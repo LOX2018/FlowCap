@@ -122,14 +122,12 @@ class DYLoginApi:
             if not (keys_str and web_protect_str):
                 await context.close()
                 raise TimeoutError("登录超时：未抓到完整 web_protect/keys，已放弃，不写入残缺凭证")
-            # 私信签名（web_protect）需由抖音 security-sdk 在“私信界面”被触发时，才针对私信场景生成。
-            # 仅首页登录抓到的通用 web_protect 调用 imapi 私信接口会被服务端判 INVALID_REQUEST/KICK。
-            # 故登录后显式打开私信页，停留让 SDK 重新生成对应场景的 web_protect/keys 后读回覆盖。
-            # 注意：此逻辑对应中午 11:12 私信成功发送版本，删除会导致私信再次 KICK，切勿移除。
-            try:
-                web_protect_str, keys_str = await self._trigger_dm_signature(page, web_protect_str, keys_str)
-            except Exception as e:
-                logger.warning(f"[auth] 打开私信页触发签名失败（将沿用登录态签名）: {e}")
+            # 私信签名（web_protect/keys）由抖音 security-sdk 在“首页登录会话”中自动生成，
+            # 并非打开某个独立私信页才生成。实测 https://www.douyin.com/message 当前已失效
+            # （抖音网页版私信是 SPA 前端路由，无独立 URL，浏览器提示“该页面不存在”）。
+            # 基座原版 login_grab_ticket 从不打开私信页，仅首页抓 web_protect 即可私信成功，
+            # 故此处不打开 /message，直接用首页已抓到的签名（上面已等齐）。
+            # 若担心 SDK 生成时机偏早，可在此额外 page.wait_for_timeout 等待，但无需跳转任何页面。
             cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
             # 最终守卫：任一关键字段缺失都视为残缺，绝不返回（上层 get_login_auth 不会写 .env）
             if not cookies or not web_protect_str or not keys_str:
@@ -142,69 +140,6 @@ class DYLoginApi:
             auth.cookie = cookies
             auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
             return auth
-
-    async def _trigger_dm_signature(self, page, web_protect_str, keys_str):
-        """打开私信页，让 security-sdk 重新生成“私信场景”的 web_protect/keys 并读回覆盖。
-
-        关键事实（来自工作记忆续5 / 中午 11:12 私信成功发送版本）：
-        私信签名需由抖音 security-sdk 在“私信界面”被触发时才针对私信场景生成；
-        仅首页登录抓到的通用 web_protect 调用 imapi 私信接口会被服务端判
-        INVALID_REQUEST / KICK。故登录后（或复用旧凭证时）都必须显式重抓一次。
-        """
-        logger.info("[auth] 正在打开私信页以触发私信签名生成…")
-        wp_before = web_protect_str
-        await page.goto("https://www.douyin.com/message", wait_until="domcontentloaded", timeout=30000)
-        for _ in range(8):
-            await asyncio.sleep(3)
-            try:
-                wp = await page.evaluate('localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
-                ks = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-            except Exception:
-                continue
-            if wp and ks:
-                web_protect_str, keys_str = wp, ks
-                break
-        if web_protect_str != wp_before:
-            logger.info("[auth] 私信签名已刷新（场景化 web_protect 已更新）")
-        else:
-            logger.info("[auth] 私信签名已就绪（与登录态一致，无需刷新）")
-        return web_protect_str, keys_str
-
-    async def _refresh_dm_signature_via_profile(self, auth, env_path, headless=False,
-                                                user_data_dir="pw_profile_dm"):
-        """凭证有效跳过扫码时，用持久化 profile 免扫码打开私信页刷新私信场景签名。
-
-        对齐中午 11:12 私信成功版本：私信签名必须针对私信场景生成，而仅靠首页通用
-        web_protect 必被 imapi 判 KICK。即便 cookie 探活通过、签名四件套齐全，也必须
-        重新触发一次私信页签名并写回 .env，否则复用旧签名时私信仍失败。
-        由于会话仍有效（已登录态），打开浏览器不会弹码，用户无感。
-        """
-        try:
-            async with async_playwright() as p:
-                context = await p.chromium.launch_persistent_context(
-                    user_data_dir=user_data_dir,
-                    headless=headless,
-                    args=['--disable-blink-features=AutomationControlled'],
-                )
-                page = context.pages[0] if context.pages else await context.new_page()
-                web_protect_str = getattr(auth, "ticket", None) and None  # 占位，下面重抓
-                keys_str = None
-                web_protect_str, keys_str = await self._trigger_dm_signature(page, "", "")
-                cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
-                await context.close()
-            if web_protect_str and keys_str:
-                # 把私信场景签名重新解析进 auth 并写回 .env，覆盖旧的通用签名
-                auth.perepare_auth(auth.cookie_str or "", web_protect_str, keys_str)
-                if cookies:
-                    auth.cookie = cookies
-                    auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-                self.save_credential(auth, env_path=env_path)
-                logger.info("[auth] 私信场景签名已刷新并写回 .env")
-            else:
-                logger.warning("[auth] 私信页未抓到 web_protect/keys，沿用原签名（私信仍可能 KICK）")
-        except Exception as e:
-            logger.warning(f"[auth] 免扫码刷新私信签名失败，将沿用原签名: {e}")
-        return auth
 
     # 登录凭证写入 .env
     ENV_FILE = ".env"
@@ -264,10 +199,7 @@ class DYLoginApi:
                 # 浅校验：有 cookie 且能拿到自己的 uid，才算有效；否则视为失效重扫
                 try:
                     if DouyinAPI.get_my_uid(auth):
-                        logger.info("[auth] 凭证有效，跳过扫码；但需刷新私信场景签名（对齐 11:12 成功版本）")
-                        # 复用旧凭证时也必须重新触发“私信页签名”，否则 imapi 私信接口会 KICK。
-                        # 因会话仍有效，用持久化 profile 免扫码打开私信页即可，不会弹码。
-                        auth = await self._refresh_dm_signature_via_profile(auth, env_path, headless)
+                        logger.info("[auth] 凭证有效，跳过扫码（私信签名来自首页 security-sdk 自动生成，无需打开私信页）")
                         return auth
                 except Exception as e:
                     logger.warning(f"[auth] 已有凭证但校验失败，将重新扫码: {e}")
