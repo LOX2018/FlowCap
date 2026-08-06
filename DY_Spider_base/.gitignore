@@ -1,0 +1,67 @@
+__pycache__
+node_modules/
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+MANIFEST
+*.manifest
+*.spec
+.cache
+*.log
+local_settings.py
+db.sqlite3
+__pypackages__/
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+datas
+/newsign/
+/.idea
+/.claude
+/test_search_oldab.py
+/new/
+
+# 本地环境变量（cookie 与登录凭证，勿入库）
+.env
+.env.example.bak
+
+# 浏览器持久化 profile（含登录态缓存，体积大且含敏感会话，勿入库）
+pw_profile_dm/
+pw_profile/
+
+# 账号索引与凭证（含账号 cookie/签名，勿入库）
+auto_dm/accounts.json
+auto_dm/accounts/
+auto_dm/accounts/accounts.json
+
+# 运行时日志
+logs/
+*.log
+
+# 打包产物与临时压缩包
+*.zip
+*.tar.gz
+*.7z
+
+# 编辑器/IDE
+.vscode/
+.DS_Store
+
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/

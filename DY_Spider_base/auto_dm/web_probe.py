@@ -1,0 +1,125 @@
+# coding=utf-8
+"""中控台浏览器采集（补充来源）：从直播评论区 DOM 扫描昵称推给调度中心。
+
+移植自 DYchajian 的 collector.scan 思路，内联选择器与提取逻辑，
+不依赖 DYchajian 的 utils/selectors 模块（避免与底座 utils 冲突）。
+
+注意：浏览器采集只能拿到昵称（拿不到数字 uid），因此推给 dispatch 时
+只有 nickname，sender 会 fallback 到 send_by_secuid（get_user_info 查询）。
+弹幕来源（live_hook）自带 uid 是主路径，本模块作补充/兜底。
+"""
+
+import asyncio
+import time
+from loguru import logger
+
+from playwright.async_api import async_playwright
+
+# ---- 内联选择器（来自 DYchajian selectors.py）----
+COMMENT_ROW = [
+    "[class*='messageItem']", "[class*='MessageItem']",
+    "[class*='chatItem']", "[class*='ChatItem']",
+    "[class*='commentItem']", "[class*='CommentItem']",
+    "[class*='interactItem']", "[class*='interactionItem']",
+    "[class*='chatList']", "[class*='ChatList']",
+    "[class*='bullet']", "[class*='danmu']",
+]
+COMMENT_NICKNAME = [
+    "[class*='chatItemNickName']", "[class*='ChatItemNickName']",
+    "[class*='nickname']", "[class*='NickName']",
+    "[class*='userName']", "[class*='UserName']", "[class*='user-name']",
+]
+COMMENT_TEXT = [
+    "[class*='chatItemDesc']", "[class*='chatItemContent']",
+    "[class*='ChatItemContent']", "[class*='commentText']",
+    "[class*='CommentText']", "[class*='messageContent']", "[class*='MessageContent']",
+]
+
+
+def _text_of(el):
+    try:
+        return (el.inner_text() or "").strip()
+    except Exception:
+        return ""
+
+
+def scan(page):
+    row_selector = None
+    for sel in COMMENT_ROW:
+        try:
+            if page.locator(sel).count() > 0:
+                row_selector = sel
+                break
+        except Exception:
+            continue
+    if not row_selector:
+        return []
+    rows = page.locator(row_selector)
+    total = min(rows.count(), 80)
+    records = []
+    seen = set()
+    for i in range(total):
+        row = rows.nth(i)
+        nick = ""
+        for sel in COMMENT_NICKNAME:
+            try:
+                ne = row.locator(sel).first
+                if ne.count() > 0:
+                    nick = _text_of(ne)
+                    break
+            except Exception:
+                continue
+        if not nick or nick in seen:
+            continue
+        seen.add(nick)
+        comment = ""
+        for sel in COMMENT_TEXT:
+            try:
+                ce = row.locator(sel).first
+                if ce.count() > 0:
+                    comment = _text_of(ce)
+                    if comment and comment != nick:
+                        break
+            except Exception:
+                continue
+        records.append({"nickname": nick, "comment": comment, "user_id": None, "sec_uid": None})
+    return records
+
+
+async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headless=False, interval=3.0, should_stop=None):
+    """启动一个浏览器，定时扫描中控台评论区，把昵称推给 dispatch。
+
+    should_stop: 可选 callable，返回 True 时立即停止扫描并退出（配合“停止”按钮）。
+    """
+    if not room_url:
+        logger.warning("[web_probe] 未配置 WEB_PROBE_ROOM_URL，跳过中控台采集")
+        return
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled"])
+        context = await browser.new_context(
+            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"))
+        try:
+            context = await browser.new_context() if False else context
+        except Exception:
+            pass
+        page = await context.new_page()
+        logger.info(f"[web_probe] 打开中控台 {room_url}")
+        await page.goto(room_url, wait_until="domcontentloaded", timeout=60000)
+        # 等待登录（简化：停留直到评论区出现）
+        await asyncio.sleep(5)
+        while True:
+            if should_stop and should_stop():
+                logger.info("[web_probe] 收到停止信号，关闭中控台采集。")
+                break
+            try:
+                recs = scan(page)
+                for r in recs:
+                    if r.get("nickname"):
+                        dispatch.submit(r)
+            except Exception as e:
+                logger.warning(f"[web_probe] 扫描异常: {e}")
+            await asyncio.sleep(interval)
