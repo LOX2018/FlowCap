@@ -36,3 +36,15 @@ ENABLE_SEND = True
 WEB_PROBE_ROOM_URL = ""          # 例如 https://creator.douyin.com/... 或直播中控台地址
 WEB_PROBE_USER_DATA_DIR = "pw_profile_probe"
 WEB_PROBE_HEADLESS = False
+
+# ---- VirtualBrowser 指纹浏览器后端（可选，默认关闭）----
+# 设为 True 且本机已安装并运行 VirtualBrowser 本地服务时，3 处浏览器使用点
+# （扫码抓签名 / 中控台采集 / 跳转解析）改用 VirtualBrowser 的指纹内核接管。
+# 设为 False（或 VB 服务不可达）时自动回退到原生 Playwright，行为不变。
+USE_VIRTUAL_BROWSER = False
+# VirtualBrowser 本地服务地址（客户端启动后默认监听 9000）
+VB_API_BASE = "http://localhost:9000"
+# 在 VirtualBrowser 客户端中提前创建好的环境 ID（worker-id）
+VB_ENV_ID = 1
+# 启动环境 / 连接 CDP 的超时（秒）
+VB_LAUNCH_TIMEOUT = 30

@@ -217,52 +217,72 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
     """用已登录浏览器打开链接，等其跳转到直播间页，再抠 live_id。
 
     适用于用户主页等需要登录态 + JS 跳转才能到达直播间的场景（备用）。
+    优先使用 VirtualBrowser 指纹内核（若已启用且服务可达），否则回退原生 Playwright。
     """
+    from auto_dm import config as _cfg
+    from auto_dm.vbrowser import launch_vb_env, connect_sync, is_vb_available
     from playwright.sync_api import sync_playwright
+
     final_url = None
     live_id = None
-    with sync_playwright() as p:
+    _vb = _cfg.USE_VIRTUAL_BROWSER and is_vb_available(_cfg.VB_API_BASE)
+    _pw = None
+    _browser = None
+    _vb_port = None
+    if _vb:
+        logger.info("[resolve] 使用 VirtualBrowser 指纹内核解析跳转")
+        _vb_port = launch_vb_env(_cfg.VB_ENV_ID, _cfg.VB_API_BASE, _cfg.VB_LAUNCH_TIMEOUT)
+        if not _vb_port:
+            logger.warning("[resolve] VirtualBrowser 启动失败，回退原生 Playwright")
+            _vb = False
+    if _vb:
+        _pw, _browser, context = connect_sync(_vb_port, _cfg.VB_API_BASE)
+        page = context.pages[0] if context.pages else context.new_page()
+    else:
+        _pw = sync_playwright().start()
         if user_data_dir and os.path.exists(user_data_dir):
-            context = p.chromium.launch_persistent_context(
+            context = _pw.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir, headless=headless,
                 args=["--disable-blink-features=AutomationControlled"])
         else:
-            context = p.chromium.launch(
+            context = _pw.chromium.launch(
                 headless=headless,
                 args=["--disable-blink-features=AutomationControlled"]).new_context()
         page = context.new_page()
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # 等待可能的跳转（用户主页 -> 直播间）
-            for _ in range(20):
-                page.wait_for_timeout(1000)
-                u = page.url
-                if "live.douyin.com" in u and "/user/" not in u:
-                    live_id = _extract_live_id_from_url(u)
-                    if live_id:
-                        final_url = u
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        # 等待可能的跳转（用户主页 -> 直播间）
+        for _ in range(20):
+            page.wait_for_timeout(1000)
+            u = page.url
+            if "live.douyin.com" in u and "/user/" not in u:
+                live_id = _extract_live_id_from_url(u)
+                if live_id:
+                    final_url = u
+                    break
+        # 若停在用户主页，尝试找“正在直播”的入口链接
+        if not live_id:
+            u = page.url
+            m = re.search(r"douyin\.com/user/([^?/\s]+)", u)
+            if m:
+                sec_uid = m.group(1)
+                # 在页面里找去直播间的链接
+                links = page.eval_on_selector_all(
+                    "a[href*='live.douyin.com']",
+                    "els => els.map(e => e.href)")
+                for link in (links or []):
+                    lid = _extract_live_id_from_url(link)
+                    if lid:
+                        live_id = lid
+                        final_url = link
                         break
-            # 若停在用户主页，尝试找“正在直播”的入口链接
-            if not live_id:
-                u = page.url
-                m = re.search(r"douyin\.com/user/([^?/\s]+)", u)
-                if m:
-                    sec_uid = m.group(1)
-                    # 在页面里找去直播间的链接
-                    links = page.eval_on_selector_all(
-                        "a[href*='live.douyin.com']",
-                        "els => els.map(e => e.href)")
-                    for link in (links or []):
-                        lid = _extract_live_id_from_url(link)
-                        if lid:
-                            live_id = lid
-                            final_url = link
-                            break
-                    if not live_id:
-                        logger.warning(f"[resolve] 用户 {sec_uid} 当前未在直播或无法解析房间")
-        except Exception as e:
-            logger.warning(f"[resolve] 浏览器解析失败: {e}")
-        finally:
+                if not live_id:
+                    logger.warning(f"[resolve] 用户 {sec_uid} 当前未在直播或无法解析房间")
+    except Exception as e:
+        logger.warning(f"[resolve] 浏览器解析失败: {e}")
+    finally:
+        # VB 模式 context 由 VirtualBrowser 管理，不主动关闭；原生模式才关闭
+        if not _vb:
             try:
                 context.close()
             except Exception:

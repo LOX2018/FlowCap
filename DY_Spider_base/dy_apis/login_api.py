@@ -67,8 +67,25 @@ class DYLoginApi:
         # 前提（用户确认）：仅当浏览器打开后显示“已登录”时复用 profile 才有效；
         # 若显示未登录，必须等用户真正扫码完成、且 web_protect/keys 抓全后才落盘，
         # 绝不在凭证残缺时写 .env（否则后续弹幕加密 + 私信 INVALID_REQUEST）。
-        async with async_playwright() as p:
-            context = await p.chromium.launch_persistent_context(
+        from auto_dm import config as _cfg
+        from auto_dm.vbrowser import launch_vb_env, connect_async, is_vb_available
+
+        _vb = _cfg.USE_VIRTUAL_BROWSER and is_vb_available(_cfg.VB_API_BASE)
+        _pw = None          # async_playwright 实例（原生模式用）
+        _browser = None
+        _vb_port = None
+        if _vb:
+            logger.info("[auth] 使用 VirtualBrowser 指纹内核接管登录会话")
+            _vb_port = launch_vb_env(_cfg.VB_ENV_ID, _cfg.VB_API_BASE, _cfg.VB_LAUNCH_TIMEOUT)
+            if not _vb_port:
+                logger.warning("[auth] VirtualBrowser 启动失败，回退原生 Playwright")
+                _vb = False
+        if _vb:
+            _pw, _browser, context = await connect_async(_vb_port, _cfg.VB_API_BASE)
+            page = context.pages[0] if context.pages else await context.new_page()
+        else:
+            _pw = await async_playwright().start()
+            context = await _pw.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=headless,
                 args=['--disable-blink-features=AutomationControlled'],
@@ -120,7 +137,8 @@ class DYLoginApi:
                     if keys_str and web_protect_str:
                         break
             if not (keys_str and web_protect_str):
-                await context.close()
+                if not _vb:
+                    await context.close()
                 raise TimeoutError("登录超时：未抓到完整 web_protect/keys，已放弃，不写入残缺凭证")
             # 私信签名（web_protect/keys）由抖音 security-sdk 在“首页登录会话”中自动生成，
             # 并非打开某个独立私信页才生成。实测 https://www.douyin.com/message 当前已失效
@@ -131,10 +149,12 @@ class DYLoginApi:
             cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
             # 最终守卫：任一关键字段缺失都视为残缺，绝不返回（上层 get_login_auth 不会写 .env）
             if not cookies or not web_protect_str or not keys_str:
-                await context.close()
+                if not _vb:
+                    await context.close()
                 raise RuntimeError(
                     "凭证不完整（cookie/web_protect/keys 任一缺失），拒绝返回残缺 auth，不写 .env")
-            await context.close()
+            if not _vb:
+                await context.close()
             auth = DouyinAuth()
             auth.perepare_auth('', web_protect_str, keys_str)
             auth.cookie = cookies
