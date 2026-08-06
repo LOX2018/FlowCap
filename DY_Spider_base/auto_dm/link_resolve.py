@@ -220,25 +220,22 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
     优先使用 VirtualBrowser 指纹内核（若已启用且服务可达），否则回退原生 Playwright。
     """
     from auto_dm import config as _cfg
-    from auto_dm.vbrowser import launch_vb_env, connect_sync, is_vb_available
+    from auto_dm.vbrowser import should_use_vb, launch_sync
     from playwright.sync_api import sync_playwright
 
     final_url = None
     live_id = None
-    _vb = _cfg.USE_VIRTUAL_BROWSER and is_vb_available(_cfg.VB_API_BASE)
+    _vb, _vb_mode = should_use_vb(_cfg)
     _pw = None
     _browser = None
-    _vb_port = None
+    _backend = None
     if _vb:
-        logger.info("[resolve] 使用 VirtualBrowser 指纹内核解析跳转")
-        _vb_port = launch_vb_env(_cfg.VB_ENV_ID, _cfg.VB_API_BASE, _cfg.VB_LAUNCH_TIMEOUT)
-        if not _vb_port:
-            logger.warning("[resolve] VirtualBrowser 启动失败，回退原生 Playwright")
+        logger.info(f"[resolve] 使用指纹浏览器内核解析跳转 (mode={_vb_mode})")
+        _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=headless)
+        if _backend is None:
+            logger.warning("[resolve] 指纹内核启动失败，回退原生 Playwright")
             _vb = False
-    if _vb:
-        _pw, _browser, context = connect_sync(_vb_port, _cfg.VB_API_BASE)
-        page = context.pages[0] if context.pages else context.new_page()
-    else:
+    if not _vb:
         _pw = sync_playwright().start()
         if user_data_dir and os.path.exists(user_data_dir):
             context = _pw.chromium.launch_persistent_context(
@@ -248,6 +245,7 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
             context = _pw.chromium.launch(
                 headless=headless,
                 args=["--disable-blink-features=AutomationControlled"]).new_context()
+    if not _vb:
         page = context.new_page()
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -281,8 +279,8 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
     except Exception as e:
         logger.warning(f"[resolve] 浏览器解析失败: {e}")
     finally:
-        # VB 模式 context 由 VirtualBrowser 管理，不主动关闭；原生模式才关闭
-        if not _vb:
+        # exe 模式 context 由我们 launch，需关闭；cdp 模式由外部客户端管理，不关；原生模式关闭
+        if _backend == "exe" or (not _vb and _backend is None):
             try:
                 context.close()
             except Exception:

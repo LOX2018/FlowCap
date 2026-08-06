@@ -1,35 +1,36 @@
 # coding=utf-8
-"""VirtualBrowser 指纹浏览器后端接入层。
+"""指纹浏览器后端接入层（可切换，默认不启用，回退原生 Playwright）。
 
-集成方式（基于 VirtualBrowser 仓库 automation/test-api.py 的真实示例，非臆测）：
-  1) VirtualBrowser 客户端运行一个本地服务（默认 http://localhost:9000）；
-  2) 通过 REST API 启动一个已配置好指纹的浏览器环境：
-         POST {api_base}/api/launchBrowser  json={"id": <环境ID>}
-     -> 返回 {"success": true, "data": {"debuggingPort": <端口>}}
-  3) 用 Playwright 的 connect_over_cdp 接管该端口，直接复用 VirtualBrowser 建好的
-     带指纹上下文（browser.contexts[0]），**不要**自己 launch_persistent_context
-     （那样建的是无指纹的空上下文）。
+支持两种指纹内核：
 
-注意：
-- 环境ID（worker-id）需在 VirtualBrowser 客户端里提前创建好，否则 API 返回 success=false。
-- 本模块只负责“启动环境 + 连 CDP”，指纹伪装由 VirtualBrowser 自身完成。
-- 若 VirtualBrowser 未安装 / 服务未启动 / 未启用，调用方应回退到原生 Playwright。
+模式 A —— fingerprint-chromium（直接启动带指纹的 chrome.exe，无需服务）：
+  - 基于 Ungoogled Chromium 源码级随机化（Canvas/WebGL/音频/字体等），
+    编译产物就是一个标准 chrome.exe，可被 Playwright 直接以 executable_path 启动。
+  - 配置：VB_MODE="exe"，VB_CHROME_EXE="路径/chrome.exe"。
+  - 优势：无需安装任何 GUI 客户端，无本地 REST 服务依赖。
+
+模式 B —— VirtualBrowser / Ant-Browser（CDP 接管，需本地服务）：
+  - 客户端运行本地服务（默认 http://localhost:9000），POST /api/launchBrowser
+    启动环境并返回 CDP debuggingPort，外部脚本 connect_over_cdp 接管其指纹上下文。
+  - 配置：VB_MODE="cdp"，VB_API_BASE / VB_ENV_ID。
+
+两种模式都通过 config.USE_VIRTUAL_BROWSER 总开关控制；未启用或服务/文件不可达时，
+调用方（login_api / web_probe / link_resolve）自动回退到原生 Playwright，行为不变。
+
+注意：指纹伪装由对应内核自身完成，本模块只负责“启动内核 + 把 page/context 交给调用方”。
 """
 
+import os
 import time
 
 import requests
 from loguru import logger
 
 
-def launch_vb_env(env_id, api_base="http://localhost:9000", timeout=30):
-    """调用 VirtualBrowser 本地 API 启动指定环境，返回 CDP 调试端口（int）或 None。
+# ---------- 模式 B：CDP 接管（VirtualBrowser / Ant-Browser）----------
 
-    :param env_id: 在 VirtualBrowser 客户端中创建的环境 ID（整数）
-    :param api_base: VirtualBrowser 本地服务地址
-    :param timeout: 请求超时（秒）
-    :return: debuggingPort（int）或 None（启动失败）
-    """
+def launch_vb_env(env_id, api_base="http://localhost:9000", timeout=30):
+    """调用本地 API 启动指定环境，返回 CDP 调试端口（int）或 None。"""
     try:
         resp = requests.post(
             f"{api_base}/api/launchBrowser",
@@ -53,7 +54,7 @@ def launch_vb_env(env_id, api_base="http://localhost:9000", timeout=30):
 
 
 def is_vb_available(api_base="http://localhost:9000", timeout=3):
-    """探测 VirtualBrowser 本地服务是否可达（用于决定回退）。"""
+    """探测本地服务是否可达（决定是否走 CDP 模式）。"""
     try:
         r = requests.get(f"{api_base}/api/status", timeout=timeout)
         return r.status_code < 500
@@ -61,21 +62,85 @@ def is_vb_available(api_base="http://localhost:9000", timeout=3):
         return False
 
 
-# ---- 异步接管（供 login_api.py / web_probe.py 使用）----
-async def connect_async(port, api_base="http://localhost:9000"):
-    """connect_over_cdp 拿到 (browser, context)，context 为 VirtualBrowser 建好的指纹上下文。"""
+# ---------- 统一启动入口（被 3 处浏览器使用点调用）----------
+
+async def launch_async(mode, cfg, headless=False):
+    """异步启动指纹内核，返回 (playwright, browser, context, backend)。
+
+    backend 用于调用方决定收尾时是否关闭 context：
+      - "exe" 模式：context 由我们 launch 出来，结束时需关闭（与原生 Playwright 一致）；
+      - "cdp" 模式：context 由外部客户端管理，不应主动关闭。
+    """
     from playwright.async_api import async_playwright
+
+    if mode == "exe":
+        exe = cfg.VB_CHROME_EXE
+        if not exe or not os.path.exists(exe):
+            logger.warning(f"[vbrowser] VB_CHROME_EXE 未配置或不存在: {exe}，回退原生 Playwright")
+            return None, None, None, None
+        logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
+        p = await async_playwright().start()
+        browser = await p.chromium.launch(
+            executable_path=exe,
+            headless=headless,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context()
+        return p, browser, context, "exe"
+
+    # 默认 cdp 模式
+    port = launch_vb_env(cfg.VB_ENV_ID, cfg.VB_API_BASE, cfg.VB_LAUNCH_TIMEOUT)
+    if not port:
+        logger.warning("[vbrowser] CDP 启动失败，回退原生 Playwright")
+        return None, None, None, None
     p = await async_playwright().start()
     browser = await p.chromium.connect_over_cdp(f"http://localhost:{port}")
     context = browser.contexts[0] if browser.contexts else await browser.new_context()
-    return p, browser, context
+    return p, browser, context, "cdp"
 
 
-# ---- 同步接管（供 link_resolve.py 使用）----
-def connect_sync(port, api_base="http://localhost:9000"):
-    """同步版 connect_over_cdp，返回 (playwright, browser, context)。"""
+def launch_sync(mode, cfg, headless=False):
+    """同步版启动指纹内核，返回 (playwright, browser, context, backend)。"""
     from playwright.sync_api import sync_playwright
+
+    if mode == "exe":
+        exe = cfg.VB_CHROME_EXE
+        if not exe or not os.path.exists(exe):
+            logger.warning(f"[vbrowser] VB_CHROME_EXE 未配置或不存在: {exe}，回退原生 Playwright")
+            return None, None, None, None
+        logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
+        p = sync_playwright().start()
+        browser = p.chromium.launch(
+            executable_path=exe,
+            headless=headless,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        context = browser.new_context()
+        return p, browser, context, "exe"
+
+    port = launch_vb_env(cfg.VB_ENV_ID, cfg.VB_API_BASE, cfg.VB_LAUNCH_TIMEOUT)
+    if not port:
+        logger.warning("[vbrowser] CDP 启动失败，回退原生 Playwright")
+        return None, None, None, None
     p = sync_playwright().start()
     browser = p.chromium.connect_over_cdp(f"http://localhost:{port}")
     context = browser.contexts[0] if browser.contexts else browser.new_context()
-    return p, browser, context
+    return p, browser, context, "cdp"
+
+
+def should_use_vb(cfg):
+    """总开关 + 可用性探测：是否启用指纹内核。"""
+    if not getattr(cfg, "USE_VIRTUAL_BROWSER", False):
+        return False, None
+    mode = getattr(cfg, "VB_MODE", "cdp")
+    if mode == "exe":
+        # exe 模式只需文件存在即可
+        if not os.path.exists(getattr(cfg, "VB_CHROME_EXE", "") or ""):
+            logger.warning("[vbrowser] VB_MODE=exe 但 VB_CHROME_EXE 不存在，回退原生 Playwright")
+            return False, None
+        return True, "exe"
+    # cdp 模式需本地服务可达
+    if is_vb_available(getattr(cfg, "VB_API_BASE", "http://localhost:9000")):
+        return True, "cdp"
+    logger.warning("[vbrowser] VB_MODE=cdp 但本地服务不可达，回退原生 Playwright")
+    return False, None

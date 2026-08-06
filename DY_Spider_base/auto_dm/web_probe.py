@@ -95,22 +95,19 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
         logger.warning("[web_probe] 未配置 WEB_PROBE_ROOM_URL，跳过中控台采集")
         return
     from auto_dm import config as _cfg
-    from auto_dm.vbrowser import launch_vb_env, connect_async, is_vb_available
+    from auto_dm.vbrowser import should_use_vb, launch_async
 
-    _vb = _cfg.USE_VIRTUAL_BROWSER and is_vb_available(_cfg.VB_API_BASE)
+    _vb, _vb_mode = should_use_vb(_cfg)
     _pw = None
     _browser = None
-    _vb_port = None
+    _backend = None
     if _vb:
-        logger.info("[web_probe] 使用 VirtualBrowser 指纹内核接管中控台采集")
-        _vb_port = launch_vb_env(_cfg.VB_ENV_ID, _cfg.VB_API_BASE, _cfg.VB_LAUNCH_TIMEOUT)
-        if not _vb_port:
-            logger.warning("[web_probe] VirtualBrowser 启动失败，回退原生 Playwright")
+        logger.info(f"[web_probe] 使用指纹浏览器内核接管中控台采集 (mode={_vb_mode})")
+        _pw, _browser, context, _backend = await launch_async(_vb_mode, _cfg, headless=headless)
+        if _backend is None:
+            logger.warning("[web_probe] 指纹内核启动失败，回退原生 Playwright")
             _vb = False
-    if _vb:
-        _pw, _browser, context = await connect_async(_vb_port, _cfg.VB_API_BASE)
-        page = context.pages[0] if context.pages else await context.new_page()
-    else:
+    if not _vb:
         _pw = await async_playwright().start()
         _browser = await _pw.chromium.launch(
             headless=headless,
@@ -119,6 +116,7 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
             user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                         "Chrome/120.0.0.0 Safari/537.36"))
+    if not _vb:
         page = await context.new_page()
     try:
         logger.info(f"[web_probe] 打开中控台 {room_url}")
@@ -138,8 +136,13 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
                 logger.warning(f"[web_probe] 扫描异常: {e}")
             await asyncio.sleep(interval)
     finally:
-        # VB 模式下 context 由 VirtualBrowser 管理，不主动关闭；原生模式才关闭浏览器
-        if not _vb and _browser is not None:
+        # exe 模式浏览器由我们 launch，需关闭；cdp 模式由外部客户端管理，不关；原生模式关闭
+        if _backend == "exe" and _browser is not None:
+            try:
+                await _browser.close()
+            except Exception:
+                pass
+        elif not _vb and _browser is not None:
             try:
                 await _browser.close()
             except Exception:

@@ -37,14 +37,19 @@ WEB_PROBE_ROOM_URL = ""          # 例如 https://creator.douyin.com/... 或直�
 WEB_PROBE_USER_DATA_DIR = "pw_profile_probe"
 WEB_PROBE_HEADLESS = False
 
-# ---- VirtualBrowser 指纹浏览器后端（可选，默认关闭）----
-# 设为 True 且本机已安装并运行 VirtualBrowser 本地服务时，3 处浏览器使用点
-# （扫码抓签名 / 中控台采集 / 跳转解析）改用 VirtualBrowser 的指纹内核接管。
-# 设为 False（或 VB 服务不可达）时自动回退到原生 Playwright，行为不变。
-USE_VIRTUAL_BROWSER = False
-# VirtualBrowser 本地服务地址（客户端启动后默认监听 9000）
+# ---- 指纹浏览器内核后端（可选，默认关闭）----
+# 设为 True 时，3 处浏览器使用点（扫码抓签名 / 中控台采集 / 跳转解析）改用指纹内核，
+# 由 VB_MODE 决定具体内核：
+#   "exe"  -> fingerprint-chromium 的 chrome.exe（推荐：无需装 GUI 客户端，源码级指纹伪装）
+#   "cdp"  -> VirtualBrowser/Ant-Browser 本地服务 + connect_over_cdp 接管
+# 设为 False（或内核不可用）时自动回退到原生 Playwright，行为不变。
+USE_VIRTUAL_BROWSER = True
+VB_MODE = "exe"
+# exe 模式：fingerprint-chromium 编译产物 chrome.exe 的相对路径
+VB_CHROME_EXE = "vb_chromium/ungoogled-chromium_148.0.7778.215-1.1_windows_x64/chrome.exe"
+# cdp 模式：VirtualBrowser/Ant-Browser 本地服务地址（客户端启动后默认监听 9000）
 VB_API_BASE = "http://localhost:9000"
-# 在 VirtualBrowser 客户端中提前创建好的环境 ID（worker-id）
+# cdp 模式：在客户端中提前创建好的环境 ID（worker-id）
 VB_ENV_ID = 1
 # 启动环境 / 连接 CDP 的超时（秒）
 VB_LAUNCH_TIMEOUT = 30

@@ -43,6 +43,9 @@ datas
 pw_profile_dm/
 pw_profile/
 
+# 指纹浏览器内核（fingerprint-chromium 解压产物，体积大，勿入库；从 Release 重新下载即可）
+vb_chromium/
+
 # 账号索引与凭证（含账号 cookie/签名，勿入库）
 auto_dm/accounts.json
 auto_dm/accounts/
