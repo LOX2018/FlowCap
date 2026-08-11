@@ -68,3 +68,12 @@ logs/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# 临时调试脚本（排错用，非项目源码）
+_keycheck.js
+_keymap.js
+_line.js
+_mapcheck.js
+_render.js
+_ssr.js
+_patch_web.py
