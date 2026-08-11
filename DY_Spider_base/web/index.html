@@ -2288,9 +2288,10 @@ function Accounts({ push, goMsg, api }) {
       </div>
 
       <AnimatePresence>
-        {reviewAccount && <AccountReview account={reviewAccount} onClose={() => setReviewAccount(null)} push={push} goMsg={goMsg} />}
+        {reviewAccount && <AccountReview key="account-review" account={reviewAccount} onClose={() => setReviewAccount(null)} push={push} goMsg={goMsg} />}
         {proxyAcct && (
           <ProxyDrawer
+            key="proxy-drawer"
             account={proxyAcct}
             form={proxyForm}
             setForm={setProxyForm}
@@ -2320,6 +2321,7 @@ function Accounts({ push, goMsg, api }) {
         )}
         {addOpen && (
           <AccountDrawer
+            key="account-drawer"
             form={addForm}
             setForm={setAddForm}
             onSave={addAccount}
