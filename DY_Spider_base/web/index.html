@@ -850,7 +850,7 @@ function Crawl({ push, goMsg }) {
 
       <AnimatePresence>
         {detail && (
-          <motion.div className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .18 }} data-od-id="video-detail">
+          <motion.div key="video-detail" className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .18 }} data-od-id="video-detail">
             <div className="overlay-head">
               <h2>{detail.v.title}</h2>
               <div style={{ flex: 1 }} />
@@ -1314,7 +1314,7 @@ function Live({ push, goMsg, api, ready }) {
       )}
 
       <AnimatePresence>
-        {review && <ReviewMode rows={rows} onClose={() => setReview(false)} push={push} sendDm={sendDm} goMsg={goMsg} />}
+        {review && <ReviewMode key="review-mode" rows={rows} onClose={() => setReview(false)} push={push} sendDm={sendDm} goMsg={goMsg} />}
       </AnimatePresence>
     </div>
   );
