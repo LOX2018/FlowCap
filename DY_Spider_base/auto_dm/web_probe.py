@@ -1,8 +1,11 @@
 # coding=utf-8
-"""中控台浏览器采集（补充来源）：从直播评论区 DOM 扫描昵称推给调度中心。
+"""中控台浏览器 DOM 扫描采集（补充/兜底来源，非必需，已不推荐）。
 
-移植自 DYchajian 的 collector.scan 思路，内联选择器与提取逻辑，
-不依赖 DYchajian 的 utils/selectors 模块（避免与底座 utils 冲突）。
+【重要澄清】直播间“评论区/公屏评论”与“弹幕”在抖音后端是同一个 WebSocket 流
+（WebcastChatMessage），已由 live_hook 完整接收并推给调度中心——这才是评论区的
+真实、稳定来源。本模块的 DOM 扫描只是 DYchajian 旧思路的兜底，依赖中控台页面
+渲染出 messageItem/chatItem 这类 DOM，且必须配置 WEB_PROBE_ROOM_URL 才会启动；
+选择器常与真实 DOM 对不上，稳定性差，平时建议保持关闭（ENABLE_WEB_PROBE=False）。
 
 注意：浏览器采集只能拿到昵称（拿不到数字 uid），因此推给 dispatch 时
 只有 nickname，sender 会 fallback 到 send_by_secuid（get_user_info 查询）。

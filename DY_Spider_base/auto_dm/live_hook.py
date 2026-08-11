@@ -7,7 +7,12 @@
 
 import sys
 import gzip
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+import threading
+if sys.stdout is not None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 import static.Live_pb2 as Live_pb2
 from dy_live.server import DouyinLive
@@ -19,12 +24,80 @@ from auto_dm import config as C
 class LiveChatHook(DouyinLive):
     """在基类 DouyinLive 的 on_message 基础上，把公屏弹幕转成私信目标推给 dispatch。"""
 
-    def __init__(self, live_id, auth_, dispatch):
+    def __init__(self, live_id, auth_, dispatch, controller=None):
         super().__init__(live_id, auth_)
         self.dispatch = dispatch
+        # 所属控制器 AutoDM（用于心跳探活失败时自动触发重新扫码）；可为 None（独立测试时）。
+        self.controller = controller
+        # 开播状态（由 run.py 在启动前查询并写入；None 表示未查询）
+        self.room_status = None
         # 诊断计数：本会话遇到的加密昵称 / 其中 sec_uid 缺失的数量
         self._enc_count = 0
         self._enc_no_secuid = 0
+        # 运行期登录态心跳线程（每 C.WS_HEARTBEAT_INTERVAL 秒探活一次，失败自动重扫）
+        self._hb_thread = None
+        self._hb_stop = threading.Event()
+
+    def start_heartbeat(self):
+        """启动运行期登录态心跳守护线程（在 start_ws 之前调用，随 WS 线程一同运行）。"""
+        if self._hb_thread and self._hb_thread.is_alive():
+            return
+        self._hb_stop.clear()
+        self._hb_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._hb_thread.start()
+        logger.info(f"[心跳] 登录态心跳已启动，间隔 {C.WS_HEARTBEAT_INTERVAL}s")
+
+    def stop_heartbeat(self):
+        if self._hb_thread:
+            self._hb_stop.set()
+            self._hb_thread = None
+
+    def _heartbeat_loop(self):
+        """周期探活：用 get_my_uid 校验登录态；失败则自动重扫（B2：自动重建监听）。"""
+        from dy_apis.douyin_api import DouyinAPI
+        while not self._hb_stop.is_set():
+            # 等待一个间隔，期间可被 stop 立即唤醒退出
+            if self._hb_stop.wait(C.WS_HEARTBEAT_INTERVAL):
+                break
+            if self._hb_stop.is_set():
+                break
+            if not self.auth_ or not getattr(self.auth_, "cookie", None):
+                continue
+            try:
+                uid = DouyinAPI.get_my_uid(self.auth_)
+            except Exception as e:
+                logger.error(f"[心跳] 登录态探活异常（将自动重新扫码）: {e}")
+                uid = None
+            if not uid:
+                logger.error(
+                    "[心跳] 登录态失效（get_my_uid 无返回，cookie 可能过期/账号被挤下线）。\n"
+                    "       自动触发重新扫码以恢复监测账号有效会话，避免弹幕昵称被加密。")
+                self._trigger_rescan()
+                break
+            else:
+                logger.debug(f"[心跳] 登录态正常（uid={uid}），下次探活在 {C.WS_HEARTBEAT_INTERVAL}s 后")
+        logger.info("[心跳] 心跳线程已退出")
+
+    def _trigger_rescan(self):
+        """登录态失效时：关闭当前 WS 并让控制器自动重新扫码重建监听（B2）。"""
+        # 先置停止开关，防止 on_close 自动重连抢先把旧会话拉起来
+        try:
+            self._should_stop = True
+        except Exception:
+            pass
+        if getattr(self, "ws", None):
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+        if self.controller and hasattr(self.controller, "rescan_and_rebuild"):
+            try:
+                # 重新扫码监测账号（controller 已知当前监测账号角色）
+                self.controller.rescan_and_rebuild()
+            except Exception as e:
+                logger.error(f"[心跳] 自动重新扫码失败（请手动点【重新扫码】）: {e}")
+        else:
+            logger.warning("[心跳] 未绑定控制器，无法自动重扫，请手动重新扫码。")
 
     @staticmethod
     def _is_encrypted_nickname(nickname):

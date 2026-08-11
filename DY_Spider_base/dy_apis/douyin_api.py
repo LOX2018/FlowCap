@@ -1719,14 +1719,14 @@ class DouyinAPI:
         :param to_user_id: 私信对话接收者ID.
         :return: 私信对话ID.
         """
+        # 私信建会话走抖音 IM 私有网关 imapi.douyin.com（与 send_msg 同域），
+        # 该接口靠 cookie + protobuf 内签名（web_protect 注入的 ticket/ts_sign/sdk_cert）鉴权，
+        # 不需要 www.douyin.com 那套 msToken/a_bogus query（那是网页版 IM 接口参数，私有网关无此路径，
+        # 强行拼 www.douyin.com 路径会返回 404 Unsupported path(Janus)）。
         url = "https://imapi.douyin.com/v2/conversation/create"
         requestProto = ProtoBuilder.build_create_conversation_request(auth, to_user_id, auth.get_uid())
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
         headers.set_header('referer', 'https://www.douyin.com/')
-
-        # 回归基座原版：create_conversation 仅带 protobuf body + cookie，不附加 msToken/a_bogus。
-        # 基座私信本就是好的，签名由 DouyinAuth.perepare_auth 注入的 ticket/ts_sign/sdk_cert 提供，
-        # 之前自行加风控参数反而破坏了与 web_protect/keys 的匹配，导致 KICK。
         resp = requests.post(
             url,
             headers=headers.get(),

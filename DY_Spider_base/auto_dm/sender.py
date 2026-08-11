@@ -47,13 +47,15 @@ def send_by_uid(auth, user_id, content, max_retry=2):
         except Exception as e:
             msg = str(e)
             if "INVALID_REQUEST" in msg or "KICK" in msg:
-                # 私信签名无效的典型表现：服务端拒绝创建会话。根因是 web_protect/keys
-                # 未针对私信场景生成（扫码登录后未打开过私信对话框触发 SDK）。
+                # create_conversation 走 imapi 私有网关（带 web_protect 四件套签名），
+                # 预检（对自身 uid）通过即证明签名有效。此处被 KICK 几乎不是“没打开私信对话框/
+                # 签名缺失”，而是账号级私信风控（陌生目标反 spam）或私信频控/被限制。
                 logger.error(
-                    f"[私信签名无效] create_conversation 被抖音拒绝(uid={user_id}): {msg}\n"
-                    f"       请先在抖音网页版用该账号打开一次【私信对话框】触发签名生成，\n"
-                    f"       然后在本程序点该账号的“重新扫码”重新抓取 web_protect/keys 后再试。")
-                return False, f"私信签名无效(INVALID_REQUEST/KICK): {msg}"
+                    f"[私信被风控] create_conversation 被抖音拒绝(uid={user_id}): {msg}\n"
+                    f"       说明：签名四件套有效（预检已通过），此处 KICK 多为账号级私信风控\n"
+                    f"       （向陌生观众批量私信触发反 spam）或私信频控/被限制。\n"
+                    f"       建议：降低发送频率、换号/养号，或确认该账号能否手动给该用户发私信。")
+                return False, f"私信被风控(INVALID_REQUEST/KICK): {msg}"
             logger.warning(f"create_conversation 失败(第{attempt}次) uid={user_id}: {e}")
             if attempt == max_retry:
                 return False, f"create_conversation 失败: {e}"

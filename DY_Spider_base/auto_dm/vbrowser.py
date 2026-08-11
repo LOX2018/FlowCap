@@ -21,10 +21,51 @@
 """
 
 import os
+import shutil
 import time
 
 import requests
 from loguru import logger
+
+# 基准目录：本文件位于 auto_dm/vbrowser.py，其上一级即为项目根 DY_Spider_base/。
+# 所有相对路径（如 VB_CHROME_EXE 的 "vb_chromium/..."）都以项目根为基准解析，
+# 与启动脚本的当前工作目录无关，避免从不同目录启动时相对路径错位导致回退原生 Playwright。
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_exe(rel_or_abs):
+    """把 VB_CHROME_EXE 解析为绝对路径：绝对路径原样返回，相对路径按项目根解析。"""
+    if not rel_or_abs:
+        return rel_or_abs
+    if os.path.isabs(rel_or_abs):
+        return rel_or_abs
+    return os.path.join(_PROJECT_ROOT, rel_or_abs)
+
+
+def _wipe_user_data_dir(user_data_dir):
+    """强制重扫（方案B）：删除整个 profile 目录，等同全新浏览器。
+
+    - 先递归重置只读属性（Windows 下 Chromium 缓存/偏好文件常为只读，否则 shutil 删除失败）；
+    - 目录不存在则忽略（首次扫码本就无目录）；
+    - 删除失败仅告警，不阻断启动（浏览器会自行创建空目录）。
+    """
+    if not user_data_dir:
+        return
+    if not os.path.exists(user_data_dir):
+        logger.info(f"[vbrowser] profile 目录不存在，视为全新: {user_data_dir}")
+        return
+    try:
+        for root, dirs, files in os.walk(user_data_dir):
+            for name in dirs + files:
+                p = os.path.join(root, name)
+                try:
+                    os.chmod(p, 0o755)
+                except OSError:
+                    pass
+        shutil.rmtree(user_data_dir)
+        logger.info(f"[vbrowser] 已删除旧 profile 目录: {user_data_dir}")
+    except Exception as e:
+        logger.warning(f"[vbrowser] 清空 profile 目录失败（将仍尝试启动）: {e}")
 
 
 # ---------- 模式 B：CDP 接管（VirtualBrowser / Ant-Browser）----------
@@ -64,28 +105,43 @@ def is_vb_available(api_base="http://localhost:9000", timeout=3):
 
 # ---------- 统一启动入口（被 3 处浏览器使用点调用）----------
 
-async def launch_async(mode, cfg, headless=False):
+async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=False):
     """异步启动指纹内核，返回 (playwright, browser, context, backend)。
 
     backend 用于调用方决定收尾时是否关闭 context：
       - "exe" 模式：context 由我们 launch 出来，结束时需关闭（与原生 Playwright 一致）；
       - "cdp" 模式：context 由外部客户端管理，不应主动关闭。
+
+    user_data_dir：exe 模式使用持久化 profile（launch_persistent_context）。
+      - force=True（强制重新扫码）：使用【临时目录】作为 profile，确保浏览器一定是“未登录”全新态，
+        必然弹出二维码等待用户真实扫码；避免因持久化 profile 残留旧 sessionid 而“跳过扫码、误捕获旧凭证”
+        （这正是“还没扫码就登录了”的根因）。扫完即弃，不留旧登录态。
+      - force=False：用 user_data_dir（默认 vb_profile_dm），可复用已有登录态免扫码。
     """
     from playwright.async_api import async_playwright
 
     if mode == "exe":
-        exe = cfg.VB_CHROME_EXE
+        exe = _resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")
         if not exe or not os.path.exists(exe):
             logger.warning(f"[vbrowser] VB_CHROME_EXE 未配置或不存在: {exe}，回退原生 Playwright")
             return None, None, None, None
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
+        if user_data_dir is None:
+            user_data_dir = os.path.join(_PROJECT_ROOT, "vb_profile_dm")
+        if force:
+            # 方案B：强制重扫时，直接清空该账号的 profile 整个目录（等同全新浏览器），
+            # 再用原目录启动——绕过一切持久化登录态（残留 sessionid 等），确保必须真实扫码；
+            # 扫完的真实登录态会写回原目录（区别于临时目录，不会扫完即弃）。
+            _wipe_user_data_dir(user_data_dir)
+            logger.info(f"[vbrowser] 强制重扫模式：已清空原 profile 目录（等同全新浏览器）: {user_data_dir}")
         p = await async_playwright().start()
-        browser = await p.chromium.launch(
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
             executable_path=exe,
             headless=headless,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
-        context = await browser.new_context()
+        browser = context.browser
         return p, browser, context, "exe"
 
     # 默认 cdp 模式
@@ -99,23 +155,26 @@ async def launch_async(mode, cfg, headless=False):
     return p, browser, context, "cdp"
 
 
-def launch_sync(mode, cfg, headless=False):
+def launch_sync(mode, cfg, headless=False, user_data_dir=None):
     """同步版启动指纹内核，返回 (playwright, browser, context, backend)。"""
     from playwright.sync_api import sync_playwright
 
     if mode == "exe":
-        exe = cfg.VB_CHROME_EXE
+        exe = _resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")
         if not exe or not os.path.exists(exe):
             logger.warning(f"[vbrowser] VB_CHROME_EXE 未配置或不存在: {exe}，回退原生 Playwright")
             return None, None, None, None
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
+        if user_data_dir is None:
+            user_data_dir = os.path.join(_PROJECT_ROOT, "vb_profile_dm")
         p = sync_playwright().start()
-        browser = p.chromium.launch(
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
             executable_path=exe,
             headless=headless,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
-        context = browser.new_context()
+        browser = context.browser
         return p, browser, context, "exe"
 
     port = launch_vb_env(cfg.VB_ENV_ID, cfg.VB_API_BASE, cfg.VB_LAUNCH_TIMEOUT)
@@ -134,8 +193,8 @@ def should_use_vb(cfg):
         return False, None
     mode = getattr(cfg, "VB_MODE", "cdp")
     if mode == "exe":
-        # exe 模式只需文件存在即可
-        if not os.path.exists(getattr(cfg, "VB_CHROME_EXE", "") or ""):
+        # exe 模式只需文件存在即可（相对路径按项目根解析，与启动目录无关）
+        if not os.path.exists(_resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")):
             logger.warning("[vbrowser] VB_MODE=exe 但 VB_CHROME_EXE 不存在，回退原生 Playwright")
             return False, None
         return True, "exe"

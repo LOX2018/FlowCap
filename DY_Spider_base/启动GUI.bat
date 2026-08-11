@@ -1,35 +1,38 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
-setlocal EnableDelayedExpansion
+REM ============================================================
+REM  DouYin Auto-DM - main launcher (GUI + auto-start daemons)
+REM  Double-click to: 1) launch browser daemon (keep credential alive)
+REM                    2) launch receive daemon (per-account isolated DM)
+REM                    3) start the GUI
+REM  Daemons run as standalone no-window processes; they keep running
+REM  after the GUI is closed. Stop them from the GUI or kill the processes.
+REM ============================================================
+set PYTHON_EXE=C:\Users\LOX\AppData\Local\Programs\Python\Python314\pythonw.exe
+set PYTHON_EXE_CON=C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe
+set BASE_DIR=%~dp0
 
-REM ========== 配置区（按需修改）==========
-set "PY=C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe"
-set "ROOT=%~dp0"
-REM =======================================
-
-cd /d "%ROOT%"
-
-echo ===================================================
-echo   Douyin Live Auto-DM - GUI Manager
-echo   Work dir: %ROOT%
-echo ===================================================
-
-if not exist "%PY%" (
-    echo [ERROR] Python not found: %PY%
-    echo Please edit PY variable in this script.
-    pause
-    exit /b 1
+if not exist "%PYTHON_EXE%" (
+    set PYTHON_EXE=%PYTHON_EXE_CON%
 )
 
-"%PY%" -c "import tkinter" 2>nul
+cd /d "%BASE_DIR%"
+
+REM 1) browser daemon (no window, keep credential alive)
+echo [1/3] Starting browser daemon...
+start "" "%PYTHON_EXE%" -m auto_dm.browser_daemon --account 主
+timeout /t 2 >nul
+
+REM 2) receive daemon (no window, per-account isolated DM)
+echo [2/3] Starting receive daemon...
+start "" "%PYTHON_EXE%" -m auto_dm.recv_daemon
+timeout /t 2 >nul
+
+REM 3) GUI (needs a window)
+echo [3/3] Starting GUI...
+"%PYTHON_EXE_CON%" -m auto_dm.gui
 if errorlevel 1 (
-    echo [ERROR] tkinter not available in this Python build.
+    echo.
+    echo [ERROR] GUI launch failed, check logs or Python env.
     pause
-    exit /b 1
 )
-
-echo [INFO] Launching GUI ...
-"%PY%" -m auto_dm.gui
-
-endlocal
-pause

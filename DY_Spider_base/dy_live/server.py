@@ -13,8 +13,13 @@ from builder.params import Params
 import utils.common_util as common_util
 from utils.dy_util import generate_signature
 
-# Windows 控制台是 GBK，弹幕含 emoji 会 UnicodeEncodeError，按 UTF-8 输出
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# Windows 控制台是 GBK，弹幕含 emoji 会 UnicodeEncodeError，按 UTF-8 输出。
+# 无控制台模式（PyInstaller --noconsole / pythonw）下 sys.stdout 为 None，需判空。
+if sys.stdout is not None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 class DouyinLive:
@@ -106,11 +111,20 @@ class DouyinLive:
         print(f"status_code: {close_status_code}, msg: {close_msg}")
         print("### ===closed=== ###\033[m")
 
-    def start_ws(self):
-        room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
-        room_id = room_info['room_id']
-        user_id = room_info['user_id']
-        ttwid = room_info['ttwid']
+    def start_ws(self, room_info=None):
+        # room_info：可选，由调用方预查并传入（避免重复查询同一直播间，加速启动）。
+        # 为 None 时回退原行为：自行调用 get_live_info。
+        if room_info and isinstance(room_info, dict) and room_info.get("room_id"):
+            logger_info = room_info
+        else:
+            room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
+            if not room_info or not isinstance(room_info, dict):
+                print("\033[31m### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###\033[m")
+                return
+            logger_info = room_info
+        room_id = logger_info['room_id']
+        user_id = logger_info['user_id']
+        ttwid = logger_info['ttwid']
         params = Params()
 
         res = DouyinAPI.get_webcast_detail(self.auth_, str(user_id), room_id, f"https://live.douyin.com/{self.live_id}")

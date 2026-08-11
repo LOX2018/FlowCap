@@ -61,22 +61,31 @@ class DYLoginApi:
             return auth
 
     # 扫码登录并抓 ticket
-    async def login_grab_ticket(self, headless=False, timeout=300, user_data_dir="pw_profile_dm"):
-        # 用持久化 profile：已登录则免扫码直接复用；过期才弹码。
-        # 关键：监测账号 WS 必须用“真实浏览器会话”建，否则抖音返回 uid=111111 + 昵称加密。
-        # 前提（用户确认）：仅当浏览器打开后显示“已登录”时复用 profile 才有效；
-        # 若显示未登录，必须等用户真正扫码完成、且 web_protect/keys 抓全后才落盘，
-        # 绝不在凭证残缺时写 .env（否则后续弹幕加密 + 私信 INVALID_REQUEST）。
+    async def login_grab_ticket(self, headless=False, timeout=300, user_data_dir="pw_profile_dm",
+                                env_path=".env", force=False):
+        # force=True：强制重新扫码，绝不复用 profile 里的旧登录态（避免“着急捕获旧凭证”）。
+        #   监测账号启动时永远 force=True，确保拿到“本次真实扫码”的会话 + 有效 web_protect。
+        # 关键：私信凭证 = 首页 security-sdk 的 web_protect/keys；但 web_protect 只有在
+        #   抖音网页版【打开过私信对话框】之后才生成有效值，否则是空壳 → 私信 KICK。
+        #   故捕获后必须校验 web_protect 有效性，无效则视为未就绪、继续等/报错，绝不写残缺凭证。
+        # 账号隔离：env_path 推导该账号独占的 profile 目录，新增账号用全新指纹封存、不复用他人凭证。
         from auto_dm import config as _cfg
         from auto_dm.vbrowser import should_use_vb, launch_async
+        from auto_dm import accounts as _accounts
 
         _vb, _vb_mode = should_use_vb(_cfg)
         _pw = None          # async_playwright 实例
         _browser = None
         _backend = None      # "exe" / "cdp" / None(原生)
+        context = None
+        page = None
+        # 账号独占 profile：exe 模式用 accounts.profile_dir_of 推导，确保每账号独立封存
+        _acc_profile = _accounts.profile_dir_of(env_path)
         if _vb:
             logger.info(f"[auth] 使用指纹浏览器内核接管登录会话 (mode={_vb_mode})")
-            _pw, _browser, context, _backend = await launch_async(_vb_mode, _cfg, headless=headless)
+            logger.info(f"[auth] 账号专属指纹 profile: {_acc_profile}")
+            _pw, _browser, context, _backend = await launch_async(
+                _vb_mode, _cfg, headless=headless, user_data_dir=_acc_profile, force=force)
             if _backend is None:
                 logger.warning("[auth] 指纹内核启动失败，回退原生 Playwright")
                 _vb = False
@@ -90,79 +99,140 @@ class DYLoginApi:
                 args=['--disable-blink-features=AutomationControlled'],
             )
             page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(self.home_url)
-            await page.wait_for_load_state("load")
-            await asyncio.sleep(2)
-            # 若 profile 已带登录态（已登录），跳过扫码直接抓签名
-            already_login = False
+
+        # ===== 以下为指纹内核与原生内核共用的登录/抓签名流程 =====
+        if page is None:
+            raise RuntimeError("[auth] 未能获得浏览器页面，登录中止")
+
+        async def _is_real_login(ctx):
+            """判定浏览器是否处于“真实登录态”：
+            仅当 cookie 中存在 sessionid / sid_tt（抖音真实登录 cookie）才认为已登录。
+            注意：web_protect/keys 在首页加载时即由 security-sdk 生成（未登录也会生成空壳），
+            不能据此判断登录，否则会出现“未扫码就捕获凭证”的事故。"""
             try:
-                login_btn = await page.evaluate('''() => {
-                    const nodes = Array.from(document.querySelectorAll('button, span, div, a'));
-                    const hit = nodes.find(n => ['登录','登 录'].includes((n.textContent||'').trim()));
-                    return !!hit;
-                }''')
-                already_login = not login_btn
+                ck = {c['name']: c['value'] for c in await ctx.cookies()}
             except Exception:
-                already_login = False
-            keys_str = None
-            web_protect_str = None
+                return False
+            return bool(ck.get("sessionid") or ck.get("sid_tt"))
+
+        def _web_protect_valid(s):
+            """校验 web_protect 是有效 JSON 且含关键密钥字段，避免捕获空壳/占位导致私信 KICK。"""
+            if not s or not isinstance(s, str):
+                return False
+            s = s.strip()
+            if not (s.startswith("{") or s.startswith("[")):
+                return False
+            try:
+                import json
+                obj = json.loads(s)
+            except Exception:
+                return False
+            # 有效 web_protect 应含密钥/签名相关字段，空壳通常缺少这些
+            blob = json.dumps(obj)
+            for key in ("webcast", "sign", "key", "ticket", "token", "salt", "app_id"):
+                if key in blob:
+                    return True
+            return False
+
+        async def _wait_sign_and_login(ctx, deadline):
+            """轮询直到：① 真实登录 cookie 出现（用户已扫码）且 ② web_protect 有效。
+            二者同时满足才返回 (keys_str, web_protect_str)，否则超时 raise。"""
+            keys_str = web_protect_str = None
+            while time.time() < deadline:
+                await asyncio.sleep(1)
+                try:
+                    keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                    web_protect_str = await page.evaluate(
+                        'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+                except Exception:
+                    keys_str = web_protect_str = None
+                # 关键：必须真实登录态（sessionid 出现），仅 web_protect 出现不算；
+                # 且 web_protect 必须是有效 JSON（空壳不算），否则继续等
+                if (keys_str and _web_protect_valid(web_protect_str)) and await _is_real_login(ctx):
+                    return keys_str, web_protect_str
+            raise TimeoutError(
+                "登录超时：未在超时时间内完成扫码并拿到【有效】web_protect+登录态，已放弃，不写入残缺凭证")
+
+        # 用 domcontentloaded 而非 load：抖音首页有持续长连接/轮询，load 事件常延迟触发，
+        # 在指纹 chromium 下更易触发 30s 超时；domcontentloaded 已足够后续脚本执行与扫码。
+        await page.goto(self.home_url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(1)
+
+        if force:
+            # 强制重新扫码：绝不依赖 profile 里的旧 sessionid 判定“已登录”，直接等待本次真实扫码。
+            # 若 profile 残留旧登录态导致没出现登录按钮，先尝试点“退出登录/切换账号”不可行，
+            # 但抖音首页对已登录用户通常仍会展示头像而非登录按钮；此时改为等待其真实登录 cookie
+            # + 有效 web_protect 即可（已登录用户打开私信对话框后 web_protect 会变有效）。
+            logger.info("强制重新扫码模式：等待本次真实登录态 + 有效 web_protect（不会复用旧残缺凭证）")
+            keys_str, web_protect_str = await _wait_sign_and_login(context, time.time() + timeout)
+        else:
+            # 非强制：仅当 profile 真实已登录（sessionid 存在）才复用，否则重新扫码
+            already_login = await _is_real_login(context)
             if not already_login:
-                await page.evaluate('''() => {
-                    const nodes = Array.from(document.querySelectorAll('button, span, div, a'));
-                    const hit = nodes.find(n => ['登录','登 录'].includes((n.textContent||'').trim()));
-                    if (hit) hit.click();
-                }''')
-                logger.info("请在浏览器里扫码登录（超时前请完成扫码，未完成将报错而不是写残缺凭证）")
-                deadline = time.time() + timeout
-                while time.time() < deadline:
-                    await asyncio.sleep(2)
-                    try:
-                        keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-                        web_protect_str = await page.evaluate('localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
-                    except Exception:
-                        continue
-                    if keys_str and web_protect_str:
-                        break
+                try:
+                    await page.evaluate('''() => {
+                        const nodes = Array.from(document.querySelectorAll('button, span, div, a'));
+                        const hit = nodes.find(n => ['登录','登 录'].includes((n.textContent||'').trim()));
+                        if (hit) hit.click();
+                    }''')
+                except Exception:
+                    pass
+                logger.info("请在浏览器里扫码登录（必须先完成扫码、出现真实登录态才捕获凭证；"
+                            "未完成将报错而不是写残缺凭证）")
+                keys_str, web_protect_str = await _wait_sign_and_login(context, time.time() + timeout)
             else:
-                logger.info("[auth] 检测到已登录会话（复用 profile），无需重新扫码")
-                deadline = time.time() + timeout
-                while time.time() < deadline:
-                    await asyncio.sleep(2)
+                logger.info("[auth] 检测到真实已登录会话（profile 含 sessionid），直接复用并抓取签名")
+                try:
+                    keys_str, web_protect_str = await _wait_sign_and_login(context, time.time() + 30)
+                except TimeoutError:
+                    logger.warning("[auth] 已登录会话签名未就绪，降级为重新扫码")
                     try:
-                        keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-                        web_protect_str = await page.evaluate('localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+                        await page.evaluate('''() => {
+                            const nodes = Array.from(document.querySelectorAll('button, span, div, a'));
+                            const hit = nodes.find(n => ['登录','登 录'].includes((n.textContent||'').trim()));
+                            if (hit) hit.click();
+                        }''')
                     except Exception:
-                        continue
-                    if keys_str and web_protect_str:
-                        break
-            if not (keys_str and web_protect_str):
-                if _backend == "exe":
-                    await context.close()
-                raise TimeoutError("登录超时：未抓到完整 web_protect/keys，已放弃，不写入残缺凭证")
-            # 私信签名（web_protect/keys）由抖音 security-sdk 在“首页登录会话”中自动生成，
-            # 并非打开某个独立私信页才生成。实测 https://www.douyin.com/message 当前已失效
-            # （抖音网页版私信是 SPA 前端路由，无独立 URL，浏览器提示“该页面不存在”）。
-            # 基座原版 login_grab_ticket 从不打开私信页，仅首页抓 web_protect 即可私信成功，
-            # 故此处不打开 /message，直接用首页已抓到的签名（上面已等齐）。
-            # 若担心 SDK 生成时机偏早，可在此额外 page.wait_for_timeout 等待，但无需跳转任何页面。
-            cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
-            # 最终守卫：任一关键字段缺失都视为残缺，绝不返回（上层 get_login_auth 不会写 .env）
-            if not cookies or not web_protect_str or not keys_str:
-                if _backend == "exe":
-                    await context.close()
-                raise RuntimeError(
-                    "凭证不完整（cookie/web_protect/keys 任一缺失），拒绝返回残缺 auth，不写 .env")
+                        pass
+                    keys_str, web_protect_str = await _wait_sign_and_login(context, time.time() + timeout)
+
+        if not (keys_str and _web_protect_valid(web_protect_str)):
             if _backend == "exe":
                 await context.close()
-            auth = DouyinAuth()
-            auth.perepare_auth('', web_protect_str, keys_str)
-            auth.cookie = cookies
-            auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-            return auth
+            raise TimeoutError("登录超时：未抓到完整/有效 web_protect/keys，已放弃，不写入残缺凭证")
+
+        cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
+        # 最终守卫：必须含真实登录 cookie + 有效签名，否则绝不返回（上层不会写 .env）
+        if not (cookies.get("sessionid") or cookies.get("sid_tt")) or not _web_protect_valid(web_protect_str) or not keys_str:
+            if _backend == "exe":
+                await context.close()
+            raise RuntimeError(
+                "凭证不完整（缺少真实登录 cookie 或有效 web_protect/keys），拒绝返回残缺 auth，不写 .env")
+        if _backend == "exe":
+            await context.close()
+        auth = DouyinAuth()
+        auth.perepare_auth('', web_protect_str, keys_str)
+        auth.cookie = cookies
+        auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        return auth
 
     # 登录凭证写入 .env
     ENV_FILE = ".env"
     TICKET_KEYS = ("DY_TICKET", "DY_TS_SIGN", "DY_CLIENT_CERT", "DY_PRIVATE_KEY")
+
+    @staticmethod
+    def _encode_private_key(pem):
+        """把 PEM 私钥里的真实换行替换成字面量 \\n，使其能安全存入单引号 .env 而不破坏 dotenv 解析。"""
+        if not pem:
+            return ""
+        return pem.replace("\r\n", "\n").replace("\n", "\\n")
+
+    @staticmethod
+    def _decode_private_key(value):
+        """读回时把 .env 中的字面量 \\n 还原为真实换行，恢复合法 PEM 格式。"""
+        if not value:
+            return None
+        return value.replace("\\n", "\n")
 
     def save_credential(self, auth, env_path=None):
         env_file = env_path or self.ENV_FILE
@@ -172,12 +242,14 @@ class DYLoginApi:
             "DY_TICKET": auth.ticket or "",
             "DY_TS_SIGN": auth.ts_sign or "",
             "DY_CLIENT_CERT": auth.client_cert or "",
-            "DY_PRIVATE_KEY": auth.private_key or "",
+            # PEM 含换行，必须编码为字面量 \n 才能安全存入单引号 .env（否则 dotenv 解析失败）
+            "DY_PRIVATE_KEY": self._encode_private_key(auth.private_key),
         }
         set_values = {k: v for k, v in values.items() if v}
         from dotenv import set_key
         for key, value in set_values.items():
-            set_key(env_file, key, value)
+            set_key(env_file, key, value, quote_mode="never")
+        logger.debug(f"[auth] 凭证已写回 {env_file}（DY_PRIVATE_KEY 已编码换行）")
         return os.path.abspath(env_file)
 
     @staticmethod
@@ -195,7 +267,7 @@ class DYLoginApi:
         auth.ticket = os.getenv("DY_TICKET") or None
         auth.ts_sign = os.getenv("DY_TS_SIGN") or None
         auth.client_cert = os.getenv("DY_CLIENT_CERT") or None
-        auth.private_key = os.getenv("DY_PRIVATE_KEY") or None
+        auth.private_key = DYLoginApi._decode_private_key(os.getenv("DY_PRIVATE_KEY"))
         return auth
 
     async def get_login_auth(self, headless=False, env_path=".env", force=False):
@@ -230,7 +302,7 @@ class DYLoginApi:
         # —— 扫码前快照旧凭证（磁盘上 .env 的当前值），供扫码后做“旧→新”捕获对比 ——
         from auto_dm.login_capture import snapshot_old_env, analyze_login_capture
         old_snap = snapshot_old_env(env_path)
-        auth = await self.login_grab_ticket(headless=headless)
+        auth = await self.login_grab_ticket(headless=headless, env_path=env_path, force=force)
         # —— 写回 .env 前，先比对旧→新并生成捕获分析报告（你扫码，程序自动分析）——
         analyze_login_capture(auth, old_snap, env_path)
         logger.info(f"登录凭证已存 {self.save_credential(auth, env_path=env_path)}")

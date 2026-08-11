@@ -1,0 +1,2581 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>抖音数据控制台 · Douyin Console</title>
+<style>
+:root {
+  --bg: oklch(15.5% 0.012 245);
+  --surface: oklch(19.5% 0.016 245);
+  --surface-2: oklch(23% 0.018 245);
+  --fg: oklch(93% 0.008 245);
+  --muted: oklch(67% 0.02 245);
+  --border: oklch(28% 0.02 245);
+  --accent: oklch(76% 0.16 145);
+  --accent-ink: oklch(16% 0.04 150);
+  --ok: oklch(74% 0.15 150);
+  --warn: oklch(79% 0.14 85);
+  --danger: oklch(69% 0.19 25);
+  --ok-bg: color-mix(in oklch, var(--ok) 15%, transparent);
+  --warn-bg: color-mix(in oklch, var(--warn) 15%, transparent);
+  --danger-bg: color-mix(in oklch, var(--danger) 15%, transparent);
+  --accent-bg: color-mix(in oklch, var(--accent) 14%, transparent);
+
+  --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.6 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    linear-gradient(color-mix(in oklch, var(--border) 22%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--border) 22%, transparent) 1px, transparent 1px);
+  background-size: 44px 44px;
+  overflow-x: hidden;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input, select, textarea { font: inherit; color: inherit; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+#root { min-height: 100vh; }
+
+.app { display: flex; flex-direction: column; min-height: 100vh; }
+
+.nav {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; gap: 22px;
+  padding: 0 22px; height: 56px;
+  background: color-mix(in oklch, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+.brand .mark {
+  width: 22px; height: 22px; border-radius: 6px; align-self: center;
+  background: var(--accent); position: relative;
+}
+.brand .mark::after {
+  content: ''; position: absolute; inset: 6px; border-radius: 3px;
+  background: var(--accent-ink);
+}
+.brand h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+.brand .sub { font-family: var(--font-mono); font-size: 11px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.tabs { display: flex; gap: 2px; flex: 1; }
+.tab {
+  padding: 7px 13px; border-radius: 7px; font-size: 13.5px; color: var(--muted);
+  transition: background .15s, color .15s; white-space: nowrap;
+}
+.tab:hover { background: var(--surface-2); color: var(--fg); }
+.tab.active { background: var(--accent-bg); color: var(--accent); font-weight: 550; }
+.nav-status { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.badge-conn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); font-size: 12px; color: var(--muted); font-family: var(--font-mono);
+  letter-spacing: 0.03em;
+}
+.badge-conn b { font-weight: 500; color: var(--fg); font-family: var(--font-body); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
+.dot.pulse { animation: pulse 1.6s ease-out infinite; }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 var(--ok-bg); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.demo-tag {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--warn); border: 1px dashed color-mix(in oklch, var(--warn) 45%, transparent);
+  padding: 2px 8px; border-radius: 6px; white-space: nowrap;
+}
+
+.main { flex: 1; padding: 22px; max-width: 1680px; width: 100%; margin: 0 auto; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.section-head h2 { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+.section-head .desc { font-size: 13px; color: var(--muted); }
+.head-row { display: flex; align-items: center; gap: 14px; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px; overflow: hidden;
+}
+.card h3 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.grid { display: grid; gap: 14px; }
+.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.cols-3-7 { grid-template-columns: 3fr 7fr; }
+
+.stat { display: flex; flex-direction: column; gap: 10px; }
+.stat .label { font-size: 12px; color: var(--muted); letter-spacing: 0.05em; }
+.stat .num { font-family: var(--font-mono); font-size: 30px; font-weight: 550; letter-spacing: -0.01em; line-height: 1; font-variant-numeric: tabular-nums; }
+.stat .num .unit { font-size: 14px; color: var(--muted); margin-left: 4px; font-weight: 400; }
+.stat .spark { display: flex; align-items: flex-end; justify-content: space-between; }
+.stat .delta { font-size: 12px; font-family: var(--font-mono); color: var(--ok); }
+.stat .delta.down { color: var(--danger); }
+
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 12px; line-height: 1.5; white-space: nowrap; }
+.pill .bullet { width: 5px; height: 5px; border-radius: 50%; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13.5px; font-weight: 550;
+  transition: background .15s, border-color .15s, color .15s;
+  white-space: nowrap;
+}
+.btn.primary { background: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { background: oklch(82% 0.16 145); }
+.btn.ghost { background: var(--surface-2); color: var(--fg); border: 1px solid var(--border); }
+.btn.ghost:hover { background: oklch(26% 0.02 245); border-color: color-mix(in oklch, var(--border) 60%, var(--fg)); }
+.btn.text { background: transparent; color: var(--accent); height: auto; padding: 0; }
+.btn.text:hover { color: oklch(82% 0.16 145); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn:focus-visible, .tab:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .row-expand:focus-visible, .conv:focus-visible, .msg-inline:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+}
+.btn.sm { height: 30px; padding: 0 11px; font-size: 12.5px; border-radius: 7px; }
+.like-btn { position: relative; }
+.like-cnt { margin-left: 6px; font-family: var(--font-mono); color: var(--accent); font-weight: 600; font-size: 12.5px; }
+.burst { position: absolute; left: 50%; bottom: calc(100% + 4px); transform: translateX(-50%); font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--accent); pointer-events: none; animation: burstup .8s ease-out forwards; white-space: nowrap; text-shadow: 0 1px 6px color-mix(in oklch, var(--bg) 60%, transparent); }
+@keyframes burstup { 0% { opacity: 0; transform: translate(-50%, 6px); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%, -16px); } }
+.like-total { color: var(--muted); font-size: 12.5px; font-weight: 400; }
+.batch-row { margin-top: 10px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; }
+.batch-input { width: 88px; height: 34px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.input, .select, .textarea {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 0 12px; height: 36px; font-size: 13.5px; color: var(--fg);
+  transition: border-color .15s;
+}
+.input::placeholder { color: color-mix(in oklch, var(--muted) 60%, var(--bg)); }
+.input:focus, .select:focus, .textarea:focus { border-color: var(--accent); outline: none; }
+.select { padding: 0 30px 0 12px; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+.textarea { height: auto; padding: 10px 12px; resize: none; }
+
+.searchbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.searchbar .input { flex: 1; min-width: 240px; }
+.seg { display: inline-flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; }
+.seg button { padding: 5px 12px; border-radius: 6px; font-size: 13px; color: var(--muted); transition: background .15s, color .15s; }
+.seg button.active { background: var(--surface-2); color: var(--fg); font-weight: 550; }
+
+.result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.vcard { display: flex; flex-direction: column; gap: 10px; cursor: pointer; }
+.thumb { position: relative; aspect-ratio: 16/9; border-radius: 9px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.thumb .play { width: 34px; height: 34px; border-radius: 50%; background: color-mix(in oklch, var(--bg) 62%, transparent); border: 1px solid color-mix(in oklch, white 25%, transparent); display: grid; place-items: center; }
+.thumb .play::after { content: ''; width: 0; height: 0; margin-left: 3px; border-style: solid; border-width: 6px 0 6px 10px; border-color: transparent transparent transparent white; }
+.thumb .dur { position: absolute; right: 8px; bottom: 8px; font-family: var(--font-mono); font-size: 11px; color: white; background: color-mix(in oklch, var(--bg) 60%, transparent); padding: 1px 6px; border-radius: 5px; }
+.thumb .src { position: absolute; left: 8px; top: 8px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: white; background: color-mix(in oklch, var(--bg) 55%, transparent); padding: 1px 6px; border-radius: 5px; }
+.vcard .t { font-size: 13.5px; font-weight: 550; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 40px; }
+.vcard .m { display: flex; gap: 14px; font-family: var(--font-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.vcard .row-ops { display: flex; gap: 6px; align-items: center; }
+.vcard .row-ops .btn { flex: 1; }
+.sk { position: relative; overflow: hidden; background: var(--surface-2); border-radius: 7px; }
+.sk::after { content: ''; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, color-mix(in oklch, white 7%, transparent), transparent); animation: shimmer 1.2s infinite; }
+@keyframes shimmer { to { transform: translateX(100%); } }
+.sk-thumb { aspect-ratio: 16/9; border-radius: 9px; }
+.sk-line { height: 12px; margin-top: 12px; }
+.sk-line.w60 { width: 60%; }
+.sk-line.w40 { width: 40%; }
+.urow { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.urow:last-child { border-bottom: 0; }
+.avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-size: 15px; font-weight: 600; color: var(--accent-ink); flex: none; }
+.avatar.sm { width: 30px; height: 30px; font-size: 12px; }
+.avatar.lg { width: 54px; height: 54px; font-size: 20px; }
+.urow .info { flex: 1; min-width: 0; }
+.urow .nm { font-weight: 600; font-size: 13.5px; }
+.urow .sub { font-size: 12px; color: var(--muted); }
+.tag { display: inline-block; font-size: 11px; color: var(--accent); background: var(--accent-bg); border-radius: 5px; padding: 1px 6px; margin-left: 6px; font-family: var(--font-mono); letter-spacing: .04em; }
+
+.feed { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.feed-item { display: flex; gap: 10px; align-items: baseline; padding: 7px 8px; border-radius: 7px; animation: slidein .35s ease both; }
+.feed-item:hover { background: var(--surface-2); }
+.feed-item .tm { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); flex: none; width: 52px; font-variant-numeric: tabular-nums; }
+.feed-item .kind { font-family: var(--font-mono); font-size: 11px; flex: none; width: 34px; letter-spacing: .04em; }
+.feed-item .txt { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-item .txt b { font-weight: 600; }
+.feed-item .lv { font-family: var(--font-mono); font-size: 11px; color: var(--warn); flex: none; }
+.k-danmaku { color: var(--accent); }
+.k-gift { color: var(--danger); }
+.k-enter { color: var(--muted); }
+.k-follow { color: var(--ok); }
+.k-like { color: var(--warn); }
+@keyframes slidein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+.run-list { display: flex; flex-direction: column; gap: 12px; }
+.run-item .top { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 5px; }
+.run-item .top .nm { font-weight: 550; }
+.run-item .top .pct { font-family: var(--font-mono); color: var(--muted); font-size: 12px; }
+.track { height: 5px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.bar { height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s ease; }
+
+.chart-wrap { position: relative; }
+.chart-wrap svg { display: block; width: 100%; }
+.chart-grid line { stroke: var(--border); stroke-width: 1; }
+.chart-area { fill: var(--accent); opacity: .1; }
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.chart-last { fill: var(--accent); }
+
+.live-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.live-feed-card { max-height: 320px; }
+
+.comment-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.comment-table th {
+  text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px;
+  letter-spacing: .05em; padding: 8px 10px; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.comment-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.comment-table tr { animation: slidein .3s ease both; }
+.comment-table tbody tr:hover { background: var(--surface-2); }
+.comment-table .content-cell { max-width: 260px; }
+.cmt-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speaker { display: inline-flex; align-items: center; gap: 8px; }
+.speaker .nm { font-weight: 550; white-space: nowrap; }
+.speaker .lv { font-family: var(--font-mono); font-size: 10.5px; color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 40%, transparent); border-radius: 4px; padding: 0 4px; }
+.dm-cell { max-width: 180px; }
+.dm-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; color: var(--muted); }
+.dm-text.has { color: var(--fg); }
+.blank { color: var(--muted); font-family: var(--font-mono); }
+.table-scroll { overflow-x: auto; }
+.table-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.table-tools .input { flex: 1; min-width: 180px; height: 32px; font-size: 12.5px; }
+.table-tools .select { height: 32px; font-size: 12.5px; }
+.filter-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.fpill { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); background: var(--surface); transition: all .15s; }
+.fpill:hover { color: var(--fg); border-color: var(--muted); }
+.fpill.active { background: var(--surface-2); color: var(--fg); border-color: var(--fg); font-weight: 550; }
+.fpill .c { font-family: var(--font-mono); font-size: 11px; margin-left: 5px; color: var(--muted); }
+.count-line { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.count-line b { color: var(--fg); font-family: var(--font-mono); font-weight: 550; }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 60;
+  background: var(--bg);
+  display: flex; flex-direction: column;
+}
+.drawer-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45); }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 61; width: 480px; max-width: 92vw; background: var(--bg); border-left: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: -8px 0 32px rgba(0,0,0,.25); }
+.drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+.drawer-body { flex: 1; overflow: auto; padding: 16px 18px 24px; }
+.drawer-foot { display: flex; gap: 8; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+.overlay-head {
+  display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+  border-bottom: 1px solid var(--border); background: var(--surface); flex-wrap: wrap;
+}
+.overlay-head h2 { font-size: 15px; font-weight: 600; }
+.overlay-body { flex: 1; overflow: auto; padding: 18px 20px 40px; max-width: 1680px; width: 100%; margin: 0 auto; }
+.row-expand { display: flex; gap: 10px; align-items: baseline; cursor: pointer; }
+.detail-panel { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin: 10px 0; }
+.detail-panel h4 { font-size: 12px; color: var(--muted); letter-spacing: .06em; margin-bottom: 8px; }
+.history-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.history-item { display: flex; gap: 10px; font-size: 12.5px; align-items: baseline; }
+.history-item .tm { font-family: var(--font-mono); color: var(--muted); font-size: 11px; flex: none; }
+
+.conv-list { display: flex; flex-direction: column; overflow-y: auto; max-height: 600px; }
+.conv { display: flex; gap: 11px; align-items: center; padding: 12px 10px; border-radius: 9px; cursor: pointer; border: 0; text-align: left; width: 100%; transition: background .15s; }
+.conv:hover { background: var(--surface-2); }
+.conv.active { background: var(--accent-bg); }
+.conv .info { flex: 1; min-width: 0; }
+.conv .nm { font-weight: 550; font-size: 13.5px; display: flex; justify-content: space-between; gap: 8px; }
+.conv .nm .t { font-family: var(--font-mono); font-size: 11px; color: var(--muted); font-weight: 400; flex: none; }
+.conv .pre { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unread { background: var(--accent); color: var(--accent-ink); font-family: var(--font-mono); font-size: 11px; font-weight: 600; min-width: 18px; height: 18px; border-radius: 9px; display: grid; place-items: center; padding: 0 5px; flex: none; }
+.thread { display: flex; flex-direction: column; height: 600px; }
+.thread-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.thread-head .nm { font-weight: 600; }
+.msgs { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.msg { display: flex; gap: 9px; max-width: 78%; animation: slidein .3s ease both; }
+.msg.out { align-self: flex-end; flex-direction: row-reverse; }
+.bubble { padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.55; background: var(--surface-2); border: 1px solid var(--border); }
+.msg.out .bubble { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.msg .mtm { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); align-self: flex-end; flex: none; }
+.bubble .voice { display: flex; align-items: center; gap: 8px; }
+.voice-bars { display: flex; align-items: center; gap: 2px; height: 18px; }
+.voice-bars i { width: 3px; background: currentColor; border-radius: 2px; opacity: .85; }
+.bubble .vdur { font-family: var(--font-mono); font-size: 12px; }
+.sticker { width: 76px; height: 76px; border-radius: 12px; display: grid; place-items: center; font-size: 30px; }
+.imgtile { width: 150px; height: 110px; border-radius: 10px; display: grid; place-items: center; font-size: 12px; color: white; }
+.vshare { display: flex; gap: 10px; align-items: center; min-width: 220px; }
+.vshare .thumb { width: 84px; aspect-ratio: 16/9; border-radius: 8px; flex: none; }
+.vshare .ti { font-size: 12.5px; font-weight: 550; line-height: 1.5; }
+.vshare .st { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.composer { display: flex; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--border); align-items: flex-end; }
+.composer .textarea { flex: 1; min-height: 38px; max-height: 120px; }
+.newmsg-banner {
+  position: absolute; top: -46px; left: 50%; transform: translateX(-50%);
+  background: var(--accent); color: var(--accent-ink); font-size: 12.5px; font-weight: 550;
+  padding: 6px 14px; border-radius: 999px; box-shadow: 0 6px 20px rgba(0,0,0,.35);
+  animation: slidein .3s ease both; z-index: 5; white-space: nowrap; cursor: pointer;
+}
+.thread-wrap { position: relative; }
+
+.table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; letter-spacing: .05em; padding: 9px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.table td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.table tbody tr:hover { background: var(--surface-2); }
+.table .mono { font-variant-numeric: tabular-nums; }
+
+.export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.tree { font-family: var(--font-mono); font-size: 12.5px; line-height: 2; color: var(--muted); }
+.tree .dir { color: var(--accent); }
+.tree .cur { color: var(--fg); }
+
+.form { display: flex; flex-direction: column; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 12.5px; font-weight: 550; color: var(--muted); letter-spacing: .02em; }
+.field .hint { font-size: 11.5px; color: var(--muted); }
+.field-row { display: flex; gap: 8px; align-items: center; }
+.field-row .input { flex: 1; font-family: var(--font-mono); font-size: 12px; }
+.switch { position: relative; width: 40px; height: 22px; flex: none; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer; z-index: 2; }
+.switch i { position: absolute; inset: 0; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; transition: background .2s; }
+.switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: transform .2s, background .2s; }
+.switch input:checked + i { background: var(--accent); border-color: transparent; }
+.switch input:checked + i::after { transform: translateX(18px); background: var(--accent-ink); }
+.mask-toggle { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); flex: none; }
+.mask-toggle:hover { color: var(--fg); }
+.cookie-line { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; }
+.cookie-line .site { width: 210px; font-family: var(--font-mono); font-size: 12px; color: var(--accent); flex: none; }
+.cookie-line .val { flex: 1; font-family: var(--font-mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-stream { font-family: var(--font-mono); font-size: 12px; line-height: 1.9; max-height: 320px; overflow-y: auto; }
+.log-line { display: flex; gap: 10px; align-items: baseline; }
+.log-line .tm { color: var(--muted); flex: none; }
+.log-line .lvl { flex: none; width: 44px; }
+.log-line .info { color: var(--ok); }
+.log-line .warn { color: var(--warn); }
+.log-line .err { color: var(--danger); }
+
+.toasts { position: fixed; bottom: 20px; right: 20px; z-index: 90; display: flex; flex-direction: column; gap: 8px; }
+.toast { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); color: var(--fg); font-size: 13px; padding: 10px 14px; border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.35); animation: slidein .25s ease both; max-width: 320px; }
+.toast.err { border-left-color: var(--danger); }
+
+.acct-card { display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; }
+.acct-header { display: flex; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
+.acct-header .info { flex: 1; min-width: 0; }
+.acct-header .nm { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.acct-header .uid { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.acct-header .ops { display: flex; gap: 6px; flex-shrink: 0; }
+.acct-body { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+.acct-section { padding: 16px; }
+.acct-section:first-child { border-right: 1px solid var(--border); }
+.acct-section h4 { font-size: 11.5px; color: var(--muted); letter-spacing: 0.06em; margin-bottom: 10px; text-transform: uppercase; }
+.acct-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: 13px; }
+.acct-row .k { color: var(--muted); flex: none; }
+.acct-row .v { font-family: var(--font-mono); font-size: 12.5px; text-align: right; }
+.acct-log-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.acct-log-cell { padding: 8px 10px; background: var(--bg); border-radius: 7px; }
+.acct-log-cell .lc-label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+.acct-log-cell .lc-val { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+.fp-card { padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; }
+.fp-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.fp-header .nm { font-weight: 600; font-size: 13.5px; }
+.fp-env { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; }
+.fp-env dt { font-size: 12px; color: var(--muted); }
+.fp-env dd { font-family: var(--font-mono); font-size: 12.5px; }
+.acct-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+.review-stats-row { display: flex; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+.acct-summary .stat .num { font-size: 28px; }
+.batch-bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--accent-bg); border: 1px solid var(--accent); border-radius: 8px; margin-bottom: 14px; }
+.batch-count { font-size: 12.5px; color: var(--muted); }
+.batch-chk { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; margin: 0; flex-shrink: 0; }
+
+@media (max-width: 1180px) {
+  .cols-4 { grid-template-columns: repeat(2, 1fr); }
+  .cols-3 { grid-template-columns: 1fr 1fr; }
+  .live-layout { grid-template-columns: 1fr; }
+  .export-grid { grid-template-columns: 1fr; }
+  .acct-summary { grid-template-columns: repeat(2, 1fr); }
+  .review-stats-row { flex-wrap: wrap; }
+  .review-stats-row .stat { min-width: calc(50% - 7px) !important; }
+  .acct-body { grid-template-columns: 1fr; }
+  .acct-section:first-child { border-right: 0; border-bottom: 1px solid var(--border); }
+  .acct-log-grid { grid-template-columns: repeat(3, 1fr); }
+  .nav { gap: 12px; padding: 0 12px; }
+  .brand .sub { display: none; }
+}
+@media (max-width: 760px) {
+  .cols-4, .cols-3, .cols-2, .cols-3-7 { grid-template-columns: 1fr; }
+  .nav { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; }
+  .tabs { order: 3; width: 100%; overflow-x: auto; }
+  .main { padding: 14px; }
+  .review-stats-row .stat { min-width: 100% !important; }
+  .overlay-body > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script src="https://unpkg.com/framer-motion@11.11.13/dist/framer-motion.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+const { motion, AnimatePresence } = window.Motion;
+
+/* ---------- 工具 ---------- */
+function tick(off) {
+  const d = new Date(Date.now() + (off || 0));
+  const p = n => (n < 10 ? '0' : '') + n;
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function nowHM() {
+  const d = new Date();
+  const p = n => (n < 10 ? '0' : '') + n;
+  return p(d.getHours()) + ':' + p(d.getMinutes());
+}
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const HUES = ['150', '210', '300', '20', '40', '80', '260', '180'];
+const hue = i => HUES[i % HUES.length];
+
+/* ---------- 示例数据 ---------- */
+const SPEAKERS = [['林小满', 12], ['阿澈', 8], ['芝士不加糖', 21], ['大熊_', 5], ['苏苏酱', 33], ['夜风', 16], ['一颗柠檬', 9], ['老白', 40], ['桃子气泡', 14], ['云深处', 27]];
+const COMMENTS = ['主播今天播多久呀', '这歌叫什么名字', '第一次来 好有意思', '来了来了 蹲一个', '礼物走一波', '声音太好听了', '求歌单', '666666', '已关注 铁粉报到', '主播加油', '讲的太详细了', '这个选题爱了', '在哪下载', '前面说的对', '哈哈哈哈笑死', '带带我 大佬'];
+const GIFTS = [['小心心', 1], ['棒棒糖', 3], ['跑车', 1], ['大啤酒', 5], ['火箭', 1]];
+const DM_TEXTS = ['你好，我是内容运营，看了你今天的直播想聊聊合作', '您好，这边在整理美食类达人库，方便加个微信吗', '你好，想邀请你参加本周五的美食专题活动', '在吗？看到你在评论区提到探店，想深入聊聊'];
+const FEEDKIND = ['danmaku', 'danmaku', 'danmaku', 'danmaku', 'gift', 'enter', 'follow', 'like'];
+const KIND_NAME = { danmaku: '弹幕', gift: '礼物', enter: '进场', follow: '关注', like: '点赞' };
+
+const VIDEOS = [
+  { id: 'v1', hue: 20, title: '北京胡同里藏着一家 30 年的老面馆，老板说只做给熟客吃', author: '阿澈探店', plays: '328.6万', likes: '12.4万', cmts: '8,932', dur: '01:24' },
+  { id: 'v2', hue: 260, title: '一晚上学会写歌？我用 3 个和弦写出了第一首 Demo', author: '夜风音乐', plays: '96.2万', likes: '3.1万', cmts: '2,048', dur: '02:05' },
+  { id: 'v3', hue: 150, title: '健身 3 年，我最想删掉的 5 个健身误区', author: '大熊健身', plays: '512.8万', likes: '22.7万', cmts: '15,320', dur: '00:58' },
+  { id: 'v4', hue: 210, title: '露营新手装备清单｜预算 1000 搞定一晚', author: '桃子气泡', plays: '44.1万', likes: '1.9万', cmts: '1,276', dur: '01:47' },
+  { id: 'v5', hue: 40, title: '带你看凌晨四点的批发市场，人间烟火气', author: '林小满生活', plays: '187.5万', likes: '8.6万', cmts: '5,401', dur: '02:31' },
+  { id: 'v6', hue: 300, title: '代码写得像诗是什么体验｜一行注释都没有', author: '云深处Code', plays: '63.8万', likes: '4.2万', cmts: '3,887', dur: '01:12' },
+];
+const USERS = [
+  { id: 'u1', hue: 20, name: '阿澈探店', note: '美食探店 · 北京', fans: '86.3万', follow: '231', works: '412' },
+  { id: 'u2', hue: 260, name: '夜风音乐', note: '独立音乐人', fans: '12.7万', follow: '89', works: '156' },
+  { id: 'u3', hue: 150, name: '大熊健身', note: '健身博主 · 科学训练', fans: '204.1万', follow: '102', works: '897' },
+  { id: 'u4', hue: 40, name: '林小满生活', note: '生活记录 · 早餐党', fans: '8.4万', follow: '311', works: '603' },
+];
+const LIVES = [
+  { id: 'l1', title: '夜风音乐 · 原创弹唱专场', author: '夜风音乐', viewers: '12,847', tag: '音乐' },
+  { id: 'l2', title: '阿澈探店 · 深夜食堂', author: '阿澈探店', viewers: '4,219', tag: '美食' },
+];
+
+const COMMENTS_DETAIL = [
+  { name: '一颗柠檬', lv: 9, text: '这个面馆我小时候也常去，怀念！', replies: [{ name: '阿澈探店', text: '哈哈是懂行的，下次一起去' }] },
+  { name: '老白', lv: 40, text: '讲得真好，收藏了', replies: [] },
+  { name: '苏苏酱', lv: 33, text: '求具体地址！', replies: [] },
+];
+
+let cid = 0;
+
+const TASKS_INIT = [
+  { id: 't1', ct: '09:12:04', acct: 'a1', type: '采集·用户主页', target: '阿澈探店', status: 'running', prog: 64, dur: '12:41', res: 263, retry: 0 },
+  { id: 't2', ct: '09:26:18', acct: 'a1', type: '直播监听', target: '夜风音乐 · 直播间', status: 'running', prog: 100, dur: '48:06', res: 1284, retry: 1 },
+  { id: 't3', ct: '09:31:40', acct: 'a2', type: '私信同步', target: 'WebSocket 收信', status: 'running', prog: 100, dur: '48:06', res: 96, retry: 0 },
+  { id: 't4', ct: '10:02:11', acct: 'a4', type: '搜索·视频', target: '美食探店', status: 'done', prog: 100, dur: '03:22', res: 1284, retry: 2 },
+  { id: 't5', ct: '10:08:03', acct: 'a1', type: '导出 Excel', target: '评论数据.xlsx', status: 'queued', prog: 0, dur: '--', res: 0, retry: 0 },
+  { id: 't6', ct: '10:11:27', acct: 'a2', type: '采集·评论区', target: '视频 #v1', status: 'done', prog: 100, dur: '01:58', res: 8932, retry: 0 },
+  { id: 't7', ct: '10:15:49', acct: 'a5', type: '搜索·直播', target: '音乐专场', status: 'fail', prog: 100, dur: '00:47', res: 0, retry: 3 },
+];
+const TASK_ST = { running: ['运行中', 'accent'], done: ['成功', 'ok'], queued: ['排队', 'mute'], fail: ['失败', 'danger'] };
+
+const CONVS_INIT = [
+{ id: 'c1', acct: 'a2', hue: 20, name: '阿澈探店', unread: 2, msgs: [
+    { id: ++cid, dir: 'in', type: 'text', text: '在吗？想请教下探店合作的事', mt: '10:12' },
+    { id: ++cid, dir: 'in', type: 'voice', dur: '0:12', mt: '10:12' },
+    { id: ++cid, dir: 'out', type: 'text', text: '在的，您说～', mt: '10:14' },
+    { id: ++cid, dir: 'in', type: 'image', mt: '10:15' },
+  ] },
+  { id: 'c2', acct: 'a1', hue: 150, name: '大熊健身', unread: 0, msgs: [
+    { id: ++cid, dir: 'in', type: 'video', title: '健身 3 年，我最想删掉的 5 个健身误区', mt: '09:41' },
+    { id: ++cid, dir: 'out', type: 'text', text: '收到，我看看这条数据', mt: '09:52' },
+  ] },
+  { id: 'c3', acct: 'a4', hue: 300, name: '芝士不加糖', unread: 1, msgs: [
+    { id: ++cid, dir: 'in', type: 'sticker', mt: '08:05' },
+  ] },
+  { id: 'c4', acct: 'a4', hue: 40, name: '林小满生活', unread: 0, msgs: [
+    { id: ++cid, dir: 'out', type: 'text', text: '你好，我是内容运营，想和你聊聊早餐栏目合作', mt: '昨天' },
+    { id: ++cid, dir: 'in', type: 'text', text: '可以呀，具体怎么合作？', mt: '昨天' },
+  ] },
+  { id: 'c5', acct: 'a1', hue: 260, name: '云深处Code', unread: 0, msgs: [
+    { id: ++cid, dir: 'in', type: 'text', text: '私信接口用的 WebSocket 稳定吗', mt: '周二' },
+    { id: ++cid, dir: 'out', type: 'text', text: '目前断线重连后很稳，测试通过', mt: '周二' },
+  ] },
+  { id: 'c6', acct: 'a1', hue: 210, name: '探店达人阿蓝', unread: 0, msgs: [
+    { id: ++cid, dir: 'in', type: 'text', text: '下周二有家新店开业，要不要来拍拍', mt: '周一' },
+    { id: ++cid, dir: 'out', type: 'text', text: '可以，发我时间地点', mt: '周一' },
+  ] },
+  { id: 'c7', acct: 'a2', hue: 265, name: '民谣姑娘', unread: 0, msgs: [
+    { id: ++cid, dir: 'in', type: 'text', text: '你们那把民谣专场曲目单发我下', mt: '昨天' },
+    { id: ++cid, dir: 'out', type: 'text', text: '晚点整理好发你', mt: '昨天' },
+  ] },
+  { id: 'c8', acct: 'a2', hue: 285, name: '音乐节主办方', unread: 0, msgs: [
+    { id: ++cid, dir: 'in', type: 'text', text: '8 月档期还在吗，想约一场 90 分钟', mt: '上周五' },
+  ] },
+];
+
+const LOGS = [
+  ['10:12:04', 'info', 'cookie 校验通过 · www.douyin.com'],
+  ['10:12:04', 'info', 'cookie 校验通过 · live.douyin.com'],
+  ['10:13:37', 'info', 'WebSocket 已连接 · 私信通道'],
+  ['10:14:02', 'info', '已开始监听 夜风音乐 直播间 room_id=7462...'],
+  ['10:14:15', 'warn', '单条请求限流，自动重试（1/3）'],
+  ['10:15:44', 'info', '弹幕消息入库 1,284 条'],
+  ['10:16:31', 'err', '礼物详情字段缺失，已跳过该条'],
+  ['10:17:09', 'info', '私信发送成功 → 阿澈探店'],
+];
+
+/* ---------- 通用小件 ---------- */
+function Spark({ pts, color = 'var(--accent)' }) {
+  const w = 104, h = 30;
+  const max = Math.max(...pts), min = Math.min(...pts);
+  const x = i => (i / (pts.length - 1)) * w;
+  const y = v => h - 3 - ((v - min) / (max - min || 1)) * (h - 6);
+  const d = pts.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join('');
+  return (
+    <svg width={w} height={h} viewBox={'0 0 ' + w + ' ' + h} aria-hidden="true">
+      <path d={d + ' L' + w + ' ' + h + ' L0 ' + h + ' Z'} fill={color} opacity=".12" />
+      <path d={d} fill="none" stroke={color} strokeWidth="1.6" />
+      <circle cx={x(pts.length - 1)} cy={y(pts[pts.length - 1])} r="2.4" fill={color} />
+    </svg>
+  );
+}
+function Pill({ c, children }) {
+  const map = { ok: ['var(--ok)', 'var(--ok-bg)'], warn: ['var(--warn)', 'var(--warn-bg)'], danger: ['var(--danger)', 'var(--danger-bg)'], accent: ['var(--accent)', 'var(--accent-bg)'], mute: ['var(--muted)', 'var(--surface-2)'] };
+  const [color, bg] = map[c] || map.mute;
+  return <span className="pill" style={{ color, background: bg }}><span className="bullet" style={{ background: color }} />{children}</span>;
+}
+function Avatar({ name, h, sm, lg }) {
+  return <span className={'avatar' + (sm ? ' sm' : '') + (lg ? ' lg' : '')} style={{ background: 'oklch(55% 0.14 ' + h + ')' }}>{name.charAt(0)}</span>;
+}
+function Dot({ c, pulse }) {
+  return <span className={'dot ' + c + (pulse ? ' pulse' : '')} />;
+}
+function Num({ v }) { return <span className="mono">{v}</span>; }
+
+/* ---------- 顶部导航 ---------- */
+const TABS = [
+  ['overview', '总览'], ['crawl', '采集'], ['live', '直播监听'],
+  ['msg', '私信'], ['accounts', '账号管理'], ['tasks', '任务中心'], ['settings', '设置'],
+];
+function Header({ tab, setTab }) {
+  return (
+    <header className="nav">
+      <div className="brand">
+        <span className="mark" aria-hidden="true" />
+        <h1>抖音数据控制台</h1>
+        <span className="sub">Douyin Console</span>
+      </div>
+      <nav className="tabs" aria-label="主导航">
+        {TABS.map(([id, label]) => (
+          <button key={id} data-od-id={'tab-' + id} className={'tab' + (tab === id ? ' active' : '')} onClick={() => setTab(id)}>{label}</button>
+        ))}
+      </nav>
+      <div className="nav-status">
+        <span className="badge-conn"><Dot c="ok" pulse /> Cookie <b>有效</b></span>
+        <span className="badge-conn"><Dot c="ok" pulse /> 直播 <b>已连接</b></span>
+        <span className="badge-conn"><Dot c="ok" pulse /> WS <b>已连接</b></span>
+        <span className="demo-tag">示例数据</span>
+      </div>
+    </header>
+  );
+}
+
+/* ---------- 总览 ---------- */
+function Overview({ push }) {
+  const [viewMode, setViewMode] = useState('single');
+  const [activeAcct, setActiveAcct] = useState('a1');
+  const [feed, setFeed] = useState([
+    { id: ++cid, t: '10:18:22', k: 'danmaku', n: '苏苏酱', l: 33, x: '声音太好听了' },
+    { id: ++cid, t: '10:18:05', k: 'gift', n: '老白', l: 40, x: '送出 跑车 × 1' },
+    { id: ++cid, t: '10:17:52', k: 'danmaku', n: '夜风', l: 16, x: '求歌单' },
+    { id: ++cid, t: '10:17:31', k: 'follow', n: '桃子气泡', l: 14, x: '关注了主播' },
+    { id: ++cid, t: '10:17:09', k: 'enter', n: '一颗柠檬', l: 9, x: '进入直播间' },
+  ]);
+  const [tasks, setTasks] = useState(TASKS_INIT.slice(0, 3));
+  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || ACCOUNTS_INIT[0];
+
+  const getAcctStats = (acct) => {
+    const seed = acct.id.charCodeAt(1) || 1;
+    return {
+      videos: 1284 * seed, users: 96 * seed, comments: 8432 * seed, msgs: 342 * seed,
+      vDelta: 18 + seed % 10, uDelta: 9 + seed % 8, cDelta: 24 + seed % 12, mDelta: -(3 + seed % 5),
+      vPts: [12, 28, 20, 44, 36, 60, 52, 78, 66, 90].map(v => v + seed * 2),
+      uPts: [8, 14, 12, 20, 18, 26, 24, 30, 36, 40].map(v => v + seed),
+      cPts: [30, 42, 38, 55, 70, 62, 80, 74, 92, 108].map(v => v + seed * 3),
+      mPts: [6, 10, 14, 12, 18, 22, 20, 26, 30, 34].map(v => v + seed),
+    };
+  };
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const kind = pick(FEEDKIND);
+      const [nm, lv] = pick(SPEAKERS);
+      let txt;
+      if (kind === 'gift') { const [g, c] = pick(GIFTS); txt = '送出 ' + g + ' × ' + c; }
+      else if (kind === 'danmaku') txt = pick(COMMENTS);
+      else if (kind === 'enter') txt = '进入直播间';
+      else if (kind === 'follow') txt = '关注了主播';
+      else txt = '点赞了直播间';
+      setFeed(f => [{ id: ++cid, t: tick(), k: kind, n: nm, l: lv, x: txt }, ...f].slice(0, 24));
+    }, 2600);
+    return () => clearInterval(iv);
+  }, []);
+
+  return (
+    <div>
+      <div className="section-head">
+        <div>
+          <h2>总览</h2>
+          <div className="desc">系统运行状态与今日采集概况</div>
+        </div>
+        <div className="head-row">
+          <div className="seg">
+            <button className={viewMode === 'single' ? 'active' : ''} onClick={() => setViewMode('single')}>单账户</button>
+            <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>多账户总览</button>
+          </div>
+          <span className="badge-conn"><Dot c="ok" pulse /> 运行正常</span>
+          <span className="demo-tag">示例数据</span>
+        </div>
+      </div>
+
+      {viewMode === 'grid' ? (
+        <div className="grid cols-2" data-od-id="overview-grid">
+          {ACCOUNTS_INIT.filter(a => a.tokenValid).slice(0, 2).map(acct => {
+            const s = getAcctStats(acct);
+            return (
+              <div className="card" key={acct.id} style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+                  <Avatar name={acct.name} h={acct.hue} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{acct.name}</div>
+                    <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID: {acct.uid}</div>
+                  </div>
+                  <Pill c={acct.tokenValid ? 'ok' : 'danger'}>{acct.tokenValid ? '在线' : '离线'}</Pill>
+                </div>
+                <div className="grid cols-4" style={{ padding: '10px 16px', gap: 6 }}>
+                  <div className="card stat" style={{ padding: '6px 8px' }}>
+                    <span className="label" style={{ fontSize: 10 }}>视频</span>
+                    <span className="num" style={{ fontSize: 16 }}>{s.videos.toLocaleString()}</span>
+                  </div>
+                  <div className="card stat" style={{ padding: '6px 8px' }}>
+                    <span className="label" style={{ fontSize: 10 }}>用户</span>
+                    <span className="num" style={{ fontSize: 16 }}>{s.users.toLocaleString()}</span>
+                  </div>
+                  <div className="card stat" style={{ padding: '6px 8px' }}>
+                    <span className="label" style={{ fontSize: 10 }}>评论</span>
+                    <span className="num" style={{ fontSize: 16 }}>{s.comments.toLocaleString()}</span>
+                  </div>
+                  <div className="card stat" style={{ padding: '6px 8px' }}>
+                    <span className="label" style={{ fontSize: 10 }}>私信</span>
+                    <span className="num" style={{ fontSize: 16 }}>{s.msgs.toLocaleString()}</span>
+                  </div>
+                </div>
+                <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
+                  <div className="head-row" style={{ marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>直播间</span>
+                    <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{acct.lastRun.room}</span>
+                  </div>
+                  <div className="head-row">
+                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>运行时长</span>
+                    <span className="mono" style={{ fontSize: 12 }}>{acct.lastRun.duration}</span>
+                  </div>
+                </div>
+                <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', maxHeight: 100, overflow: 'auto' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>实时动态</div>
+                  {feed.slice(0, 4).map(f => (
+                    <div className="feed-item" key={f.id} style={{ padding: '2px 0' }}>
+                      <span className="tm" style={{ fontSize: 10 }}>{f.t}</span>
+                      <span className={'kind k-' + f.k} style={{ fontSize: 10 }}>{KIND_NAME[f.k]}</span>
+                      <span className="txt" style={{ fontSize: 11 }}><b>{f.n}</b> {f.x}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>运行中任务</div>
+                  {TASKS_INIT.slice(0, 2).map(t => (
+                    <div className="run-item" key={t.id} style={{ padding: '3px 0' }}>
+                      <div className="top"><span className="nm" style={{ fontSize: 11 }}>{t.type}</span><span className="pct" style={{ fontSize: 11 }}>{t.status === 'running' ? t.prog + '%' : '完成'}</span></div>
+                      <div className="track" style={{ height: 4 }}><div className="bar" style={{ width: (t.status === 'running' ? t.prog : 100) + '%' }} /></div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 6 }}>
+                  <button className="btn sm ghost" style={{ flex: 1 }} onClick={() => { setViewMode('single'); setActiveAcct(acct.id); push('已切换到 ' + acct.name); }}>查看详情</button>
+                  <button className="btn sm ghost" onClick={() => push('已导出 ' + acct.name + ' 数据')}>导出</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <>
+          <div className="card" style={{ marginBottom: 14 }} data-od-id="overview-acct-select">
+            <div className="head-row">
+              <span style={{ fontSize: 13, fontWeight: 600 }}>当前查看账号</span>
+              <div style={{ flex: 1 }} />
+              <div className="seg">
+                {ACCOUNTS_INIT.filter(a => a.tokenValid).map(a => (
+                  <button key={a.id} className={activeAcct === a.id ? 'active' : ''} onClick={() => { setActiveAcct(a.id); push('已切换到 ' + a.name); }}>
+                    <Avatar name={a.name} h={a.hue} sm /> {a.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid cols-4" style={{ marginBottom: 14 }}>
+            {(() => { const s = getAcctStats(curAcct); return (<>
+              <div className="card stat" data-od-id="stat-videos">
+                <span className="label">今日采集视频</span>
+                <span className="num">{s.videos.toLocaleString()}<span className="unit">条</span></span>
+                <div className="spark"><Spark pts={s.vPts} /><span className="delta">▲ {s.vDelta}%</span></div>
+              </div>
+              <div className="card stat" data-od-id="stat-users">
+                <span className="label">今日采集用户</span>
+                <span className="num">{s.users.toLocaleString()}<span className="unit">个</span></span>
+                <div className="spark"><Spark pts={s.uPts} color="var(--ok)" /><span className="delta">▲ {s.uDelta}%</span></div>
+              </div>
+              <div className="card stat" data-od-id="stat-comments">
+                <span className="label">今日采集评论</span>
+                <span className="num">{s.comments.toLocaleString()}<span className="unit">条</span></span>
+                <div className="spark"><Spark pts={s.cPts} color="var(--warn)" /><span className="delta">▲ {s.cDelta}%</span></div>
+              </div>
+              <div className="card stat" data-od-id="stat-msgs">
+                <span className="label">今日收发私信</span>
+                <span className="num">{s.msgs.toLocaleString()}<span className="unit">条</span></span>
+                <div className="spark"><Spark pts={s.mPts} color="var(--accent)" /><span className="delta down">▼ {Math.abs(s.mDelta)}%</span></div>
+              </div>
+            </>); })()}
+          </div>
+          <div className="grid cols-2">
+            <div className="card" data-od-id="overview-feed">
+              <h3>实时动态 <span className="demo-tag" style={{ textTransform: 'none' }}>流</span></h3>
+              <div className="feed">
+                {feed.map(f => (
+                  <div className="feed-item" key={f.id}>
+                    <span className="tm">{f.t}</span>
+                    <span className={'kind k-' + f.k}>{KIND_NAME[f.k]}</span>
+                    <span className="txt"><b>{f.n}</b>　{f.x}</span>
+                    <span className="lv">Lv.{f.l}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="card" data-od-id="overview-tasks">
+              <h3>运行中任务</h3>
+              <div className="run-list">
+                {tasks.map(t => (
+                  <div className="run-item" key={t.id}>
+                    <div className="top"><span className="nm">{t.type} · {t.target}</span><span className="pct">{t.status === 'running' ? t.prog + '%' : '完成'}</span></div>
+                    <div className="track"><div className="bar" style={{ width: (t.status === 'running' ? t.prog : 100) + '%' }} /></div>
+                  </div>
+                ))}
+                {curAcct.lastRun.room !== '—' && (
+                  <div className="run-item" style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 2 }}>
+                    <div className="top" style={{ marginBottom: 0 }}><span style={{ color: 'var(--muted)', fontSize: 12 }}>直播间监听 · {curAcct.lastRun.room} 已运行 {curAcct.lastRun.duration}，累计 {curAcct.lastRun.comments.toLocaleString()} 条弹幕</span><span className="pct" style={{ color: 'var(--ok)' }}>在线</span></div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- 数据采集 ---------- */
+function Crawl({ push, goMsg }) {
+  const [mode, setMode] = useState('video');
+  const [q, setQ] = useState('美食');
+  const [range, setRange] = useState('24h');
+  const [order, setOrder] = useState('综合');
+  const [detail, setDetail] = useState(null);
+  const [liked, setLiked] = useState(new Set());
+  const [fav, setFav] = useState(new Set());
+  const [searching, setSearching] = useState(false);
+  const [did, setDid] = useState(false);
+
+  const runSearch = () => {
+    setSearching(true);
+    setTimeout(() => { setSearching(false); setDid(true); push('已根据条件完成搜索，共命中示例结果'); }, 650);
+  };
+
+  const filtered = useMemo(() => {
+    const kw = q.trim();
+    if (!kw) return [];
+    if (mode === 'video') return VIDEOS.filter(v => v.title.includes(kw) || v.author.includes(kw));
+    if (mode === 'user') return USERS.filter(u => u.name.includes(kw) || u.note.includes(kw));
+    return LIVES.filter(l => l.title.includes(kw) || l.author.includes(kw));
+  }, [q, mode]);
+
+  const empty = did && filtered.length === 0;
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') setDetail(null); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+  const onAct = (kind) => {
+    if (kind === 'like') { setLiked(s => new Set(s).add(detail.id)); push('已点赞该作品'); }
+    if (kind === 'fav') { setFav(s => new Set(s).add(detail.id)); push('已收藏该作品'); }
+    if (kind === 'comment') { push('已发布评论：讲得真好！'); }
+    if (kind === 'export') { push('已导出为 JSON · comment_v1.json'); }
+  };
+
+  return (
+    <div>
+      <div className="section-head">
+        <div>
+          <h2>数据采集</h2>
+          <div className="desc">搜索用户 / 作品 / 直播，采集主页、评论与粉丝数据</div>
+        </div>
+        <span className="demo-tag">示例数据</span>
+      </div>
+      <div className="card" style={{ marginBottom: 14 }} data-od-id="search-panel">
+        <div className="searchbar">
+          <div className="seg" data-od-id="search-mode">
+            {[['video', '视频'], ['user', '用户'], ['live', '直播']].map(([id, l]) => (
+              <button key={id} className={mode === id ? 'active' : ''} onClick={() => { setMode(id); setDid(false); }}>{l}</button>
+            ))}
+          </div>
+          <input className="input" data-od-id="search-input" placeholder={mode === 'video' ? '搜索视频关键词 / 作者' : mode === 'user' ? '搜索用户昵称' : '搜索直播间'} value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && runSearch()} />
+          <select className="select" value={range} onChange={e => setRange(e.target.value)} aria-label="时间范围">
+            <option value="24h">近 24 小时</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="all">全部时间</option>
+          </select>
+          <select className="select" value={order} onChange={e => setOrder(e.target.value)} aria-label="排序">
+            <option value="综合">综合排序</option><option value="latest">最新发布</option><option value="hot">热度最高</option>
+          </select>
+          <button className="btn primary" data-od-id="search-submit" disabled={searching} onClick={runSearch}>{searching ? '搜索中…' : '搜索'}</button>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>
+          类型：{mode === 'video' ? '视频' : mode === 'user' ? '用户' : '直播'} · 时间：{range === '24h' ? '近24小时' : range} · 排序：{order}
+        </div>
+      </div>
+
+      {searching ? (
+        <div className="result-grid" data-od-id="search-loading" aria-busy="true">
+          {[0, 1, 2, 3].map(i => (
+            <div className="card vcard" key={i}>
+              <div className="sk sk-thumb" />
+              <div className="sk sk-line" />
+              <div className="sk sk-line w60" />
+              <div className="sk sk-line w40" />
+            </div>
+          ))}
+        </div>
+      ) : !did ? (
+        <div className="card" style={{ padding: '46px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+          输入关键词并点击「搜索」，查看示例结果集
+        </div>
+      ) : empty ? (
+        <div className="card" style={{ padding: '46px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>未命中「{q}」，换一个关键词试试</div>
+      ) : mode === 'video' ? (
+        <div className="result-grid" data-od-id="video-results">
+          {filtered.map(v => (
+            <div className="card vcard" data-od-id={'video-card-' + v.id} key={v.id}>
+              <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(40% 0.13 ' + v.hue + '), oklch(24% 0.08 ' + v.hue + '))' }} onClick={() => setDetail({ type: 'video', v })}>
+                <span className="src">douyin</span>
+                <span className="play" aria-hidden="true" />
+                <span className="dur">{v.dur}</span>
+              </div>
+              <div className="t">{v.title}</div>
+              <div className="m"><span>▶ {v.plays}</span><span>♥ {v.likes}</span><span>评论 {v.cmts}</span></div>
+              <div className="row-ops">
+                <button className="btn sm ghost" data-od-id={'like-' + v.id} style={liked.has(v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'transparent' } : {}} onClick={() => { const n = new Set(liked); n.has(v.id) ? n.delete(v.id) : n.add(v.id); setLiked(n); push(liked.has(v.id) ? '已取消点赞' : '已点赞'); }}>点赞</button>
+                <button className="btn sm ghost" data-od-id={'fav-' + v.id} style={fav.has(v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'transparent' } : {}} onClick={() => { const n = new Set(fav); n.has(v.id) ? n.delete(v.id) : n.add(v.id); setFav(n); push(fav.has(v.id) ? '已取消收藏' : '已收藏'); }}>收藏</button>
+                <button className="btn sm ghost" onClick={() => { push('已导出为 Excel · video_data.xlsx'); }}>导出</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : mode === 'user' ? (
+        <div className="card" data-od-id="user-results">
+          {filtered.map(u => (
+            <div className="urow" key={u.id} data-od-id={'user-row-' + u.id}>
+              <Avatar name={u.name} h={u.hue} />
+              <div className="info">
+                <div className="nm">{u.name}<span className="tag">已采集</span></div>
+                <div className="sub">{u.note}</div>
+              </div>
+              <div className="m mono" style={{ color: 'var(--muted)', fontSize: 12, gap: 14, display: 'flex', whiteSpace: 'nowrap' }}><span>粉丝 {u.fans}</span><span>关注 {u.follow}</span><span>作品 {u.works}</span></div>
+              <div className="row-ops">
+                <button className="btn sm ghost" onClick={() => { push('已采集 ' + u.name + ' 主页信息'); }}>采集主页</button>
+                <button className="btn sm ghost" onClick={() => { push('已采集 ' + u.name + ' 全部作品'); }}>采集作品</button>
+                <button className="btn sm ghost" onClick={() => { push('已导出 JSON · user_' + u.id + '.json'); }}>导出</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="result-grid" data-od-id="live-results">
+          {filtered.map(l => (
+            <div className="card vcard" key={l.id} data-od-id={'live-card-' + l.id}>
+              <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(42% 0.13 280), oklch(24% 0.09 320))' }}>
+                <span className="src">直播中</span>
+                <span className="play" aria-hidden="true" />
+                <span className="dur">LIVE</span>
+              </div>
+              <div className="t">{l.title}</div>
+              <div className="m"><span>♥ {l.viewers} 在看</span><span className="tag" style={{ marginLeft: 0 }}>{l.tag}</span></div>
+              <div className="row-ops"><button className="btn sm ghost" onClick={() => push('已采集直播信息 · ' + l.title)}>采集详情</button><button className="btn sm ghost" onClick={() => push('已加入直播间监听队列')}>监听</button></div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <AnimatePresence>
+        {detail && (
+          <motion.div className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .18 }} data-od-id="video-detail">
+            <div className="overlay-head">
+              <h2>{detail.v.title}</h2>
+              <div style={{ flex: 1 }} />
+              <button className="btn ghost" onClick={() => setDetail(null)}>关闭</button>
+            </div>
+            <div className="overlay-body">
+              <div className="grid cols-2">
+                <div>
+                  <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(42% 0.13 ' + detail.v.hue + '), oklch(24% 0.08 ' + detail.v.hue + '))', aspectRatio: '16/9' }}>
+                    <span className="play" aria-hidden="true" /><span className="dur">{detail.v.dur}</span>
+                  </div>
+                  <div className="head-row" style={{ marginTop: 12 }}>
+                    <Avatar name={detail.v.author} h={detail.v.hue} />
+                    <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>{detail.v.author}</div><div className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>▶ {detail.v.plays} · ♥ {detail.v.likes} · 评论 {detail.v.cmts}</div></div>
+                    <button className="btn ghost" onClick={() => { push('已导出为 JSON · video_' + detail.v.id + '.json'); }}>导出</button>
+                  </div>
+                </div>
+                <div className="card">
+                  <h3>评论区 <span style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono)', fontWeight: 400 }}>含多级回复</span></h3>
+                  {COMMENTS_DETAIL.map((c, i) => (
+                    <div key={i} style={{ padding: '10px 0', borderBottom: i < COMMENTS_DETAIL.length - 1 ? '1px solid var(--border)' : 0 }}>
+                      <div className="urow" style={{ padding: 0, border: 0 }}>
+                        <Avatar name={c.name} h={hue(i + 1)} sm />
+                        <div className="info"><div className="nm">{c.name}</div></div>
+                        <span className="lv mono" style={{ color: 'var(--warn)', fontSize: 11 }}>Lv.{c.lv}</span>
+                      </div>
+                      <div style={{ margin: '6px 0 0 40px', fontSize: 13 }}>{c.text}</div>
+                      {c.replies.map((r, j) => (
+                        <div key={j} style={{ margin: '8px 0 0 40px', padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 8, fontSize: 12.5 }}>
+                          <b>{r.name}</b> 回复：{r.text}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                  <div className="head-row" style={{ marginTop: 12 }}>
+                    <input className="input" style={{ flex: 1 }} placeholder="写下你的评论…" />
+                    <button className="btn primary" onClick={() => onAct('comment')}>发布评论</button>
+                  </div>
+                </div>
+              </div>
+              <div className="head-row" style={{ marginTop: 14 }}>
+                <button className="btn ghost" onClick={() => onAct('like')} style={liked.has(detail.v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : {}}>{liked.has(detail.v.id) ? '已点赞' : '点赞'}</button>
+                <button className="btn ghost" onClick={() => onAct('fav')} style={fav.has(detail.v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : {}}>{fav.has(detail.v.id) ? '已收藏' : '收藏'}</button>
+                <button className="btn ghost" onClick={() => goMsg('你好，我是内容运营，看了你的作品想聊聊合作')}>发私信</button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/* ---------- 直播监听 ---------- */
+const DM_META = { un: ['未私信', 'mute'], wait: ['待发送', 'warn'], sent: ['已发送', 'ok'], fail: ['发送失败', 'danger'] };
+function seedRows() {
+  const base = [
+    ['林小满', 12, '主播今天播多久呀', 'sent', '你好，我是内容运营，看了你今天的直播想聊聊合作'],
+    ['阿澈', 8, '这歌叫什么名字', 'un', ''],
+    ['芝士不加糖', 21, '第一次来 好有意思', 'sent', '您好，这边在整理美食类达人库，方便加个微信吗'],
+    ['大熊_', 5, '来了来了 蹲一个', 'wait', '在吗？看到你在评论区提到探店，想深入聊聊'],
+    ['苏苏酱', 33, '礼物走一波', 'un', ''],
+    ['夜风', 16, '声音太好听了', 'sent', '你好，想邀请你参加本周五的美食专题活动'],
+    ['一颗柠檬', 9, '求歌单', 'fail', '你好，想邀请你参加本周五的美食专题活动'],
+    ['老白', 40, '666666', 'un', ''],
+  ];
+  const min = Date.now() - base.length * 45000;
+  return base.map((r, i) => ({
+    id: ++cid, time: tick(-(base.length - i) * 45000), name: r[0], lv: r[1], content: r[2],
+    dmStatus: r[3], dmText: r[4], dmTime: r[3] === 'sent' ? tick(-(base.length - i) * 45000 + 8000) : '',
+    ts: min + i * 45000,
+  }));
+}
+function Live({ push, goMsg }) {
+  const [viewMode, setViewMode] = useState('single');
+  const [activeAcct, setActiveAcct] = useState('a1');
+  const [room, setRoom] = useState('live.douyin.com/7462001');
+  const [listening, setListening] = useState(true);
+  const [reconnect, setReconnect] = useState(false);
+  const [feed, setFeed] = useState([
+    { id: ++cid, t: '10:18:22', k: 'danmaku', n: '苏苏酱', l: 33, x: '声音太好听了' },
+    { id: ++cid, t: '10:18:05', k: 'gift', n: '老白', l: 40, x: '送出 跑车 × 1' },
+    { id: ++cid, t: '10:17:52', k: 'danmaku', n: '夜风', l: 16, x: '求歌单' },
+    { id: ++cid, t: '10:17:31', k: 'follow', n: '桃子气泡', l: 14, x: '关注了主播' },
+    { id: ++cid, t: '10:17:09', k: 'enter', n: '一颗柠檬', l: 9, x: '进入直播间' },
+  ]);
+  const [rows, setRows] = useState(seedRows);
+  const [heat, setHeat] = useState(Array.from({ length: 36 }, (_, i) => 40 + Math.round(Math.sin(i / 4) * 12 + i * 1.4)));
+  const [review, setReview] = useState(false);
+  const [dmDraft, setDmDraft] = useState('');
+  const [heatOn, setHeatOn] = useState(true);
+  const [roomLikes, setRoomLikes] = useState(128600);
+  const [myLikes, setMyLikes] = useState(0);
+  const [burst, setBurst] = useState(0);
+  const likeT = useRef();
+  const [batchN, setBatchN] = useState('10');
+  const [dmLimit, setDmLimit] = useState('3');
+  const [dmInterval, setDmInterval] = useState('60.0');
+  const [dmJitter, setDmJitter] = useState('50,120');
+  const [dmTemplates, setDmTemplates] = useState([
+    { text: '你好，欢迎留言咨询唐律师工伤，留个方式，唐律下播后帮你分析', enabled: true },
+    { text: '老乡 看到你在唐律师直播间咨询工伤问题，我是他的助理，你可以留个📞方式，我们帮你看下等级和赔偿 [握手]', enabled: true },
+    { text: '唐律还在直播，我是助理，可以留个联系方式，唐律下播后帮你分析', enabled: true },
+  ]);
+
+  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || ACCOUNTS_INIT[0];
+
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') setReview(false); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+
+  const listenRef = useRef();
+  useEffect(() => {
+    if (!listening) return;
+    listenRef.current = setInterval(() => {
+      const [nm, lv] = pick(SPEAKERS);
+      const kind = pick(FEEDKIND);
+      let txt;
+      if (kind === 'gift') { const [g, c] = pick(GIFTS); txt = '送出 ' + g + ' × ' + c; }
+      else if (kind === 'danmaku') txt = pick(COMMENTS);
+      else if (kind === 'enter') txt = '进入直播间';
+      else if (kind === 'follow') txt = '关注了主播';
+      else txt = '点赞了直播间';
+      const t = tick();
+      if (kind === 'like') setRoomLikes(r => r + 1 + Math.floor(Math.random() * 18));
+      setFeed(f => [{ id: ++cid, t, k: kind, n: nm, l: lv, x: txt }, ...f].slice(0, 30));
+      if (kind === 'danmaku' || kind === 'gift') {
+        const roll = Math.random();
+        const st = roll < 0.5 ? 'un' : roll < 0.62 ? 'wait' : roll < 0.92 ? 'sent' : 'fail';
+        const dmt = st === 'sent' ? pick(DM_TEXTS) : '';
+        setRows(r => [{ id: ++cid, time: t, name: nm, lv, content: txt, dmStatus: st, dmText: dmt, dmTime: st === 'sent' ? t : '', ts: Date.now() }, ...r]);
+      }
+      if (Math.random() < 0.08) { setReconnect(true); setTimeout(() => setReconnect(false), 2500); }
+    }, 1800);
+    return () => clearInterval(listenRef.current);
+  }, [listening]);
+
+  useEffect(() => {
+    if (!heatOn) return;
+    const iv = setInterval(() => setHeat(h => [...h.slice(1), h[h.length - 1] + Math.round(Math.random() * 14 - 5) + 2]), 2000);
+    return () => clearInterval(iv);
+  }, [heatOn]);
+
+  const heatChart = (data, w = 640, h = 120) => {
+    const max = Math.max(...data) * 1.18;
+    const x = i => (i / (data.length - 1)) * w;
+    const y = v => h - 10 - (v / max) * (h - 16);
+    const d = data.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join('');
+    return (
+      <svg width={w} height={h} viewBox={'0 0 ' + w + ' ' + h} style={{ width: '100%', height: 'auto' }} role="img" aria-label="房间热度曲线">
+        {[0.25, 0.5, 0.75].map(g => <line key={g} className="chart-grid" x1="0" x2={w} y1={h * g} y2={h * g} />)}
+        <path className="chart-area" d={d + ' L' + w + ' ' + h + ' L0 ' + h + ' Z'} />
+        <path className="chart-line" d={d} />
+        <circle className="chart-last" cx={x(data.length - 1)} cy={y(data[data.length - 1])} r="3.4" />
+      </svg>
+    );
+  };
+
+  const sendDanmaku = () => {
+    if (!dmDraft.trim()) return;
+    const t = tick();
+    setFeed(f => [{ id: ++cid, t, k: 'danmaku', n: '我', l: 99, x: dmDraft.trim() }, ...f].slice(0, 30));
+    setRows(r => [{ id: ++cid, time: t, name: '我', lv: 99, content: dmDraft.trim(), dmStatus: 'un', dmText: '', dmTime: '', ts: Date.now() }, ...r]);
+    setDmDraft('');
+    push('弹幕已发送');
+  };
+  const doLike = () => {
+    setRoomLikes(r => r + 1 + Math.floor(Math.random() * 4));
+    setMyLikes(m => m + 1);
+    setBurst(b => b + 1);
+    clearTimeout(likeT.current);
+    likeT.current = setTimeout(() => setBurst(0), 900);
+  };
+  const doBatch = () => {
+    const n = Math.min(1000, Math.max(1, parseInt(batchN, 10) || 1));
+    setRoomLikes(r => r + n);
+    setMyLikes(m => m + n);
+    setBurst(b => b + n);
+    clearTimeout(likeT.current);
+    likeT.current = setTimeout(() => setBurst(0), 1600);
+    push('已批量点赞 ' + n + ' 次');
+  };
+
+  const dedup = useMemo(() => new Set(rows.map(r => r.name)).size, [rows]);
+
+  const sendDm = (r) => {
+    const t = tick();
+    setRows(rs => rs.map(x => x.id === r.id ? { ...x, dmStatus: 'sent', dmText: r.dmText || pick(DM_TEXTS), dmTime: t } : x));
+    push('私信已发送 → ' + r.name);
+  };
+
+  return (
+    <div>
+      <div className="section-head">
+        <div>
+          <h2>直播监听</h2>
+          <div className="desc">实时弹幕 / 礼物 / 评论采集与私信自动化</div>
+        </div>
+        <div className="head-row">
+          <div className="seg">
+            <button className={viewMode === 'single' ? 'active' : ''} onClick={() => setViewMode('single')}>单账户</button>
+            <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>多账户总览</button>
+          </div>
+          <span className="badge-conn"><Dot c={reconnect ? 'warn' : 'ok'} pulse /> {reconnect ? '断线重连中' : '监听中'}</span>
+          <span className="demo-tag">示例数据</span>
+        </div>
+      </div>
+
+      {viewMode === 'grid' ? (
+        <div className="grid cols-2" data-od-id="live-grid">
+          {ACCOUNTS_INIT.filter(a => a.tokenValid).slice(0, 2).map(acct => (
+            <div className="card" key={acct.id} style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+                <Avatar name={acct.name} h={acct.hue} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{acct.name}</div>
+                  <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID: {acct.uid}</div>
+                </div>
+                <Pill c={acct.tokenValid ? 'ok' : 'danger'}>{acct.tokenValid ? '在线' : '离线'}</Pill>
+              </div>
+              <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
+                <div className="head-row" style={{ marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>直播间</span>
+                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{acct.lastRun.room}</span>
+                </div>
+                <div className="head-row">
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>运行时长</span>
+                  <span className="mono" style={{ fontSize: 12 }}>{acct.lastRun.duration}</span>
+                </div>
+              </div>
+              <div className="grid cols-2" style={{ padding: '10px 16px', gap: 8 }}>
+                <div className="card stat" style={{ padding: '8px 10px' }}>
+                  <span className="label" style={{ fontSize: 11 }}>弹幕</span>
+                  <span className="num" style={{ fontSize: 18 }}>{acct.lastRun.comments.toLocaleString()}</span>
+                </div>
+                <div className="card stat" style={{ padding: '8px 10px' }}>
+                  <span className="label" style={{ fontSize: 11 }}>已私信</span>
+                  <span className="num" style={{ fontSize: 18 }}>{acct.lastRun.dmSent}</span>
+                </div>
+              </div>
+              <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
+                <div className="head-row" style={{ marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>房间热度</span>
+                  <span className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>{heat[heat.length - 1]} 人</span>
+                </div>
+                <div style={{ height: 60 }}>{heatChart(heat, 400, 60)}</div>
+              </div>
+              <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', maxHeight: 120, overflow: 'auto' }}>
+                {feed.slice(0, 5).map(f => (
+                  <div className="feed-item" key={f.id} style={{ padding: '3px 0' }}>
+                    <span className="tm" style={{ fontSize: 10 }}>{f.t}</span>
+                    <span className={'kind k-' + f.k} style={{ fontSize: 10 }}>{KIND_NAME[f.k]}</span>
+                    <span className="txt" style={{ fontSize: 11 }}><b>{f.n}</b> {f.x}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 6 }}>
+                <button className="btn sm ghost" style={{ flex: 1 }} onClick={() => { setViewMode('single'); setActiveAcct(acct.id); setRoom(acct.lastRun.roomUrl?.replace('https://', '') || ''); push('已切换到 ' + acct.name); }}>进入监听</button>
+                <button className="btn sm ghost" onClick={() => push('已导出 ' + acct.name + ' 数据')}>导出</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="card" style={{ marginBottom: 14 }} data-od-id="live-acct-select">
+            <div className="head-row">
+              <span style={{ fontSize: 13, fontWeight: 600 }}>当前监听账号</span>
+              <div style={{ flex: 1 }} />
+              <div className="seg">
+                {ACCOUNTS_INIT.filter(a => a.tokenValid).map(a => (
+                  <button key={a.id} className={activeAcct === a.id ? 'active' : ''} onClick={() => { setActiveAcct(a.id); setRoom(a.lastRun.roomUrl?.replace('https://', '') || ''); push('已切换到 ' + a.name); }}>
+                    <Avatar name={a.name} h={a.hue} sm /> {a.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 14 }} data-od-id="live-input">
+            <div className="searchbar" style={{ marginBottom: 0 }}>
+              <input className="input" style={{ flex: 1, fontFamily: 'var(--font-mono)' }} value={room} onChange={e => setRoom(e.target.value)} placeholder="直播间 URL 或 room_id" aria-label="直播间地址" />
+              <button className="btn ghost" data-od-id="live-parse" onClick={() => { if (room.trim()) push('已解析房间号 · ' + room.trim()); }}>解析房间号</button>
+              <button className="btn primary" data-od-id="live-start" onClick={() => { setListening(s => !s); push(listening ? '已停止监听' : '开始监听 ' + room); }}>{listening ? '停止监听' : '开始监听'}</button>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>粘贴直播页/分享短链/用户主页链接，自动识别</div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 14 }} data-od-id="live-auto-dm">
+            <h3>自动私信配置</h3>
+            <div className="grid cols-3" style={{ marginBottom: 14 }}>
+              <div className="field">
+                <label>发送上限</label>
+                <input className="input" type="number" min="1" max="100" value={dmLimit} onChange={e => setDmLimit(e.target.value)} style={{ width: '100%', fontFamily: 'var(--font-mono)' }} aria-label="每场最多发送私信条数" />
+                <span className="hint">每场直播最多发送私信条数</span>
+              </div>
+              <div className="field">
+                <label>间隔（秒）</label>
+                <input className="input" type="number" min="1" step="0.1" value={dmInterval} onChange={e => setDmInterval(e.target.value)} style={{ width: '100%', fontFamily: 'var(--font-mono)' }} aria-label="两条私信之间的间隔秒数" />
+                <span className="hint">两条私信之间的等待时间</span>
+              </div>
+              <div className="field">
+                <label>延迟抖动（秒）</label>
+                <input className="input" value={dmJitter} onChange={e => setDmJitter(e.target.value)} style={{ width: '100%', fontFamily: 'var(--font-mono)' }} aria-label="延迟抖动区间" />
+                <span className="hint">格式：50,120 = 随机区间；60 = 固定延迟</span>
+              </div>
+            </div>
+            <div>
+              <div className="head-row" style={{ marginBottom: 10 }}>
+                <h3 style={{ marginBottom: 0 }}>私信词库</h3>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>每行一条，勾选 = 启用，发送时随机抽已启用的一条</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }} data-od-id="dm-templates">
+                {dmTemplates.map((t, i) => (
+                  <div key={i} className="head-row" style={{ gap: 10 }}>
+                    <span className="switch" style={{ flex: 'none' }}>
+                      <input type="checkbox" checked={t.enabled} onChange={e => { const next = [...dmTemplates]; next[i] = { ...next[i], enabled: e.target.checked }; setDmTemplates(next); }} aria-label={'启用模板 ' + (i + 1)} />
+                      <i />
+                    </span>
+                    <input className="input" style={{ flex: 1 }} value={t.text} onChange={e => { const next = [...dmTemplates]; next[i] = { ...next[i], text: e.target.value }; setDmTemplates(next); }} placeholder="输入私信文案…" />
+                  </div>
+                ))}
+              </div>
+              <div className="head-row" style={{ marginTop: 10, gap: 8 }}>
+                <button className="btn sm ghost" onClick={() => setDmTemplates(dmTemplates.map(t => ({ ...t, enabled: true })))}>全选</button>
+                <button className="btn sm ghost" onClick={() => setDmTemplates(dmTemplates.map(t => ({ ...t, enabled: false })))}>全不选</button>
+                <button className="btn sm ghost" onClick={() => setDmTemplates([...dmTemplates, { text: '', enabled: true }])}>添加一条</button>
+                <button className="btn sm ghost" onClick={() => setDmTemplates(dmTemplates.filter(t => t.enabled))}>删除选中</button>
+                <span className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>已启用 {dmTemplates.filter(t => t.enabled).length} / {dmTemplates.length} 条</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="live-layout" style={{ marginBottom: 14 }}>
+            <div className="card" data-od-id="live-feed">
+              <h3><span>实时信息流 <span className="mono" style={{ color: 'var(--accent)', fontWeight: 400 }}>{KIND_NAME.danmaku} / {KIND_NAME.gift} / {KIND_NAME.enter}</span></span><span className="mono like-total">♥ {roomLikes.toLocaleString()}</span></h3>
+              <div className="feed" style={{ maxHeight: 236 }}>
+                {feed.map(f => (
+                  <div className="feed-item" key={f.id}>
+                    <span className="tm">{f.t}</span>
+                    <span className={'kind k-' + f.k}>{KIND_NAME[f.k]}</span>
+                    <span className="txt"><b>{f.n}</b>　{f.x}</span>
+                    <span className="lv">Lv.{f.l}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="head-row" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <input className="input" style={{ flex: 1 }} placeholder="发送弹幕到直播间…" value={dmDraft} onChange={e => setDmDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendDanmaku()} />
+                <button className="btn ghost" data-od-id="live-send-danmaku" onClick={sendDanmaku}>发送</button>
+                <button className="btn ghost like-btn" data-od-id="live-like" onClick={doLike}>♥ 点赞{myLikes > 0 && <span className="like-cnt">×{myLikes}</span>}{burst > 0 && <span className="burst" key={myLikes}>+{burst}</span>}</button>
+              </div>
+              <div className="head-row batch-row" data-od-id="live-batch-like">
+                <span className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>批量点赞</span>
+                <input className="input batch-input" type="number" min="1" max="1000" aria-label="批量点赞数量" value={batchN} onChange={e => setBatchN(e.target.value)} onKeyDown={e => e.key === 'Enter' && doBatch()} />
+                <button className="btn ghost" onClick={doBatch}>批量点赞</button>
+                <span className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>每次按输入数量执行，上限 1000</span>
+              </div>
+            </div>
+            <div className="card" data-od-id="heat-chart">
+              <h3>房间热度 <span className="mono" style={{ color: 'var(--accent)', fontWeight: 400 }}>{heat[heat.length - 1]} 人在线</span></h3>
+              <div className="chart-wrap">{heatChart(heat)}</div>
+            </div>
+          </div>
+
+          <div className="card" data-od-id="comment-stats">
+            <div className="table-tools">
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <h3 style={{ marginBottom: 0 }}>实时评论统计列表</h3>
+              </div>
+              <button className="btn ghost" data-od-id="review-open" onClick={() => setReview(true)}>进入查阅模式</button>
+            </div>
+            <div className="count-line">共 <b>{rows.length}</b> 条弹幕记录 · 去重发言人 <b>{dedup}</b> 人 · 已发送私信 <b>{rows.filter(r => r.dmStatus === 'sent').length}</b> 条</div>
+            <div className="table-scroll">
+              <table className="comment-table">
+                <thead>
+                  <tr>
+                    <th>发送时间</th><th>发言人</th><th>评论内容</th><th>私信状态</th><th>私信文案</th><th>私信时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice(0, 12).map(r => (
+                    <tr key={r.id}>
+                      <td className="mono">{r.time}</td>
+                      <td>
+                        <span className="speaker">
+                          <Avatar name={r.name} h={hue(r.name.length)} sm />
+                          <span className="nm">{r.name}</span>
+                          {r.lv < 99 && <span className="lv">Lv.{r.lv}</span>}
+                        </span>
+                      </td>
+                      <td className="content-cell" title={r.content}><span className="cmt-text">{r.content}</span></td>
+                      <td>{r.dmStatus === 'un' ? <span className="blank">—</span> : <Pill c={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Pill>}</td>
+                      <td className="dm-cell"><span className={'dm-text' + (r.dmText ? ' has' : '')} title={r.dmText}>{r.dmText || <span className="blank">未发送</span>}</span></td>
+                      <td className="mono">{r.dmTime || <span className="blank">—</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      <AnimatePresence>
+        {review && <ReviewMode rows={rows} onClose={() => setReview(false)} push={push} sendDm={sendDm} goMsg={goMsg} />}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function ReviewMode({ rows, onClose, push, sendDm, goMsg }) {
+  const [q, setQ] = useState('');
+  const [st, setSt] = useState('all');
+  const [asc, setAsc] = useState(false);
+  const [exp, setExp] = useState(null);
+
+  const filtered = useMemo(() => {
+    let list = rows.slice();
+    if (st !== 'all') list = list.filter(r => r.dmStatus === st);
+    if (q.trim()) { const kw = q.trim(); list = list.filter(r => (r.name + r.content + r.dmText).includes(kw)); }
+    list.sort((a, b) => asc ? a.ts - b.ts : b.ts - a.ts);
+    return list;
+  }, [rows, q, st, asc]);
+
+  const cnt = s => rows.filter(r => r.dmStatus === s).length;
+  const exportCSV = () => {
+    const head = ['发送时间', '发言人', '用户等级', '评论内容', '私信状态', '私信文案', '私信时间'];
+    const body = filtered.map(r => [r.time, r.name, r.lv, r.content, DM_META[r.dmStatus][0], r.dmText || '', r.dmTime || '']);
+    const csv = [head, ...body].map(l => l.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjecturl(/api/projects/4d03cd9d-4edf-4ace-9592-eb7aa97e298e/raw/blob?workspaceId=xl31pfpy01561g39my0yf7rx&workspaceMemberId=fwqc99owe2nyh67ddu1fycy9);
+    a.download = 'live_comments_' + tick().replace(/:/g, '') + '.csv';
+    a.click();
+    URL.revokeObjecturl(/api/projects/4d03cd9d-4edf-4ace-9592-eb7aa97e298e/raw/a.href?workspaceId=xl31pfpy01561g39my0yf7rx&workspaceMemberId=fwqc99owe2nyh67ddu1fycy9);
+    push('已导出 CSV · ' + a.download);
+  };
+
+  return (
+    <motion.div className="overlay" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .18 }} data-od-id="live-review">
+      <div className="overlay-head">
+        <button className="btn ghost" data-od-id="review-back" onClick={onClose}>‹ 返回实时流</button>
+        <h2>评论查阅模式</h2>
+        <div style={{ flex: 1 }} />
+        <span className="demo-tag">只读 · 实时入库</span>
+      </div>
+      <div className="overlay-body">
+        <div className="table-tools">
+          <input className="input" placeholder="搜索昵称 / 评论内容 / 私信文案…" value={q} onChange={e => setQ(e.target.value)} />
+          <select className="select" value={st} onChange={e => setSt(e.target.value)} aria-label="私信状态筛选">
+            <option value="all">全部状态</option>
+            <option value="un">未私信</option><option value="wait">待发送</option>
+            <option value="sent">已发送</option><option value="fail">发送失败</option>
+          </select>
+          <button className="btn ghost" onClick={() => setAsc(s => !s)}>{asc ? '时间 ↑' : '时间 ↓'}</button>
+          <button className="btn ghost" onClick={() => { setSt('all'); setQ(''); }}>重置</button>
+          <button className="btn primary" data-od-id="review-export" onClick={exportCSV}>导出 CSV</button>
+        </div>
+        <div className="count-line">共 <b>{filtered.length}</b> 条 · <span className="filter-pills" style={{ display: 'inline-flex', marginLeft: 10, verticalAlign: 'middle' }}>
+          {[['all', '全部', rows.length], ['un', '未私信', cnt('un')], ['wait', '待发送', cnt('wait')], ['sent', '已发送', cnt('sent')], ['fail', '发送失败', cnt('fail')]].map(([id, l, c]) => (
+            <button key={id} className={'fpill' + (st === id ? ' active' : '')} onClick={() => setSt(id)}>{l}<span className="c">{c}</span></button>
+          ))}
+        </span></div>
+        <div className="card" style={{ padding: 0 }}>
+          <div className="table-scroll">
+            <table className="comment-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 30 }} />
+                  <th>发送时间</th><th>发言人</th><th>评论内容</th><th>私信状态</th><th>私信文案</th><th>私信时间</th><th style={{ width: 150 }}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(r => (
+                  <React.Fragment key={r.id}>
+                    <tr>
+                      <td><span className="mono" style={{ color: 'var(--muted)' }}>{exp === r.id ? '▾' : '▸'}</span></td>
+                      <td className="mono">{r.time}</td>
+                      <td>
+                        <span className="speaker">
+                          <Avatar name={r.name} h={hue(r.name.length)} sm />
+                          <span className="nm">{r.name}</span>
+                          {r.lv < 99 && <span className="lv">Lv.{r.lv}</span>}
+                        </span>
+                      </td>
+                      <td className="content-cell"><span className="cmt-text">{r.content}</span></td>
+                      <td>{r.dmStatus === 'un' ? <span className="blank">—</span> : <Pill c={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Pill>}</td>
+                      <td className="dm-cell"><span className={'dm-text' + (r.dmText ? ' has' : '')}>{r.dmText || <span className="blank">未发送</span>}</span></td>
+                      <td className="mono">{r.dmTime || <span className="blank">—</span>}</td>
+                      <td>
+                        <div className="head-row" style={{ gap: 6 }}>
+                          <button className="btn text sm" onClick={() => { setExp(exp === r.id ? null : r.id); }}>详情</button>
+                          <button className="btn text sm" onClick={() => sendDm(r)}>发私信</button>
+                          <button className="btn text sm" onClick={() => goMsg(r.name, r.dmText || pick(DM_TEXTS))}>去私信中心</button>
+                        </div>
+                      </td>
+                    </tr>
+                    {exp === r.id && (
+                      <tr key={r.id + '-d'}>
+                        <td colSpan="8" style={{ padding: '6px 10px 14px', background: 'var(--surface-2)' }}>
+                          <div className="detail-panel">
+                            <h4>发言历史 · {r.name}</h4>
+                            <div className="history-list">
+                              {rows.filter(x => x.name === r.name).slice(0, 5).map((x, i) => (
+                                <div className="history-item" key={i}><span className="tm">{x.time}</span><span>{x.content}</span></div>
+                              ))}
+                            </div>
+                            <h4>私信内容</h4>
+                            <div style={{ fontSize: 13 }}>
+                              {r.dmStatus === 'un' ? <span className="blank">尚未对该发言人发送私信</span> :
+                                <span><Pill c={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Pill>　{r.dmText || '（文案未填写）'}{r.dmTime ? '　·　' + r.dmTime : ''}</span>}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ---------- 私信中心 ---------- */
+const MSG_STYLE = { sticker: ['oklch(70% 0.13 300)', '✨'], image: ['oklch(45% 0.13 210)', '图片'], video: ['oklch(42% 0.13 150)', '分享的视频'] };
+function MsgBubble({ m, h }) {
+  if (m.type === 'text') return <div className="bubble">{m.text}</div>;
+  if (m.type === 'voice') return (
+    <div className="bubble"><div className="voice"><span className="voice-bars">{[10, 18, 14, 22, 12, 20, 8, 16].map((hgt, i) => <i key={i} style={{ height: hgt }} />)}</span><span className="vdur">{m.dur}</span></div></div>
+  );
+  if (m.type === 'sticker') return <div className="sticker" style={{ background: 'oklch(70% 0.13 300)' }}>✨</div>;
+  if (m.type === 'image') return <div className="imgtile" style={{ background: 'linear-gradient(135deg, oklch(48% 0.13 210), oklch(26% 0.09 250))' }}>图片消息</div>;
+  return (
+    <div className="bubble"><div className="vshare">
+      <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(46% 0.13 150), oklch(26% 0.09 190))' }}><span className="play" aria-hidden="true" /></div>
+      <div><div className="ti">{m.title}</div><div className="st">分享的视频</div></div>
+    </div></div>
+  );
+}
+function Messages({ push, goDm }) {
+  const [activeAcct, setActiveAcct] = useState('a1');
+  const [convs, setConvs] = useState(CONVS_INIT);
+  const [active, setActive] = useState('c2');
+  const [draft, setDraft] = useState('');
+  const [newBanner, setNewBanner] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [newName, setNewName] = useState('');
+  const bannerT = useRef();
+  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || ACCOUNTS_INIT[0];
+  const acctConvs = convs.filter(c => c.acct === activeAcct);
+
+  useEffect(() => {
+    if (!goDm) return;
+    const { name, text } = goDm;
+    const existing = convs.find(c => c.name === name);
+    if (existing) {
+      setActiveAcct(existing.acct);
+      setActive(existing.id);
+      setDraft(text || '');
+    } else {
+      const nc = { id: 'c' + (convs.length + 1), acct: activeAcct, hue: hue(name.length * 2), name, unread: 0, msgs: [{ id: ++cid, dir: 'in', type: 'text', text: '你好，很高兴认识你', mt: nowHM() }] };
+      setConvs(c => [nc, ...c]);
+      setActive(nc.id);
+      setDraft(text || '');
+    }
+    push('已打开 ' + name + ' 的会话，文案已预填');
+  }, [goDm]);
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const [nm] = pick(SPEAKERS);
+      setConvs(cs => cs.map(c => c.acct === activeAcct && c.name === nm
+        ? { ...c, unread: c.unread + 1, msgs: [...c.msgs, { id: ++cid, dir: 'in', type: 'text', text: pick(COMMENTS), mt: nowHM() }] }
+        : c));
+      setNewBanner(true);
+      clearTimeout(bannerT.current);
+      bannerT.current = setTimeout(() => setNewBanner(false), 4000);
+    }, 9000);
+    return () => clearInterval(iv);
+  }, [activeAcct]);
+
+  const conv = acctConvs.find(c => c.id === active) || acctConvs[0] || convs[0];
+  const send = () => {
+    if (!draft.trim()) return;
+    setConvs(cs => cs.map(c => c.id === conv.id ? { ...c, msgs: [...c.msgs, { id: ++cid, dir: 'out', type: 'text', text: draft.trim(), mt: nowHM() }] } : c));
+    setDraft('');
+    push('私信已发送');
+  };
+  const openConv = (id) => {
+    setActive(id);
+    setConvs(cs => cs.map(c => c.id === id ? { ...c, unread: 0 } : c));
+  };
+  const createConv = () => {
+    const nm = newName.trim();
+    if (!nm) { push('请输入对方昵称'); return; }
+    const existing = convs.find(c => c.name === nm);
+    if (existing) { setActiveAcct(existing.acct); setActive(existing.id); setShowNew(false); setNewName(''); setDraft(''); push('已打开已有会话 ' + nm); return; }
+    const nc = { id: 'c' + (convs.length + 1), acct: activeAcct, hue: hue(nm.length * 2), name: nm, unread: 0, msgs: [{ id: ++cid, dir: 'in', type: 'text', text: '你好，很高兴认识你', mt: nowHM() }] };
+    setConvs(c => [nc, ...c]);
+    setActive(nc.id);
+    setShowNew(false);
+    setNewName('');
+    push('已创建会话 ' + nm);
+  };
+
+  return (
+    <div>
+      <div className="section-head">
+        <div>
+          <h2>私信中心</h2>
+          <div className="desc">WebSocket 实时收发 · 文本 / 表情 / 语音 / 图片 / 视频</div>
+        </div>
+        <div className="head-row">
+          <span className="badge-conn"><Dot c="ok" pulse /> 已连接</span>
+          <span className="demo-tag">示例数据</span>
+        </div>
+      </div>
+      <div className="card" style={{ marginBottom: 12 }} data-od-id="msg-acct-select">
+        <div className="head-row">
+          <Avatar name={curAcct.name} h={curAcct.hue} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 13.5 }}>当前私信账号 · {curAcct.name}</div>
+            <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID {curAcct.uid} · 会话按账号隔离</div>
+          </div>
+          <Pill c={curAcct.tokenValid ? 'ok' : 'danger'}>{curAcct.tokenValid ? '凭证有效' : '凭证过期'}</Pill>
+          <div className="seg" style={{ marginLeft: 6 }}>
+            {ACCOUNTS_INIT.filter(a => a.tokenValid).map(a => (
+              <button key={a.id} className={activeAcct === a.id ? 'active' : ''} onClick={() => { const first = convs.find(c => c.acct === a.id); setActiveAcct(a.id); setActive(first ? first.id : ''); push('已切换到 ' + a.name + ' 的私信通道'); }}>
+                <Avatar name={a.name} h={a.hue} sm /> {a.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="grid cols-3-7" data-od-id="messages-panel">
+        <div className="card" style={{ padding: 8 }}>
+          <div className="head-row" style={{ padding: '4px 8px 10px' }}>
+            <h3 style={{ marginBottom: 0 }}>会话列表</h3>
+            <div style={{ flex: 1 }} />
+            <button className="btn sm ghost" data-od-id="new-conv" onClick={() => setShowNew(s => !s)}>{showNew ? '取消' : '＋ 新建会话'}</button>
+          </div>
+          <div className="conv-list">
+            {showNew && (
+              <div className="head-row" style={{ padding: '2px 8px 8px', gap: 8 }} data-od-id="new-conv-form">
+                <input className="input" style={{ flex: 1, height: 34, fontSize: 12.5 }} autoFocus placeholder="输入对方昵称，回车创建…" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') createConv(); if (e.key === 'Escape') setShowNew(false); }} />
+                <button className="btn sm ghost" onClick={createConv}>创建</button>
+              </div>
+            )}
+            {acctConvs.map(c => (
+              <button className={'conv' + (c.id === active ? ' active' : '')} data-od-id={'conv-' + c.id} key={c.id} onClick={() => openConv(c.id)}>
+                <Avatar name={c.name} h={c.hue} />
+                <span className="info">
+                  <span className="nm">{c.name}<span className="t">{c.msgs[c.msgs.length - 1].mt}</span></span>
+                  <span className="pre">{c.msgs[c.msgs.length - 1].type === 'text' ? c.msgs[c.msgs.length - 1].text : (c.msgs[c.msgs.length - 1].dir === 'in' ? '收到一条新消息' : '已发送')}</span>
+                </span>
+                {c.unread > 0 && <span className="unread">{c.unread}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="card thread-wrap" style={{ padding: 0 }}>
+          <div className="thread">
+            <div className="thread-head">
+              <Avatar name={conv.name} h={conv.hue} sm />
+              <span className="nm">{conv.name}</span>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>会话 ID {conv.id}</span>
+              <div style={{ flex: 1 }} />
+              <button className="btn sm ghost" onClick={() => { push('已导出该会话为 JSON'); }}>导出会话</button>
+            </div>
+            {newBanner && <div className="newmsg-banner" onClick={() => { setNewBanner(false); }}>有新私信进入，点击查看</div>}
+            <div className="msgs">
+              {conv.msgs.map(m => (
+                <div className={'msg ' + m.dir} key={m.id}>
+                  <MsgBubble m={m} h={conv.hue} />
+                  <span className="mtm">{m.mt}</span>
+                </div>
+              ))}
+            </div>
+            <div className="composer" data-od-id="composer">
+              <textarea className="textarea" placeholder="输入私信内容…" value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
+              <button className="btn primary" data-od-id="send-msg" onClick={send}>发送</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 任务中心 ---------- */
+function Tasks({ push }) {
+  const [tasks, setTasks] = useState(TASKS_INIT);
+  useEffect(() => {
+    const iv = setInterval(() => setTasks(ts => ts.map(t => t.status === 'running' ? { ...t, prog: Math.min(100, t.prog + Math.round(Math.random() * 6)) } : t)), 1800);
+    return () => clearInterval(iv);
+  }, []);
+  const done = tasks.filter(t => t.status === 'done').length;
+  return (
+    <div>
+      <div className="section-head">
+        <div>
+          <h2>任务中心</h2>
+          <div className="desc">采集 / 监听 / 导出任务与断线重连状态</div>
+        </div>
+        <div className="head-row">
+          <span className="badge-conn"><Dot c="ok" pulse /> {done}/{tasks.length} 已完成</span>
+          <span className="demo-tag">示例数据</span>
+        </div>
+      </div>
+      <div className="card" style={{ marginBottom: 14, padding: 0 }} data-od-id="task-list">
+        <div className="table-scroll">
+          <table className="table">
+            <thead>
+              <tr><th>创建时间</th><th>账号</th><th>任务类型</th><th>目标</th><th>状态</th><th>耗时</th><th>结果条数</th><th>重试</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              {tasks.map(t => {
+                const ta = ACCOUNTS_INIT.find(a => a.id === t.acct) || ACCOUNTS_INIT[0];
+                return (
+                <tr key={t.id}>
+                  <td className="mono" style={{ whiteSpace: 'nowrap' }}>{t.ct}</td>
+                  <td><div style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><Avatar name={ta.name} h={ta.hue} sm /><span>{ta.name}</span></div></td>
+                  <td>{t.type}</td>
+                  <td className="mono" style={{ color: 'var(--muted)' }}>{t.target}</td>
+                  <td><Pill c={TASK_ST[t.status][1]}>{TASK_ST[t.status][0]}</Pill></td>
+                  <td className="mono">{t.dur}</td>
+                  <td className="mono">{t.res}</td>
+                  <td className="mono">{t.retry}</td>
+                  <td>
+                    {t.status === 'done' ? <button className="btn text sm" onClick={() => push('已导出结果 · ' + t.target + '.json')}>导出结果</button>
+                      : t.status === 'running' ? <button className="btn text sm" onClick={() => push('任务已暂停')}>暂停</button>
+                        : <button className="btn text sm" onClick={() => push('任务已重新入队')}>重试</button>}
+                  </td>
+                </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="export-grid">
+        <div className="card" data-od-id="export-card">
+          <h3>导出管理</h3>
+          <div className="field-row" style={{ marginBottom: 10 }}>
+            <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>评论数据.xlsx</div><div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>8,432 行 · 2026-08-11 10:12</div></div>
+            <button className="btn sm ghost" onClick={() => push('已开始导出 Excel')}>导出</button>
+          </div>
+          <div className="field-row" style={{ marginBottom: 10 }}>
+            <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>用户主页数据.json</div><div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>96 条 · 2026-08-11 09:40</div></div>
+            <button className="btn sm ghost" onClick={() => push('已开始导出 JSON')}>导出</button>
+          </div>
+          <div className="field-row">
+            <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>私信会话.json</div><div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>342 条 · 2026-08-11 10:01</div></div>
+            <button className="btn sm ghost" onClick={() => push('已开始导出 JSON')}>导出</button>
+          </div>
+        </div>
+        <div className="card" data-od-id="output-tree">
+          <h3>结构化输出目录</h3>
+          <div className="tree">
+            <div><span className="dir">output/</span></div>
+            <div>　├─ <span className="dir">2026-08-11/</span></div>
+            <div>　│　├─ <span className="cur">users.json</span></div>
+            <div>　│　├─ <span className="cur">videos/</span></div>
+            <div>　│　│　└─ <span className="cur">v1/</span></div>
+            <div>　│　│　　├─ info.json</div>
+            <div>　│　│　　└─ comments.xlsx</div>
+            <div>　│　├─ <span className="cur">live_7462001/</span></div>
+            <div>　│　│　└─ <span className="cur">danmaku.csv</span></div>
+            <div>　│　└─ <span className="cur">media/</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 设置 ---------- */
+function Settings({ push }) {
+  const [mask, setMask] = useState(true);
+  const [expandedAcct, setExpandedAcct] = useState(null);
+  const DEFAULTS = {
+    rateLimit: '500', searchCap: '100', exportFmt: 'xlsx',
+    dmPerLive: '3', dmInterval: '60', likeInterval: '3',
+    wsReconnect: '5', syncLimit: '200', recvMedia: true,
+    maxTasks: '3', retry: '3', timeout: '10',
+    outDir: './output', autoExport: true, logFile: true,
+    cookieWww: '', cookieLive: '', cookieWwwOk: false, cookieLiveOk: false,
+    proxyEnabled: false, proxyAddr: '',
+  };
+  const [overrides, setOverrides] = useState({
+    a1: { enabled: true, rateLimit: '300', dmPerLive: '5', dmInterval: '45', cookieWww: 'sessionid=...cR2Kf9; ttwid=...93nA', cookieLive: 'sessionid=...q7DmZ; odin_tt=...22bF', cookieWwwOk: true, cookieLiveOk: true },
+    a2: { enabled: true, dmPerLive: '2', cookieWww: 'sessionid=...xK9mP2; ttwid=...7jQw', cookieLive: 'sessionid=...rT4nB; odin_tt=...5cDe', cookieWwwOk: true, cookieLiveOk: true },
+    a3: { enabled: false },
+    a4: { enabled: true, cookieWww: 'sessionid=...hL3vR8; ttwid=...2kNm', cookieLive: 'sessionid=...wP6qS; odin_tt=...9fGh', cookieWwwOk: true, cookieLiveOk: true },
+    a5: { enabled: false },
+  });
+  const getVal = (acctId, key) => { const ov = overrides[acctId]; if (ov?.enabled && ov[key] !== undefined) return ov[key]; return DEFAULTS[key]; };
+  const setOverride = (acctId, key, val) => { setOverrides(o => ({ ...o, [acctId]: { ...o[acctId], [key]: val } })); };
+  const toggleOverride = (acctId) => { setOverrides(o => ({ ...o, [acctId]: { ...o[acctId], enabled: !o[acctId]?.enabled } })); };
+
+  return (
+    <div>
+      <div className="section-head">
+        <div>
+          <h2>设置</h2>
+          <div className="desc">默认配置适用于全部账号，可为单个账号开启独立配置覆盖默认值</div>
+        </div>
+        <span className="demo-tag">示例数据</span>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent)' }}>&#9679;</span>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>默认配置</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>所有账号共用，未独立配置的账号自动使用此处参数</span>
+      </div>
+
+      <div className="grid cols-3" style={{ marginBottom: 14 }}>
+        <div className="card">
+          <h3>采集参数</h3>
+          <div className="form">
+            <div className="field"><label>请求频率限制（ms）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={DEFAULTS.rateLimit} readOnly /><span className="hint">两次请求之间的最小间隔</span></div>
+            <div className="field"><label>搜索结果上限</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={DEFAULTS.searchCap} readOnly /></div>
+            <div className="field"><label>导出格式</label><div className="seg" style={{ width: '100%' }}>{['xlsx', 'csv', 'json'].map(f => <button key={f} className={DEFAULTS.exportFmt === f ? 'active' : ''} style={{ flex: 1 }}>{f.toUpperCase()}</button>)}</div></div>
+          </div>
+        </div>
+        <div className="card">
+          <h3>直播监听策略</h3>
+          <div className="form">
+            <div className="field"><label>每场私信上限</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={DEFAULTS.dmPerLive} readOnly /></div>
+            <div className="field"><label>私信间隔（秒）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={DEFAULTS.dmInterval} readOnly /></div>
+            <div className="field"><label>点赞间隔（秒）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={DEFAULTS.likeInterval} readOnly /></div>
+          </div>
+        </div>
+        <div className="card">
+          <h3>私信同步</h3>
+          <div className="form">
+            <div className="field"><label>断线重连（秒）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={DEFAULTS.wsReconnect} readOnly /></div>
+            <div className="field"><label>单次同步上限</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={DEFAULTS.syncLimit} readOnly /></div>
+            <div className="field-row"><label style={{ flex: 1 }}>接收图片/视频</label><span className="switch"><input type="checkbox" checked={DEFAULTS.recvMedia} readOnly /><i /></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid cols-2" style={{ marginBottom: 14 }}>
+        <div className="card">
+          <h3>任务管理</h3>
+          <div className="form" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
+            <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><label style={{ whiteSpace: 'nowrap' }}>最大并发</label><input className="input" style={{ width: 60, fontFamily: 'var(--font-mono)' }} value={DEFAULTS.maxTasks} readOnly /></div>
+            <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><label style={{ whiteSpace: 'nowrap' }}>重试次数</label><input className="input" style={{ width: 60, fontFamily: 'var(--font-mono)' }} value={DEFAULTS.retry} readOnly /></div>
+            <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><label style={{ whiteSpace: 'nowrap' }}>超时（秒）</label><input className="input" style={{ width: 60, fontFamily: 'var(--font-mono)' }} value={DEFAULTS.timeout} readOnly /></div>
+          </div>
+        </div>
+        <div className="card">
+          <h3>输出与日志</h3>
+          <div className="form" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
+            <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}><label style={{ whiteSpace: 'nowrap' }}>输出目录</label><input className="input mono" style={{ flex: 1 }} value={DEFAULTS.outDir} readOnly /><button className="btn sm ghost" data-od-id="settings-pick-path" onClick={() => push('已选择输出目录 · ' + DEFAULTS.outDir)}>选择路径</button></div>
+            <div className="field-row"><label>自动导出</label><span className="switch"><input type="checkbox" checked={DEFAULTS.autoExport} readOnly /><i /></span></div>
+            <div className="field-row"><label>日志写文件</label><span className="switch"><input type="checkbox" checked={DEFAULTS.logFile} readOnly /><i /></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 20, marginBottom: 10 }}>
+        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--warn)' }}>&#9679;</span>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>独立配置</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>开启后该账号使用独立参数，未填写的字段仍使用默认值</span>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {ACCOUNTS_INIT.map(a => {
+          const ov = overrides[a.id] || { enabled: false };
+          const isExpanded = expandedAcct === a.id;
+          const overriddenCount = ov.enabled ? Object.keys(ov).filter(k => k !== 'enabled' && ov[k] !== undefined && ov[k] !== DEFAULTS[k]).length : 0;
+          return (
+            <div className="card" key={a.id} style={{ padding: 0, overflow: 'hidden', borderLeft: ov.enabled ? '3px solid var(--warn)' : undefined }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', cursor: 'pointer' }} onClick={() => setExpandedAcct(isExpanded ? null : a.id)}>
+                <Avatar name={a.name} h={a.hue} sm />
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{a.name}</span>
+                <span className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>{a.uid}</span>
+                <div style={{ flex: 1 }} />
+                {ov.enabled && overriddenCount > 0 && <Pill c="warn">{overriddenCount} 项已覆盖</Pill>}
+                {ov.enabled && overriddenCount === 0 && <Pill c="mute">已启用 · 无覆盖</Pill>}
+                {!ov.enabled && <Pill c="mute">使用默认</Pill>}
+                <span className="switch" onClick={e => e.stopPropagation()}>
+                  <input type="checkbox" checked={ov.enabled} onChange={() => toggleOverride(a.id)} aria-label={'启用 ' + a.name + ' 独立配置'} /><i />
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted)', transition: 'transform .15s', transform: isExpanded ? 'rotate(90deg)' : '' }}>&#9656;</span>
+              </div>
+
+              {isExpanded && ov.enabled && (
+                <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+                  <div className="grid cols-3" style={{ gap: 10 }}>
+                    <div className="card" style={{ padding: 10 }}>
+                      <h4 style={{ fontSize: 12, marginBottom: 8 }}>Cookie</h4>
+                      <div className="field" style={{ marginBottom: 6 }}><label style={{ fontSize: 11 }}>www.douyin.com</label><input className="input mono" style={{ fontSize: 11 }} placeholder={'默认: ' + (DEFAULTS.cookieWww || '未配置')} value={ov.cookieWww || ''} onChange={e => setOverride(a.id, 'cookieWww', e.target.value)} /></div>
+                      <div className="field" style={{ marginBottom: 0 }}><label style={{ fontSize: 11 }}>live.douyin.com</label><input className="input mono" style={{ fontSize: 11 }} placeholder={'默认: ' + (DEFAULTS.cookieLive || '未配置')} value={ov.cookieLive || ''} onChange={e => setOverride(a.id, 'cookieLive', e.target.value)} /></div>
+                    </div>
+                    <div className="card" style={{ padding: 10 }}>
+                      <h4 style={{ fontSize: 12, marginBottom: 8 }}>直播策略</h4>
+                      <div className="field" style={{ marginBottom: 6 }}><label style={{ fontSize: 11 }}>私信上限</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 11 }} placeholder={'默认: ' + DEFAULTS.dmPerLive} value={ov.dmPerLive || ''} onChange={e => setOverride(a.id, 'dmPerLive', e.target.value)} /></div>
+                      <div className="field" style={{ marginBottom: 6 }}><label style={{ fontSize: 11 }}>私信间隔（秒）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 11 }} placeholder={'默认: ' + DEFAULTS.dmInterval} value={ov.dmInterval || ''} onChange={e => setOverride(a.id, 'dmInterval', e.target.value)} /></div>
+                      <div className="field" style={{ marginBottom: 0 }}><label style={{ fontSize: 11 }}>请求频率（ms）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 11 }} placeholder={'默认: ' + DEFAULTS.rateLimit} value={ov.rateLimit || ''} onChange={e => setOverride(a.id, 'rateLimit', e.target.value)} /></div>
+                    </div>
+                    <div className="card" style={{ padding: 10 }}>
+                      <h4 style={{ fontSize: 12, marginBottom: 8 }}>状态总览</h4>
+                      <div style={{ fontSize: 12, display: 'grid', gridTemplateColumns: '70px 1fr', gap: '4px 8px' }}>
+                        <span style={{ color: 'var(--muted)' }}>凭证</span><Pill c={a.tokenValid ? 'ok' : 'danger'}>{a.tokenValid ? '有效' : '过期'}</Pill>
+                        <span style={{ color: 'var(--muted)' }}>指纹浏览器</span><span className="mono" style={{ fontSize: 11 }}>{a.fp.name}</span>
+                        <span style={{ color: 'var(--muted)' }}>代理</span><span className="mono" style={{ fontSize: 11 }}>{a.fp.proxy}</span>
+                        <span style={{ color: 'var(--muted)' }}>上次运行</span><span className="mono" style={{ fontSize: 11 }}>{a.lastRun.time}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+        <button className="btn primary" onClick={() => push('全部配置已保存')}>保存全部配置</button>
+        <button className="btn ghost" onClick={() => push('已重置所有独立配置为默认值')}>重置全部为默认</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 账号管理 ---------- */
+const ACCOUNTS_INIT = [
+  {
+    id: 'a1', name: '阿澈探店', uid: 'UC_20481673', hue: 20,
+    tokenValid: true, tokenExpire: '2026-09-15', lastCheck: '10:18:04',
+    lastRun: { room: '夜风音乐 · 原创弹唱专场', roomUrl: 'https://live.douyin.com/7462001', time: '10:14:02', duration: '2h 34min', totalRuns: 127, comments: 1284, dmSent: 42, dmSuccess: 38, dmFail: 4, dmAfterLive: 18 },
+    fp: { name: 'BitBrowser · Profile #3', status: 'running', os: 'Windows 11', ip: '120.78.142.***', resolution: '1920×1080', ua: 'Chrome 126.0.6478.126', proxy: 'SOCKS5 · 127.0.0.1:1080', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
+  },
+  {
+    id: 'a2', name: '芝士不加糖', uid: 'UC_33095421', hue: 300,
+    tokenValid: true, tokenExpire: '2026-08-28', lastCheck: '10:18:04',
+    lastRun: { room: '阿澈探店 · 深夜食堂', roomUrl: 'https://live.douyin.com/8871002', time: '09:52:17', duration: '2h 12min', totalRuns: 89, comments: 876, dmSent: 28, dmSuccess: 25, dmFail: 3, dmAfterLive: 12 },
+    fp: { name: 'BitBrowser · Profile #7', status: 'running', os: 'macOS 15.1', ip: '47.95.112.***', resolution: '1440×900', ua: 'Chrome 125.0.6422.113', proxy: '直连', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
+  },
+  {
+    id: 'a3', name: '大熊健身', uid: 'UC_50178246', hue: 150,
+    tokenValid: false, tokenExpire: '2026-07-30', lastCheck: '10:18:04',
+    lastRun: { room: '—', roomUrl: '', time: '—', duration: '—', totalRuns: 56, comments: 0, dmSent: 0, dmSuccess: 0, dmFail: 0, dmAfterLive: 0 },
+    fp: { name: 'BitBrowser · Profile #12', status: 'stopped', os: 'Windows 10', ip: '223.166.78.***', resolution: '1366×768', ua: 'Chrome 124.0.6367.91', proxy: 'HTTP · 10.0.0.1:8080', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
+  },
+  {
+    id: 'a4', name: '林小满生活', uid: 'UC_61834097', hue: 40,
+    tokenValid: true, tokenExpire: '2026-10-02', lastCheck: '10:18:04',
+    lastRun: { room: '林小满 · 早餐日记', roomUrl: 'https://live.douyin.com/6183409', time: '昨天 08:31', duration: '1h 58min', totalRuns: 203, comments: 2156, dmSent: 67, dmSuccess: 61, dmFail: 6, dmAfterLive: 24 },
+    fp: { name: 'AdsPower · 环境 2', status: 'running', os: 'Windows 11', ip: '36.110.147.***', resolution: '2560×1440', ua: 'Chrome 126.0.6478.126', proxy: 'SOCKS5 · 127.0.0.1:7890', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
+  },
+  {
+    id: 'a5', name: '夜风音乐', uid: 'UC_88452160', hue: 260,
+    tokenValid: false, tokenExpire: '2026-07-12', lastCheck: '10:18:04',
+    lastRun: { room: '夜风音乐 · 原创弹唱专场', roomUrl: 'https://live.douyin.com/8845216', time: '3天前', duration: '1h 45min', totalRuns: 74, comments: 543, dmSent: 18, dmSuccess: 12, dmFail: 6, dmAfterLive: 8 },
+    fp: { name: 'BitBrowser · Profile #3', status: 'running', os: 'Windows 11', ip: '120.78.142.***', resolution: '1920×1080', ua: 'Chrome 126.0.6478.126', proxy: 'SOCKS5 · 127.0.0.1:1080', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
+  },
+];
+function Accounts({ push, goMsg }) {
+  const [accounts, setAccounts] = useState(ACCOUNTS_INIT);
+  const [reviewAccount, setReviewAccount] = useState(null);
+  const [proxyAcct, setProxyAcct] = useState(null);
+  const [proxyForm, setProxyForm] = useState({ type: 'socks5', host: '127.0.0.1', port: '1080', user: '', pass: '', testUrl: '' });
+  const [proxyTesting, setProxyTesting] = useState(false);
+  const [proxyTestResult, setProxyTestResult] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addForm, setAddForm] = useState({ name: '', uid: '', cookie: '' });
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchSel, setBatchSel] = useState(() => new Set());
+  const validCnt = accounts.filter(a => a.tokenValid).length;
+  const totalComments = accounts.reduce((s, a) => s + a.lastRun.comments, 0);
+  const totalDm = accounts.reduce((s, a) => s + a.lastRun.dmSent, 0);
+  const totalFail = accounts.reduce((s, a) => s + a.lastRun.dmFail, 0);
+  const fpRunning = accounts.filter(a => a.fp.status === 'running').length;
+  const fpSet = useMemo(() => {
+    const map = new Map();
+    accounts.forEach(a => { if (!map.has(a.fp.name)) map.set(a.fp.name, a.fp); });
+    return Array.from(map.values());
+  }, [accounts]);
+
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') { if (proxyAcct) setProxyAcct(null); else if (reviewAccount) setReviewAccount(null); else if (addOpen) setAddOpen(false); } };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [proxyAcct, reviewAccount, addOpen]);
+
+  const checkAll = () => {
+    setAccounts(accounts.map(a => ({ ...a, lastCheck: tick() })));
+    push('已对全部 ' + accounts.length + ' 个账号执行凭证校验');
+  };
+  const toggleValid = (id) => {
+    setAccounts(accounts.map(a => a.id === id ? { ...a, tokenValid: !a.tokenValid } : a));
+  };
+  const toggleBatch = (id) => {
+    setBatchSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  };
+  const batchAll = () => {
+    if (batchSel.size === accounts.length) setBatchSel(new Set());
+    else setBatchSel(new Set(accounts.map(a => a.id)));
+  };
+  const batchCheck = () => {
+    if (!batchSel.size) { push('请先勾选账号'); return; }
+    setAccounts(accounts.map(a => batchSel.has(a.id) ? { ...a, lastCheck: tick() } : a));
+    push('已对 ' + batchSel.size + ' 个所选账号执行凭证校验');
+  };
+  const batchExport = () => {
+    if (!batchSel.size) { push('请先勾选账号'); return; }
+    push('已导出 ' + batchSel.size + ' 个账号的运行数据');
+  };
+  const batchDelete = () => {
+    if (!batchSel.size) { push('请先勾选账号'); return; }
+    setAccounts(accounts.filter(a => !batchSel.has(a.id)));
+    push('已删除 ' + batchSel.size + ' 个账号');
+    setBatchSel(new Set());
+    setBatchMode(false);
+  };
+  const addAccount = () => {
+    const name = addForm.name.trim();
+    const uid = addForm.uid.trim();
+    if (!name || !uid) { push('请填写昵称与 UID'); return; }
+    const nu = {
+      id: 'a' + Date.now(),
+      name, uid,
+      hue: [340, 100, 200, 60, 160][Math.floor(Math.random() * 5)],
+      tokenValid: true, tokenExpire: '2027-01-01', lastCheck: '刚刚',
+      lastRun: { room: '—', roomUrl: '', time: '—', duration: '—', totalRuns: 0, comments: 0, dmSent: 0, dmSuccess: 0, dmFail: 0, dmAfterLive: 0 },
+      fp: { name: 'BitBrowser · Profile 新增', status: 'stopped', os: 'Windows 11', ip: '—', resolution: '1920×1080', ua: 'Chrome 126.0.6478.126', proxy: '直连', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
+    };
+    setAccounts(list => [nu, ...list]);
+    setAddOpen(false);
+    setAddForm({ name: '', uid: '', cookie: '' });
+    push('已新增账号 ' + name);
+  };
+
+  return (
+    <div>
+      <div className="section-head">
+        <div>
+          <h2>账号管理</h2>
+          <div className="desc">授权账号凭证监控 · 运行日志 · 指纹浏览器环境</div>
+        </div>
+        <div className="head-row">
+          <button className="btn ghost" data-od-id="acct-add" onClick={() => setAddOpen(true)}>新增账号</button>
+          <button className="btn ghost" data-od-id="acct-batch" onClick={() => { setBatchMode(b => !b); setBatchSel(new Set()); }}>{batchMode ? '退出批量' : '批量管理'}</button>
+          <button className="btn ghost" onClick={checkAll}>全部校验</button>
+          <button className="btn primary" onClick={() => push('已刷新所有账号状态')}>刷新状态</button>
+          <span className="demo-tag">示例数据</span>
+        </div>
+      </div>
+
+      <div className="acct-summary">
+        <div className="card stat" data-od-id="acct-total">
+          <span className="label">已授权账号</span>
+          <span className="num">{accounts.length}<span className="unit">个</span></span>
+        </div>
+        <div className="card stat" data-od-id="acct-valid">
+          <span className="label">有效凭证</span>
+          <span className="num" style={{ color: 'var(--ok)' }}>{validCnt}<span className="unit">个</span></span>
+        </div>
+        <div className="card stat" data-od-id="acct-expired">
+          <span className="label">过期 / 异常</span>
+          <span className="num" style={{ color: 'var(--danger)' }}>{accounts.length - validCnt}<span className="unit">个</span></span>
+        </div>
+        <div className="card stat" data-od-id="acct-fp">
+          <span className="label">指纹浏览器在线</span>
+          <span className="num" style={{ color: 'var(--accent)' }}>{fpRunning}<span className="unit">/ {fpSet.length}</span></span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }} data-od-id="account-list">
+        {batchMode && (
+          <div className="batch-bar" data-od-id="acct-batch-bar">
+            <button className="btn sm ghost" onClick={batchAll}>{batchSel.size === accounts.length ? '取消全选' : '全选'}</button>
+            <span className="batch-count">已选 <b style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>{batchSel.size}</b> / {accounts.length} 个账号</span>
+            <div style={{ flex: 1 }} />
+            <button className="btn sm ghost" onClick={batchCheck}>批量校验</button>
+            <button className="btn sm ghost" onClick={batchExport}>批量导出</button>
+            <button className="btn sm ghost" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }} onClick={batchDelete}>删除所选</button>
+          </div>
+        )}
+        {accounts.map(a => (
+          <div className="card acct-card" key={a.id} data-od-id={'acct-' + a.id}>
+            <div className="acct-header">
+              {batchMode && <input type="checkbox" className="batch-chk" checked={batchSel.has(a.id)} onChange={() => toggleBatch(a.id)} aria-label={'选择 ' + a.name} />}
+              <Avatar name={a.name} h={a.hue} lg />
+              <div className="info">
+                <div className="nm">
+                  {a.name}
+                  <Pill c={a.tokenValid ? 'ok' : 'danger'}>{a.tokenValid ? '凭证有效' : '凭证过期'}</Pill>
+                </div>
+                <div className="uid">UID {a.uid} · 上次校验 {a.lastCheck}</div>
+              </div>
+              <div className="ops">
+                <button className="btn sm ghost" onClick={() => toggleValid(a.id)}>{a.tokenValid ? '模拟过期' : '模拟刷新'}</button>
+                <button className="btn sm ghost" onClick={() => setReviewAccount(a)}>查阅模式</button>
+              </div>
+            </div>
+            <div className="acct-body">
+              <div className="acct-section">
+                <h4>上次运行日志</h4>
+                <div className="acct-row"><span className="k">直播间</span><span className="v" style={{ display: 'flex', alignItems: 'center', gap: 6, color: a.lastRun.room === '—' ? 'var(--muted)' : 'var(--fg)' }}>{a.lastRun.room}{a.lastRun.roomUrl && <a href={a.lastRun.roomUrl} target="_blank" rel="noopener noreferrer" className="btn sm ghost" style={{ height: 24, padding: '0 8px', fontSize: 11, lineHeight: 1 }} onClick={() => push('已打开直播间：' + a.lastRun.room)}>前往直播间</a>}</span></div>
+                <div className="acct-row"><span className="k">运行时间</span><span className="v">{a.lastRun.time}</span></div>
+                <div className="acct-row"><span className="k">运行时长</span><span className="v">{a.lastRun.duration}</span></div>
+                <div className="acct-row"><span className="k">累计运行</span><span className="v">{a.lastRun.totalRuns} 次</span></div>
+                <div className="acct-log-grid" style={{ marginTop: 8 }}>
+                  <div className="acct-log-cell">
+                    <div className="lc-label">捕获评论</div>
+                    <div className="lc-val">{a.lastRun.comments.toLocaleString()}</div>
+                  </div>
+                  <div className="acct-log-cell">
+                    <div className="lc-label">发送私信</div>
+                    <div className="lc-val" style={{ color: 'var(--accent)' }}>{a.lastRun.dmSent}</div>
+                  </div>
+                  <div className="acct-log-cell">
+                    <div className="lc-label">下播私信</div>
+                    <div className="lc-val" style={{ color: 'var(--warn)' }}>{a.lastRun.dmAfterLive}</div>
+                  </div>
+                  <div className="acct-log-cell">
+                    <div className="lc-label">成功</div>
+                    <div className="lc-val" style={{ color: 'var(--ok)' }}>{a.lastRun.dmSuccess}</div>
+                  </div>
+                  <div className="acct-log-cell">
+                    <div className="lc-label">失败</div>
+                    <div className="lc-val" style={{ color: 'var(--danger)' }}>{a.lastRun.dmFail}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="acct-section">
+                <h4>关联指纹浏览器</h4>
+                <div className="fp-card">
+                  <div className="fp-header">
+                    <Dot c={a.fp.status === 'running' ? 'ok' : 'warn'} pulse={a.fp.status === 'running'} />
+                    <span className="nm">{a.fp.name}</span>
+                    <Pill c={a.fp.status === 'running' ? 'ok' : 'warn'}>{a.fp.status === 'running' ? '运行中' : '已停止'}</Pill>
+                    <div style={{ flex: 1 }} />
+                    <button className="btn sm ghost" onClick={() => { setProxyAcct(a); setProxyForm({ type: a.fp.proxy.includes('SOCKS') ? 'socks5' : a.fp.proxy.includes('HTTP') ? 'http' : 'direct', host: a.fp.proxy.includes('·') ? a.fp.proxy.split('·')[1]?.split(':')[0] || '' : '', port: a.fp.proxy.includes('·') ? a.fp.proxy.split('·')[1]?.split(':')[1] || '' : '', user: '', pass: '', testUrl: '' }); setProxyTestResult(null); push('已打开代理配置 · ' + a.name); }}>代理配置</button>
+                  </div>
+                  <dl className="fp-env">
+                    <dt>系统</dt><dd>{a.fp.os}</dd>
+                    <dt>代理</dt><dd style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>{a.fp.proxy}</dd>
+                    <dt>分辨率</dt><dd>{a.fp.resolution}</dd>
+                    <dt>UA</dt><dd style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{a.fp.ua}</dd>
+                    <dt>WebRTC</dt><dd>{a.fp.webrtc}</dd>
+                    <dt>时区</dt><dd>{a.fp.timezone}</dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <AnimatePresence>
+        {reviewAccount && <AccountReview account={reviewAccount} onClose={() => setReviewAccount(null)} push={push} goMsg={goMsg} />}
+        {proxyAcct && (
+          <ProxyDrawer
+            account={proxyAcct}
+            form={proxyForm}
+            setForm={setProxyForm}
+            testing={proxyTesting}
+            testResult={proxyTestResult}
+            onTest={() => {
+              setProxyTesting(true);
+              setTimeout(() => {
+                const ok = Math.random() > 0.3;
+                setProxyTestResult({
+                  ok,
+                  msg: ok
+                    ? `连接成功 · ${proxyForm.type}://${proxyForm.host}${proxyForm.port ? ':' + proxyForm.port : ''} → ${(Math.random() * 200 + 50).toFixed(0)}ms`
+                    : `连接超时 · 请检查代理地址和端口是否正确`
+                });
+                setProxyTesting(false);
+                push(ok ? '代理连接测试成功' : '代理连接测试失败');
+              }, 1500);
+            }}
+            onSave={() => {
+              setAccounts(accts => accts.map(a => a.id === proxyAcct.id ? { ...a, fp: { ...a.fp, proxy: proxyForm.type === 'direct' ? '直连' : proxyForm.type.toUpperCase() + ' · ' + proxyForm.host + ':' + proxyForm.port } } : a));
+              push('代理配置已保存 · ' + proxyAcct.name);
+              setProxyAcct(null);
+            }}
+            onClose={() => setProxyAcct(null)}
+          />
+        )}
+        {addOpen && (
+          <AccountDrawer
+            form={addForm}
+            setForm={setAddForm}
+            onSave={addAccount}
+            onClose={() => setAddOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/* ---------- 账号查阅模式 ---------- */
+const REVIEW_ROWS_INIT = [
+  ['10:18:22', '苏苏酱', 33, '声音太好听了', 'sent', '你好，我是内容运营，看了你今天的直播想聊聊合作', '10:18:30'],
+  ['10:18:05', '老白', 40, '666666', 'un', '', ''],
+  ['10:17:52', '夜风', 16, '求歌单', 'sent', '您好，这边在整理美食类达人库，方便加个微信吗', '10:18:01'],
+  ['10:17:31', '桃子气泡', 14, '来了来了 蹲一个', 'wait', '在吗？看到你在评论区提到探店，想深入聊聊', ''],
+  ['10:17:09', '一颗柠檬', 9, '第一次来 好有意思', 'sent', '你好，想邀请你参加本周五的美食专题活动', '10:17:18'],
+  ['10:16:44', '大熊_', 5, '礼物走一波', 'fail', '你好，想邀请你参加本周五的美食专题活动', '10:16:52'],
+  ['10:16:18', '林小满', 12, '主播加油', 'un', '', ''],
+  ['10:15:55', '云深处', 27, '讲的太详细了', 'sent', '你好，欢迎留言咨询唐律师工伤，留个方式', '10:16:04'],
+  ['10:15:30', '芝士不加糖', 21, '这个选题爱了', 'un', '', ''],
+  ['10:15:02', '阿澈', 8, '已关注 铁粉报到', 'sent', '唐律还在直播，我是助理，可以留个联系方式', '10:15:13'],
+  ['10:14:44', '苏苏酱', 33, '在哪下载', 'wait', '', ''],
+  ['10:14:20', '老白', 40, '前面说的对', 'sent', '老乡 看到你在唐律师直播间咨询工伤问题', '10:14:31'],
+  ['10:13:55', '夜风', 16, '哈哈哈哈笑死', 'un', '', ''],
+  ['10:13:30', '桃子气泡', 14, '带带我 大佬', 'sent', '你好，我是内容运营，看了你今天的直播想聊聊合作', '10:13:42'],
+  ['10:13:02', '一颗柠檬', 9, '这歌叫什么名字', 'un', '', ''],
+];
+function AccountReview({ account, onClose, push, goMsg }) {
+  const [q, setQ] = useState('');
+  const [st, setSt] = useState('all');
+  const [asc, setAsc] = useState(false);
+  const [exp, setExp] = useState(null);
+  const [dmFilter, setDmFilter] = useState('all');
+
+  const rows = useMemo(() => {
+    const base = REVIEW_ROWS_INIT;
+    const min = Date.now() - base.length * 38000;
+    return base.map((r, i) => ({
+      id: i, time: r[0], name: r[1], lv: r[2], content: r[3],
+      dmStatus: r[4], dmText: r[5], dmTime: r[6], ts: min + i * 38000,
+    }));
+  }, []);
+
+  const filtered = useMemo(() => {
+    let list = rows.slice();
+    if (st !== 'all') list = list.filter(r => r.dmStatus === st);
+    if (q.trim()) { const kw = q.trim(); list = list.filter(r => (r.name + r.content + r.dmText).includes(kw)); }
+    list.sort((a, b) => asc ? a.ts - b.ts : b.ts - a.ts);
+    return list;
+  }, [rows, q, st, asc]);
+
+  const cnt = s => rows.filter(r => r.dmStatus === s).length;
+  const DM_META = { un: ['未私信', 'mute'], wait: ['待发送', 'warn'], sent: ['已发送', 'ok'], fail: ['发送失败', 'danger'] };
+
+  const exportCSV = () => {
+    const head = ['发送时间', '发言人', '用户等级', '评论内容', '私信状态', '私信文案', '私信时间'];
+    const body = filtered.map(r => [r.time, r.name, r.lv, r.content, DM_META[r.dmStatus][0], r.dmText || '', r.dmTime || '']);
+    const csv = [head, ...body].map(l => l.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjecturl(/api/projects/4d03cd9d-4edf-4ace-9592-eb7aa97e298e/raw/blob?workspaceId=xl31pfpy01561g39my0yf7rx&workspaceMemberId=fwqc99owe2nyh67ddu1fycy9);
+    a.download = account.name + '_review_' + tick().replace(/:/g, '') + '.csv';
+    a.click();
+    URL.revokeObjecturl(/api/projects/4d03cd9d-4edf-4ace-9592-eb7aa97e298e/raw/a.href?workspaceId=xl31pfpy01561g39my0yf7rx&workspaceMemberId=fwqc99owe2nyh67ddu1fycy9);
+    push('已导出 CSV · ' + a.download);
+  };
+
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  const a = account;
+  const r = a.lastRun;
+  return (
+    <motion.div className="overlay" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .18 }} data-od-id="acct-review">
+      <header className="nav">
+        <div className="brand">
+          <span className="mark" aria-hidden="true" />
+          <h1>抖音数据控制台</h1>
+          <span className="sub">Douyin Console</span>
+        </div>
+        <nav className="tabs" aria-label="主导航">
+          {TABS.map(([id, label]) => (
+            <button key={id} data-od-id={'review-tab-' + id} className={'tab' + (id === 'accounts' ? ' active' : '')} onClick={() => { if (id !== 'accounts') { onClose(); setTimeout(() => { document.querySelector('[data-od-id="tab-' + id + '"]')?.click(); }, 50); } }}>{label}</button>
+          ))}
+        </nav>
+        <div className="nav-status">
+          <span className="badge-conn"><Dot c="ok" pulse /> Cookie <b>有效</b></span>
+          <span className="badge-conn"><Dot c="ok" pulse /> 直播 <b>已连接</b></span>
+          <span className="demo-tag">查阅模式</span>
+        </div>
+      </header>
+      <div className="overlay-head" style={{ background: 'var(--surface)' }}>
+        <button className="btn ghost" onClick={onClose}>‹ 返回账号管理</button>
+        <Avatar name={a.name} h={a.hue} sm />
+        <h2>{a.name} · 查阅模式</h2>
+        <Pill c={a.tokenValid ? 'ok' : 'danger'}>{a.tokenValid ? '凭证有效' : '凭证过期'}</Pill>
+        <div style={{ flex: 1 }} />
+        <span className="demo-tag">只读 · {a.uid}</span>
+      </div>
+      <div className="overlay-body">
+        <div className="review-stats-row" data-od-id="review-stats">
+          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
+            <span className="label">捕获评论</span>
+            <span className="num">{r.comments.toLocaleString()}<span className="unit">条</span></span>
+          </div>
+          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
+            <span className="label">发送私信</span>
+            <span className="num" style={{ color: 'var(--accent)' }}>{r.dmSent}<span className="unit">条</span></span>
+          </div>
+          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
+            <span className="label">下播私信</span>
+            <span className="num" style={{ color: 'var(--warn)' }}>{r.dmAfterLive}<span className="unit">条</span></span>
+          </div>
+          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
+            <span className="label">成功</span>
+            <span className="num" style={{ color: 'var(--ok)' }}>{r.dmSuccess}</span>
+          </div>
+          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
+            <span className="label">失败</span>
+            <span className="num" style={{ color: 'var(--danger)' }}>{r.dmFail}</span>
+          </div>
+          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
+            <span className="label">成功率</span>
+            <span className="num" style={{ color: r.dmSent > 0 && r.dmSuccess / r.dmSent > 0.9 ? 'var(--ok)' : 'var(--warn)' }}>{r.dmSent > 0 ? Math.round(r.dmSuccess / r.dmSent * 100) : 0}<span className="unit">%</span></span>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 14, alignItems: 'start' }} data-od-id="review-content">
+          <div>
+            <div className="table-tools">
+              <input className="input" placeholder="搜索昵称 / 评论内容 / 私信文案…" value={q} onChange={e => setQ(e.target.value)} />
+              <select className="select" value={st} onChange={e => setSt(e.target.value)} aria-label="私信状态筛选">
+                <option value="all">全部状态</option>
+                <option value="un">未私信</option><option value="wait">待发送</option>
+                <option value="sent">已发送</option><option value="fail">发送失败</option>
+              </select>
+              <button className="btn ghost" onClick={() => setAsc(s => !s)}>{asc ? '时间 ↑' : '时间 ↓'}</button>
+              <button className="btn ghost" onClick={() => { setSt('all'); setQ(''); }}>重置</button>
+              <button className="btn primary" onClick={exportCSV}>导出 CSV</button>
+            </div>
+            <div className="count-line">共 <b>{filtered.length}</b> 条 · <span className="filter-pills" style={{ display: 'inline-flex', marginLeft: 10, verticalAlign: 'middle' }}>
+              {[['all', '全部', rows.length], ['un', '未私信', cnt('un')], ['wait', '待发送', cnt('wait')], ['sent', '已发送', cnt('sent')], ['fail', '发送失败', cnt('fail')]].map(([id, l, c]) => (
+                <button key={id} className={'fpill' + (st === id ? ' active' : '')} onClick={() => setSt(id)}>{l}<span className="c">{c}</span></button>
+              ))}
+            </span></div>
+            <div className="card" style={{ padding: 0 }}>
+              <div className="table-scroll">
+                <table className="comment-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 30 }} />
+                      <th>发送时间</th><th>发言人</th><th>评论内容</th><th>私信状态</th><th>私信文案</th><th>私信时间</th><th style={{ width: 120 }}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(r => (
+                      <React.Fragment key={r.id}>
+                        <tr>
+                          <td><span className="mono" style={{ color: 'var(--muted)' }}>{exp === r.id ? '▾' : '▸'}</span></td>
+                          <td className="mono">{r.time}</td>
+                          <td>
+                            <span className="speaker">
+                              <Avatar name={r.name} h={hue(r.name.length)} sm />
+                              <span className="nm">{r.name}</span>
+                              {r.lv < 99 && <span className="lv">Lv.{r.lv}</span>}
+                            </span>
+                          </td>
+                          <td className="content-cell"><span className="cmt-text">{r.content}</span></td>
+                          <td>{r.dmStatus === 'un' ? <span className="blank">—</span> : <Pill c={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Pill>}</td>
+                          <td className="dm-cell"><span className={'dm-text' + (r.dmText ? ' has' : '')}>{r.dmText || <span className="blank">未发送</span>}</span></td>
+                          <td className="mono">{r.dmTime || <span className="blank">—</span>}</td>
+                          <td>
+                            <div className="head-row" style={{ gap: 4 }}>
+                              <button className="btn text sm" onClick={() => setExp(exp === r.id ? null : r.id)}>详情</button>
+                               <button className="btn text sm" onClick={() => { goMsg(r.name, r.text); push('已跳转私信中心 · ' + r.name); }}>发私信</button>
+                            </div>
+                          </td>
+                        </tr>
+                        {exp === r.id && (
+                          <tr key={r.id + '-d'}>
+                            <td colSpan="8" style={{ padding: '6px 10px 14px', background: 'var(--surface-2)' }}>
+                              <div className="detail-panel">
+                                <h4>评论历史 · {r.name}</h4>
+                                <div className="history-list">
+                                  {rows.filter(x => x.name === r.name).slice(0, 5).map((x, i) => (
+                                    <div className="history-item" key={i}><span className="tm">{x.time}</span><span>{x.content}</span></div>
+                                  ))}
+                                </div>
+                                <h4>私信内容</h4>
+                                <div style={{ fontSize: 13 }}>
+                                  {r.dmStatus === 'un' ? <span className="blank">尚未对该发言人发送私信</span> :
+                                    <span><Pill c={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Pill>　{r.dmText || '（文案未填写）'}{r.dmTime ? '　·　' + r.dmTime : ''}</span>}
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="card">
+              <h3>运行信息</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                <div className="acct-row"><span className="k">直播间</span><span className="v" style={{ color: 'var(--accent)' }}>{r.room}</span></div>
+                <div className="acct-row"><span className="k">运行时间</span><span className="v">{r.time}</span></div>
+                <div className="acct-row"><span className="k">运行时长</span><span className="v">{r.duration}</span></div>
+                <div className="acct-row"><span className="k">累计运行</span><span className="v">{r.totalRuns} 次</span></div>
+              </div>
+            </div>
+            <div className="card">
+              <h3>指纹浏览器</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                <div className="fp-header" style={{ marginBottom: 4 }}>
+                  <Dot c={a.fp.status === 'running' ? 'ok' : 'warn'} pulse={a.fp.status === 'running'} />
+                  <span className="nm">{a.fp.name}</span>
+                  <Pill c={a.fp.status === 'running' ? 'ok' : 'warn'}>{a.fp.status === 'running' ? '运行中' : '已停止'}</Pill>
+                </div>
+                <dl className="fp-env">
+                  <dt>系统</dt><dd>{a.fp.os}</dd>
+                  <dt>代理</dt><dd style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{a.fp.proxy}</dd>
+                  <dt>分辨率</dt><dd>{a.fp.resolution}</dd>
+                  <dt>UA</dt><dd style={{ fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.fp.ua}</dd>
+                  <dt>WebRTC</dt><dd>{a.fp.webrtc}</dd>
+                  <dt>时区</dt><dd>{a.fp.timezone}</dd>
+                </dl>
+              </div>
+            </div>
+            <div className="card">
+              <h3>操作</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <button className="btn primary" style={{ width: '100%' }} onClick={() => push('已对全部未私信用户批量发送私信')}>批量发送私信</button>
+                <button className="btn ghost" style={{ width: '100%' }} onClick={exportCSV}>导出全部数据</button>
+                <button className="btn ghost" style={{ width: '100%' }} onClick={() => push('已跳转私信中心 · ' + a.name)}>进入私信中心</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ---------- 代理配置抽屉 ---------- */
+function ProxyDrawer({ account, form, setForm, testing, testResult, onTest, onSave, onClose }) {
+  if (!account) return null;
+  const a = account;
+  const proxyTypes = [
+    { id: 'socks5', label: 'SOCKS5', desc: '推荐 · 支持UDP/TCP' },
+    { id: 'http', label: 'HTTP', desc: '兼容性好' },
+    { id: 'https', label: 'HTTPS', desc: '加密传输' },
+    { id: 'direct', label: '直连', desc: '不使用代理' },
+  ];
+  return (
+    <>
+      <motion.div className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
+      <motion.div className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id="proxy-drawer">
+        <div className="drawer-head">
+          <Avatar name={a.name} h={a.hue} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>代理配置 · {a.name}</div>
+            <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID: {a.uid} · {a.fp.name}</div>
+          </div>
+          <Pill c={a.fp.status === 'running' ? 'ok' : 'warn'}>{a.fp.status === 'running' ? '运行中' : '已停止'}</Pill>
+          <button className="btn ghost" onClick={onClose} style={{ fontSize: 18, padding: '4px 8px', lineHeight: 1 }}>×</button>
+        </div>
+        <div className="drawer-body">
+          <div className="card" style={{ marginBottom: 14 }}>
+            <h3>代理类型</h3>
+            <div className="grid cols-4" style={{ gap: 8 }}>
+              {proxyTypes.map(pt => (
+                <button key={pt.id} style={{ padding: '10px 12px', cursor: 'pointer', border: form.type === pt.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 8, background: form.type === pt.id ? 'var(--accent-bg)' : 'var(--surface)', textAlign: 'left' }} onClick={() => setForm(f => ({ ...f, type: pt.id }))}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: form.type === pt.id ? 'var(--accent)' : 'var(--fg)' }}>{pt.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{pt.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {form.type !== 'direct' && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <h3>连接设置</h3>
+              <div className="grid cols-2" style={{ gap: 12 }}>
+                <div className="field">
+                  <label>主机地址</label>
+                  <input className="input mono" placeholder="127.0.0.1" value={form.host} onChange={e => setForm(f => ({ ...f, host: e.target.value }))} />
+                </div>
+                <div className="field">
+                  <label>端口</label>
+                  <input className="input mono" placeholder="1080" value={form.port} onChange={e => setForm(f => ({ ...f, port: e.target.value }))} />
+                </div>
+                <div className="field">
+                  <label>用户名 <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(可选)</span></label>
+                  <input className="input" placeholder="留空则无需认证" value={form.user} onChange={e => setForm(f => ({ ...f, user: e.target.value }))} />
+                </div>
+                <div className="field">
+                  <label>密码 <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(可选)</span></label>
+                  <input className="input" type="password" placeholder="留空则无需认证" value={form.pass} onChange={e => setForm(f => ({ ...f, pass: e.target.value }))} />
+                </div>
+              </div>
+              <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--surface-2)', borderRadius: 8, fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 16 }}>💡</span>
+                <span>完整地址：<b className="mono" style={{ color: 'var(--fg)' }}>{form.type}://{form.host}{form.port ? ':' + form.port : ''}</b></span>
+              </div>
+            </div>
+          )}
+
+          <div className="card" style={{ marginBottom: 14 }}>
+            <h3>连接测试</h3>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <input className="input" style={{ flex: 1 }} placeholder="测试目标 URL（默认 https://www.douyin.com）" value={form.testUrl} onChange={e => setForm(f => ({ ...f, testUrl: e.target.value }))} />
+              <button className="btn primary" disabled={testing || form.type === 'direct'} onClick={onTest}>{testing ? '测试中…' : '测试连接'}</button>
+            </div>
+            {testResult && (
+              <div style={{ padding: '10px 14px', borderRadius: 8, background: testResult.ok ? 'var(--ok-bg)' : 'var(--danger-bg)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <span style={{ fontSize: 16 }}>{testResult.ok ? '✅' : '❌'}</span>
+                <div>
+                  <div style={{ fontWeight: 600, color: testResult.ok ? 'var(--ok)' : 'var(--danger)' }}>{testResult.ok ? '连接成功' : '连接失败'}</div>
+                  <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{testResult.msg}</div>
+                </div>
+              </div>
+            )}
+            {form.type === 'direct' && (
+              <div style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--surface-2)', fontSize: 12, color: 'var(--muted)' }}>
+                直连模式下无需测试，流量将不经代理直接发出
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <h3>当前配置预览</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '6px 10px', fontSize: 12.5 }}>
+              <span style={{ color: 'var(--muted)' }}>代理类型</span>
+              <span className="mono" style={{ fontWeight: 600 }}>{form.type.toUpperCase()}</span>
+              <span style={{ color: 'var(--muted)' }}>地址</span>
+              <span className="mono">{form.type === 'direct' ? '直连' : (form.host + (form.port ? ':' + form.port : ''))}</span>
+              <span style={{ color: 'var(--muted)' }}>认证</span>
+              <span className="mono">{form.user ? form.user + ' / ●●●●' : '无'}</span>
+              <span style={{ color: 'var(--muted)' }}>影响账号</span>
+              <span>{a.name} ({a.uid})</span>
+            </div>
+          </div>
+        </div>
+        <div className="drawer-foot">
+          <button className="btn ghost" onClick={onClose}>取消</button>
+          <button className="btn primary" onClick={onSave}>保存配置</button>
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
+/* ---------- 新增账号抽屉 ---------- */
+function AccountDrawer({ form, setForm, onSave, onClose }) {
+  return (
+    <>
+      <motion.div className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
+      <motion.div className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id="acct-add-drawer">
+        <div className="drawer-head">
+          <Avatar name="+" h={200} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>新增授权账号</div>
+            <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>授权新抖音账号并创建指纹环境</div>
+          </div>
+          <button className="btn ghost" onClick={onClose} style={{ fontSize: 18, padding: '4px 8px', lineHeight: 1 }}>×</button>
+        </div>
+        <div className="drawer-body">
+          <div className="card" style={{ marginBottom: 14 }}>
+            <h3>账号信息</h3>
+            <div className="grid cols-2" style={{ gap: 12 }}>
+              <div className="field">
+                <label>昵称</label>
+                <input className="input" placeholder="如：阿澈探店" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} autoFocus />
+              </div>
+              <div className="field">
+                <label>UID</label>
+                <input className="input mono" placeholder="UC_xxxxxxxx" value={form.uid} onChange={e => setForm(f => ({ ...f, uid: e.target.value }))} />
+              </div>
+            </div>
+            <div className="field" style={{ marginTop: 12 }}>
+              <label>Cookie <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(可选 · 留空则扫码授权)</span></label>
+              <textarea className="input mono" rows={3} placeholder="粘贴 Cookie 字符串，用于免扫码登录" value={form.cookie} onChange={e => setForm(f => ({ ...f, cookie: e.target.value }))} style={{ resize: 'vertical' }} />
+            </div>
+          </div>
+          <div style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--surface-2)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
+            新增账号将自动创建关联指纹浏览器环境（默认「BitBrowser · Profile 新增」，直连代理）。保存后可在账号卡片中配置代理与凭证校验。
+          </div>
+        </div>
+        <div className="drawer-foot">
+          <button className="btn ghost" onClick={onClose}>取消</button>
+          <button className="btn primary" onClick={onSave} disabled={!form.name.trim() || !form.uid.trim()}>确认新增</button>
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
+/* ---------- 应用 ---------- */
+function App() {
+  const [tab, setTabState] = useState(() => {
+    try { return localStorage.getItem('dy:tab') || 'overview'; } catch (_) { return 'overview'; }
+  });
+  const [toasts, setToasts] = useState([]);
+  const [goDm, setGoDm] = useState(null);
+  const setTab = (t) => { setTabState(t); try { localStorage.setItem('dy:tab', t); } catch (_) {} };
+  const push = useCallback((msg) => {
+    const id = ++cid;
+    setToasts(ts => [...ts.slice(-2), { id, msg }]);
+    setTimeout(() => setToasts(ts => ts.filter(x => x.id !== id)), 2600);
+  }, []);
+  const goMsg = useCallback((name, text) => {
+    setGoDm({ name, text: text || '' });
+    setTab('msg');
+  }, []);
+  const T = tab;
+  return (
+    <div className="app">
+      <Header tab={T} setTab={setTab} />
+      <main className="main">
+        <AnimatePresence mode="wait">
+          <motion.div key={T} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: .16 }}>
+            {T === 'overview' && <Overview push={push} />}
+            {T === 'crawl' && <Crawl push={push} goMsg={goMsg} />}
+            {T === 'live' && <Live push={push} goMsg={goMsg} />}
+            {T === 'msg' && <Messages push={push} goDm={goDm} />}
+            {T === 'tasks' && <Tasks push={push} />}
+            {T === 'accounts' && <Accounts push={push} goMsg={goMsg} />}
+            {T === 'settings' && <Settings push={push} />}
+          </motion.div>
+        </AnimatePresence>
+      </main>
+      <div className="toasts">
+        {toasts.map(t => <div className="toast" key={t.id}>{t.msg}</div>)}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

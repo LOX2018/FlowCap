@@ -73,7 +73,42 @@ def enrich_auth(auth, cookies_dy="", headless=False,
         return auth, cookies_dy
 
     cookie_str = "; ".join(f"{k}={v}" for k, v in (auth.cookie or {}).items())
+    # 修复：基座 get_login_auth 不设置 auth.uid，而 create_conversation 依赖
+    # auth.get_uid() 返回数字 uid；get_my_uid 依赖不稳定的 s_v_web_id 字段，
+    # 抓到的 cookie 里往往没有 -> 返回 None -> int(None) 崩。
+    # 这里直接从 cookie 的数字字段提取并固定 auth.uid，彻底绕开该问题。
+    ensure_uid(auth)
     return auth, cookie_str
+
+
+def ensure_uid(auth):
+    """从 cookie 提取并设置 auth.uid（数字 uid），避免 get_my_uid 不稳定导致崩溃。"""
+    if getattr(auth, "uid", None):
+        return auth.uid
+    ck = getattr(auth, "cookie", None) or {}
+    # 优先：uid_tt / sid_tt 是抖音登录态里的数字 uid
+    for key in ("uid_tt", "sid_tt", "uid_tt_ss", "sid_ucp_v1"):
+        val = ck.get(key)
+        if val:
+            try:
+                auth.uid = int(str(val).split(".")[0])
+                logger.info(f"[auth] 从 cookie 字段 {key} 解析到 uid={auth.uid}")
+                return auth.uid
+            except Exception:
+                pass
+    # 兜底：基座 get_my_uid（依赖 s_v_web_id，可能返回 None）
+    try:
+        from dy_apis.douyin_api import DouyinAPI
+        uid = DouyinAPI.get_my_uid(auth)
+        if uid:
+            auth.uid = int(uid)
+            logger.info(f"[auth] 从 get_my_uid 解析到 uid={auth.uid}")
+            return auth.uid
+    except Exception as e:
+        logger.debug(f"[auth] get_my_uid 失败: {e}")
+    logger.warning("[auth] 未能解析自身 uid（create_conversation 将失败，"
+                   "请确认登录 cookie 含 uid_tt/sid_tt）")
+    return None
 
 
 def save_cookie_to_env(cookie_str, env_path=".env"):
@@ -96,3 +131,36 @@ def save_cookie_to_env(cookie_str, env_path=".env"):
     with open(env_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
     logger.info(f"[auth] 已将 cookie 写入 {env_path}")
+
+
+def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
+    """构造并返回当前账号（accounts 选中）的已登录 auth。
+
+    供功能窗口（features_gui）等需要「当前登录态」的入口复用，
+    与 run/gui 启动私信走同一套登录逻辑，避免重复实现。
+    返回 (auth, cookie_str)；若当前账号无 cookie 且无法登录则返回 (None, None)。
+    """
+    try:
+        from dotenv import load_dotenv
+        from builder.auth import DouyinAuth
+        from auto_dm import accounts
+    except Exception as e:
+        logger.warning(f"[auth] 导入依赖失败: {e}")
+        return None, None
+
+    env_path = accounts.current_env_path()
+    cookies = ""
+    if env_path and os.path.exists(env_path):
+        load_dotenv(env_path, override=True)
+        cookies = os.getenv("DY_COOKIES", "") or ""
+    auth = DouyinAuth()
+    if cookies:
+        auth.perepare_auth(cookies, "", "")
+    auth, cookie_str = enrich_auth(
+        auth, cookies_dy=cookies, headless=headless,
+        user_data_dir=user_data_dir, env_path=env_path or ".env", force=bool(not cookies))
+    ensure_uid(auth)
+    if not getattr(auth, "cookie", None):
+        logger.warning("[auth] 当前账号无可用的登录态，请在「账号管理」完成登录。")
+        return None, None
+    return auth, cookie_str

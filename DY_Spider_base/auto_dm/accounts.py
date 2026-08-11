@@ -118,6 +118,23 @@ def env_path_of(name):
     return _env_path_of(name)
 
 
+def profile_dir_of(env_path):
+    """根据账号 .env 路径推导该账号独占的浏览器 profile 目录（指纹封存隔离）。
+
+    每个账号一个独立 profile 目录，避免新增账号复用别的账号的浏览器登录态/指纹。
+    规则：env_path 为 '.../accounts/<name>/.env' 时，profile 目录取 '.../accounts/<name>/profile'；
+    若为根 .env（默认账号），则取项目根 'vb_profile_default'。
+    """
+    env_path = os.path.abspath(env_path)
+    parent = os.path.dirname(env_path)          # .../accounts/<name>
+    if (os.path.basename(env_path) == ".env"
+            and os.path.basename(os.path.dirname(parent)) == "accounts"):
+        # .../accounts/<name>/.env  ->  .../accounts/<name>/profile
+        return os.path.join(parent, "profile")
+    # 默认账号 / 其他：退回项目根下的独立目录
+    return os.path.join(_ROOT, "vb_profile_default")
+
+
 def monitor_name():
     """监测账号（用于直播间监听弹幕，需管理器权限才能看到完整昵称）。"""
     idx = _load_index()
@@ -190,6 +207,99 @@ def add_account(name):
     idx["accounts"][name] = rel
     _save_index(idx)
     return env_path
+
+
+# 退出时清空凭证时抹除的字段（登录态 + 私信签名）。这些字段失效快、且含敏感登录态，
+# 每次关软件应清空，避免下次启动复用过期/他人凭证。账号结构、私信任务配置、日志均不受影响。
+_CREDENTIAL_KEYS = (
+    "DY_COOKIES", "DY_TICKET", "DY_TS_SIGN",
+    "DY_CLIENT_CERT", "DY_PRIVATE_KEY", "DY_COOKIE_STR",
+)
+
+
+def _strip_credential_lines(env_path):
+    """把 .env 中凭证字段行删除并重写，返回是否发生了改动。"""
+    if not os.path.exists(env_path):
+        return False
+    with open(env_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    kept = [ln for ln in lines
+            if not any(ln.strip().startswith(k + "=") or ln.strip().startswith(k + " =")
+                       for k in _CREDENTIAL_KEYS)]
+    changed = len(kept) != len(lines)
+    if changed:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+    return changed
+
+
+def clear_credentials_of(env_path):
+    """仅清空单个账号 .env 的凭证字段（保留文件/结构/其他配置）。"""
+    if not env_path or not os.path.exists(env_path):
+        return False
+    try:
+        load_dotenv(env_path, override=True)
+        for k in _CREDENTIAL_KEYS:
+            os.environ.pop(k, None)
+        return _strip_credential_lines(env_path)
+    except Exception as e:
+        logger.warning(f"[账号] 清空凭证失败 {env_path}: {e}")
+        return False
+
+
+# 守护进程存活标记（由 browser_daemon 写入/删除）。
+# GUI 退出时若守护仍在运行，则不清凭证（凭证由常驻浏览器容器保活）。
+_DAEMON_ALIVE_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon_alive")
+
+
+def daemon_is_alive():
+    """判断常驻浏览器守护进程是否在运行（守护退出才清凭证的判据之一）。"""
+    if not os.path.exists(_DAEMON_ALIVE_FLAG):
+        return False
+    try:
+        with open(_DAEMON_ALIVE_FLAG, "r", encoding="utf-8") as f:
+            pid = int(f.read().strip())
+        try:
+            import psutil
+            return psutil.pid_exists(pid)
+        except Exception:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                return s.connect_ex(("127.0.0.1", 9911)) == 0
+            finally:
+                s.close()
+    except Exception:
+        return False
+
+
+def clear_credentials(force=False):
+    """清空所有账号（含默认账号）.env 中的登录凭证字段，但保留文件本身与账号结构。
+
+    用于“仅在守护进程也退出时才清空凭证”的场景（用户诉求：守住所不退则凭证有效）：
+      - force=True 或不传：仅在【没有常驻守护进程存活】时才清空；
+        若有守护进程在跑（browser_daemon 常驻容器），则不清，保留活凭证。
+      - force=True 强制清空（仅用于守护进程自身退出 / 显式清理）。
+
+    日志、账号列表、私信任务配置（config.py）均不受影响，
+    仅抹除易过期/敏感的登录态与私信签名。
+    """
+    # 守护存活时默认不清（GUI 单独关闭不影响凭证）
+    if not force and daemon_is_alive():
+        logger.info("[账号] 检测到常驻守护进程仍在运行，保留登录凭证（由守护容器保活）")
+        return 0
+    cleared = 0
+    targets = [(_DEFAULT_ENV, _DEFAULT_NAME)]
+    try:
+        for name, env_path in list_accounts():
+            targets.append((env_path, name))
+    except Exception:
+        pass
+    for env_path, name in targets:
+        if clear_credentials_of(env_path):
+            cleared += 1
+    logger.info(f"[账号] 软件退出：已清空 {cleared} 个账号的登录凭证（日志/配置/账号结构保留）")
+    return cleared
 
 
 def remove_account(name):
