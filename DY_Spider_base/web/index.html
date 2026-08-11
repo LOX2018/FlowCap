@@ -440,97 +440,28 @@ const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 const HUES = ['150', '210', '300', '20', '40', '80', '260', '180'];
 const hue = i => HUES[i % HUES.length];
 
-/* ---------- 示例数据 ---------- */
-const SPEAKERS = [['林小满', 12], ['阿澈', 8], ['芝士不加糖', 21], ['大熊_', 5], ['苏苏酱', 33], ['夜风', 16], ['一颗柠檬', 9], ['老白', 40], ['桃子气泡', 14], ['云深处', 27]];
-const COMMENTS = ['主播今天播多久呀', '这歌叫什么名字', '第一次来 好有意思', '来了来了 蹲一个', '礼物走一波', '声音太好听了', '求歌单', '666666', '已关注 铁粉报到', '主播加油', '讲的太详细了', '这个选题爱了', '在哪下载', '前面说的对', '哈哈哈哈笑死', '带带我 大佬'];
-const GIFTS = [['小心心', 1], ['棒棒糖', 3], ['跑车', 1], ['大啤酒', 5], ['火箭', 1]];
-const DM_TEXTS = ['你好，我是内容运营，看了你今天的直播想聊聊合作', '您好，这边在整理美食类达人库，方便加个微信吗', '你好，想邀请你参加本周五的美食专题活动', '在吗？看到你在评论区提到探店，想深入聊聊'];
-const FEEDKIND = ['danmaku', 'danmaku', 'danmaku', 'danmaku', 'gift', 'enter', 'follow', 'like'];
+/* ---------- 示例数据（已清除，等待真实后端驱动） ---------- */
+const SPEAKERS = [];
+const COMMENTS = [];
+const GIFTS = [];
+const DM_TEXTS = [];
+const FEEDKIND = [];
 const KIND_NAME = { danmaku: '弹幕', gift: '礼物', enter: '进场', follow: '关注', like: '点赞' };
 
-const VIDEOS = [
-  { id: 'v1', hue: 20, title: '北京胡同里藏着一家 30 年的老面馆，老板说只做给熟客吃', author: '阿澈探店', plays: '328.6万', likes: '12.4万', cmts: '8,932', dur: '01:24' },
-  { id: 'v2', hue: 260, title: '一晚上学会写歌？我用 3 个和弦写出了第一首 Demo', author: '夜风音乐', plays: '96.2万', likes: '3.1万', cmts: '2,048', dur: '02:05' },
-  { id: 'v3', hue: 150, title: '健身 3 年，我最想删掉的 5 个健身误区', author: '大熊健身', plays: '512.8万', likes: '22.7万', cmts: '15,320', dur: '00:58' },
-  { id: 'v4', hue: 210, title: '露营新手装备清单｜预算 1000 搞定一晚', author: '桃子气泡', plays: '44.1万', likes: '1.9万', cmts: '1,276', dur: '01:47' },
-  { id: 'v5', hue: 40, title: '带你看凌晨四点的批发市场，人间烟火气', author: '林小满生活', plays: '187.5万', likes: '8.6万', cmts: '5,401', dur: '02:31' },
-  { id: 'v6', hue: 300, title: '代码写得像诗是什么体验｜一行注释都没有', author: '云深处Code', plays: '63.8万', likes: '4.2万', cmts: '3,887', dur: '01:12' },
-];
-const USERS = [
-  { id: 'u1', hue: 20, name: '阿澈探店', note: '美食探店 · 北京', fans: '86.3万', follow: '231', works: '412' },
-  { id: 'u2', hue: 260, name: '夜风音乐', note: '独立音乐人', fans: '12.7万', follow: '89', works: '156' },
-  { id: 'u3', hue: 150, name: '大熊健身', note: '健身博主 · 科学训练', fans: '204.1万', follow: '102', works: '897' },
-  { id: 'u4', hue: 40, name: '林小满生活', note: '生活记录 · 早餐党', fans: '8.4万', follow: '311', works: '603' },
-];
-const LIVES = [
-  { id: 'l1', title: '夜风音乐 · 原创弹唱专场', author: '夜风音乐', viewers: '12,847', tag: '音乐' },
-  { id: 'l2', title: '阿澈探店 · 深夜食堂', author: '阿澈探店', viewers: '4,219', tag: '美食' },
-];
+const VIDEOS = [];
+const USERS = [];
+const LIVES = [];
 
-const COMMENTS_DETAIL = [
-  { name: '一颗柠檬', lv: 9, text: '这个面馆我小时候也常去，怀念！', replies: [{ name: '阿澈探店', text: '哈哈是懂行的，下次一起去' }] },
-  { name: '老白', lv: 40, text: '讲得真好，收藏了', replies: [] },
-  { name: '苏苏酱', lv: 33, text: '求具体地址！', replies: [] },
-];
+const COMMENTS_DETAIL = [];
 
 let cid = 0;
 
-const TASKS_INIT = [
-  { id: 't1', ct: '09:12:04', acct: 'a1', type: '采集·用户主页', target: '阿澈探店', status: 'running', prog: 64, dur: '12:41', res: 263, retry: 0 },
-  { id: 't2', ct: '09:26:18', acct: 'a1', type: '直播监听', target: '夜风音乐 · 直播间', status: 'running', prog: 100, dur: '48:06', res: 1284, retry: 1 },
-  { id: 't3', ct: '09:31:40', acct: 'a2', type: '私信同步', target: 'WebSocket 收信', status: 'running', prog: 100, dur: '48:06', res: 96, retry: 0 },
-  { id: 't4', ct: '10:02:11', acct: 'a4', type: '搜索·视频', target: '美食探店', status: 'done', prog: 100, dur: '03:22', res: 1284, retry: 2 },
-  { id: 't5', ct: '10:08:03', acct: 'a1', type: '导出 Excel', target: '评论数据.xlsx', status: 'queued', prog: 0, dur: '--', res: 0, retry: 0 },
-  { id: 't6', ct: '10:11:27', acct: 'a2', type: '采集·评论区', target: '视频 #v1', status: 'done', prog: 100, dur: '01:58', res: 8932, retry: 0 },
-  { id: 't7', ct: '10:15:49', acct: 'a5', type: '搜索·直播', target: '音乐专场', status: 'fail', prog: 100, dur: '00:47', res: 0, retry: 3 },
-];
+const TASKS_INIT = [];
 const TASK_ST = { running: ['运行中', 'accent'], done: ['成功', 'ok'], queued: ['排队', 'mute'], fail: ['失败', 'danger'] };
 
-const CONVS_INIT = [
-{ id: 'c1', acct: 'a2', hue: 20, name: '阿澈探店', unread: 2, msgs: [
-    { id: ++cid, dir: 'in', type: 'text', text: '在吗？想请教下探店合作的事', mt: '10:12' },
-    { id: ++cid, dir: 'in', type: 'voice', dur: '0:12', mt: '10:12' },
-    { id: ++cid, dir: 'out', type: 'text', text: '在的，您说～', mt: '10:14' },
-    { id: ++cid, dir: 'in', type: 'image', mt: '10:15' },
-  ] },
-  { id: 'c2', acct: 'a1', hue: 150, name: '大熊健身', unread: 0, msgs: [
-    { id: ++cid, dir: 'in', type: 'video', title: '健身 3 年，我最想删掉的 5 个健身误区', mt: '09:41' },
-    { id: ++cid, dir: 'out', type: 'text', text: '收到，我看看这条数据', mt: '09:52' },
-  ] },
-  { id: 'c3', acct: 'a4', hue: 300, name: '芝士不加糖', unread: 1, msgs: [
-    { id: ++cid, dir: 'in', type: 'sticker', mt: '08:05' },
-  ] },
-  { id: 'c4', acct: 'a4', hue: 40, name: '林小满生活', unread: 0, msgs: [
-    { id: ++cid, dir: 'out', type: 'text', text: '你好，我是内容运营，想和你聊聊早餐栏目合作', mt: '昨天' },
-    { id: ++cid, dir: 'in', type: 'text', text: '可以呀，具体怎么合作？', mt: '昨天' },
-  ] },
-  { id: 'c5', acct: 'a1', hue: 260, name: '云深处Code', unread: 0, msgs: [
-    { id: ++cid, dir: 'in', type: 'text', text: '私信接口用的 WebSocket 稳定吗', mt: '周二' },
-    { id: ++cid, dir: 'out', type: 'text', text: '目前断线重连后很稳，测试通过', mt: '周二' },
-  ] },
-  { id: 'c6', acct: 'a1', hue: 210, name: '探店达人阿蓝', unread: 0, msgs: [
-    { id: ++cid, dir: 'in', type: 'text', text: '下周二有家新店开业，要不要来拍拍', mt: '周一' },
-    { id: ++cid, dir: 'out', type: 'text', text: '可以，发我时间地点', mt: '周一' },
-  ] },
-  { id: 'c7', acct: 'a2', hue: 265, name: '民谣姑娘', unread: 0, msgs: [
-    { id: ++cid, dir: 'in', type: 'text', text: '你们那把民谣专场曲目单发我下', mt: '昨天' },
-    { id: ++cid, dir: 'out', type: 'text', text: '晚点整理好发你', mt: '昨天' },
-  ] },
-  { id: 'c8', acct: 'a2', hue: 285, name: '音乐节主办方', unread: 0, msgs: [
-    { id: ++cid, dir: 'in', type: 'text', text: '8 月档期还在吗，想约一场 90 分钟', mt: '上周五' },
-  ] },
-];
+const CONVS_INIT = [];
 
-const LOGS = [
-  ['10:12:04', 'info', 'cookie 校验通过 · www.douyin.com'],
-  ['10:12:04', 'info', 'cookie 校验通过 · live.douyin.com'],
-  ['10:13:37', 'info', 'WebSocket 已连接 · 私信通道'],
-  ['10:14:02', 'info', '已开始监听 夜风音乐 直播间 room_id=7462...'],
-  ['10:14:15', 'warn', '单条请求限流，自动重试（1/3）'],
-  ['10:15:44', 'info', '弹幕消息入库 1,284 条'],
-  ['10:16:31', 'err', '礼物详情字段缺失，已跳过该条'],
-  ['10:17:09', 'info', '私信发送成功 → 阿澈探店'],
-];
+const LOGS = [];
 
 /* ---------- 通用小件 ---------- */
 function Spark({ pts, color = 'var(--accent)' }) {
@@ -590,7 +521,7 @@ function Header({ tab, setTab, overview, ready }) {
         <span className="badge-conn"><Dot c={bd && bd.alive ? 'ok' : 'danger'} pulse={bd && bd.alive} /> 凭证守护 <b>{bd && bd.alive ? (bd.signReady ? '已就绪' : '登录中') : '离线'}</b></span>
         <span className="badge-conn"><Dot c={rd && rd.alive ? 'ok' : 'danger'} pulse={rd && rd.alive} /> 私信守护 <b>{rd && rd.alive ? '在线' : '离线'}</b></span>
         {ready && <span className="badge-conn"><b>已发 {ov.sent}/{ov.limit}{ov.queue ? ' · 待发 ' + ov.queue : ''}</b></span>}
-        {!ready && <span className="demo-tag">示例数据</span>}
+        {!ready && <span className="demo-tag">未连接</span>}
       </div>
     </header>
   );
@@ -600,13 +531,7 @@ function Header({ tab, setTab, overview, ready }) {
 function Overview({ push, api, overview, ready }) {
   const [viewMode, setViewMode] = useState('single');
   const [activeAcct, setActiveAcct] = useState('');
-  const [feed, setFeed] = useState([
-    { id: ++cid, t: '10:18:22', k: 'danmaku', n: '苏苏酱', l: 33, x: '声音太好听了' },
-    { id: ++cid, t: '10:18:05', k: 'gift', n: '老白', l: 40, x: '送出 跑车 × 1' },
-    { id: ++cid, t: '10:17:52', k: 'danmaku', n: '夜风', l: 16, x: '求歌单' },
-    { id: ++cid, t: '10:17:31', k: 'follow', n: '桃子气泡', l: 14, x: '关注了主播' },
-    { id: ++cid, t: '10:17:09', k: 'enter', n: '一颗柠檬', l: 9, x: '进入直播间' },
-  ]);
+  const [feed, setFeed] = useState([]);
   const [stats, setStats] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const ov = overview || {};
@@ -713,7 +638,7 @@ function Overview({ push, api, overview, ready }) {
             <button className={viewMode === 'single' ? 'active' : ''} onClick={() => setViewMode('single')}>单账户</button>
             <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>多账户总览</button>
           </div>
-          <span className="badge-conn"><Dot c={!ready ? 'mute' : (ov.running ? (ov.paused ? 'warn' : 'ok') : 'danger')} pulse={ready && ov.running && !ov.paused} /> {ready ? (ov.running ? (ov.paused ? '已暂停' : '引擎运行中') : '引擎已停止') : '示例数据'}</span>
+          <span className="badge-conn"><Dot c={!ready ? 'mute' : (ov.running ? (ov.paused ? 'warn' : 'ok') : 'danger')} pulse={ready && ov.running && !ov.paused} /> {ready ? (ov.running ? (ov.paused ? '已暂停' : '引擎运行中') : '引擎已停止') : '未连接'}</span>
           {ready && <span className="badge-conn"><b>已发 {ov.sent}/{ov.limit}{ov.queue ? ' · 待发 ' + ov.queue : ''}</b></span>}
         </div>
       </div>
@@ -758,7 +683,7 @@ function Overview({ push, api, overview, ready }) {
           </div>
           <div className="grid cols-2">
             <div className="card" data-od-id="overview-feed">
-              <h3>实时动态 <span className="demo-tag" style={{ textTransform: 'none' }}>{ready ? '真实' : '示例'}</span></h3>
+              <h3>实时动态 <span className="demo-tag" style={{ textTransform: 'none' }}>{ready ? '实时' : '未连接'}</span></h3>
               <div className="feed">
                 {shownFeed.map(f => (
                   <div className="feed-item" key={f.id}>
@@ -798,7 +723,7 @@ function Crawl({ push, goMsg }) {
 
   const runSearch = () => {
     setSearching(true);
-    setTimeout(() => { setSearching(false); setDid(true); push('已根据条件完成搜索，共命中示例结果'); }, 650);
+    setTimeout(() => { setSearching(false); setDid(true); push('已根据条件完成搜索，共命中结果'); }, 650);
   };
 
   const filtered = useMemo(() => {
@@ -829,7 +754,7 @@ function Crawl({ push, goMsg }) {
           <h2>数据采集</h2>
           <div className="desc">搜索用户 / 作品 / 直播，采集主页、评论与粉丝数据</div>
         </div>
-        <span className="demo-tag">示例数据</span>
+        <span className="demo-tag">未连接</span>
       </div>
       <div className="card" style={{ marginBottom: 14 }} data-od-id="search-panel">
         <div className="searchbar">
@@ -865,7 +790,7 @@ function Crawl({ push, goMsg }) {
         </div>
       ) : !did ? (
         <div className="card" style={{ padding: '46px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
-          输入关键词并点击「搜索」，查看示例结果集
+          输入关键词并点击「搜索」，查看结果集
         </div>
       ) : empty ? (
         <div className="card" style={{ padding: '46px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>未命中「{q}」，换一个关键词试试</div>
@@ -982,22 +907,7 @@ function Crawl({ push, goMsg }) {
 /* ---------- 直播监听 ---------- */
 const DM_META = { un: ['未私信', 'mute'], wait: ['待发送', 'warn'], sent: ['已发送', 'ok'], fail: ['发送失败', 'danger'] };
 function seedRows() {
-  const base = [
-    ['林小满', 12, '主播今天播多久呀', 'sent', '你好，我是内容运营，看了你今天的直播想聊聊合作'],
-    ['阿澈', 8, '这歌叫什么名字', 'un', ''],
-    ['芝士不加糖', 21, '第一次来 好有意思', 'sent', '您好，这边在整理美食类达人库，方便加个微信吗'],
-    ['大熊_', 5, '来了来了 蹲一个', 'wait', '在吗？看到你在评论区提到探店，想深入聊聊'],
-    ['苏苏酱', 33, '礼物走一波', 'un', ''],
-    ['夜风', 16, '声音太好听了', 'sent', '你好，想邀请你参加本周五的美食专题活动'],
-    ['一颗柠檬', 9, '求歌单', 'fail', '你好，想邀请你参加本周五的美食专题活动'],
-    ['老白', 40, '666666', 'un', ''],
-  ];
-  const min = Date.now() - base.length * 45000;
-  return base.map((r, i) => ({
-    id: ++cid, time: tick(-(base.length - i) * 45000), name: r[0], lv: r[1], content: r[2],
-    dmStatus: r[3], dmText: r[4], dmTime: r[3] === 'sent' ? tick(-(base.length - i) * 45000 + 8000) : '',
-    ts: min + i * 45000,
-  }));
+  return [];
 }
 function Live({ push, goMsg, api, ready }) {
   const [viewMode, setViewMode] = useState('single');
@@ -1005,13 +915,7 @@ function Live({ push, goMsg, api, ready }) {
   const [room, setRoom] = useState('live.douyin.com/7462001');
   const [listening, setListening] = useState(false);
   const [reconnect, setReconnect] = useState(false);
-  const [feed, setFeed] = useState([
-    { id: ++cid, t: '10:18:22', k: 'danmaku', n: '苏苏酱', l: 33, x: '声音太好听了' },
-    { id: ++cid, t: '10:18:05', k: 'gift', n: '老白', l: 40, x: '送出 跑车 × 1' },
-    { id: ++cid, t: '10:17:52', k: 'danmaku', n: '夜风', l: 16, x: '求歌单' },
-    { id: ++cid, t: '10:17:31', k: 'follow', n: '桃子气泡', l: 14, x: '关注了主播' },
-    { id: ++cid, t: '10:17:09', k: 'enter', n: '一颗柠檬', l: 9, x: '进入直播间' },
-  ]);
+  const [feed, setFeed] = useState([]);
   const [rows, setRows] = useState(seedRows);
   const [heat, setHeat] = useState(Array.from({ length: 36 }, (_, i) => 40 + Math.round(Math.sin(i / 4) * 12 + i * 1.4)));
   const [review, setReview] = useState(false);
@@ -1031,7 +935,7 @@ function Live({ push, goMsg, api, ready }) {
     { text: '唐律还在直播，我是助理，可以留个联系方式，唐律下播后帮你分析', enabled: true },
   ]);
   const [tasksCfg, setTasksCfg] = useState(null);
-  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || ACCOUNTS_INIT[0];
+  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || null;
 
   // 真实数据：任务配置 + 统计（私信记录表 / 弹幕流）
   useEffect(() => {
@@ -1092,6 +996,7 @@ function Live({ push, goMsg, api, ready }) {
   const listenRef = useRef();
   useEffect(() => {
     if (!listening || ready) return;  // ready 时由后端真实引擎驱动，不跑 mock
+    if (!SPEAKERS.length) return;      // 示例数据已清除，离线时不生成假内容
     listenRef.current = setInterval(() => {
       const [nm, lv] = pick(SPEAKERS);
       const kind = pick(FEEDKIND);
@@ -1182,7 +1087,7 @@ function Live({ push, goMsg, api, ready }) {
             <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>多账户总览</button>
           </div>
           <span className="badge-conn"><Dot c={reconnect ? 'warn' : 'ok'} pulse /> {reconnect ? '断线重连中' : '监听中'}</span>
-          <span className="demo-tag">示例数据</span>
+          <span className="demo-tag">未连接</span>
         </div>
       </div>
 
@@ -1550,7 +1455,7 @@ function MsgBubble({ m, h }) {
 }
 function Messages({ push, goDm, api }) {
   const [activeAcct, setActiveAcct] = useState('a1');
-  const [convs, setConvs] = useState(CONVS_INIT);
+  const [convs, setConvs] = useState([]);
   const [active, setActive] = useState('c2');
   const [draft, setDraft] = useState('');
   const [newBanner, setNewBanner] = useState(false);
@@ -1558,7 +1463,7 @@ function Messages({ push, goDm, api }) {
   const [newName, setNewName] = useState('');
   const [realConvs, setRealConvs] = useState(null);
   const bannerT = useRef();
-  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || ACCOUNTS_INIT[0];
+  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || null;
   const acctConvs = convs.filter(c => c.acct === activeAcct);
 
   // 真实会话数据（来自 recv_daemon 9912）
@@ -1606,6 +1511,7 @@ function Messages({ push, goDm, api }) {
 
   useEffect(() => {
     if (window.ApiBridge && window.ApiBridge.ready) return;  // 真实模式不跑 mock
+    if (!SPEAKERS.length) return;      // 示例数据已清除，离线时不生成假消息
     const iv = setInterval(() => {
       const [nm] = pick(SPEAKERS);
       setConvs(cs => cs.map(c => c.acct === activeAcct && c.name === nm
@@ -1661,17 +1567,23 @@ function Messages({ push, goDm, api }) {
         <div className="head-row">
           {window.ApiBridge && window.ApiBridge.ready
             ? <span className="badge-conn"><Dot c="ok" pulse /> 已连接（接收守护）</span>
-            : <><span className="badge-conn"><Dot c="ok" pulse /> 已连接</span><span className="demo-tag">示例数据</span></>}
+            : <><span className="badge-conn"><Dot c="ok" pulse /> 已连接</span><span className="demo-tag">未连接</span></>}
         </div>
       </div>
       <div className="card" style={{ marginBottom: 12 }} data-od-id="msg-acct-select">
         <div className="head-row">
-          <Avatar name={curAcct.name} h={curAcct.hue} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 13.5 }}>当前私信账号 · {curAcct.name}</div>
-            <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID {curAcct.uid} · 会话按账号隔离</div>
-          </div>
-          <Pill c={curAcct.tokenValid ? 'ok' : 'danger'}>{curAcct.tokenValid ? '凭证有效' : '凭证过期'}</Pill>
+          {curAcct ? (
+            <>
+              <Avatar name={curAcct.name} h={curAcct.hue} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>当前私信账号 · {curAcct.name}</div>
+                <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID {curAcct.uid} · 会话按账号隔离</div>
+              </div>
+              <Pill c={curAcct.tokenValid ? 'ok' : 'danger'}>{curAcct.tokenValid ? '凭证有效' : '凭证过期'}</Pill>
+            </>
+          ) : (
+            <div style={{ flex: 1, fontSize: 13.5, color: 'var(--muted)' }}>暂无账号 · 请在「账号」页添加并登录</div>
+          )}
           <div className="seg" style={{ marginLeft: 6 }}>
             {ACCOUNTS_INIT.filter(a => a.tokenValid).map(a => (
               <button key={a.id} className={activeAcct === a.id ? 'active' : ''} onClick={() => { const first = convs.find(c => c.acct === a.id); setActiveAcct(a.id); setActive(first ? first.id : ''); push('已切换到 ' + a.name + ' 的私信通道'); }}>
@@ -1739,7 +1651,7 @@ function Messages({ push, goDm, api }) {
 
 /* ---------- 任务中心 ---------- */
 function Tasks({ push, api, overview }) {
-  const [tasks, setTasks] = useState(TASKS_INIT);
+  const [tasks, setTasks] = useState([]);
   const ready = window.ApiBridge && window.ApiBridge.ready;
   useEffect(() => {
     if (ready) return;  // 真实模式下进度由 overview 驱动
@@ -1758,7 +1670,7 @@ function Tasks({ push, api, overview }) {
         <div className="head-row">
           {ready
             ? <span className="badge-conn"><Dot c={ov.running ? (ov.paused ? 'warn' : 'ok') : 'danger'} pulse={ov.running && !ov.paused} /> 已发 {ov.sent || 0}/{ov.limit || 0}{ov.queue ? ' · 待发 ' + ov.queue : ''}</span>
-            : <><span className="badge-conn"><Dot c="ok" pulse /> {done}/{tasks.length} 已完成</span><span className="demo-tag">示例数据</span></>}
+            : <><span className="badge-conn"><Dot c="ok" pulse /> {done}/{tasks.length} 已完成</span><span className="demo-tag">未连接</span></>}
           {ready && (
             <button className="btn sm primary" onClick={() => api.exportStats().then(r => push(r && r.ok ? '统计已导出 · ' + r.path : '导出失败: ' + ((r && r.error) || ''))).catch(e => push('导出异常: ' + e))}>导出统计 xlsx</button>
           )}
@@ -1789,11 +1701,11 @@ function Tasks({ push, api, overview }) {
                   </td>
                 </tr>
               ) : tasks.map(t => {
-                const ta = ACCOUNTS_INIT.find(a => a.id === t.acct) || ACCOUNTS_INIT[0];
+                const ta = ACCOUNTS_INIT.find(a => a.id === t.acct) || null;
                 return (
                 <tr key={t.id}>
                   <td className="mono" style={{ whiteSpace: 'nowrap' }}>{t.ct}</td>
-                  <td><div style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><Avatar name={ta.name} h={ta.hue} sm /><span>{ta.name}</span></div></td>
+                  <td><div style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><Avatar name={ta ? ta.name : '?'} h={ta ? ta.hue : 0} sm /><span>{ta ? ta.name : '—'}</span></div></td>
                   <td>{t.type}</td>
                   <td className="mono" style={{ color: 'var(--muted)' }}>{t.target}</td>
                   <td><Pill c={TASK_ST[t.status][1]}>{TASK_ST[t.status][0]}</Pill></td>
@@ -1881,7 +1793,7 @@ function Settings({ push }) {
           <h2>设置</h2>
           <div className="desc">默认配置适用于全部账号，可为单个账号开启独立配置覆盖默认值</div>
         </div>
-        <span className="demo-tag">示例数据</span>
+        <span className="demo-tag">未连接</span>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
@@ -2003,38 +1915,7 @@ function Settings({ push }) {
 }
 
 /* ---------- 账号管理 ---------- */
-const ACCOUNTS_INIT = [
-  {
-    id: 'a1', name: '阿澈探店', uid: 'UC_20481673', hue: 20,
-    tokenValid: true, tokenExpire: '2026-09-15', lastCheck: '10:18:04',
-    lastRun: { room: '夜风音乐 · 原创弹唱专场', roomUrl: 'https://live.douyin.com/7462001', time: '10:14:02', duration: '2h 34min', totalRuns: 127, comments: 1284, dmSent: 42, dmSuccess: 38, dmFail: 4, dmAfterLive: 18 },
-    fp: { name: 'BitBrowser · Profile #3', status: 'running', os: 'Windows 11', ip: '120.78.142.***', resolution: '1920×1080', ua: 'Chrome 126.0.6478.126', proxy: 'SOCKS5 · 127.0.0.1:1080', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
-  },
-  {
-    id: 'a2', name: '芝士不加糖', uid: 'UC_33095421', hue: 300,
-    tokenValid: true, tokenExpire: '2026-08-28', lastCheck: '10:18:04',
-    lastRun: { room: '阿澈探店 · 深夜食堂', roomUrl: 'https://live.douyin.com/8871002', time: '09:52:17', duration: '2h 12min', totalRuns: 89, comments: 876, dmSent: 28, dmSuccess: 25, dmFail: 3, dmAfterLive: 12 },
-    fp: { name: 'BitBrowser · Profile #7', status: 'running', os: 'macOS 15.1', ip: '47.95.112.***', resolution: '1440×900', ua: 'Chrome 125.0.6422.113', proxy: '直连', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
-  },
-  {
-    id: 'a3', name: '大熊健身', uid: 'UC_50178246', hue: 150,
-    tokenValid: false, tokenExpire: '2026-07-30', lastCheck: '10:18:04',
-    lastRun: { room: '—', roomUrl: '', time: '—', duration: '—', totalRuns: 56, comments: 0, dmSent: 0, dmSuccess: 0, dmFail: 0, dmAfterLive: 0 },
-    fp: { name: 'BitBrowser · Profile #12', status: 'stopped', os: 'Windows 10', ip: '223.166.78.***', resolution: '1366×768', ua: 'Chrome 124.0.6367.91', proxy: 'HTTP · 10.0.0.1:8080', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
-  },
-  {
-    id: 'a4', name: '林小满生活', uid: 'UC_61834097', hue: 40,
-    tokenValid: true, tokenExpire: '2026-10-02', lastCheck: '10:18:04',
-    lastRun: { room: '林小满 · 早餐日记', roomUrl: 'https://live.douyin.com/6183409', time: '昨天 08:31', duration: '1h 58min', totalRuns: 203, comments: 2156, dmSent: 67, dmSuccess: 61, dmFail: 6, dmAfterLive: 24 },
-    fp: { name: 'AdsPower · 环境 2', status: 'running', os: 'Windows 11', ip: '36.110.147.***', resolution: '2560×1440', ua: 'Chrome 126.0.6478.126', proxy: 'SOCKS5 · 127.0.0.1:7890', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
-  },
-  {
-    id: 'a5', name: '夜风音乐', uid: 'UC_88452160', hue: 260,
-    tokenValid: false, tokenExpire: '2026-07-12', lastCheck: '10:18:04',
-    lastRun: { room: '夜风音乐 · 原创弹唱专场', roomUrl: 'https://live.douyin.com/8845216', time: '3天前', duration: '1h 45min', totalRuns: 74, comments: 543, dmSent: 18, dmSuccess: 12, dmFail: 6, dmAfterLive: 8 },
-    fp: { name: 'BitBrowser · Profile #3', status: 'running', os: 'Windows 11', ip: '120.78.142.***', resolution: '1920×1080', ua: 'Chrome 126.0.6478.126', proxy: 'SOCKS5 · 127.0.0.1:1080', lang: 'zh-CN', webrtc: '替换', timezone: 'Asia/Shanghai' },
-  },
-];
+const ACCOUNTS_INIT = [];
 function Accounts({ push, goMsg, api }) {
   const [accounts, setAccounts] = useState(ACCOUNTS_INIT);
   const [reviewAccount, setReviewAccount] = useState(null);
@@ -2179,7 +2060,7 @@ function Accounts({ push, goMsg, api }) {
           ) : (
             <>
               <button className="btn primary" onClick={() => push('已刷新所有账号状态')}>刷新状态</button>
-              <span className="demo-tag">示例数据</span>
+              <span className="demo-tag">未连接</span>
             </>
           )}
         </div>
