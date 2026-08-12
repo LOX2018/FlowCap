@@ -402,17 +402,18 @@ def account_status(name=None, force=False, timeout=10):
 
     local = _read_status(env_path)
 
-    # 无 .env 或缺签名：直接短路返回，不发起网络探活（避免无效账号拖慢前端加载）
+    # 无 .env 或缺核心签名：直接短路返回，不发起网络探活（避免无效账号拖慢前端加载）
+    # 注意：web_protect/keys（wp 凭证）缺失【不判失效】——实测仅凭四件套
+    # (ticket/ts_sign/client_cert/private_key + 手动补的 ree_public_key) 私信回环即可发送成功，
+    # _load_auth_from_env 在无 web_protect/keys 时会自动用四件套补齐签名。wp 缺失仅作提示。
     if not local.get("exists"):
         return {"name": name, "env": env_path, "level": "missing",
                 "label": "未配置（无 .env）", "alive": False,
                 "has_ticket": False, "has_private_key": False,
                 "has_cookie": False, "has_web_protect": False}
-    if not (local.get("has_ticket") and local.get("has_private_key") and local.get("has_web_protect")):
-        # 区分“wp 凭证(web_protect/keys) 缺失”与“ticket/私钥 缺失”，便于定位私信失败根因
-        if not local.get("has_web_protect"):
-            label = "缺私信签名（web_protect/keys 缺失，即 wp 凭证失效）"
-        elif not local.get("has_ticket"):
+    if not (local.get("has_ticket") and local.get("has_private_key")):
+        # 仅当核心签名(ticket/私钥)缺失才判 nosign，区分 ticket 与私钥
+        if not local.get("has_ticket"):
             label = "缺私信签名（ticket 缺失）"
         else:
             label = "缺私钥（私信签名不可用）"
@@ -422,6 +423,10 @@ def account_status(name=None, force=False, timeout=10):
                 "has_private_key": local["has_private_key"],
                 "has_cookie": local["has_cookie"],
                 "has_web_protect": local["has_web_protect"]}
+    # web_protect/keys 未持久化时，补一条“兼容模式”提示，但不阻断后续探活判定
+    _wp_hint = ""
+    if not local.get("has_web_protect"):
+        _wp_hint = "（wp 凭证未持久化，四件套兼容模式）"
 
     # 有凭证才探活（60s 缓存）
     now = time.time()
@@ -434,17 +439,17 @@ def account_status(name=None, force=False, timeout=10):
 
     if ok and info != "SIGN_REJECTED":
         return {"name": name, "env": env_path, "level": "ok",
-                "label": f"有效（uid={info}）", "alive": True,
+                "label": f"有效（uid={info}）{_wp_hint}", "alive": True,
                 "has_ticket": True, "has_private_key": True,
                 "has_cookie": local["has_cookie"],
-                "has_web_protect": True, "uid": info}
+                "has_web_protect": local["has_web_protect"], "uid": info}
     _rej = (info == "SIGN_REJECTED")
     return {"name": name, "env": env_path, "level": "expired",
-            "label": "失效（私信签名被服务端拒绝）" if _rej else "失效（探活失败/超时）",
+            "label": ("失效（私信签名被服务端拒绝）" if _rej else "失效（探活失败/超时）") + _wp_hint,
             "alive": False,
             "has_ticket": True, "has_private_key": True,
             "has_cookie": local["has_cookie"],
-            "has_web_protect": True}
+            "has_web_protect": local["has_web_protect"]}
 
 
 def _probe(env_path, timeout):
