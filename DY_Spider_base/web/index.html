@@ -3868,7 +3868,12 @@ function Accounts({
   }, [proxyAcct, reviewAccount, editAcct, addOpen]);
   const checkAll = () => {
     if (window.ApiBridge && window.ApiBridge.ready) {
-      api.getAccounts().then(d => push(d && d.ok ? '已刷新全部账号状态' : '刷新失败')).catch(e => push('刷新异常: ' + e));
+      // 真实后端：重新拉取并刷新卡片（getAccounts 内部已做实时探活），
+      // 避免“重新获取凭证后刷新仍显示旧失败状态”。
+      api.getAccounts().then(d => {
+        if (d && d.ok && d.accounts) setRealAccts(d.accounts);
+        push(d && d.ok ? '已刷新全部账号状态' : '刷新失败');
+      }).catch(e => push('刷新异常: ' + e));
       return;
     }
     setAccounts(accounts.map(a => ({
@@ -4045,15 +4050,9 @@ function Accounts({
   }, batchMode ? '退出批量' : '批量管理'), React.createElement("button", {
     className: "btn ghost",
     onClick: checkAll
-  }, "\u5168\u90E8\u6821\u9A8C"), window.ApiBridge && window.ApiBridge.ready ? React.createElement(React.Fragment, null, React.createElement("button", {
-    className: "btn primary",
-    onClick: () => push('已刷新所有账号状态')
-  }, "\u5237\u65B0\u72B6\u6001")) : React.createElement(React.Fragment, null, React.createElement("button", {
-    className: "btn primary",
-    onClick: () => push('已刷新所有账号状态')
-  }, "\u5237\u65B0\u72B6\u6001"), React.createElement("span", {
+  }, "\u5168\u90E8\u6821\u9A8C")), window.ApiBridge && window.ApiBridge.ready ? null : React.createElement("span", {
     className: "demo-tag"
-  }, "\u672A\u8FDE\u63A5")))), React.createElement("div", {
+  }, "\u672A\u8FDE\u63A5")), React.createElement("div", {
     className: "acct-summary"
   }, React.createElement("div", {
     className: "card stat",

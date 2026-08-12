@@ -463,21 +463,29 @@ def _probe(env_path, timeout):
             try:
                 # 用 dotenv_values 显式读该账号 .env，避免 os.getenv 读到进程级
                 # 残留的其他账号环境变量导致跨账号 UID 重复。
-                vals = dotenv_values(env_path)
-                auth = DouyinAuth()
-                auth.perepare_auth(vals.get("DY_COOKIES", "") or "", "", "")
-                auth.ticket = vals.get("DY_TICKET") or None
-                auth.ts_sign = vals.get("DY_TS_SIGN") or None
-                auth.client_cert = vals.get("DY_CLIENT_CERT") or None
-                # 必须用 _decode_private_key 还原 PEM 换行：.env 存的是字面量 \n，
-                # 直接读会导致 SigningKey.from_pem 解析失败（Empty string does not encode a sequence）。
                 from dy_apis.login_api import DYLoginApi as _DL
-                auth.private_key = _DL._decode_private_key(vals.get("DY_PRIVATE_KEY") or "")
-                # 补齐 ree_public_key（perepare_auth 用 web_protect/keys 时才派生，
-                # 直接读四件套时需手动补，否则 create_conversation 因缺它而本地序列化失败）
-                if auth.private_key:
-                    import base64 as _b64
-                    auth.ree_public_key = _b64.b64encode(auth.private_key.encode()).decode()
+                vals = dotenv_values(env_path)
+                web_protect = vals.get("DY_WEB_PROTECT") or ""
+                keys = vals.get("DY_KEYS") or ""
+                auth = DouyinAuth()
+                # 与 _load_auth_from_env 完全对齐：优先用持久化的 web_protect/keys
+                # （含 ree_public_key 等派生签名）重建 auth；仅旧 .env 无这两个键时
+                # 退回四件套 + 手动补 ree_public_key。否则仅用四件套自建会话会被
+                # 服务端 SIGN_REJECTED，误判“失效（私信签名被服务端拒绝）”。
+                auth.perepare_auth(vals.get("DY_COOKIES", "") or "", web_protect, keys)
+                if not (web_protect and keys):
+                    auth.ticket = vals.get("DY_TICKET") or None
+                    auth.ts_sign = vals.get("DY_TS_SIGN") or None
+                    auth.client_cert = vals.get("DY_CLIENT_CERT") or None
+                    auth.private_key = _DL._decode_private_key(vals.get("DY_PRIVATE_KEY") or "")
+                    if auth.private_key:
+                        import base64 as _b64
+                        auth.ree_public_key = _b64.b64encode(auth.private_key.encode()).decode()
+                else:
+                    auth.ticket = vals.get("DY_TICKET") or None
+                    auth.private_key = _DL._decode_private_key(vals.get("DY_PRIVATE_KEY") or "")
+                if not getattr(auth, "cookie_str", None) and auth.cookie:
+                    auth.cookie_str = "; ".join(f"{k}={v}" for k, v in auth.cookie.items())
                 uid = DouyinAPI.get_my_uid(auth)
                 if not uid:
                     return None

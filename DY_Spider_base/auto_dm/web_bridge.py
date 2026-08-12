@@ -561,7 +561,9 @@ class WebBridge:
     def getAccounts(self):
         accs = []
         for name, env_path in accounts.list_accounts():
-            st = accounts.account_status(name, force=False, timeout=4)
+            # 账号管理页每次拉取都做实时探活（force=True），避免 60s 缓存让
+            # “扫码/重新获取凭证后刷新仍显示旧的失败状态”；timeout 收紧到 4s 控频。
+            st = accounts.account_status(name, force=True, timeout=4)
             bport = accounts.browser_daemon_port(name)
             rport = accounts.recv_daemon_port(name)
             # 每账号独立守护：快速 socket 探测专属端口（短超时，避免拖慢前端）

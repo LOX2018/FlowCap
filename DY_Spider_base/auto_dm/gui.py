@@ -331,6 +331,7 @@ class App(tk.Tk):
         self.enable_danmaku = tk.BooleanVar(value=C.ENABLE_DANMAKU)
         self.enable_console = tk.BooleanVar(value=C.ENABLE_CONSOLE)
         self.enable_send = tk.BooleanVar(value=C.ENABLE_SEND)
+        self.force_rescan = tk.BooleanVar(value=getattr(C, "FORCE_RESCAN_ON_START", False))
         ttk.Checkbutton(cf, text="启用弹幕监听", variable=self.enable_danmaku).grid(row=0, column=0, sticky="w", padx=8, pady=4)
         ttk.Checkbutton(cf, text="启用中控台采集", variable=self.enable_console).grid(row=0, column=1, sticky="w", padx=8, pady=4)
         ttk.Checkbutton(cf, text="启用真实发送私信", variable=self.enable_send).grid(row=0, column=2, sticky="w", padx=8, pady=4)
@@ -545,7 +546,7 @@ class App(tk.Tk):
         ttk.Checkbutton(row, text="启用弹幕监听", variable=self.enable_danmaku).grid(row=0, column=0, sticky="w", padx=8, pady=4)
         ttk.Checkbutton(row, text="启用中控台采集", variable=self.enable_console).grid(row=0, column=1, sticky="w", padx=8, pady=4)
         ttk.Checkbutton(row, text="启用真实发送", variable=self.enable_send).grid(row=0, column=2, sticky="w", padx=8, pady=4)
-        ttk.Checkbutton(row, text="启动即强制重新扫码", variable=tk.BooleanVar(value=getattr(C, "FORCE_RESCAN_ON_START", True))).grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.Checkbutton(row, text="启动即强制重新扫码", variable=self.force_rescan).grid(row=1, column=0, sticky="w", padx=8, pady=4)
 
         blf = tk.LabelFrame(parent, text="功能入口", bg=PANEL, fg=ACCENT)
         blf.pack(fill="x", padx=14, pady=(0, 12))
@@ -649,6 +650,8 @@ class App(tk.Tk):
             self.enable_console.set(C.ENABLE_CONSOLE)
         if hasattr(self, "enable_send"):
             self.enable_send.set(C.ENABLE_SEND)
+        if hasattr(self, "force_rescan"):
+            self.force_rescan.set(getattr(C, "FORCE_RESCAN_ON_START", False))
         # 词库
         if hasattr(self, "dm_list_frame"):
             self._dm_clear_rows()
@@ -672,6 +675,7 @@ class App(tk.Tk):
         C.ENABLE_DANMAKU = self.enable_danmaku.get()
         C.ENABLE_CONSOLE = self.enable_console.get()
         C.ENABLE_SEND = self.enable_send.get()
+        C.FORCE_RESCAN_ON_START = self.force_rescan.get()
         # 直播间
         C.LIVE_URL = self.live_url.get().strip() if hasattr(self, "live_url") else C.LIVE_URL
         # 词库
@@ -711,7 +715,7 @@ class App(tk.Tk):
             "DM_MESSAGE": repr(C.DM_MESSAGE),
             "DM_MESSAGE_POOL": repr(C.DM_MESSAGE_POOL),
             "DM_MESSAGE_ENABLED": repr(C.DM_MESSAGE_ENABLED),
-            "FORCE_RESCAN_ON_START": repr(getattr(C, "FORCE_RESCAN_ON_START", True)),
+            "FORCE_RESCAN_ON_START": repr(C.FORCE_RESCAN_ON_START),
         }
         path = os.path.join(auto_dm_root, "auto_dm", "config.py")
         try:
