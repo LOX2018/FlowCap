@@ -172,32 +172,38 @@ class DispatchCenter:
             f"将在 {delay}s 后发送私信（延迟队列长度={len(self._queue)}）")
 
     def _loop(self):
-        """后台线程：到点后真正发送（捕获时刻 + SEND_DELAY_SEC）。"""
+        """后台线程：到点后真正发送（捕获时刻 + SEND_DELAY_SEC）。
+
+        注意：self._cv 是绑定在 self._lock(RLock) 上的 Condition，
+        wait() 必须在【持锁】状态下调用（wait 内部自动释放/重获锁）。
+        因此整个主循环体都包裹在 `with self._lock:` 内，仅 _do_send 在锁外执行。
+        """
         while True:
             to_send = None
             with self._lock:
+                # 1) 彻底停止且队列已空：退出线程
                 if self.stopped and not self._queue:
                     break
-            # 延迟队列已自然发空：通知控制器收尾（监听停止后私信线路也随之结束）
-            if self.on_idle:
-                try:
-                    self.on_idle()
-                except Exception:
-                    pass
-                self.on_idle = None  # 只触发一次
+                # 2) 延迟队列自然发空：通知控制器收尾（只触发一次）
+                if self.on_idle:
+                    try:
+                        self.on_idle()
+                    except Exception:
+                        pass
+                    self.on_idle = None
                 now = time.time()
-                # 暂停态：不消费队列（已排队的也暂不发），但保持线程存活以便恢复
+                # 3) 暂停态：不消费队列（已排队的也暂不发），保持线程存活以便恢复
                 if self.paused:
                     self._cv.wait(0.5)
                     continue
-                # 已达上限：清空待发队列，不再发送（避免队列里排队的超发）
+                # 4) 已达上限：清空待发队列，不再发送（避免队列里排队的超发）
                 if self.reached_limit:
                     if self._queue:
                         self._queue.clear()
                         self.pending.clear()
                     self._cv.wait(0.5)
                     continue
-                # 取最早到期的一条
+                # 5) 取最早到期的一条
                 ready = None
                 for i, (send_at, k, t) in enumerate(self._queue):
                     if send_at <= now:
@@ -205,10 +211,7 @@ class DispatchCenter:
                         break
                 if ready is None:
                     # 无可发送项：等待直到最近一条到期或被唤醒
-                    if self._queue:
-                        wait = max(0.1, self._queue[0][0] - now)
-                    else:
-                        wait = 1.0
+                    wait = max(0.1, self._queue[0][0] - now) if self._queue else 1.0
                     self._cv.wait(wait)
                     continue
                 to_send = ready
