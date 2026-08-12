@@ -46,40 +46,47 @@ def _exe_cmd(mode, *args):
 
 
 def _spawn_daemons():
-    """按当前运行形态（源码/打包）启动 recv + browser 两个守护子进程。
+    """按当前运行形态（源码/打包），为每个账号启动独立的 recv + browser 守护子进程。
 
-    返回 (procs, cmd_ready)：procs 为子进程列表；cmd_ready 表示是否用 --mode 方式。
+    每个账号的私信守护(recv_daemon)与凭证守护(browser_daemon)监听各自专属端口
+    （accounts.browser_daemon_port / accounts.recv_daemon_port），实现每账号独立守护。
+    返回 procs：子进程列表。
     """
     procs = []
     is_frozen = getattr(sys, "frozen", False)
-
-    # 1) 私信接收守护 recv_daemon(9912) —— 多账号，全部账号
-    recv_cmd = _exe_cmd("recv") if is_frozen else _module_cmd("auto_dm.recv_daemon")
-    # 2) 凭证保活守护 browser_daemon(9911) —— 当前账号（current_name 优先，回退首个账号）
-    acct = "主"
     try:
         from auto_dm import accounts as _acc
-        acct = _acc.current_name() or _acc.monitor_name() or ""
-        if not acct:
-            lst = [n for n, _ in _acc.list_accounts()]
-            acct = lst[0] if lst else "主"
     except Exception:
-        acct = "主"
-    bd_cmd = _exe_cmd("daemon", "--account", acct) if is_frozen \
-        else _module_cmd("auto_dm.browser_daemon", "--account", acct)
+        _acc = None
 
-    # 无控制台，避免黑窗
+    accts = []
+    if _acc is not None:
+        try:
+            accts = [n for n, _ in _acc.list_accounts()]
+        except Exception:
+            accts = []
+
     kwargs = {
         "creationflags": subprocess.CREATE_NO_WINDOW,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     } if os.name == "nt" else {}
-    for cmd in (recv_cmd, bd_cmd):
-        try:
-            p = subprocess.Popen(cmd, **kwargs)
-            procs.append(p)
-        except Exception as e:
-            print(f"[service] 启动守护子进程失败 {cmd}: {e}", flush=True)
+
+    for acct in accts:
+        bport = _acc.browser_daemon_port(acct)
+        rport = _acc.recv_daemon_port(acct)
+        # 凭证保活守护 browser_daemon（专属端口）
+        bd_cmd = _exe_cmd("daemon", "--account", acct, "--port", str(bport)) if is_frozen \
+            else _module_cmd("auto_dm.browser_daemon", "--account", acct, "--port", str(bport))
+        # 私信接收守护 recv_daemon（专属端口，仅该账号）
+        recv_cmd = _exe_cmd("recv", "--port", str(rport), "--accounts", acct) if is_frozen \
+            else _module_cmd("auto_dm.recv_daemon", "--port", str(rport), "--accounts", acct)
+        for cmd in (bd_cmd, recv_cmd):
+            try:
+                p = subprocess.Popen(cmd, **kwargs)
+                procs.append(p)
+            except Exception as e:
+                print(f"[service] 启动守护子进程失败 {cmd}: {e}", flush=True)
     return procs
 
 
@@ -104,11 +111,8 @@ try:
         def SvcStop(self):
             self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
             win32event.SetEvent(self._stop_evt)
-            # 优雅停止守护：POST /quit 给 9911/9912
-            self._request_quit(9911)
-            self._request_quit(9912)
             time.sleep(1)
-            # 兜底强制结束子进程
+            # 每账号守护均为独立子进程（各自专属端口），直接结束所有子进程
             for p in self._procs:
                 if p.poll() is None:
                     try:

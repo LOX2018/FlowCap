@@ -55,8 +55,16 @@ from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根�
 # ----------------------------------------------------------------------------
 _ROOT = app_root()        # DY_Spider_base（源码态）/ exe 所在目录（打包态）
 _DAEMON_DIR = os.path.join(_ROOT, "auto_dm")   # 打包态=exe 旁 auto_dm（持久目录）
+# 默认端口 9911；多账号独立凭证守护时由 main() 按账号专属端口覆盖（global）。
 CONTROL_PORT = 9911
-_ALIVE_FLAG = os.path.join(_DAEMON_DIR, ".daemon_alive")
+# 存活标记：默认 .daemon_alive；多账号时按账号区分（main 里按账号设置）。
+_ACTIVE_ACCOUNT = None
+
+
+def _alive_flag_path():
+    if _ACTIVE_ACCOUNT:
+        return os.path.join(_DAEMON_DIR, f".daemon_alive_{_ACTIVE_ACCOUNT}")
+    return os.path.join(_DAEMON_DIR, ".daemon_alive")
 
 
 def _setup_logger():
@@ -250,7 +258,7 @@ def _request_quit():
 
 def _touch_alive_flag():
     try:
-        with open(_ALIVE_FLAG, "w", encoding="utf-8") as f:
+        with open(_alive_flag_path(), "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
     except Exception:
         pass
@@ -258,18 +266,20 @@ def _touch_alive_flag():
 
 def _remove_alive_flag():
     try:
-        if os.path.exists(_ALIVE_FLAG):
-            os.remove(_ALIVE_FLAG)
+        if os.path.exists(_alive_flag_path()):
+            os.remove(_alive_flag_path())
     except Exception:
         pass
 
 
-def is_daemon_running():
-    """外部（GUI）判断守护是否在跑。"""
-    if not os.path.exists(_ALIVE_FLAG):
+def is_daemon_running(name=None, port=None):
+    """外部（GUI）判断守护是否在跑。name 给定时探测该账号专属端口/标记。"""
+    port = port or CONTROL_PORT
+    flag = os.path.join(_DAEMON_DIR, f".daemon_alive_{name}") if name else _alive_flag_path()
+    if not os.path.exists(flag):
         return False
     try:
-        with open(_ALIVE_FLAG, "r", encoding="utf-8") as f:
+        with open(flag, "r", encoding="utf-8") as f:
             pid = int(f.read().strip())
         try:
             import psutil
@@ -278,7 +288,7 @@ def is_daemon_running():
             import socket
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                return s.connect_ex(("127.0.0.1", CONTROL_PORT)) == 0
+                return s.connect_ex(("127.0.0.1", port)) == 0
             finally:
                 s.close()
     except Exception:
@@ -286,13 +296,21 @@ def is_daemon_running():
 
 
 def main():
+    global CONTROL_PORT, _ACTIVE_ACCOUNT
     parser = argparse.ArgumentParser(description="浏览器常驻守护进程（凭证保活）")
     parser.add_argument("--account", default="主", help="默认账号名")
     parser.add_argument("--no-clear", action="store_true",
                         help="守护退出时不清空凭证（用于调试）")
     parser.add_argument("--interval", type=int, default=300,
                         help="保活心跳间隔（秒），默认 300")
+    parser.add_argument("--port", type=int, default=None,
+                        help="HTTP 控制端口；多账号独立凭证守护时按账号专属端口传入")
     args = parser.parse_args()
+
+    # 多账号独立凭证守护：每个账号用专属端口 + 专属存活标记，互不冲突
+    if args.port:
+        CONTROL_PORT = args.port
+    _ACTIVE_ACCOUNT = args.account
 
     _setup_logger()
     if args.no_clear:

@@ -209,9 +209,10 @@ class WebBridge:
             status = adm.status
             paused = bool(adm.dispatch and getattr(adm.dispatch, "paused", False))
             room = getattr(adm, "room_title", "") or ""
-        # 守护状态
-        bd = _http_get(f"http://127.0.0.1:{_BROWSER_DAEMON_PORT}/status")
-        rd = _http_get(f"http://127.0.0.1:{_RECV_DAEMON_PORT}/status")
+        # 守护状态（按当前账号的专属端口探活）
+        _cur = accounts.current_name()
+        bd = _http_get(f"http://127.0.0.1:{accounts.browser_daemon_port(_cur)}/status")
+        rd = _http_get(f"http://127.0.0.1:{accounts.recv_daemon_port(_cur)}/status")
         return {
             "ok": True,
             "running": running,
@@ -502,9 +503,14 @@ class WebBridge:
         return self._work_action("collect", awemeId)
 
     # ---- 只读：私信会话（来自 recv_daemon 9912） --------------------------
+    def _recv_port(self, account=None):
+        """该账号的私信守护端口（默认当前账号）。"""
+        acc = account or accounts.current_name()
+        return accounts.recv_daemon_port(acc)
+
     def getConversations(self, account=None):
         rd = _http_get(
-            f"http://127.0.0.1:{_RECV_DAEMON_PORT}/conversations"
+            f"http://127.0.0.1:{self._recv_port(account)}/conversations"
             + (f"?account={urllib.parse.quote(str(account))}" if account else ""))
         if isinstance(rd, dict) and rd.get("ok"):
             return {"ok": True, "conversations": rd.get("conversations", [])}
@@ -512,7 +518,7 @@ class WebBridge:
 
     def getConversation(self, account, conv_id):
         rd = _http_get(
-            f"http://127.0.0.1:{_RECV_DAEMON_PORT}/conversation"
+            f"http://127.0.0.1:{self._recv_port(account)}/conversation"
             f"?account={urllib.parse.quote(str(account))}&conv_id={urllib.parse.quote(str(conv_id))}")
         if isinstance(rd, dict) and rd.get("ok"):
             return {"ok": True, "conversation": rd.get("conversation", {})}
@@ -523,6 +529,11 @@ class WebBridge:
         accs = []
         for name, env_path in accounts.list_accounts():
             st = accounts.account_status(name, force=False, timeout=4)
+            bport = accounts.browser_daemon_port(name)
+            rport = accounts.recv_daemon_port(name)
+            # 每账号独立守护：探测该账号专属端口的守护进程是否在跑
+            bd = _http_get(f"http://127.0.0.1:{bport}/status")
+            rd = _http_get(f"http://127.0.0.1:{rport}/status")
             accs.append({
                 "name": name,
                 "isCurrent": name == accounts.current_name(),
@@ -538,15 +549,18 @@ class WebBridge:
                 "hasTicket": bool(st.get("has_ticket")),
                 "hasPrivateKey": bool(st.get("has_private_key")),
                 "uid": st.get("uid"),
+                # 每账号独立守护的专属端口与运行状态
+                "browserDaemonPort": bport,
+                "recvDaemonPort": rport,
+                "browserDaemonAlive": bool(bd.get("alive")) if isinstance(bd, dict) else False,
+                "recvDaemonAlive": bool(rd.get("alive")) if isinstance(rd, dict) else False,
             })
-        bd = _http_get(f"http://127.0.0.1:{_BROWSER_DAEMON_PORT}/status")
         return {
             "ok": True,
             "accounts": accs,
             "current": accounts.current_name(),
             "monitor": accounts.monitor_name(),
             "sender": accounts.sender_name(),
-            "browserDaemonAlive": bool(bd.get("alive")) if isinstance(bd, dict) else False,
         }
 
     # ---- 只读：任务配置（词库 / 策略 / 开关） ----------------------------
@@ -723,7 +737,7 @@ class WebBridge:
         if not (account and conv_id and text):
             return {"ok": False, "error": "缺少 account/conv_id/text"}
         return _http_post_json(
-            f"http://127.0.0.1:{_RECV_DAEMON_PORT}/send",
+            f"http://127.0.0.1:{self._recv_port(account)}/send",
             {"account": account, "conv_id": conv_id, "text": str(text).strip()})
 
     # ---- 写：导出统计 -----------------------------------------------------
@@ -809,46 +823,58 @@ class WebBridge:
             return {"ok": False, "error": str(e)}
 
     def startBrowserDaemon(self, account=None):
+        # 启动该账号的凭证守护，监听其专属端口（accounts.browser_daemon_port）
         try:
             acc = account or accounts.current_name()
+            port = accounts.browser_daemon_port(acc)
             exe = sys.executable
             import subprocess
             subprocess.Popen(
-                [exe, "--mode", "daemon", "--account", acc],
+                [exe, "--mode", "daemon", "--account", acc, "--port", str(port)],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return {"ok": True, "port": port, "account": acc}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def stopBrowserDaemon(self, account=None):
+        # 通过该账号专属端口的 /quit 优雅停止对应凭证守护进程
+        try:
+            acc = account or accounts.current_name()
+            port = accounts.browser_daemon_port(acc)
+            _http_post_json(f"http://127.0.0.1:{port}/quit", {})
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def stopBrowserDaemon(self):
+    def startRecvDaemon(self, account=None):
+        # 启动该账号的私信守护，监听其专属端口（accounts.recv_daemon_port），
+        # 仅接收该账号的私信（--accounts），实现每账号独立私信守护。
         try:
-            browser_daemon._request_quit()
-            return {"ok": True}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    def startRecvDaemon(self):
-        try:
+            acc = account or accounts.current_name()
+            port = accounts.recv_daemon_port(acc)
             exe = sys.executable
             import subprocess
             subprocess.Popen(
-                [exe, "--mode", "recv"],
+                [exe, "--mode", "recv", "--port", str(port), "--accounts", acc],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            return {"ok": True}
+            return {"ok": True, "port": port, "account": acc}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def stopRecvDaemon(self):
+    def stopRecvDaemon(self, account=None):
         try:
-            _http_post_json(f"http://127.0.0.1:{_RECV_DAEMON_PORT}/quit", {})
+            acc = account or accounts.current_name()
+            port = accounts.recv_daemon_port(acc)
+            _http_post_json(f"http://127.0.0.1:{port}/quit", {})
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
     def refreshBrowserDaemon(self, account=None):
         acc = account or accounts.current_name()
+        port = accounts.browser_daemon_port(acc)
         return _http_post_json(
-            f"http://127.0.0.1:{_BROWSER_DAEMON_PORT}/refresh?account={urllib.parse.quote(str(acc))}",
+            f"http://127.0.0.1:{port}/refresh?account={urllib.parse.quote(str(acc))}",
             {})
 
 

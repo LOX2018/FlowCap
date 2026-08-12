@@ -3793,6 +3793,11 @@ function Accounts({
             tokenExpire: isValid ? '有效' : (lvl === 'nosign' ? '未扫码' : lvl === 'missing' ? '未配置' : '失效'),
             lvlLabel: lvlLabel,
             lvl: lvl,
+            // 每账号独立守护的专属端口与运行状态（getAccounts 后端透传）
+            browserDaemonPort: a.browserDaemonPort,
+            recvDaemonPort: a.recvDaemonPort,
+            browserDaemonAlive: !!a.browserDaemonAlive,
+            recvDaemonAlive: !!a.recvDaemonAlive,
             lastCheck: '刚刚',
           lastRun: {
             room: '—',
@@ -4031,18 +4036,6 @@ function Accounts({
     className: "btn ghost",
     onClick: checkAll
   }, "\u5168\u90E8\u6821\u9A8C"), window.ApiBridge && window.ApiBridge.ready ? React.createElement(React.Fragment, null, React.createElement("button", {
-    className: "btn ghost",
-    onClick: () => api.startBrowserDaemon().then(r => push(r && r.ok ? '凭证守护已启动' : '启动失败')).catch(e => push('异常: ' + e))
-  }, "\u542F\u52A8\u51ED\u8BC1\u5B88\u62A4"), React.createElement("button", {
-    className: "btn ghost",
-    onClick: () => api.stopBrowserDaemon().then(r => push(r && r.ok ? '凭证守护已停止' : '停止失败')).catch(e => push('异常: ' + e))
-  }, "\u505C\u6B62\u51ED\u8BC1\u5B88\u62A4"), React.createElement("button", {
-    className: "btn ghost",
-    onClick: () => api.startRecvDaemon().then(r => push(r && r.ok ? '私信接收守护已启动' : '启动失败')).catch(e => push('异常: ' + e))
-  }, "\u542F\u52A8\u79C1\u4FE1\u5B88\u62A4"), React.createElement("button", {
-    className: "btn ghost",
-    onClick: () => api.stopRecvDaemon().then(r => push(r && r.ok ? '私信接收守护已停止' : '停止失败')).catch(e => push('异常: ' + e))
-  }, "\u505C\u6B62\u79C1\u4FE1\u5B88\u62A4"), React.createElement("button", {
     className: "btn primary",
     onClick: () => push('已刷新所有账号状态')
   }, "\u5237\u65B0\u72B6\u6001")) : React.createElement(React.Fragment, null, React.createElement("button", {
@@ -4170,6 +4163,82 @@ function Accounts({
   }, "\u67E5\u9605\u6A21\u5F0F"))), React.createElement("div", {
     className: "acct-body"
   }, React.createElement("div", {
+    className: "acct-section"
+  }, React.createElement("h4", null, "\u5B88\u62A4\u670D\u52A1"), React.createElement("div", {
+    className: "acct-row"
+  }, React.createElement("span", {
+    className: "k"
+  }, "\u51ED\u8BC1\u5B88\u62A4"), React.createElement("span", {
+    className: "v",
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8
+    }
+  }, React.createElement(Pill, {
+    c: a.browserDaemonAlive ? 'ok' : 'muted'
+  }, a.browserDaemonAlive ? '运行中' : '未运行'), React.createElement("button", {
+    className: "btn sm ghost",
+    onClick: () => {
+      if (a.browserDaemonAlive) {
+        api.stopBrowserDaemon(a.name).then(r => {
+          if (r && r.ok) {
+            setRealAccts(prev => (prev || []).map(x => x.name === a.name ? Object.assign({}, x, { browserDaemonAlive: false }) : x));
+            push('凭证守护已停止');
+          } else push('停止失败: ' + (r && r.error || ''));
+        }).catch(e => push('异常: ' + e));
+      } else {
+        api.startBrowserDaemon(a.name).then(r => {
+          if (r && r.ok) {
+            setRealAccts(prev => (prev || []).map(x => x.name === a.name ? Object.assign({}, x, { browserDaemonAlive: true }) : x));
+            push('凭证守护已启动');
+          } else push('启动失败: ' + (r && r.error || ''));
+        }).catch(e => push('异常: ' + e));
+      }
+    }
+  }, a.browserDaemonAlive ? '\u505C\u6B62' : '\u542F\u52A8'), React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: 'var(--muted)'
+    }
+  }, ":", a.browserDaemonPort))), React.createElement("div", {
+    className: "acct-row"
+  }, React.createElement("span", {
+    className: "k"
+  }, "\u79C1\u4FE1\u5B88\u62A4"), React.createElement("span", {
+    className: "v",
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8
+    }
+  }, React.createElement(Pill, {
+    c: a.recvDaemonAlive ? 'ok' : 'muted'
+  }, a.recvDaemonAlive ? '运行中' : '未运行'), React.createElement("button", {
+    className: "btn sm ghost",
+    onClick: () => {
+      if (a.recvDaemonAlive) {
+        api.stopRecvDaemon(a.name).then(r => {
+          if (r && r.ok) {
+            setRealAccts(prev => (prev || []).map(x => x.name === a.name ? Object.assign({}, x, { recvDaemonAlive: false }) : x));
+            push('私信守护已停止');
+          } else push('停止失败: ' + (r && r.error || ''));
+        }).catch(e => push('异常: ' + e));
+      } else {
+        api.startRecvDaemon(a.name).then(r => {
+          if (r && r.ok) {
+            setRealAccts(prev => (prev || []).map(x => x.name === a.name ? Object.assign({}, x, { recvDaemonAlive: true }) : x));
+            push('私信守护已启动');
+          } else push('启动失败: ' + (r && r.error || ''));
+        }).catch(e => push('异常: ' + e));
+      }
+    }
+  }, a.recvDaemonAlive ? '\u505C\u6B62' : '\u542F\u52A8'), React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: 'var(--muted)'
+    }
+  }, ":", a.recvDaemonPort)))), React.createElement("div", {
     className: "acct-section"
   }, React.createElement("h4", null, "\u4E0A\u6B21\u8FD0\u884C\u65E5\u5FD7"), React.createElement("div", {
     className: "acct-row"
@@ -5444,13 +5513,13 @@ function App() {
     startBrowserDaemon: a => window.ApiBridge.startBrowserDaemon ? window.ApiBridge.startBrowserDaemon(a) : Promise.resolve({
       ok: false
     }),
-    stopBrowserDaemon: () => window.ApiBridge.stopBrowserDaemon ? window.ApiBridge.stopBrowserDaemon() : Promise.resolve({
+    stopBrowserDaemon: a => window.ApiBridge.stopBrowserDaemon ? window.ApiBridge.stopBrowserDaemon(a) : Promise.resolve({
       ok: false
     }),
-    startRecvDaemon: () => window.ApiBridge.startRecvDaemon ? window.ApiBridge.startRecvDaemon() : Promise.resolve({
+    startRecvDaemon: a => window.ApiBridge.startRecvDaemon ? window.ApiBridge.startRecvDaemon(a) : Promise.resolve({
       ok: false
     }),
-    stopRecvDaemon: () => window.ApiBridge.stopRecvDaemon ? window.ApiBridge.stopRecvDaemon() : Promise.resolve({
+    stopRecvDaemon: a => window.ApiBridge.stopRecvDaemon ? window.ApiBridge.stopRecvDaemon(a) : Promise.resolve({
       ok: false
     }),
     refreshBrowserDaemon: a => window.ApiBridge.refreshBrowserDaemon ? window.ApiBridge.refreshBrowserDaemon(a) : Promise.resolve({

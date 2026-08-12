@@ -120,6 +120,39 @@ def env_path_of(name):
     return _env_path_of(name)
 
 
+# 每账号守护端口分配：用账号名稳定哈希，保证每个账号的
+# 凭证守护(browser_daemon)与私信守护(recv_daemon)有各自唯一、稳定的端口，
+# 从而实现「每个账号独立启停守护」，互不冲突。
+# 范围 [10000, 10999]，避开 9911/9912/8765/8877/8080 等常用端口。
+_BPORT_BASE = 10000
+_RPORT_BASE = 10500
+_BPORT_SPAN = 500   # browser 端口段 [10000,10499]
+_RPORT_SPAN = 500   # recv 端口段 [10500,10999]
+
+
+def _stable_port(name, base, span):
+    # 用 zlib.crc32 稳定哈希：不依赖 PYTHONHASHSEED（hash() 跨进程随机，会导致
+    # web_bridge 算的端口与 subprocess 拉起的守护进程算的端口不一致）。
+    try:
+        import zlib
+        h = zlib.crc32((name or "").encode("utf-8")) % span
+    except Exception:
+        h = 0
+    return base + h
+
+
+def browser_daemon_port(name=None):
+    """该账号的凭证守护(browser_daemon)专属端口（稳定分配）。"""
+    name = name or current_name()
+    return _stable_port(name, _BPORT_BASE, _BPORT_SPAN)
+
+
+def recv_daemon_port(name=None):
+    """该账号的私信守护(recv_daemon)专属端口（稳定分配）。"""
+    name = name or current_name()
+    return _stable_port(name, _RPORT_BASE, _RPORT_SPAN)
+
+
 def profile_dir_of(env_path):
     """根据账号 .env 路径推导该账号独占的浏览器 profile 目录（指纹封存隔离）。
 
