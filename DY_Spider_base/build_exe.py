@@ -5,16 +5,15 @@
 把项目打包为「双击即运行」的可执行封装版，取消任何 .bat / python -m 脚本启动制。
 
 产物：
-    dist/DYAutoDM/DYAutoDM.exe      <- 统一入口（GUI / 守护 / 接收 均由此 exe 按 --mode 分流）
+    dist/DYAutoDM/DYAutoDM.exe      <- 统一入口（WebView 前端 / 守护 / 接收 均由此 exe 按 --mode 分流）
     dist/DYAutoDM/...              <- 浏览器内核 vb_chromium、profile、.env、logs 等运行时资源
 
 用法（需在装有真实 Python 3.10+ 的机器上执行，本机为 Store 占位符无法运行）：
     pip install pyinstaller
     python build_exe.py
-打包完成后，把 dist/DYAutoDM 整个目录发给测试人员，双击 DYAutoDM.exe 即启动控制台。
+打包完成后，把 dist/DYAutoDM 整个目录发给测试人员，双击 DYAutoDM.exe 即启动 WebView 前端。
 
-GUI 内部启动守护时，会调用 sys.executable（即本 exe）--mode daemon / --mode recv，
-因此无需任何外部脚本。
+守护由 WebView 前端内部按需在浏览器/接收守护接口拉起，因此无需任何外部脚本。
 """
 import os
 import sys
@@ -134,7 +133,6 @@ def build(version):
         "--paths", HERE,
         "--hidden-import", "auto_dm.browser_daemon",
         "--hidden-import", "auto_dm.recv_daemon",
-        "--hidden-import", "auto_dm.features_gui",
         "--hidden-import", "auto_dm.features",
         "--hidden-import", "auto_dm.web_bridge",
         "--hidden-import", "webview",
@@ -210,7 +208,7 @@ def main(no_clean=False):
     collect_data()
     print("\n[done] 封装完成：", DIST_DIR)
     print(f"       版本={version}  测试版={TEST_BUILD}")
-    print("       双击 DYAutoDM.exe 启动控制台；守护由 GUI 内部自动拉起。")
+    print("       双击 DYAutoDM.exe 启动 WebView 前端；守护由前端内部自动拉起。")
 
 
 if __name__ == "__main__":

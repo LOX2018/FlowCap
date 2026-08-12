@@ -1,12 +1,13 @@
 ﻿@echo off
 chcp 65001 >nul
 REM ============================================================
-REM  DouYin Auto-DM - main launcher (GUI + auto-start daemons)
+REM  DouYin Auto-DM - main launcher (WebView frontend + auto-start daemons)
 REM  Double-click to: 1) launch browser daemon (keep credential alive)
 REM                    2) launch receive daemon (per-account isolated DM)
-REM                    3) start the GUI
+REM                    3) start the WebView frontend
 REM  Daemons run as standalone no-window processes; they keep running
-REM  after the GUI is closed. Stop them from the GUI or kill the processes.
+REM  after the WebView window is closed. Stop them from the WebView
+REM  frontend or kill the processes.
 REM ============================================================
 set PYTHON_EXE=C:\Users\LOX\AppData\Local\Programs\Python\Python314\pythonw.exe
 set PYTHON_EXE_CON=C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe
@@ -28,11 +29,11 @@ echo [2/3] Starting receive daemon...
 start "" "%PYTHON_EXE%" -m auto_dm.recv_daemon
 timeout /t 2 >nul
 
-REM 3) GUI (needs a window)
-echo [3/3] Starting GUI...
-"%PYTHON_EXE_CON%" -m auto_dm.gui
+REM 3) WebView frontend (needs a window)
+echo [3/3] Starting WebView frontend...
+"%PYTHON_EXE_CON%" -m auto_dm.launcher
 if errorlevel 1 (
     echo.
-    echo [ERROR] GUI launch failed, check logs or Python env.
+    echo [ERROR] WebView launch failed, check logs or Python env.
     pause
 )

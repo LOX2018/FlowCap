@@ -1459,6 +1459,7 @@ function Live({
     enabled: true
   }]);
   const [tasksCfg, setTasksCfg] = useState(null);
+  const [forceRescan, setForceRescan] = useState(false);
   const [realAccts, setRealAccts] = useState([]);
   const [liveStream, setLiveStream] = useState(null);
   const streamRef = useRef(null);
@@ -1503,6 +1504,7 @@ function Live({
     if (tasksCfg.maxTarget) setDmLimit(String(tasksCfg.maxTarget));
     if (tasksCfg.interval) setDmInterval(String(tasksCfg.interval));
     if (tasksCfg.delay) setDmJitter(String(tasksCfg.delay));
+    if (typeof tasksCfg.forceRescan === 'boolean') setForceRescan(tasksCfg.forceRescan);
     if (tasksCfg.dmPool && tasksCfg.dmPool.length) setDmTemplates(tasksCfg.dmPool.map(p => ({
       text: p.text,
       enabled: p.enabled
@@ -1995,7 +1997,12 @@ function Live({
         maxTarget: parseInt(dmLimit, 10) || 9999,
         interval: parseFloat(dmInterval) || 60,
         delay: dmJitter,
-        dmPool: dmTemplates
+        dmPool: dmTemplates.filter(t => t.text && t.text.trim()).map(t => ({
+          text: t.text.trim(),
+          enabled: t.enabled
+        })),
+        enableSend: enableSend,
+        forceRescan: forceRescan
       };
       api.start(cfg).then(r => push(r && r.ok ? '引擎已启动 · ' + room : '启动失败: ' + (r && r.error || ''))).catch(e => push('启动异常: ' + e));
     }
@@ -3267,12 +3274,16 @@ function Settings({
 }) {
   const [expandedAcct, setExpandedAcct] = useState(null);
   const [tasksCfg, setTasksCfg] = useState(null);
+  const [forceRescan, setForceRescan] = useState(false);
   const [realAccts, setRealAccts] = useState([]);
   useEffect(() => {
     if (!(window.ApiBridge && window.ApiBridge.ready)) return;
     let alive = true;
     const loadTasks = () => api.getTasks().then(d => {
-      if (alive && d && d.ok) setTasksCfg(d);
+      if (alive && d && d.ok) {
+        setTasksCfg(d);
+        if (typeof d.forceRescan === 'boolean') setForceRescan(d.forceRescan);
+      }
     }).catch(() => {});
     const loadAccts = () => api.getAccounts().then(d => {
       if (alive && d && d.ok && d.accounts) setRealAccts(d.accounts);
@@ -3313,7 +3324,9 @@ function Settings({
   };
   const saveAll = () => {
     if (window.ApiBridge && window.ApiBridge.ready) {
-      api.saveConfig({}).then(r => push(r && r.ok ? '配置已写回 config.py · 写入 ' + (r.written || 0) + ' 项' : '保存失败: ' + (r && r.error || ''))).catch(e => push('保存异常: ' + e));
+      api.saveConfig({
+        forceRescan: forceRescan
+      }).then(r => push(r && r.ok ? '配置已写回 config.py · 写入 ' + (r.written || 0) + ' 项' : '保存失败: ' + (r && r.error || ''))).catch(e => push('保存异常: ' + e));
     } else {
       push('未连接后端，无法保存');
     }
@@ -3585,6 +3598,38 @@ function Settings({
     checked: DEFAULTS.logFile,
     readOnly: true
   }), React.createElement("i", null)))))), React.createElement("div", {
+    style: {
+      background: 'var(--panel)',
+      border: '1px solid var(--line)',
+      borderRadius: 12,
+      padding: '14px 16px',
+      marginBottom: 14
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      marginBottom: 8
+    }
+  }, "\u542F\u52A8\u7B56\u7565"), React.createElement("label", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      fontSize: 13,
+      color: 'var(--muted)',
+      cursor: 'pointer'
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: forceRescan,
+    onChange: e => setForceRescan(e.target.checked)
+  }), React.createElement("span", null, "\u542F\u52A8\u524D\u5F3A\u5236\u91CD\u65B0\u626B\u7801"), React.createElement("i", {
+    style: {
+      fontSize: 12,
+      color: 'var(--muted)'
+    }
+  }, "\uFF08\u52FE\u9009\u5219\u6BCF\u6B21\u542F\u52A8\u81EA\u52A8\u79C1\u4FE1\u90FD\u5F3A\u5236\u91CD\u626B\u5FFD\u7565\u78C1\u76D8\u51ED\u8BC1\uFF1B\u4E0D\u52FE\u9009\u5219\u590D\u7528\u5B88\u62A4\u8FDB\u7A0B\u4FDD\u6D3B\u7684\u51ED\u8BC1\u5FEB\u901F\u542F\u52A8\uFF09"))), React.createElement("div", {
     style: {
       display: 'flex',
       alignItems: 'center',

@@ -136,8 +136,8 @@ def save_cookie_to_env(cookie_str, env_path=".env"):
 def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
     """构造并返回当前账号（accounts 选中）的已登录 auth。
 
-    供功能窗口（features_gui）等需要「当前登录态」的入口复用，
-    与 run/gui 启动私信走同一套登录逻辑，避免重复实现。
+    供需要「当前登录态」的入口（如 web_bridge 的搜索/点赞/收藏等）复用，
+    与 run 启动私信走同一套登录逻辑，避免重复实现。
     返回 (auth, cookie_str)；若当前账号无 cookie 且无法登录则返回 (None, None)。
     """
     try:

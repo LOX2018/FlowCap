@@ -616,7 +616,7 @@ class WebBridge:
             "enableDanmaku": bool(getattr(C, "ENABLE_DANMAKU", True)),
             "enableConsole": bool(getattr(C, "ENABLE_CONSOLE", True)),
             "enableSend": bool(getattr(C, "ENABLE_SEND", True)),
-            "forceRescan": bool(getattr(C, "FORCE_RESCAN_ON_START", True)),
+            "forceRescan": bool(getattr(C, "FORCE_RESCAN_ON_START", False)),
             "liveUrl": getattr(C, "LIVE_URL", ""),
         }
 
@@ -646,6 +646,9 @@ class WebBridge:
                     C.ENABLE_CONSOLE = bool(config["enableConsole"])
                 if "enableSend" in config:
                     C.ENABLE_SEND = bool(config["enableSend"])
+                if "forceRescan" in config:
+                    # 前端「启动前强制重新扫码」开关：本次启动是否忽略磁盘凭证强刷
+                    C.FORCE_RESCAN_ON_START = bool(config["forceRescan"])
                 if "dmPool" in config and isinstance(config["dmPool"], list):
                     pool, en = [], []
                     for item in config["dmPool"]:
