@@ -34,6 +34,9 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # DY_Spi
 _BROWSER_DAEMON_PORT = 9911
 _RECV_DAEMON_PORT = 9912
 
+# getStats 只返回最近 N 条记录（total 仍为全量），避免高频轮询全量序列化大响应
+STATS_RECENT = 200
+
 from auto_dm import config as C
 from auto_dm import accounts
 from auto_dm import browser_daemon
@@ -232,9 +235,11 @@ class WebBridge:
         if adm and adm.dispatch:
             records = getattr(adm.dispatch, "records", []) or []
         sent = sum(1 for r in records if r.get("status") not in ("已捕获", "采集(未发)", None, ""))
+        # 性能优化：只返回最近 STATS_RECENT 条明细与聚合，避免高频轮询时全量序列化大响应
+        recent = records[-STATS_RECENT:] if len(records) > STATS_RECENT else records
         # 查阅模式：按 nickname 聚合
         agg = OrderedDict()
-        for r in records:
+        for r in recent:
             agg.setdefault(r.get("nickname", ""), []).append(r)
         view = []
         for name, rs in agg.items():
@@ -260,7 +265,7 @@ class WebBridge:
                     "sendTs": r.get("send_ts", ""),
                     "captureTs": r.get("capture_ts", ""),
                 }
-                for r in records
+                for r in recent
             ],
             "view": view,
         }

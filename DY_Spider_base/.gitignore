@@ -87,6 +87,16 @@ _frag.js
 _build_compiled.js
 _locate_key.js
 check_console.py
+_precompile.js
+_jscheck.js
+_check_exe12.py
+_check_exe10.py
+_verify_pyz.py
+_bridge_smoke.py
+_dl_react.ps1
+_serve.ps1
+_serve2.ps1
+_run_exe11.ps1
 
 # Playwright MCP 运行产物
 .playwright-mcp/
