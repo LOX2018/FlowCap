@@ -2015,8 +2015,7 @@ function Accounts({ push, goMsg, api }) {
   };
   const addAccount = () => {
     const name = addForm.name.trim();
-    const uid = addForm.uid.trim();
-    if (!name || !uid) { push('请填写昵称与 UID'); return; }
+    if (!name) { push('请填写昵称'); return; }
     if (window.ApiBridge && window.ApiBridge.ready) {
       api.addAccount(name).then(r => {
         if (r && r.ok) { push('已新增账号 ' + name + '（请在守护中扫码登录）'); setAddOpen(false); setAddForm({ name: '', uid: '', cookie: '' }); }
@@ -2024,6 +2023,7 @@ function Accounts({ push, goMsg, api }) {
       }).catch(e => push('新增异常: ' + e));
       return;
     }
+    const uid = addForm.uid.trim() || '—';
     const nu = {
       id: 'a' + Date.now(),
       name, uid,
@@ -2587,8 +2587,8 @@ function AccountDrawer({ form, setForm, onSave, onClose }) {
                 <input className="input" placeholder="如：阿澈探店" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} autoFocus />
               </div>
               <div className="field">
-                <label>UID</label>
-                <input className="input mono" placeholder="UC_xxxxxxxx" value={form.uid} onChange={e => setForm(f => ({ ...f, uid: e.target.value }))} />
+                <label>UID <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(可选 · 扫码后自动获取)</span></label>
+                <input className="input mono" placeholder="留空即可，扫码后自动读入" value={form.uid} onChange={e => setForm(f => ({ ...f, uid: e.target.value }))} />
               </div>
             </div>
             <div className="field" style={{ marginTop: 12 }}>
@@ -2602,7 +2602,7 @@ function AccountDrawer({ form, setForm, onSave, onClose }) {
         </div>
         <div className="drawer-foot">
           <button className="btn ghost" onClick={onClose}>取消</button>
-          <button className="btn primary" onClick={onSave} disabled={!form.name.trim() || !form.uid.trim()}>确认新增</button>
+          <button className="btn primary" onClick={onSave} disabled={!form.name.trim()}>确认新增</button>
         </div>
       </motion.div>
     </>

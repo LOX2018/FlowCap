@@ -81,6 +81,8 @@ _peek_fm.js
 _patch_fm.js
 _patch_fm2.py
 _verify_exe.py
+_babel_check.js
+_verify_uid.py
 _frag.js
 _build_compiled.js
 _locate_key.js
