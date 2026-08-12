@@ -5,9 +5,12 @@
 彻底绕开原 DYchajian 卡死的 get_user_info 风控环节。
 """
 
+import re
 import sys
+import time
 import gzip
 import threading
+from collections import deque
 if sys.stdout is not None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -37,6 +40,68 @@ class LiveChatHook(DouyinLive):
         # 运行期登录态心跳线程（每 C.WS_HEARTBEAT_INTERVAL 秒探活一次，失败自动重扫）
         self._hb_thread = None
         self._hb_stop = threading.Event()
+        # ---- 实时信息流（前端「直播监听」页数据源）----
+        # feed: {type: danmaku|gift|enter|like|follow, nickname, content, ts(显示), epoch}
+        self.feed = deque(maxlen=500)
+        # 房间热度：在线人数 / 累计点赞 / 观看人次 / 原始 displayLong 文本
+        self.room_stats = {"online": 0, "likes": 0, "total_user": 0, "display": ""}
+        # 热度时间序列：(epoch, online, likes)，供前端折线图
+        self.heat_series = deque(maxlen=180)
+
+    # ------------------------------------------------------------------
+    # 实时信息流快照（供 web_bridge.getLiveStream 轮询）
+    # ------------------------------------------------------------------
+    def reset_stream(self):
+        self.feed.clear()
+        self.room_stats = {"online": 0, "likes": 0, "total_user": 0, "display": ""}
+        self.heat_series.clear()
+
+    def feed_snapshot(self, limit=120):
+        """返回最近 limit 条信息流（前端倒序展示）。"""
+        lst = list(self.feed)[-limit:]
+        return [dict(x) for x in reversed(lst)]
+
+    def room_snapshot(self):
+        return dict(self.room_stats)
+
+    def heat_snapshot(self):
+        return [list(x) for x in self.heat_series]
+
+    @staticmethod
+    def _extract_num(text, keywords):
+        """在 text 中找关键词（在线/点赞…）后第一个数字，支持 '1.2万' 缩写。"""
+        for kw in keywords:
+            idx = text.find(kw)
+            if idx >= 0:
+                m = re.search(r"([\d.]+)\s*(万|k|K)?", text[idx + len(kw):])
+                if m:
+                    val = float(m.group(1))
+                    unit = (m.group(2) or "").lower()
+                    if unit == "万":
+                        val *= 10000
+                    elif unit == "k":
+                        val *= 1000
+                    return int(val)
+        return 0
+
+    def _push_feed(self, type_, nickname, content, epoch=None):
+        self.feed.append({
+            "type": type_,
+            "nickname": nickname or "—",
+            "content": content or "",
+            "ts": time.strftime("%H:%M:%S"),
+            "epoch": epoch if epoch is not None else time.time(),
+        })
+
+    def _on_room_stats(self, m):
+        text = getattr(m, "displayLong", None) or getattr(m, "displayShort", None) or ""
+        if not text:
+            return
+        self.room_stats["display"] = text
+        self.room_stats["online"] = self._extract_num(text, ("在线", "当前在线"))
+        self.room_stats["likes"] = self._extract_num(text, ("点赞",))
+        self.room_stats["total_user"] = max(self.room_stats["online"], self.room_stats["total_user"])
+        self.heat_series.append((time.time(), self.room_stats["online"], self.room_stats["likes"]))
 
     def start_heartbeat(self):
         """启动运行期登录态心跳守护线程（在 start_ws 之前调用，随 WS 线程一同运行）。"""
@@ -130,6 +195,12 @@ class LiveChatHook(DouyinLive):
                         m = Live_pb2.GiftMessage()
                         m.ParseFromString(item.payload)
                         print(f'\033[1;37;40m[礼物]SEC_UID = {m.user.sec_uid} - {m.user.nickname}\033[m 送给 \033[1;37;40m{m.toUser.sec_uid} - {m.toUser.nickname}\033[m \033[4;30;44m{m.gift.name}\033[m x {m.comboCount}')
+                        try:
+                            gname = m.gift.name or "礼物"
+                            gcnt = m.comboCount or 1
+                            self._push_feed("gift", m.user.nickname, f"{gname} × {gcnt}")
+                        except Exception:
+                            pass
                     elif item.method == "WebcastChatMessage":
                         m = Live_pb2.ChatMessage()
                         m.ParseFromString(item.payload)
@@ -143,6 +214,7 @@ class LiveChatHook(DouyinLive):
                             "nickname": nickname,
                             "comment": getattr(m, "content", None),
                         }
+                        self._push_feed("danmaku", nickname, target.get("comment"))
                         if C.ENABLE_LIVE_CHAT:
                             logger.info(f"[弹幕] {nickname}(uid={user_id} sec_uid={sec_uid}): {target['comment']}")
                             if self._is_encrypted_nickname(nickname):
@@ -166,19 +238,35 @@ class LiveChatHook(DouyinLive):
                         m = Live_pb2.MemberMessage()
                         m.ParseFromString(item.payload)
                         print(f'\033[1;37;40m[进入]SEC_UID = {m.user.sec_uid} - {m.user.nickname}\033[m 进入直播间')
+                        try:
+                            self._push_feed("enter", m.user.nickname, "进入直播间")
+                        except Exception:
+                            pass
                     elif item.method == "WebcastLikeMessage":
                         m = Live_pb2.LikeMessage()
                         m.ParseFromString(item.payload)
                         print(f'\033[1;37;40m[点赞]SEC_UID = {m.user.sec_uid} - {m.user.nickname}\033[m 点赞了 {m.count} 次')
+                        try:
+                            self._push_feed("like", m.user.nickname, f"点赞 × {m.count}")
+                        except Exception:
+                            pass
                     elif item.method == "WebcastSocialMessage":
                         m = Live_pb2.SocialMessage()
                         m.ParseFromString(item.payload)
                         if m.action == 1:
                             print(f'\033[1;37;40m[关注]SEC_UID = {m.user.sec_uid} - {m.user.nickname}\033[m 关注主播')
+                            try:
+                                self._push_feed("follow", m.user.nickname, "关注了主播")
+                            except Exception:
+                                pass
                     elif item.method == "WebcastRoomStatsMessage":
                         m = Live_pb2.RoomStatsMessage()
                         m.ParseFromString(item.payload)
                         print(f'\033[1;37;40m[房间信息] {m.displayLong}\033[m')
+                        try:
+                            self._on_room_stats(m)
+                        except Exception:
+                            pass
                 except Exception as e:
                     # 单条消息解析/处理异常不应中断整帧，避免漏掉同帧其他消息
                     print('live_hook item error:', str(e))

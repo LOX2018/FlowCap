@@ -710,9 +710,9 @@ function Overview({ push, api, overview, ready }) {
 }
 
 /* ---------- 数据采集 ---------- */
-function Crawl({ push, goMsg }) {
+function Crawl({ push, goMsg, api, overview }) {
   const [mode, setMode] = useState('video');
-  const [q, setQ] = useState('美食');
+  const [q, setQ] = useState('');
   const [range, setRange] = useState('24h');
   const [order, setOrder] = useState('综合');
   const [detail, setDetail] = useState(null);
@@ -720,19 +720,24 @@ function Crawl({ push, goMsg }) {
   const [fav, setFav] = useState(new Set());
   const [searching, setSearching] = useState(false);
   const [did, setDid] = useState(false);
+  const [results, setResults] = useState([]);
 
   const runSearch = () => {
+    const kw = q.trim();
+    if (!kw) { push('请输入搜索关键词'); return; }
+    if (!(window.ApiBridge && window.ApiBridge.ready)) { push('未连接后端，无法搜索'); return; }
     setSearching(true);
-    setTimeout(() => { setSearching(false); setDid(true); push('已根据条件完成搜索，共命中结果'); }, 650);
+    const sortType = order === '最新发布' ? '1' : order === '热度最高' ? '2' : '0';
+    const pub = range === '7d' ? '1' : range === '30d' ? '2' : range === 'all' ? '0' : '1';
+    api.search(mode, kw, 20, sortType, pub).then(d => {
+      setSearching(false);
+      setDid(true);
+      if (d && d.ok) { setResults(d.list || []); push('搜索完成 · 命中 ' + (d.list || []).length + ' 条'); }
+      else push('搜索失败: ' + ((d && d.error) || ''));
+    }).catch(e => { setSearching(false); setDid(true); setResults([]); push('搜索异常: ' + e); });
   };
 
-  const filtered = useMemo(() => {
-    const kw = q.trim();
-    if (!kw) return [];
-    if (mode === 'video') return VIDEOS.filter(v => v.title.includes(kw) || v.author.includes(kw));
-    if (mode === 'user') return USERS.filter(u => u.name.includes(kw) || u.note.includes(kw));
-    return LIVES.filter(l => l.title.includes(kw) || l.author.includes(kw));
-  }, [q, mode]);
+  const filtered = results;
 
   const empty = did && filtered.length === 0;
   useEffect(() => {
@@ -741,9 +746,16 @@ function Crawl({ push, goMsg }) {
     return () => window.removeEventListener('keydown', h);
   }, []);
   const onAct = (kind) => {
-    if (kind === 'like') { setLiked(s => new Set(s).add(detail.id)); push('已点赞该作品'); }
-    if (kind === 'fav') { setFav(s => new Set(s).add(detail.id)); push('已收藏该作品'); }
-    if (kind === 'comment') { push('已发布评论：讲得真好！'); }
+    const aid = detail && detail.v ? (detail.v.awemeId || '') : '';
+    if (kind === 'like') {
+      if (window.ApiBridge && window.ApiBridge.ready && aid) { api.diggVideo(aid).then(r => { if (r && r.ok) { setLiked(s => new Set(s).add(aid)); push('已点赞该作品'); } else push('点赞失败: ' + ((r && r.error) || '')); }).catch(e => push('异常: ' + e)); }
+      else { setLiked(s => new Set(s).add(aid)); push('已点赞该作品（本地标记）'); }
+    }
+    if (kind === 'fav') {
+      if (window.ApiBridge && window.ApiBridge.ready && aid) { api.favoriteVideo(aid).then(r => { if (r && r.ok) { setFav(s => new Set(s).add(aid)); push('已收藏该作品'); } else push('收藏失败: ' + ((r && r.error) || '')); }).catch(e => push('异常: ' + e)); }
+      else { setFav(s => new Set(s).add(aid)); push('已收藏该作品（本地标记）'); }
+    }
+    if (kind === 'comment') { push('评论发布功能需在对应采集模块对接'); }
     if (kind === 'export') { push('已导出为 JSON · comment_v1.json'); }
   };
 
@@ -754,7 +766,7 @@ function Crawl({ push, goMsg }) {
           <h2>数据采集</h2>
           <div className="desc">搜索用户 / 作品 / 直播，采集主页、评论与粉丝数据</div>
         </div>
-        <span className="demo-tag">未连接</span>
+        <span className="demo-tag">{window.ApiBridge && window.ApiBridge.ready ? '真实搜索接口' : '未连接'}</span>
       </div>
       <div className="card" style={{ marginBottom: 14 }} data-od-id="search-panel">
         <div className="searchbar">
@@ -796,55 +808,67 @@ function Crawl({ push, goMsg }) {
         <div className="card" style={{ padding: '46px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>未命中「{q}」，换一个关键词试试</div>
       ) : mode === 'video' ? (
         <div className="result-grid" data-od-id="video-results">
-          {filtered.map(v => (
-            <div className="card vcard" data-od-id={'video-card-' + v.id} key={v.id}>
-              <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(40% 0.13 ' + v.hue + '), oklch(24% 0.08 ' + v.hue + '))' }} onClick={() => setDetail({ type: 'video', v })}>
+          {filtered.map((v, i) => {
+            const vId = v.awemeId || ('v' + i);
+            return (
+            <div className="card vcard" data-od-id={'video-card-' + vId} key={vId}>
+              <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(40% 0.13 ' + (hue(i + 1) % 360) + '), oklch(24% 0.08 ' + (hue(i + 1) % 360) + '))' }} onClick={() => setDetail({ type: 'video', v })}>
                 <span className="src">douyin</span>
                 <span className="play" aria-hidden="true" />
-                <span className="dur">{v.dur}</span>
+                <span className="dur">▶</span>
               </div>
-              <div className="t">{v.title}</div>
-              <div className="m"><span>▶ {v.plays}</span><span>♥ {v.likes}</span><span>评论 {v.cmts}</span></div>
+              <div className="t">{v.title || '（无标题）'}</div>
+              <div className="m"><span>▶ {v.plays || 0}</span><span>♥ {v.likes || 0}</span><span>评论 {v.cmts || 0}</span></div>
               <div className="row-ops">
-                <button className="btn sm ghost" data-od-id={'like-' + v.id} style={liked.has(v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'transparent' } : {}} onClick={() => { const n = new Set(liked); n.has(v.id) ? n.delete(v.id) : n.add(v.id); setLiked(n); push(liked.has(v.id) ? '已取消点赞' : '已点赞'); }}>点赞</button>
-                <button className="btn sm ghost" data-od-id={'fav-' + v.id} style={fav.has(v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'transparent' } : {}} onClick={() => { const n = new Set(fav); n.has(v.id) ? n.delete(v.id) : n.add(v.id); setFav(n); push(fav.has(v.id) ? '已取消收藏' : '已收藏'); }}>收藏</button>
+                <button className="btn sm ghost" data-od-id={'like-' + vId} style={liked.has(vId) ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'transparent' } : {}} onClick={() => { if (window.ApiBridge && window.ApiBridge.ready && v.awemeId) { api.diggVideo(v.awemeId).then(r => push(r && r.ok ? '已点赞该作品' : ('点赞失败: ' + ((r && r.error) || '')))).catch(e => push('异常: ' + e)); } else push('未连接后端，无法点赞'); }}>点赞</button>
+                <button className="btn sm ghost" data-od-id={'fav-' + vId} style={fav.has(vId) ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'transparent' } : {}} onClick={() => { if (window.ApiBridge && window.ApiBridge.ready && v.awemeId) { api.favoriteVideo(v.awemeId).then(r => push(r && r.ok ? '已收藏该作品' : ('收藏失败: ' + ((r && r.error) || '')))).catch(e => push('异常: ' + e)); } else push('未连接后端，无法收藏'); }}>收藏</button>
                 <button className="btn sm ghost" onClick={() => { push('已导出为 Excel · video_data.xlsx'); }}>导出</button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : mode === 'user' ? (
         <div className="card" data-od-id="user-results">
-          {filtered.map(u => (
-            <div className="urow" key={u.id} data-od-id={'user-row-' + u.id}>
-              <Avatar name={u.name} h={u.hue} />
+          {filtered.map((u, i) => {
+            const uId = u.uid || u.secUid || ('u' + i);
+            return (
+            <div className="urow" key={uId} data-od-id={'user-row-' + uId}>
+              <Avatar name={u.nickname || '未知'} h={hue(i + 1)} />
               <div className="info">
-                <div className="nm">{u.name}<span className="tag">已采集</span></div>
-                <div className="sub">{u.note}</div>
+                <div className="nm">{u.nickname || '未知'}{u.secUid ? <span className="tag">已采集</span> : ''}</div>
+                <div className="sub">{u.signature || '暂无简介'}</div>
               </div>
-              <div className="m mono" style={{ color: 'var(--muted)', fontSize: 12, gap: 14, display: 'flex', whiteSpace: 'nowrap' }}><span>粉丝 {u.fans}</span><span>关注 {u.follow}</span><span>作品 {u.works}</span></div>
+              <div className="m mono" style={{ color: 'var(--muted)', fontSize: 12, gap: 14, display: 'flex', whiteSpace: 'nowrap' }}><span>粉丝 {u.fans || 0}</span><span>关注 {u.follow || 0}</span><span>作品 {u.works || 0}</span></div>
               <div className="row-ops">
-                <button className="btn sm ghost" onClick={() => { push('已采集 ' + u.name + ' 主页信息'); }}>采集主页</button>
-                <button className="btn sm ghost" onClick={() => { push('已采集 ' + u.name + ' 全部作品'); }}>采集作品</button>
-                <button className="btn sm ghost" onClick={() => { push('已导出 JSON · user_' + u.id + '.json'); }}>导出</button>
+                <button className="btn sm ghost" onClick={() => { push('已采集 ' + u.nickname + ' 主页信息'); }}>采集主页</button>
+                <button className="btn sm ghost" onClick={() => { push('已采集 ' + u.nickname + ' 全部作品'); }}>采集作品</button>
+                <button className="btn sm ghost" onClick={() => { push('已导出 JSON · user_' + uId + '.json'); }}>导出</button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="result-grid" data-od-id="live-results">
-          {filtered.map(l => (
-            <div className="card vcard" key={l.id} data-od-id={'live-card-' + l.id}>
-              <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(42% 0.13 280), oklch(24% 0.09 320))' }}>
+          {filtered.map((l, i) => {
+            const lId = l.uid || ('l' + i);
+            return (
+            <div className="card vcard" key={lId} data-od-id={'live-card-' + lId}>
+              <div className="thumb" style={{ background: l.cover ? 'url(' + l.cover + ') center/cover' : 'linear-gradient(135deg, oklch(42% 0.13 280), oklch(24% 0.09 320))' }}>
                 <span className="src">直播中</span>
                 <span className="play" aria-hidden="true" />
                 <span className="dur">LIVE</span>
               </div>
-              <div className="t">{l.title}</div>
-              <div className="m"><span>♥ {l.viewers} 在看</span><span className="tag" style={{ marginLeft: 0 }}>{l.tag}</span></div>
-              <div className="row-ops"><button className="btn sm ghost" onClick={() => push('已采集直播信息 · ' + l.title)}>采集详情</button><button className="btn sm ghost" onClick={() => push('已加入直播间监听队列')}>监听</button></div>
+              <div className="t">{l.title || '（无标题直播）'}</div>
+              <div className="m"><span>♥ {l.viewers || 0} 在看</span><span className="tag" style={{ marginLeft: 0 }}>{l.nickname || '主播'}</span></div>
+              <div className="row-ops">
+                <button className="btn sm ghost" onClick={() => push('已采集直播信息 · ' + (l.title || ''))}>采集详情</button>
+                <button className="btn sm ghost" onClick={() => { if (window.ApiBridge && window.ApiBridge.ready && l.url) { api.resolveLive(l.url).then(r => push(r && r.ok ? ('已解析房间号 · ' + r.liveId + '，可到直播监听页启动') : ('解析失败: ' + ((r && r.error) || '')))).catch(e => push('异常: ' + e)); } else push('请复制直播链接到直播监听页'); }}>监听</button>
+              </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -852,39 +876,28 @@ function Crawl({ push, goMsg }) {
         {detail && (
           <motion.div key="video-detail" className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .18 }} data-od-id="video-detail">
             <div className="overlay-head">
-              <h2>{detail.v.title}</h2>
+              <h2>{detail.v.title || '作品详情'}</h2>
               <div style={{ flex: 1 }} />
               <button className="btn ghost" onClick={() => setDetail(null)}>关闭</button>
             </div>
             <div className="overlay-body">
               <div className="grid cols-2">
                 <div>
-                  <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(42% 0.13 ' + detail.v.hue + '), oklch(24% 0.08 ' + detail.v.hue + '))', aspectRatio: '16/9' }}>
-                    <span className="play" aria-hidden="true" /><span className="dur">{detail.v.dur}</span>
+                  <div className="thumb" style={{ background: 'linear-gradient(135deg, oklch(42% 0.13 ' + (hue((detail.v.awemeId || 'x').length + 1) % 360) + '), oklch(24% 0.08 ' + (hue((detail.v.awemeId || 'x').length + 1) % 360) + '))', aspectRatio: '16/9' }}>
+                    <span className="play" aria-hidden="true" /><span className="dur">▶</span>
                   </div>
                   <div className="head-row" style={{ marginTop: 12 }}>
-                    <Avatar name={detail.v.author} h={detail.v.hue} />
-                    <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>{detail.v.author}</div><div className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>▶ {detail.v.plays} · ♥ {detail.v.likes} · 评论 {detail.v.cmts}</div></div>
-                    <button className="btn ghost" onClick={() => { push('已导出为 JSON · video_' + detail.v.id + '.json'); }}>导出</button>
+                    <Avatar name={detail.v.nickname || '作者'} h={hue(7)} />
+                    <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>{detail.v.nickname || '作者'}</div><div className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>▶ {detail.v.plays || 0} · ♥ {detail.v.likes || 0} · 评论 {detail.v.cmts || 0}</div></div>
+                    <button className="btn ghost" onClick={() => { push('已导出为 JSON · video_' + (detail.v.awemeId || '') + '.json'); }}>导出</button>
                   </div>
                 </div>
                 <div className="card">
-                  <h3>评论区 <span style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono)', fontWeight: 400 }}>含多级回复</span></h3>
-                  {COMMENTS_DETAIL.map((c, i) => (
-                    <div key={i} style={{ padding: '10px 0', borderBottom: i < COMMENTS_DETAIL.length - 1 ? '1px solid var(--border)' : 0 }}>
-                      <div className="urow" style={{ padding: 0, border: 0 }}>
-                        <Avatar name={c.name} h={hue(i + 1)} sm />
-                        <div className="info"><div className="nm">{c.name}</div></div>
-                        <span className="lv mono" style={{ color: 'var(--warn)', fontSize: 11 }}>Lv.{c.lv}</span>
-                      </div>
-                      <div style={{ margin: '6px 0 0 40px', fontSize: 13 }}>{c.text}</div>
-                      {c.replies.map((r, j) => (
-                        <div key={j} style={{ margin: '8px 0 0 40px', padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 8, fontSize: 12.5 }}>
-                          <b>{r.name}</b> 回复：{r.text}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
+                  <h3>评论区 <span style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono)', fontWeight: 400 }}>真实评论采集</span></h3>
+                  <div style={{ padding: '26px 10px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+                    <div style={{ fontSize: 24, marginBottom: 6 }}>💬</div>
+                    评论列表将随采集任务在后续版本展示（当前已接通真实搜索链路）
+                  </div>
                   <div className="head-row" style={{ marginTop: 12 }}>
                     <input className="input" style={{ flex: 1 }} placeholder="写下你的评论…" />
                     <button className="btn primary" onClick={() => onAct('comment')}>发布评论</button>
@@ -892,8 +905,8 @@ function Crawl({ push, goMsg }) {
                 </div>
               </div>
               <div className="head-row" style={{ marginTop: 14 }}>
-                <button className="btn ghost" onClick={() => onAct('like')} style={liked.has(detail.v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : {}}>{liked.has(detail.v.id) ? '已点赞' : '点赞'}</button>
-                <button className="btn ghost" onClick={() => onAct('fav')} style={fav.has(detail.v.id) ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : {}}>{fav.has(detail.v.id) ? '已收藏' : '收藏'}</button>
+                <button className="btn ghost" onClick={() => onAct('like')} style={liked.has(detail.v.awemeId) ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : {}}>{liked.has(detail.v.awemeId) ? '已点赞' : '点赞'}</button>
+                <button className="btn ghost" onClick={() => onAct('fav')} style={fav.has(detail.v.awemeId) ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : {}}>{fav.has(detail.v.awemeId) ? '已收藏' : '收藏'}</button>
                 <button className="btn ghost" onClick={() => goMsg('你好，我是内容运营，看了你的作品想聊聊合作')}>发私信</button>
               </div>
             </div>
@@ -911,17 +924,16 @@ function seedRows() {
 }
 function Live({ push, goMsg, api, ready }) {
   const [viewMode, setViewMode] = useState('single');
-  const [activeAcct, setActiveAcct] = useState('a1');
-  const [room, setRoom] = useState('live.douyin.com/7462001');
+  const [activeAcct, setActiveAcct] = useState(null);
+  const [room, setRoom] = useState('');
   const [listening, setListening] = useState(false);
   const [reconnect, setReconnect] = useState(false);
   const [feed, setFeed] = useState([]);
   const [rows, setRows] = useState(seedRows);
-  const [heat, setHeat] = useState(Array.from({ length: 36 }, (_, i) => 40 + Math.round(Math.sin(i / 4) * 12 + i * 1.4)));
+  const [heat, setHeat] = useState([]);
   const [review, setReview] = useState(false);
   const [dmDraft, setDmDraft] = useState('');
-  const [heatOn, setHeatOn] = useState(true);
-  const [roomLikes, setRoomLikes] = useState(128600);
+  const [roomLikes, setRoomLikes] = useState(0);
   const [myLikes, setMyLikes] = useState(0);
   const [burst, setBurst] = useState(0);
   const likeT = useRef();
@@ -935,7 +947,10 @@ function Live({ push, goMsg, api, ready }) {
     { text: '唐律还在直播，我是助理，可以留个联系方式，唐律下播后帮你分析', enabled: true },
   ]);
   const [tasksCfg, setTasksCfg] = useState(null);
-  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || null;
+  const [realAccts, setRealAccts] = useState([]);
+  const [liveStream, setLiveStream] = useState(null);
+  const curAcct = realAccts.find(a => a.name === activeAcct) || realAccts[0] || null;
+  const running = !!(liveStream && liveStream.running);
 
   // 真实数据：任务配置 + 统计（私信记录表 / 弹幕流）
   useEffect(() => {
@@ -957,25 +972,12 @@ function Live({ push, goMsg, api, ready }) {
           ts: Date.now() - i * 1000,
         }));
         if (realRows.length) setRows(realRows);
-        const realFeed = d.list.slice(0, 30).map((r, i) => ({
-          id: 300000 + i, t: (r.captureTs || '').slice(-8) || '—',
-          k: (r.status && r.status.indexOf('发送') >= 0) ? 'msg' : 'danmaku',
-          n: r.nickname || '未知', l: 0, x: r.comment || '',
-        }));
-        if (realFeed.length) setFeed(realFeed);
       }).catch(() => {});
     };
     load();
     const iv = setInterval(load, 2500);
     return () => { alive = false; clearInterval(iv); };
   }, [api, ready]);
-
-  // 同步后端运行态到前端开关（ready 时由后端驱动，不跑 mock 定时器）
-  const running = ready && window.ApiBridge && window.ApiBridge.ready ? false : false;
-  useEffect(() => {
-    if (!ready) return;
-    // 不启动模拟监听定时器，真实监听由后端引擎负责
-  }, [ready]);
 
   // 就绪后把后端任务配置同步到本地表单
   useEffect(() => {
@@ -993,40 +995,39 @@ function Live({ push, goMsg, api, ready }) {
     return () => window.removeEventListener('keydown', h);
   }, []);
 
-  const listenRef = useRef();
+  // 真实轮询：账号列表（每 5s）+ 直播实时流 getLiveStream（每 2s）
   useEffect(() => {
-    if (!listening || ready) return;  // ready 时由后端真实引擎驱动，不跑 mock
-    if (!SPEAKERS.length) return;      // 示例数据已清除，离线时不生成假内容
-    listenRef.current = setInterval(() => {
-      const [nm, lv] = pick(SPEAKERS);
-      const kind = pick(FEEDKIND);
-      let txt;
-      if (kind === 'gift') { const [g, c] = pick(GIFTS); txt = '送出 ' + g + ' × ' + c; }
-      else if (kind === 'danmaku') txt = pick(COMMENTS);
-      else if (kind === 'enter') txt = '进入直播间';
-      else if (kind === 'follow') txt = '关注了主播';
-      else txt = '点赞了直播间';
-      const t = tick();
-      if (kind === 'like') setRoomLikes(r => r + 1 + Math.floor(Math.random() * 18));
-      setFeed(f => [{ id: ++cid, t, k: kind, n: nm, l: lv, x: txt }, ...f].slice(0, 30));
-      if (kind === 'danmaku' || kind === 'gift') {
-        const roll = Math.random();
-        const st = roll < 0.5 ? 'un' : roll < 0.62 ? 'wait' : roll < 0.92 ? 'sent' : 'fail';
-        const dmt = st === 'sent' ? pick(DM_TEXTS) : '';
-        setRows(r => [{ id: ++cid, time: t, name: nm, lv, content: txt, dmStatus: st, dmText: dmt, dmTime: st === 'sent' ? t : '', ts: Date.now() }, ...r]);
-      }
-      if (Math.random() < 0.08) { setReconnect(true); setTimeout(() => setReconnect(false), 2500); }
-    }, 1800);
-    return () => clearInterval(listenRef.current);
-  }, [listening, ready]);
-
-  useEffect(() => {
-    if (!heatOn) return;
-    const iv = setInterval(() => setHeat(h => [...h.slice(1), h[h.length - 1] + Math.round(Math.random() * 14 - 5) + 2]), 2000);
-    return () => clearInterval(iv);
-  }, [heatOn]);
+    if (!ready) return;
+    let alive = true;
+    const loadAccts = () => {
+      api.getAccounts().then(d => { if (alive && d && d.ok && d.accounts && d.accounts.length) setRealAccts(d.accounts); }).catch(() => {});
+    };
+    const loadStream = () => {
+      api.getLiveStream().then(d => {
+        if (!alive || !d) return;
+        setLiveStream(d);
+        setReconnect(Boolean(d.listening && !d.running));
+        setRoomLikes(d.likes || 0);
+        if (d.heat && d.heat.length) setHeat(d.heat.map(p => p[1]));
+        if (d.feed && d.feed.length) {
+          setFeed(d.feed.map(f => ({
+            id: f.epoch || (400000 + Math.random()),
+            t: f.ts || '—', k: f.type || 'danmaku', n: f.nickname || '未知', l: 0, x: f.content || '',
+          })));
+        } else {
+          setFeed([]);
+        }
+      }).catch(() => {});
+    };
+    loadAccts();
+    loadStream();
+    const iv1 = setInterval(loadAccts, 5000);
+    const iv2 = setInterval(loadStream, 2000);
+    return () => { alive = false; clearInterval(iv1); clearInterval(iv2); };
+  }, [api, ready]);
 
   const heatChart = (data, w = 640, h = 120) => {
+    if (!data || !data.length) return <div style={{ height: h, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: 12 }}>等待房间热度数据 · 引擎运行后自动生成</div>;
     const max = Math.max(...data) * 1.18;
     const x = i => (i / (data.length - 1)) * w;
     const y = v => h - 10 - (v / max) * (h - 16);
@@ -1042,35 +1043,44 @@ function Live({ push, goMsg, api, ready }) {
   };
 
   const sendDanmaku = () => {
-    if (!dmDraft.trim()) return;
-    const t = tick();
-    setFeed(f => [{ id: ++cid, t, k: 'danmaku', n: '我', l: 99, x: dmDraft.trim() }, ...f].slice(0, 30));
-    setRows(r => [{ id: ++cid, time: t, name: '我', lv: 99, content: dmDraft.trim(), dmStatus: 'un', dmText: '', dmTime: '', ts: Date.now() }, ...r]);
+    const text = dmDraft.trim();
+    if (!text) return;
+    if (ready && window.ApiBridge && window.ApiBridge.ready) {
+      api.sendDanmaku(text).then(r => push(r && r.ok ? ('弹幕已发送 · ' + text) : ('发送失败: ' + ((r && r.error) || '')))).catch(e => push('发送异常: ' + e));
+    } else {
+      push('未连接后端，无法发送弹幕');
+    }
     setDmDraft('');
-    push('弹幕已发送');
   };
   const doLike = () => {
-    setRoomLikes(r => r + 1 + Math.floor(Math.random() * 4));
-    setMyLikes(m => m + 1);
-    setBurst(b => b + 1);
+    if (!(ready && window.ApiBridge && window.ApiBridge.ready)) { push('未连接后端，无法点赞'); return; }
+    api.doLike(1).then(r => {
+      if (r && r.ok) { setMyLikes(m => m + 1); setBurst(b => b + 1); }
+      else push('点赞失败: ' + ((r && r.error) || ''));
+    }).catch(e => push('点赞异常: ' + e));
     clearTimeout(likeT.current);
     likeT.current = setTimeout(() => setBurst(0), 900);
   };
   const doBatch = () => {
     const n = Math.min(1000, Math.max(1, parseInt(batchN, 10) || 1));
-    setRoomLikes(r => r + n);
-    setMyLikes(m => m + n);
-    setBurst(b => b + n);
+    if (!(ready && window.ApiBridge && window.ApiBridge.ready)) { push('未连接后端，无法批量点赞'); return; }
+    api.doLike(n).then(r => {
+      if (r && r.ok) { setMyLikes(m => m + n); setBurst(b => b + n); }
+      else push('点赞失败: ' + ((r && r.error) || ''));
+    }).catch(e => push('点赞异常: ' + e));
     clearTimeout(likeT.current);
     likeT.current = setTimeout(() => setBurst(0), 1600);
-    push('已批量点赞 ' + n + ' 次');
   };
 
   const dedup = useMemo(() => new Set(rows.map(r => r.name)).size, [rows]);
 
   const sendDm = (r) => {
+    if (ready && window.ApiBridge && window.ApiBridge.ready) {
+      api.requestDm(r.name, r.content).then(res => push(res && res.ok ? ((res.msg || '已加入发送队列') + ' · ' + r.name) : ('加入失败: ' + ((res && res.error) || '')))).catch(e => push('异常: ' + e));
+      return;
+    }
     const t = tick();
-    setRows(rs => rs.map(x => x.id === r.id ? { ...x, dmStatus: 'sent', dmText: r.dmText || pick(DM_TEXTS), dmTime: t } : x));
+    setRows(rs => rs.map(x => x.id === r.id ? { ...x, dmStatus: 'sent', dmText: r.dmText || '（离线模拟）', dmTime: t } : x));
     push('私信已发送 → ' + r.name);
   };
 
@@ -1086,65 +1096,72 @@ function Live({ push, goMsg, api, ready }) {
             <button className={viewMode === 'single' ? 'active' : ''} onClick={() => setViewMode('single')}>单账户</button>
             <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>多账户总览</button>
           </div>
-          <span className="badge-conn"><Dot c={reconnect ? 'warn' : 'ok'} pulse /> {reconnect ? '断线重连中' : '监听中'}</span>
-          <span className="demo-tag">未连接</span>
+          <span className="badge-conn"><Dot c={liveStream && liveStream.running ? 'ok' : 'warn'} pulse={liveStream && liveStream.running} /> {liveStream ? (liveStream.running ? '引擎运行中' : '引擎未运行') : '未连接'}</span>
+          <span className="demo-tag">{ready ? (liveStream && liveStream.running ? '实时数据' : '等待运行') : '未连接'}</span>
         </div>
       </div>
 
       {viewMode === 'grid' ? (
         <div className="grid cols-2" data-od-id="live-grid">
-          {ACCOUNTS_INIT.filter(a => a.tokenValid).slice(0, 2).map(acct => (
-            <div className="card" key={acct.id} style={{ padding: 0, overflow: 'hidden' }}>
+          {realAccts.slice(0, 2).map(acct => (
+            <div className="card" key={acct.name} style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-                <Avatar name={acct.name} h={acct.hue} />
+                <Avatar name={acct.name} h={hue(acct.name.length)} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{acct.name}</div>
-                  <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID: {acct.uid}</div>
+                  <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID: {acct.uid || '—'}</div>
                 </div>
-                <Pill c={acct.tokenValid ? 'ok' : 'danger'}>{acct.tokenValid ? '在线' : '离线'}</Pill>
+                <Pill c={acct.loggedIn ? 'ok' : 'danger'}>{acct.loggedIn ? '在线' : '离线'}</Pill>
               </div>
               <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
                 <div className="head-row" style={{ marginBottom: 6 }}>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>直播间</span>
-                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{acct.lastRun.room}</span>
+                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{(liveStream && (liveStream.roomTitle || liveStream.liveUrl)) || '未解析'}</span>
                 </div>
                 <div className="head-row">
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>运行时长</span>
-                  <span className="mono" style={{ fontSize: 12 }}>{acct.lastRun.duration}</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>在线人数</span>
+                  <span className="mono" style={{ fontSize: 12 }}>{liveStream ? liveStream.online.toLocaleString() : '—'}</span>
                 </div>
               </div>
               <div className="grid cols-2" style={{ padding: '10px 16px', gap: 8 }}>
                 <div className="card stat" style={{ padding: '8px 10px' }}>
                   <span className="label" style={{ fontSize: 11 }}>弹幕</span>
-                  <span className="num" style={{ fontSize: 18 }}>{acct.lastRun.comments.toLocaleString()}</span>
+                  <span className="num" style={{ fontSize: 18 }}>{rows.length.toLocaleString()}</span>
                 </div>
                 <div className="card stat" style={{ padding: '8px 10px' }}>
                   <span className="label" style={{ fontSize: 11 }}>已私信</span>
-                  <span className="num" style={{ fontSize: 18 }}>{acct.lastRun.dmSent}</span>
+                  <span className="num" style={{ fontSize: 18 }}>{rows.filter(r => r.dmStatus === 'sent').length}</span>
                 </div>
               </div>
               <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
                 <div className="head-row" style={{ marginBottom: 6 }}>
                   <span style={{ fontSize: 12, fontWeight: 600 }}>房间热度</span>
-                  <span className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>{heat[heat.length - 1]} 人</span>
+                  <span className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>{liveStream ? liveStream.online.toLocaleString() : 0} 人</span>
                 </div>
-                <div style={{ height: 60 }}>{heatChart(heat, 400, 60)}</div>
+                <div style={{ height: 60 }}>{heatChart(heat.length ? heat : [0], 400, 60)}</div>
               </div>
               <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', maxHeight: 120, overflow: 'auto' }}>
                 {feed.slice(0, 5).map(f => (
                   <div className="feed-item" key={f.id} style={{ padding: '3px 0' }}>
                     <span className="tm" style={{ fontSize: 10 }}>{f.t}</span>
-                    <span className={'kind k-' + f.k} style={{ fontSize: 10 }}>{KIND_NAME[f.k]}</span>
+                    <span className={'kind k-' + f.k} style={{ fontSize: 10 }}>{KIND_NAME[f.k] || f.k}</span>
                     <span className="txt" style={{ fontSize: 11 }}><b>{f.n}</b> {f.x}</span>
                   </div>
                 ))}
+                {feed.length === 0 && <div style={{ padding: '10px 0', color: 'var(--muted)', fontSize: 11, textAlign: 'center' }}>暂无实时信息</div>}
               </div>
               <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 6 }}>
-                <button className="btn sm ghost" style={{ flex: 1 }} onClick={() => { setViewMode('single'); setActiveAcct(acct.id); setRoom(acct.lastRun.roomUrl?.replace('https://', '') || ''); push('已切换到 ' + acct.name); }}>进入监听</button>
+                <button className="btn sm ghost" style={{ flex: 1 }} onClick={() => { setViewMode('single'); setActiveAcct(acct.name); push('已切换到 ' + acct.name); }}>进入监听</button>
                 <button className="btn sm ghost" onClick={() => push('已导出 ' + acct.name + ' 数据')}>导出</button>
               </div>
             </div>
           ))}
+          {realAccts.length === 0 && (
+            <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
+              <div style={{ fontSize: 26, marginBottom: 8 }}>👥</div>
+              暂无已授权账号 · 请到「账号管理」添加并完成扫码
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -1153,11 +1170,12 @@ function Live({ push, goMsg, api, ready }) {
               <span style={{ fontSize: 13, fontWeight: 600 }}>当前监听账号</span>
               <div style={{ flex: 1 }} />
               <div className="seg">
-                {ACCOUNTS_INIT.filter(a => a.tokenValid).map(a => (
-                  <button key={a.id} className={activeAcct === a.id ? 'active' : ''} onClick={() => { setActiveAcct(a.id); setRoom(a.lastRun.roomUrl?.replace('https://', '') || ''); push('已切换到 ' + a.name); }}>
-                    <Avatar name={a.name} h={a.hue} sm /> {a.name}
+                {realAccts.map(a => (
+                  <button key={a.name} className={activeAcct === a.name ? 'active' : ''} onClick={() => { setActiveAcct(a.name); push('已切换到 ' + a.name); }}>
+                    <Avatar name={a.name} h={hue(a.name.length)} sm /> {a.name}
                   </button>
                 ))}
+                {realAccts.length === 0 && <span className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>无已授权账号</span>}
               </div>
             </div>
           </div>
@@ -1165,7 +1183,7 @@ function Live({ push, goMsg, api, ready }) {
           <div className="card" style={{ marginBottom: 14 }} data-od-id="live-input">
             <div className="searchbar" style={{ marginBottom: 0 }}>
               <input className="input" style={{ flex: 1, fontFamily: 'var(--font-mono)' }} value={room} onChange={e => setRoom(e.target.value)} placeholder="直播间 URL 或 room_id" aria-label="直播间地址" />
-              <button className="btn ghost" data-od-id="live-parse" onClick={() => { if (room.trim()) push('已解析房间号 · ' + room.trim()); }}>解析房间号</button>
+              <button className="btn ghost" data-od-id="live-parse" onClick={() => { const u = room.trim(); if (!u) return; if (ready && window.ApiBridge && window.ApiBridge.ready) { api.resolveLive(u).then(r => push(r && r.ok ? ('已解析房间号 · ' + r.liveId) : ('解析失败: ' + ((r && r.error) || '')))).catch(e => push('解析异常: ' + e)); } else push('未连接后端，无法解析'); }}>解析房间号</button>
               {ready && tasksCfg && tasksCfg.liveUrl && room !== tasksCfg.liveUrl && (
                 <button className="btn ghost" onClick={() => setRoom(tasksCfg.liveUrl)}>填入已配置</button>
               )}
@@ -1250,11 +1268,16 @@ function Live({ push, goMsg, api, ready }) {
                 {feed.map(f => (
                   <div className="feed-item" key={f.id}>
                     <span className="tm">{f.t}</span>
-                    <span className={'kind k-' + f.k}>{KIND_NAME[f.k]}</span>
+                    <span className={'kind k-' + f.k}>{KIND_NAME[f.k] || f.k}</span>
                     <span className="txt"><b>{f.n}</b>　{f.x}</span>
-                    <span className="lv">Lv.{f.l}</span>
+                    {f.l > 0 && <span className="lv">Lv.{f.l}</span>}
                   </div>
                 ))}
+                {feed.length === 0 && (
+                  <div style={{ padding: '28px 12px', textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+                    暂无实时信息 · 引擎运行后自动展示弹幕 / 礼物 / 进场 / 点赞 / 关注
+                  </div>
+                )}
               </div>
               <div className="head-row" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                 <input className="input" style={{ flex: 1 }} placeholder="发送弹幕到直播间…" value={dmDraft} onChange={e => setDmDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendDanmaku()} />
@@ -1269,7 +1292,7 @@ function Live({ push, goMsg, api, ready }) {
               </div>
             </div>
             <div className="card" data-od-id="heat-chart">
-              <h3>房间热度 <span className="mono" style={{ color: 'var(--accent)', fontWeight: 400 }}>{heat[heat.length - 1]} 人在线</span></h3>
+              <h3>房间热度 <span className="mono" style={{ color: 'var(--accent)', fontWeight: 400 }}>{heat.length ? heat[heat.length - 1].toLocaleString() : ((liveStream && liveStream.online) ? liveStream.online.toLocaleString() : 0)} 人在线</span></h3>
               <div className="chart-wrap">{heatChart(heat)}</div>
             </div>
           </div>
@@ -1290,6 +1313,12 @@ function Live({ push, goMsg, api, ready }) {
                   </tr>
                 </thead>
                 <tbody>
+                  {rows.length === 0 && (
+                    <tr><td colSpan="6" style={{ padding: '30px 12px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+                      <div style={{ fontSize: 24, marginBottom: 6 }}>📭</div>
+                      暂无评论记录 · 引擎运行后自动捕获
+                    </td></tr>
+                  )}
                   {rows.slice(0, 12).map(r => (
                     <tr key={r.id}>
                       <td className="mono">{r.time}</td>
@@ -1403,7 +1432,7 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }) {
                         <div className="head-row" style={{ gap: 6 }}>
                           <button className="btn text sm" onClick={() => { setExp(exp === r.id ? null : r.id); }}>详情</button>
                           <button className="btn text sm" onClick={() => sendDm(r)}>发私信</button>
-                          <button className="btn text sm" onClick={() => goMsg(r.name, r.dmText || pick(DM_TEXTS))}>去私信中心</button>
+                          <button className="btn text sm" onClick={() => goMsg(r.name, r.dmText || '')}>去私信中心</button>
                         </div>
                       </td>
                     </tr>
@@ -1454,16 +1483,17 @@ function MsgBubble({ m, h }) {
   );
 }
 function Messages({ push, goDm, api }) {
-  const [activeAcct, setActiveAcct] = useState('a1');
+  const [activeAcct, setActiveAcct] = useState(null);
   const [convs, setConvs] = useState([]);
-  const [active, setActive] = useState('c2');
+  const [active, setActive] = useState('');
   const [draft, setDraft] = useState('');
   const [newBanner, setNewBanner] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState('');
   const [realConvs, setRealConvs] = useState(null);
+  const [realAccts, setRealAccts] = useState([]);
   const bannerT = useRef();
-  const curAcct = ACCOUNTS_INIT.find(a => a.id === activeAcct) || null;
+  const curAcct = realAccts.find(a => a.name === activeAcct) || realAccts[0] || null;
   const acctConvs = convs.filter(c => c.acct === activeAcct);
 
   // 真实会话数据（来自 recv_daemon 9912）
@@ -1490,6 +1520,20 @@ function Messages({ push, goDm, api }) {
     return () => { alive = false; clearInterval(iv); };
   }, [api, activeAcct]);
 
+  // 真实账号列表（getAccounts），默认选中第一个
+  useEffect(() => {
+    if (!window.ApiBridge || !window.ApiBridge.ready) return;
+    let alive = true;
+    const load = () => api.getAccounts().then(d => {
+      if (!alive || !d || !d.ok || !d.accounts || !d.accounts.length) return;
+      setRealAccts(d.accounts);
+      setActiveAcct(p => p || d.accounts[0].name);
+    }).catch(() => {});
+    load();
+    const iv = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [api]);
+
   const shownConvs = realConvs || acctConvs;
 
   useEffect(() => {
@@ -1508,21 +1552,6 @@ function Messages({ push, goDm, api }) {
     }
     push('已打开 ' + name + ' 的会话，文案已预填');
   }, [goDm]);
-
-  useEffect(() => {
-    if (window.ApiBridge && window.ApiBridge.ready) return;  // 真实模式不跑 mock
-    if (!SPEAKERS.length) return;      // 示例数据已清除，离线时不生成假消息
-    const iv = setInterval(() => {
-      const [nm] = pick(SPEAKERS);
-      setConvs(cs => cs.map(c => c.acct === activeAcct && c.name === nm
-        ? { ...c, unread: c.unread + 1, msgs: [...c.msgs, { id: ++cid, dir: 'in', type: 'text', text: pick(COMMENTS), mt: nowHM() }] }
-        : c));
-      setNewBanner(true);
-      clearTimeout(bannerT.current);
-      bannerT.current = setTimeout(() => setNewBanner(false), 4000);
-    }, 9000);
-    return () => clearInterval(iv);
-  }, [activeAcct]);
 
   const conv = shownConvs.find(c => c.id === active) || shownConvs[0] || convs[0] || { id: '', name: '暂无会话', hue: 0, msgs: [] };
   const send = () => {
@@ -1547,6 +1576,15 @@ function Messages({ push, goDm, api }) {
   const createConv = () => {
     const nm = newName.trim();
     if (!nm) { push('请输入对方昵称'); return; }
+    if (window.ApiBridge && window.ApiBridge.ready) {
+      // 真实链路：按昵称加入私信发送队列（与直播监听「发私信」一致）
+      api.requestDm(nm).then(r => {
+        setShowNew(false);
+        setNewName('');
+        push(r && r.ok ? ((r.msg || '已加入发送队列') + ' · ' + nm) : ('发送失败: ' + ((r && r.error) || '')));
+      }).catch(e => push('异常: ' + e));
+      return;
+    }
     const existing = convs.find(c => c.name === nm);
     if (existing) { setActiveAcct(existing.acct); setActive(existing.id); setShowNew(false); setNewName(''); setDraft(''); push('已打开已有会话 ' + nm); return; }
     const nc = { id: 'c' + (convs.length + 1), acct: activeAcct, hue: hue(nm.length * 2), name: nm, unread: 0, msgs: [{ id: ++cid, dir: 'in', type: 'text', text: '你好，很高兴认识你', mt: nowHM() }] };
@@ -1566,30 +1604,31 @@ function Messages({ push, goDm, api }) {
         </div>
         <div className="head-row">
           {window.ApiBridge && window.ApiBridge.ready
-            ? <span className="badge-conn"><Dot c="ok" pulse /> 已连接（接收守护）</span>
-            : <><span className="badge-conn"><Dot c="ok" pulse /> 已连接</span><span className="demo-tag">未连接</span></>}
+            ? <span className="badge-conn"><Dot c="ok" pulse /> 已连接（真实后端）</span>
+            : <><span className="badge-conn"><Dot c="warn" /> 未连接</span><span className="demo-tag">未连接</span></>}
         </div>
       </div>
       <div className="card" style={{ marginBottom: 12 }} data-od-id="msg-acct-select">
         <div className="head-row">
           {curAcct ? (
             <>
-              <Avatar name={curAcct.name} h={curAcct.hue} />
+              <Avatar name={curAcct.name} h={hue(curAcct.name.length)} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 13.5 }}>当前私信账号 · {curAcct.name}</div>
-                <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID {curAcct.uid} · 会话按账号隔离</div>
+                <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>UID {curAcct.uid || '—'} · 会话按账号隔离</div>
               </div>
-              <Pill c={curAcct.tokenValid ? 'ok' : 'danger'}>{curAcct.tokenValid ? '凭证有效' : '凭证过期'}</Pill>
+              <Pill c={curAcct.loggedIn ? 'ok' : 'danger'}>{curAcct.loggedIn ? '凭证有效' : '凭证过期'}</Pill>
             </>
           ) : (
             <div style={{ flex: 1, fontSize: 13.5, color: 'var(--muted)' }}>暂无账号 · 请在「账号」页添加并登录</div>
           )}
           <div className="seg" style={{ marginLeft: 6 }}>
-            {ACCOUNTS_INIT.filter(a => a.tokenValid).map(a => (
-              <button key={a.id} className={activeAcct === a.id ? 'active' : ''} onClick={() => { const first = convs.find(c => c.acct === a.id); setActiveAcct(a.id); setActive(first ? first.id : ''); push('已切换到 ' + a.name + ' 的私信通道'); }}>
-                <Avatar name={a.name} h={a.hue} sm /> {a.name}
+            {realAccts.map(a => (
+              <button key={a.name} className={activeAcct === a.name ? 'active' : ''} onClick={() => { setActiveAcct(a.name); setActive(''); push('已切换到 ' + a.name + ' 的私信通道'); }}>
+                <Avatar name={a.name} h={hue(a.name.length)} sm /> {a.name}
               </button>
             ))}
+            {realAccts.length === 0 && <span className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>无已授权账号</span>}
           </div>
         </div>
       </div>
@@ -1763,28 +1802,37 @@ function Tasks({ push, api, overview }) {
 }
 
 /* ---------- 设置 ---------- */
-function Settings({ push }) {
-  const [mask, setMask] = useState(true);
+function Settings({ push, api }) {
   const [expandedAcct, setExpandedAcct] = useState(null);
+  const [tasksCfg, setTasksCfg] = useState(null);
+  const [realAccts, setRealAccts] = useState([]);
+  // 真实配置 / 账号轮询（getTasks / getAccounts）
+  useEffect(() => {
+    if (!(window.ApiBridge && window.ApiBridge.ready)) return;
+    let alive = true;
+    const loadTasks = () => api.getTasks().then(d => { if (alive && d && d.ok) setTasksCfg(d); }).catch(() => {});
+    const loadAccts = () => api.getAccounts().then(d => { if (alive && d && d.ok && d.accounts) setRealAccts(d.accounts); }).catch(() => {});
+    loadTasks(); loadAccts();
+    const iv1 = setInterval(loadTasks, 8000);
+    const iv2 = setInterval(loadAccts, 8000);
+    return () => { alive = false; clearInterval(iv1); clearInterval(iv2); };
+  }, [api]);
+  const tc = tasksCfg || {};
+  // 默认配置：真实值来自 getTasks（后端未提供的字段显示 —）
   const DEFAULTS = {
-    rateLimit: '500', searchCap: '100', exportFmt: 'xlsx',
-    dmPerLive: '3', dmInterval: '60', likeInterval: '3',
-    wsReconnect: '5', syncLimit: '200', recvMedia: true,
-    maxTasks: '3', retry: '3', timeout: '10',
-    outDir: './output', autoExport: true, logFile: true,
+    rateLimit: '—', searchCap: '—', exportFmt: 'xlsx',
+    dmPerLive: tc.maxTarget != null ? String(tc.maxTarget) : '—', dmInterval: tc.interval != null ? String(tc.interval) : '—', likeInterval: '—',
+    wsReconnect: '—', syncLimit: '—', recvMedia: true,
+    maxTasks: '—', retry: '—', timeout: '—',
+    outDir: 'stats_export/ · logs/', autoExport: true, logFile: true,
     cookieWww: '', cookieLive: '', cookieWwwOk: false, cookieLiveOk: false,
     proxyEnabled: false, proxyAddr: '',
   };
-  const [overrides, setOverrides] = useState({
-    a1: { enabled: true, rateLimit: '300', dmPerLive: '5', dmInterval: '45', cookieWww: 'sessionid=...cR2Kf9; ttwid=...93nA', cookieLive: 'sessionid=...q7DmZ; odin_tt=...22bF', cookieWwwOk: true, cookieLiveOk: true },
-    a2: { enabled: true, dmPerLive: '2', cookieWww: 'sessionid=...xK9mP2; ttwid=...7jQw', cookieLive: 'sessionid=...rT4nB; odin_tt=...5cDe', cookieWwwOk: true, cookieLiveOk: true },
-    a3: { enabled: false },
-    a4: { enabled: true, cookieWww: 'sessionid=...hL3vR8; ttwid=...2kNm', cookieLive: 'sessionid=...wP6qS; odin_tt=...9fGh', cookieWwwOk: true, cookieLiveOk: true },
-    a5: { enabled: false },
-  });
-  const getVal = (acctId, key) => { const ov = overrides[acctId]; if (ov?.enabled && ov[key] !== undefined) return ov[key]; return DEFAULTS[key]; };
-  const setOverride = (acctId, key, val) => { setOverrides(o => ({ ...o, [acctId]: { ...o[acctId], [key]: val } })); };
-  const toggleOverride = (acctId) => { setOverrides(o => ({ ...o, [acctId]: { ...o[acctId], enabled: !o[acctId]?.enabled } })); };
+  const saveAll = () => {
+    if (window.ApiBridge && window.ApiBridge.ready) {
+      api.saveConfig({}).then(r => push(r && r.ok ? ('配置已写回 config.py · 写入 ' + (r.written || 0) + ' 项') : ('保存失败: ' + ((r && r.error) || '')))).catch(e => push('保存异常: ' + e));
+    } else { push('未连接后端，无法保存'); }
+  };
 
   return (
     <div>
@@ -1855,60 +1903,47 @@ function Settings({ push }) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {ACCOUNTS_INIT.map(a => {
-          const ov = overrides[a.id] || { enabled: false };
-          const isExpanded = expandedAcct === a.id;
-          const overriddenCount = ov.enabled ? Object.keys(ov).filter(k => k !== 'enabled' && ov[k] !== undefined && ov[k] !== DEFAULTS[k]).length : 0;
+        {realAccts.map(a => {
+          const isExpanded = expandedAcct === a.name;
+          const r = a.roles || {};
+          const roleTxt = [(r.monitor ? '监测' : ''), (r.sender ? '发送' : '')].filter(Boolean).join(' / ') || '未分配';
           return (
-            <div className="card" key={a.id} style={{ padding: 0, overflow: 'hidden', borderLeft: ov.enabled ? '3px solid var(--warn)' : undefined }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', cursor: 'pointer' }} onClick={() => setExpandedAcct(isExpanded ? null : a.id)}>
-                <Avatar name={a.name} h={a.hue} sm />
+            <div className="card" key={a.name} style={{ padding: 0, overflow: 'hidden', borderLeft: a.loggedIn ? '3px solid var(--ok)' : '3px solid var(--danger)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', cursor: 'pointer' }} onClick={() => setExpandedAcct(isExpanded ? null : a.name)}>
+                <Avatar name={a.name} h={hue(a.name.length)} sm />
                 <span style={{ fontWeight: 600, fontSize: 13 }}>{a.name}</span>
-                <span className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>{a.uid}</span>
+                <span className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>{a.uid || '未读入 UID'}</span>
                 <div style={{ flex: 1 }} />
-                {ov.enabled && overriddenCount > 0 && <Pill c="warn">{overriddenCount} 项已覆盖</Pill>}
-                {ov.enabled && overriddenCount === 0 && <Pill c="mute">已启用 · 无覆盖</Pill>}
-                {!ov.enabled && <Pill c="mute">使用默认</Pill>}
-                <span className="switch" onClick={e => e.stopPropagation()}>
-                  <input type="checkbox" checked={ov.enabled} onChange={() => toggleOverride(a.id)} aria-label={'启用 ' + a.name + ' 独立配置'} /><i />
-                </span>
+                {a.isCurrent && <Pill c="ok">当前</Pill>}
+                {r.monitor && <Pill c="ok">监测</Pill>}
+                {r.sender && <Pill c="ok">发送</Pill>}
+                <Pill c={a.loggedIn ? 'ok' : 'danger'}>{a.loggedIn ? '已登录' : '未登录'}</Pill>
                 <span style={{ fontSize: 12, color: 'var(--muted)', transition: 'transform .15s', transform: isExpanded ? 'rotate(90deg)' : '' }}>&#9656;</span>
               </div>
-
-              {isExpanded && ov.enabled && (
+              {isExpanded && (
                 <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-                  <div className="grid cols-3" style={{ gap: 10 }}>
-                    <div className="card" style={{ padding: 10 }}>
-                      <h4 style={{ fontSize: 12, marginBottom: 8 }}>Cookie</h4>
-                      <div className="field" style={{ marginBottom: 6 }}><label style={{ fontSize: 11 }}>www.douyin.com</label><input className="input mono" style={{ fontSize: 11 }} placeholder={'默认: ' + (DEFAULTS.cookieWww || '未配置')} value={ov.cookieWww || ''} onChange={e => setOverride(a.id, 'cookieWww', e.target.value)} /></div>
-                      <div className="field" style={{ marginBottom: 0 }}><label style={{ fontSize: 11 }}>live.douyin.com</label><input className="input mono" style={{ fontSize: 11 }} placeholder={'默认: ' + (DEFAULTS.cookieLive || '未配置')} value={ov.cookieLive || ''} onChange={e => setOverride(a.id, 'cookieLive', e.target.value)} /></div>
-                    </div>
-                    <div className="card" style={{ padding: 10 }}>
-                      <h4 style={{ fontSize: 12, marginBottom: 8 }}>直播策略</h4>
-                      <div className="field" style={{ marginBottom: 6 }}><label style={{ fontSize: 11 }}>私信上限</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 11 }} placeholder={'默认: ' + DEFAULTS.dmPerLive} value={ov.dmPerLive || ''} onChange={e => setOverride(a.id, 'dmPerLive', e.target.value)} /></div>
-                      <div className="field" style={{ marginBottom: 6 }}><label style={{ fontSize: 11 }}>私信间隔（秒）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 11 }} placeholder={'默认: ' + DEFAULTS.dmInterval} value={ov.dmInterval || ''} onChange={e => setOverride(a.id, 'dmInterval', e.target.value)} /></div>
-                      <div className="field" style={{ marginBottom: 0 }}><label style={{ fontSize: 11 }}>请求频率（ms）</label><input className="input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 11 }} placeholder={'默认: ' + DEFAULTS.rateLimit} value={ov.rateLimit || ''} onChange={e => setOverride(a.id, 'rateLimit', e.target.value)} /></div>
-                    </div>
-                    <div className="card" style={{ padding: 10 }}>
-                      <h4 style={{ fontSize: 12, marginBottom: 8 }}>状态总览</h4>
-                      <div style={{ fontSize: 12, display: 'grid', gridTemplateColumns: '70px 1fr', gap: '4px 8px' }}>
-                        <span style={{ color: 'var(--muted)' }}>凭证</span><Pill c={a.tokenValid ? 'ok' : 'danger'}>{a.tokenValid ? '有效' : '过期'}</Pill>
-                        <span style={{ color: 'var(--muted)' }}>指纹浏览器</span><span className="mono" style={{ fontSize: 11 }}>{a.fp.name}</span>
-                        <span style={{ color: 'var(--muted)' }}>代理</span><span className="mono" style={{ fontSize: 11 }}>{a.fp.proxy}</span>
-                        <span style={{ color: 'var(--muted)' }}>上次运行</span><span className="mono" style={{ fontSize: 11 }}>{a.lastRun.time}</span>
-                      </div>
-                    </div>
+                  <div style={{ fontSize: 12, display: 'grid', gridTemplateColumns: '80px 1fr', gap: '4px 8px' }}>
+                    <span style={{ color: 'var(--muted)' }}>UID</span><span className="mono" style={{ fontSize: 11 }}>{a.uid || '未读入（扫码后自动获取）'}</span>
+                    <span style={{ color: 'var(--muted)' }}>角色</span><span className="mono" style={{ fontSize: 11 }}>{roleTxt}</span>
+                    <span style={{ color: 'var(--muted)' }}>浏览器守护</span><span className="mono" style={{ fontSize: 11 }}>{a.browserDaemonAlive ? '运行中' : '未运行'}</span>
+                    <span style={{ color: 'var(--muted)' }}>接收守护</span><span className="mono" style={{ fontSize: 11 }}>{a.recvDaemonAlive ? '运行中' : '未运行'}</span>
                   </div>
                 </div>
               )}
             </div>
           );
         })}
+        {realAccts.length === 0 && (
+          <div className="card" style={{ padding: 36, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+            <div style={{ fontSize: 24, marginBottom: 6 }}>🔑</div>
+            暂无账号 · 请到「账号管理」添加并扫码授权
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-        <button className="btn primary" onClick={() => push('全部配置已保存')}>保存全部配置</button>
-        <button className="btn ghost" onClick={() => push('已重置所有独立配置为默认值')}>重置全部为默认</button>
+        <button className="btn primary" onClick={saveAll}>保存全部配置</button>
+        <button className="btn ghost" onClick={() => push('重置仅作用于展示值；任务参数请到「任务中心」修改并保存')}>重置全部为默认</button>
       </div>
     </div>
   );
@@ -1925,6 +1960,8 @@ function Accounts({ push, goMsg, api }) {
   const [proxyTestResult, setProxyTestResult] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState({ name: '', uid: '', cookie: '' });
+  const [editAcct, setEditAcct] = useState(null);
+  const [editForm, setEditForm] = useState({ name: '', uid: '', cookie: '' });
   const [batchMode, setBatchMode] = useState(false);
   const [batchSel, setBatchSel] = useState(() => new Set());
   const [realAccts, setRealAccts] = useState(null);
@@ -1966,10 +2003,10 @@ function Accounts({ push, goMsg, api }) {
   }, [shownAccounts]);
 
   useEffect(() => {
-    const h = e => { if (e.key === 'Escape') { if (proxyAcct) setProxyAcct(null); else if (reviewAccount) setReviewAccount(null); else if (addOpen) setAddOpen(false); } };
+    const h = e => { if (e.key === 'Escape') { if (proxyAcct) setProxyAcct(null); else if (reviewAccount) setReviewAccount(null); else if (editAcct) setEditAcct(null); else if (addOpen) setAddOpen(false); } };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [proxyAcct, reviewAccount, addOpen]);
+  }, [proxyAcct, reviewAccount, editAcct, addOpen]);
 
   const checkAll = () => {
     if (window.ApiBridge && window.ApiBridge.ready) {
@@ -1979,8 +2016,23 @@ function Accounts({ push, goMsg, api }) {
     setAccounts(accounts.map(a => ({ ...a, lastCheck: tick() })));
     push('已对全部 ' + accounts.length + ' 个账号执行凭证校验');
   };
-  const toggleValid = (id) => {
-    setAccounts(accounts.map(a => a.id === id ? { ...a, tokenValid: !a.tokenValid } : a));
+  const openEdit = (a) => {
+    setEditForm({ name: a.name, uid: a.uid && a.uid !== '—' ? a.uid : '', cookie: '' });
+    setEditAcct(a);
+  };
+  const saveEdit = () => {
+    const name = editForm.name.trim();
+    if (!name) { push('请填写昵称'); return; }
+    if (window.ApiBridge && window.ApiBridge.ready) {
+      api.refreshBrowserDaemon(name).then(r => {
+        if (r && r.ok) { push('已提交刷新凭证 · ' + name + '（请在守护中扫码/确认登录）'); setEditAcct(null); }
+        else push('刷新凭证失败: ' + ((r && r.error) || ''));
+      }).catch(e => push('刷新凭证异常: ' + e));
+      return;
+    }
+    setAccounts(accts => accts.map(a => a.id === editAcct.id ? { ...a, name } : a));
+    push('已刷新凭证 · ' + name);
+    setEditAcct(null);
   };
   const toggleBatch = (id) => {
     setBatchSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -2109,7 +2161,7 @@ function Accounts({ push, goMsg, api }) {
                 <div className="uid">UID {a.uid} · 上次校验 {a.lastCheck}</div>
               </div>
               <div className="ops">
-                <button className="btn sm ghost" onClick={() => toggleValid(a.id)}>{a.tokenValid ? '模拟过期' : '模拟刷新'}</button>
+                <button className="btn sm ghost" onClick={() => openEdit(a)} title="编辑账号信息并刷新登录凭证">刷新凭证</button>
                 <button className="btn sm ghost" onClick={() => setReviewAccount(a)}>查阅模式</button>
               </div>
             </div>
@@ -2203,10 +2255,22 @@ function Accounts({ push, goMsg, api }) {
         {addOpen && (
           <AccountDrawer
             key="account-drawer"
+            mode="add"
             form={addForm}
             setForm={setAddForm}
             onSave={addAccount}
             onClose={() => setAddOpen(false)}
+          />
+        )}
+        {editAcct && (
+          <AccountDrawer
+            key="account-edit-drawer"
+            mode="edit"
+            account={editAcct}
+            form={editForm}
+            setForm={setEditForm}
+            onSave={saveEdit}
+            onClose={() => setEditAcct(null)}
           />
         )}
       </AnimatePresence>
@@ -2214,24 +2278,8 @@ function Accounts({ push, goMsg, api }) {
   );
 }
 
-/* ---------- 账号查阅模式 ---------- */
-const REVIEW_ROWS_INIT = [
-  ['10:18:22', '苏苏酱', 33, '声音太好听了', 'sent', '你好，我是内容运营，看了你今天的直播想聊聊合作', '10:18:30'],
-  ['10:18:05', '老白', 40, '666666', 'un', '', ''],
-  ['10:17:52', '夜风', 16, '求歌单', 'sent', '您好，这边在整理美食类达人库，方便加个微信吗', '10:18:01'],
-  ['10:17:31', '桃子气泡', 14, '来了来了 蹲一个', 'wait', '在吗？看到你在评论区提到探店，想深入聊聊', ''],
-  ['10:17:09', '一颗柠檬', 9, '第一次来 好有意思', 'sent', '你好，想邀请你参加本周五的美食专题活动', '10:17:18'],
-  ['10:16:44', '大熊_', 5, '礼物走一波', 'fail', '你好，想邀请你参加本周五的美食专题活动', '10:16:52'],
-  ['10:16:18', '林小满', 12, '主播加油', 'un', '', ''],
-  ['10:15:55', '云深处', 27, '讲的太详细了', 'sent', '你好，欢迎留言咨询唐律师工伤，留个方式', '10:16:04'],
-  ['10:15:30', '芝士不加糖', 21, '这个选题爱了', 'un', '', ''],
-  ['10:15:02', '阿澈', 8, '已关注 铁粉报到', 'sent', '唐律还在直播，我是助理，可以留个联系方式', '10:15:13'],
-  ['10:14:44', '苏苏酱', 33, '在哪下载', 'wait', '', ''],
-  ['10:14:20', '老白', 40, '前面说的对', 'sent', '老乡 看到你在唐律师直播间咨询工伤问题', '10:14:31'],
-  ['10:13:55', '夜风', 16, '哈哈哈哈笑死', 'un', '', ''],
-  ['10:13:30', '桃子气泡', 14, '带带我 大佬', 'sent', '你好，我是内容运营，看了你今天的直播想聊聊合作', '10:13:42'],
-  ['10:13:02', '一颗柠檬', 9, '这歌叫什么名字', 'un', '', ''],
-];
+/* ---------- 账号查阅模式（真实数据驱动，暂无示例数据） ---------- */
+const REVIEW_ROWS_INIT = [];
 function AccountReview({ account, onClose, push, goMsg }) {
   const [q, setQ] = useState('');
   const [st, setSt] = useState('all');
@@ -2265,7 +2313,7 @@ function AccountReview({ account, onClose, push, goMsg }) {
     const csv = [head, ...body].map(l => l.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(exportData,null,2)],{type:'application/json'}));
+    a.href = URL.createObjectURL(blob);
     a.download = account.name + '_review_' + tick().replace(/:/g, '') + '.csv';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -2363,6 +2411,14 @@ function AccountReview({ account, onClose, push, goMsg }) {
                     </tr>
                   </thead>
                   <tbody>
+                    {filtered.length === 0 && (
+                      <tr>
+                        <td colSpan="8" style={{ padding: '36px 20px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+                          <div style={{ fontSize: 26, marginBottom: 8 }}>📭</div>
+                          暂无评论记录 · 等待直播间捕获后自动入库
+                        </td>
+                      </tr>
+                    )}
                     {filtered.map(r => (
                       <React.Fragment key={r.id}>
                         <tr key={r.id}>
@@ -2564,17 +2620,18 @@ function ProxyDrawer({ account, form, setForm, testing, testResult, onTest, onSa
   );
 }
 
-/* ---------- 新增账号抽屉 ---------- */
-function AccountDrawer({ form, setForm, onSave, onClose }) {
+/* ---------- 新增 / 编辑账号抽屉 ---------- */
+function AccountDrawer({ form, setForm, onSave, onClose, mode = 'add', account = null }) {
+  const isEdit = mode === 'edit';
   return (
     <>
-      <motion.div key="acct-backdrop" className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
-      <motion.div key="acct-drawer" className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id="acct-add-drawer">
+      <motion.div key={'acct-backdrop-' + mode} className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
+      <motion.div key={'acct-drawer-' + mode} className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id={isEdit ? 'acct-edit-drawer' : 'acct-add-drawer'}>
         <div className="drawer-head">
-          <Avatar name="+" h={200} />
+          <Avatar name={isEdit ? (account && account.name) || '+' : '+'} h={isEdit ? (account && account.hue) || 200 : 200} />
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>新增授权账号</div>
-            <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>授权新抖音账号并创建指纹环境</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{isEdit ? '编辑账号信息' : '新增授权账号'}</div>
+            <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>{isEdit ? '修改账号信息并刷新登录凭证' : '授权新抖音账号并创建指纹环境'}</div>
           </div>
           <button className="btn ghost" onClick={onClose} style={{ fontSize: 18, padding: '4px 8px', lineHeight: 1 }}>×</button>
         </div>
@@ -2591,18 +2648,22 @@ function AccountDrawer({ form, setForm, onSave, onClose }) {
                 <input className="input mono" placeholder="留空即可，扫码后自动读入" value={form.uid} onChange={e => setForm(f => ({ ...f, uid: e.target.value }))} />
               </div>
             </div>
-            <div className="field" style={{ marginTop: 12 }}>
-              <label>Cookie <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(可选 · 留空则扫码授权)</span></label>
-              <textarea className="input mono" rows={3} placeholder="粘贴 Cookie 字符串，用于免扫码登录" value={form.cookie} onChange={e => setForm(f => ({ ...f, cookie: e.target.value }))} style={{ resize: 'vertical' }} />
-            </div>
+            {!isEdit && (
+              <div className="field" style={{ marginTop: 12 }}>
+                <label>Cookie <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(可选 · 留空则扫码授权)</span></label>
+                <textarea className="input mono" rows={3} placeholder="粘贴 Cookie 字符串，用于免扫码登录" value={form.cookie} onChange={e => setForm(f => ({ ...f, cookie: e.target.value }))} style={{ resize: 'vertical' }} />
+              </div>
+            )}
           </div>
           <div style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--surface-2)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
-            新增账号将自动创建关联指纹浏览器环境（默认「BitBrowser · Profile 新增」，直连代理）。保存后可在账号卡片中配置代理与凭证校验。
+            {isEdit
+              ? '点击「保存并刷新凭证」后，将在浏览器守护中重新获取该账号登录态（可能需要在守护窗口扫码确认），并写回最新 Cookie / 签名凭证。'
+              : '新增账号将自动创建关联指纹浏览器环境（默认「BitBrowser · Profile 新增」，直连代理）。保存后可在账号卡片中配置代理与凭证校验。'}
           </div>
         </div>
         <div className="drawer-foot">
           <button className="btn ghost" onClick={onClose}>取消</button>
-          <button className="btn primary" onClick={onSave} disabled={!form.name.trim()}>确认新增</button>
+          <button className="btn primary" onClick={onSave} disabled={!form.name.trim()}>{isEdit ? '保存并刷新凭证' : '确认新增'}</button>
         </div>
       </motion.div>
     </>

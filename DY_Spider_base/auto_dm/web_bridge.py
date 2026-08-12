@@ -265,6 +265,229 @@ class WebBridge:
             "view": view,
         }
 
+    # ---- 只读：直播监听（实时信息流 / 房间热度 / 弹幕与点赞） ------------
+    def getLiveStream(self):
+        """直播监听页数据源：实时信息流 + 房间热度序列 + 在线/点赞 + 引擎状态。"""
+        with self._lock:
+            adm = self.adm
+        live = getattr(adm, "live", None) if adm is not None else None
+        base = {
+            "ok": True,
+            "running": bool(adm and adm.is_running()),
+            "listening": bool(adm and getattr(adm, "listen_active", False)),
+            "feed": [],
+            "heat": [],
+            "online": 0,
+            "likes": 0,
+            "totalUser": 0,
+            "roomDisplay": "",
+            "roomTitle": (getattr(adm, "room_title", "") or "") if adm else "",
+            "liveUrl": getattr(C, "LIVE_URL", ""),
+            "liveId": getattr(C, "LIVE_ID", "") or "",
+        }
+        if live is None:
+            return base
+        try:
+            base["feed"] = live.feed_snapshot(120)
+        except Exception:
+            pass
+        try:
+            rs = live.room_snapshot()
+            base["online"] = rs.get("online", 0)
+            base["likes"] = rs.get("likes", 0)
+            base["totalUser"] = rs.get("total_user", 0)
+            base["roomDisplay"] = rs.get("display", "")
+        except Exception:
+            pass
+        try:
+            base["heat"] = live.heat_snapshot()
+        except Exception:
+            pass
+        return base
+
+    def _live_action(self, kind, *args):
+        """直播间操作（发弹幕 / 点赞）公共入口：引擎须运行中，用监测账号凭证。"""
+        with self._lock:
+            adm = self.adm
+        live = getattr(adm, "live", None) if adm is not None else None
+        if live is None or not (adm and adm.is_running()):
+            return {"ok": False, "error": "引擎未运行：请先在「任务中心」启动自动私信"}
+        room_id = getattr(live, "live_id", None) or getattr(C, "LIVE_ID", "") or ""
+        if not room_id:
+            return {"ok": False, "error": "未解析到直播间号，请先在任务页解析房间号"}
+        auth = getattr(live, "auth_", None)
+        if not auth:
+            return {"ok": False, "error": "无可用登录凭证（监测账号未登录）"}
+        try:
+            import auto_dm.features as F
+            if kind == "danmaku":
+                text = str(args[0]).strip() if args else ""
+                if not text:
+                    return {"ok": False, "error": "弹幕内容为空"}
+                res = F.live_send_msg(auth, room_id, text)
+            elif kind == "like":
+                cnt = int(args[0]) if args and str(args[0]).isdigit() else 1
+                res = F.live_digg(auth, room_id, str(cnt))
+            else:
+                return {"ok": False, "error": f"未知直播操作 {kind}"}
+        except Exception as e:
+            return {"ok": False, "error": f"直播操作异常: {e}"}
+        if isinstance(res, dict) and res.get("ok"):
+            data = res.get("data") or {}
+            if isinstance(data, dict) and (data.get("status_code") == 0 or data.get("status_code") == "0"):
+                return {"ok": True}
+            # status_code 非 0 或返回结构异常：按真实响应透传
+            return {"ok": True, "warning": json.dumps(data, ensure_ascii=False)[:200]}
+        return {"ok": False, "error": (res or {}).get("error", "操作失败") if isinstance(res, dict) else str(res)}
+
+    def sendDanmaku(self, content):
+        """在直播间发送弹幕（需要引擎运行中）。"""
+        return self._live_action("danmaku", content)
+
+    def doLike(self, count=1):
+        """在直播间点赞 N 次（需要引擎运行中）。"""
+        return self._live_action("like", count)
+
+    def requestDm(self, nickname, comment=""):
+        """手动把某发言人加入私信发送队列（走真实延迟发送链路）。"""
+        with self._lock:
+            adm = self.adm
+        if adm is None or not (adm and adm.is_running()) or not adm.dispatch:
+            return {"ok": False, "error": "引擎未运行：请先在「任务中心」启动自动私信"}
+        if not (nickname or "").strip():
+            return {"ok": False, "error": "缺少发言人昵称"}
+        try:
+            adm.dispatch.submit({
+                "user_id": None,
+                "sec_uid": None,
+                "nickname": nickname.strip(),
+                "comment": comment or "(手动)",
+            })
+            return {"ok": True, "msg": f"已加入发送队列 · {nickname}"}
+        except Exception as e:
+            return {"ok": False, "error": f"加入队列失败: {e}"}
+
+    def resolveLive(self, url):
+        """解析直播间链接/房间号，写回 C.LIVE_ID / C.LIVE_URL。"""
+        from auto_dm import link_resolve
+        try:
+            live_id, _src = link_resolve.resolve_live_id(str(url or "").strip())
+        except Exception as e:
+            return {"ok": False, "error": f"解析失败: {e}"}
+        if not live_id:
+            return {"ok": False, "error": "未能从链接中解析出直播间号"}
+        C.LIVE_ID = live_id
+        if url:
+            C.LIVE_URL = str(url).strip()
+        _write_config_file({"LIVE_ID": repr(live_id), "LIVE_URL": repr(C.LIVE_URL)})
+        return {"ok": True, "liveId": live_id, "liveUrl": C.LIVE_URL}
+
+    # ---- 只读：内容搜索（Crawl 页，走基座真实搜索接口） ------------------
+    def search(self, mode, query, num=20, sort_type="0", publish_time="0"):
+        """按 mode(user/video/live) 搜索，返回归一化结果列表。"""
+        try:
+            from auto_dm import auth_helper
+            auth, _c = auth_helper.get_current_auth()
+        except Exception as e:
+            return {"ok": False, "error": f"获取登录态失败: {e}"}
+        if not auth:
+            return {"ok": False, "error": "当前账号未登录，无法搜索"}
+        import auto_dm.features as F
+        q = str(query or "").strip()
+        if not q:
+            return {"ok": False, "error": "搜索关键词为空"}
+        try:
+            n = max(1, min(int(num or 20), 50))
+        except Exception:
+            n = 20
+        try:
+            if mode == "user":
+                raw = F.search_user(auth, q, n)
+            elif mode == "live":
+                raw = F.search_live(auth, q, n)
+            else:
+                raw = F.search_work(auth, q, n, sort_type or "0", publish_time or "0")
+        except Exception as e:
+            return {"ok": False, "error": f"搜索异常: {e}"}
+        if not isinstance(raw, dict) or not raw.get("ok"):
+            return {"ok": False, "error": (raw or {}).get("error", "搜索失败") if isinstance(raw, dict) else "搜索失败"}
+        items = raw.get("data") or []
+        out = []
+        if mode == "user":
+            for it in items:
+                ui = it.get("user_info") or {}
+                out.append({
+                    "nickname": ui.get("nickname", ""),
+                    "uid": ui.get("uid", ""),
+                    "secUid": ui.get("sec_uid", ""),
+                    "fans": ui.get("follower_count", 0),
+                    "follow": ui.get("following_count", 0),
+                    "works": ui.get("aweme_count", 0),
+                    "signature": (ui.get("signature") or "")[:80],
+                    "url": f"https://www.douyin.com/user/{ui.get('sec_uid', '')}" if ui.get("sec_uid") else "",
+                })
+        elif mode == "live":
+            for it in items:
+                u = it.get("user") or it.get("anchor") or {}
+                out.append({
+                    "title": it.get("title", ""),
+                    "nickname": u.get("nickname", ""),
+                    "uid": u.get("id", u.get("uid", "")),
+                    "viewers": (it.get("stats") or {}).get("total_user", 0),
+                    "cover": it.get("cover", {}).get("url_list", ["", ""])[0] if isinstance(it.get("cover"), dict) else "",
+                    "url": it.get("web_url", it.get("live_url", "")),
+                })
+        else:  # video
+            for it in items:
+                aw = it.get("aweme_info") or it
+                au = aw.get("author") or {}
+                st = aw.get("statistics") or {}
+                out.append({
+                    "title": (aw.get("desc") or "").replace("\n", " ")[:60],
+                    "nickname": au.get("nickname", ""),
+                    "uid": au.get("uid", ""),
+                    "secUid": au.get("sec_uid", ""),
+                    "plays": st.get("play_count", 0),
+                    "likes": st.get("digg_count", 0),
+                    "cmts": st.get("comment_count", 0),
+                    "awemeId": aw.get("aweme_id", ""),
+                    "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}" if aw.get("aweme_id") else "",
+                })
+        return {"ok": True, "mode": mode, "list": out}
+
+    # ---- 只读：作品互动（Crawl 详情页点赞 / 收藏） ------------------------
+    def _work_action(self, kind, aweme_id):
+        try:
+            from auto_dm import auth_helper
+            auth, _c = auth_helper.get_current_auth()
+        except Exception as e:
+            return {"ok": False, "error": f"获取登录态失败: {e}"}
+        if not auth:
+            return {"ok": False, "error": "当前账号未登录，无法操作"}
+        if not (aweme_id or "").strip():
+            return {"ok": False, "error": "缺少作品 ID"}
+        import auto_dm.features as F
+        try:
+            if kind == "digg":
+                res = F.digg_work(auth, str(aweme_id).strip())
+            elif kind == "collect":
+                res = F.collect_work(auth, str(aweme_id).strip())
+            else:
+                return {"ok": False, "error": f"未知作品操作 {kind}"}
+        except Exception as e:
+            return {"ok": False, "error": f"操作异常: {e}"}
+        if isinstance(res, dict) and res.get("ok"):
+            return {"ok": True}
+        return {"ok": False, "error": (res or {}).get("error", "操作失败") if isinstance(res, dict) else "操作失败"}
+
+    def diggVideo(self, awemeId):
+        """给指定作品点赞。"""
+        return self._work_action("digg", awemeId)
+
+    def favoriteVideo(self, awemeId):
+        """收藏指定作品。"""
+        return self._work_action("collect", awemeId)
+
     # ---- 只读：私信会话（来自 recv_daemon 9912） --------------------------
     def getConversations(self, account=None):
         rd = _http_get(
