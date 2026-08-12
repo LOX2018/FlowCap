@@ -273,7 +273,9 @@ class AutoDM:
             # 磁盘凭证完整且 age<max_age 时走 get_login_auth(force=False) 快速路径
             # （get_my_uid 探活通过即返回，不打开浏览器），仅凭证缺失/过期才重新扫码。
             # GUI【重新扫码】按钮走 rescan_and_rebuild(force_fresh=True) 仍强制重扫。
-            self.monitor_auth = self._build_one_auth(m_env, force_fresh=_force)
+            # 未开启强制重扫时 max_age=0：完全信任该账号守护进程( browser_daemon )保活的
+            # 已登录凭证，不因凭证年龄强制重新扫码（复用守护凭证快速启动）。
+            self.monitor_auth = self._build_one_auth(m_env, force_fresh=_force, max_age=0 if not _force else 600)
             if not getattr(self.monitor_auth, "cookie", None):
                 logger.error(f"监测账号 [{accounts.monitor_name()}] 未获取到登录 cookie，无法监听。")
                 self.status = "监测登录失败"
@@ -286,7 +288,8 @@ class AutoDM:
                 self.auth = self.monitor_auth
                 logger.info(f"[auth] 发送账号与监测账号共用 .env，复用现场会话凭证（不二次扫码）")
             else:
-                self.auth = self._build_one_auth(s_env, force_fresh=True)
+                # 复用发送账号的已登录凭证（守护保活），不强制重扫（与 FORCE_RESCAN 同步）
+                self.auth = self._build_one_auth(s_env, force_fresh=_force, max_age=0 if not _force else 600)
             if not getattr(self.auth, "cookie", None):
                 logger.error(f"发送账号 [{accounts.sender_name()}] 未获取到登录 cookie，无法发私信。")
                 self.status = "发送登录失败"
