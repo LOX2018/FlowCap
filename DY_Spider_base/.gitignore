@@ -79,6 +79,8 @@ _ssr.js
 _patch_web.py
 _peek_fm.js
 _patch_fm.js
+_patch_fm2.py
+_verify_exe.py
 _frag.js
 _build_compiled.js
 _locate_key.js

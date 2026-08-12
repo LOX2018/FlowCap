@@ -1524,7 +1524,7 @@ function Messages({ push, goDm, api }) {
     return () => clearInterval(iv);
   }, [activeAcct]);
 
-  const conv = shownConvs.find(c => c.id === active) || shownConvs[0] || convs[0];
+  const conv = shownConvs.find(c => c.id === active) || shownConvs[0] || convs[0] || { id: '', name: '暂无会话', hue: 0, msgs: [] };
   const send = () => {
     if (!draft.trim()) return;
     if (window.ApiBridge && window.ApiBridge.ready && conv && conv.id && conv.id.indexOf('rc') === 0) {
