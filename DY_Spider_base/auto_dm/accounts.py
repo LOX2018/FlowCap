@@ -17,7 +17,7 @@
 import os
 import json
 import time
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
 
@@ -361,14 +361,19 @@ def remove_account(name):
 
 
 def _read_status(env_path):
-    """读取该 env 的签名配置情况（不探活，纯本地）。"""
+    """读取该 env 的签名配置情况（不探活，纯本地）。
+
+    用 dotenv_values 显式从 .env 文件读键，避免 os.getenv 读到进程级残留的
+    其他账号环境变量（否则空 .env 的账号会误读到上一个账号的 DY_COOKIES/TICKET，
+    导致跨账号 UID 重复、凭证误判）。
+    """
     if not os.path.exists(env_path):
         return {"exists": False, "has_ticket": False, "has_private_key": False,
                 "has_cookie": False}
-    load_dotenv(env_path, override=True)
-    ticket = os.getenv("DY_TICKET")
-    pkey = os.getenv("DY_PRIVATE_KEY")
-    cookie = os.getenv("DY_COOKIES")
+    vals = dotenv_values(env_path)
+    ticket = vals.get("DY_TICKET")
+    pkey = vals.get("DY_PRIVATE_KEY")
+    cookie = vals.get("DY_COOKIES")
     return {
         "exists": True,
         "has_ticket": bool(ticket),
@@ -390,14 +395,8 @@ def account_status(name=None, force=False, timeout=10):
     env_path = _DEFAULT_ENV if rel == ".env" else os.path.join(_ACCOUNTS_DIR, rel)
 
     local = _read_status(env_path)
-    now = time.time()
-    cached = _status_cache.get(name)
-    if not force and cached and (now - cached[0] < 60):
-        ok, info = cached[1], cached[2]
-    else:
-        ok, info = _probe(env_path, timeout)
-        _status_cache[name] = (now, ok, info)
 
+    # 无 .env 或缺签名：直接短路返回，不发起网络探活（避免无效账号拖慢前端加载）
     if not local.get("exists"):
         return {"name": name, "env": env_path, "level": "missing",
                 "label": "未配置（无 .env）", "alive": False,
@@ -408,6 +407,16 @@ def account_status(name=None, force=False, timeout=10):
                 "has_ticket": local["has_ticket"],
                 "has_private_key": local["has_private_key"],
                 "has_cookie": local["has_cookie"]}
+
+    # 有凭证才探活（60s 缓存）
+    now = time.time()
+    cached = _status_cache.get(name)
+    if not force and cached and (now - cached[0] < 60):
+        ok, info = cached[1], cached[2]
+    else:
+        ok, info = _probe(env_path, timeout)
+        _status_cache[name] = (now, ok, info)
+
     if ok:
         return {"name": name, "env": env_path, "level": "ok",
                 "label": f"有效（uid={info}）", "alive": True,
@@ -428,14 +437,15 @@ def _probe(env_path, timeout):
 
         def worker():
             try:
-                load_dotenv(env_path, override=True)
+                # 用 dotenv_values 显式读该账号 .env，避免 os.getenv 读到进程级
+                # 残留的其他账号环境变量导致跨账号 UID 重复。
+                vals = dotenv_values(env_path)
                 auth = DouyinAuth()
-                cookies = os.getenv("DY_COOKIES", "") or ""
-                auth.perepare_auth(cookies, "", "")
-                auth.ticket = os.getenv("DY_TICKET") or None
-                auth.ts_sign = os.getenv("DY_TS_SIGN") or None
-                auth.client_cert = os.getenv("DY_CLIENT_CERT") or None
-                auth.private_key = os.getenv("DY_PRIVATE_KEY") or None
+                auth.perepare_auth(vals.get("DY_COOKIES", "") or "", "", "")
+                auth.ticket = vals.get("DY_TICKET") or None
+                auth.ts_sign = vals.get("DY_TS_SIGN") or None
+                auth.client_cert = vals.get("DY_CLIENT_CERT") or None
+                auth.private_key = vals.get("DY_PRIVATE_KEY") or None
                 return DouyinAPI.get_my_uid(auth)
             except Exception as e:
                 return None

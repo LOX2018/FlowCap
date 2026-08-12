@@ -70,6 +70,17 @@ def _http_get(url, timeout=3):
         return {"ok": False, "error": str(e)}
 
 
+def _port_open(port, timeout=0.3):
+    """快速探测本机端口是否有进程监听（短超时，避免守护探测拖慢前端加载）。"""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        s.close()
+
+
 def _http_post_json(url, payload, timeout=10):
     try:
         data = json.dumps(payload).encode("utf-8")
@@ -531,16 +542,16 @@ class WebBridge:
             st = accounts.account_status(name, force=False, timeout=4)
             bport = accounts.browser_daemon_port(name)
             rport = accounts.recv_daemon_port(name)
-            # 每账号独立守护：探测该账号专属端口的守护进程是否在跑
-            bd = _http_get(f"http://127.0.0.1:{bport}/status")
-            rd = _http_get(f"http://127.0.0.1:{rport}/status")
+            # 每账号独立守护：快速 socket 探测专属端口（短超时，避免拖慢前端）
+            bd_alive = _port_open(bport)
+            rd_alive = _port_open(rport)
             accs.append({
                 "name": name,
                 "isCurrent": name == accounts.current_name(),
                 "isMonitor": name == accounts.monitor_name(),
                 "isSender": name == accounts.sender_name(),
                 "signReady": bool(st.get("sign_ready")),
-                "loggedIn": bool(st.get("logged_in")),
+                "loggedIn": bool(st.get("alive")),
                 # 真实凭证状态：透传 account_status 的细粒度判定，
                 # 前端据此区分「未扫码 / 探活超时 / 有效 / 离线」而非笼统“过期”。
                 "level": st.get("level"),
@@ -549,11 +560,11 @@ class WebBridge:
                 "hasTicket": bool(st.get("has_ticket")),
                 "hasPrivateKey": bool(st.get("has_private_key")),
                 "uid": st.get("uid"),
-                # 每账号独立守护的专属端口与运行状态
+                # 每账号独立守护的专属端口与运行状态（socket 快速探测）
                 "browserDaemonPort": bport,
                 "recvDaemonPort": rport,
-                "browserDaemonAlive": bool(bd.get("alive")) if isinstance(bd, dict) else False,
-                "recvDaemonAlive": bool(rd.get("alive")) if isinstance(rd, dict) else False,
+                "browserDaemonAlive": bd_alive,
+                "recvDaemonAlive": rd_alive,
             })
         return {
             "ok": True,

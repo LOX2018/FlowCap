@@ -4163,9 +4163,16 @@ function Accounts({
   }, "\u67E5\u9605\u6A21\u5F0F"))), React.createElement("div", {
     className: "acct-body"
   }, React.createElement("div", {
-    className: "acct-section"
+    className: "acct-section",
+    style: {
+      gridColumn: '1 / -1',
+      borderBottom: '1px solid var(--border)'
+    }
   }, React.createElement("h4", null, "\u5B88\u62A4\u670D\u52A1"), React.createElement("div", {
-    className: "acct-row"
+    className: "acct-row",
+    style: {
+      justifyContent: 'flex-start'
+    }
   }, React.createElement("span", {
     className: "k"
   }, "\u51ED\u8BC1\u5B88\u62A4"), React.createElement("span", {
@@ -4201,16 +4208,17 @@ function Accounts({
       fontSize: 11,
       color: 'var(--muted)'
     }
-  }, ":", a.browserDaemonPort))), React.createElement("div", {
-    className: "acct-row"
-  }, React.createElement("span", {
-    className: "k"
+  }, ":", a.browserDaemonPort)), React.createElement("span", {
+    className: "k",
+    style: {
+      marginLeft: 16
+    }
   }, "\u79C1\u4FE1\u5B88\u62A4"), React.createElement("span", {
     className: "v",
     style: {
       display: 'flex',
       alignItems: 'center',
-      gap: 8
+      gap: 6
     }
   }, React.createElement(Pill, {
     c: a.recvDaemonAlive ? 'ok' : 'muted'
