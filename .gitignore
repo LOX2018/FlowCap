@@ -42,3 +42,6 @@ node_modules/
 *.pma
 *.tmp
 ~$*
+
+# MCP 浏览器测试快照
+.playwright-mcp/

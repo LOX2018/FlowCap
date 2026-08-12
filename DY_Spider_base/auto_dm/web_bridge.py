@@ -37,6 +37,8 @@ _RECV_DAEMON_PORT = 9912
 # getStats 只返回最近 N 条记录（total 仍为全量），避免高频轮询全量序列化大响应
 STATS_RECENT = 200
 
+from loguru import logger
+
 from auto_dm import config as C
 from auto_dm import accounts
 from auto_dm import browser_daemon
@@ -180,6 +182,7 @@ class WebBridge:
     def __init__(self):
         self.adm = None
         self._lock = threading.Lock()
+        self._scanning = None  # 正在弹出扫码窗口的账号名（防重复）
 
     # ---- 只读：概览 -------------------------------------------------------
     def getOverview(self):
@@ -740,6 +743,49 @@ class WebBridge:
         try:
             accounts.add_account(name)
             return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def scanLogin(self, name):
+        """为指定账号弹出内置指纹浏览器二维码登录（后台线程，立即返回）。
+
+        新账号无任何凭证：get_login_auth(headless=False, force=True) 会打开指纹浏览器、
+        自动点登录、展示二维码等待扫码；扫码完成后凭证自动写回该账号 .env 并关闭浏览器。
+        返回 ok 仅表示"已弹出浏览器"；登录结果由前端轮询 getAccounts 观察凭证状态。
+        """
+        try:
+            import asyncio
+            from dy_apis.login_api import DYLoginApi
+            name = (name or "").strip()
+            if not name:
+                return {"ok": False, "error": "账号名不能为空"}
+            if name not in [n for n, _ in accounts.list_accounts()]:
+                return {"ok": False, "error": f"账号不存在: {name}"}
+            env_path = accounts.env_path_of(name)
+            with self._lock:
+                if self._scanning == name:
+                    return {"ok": False, "error": f"账号 {name} 正在扫码中，请勿重复操作"}
+                self._scanning = name
+
+            def _worker():
+                try:
+                    api = DYLoginApi()
+                    auth = asyncio.run(
+                        api.get_login_auth(headless=False, env_path=env_path, force=True)
+                    )
+                    ok = bool(auth and getattr(auth, "cookie", None))
+                    logger.info(f"[scanLogin] 账号 {name} 扫码登录{'成功' if ok else '未完成'}")
+                except Exception as e:
+                    logger.error(f"[scanLogin] 账号 {name} 扫码异常: {e}")
+                finally:
+                    with self._lock:
+                        self._scanning = None
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return {
+                "ok": True,
+                "msg": f"已为账号 {name} 弹出内置指纹浏览器，请在浏览器窗口扫码登录",
+            }
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
