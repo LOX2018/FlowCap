@@ -174,6 +174,7 @@ class DispatchCenter:
     def _loop(self):
         """后台线程：到点后真正发送（捕获时刻 + SEND_DELAY_SEC）。"""
         while True:
+            to_send = None
             with self._lock:
                 if self.stopped and not self._queue:
                     break
@@ -198,9 +199,9 @@ class DispatchCenter:
                     continue
                 # 取最早到期的一条
                 ready = None
-                for i, (send_at, key, target) in enumerate(self._queue):
+                for i, (send_at, k, t) in enumerate(self._queue):
                     if send_at <= now:
-                        ready = (i, key, target)
+                        ready = (k, t)
                         break
                 if ready is None:
                     # 无可发送项：等待直到最近一条到期或被唤醒
@@ -210,11 +211,12 @@ class DispatchCenter:
                         wait = 1.0
                     self._cv.wait(wait)
                     continue
-                _, key, target = ready
+                to_send = ready
                 # 从队列移除（pending 在发送成功后清除）
-                self._queue = [x for x in self._queue if x[1] != key]
+                self._queue = [x for x in self._queue if x[1] != to_send[0]]
             # 在锁外发送，避免发送阻塞整个调度
-            self._do_send(key, target)
+            if to_send is not None:
+                self._do_send(to_send[0], to_send[1])
 
     def _do_send(self, key, target):
         if self.stopped:
