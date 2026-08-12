@@ -30,7 +30,13 @@ class DispatchCenter:
         # 发送上限：优先用构造参数（运行时显式传入，避免依赖模块全局的时序问题）
         self.max_target = int(max_target) if max_target is not None else int(getattr(C, "MAX_TARGET", 9999))
         self.reached_limit = False
-        self.stopped = False       # 停止标志：置 True 后不再发送任何私信
+        # 两个停止语义必须区分：
+        #   hard_stopped: 硬停止（force_stop_all）—— 丢弃队列、_do_send 直接拦截，一条都不发。
+        #   stopped:      仅用于“软停止后队列已发空”时让 _loop 退出线程（见 stop_keep_queue / on_idle）。
+        #   no_new:       软停止（stop_keep_queue）—— 只阻止 submit 接收新目标，已入队的延迟私信仍照常发出。
+        self.hard_stopped = False
+        self.stopped = False
+        self.no_new = False        # 软停止标志：置 True 后 submit 不再入队（_do_send 不受影响）
         self.paused = False        # 暂停标志：置 True 后停止监听采集与发送（不断浏览器/守护）
         self.on_idle = None        # 回调：延迟队列自然发空（_loop 退出前）触发，供 AutoDM 收尾
         self._queue = []           # [(send_at_ts, key, target)]，后台线程消费
@@ -44,18 +50,21 @@ class DispatchCenter:
         """硬停止：之后 submit 一律忽略，并清空待发队列，确保不再发送任何私信。
         注意：这是“彻底停止”，会丢弃已捕获未发的延迟私信。一般仅供 force_stop_all 内部使用。"""
         with self._lock:
+            self.hard_stopped = True
             self.stopped = True
             self._queue.clear()
             self.pending.clear()
             self._cv.notify_all()
 
     def stop_keep_queue(self):
-        """软停止（监听与发送解耦）：停止接收新目标、不再发送新私信，
+        """软停止（监听与发送解耦）：停止接收新目标、不再发送【新】私信，
         但【保留已入队的延迟私信】，由后台 _loop 继续按延迟时点发完。
         用于“直播间关闭/主动停止监听”场景：私信发送是与监听(WS)独立的线路，
-        已捕获的评论不应因监听停止而被丢弃。"""
+        已捕获的评论不应因监听停止而被丢弃。
+        注意：此处只置 no_new（挡 submit），【不置 hard_stopped / stopped】，
+        否则 _do_send 开头的拦截会把已到期的存量私信也一并丢弃（静默丢失、且无日志）。"""
         with self._lock:
-            self.stopped = True
+            self.no_new = True
             self._cv.notify_all()
         logger.info(
             f"[调度] 软停止（保留延迟队列）：已停止接收新目标，"
@@ -124,8 +133,12 @@ class DispatchCenter:
 
     def submit(self, target):
         """提交一个私信目标。target 需含 nickname，可选 user_id / sec_uid / comment。"""
-        if self.stopped:
-            logger.debug("[调度] 已停止，忽略提交目标（不再发送私信）")
+        if self.hard_stopped:
+            logger.debug("[调度] 已硬停止，忽略提交目标（不再发送私信）")
+            return
+        if self.no_new:
+            # 软停止：已停止接收新目标（存量延迟私信照常发），忽略新提交
+            logger.debug("[调度] 软停止中，忽略新提交目标")
             return
         if self.paused:
             # 暂停态：停止监听采集效果——忽略新目标，不记录不入队（浏览器/守护保持运行）
@@ -181,8 +194,8 @@ class DispatchCenter:
         while True:
             to_send = None
             with self._lock:
-                # 1) 彻底停止且队列已空：退出线程
-                if self.stopped and not self._queue:
+                # 1) 硬停止（force_stop_all）或软停止后队列已发空：退出线程
+                if (self.hard_stopped or self.no_new) and not self._queue:
                     break
                 # 2) 延迟队列自然发空：通知控制器收尾（只触发一次）
                 if self.on_idle:
@@ -222,7 +235,9 @@ class DispatchCenter:
                 self._do_send(to_send[0], to_send[1])
 
     def _do_send(self, key, target):
-        if self.stopped:
+        # 仅硬停止（force_stop_all）才拦截；软停止(no_new)仍要把已到期的存量私信发完。
+        if self.hard_stopped:
+            logger.warning(f"[调度] 硬停止，丢弃待发私信「{target.get('nickname')}」")
             return
         content = C.pick_dm_message()
         ok, reason = send_target(self.auth, target, content)

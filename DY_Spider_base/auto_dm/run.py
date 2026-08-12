@@ -472,7 +472,8 @@ class AutoDM:
         # 任务活跃 = 监听在跑，或私信延迟队列仍在发送（两条线路任一活跃即为运行中）
         if self._running:
             return True
-        if self.dispatch and (not self.dispatch.stopped or self.dispatch.queue_size() > 0):
+        if self.dispatch and not self.dispatch.hard_stopped and self.dispatch.queue_size() > 0:
+            # 软停止(no_new)后仍有存量私信在后台发送中
             return True
         return False
 
