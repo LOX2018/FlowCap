@@ -530,6 +530,13 @@ class WebBridge:
                 "isSender": name == accounts.sender_name(),
                 "signReady": bool(st.get("sign_ready")),
                 "loggedIn": bool(st.get("logged_in")),
+                # 真实凭证状态：透传 account_status 的细粒度判定，
+                # 前端据此区分「未扫码 / 探活超时 / 有效 / 离线」而非笼统“过期”。
+                "level": st.get("level"),
+                "label": st.get("label"),
+                "alive": bool(st.get("alive")),
+                "hasTicket": bool(st.get("has_ticket")),
+                "hasPrivateKey": bool(st.get("has_private_key")),
                 "uid": st.get("uid"),
             })
         bd = _http_get(f"http://127.0.0.1:{_BROWSER_DAEMON_PORT}/status")

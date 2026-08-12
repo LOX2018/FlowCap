@@ -2853,8 +2853,8 @@ function Messages({
       color: 'var(--muted)'
     }
   }, "UID ", curAcct.uid || '—', " \xB7 \u4F1A\u8BDD\u6309\u8D26\u53F7\u9694\u79BB")), React.createElement(Pill, {
-    c: curAcct.loggedIn ? 'ok' : 'danger'
-  }, curAcct.loggedIn ? '凭证有效' : '凭证过期')) : React.createElement("div", {
+    c: curAcct.loggedIn ? 'ok' : (curAcct.level === 'nosign' ? 'warn' : 'danger')
+  }, curAcct.label || '凭证状态未知')) : React.createElement("div", {
     style: {
       flex: 1,
       fontSize: 13.5,
@@ -3777,14 +3777,23 @@ function Accounts({
       if (!alive || !d || !d.ok) return;
       const list = d.accounts || [];
       if (list.length) {
-        setRealAccts(list.map((a, i) => ({
-          id: 'ra' + i,
-          name: a.name,
-          uid: a.uid || '—',
-          hue: hue(a.name.length * 2),
-          tokenValid: a.signReady,
-          tokenExpire: a.loggedIn ? '有效' : '过期',
-          lastCheck: '刚刚',
+        setRealAccts(list.map((a, i) => {
+          // 基于后端透传的细粒度 level 判定真实凭证状态：
+          // ok=有效；nosign=已建账号但未扫码；expired=扫码过但探活失败(可能守护未开/网络抖动)；
+          // missing=无 .env。统一映射 tokenValid(是否可用于发私信) 与展示文案。
+          const lvl = a.level || (a.loggedIn ? 'ok' : 'expired');
+          const lvlLabel = a.label || (a.loggedIn ? '凭证有效' : '凭证过期');
+          const isValid = lvl === 'ok';
+          return {
+            id: 'ra' + i,
+            name: a.name,
+            uid: a.uid || '—',
+            hue: hue(a.name.length * 2),
+            tokenValid: isValid,
+            tokenExpire: isValid ? '有效' : (lvl === 'nosign' ? '未扫码' : lvl === 'missing' ? '未配置' : '失效'),
+            lvlLabel: lvlLabel,
+            lvl: lvl,
+            lastCheck: '刚刚',
           lastRun: {
             room: '—',
             roomUrl: '',
@@ -3809,7 +3818,8 @@ function Accounts({
             webrtc: '替换',
             timezone: 'Asia/Shanghai'
           }
-        })));
+        };
+        }));
       }
     }).catch(() => {});
     load();
@@ -3867,12 +3877,13 @@ function Accounts({
       return;
     }
     if (window.ApiBridge && window.ApiBridge.ready) {
-      api.refreshBrowserDaemon(name).then(r => {
+      // 重新获取凭证 = 重新拉起内置指纹浏览器展示扫码二维码，扫码后凭证写回该账号
+      api.scanLogin(name).then(r => {
         if (r && r.ok) {
-          push('已提交刷新凭证 · ' + name + '（请在守护中扫码/确认登录）');
+          push('已弹出指纹浏览器 · ' + name + '，请扫码完成登录（凭证将自动写回）');
           setEditAcct(null);
-        } else push('刷新凭证失败: ' + (r && r.error || ''));
-      }).catch(e => push('刷新凭证异常: ' + e));
+        } else push('重新获取凭证失败: ' + (r && r.error || ''));
+      }).catch(e => push('重新获取凭证异常: ' + e));
       return;
     }
     setAccounts(accts => accts.map(a => a.id === editAcct.id ? {
@@ -4144,8 +4155,8 @@ function Accounts({
   }, React.createElement("div", {
     className: "nm"
   }, a.name, React.createElement(Pill, {
-    c: a.tokenValid ? 'ok' : 'danger'
-  }, a.tokenValid ? '凭证有效' : '凭证过期')), React.createElement("div", {
+    c: a.tokenValid ? 'ok' : (a.lvl === 'nosign' ? 'warn' : 'danger')
+  }, a.lvlLabel || (a.tokenValid ? '凭证有效' : '凭证过期'))), React.createElement("div", {
     className: "uid"
   }, "UID ", a.uid, " \xB7 \u4E0A\u6B21\u6821\u9A8C ", a.lastCheck)), React.createElement("div", {
     className: "ops"
@@ -4485,8 +4496,8 @@ function AccountReview({
     h: a.hue,
     sm: true
   }), React.createElement("h2", null, a.name, " \xB7 \u67E5\u9605\u6A21\u5F0F"), React.createElement(Pill, {
-    c: a.tokenValid ? 'ok' : 'danger'
-  }, a.tokenValid ? '凭证有效' : '凭证过期'), React.createElement("div", {
+    c: a.tokenValid ? 'ok' : (a.lvl === 'nosign' ? 'warn' : 'danger')
+  }, a.lvlLabel || (a.tokenValid ? '凭证有效' : '凭证过期')), React.createElement("div", {
     style: {
       flex: 1
     }
@@ -5306,7 +5317,7 @@ function AccountDrawer({
       color: 'var(--muted)',
       lineHeight: 1.6
     }
-  }, isEdit ? '点击「保存并刷新凭证」后，将在浏览器守护中重新获取该账号登录态（可能需要在守护窗口扫码确认），并写回最新 Cookie / 签名凭证。' : '保存后将自动弹出内置指纹浏览器并展示抖音扫码二维码，扫码完成后凭证自动写回该账号；之后可在账号卡片中配置代理与凭证校验。')), React.createElement("div", {
+  }, isEdit ? '点击「重新获取凭证」后，将重新拉起内置指纹浏览器并展示抖音扫码二维码，扫码完成后最新凭证（Cookie / 签名）自动写回该账号。' : '保存后将自动弹出内置指纹浏览器并展示抖音扫码二维码，扫码完成后凭证自动写回该账号；之后可在账号卡片中配置代理与凭证校验。')), React.createElement("div", {
     className: "drawer-foot"
   }, React.createElement("button", {
     className: "btn ghost",
@@ -5315,7 +5326,7 @@ function AccountDrawer({
     className: "btn primary",
     onClick: onSave,
     disabled: !form.name.trim()
-  }, isEdit ? '保存并刷新凭证' : '确认新增'))));
+  }, isEdit ? '重新获取凭证' : '确认新增'))));
 }
 function App() {
   const [tab, setTabState] = useState(() => {
