@@ -1,5 +1,5 @@
 # coding=utf-8
-"""指纹浏览器后端接入层（可切换，默认不启用，回退原生 Playwright）。
+"""指纹浏览器后端接入层（唯一浏览器来源，禁止回退原生 Playwright）。
 
 支持两种指纹内核：
 
@@ -14,8 +14,10 @@
     启动环境并返回 CDP debuggingPort，外部脚本 connect_over_cdp 接管其指纹上下文。
   - 配置：VB_MODE="cdp"，VB_API_BASE / VB_ENV_ID。
 
-两种模式都通过 config.USE_VIRTUAL_BROWSER 总开关控制；未启用或服务/文件不可达时，
-调用方（login_api / web_probe / link_resolve）自动回退到原生 Playwright，行为不变。
+【硬性约束】调用时只用指纹浏览器，禁止使用原生 Playwright：
+  - USE_VIRTUAL_BROWSER 必须为 True（项目默认已开启）；
+  - 指纹内核不可用（exe 内核文件缺失 / cdp 服务不可达）时，should_use_vb / launch_*
+    直接抛 RuntimeError 让上层报错，绝不静默回退原生 Playwright。
 
 注意：指纹伪装由对应内核自身完成，本模块只负责“启动内核 + 把 page/context 交给调用方”。
 """
@@ -133,8 +135,10 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
     if mode == "exe":
         exe = _resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")
         if not exe or not os.path.exists(exe):
-            logger.warning(f"[vbrowser] VB_CHROME_EXE 未配置或不存在: {exe}，回退原生 Playwright")
-            return None, None, None, None
+            # 禁止回退原生 Playwright：内核缺失是配置错误，直接抛错让上层明确感知
+            raise RuntimeError(
+                f"[vbrowser] 指纹浏览器内核不存在: {exe}（已禁用原生 Playwright，不会回退）。"
+                f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
         if user_data_dir is None:
             user_data_dir = os.path.join(app_root(), "vb_profile_dm")
@@ -157,8 +161,10 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
     # 默认 cdp 模式
     port = launch_vb_env(cfg.VB_ENV_ID, cfg.VB_API_BASE, cfg.VB_LAUNCH_TIMEOUT)
     if not port:
-        logger.warning("[vbrowser] CDP 启动失败，回退原生 Playwright")
-        return None, None, None, None
+        # 禁止回退原生 Playwright：CDP 指纹服务不可达是配置错误，直接抛错
+        raise RuntimeError(
+            f"[vbrowser] 指纹浏览器 CDP 服务不可达: {cfg.VB_API_BASE}（已禁用原生 Playwright，不会回退）。"
+            f"请先启动 VirtualBrowser/Ant-Browser 本地服务并核对 VB_API_BASE/VB_ENV_ID。")
     p = await async_playwright().start()
     browser = await p.chromium.connect_over_cdp(f"http://localhost:{port}")
     context = browser.contexts[0] if browser.contexts else await browser.new_context()
@@ -172,8 +178,10 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
     if mode == "exe":
         exe = _resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")
         if not exe or not os.path.exists(exe):
-            logger.warning(f"[vbrowser] VB_CHROME_EXE 未配置或不存在: {exe}，回退原生 Playwright")
-            return None, None, None, None
+            # 禁止回退原生 Playwright：内核缺失是配置错误，直接抛错让上层明确感知
+            raise RuntimeError(
+                f"[vbrowser] 指纹浏览器内核不存在: {exe}（已禁用原生 Playwright，不会回退）。"
+                f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
         if user_data_dir is None:
             user_data_dir = os.path.join(app_root(), "vb_profile_dm")
@@ -189,8 +197,10 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
 
     port = launch_vb_env(cfg.VB_ENV_ID, cfg.VB_API_BASE, cfg.VB_LAUNCH_TIMEOUT)
     if not port:
-        logger.warning("[vbrowser] CDP 启动失败，回退原生 Playwright")
-        return None, None, None, None
+        # 禁止回退原生 Playwright：CDP 指纹服务不可达是配置错误，直接抛错
+        raise RuntimeError(
+            f"[vbrowser] 指纹浏览器 CDP 服务不可达: {cfg.VB_API_BASE}（已禁用原生 Playwright，不会回退）。"
+            f"请先启动 VirtualBrowser/Ant-Browser 本地服务并核对 VB_API_BASE/VB_ENV_ID。")
     p = sync_playwright().start()
     browser = p.chromium.connect_over_cdp(f"http://localhost:{port}")
     context = browser.contexts[0] if browser.contexts else browser.new_context()
@@ -198,18 +208,29 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
 
 
 def should_use_vb(cfg):
-    """总开关 + 可用性探测：是否启用指纹内核。"""
+    """总开关 + 可用性探测。
+
+    禁止回退原生 Playwright：指纹浏览器不可用时直接抛 RuntimeError（返回 False 仅用于
+    上游无条件跳过——实际所有调用点都应把不可用当作错误上报，而不是降级到原生内核）。
+    正常返回 (True, mode)（mode 为 "exe" / "cdp"）。
+    """
     if not getattr(cfg, "USE_VIRTUAL_BROWSER", False):
-        return False, None
+        raise RuntimeError(
+            "[vbrowser] 已禁用原生 Playwright：USE_VIRTUAL_BROWSER 必须为 True（指纹浏览器强制启用）。"
+            "请检查 config.py / 前端配置，不要关闭指纹浏览器开关。")
     mode = getattr(cfg, "VB_MODE", "cdp")
     if mode == "exe":
-        # exe 模式只需文件存在即可（相对路径按项目根解析，与启动目录无关）
-        if not os.path.exists(_resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")):
-            logger.warning("[vbrowser] VB_MODE=exe 但 VB_CHROME_EXE 不存在，回退原生 Playwright")
-            return False, None
+        # exe 模式只需文件存在即可（相对路径按应用根解析，与启动目录无关）
+        exe = _resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")
+        if not os.path.exists(exe):
+            raise RuntimeError(
+                f"[vbrowser] 指纹浏览器内核不存在: {exe}（已禁用原生 Playwright，不会回退）。"
+                f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         return True, "exe"
     # cdp 模式需本地服务可达
-    if is_vb_available(getattr(cfg, "VB_API_BASE", "http://localhost:9000")):
+    api = getattr(cfg, "VB_API_BASE", "http://localhost:9000")
+    if is_vb_available(api):
         return True, "cdp"
-    logger.warning("[vbrowser] VB_MODE=cdp 但本地服务不可达，回退原生 Playwright")
-    return False, None
+    raise RuntimeError(
+        f"[vbrowser] 指纹浏览器 CDP 服务不可达: {api}（已禁用原生 Playwright，不会回退）。"
+        f"请先启动 VirtualBrowser/Ant-Browser 本地服务并核对 VB_API_BASE/VB_ENV_ID。")

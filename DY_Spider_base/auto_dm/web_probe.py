@@ -16,8 +16,6 @@ import asyncio
 import time
 from loguru import logger
 
-from playwright.async_api import async_playwright
-
 # ---- 内联选择器（来自 DYchajian selectors.py）----
 COMMENT_ROW = [
     "[class*='messageItem']", "[class*='MessageItem']",
@@ -100,27 +98,16 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
     from auto_dm import config as _cfg
     from auto_dm.vbrowser import should_use_vb, launch_async
 
-    _vb, _vb_mode = should_use_vb(_cfg)
-    _pw = None
-    _browser = None
-    _backend = None
-    if _vb:
+    # 禁止回退原生 Playwright：指纹内核不可用（should_use_vb / launch_async 抛错）时
+    # 直接报错并跳过中控台采集，绝不降级到原生内核
+    try:
+        _vb, _vb_mode = should_use_vb(_cfg)
         logger.info(f"[web_probe] 使用指纹浏览器内核接管中控台采集 (mode={_vb_mode})")
         _pw, _browser, context, _backend = await launch_async(_vb_mode, _cfg, headless=headless)
-        if _backend is None:
-            logger.warning("[web_probe] 指纹内核启动失败，回退原生 Playwright")
-            _vb = False
-    if not _vb:
-        _pw = await async_playwright().start()
-        _browser = await _pw.chromium.launch(
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled"])
-        context = await _browser.new_context(
-            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"))
-    if not _vb:
-        page = await context.new_page()
+    except RuntimeError as e:
+        logger.error(f"[web_probe] 中控台采集无法启动（已禁用原生 Playwright，不采集）：{e}")
+        return
+    page = context.pages[0] if context.pages else await context.new_page()
     try:
         logger.info(f"[web_probe] 打开中控台 {room_url}")
         await page.goto(room_url, wait_until="domcontentloaded", timeout=60000)
@@ -139,13 +126,9 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
                 logger.warning(f"[web_probe] 扫描异常: {e}")
             await asyncio.sleep(interval)
     finally:
-        # exe 模式浏览器由我们 launch，需关闭；cdp 模式由外部客户端管理，不关；原生模式关闭
+        # exe 模式浏览器由我们 launch，需关闭；cdp 模式由外部客户端管理，不关。
+        # （原生 Playwright 已禁用，无“原生模式”收尾分支）
         if _backend == "exe" and _browser is not None:
-            try:
-                await _browser.close()
-            except Exception:
-                pass
-        elif not _vb and _browser is not None:
             try:
                 await _browser.close()
             except Exception:

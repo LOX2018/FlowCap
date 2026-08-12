@@ -4,7 +4,6 @@ import urllib.parse
 import aiohttp
 import asyncio
 import os
-from playwright.async_api import async_playwright
 import requests
 from loguru import logger
 
@@ -25,14 +24,14 @@ class DYLoginApi:
 
     # 生成初始cookies
     async def dyGenerateInitData(self, headless=True, cookie_str=""):
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=headless,
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                ],
-            )
-            context = await browser.new_context()
+        # 禁止回退原生 Playwright：统一走指纹浏览器内核（should_use_vb 不可用时直接抛错）
+        from auto_dm import config as _cfg
+        from auto_dm.vbrowser import should_use_vb, launch_async
+
+        _vb, _vb_mode = should_use_vb(_cfg)
+        _pw, _browser, context, _backend = await launch_async(
+            _vb_mode, _cfg, headless=headless, force=True)
+        try:
             if cookie_str:
                 await context.add_cookies([
                     {"name": part.strip().partition("=")[0],
@@ -40,7 +39,7 @@ class DYLoginApi:
                      "domain": ".douyin.com", "path": "/"}
                     for part in cookie_str.split(";") if part.strip()
                 ])
-            page = await context.new_page()
+            page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(self.home_url)
             await page.wait_for_load_state("load")
             keys_str = None
@@ -53,12 +52,22 @@ class DYLoginApi:
                 if keys_str and web_protect_str:
                     break
             cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
-            await browser.close()
             auth = DouyinAuth()
             auth.perepare_auth('', web_protect_str, keys_str)
             auth.cookie = cookies
             auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
             return auth
+        finally:
+            if _backend == "exe" and _browser is not None:
+                try:
+                    await _browser.close()
+                except Exception:
+                    pass
+            if _pw is not None:
+                try:
+                    await _pw.stop()
+                except Exception:
+                    pass
 
     # 扫码登录并抓 ticket
     async def login_grab_ticket(self, headless=False, timeout=300, user_data_dir="pw_profile_dm",
@@ -76,31 +85,19 @@ class DYLoginApi:
         _vb, _vb_mode = should_use_vb(_cfg)
         _pw = None          # async_playwright 实例
         _browser = None
-        _backend = None      # "exe" / "cdp" / None(原生)
+        _backend = None      # "exe" / "cdp"（指纹内核；禁止回退原生 Playwright，无 None 降级）
         context = None
         page = None
         # 账号独占 profile：exe 模式用 accounts.profile_dir_of 推导，确保每账号独立封存
         _acc_profile = _accounts.profile_dir_of(env_path)
-        if _vb:
-            logger.info(f"[auth] 使用指纹浏览器内核接管登录会话 (mode={_vb_mode})")
-            logger.info(f"[auth] 账号专属指纹 profile: {_acc_profile}")
-            _pw, _browser, context, _backend = await launch_async(
-                _vb_mode, _cfg, headless=headless, user_data_dir=_acc_profile, force=force)
-            if _backend is None:
-                logger.warning("[auth] 指纹内核启动失败，回退原生 Playwright")
-                _vb = False
-            else:
-                page = context.pages[0] if context.pages else await context.new_page()
-        if not _vb:
-            _pw = await async_playwright().start()
-            context = await _pw.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                headless=headless,
-                args=['--disable-blink-features=AutomationControlled'],
-            )
-            page = context.pages[0] if context.pages else await context.new_page()
+        # 指纹内核不可用时 should_use_vb 已直接抛错，此处不会再出现“回退原生 Playwright”
+        logger.info(f"[auth] 使用指纹浏览器内核接管登录会话 (mode={_vb_mode})")
+        logger.info(f"[auth] 账号专属指纹 profile: {_acc_profile}")
+        _pw, _browser, context, _backend = await launch_async(
+            _vb_mode, _cfg, headless=headless, user_data_dir=_acc_profile, force=force)
+        page = context.pages[0] if context.pages else await context.new_page()
 
-        # ===== 以下为指纹内核与原生内核共用的登录/抓签名流程 =====
+        # ===== 以下为指纹内核共用的登录/抓签名流程 =====
         if page is None:
             raise RuntimeError("[auth] 未能获得浏览器页面，登录中止")
 

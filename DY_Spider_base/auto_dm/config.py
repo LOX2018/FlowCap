@@ -100,7 +100,8 @@ WEB_PROBE_HEADLESS = False
 # 由 VB_MODE 决定具体内核：
 #   "exe"  -> fingerprint-chromium 的 chrome.exe（推荐：无需装 GUI 客户端，源码级指纹伪装）
 #   "cdp"  -> VirtualBrowser/Ant-Browser 本地服务 + connect_over_cdp 接管
-# 设为 False（或内核不可用）时自动回退到原生 Playwright，行为不变。
+# 【硬性约束】只用指纹浏览器，禁止使用原生 Playwright：本开关必须保持 True，
+# 指纹内核不可用（exe 内核缺失 / cdp 服务不可达）时直接报错，绝不回退原生内核。
 USE_VIRTUAL_BROWSER = True
 VB_MODE = "exe"
 # exe 模式：fingerprint-chromium 编译产物 chrome.exe 的相对路径

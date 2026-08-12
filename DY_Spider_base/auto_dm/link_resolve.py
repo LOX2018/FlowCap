@@ -217,36 +217,22 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
     """用已登录浏览器打开链接，等其跳转到直播间页，再抠 live_id。
 
     适用于用户主页等需要登录态 + JS 跳转才能到达直播间的场景（备用）。
-    优先使用 VirtualBrowser 指纹内核（若已启用且服务可达），否则回退原生 Playwright。
+    只使用 VirtualBrowser 指纹内核——禁止回退原生 Playwright，指纹不可用时
+    报错并放弃浏览器解析（上层会给出“无法解析直播间号”的明确提示）。
     """
     from auto_dm import config as _cfg
     from auto_dm.vbrowser import should_use_vb, launch_sync
-    from playwright.sync_api import sync_playwright
 
     final_url = None
     live_id = None
-    _vb, _vb_mode = should_use_vb(_cfg)
-    _pw = None
-    _browser = None
-    _backend = None
-    if _vb:
+    try:
+        _vb, _vb_mode = should_use_vb(_cfg)
         logger.info(f"[resolve] 使用指纹浏览器内核解析跳转 (mode={_vb_mode})")
         _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=headless)
-        if _backend is None:
-            logger.warning("[resolve] 指纹内核启动失败，回退原生 Playwright")
-            _vb = False
-    if not _vb:
-        _pw = sync_playwright().start()
-        if user_data_dir and os.path.exists(user_data_dir):
-            context = _pw.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir, headless=headless,
-                args=["--disable-blink-features=AutomationControlled"])
-        else:
-            context = _pw.chromium.launch(
-                headless=headless,
-                args=["--disable-blink-features=AutomationControlled"]).new_context()
-    if not _vb:
-        page = context.new_page()
+    except RuntimeError as e:
+        logger.error(f"[resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：{e}")
+        return None, None
+    page = context.new_page()
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         # 等待可能的跳转（用户主页 -> 直播间）
@@ -279,8 +265,9 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
     except Exception as e:
         logger.warning(f"[resolve] 浏览器解析失败: {e}")
     finally:
-        # exe 模式 context 由我们 launch，需关闭；cdp 模式由外部客户端管理，不关；原生模式关闭
-        if _backend == "exe" or (not _vb and _backend is None):
+        # exe 模式 context 由我们 launch，需关闭；cdp 模式由外部客户端管理，不关。
+        # （原生 Playwright 已禁用，无“原生模式”收尾分支）
+        if _backend == "exe":
             try:
                 context.close()
             except Exception:
