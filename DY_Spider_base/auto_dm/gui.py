@@ -515,7 +515,7 @@ class App(tk.Tk):
         tk.Label(r2, text="延迟抖动(秒)", bg=PANEL, fg=MUTED).pack(side="left")
         self.delay = tk.StringVar(value=self._delay_repr())
         ttk.Entry(r2, textvariable=self.delay, width=14).pack(side="left", padx=6)
-        tk.Label(r2, text="格式：50,120=随机区间；60=固定延迟", bg=PANEL, fg=MUTED,
+        tk.Label(r2, text="格式：40,65=随机区间；60=固定延迟（可手动填写）", bg=PANEL, fg=MUTED,
                  font=("Microsoft YaHei", 9)).pack(side="left", padx=6)
 
         # 运行控制
