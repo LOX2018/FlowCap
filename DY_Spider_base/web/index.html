@@ -1482,7 +1482,7 @@ function Live({
           name: r.nickname || '未知',
           lv: 0,
           content: r.comment || '',
-          dmStatus: r.status && r.status.indexOf('发送') >= 0 ? 'sent' : 'un',
+          dmStatus: r.status === '已发送' ? 'sent' : r.status === '已捕获' ? 'wait' : r.status === '发送失败' ? 'fail' : 'un',
           dmText: r.content || '',
           dmTime: r.sendTs || '',
           ts: Date.now() - i * 1000
@@ -1663,6 +1663,10 @@ function Live({
     likeT.current = setTimeout(() => setBurst(0), 1600);
   };
   const dedup = useMemo(() => new Set(rows.map(r => r.name)).size, [rows]);
+  // 去重弹幕条数：相同(发言人+内容)只算一条；待发送私信数
+  const dedupCount = useMemo(() => new Set(rows.map(r => r.name + '||' + r.content)).size, [rows]);
+  const waitCount = useMemo(() => rows.filter(r => r.dmStatus === 'wait').length, [rows]);
+  const sentCount = useMemo(() => rows.filter(r => r.dmStatus === 'sent').length, [rows]);
   const sendDm = r => {
     if (ready && window.ApiBridge && window.ApiBridge.ready) {
       api.requestDm(r.name, r.content).then(res => push(res && res.ok ? (res.msg || '已加入发送队列') + ' · ' + r.name : '加入失败: ' + (res && res.error || ''))).catch(e => push('异常: ' + e));
@@ -2296,7 +2300,7 @@ function Live({
     onClick: () => setReview(true)
   }, "\u8FDB\u5165\u67E5\u9605\u6A21\u5F0F")), React.createElement("div", {
     className: "count-line"
-  }, "\u5171 ", React.createElement("b", null, rows.length), " \u6761\u5F39\u5E55\u8BB0\u5F55 \xB7 \u53BB\u91CD\u53D1\u8A00\u4EBA ", React.createElement("b", null, dedup), " \u4EBA \xB7 \u5DF2\u53D1\u9001\u79C1\u4FE1 ", React.createElement("b", null, rows.filter(r => r.dmStatus === 'sent').length), " \u6761"), React.createElement("div", {
+  }, "\u5171 ", React.createElement("b", null, rows.length), " \u6761\u5F39\u5E55\u8BB0\u5F55 \xB7 \u53BB\u91CD ", React.createElement("b", null, dedupCount), " \u6761 \xB7 \u5B9E\u9645\u53D1\u8A00 ", React.createElement("b", null, dedup), " \u4EBA \xB7 \u5F85\u53D1\u9001\u79C1\u4FE1 ", React.createElement("b", null, waitCount), " \u6761 \xB7 \u5DF2\u53D1\u9001\u79C1\u4FE1 ", React.createElement("b", null, sentCount), " \u6761"), React.createElement("div", {
     className: "table-scroll"
   }, React.createElement("table", {
     className: "comment-table"

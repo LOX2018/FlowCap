@@ -34,10 +34,10 @@ WS_HEARTBEAT_INTERVAL = 300
 
 # 启动自动私信时是否【强制重新扫码、完全不读取磁盘旧凭证】。
 # True  = 每次点“启动自动私信”都打开浏览器重新扫码，忽略任何已存在的 .env 凭证
-#         （最干净，杜绝旧 cookie/签名导致的昵称加密、私信 KICK；代价是每次都要扫码）。
+#         （最干净，杜绝旧 cookie/签名导致的昵称加密、私信 KICK；优先确保私信可用）。
 # False = 走凭证新鲜度判断：凭证完整且较新则跳过扫码（快速启动，复用已登录/守护保活的凭证），
 #         仅过期/缺失才重扫。
-FORCE_RESCAN_ON_START = False
+FORCE_RESCAN_ON_START = True
 
 # 私信接收守护配置（独立常驻进程 auto_dm.recv_daemon，多账户隔离）。
 # 接收通道是 frontier-im.douyin.com 的私有长连接，与发送（imapi.douyin.com）同源但独立，
