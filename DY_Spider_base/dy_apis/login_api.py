@@ -211,6 +211,10 @@ class DYLoginApi:
         auth.perepare_auth('', web_protect_str, keys_str)
         auth.cookie = cookies
         auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        # 把原始 web_protect/keys JSON 挂到 auth 上，供 save_credential 持久化到 .env，
+        # 后续复用凭证时能完整还原签名（含 ree_public_key 等派生字段），私信不再缺签名。
+        auth.web_protect_str = web_protect_str
+        auth.keys_str = keys_str
         return auth
 
     # 登录凭证写入 .env
@@ -241,6 +245,10 @@ class DYLoginApi:
             "DY_CLIENT_CERT": auth.client_cert or "",
             # PEM 含换行，必须编码为字面量 \n 才能安全存入单引号 .env（否则 dotenv 解析失败）
             "DY_PRIVATE_KEY": self._encode_private_key(auth.private_key),
+            # 原始 web_protect/keys（私信签名 JSON）持久化：复用凭证时完整还原签名，
+            # 避免仅存四件套导致 ree_public_key 等派生字段缺失、create_conversation 缺签名。
+            "DY_WEB_PROTECT": getattr(auth, "web_protect_str", "") or "",
+            "DY_KEYS": getattr(auth, "keys_str", "") or "",
         }
         set_values = {k: v for k, v in values.items() if v}
         from dotenv import set_key
@@ -259,12 +267,22 @@ class DYLoginApi:
         else:
             load_dotenv(override=True)
         cookies = os.getenv("DY_COOKIES")
+        web_protect = os.getenv("DY_WEB_PROTECT") or ""
+        keys = os.getenv("DY_KEYS") or ""
         auth = DouyinAuth()
-        auth.perepare_auth(cookies, "", "")
-        auth.ticket = os.getenv("DY_TICKET") or None
-        auth.ts_sign = os.getenv("DY_TS_SIGN") or None
-        auth.client_cert = os.getenv("DY_CLIENT_CERT") or None
-        auth.private_key = DYLoginApi._decode_private_key(os.getenv("DY_PRIVATE_KEY"))
+        # 优先用持久化的 web_protect/keys（完整还原签名，含 ree_public_key 等派生字段）；
+        # 旧 .env 无这两个键时退回仅四件套。
+        auth.perepare_auth(cookies, web_protect, keys)
+        if not (web_protect and keys):
+            auth.ticket = os.getenv("DY_TICKET") or None
+            auth.ts_sign = os.getenv("DY_TS_SIGN") or None
+            auth.client_cert = os.getenv("DY_CLIENT_CERT") or None
+            auth.private_key = DYLoginApi._decode_private_key(os.getenv("DY_PRIVATE_KEY"))
+            # 补齐 ree_public_key（perepare_auth 用 web_protect/keys 时才派生；
+            # 旧 .env 无 web_protect/keys 键时手动补，避免私信签名缺字段）
+            if auth.private_key:
+                import base64 as _b64
+                auth.ree_public_key = _b64.b64encode(auth.private_key.encode()).decode()
         return auth
 
     async def get_login_auth(self, headless=False, env_path=".env", force=False):

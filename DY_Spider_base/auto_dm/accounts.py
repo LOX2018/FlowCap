@@ -417,13 +417,15 @@ def account_status(name=None, force=False, timeout=10):
         ok, info = _probe(env_path, timeout)
         _status_cache[name] = (now, ok, info)
 
-    if ok:
+    if ok and info != "SIGN_REJECTED":
         return {"name": name, "env": env_path, "level": "ok",
                 "label": f"有效（uid={info}）", "alive": True,
                 "has_ticket": True, "has_private_key": True,
                 "has_cookie": local["has_cookie"], "uid": info}
+    _rej = (info == "SIGN_REJECTED")
     return {"name": name, "env": env_path, "level": "expired",
-            "label": "失效（探活失败/超时）", "alive": False,
+            "label": "失效（私信签名被服务端拒绝）" if _rej else "失效（探活失败/超时）",
+            "alive": False,
             "has_ticket": True, "has_private_key": True,
             "has_cookie": local["has_cookie"]}
 
@@ -445,8 +447,25 @@ def _probe(env_path, timeout):
                 auth.ticket = vals.get("DY_TICKET") or None
                 auth.ts_sign = vals.get("DY_TS_SIGN") or None
                 auth.client_cert = vals.get("DY_CLIENT_CERT") or None
-                auth.private_key = vals.get("DY_PRIVATE_KEY") or None
-                return DouyinAPI.get_my_uid(auth)
+                # 必须用 _decode_private_key 还原 PEM 换行：.env 存的是字面量 \n，
+                # 直接读会导致 SigningKey.from_pem 解析失败（Empty string does not encode a sequence）。
+                from dy_apis.login_api import DYLoginApi as _DL
+                auth.private_key = _DL._decode_private_key(vals.get("DY_PRIVATE_KEY") or "")
+                # 补齐 ree_public_key（perepare_auth 用 web_protect/keys 时才派生，
+                # 直接读四件套时需手动补，否则 create_conversation 因缺它而本地序列化失败）
+                if auth.private_key:
+                    import base64 as _b64
+                    auth.ree_public_key = _b64.b64encode(auth.private_key.encode()).decode()
+                uid = DouyinAPI.get_my_uid(auth)
+                if not uid:
+                    return None
+                # 严格校验：对自身 uid 建会话，验证服务端是否真的接受私信签名(web_protect/keys)。
+                # 与启动 _verify_credential 一致，避免“四件套在但服务端拒绝签名”被误判为有效。
+                try:
+                    DouyinAPI.create_conversation(auth, int(uid))
+                except Exception:
+                    return "SIGN_REJECTED"
+                return uid
             except Exception as e:
                 return None
 
