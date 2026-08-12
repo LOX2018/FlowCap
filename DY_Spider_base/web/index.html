@@ -1385,7 +1385,7 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }) {
               <tbody>
                 {filtered.map(r => (
                   <React.Fragment key={r.id}>
-                    <tr>
+                    <tr key={r.id}>
                       <td><span className="mono" style={{ color: 'var(--muted)' }}>{exp === r.id ? '▾' : '▸'}</span></td>
                       <td className="mono">{r.time}</td>
                       <td>
@@ -2365,7 +2365,7 @@ function AccountReview({ account, onClose, push, goMsg }) {
                   <tbody>
                     {filtered.map(r => (
                       <React.Fragment key={r.id}>
-                        <tr>
+                        <tr key={r.id}>
                           <td><span className="mono" style={{ color: 'var(--muted)' }}>{exp === r.id ? '▾' : '▸'}</span></td>
                           <td className="mono">{r.time}</td>
                           <td>
@@ -2467,8 +2467,8 @@ function ProxyDrawer({ account, form, setForm, testing, testResult, onTest, onSa
   ];
   return (
     <>
-      <motion.div className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
-      <motion.div className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id="proxy-drawer">
+      <motion.div key="proxy-backdrop" className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
+      <motion.div key="proxy-drawer" className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id="proxy-drawer">
         <div className="drawer-head">
           <Avatar name={a.name} h={a.hue} />
           <div style={{ flex: 1 }}>
@@ -2568,8 +2568,8 @@ function ProxyDrawer({ account, form, setForm, testing, testResult, onTest, onSa
 function AccountDrawer({ form, setForm, onSave, onClose }) {
   return (
     <>
-      <motion.div className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
-      <motion.div className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id="acct-add-drawer">
+      <motion.div key="acct-backdrop" className="drawer-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }} onClick={onClose} />
+      <motion.div key="acct-drawer" className="drawer" initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} data-od-id="acct-add-drawer">
         <div className="drawer-head">
           <Avatar name="+" h={200} />
           <div style={{ flex: 1 }}>

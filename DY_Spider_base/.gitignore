@@ -77,3 +77,20 @@ _mapcheck.js
 _render.js
 _ssr.js
 _patch_web.py
+_peek_fm.js
+_patch_fm.js
+_frag.js
+_build_compiled.js
+_locate_key.js
+check_console.py
+
+# Playwright MCP 运行产物
+.playwright-mcp/
+
+# 其他杂项
+$null
+_out.txt
+_console_report.json
+_bootstrap_keycheck.js
+web/_compiled.html
+web/_compiled.js
