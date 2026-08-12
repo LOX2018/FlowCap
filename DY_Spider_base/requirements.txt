@@ -12,3 +12,4 @@ requests
 retry
 urllib3
 websockets
+pywin32

@@ -55,6 +55,9 @@ auto_dm/accounts/accounts.json
 logs/
 *.log
 
+# 守护进程存活标记（运行时产物）
+auto_dm/.daemon_alive
+
 # 打包产物与临时压缩包
 *.zip
 *.tar.gz
