@@ -87,15 +87,67 @@ class Conversation:
 
 
 class AccountInbox:
-    """一个账号的收件箱：conversation_id -> Conversation，线程安全。"""
+    """一个账号的收件箱：conversation_id -> Conversation，线程安全。
 
-    def __init__(self, name):
+    会话消息会持久化到账号目录的 dm_history.json：退出软件 / 重启 recv_daemon 后，
+    重新进入仍能查看之前收到/发出的全部历史私信。未读数（unread）不落盘，重启清零。
+    """
+
+    def __init__(self, name, history_path=None):
         self.name = name
         self.lock = threading.RLock()
         self.convs = {}                  # conv_id -> Conversation
         self.connected = False
         self.last_error = ""
+        self.history_path = history_path
+        if history_path:
+            self._load_history()
 
+    # -- 历史会话持久化 ------------------------------------------------------
+    def _load_history(self):
+        """启动时从磁盘加载历史会话（保留完整 messages，未读清零）。"""
+        try:
+            if not self.history_path or not os.path.exists(self.history_path):
+                return
+            with open(self.history_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            for conv_id, d in data.items():
+                if not isinstance(d, dict) or not conv_id:
+                    continue
+                c = Conversation(conv_id, d.get("peer_id"), d.get("peer_name"))
+                c.messages = d.get("messages") or []
+                c.last_ts = d.get("last_ts") or 0
+                c.unread = 0
+                self.convs[conv_id] = c
+            if self.convs:
+                logger.info(f"[recv][{self.name}] 已从历史加载 {len(self.convs)} 个会话")
+        except Exception as e:
+            logger.warning(f"[recv][{self.name}] 历史会话加载失败: {e}")
+
+    def _save_history(self):
+        """把当前全部会话写盘（在调用方已持有 self.lock 时调用）。"""
+        try:
+            if not self.history_path:
+                return
+            os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
+            data = {}
+            for cid, c in self.convs.items():
+                data[cid] = {
+                    "peer_id": c.peer_id,
+                    "peer_name": c.peer_name,
+                    "last_ts": c.last_ts,
+                    "messages": c.messages,
+                }
+            tmp = self.history_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.history_path)
+        except Exception as e:
+            logger.warning(f"[recv][{self.name}] 历史会话保存失败: {e}")
+
+    # -- 会话操作 ------------------------------------------------------------
     def get_or_create(self, conv_id, peer_id=None, peer_name=None):
         with self.lock:
             c = self.convs.get(conv_id)
@@ -126,8 +178,10 @@ class AccountInbox:
 
     def add_message(self, conv_id, role, text, peer_id=None, peer_name=None,
                     msg_type="text", extra=None):
-        c = self.get_or_create(conv_id, peer_id, peer_name)
-        c.add(role, text, msg_type, extra)
+        with self.lock:
+            c = self.get_or_create(conv_id, peer_id, peer_name)
+            c.add(role, text, msg_type, extra)
+            self._save_history()
         return c
 
 
@@ -464,7 +518,10 @@ def main():
         return
 
     for name, env_path in accs:
-        ib = AccountInbox(name)
+        # 历史会话统一持久化到账号目录 auto_dm/accounts/<name>/dm_history.json，
+        # 重启 recv_daemon 后仍可查看全部历史私信（不依赖 .env 是否在根目录）。
+        history_path = os.path.join(ACCOUNTS._ACCOUNTS_DIR, name, "dm_history.json")
+        ib = AccountInbox(name, history_path=history_path)
         ch = RecvChannel(name, env_path, ib, auto_reconnect=True)
         with _STATE.lock:
             _STATE.inboxes[name] = ib
