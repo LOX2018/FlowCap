@@ -369,16 +369,22 @@ def _read_status(env_path):
     """
     if not os.path.exists(env_path):
         return {"exists": False, "has_ticket": False, "has_private_key": False,
-                "has_cookie": False}
+                "has_cookie": False, "has_web_protect": False}
     vals = dotenv_values(env_path)
     ticket = vals.get("DY_TICKET")
     pkey = vals.get("DY_PRIVATE_KEY")
     cookie = vals.get("DY_COOKIES")
+    webp = vals.get("DY_WEB_PROTECT")
+    keys = vals.get("DY_KEYS")
+    # web_protect/keys 是抖音私信 IM 私有网关签名（即用户所说“wp 凭证”）的关键，
+    # 与 ticket/私钥相互独立，需单独暴露，便于账户管理页区分“wp 凭证失效”与“私信签名失效”。
+    has_web_protect = bool(webp) and bool(keys)
     return {
         "exists": True,
         "has_ticket": bool(ticket),
         "has_private_key": bool(pkey),
         "has_cookie": bool(cookie),
+        "has_web_protect": has_web_protect,
     }
 
 
@@ -400,13 +406,22 @@ def account_status(name=None, force=False, timeout=10):
     if not local.get("exists"):
         return {"name": name, "env": env_path, "level": "missing",
                 "label": "未配置（无 .env）", "alive": False,
-                "has_ticket": False, "has_private_key": False, "has_cookie": False}
-    if not (local.get("has_ticket") and local.get("has_private_key")):
+                "has_ticket": False, "has_private_key": False,
+                "has_cookie": False, "has_web_protect": False}
+    if not (local.get("has_ticket") and local.get("has_private_key") and local.get("has_web_protect")):
+        # 区分“wp 凭证(web_protect/keys) 缺失”与“ticket/私钥 缺失”，便于定位私信失败根因
+        if not local.get("has_web_protect"):
+            label = "缺私信签名（web_protect/keys 缺失，即 wp 凭证失效）"
+        elif not local.get("has_ticket"):
+            label = "缺私信签名（ticket 缺失）"
+        else:
+            label = "缺私钥（私信签名不可用）"
         return {"name": name, "env": env_path, "level": "nosign",
-                "label": "未扫码（缺私信签名）", "alive": False,
+                "label": label, "alive": False,
                 "has_ticket": local["has_ticket"],
                 "has_private_key": local["has_private_key"],
-                "has_cookie": local["has_cookie"]}
+                "has_cookie": local["has_cookie"],
+                "has_web_protect": local["has_web_protect"]}
 
     # 有凭证才探活（60s 缓存）
     now = time.time()
@@ -421,13 +436,15 @@ def account_status(name=None, force=False, timeout=10):
         return {"name": name, "env": env_path, "level": "ok",
                 "label": f"有效（uid={info}）", "alive": True,
                 "has_ticket": True, "has_private_key": True,
-                "has_cookie": local["has_cookie"], "uid": info}
+                "has_cookie": local["has_cookie"],
+                "has_web_protect": True, "uid": info}
     _rej = (info == "SIGN_REJECTED")
     return {"name": name, "env": env_path, "level": "expired",
             "label": "失效（私信签名被服务端拒绝）" if _rej else "失效（探活失败/超时）",
             "alive": False,
             "has_ticket": True, "has_private_key": True,
-            "has_cookie": local["has_cookie"]}
+            "has_cookie": local["has_cookie"],
+            "has_web_protect": True}
 
 
 def _probe(env_path, timeout):

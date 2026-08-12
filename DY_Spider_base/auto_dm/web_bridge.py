@@ -559,6 +559,7 @@ class WebBridge:
                 "alive": bool(st.get("alive")),
                 "hasTicket": bool(st.get("has_ticket")),
                 "hasPrivateKey": bool(st.get("has_private_key")),
+                "hasWebProtect": bool(st.get("has_web_protect")),
                 "uid": st.get("uid"),
                 # 每账号独立守护的专属端口与运行状态（socket 快速探测）
                 "browserDaemonPort": bport,
