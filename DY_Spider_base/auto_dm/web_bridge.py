@@ -309,6 +309,12 @@ class WebBridge:
             "roomTitle": (getattr(adm, "room_title", "") or "") if adm else "",
             "liveUrl": getattr(C, "LIVE_URL", ""),
             "liveId": getattr(C, "LIVE_ID", "") or "",
+            # 私信引擎独立状态（与直播监听 WS 引擎区分）
+            "dmRunning": False,
+            "dmPaused": False,
+            "dmQueue": 0,
+            "dmSent": 0,
+            "dmLimit": getattr(C, "MAX_TARGET", 0),
         }
         if live is None:
             return base
@@ -325,7 +331,23 @@ class WebBridge:
         except Exception:
             pass
         try:
-            base["heat"] = live.heat_snapshot()
+            heat = live.heat_snapshot()
+            # 兜底：若直播间未推送 RoomStats 导致热度序列为空，但已读到在线人数，
+            # 则用当前 online 构造单点，避免前端折线图完全空白。
+            if not heat and base.get("online"):
+                heat = [[time.time(), base["online"], base.get("likes", 0)]]
+            base["heat"] = heat
+        except Exception:
+            pass
+        # 私信引擎状态（dispatch 发送线路独立于直播 WS 监听）
+        try:
+            disp = getattr(adm, "dispatch", None)
+            if disp is not None:
+                base["dmRunning"] = bool(disp and not disp.hard_stopped
+                                         and (disp.queue_size() > 0 or getattr(adm, "listen_active", False)))
+                base["dmPaused"] = bool(getattr(disp, "paused", False))
+                base["dmQueue"] = disp.queue_size()
+                base["dmSent"] = getattr(disp, "count", 0)
         except Exception:
             pass
         return base

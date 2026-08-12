@@ -1700,9 +1700,15 @@ function Live({
   }, React.createElement(Dot, {
     c: liveStream && liveStream.running ? 'ok' : 'warn',
     pulse: liveStream && liveStream.running
-  }), " ", liveStream ? liveStream.running ? '引擎运行中' : '引擎未运行' : '未连接'), React.createElement("span", {
+  }), " ", liveStream ? liveStream.listening ? '直播引擎监听中' : liveStream.running ? '直播引擎运行中' : '直播引擎未运行' : '未连接'), React.createElement("span", {
     className: "demo-tag"
-  }, ready ? liveStream && liveStream.running ? '实时数据' : '等待运行' : '未连接'))), viewMode === 'grid' ? React.createElement("div", {
+  }, ready ? liveStream && liveStream.running ? '实时数据' : '等待运行' : '未连接')), React.createElement("span", {
+    className: "badge-conn",
+    style: { marginLeft: 8 }
+  }, React.createElement(Dot, {
+    c: liveStream && liveStream.dmRunning ? 'ok' : 'warn',
+    pulse: liveStream && liveStream.dmRunning
+  }), " ", liveStream ? liveStream.dmRunning ? (liveStream.dmPaused ? '私信引擎已暂停' : '私信引擎发送中') : '私信引擎待命' : '未连接')), viewMode === 'grid' ? React.createElement("div", {
     className: "grid cols-2",
     "data-od-id": "live-grid"
   }, realAccts.slice(0, 2).map(acct => React.createElement("div", {

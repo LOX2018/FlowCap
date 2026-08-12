@@ -244,7 +244,7 @@ class DispatchCenter:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             self.pending.pop(key, None)
-            status = "成功" if ok else f"失败({reason})"
+            status = "已发送" if ok else f"发送失败({reason})"
             # 更新该 key 在统计里的记录（submit 已为每次发言留“已捕获”占位），不重复 append。
             # 用正向遍历找【第一条】该 key 的记录：去重后真正被发送的是首次发言，
             # 私信情况/文案应记到实际被发送的那条评论上，其余发言行保持“已捕获”。
