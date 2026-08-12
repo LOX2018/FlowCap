@@ -1725,6 +1725,8 @@ class DouyinAPI:
         # 强行拼 www.douyin.com 路径会返回 404 Unsupported path(Janus)）。
         url = "https://imapi.douyin.com/v2/conversation/create"
         requestProto = ProtoBuilder.build_create_conversation_request(auth, to_user_id, auth.get_uid())
+        # IM 私有网关 imapi.douyin.com 靠 protobuf body 内签名(ticket/ts_sign/sdk_cert)鉴权，
+        # 不叠加 www.douyin.com 的 bd-ticket-guard-* HTTP 头（叠加反而 INVALID_REQUEST）。
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
         headers.set_header('referer', 'https://www.douyin.com/')
         resp = requests.post(
@@ -1804,15 +1806,20 @@ class DouyinAPI:
         :return: True 发送成功 False 发送失败
         """
         url = 'https://imapi.douyin.com/v1/message/send'
+        # IM 私有网关靠 protobuf body 内签名鉴权，不叠加 bd-ticket-guard-* HTTP 头
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
         headers.set_header('referer', 'https://www.douyin.com/')
         requestProto = ProtoBuilder.build_send_message_request(auth, conversation_id, conversation_short_id, ticket,
                                                                content)
         webid = auth.cookie.get('s_v_web_id', '')
+        # 回归基座私信设计：msToken 必须随请求动态生成（随机 107 位），
+        # 空串会被 IM 网关风控拒绝(KICK/INVALID_REQUEST)。优先用 cookie 中真实 msToken，
+        # 缺失则动态生成（基座原版即 generate_msToken()）。
+        _cookie_ms = auth.cookie.get('msToken') or ''
         params = {
             'verifyFp': webid,
             'fp': webid,
-            'msToken': getattr(auth, 'msToken', '') or ''
+            'msToken': _cookie_ms if _cookie_ms else generate_msToken()
         }
         query = splice_url(params)
         abogus = generate_a_bogus(query)

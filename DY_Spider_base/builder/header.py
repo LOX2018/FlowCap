@@ -21,6 +21,7 @@ class Header:
         self.set_header('bd-ticket-guard-ree-public-key', generate_ree_key(auth.private_key))
         self.set_header('bd-ticket-guard-version', '2')
         self.set_header('bd-ticket-guard-web-version', '1')
+        return self
 
     def set_header(self, key, value):
         self.headers[key] = value

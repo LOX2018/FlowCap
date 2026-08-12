@@ -283,6 +283,9 @@ class DYLoginApi:
             if auth.private_key:
                 import base64 as _b64
                 auth.ree_public_key = _b64.b64encode(auth.private_key.encode()).decode()
+        # 补 cookie_str，供 IM 私有网关 with_csrf 注入 x-secsdk-csrf-token 头（抖音要求）
+        if auth.cookie and not getattr(auth, "cookie_str", None):
+            auth.cookie_str = "; ".join(f"{k}={v}" for k, v in auth.cookie.items())
         return auth
 
     async def get_login_auth(self, headless=False, env_path=".env", force=False):
