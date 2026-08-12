@@ -22,24 +22,34 @@
 
 import os
 import shutil
+import sys
 import time
 
 import requests
 from loguru import logger
 
-# 基准目录：本文件位于 auto_dm/vbrowser.py，其上一级即为项目根 DY_Spider_base/。
-# 所有相对路径（如 VB_CHROME_EXE 的 "vb_chromium/..."）都以项目根为基准解析，
-# 与启动脚本的当前工作目录无关，避免从不同目录启动时相对路径错位导致回退原生 Playwright。
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def app_root():
+    """应用根目录（持久化数据基准）：
+
+    - 源码态：本文件位于 auto_dm/vbrowser.py，其上一级即为项目根 DY_Spider_base/；
+    - PyInstaller 打包态（onefile）：exe 所在目录。build_exe.py 的 collect_data() 会把
+      vb_chromium / vb_profile_* / pw_profile_dm / web / .env / logs 等运行时资源
+      拷贝到 exe 旁边，因此打包后所有相对路径都必须以【exe 所在目录】为基准，
+      否则会按 __file__ 解析到 _MEIxxx 临时解压目录导致资源找不到、回退原生 Playwright 而崩溃。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _resolve_exe(rel_or_abs):
-    """把 VB_CHROME_EXE 解析为绝对路径：绝对路径原样返回，相对路径按项目根解析。"""
+    """把 VB_CHROME_EXE 解析为绝对路径：绝对路径原样返回，相对路径按应用根目录解析。"""
     if not rel_or_abs:
         return rel_or_abs
     if os.path.isabs(rel_or_abs):
         return rel_or_abs
-    return os.path.join(_PROJECT_ROOT, rel_or_abs)
+    return os.path.join(app_root(), rel_or_abs)
 
 
 def _wipe_user_data_dir(user_data_dir):
@@ -127,7 +137,7 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             return None, None, None, None
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
         if user_data_dir is None:
-            user_data_dir = os.path.join(_PROJECT_ROOT, "vb_profile_dm")
+            user_data_dir = os.path.join(app_root(), "vb_profile_dm")
         if force:
             # 方案B：强制重扫时，直接清空该账号的 profile 整个目录（等同全新浏览器），
             # 再用原目录启动——绕过一切持久化登录态（残留 sessionid 等），确保必须真实扫码；
@@ -166,7 +176,7 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
             return None, None, None, None
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
         if user_data_dir is None:
-            user_data_dir = os.path.join(_PROJECT_ROOT, "vb_profile_dm")
+            user_data_dir = os.path.join(app_root(), "vb_profile_dm")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,

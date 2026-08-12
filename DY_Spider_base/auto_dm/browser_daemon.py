@@ -48,11 +48,13 @@ if sys.stderr is not None:
 
 from loguru import logger
 
+from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
+
 # ----------------------------------------------------------------------------
 # 路径与端口
 # ----------------------------------------------------------------------------
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # DY_Spider_base
-_DAEMON_DIR = os.path.dirname(os.path.abspath(__file__))              # auto_dm
+_ROOT = app_root()        # DY_Spider_base（源码态）/ exe 所在目录（打包态）
+_DAEMON_DIR = os.path.join(_ROOT, "auto_dm")   # 打包态=exe 旁 auto_dm（持久目录）
 CONTROL_PORT = 9911
 _ALIVE_FLAG = os.path.join(_DAEMON_DIR, ".daemon_alive")
 

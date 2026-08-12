@@ -21,14 +21,19 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict
 
-# onefile 模式下 PyInstaller 把资源解包到 sys._MEIPASS；开发态用项目根 web/ 目录。
+from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
+
+# web 静态资源：onefile 模式下 PyInstaller 把资源解包到 sys._MEIPASS（打进 exe 内）；
+# 开发态用项目根 web/ 目录。
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     _BASE = sys._MEIPASS
 else:
     _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(_BASE, "web")
 INDEX_HTML = os.path.join(WEB_DIR, "index.html")
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # DY_Spider_base
+# 持久化数据根（stats_export 导出 / config.py 写回 / logs）：打包态必须指向 exe 所在目录，
+# 否则按 __file__ 解析到 _MEIxxx 临时目录，导出/写回的文件随进程退出被清理。
+ROOT_DIR = app_root()
 
 # 守护进程端口（与 config / daemon 保持一致）
 _BROWSER_DAEMON_PORT = 9911

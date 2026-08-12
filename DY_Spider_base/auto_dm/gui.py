@@ -39,7 +39,8 @@ from auto_dm import run as dm_run
 from utils import data_util
 
 A = dm_run.AutoDM
-auto_dm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
+auto_dm_root = app_root()
 sys.path.insert(0, os.path.dirname(auto_dm_root))
 
 

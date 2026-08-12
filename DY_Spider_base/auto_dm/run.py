@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
 from auto_dm import config as C
 from auto_dm.core import DispatchCenter
 from auto_dm.sender import send_target
@@ -62,7 +63,7 @@ def check_room_live(auth, live_id):
 try:
     import os as _os
     from datetime import datetime as _dt
-    _log_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "logs")
+    _log_dir = _os.path.join(app_root(), "logs")
     _os.makedirs(_log_dir, exist_ok=True)
     _log_file = _os.path.join(_log_dir, f"run_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log")
     logger.add(_log_file, level="DEBUG", encoding="utf-8",
@@ -74,7 +75,7 @@ except Exception:
 
 def load_dotenv_safe():
     """安全加载 .env：仅读环境变量，不做任何会崩溃的 auth 初始化。"""
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    env_path = os.path.join(app_root(), ".env")
     if os.path.exists(env_path):
         load_dotenv(env_path)
 
@@ -150,8 +151,7 @@ class AutoDM:
         from dotenv import load_dotenv
         load_dotenv_safe()
         # 优先用该账号自己的 DY_COOKIES；空则退回全局根 .env
-        if env_path and env_path != os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"):
+        if env_path and env_path != os.path.join(app_root(), ".env"):
             load_dotenv(env_path, override=True)
         cookies = os.getenv("DY_COOKIES", "") or ""
 

@@ -99,6 +99,8 @@ _serve2.ps1
 _serve3.ps1
 _run_exe11.ps1
 _scan_smoke.py
+_path_frozen_smoke.py
+_res_copy.ps1
 
 # Playwright MCP 运行产物
 .playwright-mcp/

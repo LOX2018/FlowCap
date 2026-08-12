@@ -27,7 +27,9 @@ from dotenv import load_dotenv
 
 from loguru import logger
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
+
+_ROOT = app_root()
 _LOG_DIR = os.path.join(_ROOT, "logs")
 
 # 维持登录会话身份的关键 cookie 字段（缺失最容易导致会话态异常 / 昵称脱敏）

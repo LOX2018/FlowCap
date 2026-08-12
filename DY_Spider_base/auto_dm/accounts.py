@@ -19,8 +19,10 @@ import json
 import time
 from dotenv import load_dotenv
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # DY_Spider_base
-_ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts")
+from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
+
+_ROOT = app_root()  # DY_Spider_base（源码态）/ exe 所在目录（打包态，随附资源根）
+_ACCOUNTS_DIR = os.path.join(_ROOT, "auto_dm", "accounts")
 _INDEX_PATH = os.path.join(_ACCOUNTS_DIR, "accounts.json")
 _DEFAULT_ENV = os.path.join(_ROOT, ".env")          # 旧版/默认账号
 _DEFAULT_NAME = "默认账号"
@@ -249,7 +251,9 @@ def clear_credentials_of(env_path):
 
 # 守护进程存活标记（由 browser_daemon 写入/删除）。
 # GUI 退出时若守护仍在运行，则不清凭证（凭证由常驻浏览器容器保活）。
-_DAEMON_ALIVE_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon_alive")
+# 注意：必须与应用根一致（打包态=exe 旁 auto_dm/），否则守护与 GUI 各自解压到不同
+# _MEIxxx 临时目录后互相找不到标记，导致“误判守护不在”而清空凭证。
+_DAEMON_ALIVE_FLAG = os.path.join(_ROOT, "auto_dm", ".daemon_alive")
 
 
 def daemon_is_alive():

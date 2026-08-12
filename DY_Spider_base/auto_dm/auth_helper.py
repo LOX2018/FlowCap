@@ -43,8 +43,8 @@ def enrich_auth(auth, cookies_dy="", headless=False,
         # 强制用指定 .env 绝对路径加载（override=True），确保 get_login_auth 内部的
         # common_util.load_env() 能读到 DY_COOKIES（否则 trans_cookies(None) 会崩）。
         if not os.path.isabs(env_path):
-            env_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env_path)
+            from auto_dm.vbrowser import app_root
+            env_path = os.path.join(app_root(), env_path)
         load_dotenv(env_path, override=True)
     except Exception as e:
         logger.warning(f"[auth] 加载 {env_path} 失败: {e}")

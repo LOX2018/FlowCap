@@ -30,12 +30,13 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
 from loguru import logger
 
 logger.remove()
 logger.add(sys.stderr, level="INFO")
 try:
-    _LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    _LOG_DIR = os.path.join(app_root(), "logs")
     os.makedirs(_LOG_DIR, exist_ok=True)
     from datetime import datetime
     logger.add(os.path.join(_LOG_DIR, f"recv_daemon_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
