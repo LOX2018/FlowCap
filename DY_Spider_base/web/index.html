@@ -4240,6 +4240,8 @@ function Accounts({
   }, React.createElement("div", {
     className: "acct-section",
     style: {
+      gridColumn: '1',
+      gridRow: '1',
       borderBottom: '1px solid var(--border)'
     }
   }, React.createElement("h4", null, "\u5B88\u62A4\u670D\u52A1"), React.createElement("div", {
@@ -4322,7 +4324,7 @@ function Accounts({
     }
   }, ":", a.recvDaemonPort)))), React.createElement("div", {
     className: "acct-section",
-    style: { gridColumn: '1 / -1' }
+    style: { gridColumn: '1 / -1', gridRow: '2' }
   }, React.createElement("h4", null, "\u4E0A\u6B21\u8FD0\u884C\u65E5\u5FD7"), React.createElement("div", {
     className: "acct-row"
   }, React.createElement("span", {
@@ -4413,7 +4415,8 @@ function Accounts({
       color: 'var(--danger)'
     }
   }, a.lastRun.dmFail)))), React.createElement("div", {
-    className: "acct-section"
+    className: "acct-section",
+    style: { gridColumn: '2', gridRow: '1' }
   }, React.createElement("h4", null, "\u5F15\u64CE\u6821\u9A8C"), React.createElement("div", {
     style: { display: 'grid', gap: 10 }
   }, React.createElement("div", {
@@ -4475,7 +4478,7 @@ function Accounts({
     }
   }, "\u5F15\u64CE\u6821\u9A8C"))), React.createElement("div", {
     className: "acct-section",
-    style: { gridColumn: '1 / -1' }
+    style: { gridColumn: '1 / -1', gridRow: '3' }
   }, React.createElement("h4", null, "\u5173\u8054\u6307\u7EB9\u6D4F\u89C8\u5668"), React.createElement("div", {
     className: "fp-card"
   }, React.createElement("div", {

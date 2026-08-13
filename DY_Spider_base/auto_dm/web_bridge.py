@@ -559,6 +559,7 @@ class WebBridge:
 
     # ---- 只读：账号管理 ---------------------------------------------------
     def getAccounts(self):
+        logger.info("[getAccounts] 收到前端拉取账号列表请求（全部校验/轮询）")
         accs = []
         for name, env_path in accounts.list_accounts():
             # 账号管理页每次拉取都做实时探活（force=True），避免 60s 缓存让
