@@ -571,6 +571,12 @@ class WebBridge:
             rd_alive = _port_open(rport)
             # 双引擎校验（守护进程来源）：wp 引擎=凭证守护捕获；私信引擎=轮询场景仅标“待校验”
             verify = accounts.verify_account(name, timeout=4, dm_loopback=False)
+            # 私信引擎：若用户近期点过「引擎校验」（含真实回环测试），透传缓存结果，
+            # 避免轮询的 dm_loopback=False 把 dm 状态重置回 idle、覆盖回环结果。
+            dm_engine = verify.get("dm", {})
+            cached = self._dm_verify_cache.get(name)
+            if cached and (time.time() - cached.get("ts", 0)) < 120:
+                dm_engine = cached.get("dm", dm_engine)
             accs.append({
                 "name": name,
                 "isCurrent": name == accounts.current_name(),
@@ -594,7 +600,7 @@ class WebBridge:
                 "recvDaemonAlive": rd_alive,
                 # 双引擎校验（守护进程来源）：wp 引擎=凭证守护捕获；私信引擎=回环测试
                 "wpEngine": verify.get("wp", {}),
-                "dmEngine": verify.get("dm", {}),
+                "dmEngine": dm_engine,
             })
         return {
             "ok": True,
@@ -604,16 +610,28 @@ class WebBridge:
             "sender": accounts.sender_name(),
         }
 
+    # 缓存最近一次「引擎校验」（含私信回环）的结果，供 getAccounts 轮询时透传，
+    # 避免 dm_loopback=False 的轮询把 dm 引擎状态重置回 idle（覆盖用户刚触发的回环结果）。
+    _dm_verify_cache = {}
+
     def checkAccount(self, name):
         """触发该账号的完整双引擎校验（含私信引擎回环测试）。
 
         wp 引擎：凭证守护是否在跑 + 守护保活凭证的 web_protect 签名四件套是否齐全（捕获检查）。
         私信引擎：对自身 uid 发送回环测试文本，检查 imapi 私有网关建会话+发送链路是否回环正常。
         """
+        logger.info(f"[checkAccount] 开始校验账号 {name}：wp 引擎 + 私信引擎回环测试")
         try:
             res = accounts.verify_account(name, timeout=8, dm_loopback=True)
+            self._dm_verify_cache[name] = {
+                "dm": res.get("dm", {}),
+                "ts": time.time(),
+            }
+            logger.info(f"[checkAccount] 账号 {name} 校验完成：wp={res.get('wp', {}).get('label')} "
+                        f"dm={res.get('dm', {}).get('label')}")
             return {"ok": True, "name": name, "verify": res}
         except Exception as e:
+            logger.error(f"[checkAccount] 账号 {name} 校验异常: {e}")
             return {"ok": False, "name": name, "error": f"账号校验异常: {e}"}
 
     # ---- 只读：任务配置（词库 / 策略 / 开关） ----------------------------
@@ -639,8 +657,10 @@ class WebBridge:
 
     # ---- 写：启动 / 暂停 / 继续 / 停止 -----------------------------------
     def start(self, config=None):
+        logger.info(f"[start] 收到启动请求 config={config}")
         with self._lock:
             if self.adm is not None and self.adm.is_running():
+                logger.warning("[start] 已在运行中，忽略本次请求")
                 return {"ok": False, "error": "已在运行中"}
             # 应用前端传入的临时配置（不写盘，仅本次运行生效）
             overrides = {}

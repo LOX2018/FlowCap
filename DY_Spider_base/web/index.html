@@ -3827,6 +3827,57 @@ function Accounts({
   const [batchMode, setBatchMode] = useState(false);
   const [batchSel, setBatchSel] = useState(() => new Set());
   const [realAccts, setRealAccts] = useState(null);
+  // 后端原始账号对象 → 前端卡片渲染所需完整字段（含 lastRun/fp 等默认值），
+  // 供 getAccounts 轮询刷新与「全部校验」复用，避免直接 setRealAccts 原始对象导致渲染崩溃黑屏。
+  const mapAcct = (a, i) => {
+    const lvl = a.level || (a.loggedIn ? 'ok' : 'expired');
+    const lvlLabel = a.label || (a.loggedIn ? '凭证有效' : '凭证过期');
+    const isValid = lvl === 'ok';
+    return {
+      id: 'ra' + i,
+      name: a.name,
+      uid: a.uid || '—',
+      hue: hue(a.name.length * 2),
+      tokenValid: isValid,
+      tokenExpire: isValid ? '有效' : (lvl === 'nosign' ? '未扫码' : lvl === 'missing' ? '未配置' : '失效'),
+      lvlLabel: lvlLabel,
+      lvl: lvl,
+      browserDaemonPort: a.browserDaemonPort,
+      recvDaemonPort: a.recvDaemonPort,
+      browserDaemonAlive: !!a.browserDaemonAlive,
+      recvDaemonAlive: !!a.recvDaemonAlive,
+      wpEngine: a.wpEngine || { level: 'unknown', label: '未校验', detail: '' },
+      dmEngine: a.dmEngine || { level: 'unknown', label: '未校验', detail: '' },
+      isCurrent: !!a.isCurrent,
+      isMonitor: !!a.isMonitor,
+      isSender: !!a.isSender,
+      lastCheck: '刚刚',
+      lastRun: {
+        room: '—',
+        roomUrl: '',
+        time: '—',
+        duration: '—',
+        totalRuns: 0,
+        comments: 0,
+        dmSent: 0,
+        dmSuccess: 0,
+        dmFail: 0,
+        dmAfterLive: 0
+      },
+      fp: {
+        name: '浏览器守护 · ' + a.name,
+        status: 'running',
+        os: 'Windows 11',
+        ip: '—',
+        resolution: '1920×1080',
+        ua: 'Chrome',
+        proxy: '直连',
+        lang: 'zh-CN',
+        webrtc: '替换',
+        timezone: 'Asia/Shanghai'
+      }
+    };
+  };
   useEffect(() => {
     if (!window.ApiBridge || !window.ApiBridge.ready) return;
     let alive = true;
@@ -3834,57 +3885,7 @@ function Accounts({
       if (!alive || !d || !d.ok) return;
       const list = d.accounts || [];
       if (list.length) {
-        setRealAccts(list.map((a, i) => {
-          // 基于后端透传的细粒度 level 判定真实凭证状态：
-          // ok=有效；nosign=已建账号但未扫码；expired=扫码过但探活失败(可能守护未开/网络抖动)；
-          // missing=无 .env。统一映射 tokenValid(是否可用于发私信) 与展示文案。
-          const lvl = a.level || (a.loggedIn ? 'ok' : 'expired');
-          const lvlLabel = a.label || (a.loggedIn ? '凭证有效' : '凭证过期');
-          const isValid = lvl === 'ok';
-          return {
-            id: 'ra' + i,
-            name: a.name,
-            uid: a.uid || '—',
-            hue: hue(a.name.length * 2),
-            tokenValid: isValid,
-            tokenExpire: isValid ? '有效' : (lvl === 'nosign' ? '未扫码' : lvl === 'missing' ? '未配置' : '失效'),
-            lvlLabel: lvlLabel,
-            lvl: lvl,
-            // 每账号独立守护的专属端口与运行状态（getAccounts 后端透传）
-            browserDaemonPort: a.browserDaemonPort,
-            recvDaemonPort: a.recvDaemonPort,
-            browserDaemonAlive: !!a.browserDaemonAlive,
-            recvDaemonAlive: !!a.recvDaemonAlive,
-            // 双引擎校验（守护进程来源）：wp 引擎=凭证守护捕获；私信引擎=回环测试
-            wpEngine: a.wpEngine || { level: 'unknown', label: '未校验', detail: '' },
-            dmEngine: a.dmEngine || { level: 'unknown', label: '未校验', detail: '' },
-            lastCheck: '刚刚',
-          lastRun: {
-            room: '—',
-            roomUrl: '',
-            time: '—',
-            duration: '—',
-            totalRuns: 0,
-            comments: 0,
-            dmSent: 0,
-            dmSuccess: 0,
-            dmFail: 0,
-            dmAfterLive: 0
-          },
-          fp: {
-            name: '浏览器守护 · ' + a.name,
-            status: 'running',
-            os: 'Windows 11',
-            ip: '—',
-            resolution: '1920×1080',
-            ua: 'Chrome',
-            proxy: '直连',
-            lang: 'zh-CN',
-            webrtc: '替换',
-            timezone: 'Asia/Shanghai'
-          }
-        };
-        }));
+        setRealAccts(list.map(mapAcct));
       }
     }).catch(() => {});
     load();
@@ -3920,8 +3921,10 @@ function Accounts({
     if (window.ApiBridge && window.ApiBridge.ready) {
       // 真实后端：重新拉取并刷新卡片（getAccounts 内部已做实时探活），
       // 避免“重新获取凭证后刷新仍显示旧失败状态”。
+      // 注意：必须用 mapAcct 映射（与轮询一致），直接 setRealAccts 原始对象会因
+      // lastRun/fp 等字段缺失导致渲染崩溃（黑屏）。
       api.getAccounts().then(d => {
-        if (d && d.ok && d.accounts) setRealAccts(d.accounts);
+        if (d && d.ok && d.accounts) setRealAccts(d.accounts.map(mapAcct));
         push(d && d.ok ? '已刷新全部账号状态' : '刷新失败');
       }).catch(e => push('刷新异常: ' + e));
       return;
@@ -4189,7 +4192,20 @@ function Accounts({
   }, "\u5220\u9664\u6240\u9009")), shownAccounts.map(a => React.createElement("div", {
     className: "card acct-card",
     key: a.id,
-    "data-od-id": 'acct-' + a.id
+    "data-od-id": 'acct-' + a.id,
+    onClick: function () {
+      // 点击卡片 = 选中该账号为监听账号（同时设为当前账号 + 监测/发送角色）
+      Promise.resolve(api.setCurrent(a.name)).then(function () {
+        return Promise.resolve(api.setRoles && api.setRoles({ monitor: a.name, sender: a.name }));
+      });
+      push('已选中监听账号 · ' + a.name);
+      api.getAccounts && api.getAccounts();
+    },
+    style: a.isMonitor ? {
+      border: '2px solid var(--accent)',
+      boxShadow: '0 0 0 3px rgba(54,194,207,0.35)',
+      cursor: 'pointer'
+    } : { cursor: 'pointer' }
   }, React.createElement("div", {
     className: "acct-header"
   }, batchMode && React.createElement("input", {
@@ -4224,7 +4240,6 @@ function Accounts({
   }, React.createElement("div", {
     className: "acct-section",
     style: {
-      gridColumn: '1 / -1',
       borderBottom: '1px solid var(--border)'
     }
   }, React.createElement("h4", null, "\u5B88\u62A4\u670D\u52A1"), React.createElement("div", {
@@ -4306,7 +4321,8 @@ function Accounts({
       color: 'var(--muted)'
     }
   }, ":", a.recvDaemonPort)))), React.createElement("div", {
-    className: "acct-section"
+    className: "acct-section",
+    style: { gridColumn: '1 / -1' }
   }, React.createElement("h4", null, "\u4E0A\u6B21\u8FD0\u884C\u65E5\u5FD7"), React.createElement("div", {
     className: "acct-row"
   }, React.createElement("span", {
@@ -4438,14 +4454,28 @@ function Accounts({
     style: { marginTop: 2 },
     onClick: function () {
       push('\u5DF2\u53D1\u8D77\u8D26\u53F7\u5F15\u64CE\u6821\u9A8C · ' + a.name);
+      // 乐观更新：先置“校验中”，避免回环测试耗时（发真实私信）期间按钮无反馈
+      setRealAccts(prev => (prev || []).map(x => x.name === a.name ? Object.assign({}, x, {
+        dmEngine: { level: 'unknown', label: '校验中…', detail: '正在对自身发送回环测试文本，请稍候' }
+      }) : x));
       Promise.resolve(api.checkAccount(a.name)).then(function (d) {
-        if (d && d.ok) {
-          api.getAccounts && api.getAccounts();
+        if (d && d.ok && d.verify) {
+          var v = d.verify;
+          setRealAccts(prev => (prev || []).map(x => x.name === a.name ? Object.assign({}, x, {
+            wpEngine: v.wp || x.wpEngine,
+            dmEngine: v.dm || x.dmEngine,
+            uid: v.uid || x.uid
+          }) : x));
+          push('引擎校验完成 · ' + a.name + ' · wp: ' + (v.wp && v.wp.label) + ' · dm: ' + (v.dm && v.dm.label));
+        } else if (d && d.error) {
+          push('引擎校验失败: ' + d.error);
         }
-      });
+        if (api.getAccounts) api.getAccounts();
+      }).catch(e => push('引擎校验异常: ' + e));
     }
   }, "\u5F15\u64CE\u6821\u9A8C"))), React.createElement("div", {
-    className: "acct-section"
+    className: "acct-section",
+    style: { gridColumn: '1 / -1' }
   }, React.createElement("h4", null, "\u5173\u8054\u6307\u7EB9\u6D4F\u89C8\u5668"), React.createElement("div", {
     className: "fp-card"
   }, React.createElement("div", {
