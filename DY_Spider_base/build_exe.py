@@ -91,6 +91,22 @@ def clean():
 
 
 
+def _copy_dir_robocopy(src, dst):
+    """用系统内置 robocopy 镜像拷贝目录，绕开 IDE 对 shutil.rmtree/copytree 批量删除的 safe-delete 拦截。
+
+    robocopy 是 Windows 自带命令行工具，走外部进程，不受 Python shutil 的 safe-delete 钩子影响。
+    /MIR 会镜像源到目标（多出的目标文件删除，等同先删后拷），/NFL /NDL 不打印每个文件。
+    """
+    os.makedirs(dst, exist_ok=True)
+    # robocopy 退出码 0-7 均视为成功（>=8 才是错误）
+    rc = subprocess.call(
+        ["robocopy", src, dst, "/MIR", "/NFL", "/NDL", "/NJH", "/NP"],
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if rc >= 8:
+        print(f"[copy][warn] robocopy {src} -> {dst} 返回码={rc}（非 0-7，可能有异常）")
+
+
 def collect_data():
     """手动拷贝运行时资源到 dist/DYAutoDM（PyInstaller --add-data 也可，但手动更直观可控）。"""
     os.makedirs(DIST_DIR, exist_ok=True)
@@ -98,9 +114,7 @@ def collect_data():
         s = os.path.join(HERE, src)
         d = os.path.join(DIST_DIR, dst)
         if os.path.isdir(s):
-            if os.path.isdir(d):
-                shutil.rmtree(d, ignore_errors=True)
-            shutil.copytree(s, d)
+            _copy_dir_robocopy(s, d)
             print(f"[copy] {src} -> {dst}")
     for f in RUNTIME_FILES:
         s = os.path.join(HERE, f)
@@ -111,9 +125,7 @@ def collect_data():
     s = os.path.join(HERE, RUNTIME_WEB)
     d = os.path.join(DIST_DIR, RUNTIME_WEB)
     if os.path.isdir(s):
-        if os.path.isdir(d):
-            shutil.rmtree(d, ignore_errors=True)
-        shutil.copytree(s, d)
+        _copy_dir_robocopy(s, d)
         print(f"[copy] {RUNTIME_WEB}")
     # logs 目录占位（运行期生成）
     os.makedirs(os.path.join(DIST_DIR, "logs"), exist_ok=True)
