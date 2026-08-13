@@ -1,0 +1,6 @@
+feat(账号校验): 改为从守护进程判断，账号卡片分别标注 wp引擎/私信引擎
+
+- accounts.py 新增 verify_account：wp引擎=凭证守护在跑+四件套捕获齐全；私信引擎=对自身回环文本发送检查回环
+- web_bridge.py getAccounts 透传 wpEngine/dmEngine；新增 checkAccount 接口触发完整双引擎回环测试
+- 前端账号卡片新增「引擎校验」区块，分行清晰标注 wp引擎/私信引擎状态与详情
+- version.txt CS0.35 -> CS0.36

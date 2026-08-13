@@ -569,6 +569,8 @@ class WebBridge:
             # 每账号独立守护：快速 socket 探测专属端口（短超时，避免拖慢前端）
             bd_alive = _port_open(bport)
             rd_alive = _port_open(rport)
+            # 双引擎校验（守护进程来源）：wp 引擎=凭证守护捕获；私信引擎=轮询场景仅标“待校验”
+            verify = accounts.verify_account(name, timeout=4, dm_loopback=False)
             accs.append({
                 "name": name,
                 "isCurrent": name == accounts.current_name(),
@@ -590,6 +592,9 @@ class WebBridge:
                 "recvDaemonPort": rport,
                 "browserDaemonAlive": bd_alive,
                 "recvDaemonAlive": rd_alive,
+                # 双引擎校验（守护进程来源）：wp 引擎=凭证守护捕获；私信引擎=回环测试
+                "wpEngine": verify.get("wp", {}),
+                "dmEngine": verify.get("dm", {}),
             })
         return {
             "ok": True,
@@ -598,6 +603,18 @@ class WebBridge:
             "monitor": accounts.monitor_name(),
             "sender": accounts.sender_name(),
         }
+
+    def checkAccount(self, name):
+        """触发该账号的完整双引擎校验（含私信引擎回环测试）。
+
+        wp 引擎：凭证守护是否在跑 + 守护保活凭证的 web_protect 签名四件套是否齐全（捕获检查）。
+        私信引擎：对自身 uid 发送回环测试文本，检查 imapi 私有网关建会话+发送链路是否回环正常。
+        """
+        try:
+            res = accounts.verify_account(name, timeout=8, dm_loopback=True)
+            return {"ok": True, "name": name, "verify": res}
+        except Exception as e:
+            return {"ok": False, "name": name, "error": f"账号校验异常: {e}"}
 
     # ---- 只读：任务配置（词库 / 策略 / 开关） ----------------------------
     def getTasks(self):

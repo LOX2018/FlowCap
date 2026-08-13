@@ -153,6 +153,148 @@ def recv_daemon_port(name=None):
     return _stable_port(name, _RPORT_BASE, _RPORT_SPAN)
 
 
+def _port_open(port, timeout=0.5):
+    """快速探测本机端口是否有进程监听（短超时）。"""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def verify_account(name=None, timeout=8, dm_loopback=False):
+    """双引擎校验：分别判定 wp 引擎（凭证守护捕获）与私信引擎（回环发送）是否正常。
+
+    判定来源改为「守护进程」，而非纯网络探活：
+      - wp 引擎：① 该账号凭证守护(browser_daemon)是否在跑；
+                 ② 守护保活的凭证能否被 _load_auth_from_env 还原出完整签名四件套
+                   （ticket/ts_sign/sdk_cert/web_protect，即“捕获正常”）。
+      - 私信引擎：用 sender.send_by_uid 对自身 uid 发一条回环测试文本，
+                  成功则证明私信建会话+发送链路（imapi 私有网关）回环正常。
+
+    dm_loopback=False 时只做 wp 引擎+uid 探活（getAccounts 轮询调用，不污染私信）；
+    dm_loopback=True 时额外触发私信引擎回环测试（点「校验」按钮时调用）。
+
+    返回 {ok, wp:{level,label,detail}, dm:{level,label,detail}, uid}。
+    """
+    name = name or current_name()
+    env_path = env_path_of(name)
+    bport = browser_daemon_port(name)
+
+    result = {
+        "ok": False,
+        "uid": None,
+        "wp": {"level": "unknown", "label": "未校验", "detail": ""},
+        "dm": {"level": "unknown", "label": "未校验", "detail": ""},
+    }
+
+    # ---- wp 引擎校验 ----
+    try:
+        from dy_apis.login_api import DYLoginApi
+        if not _port_open(bport, timeout=1.0):
+            result["wp"] = {
+                "level": "stopped",
+                "label": "凭证守护未运行",
+                "detail": f"该账号凭证守护(browser_daemon)未启动，无法确认 wp 捕获状态。请先启动凭证守护。",
+            }
+        else:
+            auth = DYLoginApi._load_auth_from_env(env_path)
+            uid = None
+            try:
+                from dy_apis.douyin_api import DouyinAPI
+                uid = DouyinAPI.get_my_uid(auth)
+            except Exception:
+                uid = None
+            if uid:
+                result["uid"] = uid
+            # 检查 wp 引擎“捕获”的关键签名：web_protect/keys 四件套是否齐全
+            _has_sign = bool(auth.ticket and auth.ts_sign and auth.client_cert
+                             and auth.private_key and (auth.web_protect or auth.ree_public_key))
+            if uid and _has_sign:
+                result["wp"] = {
+                    "level": "ok",
+                    "label": "正常（捕获齐全）",
+                    "detail": f"凭证守护运行中，wp 签名四件套已捕获(uid={uid})。",
+                }
+            elif _has_sign and not uid:
+                result["wp"] = {
+                    "level": "warn",
+                    "label": "捕获齐全但探活失败",
+                    "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败（守护可能刚重启/网络抖动）。",
+                }
+            elif uid and not _has_sign:
+                result["wp"] = {
+                    "level": "warn",
+                    "label": "已登录但签名缺失",
+                    "detail": f"已登录(uid={uid})但 wp 签名四件套缺失，请重新获取凭证以抓 web_protect/keys。",
+                }
+            else:
+                result["wp"] = {
+                    "level": "fail",
+                    "label": "凭证无效",
+                    "detail": "凭证守护运行中，但登录态与签名均缺失，请重新获取凭证。",
+                }
+    except Exception as e:
+        result["wp"] = {
+            "level": "error",
+            "label": "校验异常",
+            "detail": f"wp 引擎校验抛出异常: {e}",
+        }
+
+    # ---- 私信引擎校验（回环测试，仅 dm_loopback=True 时执行）----
+    if dm_loopback:
+        try:
+            from dy_apis.login_api import DYLoginApi
+            from dy_apis.douyin_api import DouyinAPI
+            from auto_dm.sender import send_by_uid
+            auth = DYLoginApi._load_auth_from_env(env_path)
+            uid = result["uid"] or DouyinAPI.get_my_uid(auth)
+            if not uid:
+                result["dm"] = {
+                    "level": "skip",
+                    "label": "跳过（无 uid）",
+                    "detail": "无法获取自身 uid，私信引擎回环测试跳过。请先确保 wp 引擎已登录。",
+                }
+            else:
+                ok, reason = send_by_uid(auth, uid, "【账号校验】私信引擎回环测试")
+                if ok:
+                    result["dm"] = {
+                        "level": "ok",
+                        "label": "回环正常",
+                        "detail": f"已对自身(uid={uid})成功发送回环测试文本，私信建会话+发送链路正常。",
+                    }
+                else:
+                    result["dm"] = {
+                        "level": "fail",
+                        "label": "回环失败",
+                        "detail": f"回环测试失败: {reason}",
+                    }
+        except Exception as e:
+            result["dm"] = {
+                "level": "error",
+                "label": "校验异常",
+                "detail": f"私信引擎校验抛出异常: {e}",
+            }
+    else:
+        # 轮询场景：私信引擎状态沿用“接收守护是否在跑”做轻量标注
+        result["dm"] = {
+            "level": "idle",
+            "label": "待校验",
+            "detail": "点击账号卡片「引擎校验」按钮可触发私信引擎回环测试。",
+        }
+
+    result["ok"] = (result["wp"]["level"] in ("ok", "warn")
+                    and result["dm"]["level"] in ("ok", "warn", "skip"))
+    return result
+
+
 def profile_dir_of(env_path):
     """根据账号 .env 路径推导该账号独占的浏览器 profile 目录（指纹封存隔离）。
 

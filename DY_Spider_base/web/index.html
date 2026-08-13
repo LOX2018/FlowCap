@@ -3853,6 +3853,9 @@ function Accounts({
             recvDaemonPort: a.recvDaemonPort,
             browserDaemonAlive: !!a.browserDaemonAlive,
             recvDaemonAlive: !!a.recvDaemonAlive,
+            // 双引擎校验（守护进程来源）：wp 引擎=凭证守护捕获；私信引擎=回环测试
+            wpEngine: a.wpEngine || { level: 'unknown', label: '未校验', detail: '' },
+            dmEngine: a.dmEngine || { level: 'unknown', label: '未校验', detail: '' },
             lastCheck: '刚刚',
           lastRun: {
             room: '—',
@@ -4392,6 +4395,41 @@ function Accounts({
       color: 'var(--danger)'
     }
   }, a.lastRun.dmFail)))), React.createElement("div", {
+    className: "acct-section"
+  }, React.createElement("h4", null, "\u5F15\u64CE\u6821\u9A8C"), React.createElement("div", {
+    style: { display: 'grid', gap: 10 }
+  }, React.createElement("div", {
+    style: { padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }
+  }, React.createElement("div", {
+    style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }
+  }, React.createElement("span", {
+    style: { fontWeight: 600, fontSize: 13 }
+  }, "wp \u5F15\u64CE"), React.createElement(Pill, {
+    c: (a.wpEngine.level === 'ok' ? 'ok' : a.wpEngine.level === 'warn' ? 'warn' : (a.wpEngine.level === 'fail' || a.wpEngine.level === 'error') ? 'danger' : 'info')
+  }, a.wpEngine.label)), React.createElement("div", {
+    style: { fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.4 }
+  }, a.wpEngine.detail)), React.createElement("div", {
+    style: { padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }
+  }, React.createElement("div", {
+    style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }
+  }, React.createElement("span", {
+    style: { fontWeight: 600, fontSize: 13 }
+  }, "\u79C1\u4FE1\u5F15\u64CE"), React.createElement(Pill, {
+    c: (a.dmEngine.level === 'ok' ? 'ok' : a.dmEngine.level === 'warn' ? 'warn' : (a.dmEngine.level === 'fail' || a.dmEngine.level === 'error') ? 'danger' : 'info')
+  }, a.dmEngine.label)), React.createElement("div", {
+    style: { fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.4 }
+  }, a.dmEngine.detail)), React.createElement("button", {
+    className: "btn sm",
+    style: { marginTop: 2 },
+    onClick: function () {
+      push('\u5DF2\u53D1\u8D77\u8D26\u53F7\u5F15\u64CE\u6821\u9A8C · ' + a.name);
+      Promise.resolve(api.checkAccount(a.name)).then(function (d) {
+        if (d && d.ok) {
+          api.getAccounts && api.getAccounts();
+        }
+      });
+    }
+  }, "\u5F15\u64CE\u6821\u9A8C"))), React.createElement("div", {
     className: "acct-section"
   }, React.createElement("h4", null, "\u5173\u8054\u6307\u7EB9\u6D4F\u89C8\u5668"), React.createElement("div", {
     className: "fp-card"
@@ -5499,6 +5537,10 @@ function App() {
     getConversations: a => window.ApiBridge.getConversations ? window.ApiBridge.getConversations(a) : Promise.resolve(null),
     getConversation: (a, c) => window.ApiBridge.getConversation ? window.ApiBridge.getConversation(a, c) : Promise.resolve(null),
     getAccounts: () => window.ApiBridge.getAccounts ? window.ApiBridge.getAccounts() : Promise.resolve(null),
+    checkAccount: n => window.ApiBridge.checkAccount ? window.ApiBridge.checkAccount(n) : Promise.resolve({
+      ok: false,
+      error: '未连接后端'
+    }),
     getTasks: () => window.ApiBridge.getTasks ? window.ApiBridge.getTasks() : Promise.resolve(null),
     getLiveStream: () => window.ApiBridge.getLiveStream ? window.ApiBridge.getLiveStream() : Promise.resolve(null),
     sendDanmaku: c => window.ApiBridge.sendDanmaku ? window.ApiBridge.sendDanmaku(c) : Promise.resolve({
@@ -5682,6 +5724,12 @@ window.ApiBridge = {
   },
   getAccounts: function () {
     return Promise.resolve(null);
+  },
+  checkAccount: function () {
+    return Promise.resolve({
+      ok: false,
+      error: '未连接后端'
+    });
   },
   getTasks: function () {
     return Promise.resolve(null);
