@@ -489,11 +489,14 @@ function Accounts({
       fontSize: 11,
       color: 'var(--muted)'
     }
-  }, ":", a.browserDaemonPort)), React.createElement("span", {
-    className: "k",
+  }, ":", a.browserDaemonPort))), React.createElement("div", {
+    className: "acct-row",
     style: {
-      marginLeft: 16
+      justifyContent: 'flex-start',
+      marginTop: 10
     }
+  }, React.createElement("span", {
+    className: "k"
   }, "私信守护"), React.createElement("span", {
     className: "v",
     style: {
@@ -529,7 +532,7 @@ function Accounts({
     }
   }, ":", a.recvDaemonPort)))), React.createElement("div", {
     className: "acct-section",
-    style: { gridColumn: '1 / -1', gridRow: '2' }
+    style: { gridColumn: '1', gridRow: '2' }
   }, React.createElement("h4", null, "上次运行日志"), React.createElement("div", {
     className: "acct-row"
   }, React.createElement("span", {
@@ -623,7 +626,9 @@ function Accounts({
     className: "acct-section",
     style: { gridColumn: '2', gridRow: '1' }
   }, React.createElement("h4", null, "引擎校验"), React.createElement("div", {
-    style: { display: 'grid', gap: 10 }
+    style: { display: 'flex', alignItems: 'stretch', gap: 10 }
+  }, React.createElement("div", {
+    style: { flex: 1, display: 'grid', gap: 10 }
   }, React.createElement("div", {
     style: { padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }
   }, React.createElement("div", {
@@ -632,7 +637,7 @@ function Accounts({
     style: { fontWeight: 600, fontSize: 13 }
   }, "wp 引擎"), React.createElement(Pill, {
     c: (a.wpEngine.level === 'ok' ? 'ok' : a.wpEngine.level === 'warn' ? 'warn' : (a.wpEngine.level === 'fail' || a.wpEngine.level === 'error') ? 'danger' : 'info')
-  }, a.wpEngine.label)), React.createElement("div", {
+  }, a.wpEngine.level === 'stopped' ? '未运行' : a.wpEngine.label)), React.createElement("div", {
     style: { fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.4 }
   }, a.wpEngine.detail)), (a.wpEngine.level === 'fail' || a.dmEngine.level === 'fail') && React.createElement("button", {
     className: "btn sm danger",
@@ -657,9 +662,10 @@ function Accounts({
     c: (a.dmEngine.level === 'ok' ? 'ok' : a.dmEngine.level === 'warn' ? 'warn' : (a.dmEngine.level === 'fail' || a.dmEngine.level === 'error') ? 'danger' : 'info')
   }, a.dmEngine.label)), React.createElement("div", {
     style: { fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.4 }
-  }, a.dmEngine.detail)), React.createElement("button", {
+  }, a.dmEngine.detail))), React.createElement("div", {
+    style: { display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'stretch', minWidth: 96 }
+  }, React.createElement("button", {
     className: "btn sm",
-    style: { marginTop: 2 },
     onClick: function () {
       push('已发起账号引擎校验 · ' + a.name);
       // 乐观更新：先置“校验中”，避免回环测试耗时（发真实私信）期间按钮无反馈
@@ -681,9 +687,9 @@ function Accounts({
         if (api.getAccounts) api.getAccounts();
       }).catch(e => push('引擎校验异常: ' + e));
     }
-  }, "引擎校验"))), React.createElement("div", {
+  }, "引擎校验")))), React.createElement("div", {
     className: "acct-section",
-    style: { gridColumn: '1 / -1', gridRow: '3' }
+    style: { gridColumn: '2', gridRow: '2' }
   }, React.createElement("h4", null, "关联指纹浏览器"), React.createElement("div", {
     className: "fp-card"
   }, React.createElement("div", {
