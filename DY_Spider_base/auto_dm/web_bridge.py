@@ -989,6 +989,12 @@ class _StaticHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         ctype = "text/html"
+        # 框架层(framework.js)与第三方 vendor 属稳定资源，启用强缓存(一天)，
+        # 落实“框架类内容固定下来、不随每次启动重复传输/解析”；
+        # 业务页面 pages/*.js / app.js 数据全走接口动态渲染，本身同样稳定，一并长缓存；
+        # 发版后由文件名/版本参数刷新。
+        cache_seconds = 86400
+        fname = os.path.basename(fp)
         if fp.endswith(".js"):
             ctype = "application/javascript"
         elif fp.endswith(".css"):
@@ -1003,6 +1009,7 @@ class _StaticHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=%d, public" % cache_seconds)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(data)
