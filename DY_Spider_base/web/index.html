@@ -140,6 +140,8 @@ input, select, textarea { font: inherit; color: inherit; }
 .btn.ghost:hover { background: oklch(26% 0.02 245); border-color: color-mix(in oklch, var(--border) 60%, var(--fg)); }
 .btn.text { background: transparent; color: var(--accent); height: auto; padding: 0; }
 .btn.text:hover { color: oklch(82% 0.16 145); }
+.btn.danger { background: #e5484d; color: #fff; border: 1px solid #e5484d; }
+.btn.danger:hover { background: #c93b40; }
 .btn:disabled { opacity: .45; cursor: default; }
 .btn:focus-visible, .tab:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .row-expand:focus-visible, .conv:focus-visible, .msg-inline:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px;
@@ -4408,7 +4410,20 @@ function Accounts({
     c: (a.wpEngine.level === 'ok' ? 'ok' : a.wpEngine.level === 'warn' ? 'warn' : (a.wpEngine.level === 'fail' || a.wpEngine.level === 'error') ? 'danger' : 'info')
   }, a.wpEngine.label)), React.createElement("div", {
     style: { fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.4 }
-  }, a.wpEngine.detail)), React.createElement("div", {
+  }, a.wpEngine.detail)), (a.wpEngine.level === 'fail' || a.dmEngine.level === 'fail') && React.createElement("button", {
+    className: "btn sm danger",
+    style: { marginTop: 8 },
+    onClick: function () {
+      push('\u5DF2\u63D0\u9192\u5904\u7406\u9A8C\u8BC1 \u00B7 ' + a.name + ' \u00B7 \u8BF7\u5728\u5F39\u51FA\u7684\u6307\u7EB9\u6D4F\u89C8\u5668\u4E2D\u5B8C\u6210\u9A8C\u8BC1');
+      Promise.resolve(api.scanLogin(a.name)).then(function (d) {
+        if (d && d.ok) {
+          push(d.msg || ('\u5DF2\u4E3A ' + a.name + ' \u5F39\u51FA\u6307\u7EB9\u6D4F\u89C8\u5668'));
+        } else if (d && d.error) {
+          push('\u5904\u7406\u9A8C\u8BC1\u5931\u8D25: ' + d.error);
+        }
+      });
+    }
+  }, "\u7ACB\u5373\u5904\u7406\u9A8C\u8BC1"), React.createElement("div", {
     style: { padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }
   }, React.createElement("div", {
     style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }
