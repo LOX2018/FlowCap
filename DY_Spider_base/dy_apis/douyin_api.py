@@ -715,13 +715,38 @@ class DouyinAPI:
         """
         获取自己的用户ID.
         :param auth: DouyinAuth object.
-        :return: 用户ID；无有效 cookie / 缺 s_v_web_id 等情况下返回 None（探活失败）。
+        :return: 用户ID；无有效 cookie 情况下返回 None（探活失败）。
+
+        注意：抖音在风控验证态下会把 cookie 里的 s_v_web_id 写成占位值
+        （如 "verify_msppk8gp_xxxx"，以 verify_msppk8gp_ 前缀开头，非 19 位纯数字），
+        此时用它去请求 query/user 必被服务端拒绝、resp_json 无 user_uid 字段会抛异常，
+        进而被上层误判为“探活失败/凭证失效”。本函数识别该占位值后：
+          1) 优先直接返回 cookie 里的真实 uid_tt（正常登录态下必有，且已经过扫码验证）；
+          2) 仅当 uid_tt 也缺失时才回退到网络请求。
+        这样“账号真实有效、仅 s_v_web_id 被风控占位”的情形不再被误判。
         """
         if not auth or not getattr(auth, "cookie", None):
             return None
-        s_v_web_id = auth.cookie.get("s_v_web_id")
-        if not s_v_web_id:
-            # 未登录 / cookie 缺 s_v_web_id（如账号尚未扫码），视为探活失败
+        cookie = auth.cookie
+        # 真实 uid 优先（uid_tt 是登录态直接下发的数字 uid，不受 s_v_web_id 占位影响）
+        uid_tt = cookie.get("uid_tt") or cookie.get("uid_tt_ss")
+        if uid_tt:
+            try:
+                return int(str(uid_tt).strip())
+            except (ValueError, TypeError):
+                pass
+        s_v_web_id = cookie.get("s_v_web_id")
+        # 识别风控占位值：verify_msppk8gp_ 前缀 或 非 19 位纯数字（正常 s_v_web_id 为 19 位数字）
+        def _is_placeholder(v):
+            if not v:
+                return True
+            v = str(v).strip()
+            if v.startswith("verify_msppk8gp_"):
+                return True
+            # 正常 s_v_web_id 形如 19 位数字；非纯数字即视为占位/异常
+            return not v.isdigit()
+        if _is_placeholder(s_v_web_id):
+            # 没有可用 s_v_web_id 且 uid_tt 解析失败 → 视为探活失败
             return None
         url = 'https://www.douyin.com/aweme/v1/web/query/user/'
         headers = HeaderBuilder().build(HeaderType.GET)

@@ -45,7 +45,14 @@ class ProtoBuilder:
         request.headers['timezone_name'] = 'Etc/GMT-8'
         request.headers['deviceId'] = '0'
         request.headers['webid'] = generate_webid()
-        request.headers['fp'] = auth.cookie['s_v_web_id']
+        # fp 字段原样写入 cookie 的 s_v_web_id。但抖音在风控验证态下会把 s_v_web_id
+        # 写成占位值（如 "verify_msppk8gp_xxxx"），写入 fp 会污染 IM 签名导致 KICK/INVALID_REQUEST。
+        # 识别占位值后清空 fp（不写脏值），由服务端按其它签名要素鉴权，避免签名被污染。
+        _sv = auth.cookie.get('s_v_web_id') if getattr(auth, 'cookie', None) else None
+        if _sv and not str(_sv).strip().startswith('verify_msppk8gp_') and str(_sv).strip().isdigit():
+            request.headers['fp'] = _sv
+        else:
+            request.headers['fp'] = ''
         request.headers['is-retry'] = '0'
         request.auth_type = 4
         request.biz = 'douyin_web'

@@ -104,9 +104,16 @@ _run_exe11.ps1
 _scan_smoke.py
 _path_frozen_smoke.py
 _res_copy.ps1
+_res_copy_c040.ps1
+_verify_c040.py
 _vb_strict_smoke.py
 _pyz_dbg.py
 _verify17.py
+_mcp_bridge.py
+_pyz_diag_c040.py
+_cleanup_residue.py
+_cleanup_residue.ps1
+_jsline.js
 
 # Playwright MCP 运行产物
 .playwright-mcp/
