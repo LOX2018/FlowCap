@@ -200,8 +200,18 @@ VSVersionInfo(
     return path
 
 
-def main(no_clean=False):
-    version = bump_version()
+def main(no_clean=False, no_bump=False):
+    version = "" if no_bump else bump_version()
+    if not version:
+        # --no-bump 时不递增，直接读当前版本号
+        version = "CS0.01"
+        if os.path.isfile(VERSION_FILE):
+            try:
+                with open(VERSION_FILE, "r", encoding="utf-8") as f:
+                    version = f.read().strip() or version
+            except Exception:
+                pass
+        print(f"[build] --no-bump：保持版本 {version}（不递增）")
     if not no_clean:
         clean()
     build(version)
@@ -214,4 +224,5 @@ def main(no_clean=False):
 if __name__ == "__main__":
     import sys
     _no_clean = "--no-clean" in sys.argv
-    main(no_clean=_no_clean)
+    _no_bump = "--no-bump" in sys.argv
+    main(no_clean=_no_clean, no_bump=_no_bump)
