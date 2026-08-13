@@ -216,7 +216,8 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
                 result["uid"] = uid
             # 检查 wp 引擎“捕获”的关键签名：web_protect/keys 四件套是否齐全
             _has_sign = bool(auth.ticket and auth.ts_sign and auth.client_cert
-                             and auth.private_key and (auth.web_protect or auth.ree_public_key))
+                             and auth.private_key and (getattr(auth, "web_protect_str", None)
+                                                       or getattr(auth, "ree_public_key", None)))
             if uid and _has_sign:
                 result["wp"] = {
                     "level": "ok",
@@ -224,11 +225,26 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
                     "detail": f"凭证守护运行中，wp 签名四件套已捕获(uid={uid})。",
                 }
             elif _has_sign and not uid:
-                result["wp"] = {
-                    "level": "warn",
-                    "label": "捕获齐全但探活失败",
-                    "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败（守护可能刚重启/网络抖动）。",
-                }
+                # 有签名但探活(uid)失败：进一步判断是“风控需重新授权”还是“网络抖动”
+                _cookie = getattr(auth, "cookie", None) or {}
+                _sv = _cookie.get("s_v_web_id") or ""
+                _no_wpsign = not getattr(auth, "web_protect_str", None)
+                _is_verify_page = _sv.startswith("verify_") or _sv.startswith("verify_msppk8gp")
+                if _is_verify_page or _no_wpsign:
+                    result["wp"] = {
+                        "level": "fail",
+                        "label": "需重新授权（账号疑似风控）",
+                        "detail": "wp 签名四件套虽已捕获，但 cookie 中 s_v_web_id 为风控验证页占位值"
+                                  "（%s）或 web_protect 未持久化，get_my_uid 探活失败。"
+                                  "请点「重新获取凭证」重新扫码，确保在正常网络/设备下完成登录"
+                                  "（避开抖音风控验证页）。" % _sv[:24],
+                    }
+                else:
+                    result["wp"] = {
+                        "level": "warn",
+                        "label": "捕获齐全但探活失败",
+                        "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败（守护可能刚重启/网络抖动），可稍后重试引擎校验。",
+                    }
             elif uid and not _has_sign:
                 result["wp"] = {
                     "level": "warn",

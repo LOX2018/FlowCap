@@ -297,8 +297,20 @@ def is_daemon_running(name=None, port=None):
 
 def main():
     global CONTROL_PORT, _ACTIVE_ACCOUNT
+    from auto_dm import accounts as _acc_mod
+    # 默认账号名：优先用首个真实账号，回退"默认账号"，最后回退"主"（避免硬编码与真实账号名不符）
+    _default_name = None
+    try:
+        _names = [n for n, _ in _acc_mod.list_accounts()]
+        if _names:
+            _default_name = _names[0]
+    except Exception:
+        _default_name = None
+    if not _default_name:
+        _default_name = "默认账号" if os.path.exists(os.path.join(_acc_mod._ACCOUNTS_DIR, "默认账号")) else "主"
+
     parser = argparse.ArgumentParser(description="浏览器常驻守护进程（凭证保活）")
-    parser.add_argument("--account", default="主", help="默认账号名")
+    parser.add_argument("--account", default=_default_name, help="默认账号名")
     parser.add_argument("--no-clear", action="store_true",
                         help="守护退出时不清空凭证（用于调试）")
     parser.add_argument("--interval", type=int, default=300,
@@ -308,8 +320,11 @@ def main():
     args = parser.parse_args()
 
     # 多账号独立凭证守护：每个账号用专属端口 + 专属存活标记，互不冲突
+    # 未显式传 --port 时，自动按账号名算出专属端口（与 web_bridge.getAccounts 探测端口一致）
     if args.port:
         CONTROL_PORT = args.port
+    else:
+        CONTROL_PORT = _acc_mod.browser_daemon_port(args.account)
     _ACTIVE_ACCOUNT = args.account
 
     _setup_logger()
