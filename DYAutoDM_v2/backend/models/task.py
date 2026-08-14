@@ -32,8 +32,11 @@ class TaskConfig(BaseModel):
     delay_range: list[int] = [40, 65]
     interval: float = 60.0
     force_rescan: bool = False
+    enable_danmaku: bool = True
+    enable_console: bool = True
+    enable_send: bool = True
 
-    # 前端别名兼容（live.tsx 发送 liveUrl/maxTarget/dmPool/delay/forceRescan）
+    # 前端别名兼容 + 扩展开关（tasks.tsx 发送 enableDanmaku/enableConsole/enableSend）
     # 使用字段别名 + 宽松校验，避免 pydantic 422
     model_config = {"populate_by_name": True, "extra": "ignore"}
 
@@ -43,6 +46,9 @@ class TaskConfig(BaseModel):
     dmPool: list = []
     delay: str | None = None  # 形如 "50,120" 或 "60"
     forceRescan: bool | None = None
+    enableDanmaku: bool | None = None
+    enableConsole: bool | None = None
+    enableSend: bool | None = None
 
     def resolved(self) -> "TaskConfig":
         """把前端别名归一到规范字段。
@@ -57,6 +63,9 @@ class TaskConfig(BaseModel):
         max_target = self.max_target if self.maxTarget is None else self.maxTarget
         dm_pool = self.dm_pool or self.dmPool or []
         force_rescan = self.force_rescan if self.forceRescan is None else self.forceRescan
+        enable_danmaku = self.enable_danmaku if self.enableDanmaku is None else self.enableDanmaku
+        enable_console = self.enable_console if self.enableConsole is None else self.enableConsole
+        enable_send = self.enable_send if self.enableSend is None else self.enableSend
 
         delay_range = self.delay_range
         if (not delay_range or delay_range == [40, 65]) and self.delay:
@@ -70,6 +79,9 @@ class TaskConfig(BaseModel):
             delay_range=delay_range,
             interval=self.interval,
             force_rescan=bool(force_rescan),
+            enable_danmaku=bool(enable_danmaku),
+            enable_console=bool(enable_console),
+            enable_send=bool(enable_send),
         )
 
 

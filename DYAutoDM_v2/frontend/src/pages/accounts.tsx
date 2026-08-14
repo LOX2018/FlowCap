@@ -506,9 +506,10 @@ export default function AccountsPage(props: PageProps) {
   };
 
   // 点击卡片 = 选中该账号为监听账号（设为监测/发送角色）
+  // 注意：后端 AccountRole 枚举值为 watch/send/both（见 backend/models/enums.py）
   const selectAsMonitor = (a: FmtAccount) => {
-    api.setRole(a.name, "monitor").catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
-    api.setRole(a.name, "sender").catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
+    api.setRole(a.name, "watch").catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
+    api.setRole(a.name, "send").catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
     push("已选中监听账号 · " + a.name);
     refetch();
   };

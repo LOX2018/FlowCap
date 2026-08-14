@@ -45,3 +45,16 @@ node_modules/
 
 # MCP 浏览器测试快照
 .playwright-mcp/
+
+# ===== DYAutoDM_v2 运行时/构建缓存（不入库）=====
+DYAutoDM_v2/auto_dm/
+DYAutoDM_v2/data/
+DYAutoDM_v2/vb_chromium/
+DYAutoDM_v2/build_tauri.err
+DYAutoDM_v2/*.log
+frontend/tsconfig.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+_commit_msg.txt
+DY_Spider_base/_重构前版本标记.md

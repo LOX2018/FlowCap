@@ -86,16 +86,31 @@ def ensure_uid(auth):
     if getattr(auth, "uid", None):
         return auth.uid
     ck = getattr(auth, "cookie", None) or {}
-    # 优先：uid_tt / sid_tt 是抖音登录态里的数字 uid
-    for key in ("uid_tt", "sid_tt", "uid_tt_ss", "sid_ucp_v1"):
+    # 优先：uid_tt / sid_tt 是抖音登录态里的账号标识
+    # 旧版是 base64（MS4wLjAB...），新版是 32 位 hex 串（uid 的十六进制），
+    # 需注意 sid_ucp_v1 可能为风控验证页占位值（如 "1.0.0-..." / "verify_..."）。
+    for key in ("uid_tt", "sid_tt", "uid_tt_ss"):
         val = ck.get(key)
-        if val:
+        if not val:
+            continue
+        sval = str(val).strip()
+        # 排除风控验证页占位（verify_ 开头 / 纯 "1" / 1.0.0- 前缀）
+        if sval.startswith("verify_") or sval in ("1", "0"):
+            continue
+        _uid = None
+        try:
+            _uid = int(sval)  # 纯数字 uid
+        except Exception:
+            pass
+        if _uid is None:
             try:
-                auth.uid = int(str(val).split(".")[0])
-                logger.info(f"[auth] 从 cookie 字段 {key} 解析到 uid={auth.uid}")
-                return auth.uid
+                _uid = int(sval, 16)  # 32 位 hex 串 -> 十进制 uid（新版 cookie）
             except Exception:
                 pass
+        if _uid and _uid > 1:
+            auth.uid = _uid
+            logger.info(f"[auth] 从 cookie 字段 {key} 解析到 uid={auth.uid}")
+            return auth.uid
     # 兜底：基座 get_my_uid（依赖 s_v_web_id，可能返回 None）
     try:
         from dy_apis.douyin_api import DouyinAPI

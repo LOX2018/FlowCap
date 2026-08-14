@@ -76,6 +76,11 @@ class AutoDM:
         self.live_id: Optional[str] = None
         self.limit: int = settings.max_target
         self.sent_count: int = 0
+        # 私信词库（前端 Tasks 页配置，运行时由 save_dm_pool 写入）
+        self.dm_template: list[dict] = list(getattr(settings, "dm_pool", []) or [])
+        self.delay_range: tuple[int, int] = tuple(getattr(settings, "delay_range", [40, 65]))
+        self.interval: float = float(getattr(settings, "interval", 60.0))
+        self.force_rescan: bool = bool(getattr(settings, "force_rescan", False))
         # captured_count 是只读 property（从 dispatch.records 派生），无需初始化
         self.status_msg: str = "未启动"
         self.room_title: str = ""
@@ -230,7 +235,12 @@ class AutoDM:
             raise RuntimeError(f"当前状态 {self.state.value} 无法启动")
         self.state = EngineState.STARTING
         self.live_url = config.live_url
-        self.live_id = config.live_url  # TODO: 从 live_url 解析 live_id
+        # 从 live_url 解析出真实直播间号 web_rid（live.douyin.com/<web_rid>）
+        try:
+            from link_resolve import resolve_live_id
+            self.live_id, _ = resolve_live_id(config.live_url)
+        except Exception:
+            self.live_id = config.live_url
         self.limit = config.max_target
         self.status_msg = "启动中"
         self._stop_event.clear()
@@ -463,8 +473,9 @@ class AutoDM:
             self.live.stop_heartbeat()
             self.live = None
 
-        # 2) 强制重新扫码
-        auth = self._build_one_auth(env_path, force_fresh=True, max_age=0)
+        # 2) 重新扫码（由 force_rescan 控制：True 强制重扫，False 复用 .env 凭证）
+        force_fresh = getattr(config, "force_rescan", False)
+        auth = self._build_one_auth(env_path, force_fresh=force_fresh, max_age=0)
         if auth is None or not getattr(auth, "cookie", None):
             raise RuntimeError(
                 f"账号「{account_name}」扫码未成功拿到有效凭证。"

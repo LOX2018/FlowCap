@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     send_delay_sec: Tuple[int, int] = (40, 65)
     send_interval: float = 60.0
 
+    # 私信词库（[{text, enabled}] 经 tasks/dm-pool 写入）
+    dm_pool: list = Field(default_factory=list)
+    # 延迟抖动区间（前端 delay "40,65" -> [40, 65]）
+    delay_range: list[int] = [40, 65]
+    interval: float = 60.0
+    force_rescan: bool = False
+
+    # 采集开关（前端 Tasks 页）
+    enable_danmaku: bool = True
+    enable_console: bool = True
+    enable_send: bool = True
+
     # 监听关键词（来自原 config.KEYWORDS）
     keywords: list[str] = Field(default_factory=list)
 

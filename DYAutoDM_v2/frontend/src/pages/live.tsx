@@ -9,7 +9,8 @@
  *   - 关键 bug 修复（规则 10）: 旧版 r.status === "发送失败" 永不匹配
  *     -> toDmStatus 按后端英文枚举 (captured/sent/fail/skipped) 类型安全比较
  *   - 旧 getLiveStream -> props.api.getStream（规则 11）
- *   - doLike / requestDm / resolveLive 后端暂未实现 -> 提示"功能开发中"
+ *   - doLike / requestDm 后端暂未实现 -> 提示"功能开发中"
+ *   - resolveLive 已移植：后端 /api/live/resolve 调用 link_resolve.resolve_live_id
  *   - rows 数据源: 旧版 getStats.list -> 新版 tasksCfg.records（含 status 枚举）
  */
 import { Fragment, useState, useEffect, useMemo } from "react";
@@ -549,7 +550,18 @@ export default function LivePage(props: PageProps) {
                 onClick={() => {
                   const u = room.trim();
                   if (!u) return;
-                  push("功能开发中：解析房间号 · " + u);
+                  api
+                    .resolveLive(u)
+                    .then((r) => {
+                      if (r.ok) {
+                        const resolved = r.liveId || r.liveUrl || u;
+                        setRoom(resolved);
+                        push("解析成功 · 直播间号 " + resolved);
+                      } else {
+                        push("解析失败: " + (r.error || "未知错误"));
+                      }
+                    })
+                    .catch((e: unknown) => push("解析异常: " + errMsg(e)));
                 }}
               >
                 解析房间号

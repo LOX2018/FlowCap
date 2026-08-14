@@ -93,7 +93,8 @@ export const api = {
 
   // ===== accounts =====
   async getAccounts(): Promise<unknown[]> {
-    return request("/api/accounts");
+    const r = await request<{ ok: boolean; accounts: unknown[] }>("/api/accounts");
+    return r.accounts || [];
   },
 
   async checkAccount(name: string): Promise<unknown> {
@@ -151,6 +152,13 @@ export const api = {
     });
   },
 
+  async resolveLive(url: string): Promise<{ ok: boolean; liveId?: string; liveUrl?: string; error?: string }> {
+    return request("/api/live/resolve", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
+  },
+
   // ===== messages =====
   async getConversations(account: string): Promise<unknown> {
     return request(`/api/messages/conversations?account=${encodeURIComponent(account)}`);
@@ -166,6 +174,13 @@ export const api = {
     return request("/api/messages/send", {
       method: "POST",
       body: JSON.stringify({ account, conv_id: convId, text }),
+    });
+  },
+
+  async requestDm(name: string, comment = ""): Promise<{ ok: boolean; msg?: string }> {
+    return request("/api/messages/request", {
+      method: "POST",
+      body: JSON.stringify({ name, comment }),
     });
   },
 
@@ -188,6 +203,10 @@ export const api = {
     });
   },
 
+  async exportStats(): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return request("/api/tasks/export", { method: "POST" });
+  },
+
   // ===== settings =====
   async getConfig(): Promise<{ ok: boolean; config: Record<string, unknown> }> {
     return request("/api/settings");
@@ -198,6 +217,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(config),
     });
+  },
+
+  // ===== logs =====
+  async getLogs(limit = 500): Promise<{ ok: boolean; file: string | null; lines: { ts: string; level: string; text: string }[] }> {
+    return request(`/api/logs?limit=${limit}`);
   },
 };
 

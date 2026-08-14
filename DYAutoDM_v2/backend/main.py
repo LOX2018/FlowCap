@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from config import settings
-from api import accounts, engine, live, messages, overview, settings as settings_api, tasks
+from api import accounts, engine, live, messages, overview, settings as settings_api, tasks, logs as logs_api
 from core.auto_dm import AutoDM
 
 
@@ -35,10 +35,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 允许前端跨域（开发模式 Vite 跑在 1420）
+# 允许前端跨域（开发模式 Vite 跑在 1420，preview 跑在 4173，Tauri 用 tauri://localhost）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:1420", "http://127.0.0.1:1420", "tauri://localhost"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,6 +52,7 @@ app.include_router(live.router, prefix="/api/live", tags=["live"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
+app.include_router(logs_api.router, prefix="/api/logs", tags=["logs"])
 
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
 logger.remove()

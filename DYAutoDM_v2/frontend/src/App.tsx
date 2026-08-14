@@ -17,6 +17,7 @@ import MessagesPage from "./pages/messages";
 import AccountsPage from "./pages/accounts";
 import TasksPage from "./pages/tasks";
 import SettingsPage from "./pages/settings";
+import LogsPage from "./pages/logs";
 
 type TabId = (typeof TABS)[number][0];
 
@@ -145,6 +146,7 @@ export default function App() {
             {tab === "accounts" && <AccountsPage {...pageProps} />}
             {tab === "tasks" && <TasksPage {...pageProps} />}
             {tab === "settings" && <SettingsPage {...pageProps} />}
+            {tab === "logs" && <LogsPage {...pageProps} />}
           </motion.div>
         </AnimatePresence>
       </main>
