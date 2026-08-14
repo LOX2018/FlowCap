@@ -54,6 +54,33 @@ def _link_target_triple(src: Path) -> None:
         print(f"复制: {dst.name} (硬链接失败，退化为复制)")
 
 
+def _runtime_resources() -> list[str]:
+    """返回需要随 sidecar 一起打包的运行时资源（源码态项目根下的目录/文件）。
+
+    这些资源（指纹内核、浏览器 profile、.env、logs）按 app_root() 解析，
+    打包态 app_root() = exe 所在目录，因此必须用 --add-data 把它们收集进去，
+    否则 sidecar 运行时会因找不到 vb_chromium 而 RuntimeError（禁止回退原生 Playwright）。
+    """
+    items = [
+        "vb_chromium",
+        "vb_profile_default",
+        "vb_profile_dm",
+        "pw_profile_dm",
+        ".env",
+        "logs",
+    ]
+    args: list[str] = []
+    sep = ";" if platform.system() == "Windows" else ":"
+    for it in items:
+        src = ROOT / it
+        if src.exists():
+            # DEST 用 "." —— PyInstaller 会把这些目录/文件解压到 exe 所在目录（即 app_root() 打包态）
+            args += ["--add-data", f"{src}{sep}."]
+        else:
+            print(f"[warn] 运行时资源不存在，跳过: {src}")
+    return args
+
+
 def build_one(entry: str, name: str) -> None:
     """打包单个 sidecar 并创建 target-triple 后缀链接"""
     print(f"\n=== 打包 {name} ===")
@@ -67,8 +94,9 @@ def build_one(entry: str, name: str) -> None:
         "--workpath", str(BACKEND / "build" / name),
         "--specpath", str(BACKEND / "build" / name),
         "--clean", "--noconfirm",
-        str(BACKEND / entry),
     ]
+    cmd += _runtime_resources()
+    cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))
     print(f"产出: {out}")

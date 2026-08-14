@@ -34,14 +34,17 @@ from loguru import logger
 def app_root():
     """应用根目录（持久化数据基准）：
 
-    - 源码态：本文件位于 auto_dm/vbrowser.py，其上一级即为项目根 DY_Spider_base/；
-    - PyInstaller 打包态（onefile）：exe 所在目录。build_exe.py 的 collect_data() 会把
-      vb_chromium / vb_profile_* / pw_profile_dm / web / .env / logs 等运行时资源
+    - 源码态：本文件位于 backend/vbrowser.py，向上两级（backend 的上一级）即项目根
+      DYAutoDM_v2/，随附资源（vb_chromium / vb_profile_* / pw_profile_dm / .env / logs）
+      都放在项目根下，accounts.py 等也以项目根为基准，保持一致；
+    - PyInstaller 打包态（onefile）：exe 所在目录。build_sidecar.py 的 _add_data 会把
+      vb_chromium / vb_profile_* / pw_profile_dm / .env / logs 等运行时资源
       拷贝到 exe 旁边，因此打包后所有相对路径都必须以【exe 所在目录】为基准，
       否则会按 __file__ 解析到 _MEIxxx 临时解压目录导致资源找不到、回退原生 Playwright 而崩溃。
     """
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
+    # 本文件: <root>/backend/vbrowser.py -> 向上两级(backend 的上一级) = <root>
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
