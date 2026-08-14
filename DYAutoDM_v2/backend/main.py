@@ -64,10 +64,13 @@ logger.add(
     encoding="utf-8",
     format="{time:HH:mm:ss} | {level: <8} | {message}",
 )
+# stderr sink：enqueue=True 让日志在独立线程写出，即使 Windows 控制台 GBK 编码
+# 中文失败也不会中断请求处理（异常被 loguru 吞掉而非抛出到主线程）。
 logger.add(
     sys.stderr,
     level="INFO",
     colorize=True,
+    enqueue=True,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
 )
 

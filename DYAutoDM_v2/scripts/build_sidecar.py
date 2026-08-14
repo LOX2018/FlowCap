@@ -41,17 +41,10 @@ def _target_triple() -> str:
 
 
 def _link_target_triple(src: Path) -> None:
-    """为 src 创建带 target-triple 后缀的硬链接（失败则复制）。"""
-    triple = _target_triple()
-    dst = src.with_name(f"{src.stem}-{triple}{src.suffix}")
-    if dst.exists():
-        dst.unlink()
-    try:
-        os.link(src, dst)  # 硬链接，同盘符不占额外空间
-        print(f"硬链接: {dst.name} -> {src.name}")
-    except OSError:
-        shutil.copy2(src, dst)  # 跨盘符或权限不足时退化为复制
-        print(f"复制: {dst.name} (硬链接失败，退化为复制)")
+    """不再创建无 triple 别名：Tauri externalBin 要求文件名带 triple 后缀，
+    无 triple 的同名 .exe 会与 triple 文件冲突导致 externalBin 嵌入失败。
+    本函数保留为空操作（兼容旧调用），实际产物名已由 build_one 直接带 triple。"""
+    return
 
 
 def _runtime_resources() -> list[str]:
@@ -82,14 +75,16 @@ def _runtime_resources() -> list[str]:
 
 
 def build_one(entry: str, name: str) -> None:
-    """打包单个 sidecar 并创建 target-triple 后缀链接"""
-    print(f"\n=== 打包 {name} ===")
+    """打包单个 sidecar，产物名直接带 target-triple 后缀（Tauri externalBin 要求）。"""
+    triple = _target_triple()
+    full = f"{name}-{triple}"
+    print(f"\n=== 打包 {name} (-> {full}{EXT}) ===")
     BINARIES.mkdir(parents=True, exist_ok=True)
-    out = BINARIES / f"{name}{EXT}"
+    out = BINARIES / f"{full}{EXT}"
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
-        "--name", name,
+        "--name", full,
         "--distpath", str(BINARIES),
         "--workpath", str(BACKEND / "build" / name),
         "--specpath", str(BACKEND / "build" / name),
@@ -100,7 +95,6 @@ def build_one(entry: str, name: str) -> None:
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))
     print(f"产出: {out}")
-    _link_target_triple(out)
 
 
 def main() -> None:
