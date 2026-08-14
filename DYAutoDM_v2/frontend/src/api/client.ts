@@ -1,0 +1,220 @@
+/**
+ * API 客户端
+ *
+ * 通过 fetch 调用 FastAPI 后端（http://127.0.0.1:8000）。
+ * 协议类型由 openapi-typescript 从 OpenAPI schema 自动生成：
+ *   npm run gen:api
+ *
+ * 迁移自原 DY_Spider_base/web/framework.js 的 ApiBridge，
+ * 调用方式从 `await ApiBridge.xxx()` 改为 `await api.xxx()`。
+ *
+ * Tauri 模式下，首次请求前会自动拉起 backend sidecar 并等待就绪；
+ * 浏览器开发模式下由开发者手动运行 `py backend/main.py`。
+ */
+import { ensureBackendReady, BACKEND_BASE } from "./sidecar";
+
+// 后端地址：Tauri 模式与浏览器模式都用 127.0.0.1:8000
+const BASE = BACKEND_BASE;
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // 首次请求前确保 backend sidecar 已就绪（Tauri 模式自动拉起，浏览器模式 no-op）
+  await ensureBackendReady();
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${path} 失败 (${res.status}): ${text}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+// ===== 协议类型（待 openapi-typescript 生成替换）=====
+
+export interface BackendStatus {
+  ok: boolean;
+  running: boolean;
+  sent?: number;
+  limit?: number;
+}
+
+export interface Overview {
+  running: boolean;
+  paused?: boolean;
+  sent: number;
+  limit: number;
+  queue?: number;
+  accounts: { name: string; role: string; loggedIn: boolean }[];
+  daemons: { browser: boolean; recv: boolean };
+  browserDaemon?: { alive: boolean; signReady?: boolean };
+  recvDaemon?: { alive: boolean };
+}
+
+// ===== API 客户端 =====
+
+export const api = {
+  // ===== overview =====
+  async getBackendStatus(): Promise<BackendStatus> {
+    return request("/api/status");
+  },
+
+  async getOverview(): Promise<Overview> {
+    return request("/api/overview");
+  },
+
+  async getStats(): Promise<{ sent: number; captured: number; queue: number }> {
+    return request("/api/stats");
+  },
+
+  // ===== engine =====
+  async start(config: Record<string, unknown>): Promise<{ ok: boolean; state?: string }> {
+    return request("/api/engine/start", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+  },
+
+  async stop(): Promise<{ ok: boolean; state?: string }> {
+    return request("/api/engine/stop", { method: "POST" });
+  },
+
+  async stopSoft(): Promise<{ ok: boolean; state?: string }> {
+    return request("/api/engine/stop-soft", { method: "POST" });
+  },
+
+  async pause(): Promise<{ ok: boolean; state?: string }> {
+    return request("/api/engine/pause", { method: "POST" });
+  },
+
+  async resume(): Promise<{ ok: boolean; state?: string }> {
+    return request("/api/engine/resume", { method: "POST" });
+  },
+
+  // ===== accounts =====
+  async getAccounts(): Promise<unknown[]> {
+    return request("/api/accounts");
+  },
+
+  async checkAccount(name: string): Promise<unknown> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/check`, {
+      method: "POST",
+    });
+  },
+
+  async scanLogin(name: string): Promise<{ ok: boolean; msg: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/scan`, {
+      method: "POST",
+    });
+  },
+
+  async scanStatus(name: string): Promise<{ name: string; done: boolean; loggedIn: boolean }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/scan-status`);
+  },
+
+  async setRole(name: string, role: string): Promise<{ ok: boolean; name: string; role: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/role`, {
+      method: "POST",
+      body: JSON.stringify({ role }),
+    });
+  },
+
+  async addAccount(name: string): Promise<{ ok: boolean; name: string }> {
+    return request("/api/accounts", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  async removeAccount(name: string): Promise<{ ok: boolean; name: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+  },
+
+  // ===== live =====
+  async getStream(): Promise<unknown> {
+    return request("/api/live/stream");
+  },
+
+  async sendDanmaku(content: string): Promise<{ ok: boolean; content: string }> {
+    return request("/api/live/danmaku", {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+  },
+
+  async setDmTemplate(template: string): Promise<{ ok: boolean }> {
+    return request("/api/live/dm-template", {
+      method: "POST",
+      body: JSON.stringify({ template }),
+    });
+  },
+
+  // ===== messages =====
+  async getConversations(account: string): Promise<unknown> {
+    return request(`/api/messages/conversations?account=${encodeURIComponent(account)}`);
+  },
+
+  async getConversation(account: string, convId: string): Promise<unknown> {
+    return request(
+      `/api/messages/conversation?account=${encodeURIComponent(account)}&conv_id=${encodeURIComponent(convId)}`,
+    );
+  },
+
+  async sendDm(account: string, convId: string, text: string): Promise<{ ok: boolean }> {
+    return request("/api/messages/send", {
+      method: "POST",
+      body: JSON.stringify({ account, conv_id: convId, text }),
+    });
+  },
+
+  // ===== tasks =====
+  async getTasks(): Promise<unknown> {
+    return request("/api/tasks");
+  },
+
+  async saveTaskConfig(config: Record<string, unknown>): Promise<{ ok: boolean }> {
+    return request("/api/tasks/config", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+  },
+
+  async saveDmPool(items: string[]): Promise<{ ok: boolean; count: number }> {
+    return request("/api/tasks/dm-pool", {
+      method: "POST",
+      body: JSON.stringify(items),
+    });
+  },
+
+  // ===== settings =====
+  async getConfig(): Promise<{ ok: boolean; config: Record<string, unknown> }> {
+    return request("/api/settings");
+  },
+
+  async saveConfig(config: Record<string, unknown>): Promise<{ ok: boolean }> {
+    return request("/api/settings", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+  },
+};
+
+// ===== 页面组件统一 Props 类型（1:1 对应旧版 app.js 传给页面的 props）=====
+
+export interface PageProps {
+  /** toast 提示 */
+  push: (msg: string) => void;
+  /** API 客户端 */
+  api: typeof api;
+  /** 总览数据（3s 轮询） */
+  overview?: Overview | null;
+  /** 后端是否已连接 */
+  ready?: boolean;
+  /** 跳转私信页并预填文本 */
+  goMsg?: (name: string, text?: string) => void;
+  /** 私信页接收的预填消息 */
+  goDm?: { name: string; text: string } | null;
+}
+

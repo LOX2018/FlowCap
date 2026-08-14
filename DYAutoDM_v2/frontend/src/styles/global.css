@@ -1,11 +1,8 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>抖音数据控制台 · Douyin Console</title>
-<link rel="icon" href="data:," />
-<style>
+/**
+ * 全局样式 —— 1:1 迁移自 DY_Spider_base/web/index.html 的 <style> 块。
+ * class 命名与旧版完全一致，组件结构与原版对应。
+ * oklch 色彩系统 + grid 布局 + 动画，现代浏览器原生支持。
+ */
 :root {
   --bg: oklch(15.5% 0.012 245);
   --surface: oklch(19.5% 0.016 245);
@@ -418,22 +415,3 @@ input, select, textarea { font: inherit; color: inherit; }
   .review-stats-row .stat { min-width: 100% !important; }
   .overlay-body > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
 }
-</style>
-</head>
-<body>
-<div id="root"></div>
-
-<script crossorigin src="vendor/react.production.min.js"></script>
-<script crossorigin src="vendor/react-dom.production.min.js"></script>
-<script src="vendor/framer-motion.js"></script>
-
-<script src="framework.js"></script>
-<script src="pages/overview.js"></script>
-<script src="pages/crawl.js"></script>
-<script src="pages/live.js"></script>
-<script src="pages/messages.js"></script>
-<script src="pages/accounts.js"></script>
-<script src="pages/tasks.js"></script>
-<script src="pages/settings.js"></script>
-<script src="app.js"></script>
-</script>

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Account Card Narrow 2-Column Test</title>
+<style>
+:root {
+  --bg: oklch(15.5% 0.012 245);
+  --surface: oklch(19.5% 0.016 245);
+  --surface-2: oklch(23% 0.018 245);
+  --fg: oklch(93% 0.008 245);
+  --muted: oklch(67% 0.02 245);
+  --border: oklch(28% 0.02 245);
+  --accent: oklch(76% 0.16 145);
+  --ok: oklch(74% 0.15 150);
+  --warn: oklch(79% 0.14 85);
+  --danger: oklch(69% 0.19 25);
+  --font-mono: 'JetBrains Mono', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; padding: 24px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.acct-header { display: flex; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
+.acct-header .info { flex: 1; min-width: 0; }
+.acct-header .nm { font-size: 15px; font-weight: 600; }
+.acct-header .uid { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+/* Force 2-column layout even at narrow widths to test equal scaling */
+.acct-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; }
+.acct-section { padding: 16px; min-width: 0; overflow: hidden; }
+.acct-section:nth-child(-n+2) { border-right: 1px solid var(--border); }
+.acct-section:nth-child(odd) { border-bottom: 1px solid var(--border); }
+.acct-section h4 { font-size: 11.5px; color: var(--muted); letter-spacing: 0.06em; margin-bottom: 10px; text-transform: uppercase; }
+
+.acct-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: 13px; }
+.acct-row .k { color: var(--muted); flex: none; }
+.acct-row .v { font-family: var(--font-mono); font-size: 12.5px; text-align: right; }
+.acct-log-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.acct-log-cell { padding: 8px 10px; background: var(--bg); border-radius: 7px; }
+.acct-log-cell .lc-label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+.acct-log-cell .lc-val { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+
+.pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--ok); color: #000; }
+.btn { padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); font-size: 12px; cursor: pointer; }
+
+.fp-card { padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; }
+.fp-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.fp-env { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 12px; }
+.fp-env dt { color: var(--muted); }
+.fp-env dd { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+
+<div id="vp" style="color:var(--muted); font-size:12px; text-align:center; margin-bottom:12px;"></div>
+<script>function w(){document.getElementById('vp').textContent='card: '+document.querySelector('.acct-card').getBoundingClientRect().width.toFixed(0)+'px';}window.addEventListener('load',w);window.addEventListener('resize',w);</script>
+
+<div class="card acct-card" style="width: 720px; margin: 0 auto;">
+  <div class="acct-header">
+    <div class="info">
+      <div class="nm">默认账号 <span class="pill">凭证有效</span></div>
+      <div class="uid">UID 316276709626638 · 上次校验 刚刚</div>
+    </div>
+  </div>
+  <div class="acct-body">
+    <div class="acct-section" style="grid-column:1; grid-row:1;">
+      <h4>守护服务</h4>
+      <div class="acct-row"><span class="k">凭证守护</span><span class="v"><span class="pill">运行中</span> <button class="btn">停止</button> :10002</span></div>
+      <div class="acct-row"><span class="k">私信守护</span><span class="v"><span class="pill">运行中</span> <button class="btn">停止</button> :10002</span></div>
+    </div>
+    <div class="acct-section" style="grid-column:1; grid-row:2;">
+      <h4>上次运行日志</h4>
+      <div class="acct-row"><span class="k">直播间</span><span class="v">—</span></div>
+      <div class="acct-row"><span class="k">运行时间</span><span class="v">—</span></div>
+      <div class="acct-row"><span class="k">运行时长</span><span class="v">—</span></div>
+      <div class="acct-row"><span class="k">累计运行</span><span class="v">0 次</span></div>
+      <div class="acct-log-grid">
+        <div class="acct-log-cell"><div class="lc-label">捕获评论</div><div class="lc-val">0</div></div>
+        <div class="acct-log-cell"><div class="lc-label">发送私信</div><div class="lc-val" style="color:var(--accent)">0</div></div>
+        <div class="acct-log-cell"><div class="lc-label">下播私信</div><div class="lc-val" style="color:var(--warn)">0</div></div>
+        <div class="acct-log-cell"><div class="lc-label">成功</div><div class="lc-val" style="color:var(--ok)">0</div></div>
+        <div class="acct-log-cell"><div class="lc-label">失败</div><div class="lc-val" style="color:var(--danger)">0</div></div>
+      </div>
+    </div>
+    <div class="acct-section" style="grid-column:2; grid-row:1;">
+      <h4>引擎校验</h4>
+      <div style="display:flex; align-items:stretch; gap:10px;">
+        <div style="flex:1; display:grid; gap:10px;">
+          <div style="padding:10px 12px; background:var(--bg); border-radius:8px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;"><strong style="font-size:13px;">wp 引擎</strong> <span class="pill">未运行</span></div>
+            <div style="font-size:11.5px; color:var(--muted);">detail1</div>
+          </div>
+          <div style="padding:10px 12px; background:var(--bg); border-radius:8px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;"><strong style="font-size:13px;">私信引擎</strong> <span class="pill">待校验</span></div>
+            <div style="font-size:11.5px; color:var(--muted);">detail2</div>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; justify-content:center; align-items:stretch; min-width:96px;">
+          <button class="btn" style="height:100%;">引擎校验</button>
+        </div>
+      </div>
+    </div>
+    <div class="acct-section" style="grid-column:2; grid-row:2;">
+      <h4>关联指纹浏览器</h4>
+      <div class="fp-card">
+        <div class="fp-header"><strong>BitBrowser · Profile #3</strong> <span class="pill">运行中</span></div>
+        <dl class="fp-env">
+          <dt>系统</dt><dd>Windows 11</dd>
+          <dt>代理</dt><dd>直连</dd>
+          <dt>分辨率</dt><dd>1920×1080</dd>
+          <dt>UA</dt><dd style="font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;">Chrome 126.0.6478.126</dd>
+          <dt>WebRTC</dt><dd>替换</dd>
+          <dt>时区</dt><dd>Asia/Shanghai</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

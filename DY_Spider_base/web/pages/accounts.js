@@ -446,8 +446,7 @@ function Accounts({
     className: "acct-section",
     style: {
       gridColumn: '1',
-      gridRow: '1',
-      borderBottom: '1px solid var(--border)'
+      gridRow: '1'
     }
   }, React.createElement("h4", null, "守护服务"), React.createElement("div", {
     className: "acct-row",

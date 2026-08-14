@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# Build artifacts
+dist/
+build/
+target/
+*.exe
+*.app
+*.dll
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/*.exe
+src-tauri/binaries/*.app
+
+# Frontend
+frontend/dist/
+frontend/node_modules/
+
+# Python sidecar
+backend/dist/
+backend/build/
+backend/*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# PyInstaller
+*.manifest
+
+# Local data
+accounts_data/
+stats_export/
+vb_profile_*/
+pw_profile_*/
