@@ -13,11 +13,13 @@ router = APIRouter()
 @router.post("/start")
 async def start_engine(request: Request, config: TaskConfig):
     adm: AutoDM = request.app.state.adm
+    # 把前端别名归一到规范字段
+    cfg = config.resolved()
     # 空直播间链接属于不合法的启动参数，应返回结构化 400 而非 500 崩溃
-    if not config.live_url or not config.live_url.strip():
+    if not cfg.live_url or not cfg.live_url.strip():
         raise HTTPException(400, "live_url 不能为空（需提供直播间链接或房间号）")
     try:
-        await adm.start(config)
+        await adm.start(cfg)
         return {"ok": True, "state": adm.state.value}
     except Exception as e:
         raise HTTPException(500, f"启动失败: {e}")

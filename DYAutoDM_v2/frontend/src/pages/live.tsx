@@ -28,6 +28,23 @@ const DM_META: Record<DmStatus, [string, PillColor]> = {
   fail: ["发送失败", "danger"],
 };
 
+/** 解析延迟抖动字符串：'50,120'/'50-120'/'50~120' -> [50,120]；'60' -> [60,60] */
+function parseDelayRange(raw: string): number[] {
+  const s = (raw || "").trim();
+  if (!s) return [40, 65];
+  const m = s.split(/[,~\-\s]+/);
+  if (m.length >= 2) {
+    const lo = parseInt(m[0], 10);
+    const hi = parseInt(m[1], 10);
+    if (!isNaN(lo) && !isNaN(hi)) {
+      return lo > hi ? [hi, lo] : [lo, hi];
+    }
+  }
+  const v = parseInt(s, 10);
+  if (!isNaN(v)) return [v, v];
+  return [40, 65];
+}
+
 interface LiveMsg {
   uid: string;
   nickname: string;
@@ -562,14 +579,14 @@ export default function LivePage(props: PageProps) {
                     disabled={running}
                     onClick={() => {
                       const cfg = {
-                        liveUrl: room,
-                        maxTarget: parseInt(dmLimit, 10) || 9999,
+                        live_url: room,
+                        max_target: parseInt(dmLimit, 10) || 9999,
                         interval: parseFloat(dmInterval) || 60,
-                        delay: dmJitter,
-                        dmPool: dmTemplates
+                        delay_range: parseDelayRange(dmJitter),
+                        dm_pool: dmTemplates
                           .filter((t) => t.text && t.text.trim())
-                          .map((t) => ({ text: t.text.trim(), enabled: t.enabled })),
-                        forceRescan: forceRescan,
+                          .map((t) => t.text.trim()),
+                        force_rescan: forceRescan,
                       };
                       api
                         .start(cfg)

@@ -8,6 +8,7 @@
 - 3s 轮询 → WebSocket 推送
 """
 from contextlib import asynccontextmanager
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
@@ -51,6 +52,23 @@ app.include_router(live.router, prefix="/api/live", tags=["live"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
+
+# 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
+logger.remove()
+logger.add(
+    "logs/run_{time:YYYYMMDD_HHMMSS}.log",
+    level="INFO",
+    rotation="20 MB",
+    retention=5,
+    encoding="utf-8",
+    format="{time:HH:mm:ss} | {level: <8} | {message}",
+)
+logger.add(
+    sys.stderr,
+    level="INFO",
+    colorize=True,
+    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+)
 
 
 @app.get("/api/status")
