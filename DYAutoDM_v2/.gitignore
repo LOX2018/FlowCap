@@ -52,3 +52,9 @@ accounts_data/
 stats_export/
 vb_profile_*/
 pw_profile_*/
+
+# Debug / temporary artifacts
+_*.txt
+_unittest_out.txt
+_fe_deps.txt
+*.txt.tmp
