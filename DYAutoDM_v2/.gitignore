@@ -24,6 +24,10 @@ src-tauri/binaries/*.app
 # Frontend
 frontend/dist/
 frontend/node_modules/
+*.tsbuildinfo
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
 # Python sidecar
 backend/dist/

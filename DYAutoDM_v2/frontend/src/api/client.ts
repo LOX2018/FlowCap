@@ -109,6 +109,13 @@ export const api = {
     });
   },
 
+  /** 打开该账号绑定的指纹浏览器窗口（先停守护释放 profile 锁再弹窗） */
+  async openFingerprintBrowser(name: string): Promise<{ ok: boolean; msg: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/open-browser`, {
+      method: "POST",
+    });
+  },
+
   async scanStatus(name: string): Promise<{ name: string; done: boolean; loggedIn: boolean }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/scan-status`);
   },

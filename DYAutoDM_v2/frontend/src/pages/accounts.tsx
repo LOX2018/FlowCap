@@ -225,6 +225,8 @@ export default function AccountsPage(props: PageProps) {
   const [batchMode, setBatchMode] = useState(false);
   const [batchSel, setBatchSel] = useState<Set<string>>(() => new Set());
   const [scanning, setScanning] = useState<{ name: string; seq: number } | null>(null);
+  // 正在打开指纹浏览器的账号（防止重复点击）
+  const [busy, setBusy] = useState<string | null>(null);
 
   // 账号列表 8s 轮询（替代旧版 setInterval；数据始终经 mapAcct 映射）
   const { data: rawAccounts, isLoading, refetch } = useQuery({
@@ -421,6 +423,33 @@ export default function AccountsPage(props: PageProps) {
         push("凭证守护已启动");
       })
       .catch((e: unknown) => push("启动失败: " + errMsg(e)));
+  };
+
+  // 打开该账号绑定的指纹浏览器窗口（安全流程：先停守护释放 profile 锁，再弹窗）
+  const onOpenFingerprint = (name: string) => {
+    if (busy) return;
+    setBusy(name);
+    api
+      .openFingerprintBrowser(name)
+      .then((d) => {
+        if (d && d.ok) {
+          push(d.msg || `已打开指纹浏览器 · ${name}`);
+          // 守护被停止后乐观更新卡片状态（稍后轮询也会自动刷新）
+          qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
+            (old || []).map((x) =>
+              x.name === name ? { ...x, browserDaemonAlive: false } : x,
+            ),
+          );
+        } else {
+          push("打开失败: " + ((d && d.msg) || "未知错误"));
+        }
+      })
+      .catch((e: unknown) => push("打开失败: " + errMsg(e)))
+      .finally(() => {
+        // 弹窗是后台线程，立即释放按钮；实际扫码进度由 scan-status 轮询覆盖
+        setBusy(null);
+        refetch();
+      });
   };
 
   const toggleRecvDaemon = (a: FmtAccount) => {
@@ -880,6 +909,19 @@ export default function AccountsPage(props: PageProps) {
                         <dt>时区</dt>
                         <dd>{a.fp.timezone}</dd>
                       </dl>
+                      <div className="fp-actions">
+                        <button
+                          className="btn sm"
+                          data-od-id="open-fingerprint"
+                          disabled={busy === a.name}
+                          onClick={() => onOpenFingerprint(a.name)}
+                        >
+                          {busy === a.name ? "打开中…" : "打开指纹浏览器"}
+                        </button>
+                        <span className="muted" style={{ fontSize: 11 }}>
+                          先停守护释放浏览器，操作后请重启守护
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>

@@ -8,6 +8,8 @@
 """
 import os
 import threading
+import time
+import urllib.request
 
 from fastapi import APIRouter, Request, HTTPException
 from loguru import logger
@@ -106,6 +108,51 @@ async def check_account(name: str) -> CheckAccountResponse:
     """引擎校验（重量级，按需触发）"""
     # TODO: 迁移 verify_account(dm_loopback=True) 逻辑
     return CheckAccountResponse(name=name)
+
+
+def _quit_browser_daemon(name: str) -> bool:
+    """向该账号凭证守护端口发 /quit，释放 profile 锁（避免与弹窗的 Chromium 抢锁）。
+
+    返回 True 表示守护原本在跑且已发送停止请求；False 表示守护未运行。
+    """
+    bport = acct_core.browser_daemon_port(name)
+    if not acct_core._port_open(bport, timeout=0.3):
+        return False
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/quit", method="POST"
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception as e:
+        logger.warning(f"[open-browser] 停止守护 {name} 失败（可能已退出）: {e}")
+    # 等待 profile 锁释放（Chromium 退出需要一点时间）
+    time.sleep(1.5)
+    return True
+
+
+@router.post("/{name}/open-browser")
+async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
+    """打开该账号绑定的指纹浏览器窗口（先停守护释放 profile 锁，再弹窗）。
+
+    安全流程：点开指纹浏览器前必须先停掉 browser_daemon，否则两者会争抢
+    同一个 Chromium profile 锁导致两边都起不来。停止后弹窗扫码，用户操作完
+    关闭浏览器后由 UI 重新启动守护即可恢复凭证保活。
+
+    注意：此接口仅负责“弹窗”，守护的重启由前端 toggleBrowserDaemon 触发。
+    """
+    env_path = acct_core.env_path_of(name)
+    if not os.path.exists(os.path.dirname(env_path)):
+        return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
+    prev = _scan_state.get(name)
+    if prev and prev.get("running"):
+        return ScanLoginResponse(ok=True, msg=f"账号 {name} 指纹浏览器已打开，请完成操作")
+    # 先停守护释放 profile 锁
+    daemon_was_alive = _quit_browser_daemon(name)
+    t = threading.Thread(target=_do_scan, args=(name,), daemon=True)
+    t.start()
+    hint = "（已先停止凭证守护释放浏览器，操作完后请在卡片重新启动守护）" if daemon_was_alive \
+        else "（该账号守护未运行，直接打开）"
+    return ScanLoginResponse(ok=True, msg=f"已弹出指纹浏览器，请操作账号 {name}{hint}")
 
 
 @router.post("/{name}/scan")
