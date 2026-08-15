@@ -62,3 +62,8 @@ _*.txt
 _unittest_out.txt
 _fe_deps.txt
 *.txt.tmp
+# 临时调试脚本/日志（不入库）
+_force_rebuild.ps1
+_kill_clean.ps1
+_verify_exe.py
+日志.md

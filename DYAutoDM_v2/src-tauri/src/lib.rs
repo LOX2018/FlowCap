@@ -9,6 +9,7 @@
 mod sidecar;
 
 use std::sync::Mutex;
+use tauri::Manager;
 
 use sidecar::{SidecarHandle, SidecarManager};
 
@@ -171,13 +172,14 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 log::info!("窗口关闭请求，清理所有 sidecar 进程");
                 let app = window.app_handle();
-                if let Ok(state) = app.state::<AppState>().backend.lock() {
-                    if let Some(h) = state.as_ref() {
+                if let Ok(mut state) = app.state::<AppState>().backend.lock() {
+                    if let Some(h) = state.take() {
                         let _ = h.kill();
                     }
                 }
                 if let Ok(mut guard) = app.state::<AppState>().daemons.lock() {
-                    for h in guard.drain(..) {
+                    let handles: Vec<SidecarHandle> = guard.drain(..).collect();
+                    for h in handles {
                         let _ = h.kill();
                     }
                 }

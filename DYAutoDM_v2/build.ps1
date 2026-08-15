@@ -17,8 +17,9 @@ try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ROOT
 
-# 1) 读取版本号
-$pkg = Get-Content -Raw -Path "$ROOT\package.json" | ConvertFrom-Json
+# 1) 读取版本号（UTF-8 读取，避免中文 description 导致 ConvertFrom-Json 失败）
+$pkgText = Get-Content -Raw -Path "$ROOT\package.json" -Encoding UTF8
+$pkg = $pkgText | ConvertFrom-Json
 $VERSION = $pkg.version
 Write-Host "==> 当前版本: $VERSION" -ForegroundColor Cyan
 
