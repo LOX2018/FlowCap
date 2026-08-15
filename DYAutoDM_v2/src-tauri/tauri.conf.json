@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "抖音直播间自动私信 · 控制台",
-        "width": 1440,
-        "height": 900,
+        "width": 1280,
+        "height": 720,
         "minWidth": 1024,
         "minHeight": 680,
         "backgroundColor": "#0f1320",
