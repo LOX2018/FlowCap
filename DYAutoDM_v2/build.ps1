@@ -38,11 +38,15 @@ $NEW_VERSION = Bump-Version $VERSION
 Write-Host "==> 递增版本: $VERSION -> $NEW_VERSION" -ForegroundColor Green
 
 # 1.2) 写回 4 个版本文件
+# 注意：PowerShell `-replace` 的反向引用必须用单引号 '...$1...' 包裹，
+# 否则 `` `$1 `` 会被反引号转义成字面量 $1，导致替换结果变成 "$1<newVal>" 而破坏文件。
+# 另外 Set-Content -Encoding UTF8 在 PS5.1 会写入 BOM，Node 24 拒绝带 BOM 的
+# package.json，故用 [System.IO.File]::WriteAllText（UTF-8 无 BOM）写回。
 function Set-VersionInFile([string]$path, [string]$pattern, [string]$newVal) {
     if (-not (Test-Path $path)) { Write-Host "[WARN] 版本文件不存在: $path" -ForegroundColor Yellow; return }
     $content = Get-Content -Raw -Path $path -Encoding UTF8
-    $content = $content -replace $pattern, "`$1$newVal"
-    Set-Content -Path $path -Value $content -Encoding UTF8 -NoNewline
+    $content = $content -replace $pattern, ('$1' + $newVal)
+    [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 # package.json / frontend/package.json: "version": "x.y.z"

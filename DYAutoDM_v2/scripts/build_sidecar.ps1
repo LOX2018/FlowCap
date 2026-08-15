@@ -7,8 +7,16 @@
 
 $ErrorActionPreference = "Stop"
 
-# 绝对路径（不依赖 Resolve-Path / $PSScriptRoot 嵌套解析）
-$root = "c:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
+# 用脚本自身所在目录定位项目根，避免嵌套调用时相对路径错位
+if ($PSScriptRoot -and (Test-Path $PSScriptRoot)) {
+    $root = $PSScriptRoot | Split-Path -Parent
+} else {
+    $root = "c:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
+}
+if (-not (Test-Path $root)) {
+    Write-Host "[ERROR] 项目根不存在: $root" -ForegroundColor Red
+    exit 1
+}
 $binDir = Join-Path $root "src-tauri\binaries"
 
 # 本机真实 Python（绝对路径，避免 Store 占位符）
@@ -18,6 +26,7 @@ if (-not (Test-Path $PY)) {
     exit 1
 }
 
+Write-Host "==> 项目根: $root" -ForegroundColor Cyan
 Write-Host "==> 使用 Python: $PY" -ForegroundColor Cyan
 
 # 清理旧 sidecar 产物（PowerShell Remove-Item 不经 Python os.remove 的
