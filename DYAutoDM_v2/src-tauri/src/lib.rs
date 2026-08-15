@@ -166,6 +166,24 @@ pub fn run() {
             }
             Ok(())
         })
+        // 前端窗口关闭时联动关闭所有 sidecar（后端 + 账号守护），避免孤儿进程
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                log::info!("窗口关闭请求，清理所有 sidecar 进程");
+                let app = window.app_handle();
+                if let Ok(state) = app.state::<AppState>().backend.lock() {
+                    if let Some(h) = state.as_ref() {
+                        let _ = h.kill();
+                    }
+                }
+                if let Ok(mut guard) = app.state::<AppState>().daemons.lock() {
+                    for h in guard.drain(..) {
+                        let _ = h.kill();
+                    }
+                }
+                log::info!("sidecar 进程已全部关闭");
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             backend_status,
             start_backend,
