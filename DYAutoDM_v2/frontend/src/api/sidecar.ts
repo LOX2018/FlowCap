@@ -72,9 +72,54 @@ export async function startBrowserDaemon(account: string, port: number): Promise
   return invoke<string>("start_browser_daemon", { account, port });
 }
 
+/** 停止指定账号的凭证守护进程
+ *
+ * 优先通过后端 HTTP 向守护自身的 /quit 端口发停止请求（守护会自行 os._exit，
+ * 不依赖 Rust SidecarManager 的进程 label 精确匹配，避免“停止失败”）。
+ * 后端不可达时再退回 Rust kill 兜底。
+ */
+export async function stopBrowserDaemon(account: string, port: number): Promise<void> {
+  try {
+    const res = await fetch(`${BACKEND_BASE}/api/accounts/${encodeURIComponent(account)}/stop-browser`, {
+      method: "POST",
+    });
+    if (res.ok) return;
+  } catch {
+    // 后端不可达，退回 Rust kill
+  }
+  try {
+    return await invoke<void>("stop_browser_daemon", { account, port });
+  } catch {
+    // ignore
+  }
+}
+
 /** 启动私信接收守护进程（支持多账号） */
 export async function startRecvDaemon(accounts: string[], port: number): Promise<string> {
   return invoke<string>("start_recv_daemon", { accounts, port });
+}
+
+/** 停止私信接收守护进程
+ *
+ * 优先通过后端 HTTP 向守护自身的 /quit 端口发停止请求（守护会自行 os._exit，
+ * 不依赖 Rust SidecarManager 的进程 label 精确匹配，避免“停止失败”）。
+ * 后端不可达时再退回 Rust kill 兜底。
+ */
+export async function stopRecvDaemon(accounts: string[], port: number): Promise<void> {
+  const account = accounts && accounts.length ? accounts[0] : "默认账号";
+  try {
+    const res = await fetch(`${BACKEND_BASE}/api/accounts/${encodeURIComponent(account)}/stop-recv`, {
+      method: "POST",
+    });
+    if (res.ok) return;
+  } catch {
+    // 后端不可达，退回 Rust kill
+  }
+  try {
+    return await invoke<void>("stop_recv_daemon", { accounts, port });
+  } catch {
+    // ignore
+  }
 }
 
 /** 列出所有存活守护进程标签 */

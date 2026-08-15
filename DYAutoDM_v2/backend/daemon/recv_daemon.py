@@ -47,6 +47,17 @@ from vbrowser import app_root
 
 _ROOT = app_root()
 
+# 日志同步输出到 stderr（enqueue=True 避免 Windows GBK 控制台中文编码失败中断主线程），
+# 这样 Tauri Rust 侧能捕获到守护进程的日志，也会经由 backend 的日志桥接展示到前端「运行日志」。
+logger.remove()
+logger.add(
+    sys.stderr,
+    level="INFO",
+    colorize=False,
+    enqueue=True,
+    format="{time:HH:mm:ss} | {level: <8} | {message}",
+)
+
 app = FastAPI(title="recv-daemon")
 
 # 全局状态

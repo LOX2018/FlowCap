@@ -49,6 +49,24 @@ def _do_scan(name: str):
         st["running"] = False
 
 
+def _wait_scan_error(name: str, timeout: float = 4.0) -> str:
+    """等待扫码线程：若很快以失败结束（如指纹内核缺失），返回错误文案，否则返回空串。
+
+    浏览器弹窗是异步的，enrich_auth 在真正弹窗前若因环境错误（缺 vb_chromium 内核、
+    参数错误等）会立即抛异常，此时前端应拿到 ok=False 而非永远 ok=True 却看不到窗口。
+    """
+    import time as _t
+    end = _t.time() + timeout
+    while _t.time() < end:
+        st = _scan_state.get(name)
+        if st and st.get("done") and st.get("error"):
+            return st["error"]
+        if st and not st.get("running") and st.get("done"):
+            break
+        _t.sleep(0.2)
+    return ""
+
+
 def _to_raw_account(name: str) -> dict:
     """把后端真实账号状态映射为前端 RawAccount 兼容结构。
 
@@ -150,6 +168,10 @@ async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
     daemon_was_alive = _quit_browser_daemon(name)
     t = threading.Thread(target=_do_scan, args=(name,), daemon=True)
     t.start()
+    # 捕获立即发生的失败（如指纹内核缺失），否则前端永远 ok=True 却看不到浏览器
+    err = _wait_scan_error(name)
+    if err:
+        return ScanLoginResponse(ok=False, msg=f"打开指纹浏览器失败: {err}")
     hint = "（已先停止凭证守护释放浏览器，操作完后请在卡片重新启动守护）" if daemon_was_alive \
         else "（该账号守护未运行，直接打开）"
     return ScanLoginResponse(ok=True, msg=f"已弹出指纹浏览器，请操作账号 {name}{hint}")
@@ -170,6 +192,9 @@ async def scan_login(name: str) -> ScanLoginResponse:
         return ScanLoginResponse(ok=True, msg=f"账号 {name} 已在扫码中，请完成扫码")
     t = threading.Thread(target=_do_scan, args=(name,), daemon=True)
     t.start()
+    err = _wait_scan_error(name)
+    if err:
+        return ScanLoginResponse(ok=False, msg=f"扫码登录失败: {err}")
     return ScanLoginResponse(ok=True, msg=f"已弹出指纹浏览器，请扫码登录账号 {name}")
 
 
@@ -194,9 +219,60 @@ async def set_role(name: str, body: SetRoleRequest):
 
 @router.post("")
 async def add_account(body: AddAccountRequest):
-    return {"ok": True, "name": body.name}
+    try:
+        acct_core.add_account(body.name)
+        return {"ok": True, "name": body.name}
+    except ValueError as e:
+        logger.warning(f"[accounts] add_account 失败: {e}")
+        return {"ok": False, "error": str(e), "name": body.name}
 
 
 @router.delete("/{name}")
 async def remove_account(name: str):
-    return {"ok": True, "name": name}
+    try:
+        acct_core.remove_account(name)
+        return {"ok": True, "name": name}
+    except ValueError as e:
+        logger.warning(f"[accounts] remove_account 失败: {e}")
+        return {"ok": False, "error": str(e), "name": name}
+
+
+def _quit_daemon_http(port: int) -> bool:
+    """向守护 HTTP /quit 端口发停止请求，守护自身会 os._exit(0)。
+
+    返回 True 表示请求成功送达（守护即将退出），False 表示端口不可达（守护未运行）。
+    这是停止守护的【首选】方式，不依赖 Rust SidecarManager 的进程 label 精确匹配。
+    """
+    if not port:
+        return False
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/quit", data=b"", method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            resp.read()
+        return True
+    except Exception:
+        return False
+
+
+@router.post("/{name}/stop-browser")
+async def stop_browser_daemon(name: str):
+    """停止该账号的凭证守护（经由守护自身 HTTP /quit 端口，不依赖 Rust label 匹配）。"""
+    bport = acct_core.browser_daemon_port(name)
+    if not acct_core._port_open(bport, timeout=0.3):
+        return {"ok": True, "wasRunning": False, "msg": f"凭证守护 {name} 未运行"}
+    ok = _quit_daemon_http(bport)
+    return {"ok": True, "wasRunning": True, "stopped": ok,
+            "msg": f"已向凭证守护 {name} 发送停止请求"}
+
+
+@router.post("/{name}/stop-recv")
+async def stop_recv_daemon(name: str):
+    """停止该账号的私信守护（经由守护自身 HTTP /quit 端口，不依赖 Rust label 匹配）。"""
+    rport = acct_core.recv_daemon_port(name)
+    if not acct_core._port_open(rport, timeout=0.3):
+        return {"ok": True, "wasRunning": False, "msg": f"私信守护 {name} 未运行"}
+    ok = _quit_daemon_http(rport)
+    return {"ok": True, "wasRunning": True, "stopped": ok,
+            "msg": f"已向私信守护 {name} 发送停止请求"}
