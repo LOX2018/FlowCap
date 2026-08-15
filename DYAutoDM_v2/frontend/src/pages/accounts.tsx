@@ -16,7 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageProps } from "../api/client";
 import { Avatar, Dot, Pill, TABS, hue, tick } from "../components/ui";
-import { startBrowserDaemon, startRecvDaemon } from "../api/sidecar";
+import { startBrowserDaemon, stopBrowserDaemon, startRecvDaemon, stopRecvDaemon } from "../api/sidecar";
 
 // ===== 类型定义 =====
 
@@ -227,6 +227,8 @@ export default function AccountsPage(props: PageProps) {
   const [scanning, setScanning] = useState<{ name: string; seq: number } | null>(null);
   // 正在打开指纹浏览器的账号（防止重复点击）
   const [busy, setBusy] = useState<string | null>(null);
+  // 管理面板展开状态（哪个账号的四宫格管理面板展开了）
+  const [manageOpen, setManageOpen] = useState<string | null>(null);
 
   // 账号列表 8s 轮询（替代旧版 setInterval；数据始终经 mapAcct 映射）
   const { data: rawAccounts, isLoading, refetch } = useQuery({
@@ -409,20 +411,37 @@ export default function AccountsPage(props: PageProps) {
       .catch((e: unknown) => push("新增异常: " + errMsg(e)));
   };
 
-  // 守护进程：启动走 sidecar（sidecar 暂未暴露停止接口，停止时给出反馈）
+  // 守护进程：启动/停止走 sidecar
   const toggleBrowserDaemon = (a: FmtAccount) => {
     if (a.browserDaemonAlive) {
-      push("停止凭证守护：请通过后端管理或重启 sidecar（前端暂未暴露停止接口）");
+      // 停止
+      stopBrowserDaemon(a.name, a.browserDaemonPort || 0)
+        .then(() => {
+          qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
+            (old || []).map((x) => (x.name === a.name ? { ...x, browserDaemonAlive: false } : x)),
+          );
+          push("凭证守护已停止");
+          api.addLog("SUCCESS", `凭证守护已停止 · ${a.name}`).catch(() => {});
+        })
+        .catch((e: unknown) => {
+          push("停止失败: " + errMsg(e));
+          api.addLog("ERROR", `凭证守护停止失败 · ${a.name}: ${errMsg(e)}`).catch(() => {});
+        });
       return;
     }
+    // 启动
     startBrowserDaemon(a.name, a.browserDaemonPort || 0)
       .then(() => {
         qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
           (old || []).map((x) => (x.name === a.name ? { ...x, browserDaemonAlive: true } : x)),
         );
         push("凭证守护已启动");
+        api.addLog("SUCCESS", `凭证守护已启动 · ${a.name}`).catch(() => {});
       })
-      .catch((e: unknown) => push("启动失败: " + errMsg(e)));
+      .catch((e: unknown) => {
+        push("启动失败: " + errMsg(e));
+        api.addLog("ERROR", `凭证守护启动失败 · ${a.name}: ${errMsg(e)}`).catch(() => {});
+      });
   };
 
   // 打开该账号绑定的指纹浏览器窗口（安全流程：先停守护释放 profile 锁，再弹窗）
@@ -434,6 +453,7 @@ export default function AccountsPage(props: PageProps) {
       .then((d) => {
         if (d && d.ok) {
           push(d.msg || `已打开指纹浏览器 · ${name}`);
+          api.addLog("SUCCESS", `已打开指纹浏览器 · ${name}`).catch(() => {});
           // 守护被停止后乐观更新卡片状态（稍后轮询也会自动刷新）
           qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
             (old || []).map((x) =>
@@ -442,9 +462,13 @@ export default function AccountsPage(props: PageProps) {
           );
         } else {
           push("打开失败: " + ((d && d.msg) || "未知错误"));
+          api.addLog("ERROR", `打开指纹浏览器失败 · ${name}: ${(d && d.msg) || "未知错误"}`).catch(() => {});
         }
       })
-      .catch((e: unknown) => push("打开失败: " + errMsg(e)))
+      .catch((e: unknown) => {
+        push("打开失败: " + errMsg(e));
+        api.addLog("ERROR", `打开指纹浏览器失败 · ${name}: ${errMsg(e)}`).catch(() => {});
+      })
       .finally(() => {
         // 弹窗是后台线程，立即释放按钮；实际扫码进度由 scan-status 轮询覆盖
         setBusy(null);
@@ -454,7 +478,19 @@ export default function AccountsPage(props: PageProps) {
 
   const toggleRecvDaemon = (a: FmtAccount) => {
     if (a.recvDaemonAlive) {
-      push("停止私信守护：请通过后端管理或重启 sidecar（前端暂未暴露停止接口）");
+      // 停止
+      stopRecvDaemon([a.name], a.recvDaemonPort || 0)
+        .then(() => {
+          qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
+            (old || []).map((x) => (x.name === a.name ? { ...x, recvDaemonAlive: false } : x)),
+          );
+          push("私信守护已停止");
+          api.addLog("SUCCESS", `私信守护已停止 · ${a.name}`).catch(() => {});
+        })
+        .catch((e: unknown) => {
+          push("停止失败: " + errMsg(e));
+          api.addLog("ERROR", `私信守护停止失败 · ${a.name}: ${errMsg(e)}`).catch(() => {});
+        });
       return;
     }
     startRecvDaemon([a.name], a.recvDaemonPort || 0)
@@ -463,12 +499,17 @@ export default function AccountsPage(props: PageProps) {
           (old || []).map((x) => (x.name === a.name ? { ...x, recvDaemonAlive: true } : x)),
         );
         push("私信守护已启动");
+        api.addLog("SUCCESS", `私信守护已启动 · ${a.name}`).catch(() => {});
       })
-      .catch((e: unknown) => push("启动失败: " + errMsg(e)));
+      .catch((e: unknown) => {
+        push("启动失败: " + errMsg(e));
+        api.addLog("ERROR", `私信守护启动失败 · ${a.name}: ${errMsg(e)}`).catch(() => {});
+      });
   };
 
   const runCheck = (a: FmtAccount) => {
     push("已发起账号引擎校验 · " + a.name);
+    api.addLog("INFO", `发起账号引擎校验 · ${a.name}`).catch(() => {});
     // 乐观更新：先置"校验中"，避免回环测试耗时期间按钮无反馈
     qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
       (old || []).map((x) =>
@@ -510,34 +551,47 @@ export default function AccountsPage(props: PageProps) {
               " · dm: " +
               (v.dm && v.dm.label),
           );
+          api.addLog("SUCCESS", `引擎校验完成 · ${a.name} · wp: ${v.wp && v.wp.label} · dm: ${v.dm && v.dm.label}`).catch(() => {});
         } else if (r && r.error) {
           push("引擎校验失败: " + r.error);
+          api.addLog("ERROR", `引擎校验失败 · ${a.name}: ${r.error}`).catch(() => {});
         }
         refetch();
       })
-      .catch((e: unknown) => push("引擎校验异常: " + errMsg(e)));
+      .catch((e: unknown) => {
+        push("引擎校验异常: " + errMsg(e));
+        api.addLog("ERROR", `引擎校验异常 · ${a.name}: ${errMsg(e)}`).catch(() => {});
+      });
   };
 
   const handleScanVerify = (a: FmtAccount) => {
     push("已提醒处理验证 · " + a.name + " · 请在弹出的指纹浏览器中完成验证");
+    api.addLog("INFO", `提醒处理验证 · ${a.name}`).catch(() => {});
     api
       .scanLogin(a.name)
       .then((d) => {
         const r = d as { ok?: boolean; msg?: string; error?: string };
         if (r && r.ok) {
           push(r.msg || "已为 " + a.name + " 弹出指纹浏览器");
+          api.addLog("SUCCESS", `已为 ${a.name} 弹出指纹浏览器`).catch(() => {});
           setScanning({ name: a.name, seq: Date.now() });
         } else if (r && r.error) {
           push("处理验证失败: " + r.error);
+          api.addLog("ERROR", `处理验证失败 · ${a.name}: ${r.error}`).catch(() => {});
         }
       })
-      .catch((e: unknown) => push("处理验证异常: " + errMsg(e)));
+      .catch((e: unknown) => {
+        push("处理验证异常: " + errMsg(e));
+        api.addLog("ERROR", `处理验证异常 · ${a.name}: ${errMsg(e)}`).catch(() => {});
+      });
   };
 
   // 点击卡片 = 选中该账号为监听账号（设为监测/发送角色）
   // 注意：后端 AccountRole 枚举值为 watch/send/both（见 backend/models/enums.py）
   const selectAsMonitor = (a: FmtAccount) => {
-    api.setRole(a.name, "watch").catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
+    api.setRole(a.name, "watch").then(() => {
+      api.addLog("INFO", `选中监听账号 · ${a.name}`).catch(() => {});
+    }).catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
     api.setRole(a.name, "send").catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
     push("已选中监听账号 · " + a.name);
     refetch();
@@ -675,19 +729,46 @@ export default function AccountsPage(props: PageProps) {
                   </div>
                   <div className="ops">
                     <button
+                      className={"btn sm" + (manageOpen === a.id ? " accent" : " ghost")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setManageOpen(manageOpen === a.id ? null : a.id);
+                      }}
+                      title="展开账号管理面板（指纹浏览器 / 守护 / 代理 / 凭证）"
+                    >
+                      {manageOpen === a.id ? "收起管理" : "管理"}
+                    </button>
+                    <button
                       className="btn sm ghost"
-                      onClick={() => openEdit(a)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEdit(a);
+                      }}
                       title="编辑账号信息并刷新登录凭证"
                     >
                       刷新凭证
                     </button>
-                    <button className="btn sm ghost" onClick={() => setReviewAccount(a)}>
+                    <button
+                      className="btn sm ghost"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setReviewAccount(a);
+                      }}
+                    >
                       查阅模式
                     </button>
                   </div>
                 </div>
 
-                <div className="acct-body">
+                {/* 管理面板：原卡片四板块（守护服务 / 上次运行日志 / 引擎校验 / 关联指纹浏览器） */}
+                  {manageOpen === a.id && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      transition={{ duration: 0.2 }}
+                      style={{ overflow: "hidden" }}
+                    >
+                      <div className="acct-body" onClick={(e) => e.stopPropagation()}>
                   {/* 守护服务 */}
                   <div className="acct-section" style={{ gridColumn: "1", gridRow: "1" }}>
                     <h4>守护服务</h4>
@@ -697,7 +778,7 @@ export default function AccountsPage(props: PageProps) {
                         <Pill c={a.browserDaemonAlive ? "ok" : "mute"}>
                           {a.browserDaemonAlive ? "运行中" : "未运行"}
                         </Pill>
-                        <button className="btn sm ghost" onClick={() => toggleBrowserDaemon(a)}>
+                        <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); toggleBrowserDaemon(a); }}>
                           {a.browserDaemonAlive ? "停止" : "启动"}
                         </button>
                         <span style={{ fontSize: 11, color: "var(--muted)" }}>
@@ -711,7 +792,7 @@ export default function AccountsPage(props: PageProps) {
                         <Pill c={a.recvDaemonAlive ? "ok" : "mute"}>
                           {a.recvDaemonAlive ? "运行中" : "未运行"}
                         </Pill>
-                        <button className="btn sm ghost" onClick={() => toggleRecvDaemon(a)}>
+                        <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); toggleRecvDaemon(a); }}>
                           {a.recvDaemonAlive ? "停止" : "启动"}
                         </button>
                         <span style={{ fontSize: 11, color: "var(--muted)" }}>
@@ -743,7 +824,7 @@ export default function AccountsPage(props: PageProps) {
                             rel="noopener noreferrer"
                             className="btn sm ghost"
                             style={{ height: 24, padding: "0 8px", fontSize: 11, lineHeight: 1 }}
-                            onClick={() => push("已打开直播间：" + a.lastRun.room)}
+                            onClick={(e) => { e.stopPropagation(); push("已打开直播间：" + a.lastRun.room); }}
                           >
                             前往直播间
                           </a>
@@ -814,7 +895,7 @@ export default function AccountsPage(props: PageProps) {
                           <button
                             className="btn sm danger"
                             style={{ marginTop: 8 }}
-                            onClick={() => handleScanVerify(a)}
+                            onClick={(e) => { e.stopPropagation(); handleScanVerify(a); }}
                           >
                             立即处理验证
                           </button>
@@ -838,7 +919,7 @@ export default function AccountsPage(props: PageProps) {
                           minWidth: 96,
                         }}
                       >
-                        <button className="btn sm" onClick={() => runCheck(a)}>
+                        <button className="btn sm" onClick={(e) => { e.stopPropagation(); runCheck(a); }}>
                           引擎校验
                         </button>
                       </div>
@@ -848,7 +929,15 @@ export default function AccountsPage(props: PageProps) {
                   {/* 关联指纹浏览器 */}
                   <div className="acct-section" style={{ gridColumn: "2", gridRow: "2" }}>
                     <h4>关联指纹浏览器</h4>
-                    <div className="fp-card">
+                    <div
+                      className="fp-card"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        onOpenFingerprint(a.name);
+                      }}
+                      title="双击打开指纹浏览器"
+                      style={{ cursor: "pointer" }}
+                    >
                       <div className="fp-header">
                         <Dot c={a.fp.status === "running" ? "ok" : "warn"} pulse={a.fp.status === "running"} />
                         <span className="nm">{a.fp.name}</span>
@@ -858,7 +947,8 @@ export default function AccountsPage(props: PageProps) {
                         <div style={{ flex: 1 }} />
                         <button
                           className="btn sm ghost"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             setProxyAcct(a);
                             setProxyForm({
                               type: a.fp.proxy.includes("SOCKS")
@@ -909,22 +999,11 @@ export default function AccountsPage(props: PageProps) {
                         <dt>时区</dt>
                         <dd>{a.fp.timezone}</dd>
                       </dl>
-                      <div className="fp-actions">
-                        <button
-                          className="btn sm"
-                          data-od-id="open-fingerprint"
-                          disabled={busy === a.name}
-                          onClick={() => onOpenFingerprint(a.name)}
-                        >
-                          {busy === a.name ? "打开中…" : "打开指纹浏览器"}
-                        </button>
-                        <span className="muted" style={{ fontSize: 11 }}>
-                          先停守护释放浏览器，操作后请重启守护
-                        </span>
                       </div>
-                    </div>
                   </div>
                 </div>
+                    </motion.div>
+                )}
               </div>
             ))}
       </div>

@@ -48,30 +48,17 @@ def _link_target_triple(src: Path) -> None:
 
 
 def _runtime_resources() -> list[str]:
-    """返回需要随 sidecar 一起打包的运行时资源（源码态项目根下的目录/文件）。
+    """返回需要随 sidecar 一起 --add-data 打包的运行时资源。
 
-    这些资源（指纹内核、浏览器 profile、.env、logs）按 app_root() 解析，
-    打包态 app_root() = exe 所在目录，因此必须用 --add-data 把它们收集进去，
-    否则 sidecar 运行时会因找不到 vb_chromium 而 RuntimeError（禁止回退原生 Playwright）。
+    重要：PyInstaller onefile 的 --add-data 会把资源解压到 sys._MEIPASS
+    临时目录，而 vbrowser.app_root() 在打包态返回 dirname(sys.executable)
+    （exe 旁边）。两者不一致，--add-data 的资源按 app_root() 解析不到。
+
+    因此 vb_chromium / vb_profile_* / pw_profile_dm / .env / logs 等
+    运行时资源【不应打进 sidecar】，而应放 sidecar exe 旁边（由 Tauri
+    bundle.resources 分发或 build 后手动复制）。这里返回空列表。
     """
-    items = [
-        "vb_chromium",
-        "vb_profile_default",
-        "vb_profile_dm",
-        "pw_profile_dm",
-        ".env",
-        "logs",
-    ]
-    args: list[str] = []
-    sep = ";" if platform.system() == "Windows" else ":"
-    for it in items:
-        src = ROOT / it
-        if src.exists():
-            # DEST 用 "." —— PyInstaller 会把这些目录/文件解压到 exe 所在目录（即 app_root() 打包态）
-            args += ["--add-data", f"{src}{sep}."]
-        else:
-            print(f"[warn] 运行时资源不存在，跳过: {src}")
-    return args
+    return []
 
 
 def build_one(entry: str, name: str) -> None:

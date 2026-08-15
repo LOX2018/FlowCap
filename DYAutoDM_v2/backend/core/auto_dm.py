@@ -127,11 +127,12 @@ class AutoDM:
         from auth_helper import enrich_auth
         from vbrowser import app_root
 
-        # 安全加载 .env
-        env_path = os.path.join(app_root(), ".env")
+        # 安全加载 .env（优先用传入的 env_path，未指定则退化到默认 .env）
+        if not env_path:
+            env_path = os.path.join(app_root(), ".env")
+        elif not os.path.isabs(env_path):
+            env_path = os.path.join(app_root(), env_path)
         if os.path.exists(env_path):
-            load_dotenv(env_path)
-        if env_path and env_path != os.path.join(app_root(), ".env"):
             load_dotenv(env_path, override=True)
         cookies = os.getenv("DY_COOKIES", "") or ""
 
@@ -231,7 +232,7 @@ class AutoDM:
     # ------------------------------------------------------------------
     async def start(self, config: TaskConfig) -> None:
         """启动引擎"""
-        if self.state != EngineState.IDLE:
+        if self.state not in (EngineState.IDLE, EngineState.STOPPED):
             raise RuntimeError(f"当前状态 {self.state.value} 无法启动")
         self.state = EngineState.STARTING
         self.live_url = config.live_url
@@ -259,7 +260,8 @@ class AutoDM:
         """主运行任务（asyncio.to_thread 包装同步逻辑）"""
         try:
             # 1) 构造监测账号 auth（同步，用 to_thread 包装）
-            m_env = self.monitor_env_path or "monitor.env"  # TODO: 从 AccountService 取
+            from auto_dm.accounts import current_env_path
+            m_env = self.monitor_env_path or current_env_path()
             self.monitor_auth = await asyncio.to_thread(
                 self._build_one_auth, m_env, False, 0
             )

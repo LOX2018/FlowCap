@@ -230,6 +230,14 @@ export const api = {
   async getLogs(limit = 500): Promise<{ ok: boolean; file: string | null; lines: { ts: string; level: string; text: string }[] }> {
     return request(`/api/logs?limit=${limit}`);
   },
+
+  /** 前端操作写入运行日志 */
+  async addLog(level: string, text: string): Promise<{ ok: boolean }> {
+    return request("/api/logs/write", {
+      method: "POST",
+      body: JSON.stringify({ level, text }),
+    });
+  },
 };
 
 // ===== 页面组件统一 Props 类型（1:1 对应旧版 app.js 传给页面的 props）=====

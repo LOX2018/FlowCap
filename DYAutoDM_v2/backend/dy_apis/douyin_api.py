@@ -727,14 +727,27 @@ class DouyinAPI:
         """
         if not auth or not getattr(auth, "cookie", None):
             return None
+        # 优先返回已由 ensure_uid 设置的 auth.uid（避免重复解析不一致）
+        existing_uid = getattr(auth, "uid", None)
+        if existing_uid:
+            return existing_uid
         cookie = auth.cookie
         # 真实 uid 优先（uid_tt 是登录态直接下发的数字 uid，不受 s_v_web_id 占位影响）
         uid_tt = cookie.get("uid_tt") or cookie.get("uid_tt_ss")
         if uid_tt:
-            try:
-                return int(str(uid_tt).strip())
-            except (ValueError, TypeError):
-                pass
+            sval = str(uid_tt).strip()
+            # 排除风控验证页占位值
+            if not (sval.startswith("verify_") or sval in ("1", "0")):
+                try:
+                    return int(sval)  # 纯数字 uid（旧版 cookie）
+                except (ValueError, TypeError):
+                    pass
+                try:
+                    _uid = int(sval, 16)  # 32 位 hex 串 -> 十进制 uid（新版 cookie）
+                    if _uid and _uid > 1:
+                        return _uid
+                except (ValueError, TypeError):
+                    pass
         s_v_web_id = cookie.get("s_v_web_id")
         # 识别风控占位值：verify_msppk8gp_ 前缀 或 非 19 位纯数字（正常 s_v_web_id 为 19 位数字）
         def _is_placeholder(v):

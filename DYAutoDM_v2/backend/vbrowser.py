@@ -37,13 +37,20 @@ def app_root():
     - 源码态：本文件位于 backend/vbrowser.py，向上两级（backend 的上一级）即项目根
       DYAutoDM_v2/，随附资源（vb_chromium / vb_profile_* / pw_profile_dm / .env / logs）
       都放在项目根下，accounts.py 等也以项目根为基准，保持一致；
-    - PyInstaller 打包态（onefile）：exe 所在目录。build_sidecar.py 的 _add_data 会把
-      vb_chromium / vb_profile_* / pw_profile_dm / .env / logs 等运行时资源
-      拷贝到 exe 旁边，因此打包后所有相对路径都必须以【exe 所在目录】为基准，
-      否则会按 __file__ 解析到 _MEIxxx 临时解压目录导致资源找不到、回退原生 Playwright 而崩溃。
+    - PyInstaller 打包态（onefile）：优先 exe 所在目录；若 exe 旁没有 vb_chromium
+      但存在 resources/vb_chromium（Tauri bundle.resources 分发位置），则返回
+      exe 旁的 resources/ 子目录，让 NSIS/MSI 安装场景也能找到随附资源。
     """
     if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        # exe 旁直接有 vb_chromium（直接复制 exe 场景）
+        if os.path.isdir(os.path.join(exe_dir, "vb_chromium")):
+            return exe_dir
+        # fallback: Tauri resources/ 子目录（NSIS 安装场景）
+        res_dir = os.path.join(exe_dir, "resources")
+        if os.path.isdir(os.path.join(res_dir, "vb_chromium")):
+            return res_dir
+        return exe_dir  # 退化返回 exe 旁，让上层报明确的"找不到"错误
     # 本文件: <root>/backend/vbrowser.py -> 向上两级(backend 的上一级) = <root>
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

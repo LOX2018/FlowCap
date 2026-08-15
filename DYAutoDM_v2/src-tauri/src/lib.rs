@@ -87,6 +87,42 @@ async fn start_recv_daemon(
     ))
 }
 
+/// 停止指定账号的凭证守护 sidecar（browser_daemon）
+#[tauri::command]
+async fn stop_browser_daemon(
+    state: tauri::State<'_, AppState>,
+    account: String,
+    port: u16,
+) -> Result<(), String> {
+    let label = format!("browser_daemon({account}:{port})");
+    let mut guard = state.daemons.lock().map_err(|e| e.to_string())?;
+    if let Some(pos) = guard.iter().position(|h| h.label() == label) {
+        let h = guard.remove(pos);
+        h.kill()?;
+        Ok(())
+    } else {
+        Err(format!("凭证守护 {label} 未运行"))
+    }
+}
+
+/// 停止指定账号的私信接收守护 sidecar（recv_daemon）
+#[tauri::command]
+async fn stop_recv_daemon(
+    state: tauri::State<'_, AppState>,
+    accounts: Vec<String>,
+    port: u16,
+) -> Result<(), String> {
+    let label = format!("recv_daemon({}:{port})", accounts.join(","));
+    let mut guard = state.daemons.lock().map_err(|e| e.to_string())?;
+    if let Some(pos) = guard.iter().position(|h| h.label() == label) {
+        let h = guard.remove(pos);
+        h.kill()?;
+        Ok(())
+    } else {
+        Err(format!("私信守护 {label} 未运行"))
+    }
+}
+
 /// 列出所有正在运行的守护 sidecar
 #[tauri::command]
 fn list_daemons(state: tauri::State<'_, AppState>) -> Vec<String> {
@@ -135,7 +171,9 @@ pub fn run() {
             start_backend,
             stop_backend,
             start_browser_daemon,
+            stop_browser_daemon,
             start_recv_daemon,
+            stop_recv_daemon,
             list_daemons,
         ])
         .run(tauri::generate_context!())
