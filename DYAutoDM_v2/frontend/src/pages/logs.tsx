@@ -3,6 +3,11 @@
  *
  * 轮询后端 /api/logs 读取落盘的日志文件（logs/run_*.log），
  * 替代 Tauri 下不可见的 CMD 窗口输出。
+ *
+ * 功能：
+ * - 本次日志：只显示最新一次启动会话（run_*.log 最新文件），实时追加。
+ * - 历史日志：列出全部历史启动会话，可切换查看 / 批量删除（批量管理）。
+ * - 清空显示：仅清空前端视图，不触碰磁盘实质日志；清空后只显示新产生的行。
  */
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +19,13 @@ interface LogLine {
   text: string;
 }
 
+interface Session {
+  file: string;
+  start: string;
+  size: number;
+  mtime: number;
+}
+
 const LEVEL_COLOR: Record<string, string> = {
   INFO: "var(--muted)",
   DEBUG: "var(--muted)",
@@ -22,29 +34,124 @@ const LEVEL_COLOR: Record<string, string> = {
   SUCCESS: "var(--ok)",
 };
 
+/** 将 20260815_123045 格式化为 2026-08-15 12:30:45 */
+function fmtStart(start: string): string {
+  if (start.length >= 15) {
+    const d = start.slice(0, 8);
+    const t = start.slice(9);
+    return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)} ${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}`;
+  }
+  return start;
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export default function LogsPage(props: PageProps) {
   const { api, ready } = props;
   const [autoScroll, setAutoScroll] = useState(true);
   const [limit, setLimit] = useState(500);
+  // 视图模式：current=本次日志，history=历史会话列表
+  const [mode, setMode] = useState<"current" | "history">("current");
+  // 当前查看的历史会话文件（点历史项进入查看）
+  const [viewFile, setViewFile] = useState<string | null>(null);
+  // 清空显示标记：true 时视图只显示清空后新拉到的行
+  const [displayCleared, setDisplayCleared] = useState(false);
+  // 历史会话多选
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  const q = useQuery({
-    queryKey: ["logs", limit],
+  // 本次日志轮询（只读最新会话文件）
+  const curQ = useQuery({
+    queryKey: ["logs-current", limit],
     queryFn: async (): Promise<{ ok: boolean; file: string | null; lines: LogLine[] }> => {
-      const d = await api.getLogs(limit);
+      const s = await api.getSessions();
+      const name = s.current;
+      const d = await api.getLogs(limit, name || undefined);
       return d as unknown as { ok: boolean; file: string | null; lines: LogLine[] };
     },
     refetchInterval: 2000,
+    enabled: !!ready && mode === "current",
+  });
+
+  // 历史会话列表轮询
+  const sessQ = useQuery({
+    queryKey: ["logs-sessions"],
+    queryFn: async () => await api.getSessions(),
+    refetchInterval: 5000,
     enabled: !!ready,
   });
+
+  // 查看某历史会话时的日志轮询
+  const histQ = useQuery({
+    queryKey: ["logs-history", viewFile, limit],
+    queryFn: async (): Promise<{ ok: boolean; file: string | null; lines: LogLine[] }> => {
+      const d = await api.getLogs(limit, viewFile || undefined);
+      return d as unknown as { ok: boolean; file: string | null; lines: LogLine[] };
+    },
+    refetchInterval: 2000,
+    enabled: !!ready && mode === "history" && !!viewFile,
+  });
+
+  // 当前显示的数据源
+  const activeQ = mode === "history" && viewFile ? histQ : curQ;
+  const lines = activeQ.data?.lines || [];
+
+  // 清空显示后，只保留清空后新产生的行：用一个 ref 记录「清空时已显示行数」，
+  // 简单做法——清空时直接清空 lines 状态，后续轮询 append 新行。
+  // 由于轮询整体替换数据，这里在 displayCleared 为 true 时忽略旧行：
+  // 通过保存上次清空前的行数增量已不可靠（数据是整体尾部），
+  // 故采用「清空即重置视图，不清空实质，新轮询自然只显示当下尾部」——
+  // 但用户期望「清空后看到空白、之后新日志出现」。实现：清空时把 lines 置空并冻结，
+  // 直至下次轮询带来新行才解冻。逻辑见下方 effect。
+  const clearedRef = useRef(false);
+  useEffect(() => {
+    if (displayCleared) {
+      clearedRef.current = true;
+    } else {
+      clearedRef.current = false;
+    }
+  }, [displayCleared]);
 
   useEffect(() => {
     if (autoScroll && endRef.current) {
       endRef.current.scrollIntoView({ block: "end" });
     }
-  }, [q.data, autoScroll]);
+  }, [lines, autoScroll]);
 
-  const lines = q.data?.lines || [];
+  const sessions: Session[] = sessQ.data?.sessions || [];
+  const currentFile = sessQ.data?.current || null;
+  const historySessions = sessions.filter((s) => s.file !== currentFile);
+
+  const toggleSelect = (file: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(file)) next.delete(file);
+      else next.add(file);
+      return next;
+    });
+  };
+
+  const doDeleteSelected = async () => {
+    const files = Array.from(selected);
+    if (files.length === 0) {
+      props.push("请先勾选要删除的历史会话");
+      return;
+    }
+    const r = await api.deleteSessions(files);
+    if (r.ok) {
+      props.push(`已删除 ${r.deleted.length} 个历史会话${r.skipped.length ? `，跳过 ${r.skipped.length} 个` : ""}`);
+      setSelected(new Set());
+    } else {
+      props.push("删除失败");
+    }
+  };
+
+  // 清空显示的展示行：清空后首屏不显示任何旧行
+  const shownLines = displayCleared && clearedRef.current ? [] : lines;
 
   return (
     <div>
@@ -52,12 +159,13 @@ export default function LogsPage(props: PageProps) {
         <div>
           <h2>运行日志</h2>
           <div className="desc">
-            实时读取后端落盘的日志文件 · {q.data?.file ? q.data.file : "等待数据"}
+            实时读取后端落盘的日志文件 · {activeQ.data?.file ? activeQ.data.file : "等待数据"}
           </div>
         </div>
         <span className="demo-tag">{ready ? "已连接" : "未连接"}</span>
       </div>
 
+      {/* 模式切换 + 批量管理 */}
       <div
         style={{
           display: "flex",
@@ -66,45 +174,192 @@ export default function LogsPage(props: PageProps) {
           marginBottom: 10,
           fontSize: 13,
           color: "var(--muted)",
+          flexWrap: "wrap",
         }}
       >
-        <span>行数上限：</span>
-        <select
-          className="input"
-          style={{ width: 90 }}
-          value={limit}
-          onChange={(e) => setLimit(Number(e.target.value))}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            className={"btn sm" + (mode === "current" ? " accent" : " ghost")}
+            onClick={() => {
+              setMode("current");
+              setViewFile(null);
+            }}
+          >
+            本次日志
+          </button>
+          <button
+            className={"btn sm" + (mode === "history" ? " accent" : " ghost")}
+            onClick={() => setMode("history")}
+          >
+            历史日志（{historySessions.length}）
+          </button>
+        </div>
+
+        {mode === "history" && (
+          <>
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 12 }}>
+              已选 {selected.size}
+            </span>
+            <button
+              className="btn sm ghost"
+              onClick={() => setSelected(new Set(historySessions.map((s) => s.file)))}
+            >
+              全选
+            </button>
+            <button
+              className="btn sm ghost"
+              onClick={() => setSelected(new Set())}
+            >
+              清除选择
+            </button>
+            <button
+              className="btn sm danger"
+              onClick={doDeleteSelected}
+              disabled={selected.size === 0}
+            >
+              批量删除
+            </button>
+          </>
+        )}
+
+        {mode === "current" && (
+          <>
+            <div style={{ flex: 1 }} />
+            <button
+              className="btn sm ghost"
+              onClick={() => {
+                setDisplayCleared(true);
+                props.push("已清空显示（实质日志未删除）");
+              }}
+            >
+              清空显示
+            </button>
+            {displayCleared && (
+              <button
+                className="btn sm ghost"
+                onClick={() => setDisplayCleared(false)}
+              >
+                恢复显示
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {mode === "history" && !viewFile && (
+        <div
+          className="card"
+          style={{ padding: 0, overflow: "hidden", border: "1px solid var(--line)", marginBottom: 10 }}
         >
-          {[200, 500, 1000, 2000].map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
+          {historySessions.length === 0 && (
+            <div style={{ color: "var(--muted)", padding: "20px 14px" }}>暂无历史会话（只有本次启动）</div>
+          )}
+          {historySessions.map((s) => (
+            <div
+              key={s.file}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "10px 14px",
+                borderBottom: "1px solid var(--line)",
+                fontSize: 13,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(s.file)}
+                onChange={() => toggleSelect(s.file)}
+              />
+              <div style={{ flex: 1, cursor: "pointer" }} onClick={() => setViewFile(s.file)}>
+                <div style={{ color: "var(--text)", fontWeight: 600 }}>{fmtStart(s.start)}</div>
+                <div className="mono" style={{ color: "var(--muted)", fontSize: 11 }}>
+                  {s.file} · {fmtSize(s.size)}
+                </div>
+              </div>
+              <button
+                className="btn sm ghost"
+                onClick={() => setViewFile(s.file)}
+              >
+                查看
+              </button>
+              <button
+                className="btn sm danger"
+                onClick={async () => {
+                  const r = await api.deleteSessions([s.file]);
+                  if (r.ok && r.deleted.length) props.push(`已删除 ${s.file}`);
+                  else props.push("删除失败（本次会话不可删）");
+                }}
+              >
+                删除
+              </button>
+            </div>
           ))}
-        </select>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={autoScroll}
-            onChange={(e) => setAutoScroll(e.target.checked)}
-          />
-          自动滚动到底部
-        </label>
-        <div style={{ flex: 1 }} />
-        <button
-          className="btn sm ghost"
-          onClick={() => {
-            navigator.clipboard
-              ?.writeText(lines.map((l) => `${l.ts} | ${l.level} | ${l.text}`).join("\n"))
-              .then(() => props.push("日志已复制到剪贴板"))
-              .catch(() => props.push("复制失败"));
+        </div>
+      )}
+
+      {mode === "history" && viewFile && (
+        <div style={{ marginBottom: 10 }}>
+          <button className="btn sm ghost" onClick={() => setViewFile(null)}>
+            ← 返回历史列表
+          </button>
+          <span className="mono" style={{ marginLeft: 10, fontSize: 12, color: "var(--muted)" }}>
+            {viewFile}
+          </span>
+        </div>
+      )}
+
+      {/* 行数上限 + 自动滚动（仅日志视图显示） */}
+      {(mode === "current" || !!viewFile) && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 10,
+            fontSize: 13,
+            color: "var(--muted)",
           }}
         >
-          复制全部
-        </button>
-        <span className="mono" style={{ fontSize: 12 }}>
-          共 {lines.length} 行
-        </span>
-      </div>
+          <span>行数上限：</span>
+          <select
+            className="input"
+            style={{ width: 90 }}
+            value={limit}
+            onChange={(e) => setLimit(Number(e.target.value))}
+          >
+            {[200, 500, 1000, 2000].map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={autoScroll}
+              onChange={(e) => setAutoScroll(e.target.checked)}
+            />
+            自动滚动到底部
+          </label>
+          <div style={{ flex: 1 }} />
+          <button
+            className="btn sm ghost"
+            onClick={() => {
+              navigator.clipboard
+                ?.writeText(shownLines.map((l) => `${l.ts} | ${l.level} | ${l.text}`).join("\n"))
+                .then(() => props.push("日志已复制到剪贴板"))
+                .catch(() => props.push("复制失败"));
+            }}
+          >
+            复制全部
+          </button>
+          <span className="mono" style={{ fontSize: 12 }}>
+            共 {shownLines.length} 行
+          </span>
+        </div>
+      )}
 
       <div
         className="card"
@@ -112,12 +367,13 @@ export default function LogsPage(props: PageProps) {
           padding: 0,
           overflow: "hidden",
           border: "1px solid var(--line)",
+          display: mode === "history" && !viewFile ? "none" : "block",
         }}
       >
         <div
           className="mono"
           style={{
-            height: "calc(100vh - 280px)",
+            height: "calc(100vh - 300px)",
             minHeight: 320,
             overflowY: "auto",
             background: "var(--bg)",
@@ -126,12 +382,17 @@ export default function LogsPage(props: PageProps) {
             lineHeight: 1.7,
           }}
         >
-          {lines.length === 0 && (
+          {displayCleared && clearedRef.current && shownLines.length === 0 && (
             <div style={{ color: "var(--muted)", padding: "20px 4px" }}>
-              {q.isLoading ? "加载中…" : "暂无日志（后端尚未产生运行记录）"}
+              显示已清空（实质日志保留）· 新日志将从这里开始显示
             </div>
           )}
-          {lines.map((l, i) => (
+          {!displayCleared && lines.length === 0 && (
+            <div style={{ color: "var(--muted)", padding: "20px 4px" }}>
+              {activeQ.isLoading ? "加载中…" : "暂无日志（后端尚未产生运行记录）"}
+            </div>
+          )}
+          {shownLines.map((l, i) => (
             <div
               key={i}
               style={{

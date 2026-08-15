@@ -227,8 +227,12 @@ export const api = {
   },
 
   // ===== logs =====
-  async getLogs(limit = 500): Promise<{ ok: boolean; file: string | null; lines: { ts: string; level: string; text: string }[] }> {
-    return request(`/api/logs?limit=${limit}`);
+  async getLogs(
+    limit = 500,
+    name?: string,
+  ): Promise<{ ok: boolean; file: string | null; lines: { ts: string; level: string; text: string }[] }> {
+    const q = name ? `/api/logs?limit=${limit}&name=${encodeURIComponent(name)}` : `/api/logs?limit=${limit}`;
+    return request(q);
   },
 
   /** 前端操作写入运行日志 */
@@ -236,6 +240,19 @@ export const api = {
     return request("/api/logs/write", {
       method: "POST",
       body: JSON.stringify({ level, text }),
+    });
+  },
+
+  /** 列出全部启动会话（每个 run_*.log = 一次启动），current 为「本次」会话文件名 */
+  async getSessions(): Promise<{ ok: boolean; current: string | null; sessions: { file: string; start: string; size: number; mtime: number }[] }> {
+    return request("/api/logs/sessions");
+  },
+
+  /** 批量删除历史会话文件（实质删除，current 受保护） */
+  async deleteSessions(files: string[]): Promise<{ ok: boolean; deleted: string[]; skipped: string[] }> {
+    return request("/api/logs/sessions", {
+      method: "DELETE",
+      body: JSON.stringify({ files }),
     });
   },
 };
