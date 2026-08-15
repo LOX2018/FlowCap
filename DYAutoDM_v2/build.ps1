@@ -57,8 +57,38 @@ foreach ($s in $sidecars) {
         Copy-Item $src $dst -Force
         Write-Host "==> sidecar: $dst" -ForegroundColor Green
     } else {
-        Write-Host "[WARN] 未找到 sidecar: $src" -ForegroundColor Yellow
+        Write-Host "[WARN] sidecar not found: $src" -ForegroundColor Yellow
     }
 }
 
-Write-Host "`n=== 打包完成: $DST_EXE ===" -ForegroundColor Green
+# 5) deploy to C:\temp\dyautodm_test\ per user standard:
+#    main exe renamed to fixed dyautodm-v2.exe (no version suffix)
+#    binaries\ 3 sidecars with triple suffix
+$TEST_DIR = "C:\temp\dyautodm_test"
+$TEST_BIN = "$TEST_DIR\binaries"
+if (-not (Test-Path $TEST_DIR)) { New-Item -ItemType Directory -Path $TEST_DIR | Out-Null }
+if (-not (Test-Path $TEST_BIN)) { New-Item -ItemType Directory -Path $TEST_BIN | Out-Null }
+
+$TEST_MAIN = "$TEST_DIR\dyautodm-v2.exe"
+if (Test-Path $SRC_EXE) {
+    Copy-Item $SRC_EXE $TEST_MAIN -Force
+    Write-Host "==> test deploy main: $TEST_MAIN" -ForegroundColor Green
+} else {
+    Write-Host "[ERROR] main exe missing, cannot deploy" -ForegroundColor Red
+    exit 1
+}
+foreach ($s in $sidecars) {
+    $src = "$ROOT\src-tauri\binaries\$s-$triple.exe"
+    $dst = "$TEST_BIN\$s-$triple.exe"
+    if (Test-Path $src) {
+        Copy-Item $src $dst -Force
+        Write-Host "==> test deploy sidecar: $dst" -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] sidecar not found for deploy: $src" -ForegroundColor Yellow
+    }
+}
+
+Write-Host "`n=== Build done ===" -ForegroundColor Green
+Write-Host "  dist (archived with version):  $DST_EXE" -ForegroundColor Cyan
+Write-Host "  test deploy (fixed name):      $TEST_MAIN" -ForegroundColor Cyan
+Write-Host "  test sidecars:                 $TEST_BIN" -ForegroundColor Cyan
