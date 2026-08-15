@@ -121,7 +121,7 @@ export default function SettingsPage(props: PageProps) {
         </span>
       </div>
 
-      <div className="grid cols-3" style={{ marginBottom: 14 }}>
+      <div className="grid cols-5" style={{ marginBottom: 14 }}>
         <div className="card">
           <h3>采集参数</h3>
           <div className="form">
@@ -224,44 +224,33 @@ export default function SettingsPage(props: PageProps) {
             </div>
           </div>
         </div>
-      </div>
 
-      <div className="grid cols-2" style={{ marginBottom: 14 }}>
         <div className="card">
           <h3>任务管理</h3>
-          <div
-            className="form"
-            style={{
-              display: "flex",
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 16,
-              alignItems: "center",
-            }}
-          >
-            <div className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <label style={{ whiteSpace: "nowrap" }}>最大并发</label>
+          <div className="form">
+            <div className="field">
+              <label>最大并发</label>
               <input
                 className="input"
-                style={{ width: 60, fontFamily: "var(--font-mono)" }}
+                style={{ width: "100%", fontFamily: "var(--font-mono)" }}
                 value={DEFAULTS.maxTasks}
                 readOnly
               />
             </div>
-            <div className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <label style={{ whiteSpace: "nowrap" }}>重试次数</label>
+            <div className="field">
+              <label>重试次数</label>
               <input
                 className="input"
-                style={{ width: 60, fontFamily: "var(--font-mono)" }}
+                style={{ width: "100%", fontFamily: "var(--font-mono)" }}
                 value={DEFAULTS.retry}
                 readOnly
               />
             </div>
-            <div className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <label style={{ whiteSpace: "nowrap" }}>超时（秒）</label>
+            <div className="field">
+              <label>超时（秒）</label>
               <input
                 className="input"
-                style={{ width: 60, fontFamily: "var(--font-mono)" }}
+                style={{ width: "100%", fontFamily: "var(--font-mono)" }}
                 value={DEFAULTS.timeout}
                 readOnly
               />
@@ -271,48 +260,61 @@ export default function SettingsPage(props: PageProps) {
 
         <div className="card">
           <h3>输出与日志</h3>
-          <div
-            className="form"
-            style={{
-              display: "flex",
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 16,
-              alignItems: "center",
-            }}
-          >
-            <div
-              className="field"
-              style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}
-            >
-              <label style={{ whiteSpace: "nowrap" }}>输出目录</label>
+          <div className="form">
+            <div className="field">
+              <label>输出目录</label>
               <input
                 className="input mono"
-                style={{ flex: 1 }}
+                style={{ width: "100%" }}
                 value={DEFAULTS.outDir}
                 readOnly
               />
               <button
                 className="btn sm ghost"
                 data-od-id="settings-pick-path"
+                style={{ width: "100%" }}
                 onClick={() => push("已选择输出目录 · " + DEFAULTS.outDir)}
               >
                 选择路径
               </button>
             </div>
-            <div className="field-row">
-              <label>自动导出</label>
-              <span className="switch">
-                <input type="checkbox" checked={DEFAULTS.autoExport} readOnly />
-                <i />
-              </span>
-            </div>
-            <div className="field-row">
-              <label>日志写文件</label>
-              <span className="switch">
-                <input type="checkbox" checked={DEFAULTS.logFile} readOnly />
-                <i />
-              </span>
+            <div className="field">
+              <label>结构化输出目录</label>
+              <div className="tree" style={{ fontSize: 11.5 }}>
+                <div>
+                  <span className="dir">output/</span>
+                </div>
+                <div>
+                  {"\u3000\u251C\u2500 "}
+                  <span className="dir">2026-08-11/</span>
+                </div>
+                <div>
+                  {"\u3000\u2502\u3000\u251C\u2500 "}
+                  <span className="cur">users.json</span>
+                </div>
+                <div>
+                  {"\u3000\u2502\u3000\u251C\u2500 "}
+                  <span className="cur">videos/</span>
+                </div>
+                <div>
+                  {"\u3000\u2502\u3000\u2502\u3000\u2514\u2500 "}
+                  <span className="cur">v1/</span>
+                </div>
+                <div>{"\u3000\u2502\u3000\u2502\u3000\u3000\u251C\u2500 info.json"}</div>
+                <div>{"\u3000\u2502\u3000\u2502\u3000\u3000\u2514\u2500 comments.xlsx"}</div>
+                <div>
+                  {"\u3000\u2502\u3000\u251C\u2500 "}
+                  <span className="cur">live_7462001/</span>
+                </div>
+                <div>
+                  {"\u3000\u2502\u3000\u2502\u3000\u2514\u2500 "}
+                  <span className="cur">danmaku.csv</span>
+                </div>
+                <div>
+                  {"\u3000\u2502\u3000\u2514\u2500 "}
+                  <span className="cur">media/</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
