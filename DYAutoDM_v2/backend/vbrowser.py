@@ -38,9 +38,12 @@ from loguru import logger
 #   --disable-dev-shm-usage    用磁盘而非 /dev/shm，防共享内存不足引发的卡顿/崩溃
 #   --no-first-run             跳过首次运行向导
 #   --no-default-browser-check 不探测系统默认浏览器
-#   --disable-blink-features=AutomationControlled  隐藏自动化特征（指纹场景保留）
 #   --disable-background-networking / --disable-extensions / --disable-sync
 #                               减少无关后台联网与扩展加载，加快首屏
+# 注意：不要加 --disable-blink-features=AutomationControlled。
+# 该参数是 Playwright 用来隐藏 navigator.webdriver 的，但 ungoogled-chromium
+# 指纹内核在编译期已移除 webdriver 痕迹，此参数对我们是冗余的；而且它会触发
+# 内核“不受支持的命令行标记”警告。自动化特征伪装交给指纹内核自身处理即可。
 _CHROME_ARGS = [
     "--disable-gpu",
     "--disable-dev-shm-usage",
@@ -49,7 +52,6 @@ _CHROME_ARGS = [
     "--disable-background-networking",
     "--disable-extensions",
     "--disable-sync",
-    "--disable-blink-features=AutomationControlled",
 ]
 
 
@@ -213,7 +215,14 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             f"请先启动 VirtualBrowser/Ant-Browser 本地服务并核对 VB_API_BASE/VB_ENV_ID。")
     p = await async_playwright().start()
     browser = await p.chromium.connect_over_cdp(f"http://localhost:{port}")
-    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+    # 注意：connect_over_cdp 接管的是外部指纹客户端已启动的环境，
+    # 其默认 context（含指纹伪装）必须由客户端创建，绝不能自己 new_context()
+    # —— 否则会拿到一个无指纹特征的空白 context。客户端正常启动时必有 contexts[0]。
+    if not browser.contexts:
+        raise RuntimeError(
+            f"[vbrowser] CDP 指纹环境无可用 context（客户端未创建默认浏览器上下文）。"
+            f"请检查 VirtualBrowser/Ant-Browser 启动参数。")
+    context = browser.contexts[0]
     return p, browser, context, "cdp"
 
 
