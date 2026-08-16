@@ -555,8 +555,10 @@ export default function AccountsPage(props: PageProps) {
         } else if (r && r.error) {
           push("引擎校验失败: " + r.error);
           api.addLog("ERROR", `引擎校验失败 · ${a.name}: ${r.error}`).catch(() => {});
+          refetch();
         }
-        refetch();
+        // 成功分支不 refetch：list_accounts 的 dmEngine 默认写死“待校验”，
+        // 会立即覆盖掉刚更新的真实回环结果，故保留 setQueryData 写入的真值。
       })
       .catch((e: unknown) => {
         push("引擎校验异常: " + errMsg(e));

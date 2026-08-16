@@ -4,7 +4,7 @@
 关键改进：
 - getAccounts 拆为轻量 list（仅端口探活）+ 重量级 verify（按需触发）
 - 新增 /scan-status 查询扫码状态（替代 fire-and-forget 的间接推断）
-- /check 返回结构化 CheckAccountResponse
+- /check 复用 auto_dm.accounts.verify_account 做双引擎校验（含私信回环）
 """
 import os
 import threading
@@ -16,7 +16,6 @@ from loguru import logger
 from models.account import (
     AccountInfo,
     AddAccountRequest,
-    CheckAccountResponse,
     ScanLoginResponse,
     SetRoleRequest,
 )
@@ -36,6 +35,10 @@ def _do_scan(name: str):
     st["loggedIn"] = False
     st["error"] = ""
     try:
+        # 重扫前先停该账号凭证守护，释放与「查看模式」共有的 profile 锁，
+        # 否则 force=True 清空 vb_profile_default 时会因 Chromium 占用而失败
+        # （WinError 32），导致后续浏览器崩溃落到 about:blank。
+        _quit_browser_daemon(name)
         from auth_helper import enrich_auth
         env_path = acct_core.env_path_of(name)
         auth, _ = enrich_auth(None, force=True, env_path=env_path)
@@ -149,10 +152,24 @@ async def list_accounts(request: Request):
 
 
 @router.post("/{name}/check")
-async def check_account(name: str) -> CheckAccountResponse:
-    """引擎校验（重量级，按需触发）"""
-    # TODO: 迁移 verify_account(dm_loopback=True) 逻辑
-    return CheckAccountResponse(name=name)
+async def check_account(name: str) -> dict:
+    """引擎校验（重量级，按需触发）。
+
+    复用 auto_dm.accounts.verify_account（双引擎校验）：
+      - wp 引擎：凭证守护是否在跑 + 守护保活的凭证能否还原出完整签名四件套；
+      - 私信引擎：对自身 uid 发一条回环测试文本，验证 imapi 私有网关建会话+发送链路。
+    返回前端 runCheck 期望的结构 {ok, verify:{wp,dm,uid}}。
+    """
+    logger.info(f"[check] 账号 {name} 发起双引擎校验（含私信回环）")
+    try:
+        verify = acct_core.verify_account(name, timeout=8, dm_loopback=True)
+        logger.success(
+            f"[check] 账号 {name} 校验完成 · wp:{verify['wp']['label']} · dm:{verify['dm']['label']}"
+        )
+        return {"ok": True, "verify": verify}
+    except Exception as e:
+        logger.error(f"[check] 账号 {name} 校验异常: {e}")
+        return {"ok": False, "error": str(e)}
 
 
 def _quit_browser_daemon(name: str) -> bool:
