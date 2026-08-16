@@ -20,7 +20,8 @@ from loguru import logger
 
 
 def enrich_auth(auth, cookies_dy="", headless=False,
-                user_data_dir="pw_profile_dm", env_path=".env", force=False):
+                user_data_dir="pw_profile_dm", env_path=".env", force=False,
+                landing_url="https://www.douyin.com/message"):
     """补全 auth 的私信签名字段。
 
     直接委托基座 DYLoginApi.get_login_auth：
@@ -62,12 +63,14 @@ def enrich_auth(auth, cookies_dy="", headless=False,
                 auth = ex.submit(
                     lambda: asyncio.run(
                         DYLoginApi().get_login_auth(
-                            headless=headless, env_path=env_path, force=force))
+                            headless=headless, env_path=env_path, force=force,
+                            landing_url=landing_url))
                 ).result()
         else:
             auth = asyncio.run(
                 DYLoginApi().get_login_auth(
-                    headless=headless, env_path=env_path, force=force))
+                    headless=headless, env_path=env_path, force=force,
+                    landing_url=landing_url))
     except Exception as e:
         logger.warning(f"[auth] 获取登录凭证失败: {e}")
         return auth, cookies_dy

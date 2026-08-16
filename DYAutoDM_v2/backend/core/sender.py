@@ -24,6 +24,22 @@ from loguru import logger
 from dy_apis.douyin_api import DouyinAPI
 
 
+# 触发自动重捕获的失败原因关键字（仅“凭证失效类”，排除账号级风控 KICK）
+_RECAP_MARKERS = ("签名三件套缺失", "INVALID_REQUEST")
+
+
+def _maybe_auto_recapture(auth: Any, reason: str) -> None:
+    """发送失败且属于凭证失效类时，best-effort 触发自动重捕获（不阻塞）。"""
+    if not any(m in reason for m in _RECAP_MARKERS):
+        return
+    try:
+        from auto_dm.accounts import auto_recapture
+        name = getattr(auth, "account_name", None) or None
+        auto_recapture(name)
+    except Exception as e:
+        logger.warning(f"[recap] 触发自动重捕获失败: {e}")
+
+
 def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tuple[bool, str]:
     """按数字 uid 直发私信。返回 (bool ok, str reason)。
 
@@ -56,6 +72,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
             "请删除 .env 中的 DY_TICKET/DY_TS_SIGN/DY_CLIENT_CERT/DY_PRIVATE_KEY "
             "后重启完成一次扫码登录。"
         )
+        _maybe_auto_recapture(auth, "签名三件套缺失(ticket/client_cert/private_key)")
         return False, "签名三件套缺失(ticket/client_cert/private_key)，需重新扫码"
 
     for attempt in range(1, max_retry + 1):
@@ -73,6 +90,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
                     f"       （向陌生观众批量私信触发反 spam）或私信频控/被限制。\n"
                     f"       建议：降低发送频率、换号/养号，或确认该账号能否手动给该用户发私信。"
                 )
+                _maybe_auto_recapture(auth, f"INVALID_REQUEST: {msg}")
                 return False, f"私信被风控(INVALID_REQUEST/KICK): {msg}"
             logger.warning(f"create_conversation 失败(第{attempt}次) uid={user_id}: {e}")
             if attempt == max_retry:

@@ -1812,10 +1812,21 @@ class DouyinAPI:
         return conversation_id, conversation_short_id, ticket
 
     @staticmethod
-    def get_conversation_list(auth,to_user_id: int,conversation_short_id:int, **kwargs) -> list:
-        import blackboxprotobuf
+    def get_conversation_list(auth, conversation_short_id: int = 0, **kwargs) -> list:
+        """拉取全部私信会话列表，用于校验私信凭证是否可用。
+
+        走 imapi 私有网关 get_info_list（cmd 610），靠 cookie + protobuf 内签名
+        （web_protect 注入的 ticket/ts_sign/sdk_cert）鉴权，与 create_conversation /
+        send_msg 同源。返回 conversation_info_list（每条含 conversation_id /
+        conversation_short_id 等）。鉴权失败 / 凭证无效会抛异常，由上层识别为
+        私信引擎校验失败。
+        """
+        my_id = auth.get_uid()
         url = "https://imapi.douyin.com/v2/conversation/get_info_list"
-        requestProto = ProtoBuilder.build_get_conversation_list_info_request(auth, to_user_id, auth.get_uid(), conversation_short_id)
+        # 拉取“全部”会话：conversation_id 用自身主会话占位、short_id=0，
+        # 服务端会返回当前账号的全部私信会话列表。
+        requestProto = ProtoBuilder.build_get_conversation_list_info_request(
+            auth, int(my_id), int(my_id), conversation_short_id)
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
         headers.set_header('referer', 'https://www.douyin.com/')
 
@@ -1826,14 +1837,28 @@ class DouyinAPI:
             data=requestProto.SerializeToString(),
             verify=False
         )
+        # 解析前先判定 HTTP 状态与非 protobuf 响应（抖音常返回 HTML/JSON 错误页）
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"get_conversation_list HTTP {resp.status_code}: {resp.text[:200]}")
+        ctype = resp.headers.get("Content-Type", "")
+        if "application/x-protobuf" not in ctype and "octet-stream" not in ctype \
+                and resp.content[:1] not in (b'\x08', b'\x12', b'\x1a', b'\x22'):
+            # 看起来像 JSON/HTML 错误响应
+            raise RuntimeError(
+                f"get_conversation_list 返回非 protobuf 响应(Content-Type={ctype}): {resp.text[:200]}")
+        responseProto = ResponseProto.Response()
         try:
-            # 方式1: 直接解码（自动推断消息结构）
-            deserialized_data, message_type = blackboxprotobuf.decode_message(resp.content)
-            secure_uid = deserialized_data['6']['610']['1']['50']['13'].decode('utf-8')
-            print(f"secure_uid:{secure_uid}")
-            return secure_uid
+            responseProto.ParseFromString(resp.content)
         except Exception as e:
-            pass
+            raise RuntimeError(
+                f"get_conversation_list 响应 protobuf 解析失败(Wire corrupt?): {e} | "
+                f"raw[:120]={resp.content[:120]!r}")
+        resp_json = protobuf_to_dict(responseProto)
+        body = resp_json.get("body") or {}
+        conv_body = body.get("get_conversation_info_list_v2_response_body") or {}
+        conv_list = conv_body.get("conversation_info_list") or []
+        return conv_list
 
     @staticmethod
     def send_msg(auth, conversation_id, conversation_short_id, ticket, content: str, **kwargs) -> bool:

@@ -567,15 +567,15 @@ export default function AccountsPage(props: PageProps) {
   };
 
   const handleScanVerify = (a: FmtAccount) => {
-    push("已提醒处理验证 · " + a.name + " · 请在弹出的指纹浏览器中完成验证");
+    push("已提醒处理验证 · " + a.name + " · 将在弹出的指纹浏览器私信页完成重新授权");
     api.addLog("INFO", `提醒处理验证 · ${a.name}`).catch(() => {});
     api
-      .scanLogin(a.name)
+      .autoRecapture(a.name)
       .then((d) => {
         const r = d as { ok?: boolean; msg?: string; error?: string };
         if (r && r.ok) {
-          push(r.msg || "已为 " + a.name + " 弹出指纹浏览器");
-          api.addLog("SUCCESS", `已为 ${a.name} 弹出指纹浏览器`).catch(() => {});
+          push(r.msg || "已为 " + a.name + " 弹出指纹浏览器（私信页）");
+          api.addLog("SUCCESS", `已为 ${a.name} 弹出指纹浏览器重新捕获私信凭证`).catch(() => {});
           setScanning({ name: a.name, seq: Date.now() });
         } else if (r && r.error) {
           push("处理验证失败: " + r.error);

@@ -78,7 +78,15 @@ class DYLoginApi:
 
     # 扫码登录并抓 ticket
     async def login_grab_ticket(self, headless=False, timeout=300, user_data_dir="pw_profile_dm",
-                                env_path=".env", force=False):
+                                env_path=".env", force=False,
+                                landing_url="https://www.douyin.com/message"):
+        """捕获私信签名凭证。
+
+        landing_url: 重捕获时优先打开的私信落地页。默认 /message（经验证此处
+            会触发 security-sdk 生成有效 web_protect）。私信凭证失效自动重新捕获时
+            传入 https://www.douyin.com/chat?isPopup=1，让用户在该弹窗聊天页完成
+            重新授权/验证，同样会触发 web_protect 生成。
+        """
         # force=True：强制重新扫码，绝不复用 profile 里的旧登录态（避免“着急捕获旧凭证”）。
         #   监测账号启动时永远 force=True，确保拿到“本次真实扫码”的会话 + 有效 web_protect。
         # 关键：私信凭证 = security-sdk 的 web_protect/keys。经验证抖音网页版 security-sdk
@@ -141,15 +149,20 @@ class DYLoginApi:
             return False
 
         async def _open_message_page():
-            """主动打开抖音私信页（https://www.douyin.com/message），触发 security-sdk
-            生成【有效】web_protect/keys。仅停留在首页时拿到的是空壳 → 私信 KICK，
-            故必须在等待登录态/签名期间周期性打开私信页。"""
+            """主动打开抖音私信页（默认 /message，重捕获时可能为 chat?isPopup=1），
+            触发 security-sdk 生成【有效】web_protect/keys。仅停留在首页时拿到的是空壳
+            → 私信 KICK，故必须在等待登录态/签名期间周期性打开私信页。
+
+            landing_url 由 login_grab_ticket 参数传入：私信凭证失效自动重新捕获时
+            传 https://www.douyin.com/chat?isPopup=1（弹窗聊天页），让用户在该页完成
+            重新授权/验证；常规扫码仍用 /message。
+            """
             try:
-                await page.goto("https://www.douyin.com/message",
+                await page.goto(landing_url,
                                 wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
             except Exception as e:
-                logger.warning(f"[auth] 打开私信页失败（将继续重试）: {e}")
+                logger.warning(f"[auth] 打开私信页({landing_url})失败（将继续重试）: {e}")
 
         async def _wait_sign_and_login(ctx, deadline):
             """轮询直到：① 真实登录 cookie 出现（用户已扫码）且 ② web_protect 有效。
@@ -315,7 +328,8 @@ class DYLoginApi:
             auth.cookie_str = "; ".join(f"{k}={v}" for k, v in auth.cookie.items())
         return auth
 
-    async def get_login_auth(self, headless=False, env_path=".env", force=False):
+    async def get_login_auth(self, headless=False, env_path=".env", force=False,
+                             landing_url="https://www.douyin.com/message"):
         """优先从 env_path 指定的 .env 读 ticket，没有或已失效就扫码登录后写入该 .env。
 
         多账号切换：env_path 指向当前选中账号的 .env，扫码凭证只写回该账号文件。
@@ -347,7 +361,8 @@ class DYLoginApi:
         # —— 扫码前快照旧凭证（磁盘上 .env 的当前值），供扫码后做“旧→新”捕获对比 ——
         from auto_dm.login_capture import snapshot_old_env, analyze_login_capture
         old_snap = snapshot_old_env(env_path)
-        auth = await self.login_grab_ticket(headless=headless, env_path=env_path, force=force)
+        auth = await self.login_grab_ticket(headless=headless, env_path=env_path, force=force,
+                                             landing_url=landing_url)
         # —— 写回 .env 前，先比对旧→新并生成捕获分析报告（你扫码，程序自动分析）——
         analyze_login_capture(auth, old_snap, env_path)
         logger.info(f"登录凭证已存 {self.save_credential(auth, env_path=env_path)}")

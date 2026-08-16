@@ -170,17 +170,17 @@ def _port_open(port, timeout=0.5):
 
 
 def verify_account(name=None, timeout=8, dm_loopback=False):
-    """双引擎校验：分别判定 wp 引擎（凭证守护捕获）与私信引擎（回环发送）是否正常。
+    """双引擎校验：分别判定 wp 引擎（凭证守护捕获）与私信引擎（可拉取私信列表）是否正常。
 
     判定来源改为「守护进程」，而非纯网络探活：
       - wp 引擎：① 该账号凭证守护(browser_daemon)是否在跑；
                  ② 守护保活的凭证能否被 _load_auth_from_env 还原出完整签名四件套
                    （ticket/ts_sign/sdk_cert/web_protect，即“捕获正常”）。
-      - 私信引擎：用 sender.send_by_uid 对自身 uid 发一条回环测试文本，
-                  成功则证明私信建会话+发送链路（imapi 私有网关）回环正常。
+      - 私信引擎：用 DouyinAPI.get_conversation_list 拉取全部私信会话列表，
+                  成功则说明私信凭证（imapi 私有网关签名）有效、列表可读取。
 
     dm_loopback=False 时只做 wp 引擎+uid 探活（getAccounts 轮询调用，不污染私信）；
-    dm_loopback=True 时额外触发私信引擎回环测试（点「校验」按钮时调用）。
+    dm_loopback=True 时额外触发私信引擎列表拉取测试（点「校验」按钮时调用）。
 
     返回 {ok, wp:{level,label,detail}, dm:{level,label,detail}, uid}。
     """
@@ -264,46 +264,39 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
             "detail": f"wp 引擎校验抛出异常: {e}",
         }
 
-    # ---- 私信引擎校验（回环测试，仅 dm_loopback=True 时执行）----
+    # ---- 私信引擎校验（拉取私信列表，仅 dm_loopback=True 时执行）----
     if dm_loopback:
         try:
             from dy_apis.login_api import DYLoginApi
             from dy_apis.douyin_api import DouyinAPI
-            from core.sender import send_by_uid
             auth = DYLoginApi._load_auth_from_env(env_path)
             uid = result["uid"] or DouyinAPI.get_my_uid(auth)
             if not uid:
                 result["dm"] = {
                     "level": "skip",
                     "label": "跳过（无 uid）",
-                    "detail": "无法获取自身 uid，私信引擎回环测试跳过。请先确保 wp 引擎已登录。",
+                    "detail": "无法获取自身 uid，私信列表拉取测试跳过。请先确保 wp 引擎已登录。",
                 }
             else:
-                ok, reason = send_by_uid(auth, uid, "【账号校验】私信引擎回环测试")
-                if ok:
-                    result["dm"] = {
-                        "level": "ok",
-                        "label": "回环正常",
-                        "detail": f"已对自身(uid={uid})成功发送回环测试文本，私信建会话+发送链路正常。",
-                    }
-                else:
-                    result["dm"] = {
-                        "level": "fail",
-                        "label": "回环失败",
-                        "detail": f"回环测试失败: {reason}",
-                    }
+                convs = DouyinAPI.get_conversation_list(auth)
+                result["dm"] = {
+                    "level": "ok",
+                    "label": "列表可拉取",
+                    "detail": f"已成功拉取私信会话列表（共 {len(convs)} 个会话），"
+                              f"私信凭证（imapi 签名）有效。",
+                }
         except Exception as e:
             result["dm"] = {
-                "level": "error",
-                "label": "校验异常",
-                "detail": f"私信引擎校验抛出异常: {e}",
+                "level": "fail",
+                "label": "列表拉取失败",
+                "detail": f"拉取私信列表失败: {e}",
             }
     else:
         # 轮询场景：私信引擎状态沿用“接收守护是否在跑”做轻量标注
         result["dm"] = {
             "level": "idle",
             "label": "待校验",
-            "detail": "点击账号卡片「引擎校验」按钮可触发私信引擎回环测试。",
+            "detail": "点击账号卡片「引擎校验」按钮可触发私信引擎列表拉取测试。",
         }
 
     result["ok"] = (result["wp"]["level"] in ("ok", "warn")
@@ -669,3 +662,60 @@ def _probe(env_path, timeout):
         return False, "empty"
     except Exception as e:
         return False, str(e)[:80]
+
+
+# ===== 私信凭证失效自动重新捕获（V2 新增）=====
+# 触发场景：私信发送链路检测到凭证失效类错误（三件套缺失 / INVALID_REQUEST / KICK）
+# 时，后端自动拉起指纹浏览器打开 chat?isPopup=1 重新捕获 web_protect/keys，写回 .env。
+# 节流：同一账号 5 分钟内只弹一次，避免高频失败反复弹窗打扰用户。
+_RECAP_INTERVAL = 300  # 秒
+_recap_state: dict = {}  # name -> {"running": bool, "last": float, "error": str}
+
+
+def auto_recapture(name: str = None, landing_url: str = "https://www.douyin.com/chat?isPopup=1"):
+    """私信凭证失效时自动重新捕获（best-effort，不阻塞调用方）。
+
+    - name 缺省时用当前账号（current）。
+    - 带节流守卫：同账号 5 分钟内只触发一次；已有捕获在跑则跳过。
+    - 改造点：调用方（sender）在发送失败时调本函数，由后台线程弹指纹浏览器
+      打开 chat?isPopup=1 重新授权，捕获成功后写回 .env，后续发送复用新凭证。
+    """
+    try:
+        if not name:
+            name = current_name()
+        st = _recap_state.setdefault(name, {"running": False, "last": 0.0, "error": ""})
+        now = time.time()
+        # 节流：运行中 或 距上次触发不足间隔，则跳过
+        if st["running"] or (now - st["last"]) < _RECAP_INTERVAL:
+            logger.debug(f"[recap] 账号 {name} 自动重捕获跳过（节流/进行中）")
+            return
+        st["last"] = now
+        t = threading.Thread(target=_do_auto_recapture, args=(name, landing_url), daemon=True)
+        t.start()
+    except Exception as e:
+        logger.warning(f"[recap] 账号 {name} 发起自动重捕获失败: {e}")
+
+
+def _do_auto_recapture(name: str, landing_url: str):
+    """后台线程：停守护释放 profile 锁 → 强制重扫（打开 chat?isPopup=1）→ 写回 .env。"""
+    st = _recap_state.setdefault(name, {"running": False, "last": 0.0, "error": ""})
+    st["running"] = True
+    st["error"] = ""
+    try:
+        # 复用 api 层的停守护逻辑（向该账号凭证守护端口发 /quit，释放 Chromium profile 锁）
+        try:
+            from api.accounts import _quit_browser_daemon
+            _quit_browser_daemon(name)
+        except Exception as e:
+            logger.warning(f"[recap] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
+        from auth_helper import enrich_auth
+        env_path = env_path_of(name)
+        logger.info(f"[recap] 账号 {name} 私信凭证失效，自动拉起指纹浏览器重新捕获（{landing_url}）")
+        auth, _ = enrich_auth(None, force=True, env_path=env_path, landing_url=landing_url)
+        st["error"] = "" if getattr(auth, "cookie", None) else "捕获未完成（未拿到登录态）"
+        logger.success(f"[recap] 账号 {name} 自动重新捕获完成")
+    except Exception as e:
+        st["error"] = str(e)
+        logger.error(f"[recap] 账号 {name} 自动重新捕获异常: {e}")
+    finally:
+        st["running"] = False

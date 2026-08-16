@@ -109,6 +109,13 @@ export const api = {
     });
   },
 
+  /** 私信凭证失效自动重新捕获：打开 chat?isPopup=1 重新授权（替代单纯 scanLogin） */
+  async autoRecapture(name: string): Promise<{ ok: boolean; msg: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/auto-recapture`, {
+      method: "POST",
+    });
+  },
+
   /** 打开该账号绑定的指纹浏览器窗口（先停守护释放 profile 锁再弹窗） */
   async openFingerprintBrowser(name: string): Promise<{ ok: boolean; msg: string }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/open-browser`, {

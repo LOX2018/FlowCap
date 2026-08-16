@@ -4,7 +4,7 @@
 关键改进：
 - getAccounts 拆为轻量 list（仅端口探活）+ 重量级 verify（按需触发）
 - 新增 /scan-status 查询扫码状态（替代 fire-and-forget 的间接推断）
-- /check 复用 auto_dm.accounts.verify_account 做双引擎校验（含私信回环）
+- /check 复用 auto_dm.accounts.verify_account 做双引擎校验（含私信列表拉取）
 """
 import os
 import threading
@@ -157,10 +157,10 @@ async def check_account(name: str) -> dict:
 
     复用 auto_dm.accounts.verify_account（双引擎校验）：
       - wp 引擎：凭证守护是否在跑 + 守护保活的凭证能否还原出完整签名四件套；
-      - 私信引擎：对自身 uid 发一条回环测试文本，验证 imapi 私有网关建会话+发送链路。
+      - 私信引擎：拉取全部私信会话列表，验证 imapi 私有网关私信凭证有效、列表可读取。
     返回前端 runCheck 期望的结构 {ok, verify:{wp,dm,uid}}。
     """
-    logger.info(f"[check] 账号 {name} 发起双引擎校验（含私信回环）")
+    logger.info(f"[check] 账号 {name} 发起双引擎校验（含私信列表拉取）")
     try:
         verify = acct_core.verify_account(name, timeout=8, dm_loopback=True)
         logger.success(
@@ -319,3 +319,28 @@ async def stop_recv_daemon(name: str):
     ok = _quit_daemon_http(rport)
     return {"ok": True, "wasRunning": True, "stopped": ok,
             "msg": f"已向私信守护 {name} 发送停止请求"}
+
+
+_RECAP_LANDING = "https://www.douyin.com/chat?isPopup=1"
+
+
+@router.post("/{name}/auto-recapture")
+async def auto_recapture(name: str) -> ScanLoginResponse:
+    """私信凭证失效自动重新捕获（手动触发入口）。
+
+    后端发送链路检测到凭证失效（三件套缺失 / INVALID_REQUEST）时会自动调用
+    auto_dm.accounts.auto_recapture 在后台拉起指纹浏览器打开 chat?isPopup=1 重新授权，
+    本路由供前端“立即处理验证”按钮或手动触发使用，行为与自动触发一致。
+    """
+    env_path = acct_core.env_path_of(name)
+    if not os.path.exists(os.path.dirname(env_path)):
+        return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
+    # 直接走后台重捕获（复用 send_target 自动触发同一条路径，带 5 分钟节流）
+    try:
+        acct_core.auto_recapture(name, landing_url=_RECAP_LANDING)
+        return ScanLoginResponse(
+            ok=True,
+            msg=f"已拉起指纹浏览器重新捕获私信凭证（{_RECAP_LANDING}）· {name}",
+        )
+    except Exception as e:
+        return ScanLoginResponse(ok=False, msg=f"自动重新捕获失败: {e}")
