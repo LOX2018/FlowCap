@@ -42,6 +42,13 @@ class DYLoginApi:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(self.home_url)
             await page.wait_for_load_state("load")
+            # 主动打开私信页，触发 security-sdk 生成【有效】web_protect（仅首页是空壳）
+            try:
+                await page.goto("https://www.douyin.com/message",
+                                wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning(f"[auth] 生成初始数据：打开私信页失败: {e}")
             keys_str = None
             web_protect_str = None
             for _ in range(6):
@@ -74,9 +81,11 @@ class DYLoginApi:
                                 env_path=".env", force=False):
         # force=True：强制重新扫码，绝不复用 profile 里的旧登录态（避免“着急捕获旧凭证”）。
         #   监测账号启动时永远 force=True，确保拿到“本次真实扫码”的会话 + 有效 web_protect。
-        # 关键：私信凭证 = 首页 security-sdk 的 web_protect/keys；但 web_protect 只有在
-        #   抖音网页版【打开过私信对话框】之后才生成有效值，否则是空壳 → 私信 KICK。
-        #   故捕获后必须校验 web_protect 有效性，无效则视为未就绪、继续等/报错，绝不写残缺凭证。
+        # 关键：私信凭证 = security-sdk 的 web_protect/keys。经验证抖音网页版 security-sdk
+        #   在【打开过私信对话框 / 私信页 https://www.douyin.com/message】之后，web_protect
+        #   才会生成【有效值】，仅停留在首页时拿到的是空壳 → 私信 KICK。
+        #   故捕获流程必须主动 goto 私信页触发 SDK 生成有效签名，并校验 web_protect 有效性，
+        #   无效则视为未就绪、继续等/报错，绝不写残缺凭证。
         # 账号隔离：env_path 推导该账号独占的 profile 目录，新增账号用全新指纹封存、不复用他人凭证。
         from auto_dm import config as _cfg
         from auto_dm.vbrowser import should_use_vb, launch_async
@@ -131,12 +140,30 @@ class DYLoginApi:
                     return True
             return False
 
+        async def _open_message_page():
+            """主动打开抖音私信页（https://www.douyin.com/message），触发 security-sdk
+            生成【有效】web_protect/keys。仅停留在首页时拿到的是空壳 → 私信 KICK，
+            故必须在等待登录态/签名期间周期性打开私信页。"""
+            try:
+                await page.goto("https://www.douyin.com/message",
+                                wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning(f"[auth] 打开私信页失败（将继续重试）: {e}")
+
         async def _wait_sign_and_login(ctx, deadline):
             """轮询直到：① 真实登录 cookie 出现（用户已扫码）且 ② web_protect 有效。
-            二者同时满足才返回 (keys_str, web_protect_str)，否则超时 raise。"""
+            二者同时满足才返回 (keys_str, web_protect_str)，否则超时 raise。
+            关键修复：轮询期间每轮主动 goto 私信页，触发 security-sdk 把 web_protect
+            从空壳升级为有效值（仅首页不会生成有效签名）。"""
             keys_str = web_protect_str = None
+            _msg_opened = False
             while time.time() < deadline:
                 await asyncio.sleep(1)
+                # 每轮都先确保打开过私信页（首轮打开一次即可，后续维持在该页轮询 localStorage）
+                if not _msg_opened:
+                    await _open_message_page()
+                    _msg_opened = True
                 try:
                     keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
                     web_protect_str = await page.evaluate(
@@ -308,7 +335,7 @@ class DYLoginApi:
                 # 浅校验：有 cookie 且能拿到自己的 uid，才算有效；否则视为失效重扫
                 try:
                     if DouyinAPI.get_my_uid(auth):
-                        logger.info("[auth] 凭证有效，跳过扫码（私信签名来自首页 security-sdk 自动生成，无需打开私信页）")
+                        logger.info("[auth] 凭证有效，跳过扫码（已有 web_protect/keys 有效签名，复用即可）")
                         return auth
                 except Exception as e:
                     logger.warning(f"[auth] 已有凭证但校验失败，将重新扫码: {e}")
