@@ -364,6 +364,14 @@ export default function AccountsPage(props: PageProps) {
       return;
     }
     const ids = Array.from(batchSel);
+    // 乐观更新：立即从本地列表移除勾选的卡片，消除后端刷新 3s+ 等待，感官零延迟
+    const removedNames = new Set(
+      ids.map((id) => shownAccounts.find((x) => x.id === id)?.name).filter(Boolean),
+    );
+    setAccounts((prev: RawAccount[]) =>
+      prev.filter((a) => !removedNames.has(a.name)),
+    );
+    push("正在删除 " + ids.length + " 个账号…");
     Promise.all(
       ids.map((id) => {
         const a = shownAccounts.find((x) => x.id === id);
@@ -374,9 +382,12 @@ export default function AccountsPage(props: PageProps) {
         push("已删除 " + ids.length + " 个账号");
         setBatchSel(new Set());
         setBatchMode(false);
-        refetch();
       })
-      .catch((e: unknown) => push("删除异常: " + errMsg(e)));
+      .catch((e: unknown) => push("删除异常: " + errMsg(e)))
+      .finally(() => {
+        // 后台静默重新拉取，纠正乐观更新的可能不一致（不阻塞 UI）
+        refetch();
+      });
   };
 
   const addAccount = () => {
