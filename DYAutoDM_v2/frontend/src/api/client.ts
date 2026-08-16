@@ -103,6 +103,20 @@ export const api = {
     });
   },
 
+  /** 启动自检：对所有账号跑双引擎校验（wp 凭证守护 + dm 私信列表拉取），返回可用状态 */
+  async selfCheck(): Promise<{
+    ok: boolean;
+    allOk: boolean;
+    items: {
+      name: string;
+      ok: boolean;
+      wp: { level: string; label: string; detail?: string } | null;
+      dm: { level: string; label: string; detail?: string } | null;
+    }[];
+  }> {
+    return request("/api/accounts/self-check");
+  },
+
   async scanLogin(name: string): Promise<{ ok: boolean; msg: string }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/scan`, {
       method: "POST",

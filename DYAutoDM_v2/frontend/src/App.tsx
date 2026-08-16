@@ -5,7 +5,7 @@
  * overview 用 React Query 3s 轮询（替代旧版 setInterval）。
  * Tauri 模式下首次查询会触发 ensureBackendReady 自动拉起 sidecar。
  */
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { api, Overview, PageProps } from "./api/client";
@@ -18,6 +18,7 @@ import AccountsPage from "./pages/accounts";
 import TasksPage from "./pages/tasks";
 import SettingsPage from "./pages/settings";
 import LogsPage from "./pages/logs";
+import SelfCheckModal, { SelfCheckItem } from "./components/SelfCheckModal";
 
 type TabId = (typeof TABS)[number][0];
 
@@ -104,6 +105,30 @@ export default function App() {
     refetchInterval: 3000,
   });
 
+  // ===== 启动自检：打开时对所有账号跑双引擎校验（wp 凭证守护 + dm 私信列表拉取）=====
+  const [selfCheckOpen, setSelfCheckOpen] = useState(false);
+  const [selfCheckLoading, setSelfCheckLoading] = useState(true);
+  const [selfCheckItems, setScItems] = useState<SelfCheckItem[]>([]);
+  const ranSelfCheck = useRef(false);
+
+  useEffect(() => {
+    if (!ready || ranSelfCheck.current) return; // 后端已连且只跑一次
+    ranSelfCheck.current = true;
+    setSelfCheckOpen(true);
+    setSelfCheckLoading(true);
+    api
+      .selfCheck()
+      .then((d) => {
+        setScItems((d.items || []) as SelfCheckItem[]);
+        setSelfCheckLoading(false);
+      })
+      .catch(() => {
+        // 自检接口失败不阻塞使用，仅静默关闭
+        setSelfCheckLoading(false);
+        setSelfCheckOpen(false);
+      });
+  }, [ready]);
+
   const setTab = useCallback((t: string) => {
     setTabState(t as TabId);
     try {
@@ -157,6 +182,13 @@ export default function App() {
           </div>
         ))}
       </div>
+      <SelfCheckModal
+        open={selfCheckOpen}
+        items={selfCheckItems}
+        loading={selfCheckLoading}
+        onClose={() => setSelfCheckOpen(false)}
+        push={push}
+      />
     </div>
   );
 }

@@ -151,6 +151,40 @@ async def list_accounts(request: Request):
     return {"ok": True, "accounts": [_to_raw_account(n) for n in names]}
 
 
+@router.get("/self-check")
+async def self_check(request: Request):
+    """启动自检：对所有账号真跑双引擎校验（wp=凭证守护四件套 + dm=私信列表拉取）。
+
+    前端打开时调用，用于一次性判断每个账号的 wp 引擎 / 私信引擎是否可用，
+    若不可用返回明细供前端弹「自检说明」弹窗。相比 /{name}/check（按需单账号），
+    本接口一次性覆盖全部账号，且对每个账号都跑 dm_loopback（私信列表拉取），
+    弥补 list_accounts 轮询接口 dmEngine 恒为「待校验」的盲区。
+    """
+    raw = acct_core.list_accounts()
+    names = [n[0] if isinstance(n, (tuple, list)) else n for n in raw]
+    items = []
+    for name in names:
+        entry = {"name": name, "wp": None, "dm": None, "ok": False}
+        try:
+            verify = acct_core.verify_account(name, timeout=8, dm_loopback=True)
+            entry["wp"] = verify.get("wp")
+            entry["dm"] = verify.get("dm")
+            entry["uid"] = verify.get("uid")
+            entry["ok"] = bool(verify.get("ok"))
+        except Exception as e:  # 单账号校验异常不阻断其他账号
+            logger.error(f"[self-check] 账号 {name} 校验异常: {e}")
+            entry["wp"] = {"level": "error", "label": "校验异常"}
+            entry["dm"] = {"level": "error", "label": "校验异常"}
+        items.append(entry)
+    # 整体是否全部可用（无 fail/error/unknown，且至少一个账号）
+    any_fail = any(
+        it["wp"] and it["wp"].get("level") in ("fail", "error", "unknown")
+        or it["dm"] and it["dm"].get("level") in ("fail", "error", "unknown")
+        for it in items
+    )
+    return {"ok": True, "allOk": (len(items) > 0 and not any_fail), "items": items}
+
+
 @router.post("/{name}/check")
 async def check_account(name: str) -> dict:
     """引擎校验（重量级，按需触发）。
