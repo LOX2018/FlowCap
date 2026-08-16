@@ -197,6 +197,9 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             executable_path=exe,
             headless=headless,
             args=_CHROME_ARGS,
+            # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
+            # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
+            ignore_default_args=["--no-sandbox"],
         )
         browser = context.browser
         return p, browser, context, "exe"
@@ -234,6 +237,9 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
             executable_path=exe,
             headless=headless,
             args=_CHROME_ARGS,
+            # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
+            # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
+            ignore_default_args=["--no-sandbox"],
         )
         browser = context.browser
         return p, browser, context, "exe"
@@ -277,6 +283,9 @@ async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.
             executable_path=exe,
             headless=headless,
             args=_CHROME_ARGS,
+            # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
+            # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
+            ignore_default_args=["--no-sandbox"],
         )
     else:
         port = launch_vb_env(_CFG.VB_ENV_ID, _CFG.VB_API_BASE, _CFG.VB_LAUNCH_TIMEOUT)
