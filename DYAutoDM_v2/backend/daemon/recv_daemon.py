@@ -79,6 +79,7 @@ class Conversation:
         self.conv_id = conv_id
         self.peer_id = peer_id
         self.peer_name = peer_name or (peer_id or conv_id)
+        self.short_id: Any = None
         self.messages: list[dict] = []
         self.unread = 0
         self.last_ts = 0
@@ -102,6 +103,7 @@ class Conversation:
             "conv_id": self.conv_id,
             "peer_id": self.peer_id,
             "peer_name": self.peer_name,
+            "short_id": self.short_id,
             "unread": self.unread,
             "last_ts": self.last_ts,
             "messages": self.messages,
@@ -136,6 +138,7 @@ class AccountInbox:
                 if not isinstance(d, dict) or not conv_id:
                     continue
                 c = Conversation(conv_id, d.get("peer_id"), d.get("peer_name"))
+                c.short_id = d.get("short_id")
                 c.messages = d.get("messages") or []
                 c.last_ts = d.get("last_ts") or 0
                 c.unread = 0
@@ -155,6 +158,7 @@ class AccountInbox:
                 data[cid] = {
                     "peer_id": c.peer_id,
                     "peer_name": c.peer_name,
+                    "short_id": c.short_id,
                     "last_ts": c.last_ts,
                     "messages": c.messages,
                 }
@@ -303,13 +307,26 @@ class RecvChannel(threading.Thread):
                 self._restart_ws()
 
     def _handle(self, message: bytes) -> None:
-        """解析 PushFrame -> Response.new_message_notify。"""
+        """解析 PushFrame -> Response。
+
+        - new_message_notify：新私信消息，按 content 提取可读文本入库。
+        - get_conversation_info_list_v2_response_body：连接初始化时抖音下发的
+          已有会话列表同步帧；据此建立会话骨架（conversation_id），使守护启动
+          即拿到全部历史会话（peer 信息待后续新消息到达时补全）。
+        """
         from static import Live_pb2, Response_pb2
         frame = Live_pb2.PushFrame()
         frame.ParseFromString(message)
         if frame.payloadType == "pb":
             resp = Response_pb2.Response()
             resp.ParseFromString(frame.payload)
+            # 1) 已有会话列表同步帧（连接初期下发一次）
+            sync = resp.body.get_conversation_info_list_v2_response_body
+            if sync and getattr(sync, "conversation_info_list", None):
+                self._sync_conversations(sync.conversation_info_list)
+                # 同步帧本身不携带消息体，直接返回；消息走 new_message_notify
+                return
+            # 2) 新私信消息
             nm = resp.body.new_message_notify
             if not nm or not nm.message:
                 return
@@ -336,6 +353,27 @@ class RecvChannel(threading.Thread):
                 logger.debug(f"[recv][{self.name}] json 控制帧: {json.loads(frame.payload)}")
             except Exception:
                 pass
+
+    def _sync_conversations(self, conv_list: list) -> None:
+        """把 WS 下发的已有会话列表建立成会话骨架（无消息、peer 信息待补）。"""
+        n_new = 0
+        with self.inbox.lock:
+            for item in conv_list:
+                conv_id = getattr(item, "conversation_id", "") or ""
+                if not conv_id:
+                    continue
+                if conv_id in self.inbox.convs:
+                    continue
+                # 同步帧只给 conversation_id（+short_id），真实对方 uid 待新私信补全
+                c = Conversation(conv_id, None, None)
+                c.short_id = getattr(item, "conversation_short_id", None) or None
+                self.inbox.convs[conv_id] = c
+                n_new += 1
+        if n_new:
+            self.inbox._save_history()
+            logger.info(
+                f"[recv][{self.name}] 已从同步帧加载 {n_new} 个已有会话"
+            )
 
     @staticmethod
     def _extract(content_json: dict, msg_type: Any) -> tuple[str | None, dict]:
