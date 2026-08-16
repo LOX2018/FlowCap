@@ -745,7 +745,10 @@ class DouyinAPI:
                 try:
                     _uid = int(sval, 16)  # 32 位 hex 串 -> 十进制 uid（新版 cookie）
                     if _uid and _uid > 1:
-                        return _uid
+                        # 抖音真实 uid 为十进制 19 位以内（int64 范围），
+                        # 超出则非真实 uid（风控验证页下发的伪造 token），丢弃
+                        if _uid < 10 ** 19:
+                            return _uid
                 except (ValueError, TypeError):
                     pass
         s_v_web_id = cookie.get("s_v_web_id")

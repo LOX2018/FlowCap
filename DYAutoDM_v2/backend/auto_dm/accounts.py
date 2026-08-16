@@ -269,7 +269,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
         try:
             from dy_apis.login_api import DYLoginApi
             from dy_apis.douyin_api import DouyinAPI
-            from auto_dm.sender import send_by_uid
+            from core.sender import send_by_uid
             auth = DYLoginApi._load_auth_from_env(env_path)
             uid = result["uid"] or DouyinAPI.get_my_uid(auth)
             if not uid:
