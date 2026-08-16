@@ -43,14 +43,25 @@ def app_root():
     """
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        # exe 旁直接有 vb_chromium（直接复制 exe 场景）
-        if os.path.isdir(os.path.join(exe_dir, "vb_chromium")):
-            return exe_dir
+        # 应用根解析：Tauri sidecar 常被放在 <root>/binaries/ 子目录（或类似 bin/），
+        # 而随附资源（vb_chromium / vb_profile_* / .env / logs）在 <root> 下。
+        # 若 exe 父目录名为 binaries/bin，则上溯一级作为应用根。
+        parent = os.path.dirname(exe_dir)
+        if os.path.basename(exe_dir).lower() in ("binaries", "bin"):
+            root_candidates = [parent, exe_dir]
+        else:
+            root_candidates = [exe_dir, parent]
+        for cand in root_candidates:
+            # 直接有 vb_chromium（复制 exe / 解压资源场景）
+            if os.path.isdir(os.path.join(cand, "vb_chromium")):
+                return cand
         # fallback: Tauri resources/ 子目录（NSIS 安装场景）
-        res_dir = os.path.join(exe_dir, "resources")
-        if os.path.isdir(os.path.join(res_dir, "vb_chromium")):
-            return res_dir
-        return exe_dir  # 退化返回 exe 旁，让上层报明确的"找不到"错误
+        for cand in root_candidates:
+            res_dir = os.path.join(cand, "resources")
+            if os.path.isdir(os.path.join(res_dir, "vb_chromium")):
+                return res_dir
+        # 退化返回 exe 所在目录，让上层报明确的"找不到"错误
+        return exe_dir
     # 本文件: <root>/backend/vbrowser.py -> 向上两级(backend 的上一级) = <root>
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -215,6 +226,81 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
     browser = p.chromium.connect_over_cdp(f"http://localhost:{port}")
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     return p, browser, context, "cdp"
+
+
+async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.com/"):
+    """单纯拉起指纹浏览器并打开指定页面（默认抖音主页）。
+
+    与扫码登录（get_login_auth/force=True）是两条完全不同的路径：
+      - 本函数【不扫码、不抓凭证、不写回 .env】，只是“打开浏览器看一眼”；
+      - 复用各账号独占的 profile 目录，从而打开的是该账号已绑定的登录态（若扫码过）；
+      - 浏览器前台常驻（headless=False），用户可手动操作，关闭窗口即结束。
+
+    适用于“账号管理双击指纹浏览器”这类纯查看/手动操作场景。
+    """
+    import asyncio
+    from playwright.async_api import async_playwright
+
+    mode = getattr(_CFG, "VB_MODE", "exe")
+    if mode == "exe":
+        exe = _resolve_exe(getattr(_CFG, "VB_CHROME_EXE", "") or "")
+        if not exe or not os.path.exists(exe):
+            raise RuntimeError(
+                f"[vbrowser] 指纹浏览器内核不存在: {exe}（已禁用原生 Playwright，不会回退）。"
+                f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
+        logger.info(f"[vbrowser] 打开指纹浏览器(查看模式) 内核={exe} profile={profile_dir}")
+        p = await async_playwright().start()
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir=profile_dir,
+            executable_path=exe,
+            headless=headless,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+    else:
+        port = launch_vb_env(_CFG.VB_ENV_ID, _CFG.VB_API_BASE, _CFG.VB_LAUNCH_TIMEOUT)
+        if not port:
+            raise RuntimeError(
+                f"[vbrowser] 指纹浏览器 CDP 服务不可达: {_CFG.VB_API_BASE}（已禁用原生 Playwright，不会回退）。"
+                f"请先启动 VirtualBrowser/Ant-Browser 本地服务。")
+        p = await async_playwright().start()
+        browser = await p.chromium.connect_over_cdp(f"http://localhost:{port}")
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+
+    page = context.pages[0] if context.pages else await context.new_page()
+    await page.goto(url, wait_until="domcontentloaded")
+    logger.info(f"[vbrowser] 已打开页面: {url}（用户可手动操作，关闭窗口即结束）")
+    # 前台常驻：阻塞直到浏览器上下文关闭（用户手动关窗），避免进程被回收
+    try:
+        while True:
+            if not context.pages:
+                break
+            await asyncio.sleep(1)
+    except Exception:
+        pass
+    finally:
+        try:
+            await context.close()
+        except Exception:
+            pass
+        try:
+            await p.stop()
+        except Exception:
+            pass
+    return True
+
+
+# 全局 VB 配置对象（供 open_douyin_home 等轻量入口读取 VB_MODE/EXE 等，
+# 无需每次传入）。运行期由 init_vb_config() 注入。
+_CFG = None
+
+
+def init_vb_config(cfg):
+    """注入 VB 配置对象（含 USE_VIRTUAL_BROWSER/VB_MODE/VB_CHROME_EXE 等属性）。
+
+    供 open_douyin_home 等不接收 cfg 参数的轻量入口复用，避免 import 循环。
+    """
+    global _CFG
+    _CFG = cfg
 
 
 def should_use_vb(cfg):

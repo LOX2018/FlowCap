@@ -49,6 +49,33 @@ def _do_scan(name: str):
         st["running"] = False
 
 
+def _do_open_browser(name: str):
+    """后台线程：单纯拉起该账号绑定的指纹浏览器并打开抖音主页（不扫码、不抓凭证）。"""
+    st = _scan_state.setdefault(name, {})
+    st["running"] = True
+    st["done"] = False
+    st["error"] = ""
+    try:
+        import asyncio
+        from auto_dm import config as _cfg
+        from auto_dm.vbrowser import open_douyin_home, init_vb_config
+        init_vb_config(_cfg)
+        env_path = acct_core.env_path_of(name)
+        profile = acct_core.profile_dir_of(env_path)
+        os.makedirs(profile, exist_ok=True)
+        logger.info(f"[open-browser] 账号 {name} 打开指纹浏览器(profile={profile})")
+        # 前台常驻：阻塞直到用户关闭浏览器窗口
+        asyncio.run(open_douyin_home(profile, headless=False,
+                                     url="https://www.douyin.com/"))
+        st["done"] = True
+    except Exception as e:
+        logger.error(f"[open-browser] 账号 {name} 打开指纹浏览器异常: {e}")
+        st["error"] = str(e)
+        st["done"] = True
+    finally:
+        st["running"] = False
+
+
 def _wait_scan_error(name: str, timeout: float = 4.0) -> str:
     """等待扫码线程：若很快以失败结束（如指纹内核缺失），返回错误文案，否则返回空串。
 
@@ -150,13 +177,12 @@ def _quit_browser_daemon(name: str) -> bool:
 
 @router.post("/{name}/open-browser")
 async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
-    """打开该账号绑定的指纹浏览器窗口（先停守护释放 profile 锁，再弹窗）。
+    """单纯打开该账号绑定的指纹浏览器并打开默认抖音主页（查看/手动操作）。
 
-    安全流程：点开指纹浏览器前必须先停掉 browser_daemon，否则两者会争抢
-    同一个 Chromium profile 锁导致两边都起不来。停止后弹窗扫码，用户操作完
-    关闭浏览器后由 UI 重新启动守护即可恢复凭证保活。
-
-    注意：此接口仅负责“弹窗”，守护的重启由前端 toggleBrowserDaemon 触发。
+    与“重新获取凭证/扫码登录”是两条不同的路径：本接口【不扫码、不抓凭证、
+    不写回 .env】，只拉起浏览器让用户查看或手动操作抖音页面。
+    为避免与常驻的凭证守护争抢 Chromium profile 锁，先临时停止该账号凭证守护，
+    浏览器关闭后请在前端重新启动守护以恢复凭证保活。
     """
     env_path = acct_core.env_path_of(name)
     if not os.path.exists(os.path.dirname(env_path)):
@@ -166,7 +192,7 @@ async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
         return ScanLoginResponse(ok=True, msg=f"账号 {name} 指纹浏览器已打开，请完成操作")
     # 先停守护释放 profile 锁
     daemon_was_alive = _quit_browser_daemon(name)
-    t = threading.Thread(target=_do_scan, args=(name,), daemon=True)
+    t = threading.Thread(target=_do_open_browser, args=(name,), daemon=True)
     t.start()
     # 捕获立即发生的失败（如指纹内核缺失），否则前端永远 ok=True 却看不到浏览器
     err = _wait_scan_error(name)
@@ -174,7 +200,7 @@ async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
         return ScanLoginResponse(ok=False, msg=f"打开指纹浏览器失败: {err}")
     hint = "（已先停止凭证守护释放浏览器，操作完后请在卡片重新启动守护）" if daemon_was_alive \
         else "（该账号守护未运行，直接打开）"
-    return ScanLoginResponse(ok=True, msg=f"已弹出指纹浏览器，请操作账号 {name}{hint}")
+    return ScanLoginResponse(ok=True, msg=f"已打开指纹浏览器（查看模式）· {name}{hint}")
 
 
 @router.post("/{name}/scan")
