@@ -21,7 +21,7 @@ from loguru import logger
 
 def enrich_auth(auth, cookies_dy="", headless=False,
                 user_data_dir="pw_profile_dm", env_path=".env", force=False,
-                landing_url="https://www.douyin.com/message"):
+                landing_url="https://www.douyin.com/chat?isPopup=1"):
     """补全 auth 的私信签名字段。
 
     直接委托基座 DYLoginApi.get_login_auth：

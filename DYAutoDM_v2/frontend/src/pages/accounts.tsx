@@ -368,8 +368,8 @@ export default function AccountsPage(props: PageProps) {
     const removedNames = new Set(
       ids.map((id) => shownAccounts.find((x) => x.id === id)?.name).filter(Boolean),
     );
-    setAccounts((prev: RawAccount[]) =>
-      prev.filter((a) => !removedNames.has(a.name)),
+    qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
+      (old ?? []).filter((a) => !removedNames.has(a.name)),
     );
     push("正在删除 " + ids.length + " 个账号…");
     Promise.all(
@@ -530,7 +530,7 @@ export default function AccountsPage(props: PageProps) {
               dmEngine: {
                 level: "unknown",
                 label: "校验中…",
-                detail: "正在对自身发送回环测试文本，请稍候",
+                detail: "正在拉取私信会话列表（无副作用），验证私信凭证是否有效",
               },
             }
           : x,
@@ -578,14 +578,14 @@ export default function AccountsPage(props: PageProps) {
   };
 
   const handleScanVerify = (a: FmtAccount) => {
-    push("已提醒处理验证 · " + a.name + " · 将在弹出的指纹浏览器私信页完成重新授权");
+    push("已提醒处理验证 · " + a.name + " · 将在弹出的指纹浏览器抖音首页完成重新扫码");
     api.addLog("INFO", `提醒处理验证 · ${a.name}`).catch(() => {});
     api
       .autoRecapture(a.name)
       .then((d) => {
         const r = d as { ok?: boolean; msg?: string; error?: string };
         if (r && r.ok) {
-          push(r.msg || "已为 " + a.name + " 弹出指纹浏览器（私信页）");
+          push(r.msg || ("已为 " + a.name + " 弹出指纹浏览器重新捕获私信凭证"));
           api.addLog("SUCCESS", `已为 ${a.name} 弹出指纹浏览器重新捕获私信凭证`).catch(() => {});
           setScanning({ name: a.name, seq: Date.now() });
         } else if (r && r.error) {

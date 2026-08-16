@@ -23,7 +23,8 @@ class DYLoginApi:
         self.home_url = 'https://www.douyin.com/'
 
     # 生成初始cookies
-    async def dyGenerateInitData(self, headless=True, cookie_str=""):
+    async def dyGenerateInitData(self, headless=True, cookie_str="",
+                                  landing_url="https://www.douyin.com/chat?isPopup=1"):
         # 禁止回退原生 Playwright：统一走指纹浏览器内核（should_use_vb 不可用时直接抛错）
         from auto_dm import config as _cfg
         from auto_dm.vbrowser import should_use_vb, launch_async
@@ -42,13 +43,8 @@ class DYLoginApi:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(self.home_url)
             await page.wait_for_load_state("load")
-            # 主动打开私信页，触发 security-sdk 生成【有效】web_protect（仅首页是空壳）
-            try:
-                await page.goto("https://www.douyin.com/message",
-                                wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(2)
-            except Exception as e:
-                logger.warning(f"[auth] 生成初始数据：打开私信页失败: {e}")
+            # 不再主动 goto 私信落地页：用户实测验证首页 security-sdk 已能生成有效 web_protect，
+            # 主动跳转 chat?isPopup=1 会触发抖音弹窗模式自动关闭导致浏览器崩溃。
             keys_str = None
             web_protect_str = None
             for _ in range(6):
@@ -79,21 +75,20 @@ class DYLoginApi:
     # 扫码登录并抓 ticket
     async def login_grab_ticket(self, headless=False, timeout=300, user_data_dir="pw_profile_dm",
                                 env_path=".env", force=False,
-                                landing_url="https://www.douyin.com/message"):
+                                landing_url="https://www.douyin.com/chat?isPopup=1"):
         """捕获私信签名凭证。
 
-        landing_url: 重捕获时优先打开的私信落地页。默认 /message（经验证此处
-            会触发 security-sdk 生成有效 web_protect）。私信凭证失效自动重新捕获时
-            传入 https://www.douyin.com/chat?isPopup=1，让用户在该弹窗聊天页完成
-            重新授权/验证，同样会触发 web_protect 生成。
+        landing_url: 保留参数供历史调用方传值兼容，但【不再主动 goto 该 URL】。
+            用户实测验证（2026-08-16）：账号管理双击指纹浏览器打开抖音首页就能获取
+            有效 web_protect，私信正常发送。主动 goto chat?isPopup=1 反而会触发抖音
+            “弹窗模式自动关闭”行为 → 浏览器窗口被关闭 → “Target page, context or
+            browser has been closed”报错。故统一改为：浏览器只停在抖音首页等待扫码，
+            不再主动跳转任何私信落地页，security-sdk 在首页加载后就会生成有效 web_protect。
         """
         # force=True：强制重新扫码，绝不复用 profile 里的旧登录态（避免“着急捕获旧凭证”）。
-        #   监测账号启动时永远 force=True，确保拿到“本次真实扫码”的会话 + 有效 web_protect。
-        # 关键：私信凭证 = security-sdk 的 web_protect/keys。经验证抖音网页版 security-sdk
-        #   在【打开过私信对话框 / 私信页 https://www.douyin.com/message】之后，web_protect
-        #   才会生成【有效值】，仅停留在首页时拿到的是空壳 → 私信 KICK。
-        #   故捕获流程必须主动 goto 私信页触发 SDK 生成有效签名，并校验 web_protect 有效性，
-        #   无效则视为未就绪、继续等/报错，绝不写残缺凭证。
+        # 关键：私信凭证 = security-sdk 的 web_protect/keys。经验证（2026-08-16 用户实测），
+        #   抖音首页 security-sdk 在【首页加载】时即生成有效 web_protect（无需打开私信页）。
+        #   旧记忆“仅首页是空壳，需打开私信页”是错误的，本次修复移除主动跳转逻辑。
         # 账号隔离：env_path 推导该账号独占的 profile 目录，新增账号用全新指纹封存、不复用他人凭证。
         from auto_dm import config as _cfg
         from auto_dm.vbrowser import should_use_vb, launch_async
@@ -148,44 +143,30 @@ class DYLoginApi:
                     return True
             return False
 
-        async def _open_message_page():
-            """主动打开抖音私信页（默认 /message，重捕获时可能为 chat?isPopup=1），
-            触发 security-sdk 生成【有效】web_protect/keys。仅停留在首页时拿到的是空壳
-            → 私信 KICK，故必须在等待登录态/签名期间周期性打开私信页。
-
-            landing_url 由 login_grab_ticket 参数传入：私信凭证失效自动重新捕获时
-            传 https://www.douyin.com/chat?isPopup=1（弹窗聊天页），让用户在该页完成
-            重新授权/验证；常规扫码仍用 /message。
-            """
-            try:
-                await page.goto(landing_url,
-                                wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(2)
-            except Exception as e:
-                logger.warning(f"[auth] 打开私信页({landing_url})失败（将继续重试）: {e}")
-
         async def _wait_sign_and_login(ctx, deadline):
             """轮询直到：① 真实登录 cookie 出现（用户已扫码）且 ② web_protect 有效。
             二者同时满足才返回 (keys_str, web_protect_str)，否则超时 raise。
-            关键修复：轮询期间每轮主动 goto 私信页，触发 security-sdk 把 web_protect
-            从空壳升级为有效值（仅首页不会生成有效签名）。"""
+
+            关键时序（对齐用户实测验证 2026-08-16 的成功路径）：
+            - 浏览器停留在抖音【首页】，绝不主动跳转任何私信落地页；
+              用户实测：账号管理双击指纹浏览器打开首页即可获取有效 web_protect，
+              主动 goto chat?isPopup=1 反而触发抖音“弹窗模式自动关闭”导致浏览器崩溃
+              （日志 "Target page, context or browser has been closed"）。
+            - 轮询期间持续在首页刷新 web_protect/keys，security-sdk 在首页加载后
+              会生成有效值，无需跳转任何私信页。
+            """
             keys_str = web_protect_str = None
-            _msg_opened = False
             while time.time() < deadline:
                 await asyncio.sleep(1)
-                # 每轮都先确保打开过私信页（首轮打开一次即可，后续维持在该页轮询 localStorage）
-                if not _msg_opened:
-                    await _open_message_page()
-                    _msg_opened = True
+                # 必须真实登录态（sessionid 出现）+ web_protect 有效 JSON（空壳不算），否则继续等
                 try:
                     keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
                     web_protect_str = await page.evaluate(
                         'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
                 except Exception:
                     keys_str = web_protect_str = None
-                # 关键：必须真实登录态（sessionid 出现），仅 web_protect 出现不算；
-                # 且 web_protect 必须是有效 JSON（空壳不算），否则继续等
                 if (keys_str and _web_protect_valid(web_protect_str)) and await _is_real_login(ctx):
+                    logger.info("[auth] 检测到真实登录态 + 有效 web_protect（首页 security-sdk 已生成）")
                     return keys_str, web_protect_str
             raise TimeoutError(
                 "登录超时：未在超时时间内完成扫码并拿到【有效】web_protect+登录态，已放弃，不写入残缺凭证")
@@ -329,7 +310,7 @@ class DYLoginApi:
         return auth
 
     async def get_login_auth(self, headless=False, env_path=".env", force=False,
-                             landing_url="https://www.douyin.com/message"):
+                             landing_url="https://www.douyin.com/chat?isPopup=1"):
         """优先从 env_path 指定的 .env 读 ticket，没有或已失效就扫码登录后写入该 .env。
 
         多账号切换：env_path 指向当前选中账号的 .env，扫码凭证只写回该账号文件。

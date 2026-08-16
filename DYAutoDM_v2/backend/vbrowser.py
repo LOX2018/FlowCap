@@ -171,8 +171,9 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
 
     user_data_dir：exe 模式使用持久化 profile（launch_persistent_context）。
       - force=True（强制重新扫码）：使用【临时目录】作为 profile，确保浏览器一定是“未登录”全新态，
-        必然弹出二维码等待用户真实扫码；避免因持久化 profile 残留旧 sessionid 而“跳过扫码、误捕获旧凭证”
-        （这正是“还没扫码就登录了”的根因）。扫完即弃，不留旧登录态。
+        必然弹出二维码等待用户真实扫码；避免因持久化 profile 残留旧 sessionid 而“跳过扫码、误捕获旧凭证”。
+        临时目录扫完即弃，绝【不】清空持久化 profile（否则会丢失原登录态、且与已打开的浏览器抢 profile 锁
+        导致 WinError 32 + 浏览器崩溃落到 about:blank，这是真实事故的根因）。
       - force=False：用 user_data_dir（默认 vb_profile_dm），可复用已有登录态免扫码。
     """
     from playwright.async_api import async_playwright
@@ -188,11 +189,16 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         if user_data_dir is None:
             user_data_dir = os.path.join(app_root(), "vb_profile_dm")
         if force:
-            # 方案B：强制重扫时，直接清空该账号的 profile 整个目录（等同全新浏览器），
-            # 再用原目录启动——绕过一切持久化登录态（残留 sessionid 等），确保必须真实扫码；
-            # 扫完的真实登录态会写回原目录（区别于临时目录，不会扫完即弃）。
-            _wipe_user_data_dir(user_data_dir)
-            logger.info(f"[vbrowser] 强制重扫模式：已清空原 profile 目录（等同全新浏览器）: {user_data_dir}")
+            # 方案A（修复事故）：强制重扫时改用【临时目录】启动浏览器，绝不触碰持久化 profile。
+            # 旧方案“清空原 profile 再用原目录启动”有两宗罪：
+            #   1) 用户先前用「双击指纹浏览器（查看模式）」打开的浏览器占用该 profile，
+            #      _wipe_user_data_dir 报 WinError 32 → 后续 launch_persistent_context 落到 about:blank；
+            #   2) 清空会丢失该账号原有登录态、私聊记录、扩展设置等。
+            # 临时目录每次新建、扫完即弃，与持久化 profile 完全隔离，不冲突、不丢登录态。
+            import tempfile
+            tmp_profile = tempfile.mkdtemp(prefix="vb_force_rescan_")
+            user_data_dir = tmp_profile
+            logger.info(f"[vbrowser] 强制重扫模式：使用临时 profile（不动持久化 profile）: {user_data_dir}")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,

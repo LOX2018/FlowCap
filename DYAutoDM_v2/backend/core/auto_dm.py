@@ -150,12 +150,10 @@ class AutoDM:
                     force_fresh = True
 
         if force_fresh:
-            from services.account_service import AccountService
-            try:
-                # 清除旧凭证（双保险）
-                pass  # TODO: 迁移 clear_credentials_of
-            except Exception:
-                pass
+            # 强制重扫：扫码前【不清空 .env】，新凭证成功后才覆盖；
+            # 浏览器由 vbrowser.launch_async(force=True) 使用【临时 profile】启动，
+            # 绝不动该账号持久化 profile，避免与「查看模式」打开的浏览器抢 profile 锁导致
+            # 浏览器崩溃落到 about:blank（真实事故根因）。
             from dy_apis.login_api import DYLoginApi
             api = DYLoginApi()
             try:

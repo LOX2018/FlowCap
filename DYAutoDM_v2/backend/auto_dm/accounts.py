@@ -243,20 +243,28 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
                 _sv = _cookie.get("s_v_web_id") or ""
                 _no_wpsign = not getattr(auth, "web_protect_str", None)
                 _is_verify_page = _sv.startswith("verify_") or _sv.startswith("verify_msppk8gp")
-                if _is_verify_page or _no_wpsign:
+                # 关键放宽（修复 2026-08-16 误判）：
+                # 旧逻辑把 s_v_web_id=verify_xxx 占位 + web_protect_str 缺失 同时判定为 fail，
+                # 但用户实测验证账号管理双击指纹浏览器登录正常、私信正常，
+                # 说明 .env 里实际 web_protect/keys 已持久化、cookie 也有效，s_v_web_id 占位
+                # 可能是抖音风控页留下的正常痕迹而非真风控。判定标准收紧为：
+                # 仅当 web_protect_str 与 keys 同时缺失 + s_v_web_id 是 verify_ 占位
+                # 才判“需重新授权”，否则保守视为 warn（探活失败但凭证可能仍可用）。
+                if _is_verify_page and _no_wpsign:
                     result["wp"] = {
-                        "level": "fail",
-                        "label": "需重新授权（账号疑似风控）",
-                        "detail": "wp 签名四件套虽已捕获，但 cookie 中 s_v_web_id 为风控验证页占位值"
-                                  "（%s）或 web_protect 未持久化，get_my_uid 探活失败。"
-                                  "请点「重新获取凭证」重新扫码，确保在正常网络/设备下完成登录"
-                                  "（避开抖音风控验证页）。" % _sv[:24],
+                        "level": "warn",
+                        "label": "需重新授权（凭证疑似风控）",
+                        "detail": "cookie 中 s_v_web_id 为风控验证页占位值（%s），"
+                                  "且 .env 未持久化 web_protect/keys。可尝试点「重新获取凭证」"
+                                  "重新扫码（避开抖音风控验证页）。" % _sv[:24],
                     }
                 else:
                     result["wp"] = {
                         "level": "warn",
                         "label": "捕获齐全但探活失败",
-                        "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败（守护可能刚重启/网络抖动），可稍后重试引擎校验。",
+                        "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败"
+                                  "（守护可能刚重启/网络抖动/账号偶发风控），"
+                                  "可稍后重试引擎校验；私信凭证可能仍可用。",
                     }
             elif uid and not _has_sign:
                 result["wp"] = {
@@ -305,12 +313,34 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
                 "detail": f"拉取私信列表失败: {e}",
             }
     else:
-        # 轮询场景：私信引擎状态沿用“接收守护是否在跑”做轻量标注
-        result["dm"] = {
-            "level": "idle",
-            "label": "待校验",
-            "detail": "点击账号卡片「引擎校验」按钮可触发私信引擎列表拉取测试。",
-        }
+        # 轮询场景（dm_loopback=False）：不做真实列表拉取测试（避免高频污染/耗时）。
+        # 沿用 wp 引擎结果作为 dm 引擎状态的轻量近似，避免“恒显待校验”误导用户以为私信引擎异常。
+        # 用户点「引擎校验」按钮（dm_loopback=True）才会真跑拉取测试并显示真实结果。
+        wp_level = result["wp"].get("level")
+        if wp_level == "ok":
+            result["dm"] = {
+                "level": "ok",
+                "label": "正常（沿用 wp）",
+                "detail": "wp 引擎正常时私信凭证通常亦可用；点「引擎校验」可触发真实列表拉取测试。",
+            }
+        elif wp_level in ("fail", "error"):
+            result["dm"] = {
+                "level": "fail",
+                "label": "私信凭证失效",
+                "detail": "wp 引擎判定失败，私信凭证亦不可信；请重新获取凭证后再校验。",
+            }
+        elif wp_level == "warn":
+            result["dm"] = {
+                "level": "warn",
+                "label": "可能可用（沿用 wp）",
+                "detail": "wp 引擎告警但凭证可能仍可用；点「引擎校验」可触发真实列表拉取测试。",
+            }
+        else:
+            result["dm"] = {
+                "level": "idle",
+                "label": "待校验",
+                "detail": "点击账号卡片「引擎校验」按钮可触发私信引擎列表拉取测试。",
+            }
 
     result["ok"] = (result["wp"]["level"] in ("ok", "warn")
                     and result["dm"]["level"] in ("ok", "warn", "skip"))
