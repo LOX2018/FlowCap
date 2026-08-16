@@ -30,6 +30,28 @@ import time
 import requests
 from loguru import logger
 
+# 指纹内核（Ungoogled Chromium）启动参数。
+# 重要：桌面程序（双击 exe 运行，非 root/容器）【不需要也不该用 --no-sandbox】，
+# 加它反而会触发内核“不受支持的命令行标记”警告并可能拖慢渲染进程稳定性。
+# 以下参数在去除 --no-sandbox 的基础上，补齐指纹内核友好 + 冷启动提速的组合：
+#   --disable-gpu               避免无头/独显切换导致的渲染进程反复重建
+#   --disable-dev-shm-usage    用磁盘而非 /dev/shm，防共享内存不足引发的卡顿/崩溃
+#   --no-first-run             跳过首次运行向导
+#   --no-default-browser-check 不探测系统默认浏览器
+#   --disable-blink-features=AutomationControlled  隐藏自动化特征（指纹场景保留）
+#   --disable-background-networking / --disable-extensions / --disable-sync
+#                               减少无关后台联网与扩展加载，加快首屏
+_CHROME_ARGS = [
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-extensions",
+    "--disable-sync",
+    "--disable-blink-features=AutomationControlled",
+]
+
 
 def app_root():
     """应用根目录（持久化数据基准）：
@@ -174,7 +196,7 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             user_data_dir=user_data_dir,
             executable_path=exe,
             headless=headless,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            args=_CHROME_ARGS,
         )
         browser = context.browser
         return p, browser, context, "exe"
@@ -211,7 +233,7 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
             user_data_dir=user_data_dir,
             executable_path=exe,
             headless=headless,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            args=_CHROME_ARGS,
         )
         browser = context.browser
         return p, browser, context, "exe"
@@ -254,7 +276,7 @@ async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.
             user_data_dir=profile_dir,
             executable_path=exe,
             headless=headless,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            args=_CHROME_ARGS,
         )
     else:
         port = launch_vb_env(_CFG.VB_ENV_ID, _CFG.VB_API_BASE, _CFG.VB_LAUNCH_TIMEOUT)
