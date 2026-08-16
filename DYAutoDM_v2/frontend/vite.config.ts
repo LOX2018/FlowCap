@@ -16,6 +16,9 @@ export default defineConfig({
     target: "esnext",
     outDir: "dist",
     sourcemap: false,
+    // 禁用 vite 自动清空输出目录：避免 IDE safe-delete 批量删除拦截导致打包失败。
+    // 清空动作由打包脚本在 tauri build 前用 cmd /c rmdir 完成。
+    emptyOutDir: false,
   },
   resolve: {
     alias: {

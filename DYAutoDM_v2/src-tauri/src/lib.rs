@@ -40,12 +40,12 @@ async fn start_backend(
     Ok("started".into())
 }
 
-/// 停止后端 sidecar
+/// 停止后端 sidecar（递归杀进程树，避免 PyInstaller onefile 子进程成孤儿）
 #[tauri::command]
 async fn stop_backend(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.backend.lock().map_err(|e| e.to_string())?;
-    if let Some(h) = guard.take() {
-        h.kill().map_err(|e| e.to_string())?;
+    if let Some(mut h) = guard.take() {
+        h.kill_tree().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -167,23 +167,27 @@ pub fn run() {
             }
             Ok(())
         })
-        // 前端窗口关闭时联动关闭所有 sidecar（后端 + 账号守护），避免孤儿进程
+        // 前端窗口关闭时联动关闭所有 sidecar：先关前端后端的子进程树，再关守护，
+        // 避免孤儿进程（PyInstaller onefile 解压出的 _MEI 子进程）继续占用端口。
+        // 顺序：① 后端 sidecar（kill_tree 递归终止）→ ② 各账号守护（kill_tree）。
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                log::info!("窗口关闭请求，清理所有 sidecar 进程");
+                log::info!("窗口关闭请求：先关闭后端进程树，再关闭守护");
                 let app = window.app_handle();
+                // ① 优先关闭后端（递归杀进程树，连带 _MEI 子进程一并终止）
                 if let Ok(mut state) = app.state::<AppState>().backend.lock() {
-                    if let Some(h) = state.take() {
-                        let _ = h.kill();
+                    if let Some(mut h) = state.take() {
+                        let _ = h.kill_tree();
                     }
                 }
+                // ② 再关闭各账号守护进程树
                 if let Ok(mut guard) = app.state::<AppState>().daemons.lock() {
                     let handles: Vec<SidecarHandle> = guard.drain(..).collect();
-                    for h in handles {
-                        let _ = h.kill();
+                    for mut h in handles {
+                        let _ = h.kill_tree();
                     }
                 }
-                log::info!("sidecar 进程已全部关闭");
+                log::info!("后端与守护进程树已全部关闭");
             }
         })
         .invoke_handler(tauri::generate_handler![

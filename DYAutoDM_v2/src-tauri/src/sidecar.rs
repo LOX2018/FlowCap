@@ -71,6 +71,47 @@ impl SidecarHandle {
         self.alive.load(Ordering::SeqCst)
     }
 
+    /// 递归终止整个进程树（Windows 下 PyInstaller onefile 的 sidecar 会解压出
+    /// `_MEIxxxx` 临时子进程，普通 kill() 只杀外层解压器，真正的 Python 子进程
+    /// 会成为孤儿继续占用端口/资源。用 taskkill /F /T 递归杀掉整棵树。）
+    pub fn kill_tree(&mut self) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            if let Some(child) = &self.child {
+                let pid = child.pid();
+                if pid > 0 {
+                    let out = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .output();
+                    match out {
+                        Ok(_) => {
+                            self.alive.store(false, Ordering::SeqCst);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            // taskkill 不可用（极罕见），回退普通 kill
+                            log::warn!("taskkill 失败，回退普通 kill: {e}");
+                        }
+                    }
+                }
+            }
+            // 回退：普通 kill（仍可能留下孤儿）
+            if let Some(mut child) = self.child.take() {
+                child.kill().map_err(|e| e.to_string())?;
+            }
+            self.alive.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            if let Some(mut child) = self.child.take() {
+                child.kill().map_err(|e| e.to_string())?;
+            }
+            self.alive.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
     pub fn kill(mut self) -> Result<(), String> {
         if let Some(child) = self.child.take() {
             child.kill().map_err(|e| e.to_string())?;
