@@ -8,7 +8,9 @@
 存储结构：
   auto_dm/accounts.json        账号索引（name -> env 相对路径）
   auto_dm/accounts/<name>/.env 每个账号独立的凭证文件
-  根目录 .env                  作为“默认账号”（兼容旧用法，name="默认账号”）
+
+注意：已取消「默认账号」概念——所有账号都必须通过「新增账号」才能被管理，
+不存在根 .env 默认账号，也没有任何隐式回退。无账号时相关函数返回 None。
 
 调用方（run.py / auth_helper / login_api）统一通过 env_path 参数指定要读写的
 .env 文件，从而实现账号切换。
@@ -24,8 +26,6 @@ from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根�
 _ROOT = app_root()  # DY_Spider_base（源码态）/ exe 所在目录（打包态，随附资源根）
 _ACCOUNTS_DIR = os.path.join(_ROOT, "auto_dm", "accounts")
 _INDEX_PATH = os.path.join(_ACCOUNTS_DIR, "accounts.json")
-_DEFAULT_ENV = os.path.join(_ROOT, ".env")          # 旧版/默认账号
-_DEFAULT_NAME = "默认账号"
 
 # 探活结果缓存（避免频繁请求）：name -> (ts, ok, info)
 _status_cache = {}
@@ -36,20 +36,21 @@ def _ensure_dirs():
 
 
 def _load_index():
+    """加载账号索引。
+
+    新设计：取消「默认账号」概念——不存在任何账号时返回空索引
+    （{"current": null, "accounts": {}}）。所有账号都必须通过「新增账号」才能被管理。
+    """
     _ensure_dirs()
     if not os.path.exists(_INDEX_PATH):
-        # 兼容旧版：若根 .env 存在，自动登记为“默认账号”
-        idx = {"current": _DEFAULT_NAME, "accounts": {_DEFAULT_NAME: ".env"}}
-        if os.path.exists(_DEFAULT_ENV):
-            _save_index(idx)
-        return idx
+        return {"current": None, "accounts": {}}
     try:
         with open(_INDEX_PATH, "r", encoding="utf-8") as f:
             idx = json.load(f)
     except Exception:
-        return {"current": _DEFAULT_NAME, "accounts": {_DEFAULT_NAME: ".env"}}
+        return {"current": None, "accounts": {}}
 
-    # 兼容性修正：旧版把 rel 存成了 "accounts/<name>/.env"（带前缀），
+    # 归一化：旧版可能把 rel 存成 "accounts/<name>/.env"（带前缀），
     # 与 _ACCOUNTS_DIR 拼接会变成双重 accounts 前缀。这里归一化为 "<name>/.env"，
     # 并把旧错误路径下已生成的 .env 文件迁移到正确位置。
     fixed = False
@@ -74,6 +75,9 @@ def _load_index():
                     pass
             idx["accounts"][name] = clean_rel
             fixed = True
+    # 若 current 指向不存在的账号，置空（取消默认账号后不允许落到不存在的账号）
+    if idx.get("current") and idx["current"] not in idx.get("accounts", {}):
+        idx["current"] = None
     if fixed:
         _save_index(idx)
     return idx
@@ -86,33 +90,42 @@ def _save_index(idx):
 
 
 def list_accounts():
-    """返回 [(name, env_path), ...]，env_path 为绝对路径。"""
+    """返回 [(name, env_path), ...]，env_path 为绝对路径。
+
+    取消默认账号：仅返回索引中通过「新增账号」登记的账号，不再注入根 .env。
+    """
     idx = _load_index()
     out = []
     for name, rel in idx.get("accounts", {}).items():
-        if rel == ".env":
-            out.append((name, _DEFAULT_ENV))
-        else:
-            out.append((name, os.path.join(_ACCOUNTS_DIR, rel)))
+        out.append((name, os.path.join(_ACCOUNTS_DIR, rel)))
     return out
 
 
 def current_name():
-    return _load_index().get("current", _DEFAULT_NAME)
+    """当前选中账号名；无任何账号时返回 None。"""
+    return _load_index().get("current")
 
 
 def current_env_path():
-    """当前选中账号（current，作为默认监测/发送账号）的 .env 绝对路径。"""
+    """当前选中账号（current，作为默认监测/发送账号）的 .env 绝对路径。
+    若无当前账号返回 None。
+    """
     idx = _load_index()
-    name = idx.get("current", _DEFAULT_NAME)
-    rel = idx.get("accounts", {}).get(name, ".env")
-    return _DEFAULT_ENV if rel == ".env" else os.path.join(_ACCOUNTS_DIR, rel)
+    name = idx.get("current")
+    if not name:
+        return None
+    rel = idx.get("accounts", {}).get(name)
+    if not rel:
+        return None
+    return os.path.join(_ACCOUNTS_DIR, rel)
 
 
 def _env_path_of(name):
     idx = _load_index()
-    rel = idx.get("accounts", {}).get(name, ".env")
-    return _DEFAULT_ENV if rel == ".env" else os.path.join(_ACCOUNTS_DIR, rel)
+    rel = idx.get("accounts", {}).get(name)
+    if not rel:
+        return None
+    return os.path.join(_ACCOUNTS_DIR, rel)
 
 
 def env_path_of(name):
@@ -322,20 +335,24 @@ def profile_dir_of(env_path):
 
 
 def monitor_name():
-    """监测账号（用于直播间监听弹幕，需管理器权限才能看到完整昵称）。"""
+    """监测账号（用于直播间监听弹幕，需管理器权限才能看到完整昵称）。
+    取消默认账号：若无绑定账号返回 None。
+    """
     idx = _load_index()
-    name = idx.get("monitor") or idx.get("current", _DEFAULT_NAME)
-    if name not in idx.get("accounts", {}):
-        name = _DEFAULT_NAME
+    name = idx.get("monitor") or idx.get("current")
+    if not name or name not in idx.get("accounts", {}):
+        return None
     return name
 
 
 def sender_name():
-    """发送账号（用于私信发送，需有私信权限）。"""
+    """发送账号（用于私信发送，需有私信权限）。
+    取消默认账号：若无绑定账号返回 None。
+    """
     idx = _load_index()
-    name = idx.get("sender") or idx.get("current", _DEFAULT_NAME)
-    if name not in idx.get("accounts", {}):
-        name = _DEFAULT_NAME
+    name = idx.get("sender") or idx.get("current")
+    if not name or name not in idx.get("accounts", {}):
+        return None
     return name
 
 
@@ -477,37 +494,33 @@ def clear_credentials(force=False):
         logger.info("[账号] 检测到常驻守护进程仍在运行，保留登录凭证（由守护容器保活）")
         return 0
     cleared = 0
-    targets = [(_DEFAULT_ENV, _DEFAULT_NAME)]
     try:
         for name, env_path in list_accounts():
-            targets.append((env_path, name))
+            if clear_credentials_of(env_path):
+                cleared += 1
     except Exception:
         pass
-    for env_path, name in targets:
-        if clear_credentials_of(env_path):
-            cleared += 1
     logger.info(f"[账号] 软件退出：已清空 {cleared} 个账号的登录凭证（日志/配置/账号结构保留）")
     return cleared
 
 
 def remove_account(name):
-    """删除账号（同时删除其 .env 目录）。默认账号不允许删。"""
-    if name == _DEFAULT_NAME:
-        raise ValueError("默认账号不可删除")
+    """删除账号（同时删除其 .env 目录）。所有账号都需通过新增创建，故均可删除。"""
     idx = _load_index()
     if name not in idx.get("accounts", {}):
         raise ValueError(f"账号不存在: {name}")
     rel = idx["accounts"].pop(name)
-    if rel != ".env":
-        env_path = os.path.join(_ACCOUNTS_DIR, rel)
-        try:
-            if os.path.isdir(os.path.dirname(env_path)):
-                import shutil
-                shutil.rmtree(os.path.dirname(env_path))
-        except Exception:
-            pass
-    if idx.get("current") == name:
-        idx["current"] = _DEFAULT_NAME
+    env_path = os.path.join(_ACCOUNTS_DIR, rel)
+    try:
+        if os.path.isdir(os.path.dirname(env_path)):
+            import shutil
+            shutil.rmtree(os.path.dirname(env_path))
+    except Exception:
+        pass
+    # current/monitor/sender 若指向被删账号则清空
+    for k in ("current", "monitor", "sender"):
+        if idx.get(k) == name:
+            idx[k] = None
     _save_index(idx)
 
 
@@ -542,65 +555,50 @@ def _read_status(env_path):
 def account_status(name=None, force=False, timeout=10):
     """返回账号状态字典：包含签名存在性与探活结果。
 
-    force=False 时使用 60s 缓存，避免频繁网络探活。
+    与 verify_account（启动自检 / 账号卡片双引擎校验）共用【同一真实探活】逻辑，
+    杜绝“自检通过但账号管理页失败”的不一致：二者都基于
+      「凭证守护是否运行 + 文件签名四件套齐全 + 向抖音服务端真实探活 get_my_uid 成功」
+    来判定是否有效。本函数直接委托 verify_account，保证两处结论完全一致。
+
     timeout: 探活（get_my_uid）超时秒数。
     """
     if name is None:
         name = current_name()
-    idx = _load_index()
-    rel = idx.get("accounts", {}).get(name, ".env")
-    env_path = _DEFAULT_ENV if rel == ".env" else os.path.join(_ACCOUNTS_DIR, rel)
-
-    local = _read_status(env_path)
-
-    # 无 .env 或缺核心签名：直接短路返回，不发起网络探活（避免无效账号拖慢前端加载）
-    # 注意：web_protect/keys（wp 凭证）缺失【不判失效】——实测仅凭四件套
-    # (ticket/ts_sign/client_cert/private_key + 手动补的 ree_public_key) 私信回环即可发送成功，
-    # _load_auth_from_env 在无 web_protect/keys 时会自动用四件套补齐签名。wp 缺失仅作提示。
-    if not local.get("exists"):
-        return {"name": name, "env": env_path, "level": "missing",
-                "label": "未配置（无 .env）", "alive": False,
+    if not name:
+        return {"name": None, "env": None, "level": "missing",
+                "label": "无账号（请先新增）", "alive": False,
                 "has_ticket": False, "has_private_key": False,
                 "has_cookie": False, "has_web_protect": False}
-    if not (local.get("has_ticket") and local.get("has_private_key")):
-        # 仅当核心签名(ticket/私钥)缺失才判 nosign，区分 ticket 与私钥
-        if not local.get("has_ticket"):
-            label = "缺私信签名（ticket 缺失）"
-        else:
-            label = "缺私钥（私信签名不可用）"
-        return {"name": name, "env": env_path, "level": "nosign",
-                "label": label, "alive": False,
-                "has_ticket": local["has_ticket"],
-                "has_private_key": local["has_private_key"],
-                "has_cookie": local["has_cookie"],
-                "has_web_protect": local["has_web_protect"]}
-    # web_protect/keys 未持久化时，补一条“兼容模式”提示，但不阻断后续探活判定
-    _wp_hint = ""
-    if not local.get("has_web_protect"):
-        _wp_hint = "（wp 凭证未持久化，四件套兼容模式）"
+    env_path = env_path_of(name)
+    if not env_path:
+        return {"name": name, "env": None, "level": "missing",
+                "label": "账号不存在（请先新增）", "alive": False,
+                "has_ticket": False, "has_private_key": False,
+                "has_cookie": False, "has_web_protect": False}
 
-    # 有凭证才探活（60s 缓存）
-    now = time.time()
-    cached = _status_cache.get(name)
-    if not force and cached and (now - cached[0] < 60):
-        ok, info = cached[1], cached[2]
-    else:
-        ok, info = _probe(env_path, timeout)
-        _status_cache[name] = (now, ok, info)
-
-    if ok and info != "SIGN_REJECTED":
-        return {"name": name, "env": env_path, "level": "ok",
-                "label": f"有效（uid={info}）{_wp_hint}", "alive": True,
-                "has_ticket": True, "has_private_key": True,
-                "has_cookie": local["has_cookie"],
-                "has_web_protect": local["has_web_protect"], "uid": info}
-    _rej = (info == "SIGN_REJECTED")
-    return {"name": name, "env": env_path, "level": "expired",
-            "label": ("失效（私信签名被服务端拒绝）" if _rej else "失效（探活失败/超时）") + _wp_hint,
-            "alive": False,
-            "has_ticket": True, "has_private_key": True,
-            "has_cookie": local["has_cookie"],
-            "has_web_protect": local["has_web_protect"]}
+    # 委托 verify_account 作为唯一真相源（真实探活）
+    v = verify_account(name, timeout=timeout, dm_loopback=False)
+    wp = v.get("wp", {})
+    wp_level = wp.get("level")
+    level = "ok" if wp_level == "ok" else (
+        "nosign" if wp_level == "nosign" else (
+            "expired" if wp_level in ("fail", "error") else "missing"
+        )
+    )
+    # 透传 has_* 字段（供前端细粒度展示）
+    local = _read_status(env_path)
+    return {
+        "name": name,
+        "env": env_path,
+        "level": level,
+        "label": wp.get("label", "未知"),
+        "alive": wp_level == "ok",
+        "has_ticket": bool(local.get("has_ticket")),
+        "has_private_key": bool(local.get("has_private_key")),
+        "has_cookie": bool(local.get("has_cookie")),
+        "has_web_protect": bool(local.get("has_web_protect")),
+        "uid": v.get("uid"),
+    }
 
 
 def _probe(env_path, timeout):

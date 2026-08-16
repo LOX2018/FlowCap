@@ -103,13 +103,21 @@ def _to_raw_account(name: str) -> dict:
     前端 accounts.tsx 的 RawAccount 期望：
     name/uid/level/label/loggedIn/browserDaemonAlive/wpEngine/dmEngine/
     isCurrent/isMonitor/isSender。
-    后端 account_status 提供 level/label/alive/uid；守护端口由 core 计算。
+    后端 account_status 提供 level/label/alive/uid（已委托 verify_account 真实探活）；
+    wpEngine / dmEngine 同样取自 verify_account 的【同一】双引擎校验结果，
+    保证账号管理页与启动自检弹窗的结论完全一致。
     """
     try:
         st = acct_core.account_status(name, force=False, timeout=3)
+        # wpEngine / dmEngine 复用 verify_account 同一结果（account_status 已委托它）
+        v = acct_core.verify_account(name, timeout=3, dm_loopback=False)
+        wp = v.get("wp", {})
+        dm = v.get("dm", {})
     except Exception:
         st = {"name": name, "level": "unknown", "label": "状态获取失败",
               "alive": False, "uid": None}
+        wp = {"level": "unknown", "label": "状态获取失败", "detail": ""}
+        dm = {"level": "unknown", "label": "待校验", "detail": ""}
     is_current = (name == acct_core.current_name())
     monitor = (name == acct_core.monitor_name())
     sender = (name == acct_core.sender_name())
@@ -126,12 +134,15 @@ def _to_raw_account(name: str) -> dict:
         "browserDaemonAlive": acct_core._port_open(bport, timeout=0.3),
         "recvDaemonAlive": acct_core._port_open(rport, timeout=0.3),
         "wpEngine": {
-            "level": "ok" if st.get("has_web_protect") else "warn",
-            "label": "凭证守护已捕获" if st.get("has_web_protect")
-                     else "wp 凭证未持久化（四件套兼容）",
-            "detail": st.get("label", ""),
+            "level": wp.get("level", "unknown"),
+            "label": wp.get("label", "未知"),
+            "detail": wp.get("detail", ""),
         },
-        "dmEngine": {"level": "unknown", "label": "待校验", "detail": ""},
+        "dmEngine": {
+            "level": dm.get("level", "unknown"),
+            "label": dm.get("label", "待校验"),
+            "detail": dm.get("detail", ""),
+        },
         "isCurrent": is_current,
         "isMonitor": monitor,
         "isSender": sender,

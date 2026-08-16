@@ -106,7 +106,7 @@ export async function startRecvDaemon(accounts: string[], port: number): Promise
  * 后端不可达时再退回 Rust kill 兜底。
  */
 export async function stopRecvDaemon(accounts: string[], port: number): Promise<void> {
-  const account = accounts && accounts.length ? accounts[0] : "默认账号";
+  const account = accounts && accounts.length ? accounts[0] : "";
   try {
     const res = await fetch(`${BACKEND_BASE}/api/accounts/${encodeURIComponent(account)}/stop-recv`, {
       method: "POST",
