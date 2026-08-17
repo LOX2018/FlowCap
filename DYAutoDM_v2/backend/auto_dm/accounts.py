@@ -183,12 +183,15 @@ def _port_open(port, timeout=0.5):
 
 
 def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
-    """双引擎校验：分别判定 wp 引擎（凭证守护捕获）与私信引擎（可拉取私信列表）是否正常。
+    """双引擎校验：分别判定 wp 引擎（凭证是否有效）与私信引擎（可拉取私信列表）是否正常。
 
-    判定来源改为「守护进程」，而非纯网络探活：
-      - wp 引擎：① 该账号凭证守护(browser_daemon)是否在跑；
-                 ② 守护保活的凭证能否被 _load_auth_from_env 还原出完整签名四件套
-                   （ticket/ts_sign/sdk_cert/web_protect，即“捕获正常”）。
+    关键原则（单 profile 铁律 #35）：
+      - 引擎校验的本质 = 检查「凭证本身是否有效」，【不】监测守护进程是否启动。
+      - 守护进程只在凭证有效时才能启动（browser_daemon.main 启动前 credentials_complete
+        守卫，不全则 sys.exit(2) 拒绝启动），这是守护自己的前置条件，与校验职责无关。
+      - 因此 wp 引擎判定只依赖：.env 凭证能否被 _load_auth_from_env 还原出完整签名
+        四件套 + web_protect/keys 是否齐全 + get_my_uid 探活是否成功。
+        守护起没起、端口开没开，都不应影响 wp 判定结果。
       - 私信引擎：用 DouyinAPI.get_conversation_list 拉取全部私信会话列表，
                   成功则说明私信凭证（imapi 私有网关签名）有效、列表可读取。
 
@@ -206,7 +209,6 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
     """
     name = name or current_name()
     env_path = env_path_of(name)
-    bport = browser_daemon_port(name)
 
     result = {
         "ok": False,
@@ -216,14 +218,20 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
         "auto_fix_triggered": False,
     }
 
-    # ---- wp 引擎校验 ----
+    # ---- wp 引擎校验（只检查凭证是否有效，不依赖守护进程是否启动）----
+    # 单 profile 铁律 #35：守护进程只在凭证有效时才能启动，这是守护自己的前置守卫；
+    # 引擎校验的职责是判断「凭证本身有没有效」，与守护当前起没起无关。
+    # 因此这里直接还原 .env 凭证做静态检查 + 探活，不再用 _port_open 探测守护端口。
     try:
         from dy_apis.login_api import DYLoginApi
-        if not _port_open(bport, timeout=1.0):
+        # 先用 credentials_complete 判断 .env 凭证是否齐全（#35 同款守卫逻辑）
+        _complete, _reason = credentials_complete(env_path)
+        if not _complete:
             result["wp"] = {
-                "level": "stopped",
-                "label": "凭证守护未运行",
-                "detail": f"该账号凭证守护(browser_daemon)未启动，无法确认 wp 捕获状态。请先启动凭证守护。",
+                "level": "fail",
+                "label": "凭证未就绪",
+                "detail": f".env 凭证不全（{_reason}），凭证无效无法用于私信。"
+                          f"请先完成扫码获取完整凭证（四件套 + web_protect/keys）。",
             }
         else:
             auth = DYLoginApi._load_auth_from_env(env_path)
@@ -243,7 +251,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 result["wp"] = {
                     "level": "ok",
                     "label": "正常（捕获齐全）",
-                    "detail": f"凭证守护运行中，wp 签名四件套已捕获(uid={uid})。",
+                    "detail": f"凭证有效，wp 签名四件套已捕获(uid={uid})。",
                 }
             elif _has_sign and not uid:
                 # 有签名但探活(uid)失败：进一步判断是“风控需重新授权”还是“网络抖动”
@@ -251,13 +259,6 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 _sv = _cookie.get("s_v_web_id") or ""
                 _no_wpsign = not getattr(auth, "web_protect_str", None)
                 _is_verify_page = _sv.startswith("verify_") or _sv.startswith("verify_msppk8gp")
-                # 关键放宽（修复 2026-08-16 误判）：
-                # 旧逻辑把 s_v_web_id=verify_xxx 占位 + web_protect_str 缺失 同时判定为 fail，
-                # 但用户实测验证账号管理双击指纹浏览器登录正常、私信正常，
-                # 说明 .env 里实际 web_protect/keys 已持久化、cookie 也有效，s_v_web_id 占位
-                # 可能是抖音风控页留下的正常痕迹而非真风控。判定标准收紧为：
-                # 仅当 web_protect_str 与 keys 同时缺失 + s_v_web_id 是 verify_ 占位
-                # 才判“需重新授权”，否则保守视为 warn（探活失败但凭证可能仍可用）。
                 if _is_verify_page and _no_wpsign:
                     result["wp"] = {
                         "level": "warn",
@@ -271,7 +272,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                         "level": "warn",
                         "label": "捕获齐全但探活失败",
                         "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败"
-                                  "（守护可能刚重启/网络抖动/账号偶发风控），"
+                                  "（网络抖动/账号偶发风控），"
                                   "可稍后重试引擎校验；私信凭证可能仍可用。",
                     }
             elif uid and not _has_sign:
@@ -284,7 +285,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 result["wp"] = {
                     "level": "fail",
                     "label": "凭证无效",
-                    "detail": "凭证守护运行中，但登录态与签名均缺失，请重新获取凭证。",
+                    "detail": "登录态与签名均缺失，请重新获取凭证。",
                 }
     except Exception as e:
         result["wp"] = {
@@ -608,6 +609,43 @@ def _read_status(env_path):
         "has_cookie": bool(cookie),
         "has_web_protect": has_web_protect,
     }
+
+
+def credentials_complete(env_path):
+    """单 profile 铁律前置校验：判定该账号凭证是否【全部齐全】。
+
+    齐全 = .env 存在 且 同时具备：
+      - cookie（DY_COOKIES，含正常 s_v_web_id，非 verify_ 风控占位）
+      - 私信签名四件套（DY_TICKET / DY_TS_SIGN / DY_CLIENT_CERT / DY_PRIVATE_KEY）
+      - wp 凭证（DY_WEB_PROTECT + DY_KEYS，私信 IM 私有网关签名）
+    只有全齐，才允许启动凭证守护 / 判定 wp 引擎有效；否则拒绝启动守护，
+    明确提示用户需先完成扫码，避免“守护空跑 + 发送必 KICK”。
+
+    返回 (complete: bool, reason: str)。
+    """
+    if not env_path or not os.path.exists(env_path):
+        return False, "账号 .env 不存在（请先新增账号并扫码）"
+    vals = dotenv_values(env_path)
+    cookie = vals.get("DY_COOKIES") or ""
+    ticket = vals.get("DY_TICKET")
+    ts_sign = vals.get("DY_TS_SIGN")
+    client_cert = vals.get("DY_CLIENT_CERT")
+    pkey = vals.get("DY_PRIVATE_KEY")
+    webp = vals.get("DY_WEB_PROTECT")
+    keys = vals.get("DY_KEYS")
+
+    # cookie 内 s_v_web_id 若为风控验证页占位值（verify_ 前缀），视为无效 cookie
+    if "verify_" in cookie:
+        return False, "cookie 含风控验证页占位（s_v_web_id=verify_*），请重新扫码获取正常登录态"
+    if not cookie:
+        return False, "缺失 DY_COOKIES（未登录或扫码未完成）"
+    if not (ticket and ts_sign and client_cert and pkey):
+        missing = [k for k, v in (("DY_TICKET", ticket), ("DY_TS_SIGN", ts_sign),
+                                   ("DY_CLIENT_CERT", client_cert), ("DY_PRIVATE_KEY", pkey)) if not v]
+        return False, "缺失私信签名四件套: " + ", ".join(missing)
+    if not (webp and keys):
+        return False, "缺失 wp 凭证（DY_WEB_PROTECT/DY_KEYS），私信 IM 网关签名不可用"
+    return True, "凭证齐全"
 
 
 def account_status(name=None, force=False, timeout=10):
