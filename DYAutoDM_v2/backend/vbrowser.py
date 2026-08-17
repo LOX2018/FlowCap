@@ -99,30 +99,14 @@ def _resolve_exe(rel_or_abs):
     return os.path.join(app_root(), rel_or_abs)
 
 
-def _wipe_user_data_dir(user_data_dir):
-    """强制重扫（方案B）：删除整个 profile 目录，等同全新浏览器。
-
-    - 先递归重置只读属性（Windows 下 Chromium 缓存/偏好文件常为只读，否则 shutil 删除失败）；
-    - 目录不存在则忽略（首次扫码本就无目录）；
-    - 删除失败仅告警，不阻断启动（浏览器会自行创建空目录）。
-    """
-    if not user_data_dir:
-        return
-    if not os.path.exists(user_data_dir):
-        logger.info(f"[vbrowser] profile 目录不存在，视为全新: {user_data_dir}")
-        return
-    try:
-        for root, dirs, files in os.walk(user_data_dir):
-            for name in dirs + files:
-                p = os.path.join(root, name)
-                try:
-                    os.chmod(p, 0o755)
-                except OSError:
-                    pass
-        shutil.rmtree(user_data_dir)
-        logger.info(f"[vbrowser] 已删除旧 profile 目录: {user_data_dir}")
-    except Exception as e:
-        logger.warning(f"[vbrowser] 清空 profile 目录失败（将仍尝试启动）: {e}")
+# 单 profile 优先级（铁律）：
+#   每个账号只有【一个】固定持久化 profile（= accounts.profile_dir_of(env_path)
+#   算出的 accounts/<name>/profile），守护/查看/重扫三类浏览器全部复用它。
+#   谁需要独占浏览器（重扫 > 查看 > 守护保活），必须先停该账号凭证守护释放
+#   Chromium profile 锁，再启动——绝不新建临时 profile（临时 profile 会被抖音
+#   识别为新设备/新环境，直接触发风控，是绝对禁止的）。
+#   因此：本模块【不再提供任何清空/临时目录逻辑】，user_data_dir 必须由调用方
+#   显式传入固定 profile 目录；传 None 时 exe 模式也报错，强制调用方明确指定。
 
 
 # ---------- 模式 B：CDP 接管（VirtualBrowser / Ant-Browser）----------
@@ -169,12 +153,16 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
       - "exe" 模式：context 由我们 launch 出来，结束时需关闭（与原生 Playwright 一致）；
       - "cdp" 模式：context 由外部客户端管理，不应主动关闭。
 
-    user_data_dir：exe 模式使用持久化 profile（launch_persistent_context）。
-      - force=True（强制重新扫码）：使用【临时目录】作为 profile，确保浏览器一定是“未登录”全新态，
-        必然弹出二维码等待用户真实扫码；避免因持久化 profile 残留旧 sessionid 而“跳过扫码、误捕获旧凭证”。
-        临时目录扫完即弃，绝【不】清空持久化 profile（否则会丢失原登录态、且与已打开的浏览器抢 profile 锁
-        导致 WinError 32 + 浏览器崩溃落到 about:blank，这是真实事故的根因）。
-      - force=False：用 user_data_dir（默认 vb_profile_dm），可复用已有登录态免扫码。
+    单 profile 铁律（2026-08-17 修订）：
+      - 每个账号只有【一个】固定持久化 profile 目录，由调用方显式传入
+        accounts.profile_dir_of(env_path)（如 accounts/<name>/profile）。
+      - 守护 / 查看 / 重扫三类浏览器全部复用同一目录，谁需独占（重扫 > 查看 > 守护保活）
+        必须先停该账号凭证守护释放 Chromium profile 锁，再启动——绝不新建临时目录。
+      - 临时 profile 会被抖音识别为新设备/新环境，直接触发风控，绝对禁止。
+      - 故 user_data_dir=None 时不再兜底默认 vb_profile_dm，而是直接报错，
+        强制调用方明确指定固定 profile 目录。
+      - force=True 仅表示“不复用已有登录态、强制重新扫码”，仍使用同一固定 profile 目录，
+        不清空、不新建临时目录（清空/临时化都是风控根因）。
     """
     from playwright.async_api import async_playwright
 
@@ -186,19 +174,16 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
                 f"[vbrowser] 指纹浏览器内核不存在: {exe}（已禁用原生 Playwright，不会回退）。"
                 f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
-        if user_data_dir is None:
-            user_data_dir = os.path.join(app_root(), "vb_profile_dm")
+        # 单 profile 铁律：禁止兜底默认目录，强制调用方显式传入固定 profile。
+        if not user_data_dir:
+            raise RuntimeError(
+                "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
+                "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         if force:
-            # 方案A（修复事故）：强制重扫时改用【临时目录】启动浏览器，绝不触碰持久化 profile。
-            # 旧方案“清空原 profile 再用原目录启动”有两宗罪：
-            #   1) 用户先前用「双击指纹浏览器（查看模式）」打开的浏览器占用该 profile，
-            #      _wipe_user_data_dir 报 WinError 32 → 后续 launch_persistent_context 落到 about:blank；
-            #   2) 清空会丢失该账号原有登录态、私聊记录、扩展设置等。
-            # 临时目录每次新建、扫完即弃，与持久化 profile 完全隔离，不冲突、不丢登录态。
-            import tempfile
-            tmp_profile = tempfile.mkdtemp(prefix="vb_force_rescan_")
-            user_data_dir = tmp_profile
-            logger.info(f"[vbrowser] 强制重扫模式：使用临时 profile（不动持久化 profile）: {user_data_dir}")
+            # 强制重扫：复用同一固定 profile、重新登录，不清空、不临时化。
+            logger.info(f"[vbrowser] 强制重扫模式：复用固定 profile（不新建临时目录、不清空）: {user_data_dir}")
+        else:
+            logger.info(f"[vbrowser] 复用固定 profile: {user_data_dir}")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -244,8 +229,11 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
                 f"[vbrowser] 指纹浏览器内核不存在: {exe}（已禁用原生 Playwright，不会回退）。"
                 f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
-        if user_data_dir is None:
-            user_data_dir = os.path.join(app_root(), "vb_profile_dm")
+        # 单 profile 铁律：禁止兜底默认目录，强制调用方显式传入固定 profile。
+        if not user_data_dir:
+            raise RuntimeError(
+                "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
+                "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,

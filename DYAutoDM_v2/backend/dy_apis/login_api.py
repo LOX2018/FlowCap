@@ -147,7 +147,9 @@ class DYLoginApi:
             是获取有效 web_protect 的正确落地页。此前因 profile 锁冲突导致浏览器崩溃
             落到 about:blank（日志 "Target page, context or browser has been closed"）
             是【清空持久化 profile / profile 被占用】所致，与主动 goto 私信页无关——
-            强制重扫现改用临时 profile 后该问题已解决，可安全恢复主动打开私信落地页。
+            强制重扫现统一复用该账号固定 profile（单 profile 铁律：禁止临时目录，
+            临时 profile 会被抖音识别为新设备触发风控），且重扫前先停该账号凭证守护
+            释放 profile 锁，故可安全恢复主动打开私信落地页。
         """
         # force=True：强制重新扫码，绝不复用 profile 里的旧登录态（避免“着急捕获旧凭证”）。
         # 关键：私信凭证 = security-sdk 的 web_protect/keys。经多方验证（含记忆 53668519 #20），

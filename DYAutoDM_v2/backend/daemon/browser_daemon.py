@@ -85,10 +85,21 @@ class CredentialKeeper:
         self._last_refresh: float = 0.0
 
     def refresh(self, force: bool = False) -> bool:
-        """刷新凭证。force=True 时忽略现有、重新扫码。返回是否成功。"""
+        """刷新凭证。force=True 时忽略现有、重新扫码。返回是否成功。
+
+        单 profile 铁律守卫：凭证不全（cookie/四件套/web_protect 任一缺失，或
+        cookie 含风控占位）时【拒绝】弹浏览器抓取，直接返回 False 并明确提示，
+        避免守护空跑 + 误捕获污染 .env（如 s_v_web_id=verify_* 占位被写回）。
+        用户必须先完成一次成功扫码，凭证齐全后再启动守护。
+        """
         from auto_dm import accounts as acc
         from dy_apis.login_api import DYLoginApi
         env_path = acc.env_path_of(self.account)
+        # 铁律：凭证不全不启动浏览器、不抓取、不写盘
+        complete, reason = acc.credentials_complete(env_path)
+        if not complete:
+            logger.error(f"[保活] 凭证未就绪，拒绝启动守护抓取: {reason}（请先完成扫码）")
+            return False
         try:
             api = DYLoginApi()
             auth = asyncio.run(
@@ -234,6 +245,19 @@ def main() -> None:
 
     _state["account"] = args.account
     _state["port"] = args.port
+
+    # 单 profile 铁律：守护启动前置校验——凭证必须全部齐全，否则拒绝启动守护。
+    # 凭证不全时启动守护只会“空跑 + 误捕获污染”，且发送必 KICK；应明确提示用户先扫码。
+    from auto_dm import accounts as acc
+    env_path = acc.env_path_of(args.account)
+    complete, reason = acc.credentials_complete(env_path)
+    if not complete:
+        logger.error(
+            f"[守护] 凭证未就绪，拒绝启动凭证守护(account={args.account}): {reason}。"
+            f"请先完成扫码（双击账号卡片指纹浏览器 / 点「重新获取凭证」），"
+            f"待凭证齐全后再启动守护。"
+        )
+        sys.exit(2)  # 非零退出，Tauri SidecarManager 感知到启动失败
 
     # 日志落盘
     try:
