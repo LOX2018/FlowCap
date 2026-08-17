@@ -257,27 +257,16 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                     "detail": f"凭证有效，wp 签名四件套已捕获(uid={uid})。",
                 }
             elif _has_sign and not uid:
-                # 有签名但探活(uid)失败：进一步判断是“风控需重新授权”还是“网络抖动”
-                _cookie = getattr(auth, "cookie", None) or {}
-                _sv = _cookie.get("s_v_web_id") or ""
-                _no_wpsign = not getattr(auth, "web_protect_str", None)
-                _is_verify_page = _sv.startswith("verify_") or _sv.startswith("verify_msppk8gp")
-                if _is_verify_page and _no_wpsign:
-                    result["wp"] = {
-                        "level": "warn",
-                        "label": "需重新授权（凭证疑似风控）",
-                        "detail": "cookie 中 s_v_web_id 为风控验证页占位值（%s），"
-                                  "且 .env 未持久化 web_protect/keys。可尝试点「重新获取凭证」"
-                                  "重新扫码（避开抖音风控验证页）。" % _sv[:24],
-                    }
-                else:
-                    result["wp"] = {
-                        "level": "warn",
-                        "label": "捕获齐全但探活失败",
-                        "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败"
-                                  "（网络抖动/账号偶发风控），"
-                                  "可稍后重试引擎校验；私信凭证可能仍可用。",
-                    }
+                # 有签名但探活(uid)失败：多为网络抖动/账号偶发风控。
+                # 注意：不再以 s_v_web_id='verify_' 开头判“需重新授权”——抖音新版
+                # s_v_web_id 正常值就是 'verify_' 开头（基座直测实证），不再据此提示风控。
+                result["wp"] = {
+                    "level": "warn",
+                    "label": "捕获齐全但探活失败",
+                    "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败"
+                              "（网络抖动/账号偶发风控），"
+                              "可稍后重试引擎校验；私信凭证可能仍可用。",
+                }
             elif uid and not _has_sign:
                 result["wp"] = {
                     "level": "warn",
@@ -633,11 +622,14 @@ def credentials_complete(env_path):
     """单 profile 铁律前置校验：判定该账号凭证是否【全部齐全】。
 
     齐全 = .env 存在 且 同时具备：
-      - cookie（DY_COOKIES，含正常 s_v_web_id，非 verify_ 风控占位）
+      - cookie（DY_COOKIES，非空）
       - 私信签名四件套（DY_TICKET / DY_TS_SIGN / DY_CLIENT_CERT / DY_PRIVATE_KEY）
       - wp 凭证（DY_WEB_PROTECT + DY_KEYS，私信 IM 私有网关签名）
     只有全齐，才允许启动凭证守护 / 判定 wp 引擎有效；否则拒绝启动守护，
     明确提示用户需先完成扫码，避免“守护空跑 + 发送必 KICK”。
+
+    【修复 2026-08-17 16:48 基座直测】不再以 "verify_" 开头判 cookie 无效——抖音新版
+    s_v_web_id 正常值就是 'verify_xxx' 开头（基座全新扫码实证），仅需 cookie 非空即可。
 
     返回 (complete: bool, reason: str)。
     """
@@ -652,9 +644,6 @@ def credentials_complete(env_path):
     webp = vals.get("DY_WEB_PROTECT")
     keys = vals.get("DY_KEYS")
 
-    # cookie 内 s_v_web_id 若为风控验证页占位值（verify_ 前缀），视为无效 cookie
-    if "verify_" in cookie:
-        return False, "cookie 含风控验证页占位（s_v_web_id=verify_*），请重新扫码获取正常登录态"
     if not cookie:
         return False, "缺失 DY_COOKIES（未登录或扫码未完成）"
     if not (ticket and ts_sign and client_cert and pkey):
