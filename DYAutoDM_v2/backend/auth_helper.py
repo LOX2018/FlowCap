@@ -106,21 +106,25 @@ def ensure_uid(auth):
         # 排除风控验证页占位（verify_ 开头 / 纯 "1" / 1.0.0- 前缀）
         if sval.startswith("verify_") or sval in ("1", "0"):
             continue
+        # 【修复 2026-08-17 16:55】仅当 uid_tt 是【纯十进制数字】且不超过 int64 范围
+        # （< 10**19）才直接用作 uid。抖音新版 uid_tt 是 32 位 hex 串（如
+        # 75d0502a...），int(sval,16) 转十进制会得到 39 位超 int64 的假值，用它调
+        # create_conversation/send_msg 会报 "Value out of range" 且不是真实 uid。
+        # 真实十进制 uid 的唯一可靠来源是网络接口 query/user（get_my_uid）。
         _uid = None
-        try:
-            _uid = int(sval)  # 纯数字 uid
-        except Exception:
-            pass
-        if _uid is None:
+        if sval.isdigit():
             try:
-                _uid = int(sval, 16)  # 32 位 hex 串 -> 十进制 uid（新版 cookie）
-            except Exception:
-                pass
+                _uid = int(sval)
+                if _uid >= 10 ** 19:  # 超 int64 范围，非真实 uid
+                    _uid = None
+            except (ValueError, TypeError):
+                _uid = None
         if _uid and _uid > 1:
             auth.uid = _uid
             logger.info(f"[auth] 从 cookie 字段 {key} 解析到 uid={auth.uid}")
             return auth.uid
-    # 兜底：基座 get_my_uid（依赖 s_v_web_id，可能返回 None）
+    # 兜底：get_my_uid（已修复：走网络接口 query/user 拿真实十进制 uid，
+    # 即使 s_v_web_id=verify_ 开头也返回真实 uid）
     try:
         from dy_apis.douyin_api import DouyinAPI
         uid = DouyinAPI.get_my_uid(auth)
