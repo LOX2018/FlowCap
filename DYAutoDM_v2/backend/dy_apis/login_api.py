@@ -31,43 +31,40 @@ def _cookie_is_polluted(cookies):
     """检测 cookie 是否被抖音风控验证页污染。
 
     抖音在风控验证态下会把关键身份 cookie 写成占位值：
-      - s_v_web_id：正常为 19 位纯数字；被污染时为 'verify_msppk8gp_xxxx' 之类前缀；
-      - sid_ucp_v1：正常为账号标识；被污染时为 '1.0.0-...' / 'verify_...' 前缀；
-      - ttwid / msToken：正常有值；被污染时可能缺失或为空壳。
+      - s_v_web_id / sid_ucp_v1：被污染时为 'verify_msppk8gp_xxxx' 之类前缀（以
+        'verify_' 开头）的占位值。
 
     返回 (is_polluted, polluted_fields: list[str])。
-    仅当确有占位特征时才判污染，避免误伤正常 cookie。
+
+    【判定标准收紧 2026-08-17 16:12 修复】仅以『verify_ 前缀』作为唯一强污染特征：
+      - 此前把 '1.0.0-' 前缀误判为 sid_ucp_v1 污染——但抖音新版 sid_ucp_v1 的正常
+        值就以 '1.0.0-' 开头（ucp 会话 cookie 版本前缀），是真实登录态，不是污染；
+      - 此前把『非 19 位纯数字』的 s_v_web_id 误判为污染——但抖音新版 s_v_web_id
+        格式已不保证是纯数字，非数字不代表被风控；
+      - ttwid 缺失不再单独判污染（已登录真实态下 ttwid 可能因加载时序暂缺）。
+    真实的风控验证页已由上层『_risk_hit 页面实时监测』精确捕捉（URL/内容含
+    verifycenter/captcha/滑块 等即判定并保持浏览器打开提示用户处理），无需靠
+    cookie 格式猜测误伤正常账号。用户实测：私信页（chat?isPopup=1）拉取聊天对象/
+    历史对话/收发均正常，凭证本质有效，之前误判即因此导致拒绝写盘。
     """
     if not cookies:
         return False, []
     polluted = []
 
     def _is_placeholder(v):
+        # 风控验证页占位值唯一强特征：'verify_' 前缀
         if not v:
             return False
         s = str(v).strip()
-        # 风控验证页占位特征
-        if s.startswith("verify_"):
-            return True
-        if s.startswith("1.0.0-"):
-            return True
-        return False
+        return s.startswith("verify_")
 
     s_v_web_id = cookies.get("s_v_web_id")
-    if s_v_web_id:
-        s = str(s_v_web_id).strip()
-        # 19 位纯数字才是正常；非数字且非占位也视为异常（防风控页下发的伪造值）
-        if _is_placeholder(s) or (not s.isdigit()):
-            polluted.append("s_v_web_id")
+    if s_v_web_id and _is_placeholder(str(s_v_web_id).strip()):
+        polluted.append("s_v_web_id")
 
     sid_ucp = cookies.get("sid_ucp_v1")
     if sid_ucp and _is_placeholder(str(sid_ucp).strip()):
         polluted.append("sid_ucp_v1")
-
-    # ttwid 缺失视为强污染信号（登录态不完整）；msToken 缺失单独不判污染
-    # （msToken 可能因页面加载时序暂时缺失，不代表账号被风控，避免误伤正常账号）
-    if not cookies.get("ttwid"):
-        polluted.append("ttwid")
 
     return (len(polluted) > 0), polluted
 
