@@ -201,6 +201,7 @@ async def self_check(request: Request):
             entry["dm"] = verify.get("dm")
             entry["uid"] = verify.get("uid")
             entry["ok"] = bool(verify.get("ok"))
+            entry["autoFixTriggered"] = bool(verify.get("auto_fix_triggered"))
         except Exception as e:  # 单账号校验异常不阻断其他账号
             logger.error(f"[self-check] 账号 {name} 校验异常: {e}")
             entry["wp"] = {"level": "error", "label": "校验异常"}

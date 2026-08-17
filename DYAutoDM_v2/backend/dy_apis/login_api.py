@@ -16,6 +16,63 @@ from threading import Thread
 import qrcode
 
 
+class RiskControlError(Exception):
+    """风控/验证码拦截异常。
+
+    抓取到的凭证被抖音风控页污染（如 s_v_web_id=verify_xxx 占位），
+    或抓取过程中抖音弹出验证码/滑块验证页时抛出。
+
+    抛出此异常代表【本次凭证不写入 .env】，并提示用户在指纹浏览器中
+    手动处理验证码/滑块，期间程序持续监测验证码处理进度与凭证污染状态。
+    """
+
+
+def _cookie_is_polluted(cookies):
+    """检测 cookie 是否被抖音风控验证页污染。
+
+    抖音在风控验证态下会把关键身份 cookie 写成占位值：
+      - s_v_web_id：正常为 19 位纯数字；被污染时为 'verify_msppk8gp_xxxx' 之类前缀；
+      - sid_ucp_v1：正常为账号标识；被污染时为 '1.0.0-...' / 'verify_...' 前缀；
+      - ttwid / msToken：正常有值；被污染时可能缺失或为空壳。
+
+    返回 (is_polluted, polluted_fields: list[str])。
+    仅当确有占位特征时才判污染，避免误伤正常 cookie。
+    """
+    if not cookies:
+        return False, []
+    polluted = []
+
+    def _is_placeholder(v):
+        if not v:
+            return False
+        s = str(v).strip()
+        # 风控验证页占位特征
+        if s.startswith("verify_"):
+            return True
+        if s.startswith("1.0.0-"):
+            return True
+        return False
+
+    s_v_web_id = cookies.get("s_v_web_id")
+    if s_v_web_id:
+        s = str(s_v_web_id).strip()
+        # 19 位纯数字才是正常；非数字且非占位也视为异常（防风控页下发的伪造值）
+        if _is_placeholder(s) or (not s.isdigit()):
+            polluted.append("s_v_web_id")
+
+    sid_ucp = cookies.get("sid_ucp_v1")
+    if sid_ucp and _is_placeholder(str(sid_ucp).strip()):
+        polluted.append("sid_ucp_v1")
+
+    # ttwid / msToken 被清空也视为弱污染信号（登录态不完整）
+    if not cookies.get("ttwid"):
+        polluted.append("ttwid")
+    if not cookies.get("msToken"):
+        polluted.append("msToken")
+
+    return (len(polluted) > 0), polluted
+
+
 class DYLoginApi:
 
     def __init__(self):
@@ -182,9 +239,28 @@ class DYLoginApi:
             _msg_opened = False
             while time.time() < deadline:
                 await asyncio.sleep(1)
+                # 风控/验证码实时监测：抓取过程中若抖音弹出验证码/滑块/风控验证页，
+                # 则抛出 RiskControlError（不写 .env），提示用户在指纹浏览器中手动处理，
+                # 期间由本循环的持续轮询继续监测验证码处理进度与凭证污染状态。
+                try:
+                    _page_url = await page.evaluate("location.href")
+                    _page_html = await page.evaluate("document.documentElement.outerHTML.slice(0, 4000)")
+                except Exception:
+                    _page_url = ""
+                    _page_html = ""
+                _risk_hit = any(k in (_page_url + _page_html) for k in (
+                    "verify.zijieapi.com", "verifycenter", "captcha", "滑块", "安全验证",
+                    "异常请求", "验证中心", "人机验证", "账号存在风险"))
+                if _risk_hit:
+                    logger.warning(
+                        f"[风控] 检测到验证码/风控验证页（{_page_url}），停止抓取，"
+                        f"请在指纹浏览器中手动完成验证码/滑块验证后再重试")
+                    raise RiskControlError(
+                        "抓取时触发了抖音验证码/风控验证页，已停止并【不写入】被污染的凭证。"
+                        "请在指纹浏览器中手动处理验证码（滑块/短信验证），处理完成后再重新获取凭证。")
                 # 阶段一：等待用户扫码（真实登录态）。未登录前绝不开私信页，停在首页。
                 if not _logged_in:
-                    if await _is_real_login(ctx):
+                    if await _is_real_login(context):
                         _logged_in = True
                         logger.info("[auth] 检测到真实登录态（已扫码），准备打开私信落地页生成有效 web_protect")
                     else:
@@ -200,7 +276,7 @@ class DYLoginApi:
                 except Exception:
                     keys_str = web_protect_str = None
                 # 必须真实登录态（sessionid 出现）+ web_protect 有效 JSON（空壳不算），否则继续等
-                if (keys_str and _web_protect_valid(web_protect_str)) and await _is_real_login(ctx):
+                if (keys_str and _web_protect_valid(web_protect_str)) and await _is_real_login(context):
                     logger.info("[auth] 检测到真实登录态 + 有效 web_protect（私信落地页 security-sdk 已生成）")
                     return keys_str, web_protect_str
             raise TimeoutError(
@@ -283,6 +359,17 @@ class DYLoginApi:
                 await context.close()
             raise RuntimeError(
                 "凭证不完整（缺少真实登录 cookie 或有效 web_protect/keys），拒绝返回残缺 auth，不写 .env")
+        # 风控污染守卫：即便 web_protect/cookie 看似齐全，只要关键身份 cookie 被抖音
+        # 风控验证页污染（s_v_web_id=verify_xxx 等占位），也绝不写入 .env，
+        # 否则会带着污染 cookie 写回，导致后续弹幕昵称被加密 / sec_uid 丢失。
+        _polluted, _fields = _cookie_is_polluted(cookies)
+        if _polluted:
+            if _backend == "exe":
+                await context.close()
+            raise RiskControlError(
+                f"抓取到的凭证被抖音风控验证页污染（字段={'/'.join(_fields)}），"
+                f"已【拒绝写入】.env。请更换正常网络 / 设备后重新获取凭证，"
+                f"或在指纹浏览器中手动处理验证码/滑块后再试。")
         if _backend == "exe":
             await context.close()
         auth = DouyinAuth()
@@ -399,8 +486,14 @@ class DYLoginApi:
         # —— 扫码前快照旧凭证（磁盘上 .env 的当前值），供扫码后做“旧→新”捕获对比 ——
         from auto_dm.login_capture import snapshot_old_env, analyze_login_capture
         old_snap = snapshot_old_env(env_path)
-        auth = await self.login_grab_ticket(headless=headless, env_path=env_path, force=force,
-                                             landing_url=landing_url)
+        try:
+            auth = await self.login_grab_ticket(headless=headless, env_path=env_path, force=force,
+                                                 landing_url=landing_url)
+        except RiskControlError as _rc:
+            # 风控/验证码拦截：本次凭证被污染或抓取中触发风控页，绝不写 .env。
+            # 提示用户在指纹浏览器中手动处理验证码，期间继续监测验证码处理进度与污染状态。
+            logger.warning(f"[风控] {_rc}（指纹浏览器保持打开，请在其中手动处理验证码/滑块）")
+            raise
         # —— 写回 .env 前，先比对旧→新并生成捕获分析报告（你扫码，程序自动分析）——
         analyze_login_capture(auth, old_snap, env_path)
         logger.info(f"登录凭证已存 {self.save_credential(auth, env_path=env_path)}")

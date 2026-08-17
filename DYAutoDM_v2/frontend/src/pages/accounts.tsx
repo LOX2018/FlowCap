@@ -96,7 +96,7 @@ interface CheckResult {
   ok?: boolean;
   error?: string;
   msg?: string;
-  verify?: { wp?: EngineInfo; dm?: EngineInfo; uid?: string };
+  verify?: { wp?: EngineInfo; dm?: EngineInfo; uid?: string; auto_fix_triggered?: boolean };
 }
 
 interface ReviewRow {
@@ -563,6 +563,11 @@ export default function AccountsPage(props: PageProps) {
               (v.dm && v.dm.label),
           );
           api.addLog("SUCCESS", `引擎校验完成 · ${a.name} · wp: ${v.wp && v.wp.label} · dm: ${v.dm && v.dm.label}`).catch(() => {});
+          // 方案 A：校验发现凭证失效时后端已自动唤醒指纹浏览器重捕，提示用户完成授权
+          if (v.auto_fix_triggered) {
+            push("⚠️ 凭证失效，已自动拉起指纹浏览器重新捕获 · " + a.name + " · 请在弹出的窗口中完成授权/加载页面");
+            api.addLog("WARN", `凭证失效，已自动唤醒指纹浏览器重捕 · ${a.name}`).catch(() => {});
+          }
         } else if (r && r.error) {
           push("引擎校验失败: " + r.error);
           api.addLog("ERROR", `引擎校验失败 · ${a.name}: ${r.error}`).catch(() => {});

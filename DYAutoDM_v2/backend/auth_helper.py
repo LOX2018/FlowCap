@@ -72,6 +72,12 @@ def enrich_auth(auth, cookies_dy="", headless=False,
                     headless=headless, env_path=env_path, force=force,
                     landing_url=landing_url))
     except Exception as e:
+        # 风控/验证码拦截异常：向上透传，让调用方（auto_recapture / scan）能明确提示用户
+        # 在指纹浏览器中手动处理验证码，而非被静默吞掉、导致带着污染凭证写回 .env。
+        from dy_apis.login_api import RiskControlError
+        if isinstance(e, RiskControlError) or (getattr(e, "__cause__", None)
+                                               and isinstance(e.__cause__, RiskControlError)):
+            raise
         logger.warning(f"[auth] 获取登录凭证失败: {e}")
         return auth, cookies_dy
 

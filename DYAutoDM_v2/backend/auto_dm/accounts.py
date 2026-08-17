@@ -182,7 +182,7 @@ def _port_open(port, timeout=0.5):
             pass
 
 
-def verify_account(name=None, timeout=8, dm_loopback=False):
+def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
     """双引擎校验：分别判定 wp 引擎（凭证守护捕获）与私信引擎（可拉取私信列表）是否正常。
 
     判定来源改为「守护进程」，而非纯网络探活：
@@ -195,7 +195,14 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
     dm_loopback=False 时只做 wp 引擎+uid 探活（getAccounts 轮询调用，不污染私信）；
     dm_loopback=True 时额外触发私信引擎列表拉取测试（点「校验」按钮时调用）。
 
-    返回 {ok, wp:{level,label,detail}, dm:{level,label,detail}, uid}。
+    auto_fix=True（默认）时：当 wp 引擎判定为失效/需重新授权（fail/warn/error）
+      且 dm_loopback=True（即用户主动校验或启动自检场景），自动触发 auto_recapture
+      （弹 headed 指纹浏览器重新加载抖音页面，在已登录态下生成有效 web_protect/keys
+      写回 .env），确保凭证有效后才交给守护进程保活。带 5 分钟节流，不会狂弹。
+      首次使用无凭证 / 校验发现失效，都会自动唤醒浏览器重捕，无需用户手动点「重新获取凭证」。
+
+    返回 {ok, wp:{level,label,detail}, dm:{level,label,detail}, uid,
+          auto_fix_triggered: bool}。
     """
     name = name or current_name()
     env_path = env_path_of(name)
@@ -206,6 +213,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
         "uid": None,
         "wp": {"level": "unknown", "label": "未校验", "detail": ""},
         "dm": {"level": "unknown", "label": "未校验", "detail": ""},
+        "auto_fix_triggered": False,
     }
 
     # ---- wp 引擎校验 ----
@@ -284,6 +292,26 @@ def verify_account(name=None, timeout=8, dm_loopback=False):
             "label": "校验异常",
             "detail": f"wp 引擎校验抛出异常: {e}",
         }
+
+    # ---- 自动重捕（方案 A：确保凭证有效后才交守护）----
+    # 仅当用户主动校验/启动自检（dm_loopback=True）且 wp 引擎判定凭证失效/需重授权时触发。
+    # 弹 headed 指纹浏览器重新加载抖音页面，在已登录态下生成有效 web_protect/keys 写回 .env。
+    # 带 5 分钟节流（auto_recapture 内部守卫），不会反复弹窗。
+    _wp_level = result["wp"].get("level")
+    if auto_fix and dm_loopback and _wp_level in ("fail", "warn", "error"):
+        try:
+            logger.info(
+                f"[verify] 账号 {name} wp 引擎判定 {_wp_level}，自动唤醒指纹浏览器重捕凭证"
+            )
+            auto_recapture(name, landing_url="https://www.douyin.com/chat?isPopup=1")
+            result["auto_fix_triggered"] = True
+            _old_label = result["wp"].get("label", "")
+            result["wp"]["detail"] = (
+                "已自动唤醒指纹浏览器重新捕获凭证，请在弹出的窗口中完成授权/加载页面，"
+                "捕获成功后凭证将写回 .env 并交守护进程保活。原始判定：" + _old_label
+            )
+        except Exception as e:
+            logger.warning(f"[verify] 账号 {name} 自动重捕触发失败: {e}")
 
     # ---- 私信引擎校验（拉取私信列表，仅 dm_loopback=True 时执行）----
     if dm_loopback:
