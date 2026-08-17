@@ -35,6 +35,8 @@ class TaskConfig(BaseModel):
     enable_danmaku: bool = True
     enable_console: bool = True
     enable_send: bool = True
+    # 指定私信/监测使用的账号名（直播监听页选择的账号）；None 时用当前账号 current_env_path()
+    acct: str | None = None
 
     # 前端别名兼容 + 扩展开关（tasks.tsx 发送 enableDanmaku/enableConsole/enableSend）
     # 使用字段别名 + 宽松校验，避免 pydantic 422
@@ -82,6 +84,7 @@ class TaskConfig(BaseModel):
             enable_danmaku=bool(enable_danmaku),
             enable_console=bool(enable_console),
             enable_send=bool(enable_send),
+            acct=self.acct,
         )
 
 

@@ -258,8 +258,13 @@ class AutoDM:
         """主运行任务（asyncio.to_thread 包装同步逻辑）"""
         try:
             # 1) 构造监测账号 auth（同步，用 to_thread 包装）
-            from auto_dm.accounts import current_env_path
-            m_env = self.monitor_env_path or current_env_path()
+            # 优先用前端指定的账号（直播监听页选择），否则用当前账号
+            from auto_dm.accounts import current_env_path, env_path_of
+            if getattr(config, "acct", None):
+                m_env = env_path_of(config.acct)
+                logger.info(f"[auth] 使用前端指定账号「{config.acct}」作为监测账号")
+            else:
+                m_env = self.monitor_env_path or current_env_path()
             self.monitor_auth = await asyncio.to_thread(
                 self._build_one_auth, m_env, False, 0
             )

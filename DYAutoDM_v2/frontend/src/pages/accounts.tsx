@@ -74,6 +74,7 @@ interface FmtAccount {
   name: string;
   uid: string;
   hue: string;
+  isValid: boolean;
   tokenValid: boolean;
   tokenExpire: string;
   lvlLabel: string;
@@ -154,6 +155,7 @@ function mapAcct(a: RawAccount, i: number): FmtAccount {
     name: a.name,
     uid: a.uid || "—",
     hue: hue(a.name.length * 2),
+    isValid,
     tokenValid: isValid,
     tokenExpire: isValid
       ? "有效"
@@ -713,15 +715,14 @@ export default function AccountsPage(props: PageProps) {
                 key={a.id}
                 data-od-id={"acct-" + a.id}
                 onClick={() => selectAsMonitor(a)}
-                style={
-                  a.isMonitor
-                    ? {
-                        border: "2px solid var(--accent)",
-                        boxShadow: "0 0 0 3px rgba(54,194,207,0.35)",
-                        cursor: "pointer",
-                      }
-                    : { cursor: "pointer" }
-                }
+                style={{
+                  // 边框颜色反映账号有效/失效：有效(wp ok)绿色、失效红色；未被选择时仅细边框提示状态
+                  border: "2px solid " + (a.isValid ? "#3ecf8e" : "#e5484d"),
+                  boxShadow: a.isMonitor
+                    ? "0 0 0 3px rgba(54,194,207,0.35)"
+                    : "0 0 0 2px rgba(" + (a.isValid ? "62,207,142" : "229,72,77") + ",0.18)",
+                  cursor: "pointer",
+                }}
               >
                 <div className="acct-header">
                   {batchMode && (

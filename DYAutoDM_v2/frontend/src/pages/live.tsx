@@ -198,6 +198,19 @@ export default function LivePage(props: PageProps) {
   });
 
   const realAccts: RealAcct[] = useMemo(() => (Array.isArray(accounts) ? accounts : []), [accounts]);
+  // 账号选择默认：只有一个账号时自动选中它（无需手动选）；多个账号时由用户手动选择，
+  // 且当前选择若失效（账号被删）则回退到第一个有效账号。
+  useEffect(() => {
+    if (realAccts.length === 1) {
+      setActiveAcct(realAccts[0].name);
+    } else if (realAccts.length > 0 && activeAcct === null) {
+      // 多账号：默认不自动选，保持用户手动选择；若已有选择且账号还在则保留
+    } else if (realAccts.length > 0 && activeAcct !== null) {
+      if (!realAccts.some((a) => a.name === activeAcct)) {
+        setActiveAcct(null); // 当前选择账号已被删除，清空让用户重选
+      }
+    }
+  }, [realAccts, activeAcct]);
   const ls: LiveStream | null = streamRaw || null;
   const running = !!ls?.alive;
   const online = ls?.online_count ?? 0;
@@ -530,6 +543,14 @@ export default function LivePage(props: PageProps) {
                     无已授权账号
                   </span>
                 )}
+                {realAccts.length > 1 && !activeAcct && (
+                  <span
+                    className="mono"
+                    style={{ fontSize: 12, color: "var(--warn)", marginLeft: 8 }}
+                  >
+                    有多个账号，请手动选择一个
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -588,7 +609,7 @@ export default function LivePage(props: PageProps) {
                   <button
                     className="btn primary"
                     data-od-id="live-start"
-                    disabled={running}
+                    disabled={running || (realAccts.length > 1 && !activeAcct)}
                     onClick={() => {
                       const cfg = {
                         live_url: room,
@@ -599,6 +620,7 @@ export default function LivePage(props: PageProps) {
                           .filter((t) => t.text && t.text.trim())
                           .map((t) => t.text.trim()),
                         force_rescan: forceRescan,
+                        acct: activeAcct || undefined, // 当前选中的监听账号
                       };
                       api
                         .start(cfg)
