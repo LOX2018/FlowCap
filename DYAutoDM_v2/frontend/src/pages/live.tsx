@@ -159,7 +159,6 @@ export default function LivePage(props: PageProps) {
   const [viewMode, setViewMode] = useState<"single" | "grid">("single");
   const [activeAcct, setActiveAcct] = useState<string | null>(null);
   const [room, setRoom] = useState("");
-  const [listening, setListening] = useState(false);
   const [review, setReview] = useState(false);
   const [reviewRows, setReviewRows] = useState<Row[]>([]);
   const [dmDraft, setDmDraft] = useState("");
@@ -614,16 +613,9 @@ export default function LivePage(props: PageProps) {
                 </button>
               )}
               {!ready && (
-                <button
-                  className="btn primary"
-                  data-od-id="live-start"
-                  onClick={() => {
-                    setListening((s) => !s);
-                    push(listening ? "已停止监听" : "开始监听 " + room);
-                  }}
-                >
-                  {listening ? "停止监听" : "开始监听"}
-                </button>
+                <span className="mono" style={{ fontSize: 12, color: "var(--warn)" }}>
+                  backend not connected - cannot listen
+                </span>
               )}
               {ready && (
                 <>
@@ -700,7 +692,7 @@ export default function LivePage(props: PageProps) {
                 ? running
                   ? "引擎运行中（真实监听）"
                   : "引擎未运行 · 配置后点「开始自动私信」"
-                : "粘贴直播页/分享短链/用户主页链接，自动识别"}
+                : "未连接后端 · 请先确保后端已启动"}
             </div>
           </div>
 
