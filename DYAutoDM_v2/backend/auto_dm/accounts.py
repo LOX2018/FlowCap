@@ -20,6 +20,7 @@ import os
 import json
 import time
 import asyncio
+import threading
 from dotenv import load_dotenv, dotenv_values
 from loguru import logger
 
@@ -844,7 +845,13 @@ def recapture_from_profile(name: str = None, landing_url: str = "https://www.dou
       - 读取过程中若抖音弹出验证码/风控页，底层【保持浏览器打开、不写盘】，提示用户手动处理，
         并持续监测验证码是否通过；用户验证通过后自动恢复读取，拿到 clean 凭证才写回 .env。
 
-    返回 (ok: bool, msg: str)。ok=False 时 msg 含失败原因（如风控污染提示）。
+    本函数是【发起器】：只在当前线程做节流校验 + 停守护释放 profile 锁，随后把真正的
+    读取工作交给独立【后台线程】（_do_recapture_from_profile）执行并立即返回——绝不
+    阻塞当前线程（否则在 FastAPI 事件循环线程内会被卡死，且无法同步处理验证码）。
+    验证码由用户在前端/指纹浏览器窗口内自行处理，后台线程持续监测直到读到 clean 凭证
+    或超时。状态写入 _recap_state，前端可轮询看到进行中/成功/失败。
+
+    返回 (ok: bool, msg: str)：ok=True 仅表示【已发起后台读取】，不代表已读到凭证。
     """
     try:
         if not name:
@@ -855,8 +862,27 @@ def recapture_from_profile(name: str = None, landing_url: str = "https://www.dou
             logger.debug(f"[recap-profile] 账号 {name} 从 profile 重读跳过（节流/进行中）")
             return False, "节流中（5 分钟内已触发过一次）"
         st["last"] = now
-        st["running"] = True
         st["error"] = ""
+        t = threading.Thread(
+            target=_do_recapture_from_profile, args=(name, landing_url), daemon=True)
+        t.start()
+        return True, "已启动从绑定指纹浏览器持久化 profile 读取有效凭证（指纹浏览器已拉起，保持打开）"
+    except Exception as e:
+        return False, f"从 profile 重读发起异常: {e}"
+
+
+def _do_recapture_from_profile(name: str, landing_url: str):
+    """后台线程：停守护释放 profile 锁 → 从持久化 profile 读取有效凭证 → 写回 .env。
+
+    真正执行 asyncio 的 read_auth_from_profile 的工作线程（无运行中的事件循环，可安全
+    asyncio.run）。浏览器在该线程内拉起并【保持打开】，期间持续监测验证码：若抖音弹出
+    验证码/风控页，提示用户手动处理，用户验证通过后自动恢复读取，拿到 clean 凭证才写回。
+    """
+    st = _recap_state.setdefault(name, {"running": False, "last": 0.0, "error": ""})
+    st["running"] = True
+    st["error"] = ""
+    try:
+        # 停该账号凭证守护释放 Chromium profile 锁（与查看/重扫同逻辑）
         try:
             from api.accounts import _quit_browser_daemon
             _quit_browser_daemon(name)
@@ -868,23 +894,26 @@ def recapture_from_profile(name: str = None, landing_url: str = "https://www.dou
         logger.info(f"[recap-profile] 账号 {name} 校验失败，优先从持久化 profile 读取有效凭证"
                     f"（保持指纹浏览器打开，直到读到 clean 凭证或超时）")
         try:
+            # 本线程无运行中的事件循环，asyncio.run 安全
             auth = asyncio.run(
                 DYLoginApi().read_auth_from_profile(env_path=env_path, landing_url=landing_url))
         except _RC as _rc:
             # 风控/验证码污染：浏览器保持打开，明确提示用户在指纹浏览器处理验证码
             st["error"] = str(_rc)
-            return False, (
-                "读取到的凭证被风控验证页污染，已拒绝写入 .env。【指纹浏览器保持打开】，"
-                "请在其中手动完成验证码/滑块验证；处理完成后重新点击「引擎校验」即可重新读取。"
-                f"（底层提示：{_rc}）")
+            logger.warning(
+                f"[recap-profile] 账号 {name} 读取被风控验证页污染，已拒绝写盘，"
+                f"指纹浏览器保持打开请手动处理验证码: {_rc}")
+            return
         except Exception as e:
             st["error"] = str(e)
-            return False, f"从 profile 读取凭证失败: {e}"
+            logger.error(f"[recap-profile] 账号 {name} 从 profile 读取凭证失败: {e}")
+            return
         # 确认 clean 后才写盘
         DYLoginApi().save_credential(auth, env_path=env_path)
+        st["error"] = ""
         logger.success(f"[recap-profile] 账号 {name} 已从持久化 profile 读取并写回有效凭证")
-        return True, "已从绑定指纹浏览器的持久化 profile 读取到有效凭证并写回 .env"
     except Exception as e:
-        return False, f"从 profile 重读异常: {e}"
+        st["error"] = str(e)
+        logger.error(f"[recap-profile] 账号 {name} 重读异常: {e}")
     finally:
         st["running"] = False
