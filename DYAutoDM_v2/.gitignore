@@ -67,3 +67,4 @@ _force_rebuild.ps1
 _kill_clean.ps1
 _verify_exe.py
 DYAutoDM_v2/日志.md
+_deploy.ps1
