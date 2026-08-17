@@ -32,8 +32,11 @@ async def get_stream(request: Request) -> LiveStreamResponse:
     room = getattr(live, "room_status", None) or {}
     room_info = room.get("room_info") if isinstance(room, dict) else {}
     room_stats = getattr(live, "room_stats", None) or {}
+    # 直播间标题：AutoDM 启动时已把 check_room_live 返回的 title 存到 self.room_title
+    room_title = getattr(adm, "room_title", "") or str(room_info.get("title") or "")
 
-    running = bool(getattr(live, "running", False))
+    # 运行态判断：LiveChatHook 无 running 属性，用基类 _should_stop（False=运行中）+ ws 连接存活
+    running = not bool(getattr(live, "_should_stop", True)) and bool(getattr(live, "ws", None))
 
     # 弹幕流：feed_snapshot 返回 [{type,nickname,content,ts,epoch},...]，映射成 LiveMessage
     feed_items = live.feed_snapshot(limit=50) if hasattr(live, "feed_snapshot") else []
@@ -59,8 +62,7 @@ async def get_stream(request: Request) -> LiveStreamResponse:
         heat_curve=heat_curve,
         likes=int(room_stats.get("likes", 0) or 0),
         listening=running,
-        roomTitle=room_info.get("title") or room_info.get("room_title")
-        or room.get("title") or "",
+        roomTitle=room_title,
         liveUrl=f"https://live.douyin.com/{getattr(adm, 'live_id', '') or ''}",
     )
 
