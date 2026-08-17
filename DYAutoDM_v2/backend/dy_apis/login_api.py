@@ -208,7 +208,29 @@ class DYLoginApi:
 
         # 用 domcontentloaded 而非 load：抖音首页有持续长连接/轮询，load 事件常延迟触发，
         # 在指纹 chromium 下更易触发 30s 超时；domcontentloaded 已足够后续脚本执行与扫码。
-        await page.goto(self.home_url, wait_until="domcontentloaded", timeout=30000)
+        # 【关键】goto 首页必须带异常处理 + 重试：临时全新 profile 首次启动时抖音首页
+        # 加载很慢/可能重定向，30s 超时后 Playwright 抛 TimeoutError；若不加 try/except，
+        # 异常冒泡到 enrich_auth 的 except 返回，但浏览器窗口已弹出且停在 about:blank
+        # （launch_persistent_context 初始页就是 about:blank，goto 未成功则不导航）。
+        # 这里重试一次 + 失败时明确报错，避免残留一个“白屏 about:blank”窗口让用户困惑。
+        _home_loaded = False
+        for _attempt in range(2):
+            try:
+                await page.goto(self.home_url, wait_until="domcontentloaded", timeout=30000)
+                _home_loaded = True
+                break
+            except Exception as _e:
+                logger.warning(f"[auth] 打开抖音首页失败(第{_attempt+1}次): {_e}")
+                await asyncio.sleep(2)
+        if not _home_loaded:
+            if _backend == "exe":
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            raise RuntimeError(
+                "打开抖音首页失败（可能因临时全新环境加载超时/被抖音风控拦截）。"
+                "请稍后重试「重新获取凭证」，或确认网络正常后再试。")
         await asyncio.sleep(1)
 
         if force:
