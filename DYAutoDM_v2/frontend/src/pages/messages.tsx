@@ -41,10 +41,6 @@ interface Account {
   level?: string;
   label?: string;
 }
-interface AccountsResp {
-  ok?: boolean;
-  accounts?: Account[];
-}
 interface RawMessage {
   dir?: string;
   type?: string;
@@ -148,8 +144,7 @@ export default function MessagesPage(props: PageProps) {
   const accountsQ = useQuery({
     queryKey: ["msg-accounts"],
     queryFn: async (): Promise<Account[]> => {
-      const d = (await a.getAccounts()) as unknown as AccountsResp;
-      return d && d.ok && d.accounts ? d.accounts : [];
+      return (await a.getAccounts()) as unknown as Account[];
     },
     refetchInterval: 5000,
     enabled: !!ready,
