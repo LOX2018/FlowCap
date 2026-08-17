@@ -155,12 +155,13 @@ function fmtTime(ts: number | null | undefined): string {
 }
 
 export default function LivePage(props: PageProps) {
-  const { push, ready, goMsg, api } = props;
+  const { push, ready, goMsg, api, reviewPayload } = props;
   const [viewMode, setViewMode] = useState<"single" | "grid">("single");
   const [activeAcct, setActiveAcct] = useState<string | null>(null);
   const [room, setRoom] = useState("");
   const [listening, setListening] = useState(false);
   const [review, setReview] = useState(false);
+  const [reviewRows, setReviewRows] = useState<Row[]>([]);
   const [dmDraft, setDmDraft] = useState("");
   const [myLikes] = useState(0);
   const [burst] = useState(0);
@@ -218,6 +219,26 @@ export default function LivePage(props: PageProps) {
   const messages = useMemo(() => ls?.messages ?? [], [ls]);
   const heat = useMemo(() => ls?.heat_curve ?? [], [ls]);
   const records = useMemo(() => tasksCfg?.records ?? [], [tasksCfg]);
+
+  // 响应任务中心「历史任务跳转查阅模式」：用历史任务 records 快照进入查阅模式
+  useEffect(() => {
+    if (!reviewPayload) return;
+    const src = reviewPayload.records || [];
+    const rr: Row[] = src.map((r, i) => ({
+      id: 900000 + i,
+      time: r.start_ts ? String(r.start_ts).slice(11, 19) : "",
+      name: String(r.nickname || r.uid || "未知"),
+      lv: 0,
+      content: String(r.comment || r.content || ""),
+      dmStatus: toDmStatus(String(r.status || "")),
+      dmText: String(r.content || ""),
+      dmTime: r.send_ts ? String(r.send_ts) : "",
+      ts: (Number(r.captured_at) || 0) * 1000,
+    }));
+    setReviewRows(rr);
+    setReview(true);
+    push(`已进入历史任务「${reviewPayload.acct || ""}」的查阅模式，共 ${src.length} 条结果`);
+  }, [reviewPayload, push]);
 
   const feed = useMemo<FeedItem[]>(
     () =>
@@ -1032,8 +1053,11 @@ export default function LivePage(props: PageProps) {
         {review && (
           <ReviewMode
             key="review-mode"
-            rows={rows}
-            onClose={() => setReview(false)}
+            rows={reviewRows.length ? reviewRows : rows}
+            onClose={() => {
+              setReview(false);
+              setReviewRows([]);
+            }}
             push={push}
             sendDm={sendDm}
             goMsg={goMsg}

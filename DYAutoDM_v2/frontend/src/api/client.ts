@@ -235,6 +235,14 @@ export const api = {
     return request("/api/tasks/export", { method: "POST" });
   },
 
+  async getTaskHistory(): Promise<{ ok: boolean; list?: TaskHistoryItem[] }> {
+    return request("/api/tasks/history");
+  },
+
+  async clearTaskHistory(): Promise<{ ok: boolean }> {
+    return request("/api/tasks/history/clear", { method: "POST" });
+  },
+
   // ===== settings =====
   async getConfig(): Promise<{ ok: boolean; config: Record<string, unknown> }> {
     return request("/api/settings");
@@ -280,6 +288,26 @@ export const api = {
 
 // ===== 页面组件统一 Props 类型（1:1 对应旧版 app.js 传给页面的 props）=====
 
+export interface TaskHistoryItem {
+  id: number;
+  acct: string;
+  live_id: string;
+  start_ts: string;
+  end_ts: string;
+  status: "running" | "finished" | "stopped";
+  result_count: number;
+  records?: Record<string, unknown>[];
+}
+
+/** 历史任务跳转查阅模式的载荷 */
+export interface ReviewPayload {
+  acct: string;
+  liveId: string;
+  records: Record<string, unknown>[];
+  startTs?: string;
+  endTs?: string;
+}
+
 export interface PageProps {
   /** toast 提示 */
   push: (msg: string) => void;
@@ -293,5 +321,11 @@ export interface PageProps {
   goMsg?: (name: string, text?: string) => void;
   /** 私信页接收的预填消息 */
   goDm?: { name: string; text: string } | null;
+  /** 切换 Tab（任务中心跳转用） */
+  setTab?: (tab: string) => void;
+  /** 跳转到直播监听页并进入查阅模式查看历史任务结果 */
+  goReview?: (payload: ReviewPayload) => void;
+  /** 直播监听页收到的查阅模式载荷（由 goReview 设置） */
+  reviewPayload?: ReviewPayload | null;
 }
 

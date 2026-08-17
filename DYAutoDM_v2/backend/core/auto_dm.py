@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -29,6 +30,24 @@ from models.enums import EngineState
 from models.task import TaskConfig
 from core.dispatch import DispatchCenter
 from core.live_hook import LiveChatHook
+
+
+def _rec_to_dict(rec) -> dict:
+    """把 SendRecord 模型转成可 JSON 序列化的 dict（历史任务 records 快照）。"""
+    if rec is None:
+        return {}
+    if isinstance(rec, dict):
+        return dict(rec)
+    out = {}
+    for k, v in rec.__dict__.items():
+        if k.startswith("_"):
+            continue
+        try:
+            json.dumps(v)
+            out[k] = v
+        except (TypeError, ValueError):
+            out[k] = str(v)
+    return out
 
 
 def check_room_live(auth: Any, live_id: str):
@@ -244,6 +263,17 @@ class AutoDM:
         self.status_msg = "启动中"
         self._stop_event.clear()
 
+        # 记录历史任务（任务中心展示）
+        try:
+            from auto_dm.accounts import current_name
+            acct = getattr(config, "acct", None) or current_name()
+            from tasks_history import start_task
+            self._task_history_id = start_task(acct, self.live_id or config.live_url)
+            logger.info(f"[history] 记录历史任务: 账号={acct} live={self.live_id} id={self._task_history_id}")
+        except Exception as e:
+            logger.warning(f"[history] 记录历史任务失败: {e}")
+            self._task_history_id = None
+
         logger.info(f"引擎启动: live_url={config.live_url}, max_target={config.max_target}")
         self._task = asyncio.create_task(self._run(config))
         # 等到状态变成 RUNNING 或失败（避免前端立即查询时还在 STARTING）
@@ -362,6 +392,7 @@ class AutoDM:
             if not self.dispatch or self.dispatch.queue_size() == 0:
                 self.state = EngineState.STOPPED
                 self.status_msg = "已停止"
+                self._finish_history_task("finished")
             else:
                 # 仍有待发私信：保持 STOPPING 直到队列发空
                 self.state = EngineState.STOPPING
@@ -425,6 +456,7 @@ class AutoDM:
         if hard:
             self.state = EngineState.STOPPED
             self.status_msg = "已停止"
+            self._finish_history_task("stopped")
         else:
             # 软停止：等存量发完
             if self.dispatch and (self.dispatch.queue_size() > 0 or self.dispatch.pending):
@@ -434,15 +466,39 @@ class AutoDM:
             else:
                 self.state = EngineState.STOPPED
                 self.status_msg = "已停止"
+                self._finish_history_task("finished")
 
     async def _wait_dispatch_done(self) -> None:
         """软停止后等存量私信发完"""
         if not self.dispatch:
             self.state = EngineState.STOPPED
+            self.status_msg = "已停止"
+            self._finish_history_task("finished")
             return
         await self.dispatch.wait_done()
         self.state = EngineState.STOPPED
         self.status_msg = "已停止"
+        self._finish_history_task("finished")
+
+    def _finish_history_task(self, status: str) -> None:
+        """更新当前历史任务为结束状态，记录结果条数与 records 快照。"""
+        tid = getattr(self, "_task_history_id", None)
+        if not tid:
+            return
+        try:
+            from tasks_history import finish_task
+            count = 0
+            records = []
+            if self.dispatch:
+                try:
+                    records = self.dispatch.records_list() or []
+                    count = len(records)
+                except Exception:
+                    pass
+            finish_task(tid, status=status, result_count=count,
+                        records=[r if isinstance(r, dict) else _rec_to_dict(r) for r in records])
+        except Exception as e:
+            logger.warning(f"[history] 更新历史任务失败: {e}")
         logger.info("[引擎] 存量私信已发完，整体停止")
 
     async def _on_dispatch_idle(self) -> None:

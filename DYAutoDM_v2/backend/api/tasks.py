@@ -33,6 +33,28 @@ def _dm_pool_from_adm(adm) -> list[dict]:
     return out
 
 
+@router.get("/history")
+async def get_history(request: Request) -> dict:
+    """历史任务列表（任务中心展示；含运行结果 records 快照供查阅模式跳转）"""
+    try:
+        from tasks_history import list_history
+        return {"ok": True, "list": list_history()}
+    except Exception as e:
+        logger.warning(f"[tasks] 读取历史任务失败: {e}")
+        return {"ok": False, "list": [], "error": str(e)}
+
+
+@router.post("/history/clear")
+async def clear_history(request: Request) -> dict:
+    """清空历史任务"""
+    try:
+        from tasks_history import clear_history
+        clear_history()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("")
 async def get_tasks(request: Request) -> dict:
     """任务配置 + 发送记录（对齐前端 tasks.tsx 字段）"""

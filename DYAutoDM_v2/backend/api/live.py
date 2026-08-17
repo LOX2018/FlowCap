@@ -3,10 +3,10 @@
 取代原版 WebBridge.getLiveStream / sendDanmaku / doLike 等。
 关键改进：用 WebSocket 推送实时弹幕，替代 2s 轮询。
 """
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from loguru import logger
-from models.live import LiveStreamResponse, DanmakuRequest, DmTemplateRequest
+from models.live import LiveStreamResponse, LiveMessage, DanmakuRequest, DmTemplateRequest
 from config import settings
 
 router = APIRouter()
@@ -17,9 +17,52 @@ class ResolveRequest(BaseModel):
 
 
 @router.get("/stream")
-async def get_stream() -> LiveStreamResponse:
-    """直播流快照（用于初次加载）"""
-    return LiveStreamResponse(alive=False)
+async def get_stream(request: Request) -> LiveStreamResponse:
+    """直播流快照（用于初次加载）。
+
+    从引擎持有 AutoDM.live (LiveChatHook) 读取实时直播流数据：
+    room_status（room_title/主播昵称/room_id）、feed（实时弹幕流）、heat_curve、
+    online_count / likes、当前监听状态。引擎未运行或无 live 时返回 alive=False。
+    """
+    adm = getattr(request.app.state, "adm", None)
+    live = getattr(adm, "live", None) if adm else None
+    if live is None:
+        return LiveStreamResponse(alive=False)
+
+    room = getattr(live, "room_status", None) or {}
+    room_info = room.get("room_info") if isinstance(room, dict) else {}
+    room_stats = getattr(live, "room_stats", None) or {}
+
+    running = bool(getattr(live, "running", False))
+
+    # 弹幕流：feed_snapshot 返回 [{type,nickname,content,ts,epoch},...]，映射成 LiveMessage
+    feed_items = live.feed_snapshot(limit=50) if hasattr(live, "feed_snapshot") else []
+    messages = [
+        LiveMessage(
+            uid=str(x.get("uid", "") or ""),
+            nickname=str(x.get("nickname", "") or ""),
+            content=str(x.get("content", "") or ""),
+            ts=int(x.get("epoch", 0) or 0),
+        )
+        for x in feed_items
+    ]
+
+    # 热度曲线：heat_snapshot 返回 [[epoch, online, likes],...]，取 online 作为热度点
+    heat = live.heat_snapshot() if hasattr(live, "heat_snapshot") else []
+    heat_curve = [int(h[1]) for h in heat if isinstance(h, (list, tuple)) and len(h) > 1]
+
+    return LiveStreamResponse(
+        alive=running,
+        room_id=getattr(adm, "live_id", None) or str(room_info.get("room_id") or ""),
+        online_count=int(room_stats.get("online", 0) or 0),
+        messages=messages,
+        heat_curve=heat_curve,
+        likes=int(room_stats.get("likes", 0) or 0),
+        listening=running,
+        roomTitle=room_info.get("title") or room_info.get("room_title")
+        or room.get("title") or "",
+        liveUrl=f"https://live.douyin.com/{getattr(adm, 'live_id', '') or ''}",
+    )
 
 
 @router.websocket("/ws")

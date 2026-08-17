@@ -8,7 +8,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { api, Overview, PageProps } from "./api/client";
+import { api, Overview, PageProps, ReviewPayload } from "./api/client";
 import { TABS, Dot } from "./components/ui";
 import OverviewPage from "./pages/overview";
 import CrawlPage from "./pages/crawl";
@@ -96,6 +96,7 @@ export default function App() {
   });
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const [goDm, setGoDm] = useState<{ name: string; text: string } | null>(null);
+  const [goReview, setGoReview] = useState<ReviewPayload | null>(null);
   const cidRef = useRef(0);
 
   // overview 3s 轮询（替代旧版 setInterval；Tauri 模式首次触发 ensureBackendReady）
@@ -149,8 +150,12 @@ export default function App() {
     setTab("msg");
   }, [setTab]);
 
+  const goReviewTrigger = useCallback((payload: ReviewPayload) => {
+    setGoReview(payload);
+  }, []);
+
   // 页面公共 props（1:1 对应旧版 app.js 传给页面的 props）
-  const pageProps: PageProps = { push, api, overview: overview ?? null, ready, goMsg, goDm };
+  const pageProps: PageProps = { push, api, overview: overview ?? null, ready, goMsg, goDm, setTab, goReview: goReviewTrigger, reviewPayload: goReview }; 
 
   return (
     <div className="app">
