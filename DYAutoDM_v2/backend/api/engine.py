@@ -3,8 +3,11 @@
 取代原版 AutoDM 的多标志位状态机（_running/listen_active/hard_stopped/no_new/paused），
 改用单一 enum EngineState。
 """
+import asyncio
+
 from fastapi import APIRouter, Request, HTTPException
 from models.task import TaskConfig
+from models.enums import EngineState
 from core.auto_dm import AutoDM
 
 router = APIRouter()
@@ -12,15 +15,27 @@ router = APIRouter()
 
 @router.post("/start")
 async def start_engine(request: Request, config: TaskConfig):
+    """启动自动私信引擎。
+
+    优化（#51）：改为后台任务立即返回，消除前端 2.4s 同步等待。
+    - adm.start 内部有 STARTING 轮询（最长 60s）+ _run 前几步网络探活
+      （_verify_credential + check_room_live，各 1~2s），同步 await 会让
+      前端按钮点击后卡住 2.4s。
+    - 改为 asyncio.create_task 后台跑，路由立即返回 {ok:True, state:"starting"}，
+      前端由 /api/engine/status 轮询反映真实状态（listening/running 等）。
+    """
     adm: AutoDM = request.app.state.adm
     # 把前端别名归一到规范字段
     cfg = config.resolved()
     # 空直播间链接属于不合法的启动参数，应返回结构化 400 而非 500 崩溃
     if not cfg.live_url or not cfg.live_url.strip():
         raise HTTPException(400, "live_url 不能为空（需提供直播间链接或房间号）")
+    # 已在运行/启动中则直接返回当前状态（不重复拉起）
+    if adm.state in (EngineState.RUNNING, EngineState.STARTING):
+        return {"ok": True, "state": adm.state.value, "already": True}
     try:
-        await adm.start(cfg)
-        return {"ok": True, "state": adm.state.value}
+        asyncio.create_task(adm.start(cfg))
+        return {"ok": True, "state": "starting"}
     except Exception as e:
         raise HTTPException(500, f"启动失败: {e}")
 

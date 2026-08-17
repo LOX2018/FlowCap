@@ -10,7 +10,7 @@
  * - 清空显示：仅清空前端视图，不触碰磁盘实质日志；清空后只显示新产生的行。
  */
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 
 interface LogLine {
@@ -52,6 +52,7 @@ function fmtSize(bytes: number): string {
 
 export default function LogsPage(props: PageProps) {
   const { api, ready } = props;
+  const qc = useQueryClient();
   const [autoScroll, setAutoScroll] = useState(true);
   const [limit, setLimit] = useState(500);
   // 视图模式：current=本次日志，history=历史会话列表
@@ -141,12 +142,25 @@ export default function LogsPage(props: PageProps) {
       props.push("请先勾选要删除的历史会话");
       return;
     }
+    // 乐观更新：删除前立即从列表隐藏选中项，消除删除后的可见延迟
+    const delSet = new Set(files);
+    qc.setQueryData(
+      ["logs-sessions"],
+      (old: { ok: boolean; current: string | null; sessions: Session[] } | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          sessions: old.sessions.filter((s) => !delSet.has(s.file)),
+        };
+      },
+    );
+    setSelected(new Set());
     const r = await api.deleteSessions(files);
     if (r.ok) {
       props.push(`已删除 ${r.deleted.length} 个历史会话${r.skipped.length ? `，跳过 ${r.skipped.length} 个` : ""}`);
-      setSelected(new Set());
     } else {
       props.push("删除失败");
+      sessQ.refetch(); // 失败回滚：重新拉取真实状态
     }
   };
 

@@ -27,6 +27,13 @@ router = APIRouter()
 # 后台扫码状态：name -> {"running": bool, "done": bool, "loggedIn": bool, "error": str}
 _scan_state: dict[str, dict] = {}
 
+# 轻量缓存：getAccounts 轮询频繁（默认 3s），而 verify_account 含网络探活（get_my_uid）
+# 单次耗时 1~3s。为避免每次轮询都卡顿，对单账号 verify 结果做 TTL 缓存（与轮询间隔一致），
+# 命中缓存瞬时返回，把列表刷新延迟从 2.6s 降到亚秒级。
+_VERIFY_CACHE: dict[str, tuple[float, dict]] = {}
+_VERIFY_TTL = 3.0  # 秒，与前端 getAccounts 轮询间隔对齐
+_VERIFY_LOCK = threading.Lock()
+
 
 def _get_adm():
     """懒加载全局引擎实例（app.state.adm）。
@@ -165,6 +172,34 @@ def _wait_scan_error(name: str, timeout: float = 4.0) -> str:
     return ""
 
 
+def _cached_verify(name: str, timeout: int = 3) -> dict:
+    """带 TTL 缓存的 verify_account 封装。
+
+    getAccounts 列表轮询（默认 3s）若每次都跑真实 verify（含 get_my_uid 网络探活），
+    会产生 1~3s 的可感知延迟。缓存命中（TTL 内）直接返回上次结果，把延迟降到亚秒级。
+    只缓存 dm_loopback=False（轮询用）的结果；按钮/自检触发的 dm_loopback=True 不走缓存。
+    """
+    now = time.time()
+    with _VERIFY_LOCK:
+        cached = _VERIFY_CACHE.get(name)
+        if cached is not None and (now - cached[0]) < _VERIFY_TTL:
+            return cached[1]
+    # 缓存未命中：真实计算（可能较慢，但并发池内只发生一次）
+    try:
+        result = acct_core.verify_account(name, timeout=timeout, dm_loopback=False)
+    except Exception:
+        result = {
+            "ok": False,
+            "uid": None,
+            "wp": {"level": "unknown", "label": "状态获取失败", "detail": ""},
+            "dm": {"level": "unknown", "label": "待校验", "detail": ""},
+            "auto_fix_triggered": False,
+        }
+    with _VERIFY_LOCK:
+        _VERIFY_CACHE[name] = (now, result)
+    return result
+
+
 def _to_raw_account(name: str) -> dict:
     """把后端真实账号状态映射为前端 RawAccount 兼容结构。
 
@@ -180,8 +215,8 @@ def _to_raw_account(name: str) -> dict:
     bport = acct_core.browser_daemon_port(name)
     rport = acct_core.recv_daemon_port(name)
     try:
-        # 单次 verify_account：无守护时仅做端口探测（不探活），有守护才真实探活
-        v = acct_core.verify_account(name, timeout=3, dm_loopback=False)
+        # 单次 verify_account 含网络探活，较慢；优先用 TTL 缓存避免列表刷新卡顿
+        v = _cached_verify(name, timeout=3)
         wp = v.get("wp", {})
         dm = v.get("dm", {})
         wp_level = wp.get("level")
