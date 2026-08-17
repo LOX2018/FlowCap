@@ -41,6 +41,7 @@ interface RawAccount {
   isCurrent?: boolean;
   isMonitor?: boolean;
   isSender?: boolean;
+  lastRun?: LastRun;
 }
 
 interface LastRun {
@@ -176,7 +177,7 @@ function mapAcct(a: RawAccount, i: number): FmtAccount {
     isMonitor: !!a.isMonitor,
     isSender: !!a.isSender,
     lastCheck: "刚刚",
-    lastRun: {
+    lastRun: a.lastRun || {
       room: "—",
       roomUrl: "",
       time: "—",
@@ -821,9 +822,9 @@ export default function AccountsPage(props: PageProps) {
                     </div>
                   </div>
 
-                  {/* 上次运行日志 */}
+                  {/* 上次运行记录 */}
                   <div className="acct-section" style={{ gridColumn: "1", gridRow: "2" }}>
-                    <h4>上次运行日志</h4>
+                    <h4>上次运行记录</h4>
                     <div className="acct-row">
                       <span className="k">直播间</span>
                       <span
@@ -906,9 +907,6 @@ export default function AccountsPage(props: PageProps) {
                               {a.wpEngine.level === "stopped" ? "未运行" : a.wpEngine.label}
                             </Pill>
                           </div>
-                          <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.4 }}>
-                            {a.wpEngine.detail}
-                          </div>
                         </div>
                         {(a.wpEngine.level === "fail" || a.dmEngine.level === "fail") && (
                           <button
@@ -923,9 +921,6 @@ export default function AccountsPage(props: PageProps) {
                           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                             <span style={{ fontWeight: 600, fontSize: 13 }}>私信引擎</span>
                             <Pill c={enginePill(a.dmEngine.level)}>{a.dmEngine.label}</Pill>
-                          </div>
-                          <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.4 }}>
-                            {a.dmEngine.detail}
                           </div>
                         </div>
                       </div>

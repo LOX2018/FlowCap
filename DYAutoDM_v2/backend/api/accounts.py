@@ -28,6 +28,73 @@ router = APIRouter()
 _scan_state: dict[str, dict] = {}
 
 
+def _get_adm():
+    """懒加载全局引擎实例（app.state.adm）。
+
+    避免在模块顶层 import main 造成的循环依赖：accounts 路由被 main
+    导入，但本函数在运行时（请求处理阶段）才访问，此时 main 已就绪。
+    """
+    try:
+        from main import app
+        return getattr(app.state, "adm", None)
+    except Exception:
+        return None
+
+
+def _build_last_run(name: str) -> dict:
+    """从全局引擎实例读取该账号真实运行记录，无运行时数据返回空占位。"""
+    adm = _get_adm()
+    if not adm:
+        return {
+            "room": "—",
+            "roomUrl": "",
+            "time": "—",
+            "duration": "—",
+            "totalRuns": 0,
+            "comments": 0,
+            "dmSent": 0,
+            "dmSuccess": 0,
+            "dmFail": 0,
+            "dmAfterLive": 0,
+        }
+    try:
+        # 当前仅支持单账号引擎，任何账号都读同一 adm 的运行时聚合
+        sent = getattr(adm, "sent_count", 0) or 0
+        live_id = getattr(adm, "live_id", None)
+        dispatch = getattr(adm, "dispatch", None)
+        records = dispatch.records_list() if dispatch else []
+        comments = len(records) if records else 0
+        from models.enums import RecordStatus
+        success = sum(1 for r in records if getattr(r, "status", None) == RecordStatus.SENT)
+        status_msg = getattr(adm, "status_msg", "") or ""
+        running = status_msg not in ("未启动", "已停止", "运行异常: ")
+        return {
+            "room": live_id or "—",
+            "roomUrl": live_id or "",
+            "time": "进行中" if running else "—",
+            "duration": "进行中" if running else "—",
+            "totalRuns": 1 if live_id else 0,
+            "comments": comments,
+            "dmSent": sent,
+            "dmSuccess": success,
+            "dmFail": max(0, sent - success),
+            "dmAfterLive": 0,
+        }
+    except Exception:
+        return {
+            "room": "—",
+            "roomUrl": "",
+            "time": "—",
+            "duration": "—",
+            "totalRuns": 0,
+            "comments": 0,
+            "dmSent": 0,
+            "dmSuccess": 0,
+            "dmFail": 0,
+            "dmAfterLive": 0,
+        }
+
+
 def _do_scan(name: str):
     """后台线程：弹指纹浏览器让用户扫码，完成后写回对应账号 .env。"""
     st = _scan_state.setdefault(name, {})
@@ -156,6 +223,7 @@ def _to_raw_account(name: str) -> dict:
         "isCurrent": is_current,
         "isMonitor": monitor,
         "isSender": sender,
+        "lastRun": _build_last_run(name),
     }
 
 

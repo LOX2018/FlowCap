@@ -115,13 +115,22 @@ export default function App() {
   useEffect(() => {
     if (!ready || ranSelfCheck.current) return; // 后端已连且只跑一次
     ranSelfCheck.current = true;
-    setSelfCheckOpen(true);
     setSelfCheckLoading(true);
     api
       .selfCheck()
       .then((d) => {
-        setScItems((d.items || []) as SelfCheckItem[]);
+        const items = (d.items || []) as SelfCheckItem[];
+        const bad = items.filter(
+          (it) =>
+            (it.wp && ["fail", "error", "unknown"].includes(it.wp.level)) ||
+            (it.dm && ["fail", "error", "unknown"].includes(it.dm.level)),
+        );
+        setScItems(items);
         setSelfCheckLoading(false);
+        // 仅当存在异常账号时才弹窗，正常情况静默运行
+        if (bad.length > 0) {
+          setSelfCheckOpen(true);
+        }
       })
       .catch(() => {
         // 自检接口失败不阻塞使用，仅静默关闭
