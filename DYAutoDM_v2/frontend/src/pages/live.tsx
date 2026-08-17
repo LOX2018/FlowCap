@@ -677,12 +677,12 @@ export default function LivePage(props: PageProps) {
                     disabled={!running}
                     onClick={() =>
                       api
-                        .stop()
-                        .then((r) => push(r.ok ? "已停止" : "停止失败"))
+                        .stopSoft()
+                        .then((r) => push(r.ok ? "已停止监听（存量私信继续发送）" : "停止失败"))
                         .catch((e: unknown) => push("停止异常: " + errMsg(e)))
                     }
                   >
-                    停止
+                    停止监听
                   </button>
                 </>
               )}
