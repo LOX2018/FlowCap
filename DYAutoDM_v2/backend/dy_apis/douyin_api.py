@@ -717,13 +717,15 @@ class DouyinAPI:
         :param auth: DouyinAuth object.
         :return: 用户ID；无有效 cookie 情况下返回 None（探活失败）。
 
-        注意：抖音在风控验证态下会把 cookie 里的 s_v_web_id 写成占位值
-        （如 "verify_msppk8gp_xxxx"，以 verify_msppk8gp_ 前缀开头，非 19 位纯数字），
-        此时用它去请求 query/user 必被服务端拒绝、resp_json 无 user_uid 字段会抛异常，
-        进而被上层误判为“探活失败/凭证失效”。本函数识别该占位值后：
-          1) 优先直接返回 cookie 里的真实 uid_tt（正常登录态下必有，且已经过扫码验证）；
-          2) 仅当 uid_tt 也缺失时才回退到网络请求。
-        这样“账号真实有效、仅 s_v_web_id 被风控占位”的情形不再被误判。
+        【修复 2026-08-17 16:36 基座直测结论】
+        抖音新版 cookie 格式已变化，旧代码的「占位/伪造」判断全部误伤正常登录态：
+          - s_v_web_id 正常值就是 'verify_xxx' 开头（非旧版假设的 19 位纯数字）；
+          - uid_tt 是 32 位 hex 字符串，转十进制超 19 位（非旧版假设的 int64 十进制）。
+        旧代码因「s_v_web_id=verify_ 开头 → 判占位」而【提前 return None，拦截网络
+        请求】，导致探活失败。基座实测证明：即便 s_v_web_id=verify_ 开头、uid_tt 是
+        hex，网络接口 query/user 仍返回真实十进制 uid（如 3887506227210423）。
+        故本函数【不再基于 cookie 格式提前拦截】，uid_tt 解析失败一律走网络
+        query/user 拿真实 uid。
         """
         if not auth or not getattr(auth, "cookie", None):
             return None
@@ -732,38 +734,20 @@ class DouyinAPI:
         if existing_uid:
             return existing_uid
         cookie = auth.cookie
-        # 真实 uid 优先（uid_tt 是登录态直接下发的数字 uid，不受 s_v_web_id 占位影响）
+        # 真实 uid 优先：uid_tt 是登录态直接下发的数字 uid。
+        # 仅当它是纯十进制数字才直接返回（旧版格式）；hex 或其它格式一律走网络接口。
         uid_tt = cookie.get("uid_tt") or cookie.get("uid_tt_ss")
         if uid_tt:
             sval = str(uid_tt).strip()
-            # 排除风控验证页占位值
-            if not (sval.startswith("verify_") or sval in ("1", "0")):
+            if sval.isdigit():
                 try:
-                    return int(sval)  # 纯数字 uid（旧版 cookie）
+                    return int(sval)
                 except (ValueError, TypeError):
                     pass
-                try:
-                    _uid = int(sval, 16)  # 32 位 hex 串 -> 十进制 uid（新版 cookie）
-                    if _uid and _uid > 1:
-                        # 抖音真实 uid 为十进制 19 位以内（int64 范围），
-                        # 超出则非真实 uid（风控验证页下发的伪造 token），丢弃
-                        if _uid < 10 ** 19:
-                            return _uid
-                except (ValueError, TypeError):
-                    pass
+        # 走网络接口 query/user 拿真实十进制 uid（抖音新版唯一可靠来源）。
+        # 不因 s_v_web_id 格式提前 return——verify_ 开头是抖音新版正常格式，
+        # 且基座实测该接口对 verify_ 开头的 s_v_web_id 依然返回真实 uid。
         s_v_web_id = cookie.get("s_v_web_id")
-        # 识别风控占位值：verify_msppk8gp_ 前缀 或 非 19 位纯数字（正常 s_v_web_id 为 19 位数字）
-        def _is_placeholder(v):
-            if not v:
-                return True
-            v = str(v).strip()
-            if v.startswith("verify_msppk8gp_"):
-                return True
-            # 正常 s_v_web_id 形如 19 位数字；非纯数字即视为占位/异常
-            return not v.isdigit()
-        if _is_placeholder(s_v_web_id):
-            # 没有可用 s_v_web_id 且 uid_tt 解析失败 → 视为探活失败
-            return None
         url = 'https://www.douyin.com/aweme/v1/web/query/user/'
         headers = HeaderBuilder().build(HeaderType.GET)
         refer = 'https://www.douyin.com/'
