@@ -64,11 +64,10 @@ def _cookie_is_polluted(cookies):
     if sid_ucp and _is_placeholder(str(sid_ucp).strip()):
         polluted.append("sid_ucp_v1")
 
-    # ttwid / msToken 被清空也视为弱污染信号（登录态不完整）
+    # ttwid 缺失视为强污染信号（登录态不完整）；msToken 缺失单独不判污染
+    # （msToken 可能因页面加载时序暂时缺失，不代表账号被风控，避免误伤正常账号）
     if not cookies.get("ttwid"):
         polluted.append("ttwid")
-    if not cookies.get("msToken"):
-        polluted.append("msToken")
 
     return (len(polluted) > 0), polluted
 
@@ -233,15 +232,22 @@ class DYLoginApi:
               把 web_protect 从空壳升级为有效值；之后维持在该页轮询 localStorage 直至有效。
             - 崩溃根因不在 goto 私信页，而在“清空/占用持久化 profile 导致浏览器启动失败”；
               该问题已由 vbrowser.launch_async(force=True) 改用临时 profile 修复。
+
+            【风控/验证码处理策略 2026-08-17 修订】
+            检测到抖音弹出验证码/滑块/风控验证页时，【绝不关闭浏览器、绝不立即 raise】，
+            而是 logger.warning 提示用户在【保持打开的指纹浏览器】中手动完成验证码，
+            本循环继续轮询：用户完成验证码后页面会离开风控页 → 自动恢复抓取凭证流程。
+            仅当超时仍处于风控页才 raise RiskControlError（此时浏览器仍不关闭，留给用户处理）。
             """
             keys_str = web_protect_str = None
             _logged_in = False
             _msg_opened = False
+            _risk_notified = False  # 风控提示只打一次，避免刷屏
             while time.time() < deadline:
                 await asyncio.sleep(1)
                 # 风控/验证码实时监测：抓取过程中若抖音弹出验证码/滑块/风控验证页，
-                # 则抛出 RiskControlError（不写 .env），提示用户在指纹浏览器中手动处理，
-                # 期间由本循环的持续轮询继续监测验证码处理进度与凭证污染状态。
+                # 【不关闭浏览器、不立即 raise】，提示用户在保持打开的指纹浏览器中手动处理，
+                # 本循环继续轮询；用户完成验证码后页面离开风控页 → 自动恢复抓取。
                 try:
                     _page_url = await page.evaluate("location.href")
                     _page_html = await page.evaluate("document.documentElement.outerHTML.slice(0, 4000)")
@@ -252,12 +258,19 @@ class DYLoginApi:
                     "verify.zijieapi.com", "verifycenter", "captcha", "滑块", "安全验证",
                     "异常请求", "验证中心", "人机验证", "账号存在风险"))
                 if _risk_hit:
-                    logger.warning(
-                        f"[风控] 检测到验证码/风控验证页（{_page_url}），停止抓取，"
-                        f"请在指纹浏览器中手动完成验证码/滑块验证后再重试")
-                    raise RiskControlError(
-                        "抓取时触发了抖音验证码/风控验证页，已停止并【不写入】被污染的凭证。"
-                        "请在指纹浏览器中手动处理验证码（滑块/短信验证），处理完成后再重新获取凭证。")
+                    if not _risk_notified:
+                        logger.warning(
+                            f"[风控] 检测到验证码/风控验证页（{_page_url}）。"
+                            f"【指纹浏览器保持打开】，请在其中手动完成验证码/滑块验证，"
+                            f"完成后程序将自动继续抓取凭证；无需重新扫码。")
+                        _risk_notified = True
+                    # 风控期间不抓凭证，继续轮询等待用户处理完成
+                    continue
+                else:
+                    # 风控页已离开（用户处理完成），重置提示标记，恢复抓取
+                    if _risk_notified:
+                        logger.info("[风控] 验证码/风控页已离开，恢复抓取凭证流程")
+                        _risk_notified = False
                 # 阶段一：等待用户扫码（真实登录态）。未登录前绝不开私信页，停在首页。
                 if not _logged_in:
                     if await _is_real_login(context):
@@ -279,6 +292,12 @@ class DYLoginApi:
                 if (keys_str and _web_protect_valid(web_protect_str)) and await _is_real_login(context):
                     logger.info("[auth] 检测到真实登录态 + 有效 web_protect（私信落地页 security-sdk 已生成）")
                     return keys_str, web_protect_str
+            # 超时仍未拿到有效凭证：若当前正处于风控页，raise RiskControlError（浏览器不关闭，留给用户处理）
+            if _risk_notified:
+                raise RiskControlError(
+                    "登录超时且仍处于抖音验证码/风控验证页。【指纹浏览器保持打开】，"
+                    "请在其中手动完成验证码（滑块/短信验证），处理完成后重新点击「重新获取凭证」。"
+                    "本次不写入被污染的凭证。")
             raise TimeoutError(
                 "登录超时：未在超时时间内完成扫码并拿到【有效】web_protect+登录态，已放弃，不写入残缺凭证")
 
@@ -348,15 +367,13 @@ class DYLoginApi:
                     keys_str, web_protect_str = await _wait_sign_and_login(context, time.time() + timeout)
 
         if not (keys_str and _web_protect_valid(web_protect_str)):
-            if _backend == "exe":
-                await context.close()
+            # 【不关闭浏览器】用户可能在处理验证码/等待页面恢复，保持打开让用户可继续操作
             raise TimeoutError("登录超时：未抓到完整/有效 web_protect/keys，已放弃，不写入残缺凭证")
 
         cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
         # 最终守卫：必须含真实登录 cookie + 有效签名，否则绝不返回（上层不会写 .env）
         if not (cookies.get("sessionid") or cookies.get("sid_tt")) or not _web_protect_valid(web_protect_str) or not keys_str:
-            if _backend == "exe":
-                await context.close()
+            # 【不关闭浏览器】凭证不完整可能源于用户仍在处理验证码，保持打开
             raise RuntimeError(
                 "凭证不完整（缺少真实登录 cookie 或有效 web_protect/keys），拒绝返回残缺 auth，不写 .env")
         # 风控污染守卫：即便 web_protect/cookie 看似齐全，只要关键身份 cookie 被抖音
@@ -364,14 +381,14 @@ class DYLoginApi:
         # 否则会带着污染 cookie 写回，导致后续弹幕昵称被加密 / sec_uid 丢失。
         _polluted, _fields = _cookie_is_polluted(cookies)
         if _polluted:
-            if _backend == "exe":
-                await context.close()
+            # 【不关闭浏览器】保持指纹浏览器打开，提示用户手动处理验证码/滑块后重试
             raise RiskControlError(
                 f"抓取到的凭证被抖音风控验证页污染（字段={'/'.join(_fields)}），"
-                f"已【拒绝写入】.env。请更换正常网络 / 设备后重新获取凭证，"
-                f"或在指纹浏览器中手动处理验证码/滑块后再试。")
-        if _backend == "exe":
-            await context.close()
+                f"已【拒绝写入】.env。【指纹浏览器保持打开】，请在其中手动处理验证码/滑块，"
+                f"处理完成后重新点击「重新获取凭证」。")
+        # 【不立即关闭浏览器】成功抓到凭证后保持指纹浏览器打开，让用户确认登录态/处理可能的二次验证。
+        # 浏览器由用户手动关闭，或由后续「关闭指纹浏览器」按钮/enrich_auth 上层关闭。
+        logger.info("[auth] 凭证抓取完成，指纹浏览器保持打开（用户可手动关闭或继续操作页面）")
         auth = DouyinAuth()
         auth.perepare_auth('', web_protect_str, keys_str)
         auth.cookie = cookies
