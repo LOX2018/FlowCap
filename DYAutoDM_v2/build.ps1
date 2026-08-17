@@ -45,7 +45,7 @@ Write-Host "==> 递增版本: $VERSION -> $NEW_VERSION" -ForegroundColor Green
 function Set-VersionInFile([string]$path, [string]$pattern, [string]$newVal) {
     if (-not (Test-Path $path)) { Write-Host "[WARN] 版本文件不存在: $path" -ForegroundColor Yellow; return }
     $content = Get-Content -Raw -Path $path -Encoding UTF8
-    $content = $content -replace $pattern, ('$1' + $newVal)
+    $content = $content -replace $pattern, ('${1}' + $newVal)
     [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 }
 
