@@ -99,22 +99,27 @@ class DYLoginApi:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(self.home_url)
             await page.wait_for_load_state("load")
-            # 主动打开私信落地页（默认 chat?isPopup=1），触发 security-sdk 生成【有效】web_protect。
-            # 用户实测（2026-08-17）确认 chat?isPopup=1 私信页显示正常、私信功能正常。
-            # 崩溃根因在“清空/占用持久化 profile”，已由 launch_async(force=True) 改用临时 profile 解决。
+            # 【关键】私信落地页（默认 chat?isPopup=1）必须在【新标签页】打开，绝不在首页
+            # 标签页 goto 刷新。用户实测确认：chat?isPopup=1 私信页在原生打开时一切正常
+            # （拉取聊天对象/历史对话/收发均正常），首页标签页保留干净登录态不被打扰。
+            # 打开私信落地页触发 security-sdk 生成【有效】web_protect。
+            msg_page = None
             try:
-                await page.goto(landing_url,
-                                wait_until="domcontentloaded", timeout=30000)
+                msg_page = await context.new_page()
+                await msg_page.goto(landing_url,
+                                    wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
             except Exception as e:
-                logger.warning(f"[auth] 生成初始数据：打开私信落地页({landing_url})失败: {e}")
+                logger.warning(f"[auth] 生成初始数据：新开标签页打开私信落地页({landing_url})失败: {e}")
+            # 凭证读取切到私信新标签页（干净登录态上下文）；失败时退回首页标签页
+            _read_page = msg_page if (msg_page is not None and not msg_page.is_closed()) else page
             keys_str = None
             web_protect_str = None
             for _ in range(6):
                 await asyncio.sleep(4)
-                await page.mouse.wheel(0, 600)
-                keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-                web_protect_str = await page.evaluate('localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+                await _read_page.mouse.wheel(0, 600)
+                keys_str = await _read_page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                web_protect_str = await _read_page.evaluate('localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
                 if keys_str and web_protect_str:
                     break
             cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
@@ -210,16 +215,21 @@ class DYLoginApi:
                     return True
             return False
 
+        msg_page = None
+
         async def _open_message_page():
-            """主动打开抖音私信落地页（默认 chat?isPopup=1，用户实测该页显示正常、私信功能正常），
-            触发 security-sdk 把 web_protect 从空壳升级为有效值（仅首页拿不到有效签名）。
+            """在【新标签页】打开抖音私信落地页（默认 chat?isPopup=1，用户实测该页显示正常、
+            私信功能正常），触发 security-sdk 把 web_protect 从空壳升级为有效值（仅首页拿不到
+            有效签名）。绝不在原首页标签页 goto 刷新——首页保留干净登录态不被打扰。
             """
+            nonlocal msg_page
             try:
-                await page.goto(landing_url,
-                                wait_until="domcontentloaded", timeout=30000)
+                msg_page = await context.new_page()
+                await msg_page.goto(landing_url,
+                                    wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
             except Exception as e:
-                logger.warning(f"[auth] 打开私信落地页({landing_url})失败（将继续重试）: {e}")
+                logger.warning(f"[auth] 新开标签页打开私信落地页({landing_url})失败（将继续重试）: {e}")
 
         async def _wait_sign_and_login(ctx, deadline):
             """轮询直到：① 真实登录 cookie 出现（用户已扫码）且 ② web_protect 有效。
@@ -247,12 +257,14 @@ class DYLoginApi:
             _risk_notified = False  # 风控提示只打一次，避免刷屏
             while time.time() < deadline:
                 await asyncio.sleep(1)
+                # 监测对象：优先用已打开的私信新标签页（msg_page），未打开时用首页 page。
+                _mon_page = msg_page if (msg_page is not None and not msg_page.is_closed()) else page
                 # 风控/验证码实时监测：抓取过程中若抖音弹出验证码/滑块/风控验证页，
                 # 【不关闭浏览器、不立即 raise】，提示用户在保持打开的指纹浏览器中手动处理，
                 # 本循环继续轮询；用户完成验证码后页面离开风控页 → 自动恢复抓取。
                 try:
-                    _page_url = await page.evaluate("location.href")
-                    _page_html = await page.evaluate("document.documentElement.outerHTML.slice(0, 4000)")
+                    _page_url = await _mon_page.evaluate("location.href")
+                    _page_html = await _mon_page.evaluate("document.documentElement.outerHTML.slice(0, 4000)")
                 except Exception:
                     _page_url = ""
                     _page_html = ""
@@ -277,16 +289,16 @@ class DYLoginApi:
                 if not _logged_in:
                     if await _is_real_login(context):
                         _logged_in = True
-                        logger.info("[auth] 检测到真实登录态（已扫码），准备打开私信落地页生成有效 web_protect")
+                        logger.info("[auth] 检测到真实登录态（已扫码），准备新开标签页打开私信落地页生成有效 web_protect")
                     else:
                         continue
-                # 阶段二：已登录 → 打开一次私信落地页触发 security-sdk 生成有效签名
+                # 阶段二：已登录 → 新开标签页打开私信落地页触发 security-sdk 生成有效签名
                 if not _msg_opened:
                     await _open_message_page()
                     _msg_opened = True
                 try:
-                    keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-                    web_protect_str = await page.evaluate(
+                    keys_str = await _mon_page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                    web_protect_str = await _mon_page.evaluate(
                         'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
                 except Exception:
                     keys_str = web_protect_str = None
@@ -586,12 +598,19 @@ class DYLoginApi:
                     return True
             return False
 
+        msg_page = None
+
         async def _open_message_page():
+            # 【关键】必须在【新标签页】打开私信落地页，绝不在原首页标签页 goto 刷新——
+            # 用户实测确认：chat?isPopup=1 私信页在原生打开时一切正常（拉取聊天对象/
+            # 历史对话/收发均正常），首页标签页保留干净登录态不被打扰，两者互不干扰。
+            nonlocal msg_page
             try:
-                await page.goto(landing_url, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(2)
+                msg_page = await context.new_page()
+                await msg_page.goto(landing_url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(3)
             except Exception as e:
-                logger.warning(f"[auth] 打开私信落地页({landing_url})失败（将继续重试）: {e}")
+                logger.warning(f"[auth] 新开标签页打开私信落地页({landing_url})失败（将继续重试）: {e}")
 
         # 首页加载（带重试一次），失败则明确报错（浏览器保持打开）
         _home_loaded = False
@@ -622,12 +641,15 @@ class DYLoginApi:
         deadline = time.time() + timeout
         while time.time() < deadline:
             await asyncio.sleep(1)
+            # 监测对象：优先用已打开的私信页标签页（msg_page），未打开时用首页 page。
+            # 私信页是新标签页、干净登录态上下文，凭证应从这里读取；首页标签页保持不动。
+            _mon_page = msg_page if (msg_page is not None and not msg_page.is_closed()) else page
             # 风控/验证码实时监测：抓取/读取过程中若抖音弹出验证码/滑块/风控验证页，
             # 【不关闭浏览器、不立即 raise】，提示用户在保持打开的指纹浏览器中手动处理，
             # 本循环继续轮询；用户完成验证码后页面离开风控页 → 自动恢复读取凭证流程。
             try:
-                _page_url = await page.evaluate("location.href")
-                _page_html = await page.evaluate("document.documentElement.outerHTML.slice(0, 4000)")
+                _page_url = await _mon_page.evaluate("location.href")
+                _page_html = await _mon_page.evaluate("document.documentElement.outerHTML.slice(0, 4000)")
             except Exception:
                 _page_url = ""
                 _page_html = ""
@@ -650,7 +672,7 @@ class DYLoginApi:
             if not _logged_in:
                 if await _is_real_login(context):
                     _logged_in = True
-                    logger.info("[auth] 检测到真实登录态（profile 已登录或用户已扫码），准备打开私信落地页读取有效 web_protect")
+                    logger.info("[auth] 检测到真实登录态（profile 已登录或用户已扫码），准备新开标签页打开私信落地页读取有效 web_protect")
                 else:
                     # profile 无登录态：提示用户扫码（降级为等待本次扫码）
                     if not _risk_notified:
@@ -660,13 +682,13 @@ class DYLoginApi:
                 await _open_message_page()
                 _msg_opened = True
             try:
-                keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-                web_protect_str = await page.evaluate(
+                keys_str = await _mon_page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                web_protect_str = await _mon_page.evaluate(
                     'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
             except Exception:
                 keys_str = web_protect_str = None
             if (keys_str and _web_protect_valid(web_protect_str)) and await _is_real_login(context):
-                logger.info("[auth] 从 profile 读取到真实登录态 + 有效 web_protect")
+                logger.info("[auth] 从新开标签页私信落地页读取到真实登录态 + 有效 web_protect")
                 break
         else:
             # while 正常结束（超时）：若当前处于风控页，raise（浏览器不关闭，留给用户处理）
