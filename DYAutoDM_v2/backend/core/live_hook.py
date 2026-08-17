@@ -100,6 +100,45 @@ class LiveChatHook(DouyinLive):
                     return int(val)
         return 0
 
+    @staticmethod
+    def _parse_room_numbers(text: str) -> tuple[int, int]:
+        """从房间统计文案精确提取 (在线人数, 点赞数)。
+
+        抖音 RoomStatsMessage 的 display* 字段没有独立数值字段，只能从文案解析。
+        常见格式（数字与关键词两种顺序都有）：
+          - "X万人在线 · Y万点赞"  /  "在线 X人 · 点赞 Y"
+          - "X人气值 · Y点赞"      /  "观看人数 X · 赞 Y"
+        关键坑：旧 _extract_num 用 "人气" 作在线关键词时，会从 "人气值 · 3.5万点赞"
+        里误抓到点赞数当在线（"人气" 在 3.5万 之前）。这里用精确正则，让在线/点赞
+        各自只认自己单位，且支持「数字+单位」和「单位+数字」两种顺序，互不污染。
+        """
+        def _val(*patterns: str) -> int:
+            for p in patterns:
+                m = re.search(p, text)
+                if m:
+                    v = float(m.group(1))
+                    unit = (m.group(2) or "").lower()
+                    if unit == "万":
+                        v *= 10000
+                    elif unit == "k":
+                        v *= 1000
+                    return int(v)
+            return 0
+
+        # 在线：支持 "X人/在线" 与 "在线X人" 两种顺序；也兼容 "X人气值"
+        online = _val(
+            r"([\d.]+)\s*(万|k|K)?\s*(人|人在线|在线|观看)",
+            r"(?:在线|当前在线|观看人数)\D*?([\d.]+)\s*(万|k|K)?",
+            r"([\d.]+)\s*(万|k|K)?\s*人气",
+            r"人气值?\D*?([\d.]+)\s*(万|k|K)?",
+        )
+        # 点赞：支持 "X点赞/赞" 与 "点赞X" 两种顺序
+        likes = _val(
+            r"([\d.]+)\s*(万|k|K)?\s*(点赞|赞)",
+            r"(?:点赞|赞)\D*?([\d.]+)\s*(万|k|K)?",
+        )
+        return online, likes
+
     def _push_feed(self, type_: str, nickname: str, content: str, epoch: Optional[float] = None) -> None:
         self.feed.append({
             "type": type_,
@@ -110,14 +149,26 @@ class LiveChatHook(DouyinLive):
         })
 
     def _on_room_stats(self, m: Any) -> None:
-        text = getattr(m, "displayLong", None) or getattr(m, "displayShort", None) or ""
+        # 抖音 RoomStatsMessage 的在线/点赞数只在 display* 字符串里，没有独立数值字段。
+        # 不同直播间文案格式不一，按优先级取第一个非空字段做解析源。
+        text = (
+            getattr(m, "displayLong", None)
+            or getattr(m, "displayMiddle", None)
+            or getattr(m, "displayShort", None)
+            or ""
+        )
         if not text:
             return
         self.room_stats["display"] = text
-        self.room_stats["online"] = self._extract_num(text, ("在线", "当前在线"))
-        self.room_stats["likes"] = self._extract_num(text, ("点赞",))
-        self.room_stats["total_user"] = max(self.room_stats["online"], self.room_stats["total_user"])
-        self.heat_series.append((time.time(), self.room_stats["online"], self.room_stats["likes"]))
+        online, likes = self._parse_room_numbers(text)
+        self.room_stats["online"] = online
+        self.room_stats["likes"] = likes
+        self.room_stats["total_user"] = max(online, self.room_stats.get("total_user") or 0)
+        self.heat_series.append((time.time(), online, likes))
+        # 首次（或文案变化时）打印原始文案，便于排查“热度看不到”问题
+        if self.room_stats.get("_last_logged") != text:
+            self.room_stats["_last_logged"] = text
+            logger.info(f"[房间统计] {text}（解析→在线={online} 点赞={likes}）")
 
     # ------------------------------------------------------------------
     # 心跳探活（登录态失效自动重扫）
