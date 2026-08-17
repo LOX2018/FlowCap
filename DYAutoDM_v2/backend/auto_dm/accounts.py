@@ -304,12 +304,27 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
             logger.info(
                 f"[verify] 账号 {name} wp 引擎判定 {_wp_level}，自动唤醒指纹浏览器重捕凭证"
             )
-            auto_recapture(name, landing_url="https://www.douyin.com/chat?isPopup=1")
+            # 优先：从绑定指纹浏览器的【持久化 profile】直接读取有效凭证（复用已登录态、不重扫、
+            # 保持浏览器打开直到读到 clean 凭证；遇验证码污染则提示手动处理并持续监测）。
+            # 仅当读取失败（profile 自身也失效）时，再 fallback 到强制重扫（force=True）。
+            _fixed_ok = False
+            try:
+                _fixed_ok, _fixed_msg = recapture_from_profile(
+                    name, landing_url="https://www.douyin.com/chat?isPopup=1")
+            except Exception as _e:
+                _fixed_msg = f"从 profile 读取失败: {_e}"
+            if not _fixed_ok:
+                # fallback：强制重扫（打开 chat?isPopup=1 重新授权）
+                logger.info(f"[verify] 账号 {name} 从 profile 读取未成功（{_fixed_msg}），"
+                            f"降级为强制重扫")
+                auto_recapture(name, landing_url="https://www.douyin.com/chat?isPopup=1")
+                _fixed_msg = (_fixed_msg + "；已降级为强制重扫，请在指纹浏览器完成重新授权。"
+                              if _fixed_msg else "已降级为强制重扫，请在指纹浏览器完成重新授权。")
             result["auto_fix_triggered"] = True
             _old_label = result["wp"].get("label", "")
             result["wp"]["detail"] = (
-                "已自动唤醒指纹浏览器重新捕获凭证，请在弹出的窗口中完成授权/加载页面，"
-                "捕获成功后凭证将写回 .env 并交守护进程保活。原始判定：" + _old_label
+                "已自动唤醒该账户绑定的指纹浏览器重新捕获凭证：" + _fixed_msg +
+                " 捕获成功后凭证将写回 .env 并交守护进程保活。原始判定：" + _old_label
             )
         except Exception as e:
             logger.warning(f"[verify] 账号 {name} 自动重捕触发失败: {e}")
@@ -811,5 +826,63 @@ def _do_auto_recapture(name: str, landing_url: str):
     except Exception as e:
         st["error"] = str(e)
         logger.error(f"[recap] 账号 {name} 自动重新捕获异常: {e}")
+    finally:
+        st["running"] = False
+
+
+def recapture_from_profile(name: str = None, landing_url: str = "https://www.douyin.com/chat?isPopup=1"):
+    """从【该账号已登录的持久化 profile】直接读取有效凭证写回 .env（优先于强制重扫）。
+
+    与 auto_recapture(force=True 重扫) 的区别：
+      - 本函数 force=False：复用账号独占 profile（用户双击指纹浏览器区域打开的那个
+        “一切正常”的浏览器就是它）里已有的登录态，【不重新扫码、不丢登录态】，直接读取
+        页面上的有效 web_protect/keys 写回 .env。
+      - 仅在 profile 自身也失效（无登录态且超时内拿不到有效签名）时，底层 read_auth_from_profile
+        才降级为等待本次扫码（等价于重扫）。
+      - 读取过程中若抖音弹出验证码/风控页，底层【保持浏览器打开、不写盘】，提示用户手动处理，
+        并持续监测验证码是否通过；用户验证通过后自动恢复读取，拿到 clean 凭证才写回 .env。
+
+    返回 (ok: bool, msg: str)。ok=False 时 msg 含失败原因（如风控污染提示）。
+    """
+    try:
+        if not name:
+            name = current_name()
+        st = _recap_state.setdefault(name, {"running": False, "last": 0.0, "error": ""})
+        now = time.time()
+        if st["running"] or (now - st["last"]) < _RECAP_INTERVAL:
+            logger.debug(f"[recap-profile] 账号 {name} 从 profile 重读跳过（节流/进行中）")
+            return False, "节流中（5 分钟内已触发过一次）"
+        st["last"] = now
+        st["running"] = True
+        st["error"] = ""
+        try:
+            from api.accounts import _quit_browser_daemon
+            _quit_browser_daemon(name)
+        except Exception as e:
+            logger.warning(f"[recap-profile] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
+        from dy_apis.login_api import DYLoginApi
+        from dy_apis.login_api import RiskControlError as _RC
+        env_path = env_path_of(name)
+        logger.info(f"[recap-profile] 账号 {name} 校验失败，优先从持久化 profile 读取有效凭证"
+                    f"（保持指纹浏览器打开，直到读到 clean 凭证或超时）")
+        try:
+            auth = asyncio.run(
+                DYLoginApi().read_auth_from_profile(env_path=env_path, landing_url=landing_url))
+        except _RC as _rc:
+            # 风控/验证码污染：浏览器保持打开，明确提示用户在指纹浏览器处理验证码
+            st["error"] = str(_rc)
+            return False, (
+                "读取到的凭证被风控验证页污染，已拒绝写入 .env。【指纹浏览器保持打开】，"
+                "请在其中手动完成验证码/滑块验证；处理完成后重新点击「引擎校验」即可重新读取。"
+                f"（底层提示：{_rc}）")
+        except Exception as e:
+            st["error"] = str(e)
+            return False, f"从 profile 读取凭证失败: {e}"
+        # 确认 clean 后才写盘
+        DYLoginApi().save_credential(auth, env_path=env_path)
+        logger.success(f"[recap-profile] 账号 {name} 已从持久化 profile 读取并写回有效凭证")
+        return True, "已从绑定指纹浏览器的持久化 profile 读取到有效凭证并写回 .env"
+    except Exception as e:
+        return False, f"从 profile 重读异常: {e}"
     finally:
         st["running"] = False

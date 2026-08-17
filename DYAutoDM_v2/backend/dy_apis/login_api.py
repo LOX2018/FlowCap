@@ -518,6 +518,186 @@ class DYLoginApi:
         logger.info(f"登录凭证已存 {self.save_credential(auth, env_path=env_path)}")
         return auth
 
+    async def read_auth_from_profile(self, env_path=".env",
+                                       landing_url="https://www.douyin.com/chat?isPopup=1",
+                                       timeout=300):
+        """从【该账号已登录的持久化 profile】直接读取有效凭证（不强制重新扫码）。
+
+        与 login_grab_ticket(force=True) 的区别：
+          - 本方法 force=False：复用账号独占 profile（accounts.profile_dir_of 推导）里
+            已有的登录态，绝不清空、绝不临时化。若 profile 仍是干净已登录态，
+            打开首页后直接进入私信落地页抓取有效 web_protect/keys 即可，【不弹扫码】。
+          - 仅在 profile 自身也已失效（无 sessionid、且无法在超时内拿到有效签名）时，
+            才降级为等待本次真实扫码（等价于 force=True 的重扫路径）。
+
+        风控/污染策略（与 login_grab_ticket 一致并强化）：
+          - 抓取/读取过程中若抖音弹出验证码/滑块/风控验证页，【绝不关闭浏览器、
+            绝不立即 raise】，提示用户在保持打开的指纹浏览器中手动处理，本循环继续轮询；
+            用户完成验证码后页面离开风控页 → 自动恢复抓取。
+          - 即便 web_protect/cookie 看似齐全，只要关键身份 cookie 被风控验证页污染
+            （s_v_web_id=verify_xxx 等占位），也绝不返回残缺 auth，而是 raise RiskControlError
+            （浏览器仍不关闭，提示用户手动处理验证码/滑块）。
+          - 未读取到正确凭证前，浏览器【始终保持打开】，直到超时仍在风控页才 raise。
+
+        返回完整的 DouyinAuth（含 cookie / ticket / web_protect 等）。调用方（accounts
+        层 recapture_from_profile）负责在确认凭证 clean 后写回 .env。本方法本身不写盘，
+        以便把“读取”与“落盘”两件事解耦，避免污染凭证误写回。
+        """
+        from auto_dm import config as _cfg
+        from auto_dm.vbrowser import should_use_vb, launch_async
+        from auto_dm import accounts as _accounts
+
+        _vb, _vb_mode = should_use_vb(_cfg)
+        _pw = None
+        _browser = None
+        _backend = None
+        context = None
+        page = None
+        _acc_profile = _accounts.profile_dir_of(env_path)
+        logger.info(f"[auth] 从持久化 profile 读取凭证 (mode={_vb_mode}, profile={_acc_profile})")
+        _pw, _browser, context, _backend = await launch_async(
+            _vb_mode, _cfg, headless=False, user_data_dir=_acc_profile, force=False)
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        if page is None:
+            raise RuntimeError("[auth] 未能获得浏览器页面，读取凭证中止")
+
+        async def _is_real_login(ctx):
+            try:
+                ck = {c['name']: c['value'] for c in await ctx.cookies()}
+            except Exception:
+                return False
+            return bool(ck.get("sessionid") or ck.get("sid_tt"))
+
+        def _web_protect_valid(s):
+            if not s or not isinstance(s, str):
+                return False
+            s = s.strip()
+            if not (s.startswith("{") or s.startswith("[")):
+                return False
+            try:
+                import json
+                obj = json.loads(s)
+            except Exception:
+                return False
+            blob = json.dumps(obj)
+            for key in ("webcast", "sign", "key", "ticket", "token", "salt", "app_id"):
+                if key in blob:
+                    return True
+            return False
+
+        async def _open_message_page():
+            try:
+                await page.goto(landing_url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning(f"[auth] 打开私信落地页({landing_url})失败（将继续重试）: {e}")
+
+        # 首页加载（带重试一次），失败则明确报错（浏览器保持打开）
+        _home_loaded = False
+        for _attempt in range(2):
+            try:
+                await page.goto(self.home_url, wait_until="domcontentloaded", timeout=30000)
+                _home_loaded = True
+                break
+            except Exception as _e:
+                logger.warning(f"[auth] 打开抖音首页失败(第{_attempt+1}次): {_e}")
+                await asyncio.sleep(2)
+        if not _home_loaded:
+            if _backend == "exe":
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            raise RuntimeError(
+                "打开抖音首页失败（可能因网络异常/被抖音风控拦截）。"
+                "请确认网络正常后重试「引擎校验」/「重新获取凭证」。")
+
+        # 长超时轮询：优先复用已登录态，仅在 profile 也失效时才等待本次扫码；
+        # 期间持续监测验证码/风控页，保持浏览器打开直到拿到 clean 凭证或超时。
+        keys_str = web_protect_str = None
+        _logged_in = False
+        _msg_opened = False
+        _risk_notified = False
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            await asyncio.sleep(1)
+            # 风控/验证码实时监测：抓取/读取过程中若抖音弹出验证码/滑块/风控验证页，
+            # 【不关闭浏览器、不立即 raise】，提示用户在保持打开的指纹浏览器中手动处理，
+            # 本循环继续轮询；用户完成验证码后页面离开风控页 → 自动恢复读取凭证流程。
+            try:
+                _page_url = await page.evaluate("location.href")
+                _page_html = await page.evaluate("document.documentElement.outerHTML.slice(0, 4000)")
+            except Exception:
+                _page_url = ""
+                _page_html = ""
+            _risk_hit = any(k in (_page_url + _page_html) for k in (
+                "verify.zijieapi.com", "verifycenter", "captcha", "滑块", "安全验证",
+                "异常请求", "验证中心", "人机验证", "账号存在风险"))
+            if _risk_hit:
+                if not _risk_notified:
+                    logger.warning(
+                        f"[风控] 检测到验证码/风控验证页（{_page_url}）。【指纹浏览器保持打开】，"
+                        f"请在其中手动完成验证码/滑块验证，完成后程序将自动继续读取凭证；"
+                        f"在您验证通过、页面离开风控页之前，本程序不会关闭浏览器、也不会写入被污染的凭证。")
+                    _risk_notified = True
+                continue
+            else:
+                if _risk_notified:
+                    logger.info("[风控] 验证码/风控页已离开，恢复读取凭证流程")
+                    _risk_notified = False
+
+            if not _logged_in:
+                if await _is_real_login(context):
+                    _logged_in = True
+                    logger.info("[auth] 检测到真实登录态（profile 已登录或用户已扫码），准备打开私信落地页读取有效 web_protect")
+                else:
+                    # profile 无登录态：提示用户扫码（降级为等待本次扫码）
+                    if not _risk_notified:
+                        logger.info("[auth] 持久化 profile 未检测到登录态，请在打开的指纹浏览器中完成扫码")
+                    continue
+            if not _msg_opened:
+                await _open_message_page()
+                _msg_opened = True
+            try:
+                keys_str = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                web_protect_str = await page.evaluate(
+                    'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+            except Exception:
+                keys_str = web_protect_str = None
+            if (keys_str and _web_protect_valid(web_protect_str)) and await _is_real_login(context):
+                logger.info("[auth] 从 profile 读取到真实登录态 + 有效 web_protect")
+                break
+        else:
+            # while 正常结束（超时）：若当前处于风控页，raise（浏览器不关闭，留给用户处理）
+            if _risk_notified:
+                raise RiskControlError(
+                    "读取超时且仍处于抖音验证码/风控验证页。【指纹浏览器保持打开】，"
+                    "请在其中手动完成验证码（滑块/短信验证），处理完成后重新点击「引擎校验」。"
+                    "本次不写入被污染的凭证。")
+            raise TimeoutError(
+                "读取超时：未在超时时间内从 profile 拿到【有效】web_protect+登录态，已放弃，不写入残缺凭证")
+
+        cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
+        if not (cookies.get("sessionid") or cookies.get("sid_tt")) or not _web_protect_valid(web_protect_str) or not keys_str:
+            raise RuntimeError(
+                "凭证不完整（缺少真实登录 cookie 或有效 web_protect/keys），拒绝返回残缺 auth，不写 .env")
+        # 风控污染守卫：即便看似齐全，只要关键身份 cookie 被风控验证页污染，也绝不返回
+        _polluted, _fields = _cookie_is_polluted(cookies)
+        if _polluted:
+            raise RiskControlError(
+                f"读取到的凭证被抖音风控验证页污染（字段={'/'.join(_fields)}），"
+                f"已【拒绝返回】。【指纹浏览器保持打开】，请在其中手动处理验证码/滑块，"
+                f"处理完成后重新点击「引擎校验」。")
+        logger.info("[auth] 从 profile 读取到有效凭证，指纹浏览器保持打开（等待调用方写盘/用户确认）")
+        auth = DouyinAuth()
+        auth.perepare_auth('', web_protect_str, keys_str)
+        auth.cookie = cookies
+        auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        auth.web_protect_str = web_protect_str
+        auth.keys_str = keys_str
+        return auth
+
     # 获取二维码
     def dyGenerateQRcode(self, auth) -> dict:
         api = f"get_qrcode/"
