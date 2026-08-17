@@ -43,19 +43,19 @@ async def get_stats(request: Request) -> dict:
     { ok, total, sent, list:[{captureTs,status,nickname,comment,content}] }
     """
     adm = request.app.state.adm
-    records = adm.dispatch.records if adm.dispatch else []
+    records = (adm.dispatch.records if adm.dispatch else {}) or {}
     return {
         "ok": True,
         "total": len(records),
         "sent": adm.sent_count,
         "list": [
             {
-                "captureTs": r.get("capture_ts"),
-                "status": r.get("status"),
-                "nickname": r.get("nickname"),
-                "comment": r.get("comment"),
-                "content": r.get("content"),
+                "captureTs": r.captured_at,
+                "status": r.status.value if hasattr(r.status, "value") else r.status,
+                "nickname": r.nickname,
+                "comment": r.comment,
+                "content": r.content,
             }
-            for r in records
+            for r in records.values()
         ],
     }

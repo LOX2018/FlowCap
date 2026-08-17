@@ -55,9 +55,43 @@ async def clear_history(request: Request) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def _records_from_adm(adm) -> list[dict]:
+    """从 adm.dispatch.records 取实时发送记录，转成前端 live.tsx/tasks.tsx 期望的 dict 列表。
+
+    关键字段映射（SendRecord -> 前端 Row）：
+      captured_at -> captured_at（前端 fmtTime 用）
+      uid         -> uid（前端 nickname||uid 兜底）
+      nickname    -> nickname
+      comment     -> comment（前端 r.comment||r.content 兜底）
+      content     -> content（dmText）
+      status      -> status（英文枚举 captured/sent/fail/skipped，前端 toDmStatus 匹配）
+      sent_at     -> send_ts（前端 dmTime）
+    """
+    if adm is None or getattr(adm, "dispatch", None) is None:
+        return []
+    recs = getattr(adm.dispatch, "records", {}) or {}
+    out = []
+    for r in recs.values():
+        d = r if isinstance(r, dict) else r.model_dump()
+        out.append({
+            "key": d.get("key", ""),
+            "uid": d.get("uid", "") or d.get("sec_uid", "") or "",
+            "nickname": d.get("nickname", ""),
+            "sec_uid": d.get("sec_uid"),
+            "status": d.get("status", "captured"),
+            "reason": d.get("reason"),
+            "captured_at": d.get("captured_at", 0),
+            "send_at": d.get("send_at"),
+            "send_ts": d.get("sent_at"),
+            "content": d.get("content") or "",
+            "comment": d.get("comment") or "",
+        })
+    return out
+
+
 @router.get("")
 async def get_tasks(request: Request) -> dict:
-    """任务配置 + 发送记录（对齐前端 tasks.tsx 字段）"""
+    """任务配置 + 发送记录（对齐前端 tasks.tsx / live.tsx 字段）"""
     adm = request.app.state.adm
     from config import settings
 
@@ -74,6 +108,7 @@ async def get_tasks(request: Request) -> dict:
         "enableDanmaku": bool(getattr(settings, "enable_danmaku", True)),
         "enableConsole": bool(getattr(settings, "enable_console", True)),
         "enableSend": bool(getattr(settings, "enable_send", True)),
+        "records": _records_from_adm(adm),
     }
 
 
