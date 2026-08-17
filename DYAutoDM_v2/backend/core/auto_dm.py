@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from config import settings
-from models.enums import EngineState
+from models.enums import EngineState, RecordStatus
 from models.task import TaskConfig
 from core.dispatch import DispatchCenter
 from core.live_hook import LiveChatHook
@@ -488,24 +488,39 @@ class AutoDM:
         try:
             from tasks_history import finish_task
             count = 0
+            sent = 0
             records = []
             if self.dispatch:
                 try:
                     records = self.dispatch.records_list() or []
                     count = len(records)
+                    sent = sum(1 for r in records if getattr(r, "status", None) == RecordStatus.SENT)
                 except Exception:
                     pass
             finish_task(tid, status=status, result_count=count,
                         records=[r if isinstance(r, dict) else _rec_to_dict(r) for r in records])
         except Exception as e:
             logger.warning(f"[history] 更新历史任务失败: {e}")
-        logger.info("[引擎] 存量私信已发完，整体停止")
+        # 日志打印真实计数，避免「日志说发完但实际漏发」的误导
+        logger.info(
+            f"[引擎] 私信收尾：共捕获 {count} 条，实际成功发送 {sent} 条，"
+            f"整体停止（状态={status}）"
+        )
 
     async def _on_dispatch_idle(self) -> None:
-        """私信延迟队列自然发空后的收尾"""
+        """私信延迟队列自然发空后的收尾
+
+        注意：软停止（STOPPING）期间队列自然发空，不应在此直接置 STOPPED——
+        收尾权威在 _wait_dispatch_done（它等 wait_done() 真发完再收尾）。
+        若这里在 STOPPING 时提前收尾，会与 _wait_dispatch_done 竞争，
+        且可能在「队列短暂空 + pending 假空」窗口误判为「已发完」。
+        故：仅当非 STOPPING（如运行中自然清空且未停止）才收尾；
+        STOPPING 交给 _wait_dispatch_done。
+        """
         if self.state == EngineState.STOPPING:
-            self.state = EngineState.STOPPED
-            self.status_msg = "已停止"
+            return
+        self.state = EngineState.STOPPED
+        self.status_msg = "已停止"
 
     # ------------------------------------------------------------------
     # 重新扫码重建（迁移自 rescan_and_rebuild，同步逻辑）

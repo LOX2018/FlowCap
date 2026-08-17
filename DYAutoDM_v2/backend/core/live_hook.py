@@ -301,7 +301,7 @@ class LiveChatHook(DouyinLive):
                                         f"       这是监测账号凭证/会话异常的典型表现。\n"
                                         f"       请对该监测账号执行【重新扫码】以恢复正常会话。"
                                     )
-                        if target.get("nickname") and (target.get("user_id") or target.get("sec_uid")):
+                        if target.get("nickname"):
                             self.dispatch.submit(target)
                     elif item.method == "WebcastMemberMessage":
                         m = Live_pb2.MemberMessage()

@@ -164,36 +164,54 @@ class DispatchCenter:
             self.sent_names.add(name)
         self.sent.add(self._dedup_key(target))
 
+    def _ensure_record(self, key: str, target: dict) -> None:
+        """确保 key 对应一条「已捕获」记录存在（幂等）。
+
+        原 submit 的 records 写入逻辑提取到此，并在所有拒绝点之前调用，
+        杜绝「捕获到了但连记录都没有」的漏发（停止态/去重/暂停/缺字段均不丢）。
+        """
+        if key in self.records:
+            return
+        rec = SendRecord(
+            key=key,
+            uid=str(target.get("user_id") or ""),
+            nickname=target.get("nickname") or "",
+            sec_uid=target.get("sec_uid"),
+            status=RecordStatus.CAPTURED if self.enable_send else RecordStatus.SKIPPED,
+            captured_at=time.time(),
+            comment=target.get("comment") or "",
+        )
+        self.records[key] = rec
+        self._records_order.append(key)
+
     # ------------------------------------------------------------------
     # 提交目标
     # ------------------------------------------------------------------
     def submit(self, target: dict) -> bool:
-        """提交一个私信目标。返回是否入队（去重/停止/上限时返回 False）。"""
-        if self._clear_queue or not self._accept_new:
-            logger.debug("[调度] 已停止接收新目标，忽略提交")
-            return False
-        if self._paused:
-            return False
+        """提交一个私信目标。返回是否入队（去重/停止/上限时返回 False）。
 
+        关键不变量：只要 key 有效（有 nickname/user_id/sec_uid 任一标识），
+        无论是否真发、是否去重、是否处于停止态，都先在本方法内写一条
+        CAPTURED 记录（见下方 _ensure_record）。这样可彻底消除「部分目标
+        连发送记录都没有」的漏发——调用方（live_hook / web_probe / api）在
+        停止后或去重时丢弃的目标，至少能在统计里看到「已捕获（未发）」。
+        """
         if not target.get("capture_ts"):
             target["capture_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
         key = self._dedup_key(target)
         if not key:
             return False
 
-        # 无论是否真发/是否去重，都在统计里留一条"已捕获"记录
-        if key not in self.records:
-            rec = SendRecord(
-                key=key,
-                uid=str(target.get("user_id") or ""),
-                nickname=target.get("nickname") or "",
-                sec_uid=target.get("sec_uid"),
-                status=RecordStatus.CAPTURED if self.enable_send else RecordStatus.SKIPPED,
-                captured_at=time.time(),
-                comment=target.get("comment") or "",
-            )
-            self.records[key] = rec
-            self._records_order.append(key)
+        # 先确保有「已捕获」记录（即使后面因停止/去重/暂停被拒，也不丢数据）
+        self._ensure_record(key, target)
+
+        # 停止/暂停态：拒绝真发，但记录已保留（用户可在统计里看到「已捕获未发」）
+        if self._clear_queue or not self._accept_new:
+            logger.debug("[调度] 已停止接收新目标，忽略提交（已保留捕获记录）")
+            return False
+        if self._paused:
+            logger.debug("[调度] 已暂停，忽略提交（已保留捕获记录）")
+            return False
 
         if self._already_seen(target) or key in self.pending:
             return False
@@ -308,7 +326,9 @@ class DispatchCenter:
         else:
             rec.status = RecordStatus.FAIL
             rec.reason = reason
-            # 发送失败不计入 sent，可后续重试
+            # 发送失败不计入 sent，但必须从 pending 移除，
+            # 否则 wait_done（软停止等存量）会永久卡在 STOPPING（pending 永不空）。
+            self.pending.pop(key, None)
             logger.warning(f"[跳过] 「{target.get('nickname')}」发送失败，待重试: {reason}")
 
     async def wait_done(self) -> None:
