@@ -1,119 +1,138 @@
 # -*- coding: utf-8 -*-
-"""历史任务记录（任务中心「历史任务」数据源）
+"""历史任务记录（任务中心「历史任务」数据源）—— SQLite 版
 
 每次引擎启动记录一条历史任务，停止/结束时更新状态与结果条数。
-持久化到 data/task_history.json，重启后仍保留，供任务中心展示与跳转查阅。
+持久化到 data/dyautodm.db（SQLite，WAL 模式），重启后仍保留。
+数据永不过期，仅用户「清空」时删除；列表查询支持分页。
 """
 import json
-import os
 import time
-import threading
-from pathlib import Path
 
-_lock = threading.RLock()
-_MAX = 200  # 最多保留 200 条，超出丢弃最旧
-
-
-def _history_path():
-    try:
-        from config import settings
-        p = settings.data_dir / "task_history.json"
-    except Exception:
-        p = Path("data") / "task_history.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _load() -> list[dict]:
-    p = _history_path()
-    if not p.exists():
-        return []
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        items = data if isinstance(data, list) else []
-        # 修复历史任务状态机漏路径：只保留最新的一个「运行中」，其余应已停止
-        # 但引擎崩溃/自然关播后队列发空时未收尾，导致历史任务永远停留在「运行中」。
-        _fix_stuck_tasks(items)
-        return items
-    except Exception:
-        return []
-
-
-def _fix_stuck_tasks(items: list[dict]) -> None:
-    """同步引擎状态机：多任务「运行中」时只保留最新一条，其余标为「已停止」。
-
-    根因：_run finally 的 STOPPING 分支未启动 _wait_dispatch_done，且
-    _on_dispatch_idle 对 STOPPING 态提前 return，导致队列发空后历史任务
-    永远「运行中」。本函数在每次加载时修复残存数据。
-    """
-    running = [it for it in items if it.get("status") == "running"]
-    if len(running) <= 1:
-        return
-    # 保留最新一条，其余标为「已停止」
-    running.sort(key=lambda x: x.get("id", 0), reverse=True)
-    for it in running[1:]:
-        it["status"] = "stopped"
-        if not it.get("end_ts"):
-            it["end_ts"] = it.get("start_ts") or "—"
-    _save(items)
-
-
-def _save(items: list[dict]) -> None:
-    p = _history_path()
-    try:
-        p.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+from loguru import logger
 
 
 def start_task(acct: str, live_id: str, config: dict | None = None, records: list | None = None) -> int:
-    """记录一条新历史任务（状态=运行中），返回任务 id。
-
-    config: 启动时的配置快照（供任务中心「进入/复用」回读，如 {live_url,max_target,...}）。
-    """
-    with _lock:
-        items = _load()
-        tid = int(time.time() * 1000)  # 毫秒时间戳作 id
-        items.append({
-            "id": tid,
-            "acct": acct or "",
-            "live_id": live_id or "",
-            "start_ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "end_ts": "",
-            "status": "running",      # running / finished / stopped
-            "result_count": len(records or []),
-            "config": config or {},   # 配置快照（任务中心「复用」数据源）
-            "records": records or [], # 结果快照（查阅模式数据源）
-        })
-        if len(items) > _MAX:
-            items = items[-_MAX:]
-        _save(items)
-        return tid
+    """记录一条新历史任务（状态=运行中），返回任务 id。"""
+    from database import get_db
+    tid = int(time.time() * 1000)
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO tasks(id,acct,live_id,start_ts,end_ts,status,result_count,"
+        "config,records,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (tid, acct or "", live_id or "", time.strftime("%Y-%m-%d %H:%M:%S"),
+         "", "running", len(records or []),
+         json.dumps(config or {}, ensure_ascii=False),
+         json.dumps(records or [], ensure_ascii=False),
+         tid / 1000.0),
+    )
+    conn.commit()
+    logger.info(f"[history] 记录历史任务: 账号={acct} live={live_id} id={tid}")
+    return tid
 
 
-def finish_task(tid: int, status: str = "finished", result_count: int = 0, records: list | None = None) -> None:
+def finish_task(tid: int, status: str = "finished", result_count: int = 0,
+                 records: list | None = None) -> None:
     """结束历史任务：更新状态、结果条数、记录快照。"""
-    with _lock:
-        items = _load()
-        for it in items:
-            if it.get("id") == tid:
-                it["status"] = status
-                it["end_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                it["result_count"] = result_count or 0
-                if records is not None:
-                    it["records"] = records
-                break
-        _save(items)
+    from database import get_db
+    conn = get_db()
+    sets = ["status=?", "end_ts=?", "result_count=?"]
+    vals: list = [status, time.strftime("%Y-%m-%d %H:%M:%S"), result_count or 0]
+    if records is not None:
+        sets.append("records=?")
+        vals.append(json.dumps(
+            [r if isinstance(r, dict) else _rec_to_dict(r) for r in records],
+            ensure_ascii=False))
+    vals.append(tid)
+    conn.execute(f"UPDATE tasks SET {','.join(sets)} WHERE id=?", vals)
+    conn.commit()
 
 
-def list_history() -> list[dict]:
-    """返回历史任务列表（新的在前）。"""
-    with _lock:
-        items = _load()
-    return list(reversed(items))
+def fix_stuck_tasks() -> None:
+    """同步引擎状态机：多任务「运行中」时只保留最新一条，其余标为「已停止」。
+
+    根因：引擎崩溃/自然关播后队列发空时未收尾，导致历史任务永远停留在「运行中」。
+    """
+    from database import get_db
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE status='running' ORDER BY id DESC"
+    ).fetchall()
+    if len(rows) <= 1:
+        return
+    stuck_ids = [r["id"] for r in rows[1:]]
+    conn.execute(
+        "UPDATE tasks SET status='stopped', end_ts=start_ts WHERE id IN("
+        + ",".join("?" * len(stuck_ids)) + ")",
+        stuck_ids,
+    )
+    conn.commit()
+    logger.info(f"[history] 自动修复 {len(stuck_ids)} 条悬空「运行中」任务 -> 已停止")
+
+
+def list_history(limit: int = 0, offset: int = 0) -> list[dict]:
+    """返回历史任务列表（新的在前），支持分页。limit=0 表示全量。"""
+    from database import get_db
+    fix_stuck_tasks()
+    conn = get_db()
+    if limit and limit > 0:
+        rows = conn.execute(
+            "SELECT * FROM tasks ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["config"] = json.loads(d.get("config") or "{}")
+        d["records"] = json.loads(d.get("records") or "[]")
+        out.append(d)
+    return out
+
+
+def get_task(tid: int) -> dict | None:
+    """单条任务详情。"""
+    from database import get_db
+    conn = get_db()
+    r = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["config"] = json.loads(d.get("config") or "{}")
+    d["records"] = json.loads(d.get("records") or "[]")
+    return d
+
+
+def count_history() -> int:
+    """历史任务总数（分页用）。"""
+    from database import get_db
+    conn = get_db()
+    r = conn.execute("SELECT COUNT(*) AS c FROM tasks").fetchone()
+    return r["c"] if r else 0
 
 
 def clear_history() -> None:
-    """清空历史任务。"""
-    with _lock:
-        _save([])
+    """清空历史任务（仅用户主动触发）。"""
+    from database import get_db
+    conn = get_db()
+    conn.execute("DELETE FROM tasks")
+    conn.commit()
+    logger.info("[history] 历史任务已清空（用户主动操作）")
+
+
+def _rec_to_dict(rec) -> dict:
+    """把 SendRecord 模型转成可 JSON 序列化的 dict。"""
+    if rec is None:
+        return {}
+    if isinstance(rec, dict):
+        return dict(rec)
+    out = {}
+    for k, v in rec.__dict__.items():
+        if k.startswith("_"):
+            continue
+        try:
+            json.dumps(v)
+            out[k] = v
+        except (TypeError, ValueError):
+            out[k] = str(v)
+    return out

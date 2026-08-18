@@ -244,8 +244,15 @@ export const api = {
     return request("/api/tasks/export", { method: "POST" });
   },
 
-  async getTaskHistory(): Promise<{ ok: boolean; list?: TaskHistoryItem[] }> {
-    return request("/api/tasks/history");
+  async getTaskHistory(
+    limit?: number,
+    offset?: number,
+  ): Promise<{ ok: boolean; list?: TaskHistoryItem[]; total?: number }> {
+    const q =
+      limit != null
+        ? `/api/tasks/history?limit=${limit}&offset=${offset || 0}`
+        : "/api/tasks/history";
+    return request(q);
   },
 
   async clearTaskHistory(): Promise<{ ok: boolean }> {

@@ -176,12 +176,12 @@ export default function App() {
     enabled: ready,
   });
   useQuery({
-    queryKey: ["task-history"],
+    queryKey: ["task-history", 0],
     queryFn: async () => {
-      const r = (await api.getTaskHistory()) as { ok: boolean; list?: unknown[] };
-      return r && r.ok ? r.list || [] : [];
+      const r = (await api.getTaskHistory(50, 0)) as { ok: boolean; list?: unknown[]; total?: number };
+      return { list: r && r.ok ? r.list || [] : [], total: r?.total || 0 };
     },
-    refetchInterval: 10000,
+    refetchInterval: 15000,
     enabled: ready,
   });
 

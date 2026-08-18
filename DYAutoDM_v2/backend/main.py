@@ -40,6 +40,13 @@ def _warm_verify_cache() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"DYAutoDM 后端启动，端口 {settings.backend_port}")
+    # 数据库初始化（SQLite WAL，替代 JSON 文件存储）
+    try:
+        import database
+        database.get_db()
+        logger.info("[db] SQLite 数据库已就绪")
+    except Exception as e:
+        logger.error(f"[db] 数据库初始化失败: {e}")
     # 引擎主控单例（替代原版 WebBridge.adm）
     app.state.adm = AutoDM()
     # 后台预热账号校验缓存（并发，不阻塞启动）

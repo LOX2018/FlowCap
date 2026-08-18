@@ -34,14 +34,19 @@ def _dm_pool_from_adm(adm) -> list[dict]:
 
 
 @router.get("/history")
-async def get_history(request: Request) -> dict:
-    """历史任务列表（任务中心展示；含运行结果 records 快照供查阅模式跳转）"""
+async def get_history(request: Request, limit: int = 0, offset: int = 0) -> dict:
+    """历史任务列表（任务中心展示；含运行结果 records 快照供查阅模式跳转）。
+
+    支持分页：limit>0 时只返回该页（offset 起），total 返回总数供前端翻页。
+    """
     try:
-        from tasks_history import list_history
-        return {"ok": True, "list": list_history()}
+        from tasks_history import list_history, count_history
+        items = list_history(limit=limit, offset=offset)
+        total = count_history() if limit else len(items)
+        return {"ok": True, "list": items, "total": total}
     except Exception as e:
         logger.warning(f"[tasks] 读取历史任务失败: {e}")
-        return {"ok": False, "list": [], "error": str(e)}
+        return {"ok": False, "list": [], "total": 0, "error": str(e)}
 
 
 @router.get("/current")
@@ -131,7 +136,7 @@ async def get_tasks(request: Request) -> dict:
 
 @router.post("/config")
 async def save_config(body: TaskConfig, request: Request):
-    """保存任务配置（写入运行时 settings 单例，并落盘 data/config.json）"""
+    """保存任务配置（写入运行时 settings 单例，并落盘到 SQLite kv_store）"""
     cfg = body.resolved()
     adm = request.app.state.adm
     adm.limit = cfg.max_target
@@ -146,18 +151,9 @@ async def save_config(body: TaskConfig, request: Request):
         settings.enable_danmaku = cfg.enable_danmaku
         settings.enable_console = cfg.enable_console
         settings.enable_send = cfg.enable_send
-        # 落盘
-        import json
-        from pathlib import Path
-
-        cfg_path = settings.data_dir / "config.json"
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if cfg_path.exists():
-            try:
-                data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
+        # 落盘到 SQLite kv_store（替代 config.json）
+        from database import get_kv_json, set_kv_json
+        data = get_kv_json("config", {}) or {}
         data.update({
             "max_target": cfg.max_target,
             "dm_pool": cfg.dm_pool,
@@ -168,7 +164,7 @@ async def save_config(body: TaskConfig, request: Request):
             "enable_console": cfg.enable_console,
             "enable_send": cfg.enable_send,
         })
-        cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        set_kv_json("config", data)
     except Exception as e:
         logger.warning(f"[tasks] 配置落盘失败（不影响本次保存）: {e}")
     return {"ok": True}

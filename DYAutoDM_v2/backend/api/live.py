@@ -138,21 +138,13 @@ async def resolve_live(body: ResolveRequest):
 
     # 运行时生效：写入 settings 单例（原版 C.LIVE_ID / C.LIVE_URL）
     settings.live_url = raw
-    # 落盘：等价原版 _write_config_file({"LIVE_ID", "LIVE_URL"})
+    # 落盘到 SQLite kv_store（替代 config.json）
     try:
-        cfg_path = settings.data_dir / "config.json"
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if cfg_path.exists():
-            try:
-                data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
+        from database import get_kv_json, set_kv_json
+        data = get_kv_json("config", {}) or {}
         data["live_url"] = raw
         data["live_id"] = live_id
-        cfg_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        set_kv_json("config", data)
     except Exception as e:
         logger.warning(f"[resolve] 配置落盘失败（不影响本次解析）: {e}")
 

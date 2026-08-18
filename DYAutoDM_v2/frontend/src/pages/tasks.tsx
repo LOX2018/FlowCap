@@ -10,7 +10,7 @@
  *   - loading 用 .sk 骨架屏，未运行显示空态
  *   - api.exportStats 在 client.ts 未声明，本地扩展类型
  */
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps, Overview, TaskHistoryItem, ReusePayload } from "../api/client";
 import { Avatar, Pill, Dot } from "../components/ui";
@@ -41,16 +41,25 @@ export default function TasksPage(props: PageProps) {
   const qc = useQueryClient();
 
   // 历史任务列表（App 常驻轮询"task-history"，页面只读共享缓存，切页不重拉）
+  // 支持分页：首次加载 50 条，点「加载更多」追加
+  const PAGE_SIZE = 50;
+  const [historyPage, setHistoryPage] = useState(0);
   const historyQ = useQuery({
-    queryKey: ["task-history"],
-    queryFn: async (): Promise<TaskHistoryItem[]> => {
-      const r = (await api.getTaskHistory()) as { ok: boolean; list?: TaskHistoryItem[] };
-      return r && r.ok ? r.list || [] : [];
+    queryKey: ["task-history", historyPage],
+    queryFn: async (): Promise<{ list: TaskHistoryItem[]; total: number }> => {
+      const r = (await api.getTaskHistory(PAGE_SIZE, historyPage * PAGE_SIZE)) as {
+        ok: boolean;
+        list?: TaskHistoryItem[];
+        total?: number;
+      };
+      return { list: r && r.ok ? r.list || [] : [], total: r?.total || 0 };
     },
     enabled: !!ready,
   });
-  const history = historyQ.data || [];
+  const history = historyQ.data?.list || [];
+  const historyTotal = historyQ.data?.total || 0;
   const refreshHistory = useCallback(() => {
+    setHistoryPage(0);
     qc.invalidateQueries({ queryKey: ["task-history"] });
   }, [qc]);
 
@@ -340,7 +349,8 @@ export default function TasksPage(props: PageProps) {
                   </td>
                 </tr>
               ) : (
-                history.map((h) => (
+                <>
+                  {history.map((h) => (
                   <tr
                     key={h.id}
                     style={{ cursor: "pointer" }}
@@ -381,7 +391,20 @@ export default function TasksPage(props: PageProps) {
                       </button>
                     </td>
                   </tr>
-                ))
+                  ))}
+                  {(historyPage + 1) * PAGE_SIZE < historyTotal && (
+                    <tr>
+                      <td colSpan={7} style={{ textAlign: "center", padding: "10px" }}>
+                        <button
+                          className="btn sm ghost"
+                          onClick={() => setHistoryPage((p: number) => p + 1)}
+                        >
+                          加载更多（已显示 {history.length} / {historyTotal} 条）
+                        </button>
+                      </td>
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>

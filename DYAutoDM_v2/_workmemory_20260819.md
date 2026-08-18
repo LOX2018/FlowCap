@@ -286,3 +286,57 @@ sidecar 3 个重打（含 messages/main/link_resolve 改动）；`npx tauri buil
 ## 需用户实测
 - ② 历史任务：之前悬空的「运行中」任务应自动变为「已停止」；以后所有任务结束时
   都能正确收尾，不再出现永驻「运行中」。
+
+---
+
+# 会话 0.25.0→0.26.0（同日第七轮，JSON→SQLite 全面迁移）
+
+## 改动背景
+用户要求：数据尽可能走数据库，而非 JSON 文件。对全项目做数据存储审计。
+
+## 全项目数据存储审计结果
+| # | 存储点 | 格式 | 建议 |
+|---|-------|------|------|
+| 1 | task_history.json | JSON | 已迁移 SQLite ✓ |
+| 2 | dm_history.json | JSON | 已迁移 SQLite ✓ |
+| 3 | config.json | JSON | **本次迁移** → kv_store 表 |
+| 4 | accounts.json | JSON | **本次迁移** → kv_store 表 |
+| 5 | .env | dotenv | 保留（dotenv 直读+敏感凭证+多进程） |
+| 6 | logs/run_*.log | 文本 | 保留（loguru 轮转+非结构化） |
+| 7 | exports/*.xlsx|*.csv | 导出 | 保留（用户产物） |
+| 8 | 下载 jpg/mp4/txt/info.json | 各种 | 保留（用户产物） |
+| 9 | .daemon_alive | flag | 保留（进程间通信标记） |
+| 10 | 浏览器 profile | 目录 | 保留（引擎要求） |
+
+## 改动详情
+
+### 1. 新增 SQLite kv_store 通用键值表
+- `database.py`：新增 `kv_store(key,value)` 表 + `get_kv/get_kv_json/set_kv/set_kv_json` helper。
+- `_migrate_json`：首次运行时自动把 `config.json` → kv_store("config")，
+  `accounts.json` → kv_store("accounts_index")。
+
+### 2. 运行时配置 config.json → SQLite
+- `api/live.py` resolve：`set_kv_json("config", merged)` 替代 `cfg_path.write_text(json.dumps(...))`。
+- `api/tasks.py` save_config：同上。
+
+### 3. 账号索引 accounts.json → SQLite
+- `auto_dm/accounts.py`：`_load_index` → `get_kv_json("accounts_index")`，
+  `_save_index` → `set_kv_json("accounts_index", idx)`。
+
+### 4. 前端历史任务分页
+- `api/tasks.py /history`：新增 `limit`/`offset` query 参数 + `total` 返回。
+- `client.ts getTaskHistory`：支持分页参数。
+- `tasks.tsx`：每页 50 条 + 「加载更多」按钮（显示已显示/总数）。
+- `App.tsx`：共享轮询用 `["task-history", 0]`。
+
+## 验证
+- py_compile + 19 项集成测试全过。
+- SQLite CRUD 冒烟（start/finish/list/count/clear + kv get/set）通过。
+- 前端 build 0 TS 错。
+- 版本 0.25.0→0.26.0；sidecar 3 个重打；主 exe --no-bundle。
+- 部署 dist\ + C:\temp\dyautodm_test\ 0.26.0。
+
+## 需用户实测
+- ① 历史任务：不再有 200 条上限，翻页「加载更多」；旧 JSON 数据首次启动自动迁移到 SQLite。
+- ② 配置保存/解析房间号：写回 SQLite kv_store，不再写 config.json。
+- ③ 账号增删/切换：写回 SQLite，不再写 accounts.json。

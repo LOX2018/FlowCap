@@ -39,19 +39,19 @@ def _ensure_dirs():
 
 
 def _load_index():
-    """加载账号索引。
+    """加载账号索引（从 SQLite kv_store，替代 accounts.json）。
 
     新设计：取消「默认账号」概念——不存在任何账号时返回空索引
     （{"current": null, "accounts": {}}）。所有账号都必须通过「新增账号」才能被管理。
     """
     _ensure_dirs()
-    if not os.path.exists(_INDEX_PATH):
-        return {"current": None, "accounts": {}}
     try:
-        with open(_INDEX_PATH, "r", encoding="utf-8") as f:
-            idx = json.load(f)
+        from database import get_kv_json
+        idx = get_kv_json("accounts_index", {"current": None, "accounts": {}})
+        if idx is None:
+            idx = {"current": None, "accounts": {}}
     except Exception:
-        return {"current": None, "accounts": {}}
+        idx = {"current": None, "accounts": {}}
 
     # 归一化：旧版可能把 rel 存成 "accounts/<name>/.env"（带前缀），
     # 与 _ACCOUNTS_DIR 拼接会变成双重 accounts 前缀。这里归一化为 "<name>/.env"，
@@ -87,9 +87,12 @@ def _load_index():
 
 
 def _save_index(idx):
-    _ensure_dirs()
-    with open(_INDEX_PATH, "w", encoding="utf-8") as f:
-        json.dump(idx, f, ensure_ascii=False, indent=2)
+    """保存账号索引到 SQLite kv_store（替代 accounts.json）。"""
+    try:
+        from database import set_kv_json
+        set_kv_json("accounts_index", idx)
+    except Exception as e:
+        logger.warning(f"[accounts] 保存账号索引失败: {e}")
 
 
 def list_accounts():

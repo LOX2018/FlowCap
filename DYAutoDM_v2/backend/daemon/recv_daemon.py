@@ -98,7 +98,8 @@ class Conversation:
         if role == "them":
             self.unread += 1
 
-    def to_dict(self) -> dict:
+    def to_dict(self, limit_messages: int = 0) -> dict:
+        msgs = self.messages if not limit_messages else self.messages[-limit_messages:]
         return {
             "conv_id": self.conv_id,
             "peer_id": self.peer_id,
@@ -106,70 +107,48 @@ class Conversation:
             "short_id": self.short_id,
             "unread": self.unread,
             "last_ts": self.last_ts,
-            "messages": self.messages,
+            "messages": msgs,
         }
 
 
 class AccountInbox:
-    """一个账号的收件箱：conversation_id -> Conversation，线程安全。
+    """一个账号的收件箱：会话与消息持久化到 SQLite（data/dyautodm.db）。
 
-    会话消息持久化到账号目录的 dm_history.json。
+    取代旧的 dm_history.json 方案：JSON 并发写入易损坏、无事务、无分页。
+    SQLite WAL 模式允许 recv_daemon 独立进程与 backend 共享同一 db 文件。
     """
 
     def __init__(self, name: str, history_path: str | None = None) -> None:
         self.name = name
         self.lock = threading.RLock()
-        self.convs: dict[str, Conversation] = {}
+        self.convs: dict[str, Conversation] = {}  # 内存缓存（WS 实时消息用）
         self.connected = False
         self.last_error = ""
-        self.history_path = history_path
-        if history_path:
-            self._load_history()
+        self._load_from_db()
 
-    def _load_history(self) -> None:
+    def _db(self):
+        from database import get_db
+        return get_db()
+
+    def _load_from_db(self) -> None:
+        """启动时从 SQLite 加载会话骨架到内存（消息按需查询，不全量加载）。"""
         try:
-            if not self.history_path or not os.path.exists(self.history_path):
-                return
-            with open(self.history_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                return
-            for conv_id, d in data.items():
-                if not isinstance(d, dict) or not conv_id:
-                    continue
-                c = Conversation(conv_id, d.get("peer_id"), d.get("peer_name"))
-                c.short_id = d.get("short_id")
-                c.messages = d.get("messages") or []
-                c.last_ts = d.get("last_ts") or 0
-                c.unread = 0
-                self.convs[conv_id] = c
+            conn = self._db()
+            rows = conn.execute(
+                "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread "
+                "FROM dm_conversations WHERE account=? ORDER BY last_ts DESC",
+                (self.name,),
+            ).fetchall()
+            for r in rows:
+                c = Conversation(r["conv_id"], r["peer_id"], r["peer_name"])
+                c.short_id = r["short_id"]
+                c.last_ts = r["last_ts"] or 0
+                c.unread = r["unread"] or 0
+                self.convs[r["conv_id"]] = c
             if self.convs:
-                logger.info(f"[recv][{self.name}] 已从历史加载 {len(self.convs)} 个会话")
-                for cid, c in self.convs.items():
-                    logger.info(f"[recv][{self.name}]   历史会话: conv_id={cid}, peer_name={c.peer_name}, peer_id={c.peer_id}, messages={len(c.messages)} 条")
+                logger.info(f"[recv][{self.name}] 已从数据库加载 {len(self.convs)} 个会话")
         except Exception as e:
-            logger.warning(f"[recv][{self.name}] 历史会话加载失败: {e}")
-
-    def _save_history(self) -> None:
-        try:
-            if not self.history_path:
-                return
-            os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
-            data = {}
-            for cid, c in self.convs.items():
-                data[cid] = {
-                    "peer_id": c.peer_id,
-                    "peer_name": c.peer_name,
-                    "short_id": c.short_id,
-                    "last_ts": c.last_ts,
-                    "messages": c.messages,
-                }
-            tmp = self.history_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=1)
-            os.replace(tmp, self.history_path)
-        except Exception as e:
-            logger.warning(f"[recv][{self.name}] 历史会话保存失败: {e}")
+            logger.warning(f"[recv][{self.name}] 数据库加载会话失败: {e}")
 
     def get_or_create(self, conv_id: str, peer_id: Any = None,
                       peer_name: str | None = None) -> Conversation:
@@ -178,35 +157,146 @@ class AccountInbox:
             if c is None:
                 c = Conversation(conv_id, peer_id, peer_name)
                 self.convs[conv_id] = c
+                # 持久化到 SQLite（INSERT OR IGNORE 避免重复）
+                try:
+                    conn = self._db()
+                    conn.execute(
+                        "INSERT OR IGNORE INTO dm_conversations(account,conv_id,peer_id,"
+                        "peer_name,short_id,last_ts,unread) VALUES(?,?,?,?,?,?,?)",
+                        (self.name, conv_id, peer_id, peer_name, None, 0, 0),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
             elif peer_id and not c.peer_id:
                 c.peer_id = peer_id
                 if peer_name:
                     c.peer_name = peer_name
+                try:
+                    conn = self._db()
+                    conn.execute(
+                        "UPDATE dm_conversations SET peer_id=?,peer_name=? "
+                        "WHERE account=? AND conv_id=?",
+                        (peer_id, peer_name, self.name, conv_id),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
             return c
 
     def list_convs(self) -> list[dict]:
+        """返回会话列表（按最后消息时间倒序），含最近若干条消息预览。"""
         with self.lock:
-            return [c.to_dict() for c in sorted(
+            # 优先用内存缓存（WS 实时更新），但补全 SQLite 中可能多的会话
+            try:
+                conn = self._db()
+                rows = conn.execute(
+                    "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread "
+                    "FROM dm_conversations WHERE account=? ORDER BY last_ts DESC",
+                    (self.name,),
+                ).fetchall()
+                for r in rows:
+                    if r["conv_id"] not in self.convs:
+                        c = Conversation(r["conv_id"], r["peer_id"], r["peer_name"])
+                        c.short_id = r["short_id"]
+                        c.last_ts = r["last_ts"] or 0
+                        c.unread = r["unread"] or 0
+                        self.convs[r["conv_id"]] = c
+            except Exception:
+                pass
+            return [c.to_dict(limit_messages=20) for c in sorted(
                 self.convs.values(), key=lambda x: x.last_ts, reverse=True)]
 
     def get_conv(self, conv_id: str) -> dict | None:
+        """返回单个会话详情（从 SQLite 加载完整消息历史）。"""
         with self.lock:
             c = self.convs.get(conv_id)
-            return c.to_dict() if c else None
+            peer_id = c.peer_id if c else None
+            peer_name = c.peer_name if c else None
+            short_id = c.short_id if c else None
+            try:
+                conn = self._db()
+                # 确保会话骨架存在
+                if c is None:
+                    row = conn.execute(
+                        "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread "
+                        "FROM dm_conversations WHERE account=? AND conv_id=?",
+                        (self.name, conv_id),
+                    ).fetchone()
+                    if not row:
+                        return None
+                    peer_id = row["peer_id"]
+                    peer_name = row["peer_name"]
+                    short_id = row["short_id"]
+                # 从 SQLite 加载消息（分页最近 200 条）
+                mrows = conn.execute(
+                    "SELECT role,text,msg_type,extra,ts FROM dm_messages "
+                    "WHERE account=? AND conv_id=? ORDER BY ts DESC LIMIT 200",
+                    (self.name, conv_id),
+                ).fetchall()
+                messages = [
+                    {
+                        "role": m["role"],
+                        "text": m["text"],
+                        "msg_type": m["msg_type"],
+                        "extra": json.loads(m["extra"] or "{}"),
+                        "ts": m["ts"],
+                    }
+                    for m in reversed(mrows)
+                ]
+                last_ts = mrows[0]["ts"] if mrows else 0
+                return {
+                    "conv_id": conv_id,
+                    "peer_id": peer_id,
+                    "peer_name": peer_name,
+                    "short_id": short_id,
+                    "unread": 0,
+                    "last_ts": last_ts,
+                    "messages": messages,
+                }
+            except Exception as e:
+                logger.warning(f"[recv][{self.name}] 数据库加载会话详情失败: {e}")
+                return None
 
     def mark_read(self, conv_id: str) -> None:
         with self.lock:
             c = self.convs.get(conv_id)
             if c:
                 c.unread = 0
+            try:
+                conn = self._db()
+                conn.execute(
+                    "UPDATE dm_conversations SET unread=0 WHERE account=? AND conv_id=?",
+                    (self.name, conv_id),
+                )
+                conn.commit()
+            except Exception:
+                pass
 
     def add_message(self, conv_id: str, role: str, text: str,
                     peer_id: Any = None, peer_name: str | None = None,
                     msg_type: str = "text", extra: dict | None = None) -> Conversation:
+        ts = time.time()
         with self.lock:
             c = self.get_or_create(conv_id, peer_id, peer_name)
-            c.add(role, text, msg_type, extra)
-            self._save_history()
+            c.add(role, text, msg_type, extra, ts=ts)
+            # 持久化到 SQLite（单条消息 + 会话 last_ts 更新）
+            try:
+                conn = self._db()
+                conn.execute(
+                    "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (self.name, conv_id, role, text, msg_type,
+                     json.dumps(extra or {}, ensure_ascii=False), ts),
+                )
+                conn.execute(
+                    "UPDATE dm_conversations SET last_ts=?,unread=unread+? "
+                    "WHERE account=? AND conv_id=?",
+                    (ts, 1 if role == "them" else 0, self.name, conv_id),
+                )
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"[recv][{self.name}] 消息持久化失败: {e}")
         return c
 
 
@@ -358,7 +448,7 @@ class RecvChannel(threading.Thread):
                 pass
 
     def _sync_conversations(self, conv_list: list) -> None:
-        """把 WS 下发的已有会话列表建立成会话骨架（无消息、peer 信息待补）。"""
+        """把 WS 下发的已有会话列表建立成会话骨架并持久化到 SQLite。"""
         n_new = 0
         logger.info(f"[recv][{self.name}] 收到同步帧，含 {len(conv_list)} 个会话")
         for i, item in enumerate(conv_list):
@@ -366,22 +456,30 @@ class RecvChannel(threading.Thread):
             short_id = getattr(item, "conversation_short_id", None) or None
             logger.info(f"[recv][{self.name}]   同步帧会话#{i}: conv_id={conv_id}, short_id={short_id}")
         with self.inbox.lock:
+            try:
+                conn = self.inbox._db()
+            except Exception:
+                conn = None
             for item in conv_list:
                 conv_id = getattr(item, "conversation_id", "") or ""
                 if not conv_id:
                     continue
                 if conv_id in self.inbox.convs:
                     continue
-                # 同步帧只给 conversation_id（+short_id），真实对方 uid 待新私信补全
                 c = Conversation(conv_id, None, None)
                 c.short_id = getattr(item, "conversation_short_id", None) or None
                 self.inbox.convs[conv_id] = c
                 n_new += 1
+                if conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO dm_conversations(account,conv_id,"
+                        "peer_id,peer_name,short_id,last_ts,unread) VALUES(?,?,?,?,?,?,?)",
+                        (self.inbox.name, conv_id, None, None, c.short_id, 0, 0),
+                    )
+            if conn:
+                conn.commit()
         if n_new:
-            self.inbox._save_history()
-            logger.info(
-                f"[recv][{self.name}] 已从同步帧加载 {n_new} 个已有会话"
-            )
+            logger.info(f"[recv][{self.name}] 已从同步帧加载 {n_new} 个已有会话")
 
     @staticmethod
     def _extract(content_json: dict, msg_type: Any) -> tuple[str | None, dict]:
@@ -435,13 +533,16 @@ async def _startup() -> None:
     )
     # 为每个账号启动 RecvChannel
     from auto_dm import accounts as acc
+    # 确保 SQLite 已初始化（recv_daemon 独立进程也打开同一个 db 文件）
+    try:
+        import database
+        database.get_db()
+    except Exception as e:
+        logger.error(f"[recv] 数据库初始化失败: {e}")
     for name in _state["accounts"]:
         try:
             env_path = acc.env_path_of(name)
-            history_path = os.path.join(
-                acc._ACCOUNTS_DIR, name, "dm_history.json"
-            )
-            inbox = AccountInbox(name, history_path=history_path)
+            inbox = AccountInbox(name)
             _state["inboxes"][name] = inbox
             channel = RecvChannel(name, env_path, inbox, auto_reconnect=True)
             _state["channels"][name] = channel
@@ -516,7 +617,11 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
             ib.convs[conv_id] = c
             n += 1
     if n:
-        ib._save_history()
+        try:
+            conn = ib._db()
+            conn.commit()
+        except Exception:
+            pass
         logger.info(f"[recv][{ib.name}] 由 API 拉取到 {n} 个会话骨架")
     return n
 
