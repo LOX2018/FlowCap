@@ -172,7 +172,8 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
 
     # 1.6) accounts.json -> kv_store("accounts_index")
     try:
-        accounts_json = os.path.join(_ROOT, "auto_dm", "accounts", "accounts.json")
+        from vbrowser import app_root
+        accounts_json = os.path.join(app_root(), "auto_dm", "accounts", "accounts.json")
         if os.path.exists(accounts_json):
             raw = open(accounts_json, encoding="utf-8").read()
             existing = conn.execute(
