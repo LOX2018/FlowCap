@@ -86,6 +86,47 @@ function Header({
   );
 }
 
+/** 启动闪屏：双击 exe 后窗口立即出现品牌页，后端引擎就绪（overview 首帧数据到达）
+ *  才滑入主界面，把 PyInstaller 后端冷启动的 ~3s 变成有进度的等待，而不是白屏/未连接。 */
+function BootSplash() {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 16,
+        background: "var(--bg)",
+        // 等后端就绪前，主界面藏在闪屏之下
+      }}
+    >
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: 16,
+          background: "var(--accent)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 30,
+          color: "#fff",
+          fontWeight: 700,
+        }}
+      >
+        DY
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 600 }}>抖音数据控制台</div>
+      <div className="spinner" style={{ marginTop: 4 }} />
+      <div style={{ color: "var(--muted)", fontSize: 12.5 }}>正在唤醒后端引擎并准备数据…</div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
     try {
@@ -223,6 +264,7 @@ export default function App() {
 
   return (
     <div className="app">
+      {!ready && <BootSplash />}
       <Header tab={tab} setTab={setTab} overview={overview} ready={ready} />
       <main className="main">
         <AnimatePresence mode="wait">

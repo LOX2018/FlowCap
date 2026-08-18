@@ -98,7 +98,7 @@ async def list_conversations(account: str):
     """
     logger.info(f"[私信拉取] 开始拉取账号「{account}」的会话列表")
     try:
-        url = _recv_url(account, "/conversations")
+        url = _recv_url(account, "/conversations?account=" + urllib.parse.quote(account))
         logger.info(f"[私信拉取] 账号「{account}」→ recv_daemon URL: {url}")
         if url is None:
             logger.warning(f"[私信拉取] 账号「{account}」端口分配失败")
@@ -137,7 +137,10 @@ async def get_conversation(account: str, conv_id: str):
     """会话详情（转发到 recv_daemon /conversation，含已读标记）"""
     logger.info(f"[私信拉取] 拉取账号「{account}」会话详情 conv_id={conv_id}")
     try:
-        url = _recv_url(account, f"/conversation?conv_id={urllib.parse.quote(str(conv_id))}")
+        url = _recv_url(
+            account,
+            f"/conversation?account={urllib.parse.quote(account)}&conv_id={urllib.parse.quote(str(conv_id))}",
+        )
         d = _http_get_json(url)
         conv = d.get("conversation")
         if conv is None:

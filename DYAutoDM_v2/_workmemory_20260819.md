@@ -197,3 +197,37 @@ sidecar 3 个重打（含 messages/main/link_resolve 改动）；`npx tauri buil
 - ① 各页面切换应秒开（数据已在内存缓存，不再每页重拉）；账号管理首屏不再 4s。
 - ② 私信中心：守护未运行时出现「正在自动启动」提示并自动恢复，不再报 10061 连接失败。
 - ③ 解析房间号：live.douyin.com/<id> / 纯房号秒回；短链第二次起走缓存秒回。
+
+---
+
+# 会话 0.22.0→0.23.0（同日第四轮，修复私信 422 + 启动闪屏）
+
+## 改动背景
+用户反馈两点：
+1. 双击 exe 后约 3s 才读到后端数据（PyInstaller 后端冷启动无法消除），希望先唤醒后端再展示页面。
+2. 私信中心仍拉不到会话：日志显示 recv_daemon 已起来但 `/conversations` 返回 HTTP 422。
+
+## 改动详情
+
+### 1. 私信中心 422 根因与修复
+- 根因：`backend/daemon/recv_daemon.py` 的 `GET /conversations`、`GET /conversation`
+  路由声明为 `account: str`（FastAPI 必填 query），但前转发层 `backend/api/messages.py`
+  构造 `http://127.0.0.1:<port>/conversations` 时漏带 `?account=`，导致 422。
+- 修复：`_recv_url(account, "/conversations?account="+quote(account))`；
+  `/conversation` 同样补 `account` 与 `conv_id` 双参数。
+
+### 2. 启动 3s → 启动闪屏（先唤醒后端、就绪后再展示界面）
+- 后端冷启动（PyInstaller onefile 解压 ~68MB + 导入）约 3s 属必要耗时，无法再压。
+- `frontend/src/App.tsx`：新增 `BootSplash` 全屏闪屏（品牌 DY 标 + 转圈 + “正在唤醒
+  后端引擎并准备数据…”），`ready=overview 首帧就绪` 前盖住主界面，就绪后闪屏让位
+  ——双击 exe 立即有画面，数据到齐才进入主界面，消除白屏/“未连接”观感。
+- `frontend/src/styles/global.css`：新增 `.spinner` 与 `@keyframes spin`。
+
+## 验证
+- 前端 build 0 TS 错；后端 py_compile 过；19 项集成测试全过。
+- 版本 0.22.0→0.23.0（4 文件）；sidecar 3 个重打；`npx tauri build --no-bundle` 产主 exe。
+- 部署 dist\ + C:\temp\dyautodm_test\ `DYAutoDM_v2_0.23.0.exe` + binaries\ 3 sidecar。
+
+## 需用户实测
+- ① 私信中心：守护未运行会自动拉起，运行中能拉到真实会话（不再 422）。
+- ② 双击 exe：先出「抖音数据控制台」启动闪屏，数据就绪后切入主界面。
