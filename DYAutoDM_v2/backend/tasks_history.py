@@ -43,8 +43,11 @@ def _save(items: list[dict]) -> None:
         pass
 
 
-def start_task(acct: str, live_id: str) -> int:
-    """记录一条新历史任务（状态=运行中），返回任务 id。"""
+def start_task(acct: str, live_id: str, config: dict | None = None, records: list | None = None) -> int:
+    """记录一条新历史任务（状态=运行中），返回任务 id。
+
+    config: 启动时的配置快照（供任务中心「进入/复用」回读，如 {live_url,max_target,...}）。
+    """
     with _lock:
         items = _load()
         tid = int(time.time() * 1000)  # 毫秒时间戳作 id
@@ -55,8 +58,9 @@ def start_task(acct: str, live_id: str) -> int:
             "start_ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "end_ts": "",
             "status": "running",      # running / finished / stopped
-            "result_count": 0,
-            "records": [],            # 结果快照（查阅模式数据源）
+            "result_count": len(records or []),
+            "config": config or {},   # 配置快照（任务中心「复用」数据源）
+            "records": records or [], # 结果快照（查阅模式数据源）
         })
         if len(items) > _MAX:
             items = items[-_MAX:]

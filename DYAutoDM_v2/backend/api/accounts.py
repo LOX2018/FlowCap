@@ -48,24 +48,27 @@ def _get_adm():
         return None
 
 
-def _build_last_run(name: str) -> dict:
-    """从全局引擎实例读取该账号真实运行记录，无运行时数据返回空占位。"""
+def _last_run_empty() -> dict:
+    return {
+        "room": "—",
+        "roomUrl": "",
+        "time": "—",
+        "duration": "—",
+        "totalRuns": 0,
+        "comments": 0,
+        "dmSent": 0,
+        "dmSuccess": 0,
+        "dmFail": 0,
+        "dmAfterLive": 0,
+    }
+
+
+def _last_run_runtime() -> dict:
+    """兜底：无历史任务时从全局引擎运行时聚合（单账号引擎）。"""
     adm = _get_adm()
     if not adm:
-        return {
-            "room": "—",
-            "roomUrl": "",
-            "time": "—",
-            "duration": "—",
-            "totalRuns": 0,
-            "comments": 0,
-            "dmSent": 0,
-            "dmSuccess": 0,
-            "dmFail": 0,
-            "dmAfterLive": 0,
-        }
+        return _last_run_empty()
     try:
-        # 当前仅支持单账号引擎，任何账号都读同一 adm 的运行时聚合
         sent = getattr(adm, "sent_count", 0) or 0
         live_id = getattr(adm, "live_id", None)
         dispatch = getattr(adm, "dispatch", None)
@@ -73,33 +76,85 @@ def _build_last_run(name: str) -> dict:
         comments = len(records) if records else 0
         from models.enums import RecordStatus
         success = sum(1 for r in records if getattr(r, "status", None) == RecordStatus.SENT)
+        fail = sum(1 for r in records if getattr(r, "status", None) == RecordStatus.FAIL)
         status_msg = getattr(adm, "status_msg", "") or ""
         running = status_msg not in ("未启动", "已停止", "运行异常: ")
         return {
             "room": live_id or "—",
-            "roomUrl": live_id or "",
+            "roomUrl": f"https://live.douyin.com/{live_id}" if live_id else "",
             "time": "进行中" if running else "—",
             "duration": "进行中" if running else "—",
             "totalRuns": 1 if live_id else 0,
             "comments": comments,
-            "dmSent": sent,
+            "dmSent": success + fail,
             "dmSuccess": success,
-            "dmFail": max(0, sent - success),
+            "dmFail": fail,
             "dmAfterLive": 0,
         }
     except Exception:
+        return _last_run_empty()
+
+
+def _duration_str(start: str, end: str) -> str:
+    """'%Y-%m-%d %H:%M:%S' 两个时间戳 -> 'H:MM:SS'；解析失败返回 '—'。"""
+    fmt = "%Y-%m-%d %H:%M:%S"
+    try:
+        from datetime import datetime
+        t1 = datetime.strptime((start or "").strip(), fmt)
+        t2 = datetime.strptime((end or start or "").strip(), fmt)
+        s = max(0, int((t2 - t1).total_seconds()))
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        return f"{h}:{m:02d}:{sec:02d}"
+    except Exception:
+        return "—"
+
+
+def _build_last_run(name: str) -> dict:
+    """该账号的「上次运行记录」：优先读历史任务（任务中心查阅模式数据源），
+    无历史时退回全局引擎运行时聚合。
+
+    数据源 tasks_history.json 每条含 config 快照（直播间）与 records 快照（发送明细），
+    故账号管理页看到的最近一次运行结果 = 任务中心历史任务/查阅模式里的同一份数据。
+    """
+    try:
+        from tasks_history import list_history
+        hist = list_history() or []
+        mine = [it for it in hist if (it.get("acct") or "") == name]
+        if not mine:
+            return _last_run_runtime()
+        it = mine[0]
+        records = it.get("records") or []
+        cfg = it.get("config") or {}
+        live_id = cfg.get("live_id") or it.get("live_id") or ""
+        room = cfg.get("live_url") or live_id or "—"
+        start = it.get("start_ts") or "—"
+        end = it.get("end_ts") or start
+        running = it.get("status") == "running"
+        duration = "进行中" if running else _duration_str(start, end)
+        sent = success = fail = 0
+        for r in records:
+            st = (r or {}).get("status")
+            if st in ("sent", "fail"):
+                sent += 1
+            if st == "sent":
+                success += 1
+            elif st == "fail":
+                fail += 1
         return {
-            "room": "—",
-            "roomUrl": "",
-            "time": "—",
-            "duration": "—",
-            "totalRuns": 0,
-            "comments": 0,
-            "dmSent": 0,
-            "dmSuccess": 0,
-            "dmFail": 0,
+            "room": room,
+            "roomUrl": f"https://live.douyin.com/{live_id}" if live_id else "",
+            "time": start,
+            "duration": duration,
+            "totalRuns": len(mine),
+            "comments": len(records),
+            "dmSent": sent,
+            "dmSuccess": success,
+            "dmFail": fail,
             "dmAfterLive": 0,
         }
+    except Exception:
+        return _last_run_runtime()
 
 
 def _do_scan(name: str):

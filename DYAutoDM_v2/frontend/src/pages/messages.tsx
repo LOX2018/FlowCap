@@ -74,6 +74,7 @@ interface MessagesApi {
   sendDm(account: string, convId: string, text: string): Promise<SendDmResp>;
   requestDm(name: string): Promise<RequestDmResp>;
   getAccounts(): Promise<unknown>;
+  addLog(level: string, text: string): Promise<unknown>;
 }
 
 function errMsg(e: unknown): string {
@@ -159,9 +160,23 @@ export default function MessagesPage(props: PageProps) {
   const convsQ = useQuery({
     queryKey: ["msg-convs", activeAcct],
     queryFn: async (): Promise<Conv[]> => {
+      push("正在拉取账号「" + activeAcct + "」的私信会话列表…");
       const d = (await a.getConversations(activeAcct)) as unknown as ConversationsResp;
-      if (!d || !d.ok) return [];
+      // 记录完整原始响应到运行日志，方便排查"张三"等异常数据
+      a.addLog("DEBUG", "[私信拉取] 前端：账号「" + activeAcct + "」原始响应=" + JSON.stringify(d));
+      if (!d || !d.ok) {
+        push("拉取会话列表失败: " + ((d as Record<string, unknown>)?.error || "无响应"));
+        a.addLog("WARNING", "[私信拉取] 前端：账号「" + activeAcct + "」拉取会话列表失败: " + ((d as Record<string, unknown>)?.error || "无响应"));
+        return [];
+      }
       const list = d.conversations || [];
+      push("拉取到 " + list.length + " 个会话");
+      a.addLog("INFO", "[私信拉取] 前端：账号「" + activeAcct + "」拉取到 " + list.length + " 个会话");
+      list.forEach((c, i) => {
+        a.addLog("INFO", "[私信拉取] 前端：  会话#" + i + " name=" + JSON.stringify(c.name) + " conv_id=" + (c.conv_id || "—") + " unread=" + (c.unread || 0));
+        // 记录每个会话的完整原始数据，便于排查"张三"等异常名称来源
+        a.addLog("DEBUG", "[私信拉取] 前端：  会话#" + i + " 完整原始数据=" + JSON.stringify(c));
+      });
       return list.map((c, i) => ({
         id: "rc" + i,
         conv_id: c.conv_id,

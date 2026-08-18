@@ -23,11 +23,22 @@ async def get_stream(request: Request) -> LiveStreamResponse:
     从引擎持有 AutoDM.live (LiveChatHook) 读取实时直播流数据：
     room_status（room_title/主播昵称/room_id）、feed（实时弹幕流）、heat_curve、
     online_count / likes、当前监听状态。引擎未运行或无 live 时返回 alive=False。
+
+    V2 任务容器：附加 engineState/statusMsg/dmRunning/dmPaused，前端切页回读真实引擎状态。
     """
     adm = getattr(request.app.state, "adm", None)
     live = getattr(adm, "live", None) if adm else None
+    engine_state = getattr(adm, "state", None)
+    engine_value = engine_state.value if engine_state else "idle"
+    status_msg = getattr(adm, "status_msg", "") or ""
     if live is None:
-        return LiveStreamResponse(alive=False)
+        return LiveStreamResponse(
+            alive=False,
+            engineState=engine_value,
+            statusMsg=status_msg,
+            dmRunning=getattr(adm, "is_running", False),
+            dmPaused=engine_value == "paused",
+        )
 
     room = getattr(live, "room_status", None) or {}
     room_info = room.get("room_info") if isinstance(room, dict) else {}
@@ -64,6 +75,10 @@ async def get_stream(request: Request) -> LiveStreamResponse:
         listening=running,
         roomTitle=room_title,
         liveUrl=f"https://live.douyin.com/{getattr(adm, 'live_id', '') or ''}",
+        engineState=engine_value,
+        statusMsg=status_msg,
+        dmRunning=getattr(adm, "is_running", False),
+        dmPaused=engine_value == "paused",
     )
 
 

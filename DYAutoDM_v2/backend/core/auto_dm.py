@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import threading
 import time
 from typing import Any, Optional
@@ -247,28 +248,144 @@ class AutoDM:
     # ------------------------------------------------------------------
     # 引擎控制（async）
     # ------------------------------------------------------------------
+    def _apply_config(self, config: TaskConfig) -> None:
+        """把 TaskConfig 落到运行时字段（任务容器回读 / 监控展示用）。
+
+        dm_pool 只保留文案，启用状态合并自 adm.dm_template（[{text, enabled}]）。
+        """
+        self.live_url = config.live_url
+        self.limit = max(1, int(config.max_target))
+        self.interval = float(config.interval)
+        self.delay_range = tuple(config.delay_range or [40, 65])
+        self.force_rescan = bool(config.force_rescan)
+        self._acct = getattr(config, "acct", None)
+        existing = {}
+        for t in (self.dm_template or []):
+            text = t.get("text", "") if isinstance(t, dict) else str(t)
+            en = t.get("enabled", True) if isinstance(t, dict) else True
+            existing[text] = en
+        merged = []
+        for t in config.dm_pool or []:
+            text = str(t or "").strip()
+            if not text:
+                continue
+            merged.append({"text": text, "enabled": existing.get(text, True)})
+        # 合并后仍为空时退回 settings 词库（怕 config.dm_pool 为空导致无文案可发）
+        if not merged:
+            for item in getattr(settings, "dm_pool", []) or []:
+                text = item.get("text", "") if isinstance(item, dict) else str(item)
+                if text:
+                    merged.append({"text": str(text), "enabled": True})
+        self.dm_template = merged
+        self.pick_dm_message = self._make_pick_dm_message()
+
+    def _make_pick_dm_message(self):
+        """从已启用词库随机抽一条文案（修复旧版恒取 dm_pool[0] 导致文案重复被风控）。"""
+        active = []
+        for t in (self.dm_template or []):
+            if isinstance(t, dict):
+                if not t.get("enabled", True):
+                    continue
+                text = str(t.get("text", "")).strip()
+            else:
+                text = str(t).strip()
+            if text and text not in active:
+                active.append(text)
+        if not active:
+            return None
+
+        def _pick():
+            return random.choice(active)
+
+        return _pick
+
+    def _snapshot_config(self) -> dict:
+        """当前任务的配置快照（任务中心「进入/复用」回读数据源）。"""
+        dr = tuple(self.delay_range or [40, 65])
+        return {
+            "live_url": self.live_url or "",
+            "live_id": self.live_id or "",
+            "max_target": int(self.limit),
+            "interval": float(self.interval),
+            "delay": f"{dr[0]},{dr[1]}" if len(dr) == 2 else str(list(dr)),
+            "force_rescan": bool(self.force_rescan),
+            "acct": getattr(self, "_acct", None),
+            "dm_pool": [
+                {"text": t.get("text", ""), "enabled": t.get("enabled", True)}
+                for t in (self.dm_template or [])
+                if isinstance(t, dict) and t.get("text")
+            ],
+            "status_msg": self.status_msg,
+        }
+
+    def snapshot(self) -> dict:
+        """任务容器快照：直播监听页 / 任务中心回读当前任务进程的统一视图。
+
+        聚合引擎状态 + 直播流 + 调度进度 + 发送记录为单个 JSON，前端两页共用。
+        """
+        live = self.live
+        ws_active = bool(
+            live
+            and getattr(live, "ws", None)
+            and not getattr(live, "_should_stop", True)
+        )
+        records = self.dispatch.records_list() if self.dispatch else []
+        sent = sum(1 for r in records if getattr(r, "status", None) == RecordStatus.SENT)
+        queue = self.dispatch.queue_size() if self.dispatch else 0
+        online = 0
+        if live and getattr(live, "room_stats", None):
+            try:
+                online = int((getattr(live, "room_stats") or {}).get("online", 0) or 0)
+            except Exception:
+                online = 0
+        state = self.state.value
+        return {
+            "ok": True,
+            "has_task": self.is_running or state not in ("idle",),
+            "task_id": getattr(self, "_task_history_id", None),
+            "engine_state": state,
+            "status_msg": self.status_msg,
+            "config": self._snapshot_config(),
+            "live": {
+                "alive": ws_active,
+                "listening": ws_active,
+                "online": online,
+                "room_title": getattr(self, "room_title", ""),
+                "dm_running": self.is_running,
+                "dm_paused": state == "paused",
+            },
+            "counts": {
+                "sent": sent,
+                "captured": len(records),
+                "queue": queue,
+                "limit": int(self.limit),
+            },
+            "records": [r if isinstance(r, dict) else _rec_to_dict(r) for r in records],
+        }
+
     async def start(self, config: TaskConfig) -> None:
         """启动引擎"""
         if self.state not in (EngineState.IDLE, EngineState.STOPPED):
             raise RuntimeError(f"当前状态 {self.state.value} 无法启动")
         self.state = EngineState.STARTING
-        self.live_url = config.live_url
         # 从 live_url 解析出真实直播间号 web_rid（live.douyin.com/<web_rid>）
         try:
             from link_resolve import resolve_live_id
             self.live_id, _ = resolve_live_id(config.live_url)
         except Exception:
             self.live_id = config.live_url
-        self.limit = config.max_target
+        self._apply_config(config)
         self.status_msg = "启动中"
         self._stop_event.clear()
 
-        # 记录历史任务（任务中心展示）
+        # 记录历史任务（任务中心展示），附配置快照供「复用」回读
         try:
             from auto_dm.accounts import current_name
-            acct = getattr(config, "acct", None) or current_name()
+            acct = self._acct or current_name()
             from tasks_history import start_task
-            self._task_history_id = start_task(acct, self.live_id or config.live_url)
+            self._task_history_id = start_task(
+                acct, self.live_id or config.live_url, config=self._snapshot_config()
+            )
             logger.info(f"[history] 记录历史任务: 账号={acct} live={self.live_id} id={self._task_history_id}")
         except Exception as e:
             logger.warning(f"[history] 记录历史任务失败: {e}")
@@ -329,14 +446,14 @@ class AutoDM:
                 self.state = EngineState.IDLE
                 return
 
-            # 3) 构造 DispatchCenter
+            # 3) 构造 DispatchCenter（词库随机抽取由 self.pick_dm_message 提供）
             self.dispatch = DispatchCenter(
                 auth=self.auth,
-                max_target=config.max_target,
+                max_target=self.limit,
                 delay_range=config.delay_range,
                 interval=config.interval,
                 enable_send=True,
-                pick_dm_message=(lambda: config.dm_pool[0]) if config.dm_pool else None,
+                pick_dm_message=self.pick_dm_message,
             )
             self.dispatch.on_idle = self._on_dispatch_idle
             await self.dispatch.start()
@@ -388,8 +505,12 @@ class AutoDM:
             logger.error(f"[引擎] 运行异常: {e}")
             self.status_msg = f"运行异常: {e}"
         finally:
-            # 监听线路结束；私信线路若仍有待发，由 dispatch 继续发完
-            if not self.dispatch or self.dispatch.queue_size() == 0:
+            # 启动失败（登录/凭证等）已在 _run 内把状态置回 IDLE：保留失败信息，任务标为停止
+            if self.state == EngineState.IDLE:
+                logger.warning(f"[引擎] 启动未成功: {self.status_msg}")
+                self._finish_history_task("stopped")
+            elif not self.dispatch or self.dispatch.queue_size() == 0:
+                # 监听线路结束，队列已空：正常收尾
                 self.state = EngineState.STOPPED
                 self.status_msg = "已停止"
                 self._finish_history_task("finished")
@@ -510,17 +631,26 @@ class AutoDM:
     async def _on_dispatch_idle(self) -> None:
         """私信延迟队列自然发空后的收尾
 
-        注意：软停止（STOPPING）期间队列自然发空，不应在此直接置 STOPPED——
-        收尾权威在 _wait_dispatch_done（它等 wait_done() 真发完再收尾）。
-        若这里在 STOPPING 时提前收尾，会与 _wait_dispatch_done 竞争，
-        且可能在「队列短暂空 + pending 假空」窗口误判为「已发完」。
-        故：仅当非 STOPPING（如运行中自然清空且未停止）才收尾；
-        STOPPING 交给 _wait_dispatch_done。
+        修复（V2 容器）：监听进行中队列短暂变空是正常间隙，绝不能置 STOPPED
+        （旧逻辑会在启动后队列首次空时误停引擎，导致页面读回「已停止/等待启动」）。
+        仅当监听 WS 已关闭且队列确实发空时才收尾。
         """
+        if self.state not in (EngineState.RUNNING, EngineState.STOPPING, EngineState.PAUSED):
+            return
+        # 监听还活着 -> 队列空只是正常间隙，忽略
+        live_active = (
+            self.live is not None
+            and getattr(self.live, "ws", None) is not None
+            and not getattr(self.live, "_should_stop", False)
+        )
+        if live_active:
+            return
+        # 软停止（STOPPING）期间交给 _wait_dispatch_done 权威收尾，避免竞争
         if self.state == EngineState.STOPPING:
             return
         self.state = EngineState.STOPPED
         self.status_msg = "已停止"
+        self._finish_history_task("finished")
 
     # ------------------------------------------------------------------
     # 重新扫码重建（迁移自 rescan_and_rebuild，同步逻辑）

@@ -8,8 +8,11 @@ from __future__ import annotations
 import time
 import urllib.parse
 import urllib.request
+import json
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+
+from loguru import logger
 
 from auto_dm import accounts as acct_core
 
@@ -88,32 +91,48 @@ def _map_conversation(c: dict) -> dict:
 @router.get("/conversations")
 async def list_conversations(account: str):
     """会话列表（转发到 recv_daemon /conversations）"""
+    logger.info(f"[私信拉取] 开始拉取账号「{account}」的会话列表")
     try:
         url = _recv_url(account, "/conversations")
+        logger.info(f"[私信拉取] 账号「{account}」→ recv_daemon URL: {url}")
         if url is None:
+            logger.warning(f"[私信拉取] 账号「{account}」端口分配失败")
             return {"ok": False, "conversations": [], "error": "端口分配失败"}
         d = _http_get_json(url)
-        convs = [_map_conversation(c) for c in (d.get("conversations") or [])]
+        logger.info(f"[私信拉取] 账号「{account}」recv_daemon 完整原始响应: {json.dumps(d, ensure_ascii=False)}")
+        raw_convs = d.get("conversations") or []
+        logger.info(f"[私信拉取] 账号「{account}」recv_daemon 返回 {len(raw_convs)} 个原始会话")
+        for i, rc in enumerate(raw_convs):
+            logger.info(f"[私信拉取]   原始会话#{i}: conv_id={rc.get('conv_id')}, peer_name={rc.get('peer_name')}, peer_id={rc.get('peer_id')}, messages={len(rc.get('messages') or [])} 条")
+            logger.info(f"[私信拉取]   原始会话#{i} 完整数据: {json.dumps(rc, ensure_ascii=False)}")
+        convs = [_map_conversation(c) for c in raw_convs]
+        logger.info(f"[私信拉取] 账号「{account}」映射后会话: {json.dumps(convs, ensure_ascii=False)}")
         return {"ok": True, "conversations": convs}
     except urllib.error.HTTPError as e:
         if e.code == 404:
+            logger.warning(f"[私信拉取] 账号「{account}」recv_daemon 返回 404（守护未运行）")
             return {"ok": True, "conversations": []}
+        logger.error(f"[私信拉取] 账号「{account}」HTTP 错误 {e.code}")
         return {"ok": False, "conversations": [], "error": f"私信守护返回 {e.code}"}
     except Exception as e:
-        # 守护未启动 / 端口无响应 → 返回空列表（前端显示空态，不报错崩溃）
+        logger.warning(f"[私信拉取] 账号「{account}」异常: {e}（守护可能未启动）")
         return {"ok": False, "conversations": [], "error": str(e)}
 
 
 @router.get("/conversation")
 async def get_conversation(account: str, conv_id: str):
     """会话详情（转发到 recv_daemon /conversation，含已读标记）"""
+    logger.info(f"[私信拉取] 拉取账号「{account}」会话详情 conv_id={conv_id}")
     try:
         url = _recv_url(account, f"/conversation?conv_id={urllib.parse.quote(str(conv_id))}")
         d = _http_get_json(url)
         conv = d.get("conversation")
         if conv is None:
+            logger.warning(f"[私信拉取] 账号「{account}」会话 {conv_id} 未找到")
             return {"ok": False, "conversation": {}}
-        return {"ok": True, "conversation": _map_conversation(conv)}
+        mapped = _map_conversation(conv)
+        logger.info(f"[私信拉取] 账号「{account}」会话 {conv_id} 详情: name={mapped.get('name')}, messages={len(mapped.get('messages') or [])} 条")
+        return {"ok": True, "conversation": mapped}
     except urllib.error.HTTPError as e:
         if e.code in (404,):
             return {"ok": False, "conversation": {}}

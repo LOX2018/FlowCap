@@ -318,7 +318,8 @@ class DispatchCenter:
             self.pending.pop(key, None)
             self.count += 1
             logger.info(
-                f"[进度] 已发送 {self.count}/{self.max_target}（目标「{target.get('nickname')}」）"
+                f"[进度] 已发送 {self.count}/{self.max_target}"
+                f"（目标「{target.get('nickname')}」文案前20字={content[:20]!r}）"
             )
             if self.count >= self.max_target:
                 self.reached_limit = True
@@ -329,7 +330,11 @@ class DispatchCenter:
             # 发送失败不计入 sent，但必须从 pending 移除，
             # 否则 wait_done（软停止等存量）会永久卡在 STOPPING（pending 永不空）。
             self.pending.pop(key, None)
-            logger.warning(f"[跳过] 「{target.get('nickname')}」发送失败，待重试: {reason}")
+            logger.warning(
+                f"[私信发送结果] 目标「{target.get('nickname')}」=失败\n"
+                f"   原因: {reason}\n"
+                f"   文案: {content!r}"
+            )
 
     async def wait_done(self) -> None:
         """等待队列发空（用于软停止后等存量发完）"""

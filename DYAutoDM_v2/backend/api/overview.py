@@ -23,9 +23,13 @@ async def get_overview(request: Request) -> dict:
     rport = acct_core.recv_daemon_port()
     b_alive = _daemon_alive(bport)
     r_alive = _daemon_alive(rport)
+    # running 用 adm.is_running（含 starting/stopping）：软停止后存量私信仍在发送，
+    # 任务中心必须保留「运行中」行，否则停止存量私信、进入任务的入口就消失了。
     return {
-        "running": adm.state.value == "running",
+        "running": adm.is_running,
         "paused": adm.state.value == "paused",
+        "engineState": adm.state.value,
+        "statusMsg": adm.status_msg,
         "sent": adm.sent_count,
         "limit": adm.limit,
         "queue": adm.dispatch.queue_size() if adm.dispatch else 0,

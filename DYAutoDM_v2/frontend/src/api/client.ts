@@ -49,6 +49,8 @@ export interface Overview {
   daemons: { browser: boolean; recv: boolean };
   browserDaemon?: { alive: boolean; signReady?: boolean };
   recvDaemon?: { alive: boolean };
+  engineState?: string;
+  statusMsg?: string;
 }
 
 // ===== API 客户端 =====
@@ -217,6 +219,11 @@ export const api = {
     return request("/api/tasks");
   },
 
+  /** 当前任务容器快照：直播监听页 / 任务中心回读同一个容器的进程状态 */
+  async getCurrentTask(): Promise<CurrentTask> {
+    return request("/api/tasks/current");
+  },
+
   async saveTaskConfig(config: Record<string, unknown>): Promise<{ ok: boolean }> {
     return request("/api/tasks/config", {
       method: "POST",
@@ -224,7 +231,9 @@ export const api = {
     });
   },
 
-  async saveDmPool(items: string[]): Promise<{ ok: boolean; count: number }> {
+  async saveDmPool(
+    items: { text: string; enabled: boolean }[] | string[],
+  ): Promise<{ ok: boolean; count: number }> {
     return request("/api/tasks/dm-pool", {
       method: "POST",
       body: JSON.stringify(items),
@@ -297,6 +306,51 @@ export interface TaskHistoryItem {
   status: "running" | "finished" | "stopped";
   result_count: number;
   records?: Record<string, unknown>[];
+  config?: Partial<TaskConfigSnapshot>;
+}
+
+/** 任务容器里「当前任务」的配置快照（进入任务 / 复用回读） */
+export interface TaskConfigSnapshot {
+  live_url: string;
+  live_id: string;
+  max_target: number;
+  interval: number;
+  delay: string;
+  force_rescan: boolean;
+  acct?: string | null;
+  dm_pool: { text: string; enabled: boolean }[];
+  status_msg: string;
+}
+
+/** /api/tasks/current 返回的任务容器 */
+export interface CurrentTask {
+  ok: boolean;
+  has_task: boolean;
+  task_id?: number | null;
+  engine_state: string;
+  status_msg: string;
+  config: Partial<TaskConfigSnapshot>;
+  live: {
+    alive: boolean;
+    listening: boolean;
+    online: number;
+    room_title: string;
+    dm_running: boolean;
+    dm_paused: boolean;
+  };
+  counts: { sent: number; captured: number; queue: number; limit: number };
+  records: Record<string, unknown>[];
+}
+
+/** 任务中心「复用」历史任务 -> 直播监听页预填的载荷 */
+export interface ReusePayload {
+  room?: string;
+  maxTarget?: number;
+  interval?: number;
+  delay?: string;
+  dmPool?: { text: string; enabled: boolean }[];
+  forceRescan?: boolean;
+  acct?: string | null;
 }
 
 /** 历史任务跳转查阅模式的载荷 */
@@ -327,5 +381,9 @@ export interface PageProps {
   goReview?: (payload: ReviewPayload) => void;
   /** 直播监听页收到的查阅模式载荷（由 goReview 设置） */
   reviewPayload?: ReviewPayload | null;
+  /** 任务中心「复用」历史任务 -> 预填直播监听页 */
+  goReuse?: (payload: ReusePayload) => void;
+  /** 直播监听页收到的复用载荷（由 goReuse 设置） */
+  reusePayload?: ReusePayload | null;
 }
 

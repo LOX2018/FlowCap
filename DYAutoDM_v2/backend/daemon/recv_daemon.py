@@ -145,6 +145,8 @@ class AccountInbox:
                 self.convs[conv_id] = c
             if self.convs:
                 logger.info(f"[recv][{self.name}] 已从历史加载 {len(self.convs)} 个会话")
+                for cid, c in self.convs.items():
+                    logger.info(f"[recv][{self.name}]   历史会话: conv_id={cid}, peer_name={c.peer_name}, peer_id={c.peer_id}, messages={len(c.messages)} 条")
         except Exception as e:
             logger.warning(f"[recv][{self.name}] 历史会话加载失败: {e}")
 
@@ -343,6 +345,7 @@ class RecvChannel(threading.Thread):
             if text is None:
                 return
             peer_name = content_json.get("sender_nickname") or sender or conv_id
+            logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] 新消息: peer_name={peer_name}, sender={sender}, content_json.sender_nickname={content_json.get('sender_nickname')}")
             self.inbox.add_message(
                 conv_id, "them", text, peer_id=sender,
                 peer_name=peer_name, msg_type=str(msg_type), extra=extra,
@@ -357,6 +360,11 @@ class RecvChannel(threading.Thread):
     def _sync_conversations(self, conv_list: list) -> None:
         """把 WS 下发的已有会话列表建立成会话骨架（无消息、peer 信息待补）。"""
         n_new = 0
+        logger.info(f"[recv][{self.name}] 收到同步帧，含 {len(conv_list)} 个会话")
+        for i, item in enumerate(conv_list):
+            conv_id = getattr(item, "conversation_id", "") or ""
+            short_id = getattr(item, "conversation_short_id", None) or None
+            logger.info(f"[recv][{self.name}]   同步帧会话#{i}: conv_id={conv_id}, short_id={short_id}")
         with self.inbox.lock:
             for item in conv_list:
                 conv_id = getattr(item, "conversation_id", "") or ""
@@ -467,7 +475,11 @@ async def conversations(account: str) -> dict:
     ib: AccountInbox | None = _state["inboxes"].get(account)
     if not ib:
         raise HTTPException(404, "账号不存在")
-    return {"ok": True, "conversations": ib.list_convs()}
+    convs = ib.list_convs()
+    logger.info(f"[recv][{account}] /conversations 返回 {len(convs)} 个会话")
+    for i, c in enumerate(convs):
+        logger.info(f"[recv][{account}]   会话#{i}: conv_id={c.get('conv_id')}, peer_name={c.get('peer_name')}, peer_id={c.get('peer_id')}, messages={len(c.get('messages') or [])} 条")
+    return {"ok": True, "conversations": convs}
 
 
 @app.get("/conversation")
@@ -513,14 +525,15 @@ async def send(body: SendBody) -> dict:
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
             auth, int(peer_id)
         )
-        ok = DouyinAPI.send_msg(
+        ok, detail = DouyinAPI.send_msg(
             auth, conversation_id, conversation_short_id, ticket, body.text
         )
         if ok:
             ib.add_message(body.conv_id, "me", body.text, peer_id=peer_id)
             logger.info(f"[recv][{body.account}] 已回复会话 {body.conv_id[:8]}…: {body.text}")
             return {"ok": True}
-        return {"ok": False, "error": "send_msg 返回 False（可能触发私信风控）"}
+        logger.warning(f"[recv][{body.account}] 回复失败原因: {detail}")
+        return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
     except Exception as e:
         logger.error(f"[recv][{body.account}] 回复失败: {e}")
         return {"ok": False, "error": str(e)}

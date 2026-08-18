@@ -1845,16 +1845,23 @@ class DouyinAPI:
         return conv_list
 
     @staticmethod
-    def send_msg(auth, conversation_id, conversation_short_id, ticket, content: str, **kwargs) -> bool:
+    def send_msg(auth, conversation_id, conversation_short_id, ticket, content: str, **kwargs) -> tuple:
         """
-        发送私信.
+        发送私信（V2：返回 (bool ok, str detail)）。
         :param auth: DouyinAuth object.
         :param conversation_id: 私信对话ID.
         :param conversation_short_id: 私信对话短ID.
         :param ticket: 私信对话票据.
         :param content: 私信内容.
-        :return: True 发送成功 False 发送失败
+        :return: (True, 'ok') 发送成功；否则 (False, 具体原因)
         """
+        # 文案为空防护：抖音对空消息会返回 OK 但实际未发送（被截断的根因之一）
+        if not content or not str(content).strip():
+            logger.error("[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
+            return False, "文案为空，拒绝发送"
+        # 私信文案长度受限：超长会被平台截断/静默丢弃，先本地拦截
+        if len(str(content)) > 500:
+            logger.warning(f"[私信] 文案长度 {len(str(content))} 超过 500 字，可能被平台截断，仅前 500 字发送")
         url = 'https://imapi.douyin.com/v1/message/send'
         # IM 私有网关靠 protobuf body 内签名鉴权，不叠加 bd-ticket-guard-* HTTP 头
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
@@ -1878,20 +1885,51 @@ class DouyinAPI:
                              data=requestProto.SerializeToString())
         if resp.status_code != 200:
             logger.error(f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}')
-            return False
+            return False, f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}'
         responseProto = ResponseProto.Response()
         try:
             responseProto.ParseFromString(resp.content)
         except Exception as e:
             logger.error(f'私信发送响应 protobuf 解析失败: {e} | raw[:120]={resp.content[:120]!r}')
-            return False
+            return False, f'响应用户解析失败: {e}'
         resp_json = protobuf_to_dict(responseProto)
         success = resp_json.get('message') == 'OK'
         if success:
             logger.info(f'私信发送成功 conversation_id={conversation_id}')
-        else:
-            logger.error(f'私信发送失败 resp_json={resp_json}')
-        return success
+            return True, 'ok'
+        detail = DouyinAPI._classify_send_fail(resp_json)
+        logger.error(f'私信发送失败 conversation_id={conversation_id} resp_json={resp_json}')
+        return False, detail
+
+    @staticmethod
+    def _classify_send_fail(resp_json: dict) -> str:
+        """把抖音 IM 发送失败响应解析成人类可读的原因（发送结果反馈）。
+
+        覆盖：需互关、发送频繁/被频控、隐私权限、账号风控、用户不存在等。
+        """
+        raw_msg = str(resp_json.get("message") or "").upper()
+        err = str(resp_json.get("error_desc") or "")
+        status = str(resp_json.get("status_code") or "")
+        combined = " ".join([raw_msg, err, status]).upper()
+        # 顺序敏感：先命中具体场景，再兜底
+        if raw_msg == "OK":
+            return "发送被静默拦截（返回 OK 但未实际投递，疑似内容违规/被截断）"
+        if any(k in combined for k in ("MUTUAL", "FOLLOW_EACH", "NEED_FOLLOW", "INTERACT")):
+            return "对方需与你互关后才能收到私信"
+        if any(k in combined for k in ("PRIVILEGE", "PERMISSION", "PRIVACY")):
+            return "对方隐私/权限设置限制，无法主动私信"
+        if any(k in combined for k in ("FREQUENT", "RATE", "TOO_", "LIMIT", "SPAM", "FREQUENCY")):
+            return "发送过于频繁，被平台频控拦截，请降低频率或更换账号"
+        if any(k in combined for k in ("KICK", "INVALID_REQUEST", "RISK")):
+            return f"私信被风控(KICK/INVALID_REQUEST): {err or raw_msg}"
+        if any(k in combined for k in ("NOT_FOUND", "NOT FOUND", "USER_NOT_EXIST")):
+            return "对方不存在或已注销"
+        if any(k in combined for k in ("DENY", "FORBIDDEN", "BLOCK")):
+            return f"发送被拒绝: {err or raw_msg}"
+        base = (err or raw_msg or status or str(resp_json.get("status", ""))).strip()
+        if base and base != "OK":
+            return f"发送失败: {base}"
+        return "发送失败（未知原因，请查看运行日志）"
 
     @staticmethod
     def get_device_id(auth, **kwargs) -> str:

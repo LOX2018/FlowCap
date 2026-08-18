@@ -45,15 +45,18 @@ Write-Host "==> 递增版本: $VERSION -> $NEW_VERSION" -ForegroundColor Green
 function Set-VersionInFile([string]$path, [string]$pattern, [string]$newVal) {
     if (-not (Test-Path $path)) { Write-Host "[WARN] 版本文件不存在: $path" -ForegroundColor Yellow; return }
     $content = Get-Content -Raw -Path $path -Encoding UTF8
-    $content = $content -replace $pattern, ('${1}' + $newVal)
+    # 保留 $1（前缀）与 $2（结尾引号），仅替换中间版本号，避免吃引号破坏文件
+    $content = $content -replace $pattern, ('${1}' + $newVal + '${2}')
     [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 # package.json / frontend/package.json: "version": "x.y.z"
+# 注意：替换必须保留开头捕获组 $1（前缀）与结尾捕获组 $2（右引号），
+# 否则会把 JSON/Toml 的引号吃成 "0.20.0, 破坏文件（真实事故）。
 Set-VersionInFile "$ROOT\package.json" '("version"\s*:\s*")[^"]+(")' $NEW_VERSION
 Set-VersionInFile "$ROOT\frontend\package.json" '("version"\s*:\s*")[^"]+(")' $NEW_VERSION
-# Cargo.toml: version = "x.y.z"
-Set-VersionInFile "$ROOT\src-tauri\Cargo.toml" '(version\s*=\s*")[^"]+(")' $NEW_VERSION
+# Cargo.toml: 仅匹配行首的 version = "x.y.z"（避开 rust-version / 依赖的 version = "2.0" 等）
+Set-VersionInFile "$ROOT\src-tauri\Cargo.toml" '(?m)(^version\s*=\s*")[^"]+(")' $NEW_VERSION
 # tauri.conf.json: "version": "x.y.z"
 Set-VersionInFile "$ROOT\src-tauri\tauri.conf.json" '("version"\s*:\s*")[^"]+(")' $NEW_VERSION
 

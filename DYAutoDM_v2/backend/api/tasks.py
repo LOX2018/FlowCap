@@ -44,6 +44,23 @@ async def get_history(request: Request) -> dict:
         return {"ok": False, "list": [], "error": str(e)}
 
 
+@router.get("/current")
+async def get_current_task(request: Request) -> dict:
+    """当前任务容器快照（任务中心「进入任务」/ 直播监听页回读的唯一数据源）。
+
+    把引擎进程状态（engine_state/status_msg/配置快照/直播流/调度进度/发送记录）
+    封装成单个容器，前端两处直接读取，切页后仍能还原任务真实情况。
+    """
+    adm = getattr(request.app.state, "adm", None)
+    if adm is None:
+        return {"ok": True, "has_task": False, "engine_state": "idle", "config": {}}
+    try:
+        return adm.snapshot()
+    except Exception as e:
+        logger.warning(f"[tasks] 读取任务容器失败: {e}")
+        return {"ok": False, "has_task": False, "error": str(e)}
+
+
 @router.post("/history/clear")
 async def clear_history(request: Request) -> dict:
     """清空历史任务"""

@@ -1,4 +1,4 @@
-﻿﻿/**
+﻿/**
  * 任务中心页
  *
  * 迁移自: DY_Spider_base/web/pages/tasks.js
@@ -11,10 +11,15 @@
  *   - api.exportStats 在 client.ts 未声明，本地扩展类型
  */
 import { useEffect, useState } from "react";
-import { PageProps, Overview, TaskHistoryItem } from "../api/client";
+import { PageProps, Overview, TaskHistoryItem, ReusePayload } from "../api/client";
 import { Avatar, Pill, Dot } from "../components/ui";
 
-type OverviewExt = Overview & { liveUrl?: string; status?: string };
+type OverviewExt = Overview & {
+  liveUrl?: string;
+  status?: string;
+  engineState?: string;
+  statusMsg?: string;
+};
 
 interface ExportStatsResp {
   ok: boolean;
@@ -28,7 +33,7 @@ type Api = PageProps["api"] & {
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export default function TasksPage(props: PageProps) {
-  const { push, overview, ready } = props;
+  const { push, overview, ready, goReuse } = props;
   const api = props.api as Api;
   const ov = (overview || ({} as OverviewExt)) as OverviewExt;
   const setTab = props.setTab;
@@ -77,6 +82,30 @@ export default function TasksPage(props: PageProps) {
         });
       }
     }, 150);
+  };
+
+  // 复用：用历史任务保存的配置快照预填直播监听页（重新运行同参数任务）
+  const reuseTask = (item: TaskHistoryItem) => {
+    const cfg = (item.config || {}) as ReusePayload & {
+      live_url?: string;
+      max_target?: number;
+      live_id?: string;
+      dm_pool?: { text: string; enabled: boolean }[];
+    };
+    if (!goReuse) {
+      push("当前无法复用（缺少复用入口），请手动到直播监听页配置");
+      return;
+    }
+    goReuse({
+      room: cfg.live_url || cfg.live_id || "",
+      maxTarget: cfg.max_target ?? cfg.maxTarget,
+      interval: cfg.interval,
+      delay: cfg.delay,
+      dmPool: Array.isArray(cfg.dm_pool) ? cfg.dm_pool : cfg.dmPool,
+      forceRescan: cfg.forceRescan,
+      acct: cfg.acct,
+    });
+    push(`已复用任务「${item.acct || ""}」配置到直播监听页`);
   };
 
   return (
@@ -151,7 +180,20 @@ export default function TasksPage(props: PageProps) {
                     {ov.liveUrl || "—"}
                   </td>
                   <td>
-                    <Pill c={ov.paused ? "warn" : "ok"}>{ov.paused ? "已暂停" : "运行中"}</Pill>
+                    {ov.engineState === "stopping" ? (
+                      <Pill c="warn">私信收尾中</Pill>
+                    ) : ov.engineState === "starting" ? (
+                      <Pill c="warn">启动中…</Pill>
+                    ) : (
+                      <Pill c={ov.paused ? "warn" : "ok"}>
+                        {ov.paused ? "已暂停" : "运行中"}
+                      </Pill>
+                    )}
+                    {ov.statusMsg && ov.engineState === "stopping" && (
+                      <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+                        {ov.statusMsg}
+                      </div>
+                    )}
                   </td>
                   <td className="mono">
                     {ov.sent || 0}/{ov.limit || 0}
@@ -159,7 +201,32 @@ export default function TasksPage(props: PageProps) {
                   <td className="mono">{ov.queue || 0}</td>
                   <td className="mono">0</td>
                   <td>
-                    {ov.paused ? (
+                    <button
+                      className="btn text sm"
+                      onClick={() => {
+                        if (setTab) {
+                          setTab("live");
+                          push("已跳转到直播监听页（该任务运行中）");
+                        }
+                      }}
+                    >
+                      进入任务
+                    </button>
+                    {ov.engineState === "stopping" ? (
+                      <button
+                        className="btn text sm"
+                        style={{ color: "var(--danger)" }}
+                        title="立即终止仍在发送的存量私信"
+                        onClick={() =>
+                          api
+                            .stop()
+                            .then(() => push("已硬停止，存量私信终止发送"))
+                            .catch((e: unknown) => push("异常: " + errMsg(e)))
+                        }
+                      >
+                        停止存量
+                      </button>
+                    ) : ov.paused ? (
                       <button
                         className="btn text sm"
                         onClick={() =>
@@ -232,9 +299,9 @@ export default function TasksPage(props: PageProps) {
         <div className="section-head" style={{ padding: "12px 14px 4px", marginBottom: 0 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 15 }}>历史任务</h2>
-            <div className="desc" style={{ fontSize: 12 }}>
-              每次启动的独立运行记录；运行中任务可跳转直播监听页，历史任务可跳转查阅模式查看结果
-            </div>
+<div className="desc" style={{ fontSize: 12 }}>
+                每次启动的独立运行记录；运行中任务可跳转直播监听页，历史任务可跳转查阅模式查看结果（双击行同样进入查阅模式）
+              </div>
           </div>
           {history.length > 0 && (
             <button
@@ -279,7 +346,12 @@ export default function TasksPage(props: PageProps) {
                 </tr>
               ) : (
                 history.map((h) => (
-                  <tr key={h.id}>
+                  <tr
+                    key={h.id}
+                    style={{ cursor: "pointer" }}
+                    onDoubleClick={() => gotoTask(h)}
+                    title="双击进入任务 / 查看结果查阅模式"
+                  >
                     <td className="mono" style={{ whiteSpace: "nowrap" }}>
                       {h.start_ts || "—"}
                     </td>
@@ -303,6 +375,14 @@ export default function TasksPage(props: PageProps) {
                     <td>
                       <button className="btn sm" onClick={() => gotoTask(h)}>
                         {h.status === "running" ? "进入任务" : "查看结果"}
+                      </button>
+                      <button
+                        className="btn sm ghost"
+                        style={{ marginLeft: 6 }}
+                        onClick={() => reuseTask(h)}
+                        title="复用该任务启动时的配置，重新运行"
+                      >
+                        复用
                       </button>
                     </td>
                   </tr>

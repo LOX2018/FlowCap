@@ -48,6 +48,9 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
     """
     if user_id is None:
         return False, "user_id 为空"
+    if not content or not str(content).strip():
+        logger.error("[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
+        return False, "文案为空，拒绝发送"
     try:
         user_id = int(user_id)
     except Exception:
@@ -98,7 +101,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
             time.sleep(1)
             continue
         try:
-            ok = DouyinAPI.send_msg(auth, conversation_id, short_id, ticket, content)
+            ok, detail = DouyinAPI.send_msg(auth, conversation_id, short_id, ticket, content)
         except Exception as e:
             logger.warning(f"send_msg 失败(第{attempt}次) uid={user_id}: {e}")
             if attempt == max_retry:
@@ -106,10 +109,12 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
             time.sleep(1)
             continue
         if ok:
+            logger.info(f"[私信] 发送结果: 目标「{user_id}」=成功 文案前20字={content[:20]!r}")
             return True, "ok"
-        logger.warning(f"send_msg 返回 False(第{attempt}次) uid={user_id}")
+        logger.warning(f"send_msg 返回 {detail!r}(第{attempt}次) uid={user_id}")
         if attempt == max_retry:
-            return False, "send_msg 返回 False"
+            return False, detail if detail else "send_msg 返回 False"
+        time.sleep(1)
     return False, "未知失败"
 
 

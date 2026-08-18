@@ -13,10 +13,10 @@
  *   - resolveLive 已移植：后端 /api/live/resolve 调用 link_resolve.resolve_live_id
  *   - rows 数据源: 旧版 getStats.list -> 新版 tasksCfg.records（含 status 枚举）
  */
-import { Fragment, useState, useEffect, useMemo } from "react";
+import { Fragment, useState, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { PageProps } from "../api/client";
+import { PageProps, ReusePayload } from "../api/client";
 import { Avatar, Dot, Pill, hue, KIND_NAME, tick } from "../components/ui";
 
 type DmStatus = "un" | "wait" | "sent" | "fail";
@@ -66,6 +66,8 @@ interface LiveStream {
   dmPaused?: boolean;
   roomTitle?: string;
   liveUrl?: string;
+  engineState?: string;
+  statusMsg?: string;
 }
 
 interface SendRecord {
@@ -124,6 +126,7 @@ interface Row {
   dmText: string;
   dmTime: string;
   ts: number;
+  reason?: string;
 }
 
 /** 后端英文枚举 status -> 前端 DmStatus（修复旧版中文字符串永不匹配的 bug） */
@@ -154,8 +157,24 @@ function fmtTime(ts: number | null | undefined): string {
   return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
 }
 
+/** 任务容器/历史任务 records（dict 快照）-> 查阅模式 Row 列表 */
+function recordsToRows(src: Record<string, unknown>[]): Row[] {
+  return src.map((r, i) => ({
+    id: 900000 + i,
+    time: r.start_ts ? String(r.start_ts).slice(11, 19) : "",
+    name: String(r.nickname || r.uid || "未知"),
+    lv: 0,
+    content: String(r.comment || r.content || ""),
+    dmStatus: toDmStatus(String(r.status || "")),
+    dmText: String(r.content || ""),
+    dmTime: r.send_ts ? String(r.send_ts) : "",
+    ts: (Number(r.captured_at) || 0) * 1000,
+    reason: String(r.reason || ""),
+  }));
+}
+
 export default function LivePage(props: PageProps) {
-  const { push, ready, goMsg, api, reviewPayload } = props;
+  const { push, ready, goMsg, api, reviewPayload, reusePayload } = props;
   const [viewMode, setViewMode] = useState<"single" | "grid">("single");
   const [activeAcct, setActiveAcct] = useState<string | null>(null);
   const [room, setRoom] = useState("");
@@ -177,6 +196,8 @@ export default function LivePage(props: PageProps) {
     { text: "唐律还在直播，我是助理，可以留个联系方式，唐律下播后帮你分析", enabled: true },
   ]);
   const [forceRescan, setForceRescan] = useState(false);
+  // 任务中心「复用」载荷（标记已应用，避免容器回读覆盖用户刚改的字段）
+  const reuseRef = useRef<ReusePayload | null>(null);
 
   const { data: tasksCfg } = useQuery({
     queryKey: ["live-tasks"],
@@ -212,32 +233,88 @@ export default function LivePage(props: PageProps) {
     }
   }, [realAccts, activeAcct]);
   const ls: LiveStream | null = streamRaw || null;
-  const running = !!ls?.alive;
+  // V2 任务容器：引擎进程忙命（含 启动中/等待开播/暂停/收尾）与 WS 是否真的在监听要分开看，
+  // 否则切页回来因 WS 未连上就误显示「等待启动」。
+  const engineState = ls?.engineState || "idle";
+  const engineBusy = ["starting", "running", "paused", "stopping"].includes(engineState);
+  const streaming = !!ls?.alive; // WS 真实连接（在直播流上）才算监听中
   const online = ls?.online_count ?? 0;
   const roomLikes = ls?.likes ?? 0;
   const messages = useMemo(() => ls?.messages ?? [], [ls]);
   const heat = useMemo(() => ls?.heat_curve ?? [], [ls]);
   const records = useMemo(() => tasksCfg?.records ?? [], [tasksCfg]);
+  const engineLabel =
+    engineState === "starting"
+      ? "直播引擎启动中…"
+      : engineState === "stopping"
+        ? "直播引擎收尾中"
+        : engineState === "paused"
+          ? "直播引擎已暂停"
+          : streaming
+            ? "直播引擎监听中"
+            : engineBusy
+              ? "直播引擎等待开播"
+              : "直播引擎未运行";
 
   // 响应任务中心「历史任务跳转查阅模式」：用历史任务 records 快照进入查阅模式
   useEffect(() => {
     if (!reviewPayload) return;
     const src = reviewPayload.records || [];
-    const rr: Row[] = src.map((r, i) => ({
-      id: 900000 + i,
-      time: r.start_ts ? String(r.start_ts).slice(11, 19) : "",
-      name: String(r.nickname || r.uid || "未知"),
-      lv: 0,
-      content: String(r.comment || r.content || ""),
-      dmStatus: toDmStatus(String(r.status || "")),
-      dmText: String(r.content || ""),
-      dmTime: r.send_ts ? String(r.send_ts) : "",
-      ts: (Number(r.captured_at) || 0) * 1000,
-    }));
-    setReviewRows(rr);
+    setReviewRows(recordsToRows(src));
     setReview(true);
     push(`已进入历史任务「${reviewPayload.acct || ""}」的查阅模式，共 ${src.length} 条结果`);
   }, [reviewPayload, push]);
+
+  // 任务容器回读：切换页面后回到直播监听页，用 /api/tasks/current 还原上次任务配置
+  useEffect(() => {
+    if (!ready) return;
+    let alive = true;
+    api
+      .getCurrentTask()
+      .then((t) => {
+        if (!alive || !t || !t.ok || !t.has_task) return;
+        const cfg = t.config || {};
+        if (cfg.live_url && !reuseRef.current) setRoom(String(cfg.live_url));
+        if (cfg.max_target != null) setDmLimit(String(cfg.max_target));
+        if (cfg.interval != null) setDmInterval(String(cfg.interval));
+        if (cfg.delay) setDmJitter(String(cfg.delay));
+        if (cfg.force_rescan != null) setForceRescan(Boolean(cfg.force_rescan));
+        if (Array.isArray(cfg.dm_pool) && cfg.dm_pool.length) {
+          setDmTemplates(
+            cfg.dm_pool.map((d) => ({
+              text: String((d as { text?: string }).text ?? ""),
+              enabled: (d as { enabled?: boolean }).enabled !== false,
+            })),
+          );
+        }
+        if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) {
+          setActiveAcct(cfg.acct as string);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
+  // 任务中心「复用」：预填直播监听页（配置取自历史任务快照）
+  useEffect(() => {
+    reuseRef.current = reusePayload || null;
+    if (!reusePayload) return;
+    const c = reusePayload;
+    if (c.room) setRoom(c.room);
+    if (c.maxTarget != null) setDmLimit(String(c.maxTarget));
+    if (c.interval != null) setDmInterval(String(c.interval));
+    if (c.delay) setDmJitter(c.delay);
+    if (c.forceRescan != null) setForceRescan(c.forceRescan);
+    if (Array.isArray(c.dmPool) && c.dmPool.length) {
+      setDmTemplates(c.dmPool.map((d) => ({ text: String(d.text ?? ""), enabled: d.enabled !== false })));
+    }
+    push(
+      "已复用历史任务配置到直播监听页，核对后点「开始自动私信」即可重新运行",
+    );
+  }, [reusePayload, push]);
 
   const feed = useMemo<FeedItem[]>(
     () =>
@@ -264,6 +341,7 @@ export default function LivePage(props: PageProps) {
         dmText: r.content || "",
         dmTime: r.sent_at ? fmtTime(r.sent_at) : "",
         ts: (r.captured_at || 0) * 1000,
+        reason: String(r.reason || ""),
       })),
     [records],
   );
@@ -355,6 +433,24 @@ export default function LivePage(props: PageProps) {
   const doBatch = () => push("功能开发中：批量点赞");
   const sendDm = (r: Row) => push("功能开发中：发送私信 → " + r.name);
 
+  // 进入查阅模式：优先用实时记录；实时无数据时回读任务容器/历史任务 records，
+  // 避免「进入查阅模式后一片空白未写入数据」。
+  const openReview = () => {
+    if (rows.length) {
+      setReview(true);
+      return;
+    }
+    api
+      .getCurrentTask()
+      .then((t) => {
+        const recs = t && t.ok && Array.isArray(t.records) ? t.records : [];
+        if (recs.length) setReviewRows(recordsToRows(recs));
+        setReview(true);
+        if (!recs.length) push("暂无发送记录可查阅");
+      })
+      .catch(() => setReview(true));
+  };
+
   const cfgLiveUrl = tasksCfg?.config?.live_url || "";
 
   return (
@@ -380,11 +476,15 @@ export default function LivePage(props: PageProps) {
             </button>
           </div>
           <span className="badge-conn">
-            <Dot c={running ? "ok" : "warn"} pulse={running} />{" "}
-            {ls ? (ls.listening ? "直播引擎监听中" : running ? "直播引擎运行中" : "直播引擎未运行") : "未连接"}
+            <Dot c={streaming ? "ok" : engineBusy ? "warn" : "mute"} pulse={streaming} />{" "}
+            {ls ? engineLabel : "未连接"}
           </span>
           <span className="demo-tag">
-            {ready ? (running ? "实时数据" : "等待运行") : "未连接"}
+            {ready
+              ? engineBusy
+                ? ls?.statusMsg || (streaming ? "实时监听中" : "引擎运行中")
+                : "等待启动"
+              : "未连接"}
           </span>
           <span className="badge-conn" style={{ marginLeft: 8 }}>
             <Dot c={ls?.dmRunning ? "ok" : "warn"} pulse={!!ls?.dmRunning} />{" "}
@@ -622,7 +722,7 @@ export default function LivePage(props: PageProps) {
                   <button
                     className="btn primary"
                     data-od-id="live-start"
-                    disabled={running || (realAccts.length > 1 && !activeAcct)}
+                    disabled={engineBusy || (realAccts.length > 1 && !activeAcct)}
                     onClick={() => {
                       const cfg = {
                         live_url: room,
@@ -630,7 +730,7 @@ export default function LivePage(props: PageProps) {
                         interval: parseFloat(dmInterval) || 60,
                         delay_range: parseDelayRange(dmJitter),
                         dm_pool: dmTemplates
-                          .filter((t) => t.text && t.text.trim())
+                          .filter((t) => t.enabled && t.text && t.text.trim())
                           .map((t) => t.text.trim()),
                         force_rescan: forceRescan,
                         acct: activeAcct || undefined, // 当前选中的监听账号
@@ -648,7 +748,7 @@ export default function LivePage(props: PageProps) {
                   <button
                     className="btn ghost"
                     data-od-id="live-pause"
-                    disabled={!running}
+                    disabled={engineState !== "running"}
                     onClick={() =>
                       api
                         .pause()
@@ -661,7 +761,7 @@ export default function LivePage(props: PageProps) {
                   <button
                     className="btn ghost"
                     data-od-id="live-resume"
-                    disabled={!running}
+                    disabled={engineState !== "paused"}
                     onClick={() =>
                       api
                         .resume()
@@ -674,7 +774,7 @@ export default function LivePage(props: PageProps) {
                   <button
                     className="btn ghost danger"
                     data-od-id="live-stop"
-                    disabled={!running}
+                    disabled={!engineBusy}
                     onClick={() =>
                       api
                         .stopSoft()
@@ -689,8 +789,8 @@ export default function LivePage(props: PageProps) {
             </div>
             <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 6 }}>
               {ready
-                ? running
-                  ? "引擎运行中（真实监听）"
+                ? engineBusy
+                  ? "引擎运行中" + (streaming ? "（真实监听）" : `（${ls?.statusMsg || "等待开播"}）`)
                   : "引擎未运行 · 配置后点「开始自动私信」"
                 : "未连接后端 · 请先确保后端已启动"}
             </div>
@@ -832,7 +932,9 @@ export default function LivePage(props: PageProps) {
                       onClick={() =>
                         api
                           .saveDmPool(
-                            dmTemplates.filter((t) => t.text.trim()).map((t) => t.text.trim()),
+                            dmTemplates
+                              .filter((t) => t.text && t.text.trim())
+                              .map((t) => ({ text: t.text.trim(), enabled: t.enabled })),
                           )
                           .then((r) =>
                             push(r.ok ? "词库已保存 · " + r.count + " 条" : "保存失败"),
@@ -968,9 +1070,9 @@ export default function LivePage(props: PageProps) {
               <div style={{ flex: 1, minWidth: 240 }}>
                 <h3 style={{ marginBottom: 0 }}>实时评论统计列表</h3>
               </div>
-              <button className="btn ghost" data-od-id="review-open" onClick={() => setReview(true)}>
-                进入查阅模式
-              </button>
+<button className="btn ghost" data-od-id="review-open" onClick={openReview}>
+                  进入查阅模式
+                </button>
             </div>
             <div className="count-line">
               共 <b>{rows.length}</b> 条弹幕记录 · 去重 <b>{dedupCount}</b> 条 · 实际发言{" "}
@@ -1027,7 +1129,10 @@ export default function LivePage(props: PageProps) {
                         )}
                       </td>
                       <td className="dm-cell">
-                        <span className={"dm-text" + (r.dmText ? " has" : "")} title={r.dmText}>
+                        <span
+                          className={"dm-text" + (r.dmText ? " has" : "")}
+                          title={r.dmStatus === "fail" && r.reason ? `${r.dmText}\n失败原因: ${r.reason}` : r.dmText}
+                        >
                           {r.dmText || <span className="blank">未发送</span>}
                         </span>
                       </td>
@@ -1237,7 +1342,10 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
                         )}
                       </td>
                       <td className="dm-cell">
-                        <span className={"dm-text" + (r.dmText ? " has" : "")}>
+                        <span
+                          className={"dm-text" + (r.dmText ? " has" : "")}
+                          title={r.dmStatus === "fail" && r.reason ? `${r.dmText}\n失败原因: ${r.reason}` : r.dmText}
+                        >
                           {r.dmText || <span className="blank">未发送</span>}
                         </span>
                       </td>
@@ -1290,9 +1398,24 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
                                   <Pill c={DM_META[r.dmStatus][1]}>
                                     {DM_META[r.dmStatus][0]}
                                   </Pill>
-                                  　{r.dmText || "（文案未填写）"}
+                                  {"　"}
+                                  {r.dmText || "（文案未填写）"}
                                   {r.dmTime ? "　·　" + r.dmTime : ""}
                                 </span>
+                              )}
+                              {r.dmStatus === "fail" && r.reason && (
+                                <div
+                                  style={{
+                                    marginTop: 6,
+                                    padding: "6px 10px",
+                                    borderRadius: 6,
+                                    background: "var(--danger-bg)",
+                                    color: "var(--danger)",
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  失败原因：{r.reason}
+                                </div>
                               )}
                             </div>
                           </div>

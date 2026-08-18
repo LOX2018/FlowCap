@@ -24,6 +24,12 @@ class LiveStreamResponse(BaseModel):
     roomTitle: str = ""
     liveUrl: str = ""
 
+    # V2 任务容器：切页后回读引擎真实状态（修复「页面显示等待启动」）
+    engineState: str = "idle"  # idle/starting/running/paused/stopping/stopped
+    statusMsg: str = ""  # 引擎状态文案（启动中/等待开播/监听中/…）
+    dmRunning: bool = False  # 私信引擎是否运行（running/paused/starting/stopping）
+    dmPaused: bool = False  # 私信引擎是否暂停
+
 
 class DanmakuRequest(BaseModel):
     content: str
