@@ -261,3 +261,28 @@ sidecar 3 个重打（含 messages/main/link_resolve 改动）；`npx tauri buil
 ## 需用户实测
 - ② 私信中心：守护自动拉起后下一次轮询即可看到真实会话列表（由 IM API 直拉兜底），
   不再空白；进入会话后随 WS 新消息补全昵称与内容。
+
+---
+
+# 会话 0.24.0→0.25.0（同日第六轮，历史任务「运行中」悬空修复）
+
+## 改动背景
+用户日志：一条早就停止的任务（2026-08-19 01:23:16）在任务中心仍标注为「运行中」。
+
+## 根因与修复
+- 根因：`_run` 的 finally 进入 STOPPING 分支后没有启动 `_wait_dispatch_done`，
+  且 `_on_dispatch_idle` 对 STOPPING 态提前 return（`if self.state == STOPPING: return`），
+  导致直播自然关播（WS 断联）后队列发空，但历史任务永远收不了尾（「运行中」悬空）。
+- 修复（`core/auto_dm.py` `_on_dispatch_idle`）：移除 STOPPING 提前 return 守卫，
+  RUNNING/STOPPING/PAUSED 且 WS 已关、队列已空时统一收尾（`_finish_history_task`）。
+- 已存数据修复（`tasks_history.py`）：`_load` 时自动检测多任务「运行中」→ 只保留最新一条，
+  其余标为「已停止」（`_fix_stuck_tasks`）。`_lock` 改为 `RLock` 避免重入死锁。
+
+## 验证
+- py_compile 通过；19 项集成测试全过；_fix_stuck_tasks 冒烟（多 running→保留最新）。
+- 版本 0.24.0→0.25.0（4 文件）；sidecar 3 个重打；主 exe --no-bundle 产。
+- 部署 dist\ + C:\temp\dyautodm_test\ 0.25.0。
+
+## 需用户实测
+- ② 历史任务：之前悬空的「运行中」任务应自动变为「已停止」；以后所有任务结束时
+  都能正确收尾，不再出现永驻「运行中」。

@@ -10,7 +10,7 @@ import time
 import threading
 from pathlib import Path
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _MAX = 200  # 最多保留 200 条，超出丢弃最旧
 
 
@@ -30,9 +30,32 @@ def _load() -> list[dict]:
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
+        items = data if isinstance(data, list) else []
+        # 修复历史任务状态机漏路径：只保留最新的一个「运行中」，其余应已停止
+        # 但引擎崩溃/自然关播后队列发空时未收尾，导致历史任务永远停留在「运行中」。
+        _fix_stuck_tasks(items)
+        return items
     except Exception:
         return []
+
+
+def _fix_stuck_tasks(items: list[dict]) -> None:
+    """同步引擎状态机：多任务「运行中」时只保留最新一条，其余标为「已停止」。
+
+    根因：_run finally 的 STOPPING 分支未启动 _wait_dispatch_done，且
+    _on_dispatch_idle 对 STOPPING 态提前 return，导致队列发空后历史任务
+    永远「运行中」。本函数在每次加载时修复残存数据。
+    """
+    running = [it for it in items if it.get("status") == "running"]
+    if len(running) <= 1:
+        return
+    # 保留最新一条，其余标为「已停止」
+    running.sort(key=lambda x: x.get("id", 0), reverse=True)
+    for it in running[1:]:
+        it["status"] = "stopped"
+        if not it.get("end_ts"):
+            it["end_ts"] = it.get("start_ts") or "—"
+    _save(items)
 
 
 def _save(items: list[dict]) -> None:

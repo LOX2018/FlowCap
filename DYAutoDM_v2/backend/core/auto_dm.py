@@ -634,6 +634,10 @@ class AutoDM:
         修复（V2 容器）：监听进行中队列短暂变空是正常间隙，绝不能置 STOPPED
         （旧逻辑会在启动后队列首次空时误停引擎，导致页面读回「已停止/等待启动」）。
         仅当监听 WS 已关闭且队列确实发空时才收尾。
+
+        注意：STOPPING 态也收尾（之前软停止后的 `_wait_dispatch_done` 与这里
+        都执行 `_finish_history_task`，标零保护，写多次也无害）。若不收尾，
+        自然关播（WS 断联）后队列发空的任务会永远处于「运行中」。
         """
         if self.state not in (EngineState.RUNNING, EngineState.STOPPING, EngineState.PAUSED):
             return
@@ -644,9 +648,6 @@ class AutoDM:
             and not getattr(self.live, "_should_stop", False)
         )
         if live_active:
-            return
-        # 软停止（STOPPING）期间交给 _wait_dispatch_done 权威收尾，避免竞争
-        if self.state == EngineState.STOPPING:
             return
         self.state = EngineState.STOPPED
         self.status_msg = "已停止"
