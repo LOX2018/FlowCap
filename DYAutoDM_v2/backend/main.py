@@ -9,6 +9,7 @@
 """
 from contextlib import asynccontextmanager
 import sys
+import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
@@ -18,11 +19,31 @@ from api import accounts, engine, live, messages, overview, settings as settings
 from core.auto_dm import AutoDM
 
 
+def _warm_verify_cache() -> None:
+    """后台预热账号校验缓存：getAccounts 首次进入页面时 verify 是网络探活(1~3s/账号)，
+    启动即并行预热一遍写入 TTL 缓存，用户打开账号管理页时列表秒出，消灭 4s 首屏等待。"""
+    try:
+        from api.accounts import _cached_verify
+        from auto_dm import accounts as acct_core
+        names = [n[0] if isinstance(n, (tuple, list)) else n for n in acct_core.list_accounts()]
+        if not names:
+            return
+        logger.info(f"[warmup] 后台预热 {len(names)} 个账号的校验缓存…")
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:
+            list(pool.map(lambda n: _cached_verify(n, timeout=3), names))
+        logger.info("[warmup] 账号校验缓存预热完成（账户页首屏将秒出）")
+    except Exception as e:
+        logger.warning(f"[warmup] 账号校验缓存预热失败（不影响使用）: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"DYAutoDM 后端启动，端口 {settings.backend_port}")
     # 引擎主控单例（替代原版 WebBridge.adm）
     app.state.adm = AutoDM()
+    # 后台预热账号校验缓存（并发，不阻塞启动）
+    threading.Thread(target=_warm_verify_cache, daemon=True).start()
     yield
     logger.info("DYAutoDM 后端关闭")
     await app.state.adm.shutdown()

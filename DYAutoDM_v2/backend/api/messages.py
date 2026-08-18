@@ -90,7 +90,12 @@ def _map_conversation(c: dict) -> dict:
 
 @router.get("/conversations")
 async def list_conversations(account: str):
-    """会话列表（转发到 recv_daemon /conversations）"""
+    """会话列表（转发到 recv_daemon /conversations）
+
+    私信守护(recv_daemon)未运行时返回 recvDaemonDown=True + 空列表，
+    不再向外抛 urlopen/WinError 10061 —— 前端据此提示「守护未运行」并自动拉起，
+    而不是报一屏连接失败弹窗。
+    """
     logger.info(f"[私信拉取] 开始拉取账号「{account}」的会话列表")
     try:
         url = _recv_url(account, "/conversations")
@@ -98,6 +103,11 @@ async def list_conversations(account: str):
         if url is None:
             logger.warning(f"[私信拉取] 账号「{account}」端口分配失败")
             return {"ok": False, "conversations": [], "error": "端口分配失败"}
+        # 先探测守护端口；未开直接返回空（别让前端看到原始连接错误）
+        port = acct_core.recv_daemon_port(account)
+        if not acct_core._port_open(port, timeout=0.3):
+            logger.warning(f"[私信拉取] 账号「{account}」私信守护未运行(port={port})，返回空列表")
+            return {"ok": True, "conversations": [], "recvDaemonDown": True}
         d = _http_get_json(url)
         logger.info(f"[私信拉取] 账号「{account}」recv_daemon 完整原始响应: {json.dumps(d, ensure_ascii=False)}")
         raw_convs = d.get("conversations") or []
@@ -111,9 +121,12 @@ async def list_conversations(account: str):
     except urllib.error.HTTPError as e:
         if e.code == 404:
             logger.warning(f"[私信拉取] 账号「{account}」recv_daemon 返回 404（守护未运行）")
-            return {"ok": True, "conversations": []}
+            return {"ok": True, "conversations": [], "recvDaemonDown": True}
         logger.error(f"[私信拉取] 账号「{account}」HTTP 错误 {e.code}")
         return {"ok": False, "conversations": [], "error": f"私信守护返回 {e.code}"}
+    except (ConnectionRefusedError, TimeoutError) as e:
+        logger.warning(f"[私信拉取] 账号「{account}」守护端口不可达: {e}")
+        return {"ok": True, "conversations": [], "recvDaemonDown": True}
     except Exception as e:
         logger.warning(f"[私信拉取] 账号「{account}」异常: {e}（守护可能未启动）")
         return {"ok": False, "conversations": [], "error": str(e)}
@@ -135,8 +148,10 @@ async def get_conversation(account: str, conv_id: str):
         return {"ok": True, "conversation": mapped}
     except urllib.error.HTTPError as e:
         if e.code in (404,):
-            return {"ok": False, "conversation": {}}
+            return {"ok": False, "conversation": {}, "recvDaemonDown": True}
         return {"ok": False, "conversation": {}, "error": f"私信守护返回 {e.code}"}
+    except (ConnectionRefusedError, TimeoutError) as e:
+        return {"ok": False, "conversation": {}, "recvDaemonDown": True}
     except Exception as e:
         return {"ok": False, "conversation": {}, "error": str(e)}
 

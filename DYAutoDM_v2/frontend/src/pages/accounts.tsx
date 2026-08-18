@@ -233,11 +233,10 @@ export default function AccountsPage(props: PageProps) {
   // 管理面板展开状态（哪个账号的四宫格管理面板展开了）
   const [manageOpen, setManageOpen] = useState<string | null>(null);
 
-  // 账号列表 8s 轮询（替代旧版 setInterval；数据始终经 mapAcct 映射）
+  // 账号列表（读取 App 常驻轮询的共享缓存；操作后自行 refetch）
   const { data: rawAccounts, isLoading, refetch } = useQuery({
     queryKey: ["accounts"],
     queryFn: async () => (await api.getAccounts()) as RawAccount[],
-    refetchInterval: 8000,
     enabled: !!props.ready,
   });
 

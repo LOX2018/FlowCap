@@ -233,14 +233,13 @@ export default function SettingsPage(props: PageProps) {
     if (!initDone) setInitDone(true);
   }, [tc, initDone]);
 
-  // 账号列表
+  // 账号列表（读取 App 常驻轮询的共享缓存，切页不再重拉）
   const accountsQ = useQuery({
-    queryKey: ["settings-accounts"],
+    queryKey: ["accounts"],
     queryFn: async (): Promise<Account[]> => {
       const d = await api.getAccounts();
       return (d as Account[]) || [];
     },
-    refetchInterval: 8000,
     enabled: !!ready,
   });
   const realAccts = accountsQ.data || [];

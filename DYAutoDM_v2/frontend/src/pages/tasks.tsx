@@ -10,7 +10,8 @@
  *   - loading 用 .sk 骨架屏，未运行显示空态
  *   - api.exportStats 在 client.ts 未声明，本地扩展类型
  */
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps, Overview, TaskHistoryItem, ReusePayload } from "../api/client";
 import { Avatar, Pill, Dot } from "../components/ui";
 
@@ -37,27 +38,21 @@ export default function TasksPage(props: PageProps) {
   const api = props.api as Api;
   const ov = (overview || ({} as OverviewExt)) as OverviewExt;
   const setTab = props.setTab;
+  const qc = useQueryClient();
 
-  // 历史任务列表（5s 轮询）
-  const [history, setHistory] = useState<TaskHistoryItem[]>([]);
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const r = (await api.getTaskHistory()) as { ok: boolean; list?: TaskHistoryItem[] };
-        if (alive && r && r.ok) setHistory(r.list || []);
-      } catch {
-        /* 忽略轮询错误 */
-      }
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+  // 历史任务列表（App 常驻轮询"task-history"，页面只读共享缓存，切页不重拉）
+  const historyQ = useQuery({
+    queryKey: ["task-history"],
+    queryFn: async (): Promise<TaskHistoryItem[]> => {
+      const r = (await api.getTaskHistory()) as { ok: boolean; list?: TaskHistoryItem[] };
+      return r && r.ok ? r.list || [] : [];
+    },
+    enabled: !!ready,
+  });
+  const history = historyQ.data || [];
+  const refreshHistory = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["task-history"] });
+  }, [qc]);
 
   // 跳转：运行中任务 -> 直播监听页；历史任务 -> 直播监听页进入查阅模式查看结果
   const gotoTask = (item: TaskHistoryItem) => {
@@ -310,7 +305,7 @@ export default function TasksPage(props: PageProps) {
               onClick={() =>
                 api
                   .clearTaskHistory()
-                  .then(() => setHistory([]))
+                  .then(() => refreshHistory())
                   .catch(() => {})
               }
             >

@@ -107,6 +107,43 @@ export default function App() {
     refetchInterval: 3000,
   });
 
+  // ===== 共享数据常驻轮询（「前端启动拉一次、后端数据一直热着」）=====
+  // App 永不卸载，这些查询一直订阅刷缓存；各页面用相同 key 读缓存，
+  // 切页不再向后端重拉，消灭 4s/3s 的等待（尤其是 accounts 的重型校验）。
+  useQuery({
+    queryKey: ["accounts"],
+    queryFn: async () => (await api.getAccounts()) as never[],
+    refetchInterval: 30000,
+    enabled: ready,
+  });
+  useQuery({
+    queryKey: ["live-tasks"],
+    queryFn: async () => api.getTasks(),
+    refetchInterval: 5000,
+    enabled: ready,
+  });
+  useQuery({
+    queryKey: ["live-stream"],
+    queryFn: async () => api.getStream(),
+    refetchInterval: 3000,
+    enabled: ready,
+  });
+  useQuery({
+    queryKey: ["current-task"],
+    queryFn: api.getCurrentTask,
+    refetchInterval: 5000,
+    enabled: ready,
+  });
+  useQuery({
+    queryKey: ["task-history"],
+    queryFn: async () => {
+      const r = (await api.getTaskHistory()) as { ok: boolean; list?: unknown[] };
+      return r && r.ok ? r.list || [] : [];
+    },
+    refetchInterval: 10000,
+    enabled: ready,
+  });
+
   // ===== 启动自检：打开时对所有账号跑双引擎校验（wp 凭证守护 + dm 私信列表拉取）=====
   const [selfCheckOpen, setSelfCheckOpen] = useState(false);
   const [selfCheckLoading, setSelfCheckLoading] = useState(true);

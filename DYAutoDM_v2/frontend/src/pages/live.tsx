@@ -202,19 +202,16 @@ export default function LivePage(props: PageProps) {
   const { data: tasksCfg } = useQuery({
     queryKey: ["live-tasks"],
     queryFn: async () => (await api.getTasks()) as TaskListResponse,
-    refetchInterval: 2500,
     enabled: !!ready,
   });
   const { data: accounts } = useQuery({
-    queryKey: ["live-accounts"],
+    queryKey: ["accounts"],
     queryFn: async () => (await api.getAccounts()) as RealAcct[],
-    refetchInterval: 5000,
     enabled: !!ready,
   });
   const { data: streamRaw } = useQuery({
     queryKey: ["live-stream"],
     queryFn: async () => (await api.getStream()) as LiveStream,
-    refetchInterval: 2000,
     enabled: !!ready,
   });
 

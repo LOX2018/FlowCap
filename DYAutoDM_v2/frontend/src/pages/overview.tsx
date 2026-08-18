@@ -1,4 +1,4 @@
-﻿﻿/**
+﻿/**
  * 总览页
  *
  * 迁移自: DY_Spider_base/web/pages/overview.js
@@ -40,10 +40,6 @@ interface Account {
   isMonitor?: boolean;
   isSender?: boolean;
 }
-interface AccountsResp {
-  ok?: boolean;
-  accounts?: Account[];
-}
 
 interface FeedItem {
   id: number;
@@ -67,13 +63,13 @@ export default function OverviewPage(props: PageProps) {
   const [activeAcct, setActiveAcct] = useState("");
   const ov = (overview || ({} as OverviewExt)) as OverviewExt;
 
+  // 账号列表（读取 App 常驻轮询的共享缓存；getAccounts 返回数组，勿再用 old wrapper 解包）
   const accountsQ = useQuery({
-    queryKey: ["overview-accounts"],
+    queryKey: ["accounts"],
     queryFn: async (): Promise<Account[]> => {
-      const d = (await api.getAccounts()) as unknown as AccountsResp;
-      return d && d.ok ? d.accounts || [] : [];
+      const d = (await api.getAccounts()) as unknown as Account[];
+      return Array.isArray(d) ? d : [];
     },
-    refetchInterval: 3000,
     enabled: !!ready,
   });
   const statsQ = useQuery({

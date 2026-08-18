@@ -20,6 +20,8 @@
 import re
 import os
 import json
+import time
+import threading
 import requests
 from urllib.parse import urlparse, parse_qs
 from loguru import logger
@@ -29,6 +31,30 @@ _LIVE_RE = re.compile(r"live\.douyin\.com/([^?/\s\"']+)")
 _SEC_UID_RE = re.compile(r"sec_user_id=([\w_\-]+)")
 # reflow/info 返回 JSON 取 web_rid 的路径：data.room.owner.web_rid
 _REFLOW_URL = "https://webcast.amemv.com/webcast/room/reflow/info/"
+
+# 解析结果 TTL 缓存（key=原始输入）：短链/用户主页等网络型解析很慢(2~15s)，
+# 缓存后重复点击/多页复用直接命中，秒回。
+_RESOLVE_CACHE: dict[str, tuple[float, tuple]] = {}
+_RESOLVE_CACHE_TTL = 300.0  # 5 分钟
+_RESOLVE_LOCK = threading.Lock()
+
+
+def _cache_get(raw: str):
+    with _RESOLVE_LOCK:
+        hit = _RESOLVE_CACHE.get(raw)
+        if hit and (time.time() - hit[0]) < _RESOLVE_CACHE_TTL:
+            return hit[1]
+    return None
+
+
+def _cache_put(raw: str, value: tuple) -> None:
+    with _RESOLVE_LOCK:
+        _RESOLVE_CACHE[raw] = (time.time(), value)
+    # 防止缓存无限膨胀：超 200 条删最旧
+    if len(_RESOLVE_CACHE) > 200:
+        with _RESOLVE_LOCK:
+            oldest = min(_RESOLVE_CACHE, key=lambda k: _RESOLVE_CACHE[k][0])
+            _RESOLVE_CACHE.pop(oldest, None)
 
 
 def _extract_live_id_from_url(url):
@@ -289,9 +315,20 @@ def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=Non
     if not raw:
         raise ValueError("链接为空")
 
-    # 情形1：直接就是数字或 web_rid（不含任何域名）
+    # 快速路径（直播流地址解析层优化，对齐 utlived-app 的本地 URL 抠取法）：
+    # 纯 web_rid / 已是 live.douyin.com/<id> 直接返回，不做任何网络请求，零延迟。
     if re.fullmatch(r"[A-Za-z0-9_]+", raw):
+        _cache_put(raw, (raw, raw))
         return raw, raw
+    m = _LIVE_RE.search(raw)
+    if m:
+        _cache_put(raw, (m.group(1), raw))
+        return m.group(1), raw
+
+    # TTL 缓存命中（短链/用户主页的慢解析结果，秒回）
+    cached = _cache_get(raw)
+    if cached:
+        return cached
 
     # 情形2：【主引擎】reflow 两步换发
     web_rid, anchor_sec_uid, source = resolve_via_reflow(raw, auth=auth)
@@ -299,6 +336,7 @@ def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=Non
         # 把主播 sec_uid 一并返回备用（调用方可从 source 之外的通道取，这里以日志提示）
         if anchor_sec_uid:
             logger.info(f"[resolve] 主播 sec_uid={anchor_sec_uid}（可直接用于私信/主页）")
+        _cache_put(raw, (web_rid, source))
         return web_rid, source
 
     # 情形3/4：【备用】直接抠 URL 片段 / 浏览器兜底（保留原逻辑）
@@ -320,5 +358,6 @@ def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=Non
             " - 粘贴的是直播页链接 / 分享短链 / 用户主页；\n"
             " - 若为用户主页，该用户需正在直播；\n"
             " - 首次使用请先启动一次完成浏览器登录。")
+    _cache_put(raw, (live_id, source))
     logger.info(f"[resolve] 备用解析成功 live_id={live_id} 来源={source}")
     return live_id, source

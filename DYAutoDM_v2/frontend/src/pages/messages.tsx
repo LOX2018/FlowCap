@@ -11,9 +11,10 @@
  *   - .catch(() => {}) → .catch(e => push('失败:' + ...))
  *   - requestDm 不在 client.ts，用本地 interface + as unknown as 转换
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
+import { startRecvDaemon } from "../api/sidecar";
 import { Avatar, Pill, Dot, hue, nowHM } from "../components/ui";
 
 interface Msg {
@@ -40,6 +41,7 @@ interface Account {
   loggedIn?: boolean;
   level?: string;
   label?: string;
+  recvDaemonPort?: number;
 }
 interface RawMessage {
   dir?: string;
@@ -141,13 +143,15 @@ export default function MessagesPage(props: PageProps) {
   const [draft, setDraft] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
+  // 私信守护自动启动只尝试一次（避免每 5s 轮询狂拉起）
+  const convTried = useRef(false);
 
+  // 账号列表（读取 App 常驻轮询的共享缓存）
   const accountsQ = useQuery({
-    queryKey: ["msg-accounts"],
+    queryKey: ["accounts"],
     queryFn: async (): Promise<Account[]> => {
       return (await a.getAccounts()) as unknown as Account[];
     },
-    refetchInterval: 5000,
     enabled: !!ready,
   });
 
@@ -160,18 +164,32 @@ export default function MessagesPage(props: PageProps) {
   const convsQ = useQuery({
     queryKey: ["msg-convs", activeAcct],
     queryFn: async (): Promise<Conv[]> => {
-      push("正在拉取账号「" + activeAcct + "」的私信会话列表…");
-      const d = (await a.getConversations(activeAcct)) as unknown as ConversationsResp;
+      const d = (await a.getConversations(activeAcct)) as unknown as ConversationsResp & {
+        recvDaemonDown?: boolean;
+      };
       // 记录完整原始响应到运行日志，方便排查"张三"等异常数据
       a.addLog("DEBUG", "[私信拉取] 前端：账号「" + activeAcct + "」原始响应=" + JSON.stringify(d));
+      // 私信守护未运行：不再报 urlopen 错误弹窗，自动尝试拉一次
+      if (d && (d as { recvDaemonDown?: boolean }).recvDaemonDown) {
+        a.addLog("WARNING", `[私信拉取] 账号「${activeAcct}」私信守护未运行`);
+        if (!convTried.current) {
+          convTried.current = true;
+          const acct = (accountsQ.data || []).find((x) => x.name === activeAcct);
+          const port = acct?.recvDaemonPort || 0;
+          push("私信守护未运行，正在自动启动…");
+          startRecvDaemon([activeAcct], port)
+            .then(() => push("私信守护已自动启动，请稍候自动刷新会话"))
+            .catch(() => push("私信守护自动启动失败，请到账号管理页手动「启动」"));
+        }
+        return [];
+      }
       if (!d || !d.ok) {
         push("拉取会话列表失败: " + ((d as Record<string, unknown>)?.error || "无响应"));
         a.addLog("WARNING", "[私信拉取] 前端：账号「" + activeAcct + "」拉取会话列表失败: " + ((d as Record<string, unknown>)?.error || "无响应"));
         return [];
       }
       const list = d.conversations || [];
-      push("拉取到 " + list.length + " 个会话");
-      a.addLog("INFO", "[私信拉取] 前端：账号「" + activeAcct + "」拉取到 " + list.length + " 个会话");
+      a.addLog("INFO", "[私信拉取] 前端：账号「" + activeAcct + "」拉取到 " + list.length + " 个会话（详情见后端日志）");
       list.forEach((c, i) => {
         a.addLog("INFO", "[私信拉取] 前端：  会话#" + i + " name=" + JSON.stringify(c.name) + " conv_id=" + (c.conv_id || "—") + " unread=" + (c.unread || 0));
         // 记录每个会话的完整原始数据，便于排查"张三"等异常名称来源
@@ -193,7 +211,7 @@ export default function MessagesPage(props: PageProps) {
         })),
       }));
     },
-    refetchInterval: 3000,
+    refetchInterval: 5000,
     enabled: !!ready && !!activeAcct,
   });
 

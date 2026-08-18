@@ -142,3 +142,58 @@ sidecar 3 个重打（含 accounts/overview 改动）；主 exe v0.21.0（内嵌
 - ② 实时评论统计列表「进入查阅模式」无实时数据时会自动读任务容器/历史记录，不再空白；
   任务中心历史任务行双击直接进查阅模式。
 - ③ 账号管理「上次运行记录」= 该账号最近一次历史任务的实录（房间/时间/条数/成功/失败）。
+
+---
+
+# 会话 0.21.0→0.22.0（同日第三轮，前端数据读取加速 + 私信守护自动恢复 + 解析加速）
+
+## 改动背景
+用户反馈：账号管理读后端约 4s、私信中心拉会话弹「urlopen error [WinError10061] 拒绝连接」、
+解析房间号接近 3s。并希望「前端启动时后端主动推送数据，别每次切页才去拉」，
+参考 https://github.com/YGR1996/utlived-app 的直播流地址解析层优化本地 URL 解析。
+
+## 改动详情
+
+### 1. 前端数据：App 常驻共享轮询（等效「启动即拉、数据常热、切页读缓存」）
+- `frontend/src/main.tsx`：默认 staleTime 5s→20s，切页 20s 内直接读缓存不重拉。
+- `frontend/src/App.tsx`：App 常驻轮询并持有缓存——`accounts(30s)` / `live-tasks(5s)` /
+  `live-stream(3s)` / `current-task(5s)` / `task-history(10s)`（App 永不卸载，页面退出
+  后这些查询仍持续刷新）。页面用**相同 queryKey 纯读**，不再各自发请求：
+  - live.tsx：`live-tasks`/`accounts`/`live-stream` 移除 refetchInterval。
+  - accounts.tsx：`accounts` 移除 8s 轮询（操作后仍手动 refetch）。
+  - settings.tsx / overview.tsx / messages.tsx：账号查询统一改 `["accounts"]` 读缓存。
+  - overview.tsx 顺手修复：原 `d.ok?d.accounts` 解包 bug（getAccounts 返回数组），
+    账号总览宫格一直是空的。
+  - tasks.tsx：历史任务由本地 setInterval 改为共享 `["task-history"]`；清空后
+    invalidateQueries 刷新。
+
+### 2. 账号管理 4s → 秒出
+- `backend/main.py`：lifespan 后台线程 `_warm_verify_cache`，启动即并行跑一遍
+  api.accounts._cached_verify（写入 TTL 缓存），首屏打开账号页不再现场网络探活。
+
+### 3. 私信中心 urlopen 10061 弹窗 → 自动恢复
+- `backend/api/messages.py`：`/conversations`（及 `/conversation`）先探守护端口，
+  端口未开/连接拒绝/404 返回 `{ok:true, conversations:[], recvDaemonDown:true}`
+  不再抛原始 WinError。
+- `frontend/src/pages/messages.tsx`：检测 recvDaemonDown → 只提示一次并自动调
+  `startRecvDaemon(账号, port)`（sidecar 拉起），下一轮轮询自动拉到真实会话；
+  去掉每 3s 的“正在拉取…/拉取到 N 个会话”toast 噪音（改 5s 轮询、成功仅记日志）。
+
+### 4. 解析房间号 3s → 毫秒
+- `backend/link_resolve.py`（对齐 utlived-app 本地抠 URL）：
+  - 快速路径：纯数字/web_rid 或已是 `live.douyin.com/<id>` 直接返回，0 网络请求（实测 0.1ms）。
+  - 新增 TTL 缓存（5min，thread-safe，≤200 条 LRU）：短链/用户主页等慢解析结果秒回。
+
+## 验证
+- 前端 build 0 TS 错；后端 py_compile 过；19 项集成测试全过（3.75s）。
+- link_resolve 快速路径 0.1ms。
+
+## 版本号 +0.01：0.21.0→0.22.0（4 文件）
+sidecar 3 个重打（含 messages/main/link_resolve 改动）；`npx tauri build --no-bundle`
+产主 exe（跳过 NSIS/MSI，符合打包约定）。部署 dist\ + C:\temp\dyautodm_test\ 各一份
+`DYAutoDM_v2_0.22.0.exe` + binaries\ 3 sidecar。
+
+## 需用户实测
+- ① 各页面切换应秒开（数据已在内存缓存，不再每页重拉）；账号管理首屏不再 4s。
+- ② 私信中心：守护未运行时出现「正在自动启动」提示并自动恢复，不再报 10061 连接失败。
+- ③ 解析房间号：live.douyin.com/<id> / 纯房号秒回；短链第二次起走缓存秒回。
