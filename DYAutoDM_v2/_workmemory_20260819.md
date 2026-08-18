@@ -231,3 +231,33 @@ sidecar 3 个重打（含 messages/main/link_resolve 改动）；`npx tauri buil
 ## 需用户实测
 - ① 私信中心：守护未运行会自动拉起，运行中能拉到真实会话（不再 422）。
 - ② 双击 exe：先出「抖音数据控制台」启动闪屏，数据就绪后切入主界面。
+
+---
+
+# 会话 0.23.0→0.24.0（同日第五轮，私信会话列表 API 兜底）
+
+## 改动背景
+用户日志：422 已消失（守护已启用并返回 `{"ok":true,"conversations":[]}`），
+但私信中心会话列表仍为空 —— 守护刚启动/WS 长连接同步帧未到，收件箱无会话。
+
+## 根因与修复
+- 根因：`recv_daemon` 的会话仅来自 WS 同步帧/dm_history 落盘；守护启动几秒内（或
+  WS 未同步/被风控）收件箱为空 → `/conversations` 空列表。
+- 修复（`backend/daemon/recv_daemon.py`）：
+  - 新增 `_pull_conversations_api(ib)`：收件箱为空时直接调
+    `DouyinAPI.get_conversation_list(auth)`（IM API，与账号校验的 dm 探活同源、可靠），
+    建立会话骨架（conversation_id/short_id）并落盘 dm_history.json。
+  - `/conversations`：空时先 API 拉取再加返回。
+  - `/conversation`：未见过的会话先 API 拉取再查，点开的会话必定存在。
+  - 名称/消息仍由 WS 新消息与历史补全（骨架占位用 conv_id，随后即被真实昵称覆盖）。
+
+## 验证
+- py_compile 通过；19 项集成测试全过。
+- 版本 0.23.0→0.24.0（4 文件）；sidecar 3 个重打；主 exe --no-bundle。
+- 部署 dist\ + C:\temp\dyautodm_test\ `DYAutoDM_v2_0.24.0.exe` + binaries\ 3 sidecar。
+  （重要：私信中心依赖的新逻辑在 recv-daemon sidecar，必须连同 dyautodm-recv-daemon
+  exe 一起替换；C:\temp 已同步。）
+
+## 需用户实测
+- ② 私信中心：守护自动拉起后下一次轮询即可看到真实会话列表（由 IM API 直拉兜底），
+  不再空白；进入会话后随 WS 新消息补全昵称与内容。

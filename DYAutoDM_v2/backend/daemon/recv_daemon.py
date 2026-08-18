@@ -476,10 +476,49 @@ async def conversations(account: str) -> dict:
     if not ib:
         raise HTTPException(404, "账号不存在")
     convs = ib.list_convs()
+    # 兜底：收件箱还没有任何会话（守护刚启动/WS 同步帧未到）时，
+    # 直接调 Douyin IM API 拉一次真实会话列表建立骨架，私信中心不再一片空白。
+    if not convs:
+        _pull_conversations_api(ib)
+        convs = ib.list_convs()
     logger.info(f"[recv][{account}] /conversations 返回 {len(convs)} 个会话")
     for i, c in enumerate(convs):
         logger.info(f"[recv][{account}]   会话#{i}: conv_id={c.get('conv_id')}, peer_name={c.get('peer_name')}, peer_id={c.get('peer_id')}, messages={len(c.get('messages') or [])} 条")
     return {"ok": True, "conversations": convs}
+
+
+def _pull_conversations_api(ib: AccountInbox) -> int:
+    """直接调 Douyin IM get_conversation_list 拉真实会话列表并建立骨架。
+
+    绕过 WS 长连接同步时序：守护启动几秒内 WS 未同步时列表也能即刻出现；
+    名称/消息等由后续 WS 新消息与历史补全。返回新增骨架数。
+    """
+    try:
+        from auto_dm import accounts as acc
+        from dy_apis.login_api import DYLoginApi
+        from dy_apis.douyin_api import DouyinAPI
+        env_path = acc.env_path_of(ib.name)
+        auth = DYLoginApi._load_auth_from_env(env_path)
+        conv_list = DouyinAPI.get_conversation_list(auth)
+    except Exception as e:
+        logger.warning(f"[recv][{ib.name}] API 拉取会话列表失败: {e}")
+        return 0
+    n = 0
+    with ib.lock:
+        for info in conv_list or []:
+            if not isinstance(info, dict):
+                continue
+            conv_id = info.get("conversation_id") or ""
+            if not conv_id or conv_id in ib.convs:
+                continue
+            c = Conversation(conv_id, None, None)
+            c.short_id = info.get("conversation_short_id") or None
+            ib.convs[conv_id] = c
+            n += 1
+    if n:
+        ib._save_history()
+        logger.info(f"[recv][{ib.name}] 由 API 拉取到 {n} 个会话骨架")
+    return n
 
 
 @app.get("/conversation")
@@ -488,6 +527,10 @@ async def conversation(account: str, conv_id: str) -> dict:
     if not ib:
         raise HTTPException(404, "账号不存在")
     conv = ib.get_conv(conv_id)
+    if conv is None:
+        # 未见过的会话：先 API 拉取骨架再查，保证点开的会话存在
+        _pull_conversations_api(ib)
+        conv = ib.get_conv(conv_id)
     if conv is None:
         raise HTTPException(404, "会话不存在")
     ib.mark_read(conv_id)
