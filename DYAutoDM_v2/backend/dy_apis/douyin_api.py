@@ -1797,18 +1797,13 @@ class DouyinAPI:
 
     @staticmethod
     def get_conversation_list(auth, conversation_short_id: int = 0, **kwargs) -> list:
-        """拉取全部私信会话列表，用于校验私信凭证是否可用。
+        """拉取一页私信会话列表（cmd 610），用 conversation_short_id 作分页游标。
 
-        走 imapi 私有网关 get_info_list（cmd 610），靠 cookie + protobuf 内签名
-        （web_protect 注入的 ticket/ts_sign/sdk_cert）鉴权，与 create_conversation /
-        send_msg 同源。返回 conversation_info_list（每条含 conversation_id /
-        conversation_short_id 等）。鉴权失败 / 凭证无效会抛异常，由上层识别为
-        私信引擎校验失败。
+        conversation_short_id=0 返回第一页；传入上一页最后一条的 short_id 返回下一页。
+        每页条数由服务端决定（通常 20~50）。
         """
         my_id = auth.get_uid()
         url = "https://imapi.douyin.com/v2/conversation/get_info_list"
-        # 拉取“全部”会话：conversation_id 用自身主会话占位、short_id=0，
-        # 服务端会返回当前账号的全部私信会话列表。
         requestProto = ProtoBuilder.build_get_conversation_list_info_request(
             auth, int(my_id), int(my_id), conversation_short_id)
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
@@ -1821,14 +1816,12 @@ class DouyinAPI:
             data=requestProto.SerializeToString(),
             verify=False
         )
-        # 解析前先判定 HTTP 状态与非 protobuf 响应（抖音常返回 HTML/JSON 错误页）
         if resp.status_code != 200:
             raise RuntimeError(
                 f"get_conversation_list HTTP {resp.status_code}: {resp.text[:200]}")
         ctype = resp.headers.get("Content-Type", "")
         if "application/x-protobuf" not in ctype and "octet-stream" not in ctype \
                 and resp.content[:1] not in (b'\x08', b'\x12', b'\x1a', b'\x22'):
-            # 看起来像 JSON/HTML 错误响应
             raise RuntimeError(
                 f"get_conversation_list 返回非 protobuf 响应(Content-Type={ctype}): {resp.text[:200]}")
         responseProto = ResponseProto.Response()
@@ -1843,6 +1836,52 @@ class DouyinAPI:
         conv_body = body.get("get_conversation_info_list_v2_response_body") or {}
         conv_list = conv_body.get("conversation_info_list") or []
         return conv_list
+
+    @staticmethod
+    def get_conversation_list_all(auth, max_pages: int = 20) -> list:
+        """分页拉取【全部】私信会话列表，直到无更多结果或达到 max_pages。
+
+        conversation_id 格式 `0:1:<uid_a>:<uid_b>` 中提取非自身 uid 作为 peer_id。
+        """
+        my_uid = str(auth.get_uid())
+        all_convs = []
+        cursor = 0
+        seen_ids = set()
+        for _ in range(max_pages):
+            try:
+                page = DouyinAPI.get_conversation_list(auth, conversation_short_id=cursor)
+            except Exception as e:
+                logger.warning(f"[im] 分页拉取会话列表第 {_+1} 页失败: {e}")
+                break
+            if not page:
+                break
+            new_count = 0
+            for info in page:
+                conv_id = info.get("conversation_id") or ""
+                short_id = info.get("conversation_short_id")
+                if not conv_id or conv_id in seen_ids:
+                    continue
+                seen_ids.add(conv_id)
+                # 从 conversation_id 解析对方 uid：格式 0:1:<uid_a>:<uid_b>
+                parts = conv_id.split(":")
+                peer_uid = None
+                if len(parts) >= 4:
+                    uid_a, uid_b = parts[2], parts[3]
+                    if uid_a != my_uid:
+                        peer_uid = uid_a
+                    elif uid_b != my_uid:
+                        peer_uid = uid_b
+                    # 两者相同（自身会话）→ peer_uid=None，跳过
+                info["_peer_uid"] = peer_uid
+                all_convs.append(info)
+                new_count += 1
+            # 用最后一条的 short_id 作为下一页游标
+            last_short = page[-1].get("conversation_short_id")
+            if not last_short or new_count == 0 or int(last_short) == cursor:
+                break
+            cursor = int(last_short)
+        logger.info(f"[im] 分页拉取完成：共 {len(all_convs)} 个会话")
+        return all_convs
 
     @staticmethod
     def send_msg(auth, conversation_id, conversation_short_id, ticket, content: str, **kwargs) -> tuple:

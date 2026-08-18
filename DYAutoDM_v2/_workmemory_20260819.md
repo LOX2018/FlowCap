@@ -340,3 +340,53 @@ sidecar 3 个重打（含 messages/main/link_resolve 改动）；`npx tauri buil
 - ① 历史任务：不再有 200 条上限，翻页「加载更多」；旧 JSON 数据首次启动自动迁移到 SQLite。
 - ② 配置保存/解析房间号：写回 SQLite kv_store，不再写 config.json。
 - ③ 账号增删/切换：写回 SQLite，不再写 accounts.json。
+
+---
+
+# 会话 0.26.0+（私信中心会话列表根因排查 — 实测发现）
+
+## 核心教训：思考方式
+在排查 API/长连接问题时，多次只聚焦于后端代码层面的一种方式（反复调 protobuf
+API、改 proto builder、猜测分页参数），陷入"代码推测 → 失败 → 再改代码"的误区循环。
+
+**正确做法（源头思维）**：当后端结构本身可能不匹配时，应该先到**数据源头**（抖音
+网页端）实测抖音实际用什么 API、推什么格式的数据，再回头改后端去对齐。而不是在
+后端固定结构上反复试错。
+
+具体教训：
+- `get_conversation_list`（cmd 610）是按 user_id 查单个会话的 API，不是"列全部"
+  —— 但只看后端代码注释说"拉取全部会话"就信了，没去源头验证。
+- 后端 proto 只定义了 cmd 500/609/610，没有 cmd 2043（get_message_by_init）——
+  250KB 响应被 proto 丢弃为 unknown fields，只看代码以为"只有 1 个会话"。
+- WS 长连接的同步帧也只给 conversation_id/short_id 骨架，不含昵称和消息——
+  一直以为"等 WS 同步就行"，没去验证 WS 同步帧到底带了什么。
+
+## 实测方法
+用账号绑定的指纹浏览器（ungoogled-chromium + 账号 profile）打开
+`https://www.douyin.com/chat`，通过 CDP（remote-debugging-port=9222 + --remote-allow-origins=*）
+抓取页面的全部网络请求和响应体，直接观察抖音网页的数据链路。
+
+## 抖音网页私信数据链路（实测结果）
+
+| 步骤 | API 端点 | 格式 | 内容 |
+|------|---------|------|------|
+| 1 初始化 | `imapi.douyin.com/v1/message/get_message_by_init` | protobuf 250KB cmd=2043 | **全部 259 个会话** + 初始消息 + peer uid（从 conversation_id `0:1:<a>:<b>` 解析） |
+| 2 昵称解析 | `www.douyin.com/aweme/v1/web/im/user/info/?...` | JSON | 每个会话对方的 `nickname`/`avatar_small`/`avatar_thumb`/`uid`/`sec_uid`/`follow_status` |
+| 3 消息历史 | `imapi.douyin.com/v1/message/get_user_message` | protobuf | 单个会话的消息历史 |
+| 4 陌生人 | `imapi.douyin.com/v1/stranger/get_conversation_list` | protobuf | 陌生人会话列表 |
+
+DOM 已渲染出 60 个会话项，含真实昵称（「有饼拾不拾」「峰哥。」「用户日出东方」）+ 时间。
+
+## 后端问题根因
+- 后端用 `get_info_list`（cmd 610）→ 只返回 1 条自身会话（`0:1:<uid>:<uid>`）
+- 抖音网页用 `get_message_by_init`（cmd 2043）→ 返回全部 259 个会话
+- 后端 proto 没定义 cmd 2043 → 250KB 响应的 body 全被丢弃（unknown fields）
+- 后端没有调 `/aweme/v1/web/im/user/info/` → 无法解析昵称
+- WS 同步帧只给骨架（conversation_id/short_id）→ 无昵称无消息
+
+## 待实现
+1. 扩展 `Response.proto` 增加 cmd 2043 响应结构（或用原始字节正则提取 conversation_id + peer uid）
+2. 新增 `DouyinAPI.get_message_by_init(auth)` 方法（需抓取网页请求参数/请求体）
+3. 新增 `DouyinAPI.get_im_user_info(auth, uids)` REST JSON 方法解析昵称/头像
+4. recv_daemon `_pull_conversations_api` 改用 `get_message_by_init` + `get_im_user_info`
+5. 会话列表：peer uid → nickname + avatar，写入 SQLite dm_conversations 表
