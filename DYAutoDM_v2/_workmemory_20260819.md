@@ -390,3 +390,49 @@ DOM 已渲染出 60 个会话项，含真实昵称（「有饼拾不拾」「峰
 3. 新增 `DouyinAPI.get_im_user_info(auth, uids)` REST JSON 方法解析昵称/头像
 4. recv_daemon `_pull_conversations_api` 改用 `get_message_by_init` + `get_im_user_info`
 5. 会话列表：peer uid → nickname + avatar，写入 SQLite dm_conversations 表
+
+---
+
+# 会话 0.26.0→0.27.0（同日第八轮，get_message_by_init 实现并实测验证）
+
+## 改动背景
+前一轮记录了根因：后端用 `get_info_list`（cmd 610）只返回 1 条自身会话，
+抖音网页用 `get_message_by_init`（cmd 2043）返回全量 259 个会话。
+本轮实现修复。
+
+## 改动详情
+
+### 1. DouyinAPI.get_message_by_init(auth)
+- 用 `build_normal_request(auth, 2043)` 构建请求（与网页请求结构一致）
+- 手动追加最小 body 字节（proto 未定义 cmd 2043 的 oneof，追加 field 2043 tag）
+- 发送到 `imapi.douyin.com/v1/message/get_message_by_init`
+- 返回原始 protobuf 响应字节（250KB）
+
+### 2. DouyinAPI.parse_init_conversations(raw, my_uid)
+- 从 250KB 原始字节中用正则提取：
+  - conversation_id（`0:1:<uid_a>:<uid_b>`）→ 44 个真实会话
+  - sec_uid（`MS4wLjAB...` 格式）→ 37 个
+  - 就近匹配 sec_uid 到会话（±800 字节）→ 35/44 匹配成功
+- 不依赖 proto 扩展（proto 未定义 cmd 2043），用正则从原始字节提取
+
+### 3. recv_daemon _pull_conversations_api
+- 改用 `get_message_by_init` + `parse_init_conversations` 拉全量会话
+- 写入 SQLite dm_conversations（含 peer_uid）
+- 后台线程用 `get_user_info(auth, sec_uid)` 解析昵称（已有 API，验证可用）
+- 无 sec_uid 的会话用 peer_uid 作占位名
+
+## 实测验证（真实账号「测试小助理」）
+- get_message_by_init 返回 249845 bytes ✓
+- 提取 44 个真实会话（之前只有 1 个自身会话）✓
+- 35/44 匹配到 sec_uid ✓
+- get_user_info 解析昵称成功：`peer=763501374081696 → 「尚进工伤小助理」` ✓
+- 消息内容片段提取到 15 条（"你好，欢迎留言咨询唐律师工伤"等）✓
+
+## 版本 0.26.0→0.27.0
+sidecar 3 个重打（含 douyin_api + recv_daemon 改动）；主 exe --no-bundle。
+部署 dist\ + C:\temp\dyautodm_test\ 0.27.0。
+
+## 需用户实测
+- ① 私信中心：守护拉起后应看到 44 个会话（而非 1 个），大部分带真实昵称。
+- ② 昵称逐步出现：后台线程解析 sec_uid → nickname，首次可能部分显示 uid，
+  随后逐渐变为真实昵称。

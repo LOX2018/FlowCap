@@ -1884,6 +1884,148 @@ class DouyinAPI:
         return all_convs
 
     @staticmethod
+    def get_message_by_init(auth) -> bytes:
+        """调 imapi get_message_by_init（cmd 2043）获取全量会话初始化数据。
+
+        返回原始 protobuf 响应字节（250KB+，含全部会话 ID + 消息 + peer uid）。
+        后续用正则从原始字节中提取 conversation_id 和 peer uid（proto 未定义 cmd 2043）。
+
+        实测来源：抖音网页 douyin.com/chat 首次加载时调用此 API。
+        """
+        from builder.proto import ProtoBuilder
+        from builder.header import HeaderBuilder, HeaderType
+        # 用通用 build_normal_request 构建 cmd=2043 请求（与网页请求结构一致）
+        request = ProtoBuilder.build_normal_request(auth, 2043)
+        # body 字段：proto 未定义 cmd 2043 的 oneof，手动追加最小 body 字节
+        # 网页请求体 field 8 (body) = tag(da 7f) + len(02) + content(10 00) = field 2 varint 0
+        body_bytes = request.SerializeToString()
+        # 在 body field (field 8) 后追加 cmd 2043 body：field 2043 (varint tag da7f) + len 2 + field 2 varint 0
+        # tag for field 2043 wire type 2: (2043 << 3) | 2 = 16346, varint = da 7f
+        init_body = bytes([0xda, 0x7f, 0x02, 0x10, 0x00])
+        # 在 Request 序列化结果中，field 8 (body) 当前为空字符串 (22 00)
+        # 替换为含 init_body 的版本：tag 42 + len + init_body
+        # 简单做法：直接在序列化末尾追加 body field
+        body_bytes = body_bytes + bytes([0x42, len(init_body)]) + init_body
+
+        url = "https://imapi.douyin.com/v1/message/get_message_by_init"
+        headers = HeaderBuilder().build(HeaderType.PROTOBUF)
+        headers.set_header('referer', 'https://www.douyin.com/')
+        resp = requests.post(
+            url, headers=headers.get(), cookies=auth.cookie,
+            data=body_bytes, verify=False, timeout=15,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"get_message_by_init HTTP {resp.status_code}: {resp.text[:200]}")
+        logger.info(f"[im] get_message_by_init 响应 {len(resp.content)} bytes")
+        return resp.content
+
+    @staticmethod
+    def parse_init_conversations(raw: bytes, my_uid: str) -> list[dict]:
+        """从 get_message_by_init 原始字节中提取全部会话 + peer uid + sec_uid（正则法）。
+
+        conversation_id 格式 0:1:<uid_a>:<uid_b>，其中非自身 uid 即对方 uid。
+        同时提取 sec_uid（MS4wLjAB...格式），就近匹配到会话用于后续昵称解析。
+        """
+        import re
+        decoded = raw.decode("utf-8", errors="replace")
+        # 1) 找所有 conversation_id 及位置
+        seen = set()
+        result = []
+        for m in re.finditer(r'0:1:\d{5,20}:\d{5,20}', decoded):
+            cid = m.group()
+            if cid in seen:
+                continue
+            seen.add(cid)
+            parts = cid.split(":")
+            uid_a, uid_b = parts[2], parts[3]
+            if uid_a == uid_b:
+                continue  # 跳过自身会话
+            peer_uid = uid_b if uid_a == my_uid else uid_a
+            result.append({"pos": m.start(), "conversation_id": cid, "peer_uid": peer_uid})
+
+        # 2) 找所有 sec_uid 及位置（MS4wLjAB 开头，10~60 字符）
+        sec_positions = [(m.start(), m.group()) for m in re.finditer(r'MS4wLjAB[\w_]{10,60}', decoded)]
+        sec_seen = set()
+        unique_secs = [(p, s) for p, s in sec_positions if not (s in sec_seen or sec_seen.add(s))]
+
+        # 3) 就近匹配 sec_uid 到会话（±800 字节内最近的）
+        for c in result:
+            best_sec = None
+            best_dist = 800
+            for spos, sec in unique_secs:
+                dist = abs(spos - c["pos"])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_sec = sec
+            c["sec_uid"] = best_sec
+
+        logger.info(f"[im] 从 init 响应中提取 {len(result)} 个真实会话，"
+                     f"{len(unique_secs)} 个 sec_uid，"
+                     f"匹配到 sec_uid 的会话 {sum(1 for c in result if c.get('sec_uid'))}/{len(result)}")
+        return result
+
+    @staticmethod
+    def get_im_user_info(auth, uid: str) -> dict:
+        """调 REST JSON API 解析用户昵称/头像（抖音网页 douyin.com/chat 同源）。
+
+        端点：/aweme/v1/web/im/user/info/?to_user_id=<uid>
+        返回 {nickname, avatar_small, avatar_thumb, uid, sec_uid, follow_status, ...}
+        """
+        from builder.params import Params
+        from utils.fingerprint import get_profile
+        api = "/aweme/v1/web/im/user/info/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        headers.set_referer("https://www.douyin.com/")
+        params = Params()
+        (params
+         .add_param("device_platform", "webapp")
+         .add_param("aid", "6383")
+         .add_param("channel", "channel_pc_web")
+         .add_param("to_user_id", str(uid))
+         .add_param("pc_client_type", "1")
+         .add_param("update_version_code", "170400")
+         .add_param("version_code", "170400")
+         .add_param("cookie_enabled", "true")
+         .add_param("browser_language", "zh-CN")
+         .add_param("browser_platform", "Win32")
+         .add_param("browser_name", get_profile()["browser_name"])
+         .add_param("browser_version", get_profile()["browser_version"])
+         .add_param("browser_online", "true")
+         .add_param("engine_name", "Blink")
+         .add_param("os_name", "Windows")
+         .add_param("os_version", "10")
+         .add_param("platform", "PC")
+         .add_param("downlink", "10")
+         .add_param("effective_type", "4g")
+         .add_param("round_trip_time", "100"))
+        params.with_web_id(auth, f"https://www.douyin.com/")
+        params.add_param("msToken", auth.cookie.get("msToken", ""))
+        params.add_param("verifyFp", auth.cookie.get("s_v_web_id", ""))
+        params.add_param("fp", auth.cookie.get("s_v_web_id", ""))
+        params.with_a_bogus()
+        resp = requests.get(
+            f'{DouyinAPI.douyin_url}{api}',
+            headers=headers.get(), cookies=auth.cookie,
+            params=params.get(), verify=False, timeout=8,
+        )
+        data = json.loads(resp.text)
+        if data.get("status_code") != 0:
+            logger.warning(f"[im] get_im_user_info uid={uid} status={data.get('status_code')}")
+            return {}
+        items = data.get("data") or []
+        if not items:
+            return {}
+        u = items[0]
+        return {
+            "uid": str(u.get("uid") or uid),
+            "nickname": u.get("nickname") or uid,
+            "avatar": u.get("avatar_thumb", {}).get("url_list", [""])[0] if u.get("avatar_thumb") else "",
+            "sec_uid": u.get("sec_uid") or "",
+            "follow_status": u.get("follow_status"),
+            "follower_status": u.get("follower_status"),
+        }
+
+    @staticmethod
     def send_msg(auth, conversation_id, conversation_short_id, ticket, content: str, **kwargs) -> tuple:
         """
         发送私信（V2：返回 (bool ok, str detail)）。

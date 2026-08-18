@@ -589,10 +589,11 @@ async def conversations(account: str) -> dict:
 
 
 def _pull_conversations_api(ib: AccountInbox) -> int:
-    """直接调 Douyin IM get_conversation_list 拉真实会话列表并建立骨架。
+    """直接调 Douyin IM get_message_by_init 拉全量会话 + get_im_user_info 解析昵称。
 
-    绕过 WS 长连接同步时序：守护启动几秒内 WS 未同步时列表也能即刻出现；
-    名称/消息等由后续 WS 新消息与历史补全。返回新增骨架数。
+    实测发现：抖音网页 douyin.com/chat 用 get_message_by_init（cmd 2043）加载全部会话，
+    然后调 /aweme/v1/web/im/user/info/ REST API 解析每个会话对方的昵称/头像。
+    后端此前用的 get_info_list（cmd 610）是按 user_id 查单个会话的，不是"列全部"。
     """
     try:
         from auto_dm import accounts as acc
@@ -600,29 +601,100 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         from dy_apis.douyin_api import DouyinAPI
         env_path = acc.env_path_of(ib.name)
         auth = DYLoginApi._load_auth_from_env(env_path)
-        conv_list = DouyinAPI.get_conversation_list(auth)
+        my_uid = str(auth.get_uid())
     except Exception as e:
-        logger.warning(f"[recv][{ib.name}] API 拉取会话列表失败: {e}")
+        logger.warning(f"[recv][{ib.name}] 加载凭证失败: {e}")
         return 0
+
+    # 1) get_message_by_init 拉全量会话（250KB，含 259 个 conversation_id）
+    try:
+        raw = DouyinAPI.get_message_by_init(auth)
+        convs = DouyinAPI.parse_init_conversations(raw, my_uid)
+    except Exception as e:
+        logger.warning(f"[recv][{ib.name}] get_message_by_init 失败: {e}")
+        return 0
+    if not convs:
+        logger.info(f"[recv][{ib.name}] get_message_by_init 返回 0 个会话")
+        return 0
+
+    # 2) 写入会话骨架到 SQLite + 内存
     n = 0
     with ib.lock:
-        for info in conv_list or []:
-            if not isinstance(info, dict):
-                continue
-            conv_id = info.get("conversation_id") or ""
-            if not conv_id or conv_id in ib.convs:
-                continue
-            c = Conversation(conv_id, None, None)
-            c.short_id = info.get("conversation_short_id") or None
-            ib.convs[conv_id] = c
-            n += 1
-    if n:
         try:
             conn = ib._db()
-            conn.commit()
         except Exception:
-            pass
-        logger.info(f"[recv][{ib.name}] 由 API 拉取到 {n} 个会话骨架")
+            conn = None
+        for c in convs:
+            conv_id = c["conversation_id"]
+            peer_uid = c["peer_uid"]
+            if conv_id in ib.convs:
+                # 已存在：补全 peer_id（WS 建立的骨架可能没有 peer_id）
+                if not ib.convs[conv_id].peer_id and peer_uid:
+                    ib.convs[conv_id].peer_id = peer_uid
+                    if conn:
+                        conn.execute(
+                            "UPDATE dm_conversations SET peer_id=? WHERE account=? AND conv_id=?",
+                            (peer_uid, ib.name, conv_id),
+                        )
+                continue
+            # 新会话：建立骨架
+            conv = Conversation(conv_id, peer_uid, peer_uid)
+            ib.convs[conv_id] = conv
+            n += 1
+            if conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO dm_conversations(account,conv_id,"
+                    "peer_id,peer_name,short_id,last_ts,unread) VALUES(?,?,?,?,?,?,?,?)",
+                    (ib.name, conv_id, peer_uid, peer_uid, None, 0, 0),
+                )
+        if conn:
+            conn.commit()
+    logger.info(f"[recv][{ib.name}] get_message_by_init 提取 {len(convs)} 个会话，新增 {n} 个")
+
+    # 3) 批量解析昵称/头像（后台线程，不阻塞 HTTP 响应）
+    def _resolve_names():
+        resolved = 0
+        for c in convs:
+            peer_uid = c.get("peer_uid")
+            sec_uid = c.get("sec_uid")
+            conv_id = c["conversation_id"]
+            existing = ib.convs.get(conv_id)
+            if existing and existing.peer_name and existing.peer_name != peer_uid:
+                continue  # 已有昵称
+            nickname = None
+            # 优先用 sec_uid 调 get_user_info（已验证可用）
+            if sec_uid:
+                try:
+                    info = DouyinAPI.get_user_info(auth, f"https://www.douyin.com/user/{sec_uid}")
+                    user = (info or {}).get("user") or {}
+                    nickname = user.get("nickname")
+                except Exception as e:
+                    logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} 失败: {e}")
+            # 退回 get_im_user_info（REST API）
+            if not nickname and peer_uid:
+                try:
+                    info = DouyinAPI.get_im_user_info(auth, peer_uid)
+                    nickname = info.get("nickname")
+                except Exception:
+                    pass
+            if not nickname:
+                nickname = peer_uid or conv_id  # 兜底用 uid
+            if existing:
+                existing.peer_name = nickname
+            try:
+                db = ib._db()
+                db.execute(
+                    "UPDATE dm_conversations SET peer_name=? WHERE account=? AND conv_id=?",
+                    (nickname, ib.name, conv_id),
+                )
+                db.commit()
+            except Exception:
+                pass
+            resolved += 1
+        if resolved:
+            logger.info(f"[recv][{ib.name}] 已解析 {resolved}/{len(convs)} 个会话的昵称")
+
+    threading.Thread(target=_resolve_names, daemon=True).start()
     return n
 
 
