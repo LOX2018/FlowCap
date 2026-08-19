@@ -47,19 +47,30 @@ def finish_task(tid: int, status: str = "finished", result_count: int = 0,
     conn.commit()
 
 
-def fix_stuck_tasks() -> None:
+def fix_stuck_tasks(force: bool = False) -> None:
     """同步引擎状态机：多任务「运行中」时只保留最新一条，其余标为「已停止」。
 
     根因：引擎崩溃/自然关播后队列发空时未收尾，导致历史任务永远停留在「运行中」。
+    - force=False（默认，list 查询时）：保留最新一条 running（其它标的都收尾），
+      避免引擎启动瞬间查询列表把正在运行的任务误标；
+    - force=True（backend 启动时调用）：全部 running 收尾为 stopped——
+      启动瞬间引擎必然尚未开始任何任务，所有 running 都是上一次进程遗留的悬挂任务。
     """
     from database import get_db
     conn = get_db()
     rows = conn.execute(
         "SELECT id FROM tasks WHERE status='running' ORDER BY id DESC"
     ).fetchall()
-    if len(rows) <= 1:
+    if not rows:
         return
-    stuck_ids = [r["id"] for r in rows[1:]]
+    if force:
+        stuck_ids = [r["id"] for r in rows]
+    else:
+        if len(rows) <= 1:
+            return
+        stuck_ids = [r["id"] for r in rows[1:]]
+    if not stuck_ids:
+        return
     conn.execute(
         "UPDATE tasks SET status='stopped', end_ts=start_ts WHERE id IN("
         + ",".join("?" * len(stuck_ids)) + ")",

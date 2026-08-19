@@ -47,6 +47,12 @@ async def lifespan(app: FastAPI):
         logger.info("[db] SQLite 数据库已就绪")
     except Exception as e:
         logger.error(f"[db] 数据库初始化失败: {e}")
+    # 启动瞬间引擎必然未运行：强制收尾上次进程遗留的悬空「运行中」历史任务
+    try:
+        from tasks_history import fix_stuck_tasks
+        fix_stuck_tasks(force=True)
+    except Exception as e:
+        logger.warning(f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
     # 引擎主控单例（替代原版 WebBridge.adm）
     app.state.adm = AutoDM()
     # 后台预热账号校验缓存（并发，不阻塞启动）

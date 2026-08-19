@@ -325,7 +325,10 @@ class RecvChannel(threading.Thread):
 
     def _build_auth(self) -> Any:
         from dy_apis.login_api import DYLoginApi
-        return DYLoginApi._load_auth_from_env(self.env_path)
+        auth = DYLoginApi._load_auth_from_env(self.env_path)
+        # WS 长连接同样要求实时 cookie（陈旧 cookie 会 KICK/拒绝）
+        DYLoginApi.refresh_cookie_from_profile(auth, self.env_path)
+        return auth
 
     def _make_ws(self) -> Any:
         from websocket import WebSocketApp
@@ -609,6 +612,9 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         from dy_apis.douyin_api import DouyinAPI
         env_path = acc.env_path_of(ib.name)
         auth = DYLoginApi._load_auth_from_env(env_path)
+        # .env 里保存的 cookie 会过期，导致 imapi 返回 50 字节空响应。
+        # 拉取前尝试从账号 profile 读取实时 cookie 刷新凭证（失败则退回原凭证）。
+        DYLoginApi.refresh_cookie_from_profile(auth, env_path)
         my_uid = str(auth.get_uid())
     except Exception as e:
         logger.warning(f"[recv][{ib.name}] 加载凭证失败: {e}")
@@ -617,6 +623,9 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
     # 1) get_message_by_init 拉全量会话（250KB，含 259 个 conversation_id）
     try:
         raw = DouyinAPI.get_message_by_init(auth)
+        if len(raw) < 2000:
+            logger.warning(f"[recv][{ib.name}] get_message_by_init 返回 {len(raw)} 字节"
+                           f"（非全量，疑似凭证失效/限频）：{raw[:80]}")
         convs = DouyinAPI.parse_init_conversations(raw, my_uid)
     except Exception as e:
         logger.warning(f"[recv][{ib.name}] get_message_by_init 失败: {e}")
@@ -659,70 +668,57 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
             conn.commit()
     logger.info(f"[recv][{ib.name}] get_message_by_init 提取 {len(convs)} 个会话，新增 {n} 个")
 
-    # 3) 批量解析昵称/头像（后台线程池并行，不阻塞 HTTP 响应）
-    def _resolve_one(c: dict) -> int:
-        peer_uid = c.get("peer_uid")
-        sec_uid = c.get("sec_uid")
-        conv_id = c["conversation_id"]
-        existing = ib.convs.get(conv_id)
-        if existing and existing.peer_name and existing.peer_name != peer_uid:
-            return 0  # 已有真实昵称
-        nickname = None
-        avatar_url = ""
-        # 优先用 get_user_info（用户主页 profile API，实测可用返回 nickname+avatar）
-        if sec_uid:
+    # 3) 批量解析昵称/头像（后台线程：真实浏览器页面 fetch 批量查，不阻塞 HTTP 响应）
+    # 教训：纯 requests 调 get_user_info（profile API）会被拒（status=2）/限频。
+    # 用浏览器页面 fetch sec_user_ids 批量查（对齐 douyin.com/chat 实机）稳定返回昵称+头像。
+    def _resolve_names():
+        need = []
+        for c in convs:
+            sec_uid = c.get("sec_uid")
+            peer_uid = c.get("peer_uid")
+            conv_id = c["conversation_id"]
+            if not sec_uid:
+                continue
+            existing = ib.convs.get(conv_id)
+            if existing and existing.peer_name and existing.peer_name != peer_uid:
+                continue  # 已有真实昵称
+            need.append((sec_uid, conv_id))
+        if not need:
+            return
+        resolved = 0
+        info_map = DYLoginApi.bulk_user_info_via_browser(env_path,
+                                                         [s for s, _ in need])
+        for sec_uid, conv_id in need:
+            info = info_map.get(sec_uid) or {}
+            nickname = info.get("nickname") or ""
+            avatar_url = info.get("avatar") or ""
+            if not nickname:
+                continue
+            existing = ib.convs.get(conv_id)
+            if existing:
+                existing.peer_name = nickname
+                if avatar_url:
+                    existing.avatar = avatar_url
             try:
-                info = DouyinAPI.get_user_info(auth, f"https://www.douyin.com/user/{sec_uid}")
-                user = (info or {}).get("user") or {}
-                nickname = user.get("nickname")
-                avt = user.get("avatar_small") or user.get("avatar_thumb") or {}
-                avatar_url = avt.get("url_list", [""])[0] if avt.get("url_list") else ""
-                logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} → {nickname}")
-            except Exception as e:
-                logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} 失败: {e}")
-        # 退回 get_im_user_info（GET to_user_id）
-        if not nickname and peer_uid:
-            try:
-                info = DouyinAPI.get_im_user_info(auth, peer_uid)
-                nickname = info.get("nickname")
-                avatar_url = info.get("avatar") or ""
+                db = ib._db()
+                if avatar_url:
+                    db.execute(
+                        "UPDATE dm_conversations SET peer_name=?,avatar=? WHERE account=? AND conv_id=?",
+                        (nickname, avatar_url, ib.name, conv_id),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE dm_conversations SET peer_name=? WHERE account=? AND conv_id=?",
+                        (nickname, ib.name, conv_id),
+                    )
+                db.commit()
             except Exception:
                 pass
-        if not nickname:
-            nickname = peer_uid or conv_id  # 兜底用 uid
-        if existing:
-            existing.peer_name = nickname
-            if avatar_url:
-                existing.avatar = avatar_url
-        try:
-            db = ib._db()
-            if avatar_url:
-                db.execute(
-                    "UPDATE dm_conversations SET peer_name=?,avatar=? WHERE account=? AND conv_id=?",
-                    (nickname, avatar_url, ib.name, conv_id),
-                )
-            else:
-                db.execute(
-                    "UPDATE dm_conversations SET peer_name=? WHERE account=? AND conv_id=?",
-                    (nickname, ib.name, conv_id),
-                )
-            db.commit()
-        except Exception:
-            pass
-        return 1
-
-    def _resolve_names():
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        resolved = 0
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(_resolve_one, c) for c in convs]
-            for f in as_completed(futures):
-                try:
-                    resolved += f.result()
-                except Exception:
-                    pass
+            resolved += 1
         if resolved:
-            logger.info(f"[recv][{ib.name}] 已解析 {resolved}/{len(convs)} 个会话的昵称/头像")
+            logger.info(f"[recv][{ib.name}] 已解析 {resolved}/{len(need)} 个会话的昵称/头像（浏览器批量）")
+        else:
+            logger.warning(f"[recv][{ib.name}] 浏览器批量昵称解析 0 个（会话稍后随 WS 新消息补全昵称）")
 
     threading.Thread(target=_resolve_names, daemon=True).start()
     return n

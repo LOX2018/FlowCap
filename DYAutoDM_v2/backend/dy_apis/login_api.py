@@ -458,6 +458,156 @@ class DYLoginApi:
             auth.cookie_str = "; ".join(f"{k}={v}" for k, v in auth.cookie.items())
         return auth
 
+    @staticmethod
+    def refresh_cookie_from_profile(auth, env_path=None):
+        """用指纹浏览器打开账号已登录的持久化 profile，读取【实时 cookie】刷新 auth。
+
+        背景：.env 里保存的 cookie（sessionid/sid_guard 等）会随浏览器重新登录/刷新而
+        过期，导致 imapi 的 get_message_by_init 被服务器拒（返回 50 字节空 JSON，而非
+        249KB 全量数据）。CDP 实测确认：换用浏览器实时 cookie 后立即返回 1.4MB 全量。
+        本方法通过 Playwright 打开固定 profile（复用登录态），读取实时 cookie 回填
+        auth.cookie / cookie_str 并写回 .env，保证 recv-daemon 等独立进程用的是有效凭证。
+
+        profile 被其他进程占用（凭证守护保活中）/ 指纹内核不可用时不抛错，静默退回
+        原 auth（返回 False），由调用方决定是否降级。
+        """
+        import os
+        try:
+            from auto_dm import accounts as _acc
+            from auto_dm.vbrowser import should_use_vb, launch_sync
+            from auto_dm import config as _cfg
+            if not env_path or not os.path.exists(env_path):
+                logger.info(f"[auth] profile 刷新 cookie：env 不存在跳过 env_path={env_path}")
+                return False
+            profile = _acc.profile_dir_of(env_path)
+            if not profile or not os.path.isdir(profile):
+                logger.info(f"[auth] profile 刷新 cookie：profile 不存在跳过 profile={profile}")
+                return False
+            _vb, _vb_mode = should_use_vb(_cfg)
+            _pw, _browser, context, _backend = launch_sync(
+                _vb_mode, _cfg, headless=True, user_data_dir=profile)
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                try:
+                    page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=20000)
+                    page.wait_for_timeout(2500)
+                except Exception:
+                    logger.warning("[auth] profile 刷新 cookie：打开 chat 页失败，退回原凭证")
+                    return False
+                cks = {}
+                for c in context.cookies():
+                    cks[c["name"]] = c["value"]
+                if cks.get("sessionid") or cks.get("sid_tt"):
+                    auth.cookie = cks
+                    auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
+                    try:
+                        DYLoginApi().save_credential(auth, env_path)
+                    except Exception:
+                        pass
+                    logger.info(f"[auth] profile 刷新 cookie 成功（{len(cks)} 项，已写回 .env）")
+                    return True
+                logger.warning("[auth] profile 刷新 cookie：profile 内无登录态（无 sessionid）")
+                return False
+            finally:
+                try:
+                    if _backend == "exe":
+                        context.close()
+                    _pw.stop()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.info(f"[auth] profile 刷新 cookie 跳过（{e}）")
+            return False
+
+    @staticmethod
+    def bulk_user_info_via_browser(env_path, sec_uids):
+        """在真实浏览器上下文里批量查用户昵称/头像（对齐 douyin.com/chat 实机行为）。
+
+        背景：纯 requests 调 get_user_info（profile API）会被拒绝（status=2）或限频，
+        而浏览器页面内 fetch 带真实签名+指纹+实时cookie，稳定返回昵称/头像。
+        CDP 实测：页面内 fetch `/aweme/v1/web/im/user/info/` POST `sec_user_ids=[...]`
+        返回 `data: [{nickname, avatar_small...}, ...]`，一次可查多个用户。
+
+        必须先开有头浏览器（headless=False 实测返回昵称；headless 被降级返回空）。
+        返回 {sec_uid: {"nickname": str, "avatar": str}}，失败/受限的 sec_uid 不包含。
+        """
+        import os
+        from playwright.sync_api import sync_playwright
+        from auto_dm import accounts as _acc
+        from auto_dm.vbrowser import should_use_vb, launch_sync
+        from auto_dm import config as _cfg
+        out = {}
+        if not sec_uids or not env_path or not os.path.exists(env_path):
+            return out
+        profile = _acc.profile_dir_of(env_path)
+        if not profile or not os.path.isdir(profile):
+            return out
+        _vb, _vb_mode = should_use_vb(_cfg)
+        _pw = None
+        _browser = None
+        context = None
+        try:
+            _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=False, user_data_dir=profile)
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=25000)
+                page.wait_for_timeout(2500)
+            except Exception:
+                logger.warning("[auth] 批量查昵称：打开 chat 页失败")
+                return out
+            if not page.url.startswith("https://www.douyin.com"):
+                logger.warning("[auth] 批量查昵称：未落在 douyin.com 域，跳过")
+                return out
+            api_url = "/aweme/v1/web/im/user/info/?device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&update_version_code=170400&version_code=170400&version_name=17.4.0&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Mozilla&browser_version=5.0&browser_online=true&os_name=Windows&os_version=10&platform=PC&downlink=10&effective_type=4g&round_trip_time=100"
+            # 分批（每批 6 个），浏览器单次 fetch 批量查询
+            import json as _json
+            import urllib.parse as _up
+            batch = 6
+            for i in range(0, len(sec_uids), batch):
+                chunk = sec_uids[i:i + batch]
+                # form-urlencoded: sec_user_ids=["...","..."]（与浏览器一致）
+                _body_q = "sec_user_ids=" + _up.quote(_json.dumps(chunk))
+                js = f"""
+                (async () => {{
+                  const r = await fetch({_json.dumps(api_url)}, {{
+                    method: 'POST',
+                    headers: {{'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'}},
+                    body: {_json.dumps(_body_q)},
+                    credentials: 'include'
+                  }});
+                  return await r.json();
+                }})()
+                """
+                try:
+                    result = page.evaluate(js)
+                except Exception as e:
+                    logger.warning(f"[auth] 批量查昵称 evaluate 失败: {e}")
+                    continue
+                items = (result or {}).get("data") or []
+                for u in items:
+                    sec = u.get("sec_uid") or ""
+                    if not sec:
+                        continue
+                    avt = (u.get("avatar_small") or {}).get("url_list") or []
+                    out[sec] = {
+                        "nickname": u.get("nickname") or "",
+                        "avatar": avt[0] if avt else "",
+                    }
+                page.wait_for_timeout(300)
+            logger.info(f"[auth] 浏览器批量查昵称：{len(out)}/{len(sec_uids)} 个成功")
+            return out
+        except Exception as e:
+            logger.warning(f"[auth] 浏览器批量查昵称失败: {e}")
+            return out
+        finally:
+            try:
+                if _backend == "exe" and context is not None:
+                    context.close()
+                if _pw is not None:
+                    _pw.stop()
+            except Exception:
+                pass
+
     async def get_login_auth(self, headless=False, env_path=".env", force=False,
                              landing_url="https://www.douyin.com/chat?isPopup=1"):
         """优先从 env_path 指定的 .env 读 ticket，没有或已失效就扫码登录后写入该 .env。

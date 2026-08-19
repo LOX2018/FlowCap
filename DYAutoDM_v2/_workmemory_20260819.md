@@ -556,3 +556,54 @@ Playwright CDP 抓取全部网络请求，对比浏览器与后端实现差异�
 ## 版本 0.28.3→0.28.4
 - recv-daemon sidecar 重打；前端无改动。
 - 需用户实测：私信中心昵称+头像逐步出现（44 会话约 10s 内），不再长时间数字。
+
+---
+
+# 会话 0.28.5（根因实测：cookie 过期 + 数据库基准不一致 + 浏览器批量查昵称）
+
+## 波及用户问题
+1. 私信中心数量正常但昵称全是数字、无会话内容；
+2. 任务中心历史任务一直显示「运行中」。
+
+## 实测定位（全部用指纹浏览器/CDP 实机验证）
+### 根因 1：.env 保存的 cookie 过期
+- .env 里 `sessionid/sid_guard/uid_tt/__ac_signature` 等登录态全 DIFF（与浏览器实时值不同）。
+- 用实时 cookie 重发 `get_message_by_init` → 返回 **1,430,446 字节全量**（旧 cookie 只有 50 字节
+  空 JSON `{"BaseResp":{},"Header":{},"Method":0,"Service":0}`）。**不是限频，是凭证过期。**
+- 修复：新增 `login_api.refresh_cookie_from_profile(auth, env_path)`——Playwright 打开账号
+  profile 读实时 cookie 回填 auth 并写回 .env；recv_daemon 拉会话/建 WS 前都调用。
+
+### 根因 2：数据库路径基准不一致
+- `Settings.data_dir = Path("data")` 是相对路径（取决于进程 cwd）。recv-demon 从不同目录
+  启动会打开不同 .db，账号索引读取为 None → env_path_of 返回 None。
+- 修复：`database._db_path()` 改为基于 `vbrowser.app_root()`（绝对路径），所有进程统一
+  到 app_root/data/dyautodm.db。
+
+### 根因 3：纯 requests 查昵称被拒（status=2）
+- `get_user_info`（profile API）纯 Python 调用被拒（status=2），且限频弹 8 并发会打爆账号。
+- 实机验证：**浏览器页面内 fetch** `/aweme/v1/web/im/user/info/`（POST + sec_user_ids）
+  带真实签名/指纹/实时 cookie → 稳定返回昵称+头像（headless=False 才行，headless 被降级空）。
+- 修复：`login_api.bulk_user_info_via_browser(env_path, sec_uids)` 分批页面 fetch 批量查。
+  recv 的 `_resolve_names` 改用该方法（实测 16/39 真实中文昵称+头像）。
+
+### 根因 4/修复：任务状态悬空
+- `fix_stuck_tasks` 只在多条 running 时收尾；单条悬挂（引擎崩溃/进程被杀遗留）不处理。
+- 修复：`fix_stuck_tasks(force=True)` 全量收尾；`backend main.py` 启动时调用（启动瞬间
+  引擎必然未运行）。
+
+## 改动清单
+- login_api.py：+refresh_cookie_from_profile、+bulk_user_info_via_browser
+- recv_daemon.py：拉会话/建 WS 前刷新 cookie；`_resolve_names` 改浏览器批量查；
+  get_message_by_init<2000 字节时告警
+- database.py：`_db_path()` 基于 app_root 绝对路径
+- auto_dm/vbrowser.py：重导出 launch_sync
+- tasks_history.py：`fix_stuck_tasks(force)`；main.py 启动强制收尾
+
+## 验证
+- 四川工伤-张老师：45 会话成功拉取（实时 cookie），16/39 昵称+头像浏览器批量解析成功。
+- 版本 0.28.4→0.28.5；recv-daemon + backend sidecar 重打。
+
+## 遗留
+- 会话消息内容：正则提取 protobuf 中的消息文本不可靠（conv 关联不精确）。下一轮用浏览器
+  douyin.com/chat DOM 采集会话列表最后一条消息预览，与浏览器展示完全一致。
+- 昵称未全量解析的部分：可能是隐私保护用户，随 WS 新消息（sender_nickname）补全。

@@ -30,10 +30,14 @@ _conn: sqlite3.Connection | None = None
 
 def _db_path() -> Path:
     try:
-        from config import settings
-        p = settings.data_dir / "dyautodm.db"
+        from vbrowser import app_root
+        p = Path(app_root()) / "data" / "dyautodm.db"
     except Exception:
-        p = Path("data") / "dyautodm.db"
+        try:
+            from config import settings
+            p = settings.data_dir / "dyautodm.db"
+        except Exception:
+            p = Path("data") / "dyautodm.db"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
