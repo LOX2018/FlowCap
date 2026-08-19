@@ -85,6 +85,7 @@ def _map_conversation(c: dict) -> dict:
         "name": c.get("peer_name") or c.get("peer_id") or c.get("conv_id") or "会话",
         "unread": c.get("unread") or 0,
         "messages": [_map_message(m) for m in (c.get("messages") or [])],
+        "avatar": c.get("avatar") or "",
     }
 
 

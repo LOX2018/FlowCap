@@ -93,7 +93,17 @@ export function Pill({ c, children }: { c: "ok" | "warn" | "danger" | "accent" |
 }
 
 /** 头像（首字母 + 色相背景） */
-export function Avatar({ name, h, sm, lg }: { name: string; h: string; sm?: boolean; lg?: boolean }) {
+export function Avatar({ name, h, sm, lg, src }: { name: string; h: string; sm?: boolean; lg?: boolean; src?: string }) {
+  if (src) {
+    return (
+      <span
+        className={"avatar" + (sm ? " sm" : "") + (lg ? " lg" : "")}
+        style={{ background: `oklch(55% 0.14 ${h})` }}
+      >
+        <img src={src} alt={name} style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+      </span>
+    );
+  }
   return (
     <span
       className={"avatar" + (sm ? " sm" : "") + (lg ? " lg" : "")}

@@ -57,6 +57,7 @@ def get_db() -> sqlite3.Connection:
         _conn.execute("PRAGMA synchronous=NORMAL")  # 正常同步（比 FULL 快，仍比 JSON 安全得多）
         _conn.execute("PRAGMA foreign_keys=ON")
         _init_tables(_conn)
+        _migrate_schema(_conn)
         _migrate_json(_conn)
         logger.info(f"[db] SQLite 已初始化: {p}")
     return _conn
@@ -88,6 +89,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         short_id TEXT,
         last_ts REAL DEFAULT 0,
         unread INTEGER DEFAULT 0,
+        avatar TEXT,
         UNIQUE(account, conv_id)
     );
     CREATE INDEX IF NOT EXISTS idx_dmconv_account ON dm_conversations(account, last_ts DESC);
@@ -111,6 +113,14 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     );
     """)
     conn.commit()
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """迁移旧表结构（新增列等），幂等。"""
+    try:
+        conn.execute("ALTER TABLE dm_conversations ADD COLUMN avatar TEXT")
+    except Exception:
+        pass  # 列已存在
 
 
 def _migrate_json(conn: sqlite3.Connection) -> None:

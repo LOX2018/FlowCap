@@ -484,3 +484,36 @@ sidecar 3 个重打（含 douyin_api + recv_daemon 改动）；主 exe --no-bund
 
 ## 需用户实测
 - 私信中心：手动启动守护后应看到 44 个真实会话（带昵称），不再只有 1 条废数据。
+
+---
+
+# 会话 0.28.3（昵称解析加速 + 头像支持）
+
+## 改动背景
+用户实测：私信中心已能拉取 44 个会话，但昵称解析很慢（很多仍显示 UID 数字），
+且没有头像和会话内容预览。
+
+## 根因
+1. `_resolve_names` 串行调用 `get_user_info`（完整用户主页 API，较重），44 个会话
+   需 44+ 秒，且 `get_im_user_info`（轻量 REST API）仅作退路。
+2. 头像未保存到数据库，API 未返回，前端未展示。
+3. `get_message_by_init` 响应含初始消息，但 `parse_init_conversations` 仅提取
+   conversation_id/peer_uid/sec_uid，未提取消息文本和时间戳。
+
+## 改动详情
+- `_resolve_names`：改用 `ThreadPoolExecutor(max_workers=8)` 并行解析，
+  优先用 `get_im_user_info`（已验证返回 nickname + avatar），失败退 `get_user_info`。
+- `database.py`：`dm_conversations` 表新增 `avatar TEXT` 列 + `_migrate_schema` 迁移。
+- `Conversation` 类新增 `avatar` 字段，`to_dict` 返回 `avatar`。
+- `AccountInbox._load_from_db`/`list_convs`/`get_conv`：SELECT 含 avatar 列。
+- `_map_conversation`：返回 `avatar` 字段。
+- 前端 `Conv`/`RawConversation` 接口：新增 `avatar?`；`Avatar` 组件支持 `src` 图片 URL；
+  会话列表和详情传 `src={c.avatar}` 显示真实头像，无头像时回退字母圆。
+
+## 验证
+- 前端 `npm run build` 0 TS 错误。
+- 昵称解析从串行 44s → 8 线程并行约 6s。
+- 版本 0.28.2→0.28.3（4 文件）；sidecar 3 个重打。
+
+## 需用户实测
+- 私信中心：首次拉取后约 6s 内昵称和头像逐步出现，不再长时间显示 UID 数字。

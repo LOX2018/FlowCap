@@ -83,6 +83,7 @@ class Conversation:
         self.messages: list[dict] = []
         self.unread = 0
         self.last_ts = 0
+        self.avatar: str | None = None
 
     def add(self, role: str, text: str, msg_type: str = "text",
             extra: dict | None = None, ts: float | None = None) -> None:
@@ -108,6 +109,7 @@ class Conversation:
             "unread": self.unread,
             "last_ts": self.last_ts,
             "messages": msgs,
+            "avatar": self.avatar or "",
         }
 
 
@@ -136,7 +138,7 @@ class AccountInbox:
         try:
             conn = self._db()
             rows = conn.execute(
-                "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread "
+                "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar "
                 "FROM dm_conversations WHERE account=? ORDER BY last_ts DESC",
                 (self.name,),
             ).fetchall()
@@ -145,6 +147,7 @@ class AccountInbox:
                 c.short_id = r["short_id"]
                 c.last_ts = r["last_ts"] or 0
                 c.unread = r["unread"] or 0
+                c.avatar = r["avatar"] or None
                 self.convs[r["conv_id"]] = c
             if self.convs:
                 logger.info(f"[recv][{self.name}] 已从数据库加载 {len(self.convs)} 个会话")
@@ -192,7 +195,7 @@ class AccountInbox:
             try:
                 conn = self._db()
                 rows = conn.execute(
-                    "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread "
+                    "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar "
                     "FROM dm_conversations WHERE account=? ORDER BY last_ts DESC",
                     (self.name,),
                 ).fetchall()
@@ -202,6 +205,7 @@ class AccountInbox:
                         c.short_id = r["short_id"]
                         c.last_ts = r["last_ts"] or 0
                         c.unread = r["unread"] or 0
+                        c.avatar = r["avatar"] or None
                         self.convs[r["conv_id"]] = c
             except Exception:
                 pass
@@ -220,7 +224,7 @@ class AccountInbox:
                 # 确保会话骨架存在
                 if c is None:
                     row = conn.execute(
-                        "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread "
+                        "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar "
                         "FROM dm_conversations WHERE account=? AND conv_id=?",
                         (self.name, conv_id),
                     ).fetchone()
@@ -254,6 +258,7 @@ class AccountInbox:
                     "unread": 0,
                     "last_ts": last_ts,
                     "messages": messages,
+                    "avatar": row["avatar"] or "",
                 }
             except Exception as e:
                 logger.warning(f"[recv][{self.name}] 数据库加载会话详情失败: {e}")
@@ -647,55 +652,76 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
             if conn:
                 conn.execute(
                     "INSERT OR IGNORE INTO dm_conversations(account,conv_id,"
-                    "peer_id,peer_name,short_id,last_ts,unread) VALUES(?,?,?,?,?,?,?)",
-                    (ib.name, conv_id, peer_uid, peer_uid, None, 0, 0),
+                    "peer_id,peer_name,short_id,last_ts,unread,avatar) VALUES(?,?,?,?,?,?,?,?)",
+                    (ib.name, conv_id, peer_uid, peer_uid, None, 0, 0, None),
                 )
         if conn:
             conn.commit()
     logger.info(f"[recv][{ib.name}] get_message_by_init 提取 {len(convs)} 个会话，新增 {n} 个")
 
-    # 3) 批量解析昵称/头像（后台线程，不阻塞 HTTP 响应）
-    def _resolve_names():
-        resolved = 0
-        for c in convs:
-            peer_uid = c.get("peer_uid")
-            sec_uid = c.get("sec_uid")
-            conv_id = c["conversation_id"]
-            existing = ib.convs.get(conv_id)
-            if existing and existing.peer_name and existing.peer_name != peer_uid:
-                continue  # 已有昵称
-            nickname = None
-            # 优先用 sec_uid 调 get_user_info（已验证可用）
-            if sec_uid:
-                try:
-                    info = DouyinAPI.get_user_info(auth, f"https://www.douyin.com/user/{sec_uid}")
-                    user = (info or {}).get("user") or {}
-                    nickname = user.get("nickname")
-                except Exception as e:
-                    logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} 失败: {e}")
-            # 退回 get_im_user_info（REST API）
-            if not nickname and peer_uid:
-                try:
-                    info = DouyinAPI.get_im_user_info(auth, peer_uid)
-                    nickname = info.get("nickname")
-                except Exception:
-                    pass
-            if not nickname:
-                nickname = peer_uid or conv_id  # 兜底用 uid
-            if existing:
-                existing.peer_name = nickname
+    # 3) 批量解析昵称/头像（后台线程池并行，不阻塞 HTTP 响应）
+    def _resolve_one(c: dict) -> int:
+        peer_uid = c.get("peer_uid")
+        sec_uid = c.get("sec_uid")
+        conv_id = c["conversation_id"]
+        existing = ib.convs.get(conv_id)
+        if existing and existing.peer_name and existing.peer_name != peer_uid:
+            return 0  # 已有真实昵称
+        nickname = None
+        avatar_url = ""
+        # 优先用 get_im_user_info（轻量 REST JSON API，已验证返回 nickname + avatar）
+        if peer_uid:
             try:
-                db = ib._db()
+                info = DouyinAPI.get_im_user_info(auth, peer_uid)
+                nickname = info.get("nickname")
+                avatar_url = info.get("avatar") or ""
+            except Exception:
+                pass
+        # 退回 get_user_info（完整用户主页 API，较重）
+        if not nickname and sec_uid:
+            try:
+                info = DouyinAPI.get_user_info(auth, f"https://www.douyin.com/user/{sec_uid}")
+                user = (info or {}).get("user") or {}
+                nickname = user.get("nickname")
+                avatar_thumb = user.get("avatar_thumb") or {}
+                avatar_url = avatar_thumb.get("url_list", [""])[0] if avatar_thumb else ""
+            except Exception as e:
+                logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} 失败: {e}")
+        if not nickname:
+            nickname = peer_uid or conv_id  # 兜底用 uid
+        if existing:
+            existing.peer_name = nickname
+            if avatar_url:
+                existing.avatar = avatar_url
+        try:
+            db = ib._db()
+            if avatar_url:
+                db.execute(
+                    "UPDATE dm_conversations SET peer_name=?,avatar=? WHERE account=? AND conv_id=?",
+                    (nickname, avatar_url, ib.name, conv_id),
+                )
+            else:
                 db.execute(
                     "UPDATE dm_conversations SET peer_name=? WHERE account=? AND conv_id=?",
                     (nickname, ib.name, conv_id),
                 )
-                db.commit()
-            except Exception:
-                pass
-            resolved += 1
+            db.commit()
+        except Exception:
+            pass
+        return 1
+
+    def _resolve_names():
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        resolved = 0
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(_resolve_one, c) for c in convs]
+            for f in as_completed(futures):
+                try:
+                    resolved += f.result()
+                except Exception:
+                    pass
         if resolved:
-            logger.info(f"[recv][{ib.name}] 已解析 {resolved}/{len(convs)} 个会话的昵称")
+            logger.info(f"[recv][{ib.name}] 已解析 {resolved}/{len(convs)} 个会话的昵称/头像")
 
     threading.Thread(target=_resolve_names, daemon=True).start()
     return n

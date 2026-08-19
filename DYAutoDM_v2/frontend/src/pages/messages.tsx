@@ -33,6 +33,7 @@ interface Conv {
   hue: string;
   name: string;
   unread: number;
+  avatar?: string;
   msgs: Msg[];
 }
 interface Account {
@@ -54,6 +55,7 @@ interface RawConversation {
   name?: string;
   unread?: number;
   messages?: RawMessage[];
+  avatar?: string;
 }
 interface ConversationsResp {
   ok?: boolean;
@@ -202,6 +204,7 @@ export default function MessagesPage(props: PageProps) {
         hue: hue((c.name || "x").length * 2),
         name: c.name || "会话" + i,
         unread: c.unread || 0,
+        avatar: c.avatar || "",
         msgs: (c.messages || []).map((m, j) => ({
           id: "rm" + i + "_" + j,
           dir: (m.dir || "in") as "in" | "out",
@@ -412,7 +415,7 @@ export default function MessagesPage(props: PageProps) {
                 key={c.id}
                 onClick={() => openConv(c.id)}
               >
-                <Avatar name={c.name} h={c.hue} />
+                <Avatar name={c.name} h={c.hue} src={c.avatar} />
                 <span className="info">
                   <span className="nm">
                     {c.name}
@@ -439,7 +442,7 @@ export default function MessagesPage(props: PageProps) {
         <div className="card thread-wrap" style={{ padding: 0 }}>
           <div className="thread">
             <div className="thread-head">
-              <Avatar name={conv.name} h={conv.hue} sm />
+              <Avatar name={conv.name} h={conv.hue} sm src={conv.avatar} />
               <span className="nm">{conv.name}</span>
               <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
                 会话 ID {conv.id}
