@@ -517,3 +517,42 @@ sidecar 3 个重打（含 douyin_api + recv_daemon 改动）；主 exe --no-bund
 
 ## 需用户实测
 - 私信中心：首次拉取后约 6s 内昵称和头像逐步出现，不再长时间显示 UID 数字。
+
+---
+
+# 会话 0.28.4（CDP 指纹浏览器实测 + 昵称解析修正）
+
+## 实测方法
+用指纹浏览器（ungoogled-chromium + 账号固定 profile）打开 douyin.com/chat，
+Playwright CDP 抓取全部网络请求，对比浏览器与后端实现差异。
+
+## CDP 实测结论
+| 项目 | 浏览器 | 后端（修正前） |
+|------|--------|--------------|
+| 会话拉取 | `imapi.douyin.com/v1/message/get_message_by_init` POST protobuf | ✅ 已对齐 |
+| 昵称解析 | `POST /aweme/v1/web/im/user/info/` + `sec_user_ids` body | ❌ 用 GET + to_user_id |
+| 消息历史 | `imapi.douyin.com/v1/message/get_user_message` POST protobuf | ❌ 未实现 |
+| 陌生人会话 | `imapi.douyin.com/v1/stranger/get_conversation_list` | ❌ 未实现 |
+| 头像 | `avatar_small.url_list[0]`（168x168 webp） | ❌ 未提取 |
+
+## 尝试与回退
+- 尝试复现浏览器 `POST+sec_user_ids` 方式 → 返回 `status=8`（a_bogus 签名
+  依赖 `uifid` 等浏览器端生成参数，Python 无法复现）。
+- 实测 `GET /aweme/v1/web/user/profile/other/?sec_user_id=`（`get_user_info`）
+  仍然可用：1.74s 返回 nickname + avatar ✓。
+
+## 最终修复
+- `_resolve_one`：**优先 `get_user_info`（profile API，实测可用）**，sec_uid 解析昵称+头像，
+  失败退 `get_im_user_info`（GET to_user_id）。
+- 头像提取：`user.avatar_small` 优先，退 `avatar_thumb`，取 `url_list[0]`。
+- `get_im_user_info`：头像改从 `avatar_small` 提取（与浏览器一致 168x168）。
+- 保留 `ThreadPoolExecutor(max_workers=8)` 并行（44 会话 ≈10s，原串行 75s）。
+
+## 遗留
+- 会话内容（消息预览）：需解析 `get_message_by_init` 250KB protobuf 中的消息文本，
+  或调 `get_user_message`（cmd 100）单会话历史，下一轮实现。
+- 昵称解析仍受限于 GET profile API 限频（当前 8 并行 × 1.7s/请求）。
+
+## 版本 0.28.3→0.28.4
+- recv-daemon sidecar 重打；前端无改动。
+- 需用户实测：私信中心昵称+头像逐步出现（44 会话约 10s 内），不再长时间数字。

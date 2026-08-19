@@ -1966,10 +1966,10 @@ class DouyinAPI:
 
     @staticmethod
     def get_im_user_info(auth, uid: str) -> dict:
-        """调 REST JSON API 解析用户昵称/头像（抖音网页 douyin.com/chat 同源）。
+        """调 REST JSON API 解析用户昵称/头像（GET + to_user_id）。
 
-        端点：/aweme/v1/web/im/user/info/?to_user_id=<uid>
-        返回 {nickname, avatar_small, avatar_thumb, uid, sec_uid, follow_status, ...}
+        注：CDP 实测浏览器用 POST + sec_user_ids，但 a_bogus 签名无法复现
+        （status=8）。GET + to_user_id 经验证可返回昵称/头像，作退路保留。
         """
         from builder.params import Params
         from utils.fingerprint import get_profile
@@ -2016,10 +2016,12 @@ class DouyinAPI:
         if not items:
             return {}
         u = items[0]
+        avatar_small = u.get("avatar_small") or u.get("avatar_thumb") or {}
+        avatar_url = avatar_small.get("url_list", [""])[0] if avatar_small.get("url_list") else ""
         return {
             "uid": str(u.get("uid") or uid),
             "nickname": u.get("nickname") or uid,
-            "avatar": u.get("avatar_thumb", {}).get("url_list", [""])[0] if u.get("avatar_thumb") else "",
+            "avatar": avatar_url,
             "sec_uid": u.get("sec_uid") or "",
             "follow_status": u.get("follow_status"),
             "follower_status": u.get("follower_status"),

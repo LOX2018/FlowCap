@@ -669,24 +669,25 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
             return 0  # 已有真实昵称
         nickname = None
         avatar_url = ""
-        # 优先用 get_im_user_info（轻量 REST JSON API，已验证返回 nickname + avatar）
-        if peer_uid:
+        # 优先用 get_user_info（用户主页 profile API，实测可用返回 nickname+avatar）
+        if sec_uid:
+            try:
+                info = DouyinAPI.get_user_info(auth, f"https://www.douyin.com/user/{sec_uid}")
+                user = (info or {}).get("user") or {}
+                nickname = user.get("nickname")
+                avt = user.get("avatar_small") or user.get("avatar_thumb") or {}
+                avatar_url = avt.get("url_list", [""])[0] if avt.get("url_list") else ""
+                logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} → {nickname}")
+            except Exception as e:
+                logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} 失败: {e}")
+        # 退回 get_im_user_info（GET to_user_id）
+        if not nickname and peer_uid:
             try:
                 info = DouyinAPI.get_im_user_info(auth, peer_uid)
                 nickname = info.get("nickname")
                 avatar_url = info.get("avatar") or ""
             except Exception:
                 pass
-        # 退回 get_user_info（完整用户主页 API，较重）
-        if not nickname and sec_uid:
-            try:
-                info = DouyinAPI.get_user_info(auth, f"https://www.douyin.com/user/{sec_uid}")
-                user = (info or {}).get("user") or {}
-                nickname = user.get("nickname")
-                avatar_thumb = user.get("avatar_thumb") or {}
-                avatar_url = avatar_thumb.get("url_list", [""])[0] if avatar_thumb else ""
-            except Exception as e:
-                logger.debug(f"[recv][{ib.name}] get_user_info sec={sec_uid[:20]} 失败: {e}")
         if not nickname:
             nickname = peer_uid or conv_id  # 兜底用 uid
         if existing:
