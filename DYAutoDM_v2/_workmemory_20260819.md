@@ -436,3 +436,24 @@ sidecar 3 个重打（含 douyin_api + recv_daemon 改动）；主 exe --no-bund
 - ① 私信中心：守护拉起后应看到 44 个会话（而非 1 个），大部分带真实昵称。
 - ② 昵称逐步出现：后台线程解析 sec_uid → nickname，首次可能部分显示 uid，
   随后逐渐变为真实昵称。
+
+---
+
+# 会话 0.28.1（修复 _pull_conversations_api SQL 占位符不匹配导致 HTTP 500）
+
+## 改动背景
+用户日志：recv_daemon 启动后 `/conversations` 返回 HTTP 500。
+`_pull_conversations_api` 调用抖音 `get_message_by_init` 拉取 44 个会话成功后，
+写入 SQLite 时 INSERT 语句 VALUES 有 8 个 `?` 但只有 7 列，SQLite 报错
+`ProgrammingError: 当前语句使用 8 个绑定，但提供了 7 个`，FastAPI 转 HTTP 500。
+
+## 改动详情
+- `backend/daemon/recv_daemon.py` `_pull_conversations_api`：
+  `VALUES(?,?,?,?,?,?,?,?)` → `VALUES(?,?,?,?,?,?,?)`，与 7 列匹配。
+
+## 验证
+- 全项目 SQL INSERT 审计：11 处全部正确（仅此一处有误）。
+- 版本 0.28.0→0.28.1（4 文件）；sidecar 3 个重打。
+
+## 需用户实测
+- 私信中心：守护自动拉起后应正常返回会话列表，不再 500。

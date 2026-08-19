@@ -644,7 +644,7 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
             if conn:
                 conn.execute(
                     "INSERT OR IGNORE INTO dm_conversations(account,conv_id,"
-                    "peer_id,peer_name,short_id,last_ts,unread) VALUES(?,?,?,?,?,?,?,?)",
+                    "peer_id,peer_name,short_id,last_ts,unread) VALUES(?,?,?,?,?,?,?)",
                     (ib.name, conv_id, peer_uid, peer_uid, None, 0, 0),
                 )
         if conn:
