@@ -457,3 +457,30 @@ sidecar 3 个重打（含 douyin_api + recv_daemon 改动）；主 exe --no-bund
 
 ## 需用户实测
 - 私信中心：守护自动拉起后应正常返回会话列表，不再 500。
+
+---
+
+# 会话 0.28.2（修复 _pull_conversations_api 因 WS 同步帧占据收件箱而未调用）
+
+## 改动背景
+用户实测：手动启动私信守护后只返回 1 条废数据（`peer_name=763501374081696`、`messages=[]`、
+`last_ts=0`），没有按预期拉取到 44 个真实会话。
+
+## 根因
+`/conversations` 端点判断条件为 `if not convs:` 才调 `_pull_conversations_api`。
+但 WS 长连接初始化时下发同步帧，提供了 1 个会话骨架（`conv_id` + `short_id`），
+导致 `list_convs()` 返回 1 条非空结果，`_pull_conversations_api` 永远不会被调用。
+
+## 改动详情
+- `AccountInbox.__init__` 新增 `_api_pulled` 标记，初始 False。
+- `/conversations`：改为 `if not ib._api_pulled:`，无论 `list_convs` 是否为空，
+  首次请求都强制调 `_pull_conversations_api` 拉全量真实会话。
+- `/conversation`：同样加上 `_api_pulled` 检查，避免重复调用。
+
+## 验证
+- 守护启动后 WS 同步帧给 1 个骨架 → 但 `/conversations` 首次请求仍调
+  `get_message_by_init` 拉 44 个真实会话 → 私信中心显示完整列表。
+- 版本 0.28.1→0.28.2（4 文件）；sidecar 3 个重打。
+
+## 需用户实测
+- 私信中心：手动启动守护后应看到 44 个真实会话（带昵称），不再只有 1 条废数据。

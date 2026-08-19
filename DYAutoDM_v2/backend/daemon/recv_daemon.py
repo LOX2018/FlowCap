@@ -124,6 +124,7 @@ class AccountInbox:
         self.convs: dict[str, Conversation] = {}  # 内存缓存（WS 实时消息用）
         self.connected = False
         self.last_error = ""
+        self._api_pulled = False  # 标记是否已调 get_message_by_init 拉全量会话
         self._load_from_db()
 
     def _db(self):
@@ -577,10 +578,12 @@ async def conversations(account: str) -> dict:
     if not ib:
         raise HTTPException(404, "账号不存在")
     convs = ib.list_convs()
-    # 兜底：收件箱还没有任何会话（守护刚启动/WS 同步帧未到）时，
-    # 直接调 Douyin IM API 拉一次真实会话列表建立骨架，私信中心不再一片空白。
-    if not convs:
+    # 兜底：守护启动后首次拉取时，不管收件箱有没有 WS 同步帧的骨架，
+    # 都强制调 Douyin IM API 拉一次全量真实会话，确保私信中心看到完整列表。
+    # 避免 WS 同步帧给了 1 个骨架会话导致 list_convs 非空、跳过 API 拉取。
+    if not ib._api_pulled:
         _pull_conversations_api(ib)
+        ib._api_pulled = True
         convs = ib.list_convs()
     logger.info(f"[recv][{account}] /conversations 返回 {len(convs)} 个会话")
     for i, c in enumerate(convs):
@@ -706,7 +709,9 @@ async def conversation(account: str, conv_id: str) -> dict:
     conv = ib.get_conv(conv_id)
     if conv is None:
         # 未见过的会话：先 API 拉取骨架再查，保证点开的会话存在
-        _pull_conversations_api(ib)
+        if not ib._api_pulled:
+            _pull_conversations_api(ib)
+            ib._api_pulled = True
         conv = ib.get_conv(conv_id)
     if conv is None:
         raise HTTPException(404, "会话不存在")
