@@ -57,4 +57,5 @@ frontend/tsconfig.node.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
 _commit_msg.txt
-DY_Spider_base/_重构前版本标记.md
+# V1 (DY_Spider_base) 已彻底清理废弃，永不重新跟踪
+DY_Spider_base/
