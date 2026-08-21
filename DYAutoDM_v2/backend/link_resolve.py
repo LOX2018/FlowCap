@@ -239,13 +239,30 @@ def resolve_via_reflow(raw, auth=None):
     return None, None, source
 
 
-def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
+def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account_name=None):
     """用已登录浏览器打开链接，等其跳转到直播间页，再抠 live_id。
 
     适用于用户主页等需要登录态 + JS 跳转才能到达直播间的场景（备用）。
     只使用 VirtualBrowser 指纹内核——禁止回退原生 Playwright，指纹不可用时
     报错并放弃浏览器解析（上层会给出“无法解析直播间号”的明确提示）。
+
+    优先通过 BCC HTTP /resolve_url 接口（常驻浏览器容器，不抢锁）；
+    BCC 未运行时退回直开 Playwright（旧路径，可能抢锁但保证功能可用）。
     """
+    # 优先走 BCC（常驻浏览器容器，不抢锁）
+    if account_name:
+        try:
+            from dy_apis.login_api import _bcc_alive, _bcc_post
+            if _bcc_alive(account_name):
+                r = _bcc_post(account_name, "/resolve_url", {"url": url}, timeout=30)
+                lid = r.get("live_id")
+                if lid:
+                    logger.info(f"[resolve] BCC /resolve_url 成功 live_id={lid}")
+                    return lid, r.get("final_url")
+                logger.warning(f"[resolve] BCC /resolve_url 返回失败: {r.get('msg', '')}，退回直开浏览器")
+        except Exception as e:
+            logger.warning(f"[resolve] BCC /resolve_url 异常，退回直开浏览器: {e}")
+
     from auto_dm import config as _cfg
     from auto_dm.vbrowser import should_use_vb, launch_sync
 
@@ -301,7 +318,7 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False):
     return live_id, final_url
 
 
-def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=None):
+def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=None, account_name=None):
     """解析粘贴文本为 (live_id, source_url)。失败抛 ValueError。
 
     解析顺序：
@@ -350,7 +367,7 @@ def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=Non
     if not live_id:
         logger.info("[resolve] 尝试用浏览器解析（用户主页/需登录态）...")
         live_id, source = _browser_resolve(raw, user_data_dir=user_data_dir,
-                                           headless=headless)
+                                           headless=headless, account_name=account_name)
 
     if not live_id:
         raise ValueError(

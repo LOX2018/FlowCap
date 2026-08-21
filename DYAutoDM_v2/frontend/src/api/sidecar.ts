@@ -67,12 +67,17 @@ export async function backendAlive(): Promise<boolean> {
   return invoke<boolean>("backend_status");
 }
 
-/** 启动指定账号的凭证守护进程 */
+/** 启动指定账号的浏览器守护进程（BCC，浏览器容器）
+ *
+ * 复用 dyautodm-browser-daemon exe 名，启动参数 `--account X --port P`，
+ * 与 Rust 侧 start_browser_daemon 对齐。仅 spawn sidecar 进程，不等待 BCC
+ * 浏览器 context 就绪——如需就绪后再放行调用方，用 startBrowserDaemonReady。
+ */
 export async function startBrowserDaemon(account: string, port: number): Promise<string> {
   return invoke<string>("start_browser_daemon", { account, port });
 }
 
-/** 停止指定账号的凭证守护进程
+/** 停止指定账号的浏览器守护进程（BCC）
  *
  * 优先通过后端 HTTP 向守护自身的 /quit 端口发停止请求（守护会自行 os._exit，
  * 不依赖 Rust SidecarManager 的进程 label 精确匹配，避免“停止失败”）。
@@ -92,6 +97,75 @@ export async function stopBrowserDaemon(account: string, port: number): Promise<
   } catch {
     // ignore
   }
+}
+
+// ===== BCC（浏览器容器）就绪探测 =====
+
+/** BCC /status 返回体（前端关心的字段，与 backend/daemon/browser_daemon.py 对齐） */
+export interface BccStatus {
+  alive: boolean;
+  account: string;
+  profile?: string;
+  uid?: number | string | null;
+  last_refresh?: number;
+  logged_in?: boolean;
+}
+
+/** 查询某账号 BCC 的 /status（BCC 未就绪/端口未监听时返回 null） */
+export async function browserDaemonStatus(port: number): Promise<BccStatus | null> {
+  if (!port) return null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/status`, { method: "GET" });
+    if (!res.ok) return null;
+    return (await res.json()) as BccStatus;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 轮询探测 BCC /status 直到 alive=true 或超时。
+ *
+ * BCC 启动后需数秒拉起常驻浏览器 context（指纹内核冷启动更慢），
+ * 在 alive=false 期间 /cookie /user_info /resolve_url /scan_login 均返回
+ * “容器未启动”，调用方（recv-daemon / bulk_user_info / link_resolve）
+ * 必须等待就绪后再请求。
+ *
+ * @param port BCC HTTP 端口（= startBrowserDaemon 传入的 port）
+ * @param timeoutMs 总超时（默认 60s，指纹内核冷启动留足时间）
+ * @param intervalMs 轮询间隔（默认 500ms）
+ */
+export async function waitBrowserDaemonReady(
+  port: number,
+  timeoutMs = 60000,
+  intervalMs = 500,
+): Promise<BccStatus> {
+  const deadline = Date.now() + timeoutMs;
+  let last: BccStatus | null = null;
+  while (Date.now() < deadline) {
+    last = await browserDaemonStatus(port);
+    if (last && last.alive) return last;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  const acct = last && last.account ? last.account : "";
+  throw new Error(`BCC 在 ${timeoutMs}ms 内未就绪（port=${port}, account=${acct || "未知"}）`);
+}
+
+/**
+ * Tauri 模式下：启动某账号 BCC 并等待 /status 就绪（alive=true）。
+ * 浏览器模式直接抛错（无 sidecar）。
+ *
+ * @param account 账号名
+ * @param port BCC HTTP 端口
+ * @param timeoutMs 就绪探测超时（默认 60s）
+ */
+export async function startBrowserDaemonReady(
+  account: string,
+  port: number,
+  timeoutMs = 60000,
+): Promise<BccStatus> {
+  await startBrowserDaemon(account, port); // 拉起 sidecar（幂等：已运行则直接返回）
+  return waitBrowserDaemonReady(port, timeoutMs);
 }
 
 /** 启动私信接收守护进程（支持多账号） */

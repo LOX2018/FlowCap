@@ -16,6 +16,42 @@ from threading import Thread
 import qrcode
 
 
+# ---------------------------------------------------------------------------
+# BCC（浏览器容器）HTTP 客户端辅助
+# 每账号一个常驻 BCC（dyautodm-browser-daemon），持有 profile 的唯一 Playwright
+# context。调用方通过 HTTP 调 BCC 接口，不再各自 launch_persistent_context 抢锁。
+# ---------------------------------------------------------------------------
+
+def _bcc_port(account_name: str) -> int:
+    """该账号的 BCC（browser_daemon）专属端口。"""
+    from auto_dm import accounts as _acc
+    return _acc.browser_daemon_port(account_name)
+
+
+def _bcc_alive(account_name: str, timeout: float = 0.5) -> bool:
+    """探测该账号的 BCC 是否在运行（端口开 + /status 返回 alive）。"""
+    from auto_dm import accounts as _acc
+    port = _bcc_port(account_name)
+    if not _acc._port_open(port, timeout=timeout):
+        return False
+    try:
+        r = requests.get(f"http://127.0.0.1:{port}/status", timeout=2)
+        return (r.json() or {}).get("alive", False)
+    except Exception:
+        return False
+
+
+def _bcc_post(account_name: str, path: str, json_body: dict = None, timeout: float = 30) -> dict:
+    """调 BCC 的 POST 接口，返回 {ok, ...}。BCC 不在运行时返回 {ok:false, msg:...}。"""
+    port = _bcc_port(account_name)
+    try:
+        r = requests.post(f"http://127.0.0.1:{port}{path}",
+                          json=json_body or {}, timeout=timeout)
+        return r.json() or {}
+    except Exception as e:
+        return {"ok": False, "msg": f"BCC 不可达: {e}"}
+
+
 class RiskControlError(Exception):
     """风控/验证码拦截异常。
 
@@ -460,18 +496,36 @@ class DYLoginApi:
 
     @staticmethod
     def refresh_cookie_from_profile(auth, env_path=None):
-        """用指纹浏览器打开账号已登录的持久化 profile，读取【实时 cookie】刷新 auth。
+        """刷新 auth 的 cookie 为浏览器 profile 里的实时值（写回 .env）。
 
-        背景：.env 里保存的 cookie（sessionid/sid_guard 等）会随浏览器重新登录/刷新而
-        过期，导致 imapi 的 get_message_by_init 被服务器拒（返回 50 字节空 JSON，而非
-        249KB 全量数据）。CDP 实测确认：换用浏览器实时 cookie 后立即返回 1.4MB 全量。
-        本方法通过 Playwright 打开固定 profile（复用登录态），读取实时 cookie 回填
-        auth.cookie / cookie_str 并写回 .env，保证 recv-daemon 等独立进程用的是有效凭证。
-
-        profile 被其他进程占用（凭证守护保活中）/ 指纹内核不可用时不抛错，静默退回
-        原 auth（返回 False），由调用方决定是否降级。
+        优先通过 BCC HTTP /cookie 接口（常驻浏览器容器，不抢锁）；
+        BCC 未运行时退回直开 Playwright（旧路径，可能抢锁但保证功能可用）。
         """
         import os
+        # 解析账号名（env_path -> account name）
+        account_name = None
+        if env_path:
+            base = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
+            if base and base != "accounts":
+                account_name = base
+        # 优先走 BCC
+        if account_name and _bcc_alive(account_name):
+            r = _bcc_post(account_name, "/cookie", timeout=15)
+            if r.get("ok"):
+                cks_str = r.get("cookies") or ""
+                if not cks_str:
+                    # BCC 返回的 cookie 列表
+                    cks = r.get("cookie_dict") or {}
+                    if cks:
+                        cks_str = "; ".join(f"{k}={v}" for k, v in cks.items())
+                if cks_str:
+                    auth.cookie = dict(p.split("=", 1) for p in cks_str.split("; ") if "=" in p)
+                    auth.cookie_str = cks_str
+                    logger.info(f"[auth] BCC /cookie 刷新成功（{len(auth.cookie)} 项）")
+                    return True
+            logger.warning(f"[auth] BCC /cookie 返回失败: {r.get('msg', '')}，退回直开浏览器")
+
+        # 后备：直开 Playwright（BCC 未运行时）
         try:
             from auto_dm import accounts as _acc
             from auto_dm.vbrowser import should_use_vb, launch_sync
@@ -484,8 +538,7 @@ class DYLoginApi:
                 logger.info(f"[auth] profile 刷新 cookie：profile 不存在跳过 profile={profile}")
                 return False
             _vb, _vb_mode = should_use_vb(_cfg)
-            _pw, _browser, context, _backend = launch_sync(
-                _vb_mode, _cfg, headless=True, user_data_dir=profile)
+            _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=True, user_data_dir=profile)
             try:
                 page = context.pages[0] if context.pages else context.new_page()
                 try:
@@ -530,8 +583,31 @@ class DYLoginApi:
 
         必须先开有头浏览器（headless=False 实测返回昵称；headless 被降级返回空）。
         返回 {sec_uid: {"nickname": str, "avatar": str}}，失败/受限的 sec_uid 不包含。
+
+        优先通过 BCC HTTP /user_info 接口（常驻浏览器容器，不抢锁）；
+        BCC 未运行时退回直开 Playwright（旧路径，可能抢锁但保证功能可用）。
         """
         import os
+        # 解析账号名（env_path -> account name）
+        account_name = None
+        if env_path:
+            base = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
+            if base and base != "accounts":
+                account_name = base
+        # 优先走 BCC（常驻浏览器容器，不抢锁）
+        if account_name and sec_uids and _bcc_alive(account_name):
+            r = _bcc_post(account_name, "/user_info",
+                          {"sec_uids": list(sec_uids)}, timeout=30)
+            if r.get("ok"):
+                data = r.get("data") or {}
+                # BCC 已用真实浏览器查过：data 为空说明这些 sec_uid 无效/受限，
+                # 直接返回空（不再退回直开浏览器，避免白白触发 Playwright 崩溃）
+                logger.info(f"[auth] BCC /user_info 批量查昵称："
+                            f"{len(data)}/{len(sec_uids)} 个成功")
+                return data
+            logger.warning(f"[auth] BCC /user_info 返回失败: "
+                           f"{r.get('msg', '')}，退回直开浏览器")
+        # 后备：直开 Playwright（BCC 未运行时）
         from playwright.sync_api import sync_playwright
         from auto_dm import accounts as _acc
         from auto_dm.vbrowser import should_use_vb, launch_sync

@@ -50,6 +50,48 @@ def enrich_auth(auth, cookies_dy="", headless=False,
     except Exception as e:
         logger.warning(f"[auth] 加载 {env_path} 失败: {e}")
 
+    # 解析账号名（env_path -> account name），用于调 BCC
+    account_name = None
+    if env_path:
+        base = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
+        if base and base != "accounts":
+            account_name = base
+
+    # 优先走 BCC /scan_login（常驻浏览器容器，不抢锁）。
+    # 仅在确实需要扫码时调用（force=True 或 .env 缺四件套），避免无谓重启容器
+    # context——BCC scan_login 会先关闭自身 context 让 DYLoginApi 独占扫码再重开。
+    _needs_scan = bool(force)
+    if not _needs_scan:
+        try:
+            _probe = DYLoginApi._load_auth_from_env(env_path)
+            if not (_probe and _probe.ticket and _probe.ts_sign
+                    and _probe.client_cert and _probe.private_key):
+                _needs_scan = True
+        except Exception:
+            _needs_scan = True
+    if account_name and _needs_scan:
+        try:
+            from dy_apis.login_api import _bcc_alive, _bcc_post
+            if _bcc_alive(account_name):
+                r = _bcc_post(account_name, "/scan_login",
+                              {"force": bool(force), "timeout": 300}, timeout=300)
+                if r.get("ok"):
+                    try:
+                        _auth = DYLoginApi._load_auth_from_env(env_path)
+                    except Exception:
+                        _auth = None
+                    if _auth and getattr(_auth, "cookie", None):
+                        _cks = "; ".join(f"{k}={v}" for k, v in (_auth.cookie or {}).items())
+                        ensure_uid(_auth)
+                        logger.info("[auth] BCC /scan_login 完成，已从 .env 重载凭证")
+                        return _auth, _cks
+                    logger.warning("[auth] BCC /scan_login 返回 ok 但 .env 无 cookie，退回直开浏览器")
+                else:
+                    logger.warning(f"[auth] BCC /scan_login 返回失败: {r.get('msg', '')}，退回直开浏览器")
+        except Exception as e:
+            logger.warning(f"[auth] BCC /scan_login 异常，退回直开浏览器: {e}")
+
+    # 后备：直开 Playwright（DYLoginApi.get_login_auth，BCC 未运行/失败时）
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:

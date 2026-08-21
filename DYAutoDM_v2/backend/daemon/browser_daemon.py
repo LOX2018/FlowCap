@@ -1,24 +1,32 @@
 # coding=utf-8
-"""凭证守护进程（重构版）
+"""浏览器容器守护进程（Browser Context Container, BCC）
 
-迁移自 DY_Spider_base/auto_dm/browser_daemon.py。
-关键变化：
-- http.server → FastAPI（路由更清晰，自动 JSON 序列化）
-- 启动时立即 refresh 阻塞数秒 → 改为后台任务（不阻塞 /status 响应）
-- Tauri sidecar 模式：由 Rust SidecarManager 管理生命周期，不再依赖 alive_flag 文件
+取代旧版 CredentialKeeper 的"临时开浏览器抓凭证"模式：
+- 启动时 launch_persistent_context 持有该账号 profile 的【唯一】浏览器 context，
+  整个进程只此一个 Playwright browser，所有浏览器任务排队串行执行（asyncio.Lock）。
+- 暴露 HTTP API 给 backend / recv-daemon / link_resolve / web_probe 调用，
+  调用方不再各自 launch_persistent_context（消除抢 profile 锁的根因）。
+- context/page 失活时自愈重启（profile 锁丢失 / 崩溃后自动恢复）。
+- 凭证保活（CredentialKeeper）作为内部心跳任务：周期性探活 + cookie 失效时调
+  /scan_login 自我刷新（不再单独开浏览器）。
 
-运行方式（Tauri sidecar）：
+运行方式（Tauri sidecar，沿用 dyautodm-browser-daemon exe 名）：
     dyautodm-browser-daemon --account X --port P
 
-业务逻辑（CredentialKeeper）完整保留：
-  - 周期性 get_my_uid 探活
-  - cookie/签名失效时自动调 DYLoginApi.get_login_auth 刷新
-  - 暴露 /status /refresh /quit HTTP 接口
+HTTP API：
+    GET  /status             健康检查（context/page 存活、当前登录 uid、profile 路径）
+    POST /cookie             读实时 cookie 返回 + 写回 .env（给 recv-daemon 用）
+    POST /user_info          浏览器页面内 fetch 批量查 sec_user_ids → 昵称/头像
+    POST /resolve_url        浏览器打开链接 → 跟随跳转 → 抠 live_id（替代 link_resolve）
+    POST /scan_login         扫码登录/刷新凭证（force=True 重新扫码）
+    POST /refresh            兼容旧接口（= /scan_login force=False）
+    POST /quit               优雅退出
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import threading
@@ -26,6 +34,7 @@ import time
 from typing import Any
 
 from fastapi import FastAPI
+from pydantic import BaseModel
 from loguru import logger
 
 # 无控制台模式下 sys.stdout/stderr 可能为 None
@@ -45,8 +54,6 @@ from vbrowser import app_root
 _ROOT = app_root()
 _DAEMON_DIR = os.path.join(_ROOT, "auto_dm")
 
-# 日志同步输出到 stderr（enqueue=True 避免 Windows GBK 控制台中文编码失败中断主线程），
-# 这样 Tauri Rust 侧能捕获到守护进程的日志，也会经由 backend 的日志桥接展示到前端「运行日志」。
 logger.remove()
 logger.add(
     sys.stderr,
@@ -56,78 +63,298 @@ logger.add(
     format="{time:HH:mm:ss} | {level: <8} | {message}",
 )
 
-app = FastAPI(title="browser-daemon")
+app = FastAPI(title="browser-container")
 
-# 全局状态（main 启动时填充）
+# 全局状态
 _state: dict[str, Any] = {
     "account": "",
     "port": 0,
     "started_at": time.time(),
-    "keeper": None,  # CredentialKeeper 实例
+    "container": None,  # BrowserContainer 实例
     "keepalive_thread": None,
     "keepalive_stop": None,
 }
 
 
-# ----------------------------------------------------------------------------
-# 凭证保活核心（迁移自旧版 CredentialKeeper）
-# ----------------------------------------------------------------------------
-class CredentialKeeper:
-    """周期性维护某账号的有效凭证（cookie + web_protect/keys 签名）。
+class BrowserContainer:
+    """常驻持有该账号 profile 的唯一 Playwright context。
 
-    不直接开常驻浏览器——而是由 DYLoginApi.get_login_auth 在需要时开临时浏览器抓取。
+    所有浏览器操作通过 submit(coro) 入队，内部 asyncio.Lock 串行执行，杜绝并发抢锁。
+    context/page 失活时 _ensure_alive 自愈重启。
     """
 
-    def __init__(self, account: str = "主") -> None:
+    def __init__(self, account: str) -> None:
         self.account = account
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
+        self._pw = None
+        self._browser = None
+        self._context = None
+        self._page = None
+        self._backend = ""  # "exe" / "cdp"
+        self._profile_dir = ""
+        self._started = False
         self._last_uid: Any = None
         self._last_refresh: float = 0.0
+        # _loop 由 FastAPI startup 持有，submit 用它把协程投递到主事件循环
+        self._loop: asyncio.AbstractEventLoop | None = None
 
-    def refresh(self, force: bool = False) -> bool:
-        """刷新凭证。force=True 时忽略现有、重新扫码。返回是否成功。
+    async def start(self) -> None:
+        """启动浏览器 context（持有 profile 锁）。失败抛 RuntimeError。"""
+        if self._started:
+            return
+        self._loop = asyncio.get_event_loop()
+        await self._launch()
+        self._started = True
+        logger.info(f"[bcc] 浏览器容器启动成功 account={self.account} profile={self._profile_dir}")
 
-        单 profile 铁律守卫：凭证不全（cookie/四件套/web_protect 任一缺失，或
-        cookie 含风控占位）时【拒绝】弹浏览器抓取，直接返回 False 并明确提示，
-        避免守护空跑 + 误捕获污染 .env（如 s_v_web_id=verify_* 占位被写回）。
-        用户必须先完成一次成功扫码，凭证齐全后再启动守护。
-        """
-        from auto_dm import accounts as acc
-        from dy_apis.login_api import DYLoginApi
-        env_path = acc.env_path_of(self.account)
-        # 铁律：凭证不全不启动浏览器、不抓取、不写盘
-        complete, reason = acc.credentials_complete(env_path)
-        if not complete:
-            logger.error(f"[保活] 凭证未就绪，拒绝启动守护抓取: {reason}（请先完成扫码）")
-            return False
+    async def _launch(self) -> None:
+        from auto_dm import accounts as _acc
+        from auto_dm import config as _cfg
+        from auto_dm.vbrowser import should_use_vb, launch_async
+        env_path = _acc.env_path_of(self.account)
+        if not env_path:
+            raise RuntimeError(f"[bcc] 账号 {self.account} 无 .env（索引未登记？）")
+        self._env_path = env_path
+        self._profile_dir = _acc.profile_dir_of(env_path)
+        if not self._profile_dir or not os.path.isdir(self._profile_dir):
+            raise RuntimeError(f"[bcc] profile 目录不存在: {self._profile_dir}")
+        _vb, _vb_mode = should_use_vb(_cfg)
+        self._pw, self._browser, self._context, self._backend = await launch_async(
+            _vb_mode, _cfg, headless=False, user_data_dir=self._profile_dir, force=False)
+        self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+        # 默认打开首页保活登录态（不阻塞）
         try:
-            api = DYLoginApi()
-            auth = asyncio.run(
-                api.get_login_auth(headless=False, env_path=env_path, force=force)
-            )
-            if auth and getattr(auth, "cookie", None):
-                self._last_uid = None
-                try:
-                    from dy_apis.douyin_api import DouyinAPI
-                    self._last_uid = DouyinAPI.get_my_uid(auth)
-                except Exception:
-                    pass
-                self._last_refresh = time.time()
-                logger.info(
-                    f"[保活] 凭证刷新成功(account={self.account}, uid={self._last_uid})"
-                )
-                return True
-            logger.error("[保活] 凭证刷新失败：未拿到有效 auth")
-            return False
+            await self._page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=20000)
         except Exception as e:
-            logger.error(f"[保活] 凭证刷新异常: {e}")
-            return False
+            logger.warning(f"[bcc] 打开首页失败（不阻塞，后续接口自愈）: {e}")
+
+    async def _ensure_alive(self) -> None:
+        """context/page 失活时重启。在 _lock 内调用。"""
+        try:
+            if self._context is None or not self._context.pages:
+                raise RuntimeError("context 已关闭")
+            # 探测 page 是否能 evaluate
+            if self._page is None or self._page.is_closed():
+                self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+            await self._page.evaluate("1")
+        except Exception as e:
+            logger.warning(f"[bcc] context/page 失活，重启: {e}")
+            try:
+                if self._backend == "exe" and self._context is not None:
+                    await self._context.close()
+                if self._pw is not None:
+                    await self._pw.stop()
+            except Exception:
+                pass
+            self._pw = None
+            self._browser = None
+            self._context = None
+            self._page = None
+            await self._launch()
+
+    async def submit(self, coro):
+        """把协程投递到主事件循环，串行执行（_lock 保证同一时刻只有一个浏览器操作）。"""
+        if self._loop is None:
+            raise RuntimeError("[bcc] 容器未启动")
+        # 如果调用方在另一个线程（FastAPI 路由跑在主 loop，但保活心跳在子线程），
+        # 需要切回主 loop 执行浏览器操作
+        if asyncio.get_event_loop() is not self._loop:
+            fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+            return await asyncio.wrap_future(fut)
+        return await coro
+
+    async def _exec(self, coro_factory):
+        """在 _lock 内执行浏览器操作（自愈 + 串行）。coro_factory 是无参 callable 返回 coroutine。"""
+        async with self._lock:
+            await self._ensure_alive()
+            return await coro_factory()
+
+    # -------------------- 业务方法（在 _lock 内执行）--------------------
+
+    async def get_cookies(self) -> dict:
+        """读取实时 cookie。返回 {name: value}。"""
+        async def _do():
+            cks = await self._context.cookies()
+            return {c["name"]: c["value"] for c in cks}
+        return await self._exec(_do)
+
+    async def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 25000) -> str:
+        async def _do():
+            await self._page.goto(url, wait_until=wait_until, timeout=timeout)
+            return self._page.url
+        return await self._exec(_do)
+
+    async def evaluate(self, script: str, arg: Any = None) -> Any:
+        async def _do():
+            return await self._page.evaluate(script, arg)
+        return await self._exec(_do)
+
+    async def bulk_user_info(self, sec_uids: list[str]) -> dict:
+        """浏览器页面内 fetch im/user/info 批量查昵称/头像（对齐 douyin.com/chat 实机）。
+
+        必须先 goto douyin.com/chat（同 origin 才能相对 fetch）。返回
+        {sec_uid: {"nickname": str, "avatar": str}}。
+        """
+        api_url = ("/aweme/v1/web/im/user/info/?device_platform=webapp&aid=6383&channel=channel_pc_web"
+                   "&pc_client_type=1&update_version_code=170400&version_code=170400&version_name=17.4.0"
+                   "&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Mozilla"
+                   "&browser_version=5.0&browser_online=true&os_name=Windows&os_version=10&platform=PC"
+                   "&downlink=10&effective_type=4g&round_trip_time=100")
+
+        async def _do():
+            # 确保落在 douyin.com 域（fetch 相对路径要求同 origin）
+            if not self._page.url.startswith("https://www.douyin.com"):
+                await self._page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=25000)
+                await self._page.wait_for_timeout(2500)
+            out = {}
+            batch = 6
+            import urllib.parse as _up
+            for i in range(0, len(sec_uids), batch):
+                chunk = sec_uids[i:i + batch]
+                body = "sec_user_ids=" + _up.quote(json.dumps(chunk))
+                js = (
+                    "(async () => {"
+                    f"  const r = await fetch({json.dumps(api_url)}, {{"
+                    "    method: 'POST',"
+                    "    headers: {'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'},"
+                    f"    body: {json.dumps(body)},"
+                    "    credentials: 'include'"
+                    "  });"
+                    "  return await r.json();"
+                    "})()"
+                )
+                try:
+                    result = await self._page.evaluate(js)
+                except Exception as e:
+                    logger.warning(f"[bcc] 批量查昵称 evaluate 失败: {e}")
+                    continue
+                items = (result or {}).get("data") or []
+                for u in items:
+                    sec = u.get("sec_uid") or ""
+                    if not sec:
+                        continue
+                    avt = (u.get("avatar_small") or {}).get("url_list") or []
+                    out[sec] = {
+                        "nickname": u.get("nickname") or "",
+                        "avatar": avt[0] if avt else "",
+                    }
+                await self._page.wait_for_timeout(300)
+            return out
+        return await self._exec(_do)
+
+    async def resolve_url(self, url: str) -> dict:
+        """浏览器打开链接 → 跟随跳转 → 抠 live_id（替代 link_resolve._browser_resolve）。
+
+        返回 {live_id, final_url, source}。
+        """
+        import re
+        # 复用 link_resolve 的提取正则（避免循环 import，本地复制）
+        _LIVE_RE = re.compile(r"live\.douyin\.com/([^?/\s\"']+)")
+
+        def _extract(u):
+            if not u:
+                return None
+            m = _LIVE_RE.search(u)
+            return m.group(1) if m else None
+
+        async def _do():
+            await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            live_id = None
+            final_url = None
+            for _ in range(20):
+                await self._page.wait_for_timeout(1000)
+                u = self._page.url
+                if "live.douyin.com" in u and "/user/" not in u:
+                    lid = _extract(u)
+                    if lid:
+                        live_id = lid
+                        final_url = u
+                        break
+            if not live_id:
+                u = self._page.url
+                # 用户主页里找直播间入口
+                try:
+                    links = await self._page.eval_on_selector_all(
+                        "a[href*='live.douyin.com']",
+                        "els => els.map(e => e.href)")
+                except Exception:
+                    links = []
+                for link in (links or []):
+                    lid = _extract(link)
+                    if lid:
+                        live_id = lid
+                        final_url = link
+                        break
+            return {"live_id": live_id, "final_url": final_url,
+                    "source": "browser_container" if live_id else "browser_failed"}
+        return await self._exec(_do)
+
+    async def scan_login(self, force: bool = False, timeout: int = 300) -> dict:
+        """扫码登录/刷新凭证。force=True 忽略现有凭证重新扫码。
+
+        委托 DYLoginApi.get_login_auth（复用其扫码 + 风控守卫 + 凭证落盘逻辑），
+        但在【本容器的 context】里执行——不开新浏览器，避免抢锁。
+        """
+        from dy_apis.login_api import DYLoginApi
+        from auto_dm import accounts as _acc
+        env_path = _acc.env_path_of(self.account)
+        if not env_path:
+            return {"ok": False, "msg": "账号 .env 未登记"}
+
+        # DYLoginApi.get_login_auth 内部会 launch_async（开浏览器）——我们需要让它复用
+        # 本容器的 context。但该函数当前不支持外部注入 context，最简方案：临时关闭
+        # 本容器 context，让 DYLoginApi 独占 profile 完成扫码，完成后重启容器。
+        async def _do():
+            # 关闭本容器 context，让 DYLoginApi 独占 profile
+            try:
+                if self._backend == "exe" and self._context is not None:
+                    await self._context.close()
+                if self._pw is not None:
+                    await self._pw.stop()
+            except Exception:
+                pass
+            self._pw = None
+            self._browser = None
+            self._context = None
+            self._page = None
+            api = DYLoginApi()
+            auth = await api.get_login_auth(
+                headless=False, env_path=env_path, force=force,
+                landing_url="https://www.douyin.com/chat?isPopup=1")
+            ok = bool(auth and getattr(auth, "cookie", None))
+            # 重启容器 context
+            await self._launch()
+            return {"ok": ok, "uid": getattr(auth, "uid", None) if auth else None}
+        return await self._exec(_do)
+
+    # -------------------- 健康与保活 --------------------
+
+    def status(self) -> dict:
+        from auto_dm import accounts as _acc
+        env_path = getattr(self, "_env_path", None) or _acc.env_path_of(self.account)
+        alive = self._started and self._context is not None
+        uid = self._last_uid
+        if not uid:
+            try:
+                uid = self._load_uid_from_env()
+            except Exception:
+                uid = None
+        return {
+            "alive": alive,
+            "account": self.account,
+            "profile": self._profile_dir,
+            "uid": uid,
+            "last_refresh": int(self._last_refresh),
+            "logged_in": bool(env_path and os.path.exists(env_path)),
+        }
 
     def _load_uid_from_env(self) -> Any:
-        from auto_dm import accounts as acc
+        from auto_dm import accounts as _acc
         from dy_apis.login_api import DYLoginApi
         from dy_apis.douyin_api import DouyinAPI
-        env_path = acc.env_path_of(self.account)
+        env_path = _acc.env_path_of(self.account)
+        if not env_path:
+            return None
         try:
             auth = DYLoginApi._load_auth_from_env(env_path)
             if auth and auth.cookie:
@@ -136,22 +363,33 @@ class CredentialKeeper:
             pass
         return None
 
-    def status(self) -> dict:
-        from auto_dm import accounts as acc
-        st = acc.account_status(self.account, force=False)
-        uid = self._last_uid or self._load_uid_from_env()
-        return {
-            "alive": True,
-            "logged_in": bool(st.get("has_cookie")),
-            "sign_ready": bool(st.get("has_ticket") and st.get("has_private_key")),
-            "uid": uid,
-            "account": self.account,
-            "last_refresh": int(self._last_refresh),
-        }
+    async def refresh_cookie_to_env(self) -> dict:
+        """读实时 cookie，写回 .env。返回 {ok, cookie_count, sessionid?}。"""
+        from auto_dm import accounts as _acc
+        from dy_apis.login_api import DYLoginApi
+        env_path = _acc.env_path_of(self.account)
+        if not env_path:
+            return {"ok": False, "msg": "账号 .env 未登记"}
+        # 先加载 auth（拿签名四件套），再用实时 cookie 覆盖 cookie 字段
+        auth = DYLoginApi._load_auth_from_env(env_path)
+        cks = await self.get_cookies()
+        if not (cks.get("sessionid") or cks.get("sid_tt")):
+            return {"ok": False, "msg": "profile 内无登录态"}
+        auth.cookie = cks
+        auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
+        try:
+            DYLoginApi().save_credential(auth, env_path)
+        except Exception as e:
+            logger.warning(f"[bcc] 写回 .env 失败: {e}")
+        self._last_refresh = time.time()
+        return {"ok": True, "cookie_count": len(cks),
+                "sessionid": cks.get("sessionid", "")[:12],
+                "cookies": "; ".join(f"{k}={v}" for k, v in cks.items()),
+                "cookie_dict": cks}
 
     def run_keepalive(self, stop_ev: threading.Event, interval: int = 300) -> None:
-        """每 interval 秒探活一次；uid 探活失败则自动 refresh。"""
-        logger.info(f"[保活] 心跳启动，间隔 {interval}s")
+        """每 interval 秒探活一次；uid 探活失败时调 scan_login 刷新。"""
+        logger.info(f"[bcc] 保活心跳启动，间隔 {interval}s")
         while not stop_ev.is_set():
             if stop_ev.wait(interval):
                 break
@@ -159,76 +397,134 @@ class CredentialKeeper:
                 uid = self._load_uid_from_env()
                 if uid:
                     self._last_uid = uid
-                    logger.debug(f"[保活] 登录态正常(uid={uid})")
+                    logger.debug(f"[bcc] 登录态正常(uid={uid})")
                 else:
-                    logger.warning("[保活] 登录态失效，自动刷新凭证…")
-                    self.refresh(force=False)
+                    logger.warning("[bcc] 登录态失效，自动刷新凭证…")
+                    # 在子线程调 async scan_login：投递到主 loop
+                    if self._loop:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            self.scan_login(force=False), self._loop)
+                        try:
+                            fut.result(timeout=120)
+                        except Exception as e:
+                            logger.warning(f"[bcc] 自动刷新凭证失败: {e}")
             except Exception as e:
-                logger.warning(f"[保活] 探活异常: {e}")
-        logger.info("[保活] 心跳退出")
+                logger.warning(f"[bcc] 探活异常: {e}")
+        logger.info("[bcc] 保活心跳退出")
 
 
 # ----------------------------------------------------------------------------
 # FastAPI 路由
 # ----------------------------------------------------------------------------
+class UserInfoBody(BaseModel):
+    sec_uids: list[str]
+
+
+class ResolveBody(BaseModel):
+    url: str
+
+
+class ScanBody(BaseModel):
+    force: bool = False
+    timeout: int = 300
+
+
 @app.on_event("startup")
 async def _startup() -> None:
-    logger.info(
-        f"browser_daemon 启动 account={_state['account']} port={_state['port']}"
-    )
-    # 启动保活心跳（后台线程，不阻塞 /status）
-    keeper = CredentialKeeper(account=_state["account"])
-    _state["keeper"] = keeper
+    logger.info(f"browser_daemon(BCC) 启动 account={_state['account']} port={_state['port']}")
+    container = BrowserContainer(account=_state["account"])
+    _state["container"] = container
+    try:
+        await container.start()
+    except Exception as e:
+        logger.error(f"[bcc] 浏览器容器启动失败（后续接口会自愈）: {e}")
+    # 保活心跳（后台线程）
     stop_ev = threading.Event()
     _state["keepalive_stop"] = stop_ev
-    t = threading.Thread(
-        target=keeper.run_keepalive, args=(stop_ev,), daemon=True
-    )
+    t = threading.Thread(target=container.run_keepalive, args=(stop_ev,), daemon=True)
     _state["keepalive_thread"] = t
     t.start()
-    # 旧版启动时立即 refresh(force=False) 会阻塞数秒甚至弹浏览器，
-    # 新版改为后台异步执行（不阻塞启动，/status 立即可用）
-    threading.Thread(target=lambda: keeper.refresh(force=False), daemon=True).start()
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     if _state["keepalive_stop"]:
         _state["keepalive_stop"].set()
+    c = _state.get("container")
+    if c:
+        try:
+            if c._backend == "exe" and c._context is not None:
+                await c._context.close()
+            if c._pw is not None:
+                await c._pw.stop()
+        except Exception:
+            pass
 
 
 @app.get("/status")
 async def status() -> dict:
-    keeper: CredentialKeeper | None = _state["keeper"]
-    if keeper is None:
-        return {
-            "alive": True,
-            "logged_in": False,
-            "sign_ready": False,
-            "uid": None,
-            "account": _state["account"],
-            "last_refresh": 0,
-        }
-    # status() 是同步的，用 to_thread 包装避免阻塞事件循环
-    return await asyncio.to_thread(keeper.status)
+    c = _state.get("container")
+    if not c:
+        return {"alive": False, "account": _state["account"]}
+    return c.status()
+
+
+@app.post("/cookie")
+async def refresh_cookie() -> dict:
+    """读实时 cookie 返回 + 写回 .env。"""
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动"}
+    return await c.refresh_cookie_to_env()
+
+
+@app.post("/user_info")
+async def user_info(body: UserInfoBody) -> dict:
+    """浏览器页面内 fetch 批量查 sec_user_ids → 昵称/头像。"""
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "data": {}}
+    out = await c.bulk_user_info(body.sec_uids)
+    return {"ok": True, "data": out}
+
+
+@app.post("/resolve_url")
+async def resolve_url(body: ResolveBody) -> dict:
+    """浏览器打开链接 → 跟随跳转 → 抠 live_id。"""
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "live_id": None, "msg": "容器未启动"}
+    return await c.resolve_url(body.url)
+
+
+@app.post("/scan_login")
+async def scan_login(body: ScanBody) -> dict:
+    """扫码登录/刷新凭证。"""
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动"}
+    return await c.scan_login(force=body.force, timeout=body.timeout)
 
 
 @app.post("/refresh")
 async def refresh(force: bool = False) -> dict:
-    """强制重新扫码刷新凭证。"""
-    keeper: CredentialKeeper | None = _state["keeper"]
-    if keeper is None:
-        return {"ok": False, "error": "keeper 未就绪"}
-    ok = await asyncio.to_thread(keeper.refresh, force=True)
-    return {"ok": ok}
+    """兼容旧接口（= scan_login force=False）。"""
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动"}
+    return await c.scan_login(force=force)
 
 
 @app.post("/quit")
 async def quit_() -> dict:
-    """守护进程退出（Tauri SidecarManager 会感知进程结束）。"""
-    if _state["keepalive_stop"]:
-        _state["keepalive_stop"].set()
-    # 延迟退出让响应先返回
+    for ch in []:
+        pass
+    c = _state.get("container")
+    if c and c._backend == "exe" and c._context is not None:
+        try:
+            await c._context.close()
+        except Exception:
+            pass
     threading.Timer(0.5, lambda: os._exit(0)).start()
     return {"ok": True}
 
@@ -237,43 +533,22 @@ async def quit_() -> dict:
 # 主入口
 # ----------------------------------------------------------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(description="浏览器常驻守护进程（凭证保活）")
+    parser = argparse.ArgumentParser(description="浏览器容器守护进程（BCC）")
     parser.add_argument("--account", required=True, help="账号名")
     parser.add_argument("--port", type=int, required=True, help="HTTP 控制端口")
-    parser.add_argument("--interval", type=int, default=300, help="保活心跳间隔（秒）")
     args = parser.parse_args()
 
     _state["account"] = args.account
     _state["port"] = args.port
 
-    # 单 profile 铁律：守护启动前置校验——凭证必须全部齐全，否则拒绝启动守护。
-    # 凭证不全时启动守护只会“空跑 + 误捕获污染”，且发送必 KICK；应明确提示用户先扫码。
-    from auto_dm import accounts as acc
-    env_path = acc.env_path_of(args.account)
-    complete, reason = acc.credentials_complete(env_path)
-    if not complete:
-        logger.error(
-            f"[守护] 凭证未就绪，拒绝启动凭证守护(account={args.account}): {reason}。"
-            f"请先完成扫码（双击账号卡片指纹浏览器 / 点「重新获取凭证」），"
-            f"待凭证齐全后再启动守护。"
-        )
-        sys.exit(2)  # 非零退出，Tauri SidecarManager 感知到启动失败
-
-    # 日志落盘
     try:
         from datetime import datetime
         log_dir = os.path.join(_ROOT, "logs")
         os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(
-            log_dir, f"browser_daemon_{args.account}_{datetime.now().strftime('%Y%m%d')}.log"
-        )
-        logger.add(
-            log_file,
-            level="DEBUG",
-            encoding="utf-8",
-            format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
-            retention="15 days",
-        )
+        log_file = os.path.join(log_dir, f"browser_daemon_{datetime.now().strftime('%Y%m%d')}.log")
+        logger.add(log_file, level="DEBUG", encoding="utf-8",
+                   format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+                   retention="15 days")
     except Exception:
         pass
 

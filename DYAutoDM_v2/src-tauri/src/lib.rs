@@ -44,7 +44,7 @@ async fn start_backend(
 #[tauri::command]
 async fn stop_backend(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.backend.lock().map_err(|e| e.to_string())?;
-    if let Some(mut h) = guard.take() {
+    if let Some(h) = guard.take() {
         h.kill_tree().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -176,14 +176,14 @@ pub fn run() {
                 let app = window.app_handle();
                 // ① 优先关闭后端（递归杀进程树，连带 _MEI 子进程一并终止）
                 if let Ok(mut state) = app.state::<AppState>().backend.lock() {
-                    if let Some(mut h) = state.take() {
+                    if let Some(h) = state.take() {
                         let _ = h.kill_tree();
                     }
                 }
                 // ② 再关闭各账号守护进程树
                 if let Ok(mut guard) = app.state::<AppState>().daemons.lock() {
                     let handles: Vec<SidecarHandle> = guard.drain(..).collect();
-                    for mut h in handles {
+                    for h in handles {
                         let _ = h.kill_tree();
                     }
                 }

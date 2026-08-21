@@ -130,7 +130,12 @@ async def resolve_live(body: ResolveRequest):
     if not raw:
         return {"ok": False, "error": "链接为空"}
     try:
-        live_id, _src = resolve_live_id(raw)
+        from auto_dm.accounts import current_name
+        _acct = current_name()
+    except Exception:
+        _acct = None
+    try:
+        live_id, _src = resolve_live_id(raw, account_name=_acct)
     except Exception as e:
         return {"ok": False, "error": f"解析失败: {e}"}
     if not live_id:

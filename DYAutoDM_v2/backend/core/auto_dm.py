@@ -371,7 +371,9 @@ class AutoDM:
         # 从 live_url 解析出真实直播间号 web_rid（live.douyin.com/<web_rid>）
         try:
             from link_resolve import resolve_live_id
-            self.live_id, _ = resolve_live_id(config.live_url)
+            from auto_dm.accounts import current_name
+            self.live_id, _ = resolve_live_id(
+                config.live_url, account_name=self._acct or current_name())
         except Exception:
             self.live_id = config.live_url
         self._apply_config(config)

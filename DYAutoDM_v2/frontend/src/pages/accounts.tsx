@@ -9,14 +9,15 @@
  *   - .catch(() => {}) 静默吞错 → 带 push 反馈（修复原版 bug）
  *   - 扫码状态查询 → props.api.scanStatus(name) 轮询（替代旧版间接推断）
  *   - "全部校验"黑屏 bug → 数据始终经 mapAcct 映射，类型守卫消除空字段访问
- *   - 守护进程启动 → sidecar.ts 的 startBrowserDaemon/startRecvDaemon（不使用 props.api）
+ *   - 守护进程启动 → sidecar.ts 的 startBrowserDaemonReady/startRecvDaemon（不使用 props.api）
+ *     startBrowserDaemonReady 会等待 BCC /status 就绪（alive=true）后再置真，避免 alive=false 期间调用方撞“容器未启动”
  */
 import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageProps } from "../api/client";
 import { Avatar, Dot, Pill, TABS, hue, tick } from "../components/ui";
-import { startBrowserDaemon, stopBrowserDaemon, startRecvDaemon, stopRecvDaemon } from "../api/sidecar";
+import { startBrowserDaemonReady, stopBrowserDaemon, startRecvDaemon, stopRecvDaemon } from "../api/sidecar";
 
 // ===== 类型定义 =====
 
@@ -442,8 +443,10 @@ export default function AccountsPage(props: PageProps) {
         });
       return;
     }
-    // 启动
-    startBrowserDaemon(a.name, a.browserDaemonPort || 0)
+    // 启动（等待 BCC /status 就绪后再置真，避免 alive=false 期间调用方撞“容器未启动”）
+    push("正在启动凭证守护（BCC），等待浏览器就绪…");
+    api.addLog("INFO", `正在启动凭证守护 · ${a.name}（等待 BCC 就绪）`).catch(() => {});
+    startBrowserDaemonReady(a.name, a.browserDaemonPort || 0)
       .then(() => {
         qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
           (old || []).map((x) => (x.name === a.name ? { ...x, browserDaemonAlive: true } : x)),
@@ -452,6 +455,7 @@ export default function AccountsPage(props: PageProps) {
         api.addLog("SUCCESS", `凭证守护已启动 · ${a.name}`).catch(() => {});
       })
       .catch((e: unknown) => {
+        // BCC sidecar 已 spawn 但 /status 未就绪（指纹内核冷启动超时等）——不置真
         push("启动失败: " + errMsg(e));
         api.addLog("ERROR", `凭证守护启动失败 · ${a.name}: ${errMsg(e)}`).catch(() => {});
       });
