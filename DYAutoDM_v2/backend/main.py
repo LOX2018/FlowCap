@@ -8,8 +8,12 @@
 - 3s 轮询 → WebSocket 推送
 """
 from contextlib import asynccontextmanager
+import os
+import platform
+import subprocess
 import sys
 import threading
+import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
@@ -17,6 +21,169 @@ from loguru import logger
 from config import settings
 from api import accounts, engine, live, messages, overview, settings as settings_api, tasks, logs as logs_api
 from core.auto_dm import AutoDM
+
+
+def _target_triple() -> str:
+    """返回当前平台的 Rust target triple（与 Tauri externalBin / build_sidecar.py 命名一致）。"""
+    sys_name = platform.system()
+    machine = platform.machine().lower()
+    if sys_name == "Windows":
+        arch = "aarch64" if "arm" in machine or "aarch" in machine else "x86_64"
+        return f"{arch}-pc-windows-msvc"
+    if sys_name == "Darwin":
+        arch = "aarch64" if machine == "arm64" else "x86_64"
+        return f"{arch}-apple-darwin"
+    arch = "aarch64" if "arm" in machine or "aarch" in machine else "x86_64"
+    return f"{arch}-unknown-linux-gnu"
+
+
+def _resolve_sidecar_binary(name: str) -> str | None:
+    """解析 sidecar 二进制路径（recv-daemon / browser-daemon）。
+
+    Backend exe 在发布态位于 <app_root>/binaries/ 下，与其他 sidecar 同级。
+    搜索顺序：
+      1) backend exe 所在目录 / <name>-<triple>.exe
+      2) backend exe 所在目录 / <name>.exe（无 triple 别名）
+      3) 开发态：<root>/src-tauri/binaries/<name>-<triple>.exe
+    """
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    triple = _target_triple()
+    # 1) 同目录 / <name>-<triple>.exe
+    cand = os.path.join(exe_dir, f"{name}-{triple}.exe")
+    if os.path.isfile(cand):
+        return cand
+    # 2) 同目录 / <name>.exe
+    cand = os.path.join(exe_dir, f"{name}.exe")
+    if os.path.isfile(cand):
+        return cand
+    # 3) 开发态：backend 在 <root>/backend/，需上溯到 <root>/src-tauri/binaries/
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    cand = os.path.join(project_root, "src-tauri", "binaries", f"{name}-{triple}.exe")
+    if os.path.isfile(cand):
+        return cand
+    return None
+
+
+def _wait_for_port(port: int, timeout: int = 30) -> bool:
+    """等待 127.0.0.1:port 开始监听（轮询间隔 0.5s），超时返回 False。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(("127.0.0.1", port)) == 0:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def _spawn_sidecar(binary: str, args: list[str]) -> subprocess.Popen:
+    """spawn sidecar 子进程（独立进程组，不阻塞 backend）。"""
+    kwargs: dict = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if platform.system() == "Windows":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[assignment]
+    else:
+        kwargs["start_new_session"] = True  # type: ignore[assignment]
+    return subprocess.Popen([binary] + args, **kwargs)
+
+
+def _auto_start_daemons() -> None:
+    """启动后为所有账号拉起 browser_daemon + recv_daemon sidecar。
+
+    browser_daemon（BCC 浏览器容器）是昵称关联的前置条件：
+      - capture_all(with_browser=True) 需要 BCC 提供无头浏览器环境
+      - 无头浏览器截 im/user/info → 数字 UID 桥接 → 写昵称/头像
+
+    recv_daemon（私信接收守护）是会话列表的前置条件：
+      - 首次 HTTP 请求触发全量拉取（get_message_by_init）
+      - 端口未就绪 → recvDaemonDown → 日志刷屏 + 渲染崩溃
+
+    PyInstaller onefile 解压+冷启动约需 3~10 秒，spawn 后轮询端口直到 bind 成功
+    （最多等 30 秒），确保 backend 启动完成时 daemon 已就绪。
+
+    昵称关联（capture_all with_browser=True）需要 BCC 在 chat 页滚动 40 轮触发全部
+    im/user/info，耗时 ~66s，远超 backend 启动超时。因此 nickname sync 在 daemon 线程
+    中异步执行，不阻塞 backend 启动完成。前端首次拉取可能仍有数字 UID，WS B 机制会
+    逐步补齐，待 nickname sync 完成后刷新即可全量命中。
+    """
+    try:
+        from auto_dm import accounts as acct_core
+        names = [n[0] if isinstance(n, (tuple, list)) else n for n in acct_core.list_accounts()]
+        if not names:
+            logger.info("[startup] 无账号，跳过 daemon 自动拉起")
+            return
+
+        # 1. 拉起 browser_daemon（BCC 容器，单例，所有账号共享一个浏览器）
+        bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
+        if bcc_binary is None:
+            logger.warning("[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
+        else:
+            try:
+                # browser_daemon 用第一个账号的端口（单例模式）
+                bport = acct_core.browser_daemon_port(names[0])
+                if acct_core._port_open(bport, timeout=0.2):
+                    logger.info(f"[startup] browser_daemon 已在运行 (port={bport})，跳过")
+                else:
+                    proc = _spawn_sidecar(bcc_binary, ["--account", names[0], "--port", str(bport)])
+                    logger.info(f"[startup] 已拉起 browser_daemon (port={bport}, pid={proc.pid})，等待端口就绪…")
+                    _wait_for_port(bport, timeout=30)
+            except Exception as e:
+                logger.warning(f"[startup] 拉起 browser_daemon 失败: {e}")
+
+        # 2. 为每个账号拉起 recv_daemon
+        recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")
+        if recv_binary is None:
+            logger.warning("[startup] 未找到 dyautodm-recv-daemon 二进制，跳过 recv_daemon 拉起")
+            return
+
+        for name in names:
+            try:
+                port = acct_core.recv_daemon_port(name)
+                if acct_core._port_open(port, timeout=0.2):
+                    logger.info(f"[startup] {name} 的 recv_daemon 已在运行 (port={port})，跳过")
+                    continue
+                proc = _spawn_sidecar(recv_binary, ["--accounts", name, "--port", str(port)])
+                logger.info(f"[startup] 已拉起 {name} 的 recv_daemon (port={port}, pid={proc.pid})，等待端口就绪…")
+                _wait_for_port(port, timeout=30)
+            except Exception as e:
+                logger.warning(f"[startup] 拉起 {name} 的 recv_daemon 失败: {e}")
+
+        # 3. 昵称关联（数字 UID → 昵称/头像）— daemon 线程异步执行
+        #    BCC 需要 ~66s 滚动触发全部 im/user/info，不能阻塞 backend 启动
+        threading.Thread(target=_nickname_sync_background, args=(names,), daemon=True).start()
+
+    except Exception as e:
+        logger.warning(f"[startup] 自动拉起 daemon 失败（不影响使用）: {e}")
+
+
+def _nickname_sync_background(names: list[str]) -> None:
+    """后台线程触发昵称关联：等待 BCC 完全就绪后调 capture_all(with_browser=True)。
+
+    BCC 启动后需要 ~30s 加载到 chat 页 + ~66s 滚动触发 im/user/info。
+    此线程不阻塞 backend 启动，前端首次拉取可能仍有数字 UID，
+    待 sync 完成后刷新页面即可 100% 命中。
+    """
+    import time
+    try:
+        from auto_dm.conversation_capture import capture_all
+        # 等 BCC 完全就绪（导航到 chat + 前端加载）
+        time.sleep(45)
+        for name in names:
+            try:
+                logger.info(f"[nickname] 触发 {name} 的昵称关联（数字 UID 桥接）…")
+                n_conv, n_msg = capture_all(name, with_browser=True)
+                logger.info(f"[nickname] {name} 昵称关联完成：{n_conv} 会话，{n_msg} 消息")
+            except Exception as e:
+                logger.warning(f"[nickname] {name} 昵称关联失败（WS B 机制兜底）: {e}")
+    except Exception as e:
+        logger.warning(f"[nickname] 昵称关联流程失败: {e}")
 
 
 def _warm_verify_cache() -> None:
@@ -47,16 +214,20 @@ async def lifespan(app: FastAPI):
         logger.info("[db] SQLite 数据库已就绪")
     except Exception as e:
         logger.error(f"[db] 数据库初始化失败: {e}")
-    # 启动瞬间引擎必然未运行：强制收尾上次进程遗留的悬空「运行中」历史任务
+    # 启动收尾上次进程遗留的悬空「运行中」历史任务（按 pid 比对兜底，
+    # 不会误伤本进程将要运行的任务；正常退出已由 AutoDM.shutdown 真实收尾）
     try:
         from tasks_history import fix_stuck_tasks
-        fix_stuck_tasks(force=True)
+        fix_stuck_tasks()
     except Exception as e:
         logger.warning(f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
     # 引擎主控单例（替代原版 WebBridge.adm）
     app.state.adm = AutoDM()
     # 后台预热账号校验缓存（并发，不阻塞启动）
     threading.Thread(target=_warm_verify_cache, daemon=True).start()
+    # 启动后为所有账号拉起 daemon（browser + recv）并触发昵称关联
+    # 同步执行，确保 backend 启动完成时 daemon 已就绪
+    _auto_start_daemons()
     yield
     logger.info("DYAutoDM 后端关闭")
     await app.state.adm.shutdown()

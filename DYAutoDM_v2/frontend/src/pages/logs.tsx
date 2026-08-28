@@ -59,8 +59,14 @@ export default function LogsPage(props: PageProps) {
   const [mode, setMode] = useState<"current" | "history">("current");
   // 当前查看的历史会话文件（点历史项进入查看）
   const [viewFile, setViewFile] = useState<string | null>(null);
-  // 清空显示标记：true 时视图只显示清空后新拉到的行
-  const [displayCleared, setDisplayCleared] = useState(false);
+  // 清空显示标记：持久化到 localStorage，切页重挂后继续隐藏旧行
+  const [displayCleared, setDisplayCleared] = useState(
+    () => localStorage.getItem("dy:logcleared") === "1",
+  );
+  // 清空时刻（HH:MM:SS），只显示晚于此刻之后的新行（按日志 ts 字符串比较）
+  const [clearTs, setClearTs] = useState<string | null>(
+    () => localStorage.getItem("dy:logclearts") || null,
+  );
   // 历史会话多选
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -100,22 +106,6 @@ export default function LogsPage(props: PageProps) {
   // 当前显示的数据源
   const activeQ = mode === "history" && viewFile ? histQ : curQ;
   const lines = activeQ.data?.lines || [];
-
-  // 清空显示后，只保留清空后新产生的行：用一个 ref 记录「清空时已显示行数」，
-  // 简单做法——清空时直接清空 lines 状态，后续轮询 append 新行。
-  // 由于轮询整体替换数据，这里在 displayCleared 为 true 时忽略旧行：
-  // 通过保存上次清空前的行数增量已不可靠（数据是整体尾部），
-  // 故采用「清空即重置视图，不清空实质，新轮询自然只显示当下尾部」——
-  // 但用户期望「清空后看到空白、之后新日志出现」。实现：清空时把 lines 置空并冻结，
-  // 直至下次轮询带来新行才解冻。逻辑见下方 effect。
-  const clearedRef = useRef(false);
-  useEffect(() => {
-    if (displayCleared) {
-      clearedRef.current = true;
-    } else {
-      clearedRef.current = false;
-    }
-  }, [displayCleared]);
 
   useEffect(() => {
     if (autoScroll && endRef.current) {
@@ -164,8 +154,11 @@ export default function LogsPage(props: PageProps) {
     }
   };
 
-  // 清空显示的展示行：清空后首屏不显示任何旧行
-  const shownLines = displayCleared && clearedRef.current ? [] : lines;
+  // 清空显示：只显示晚于清空时刻(clearTs)的新行；旧行隐藏。
+  // clearTs/displayCleared 持久化在 localStorage，切页重挂后仍生效，旧行不再回流。
+  const shownLines = displayCleared
+    ? lines.filter((l) => clearTs != null && l.ts > clearTs)
+    : lines;
 
   return (
     <div>
@@ -243,7 +236,16 @@ export default function LogsPage(props: PageProps) {
             <button
               className="btn sm ghost"
               onClick={() => {
+                const now = new Date();
+                const ts = [
+                  String(now.getHours()).padStart(2, "0"),
+                  String(now.getMinutes()).padStart(2, "0"),
+                  String(now.getSeconds()).padStart(2, "0"),
+                ].join(":");
                 setDisplayCleared(true);
+                setClearTs(ts);
+                localStorage.setItem("dy:logcleared", "1");
+                localStorage.setItem("dy:logclearts", ts);
                 props.push("已清空显示（实质日志未删除）");
               }}
             >
@@ -252,7 +254,12 @@ export default function LogsPage(props: PageProps) {
             {displayCleared && (
               <button
                 className="btn sm ghost"
-                onClick={() => setDisplayCleared(false)}
+                onClick={() => {
+                  setDisplayCleared(false);
+                  setClearTs(null);
+                  localStorage.removeItem("dy:logcleared");
+                  localStorage.removeItem("dy:logclearts");
+                }}
               >
                 恢复显示
               </button>
@@ -396,7 +403,7 @@ export default function LogsPage(props: PageProps) {
             lineHeight: 1.7,
           }}
         >
-          {displayCleared && clearedRef.current && shownLines.length === 0 && (
+          {displayCleared && shownLines.length === 0 && (
             <div style={{ color: "var(--muted)", padding: "20px 4px" }}>
               显示已清空（实质日志保留）· 新日志将从这里开始显示
             </div>

@@ -45,11 +45,12 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** 可收缩列表项：标题栏（点击展开/收缩）+ 内容 */
+/** 可收缩列表项：标题栏（点击展开/收缩）+ 内容 + 可选底部操作区 */
 function Collapsible(props: {
   title: string;
   subtitle?: string;
   defaultOpen?: boolean;
+  footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(!!props.defaultOpen);
@@ -97,14 +98,40 @@ function Collapsible(props: {
             padding: "12px 14px",
             borderTop: "1px solid var(--border)",
             background: "var(--surface-2)",
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-            gap: 12,
           }}
         >
-          {props.children}
+          {/* 参数项目自动换行：每个气泡 flex:1 0 220px 独立包裹，不固定宫格 */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{props.children}</div>
+          {props.footer && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                marginTop: 12,
+                paddingTop: 10,
+                borderTop: "1px dashed var(--border)",
+              }}
+            >
+              {props.footer}
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 收缩内容区的参数气泡包装：自适应宽度，上下排列 label/输入/hint */
+function FieldWrap(props: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        flex: "1 0 220px",
+        minWidth: 0,
+        maxWidth: "100%",
+      }}
+    >
+      {props.children}
     </div>
   );
 }
@@ -209,10 +236,10 @@ export default function SettingsPage(props: PageProps) {
   });
   const tc = tasksQ.data || {};
 
-  // 本地编辑态state
-  const [maxTarget, setMaxTarget] = useState("");
-  const [dmInterval, setDmInterval] = useState("");
-  const [delay, setDelay] = useState("");
+  // 本地编辑态state（带默认值，避免输入框为空需手动填写）
+  const [maxTarget, setMaxTarget] = useState("3");
+  const [dmInterval, setDmInterval] = useState("60");
+  const [delay, setDelay] = useState("40,65");
   const [forceRescan, setForceRescan] = useState(false);
   const [enableDanmaku, setEnableDanmaku] = useState(true);
   const [enableConsole, setEnableConsole] = useState(true);
@@ -223,9 +250,9 @@ export default function SettingsPage(props: PageProps) {
   // 只要 tasks API 数据变化就同步到本地编辑态（仅首次及数据真变时）
   useEffect(() => {
     if (!tc) return;
-    setMaxTarget((prev) => (initDone ? prev : tc.maxTarget != null ? String(tc.maxTarget) : ""));
-    setDmInterval((prev) => (initDone ? prev : tc.interval != null ? String(tc.interval) : ""));
-    setDelay((prev) => (initDone ? prev : tc.delay != null ? tc.delay : ""));
+    setMaxTarget((prev) => (initDone || prev !== "3" ? prev : tc.maxTarget != null ? String(tc.maxTarget) : "3"));
+    setDmInterval((prev) => (initDone || prev !== "60" ? prev : tc.interval != null ? String(tc.interval) : "60"));
+    setDelay((prev) => (initDone || prev !== "40,65" ? prev : tc.delay != null ? tc.delay : "40,65"));
     setForceRescan((prev) => (initDone ? prev : tc.forceRescan ?? false));
     setEnableDanmaku((prev) => (initDone ? prev : tc.enableDanmaku ?? true));
     setEnableConsole((prev) => (initDone ? prev : tc.enableConsole ?? true));
@@ -244,6 +271,34 @@ export default function SettingsPage(props: PageProps) {
   });
   const realAccts = accountsQ.data || [];
 
+  // 保存「直播监听策略」分组（仅发送节奏相关字段）
+  const saveStrategyGroup = useCallback(() => {
+    api
+      .saveTaskConfig({
+        maxTarget: parseInt(maxTarget) || 3,
+        interval: parseFloat(dmInterval) || 60,
+        delay: delay || "40,65",
+      })
+      .then((r) => push(r && r.ok ? "直播监听策略已保存" : "保存失败"))
+      .catch((e) => push("失败:保存异常 " + errMsg(e)));
+  }, [maxTarget, dmInterval, delay, api, push]);
+
+  // 保存「触发开关」分组（仅运行时特性开关）
+  const saveSwitchesGroup = useCallback(() => {
+    api
+      .saveTaskConfig({ enableDanmaku, enableConsole, enableSend })
+      .then((r) => push(r && r.ok ? "触发开关已保存" : "保存失败"))
+      .catch((e) => push("失败:保存异常 " + errMsg(e)));
+  }, [enableDanmaku, enableConsole, enableSend, api, push]);
+
+  const saveStrategySectionGroup = useCallback(() => {
+    api
+      .saveTaskConfig({ forceRescan })
+      .then((r) => push(r && r.ok ? "启动策略已保存" : "保存失败"))
+      .catch((e) => push("失败:保存异常 " + errMsg(e)));
+  }, [forceRescan, api, push]);
+
+  // 保存全部配置（兼容原底部按钮）
   const saveAll = useCallback(() => {
     api
       .saveTaskConfig({
@@ -311,80 +366,121 @@ export default function SettingsPage(props: PageProps) {
                 以下为各分类参数，点击标题展开后可直接编辑
               </div>
 
-              <Collapsible title="直播监听策略" subtitle="自动私信节奏参数">
-                <EditField
-                  label="每场私信上限"
-                  type="number"
-                  value={maxTarget}
-                  onChange={setMaxTarget}
-                  hint="每场直播最多发送条数"
-                />
-                <EditField
-                  label="私信间隔（秒）"
-                  type="number"
-                  value={dmInterval}
-                  onChange={setDmInterval}
-                  hint="两条私信之间的最小间隔"
-                />
-                <EditField
-                  label="延迟抖动范围"
-                  value={delay}
-                  onChange={setDelay}
-                  hint="格式: min,max（如 40,65）"
-                />
+              <Collapsible
+                title="直播监听策略"
+                subtitle="自动私信节奏参数"
+                footer={
+                  <button className="btn accent sm" onClick={saveStrategyGroup}>
+                    保存此分组
+                  </button>
+                }
+              >
+                <FieldWrap>
+                  <EditField
+                    label="每场私信上限"
+                    type="number"
+                    value={maxTarget}
+                    onChange={setMaxTarget}
+                    hint="每场直播最多发送条数"
+                  />
+                </FieldWrap>
+                <FieldWrap>
+                  <EditField
+                    label="私信间隔（秒）"
+                    type="number"
+                    value={dmInterval}
+                    onChange={setDmInterval}
+                    hint="两条私信之间的最小间隔"
+                  />
+                </FieldWrap>
+                <FieldWrap>
+                  <EditField
+                    label="延迟抖动范围"
+                    value={delay}
+                    onChange={setDelay}
+                    hint="格式: min,max（如 40,65）"
+                  />
+                </FieldWrap>
               </Collapsible>
 
-              <Collapsible title="触发开关" subtitle="运行时特性开关">
-                <SwitchField
-                  label="接收弹幕"
-                  checked={enableDanmaku}
-                  onChange={setEnableDanmaku}
-                  hint="启动监听时自动接收弹幕评论"
-                />
-                <SwitchField
-                  label="控制台输出"
-                  checked={enableConsole}
-                  onChange={setEnableConsole}
-                  hint="运行日志输出到控制台"
-                />
-                <SwitchField
-                  label="启用发送"
-                  checked={enableSend}
-                  onChange={setEnableSend}
-                  hint="是否实际发送私信"
-                />
+              <Collapsible
+                title="触发开关"
+                subtitle="运行时特性开关"
+                footer={
+                  <button className="btn accent sm" onClick={saveSwitchesGroup}>
+                    保存此分组
+                  </button>
+                }
+              >
+                <FieldWrap>
+                  <SwitchField
+                    label="接收弹幕"
+                    checked={enableDanmaku}
+                    onChange={setEnableDanmaku}
+                    hint="启动监听时自动接收弹幕评论"
+                  />
+                </FieldWrap>
+                <FieldWrap>
+                  <SwitchField
+                    label="控制台输出"
+                    checked={enableConsole}
+                    onChange={setEnableConsole}
+                    hint="运行日志输出到控制台"
+                  />
+                </FieldWrap>
+                <FieldWrap>
+                  <SwitchField
+                    label="启用发送"
+                    checked={enableSend}
+                    onChange={setEnableSend}
+                    hint="是否实际发送私信"
+                  />
+                </FieldWrap>
               </Collapsible>
             </div>
           )}
 
           {section === "strategy" && (
             <div>
-              <Collapsible title="启动策略" subtitle="启动自动私信时的凭证行为" defaultOpen>
-                <div
-                  style={{
-                    gridColumn: "1 / -1",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontSize: 13,
-                    color: "var(--muted)",
-                    cursor: "pointer",
-                    padding: "4px 0",
-                  }}
-                >
-                  <span className="switch" style={{ flex: "none" }}>
-                    <input
-                      type="checkbox"
-                      checked={forceRescan}
-                      onChange={(e) => setForceRescan(e.target.checked)}
-                    />
-                    <i />
-                  </span>
-                  <span style={{ color: "var(--text)" }}>启动前强制重新扫码</span>
-                  <i style={{ fontSize: 12, color: "var(--muted)" }}>
-                    （勾选则每次启动自动私信都强制重扫忽略磁盘凭证；不勾选则复用守护进程保活的凭证快速启动）
-                  </i>
-                </div>
+              <Collapsible
+                title="启动策略"
+                subtitle="启动自动私信时的凭证行为"
+                defaultOpen
+                footer={
+                  <button className="btn accent sm" onClick={saveStrategySectionGroup}>
+                    保存此分组
+                  </button>
+                }
+              >
+                <FieldWrap>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 13,
+                      color: "var(--muted)",
+                      cursor: "pointer",
+                      padding: "8px 10px",
+                      background: "var(--surface)",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <span className="switch" style={{ flex: "none" }}>
+                      <input
+                        type="checkbox"
+                        checked={forceRescan}
+                        onChange={(e) => setForceRescan(e.target.checked)}
+                      />
+                      <i />
+                    </span>
+                    <span style={{ color: "var(--text)" }}>启动前强制重新扫码</span>
+                    <i style={{ fontSize: 12, color: "var(--muted)" }}>
+                      （勾选则每次启动自动私信都强制重扫忽略磁盘凭证；不勾选则复用守护进程保活的凭证快速启动）
+                    </i>
+                  </div>
+                </FieldWrap>
               </Collapsible>
             </div>
           )}

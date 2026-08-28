@@ -79,7 +79,8 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         result_count INTEGER DEFAULT 0,
         config TEXT DEFAULT '{}',
         records TEXT DEFAULT '[]',
-        created_at REAL NOT NULL
+        created_at REAL NOT NULL,
+        pid INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_tasks_acct ON tasks(acct);
@@ -123,6 +124,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     """迁移旧表结构（新增列等），幂等。"""
     try:
         conn.execute("ALTER TABLE dm_conversations ADD COLUMN avatar TEXT")
+    except Exception:
+        pass  # 列已存在
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN pid INTEGER DEFAULT 0")
     except Exception:
         pass  # 列已存在
 

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 from auto_dm import accounts as acct_core
+from database import get_db
 
 router = APIRouter()
 
@@ -79,6 +80,81 @@ def _map_message(m: dict) -> dict:
     }
 
 
+def _enrich_with_db_nicknames(account: str, convs: list[dict]) -> list[dict]:
+    """用 SQLite 中已关联的昵称/头像补全 recv_daemon 内存里的数字 UID 会话。
+
+    08 方案：昵称/头像由公司级 capture_all(with_browser=True) 经 BCC 截获后写入
+    dm_conversations 表（peer_id=对端数字 UID，peer_name=昵称）。
+
+    关键：recv_daemon 内存里 peer_id/peer_name 常取成自己（首包解析时 uid_a/uid_b
+    顺序问题），但 conv_id 形如 0:1:uid_a:uid_b 里对端 UID 100% 可靠。
+    因此本函数从 conv_id 提取对端 UID（排除 my_uid），再用该 UID 匹配数据库
+    peer_id 字段取昵称/头像，确保前端不再刷屏数字 UID。
+    """
+    try:
+        from dy_apis.login_api import DYLoginApi
+        from auto_dm import accounts as acc
+        from database import get_db
+        # 取 my_uid 用于从 conv_id 排除自身、提取对端 UID
+        my_uid = None
+        try:
+            env_path = acc.env_path_of(account)
+            if env_path:
+                auth = DYLoginApi._load_auth_from_env(env_path)
+                my_uid = str(auth.get_uid())
+        except Exception:
+            pass
+
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT peer_id, peer_name, avatar FROM dm_conversations "
+            "WHERE account=? AND peer_name IS NOT NULL AND peer_name != '' AND peer_name != peer_id",
+            (account,),
+        ).fetchall()
+        if not rows:
+            return convs
+        # peer_id -> (nickname, avatar) 映射
+        db_map = {str(r["peer_id"]): (r["peer_name"], r["avatar"]) for r in rows}
+
+        def _extract_peer_uid(cid: str):
+            """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除 my_uid）。"""
+            if not cid:
+                return None
+            parts = cid.split(":")
+            if len(parts) >= 4:
+                uid_a, uid_b = parts[2], parts[3]
+                if my_uid and uid_a == my_uid:
+                    return uid_b
+                if my_uid and uid_b == my_uid:
+                    return uid_a
+                # 无 my_uid 兜底：取与 my_uid 不同的那个；都不等则取 uid_b
+                return uid_b
+            return None
+
+        for c in convs:
+            cid = c.get("conv_id")
+            peer_uid = _extract_peer_uid(cid)
+            if not peer_uid:
+                continue
+            info = db_map.get(peer_uid)
+            if not info:
+                continue
+            db_name, db_avatar = info
+            cur_name = c.get("peer_name") or c.get("name")
+            cur_name = str(cur_name) if cur_name is not None else ""
+            # 当前是数字 UID（无昵称）→ 用库值覆盖
+            if (not cur_name) or cur_name.isdigit() or cur_name == str(c.get("peer_id") or ""):
+                if db_name:
+                    c["peer_name"] = db_name
+                    c["name"] = db_name
+            cur_avatar = c.get("avatar")
+            if (not cur_avatar) and db_avatar:
+                c["avatar"] = db_avatar
+    except Exception as e:
+        logger.debug(f"[私信拉取] 数据库昵称补全失败（跳过）: {e}")
+    return convs
+
+
 def _map_conversation(c: dict) -> dict:
     return {
         "conv_id": c.get("conv_id"),
@@ -91,73 +167,104 @@ def _map_conversation(c: dict) -> dict:
 
 @router.get("/conversations")
 async def list_conversations(account: str):
-    """会话列表（转发到 recv_daemon /conversations）
+    """会话列表（08 方案：私信页纯读 SQLite 权威源）
 
-    私信守护(recv_daemon)未运行时返回 recvDaemonDown=True + 空列表，
-    不再向外抛 urlopen/WinError 10061 —— 前端据此提示「守护未运行」并自动拉起，
-    而不是报一屏连接失败弹窗。
+    昵称/头像由 backend 启动时 capture_all(with_browser=True) 经 BCC 截获后写入
+    SQLite（dm_conversations.peer_name/avatar），recv_daemon 仅负责 WS 实时增量
+    （新消息、未读数），不在内存里维护昵称。这里直接读库，保证展示层和落库一致。
+    守护未启动时不抛连接错误，返回 recvDaemonDown 由前端决定拉起。
     """
-    logger.info(f"[私信拉取] 开始拉取账号「{account}」的会话列表")
+    logger.info(f"[私信拉取] 开始拉取账号「{account}」的会话列表（纯读库）")
     try:
-        url = _recv_url(account, "/conversations?account=" + urllib.parse.quote(account))
-        logger.info(f"[私信拉取] 账号「{account}」→ recv_daemon URL: {url}")
-        if url is None:
-            logger.warning(f"[私信拉取] 账号「{account}」端口分配失败")
-            return {"ok": False, "conversations": [], "error": "端口分配失败"}
-        # 先探测守护端口；未开直接返回空（别让前端看到原始连接错误）
-        port = acct_core.recv_daemon_port(account)
-        if not acct_core._port_open(port, timeout=0.3):
-            logger.warning(f"[私信拉取] 账号「{account}」私信守护未运行(port={port})，返回空列表")
-            return {"ok": True, "conversations": [], "recvDaemonDown": True}
-        d = _http_get_json(url)
-        logger.info(f"[私信拉取] 账号「{account}」recv_daemon 完整原始响应: {json.dumps(d, ensure_ascii=False)}")
-        raw_convs = d.get("conversations") or []
-        logger.info(f"[私信拉取] 账号「{account}」recv_daemon 返回 {len(raw_convs)} 个原始会话")
-        for i, rc in enumerate(raw_convs):
-            logger.info(f"[私信拉取]   原始会话#{i}: conv_id={rc.get('conv_id')}, peer_name={rc.get('peer_name')}, peer_id={rc.get('peer_id')}, messages={len(rc.get('messages') or [])} 条")
-            logger.info(f"[私信拉取]   原始会话#{i} 完整数据: {json.dumps(rc, ensure_ascii=False)}")
-        convs = [_map_conversation(c) for c in raw_convs]
-        logger.info(f"[私信拉取] 账号「{account}」映射后会话: {json.dumps(convs, ensure_ascii=False)}")
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar "
+            "FROM dm_conversations WHERE account=? ORDER BY last_ts DESC",
+            (account,),
+        ).fetchall()
+        if not rows:
+            # 库里还没有会话：若守护未启动则提示前端拉起，否则返回空
+            port = acct_core.recv_daemon_port(account)
+            if not acct_core._port_open(port, timeout=0.3):
+                logger.warning(f"[私信拉取] 账号「{account}」库空且守护未运行(port={port})")
+                return {"ok": True, "conversations": [], "recvDaemonDown": True}
+            return {"ok": True, "conversations": []}
+        convs = []
+        # peer_id → 昵称 映射：recv_daemon 独有会话（conv_id 格式与 capture_all 不同）
+        # 可能 peer_name 为空/数字 UID，但其 peer_id 与已关联昵称的会话相同，
+        # 用 peer_id 复用昵称，保证展示层不出现裸 UID。
+        nickname_by_peer = {}
+        for r in rows:
+            pn = r["peer_name"]
+            if pn and pn != r["peer_id"] and not str(pn).isdigit():
+                nickname_by_peer[str(r["peer_id"])] = pn
+        for r in rows:
+            cid = r["conv_id"]
+            peer_id = r["peer_id"]
+            peer_name = r["peer_name"]
+            name = peer_name or nickname_by_peer.get(str(peer_id)) or peer_id or cid or "会话"
+            convs.append({
+                "conv_id": cid,
+                "name": name,
+                "peer_id": peer_id,
+                "peer_name": peer_name,
+                "unread": r["unread"] or 0,
+                "avatar": r["avatar"] or "",
+                "messages": [],
+            })
+        unread_total = sum((c.get("unread") or 0) for c in convs)
+        named = sum(1 for c in convs if c["name"] and not str(c["name"]).isdigit())
+        logger.info(
+            f"[私信拉取] 账号「{account}」读库 {len(convs)} 个会话"
+            f"（已关联昵称 {named}，未读合计 {unread_total}）"
+        )
         return {"ok": True, "conversations": convs}
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            logger.warning(f"[私信拉取] 账号「{account}」recv_daemon 返回 404（守护未运行）")
-            return {"ok": True, "conversations": [], "recvDaemonDown": True}
-        logger.error(f"[私信拉取] 账号「{account}」HTTP 错误 {e.code}")
-        return {"ok": False, "conversations": [], "error": f"私信守护返回 {e.code}"}
-    except (ConnectionRefusedError, TimeoutError) as e:
-        logger.warning(f"[私信拉取] 账号「{account}」守护端口不可达: {e}")
-        return {"ok": True, "conversations": [], "recvDaemonDown": True}
     except Exception as e:
-        logger.warning(f"[私信拉取] 账号「{account}」异常: {e}（守护可能未启动）")
+        logger.warning(f"[私信拉取] 账号「{account}」读库异常: {e}")
         return {"ok": False, "conversations": [], "error": str(e)}
 
 
 @router.get("/conversation")
 async def get_conversation(account: str, conv_id: str):
-    """会话详情（转发到 recv_daemon /conversation，含已读标记）"""
+    """会话详情（纯读库 + 标记已读）"""
     logger.info(f"[私信拉取] 拉取账号「{account}」会话详情 conv_id={conv_id}")
     try:
-        url = _recv_url(
-            account,
-            f"/conversation?account={urllib.parse.quote(account)}&conv_id={urllib.parse.quote(str(conv_id))}",
-        )
-        d = _http_get_json(url)
-        conv = d.get("conversation")
-        if conv is None:
-            logger.warning(f"[私信拉取] 账号「{account}」会话 {conv_id} 未找到")
+        conn = get_db()
+        row = conn.execute(
+            "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar "
+            "FROM dm_conversations WHERE account=? AND conv_id=?",
+            (account, str(conv_id)),
+        ).fetchone()
+        if row is None:
             return {"ok": False, "conversation": {}}
-        mapped = _map_conversation(conv)
-        logger.info(f"[私信拉取] 账号「{account}」会话 {conv_id} 详情: name={mapped.get('name')}, messages={len(mapped.get('messages') or [])} 条")
-        return {"ok": True, "conversation": mapped}
-    except urllib.error.HTTPError as e:
-        if e.code in (404,):
-            return {"ok": False, "conversation": {}, "recvDaemonDown": True}
-        return {"ok": False, "conversation": {}, "error": f"私信守护返回 {e.code}"}
-    except (ConnectionRefusedError, TimeoutError) as e:
-        return {"ok": False, "conversation": {}, "recvDaemonDown": True}
+        msgs = conn.execute(
+            "SELECT role,text,msg_type,ts FROM dm_messages "
+            "WHERE account=? AND conv_id=? ORDER BY ts ASC",
+            (account, str(conv_id)),
+        ).fetchall()
+        conv = {
+            "conv_id": row["conv_id"],
+            "name": row["peer_name"] or row["peer_id"] or row["conv_id"] or "会话",
+            "peer_id": row["peer_id"],
+            "peer_name": row["peer_name"],
+            "unread": row["unread"] or 0,
+            "avatar": row["avatar"] or "",
+            "messages": [{"role": m["role"], "text": m["text"], "msg_type": m["msg_type"]} for m in msgs],
+        }
+        # 标记已读
+        try:
+            conn.execute(
+                "UPDATE dm_conversations SET unread=0 WHERE account=? AND conv_id=?",
+                (account, str(conv_id)),
+            )
+            conn.commit()
+        except Exception:
+            pass
+        logger.info(f"[私信拉取] 账号「{account}」会话 {conv_id} 详情: name={conv['name']}, messages={len(conv['messages'])} 条")
+        return {"ok": True, "conversation": conv}
     except Exception as e:
-        return {"ok": False, "conversation": {}, "error": str(e)}
+        logger.warning(f"[私信拉取] 账号「{account}」会话详情异常: {e}")
+        return {"ok": False, "conversation": {}}
 
 
 @router.post("/request")

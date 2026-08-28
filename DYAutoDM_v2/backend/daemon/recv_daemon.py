@@ -127,7 +127,33 @@ class AccountInbox:
         self.connected = False
         self.last_error = ""
         self._api_pulled = False  # 标记是否已调 get_message_by_init 拉全量会话
+        # my_uid：用于从 conv_id 0:1:uid_a:uid_b 提取对端 UID（WS 消息 sender 常为空/自己）
+        self.my_uid = None
+        try:
+            from auto_dm import accounts as _acc
+            from dy_apis.login_api import DYLoginApi
+            env_path = _acc.env_path_of(name)
+            if env_path:
+                _auth = DYLoginApi._load_auth_from_env(env_path)
+                self.my_uid = str(_auth.get_uid())
+        except Exception:
+            pass
         self._load_from_db()
+
+    def _extract_peer_uid(self, conv_id: str) -> str | None:
+        """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除自己）。"""
+        if not conv_id:
+            return None
+        parts = conv_id.split(":")
+        if len(parts) >= 4:
+            uid_a, uid_b = parts[2], parts[3]
+            if self.my_uid and uid_a == self.my_uid:
+                return uid_b
+            if self.my_uid and uid_b == self.my_uid:
+                return uid_a
+            # 无 my_uid 兜底：取与 my_uid 不同的那个
+            return uid_b
+        return None
 
     def _db(self):
         from database import get_db
@@ -178,10 +204,17 @@ class AccountInbox:
                     c.peer_name = peer_name
                 try:
                     conn = self._db()
+                    # 保护已由 capture_all 关联的昵称 / 已有对端 UID：
+                    # 仅当数据库现有 peer_name 为空或缺失时才用本次值覆盖；
+                    # 若现有已有值（昵称或对端UID），绝不回退成自己或空值。
                     conn.execute(
-                        "UPDATE dm_conversations SET peer_id=?,peer_name=? "
+                        "UPDATE dm_conversations SET peer_id=?,"
+                        "peer_name=COALESCE("
+                        "  (SELECT CASE WHEN peer_name IS NOT NULL AND peer_name != '' "
+                        "THEN peer_name ELSE ? END), ?) "
                         "WHERE account=? AND conv_id=?",
-                        (peer_id, peer_name, self.name, conv_id),
+                        (peer_id, peer_name or peer_id, peer_name or peer_id,
+                         self.name, conv_id),
                     )
                     conn.commit()
                 except Exception:
@@ -284,6 +317,9 @@ class AccountInbox:
                     msg_type: str = "text", extra: dict | None = None) -> Conversation:
         ts = time.time()
         with self.lock:
+            # peer_id 为空/等于自己 → 从 conv_id 提取对端 UID（WS sender 常空/自己）
+            if not peer_id or str(peer_id) == self.my_uid:
+                peer_id = self._extract_peer_uid(conv_id) or peer_id
             c = self.get_or_create(conv_id, peer_id, peer_name)
             c.add(role, text, msg_type, extra, ts=ts)
             # 持久化到 SQLite（单条消息 + 会话 last_ts 更新）
@@ -300,6 +336,16 @@ class AccountInbox:
                     "WHERE account=? AND conv_id=?",
                     (ts, 1 if role == "them" else 0, self.name, conv_id),
                 )
+                # B 机制：运行时收到带 sender_nickname 的新消息，回写会话昵称。
+                # 仅在当前 peer_name 为空 / 等于 peer_id(数字) / 等于自己昵称 时覆盖，
+                # 避免覆盖首包+im/user/info 已写入的正确昵称。
+                if peer_name and peer_name != conv_id:
+                    conn.execute(
+                        "UPDATE dm_conversations SET peer_name=? "
+                        "WHERE account=? AND conv_id=? AND "
+                        "(peer_name IS NULL OR peer_name='' OR peer_name=? OR peer_name=?)",
+                        (peer_name, self.name, conv_id, peer_id, peer_name),
+                    )
                 conn.commit()
             except Exception as e:
                 logger.warning(f"[recv][{self.name}] 消息持久化失败: {e}")
@@ -535,6 +581,15 @@ class RecvChannel(threading.Thread):
 # ----------------------------------------------------------------------------
 # FastAPI 路由
 # ----------------------------------------------------------------------------
+def _safe_capture(name):
+    """守护启动补一次捕获（首包解析+写库，不抢 profile）。失败不影响守护运行。"""
+    try:
+        from auto_dm.conversation_capture import capture_all
+        capture_all(name, with_browser=False)
+    except Exception as e:
+        logger.warning(f"[recv][{name}] 启动前移捕获失败（忽略）: {e}")
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     logger.info(
@@ -557,6 +612,14 @@ async def _startup() -> None:
             _state["channels"][name] = channel
             channel.start()
             logger.info(f"[recv] 账号 {name} 接收通道已启动")
+            # 守护启动顺带补一次前移捕获（首包解析写库，不抢 profile）
+            try:
+                from auto_dm.conversation_capture import capture_all
+                threading.Thread(
+                    target=lambda: _safe_capture(name), daemon=True
+                ).start()
+            except Exception as e:
+                logger.warning(f"[recv] 启动捕获注册失败: {e}")
         except Exception as e:
             logger.error(f"[recv] 账号 {name} 启动失败: {e}")
 
@@ -620,13 +683,15 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         logger.warning(f"[recv][{ib.name}] 加载凭证失败: {e}")
         return 0
 
-    # 1) get_message_by_init 拉全量会话（250KB，含 259 个 conversation_id）
+    # 1) get_message_by_init 拉全量会话（250KB，含全部会话 ID + 消息 + peer uid）
     try:
         raw = DouyinAPI.get_message_by_init(auth)
         if len(raw) < 2000:
             logger.warning(f"[recv][{ib.name}] get_message_by_init 返回 {len(raw)} 字节"
                            f"（非全量，疑似凭证失效/限频）：{raw[:80]}")
-        convs = DouyinAPI.parse_init_conversations(raw, my_uid)
+        # 新版：protobuf 精确解析（field 6 = conversation 数组，消息内嵌 conv_id 链接键）
+        from auto_dm.conversation_capture import parse_init_protobuf
+        convs = parse_init_protobuf(raw, my_uid)
     except Exception as e:
         logger.warning(f"[recv][{ib.name}] get_message_by_init 失败: {e}")
         return 0
@@ -634,8 +699,9 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         logger.info(f"[recv][{ib.name}] get_message_by_init 返回 0 个会话")
         return 0
 
-    # 2) 写入会话骨架到 SQLite + 内存
+    # 2) 写入会话骨架 + 消息到 SQLite + 内存
     n = 0
+    n_msg = 0
     with ib.lock:
         try:
             conn = ib._db()
@@ -644,6 +710,7 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         for c in convs:
             conv_id = c["conversation_id"]
             peer_uid = c["peer_uid"]
+            sec_uid = c.get("sec_uid")
             if conv_id in ib.convs:
                 # 已存在：补全 peer_id（WS 建立的骨架可能没有 peer_id）
                 if not ib.convs[conv_id].peer_id and peer_uid:
@@ -653,6 +720,18 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                             "UPDATE dm_conversations SET peer_id=? WHERE account=? AND conv_id=?",
                             (peer_uid, ib.name, conv_id),
                         )
+                # 补全消息（增量）
+                if conn and c.get("messages"):
+                    for m in c["messages"]:
+                        try:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO dm_messages("
+                                "account,conv_id,role,text,msg_type,extra,ts) VALUES(?,?,?,?,?,?,?)",
+                                (ib.name, conv_id, m["role"], m["text"], "text", "{}", m["ts"]),
+                            )
+                            n_msg += 1
+                        except Exception:
+                            pass
                 continue
             # 新会话：建立骨架
             conv = Conversation(conv_id, peer_uid, peer_uid)
@@ -664,63 +743,23 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                     "peer_id,peer_name,short_id,last_ts,unread,avatar) VALUES(?,?,?,?,?,?,?,?)",
                     (ib.name, conv_id, peer_uid, peer_uid, None, 0, 0, None),
                 )
+                # 写消息
+                for m in c.get("messages", []):
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO dm_messages("
+                            "account,conv_id,role,text,msg_type,extra,ts) VALUES(?,?,?,?,?,?,?)",
+                            (ib.name, conv_id, m["role"], m["text"], "text", "{}", m["ts"]),
+                        )
+                        n_msg += 1
+                    except Exception:
+                        pass
         if conn:
             conn.commit()
-    logger.info(f"[recv][{ib.name}] get_message_by_init 提取 {len(convs)} 个会话，新增 {n} 个")
-
-    # 3) 批量解析昵称/头像（后台线程：真实浏览器页面 fetch 批量查，不阻塞 HTTP 响应）
-    # 教训：纯 requests 调 get_user_info（profile API）会被拒（status=2）/限频。
-    # 用浏览器页面 fetch sec_user_ids 批量查（对齐 douyin.com/chat 实机）稳定返回昵称+头像。
-    def _resolve_names():
-        need = []
-        for c in convs:
-            sec_uid = c.get("sec_uid")
-            peer_uid = c.get("peer_uid")
-            conv_id = c["conversation_id"]
-            if not sec_uid:
-                continue
-            existing = ib.convs.get(conv_id)
-            if existing and existing.peer_name and existing.peer_name != peer_uid:
-                continue  # 已有真实昵称
-            need.append((sec_uid, conv_id))
-        if not need:
-            return
-        resolved = 0
-        info_map = DYLoginApi.bulk_user_info_via_browser(env_path,
-                                                         [s for s, _ in need])
-        for sec_uid, conv_id in need:
-            info = info_map.get(sec_uid) or {}
-            nickname = info.get("nickname") or ""
-            avatar_url = info.get("avatar") or ""
-            if not nickname:
-                continue
-            existing = ib.convs.get(conv_id)
-            if existing:
-                existing.peer_name = nickname
-                if avatar_url:
-                    existing.avatar = avatar_url
-            try:
-                db = ib._db()
-                if avatar_url:
-                    db.execute(
-                        "UPDATE dm_conversations SET peer_name=?,avatar=? WHERE account=? AND conv_id=?",
-                        (nickname, avatar_url, ib.name, conv_id),
-                    )
-                else:
-                    db.execute(
-                        "UPDATE dm_conversations SET peer_name=? WHERE account=? AND conv_id=?",
-                        (nickname, ib.name, conv_id),
-                    )
-                db.commit()
-            except Exception:
-                pass
-            resolved += 1
-        if resolved:
-            logger.info(f"[recv][{ib.name}] 已解析 {resolved}/{len(need)} 个会话的昵称/头像（浏览器批量）")
-        else:
-            logger.warning(f"[recv][{ib.name}] 浏览器批量昵称解析 0 个（会话稍后随 WS 新消息补全昵称）")
-
-    threading.Thread(target=_resolve_names, daemon=True).start()
+    logger.info(f"[recv][{ib.name}] get_message_by_init 提取 {len(convs)} 个会话，"
+                f"新增 {n} 个，写入消息 {n_msg} 条")
+    # 昵称/头像补全：不再走 BCC 批量查（风控），改由 verify_account 时
+    # 无头浏览器截 im/user/info 写入；运行时 WS 新消息也会带 sender_nickname。
     return n
 
 

@@ -581,7 +581,10 @@ class DYLoginApi:
         CDP 实测：页面内 fetch `/aweme/v1/web/im/user/info/` POST `sec_user_ids=[...]`
         返回 `data: [{nickname, avatar_small...}, ...]`，一次可查多个用户。
 
-        必须先开有头浏览器（headless=False 实测返回昵称；headless 被降级返回空）。
+        注意：本函数是「主动 POST sec_user_ids 批量查」旧路径，无头下抖音会降级返回空，
+        故需有头浏览器（与 BCC 常驻无头无关）。
+        新版前移捕获改用 browser_daemon.capture_userinfo_map「被动 hook 截前端自发
+        im/user/info」——该路径无头可行（实机 44/44），BCC 常驻已默认 headless=True。
         返回 {sec_uid: {"nickname": str, "avatar": str}}，失败/受限的 sec_uid 不包含。
 
         优先通过 BCC HTTP /user_info 接口（常驻浏览器容器，不抢锁）；

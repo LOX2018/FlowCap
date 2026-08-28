@@ -6,27 +6,32 @@
 数据永不过期，仅用户「清空」时删除；列表查询支持分页。
 """
 import json
+import os
 import time
 
 from loguru import logger
 
 
 def start_task(acct: str, live_id: str, config: dict | None = None, records: list | None = None) -> int:
-    """记录一条新历史任务（状态=运行中），返回任务 id。"""
+    """记录一条新历史任务（状态=运行中），返回任务 id。
+
+    同时写入当前进程 pid，用于区分「本进程正在运行」与「上次进程退出未收尾
+    残留的悬空 running」——后者由 fix_stuck_tasks 按 pid 比对兜底修正。
+    """
     from database import get_db
     tid = int(time.time() * 1000)
     conn = get_db()
     conn.execute(
         "INSERT INTO tasks(id,acct,live_id,start_ts,end_ts,status,result_count,"
-        "config,records,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "config,records,created_at,pid) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (tid, acct or "", live_id or "", time.strftime("%Y-%m-%d %H:%M:%S"),
          "", "running", len(records or []),
          json.dumps(config or {}, ensure_ascii=False),
          json.dumps(records or [], ensure_ascii=False),
-         tid / 1000.0),
+         tid / 1000.0, os.getpid()),
     )
     conn.commit()
-    logger.info(f"[history] 记录历史任务: 账号={acct} live={live_id} id={tid}")
+    logger.info(f"[history] 记录历史任务: 账号={acct} live={live_id} id={tid} pid={os.getpid()}")
     return tid
 
 
@@ -48,27 +53,34 @@ def finish_task(tid: int, status: str = "finished", result_count: int = 0,
 
 
 def fix_stuck_tasks(force: bool = False) -> None:
-    """同步引擎状态机：多任务「运行中」时只保留最新一条，其余标为「已停止」。
+    """兜底修正悬空「运行中」任务（按进程 pid 比对，而非靠查询时机启发式）。
 
-    根因：引擎崩溃/自然关播后队列发空时未收尾，导致历史任务永远停留在「运行中」。
-    - force=False（默认，list 查询时）：保留最新一条 running（其它标的都收尾），
-      避免引擎启动瞬间查询列表把正在运行的任务误标；
-    - force=True（backend 启动时调用）：全部 running 收尾为 stopped——
-      启动瞬间引擎必然尚未开始任何任务，所有 running 都是上一次进程遗留的悬挂任务。
+    根因：引擎崩溃/被强杀/自然关播时，正常收尾路径（AutoDM.shutdown →
+    stop → _finish_history_task）没机会执行，导致历史任务永远停在「运行中」。
+    start_task 已记下每条任务的进程 pid，因此「不属于当前进程的 running」一定是
+    上次进程遗留的悬挂任务，可直接收尾为 stopped——这不会误伤本进程真正在跑的任务。
+
+    - force=False（默认，list 查询时）：只修 pid 不匹配当前进程的 running；
+    - force=True（backend 启动时）：当前进程必然还没开始任何任务，
+      所有 running（含 pid 匹配当前进程的，理论上不存在）都是遗留，全部收尾。
+      保留该参数仅为语义清晰，实际与 False 行为一致（pid 不匹配即修）。
     """
     from database import get_db
+    cur_pid = os.getpid()
     conn = get_db()
-    rows = conn.execute(
-        "SELECT id FROM tasks WHERE status='running' ORDER BY id DESC"
-    ).fetchall()
-    if not rows:
-        return
     if force:
-        stuck_ids = [r["id"] for r in rows]
+        # 启动时：所有 running 都是上次进程遗留（无论 pid 是否巧合匹配）
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE status='running'"
+        ).fetchall()
     else:
-        if len(rows) <= 1:
-            return
-        stuck_ids = [r["id"] for r in rows[1:]]
+        # 列表查询时：仅收尾 pid 不匹配当前进程的 running，
+        # 本进程自己那条 running 永远保留（不会被误杀）
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE status='running' AND pid<>?",
+            (cur_pid,),
+        ).fetchall()
+    stuck_ids = [r["id"] for r in rows]
     if not stuck_ids:
         return
     conn.execute(
@@ -77,7 +89,7 @@ def fix_stuck_tasks(force: bool = False) -> None:
         stuck_ids,
     )
     conn.commit()
-    logger.info(f"[history] 自动修复 {len(stuck_ids)} 条悬空「运行中」任务 -> 已停止")
+    logger.info(f"[history] 收尾 {len(stuck_ids)} 条悬空「运行中」任务 -> 已停止")
 
 
 def list_history(limit: int = 0, offset: int = 0) -> list[dict]:

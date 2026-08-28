@@ -392,5 +392,9 @@ export interface PageProps {
   goReuse?: (payload: ReusePayload) => void;
   /** 直播监听页收到的复用载荷（由 goReuse 设置） */
   reusePayload?: ReusePayload | null;
+  /** 私信页当前账号（提升到 App 级，配合常驻 conversations 轮询避免切页冷拉/StrictMode 双拉） */
+  msgAcct?: string;
+  /** 设置私信页当前账号 */
+  setMsgAcct?: (name: string) => void;
 }
 

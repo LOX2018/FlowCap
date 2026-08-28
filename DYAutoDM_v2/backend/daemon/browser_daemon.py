@@ -76,6 +76,61 @@ _state: dict[str, Any] = {
 }
 
 
+# 模块级 hook 脚本：截 im/user/info 响应（必须在 context 创建后、goto 前 add_init_script 注入）
+# V16 踩坑：evaluate 注入太晚（前端已发完 im/user/info），必须 add_init_script 在 goto 前
+CAP_USERINFO_HOOK_JS = r"""
+(() => {
+  if (window.__CAP_USERINFO__) return 'already';
+  window.__CAP_USERINFO__ = { map: {} };
+  const origFetch = window.fetch.bind(window);
+  window.fetch = function(u, o) {
+    const p = origFetch(u, o);
+    try {
+      const url = (typeof u === 'string') ? u : (u && u.url) || '';
+      if (/im\/user\/info/.test(url)) {
+        p.then(r => r.clone().json().catch(()=>null)).then(obj => {
+          try {
+            for (const it of (obj && obj.data) || []) {
+              const su = it.sec_uid || it.sec_user_id;
+              if (su) window.__CAP_USERINFO__.map[su] = {
+                nickname: it.nickname || '',
+                avatar: (it.avatar_thumb && it.avatar_thumb.url_list && it.avatar_thumb.url_list[0]) || '',
+                uid: it.uid != null ? String(it.uid) : ''
+              };
+            }
+          } catch(e) {}
+        }).catch(()=>{});
+      }
+    } catch(e) {}
+    return p;
+  };
+  const origXHR = window.XMLHttpRequest;
+  window.XMLHttpRequest = function() {
+    const x = new origXHR();
+    const o = x.open; x.open = function(m,u,...r){ x.__u=u; x.__m=m; return o.call(x,m,u,...r); };
+    const ob = x.send; x.send = function(d){ return ob.call(x,d); };
+    x.addEventListener('load', function(){
+      try {
+        if (x.__u && /im\/user\/info/.test(x.__u)) {
+          const obj = JSON.parse(x.responseText || '{}');
+          for (const it of (obj.data) || []) {
+            const su = it.sec_uid || it.sec_user_id;
+            if (su) window.__CAP_USERINFO__.map[su] = {
+              nickname: it.nickname || '',
+              avatar: (it.avatar_thumb && it.avatar_thumb.url_list && it.avatar_thumb.url_list[0]) || '',
+              uid: it.uid != null ? String(it.uid) : ''
+            };
+          }
+        }
+      } catch(e) {}
+    });
+    return x;
+  };
+  return 'captured';
+})()
+"""
+
+
 class BrowserContainer:
     """常驻持有该账号 profile 的唯一 Playwright context。
 
@@ -119,14 +174,19 @@ class BrowserContainer:
         if not self._profile_dir or not os.path.isdir(self._profile_dir):
             raise RuntimeError(f"[bcc] profile 目录不存在: {self._profile_dir}")
         _vb, _vb_mode = should_use_vb(_cfg)
+        # 常驻浏览器容器默认无头：捕获链路（capture_userinfo_map 被动 hook 截前端自发
+        # im/user/info）经实机验证（有头/无头均 44/44）无头完全可行，且零窗口更稳。
+        # 扫码登录走独立 get_login_auth(headless=False)，需可见 UI，不在此处。
         self._pw, self._browser, self._context, self._backend = await launch_async(
-            _vb_mode, _cfg, headless=False, user_data_dir=self._profile_dir, force=False)
+            _vb_mode, _cfg, headless=True, user_data_dir=self._profile_dir, force=False)
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
-        # 默认打开首页保活登录态（不阻塞）
+        # V16 踩坑：add_init_script 必须在 goto 前注入，否则前端已发完 im/user/info 再注入就截不到
+        await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
+        # 直接打开 chat 页（前端才会自发调 im/user/info）
         try:
-            await self._page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=20000)
+            await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=20000)
         except Exception as e:
-            logger.warning(f"[bcc] 打开首页失败（不阻塞，后续接口自愈）: {e}")
+            logger.warning(f"[bcc] 打开 chat 页失败（不阻塞，后续接口自愈）: {e}")
 
     async def _ensure_alive(self) -> None:
         """context/page 失活时重启。在 _lock 内调用。"""
@@ -202,9 +262,9 @@ class BrowserContainer:
                    "&downlink=10&effective_type=4g&round_trip_time=100")
 
         async def _do():
-            # 确保落在 douyin.com 域（fetch 相对路径要求同 origin）
-            if not self._page.url.startswith("https://www.douyin.com"):
-                await self._page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=25000)
+            # 确保在 douyin.com/chat（im/user/info 需要私信上下文）
+            if "/chat" not in self._page.url:
+                await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=25000)
                 await self._page.wait_for_timeout(2500)
             out = {}
             batch = 6
@@ -240,6 +300,125 @@ class BrowserContainer:
                     }
                 await self._page.wait_for_timeout(300)
             return out
+        return await self._exec(_do)
+
+    async def bulk_user_info_by_uid(self, uids: list[str]) -> dict:
+        """用数字 UID 主动 fetch im/user/info 批量查昵称/头像（比被动 hook 更可靠）。
+
+        抖音 im/user/info 接口同时支持 user_ids 与 sec_user_ids 参数。
+        会话列表只有数字 peer_uid（首包解析 100% 可靠），用 user_ids 直查
+        避免依赖前端自发展示会话（被动 hook 会超时/缺口）。
+        返回 {uid: {"nickname", "avatar"}}。
+        """
+        api_url = (
+            "/aweme/v1/web/im/user/info/?device_platform=webapp&aid=6383&channel=channel_pc_web"
+            "&pc_client_type=1&update_version_code=170400&version_code=170400&version_name=17.4.0"
+            "&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Mozilla"
+            "&browser_version=5.0&browser_online=true&os_name=Windows&os_version=10&platform=PC"
+            "&downlink=10&effective_type=4g&round_trip_time=100"
+        )
+
+        async def _do():
+            # 确保在 douyin.com/chat（im/user/info 需要私信上下文）
+            if "/chat" not in self._page.url:
+                await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=25000)
+                await self._page.wait_for_timeout(2500)
+            out = {}
+            batch = 6
+            import urllib.parse as _up
+            for i in range(0, len(uids), batch):
+                chunk = uids[i:i + batch]
+                body = "user_ids=" + _up.quote(json.dumps(chunk))
+                js = (
+                    "(async () => {"
+                    f"  const r = await fetch({json.dumps(api_url)}, {{"
+                    "    method: 'POST',"
+                    "    headers: {'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'},"
+                    f"    body: {json.dumps(body)},"
+                    "    credentials: 'include'"
+                    "  });"
+                    "  return await r.json();"
+                    "})()"
+                )
+                try:
+                    result = await self._page.evaluate(js)
+                    logger.info(f"[bcc] 批量查昵称(uid) 响应: {str(result)[:500]}")
+                except Exception as e:
+                    logger.warning(f"[bcc] 批量查昵称(uid) evaluate 失败: {e}")
+                    continue
+                items = (result or {}).get("data") or []
+                for u in items:
+                    uid = str(u.get("uid") or "")
+                    if not uid:
+                        continue
+                    avt = (u.get("avatar_small") or {}).get("url_list") or []
+                    out[uid] = {
+                        "nickname": u.get("nickname") or "",
+                        "avatar": avt[0] if avt else "",
+                    }
+                await self._page.wait_for_timeout(300)
+            return out
+
+        return await self._exec(_do)
+
+    async def capture_userinfo_map(self, wait: int = 15) -> dict:
+        """被动 hook 截前端自己发的 im/user/info 响应（零主动请求、零风控）。
+
+        复用本容器已持有的常驻浏览器 context/page（不另开浏览器、不抢 profile）。
+        在 _lock 内执行，与 bulk_user_info/resolve_url 串行无冲突。
+        返回 {sec_uid: {"nickname": str, "avatar": str, "uid": str}}。
+        """
+        async def _do():
+            # hook 已在 _launch 中 add_init_script 注入，直接等前端发 im/user/info
+            if "/chat" not in self._page.url:
+                await self._page.goto("https://www.douyin.com/chat?isPopup=1",
+                                       wait_until="domcontentloaded", timeout=25000)
+                await self._page.wait_for_timeout(2000)
+            # 等待前端首发 im/user/info（首屏会话）
+            await self._page.wait_for_timeout(wait * 1000)
+
+            async def _click_all():
+                items = await self._page.query_selector_all(
+                    ".conversationConversationItemwrapper")
+                for it in items:
+                    try:
+                        await it.click(timeout=2000)
+                        await self._page.wait_for_timeout(400)
+                    except Exception:
+                        pass
+
+            # 平滑逐屏滚动 + 每屏点进每个可见会话（覆盖懒加载的全部会话）
+            # 抖音私信列表是增量懒加载：大跨度 scrollTop=scrollHeight 跳跃会让
+            # 中间大量会话不进入可视区 → 前端不为它们发 im/user/info → 缺口。
+            # 故必须一屏一屏平滑往下滚，让每个会话都真正渲染、触发其 im/user/info。
+            for _round in range(40):  # 上限 40 屏防死循环
+                await _click_all()
+                # 平滑滚下一屏（一次一个 clientHeight，不跳到底）
+                moved = await self._page.evaluate(
+                    "() => { const el = document.querySelector("
+                    "'.conversationConversationListwrapper'); "
+                    "if (!el) return false; "
+                    "const before = el.scrollTop; "
+                    "el.scrollTop = before + el.clientHeight; "
+                    "return el.scrollTop > before; }")
+                await self._page.wait_for_timeout(1200)  # 等该屏渲染 + 触发 im/user/info
+                # 到底判定：已滚到接近底部 或 高度不再增长
+                at_bottom = await self._page.evaluate(
+                    "() => { const el = document.querySelector("
+                    "'.conversationConversationListwrapper'); "
+                    "if (!el) return true; "
+                    "return el.scrollTop + el.clientHeight >= el.scrollHeight - 4; }")
+                if at_bottom:
+                    break
+            # 到底后再点一轮，确保末屏会话也点进（触发其 im/user/info）
+            await _click_all()
+            try:
+                cap = await self._page.evaluate(
+                    "() => window.__CAP_USERINFO__ ? window.__CAP_USERINFO__.map : {}")
+            except Exception as e:
+                logger.warning(f"[bcc] 读取 hook 结果失败: {e}")
+                cap = {}
+            return cap or {}
         return await self._exec(_do)
 
     async def resolve_url(self, url: str) -> dict:
@@ -429,6 +608,14 @@ class ScanBody(BaseModel):
     timeout: int = 300
 
 
+class WaitBody(BaseModel):
+    wait: int = 15
+
+
+class UidsBody(BaseModel):
+    uids: list[str]
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     logger.info(f"browser_daemon(BCC) 启动 account={_state['account']} port={_state['port']}")
@@ -485,6 +672,42 @@ async def user_info(body: UserInfoBody) -> dict:
     if not c:
         return {"ok": False, "msg": "容器未启动", "data": {}}
     out = await c.bulk_user_info(body.sec_uids)
+    return {"ok": True, "data": out}
+
+
+@app.post("/capture_userinfo")
+async def capture_userinfo(body: WaitBody) -> dict:
+    """被动 hook 截前端自己发的 im/user/info 响应（零主动请求、零风控）。
+    复用本容器常驻浏览器，不另开浏览器、不抢 profile。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "data": {}}
+    try:
+        out = await c.capture_userinfo_map(wait=body.wait or 15)
+    except Exception as e:
+        logger.warning(f"[bcc] /capture_userinfo 失败: {e}")
+        return {"ok": False, "msg": str(e), "data": {}}
+    return {"ok": True, "data": out}
+
+
+@app.post("/user_info_by_uids")
+async def user_info_by_uids(body: UidsBody) -> dict:
+    """用数字 UID 主动 fetch im/user/info 批量查昵称/头像（比被动 hook 更可靠）。
+
+    抖音 im/user/info 接口同时支持 user_ids 与 sec_user_ids 两种入参。
+    会话列表只有数字 peer_uid（首包解析 100% 可靠），用 user_ids 直查
+    避免依赖前端自发展示会话（被动 hook 会超时/缺口）。
+    返回 {uid: {nickname, avatar}}。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "data": {}}
+    try:
+        out = await c.bulk_user_info_by_uid(body.uids)
+    except Exception as e:
+        logger.warning(f"[bcc] /user_info_by_uids 失败: {e}")
+        return {"ok": False, "msg": str(e), "data": {}}
     return {"ok": True, "data": out}
 
 

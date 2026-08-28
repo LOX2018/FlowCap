@@ -603,6 +603,23 @@ class AutoDM:
         self.status_msg = "已停止"
         self._finish_history_task("finished")
 
+    async def shutdown(self) -> None:
+        """后端进程退出钩子：确保历史任务被真实收尾。
+
+        修复根因：此前进程崩溃/被强杀时，历史任务的「运行中」状态无人收尾，
+        只能靠 fix_stuck_tasks 在下次读列表时擦除（热修复）。本钩子在优雅退出
+        （FastAPI lifespan 的 shutdown）时主动硬停止引擎并落终态，正常退出
+        不再产生悬空任务；只有崩溃/强杀才需要 pid 比对兜底（见 tasks_history）。
+        """
+        try:
+            if self.is_running:
+                await self.stop(hard=True)
+            else:
+                # 非运行态（idle/stopped）也可能有未收尾的历史任务遗留在内存
+                self._finish_history_task("stopped")
+        except Exception as e:
+            logger.warning(f"[history] 退出收尾历史任务失败（不影响关闭）: {e}")
+
     def _finish_history_task(self, status: str) -> None:
         """更新当前历史任务为结束状态，记录结果条数与 records 快照。"""
         tid = getattr(self, "_task_history_id", None)

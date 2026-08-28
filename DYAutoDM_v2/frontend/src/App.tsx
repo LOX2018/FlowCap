@@ -139,6 +139,7 @@ export default function App() {
   const [goDm, setGoDm] = useState<{ name: string; text: string } | null>(null);
   const [goReview, setGoReview] = useState<ReviewPayload | null>(null);
   const [goReuse, setGoReuse] = useState<ReusePayload | null>(null);
+  const [msgAcct, setMsgAcct] = useState<string>("");
   const cidRef = useRef(0);
 
   // overview 3s 轮询（替代旧版 setInterval；Tauri 模式首次触发 ensureBackendReady）
@@ -184,38 +185,32 @@ export default function App() {
     refetchInterval: 15000,
     enabled: ready,
   });
+  // 私信会话列表常驻轮询（提升到 App，与 accounts 同机制）：
+  // 切到私信页时该 query 已在内存热着，页面挂载只读缓存、不再冷拉，
+  // 同时避免 React.StrictMode 双挂载 + 账号状态变化造成的 1 秒内多次读请求。
+  const { data: accountsCache } = useQuery({
+    queryKey: ["accounts"],
+    queryFn: async () => (await api.getAccounts()) as never[],
+    refetchInterval: 30000,
+    enabled: ready,
+  });
+  useEffect(() => {
+    if (!msgAcct && accountsCache && (accountsCache as unknown[]).length) {
+      setMsgAcct((accountsCache as { name: string }[])[0].name);
+    }
+  }, [msgAcct, accountsCache]);
+  // 私信会话列表轮询已移除：App 级常驻轮询会导致非私信页也每 5s 拉一次会话列表，
+  // 产生大量冗余日志；切到私信页时 44 个会话同时渲染还会导致窗口崩溃。
+  // 会话列表轮询由 messages.tsx 自行管理（仅在该页挂载时激活）。
 
-  // ===== 启动自检：打开时对所有账号跑双引擎校验（wp 凭证守护 + dm 私信列表拉取）=====
-  const [selfCheckOpen, setSelfCheckOpen] = useState(false);
-  const [selfCheckLoading, setSelfCheckLoading] = useState(true);
-  const [selfCheckItems, setScItems] = useState<SelfCheckItem[]>([]);
-  const ranSelfCheck = useRef(false);
+  // ===== 启动自检已移除（用户要求：避免干扰日志与自动行为）=====
+  // 不再打开时自动跑双引擎校验/弹窗；state 仅保留供 SelfCheckModal 渲染（恒不弹窗）。
+  const [selfCheckOpen] = useState(false);
+  const [selfCheckLoading] = useState(true);
+  const [selfCheckItems] = useState<SelfCheckItem[]>([]);
 
   useEffect(() => {
-    if (!ready || ranSelfCheck.current) return; // 后端已连且只跑一次
-    ranSelfCheck.current = true;
-    setSelfCheckLoading(true);
-    api
-      .selfCheck()
-      .then((d) => {
-        const items = (d.items || []) as SelfCheckItem[];
-        const bad = items.filter(
-          (it) =>
-            (it.wp && ["fail", "error", "unknown"].includes(it.wp.level)) ||
-            (it.dm && ["fail", "error", "unknown"].includes(it.dm.level)),
-        );
-        setScItems(items);
-        setSelfCheckLoading(false);
-        // 仅当存在异常账号时才弹窗，正常情况静默运行
-        if (bad.length > 0) {
-          setSelfCheckOpen(true);
-        }
-      })
-      .catch(() => {
-        // 自检接口失败不阻塞使用，仅静默关闭
-        setSelfCheckLoading(false);
-        setSelfCheckOpen(false);
-      });
+    // no-op：启动自检已删除
   }, [ready]);
 
   const setTab = useCallback((t: string) => {
@@ -260,6 +255,8 @@ export default function App() {
     reviewPayload: goReview,
     goReuse: goReuseTrigger,
     reusePayload: goReuse,
+    msgAcct,
+    setMsgAcct,
   }; 
 
   return (
@@ -297,7 +294,7 @@ export default function App() {
         open={selfCheckOpen}
         items={selfCheckItems}
         loading={selfCheckLoading}
-        onClose={() => setSelfCheckOpen(false)}
+        onClose={() => { /* 启动自检已移除，弹窗恒不开启 */ }}
         push={push}
       />
     </div>

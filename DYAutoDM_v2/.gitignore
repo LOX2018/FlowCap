@@ -54,6 +54,9 @@ logs/
 # Local data
 accounts_data/
 stats_export/
+data/*.db
+data/*.db-shm
+data/*.db-wal
 vb_profile_*/
 pw_profile_*/
 

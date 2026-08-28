@@ -324,7 +324,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
         except Exception as e:
             logger.warning(f"[verify] 账号 {name} 自动重捕触发失败: {e}")
 
-    # ---- 私信引擎校验（拉取私信列表，仅 dm_loopback=True 时执行）----
+    # ---- 私信引擎校验（前移捕获：凭证有效后一次性捕获私信列表+会话详情）----
     if dm_loopback:
         try:
             from dy_apis.login_api import DYLoginApi
@@ -335,16 +335,26 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 result["dm"] = {
                     "level": "skip",
                     "label": "跳过（无 uid）",
-                    "detail": "无法获取自身 uid，私信列表拉取测试跳过。请先确保 wp 引擎已登录。",
+                    "detail": "无法获取自身 uid，私信列表捕获跳过。请先确保 wp 引擎已登录。",
                 }
             else:
-                convs = DouyinAPI.get_conversation_list(auth)
-                result["dm"] = {
-                    "level": "ok",
-                    "label": "列表可拉取",
-                    "detail": f"已成功拉取私信会话列表（共 {len(convs)} 个会话），"
-                              f"私信凭证（imapi 签名）有效。",
-                }
+                # 前移捕获：无头指纹浏览器截 im/user/info + 首包 protobuf 解析 → 写库
+                from auto_dm.conversation_capture import capture_all
+                try:
+                    n_conv, n_msg = capture_all(name, with_browser=True)
+                    result["dm"] = {
+                        "level": "ok",
+                        "label": "列表已捕获",
+                        "detail": f"已一次性捕获私信会话 {n_conv} 个（含消息 {n_msg} 条），"
+                                  f"昵称/头像经前端接口截获写入数据库。",
+                    }
+                except Exception as _e:
+                    logger.warning(f"[verify][{name}] 前移捕获失败: {_e}")
+                    result["dm"] = {
+                        "level": "warn",
+                        "label": "捕获失败",
+                        "detail": f"私信列表前移捕获异常: {_e}",
+                    }
         except Exception as e:
             result["dm"] = {
                 "level": "fail",

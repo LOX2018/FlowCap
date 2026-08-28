@@ -104,7 +104,13 @@ interface RealAcct {
   name: string;
   uid?: string | null;
   status?: string;
+  level?: string; // ok=凭证有效；nosign/expired/missing/unknown 为非有效
   role?: string;
+}
+
+/** 账号是否有效（凭证齐全且探活通过）。后端 _to_raw_account 的 level==='ok' 即有效。 */
+function acctValid(a: RealAcct): boolean {
+  return a.level === "ok";
 }
 
 interface FeedItem {
@@ -180,6 +186,8 @@ export default function LivePage(props: PageProps) {
   const [room, setRoom] = useState("");
   const [review, setReview] = useState(false);
   const [reviewRows, setReviewRows] = useState<Row[]>([]);
+  // 提示弹窗：解析房间号未填地址 / 开启自动私信前核查账号
+  const [alert, setAlert] = useState<{ title: string; msg: string } | null>(null);
   const [dmDraft, setDmDraft] = useState("");
   const [myLikes] = useState(0);
   const [burst] = useState(0);
@@ -452,6 +460,22 @@ export default function LivePage(props: PageProps) {
 
   return (
     <div>
+      {alert && (
+        <div className="modal-mask" onClick={() => setAlert(null)}>
+          <div className="modal-card self-check" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{alert.title}</h3>
+              <span className="x" style={{ cursor: "pointer" }} onClick={() => setAlert(null)}>×</span>
+            </div>
+            <div className="modal-body">
+              <div className="warn-line">{alert.msg}</div>
+            </div>
+            <div className="modal-foot">
+              <button className="btn primary" onClick={() => setAlert(null)}>我知道了</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="section-head">
         <div>
           <h2>直播监听</h2>
@@ -687,7 +711,10 @@ export default function LivePage(props: PageProps) {
                 data-od-id="live-parse"
                 onClick={() => {
                   const u = room.trim();
-                  if (!u) return;
+                  if (!u) {
+                    setAlert({ title: "请输入直播地址", msg: "请先在上方输入框填写直播间 URL 或 room_id，再点击「解析房间号」。" });
+                    return;
+                  }
                   api
                     .resolveLive(u)
                     .then((r) => {
@@ -721,6 +748,28 @@ export default function LivePage(props: PageProps) {
                     data-od-id="live-start"
                     disabled={engineBusy || (realAccts.length > 1 && !activeAcct)}
                     onClick={() => {
+                      // 开启自动私信前核查账号情况
+                      if (realAccts.length === 0) {
+                        setAlert({
+                          title: "尚未添加账号",
+                          msg: "账号管理中还没有任何账号，请先在「账号管理」页添加账号并完成扫码授权，再开启自动私信。",
+                        });
+                        return;
+                      }
+                      if (!realAccts.some(acctValid)) {
+                        setAlert({
+                          title: "没有有效的账号",
+                          msg: "当前所有账号的凭证均无效（未扫码 / 凭证过期 / 风控）。请先在「账号管理」页完成扫码授权，确保至少一个账号凭证有效后再开启自动私信。",
+                        });
+                        return;
+                      }
+                      if (realAccts.length > 1 && !activeAcct) {
+                        setAlert({
+                          title: "请先选择账号",
+                          msg: "当前有多个账号，请先在上方「监听账号」下拉框中选择一个有效账号，再开启自动私信。",
+                        });
+                        return;
+                      }
                       const cfg = {
                         live_url: room,
                         max_target: parseInt(dmLimit, 10) || 9999,
