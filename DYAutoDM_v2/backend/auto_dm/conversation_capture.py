@@ -556,19 +556,23 @@ def capture_all(name, with_browser=True):
             n_conv += 1
         conn.commit()
         # 兜底：recv_daemon 可能已写入 capture_all 首包未解析到的会话（WS 增量等，
-        # 其 peer_id 是对端 UID 但 peer_name 仍是占位）。用已截获的 BCC 昵称补全库内
-        # 所有「peer_name 为空/等于 peer_id（数字 UID）」的会话，保证展示层无裸 UID。
+        # 其 peer_id 是对端 UID 但 peer_name 仍是占位/自己）。用已截获的 BCC 昵称补全库内
+        # 所有「peer_name 为空/等于 peer_id（数字 UID）/等于自己 UID」的会话，
+        # 保证展示层无裸 UID、也不出现「自己」的冗余显示。
         try:
+            _myuid = str(auth.get_uid()) if "auth" in dir() else ""
             _backfill = conn.execute(
-                "SELECT conv_id, peer_id FROM dm_conversations "
-                "WHERE account=? AND (peer_name IS NULL OR peer_name='' OR peer_name=peer_id)",
-                (name,),
+                "SELECT conv_id, peer_id, peer_name FROM dm_conversations "
+                "WHERE account=? AND (peer_name IS NULL OR peer_name='' "
+                "OR peer_name=peer_id OR peer_name=?)",
+                (name, _myuid),
             ).fetchall()
             _bf = 0
             for _row in _backfill:
-                _cid, _pid = _row["conv_id"], _row["peer_id"]
+                _cid, _pid, _existing = _row["conv_id"], _row["peer_id"], _row["peer_name"]
                 _info = _userinfo_by_uid.get(str(_pid)) if _pid else None
                 if _info:
+                    # BCC 截到该 peer_id 的昵称 → 补全
                     conn.execute(
                         "UPDATE dm_conversations SET peer_name=?, avatar=? "
                         "WHERE account=? AND conv_id=?",
@@ -576,9 +580,17 @@ def capture_all(name, with_browser=True):
                          name, _cid),
                     )
                     _bf += 1
+                elif _existing == _myuid and _pid:
+                    # peer_name 是自己（污染值）→ 降级为对端 UID，避免展示「自己」
+                    conn.execute(
+                        "UPDATE dm_conversations SET peer_name=? "
+                        "WHERE account=? AND conv_id=?",
+                        (_pid, name, _cid),
+                    )
+                    _bf += 1
             if _bf:
                 conn.commit()
-                logger.info(f"[capture][{name}] 兜底补全 {_bf} 个库内会话昵称")
+                logger.info(f"[capture][{name}] 兜底补全 {_bf} 个库内会话昵称/降级")
         except Exception as e:
             logger.warning(f"[capture][{name}] 兜底补全失败: {e}")
     except Exception as e:

@@ -19,6 +19,10 @@ from database import get_db
 
 router = APIRouter()
 
+# 会话摘要日志去重：仅当（总数, 关联昵称数, 未读合计）变化时打印，避免前端
+# 每 5s 轮询导致「私信拉取」日志刷屏。键为 account。
+_last_summary: dict[str, tuple] = {}
+
 
 class SendDmRequest(BaseModel):
     account: str
@@ -173,8 +177,11 @@ async def list_conversations(account: str):
     SQLite（dm_conversations.peer_name/avatar），recv_daemon 仅负责 WS 实时增量
     （新消息、未读数），不在内存里维护昵称。这里直接读库，保证展示层和落库一致。
     守护未启动时不抛连接错误，返回 recvDaemonDown 由前端决定拉起。
+
+    日志策略：拉取/读库为高频轮询（前端每 5s 一次），为避免刷屏，
+    仅在「会话总数 / 关联昵称数 / 未读合计」任一发生变化时才打印摘要日志一次。
     """
-    logger.info(f"[私信拉取] 开始拉取账号「{account}」的会话列表（纯读库）")
+    logger.debug(f"[私信拉取] 账号「{account}」读库请求（高频轮询，变化时才记日志）")
     try:
         conn = get_db()
         rows = conn.execute(
@@ -214,10 +221,14 @@ async def list_conversations(account: str):
             })
         unread_total = sum((c.get("unread") or 0) for c in convs)
         named = sum(1 for c in convs if c["name"] and not str(c["name"]).isdigit())
-        logger.info(
-            f"[私信拉取] 账号「{account}」读库 {len(convs)} 个会话"
-            f"（已关联昵称 {named}，未读合计 {unread_total}）"
-        )
+        # 变化检测：仅当总数/关联数/未读合计变化时才打印（避免每 5s 轮询刷屏）
+        _key = (len(convs), named, unread_total)
+        if _last_summary.get(account) != _key:
+            _last_summary[account] = _key
+            logger.info(
+                f"[私信拉取] 账号「{account}」读库 {len(convs)} 个会话"
+                f"（已关联昵称 {named}，未读合计 {unread_total}）"
+            )
         return {"ok": True, "conversations": convs}
     except Exception as e:
         logger.warning(f"[私信拉取] 账号「{account}」读库异常: {e}")

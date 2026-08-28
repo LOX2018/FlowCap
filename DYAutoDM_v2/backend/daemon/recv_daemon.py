@@ -339,7 +339,9 @@ class AccountInbox:
                 # B 机制：运行时收到带 sender_nickname 的新消息，回写会话昵称。
                 # 仅在当前 peer_name 为空 / 等于 peer_id(数字) / 等于自己昵称 时覆盖，
                 # 避免覆盖首包+im/user/info 已写入的正确昵称。
-                if peer_name and peer_name != conv_id:
+                # 注意：WS 推送的 sender 常是自己的 UID/昵称（系统会话或自己发出的），
+                # 这种 peer_name 不可作为对端昵称，必须排除，否则污染成「自己」。
+                if peer_name and peer_name != conv_id and str(peer_name) != str(self.my_uid):
                     conn.execute(
                         "UPDATE dm_conversations SET peer_name=? "
                         "WHERE account=? AND conv_id=? AND "
@@ -503,13 +505,12 @@ class RecvChannel(threading.Thread):
                 pass
 
     def _sync_conversations(self, conv_list: list) -> None:
-        """把 WS 下发的已有会话列表建立成会话骨架并持久化到 SQLite。"""
+        """把 WS 下发的已有会话列表建立成会话骨架并持久化到 SQLite。
+
+        日志策略：同步帧为高频推送（WS 实时），逐会话打印会刷屏。改为静默处理，
+        仅在「出现新会话」（n_new>0）时打印一句摘要，符合「轮询补充静默」要求。
+        """
         n_new = 0
-        logger.info(f"[recv][{self.name}] 收到同步帧，含 {len(conv_list)} 个会话")
-        for i, item in enumerate(conv_list):
-            conv_id = getattr(item, "conversation_id", "") or ""
-            short_id = getattr(item, "conversation_short_id", None) or None
-            logger.info(f"[recv][{self.name}]   同步帧会话#{i}: conv_id={conv_id}, short_id={short_id}")
         with self.inbox.lock:
             try:
                 conn = self.inbox._db()
@@ -534,7 +535,7 @@ class RecvChannel(threading.Thread):
             if conn:
                 conn.commit()
         if n_new:
-            logger.info(f"[recv][{self.name}] 已从同步帧加载 {n_new} 个已有会话")
+            logger.info(f"[recv][{self.name}] 同步帧新增 {n_new} 个会话（已静默入库）")
 
     @staticmethod
     def _extract(content_json: dict, msg_type: Any) -> tuple[str | None, dict]:
