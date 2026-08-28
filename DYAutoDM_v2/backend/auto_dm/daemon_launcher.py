@@ -1,0 +1,114 @@
+"""守护进程 launcher（backend 与校验流程共享）。
+
+方案 A 的缺口：backend lifespan 启动时拉起 daemon，但若账号在 backend 启动后才
+扫码上线（或首次引擎校验触发 capture_all），daemon 不会自动拉起，导致 BCC 端口未开、
+昵称关联 0。本模块把「拉起 browser_daemon + recv_daemon」提取为**可重入幂等**函数，
+backend 启动、账号登录成功、首次引擎校验均可调用，端口已开则跳过。
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+
+from loguru import logger
+
+from auto_dm import accounts as acct_core
+
+
+def _target_triple() -> str:
+    return "x86_64-pc-windows-msvc"
+
+
+def _resolve_sidecar_binary(name: str) -> str | None:
+    """解析 sidecar 二进制路径（recv-daemon / browser-daemon）。
+
+    搜索顺序：
+      1) backend exe 所在目录 / <name>-<triple>.exe
+      2) backend exe 所在目录 / <name>.exe
+      3) 开发态：<root>/src-tauri/binaries/<name>-<triple>.exe
+    """
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    triple = _target_triple()
+    cand = os.path.join(exe_dir, f"{name}-{triple}.exe")
+    if os.path.isfile(cand):
+        return cand
+    cand = os.path.join(exe_dir, f"{name}.exe")
+    if os.path.isfile(cand):
+        return cand
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    cand = os.path.join(project_root, "src-tauri", "binaries", f"{name}-{triple}.exe")
+    if os.path.isfile(cand):
+        return cand
+    return None
+
+
+def _spawn_sidecar(binary: str, args: list) -> subprocess.Popen:
+    return subprocess.Popen(
+        [binary, *args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _wait_for_port(port: int, timeout: int = 30) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(("127.0.0.1", port)) == 0:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def ensure_daemons_for(account: str, wait: bool = True) -> dict:
+    """确保指定账号的 browser_daemon（单例）+ recv_daemon 已运行，未运行则拉起。
+
+    幂等：端口已开则跳过。返回 {browser: bool, recv: bool} 表示拉起是否成功。
+    """
+    result = {"browser": False, "recv": False}
+    try:
+        # 1. browser_daemon（单例，用首个账号端口；这里直接用本账号端口）
+        bport = acct_core.browser_daemon_port(account)
+        bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
+        if bcc_binary is None:
+            logger.warning("[daemon-launcher] 未找到 browser_daemon 二进制，跳过 BCC 拉起")
+        elif acct_core._port_open(bport, timeout=0.2):
+            result["browser"] = True
+        else:
+            try:
+                proc = _spawn_sidecar(bcc_binary, ["--account", account, "--port", str(bport)])
+                logger.info(f"[daemon-launcher] 已拉起 browser_daemon (port={bport}, pid={proc.pid})")
+                if wait:
+                    _wait_for_port(bport, timeout=30)
+                result["browser"] = True
+            except Exception as e:
+                logger.warning(f"[daemon-launcher] 拉起 browser_daemon 失败: {e}")
+
+        # 2. recv_daemon
+        rport = acct_core.recv_daemon_port(account)
+        recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")
+        if recv_binary is None:
+            logger.warning("[daemon-launcher] 未找到 recv_daemon 二进制，跳过")
+        elif acct_core._port_open(rport, timeout=0.2):
+            result["recv"] = True
+        else:
+            try:
+                proc = _spawn_sidecar(recv_binary, ["--account", account, "--port", str(rport)])
+                logger.info(f"[daemon-launcher] 已拉起 recv_daemon (port={rport}, pid={proc.pid})")
+                if wait:
+                    _wait_for_port(rport, timeout=30)
+                result["recv"] = True
+            except Exception as e:
+                logger.warning(f"[daemon-launcher] 拉起 recv_daemon 失败: {e}")
+    except Exception as e:
+        logger.warning(f"[daemon-launcher] ensure_daemons_for 异常（不影响使用）: {e}")
+    return result

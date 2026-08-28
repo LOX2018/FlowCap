@@ -339,6 +339,15 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 }
             else:
                 # 前移捕获：无头指纹浏览器截 im/user/info + 首包 protobuf 解析 → 写库
+                # 确保 daemon 已拉起（方案 A 缺口：backend 启动时账号可能尚未上线，
+                # 此处校验触发 capture_all 前必须拉起 browser_daemon/recv_daemon）。
+                try:
+                    from auto_dm.daemon_launcher import ensure_daemons_for
+                    _launched = ensure_daemons_for(name)
+                    if not _launched["browser"]:
+                        logger.warning(f"[verify][{name}] browser_daemon 未能拉起，昵称关联可能失效")
+                except Exception as _le:
+                    logger.warning(f"[verify][{name}] 拉起 daemon 失败: {_le}")
                 from auto_dm.conversation_capture import capture_all
                 try:
                     n_conv, n_msg = capture_all(name, with_browser=True)

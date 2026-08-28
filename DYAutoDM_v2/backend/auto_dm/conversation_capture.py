@@ -442,7 +442,9 @@ def capture_userinfo_via_browser(name, wait=15):
         return {}
     url = f"http://127.0.0.1:{bport}/capture_userinfo"
     try:
-        r = requests.post(url, json={"wait": 60}, timeout=120)
+        # wait: BCC 在 chat 页平滑滚动触发全部 im/user/info 的秒数；
+        # timeout: 网络超时。首包较大的账号（>1MB）需更久，放宽到 90s/180s。
+        r = requests.post(url, json={"wait": 90}, timeout=180)
         if r.status_code == 200:
             data = r.json().get("data") or {}
             logger.info(f"[capture] 经 BCC 截到昵称数: {len(data)}")
