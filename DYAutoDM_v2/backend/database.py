@@ -130,6 +130,28 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN pid INTEGER DEFAULT 0")
     except Exception:
         pass  # 列已存在
+    # dm_messages: 新增 msg_id（抖音消息唯一 ID，protobuf field 3）
+    # 并建唯一索引，让 INSERT OR IGNORE 真正生效，杜绝重复落库。
+    try:
+        conn.execute("ALTER TABLE dm_messages ADD COLUMN msg_id TEXT")
+    except Exception:
+        pass  # 列已存在
+    try:
+        # 仅对 msg_id 非空的行生效（旧数据 msg_id IS NULL 不受唯一约束影响）
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uniq_dmmsg "
+            "ON dm_messages(account, conv_id, msg_id) WHERE msg_id IS NOT NULL"
+        )
+    except Exception:
+        pass
+    try:
+        # 兜底去重：同一会话同一角色同一文本同一毫秒时间戳视为同一条
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uniq_dmmsg_fallback "
+            "ON dm_messages(account, conv_id, role, text, CAST(ts*1000 AS INTEGER))"
+        )
+    except Exception:
+        pass
 
 
 def _migrate_json(conn: sqlite3.Connection) -> None:

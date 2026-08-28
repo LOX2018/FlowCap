@@ -157,6 +157,41 @@ def _strip_pb_prefix(s):
     return s[start:end + 1]
 
 
+def _parse_message_sender(b):
+    """从消息对象 bytes 里提取发送方 UID（protobuf field 7，varint）。
+
+    实测（2026-08-29）：首包(2043)与历史(301)的消息对象里，field 7 = sender UID。
+    - sender == my_uid -> 我发
+    - sender == peer_uid -> 对方发
+
+    注意：不可用 aweType/content 类型推断方向 —— 那是消息类型，与发送方无关
+    （历史 bug：role = "them" if aweType == 700 else "me"，导致方向全反）。
+    """
+    try:
+        for f, wt, v in _parse(b):
+            if f == 7 and wt == WT_VARINT:
+                return str(v)
+    except Exception:
+        pass
+    return None
+
+
+def _parse_message_id(b):
+    """从消息对象 bytes 里提取消息唯一 ID（protobuf field 3，varint）。
+
+    用于落库去重（唯一索引 uniq_dmmsg），杜绝 capture_all 重复运行导致重复写入
+    （历史 bug：dm_messages 无唯一约束，INSERT OR IGNORE 形同虚设，
+      实测「转角遇到」会话真实 ~19 条被写成 104 条）。
+    """
+    try:
+        for f, wt, v in _parse(b):
+            if f == 3 and wt == WT_VARINT:
+                return str(v)
+    except Exception:
+        pass
+    return None
+
+
 def _parse_message_text(b):
     """从消息对象的 bytes 里提取聊天文本。返回 (text, aweType, createdAt) 或 None。"""
     strs = _extract_str(b)
@@ -284,21 +319,176 @@ def parse_init_protobuf(raw, my_uid):
             if key in seen_msg:
                 continue
             seen_msg.add(key)
-            role = "them" if txt[1] == 700 else "me"
+            # 方向：用消息自带的 sender UID（field 7）判断，不用 aweType
+            sender = _parse_message_sender(sb2)
+            role = "me" if (sender and sender == str(my_uid)) else "them"
             messages.append({
                 "role": role,
                 "text": txt[0],
                 "ts": (txt[2] / 1000.0) if txt[2] else time.time(),
+                "msg_id": _parse_message_id(sb2),
             })
+        # 会话属性（field 4）：含总消息数(field 2) / short_id(field 5)，
+        # 用于长会话历史补全（cmd 301）。cbuf 是原始 bytes，须从 cparsed 取。
+        short_id = None
+        total_msgs = None
+        for _f, _wt, _v in cparsed:
+            if _f == 4 and _wt == WT_LEN and isinstance(_v, bytes):
+                for _f2, _wt2, _v2 in _parse(_v):
+                    if _wt2 not in (WT_VARINT, WT_64BIT):
+                        continue
+                    if _f2 == 5:
+                        short_id = _v2
+                    elif _f2 == 2:
+                        total_msgs = _v2
+                break
+
         result.append({
             "conversation_id": cid,
             "peer_uid": peer_uid,
             "sec_uid": sec_uid,
             "messages": messages,
+            "short_id": short_id,
+            "total_msgs": total_msgs,
         })
     logger.info(f"[capture] 首包解析出 {len(result)} 个会话，"
                 f"含消息的 {sum(1 for r in result if r['messages'])} 个")
     return result
+
+
+# ---------------------------------------------------------------------------
+# 长会话历史补全（cmd 301 get_by_conversation）
+# ---------------------------------------------------------------------------
+# 首包(2043) 固定只返回每个会话「最后 ~20 条」消息，长会话历史必须靠
+# get_by_conversation(cmd 301) 补齐。
+# 实测（2026-08-29）：「转角遇到」会话总 41 条，首包只给 20 条，301 一次补齐 41 条。
+#
+# 请求构造：复用项目 ProtoBuilder.build_normal_request(auth, 301)，
+# 手工追加 field 301 的 body（项目 .proto 未定义 cmd 301 的 oneof）。
+# body 字段（实测）：
+#   1 = conversation_id (string)
+#   2 = conversation_type (int) = 1
+#   3 = conversation_short_id (int64)  ← 从首包 .4.5 取得
+#   4 = direction (int) = 1
+#   5 = cursor (int64) = 0
+#   6 = count (int) = 50
+#
+# 风控边界：这是「聊天记录」接口，不是昵称接口；单次请求（非批量），
+# 昵称仍且仅由 BCC 被动截获 im/user/info 提供，本函数不查昵称。
+# ---------------------------------------------------------------------------
+def _pb_varint(n):
+    """protobuf varint 编码"""
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            break
+    return bytes(out)
+
+
+def _build_301_body(cid, short_id, cursor=0, count=50, direction=1):
+    """构造 cmd 301 的 inner body（字段见上方注释）"""
+    inner = bytearray()
+    cid_b = cid.encode()
+    inner += b"\x0a" + _pb_varint(len(cid_b)) + cid_b   # 1: conversation_id
+    inner += b"\x10" + _pb_varint(1)                     # 2: type
+    inner += b"\x18" + _pb_varint(int(short_id))         # 3: short_id
+    inner += b"\x20" + _pb_varint(direction)             # 4: direction
+    inner += b"\x28" + _pb_varint(int(cursor))           # 5: cursor
+    inner += b"\x30" + _pb_varint(count)                 # 6: count
+    return bytes(inner)
+
+
+def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20):
+    """拉指定会话的完整历史消息（cmd 301）。
+
+    返回 [{role,text,ts,msg_id}] 或 []（失败时）。
+    """
+    try:
+        import requests
+        from builder.proto import ProtoBuilder
+        from builder.header import HeaderBuilder, HeaderType
+        from dy_apis.douyin_api import DouyinAPI
+
+        my_uid = str(DouyinAPI.get_my_uid(auth)).strip()
+        request = ProtoBuilder.build_normal_request(auth, 301)
+        body_bytes = request.SerializeToString()
+        inner = _build_301_body(cid, short_id, cursor=0, count=count)
+        tag = _pb_varint((301 << 3) | 2)          # field 301, wiretype 2
+        payload = tag + _pb_varint(len(inner)) + inner
+        # 追加到 Request 的 field 8 (body): tag = (8<<3)|2 = 66 = 0x42
+        body_bytes = body_bytes + b"\x42" + _pb_varint(len(payload)) + payload
+
+        url = "https://imapi.douyin.com/v1/message/get_by_conversation"
+        headers = HeaderBuilder().build(HeaderType.PROTOBUF)
+        headers.set_header("referer", "https://www.douyin.com/")
+        resp = requests.post(
+            url, headers=headers.get(), cookies=auth.cookie,
+            data=body_bytes, verify=False, timeout=timeout,
+        )
+        if resp.status_code != 200 or len(resp.content) < 100:
+            logger.warning(f"[capture][301] HTTP {resp.status_code} "
+                           f"len={len(resp.content)} cid={cid}")
+            return []
+        return parse_conversation_301(resp.content, cid, my_uid)
+    except Exception as e:
+        logger.warning(f"[capture][301] 拉取失败 cid={cid}: {e}")
+        return []
+
+
+def parse_conversation_301(raw, cid, my_uid):
+    """解析 get_by_conversation(cmd 301) 响应 -> [{role,text,ts,msg_id}]
+
+    结构：parsed['6']['301']['1'] = 消息数组
+      每条: 1=conversation_id 3=msg_id 7=sender 8=content 10=create_time
+    """
+    out = []
+    try:
+        import blackboxprotobuf
+        parsed, _ = blackboxprotobuf.decode_message(raw)
+        inner = parsed["6"]["301"]
+        msgs = inner.get("1", [])
+        if isinstance(msgs, dict):
+            msgs = [msgs]
+    except Exception as e:
+        logger.warning(f"[capture][301] 解析失败: {e}")
+        return out
+
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        # content -> text
+        text = None
+        raw_content = m.get("8", b"")
+        s = raw_content
+        if isinstance(s, bytes):
+            try:
+                s = s.decode("utf-8", "ignore")
+            except Exception:
+                s = ""
+        s = str(s)
+        try:
+            import json as _json
+            obj = _json.loads(s)
+            if isinstance(obj, dict):
+                text = obj.get("text") or obj.get("tips")
+        except Exception:
+            text = s if s else None
+        if not text:
+            continue
+        ts = m.get("10", 0) or 0
+        sender = str(m.get("7", "")).strip()
+        out.append({
+            "role": "me" if sender == str(my_uid) else "them",
+            "text": text,
+            "ts": (int(ts) / 1000.0) if ts else time.time(),
+            "msg_id": str(m.get("3")) if m.get("3") else None,
+        })
+    return out
 
 
 def _split_repeated(buf):
@@ -491,6 +681,46 @@ def capture_all(name, with_browser=True):
     # 缓存首包解析结果（供 capture_userinfo_via_browser 取 peer_uid 桥接）
     _last_parsed_convs[name] = convs
 
+    # 1.5) 长会话历史补全（cmd 301）
+    # 首包固定只给每会话最后 ~20 条；total_msgs > 已解析条数 时用 301 补齐。
+    #
+    # 风控保护（重要）：补全要对每个会话各发 1 次请求，频次必须受限：
+    #   - DY_HISTORY_FULL=0 可整体关闭（默认 1 开启）
+    #   - DY_HISTORY_MAX   单次最多补全会话数（默认 20）
+    #   - DY_HISTORY_SLEEP 每次请求间隔秒（默认 1.5s）
+    # 且这是「聊天记录」接口，不是昵称接口；昵称仍且仅由 BCC 被动截获提供。
+    try:
+        import os as _os
+        import time as _time
+        if _os.environ.get("DY_HISTORY_FULL", "1") == "1":
+            need = [c for c in convs
+                    if c.get("short_id")
+                    and (c.get("total_msgs") or 0) > len(c.get("messages", []))]
+            # 优先补全消息差距最大的会话（长会话优先）
+            need.sort(key=lambda c: (c.get("total_msgs") or 0)
+                      - len(c.get("messages", [])), reverse=True)
+            max_n = int(_os.environ.get("DY_HISTORY_MAX", "20"))
+            sleep_s = float(_os.environ.get("DY_HISTORY_SLEEP", "1.5"))
+            need = need[:max_n]
+            if need:
+                logger.info(f"[capture][{name}] 长会话补全：{len(need)} 个会话"
+                            f"（间隔 {sleep_s}s）")
+                for i, c in enumerate(need):
+                    if i:
+                        _time.sleep(sleep_s)
+                    lack = (c.get("total_msgs") or 0) - len(c.get("messages", []))
+                    hist = fetch_conversation_history(
+                        auth, c["conversation_id"], c["short_id"],
+                        count=max(50, int(c.get("total_msgs") or 50)),
+                    )
+                    if hist:
+                        c["messages"] = hist
+                        logger.info(
+                            f"[capture][{name}] 301 补全 {c['peer_uid']}: "
+                            f"{len(hist)} 条（首包缺 {lack} 条）")
+    except Exception as e:
+        logger.warning(f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")
+
     # 2) 浏览器昵称（可选，单 profile 独占）
     userinfo = {}
     if with_browser:
@@ -549,8 +779,10 @@ def capture_all(name, with_browser=True):
                 try:
                     conn.execute(
                         "INSERT OR IGNORE INTO dm_messages("
-                        "account,conv_id,role,text,msg_type,extra,ts) VALUES(?,?,?,?,?,?,?)",
-                        (name, cid, m["role"], m["text"], "text", "{}", m["ts"]),
+                        "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (name, cid, m["role"], m["text"], "text", "{}",
+                         m["ts"], m.get("msg_id")),
                     )
                     n_msg += 1
                 except Exception:
