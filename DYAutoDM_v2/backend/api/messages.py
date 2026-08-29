@@ -282,9 +282,11 @@ async def get_conversation(account: str, conv_id: str):
         # recv_daemon 经 WS 反复写入且 msg_id 为 NULL（唯一索引管不到），
         # 实测单个会话能堆积上千条（全库 1938 条），会把真实聊天记录挤掉。
         # 聊天框只展示真实对话内容，故在此过滤。
+        # 另：排除解析噪音 "[未知媒体] ..."（空媒体对象，非真实消息）。
         msgs = conn.execute(
             "SELECT role,text,msg_type,ts FROM dm_messages "
             "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
+            "AND text NOT LIKE '[未知媒体]%' "
             "ORDER BY ts ASC",
             (account, str(conv_id)),
         ).fetchall()

@@ -314,9 +314,12 @@ input, select, textarea { font: inherit; color: inherit; }
   text-align: center;
 }
 .msg.sys .mtm { align-self: center; }
-/* 图片消息：直接以图链渲染缩略图预览 */
-.imgbubble { display: block; max-width: 220px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); line-height: 0; }
-.imgbubble img { max-width: 220px; max-height: 240px; width: auto; height: auto; object-fit: cover; display: block; cursor: zoom-in; }
+/* 图片 / 表情包：抖音图链为私有加密格式，浏览器无法内嵌预览，
+   降级为「[图片] 点击查看原图」链接（见 messages.tsx 注释） */
+.medialink { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.5px; }
+.medialink .mlabel { color: var(--muted); font-family: var(--font-mono); }
+.medialink a { color: var(--accent); text-decoration: underline; }
+.medialink .mhint { color: var(--muted); font-size: 11px; }
 .voice-bars { display: flex; align-items: center; gap: 2px; height: 18px; }
 .voice-bars i { width: 3px; background: currentColor; border-radius: 2px; opacity: .85; }
 .bubble .vdur { font-family: var(--font-mono); font-size: 12px; }

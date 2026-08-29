@@ -126,13 +126,23 @@ function MsgBubble({ m }: { m: Msg }) {
   // 只要识别出媒体标记 + URL 就渲染缩略图；历史数据只有「图片」二字
   // （URL 在旧版本解析时丢失）则给占位提示，需重新捕获才有图链。
   if (m.type === "image" || m.type === "sticker" || /^\[(图片|表情包)\]/.test(t) || /^\[?图片\]?$/.test(t)) {
-    return url ? (
-      <a className="imgbubble" href={url} target="_blank" rel="noreferrer">
-        <img src={url} alt={/表情包/.test(t) ? "表情包" : "图片消息"} loading="lazy" />
-      </a>
-    ) : (
-      <div className="bubble">[图片]（无图链，需重新捕获）</div>
-    );
+    const label = /表情包/.test(t) ? "表情包" : "图片";
+    // 2026-08-29 实测：抖音 IM 图链是**私有加密格式**，HTTP 200 但返回的
+    // 字节流不含任何标准图片魔数（非 JPEG/PNG/WebP/GIF/HEIC），
+    // 浏览器 <img> 无法解码 -> 显示为报错图标。
+    // 故不能直接用 <img src>，降级为可点击链接 + 明确说明。
+    if (url) {
+      return (
+        <div className="bubble medialink">
+          <span className="mlabel">[{label}]</span>
+          <a href={url} target="_blank" rel="noreferrer" title={url}>
+            点击查看原图
+          </a>
+          <span className="mhint">（抖音加密格式，不支持内嵌预览）</span>
+        </div>
+      );
+    }
+    return <div className="bubble">[{label}]（无图链，需重新捕获）</div>;
   }
   if (m.type === "text") return <div className="bubble">{m.text}</div>;
   if (m.type === "voice")
@@ -268,7 +278,11 @@ export default function MessagesPage(props: PageProps) {
         conversation?: RawConversation;
       };
       const list = (raw && raw.conversation && raw.conversation.messages) || [];
-      return list.map((m, j) => ({
+      return list
+        // 过滤解析噪音：空媒体对象（如 "[未知媒体] {}"）不是真实消息。
+        // 后端已修（空对象不入库），此处兜底历史脏数据。
+        .filter((m) => !/^\[未知媒体\]/.test((m.text || "").trim()))
+        .map((m, j) => ({
         id: "dm" + conv.conv_id + "_" + j,
         dir: (m.dir || (m.role === "me" ? "out" : "in")) as "in" | "out",
         type: m.type || "text",

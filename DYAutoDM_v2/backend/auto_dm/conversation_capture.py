@@ -242,7 +242,11 @@ def _extract_media_text(obj: dict):
     # 视频分享
     if obj.get("itemId"):
         return f"[分享视频] 视频ID {obj.get('itemId')}"
-    # 兜底：把整个 JSON 截短存下来，至少不丢消息
+    # 兜底：空对象（如 {}）不代表真实媒体，返回 None 让调用方丢弃，
+    # 避免把 "[未知媒体] {}" 这类噪音写进聊天记录（实测出现过）。
+    if not obj:
+        return None
+    # 其他未知媒体：把 JSON 截短存下来，至少不丢消息
     try:
         import json as _json
         return "[未知媒体] " + _json.dumps(obj, ensure_ascii=False)[:200]
