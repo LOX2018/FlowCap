@@ -121,11 +121,14 @@ function extractImageUrl(text: string): string {
 
 function MsgBubble({ m }: { m: Msg }) {
   const url = extractImageUrl(m.text);
-  // 图片类消息：有 URL 直接渲染缩略图预览，无 URL 给占位（历史数据只有「图片」二字）
-  if (m.type === "image" || /^\[?图片\]?$/.test((m.text || "").trim())) {
+  const t = (m.text || "").trim();
+  // 图片 / 表情包：文本形如「[图片] <url>」「[表情包] <url>」或裸 URL。
+  // 只要识别出媒体标记 + URL 就渲染缩略图；历史数据只有「图片」二字
+  // （URL 在旧版本解析时丢失）则给占位提示，需重新捕获才有图链。
+  if (m.type === "image" || m.type === "sticker" || /^\[(图片|表情包)\]/.test(t) || /^\[?图片\]?$/.test(t)) {
     return url ? (
       <a className="imgbubble" href={url} target="_blank" rel="noreferrer">
-        <img src={url} alt="图片消息" loading="lazy" />
+        <img src={url} alt={/表情包/.test(t) ? "表情包" : "图片消息"} loading="lazy" />
       </a>
     ) : (
       <div className="bubble">[图片]（无图链，需重新捕获）</div>
