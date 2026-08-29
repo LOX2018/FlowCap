@@ -12,7 +12,7 @@
  *   - requestDm 不在 client.ts，用本地 interface + as unknown as 转换
  */
 import { useState, useEffect } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import { Avatar, Pill, Dot, hue, nowHM } from "../components/ui";
 
@@ -149,7 +149,6 @@ function MsgBubble({ m }: { m: Msg }) {
 export default function MessagesPage(props: PageProps) {
   const { push, ready, goDm } = props;
   const a = props.api as unknown as MessagesApi;
-  const qc = useQueryClient();
   // 当前账号提升到 App 级（由 App 常驻 conversations 轮询驱动，本页只读缓存，避免切页冷拉/双拉）
   const activeAcct = props.msgAcct || "";
   const setActiveAcct = props.setMsgAcct || (() => {});
@@ -203,6 +202,47 @@ export default function MessagesPage(props: PageProps) {
 
   const realAccts = accountsQ.data || [];
   const shownConvs: Conv[] = convsQ.data || [];
+
+  // 当前选中会话对象（先取出 conv_id，供详情 query 使用）
+  const conv: Conv =
+    shownConvs.find((c) => c.id === active) ||
+    shownConvs[0] || {
+      id: "",
+      conv_id: "",
+      acct: "",
+      name: "暂无会话",
+      hue: "0",
+      unread: 0,
+      msgs: [],
+    };
+
+  // 会话详情（聊天记录）：必须用独立 query，不能塞进列表缓存。
+  // 原因：列表每 5s 轮询（refetchInterval 5000）会用后端新数据整体覆盖
+  // ["msg-convs"] 缓存，而列表接口的 messages 恒为 []，
+  // 若把消息写入列表缓存，点开后 5 秒内就会被清空（实测现象）。
+  const detailQ = useQuery({
+    queryKey: ["msg-detail", activeAcct, conv.conv_id],
+    queryFn: async (): Promise<Msg[]> => {
+      if (!activeAcct || !conv.conv_id) return [];
+      const raw = (await a.getConversation(activeAcct, conv.conv_id)) as unknown as {
+        ok?: boolean;
+        conversation?: RawConversation;
+      };
+      const list = (raw && raw.conversation && raw.conversation.messages) || [];
+      return list.map((m, j) => ({
+        id: "dm" + conv.conv_id + "_" + j,
+        dir: (m.dir || (m.role === "me" ? "out" : "in")) as "in" | "out",
+        type: m.type || "text",
+        text: m.text || "",
+        mt: m.time || nowHM(),
+      }));
+    },
+    enabled: !!ready && !!activeAcct && !!conv.conv_id,
+    staleTime: 3000,
+  });
+
+  // 聊天框渲染优先用详情 query 的结果
+  const convMsgs: Msg[] = detailQ.data || conv.msgs || [];
   const curAcct = realAccts.find((x) => x.name === activeAcct) || realAccts[0] || null;
 
   useEffect(() => {
@@ -219,17 +259,6 @@ export default function MessagesPage(props: PageProps) {
     push("已打开 " + name + " 的会话，文案已预填");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [goDm]);
-
-  const conv: Conv =
-    shownConvs.find((c) => c.id === active) ||
-    shownConvs[0] || {
-      id: "",
-      acct: "",
-      name: "暂无会话",
-      hue: "0",
-      unread: 0,
-      msgs: [],
-    };
 
   const send = () => {
     if (!draft.trim()) return;
@@ -253,36 +282,6 @@ export default function MessagesPage(props: PageProps) {
 
   const openConv = (id: string) => {
     setActive(id);
-    // 会话列表接口 /conversations 的 messages 恒为空（列表不携带消息体），
-    // 聊天记录必须点进会话时再调详情接口 /conversation 拉取并回填到本地缓存。
-    const target = shownConvs.find((c) => c.id === id);
-    const convId = target?.conv_id || "";
-    if (!activeAcct || !convId) return;
-    a.getConversation(activeAcct, convId)
-      .then((raw) => {
-        const d = raw as { ok?: boolean; conversation?: RawConversation };
-        const list = (d && d.conversation && d.conversation.messages) || [];
-        qc.setQueryData<Conv[]>(["msg-convs", activeAcct], (old) =>
-          (old || []).map((c) =>
-            c.id === id
-              ? {
-                  ...c,
-                  msgs: list.map((m, j) => ({
-                    id: "dm" + id + "_" + j,
-                    dir: (m.dir || (m.role === "me" ? "out" : "in")) as "in" | "out",
-                    type: m.type || "text",
-                    text: m.text || "",
-                    mt: m.time || nowHM(),
-                  })),
-                }
-              : c,
-          ),
-        );
-      })
-      .catch((e: unknown) => {
-        // 详情拉取失败不阻断会话切换，仅写日志；列表轮询会持续重试
-        a.addLog("WARN", `会话详情拉取失败 · ${activeAcct}: ${errMsg(e)}`).catch(() => {});
-      });
   };
 
   const createConv = () => {
@@ -520,13 +519,13 @@ export default function MessagesPage(props: PageProps) {
               </button>
             </div>
             <div className="msgs">
-              {conv.msgs.map((m) => (
+              {convMsgs.map((m) => (
                 <div className={"msg " + m.dir} key={m.id}>
                   <MsgBubble m={m} />
                   <span className="mtm">{m.mt}</span>
                 </div>
               ))}
-              {conv.msgs.length === 0 && (
+              {convMsgs.length === 0 && (
                 <div style={{ color: "var(--muted)", fontSize: 12.5, padding: 8 }}>
                   暂无消息
                 </div>
