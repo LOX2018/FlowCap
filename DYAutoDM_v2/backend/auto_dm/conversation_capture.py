@@ -215,6 +215,41 @@ def _parse_message_text(b):
 # ---------------------------------------------------------------------------
 # 首包精确解析（V23 实证：field 6 = conversation 数组）
 # ---------------------------------------------------------------------------
+def _extract_media_text(obj: dict):
+    """从富媒体消息体里提取可读文本 + 媒体 URL。
+
+    抖音图片/表情/语音/视频卡片等消息**没有 text 字段**，只有资源 URL。
+    原解析只取 text，这类消息会被整条丢弃（前端看不到或只剩「图片」二字）。
+
+    统一输出 "[图片] <url>" / "[表情包] <url>" 形态，
+    前端 extractImageUrl() 从文本里抓 URL 直接渲染缩略图。
+
+    返回 None 表示确实无法解析（调用方会 continue 丢弃）。
+    """
+    # 图片：resource_url.origin_url_list[0]
+    res = obj.get("resource_url")
+    if isinstance(res, dict):
+        for key in ("origin_url_list", "url_list"):
+            lst = res.get(key)
+            if isinstance(lst, list) and lst:
+                return f"[图片] {lst[0]}"
+    # 表情包：url.url_list[0]
+    urlobj = obj.get("url")
+    if isinstance(urlobj, dict):
+        lst = urlobj.get("url_list")
+        if isinstance(lst, list) and lst:
+            return f"[表情包] {lst[0]}"
+    # 视频分享
+    if obj.get("itemId"):
+        return f"[分享视频] 视频ID {obj.get('itemId')}"
+    # 兜底：把整个 JSON 截短存下来，至少不丢消息
+    try:
+        import json as _json
+        return "[未知媒体] " + _json.dumps(obj, ensure_ascii=False)[:200]
+    except Exception:
+        return None
+
+
 def parse_init_protobuf(raw, my_uid):
     """解析 get_message_by_init 首包，返回会话列表（含消息）。
 
@@ -476,6 +511,13 @@ def parse_conversation_301(raw, cid, my_uid):
             obj = _json.loads(s)
             if isinstance(obj, dict):
                 text = obj.get("text") or obj.get("tips")
+                # 2026-08-29 修复：图片/表情/语音等富媒体消息没有 text 字段，
+                # 只有 resource_url / url，原逻辑会 continue 丢弃整条消息，
+                # 导致前端只能看到「图片」二字或完全看不到该条。
+                # 现按类型提取媒体 URL，统一存成 "[图片] <url>" 形态，
+                # 前端据此直接渲染缩略图预览。
+                if not text:
+                    text = _extract_media_text(obj)
         except Exception:
             text = s if s else None
         if not text:

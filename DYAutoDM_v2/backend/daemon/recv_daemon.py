@@ -557,20 +557,46 @@ class RecvChannel(threading.Thread):
         if t == 7:
             return content_json.get("text", ""), {}
         elif t == 5:
-            try:
-                return f"[表情包] {content_json['url']['url_list'][0]}", {}
-            except Exception:
-                return "[表情包]", {}
+            # 表情包：url.url_list[0]，也可能在 resource_url 下
+            def _pick(d, *keys):
+                if not isinstance(d, dict):
+                    return ""
+                for k in keys:
+                    lst = d.get(k)
+                    if isinstance(lst, list) and lst:
+                        return lst[0]
+                return ""
+
+            u = _pick(content_json.get("url"), "url_list") or _pick(
+                content_json.get("resource_url"), "origin_url_list", "url_list"
+            )
+            if u:
+                return f"[表情包] {u}", {}
+            return "[表情包]", {}
         elif t == 17:
             try:
                 return f"[语音] {content_json['resource_url']['url_list'][0]}", {}
             except Exception:
                 return "[语音]", {}
         elif t == 27:
-            try:
-                return f"[图片] {content_json['resource_url']['origin_url_list'][0]}", {}
-            except Exception:
-                return "[图片]", {}
+            # 图片：优先原图，其次普通图链；都没有才退化成占位（不能丢 URL，
+            # 否则前端无法渲染缩略图预览）
+            def _pick(d, *keys):
+                if not isinstance(d, dict):
+                    return ""
+                for k in keys:
+                    lst = d.get(k)
+                    if isinstance(lst, list) and lst:
+                        return lst[0]
+                return ""
+
+            u = _pick(content_json.get("resource_url"), "origin_url_list", "url_list")
+            if u:
+                return f"[图片] {u}", {}
+            u = _pick(content_json.get("origin_url"), "url_list")
+            if u:
+                return f"[图片] {u}", {}
+            return "[图片]", {}
         elif t == 8:
             return f"[分享视频] 视频ID {content_json.get('itemId', '')}", {}
         elif t == 50001:

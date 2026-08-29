@@ -299,8 +299,24 @@ input, select, textarea { font: inherit; color: inherit; }
 .msg.out { align-self: flex-end; flex-direction: row-reverse; }
 .bubble { padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.55; background: var(--surface-2); border: 1px solid var(--border); }
 .msg.out .bubble { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-.msg .mtm { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); align-self: flex-end; flex: none; }
 .bubble .voice { display: flex; align-items: center; gap: 8px; }
+/* 时间：与气泡垂直居中（原为 align-self: flex-end，贴气泡底部） */
+.msg .mtm { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); align-self: center; flex: none; }
+/* 系统提示：居中展示的小气泡，与左右对话气泡区分开 */
+.msg.sys { align-self: center; max-width: 84%; }
+.msg.sys .bubble {
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 5px 11px;
+  border-radius: 10px;
+  text-align: center;
+}
+.msg.sys .mtm { align-self: center; }
+/* 图片消息：直接以图链渲染缩略图预览 */
+.imgbubble { display: block; max-width: 220px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); line-height: 0; }
+.imgbubble img { max-width: 220px; max-height: 240px; width: auto; height: auto; object-fit: cover; display: block; cursor: zoom-in; }
 .voice-bars { display: flex; align-items: center; gap: 2px; height: 18px; }
 .voice-bars i { width: 3px; background: currentColor; border-radius: 2px; opacity: .85; }
 .bubble .vdur { font-family: var(--font-mono); font-size: 12px; }

@@ -94,7 +94,43 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// 抖音下发的系统提示文案（非对话内容），需居中展示为提示气泡而非对话气泡
+const SYS_TIPS = [
+  "你已确认聊天",
+  "对方已确认聊天",
+  "你已回复",
+  "Recall Content Hided",
+  "消息已撤回",
+  "对方正在输入",
+];
+
+/** 判断是否为系统提示：命中已知文案，或形如「你/对方 已…」的系统动作句 */
+function isSystemTip(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (SYS_TIPS.some((k) => t.includes(k))) return true;
+  return /^(你|对方)(已|正在|已确认)/.test(t);
+}
+
+/** 从文本里提取图片 URL（兼容 `[图片] url` 与裸 URL 两种存法） */
+function extractImageUrl(text: string): string {
+  const t = (text || "").trim();
+  const m = t.match(/https?:\/\/\S+/);
+  return m ? m[0] : "";
+}
+
 function MsgBubble({ m }: { m: Msg }) {
+  const url = extractImageUrl(m.text);
+  // 图片类消息：有 URL 直接渲染缩略图预览，无 URL 给占位（历史数据只有「图片」二字）
+  if (m.type === "image" || /^\[?图片\]?$/.test((m.text || "").trim())) {
+    return url ? (
+      <a className="imgbubble" href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt="图片消息" loading="lazy" />
+      </a>
+    ) : (
+      <div className="bubble">[图片]（无图链，需重新捕获）</div>
+    );
+  }
   if (m.type === "text") return <div className="bubble">{m.text}</div>;
   if (m.type === "voice")
     return (
@@ -519,12 +555,15 @@ export default function MessagesPage(props: PageProps) {
               </button>
             </div>
             <div className="msgs">
-              {convMsgs.map((m) => (
-                <div className={"msg " + m.dir} key={m.id}>
-                  <MsgBubble m={m} />
-                  <span className="mtm">{m.mt}</span>
-                </div>
-              ))}
+              {convMsgs.map((m) => {
+                const sys = isSystemTip(m.text);
+                return (
+                  <div className={"msg " + (sys ? "sys" : m.dir)} key={m.id}>
+                    <MsgBubble m={m} />
+                    <span className="mtm">{m.mt}</span>
+                  </div>
+                );
+              })}
               {convMsgs.length === 0 && (
                 <div style={{ color: "var(--muted)", fontSize: 12.5, padding: 8 }}>
                   暂无消息
