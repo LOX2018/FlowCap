@@ -169,6 +169,21 @@ def _map_conversation(c: dict) -> dict:
     }
 
 
+def _fmt_hm(ts) -> str:
+    """float 秒级时间戳 -> HH:MM 字符串（前端气泡时间展示）。
+
+    ts 为 0/None/非法值时返回空串，前端自行兜底 nowHM()。
+    """
+    try:
+        v = float(ts or 0)
+        if v <= 0:
+            return ""
+        import time as _t
+        return _t.strftime("%H:%M", _t.localtime(v))
+    except Exception:
+        return ""
+
+
 @router.get("/conversations")
 async def list_conversations(account: str):
     """会话列表（08 方案：私信页纯读 SQLite 权威源）
@@ -253,6 +268,11 @@ async def get_conversation(account: str, conv_id: str):
             "WHERE account=? AND conv_id=? ORDER BY ts ASC",
             (account, str(conv_id)),
         ).fetchall()
+        # 字段同时给两套命名，兼容前端不同消费点：
+        #   role/msg_type —— 后端原生命名
+        #   dir/type/time —— 前端 messages.tsx 的 Msg 接口命名
+        #     dir: role=me -> out（我发），否则 in（对方发），与气泡左右布局对应
+        #     time: HH:MM 字符串（ts 为 float 秒级时间戳）
         conv = {
             "conv_id": row["conv_id"],
             "name": row["peer_name"] or row["peer_id"] or row["conv_id"] or "会话",
@@ -260,7 +280,17 @@ async def get_conversation(account: str, conv_id: str):
             "peer_name": row["peer_name"],
             "unread": row["unread"] or 0,
             "avatar": row["avatar"] or "",
-            "messages": [{"role": m["role"], "text": m["text"], "msg_type": m["msg_type"]} for m in msgs],
+            "messages": [
+                {
+                    "role": m["role"],
+                    "text": m["text"],
+                    "msg_type": m["msg_type"],
+                    "dir": "out" if m["role"] == "me" else "in",
+                    "type": m["msg_type"] or "text",
+                    "time": _fmt_hm(m["ts"]),
+                }
+                for m in msgs
+            ],
         }
         # 标记已读
         try:

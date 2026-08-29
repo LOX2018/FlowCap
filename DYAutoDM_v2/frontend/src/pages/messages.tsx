@@ -12,7 +12,7 @@
  *   - requestDm 不在 client.ts，用本地 interface + as unknown as 转换
  */
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import { Avatar, Pill, Dot, hue, nowHM } from "../components/ui";
 
@@ -45,6 +45,8 @@ interface Account {
 }
 interface RawMessage {
   dir?: string;
+  /** 后端原生命名：me=我发 / them=对方发（dir 为空时的兜底判据） */
+  role?: string;
   type?: string;
   text?: string;
   time?: string;
@@ -147,6 +149,7 @@ function MsgBubble({ m }: { m: Msg }) {
 export default function MessagesPage(props: PageProps) {
   const { push, ready, goDm } = props;
   const a = props.api as unknown as MessagesApi;
+  const qc = useQueryClient();
   // 当前账号提升到 App 级（由 App 常驻 conversations 轮询驱动，本页只读缓存，避免切页冷拉/双拉）
   const activeAcct = props.msgAcct || "";
   const setActiveAcct = props.setMsgAcct || (() => {});
@@ -246,6 +249,36 @@ export default function MessagesPage(props: PageProps) {
 
   const openConv = (id: string) => {
     setActive(id);
+    // 会话列表接口 /conversations 的 messages 恒为空（列表不携带消息体），
+    // 聊天记录必须点进会话时再调详情接口 /conversation 拉取并回填到本地缓存。
+    const target = shownConvs.find((c) => c.id === id);
+    const convId = target?.conv_id || "";
+    if (!activeAcct || !convId) return;
+    a.getConversation(activeAcct, convId)
+      .then((raw) => {
+        const d = raw as { ok?: boolean; conversation?: RawConversation };
+        const list = (d && d.conversation && d.conversation.messages) || [];
+        qc.setQueryData<Conv[]>(["msg-convs", activeAcct], (old) =>
+          (old || []).map((c) =>
+            c.id === id
+              ? {
+                  ...c,
+                  msgs: list.map((m, j) => ({
+                    id: "dm" + id + "_" + j,
+                    dir: (m.dir || (m.role === "me" ? "out" : "in")) as "in" | "out",
+                    type: m.type || "text",
+                    text: m.text || "",
+                    mt: m.time || nowHM(),
+                  })),
+                }
+              : c,
+          ),
+        );
+      })
+      .catch((e: unknown) => {
+        // 详情拉取失败不阻断会话切换，仅写日志；列表轮询会持续重试
+        a.addLog("WARN", `会话详情拉取失败 · ${activeAcct}: ${errMsg(e)}`).catch(() => {});
+      });
   };
 
   const createConv = () => {
