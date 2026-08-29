@@ -190,6 +190,27 @@ export const api = {
   },
 
   // ===== messages =====
+
+  /**
+   * 更新会话：按需触发前移捕获（经 BCC 拉会话列表 + 会话详情/聊天记录）并写库。
+   * 与「引擎校验」区分：引擎校验只判守护活性（轻量），本接口真正跑捕获（重）。
+   */
+  async refreshConversations(
+    account: string,
+    withBrowser = true,
+  ): Promise<{
+    ok: boolean;
+    n_conv?: number;
+    n_msg?: number;
+    elapsed?: number;
+    error?: string;
+  }> {
+    return request(`/api/messages/${encodeURIComponent(account)}/refresh`, {
+      method: "POST",
+      body: JSON.stringify({ account, with_browser: withBrowser }),
+    });
+  },
+
   async getConversations(account: string): Promise<unknown> {
     return request(`/api/messages/conversations?account=${encodeURIComponent(account)}`);
   },

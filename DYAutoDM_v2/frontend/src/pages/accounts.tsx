@@ -536,7 +536,7 @@ export default function AccountsPage(props: PageProps) {
               dmEngine: {
                 level: "unknown",
                 label: "校验中…",
-                detail: "正在拉取私信会话列表（无副作用），验证私信凭证是否有效",
+                detail: "正在检测私信守护与凭证守护的有效性（不拉取会话列表）",
               },
             }
           : x,

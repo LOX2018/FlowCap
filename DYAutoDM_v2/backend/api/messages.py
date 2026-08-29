@@ -322,3 +322,57 @@ async def send_dm(body: SendDmRequest):
         return {"ok": False, "error": f"私信守护返回 {e.code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# 更新会话（按需触发前移捕获）
+# ---------------------------------------------------------------------------
+# 私信页「更新会话」按钮调用：经 BCC 一次性拉取会话列表 + 会话详情（含聊天记录），
+# 写库后前端 5s 轮询自动刷新，无需本接口返回数据。
+#
+# 与「引擎校验」的职责边界（2026-08-29 收敛）：
+#   - 引擎校验：只判守护凭证(wp) + 私信守护活性(dm)，不跑捕获（轻量、可高频）。
+#   - 更新会话：真正跑 capture_all（重、涉及浏览器与网络），只在用户点按钮时触发。
+#
+# 风控边界：capture_all 的昵称来源仍是 BCC 被动截获前端自发 im/user/info，
+# 后端零主动批量查昵称；聊天记录走首包(2043) + 长会话 cmd 301 补全。
+# ---------------------------------------------------------------------------
+class RefreshConvsRequest(BaseModel):
+    account: str
+    with_browser: bool = True
+
+
+@router.post("/{account}/refresh")
+async def refresh_conversations(account: str, body: RefreshConvsRequest | None = None):
+    """按需触发前移捕获：拉取会话列表 + 会话详情（聊天记录）并写库。
+
+    返回 {ok, n_conv, n_msg, elapsed, error}。
+    """
+    import time as _time
+    from auto_dm.daemon_launcher import ensure_daemons_for
+    from auto_dm.conversation_capture import capture_all
+
+    t0 = _time.time()
+    use_browser = body.with_browser if body else True
+    try:
+        # 捕获依赖 BCC（browser_daemon）常驻浏览器；先幂等拉起（端口已开则跳过）
+        launched = ensure_daemons_for(account)
+        if use_browser and not launched.get("browser"):
+            logger.warning(f"[refresh][{account}] browser_daemon 未拉起，昵称关联可能失效")
+
+        n_conv, n_msg = capture_all(account, with_browser=use_browser)
+        elapsed = round(_time.time() - t0, 1)
+        logger.info(f"[refresh][{account}] 更新会话完成：会话 {n_conv}（消息 {n_msg}），耗时 {elapsed}s")
+        return {
+            "ok": True,
+            "n_conv": n_conv,
+            "n_msg": n_msg,
+            "elapsed": elapsed,
+        }
+    except Exception as e:
+        logger.warning(f"[refresh][{account}] 更新会话失败: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "elapsed": round(_time.time() - t0, 1),
+        }

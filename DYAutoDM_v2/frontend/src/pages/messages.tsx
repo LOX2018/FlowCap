@@ -71,11 +71,19 @@ interface RequestDmResp {
 }
 
 /** client.ts 未提供 requestDm，本地扩展 */
+interface RefreshConvsResp {
+  ok: boolean;
+  n_conv?: number;
+  n_msg?: number;
+  elapsed?: number;
+  error?: string;
+}
 interface MessagesApi {
   getConversations(account: string): Promise<unknown>;
   getConversation(account: string, convId: string): Promise<unknown>;
   sendDm(account: string, convId: string, text: string): Promise<SendDmResp>;
   requestDm(name: string): Promise<RequestDmResp>;
+  refreshConversations(account: string, withBrowser?: boolean): Promise<RefreshConvsResp>;
   getAccounts(): Promise<unknown>;
   addLog(level: string, text: string): Promise<unknown>;
 }
@@ -146,6 +154,7 @@ export default function MessagesPage(props: PageProps) {
   const [draft, setDraft] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   // 账号列表（读取 App 常驻轮询的共享缓存）
   const accountsQ = useQuery({
@@ -339,6 +348,54 @@ export default function MessagesPage(props: PageProps) {
           <div className="head-row" style={{ padding: "4px 8px 10px" }}>
             <h3 style={{ marginBottom: 0 }}>会话列表</h3>
             <div style={{ flex: 1 }} />
+            {/* 更新会话：按需触发前移捕获（BCC 拉会话列表 + 会话详情/聊天记录）后写库。
+                与账号页「引擎校验」区分：引擎校验只判守护活性，不跑捕获。 */}
+            <button
+              className="btn sm ghost"
+              data-od-id="refresh-conv"
+              disabled={refreshing || !activeAcct}
+              title={
+                activeAcct
+                  ? `经 BCC 重新拉取 ${activeAcct} 的会话列表与聊天记录`
+                  : "请先选择账号"
+              }
+              onClick={() => {
+                if (!activeAcct || refreshing) return;
+                setRefreshing(true);
+                push(`正在更新会话 · ${activeAcct} · 经 BCC 拉取会话列表与聊天记录…`);
+                a.addLog("INFO", `更新会话开始 · ${activeAcct}`).catch(() => {});
+                a.refreshConversations(activeAcct, true)
+                  .then((r) => {
+                    if (r && r.ok) {
+                      push(
+                        `更新完成 · ${activeAcct} · 会话 ${r.n_conv} 个（消息 ${r.n_msg} 条）· 耗时 ${r.elapsed}s`,
+                      );
+                      a.addLog(
+                        "SUCCESS",
+                        `更新会话完成 · ${activeAcct} · 会话 ${r.n_conv}（消息 ${r.n_msg}）· ${r.elapsed}s`,
+                      ).catch(() => {});
+                    } else {
+                      push("更新失败: " + ((r && r.error) || "未知错误"));
+                      a.addLog(
+                        "ERROR",
+                        `更新会话失败 · ${activeAcct}: ${(r && r.error) || "未知错误"}`,
+                      ).catch(() => {});
+                    }
+                  })
+                  .catch((e: unknown) => {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    push("更新失败: " + msg);
+                    a.addLog("ERROR", `更新会话失败 · ${activeAcct}: ${msg}`).catch(() => {});
+                  })
+                  .finally(() => {
+                    setRefreshing(false);
+                    // 立即刷新会话列表，不必等 5s 轮询
+                    convsQ.refetch().catch(() => {});
+                  });
+              }}
+            >
+              {refreshing ? "更新中…" : "⟳ 更新会话"}
+            </button>
             <button
               className="btn sm ghost"
               data-od-id="new-conv"

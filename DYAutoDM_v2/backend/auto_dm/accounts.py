@@ -324,62 +324,64 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
         except Exception as e:
             logger.warning(f"[verify] 账号 {name} 自动重捕触发失败: {e}")
 
-    # ---- 私信引擎校验（前移捕获：凭证有效后一次性捕获私信列表+会话详情）----
+    # ---- 私信引擎校验（只校验「私信守护」有效性，不做列表捕获）----
+    # 2026-08-29 收敛（用户要求）：引擎校验 = 校验守护凭证(wp) + 私信守护有效性(dm)。
+    # 私信列表/会话详情的捕获不再由校验触发，改由私信页「更新会话」按钮按需触发
+    # （端点 POST /api/messages/{account}/refresh）。
     if dm_loopback:
         try:
-            from dy_apis.login_api import DYLoginApi
-            from dy_apis.douyin_api import DouyinAPI
-            auth = DYLoginApi._load_auth_from_env(env_path)
-            uid = result["uid"] or DouyinAPI.get_my_uid(auth)
-            if not uid:
+            from auto_dm.daemon_launcher import ensure_daemons_for
+
+            bport = browser_daemon_port(name)
+            rport = recv_daemon_port(name)
+            # 幂等拉起（端口已开则跳过），再查活性
+            ensure_daemons_for(name)
+            b_ok = _port_open(bport, timeout=0.5)
+            r_ok = _port_open(rport, timeout=0.5)
+            if r_ok and b_ok:
                 result["dm"] = {
-                    "level": "skip",
-                    "label": "跳过（无 uid）",
-                    "detail": "无法获取自身 uid，私信列表捕获跳过。请先确保 wp 引擎已登录。",
+                    "level": "ok",
+                    "label": "私信守护正常",
+                    "detail": f"私信守护 recv_daemon(port={rport}) 与 "
+                              f"凭证守护 browser_daemon(port={bport}) 均已就绪。",
+                }
+            elif r_ok and not b_ok:
+                result["dm"] = {
+                    "level": "warn",
+                    "label": "私信守护在，凭证守护缺失",
+                    "detail": f"recv_daemon 已就绪(port={rport})，但 browser_daemon"
+                              f"(port={bport}) 未拉起，昵称关联可能失效。",
+                }
+            elif b_ok and not r_ok:
+                result["dm"] = {
+                    "level": "warn",
+                    "label": "凭证守护在，私信守护缺失",
+                    "detail": f"browser_daemon 已就绪(port={bport})，但 recv_daemon"
+                              f"(port={rport}) 未拉起，实时新消息不会入库"
+                              f"（可在账号页点「启动私信守护」）。",
                 }
             else:
-                # 前移捕获：无头指纹浏览器截 im/user/info + 首包 protobuf 解析 → 写库
-                # 确保 daemon 已拉起（方案 A 缺口：backend 启动时账号可能尚未上线，
-                # 此处校验触发 capture_all 前必须拉起 browser_daemon/recv_daemon）。
-                try:
-                    from auto_dm.daemon_launcher import ensure_daemons_for
-                    _launched = ensure_daemons_for(name)
-                    if not _launched["browser"]:
-                        logger.warning(f"[verify][{name}] browser_daemon 未能拉起，昵称关联可能失效")
-                except Exception as _le:
-                    logger.warning(f"[verify][{name}] 拉起 daemon 失败: {_le}")
-                from auto_dm.conversation_capture import capture_all
-                try:
-                    n_conv, n_msg = capture_all(name, with_browser=True)
-                    result["dm"] = {
-                        "level": "ok",
-                        "label": "列表已捕获",
-                        "detail": f"已一次性捕获私信会话 {n_conv} 个（含消息 {n_msg} 条），"
-                                  f"昵称/头像经前端接口截获写入数据库。",
-                    }
-                except Exception as _e:
-                    logger.warning(f"[verify][{name}] 前移捕获失败: {_e}")
-                    result["dm"] = {
-                        "level": "warn",
-                        "label": "捕获失败",
-                        "detail": f"私信列表前移捕获异常: {_e}",
-                    }
+                result["dm"] = {
+                    "level": "fail",
+                    "label": "私信守护未运行",
+                    "detail": f"recv_daemon(port={rport}) 与 browser_daemon"
+                              f"(port={bport}) 均未拉起，私信引擎不可用。",
+                }
         except Exception as e:
             result["dm"] = {
-                "level": "fail",
-                "label": "列表拉取失败",
-                "detail": f"拉取私信列表失败: {e}",
+                "level": "error",
+                "label": "守护状态检测异常",
+                "detail": f"检测私信守护状态失败: {e}",
             }
     else:
-        # 轮询场景（dm_loopback=False）：不做真实列表拉取测试（避免高频污染/耗时）。
-        # 沿用 wp 引擎结果作为 dm 引擎状态的轻量近似，避免“恒显待校验”误导用户以为私信引擎异常。
-        # 用户点「引擎校验」按钮（dm_loopback=True）才会真跑拉取测试并显示真实结果。
+        # 轮询场景（dm_loopback=False）：沿用 wp 引擎结果作轻量近似，
+        # 不跑真实列表拉取也不探守护端口（避免高频开销）。
         wp_level = result["wp"].get("level")
         if wp_level == "ok":
             result["dm"] = {
                 "level": "ok",
                 "label": "正常（沿用 wp）",
-                "detail": "wp 引擎正常时私信凭证通常亦可用；点「引擎校验」可触发真实列表拉取测试。",
+                "detail": "wp 引擎正常时私信凭证通常亦可用；点「引擎校验」可检测守护真实状态。",
             }
         elif wp_level in ("fail", "error"):
             result["dm"] = {
@@ -391,15 +393,8 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
             result["dm"] = {
                 "level": "warn",
                 "label": "可能可用（沿用 wp）",
-                "detail": "wp 引擎告警但凭证可能仍可用；点「引擎校验」可触发真实列表拉取测试。",
+                "detail": "wp 引擎告警但凭证可能仍可用；点「引擎校验」可检测守护真实状态。",
             }
-        else:
-            result["dm"] = {
-                "level": "idle",
-                "label": "待校验",
-                "detail": "点击账号卡片「引擎校验」按钮可触发私信引擎列表拉取测试。",
-            }
-
     result["ok"] = (result["wp"]["level"] in ("ok", "warn")
                     and result["dm"]["level"] in ("ok", "warn", "skip"))
     return result
