@@ -200,14 +200,24 @@ async def list_conversations(account: str):
     try:
         conn = get_db()
         rows = conn.execute(
-            # 排序必须带二级键 conv_id：大量会话 last_ts 相同/相近时，
-            # 仅 ORDER BY last_ts DESC 的顺序不稳定（依赖内部扫描顺序），
-            # 会导致前端 5s 轮询拿到的列表顺序每次都变（会话「乱跳」+
-            # 前端若用数组下标当 key 则点开的会话丢失）。加 conv_id 保证确定性。
-            "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar "
-            "FROM dm_conversations WHERE account=? "
-            "ORDER BY last_ts DESC, conv_id ASC",
-            (account,),
+            # 排序规则（2026-08-29 实测修正）：
+            # 1) 有真实消息的会话优先（n_msgs > 0 排前面）。
+            #    实测 222 个会话里 180 个是空会话，且其 last_ts 反而更大
+            #    （被 WS 回执/同步刷新），若纯按 last_ts 排序，空会话会霸占
+            #    列表顶部，用户点前面几个永远是「暂无消息」。
+            # 2) 再按 last_ts DESC（有消息的按活跃度；空会话之间也按此）。
+            # 3) 二级键 conv_id 保证顺序确定：last_ts 大量并列时，
+            #    仅按 last_ts 排序不稳定（依赖内部扫描顺序），会让前端 5s
+            #    轮询拿到的顺序每次都变（会话「乱跳」+ 选中态错位）。
+            # 注：统计消息数时排除 50001 回执（不落库后已无，但历史库可能有）。
+            "SELECT c.conv_id,c.peer_id,c.peer_name,c.short_id,c.last_ts,c.unread,c.avatar "
+            "FROM dm_conversations c "
+            "LEFT JOIN (SELECT conv_id, COUNT(*) n FROM dm_messages "
+            "           WHERE account=? AND msg_type <> '50001' GROUP BY conv_id) m "
+            "  ON m.conv_id = c.conv_id "
+            "WHERE c.account=? "
+            "ORDER BY COALESCE(m.n, 0) DESC, c.last_ts DESC, c.conv_id ASC",
+            (account, account),
         ).fetchall()
         if not rows:
             # 库里还没有会话：若守护未启动则提示前端拉起，否则返回空
