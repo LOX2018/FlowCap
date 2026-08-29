@@ -177,7 +177,10 @@ export default function MessagesPage(props: PageProps) {
       };
       const list = (d && d.conversations) || [];
       return list.map((c, i) => ({
-        id: "rc" + i,
+        // id 必须用 conv_id（会话唯一标识），不能用数组下标 i：
+        // 列表 5s 轮询且按 last_ts 排序，下标会随顺序变化而改变，
+        // 导致 active 指向错位 -> 聊天框变空、列表「乱跳」。
+        id: c.conv_id || "rc" + i,
         conv_id: c.conv_id,
         acct: activeAcct,
         hue: hue((c.name || "x").length * 2),
@@ -230,11 +233,12 @@ export default function MessagesPage(props: PageProps) {
 
   const send = () => {
     if (!draft.trim()) return;
-    if (!conv || !conv.id || conv.id.indexOf("rc") !== 0) {
+    // 校验改为看 conv_id 是否有效（id 现为 conv_id，不再是 "rc"+下标）
+    if (!conv || !conv.conv_id) {
       push("请先选择有效会话");
       return;
     }
-    const convId = conv.conv_id || conv.id;
+    const convId = conv.conv_id;
     a.sendDm(activeAcct, convId, draft.trim())
       .then((r) => {
         if (r && r.ok) {

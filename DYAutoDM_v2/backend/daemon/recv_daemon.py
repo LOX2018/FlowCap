@@ -315,6 +315,16 @@ class AccountInbox:
     def add_message(self, conv_id: str, role: str, text: str,
                     peer_id: Any = None, peer_name: str | None = None,
                     msg_type: str = "text", extra: dict | None = None) -> Conversation:
+        # 回执类消息（msg_type=50001「对方已读」）不落库：
+        # 这类消息无 msg_id（唯一索引管不到去重），WS 每次同步都会重复写入，
+        # 实测全库堆积 1938 条，把真实聊天记录挤掉、也让会话 last_ts 被无效刷新。
+        # 仅更新会话的 last_ts 感知活跃度，不写 dm_messages。
+        if str(msg_type) == "50001":
+            return self.get_or_create(
+                conv_id,
+                peer_id or self._extract_peer_uid(conv_id),
+                peer_name,
+            )
         ts = time.time()
         with self.lock:
             # peer_id 为空/等于自己 → 从 conv_id 提取对端 UID（WS sender 常空/自己）

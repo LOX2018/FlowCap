@@ -200,8 +200,13 @@ async def list_conversations(account: str):
     try:
         conn = get_db()
         rows = conn.execute(
+            # 排序必须带二级键 conv_id：大量会话 last_ts 相同/相近时，
+            # 仅 ORDER BY last_ts DESC 的顺序不稳定（依赖内部扫描顺序），
+            # 会导致前端 5s 轮询拿到的列表顺序每次都变（会话「乱跳」+
+            # 前端若用数组下标当 key 则点开的会话丢失）。加 conv_id 保证确定性。
             "SELECT conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar "
-            "FROM dm_conversations WHERE account=? ORDER BY last_ts DESC",
+            "FROM dm_conversations WHERE account=? "
+            "ORDER BY last_ts DESC, conv_id ASC",
             (account,),
         ).fetchall()
         if not rows:
@@ -263,9 +268,14 @@ async def get_conversation(account: str, conv_id: str):
         ).fetchone()
         if row is None:
             return {"ok": False, "conversation": {}}
+        # 过滤回执/系统类消息：msg_type=50001 是「对方已读」回执，
+        # recv_daemon 经 WS 反复写入且 msg_id 为 NULL（唯一索引管不到），
+        # 实测单个会话能堆积上千条（全库 1938 条），会把真实聊天记录挤掉。
+        # 聊天框只展示真实对话内容，故在此过滤。
         msgs = conn.execute(
             "SELECT role,text,msg_type,ts FROM dm_messages "
-            "WHERE account=? AND conv_id=? ORDER BY ts ASC",
+            "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
+            "ORDER BY ts ASC",
             (account, str(conv_id)),
         ).fetchall()
         # 字段同时给两套命名，兼容前端不同消费点：

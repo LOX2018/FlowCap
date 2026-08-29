@@ -155,9 +155,21 @@ def _auto_start_daemons() -> None:
             except Exception as e:
                 logger.warning(f"[startup] 拉起 {name} 的 recv_daemon 失败: {e}")
 
-        # 3. 昵称关联（数字 UID → 昵称/头像）— daemon 线程异步执行
-        #    BCC 需要 ~66s 滚动触发全部 im/user/info，不能阻塞 backend 启动
-        threading.Thread(target=_nickname_sync_background, args=(names,), daemon=True).start()
+        # 3. 昵称关联（数字 UID → 昵称/头像）
+        #    2026-08-29 风控收敛（用户要求）：启动【不再自动】触发 capture_all。
+        #    原逻辑会在启动 45s 后自动跑首包 HTTP + 20 次 cmd 301 补全，
+        #    等于每次开软件都在抓包，频次高且有风控风险；而私信页本应纯读库。
+        #    现改为开关控制，默认关闭；需要捕获时由用户点「更新会话」按钮触发。
+        #    开启方式：设置环境变量 DY_AUTO_CAPTURE_ON_START=1
+        import os as _os
+        if _os.environ.get("DY_AUTO_CAPTURE_ON_START", "0") == "1":
+            logger.info("[startup] DY_AUTO_CAPTURE_ON_START=1，启动后将自动触发一次会话捕获")
+            threading.Thread(target=_nickname_sync_background, args=(names,), daemon=True).start()
+        else:
+            logger.info(
+                "[startup] 启动不自动抓包（风控保护）：私信页纯读库，"
+                "需要更新会话列表/聊天记录请在私信页点「更新会话」按钮"
+            )
 
     except Exception as e:
         logger.warning(f"[startup] 自动拉起 daemon 失败（不影响使用）: {e}")
