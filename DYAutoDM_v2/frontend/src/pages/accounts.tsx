@@ -560,13 +560,11 @@ export default function AccountsPage(props: PageProps) {
                 : x,
             ),
           );
+          // 2026-08-31：校验可能触发浏览器重捕（耗时数分钟），提示停留 12s 避免错过
           push(
-            "引擎校验完成 · " +
-              a.name +
-              " · wp: " +
-              (v.wp && v.wp.label) +
-              " · dm: " +
-              (v.dm && v.dm.label),
+            "引擎校验完成 · " + a.name + " · wp: " + (v.wp && v.wp.label) +
+              " · dm: " + (v.dm && v.dm.label),
+            12000,
           );
           api.addLog("SUCCESS", `引擎校验完成 · ${a.name} · wp: ${v.wp && v.wp.label} · dm: ${v.dm && v.dm.label}`).catch(() => {});
           // 方案 A：校验发现凭证失效时后端已自动唤醒指纹浏览器重捕，提示用户完成授权
@@ -1106,7 +1104,7 @@ function AccountReview({
 }: {
   account: FmtAccount;
   onClose: () => void;
-  push: (msg: string) => void;
+  push: (msg: string, holdMs?: number) => void;
   goMsg?: (name: string, text?: string) => void;
 }) {
   const [q, setQ] = useState("");

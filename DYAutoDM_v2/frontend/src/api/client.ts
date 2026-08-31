@@ -392,7 +392,7 @@ export interface ReviewPayload {
 
 export interface PageProps {
   /** toast 提示 */
-  push: (msg: string) => void;
+  push: (msg: string, holdMs?: number) => void;
   /** API 客户端 */
   api: typeof api;
   /** 总览数据（3s 轮询） */

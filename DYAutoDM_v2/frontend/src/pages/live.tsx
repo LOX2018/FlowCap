@@ -1219,7 +1219,7 @@ function errMsg(e: unknown): string {
 interface ReviewModeProps {
   rows: Row[];
   onClose: () => void;
-  push: (msg: string) => void;
+  push: (msg: string, holdMs?: number) => void;
   sendDm: (r: Row) => void;
   goMsg?: (name: string, text?: string) => void;
 }

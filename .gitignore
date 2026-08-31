@@ -59,3 +59,11 @@ frontend/vite.config.d.ts
 _commit_msg.txt
 # V1 (DY_Spider_base) 已彻底清理废弃，永不重新跟踪
 DY_Spider_base/
+
+# 2026-08-31 追加：运行数据库（含真实私信/昵称，绝不入库）
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# 一次性知识库写入脚本（用完即弃）
+工作记忆/_kb*.py

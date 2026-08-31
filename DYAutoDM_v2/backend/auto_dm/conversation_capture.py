@@ -192,11 +192,80 @@ def _parse_message_id(b):
     return None
 
 
+def _extract_long_str(b, min_len=200, max_len=200000):
+    """提取**长**字符串（用于图片等富媒体 JSON）。
+
+    `_extract_str` 有 `1 <= len(s) <= 800` 的硬上限（原为过滤短噪音设计），
+    但图片消息的 content JSON 实测长达 8KB+（含 inline_pic base64），
+    被该上限整条丢弃 —— 这是「图片消息解析后 0 条」的真因。
+
+    本函数只放宽长度，其余提取规则与 `_extract_str` 一致，
+    且单独提供，避免影响依赖 `_extract_str` 短串语义的其他逻辑。
+    """
+    out = []
+    i, n, cur = 0, len(b), bytearray()
+    while i < n:
+        c = b[i]
+        if 0x20 <= c < 0x7F:
+            cur.append(c)
+            i += 1
+        elif 0xC0 <= c <= 0xDF and i + 1 < n:
+            cur += b[i:i + 2]
+            i += 2
+        elif 0xE0 <= c <= 0xEF and i + 2 < n:
+            cur += b[i:i + 3]
+            i += 3
+        else:
+            if cur:
+                try:
+                    s = bytes(cur).decode("utf-8")
+                    if min_len <= len(s) <= max_len:
+                        out.append(s)
+                except Exception:
+                    pass
+            cur = bytearray()
+            i += 1
+    if cur:
+        try:
+            s = bytes(cur).decode("utf-8")
+            if min_len <= len(s) <= max_len:
+                out.append(s)
+        except Exception:
+            pass
+    return out
+
+
 def _parse_message_text(b):
-    """从消息对象的 bytes 里提取聊天文本。返回 (text, aweType, createdAt) 或 None。"""
+    """从消息对象的 bytes 里提取聊天文本。返回 (text, aweType, createdAt) 或 None。
+
+    2026-08-30 两处修复（实测定位，图片消息此前解析后为 0 条）：
+      1. 原实现要求字符串必须含 `"text"` 且 obj["text"] 非空，否则 continue
+         —— 图片/表情/语音等富媒体消息**没有 text 字段**，在第一关就被丢弃。
+      2. `_extract_str` 有 `len <= 800` 硬上限，而图片消息 content JSON
+         实测 8KB+（含 inline_pic base64），被整条过滤掉。
+    现改为：先用短串路径，失败后用长串路径 `_extract_long_str` 重试。
+    """
+    # 先走原有短串路径（保持文本消息行为完全不变）
     strs = _extract_str(b)
     for s in strs:
-        if '"text"' not in s:
+        if '"text"' in s:
+            j = _strip_pb_prefix(s)
+            if not j:
+                continue
+            try:
+                obj = json.loads(j)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            text = obj.get("text") or obj.get("tips")
+            if not text:
+                continue
+            return (text, obj.get("aweType"), obj.get("createdAt") or 0)
+
+    # 短串没拿到文本 -> 可能是富媒体（JSON 超 800 字符被过滤），走长串路径
+    for s in _extract_long_str(b):
+        if '"resource_url"' not in s and '"inline_pic"' not in s:
             continue
         j = _strip_pb_prefix(s)
         if not j:
@@ -205,7 +274,9 @@ def _parse_message_text(b):
             obj = json.loads(j)
         except Exception:
             continue
-        text = obj.get("text")
+        if not isinstance(obj, dict):
+            continue
+        text = _extract_media_text(obj)
         if not text:
             continue
         return (text, obj.get("aweType"), obj.get("createdAt") or 0)
@@ -215,24 +286,115 @@ def _parse_message_text(b):
 # ---------------------------------------------------------------------------
 # 首包精确解析（V23 实证：field 6 = conversation 数组）
 # ---------------------------------------------------------------------------
+def _inline_max_kb() -> int:
+    """内联 base64 的体积上限（KB）。超过才走图床。
+
+    2026-08-31 实测：私信图片平均仅 2.9KB，60 张合计 121KB，
+    全部内联只让数据库增加 13%。而图床渲染每张要多花 0.35~2.5s 下载。
+    故默认给一个较宽松的 32KB 阈值 —— 绝大多数图片都会内联，
+    只有异常大的图才上图床。设为 0 表示**永远内联**（图床仅作兜底）。
+    """
+    try:
+        from config import settings
+
+        v = getattr(settings, "image_inline_max_kb", None)
+        if v is not None:
+            return int(v)
+    except Exception:
+        pass
+    import os
+
+    try:
+        return int(os.environ.get("IMAGE_INLINE_MAX_KB", "32"))
+    except Exception:
+        return 32
+
+
+def _norm_inline_pic(s: str) -> str:
+    """把 inline_pic 的 base64 规范化（去空白 + 补 padding）。
+
+    实测：inline_pic 值内含 \\r\\n 换行，需先去掉再解码；
+    base64 长度非 4 倍数时要补 '='。
+    """
+    if not s:
+        return ""
+    import re as _re
+    body = _re.sub(r"\s+", "", s)
+    if len(body) < 100:
+        return ""
+    return body + "=" * ((-len(body)) % 4)
+
+
 def _extract_media_text(obj: dict):
     """从富媒体消息体里提取可读文本 + 媒体 URL。
 
     抖音图片/表情/语音/视频卡片等消息**没有 text 字段**，只有资源 URL。
     原解析只取 text，这类消息会被整条丢弃（前端看不到或只剩「图片」二字）。
 
-    统一输出 "[图片] <url>" / "[表情包] <url>" 形态，
-    前端 extractImageUrl() 从文本里抓 URL 直接渲染缩略图。
+    2026-08-30 实测重大修正（双 URL 方案）：
+      图片消息体里有两个独立来源，必须都取：
+        1) inline_pic   —— 内嵌在消息里的 **标准 WebP 缩略图 base64**，
+                           零请求、零风控，实测 27/35 条可用，平均 3.5KB。
+                           这是「默认显示缩略图」的数据源。
+        2) resource_url —— 远程原图/大图 URL，**实测为抖音私有加密格式**
+                           （熵 7.999/8.0，256 字节值均匀分布，无图片魔数），
+                           浏览器无法直接解码，仅作「点击查看原图」的跳转引用。
+      远端 URL 四组（thumb/medium/large/origin）实测**全部加密**，无一可内嵌。
+
+    输出格式（前端按行拆分）：
+        "[图片] data:image/webp;base64,<inline_pic>"
+        或（无 inline_pic 时）
+        "[图片] <thumb_url>"
+        第二行（可选）："[原图] <origin_url>"
 
     返回 None 表示确实无法解析（调用方会 continue 丢弃）。
     """
-    # 图片：resource_url.origin_url_list[0]
+    # 图片：优先 inline_pic 缩略图，其次远程 URL
     res = obj.get("resource_url")
     if isinstance(res, dict):
-        for key in ("origin_url_list", "url_list"):
-            lst = res.get(key)
-            if isinstance(lst, list) and lst:
-                return f"[图片] {lst[0]}"
+        # 2) 远程 URL（原图引用 + 无 inline_pic 时的降级缩略图）
+        def _first(*keys):
+            for k in keys:
+                lst = res.get(k)
+                if isinstance(lst, list) and lst:
+                    return lst[0]
+            return ""
+
+        origin = _first("origin_url_list", "large_url_list", "url_list")
+        thumb = _first("thumb_url_list", "medium_url_list")
+        # 1) 内嵌缩略图（最高优先级：可直接渲染）
+        inline = _norm_inline_pic(obj.get("inline_pic") or "")
+        if inline:
+            # 2026-08-31 实测修正：**小图直接内联 base64，不上图床**。
+            # 图片平均仅 2.9KB（60 张合计 121KB），内联让数据库 +13%，
+            # 却换来零网络请求、瞬时渲染；而图床每张要多花 0.35~2.5s 下载，
+            # 且境外图床还会超时 —— 为省 3KB 付出百毫秒延迟是**本末倒置**。
+            # 只有超过阈值的大图才走图床，避免单条消息过大拖慢列表查询。
+            thumb_src = f"data:image/webp;base64,{inline}"
+            max_kb = _inline_max_kb()
+            size_kb = len(inline) * 3 // 4 // 1024  # base64 → 原始字节估算
+            if max_kb and size_kb > max_kb:
+                # 大图：上传图床换短链接；失败则仍内联（保证可渲染）
+                try:
+                    from auto_dm import image_host
+
+                    hosted = image_host.upload_base64(inline)
+                    if hosted:
+                        thumb_src = hosted
+                except Exception:
+                    pass
+            body = f"[图片] {thumb_src}"
+            if origin:
+                body += f"\n[原图] {origin}"
+            return body
+        # 无 inline_pic：用远程缩略图 URL 兜底（前端会降级为可点击链接）
+        if thumb:
+            body = f"[图片] {thumb}"
+            if origin:
+                body += f"\n[原图] {origin}"
+            return body
+        if origin:
+            return f"[图片] {origin}"
     # 表情包：url.url_list[0]
     urlobj = obj.get("url")
     if isinstance(urlobj, dict):
@@ -242,6 +404,20 @@ def _extract_media_text(obj: dict):
     # 视频分享
     if obj.get("itemId"):
         return f"[分享视频] 视频ID {obj.get('itemId')}"
+    # 2026-08-31 实测：打招呼卡片 / 推荐表情包不是聊天内容，
+    # 形如 {"hint_text":"我们已互相关注，可以开始聊天了","stickers":[...]}
+    # 或 {"hello_text":"打个招呼吧","stickers":[...]}。
+    # 这些是**系统提示**，之前被兜底成 "[未知媒体] {...JSON...}" 写进库，
+    # 前端显示成一长串乱码 JSON（用户反馈的"污染信息"之一）。
+    # 这里转成系统提示文案；无文案则丢弃。
+    if "hint_text" in obj or "hello_text" in obj or "joker_stickers" in obj:
+        hint = (obj.get("hint_text") or obj.get("hello_text") or "").strip()
+        if hint:
+            return f"[系统提示] {hint}"
+        return None
+    # 纯表情包推荐（无文案）也不是消息内容
+    if "stickers" in obj and not obj.get("text"):
+        return None
     # 兜底：空对象（如 {}）不代表真实媒体，返回 None 让调用方丢弃，
     # 避免把 "[未知媒体] {}" 这类噪音写进聊天记录（实测出现过）。
     if not obj:
@@ -668,7 +844,16 @@ def capture_userinfo_via_browser(name, wait=15):
     """经 BCC 被动 hook 截前端自发 im/user/info 响应（08 文档验证 44/44）。
 
     BCC 启动后自动导航到 chat 页 + 平滑滚动触发全部 im/user/info。
-    超时 120s（滚动 40 轮约需 66s）。
+
+    2026-08-31 实测（scripts/probe_bcc_speed.py，222 个会话的真机账号）：
+      wait=15 -> 耗时 23.4s，截获 **278** 个昵称
+      wait=30 -> 耗时 38.4s，截获 278 个（与 15 相同，多等无收益）
+      wait=90 -> 90s 等待 + 滚动点击，必然超过调用方 180s 超时
+    **此前 wait=90 是超时根因**：昵称全部降级为 UID（222/222 全是
+    peer_name=peer_id）。改为 15 后单次调用约 23s。
+
+    timeout 提到 240s：BCC 浏览器**冷启动**首次调用实测 152.7s
+    （含页面导航与首屏渲染），180s 会在冷启动场景超时。
     """
     import requests
     from auto_dm import accounts as acc
@@ -678,9 +863,9 @@ def capture_userinfo_via_browser(name, wait=15):
         return {}
     url = f"http://127.0.0.1:{bport}/capture_userinfo"
     try:
-        # wait: BCC 在 chat 页平滑滚动触发全部 im/user/info 的秒数；
-        # timeout: 网络超时。首包较大的账号（>1MB）需更久，放宽到 90s/180s。
-        r = requests.post(url, json={"wait": 90}, timeout=180)
+        # wait: BCC 在 chat 页平滑滚动触发 im/user/info 的秒数。
+        # 实测 15s 与 30s 截获量相同（278 个），取 15s。
+        r = requests.post(url, json={"wait": 15}, timeout=240)
         if r.status_code == 200:
             data = r.json().get("data") or {}
             logger.info(f"[capture] 经 BCC 截到昵称数: {len(data)}")
@@ -747,23 +932,48 @@ def capture_all(name, with_browser=True):
                       - len(c.get("messages", [])), reverse=True)
             max_n = int(_os.environ.get("DY_HISTORY_MAX", "20"))
             sleep_s = float(_os.environ.get("DY_HISTORY_SLEEP", "1.5"))
+            # 2026-08-31：串行补全实测太慢（20 个会话 × (请求~10s + 间隔1.5s)
+            # ≈ 230s，加上首包和浏览器启动总计 365s，用户明确抱怨）。
+            # 改为**可配置并发**：DY_HISTORY_WORKERS（默认 4）。
+            # 保守取值的原因：本项目曾因短时高频调用抖音接口触发风控
+            # （首包返回 50 字节空响应、cookie 失效），故不做激进并发。
+            # 想更快可调到 6~8，但需承担风控风险。
+            workers = max(1, min(8, int(_os.environ.get("DY_HISTORY_WORKERS", "4"))))
             need = need[:max_n]
             if need:
                 logger.info(f"[capture][{name}] 长会话补全：{len(need)} 个会话"
-                            f"（间隔 {sleep_s}s）")
-                for i, c in enumerate(need):
-                    if i:
-                        _time.sleep(sleep_s)
-                    lack = (c.get("total_msgs") or 0) - len(c.get("messages", []))
-                    hist = fetch_conversation_history(
-                        auth, c["conversation_id"], c["short_id"],
-                        count=max(50, int(c.get("total_msgs") or 50)),
-                    )
-                    if hist:
-                        c["messages"] = hist
-                        logger.info(
-                            f"[capture][{name}] 301 补全 {c['peer_uid']}: "
-                            f"{len(hist)} 条（首包缺 {lack} 条）")
+                            f"（并发 {workers}，间隔 {sleep_s}s）")
+
+                from concurrent.futures import ThreadPoolExecutor
+
+                def _fill(_c):
+                    try:
+                        _h = fetch_conversation_history(
+                            auth, _c["conversation_id"], _c["short_id"],
+                            count=max(50, int(_c.get("total_msgs") or 50)),
+                        )
+                        if _h:
+                            _c["messages"] = _h
+                            return (_c.get("peer_uid"), len(_h), None)
+                        return (_c.get("peer_uid"), 0, "空响应")
+                    except Exception as _e:  # noqa: BLE001
+                        return (_c.get("peer_uid"), 0, str(_e)[:60])
+
+                # 按批次错峰：每批 workers 个并发，批间等 sleep_s。
+                # 这样并发真正生效（不像逐个 sleep 那样退化成串行）。
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    for b in range(0, len(need), workers):
+                        if b:
+                            _time.sleep(sleep_s)
+                        batch = need[b:b + workers]
+                        for peer_uid, n, err in ex.map(_fill, batch):
+                            if err:
+                                logger.warning(
+                                    f"[capture][{name}] 301 补全失败 {peer_uid}:"
+                                    f" {err}")
+                            else:
+                                logger.info(
+                                    f"[capture][{name}] 301 补全 {peer_uid}: {n} 条")
     except Exception as e:
         logger.warning(f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")
 

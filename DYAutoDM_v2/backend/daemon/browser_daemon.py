@@ -391,8 +391,33 @@ class BrowserContainer:
             # 抖音私信列表是增量懒加载：大跨度 scrollTop=scrollHeight 跳跃会让
             # 中间大量会话不进入可视区 → 前端不为它们发 im/user/info → 缺口。
             # 故必须一屏一屏平滑往下滚，让每个会话都真正渲染、触发其 im/user/info。
+            #
+            # 2026-08-31 优化：加**提前退出**。
+            # 实测冷启动跑满 40 轮要 152~162s，是「更新会话」179s 的 90%。
+            # 但昵称往往在前几屏就已截全（222 会话实测截到 278 个），
+            # 后面 30 多轮全是空转。这里连续 3 轮无新增就停，省下大量时间。
+            _stall = 0
+            _prev = -1
             for _round in range(40):  # 上限 40 屏防死循环
                 await _click_all()
+                # 先看当前已截获数量，判断是否还在增长
+                try:
+                    _cur = await self._page.evaluate(
+                        "() => window.__CAP_USERINFO__ "
+                        "? Object.keys(window.__CAP_USERINFO__.map || {}).length : 0")
+                except Exception:
+                    _cur = -1
+                if _cur >= 0 and _prev >= 0 and _cur <= _prev:
+                    _stall += 1
+                    if _stall >= 3:
+                        logger.info(
+                            f"[bcc] 昵称无新增（连续 {_stall} 轮，当前 {_cur} 个），"
+                            f"提前结束滚动（第 {_round} 轮）")
+                        break
+                else:
+                    _stall = 0
+                _prev = _cur
+
                 # 平滑滚下一屏（一次一个 clientHeight，不跳到底）
                 moved = await self._page.evaluate(
                     "() => { const el = document.querySelector("
@@ -631,6 +656,32 @@ async def _startup() -> None:
     t = threading.Thread(target=container.run_keepalive, args=(stop_ev,), daemon=True)
     _state["keepalive_thread"] = t
     t.start()
+
+    # 2026-08-31：昵称缓存预热。
+    # 实测：BCC 冷启动首次 capture_userinfo 要 **152~162 秒**
+    #   （页面导航 + 首屏渲染 + 40 轮滚动触发全部 im/user/info），
+    #   而缓存热之后只要 **23 秒**。
+    # 更新会话的总耗时从 179s 里 BCC 独占 162s（90%），用户明确抱怨慢。
+    # 这里在启动后**后台**跑一次预热（不阻塞 BCC 启动、不影响接口可用性），
+    # 之后用户点「更新会话」时缓存已热，昵称捕获降到 20~30 秒。
+    def _prewarm():
+        import asyncio as _aio
+
+        # 等浏览器与登录态稳定（保活线程已启动）
+        threading.Event().wait(20)
+        try:
+            # BrowserContainer 在 start() 里存了自己的 loop（self._loop）
+            loop = getattr(container, "_loop", None)
+            if not loop:
+                return
+            fut = _aio.run_coroutine_threadsafe(
+                container.capture_userinfo_map(wait=15), loop)
+            data = fut.result(timeout=300)
+            logger.info(f"[bcc] 昵称缓存预热完成：{len(data)} 个")
+        except Exception as e:
+            logger.warning(f"[bcc] 昵称缓存预热失败（不影响功能）: {e}")
+
+    threading.Thread(target=_prewarm, daemon=True).start()
 
 
 @app.on_event("shutdown")

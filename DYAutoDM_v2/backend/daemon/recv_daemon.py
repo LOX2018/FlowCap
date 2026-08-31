@@ -498,6 +498,8 @@ class RecvChannel(threading.Thread):
                 content_json = json.loads(content) if content else {}
             except Exception:
                 content_json = {}
+            # 注：图片消息结构排查用的 WS 原始帧 dump 已移除（2026-08-31）。
+            # 排查方法已固化到知识库 08 §21.5，需要时按该节重建即可。
             text, extra = self._extract(content_json, msg_type)
             if text is None:
                 return

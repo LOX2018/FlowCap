@@ -304,6 +304,29 @@ input, select, textarea { font: inherit; color: inherit; }
 .msg .mtm { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); align-self: center; flex: none; }
 /* 系统提示：居中展示的小气泡，与左右对话气泡区分开 */
 .msg.sys { align-self: center; max-width: 84%; }
+
+/* 2026-08-31：抖音文本表情短代码转成 emoji 后的样式（略放大，便于识别） */
+.bubble .emoji {
+  font-size: 1.25em;
+  line-height: 1;
+  vertical-align: -0.1em;
+  font-style: normal;
+}
+
+/* 2026-08-31：撤回消息占位（抖音原文 "Recall Content Hided" 已在组件层
+   转换为「消息已撤回」，这里给它居中、弱化、斜体的系统提示样式） */
+.bubble.recalled {
+  align-self: center;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 5px 11px;
+  border-radius: 10px;
+  font-style: italic;
+  opacity: 0.85;
+}
+
 .msg.sys .bubble {
   background: var(--surface-2);
   border: 1px dashed var(--border);
@@ -320,6 +343,80 @@ input, select, textarea { font: inherit; color: inherit; }
 .medialink .mlabel { color: var(--muted); font-family: var(--font-mono); }
 .medialink a { color: var(--accent); text-decoration: underline; }
 .medialink .mhint { color: var(--muted); font-size: 11px; }
+
+/* ===== 图片缩略图（图床链接 / 内联 base64，可直接渲染）===== */
+.mediathumb { padding: 4px; background: transparent; }
+.mediathumb .thumbimg {
+  display: block;
+  max-width: 200px;
+  max-height: 260px;
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+  cursor: zoom-in;
+  background: var(--border);
+}
+.mediathumb .thumbimg:hover { opacity: 0.9; }
+.mediathumb .thumbbar { margin-top: 5px; font-size: 11.5px; }
+.mediathumb .thumbbar a { color: var(--accent); text-decoration: underline; }
+
+/* ===== 图片预览弹层 ===== */
+.imgviewer {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+.imgviewer .ivpanel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.imgviewer .ivhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.imgviewer .ivbody {
+  padding: 14px;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.imgviewer .ivimg {
+  max-width: 78vw;
+  max-height: 68vh;
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+}
+.imgviewer .ivhint {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.7;
+  text-align: center;
+  padding: 20px;
+}
+.imgviewer .ivfoot {
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.imgviewer .ivfoot a { color: var(--accent); text-decoration: underline; }
 .voice-bars { display: flex; align-items: center; gap: 2px; height: 18px; }
 .voice-bars i { width: 3px; background: currentColor; border-radius: 2px; opacity: .85; }
 .bubble .vdur { font-family: var(--font-mono); font-size: 12px; }

@@ -12,7 +12,7 @@
  *   - requestDm 不在 client.ts，用本地 interface + as unknown as 转换
  */
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import { Avatar, Pill, Dot, hue, nowHM } from "../components/ui";
 
@@ -112,39 +112,229 @@ function isSystemTip(text: string): boolean {
   return /^(你|对方)(已|正在|已确认)/.test(t);
 }
 
-/** 从文本里提取图片 URL（兼容 `[图片] url` 与裸 URL 两种存法） */
-function extractImageUrl(text: string): string {
-  const t = (text || "").trim();
-  const m = t.match(/https?:\/\/\S+/);
-  return m ? m[0] : "";
+/** 媒体消息的双 URL 结构（2026-08-30 实测落地） */
+type MediaInfo = {
+  /** 缩略图：data:image/webp;base64,...（inline_pic，可直接渲染）或远程 URL */
+  thumb: string;
+  /** 原图远程 URL（抖音私有加密，浏览器不可直接解码，仅用于跳转/后续截获） */
+  origin: string;
+  /** 缩略图是否为内嵌 data URI（true=可直接 <img> 渲染） */
+  inline: boolean;
+  /** 是否为表情包（抖音贴纸走公开 CDN，实测可直接渲染） */
+  isSticker?: boolean;
+};
+
+/**
+ * 2026-08-31：抖音文本表情短代码 -> emoji。
+ *
+ * 实测：抖音 IM 的 `[捂脸]`/`[流泪]` 等是**纯文本短代码**，
+ * 嵌在 message.text 里（如 "病例我没有[捂脸]"），**没有独立图片 URL**，
+ * 与真正的贴纸表情（stickers 数组，带 static_url）是两回事。
+ * 原样显示成 `[捂脸]` 观感差，这里映射成 emoji 提升可读性；
+ * 未收录的保持原样，不会丢信息。
+ */
+const EMOJI_MAP: Record<string, string> = {
+  捂脸: "😅", 流泪: "😢", 尬笑: "😅", 泪奔: "😭", 赞: "👍",
+  握手: "🤝", 抱抱你: "🤗", 尴尬流汗: "😓", 笑哭: "😂",
+  偷笑: "😏", 害羞: "😊", 爱心: "❤️", 玫瑰: "🌹",
+  强: "💪", ok: "👌", 耶: "✌️", 生气: "😠", 惊讶: "😮",
+  思考: "🤔", 困: "😴", 酷: "😎", 抠鼻: "🤨", 白眼: "🙄",
+};
+
+/** 把文本里的 [短代码] 替换为 emoji（未收录的保持原样） */
+function renderTextWithEmoji(s: string): React.ReactNode[] {
+  const parts = String(s || "").split(/(\[[^\[\]]{1,10}\])/g);
+  return parts.map((p, i) => {
+    const m = p.match(/^\[([^\[\]]{1,10})\]$/);
+    if (m && EMOJI_MAP[m[1]]) {
+      return (
+        <span key={i} className="emoji" title={m[1]}>
+          {EMOJI_MAP[m[1]]}
+        </span>
+      );
+    }
+    return <span key={i}>{p}</span>;
+  });
 }
 
-function MsgBubble({ m }: { m: Msg }) {
-  const url = extractImageUrl(m.text);
+/**
+ * 解析媒体消息文本 -> 缩略图 + 原图双 URL。
+ *
+ * 后端 `_extract_media_text` 输出形态（按行）：
+ *   [图片] data:image/webp;base64,<inline_pic>   ← 有内嵌缩略图时
+ *   [原图] https://...                            ← 可选，原图远程地址
+ * 或（无 inline_pic 的大图）：
+ *   [图片] https://...thumb.image?...
+ *   [原图] https://...origin...
+ *
+ * 实测依据：抖音 IM 图片消息体内嵌 inline_pic（标准 WebP base64，27/35 条可用，
+ * 平均 3.5KB），远程 URL（thumb/medium/large/origin 四组）**全部为私有加密格式**
+ * （熵 7.999/8.0，无标准图片魔数），浏览器无法解码，只能作跳转引用。
+ */
+function parseMedia(text: string): MediaInfo {
+  const lines = (text || "").split("\n");
+  let thumb = "";
+  let origin = "";
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (/^\[原图\]/.test(line)) {
+      origin = line.replace(/^\[原图\]\s*/, "").trim();
+      continue;
+    }
+    const m = line.match(/^\[(图片|表情包)\]\s*(.+)$/);
+    if (m && !thumb) {
+      thumb = m[2].trim();
+      continue;
+    }
+    // 裸 URL 兜底
+    if (!thumb) {
+      const u = line.match(/(data:image\/[\w+-]+;base64,\S+|https?:\/\/\S+)/);
+      if (u) thumb = u[1];
+    }
+  }
+  // 表情包标记：抖音贴纸表情走公开 CDN，实测可直接 <img> 渲染
+  // （HTTP 200，image/jpeg|png|gif，0.23~0.34s）；
+  // 而私信图片的 p*-sign.douyinpic.com 是私有加密，不可内嵌 —— 需区分。
+  const isSticker = /^\[表情包\]/.test((text || "").trim());
+  return {
+    thumb,
+    origin,
+    isSticker,
+    // 可直接 <img> 渲染的情形：
+    //   1) data: URI（内联 base64，私信图片缩略图的主要形态）
+    //   2) 图床公网链接（i.ibb.co / tucdn.wpon.cn，实测标准 image/webp）
+    //   3) 表情包 URL（贴纸走公开 CDN，实测可直连）
+    // 其余（抖音图片远程原图）为私有加密，不可内嵌。
+    inline:
+      /^data:image\//.test(thumb) ||
+      /^https?:\/\/i\.ibb\.co\//.test(thumb) ||
+      /^https?:\/\/tucdn\.wpon\.cn\//.test(thumb) ||
+      isSticker,
+  };
+}
+
+/** 原图预览弹层：点击缩略图后展示可放大的图 */
+function ImageViewer({
+  media,
+  onClose,
+}: {
+  media: MediaInfo | null;
+  onClose: () => void;
+}) {
+  if (!media) return null;
+  return (
+    <div className="imgviewer" onClick={onClose}>
+      <div className="ivpanel" onClick={(e) => e.stopPropagation()}>
+        <div className="ivhead">
+          <span>{media.inline ? "缩略图（点击链接可看原图）" : "图片"}</span>
+          <button className="btn sm ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+        <div className="ivbody">
+          {/* 2026-08-31 实测：抖音 IM 消息里的 inline_pic 本身就是缩略图
+              （典型 160×213），消息体内**不含全尺寸原图**；
+              resource_url 的远程链是私有加密（熵 7.999），浏览器解不开。
+              因此弹层只能放大显示已有的缩略图，真正的原图需 BCC 页面内截获
+              （方案 B，尚未实现）。此处如实标注，避免误导用户。 */}
+          {media.inline ? (
+            <img src={media.thumb} alt="预览" className="ivimg" />
+          ) : (
+            <div className="ivhint">
+              该图为抖音私有加密格式，无法在内嵌预览中显示。
+              <br />
+              请在浏览器中打开查看。
+            </div>
+          )}
+        </div>
+        <div className="ivfoot">
+          {media.inline && (
+            <span className="ivnote">
+              当前为抖音下发的缩略图（消息体内无全尺寸原图）
+            </span>
+          )}
+          {media.origin && (
+            <a href={media.origin} target="_blank" rel="noreferrer">
+              在抖音网页打开原图 ↗
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MsgBubble({
+  m,
+  onOpenImage,
+}: {
+  m: Msg;
+  onOpenImage?: (media: MediaInfo) => void;
+}) {
   const t = (m.text || "").trim();
+
+  // 2026-08-31：系统提示。抖音的打招呼卡片/推荐表情包（hint_text / hello_text）
+  // 此前被兜底成 "[未知媒体] {...JSON...}"，前端显示成一长串乱码。
+  // 后端已改为输出 "[系统提示] 文案"，这里居中弱化展示。
+  const sysM = t.match(/^\[系统提示\]\s*(.*)$/);
+  if (sysM) {
+    return <div className="bubble recalled">{sysM[1] || "系统提示"}</div>;
+  }
+
+  // 2026-08-31：撤回消息。抖音把已撤回的消息体替换成占位串
+  // 「Recall Content Hided」（英文原文，实测 5 条），直接展示会像乱码。
+  if (t === "Recall Content Hided" || t === "Recall Content Hidden") {
+    return <div className="bubble recalled">消息已撤回</div>;
+  }
+
   // 图片 / 表情包：文本形如「[图片] <url>」「[表情包] <url>」或裸 URL。
   // 只要识别出媒体标记 + URL 就渲染缩略图；历史数据只有「图片」二字
   // （URL 在旧版本解析时丢失）则给占位提示，需重新捕获才有图链。
   if (m.type === "image" || m.type === "sticker" || /^\[(图片|表情包)\]/.test(t) || /^\[?图片\]?$/.test(t)) {
     const label = /表情包/.test(t) ? "表情包" : "图片";
-    // 2026-08-29 实测：抖音 IM 图链是**私有加密格式**，HTTP 200 但返回的
-    // 字节流不含任何标准图片魔数（非 JPEG/PNG/WebP/GIF/HEIC），
-    // 浏览器 <img> 无法解码 -> 显示为报错图标。
-    // 故不能直接用 <img src>，降级为可点击链接 + 明确说明。
-    if (url) {
+    const media = parseMedia(m.text);
+
+    // 情况 1：有内联缩略图（inline_pic，标准 WebP base64）
+    //   -> 直接 <img> 渲染缩略图，点击弹出查看原图
+    if (media.inline) {
       return (
-        <div className="bubble medialink">
-          <span className="mlabel">[{label}]</span>
-          <a href={url} target="_blank" rel="noreferrer" title={url}>
-            点击查看原图
-          </a>
-          <span className="mhint">（抖音加密格式，不支持内嵌预览）</span>
+        <div className="bubble mediathumb">
+          <img
+            src={media.thumb}
+            alt={label}
+            className="thumbimg"
+            onClick={() => onOpenImage && onOpenImage(media)}
+          />
+          {media.origin && (
+            <div className="thumbbar">
+              <a href={media.origin} target="_blank" rel="noreferrer">
+                查看原图
+              </a>
+            </div>
+          )}
         </div>
       );
     }
+
+    // 情况 2：只有远程 URL（无 inline_pic 的大图，或历史数据）
+    //   实测远程 URL 全部为抖音私有加密格式，浏览器不可解码，
+    //   降级为可点击链接，不做 <img> 内嵌（会显示破损图标）。
+    //   2026-08-31：原文案「[图片] 点击查看（抖音加密格式，不支持内嵌预览）」
+    //   暴露内部实现细节且观感差，用户反馈为「污染数据」。改为简洁人话。
+    if (media.thumb) {
+      return (
+        <div className="bubble medialink">
+          <a href={media.thumb} target="_blank" rel="noreferrer" title={media.thumb}>
+            [{label}] 在抖音查看
+          </a>
+        </div>
+      );
+    }
+
     return <div className="bubble">[{label}]（无图链，需重新捕获）</div>;
   }
-  if (m.type === "text") return <div className="bubble">{m.text}</div>;
+  if (m.type === "text")
+    return <div className="bubble">{renderTextWithEmoji(m.text || "")}</div>;
   if (m.type === "voice")
     return (
       <div className="bubble">
@@ -206,6 +396,25 @@ export default function MessagesPage(props: PageProps) {
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  // 图片预览弹层（点击缩略图后展示）
+  const [viewer, setViewer] = useState<MediaInfo | null>(null);
+  // React Query 客户端：更新会话后用于失效所有缓存（避免显示已删除的旧数据）
+  const qc = useQueryClient();
+  // 2026-08-31：更新会话耗时 3~6 分钟，按钮显示实时耗时让用户知道还在跑
+  const [refreshElapsed, setRefreshElapsed] = useState(0);
+
+  // 2026-08-31：更新会话期间每秒累加耗时，让用户看到任务仍在推进
+  useEffect(() => {
+    if (!refreshing) {
+      setRefreshElapsed(0);
+      return;
+    }
+    const t = setInterval(
+      () => setRefreshElapsed((s) => s + 1),
+      1000,
+    );
+    return () => clearInterval(t);
+  }, [refreshing]);
 
   // 账号列表（读取 App 常驻轮询的共享缓存）
   const accountsQ = useQuery({
@@ -451,13 +660,18 @@ export default function MessagesPage(props: PageProps) {
               onClick={() => {
                 if (!activeAcct || refreshing) return;
                 setRefreshing(true);
-                push(`正在更新会话 · ${activeAcct} · 经 BCC 拉取会话列表与聊天记录…`);
+                // 长任务（3~6 分钟）：提示停留 12s，否则用户错过结果
+                push(
+                  `正在更新会话 · ${activeAcct} · 经 BCC 拉取会话列表与聊天记录…（约需 3~6 分钟）`,
+                  12000,
+                );
                 a.addLog("INFO", `更新会话开始 · ${activeAcct}`).catch(() => {});
                 a.refreshConversations(activeAcct, true)
                   .then((r) => {
                     if (r && r.ok) {
                       push(
                         `更新完成 · ${activeAcct} · 会话 ${r.n_conv} 个（消息 ${r.n_msg} 条）· 耗时 ${r.elapsed}s`,
+                        12000,
                       );
                       a.addLog(
                         "SUCCESS",
@@ -478,12 +692,17 @@ export default function MessagesPage(props: PageProps) {
                   })
                   .finally(() => {
                     setRefreshing(false);
-                    // 立即刷新会话列表，不必等 5s 轮询
+                    // 2026-08-31：更新会话后必须**失效**缓存，而不只是 refetch。
+                    // 实测：清空数据库后前端仍显示旧数据（React Query
+                    // staleTime 10~20s + WebView2 磁盘缓存），
+                    // 用户会看到已删除的污染数据和旧昵称。
+                    // 此处 invalidateQueries 强制丢弃旧缓存重新拉取。
+                    qc.invalidateQueries().catch(() => {});
                     convsQ.refetch().catch(() => {});
                   });
               }}
             >
-              {refreshing ? "更新中…" : "⟳ 更新会话"}
+              {refreshing ? `更新中… ${refreshElapsed}s` : "⟳ 更新会话"}
             </button>
             <button
               className="btn sm ghost"
@@ -576,7 +795,7 @@ export default function MessagesPage(props: PageProps) {
                 const sys = isSystemTip(m.text);
                 return (
                   <div className={"msg " + (sys ? "sys" : m.dir)} key={m.id}>
-                    <MsgBubble m={m} />
+                    <MsgBubble m={m} onOpenImage={setViewer} />
                     <span className="mtm">{m.mt}</span>
                   </div>
                 );
@@ -607,6 +826,7 @@ export default function MessagesPage(props: PageProps) {
           </div>
         </div>
       </div>
+      <ImageViewer media={viewer} onClose={() => setViewer(null)} />
     </div>
   );
 }

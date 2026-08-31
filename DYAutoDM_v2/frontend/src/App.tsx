@@ -222,10 +222,15 @@ export default function App() {
     }
   }, []);
 
-  const push = useCallback((msg: string) => {
+  // 2026-08-31 修复：长任务（更新会话耗时 3~6 分钟）的结果提示原本只显示 2.6s，
+  // 用户根本看不到运行结果。改为支持自定义停留时长，重要结果默认停留 12s。
+  const push = useCallback((msg: string, holdMs?: number) => {
     const id = ++cidRef.current;
     setToasts((ts) => [...ts.slice(-2), { id, msg }]);
-    setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), 2600);
+    setTimeout(
+      () => setToasts((ts) => ts.filter((x) => x.id !== id)),
+      holdMs ?? 2600,
+    );
   }, []);
 
   const goMsg = useCallback((name: string, text?: string) => {

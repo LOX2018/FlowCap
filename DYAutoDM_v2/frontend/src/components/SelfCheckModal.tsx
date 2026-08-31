@@ -36,7 +36,7 @@ export default function SelfCheckModal({
   items: SelfCheckItem[];
   loading: boolean;
   onClose: () => void;
-  push: (m: string) => void;
+  push: (m: string, holdMs?: number) => void;
 }) {
   if (!open) return null;
 
