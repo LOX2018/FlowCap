@@ -998,6 +998,27 @@ async def exec_js(body: ExecJsBody) -> dict:
         return {"ok": False, "msg": str(e), "result": None}
 
 
+@app.post("/wp_messages")
+async def wp_messages() -> dict:
+    """拉取 BCC 被动 hook 截到的 WP 通道私信事件（读后清空）。
+
+    2026-09-05 新增。事件来源：CAP_WP_MESSAGE_HOOK_JS 监听 chat 页的
+    im 相关 HTTP 响应与 WebSocket 帧，raw 推入 window.__CAP_WP_MESSAGE__.events。
+    后端 wp_recv 轮询本接口取回后统一解析。
+
+    风控边界：纯被动读取已截获的事件，不主动发起任何请求。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "events": [], "count": 0}
+    try:
+        events = await c.capture_wp_messages()
+        return {"ok": True, "msg": "", "events": events, "count": len(events)}
+    except Exception as e:
+        logger.warning(f"[bcc] /wp_messages 失败: {e}")
+        return {"ok": False, "msg": str(e), "events": [], "count": 0}
+
+
 @app.post("/scan_login")
 async def scan_login(body: ScanBody) -> dict:
     """扫码登录/刷新凭证。"""
