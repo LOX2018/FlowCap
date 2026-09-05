@@ -133,7 +133,11 @@ CAP_USERINFO_HOOK_JS = r"""
 # ---------------------------------------------------------------------------
 # WP 通道私信消息 hook（2026-09-05 新增）
 # 抖音网页版 douyin.com/chat 的私信收发会走两类请求：
-#   - HTTP: /aweme/v1/web/im/notice/get_message_by_init（全量会话 + 最近消息）
+#   - HTTP: imapi.douyin.com/v1/message/get_message_by_init（首包 250KB，全量会话）
+#           imapi.douyin.com/v1/message/get_by_conversation（cmd 301，逐会话历史）
+#           （2026-09-05 修正：原写 www.douyin.com/aweme/v1/web/... 是错的，
+#             实测 404 Unsupported path(Janus)；真实接口在 imapi.douyin.com，
+#             见知识库 08 §33.1 / §34.2）
 #   - WebSocket: 实时推送新私信
 # 这里被动 hook 这两类，把原始帧 raw 推入 window.__CAP_WP_MESSAGE__.events，
 # 由后端 wp_recv 轮询读取后统一解析（不在页面内解析，保持 hook 极简、低侵入）。
@@ -149,13 +153,25 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
       if (arr.length > 500) arr.splice(0, arr.length - 500); // 上限防爆
     } catch(e) {}
   };
+  // 2026-09-05 修正: 正则用 new RegExp(字符串) 构造。
+  // 曾经的 bug: 直接写正则字面量 /.../ 且跨行 -> JS 语法错误 ->
+  // 整个 init script 静默失败, window.__CAP_WP_MESSAGE__ 从未创建。
+  // 匹配 imapi.douyin.com 的真实私信接口（知识库 08 §33.1 实证,
+  // 不是 www.douyin.com/aweme/v1/web/... 那条, 后者实测 404 Janus）。
+  const IMAPI_RE = new RegExp(
+    '/(v1|v2)/.*(' +
+    ['get_message_by_init', 'get_by_conversation', 'get_user_message',
+     'get_info_list', 'mark_read', 'message/send', 'conversation/create',
+     'conversation/info'].join('|') +
+    ')'
+  );
   // ---- fetch hook ----
   const origFetch = window.fetch.bind(window);
   window.fetch = function(u, o) {
     const p = origFetch(u, o);
     try {
       const url = (typeof u === 'string') ? u : (u && u.url) || '';
-      if (/im\/(notice\/)?get_message_by_init|web\/im\/conversation|im\/message\/send/.test(url)) {
+      if (IMAPI_RE.test(url)) {
         p.then(r => r.clone().text().catch(()=>null)).then(t => {
           if (t) push('http', url, t.slice(0, 400000));
         }).catch(()=>{});
@@ -171,7 +187,7 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
     const ob = x.send; x.send = function(d){ return ob.call(x, d); };
     x.addEventListener('load', function(){
       try {
-        if (x.__u && /im\/(notice\/)?get_message_by_init|web\/im\/conversation|im\/message\/send/.test(x.__u)) {
+        if (x.__u && IMAPI_RE.test(x.__u)) {
           push('http', x.__u, (x.responseText || '').slice(0, 400000));
         }
       } catch(e) {}

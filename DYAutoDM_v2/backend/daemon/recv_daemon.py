@@ -868,6 +868,15 @@ async def send(body: SendBody) -> dict:
         return {"ok": False, "error": "账号 .env 路径缺失"}
     try:
         auth = DYLoginApi._load_auth_from_env(env_path)
+        # 2026-09-05 修复：.env 里的 cookie 会过期，导致 imapi 返回空/损坏响应
+        # （实测症状：响应用户解析失败 / Wire format was corrupt）。
+        # _pull_conversations_api 早已这么做了（知识库 07 §L66），
+        # 但 /send 漏了 → 用陈旧凭证发消息必失败。
+        # refresh_cookie_from_profile 从账号 profile（常驻浏览器持有）读实时 cookie。
+        try:
+            DYLoginApi.refresh_cookie_from_profile(auth, env_path)
+        except Exception as _e:
+            logger.warning(f"[recv][{body.account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
             auth, int(peer_id)
         )
