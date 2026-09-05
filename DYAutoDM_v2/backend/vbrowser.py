@@ -54,6 +54,202 @@ _CHROME_ARGS = [
     "--disable-sync",
 ]
 
+# ---------- 代理支持（2026-09-06 借鉴 OpenBrowser per-env proxy 设计）----------
+#
+# 每账号可在自己的 .env 里配置 DY_PROXY（如 DY_PROXY=http://user:pass@host:port），
+# vbrowser 启动该账号浏览器时自动注入 --proxy-server，并按需启用 WebRTC 防泄漏。
+# 未配置 DY_PROXY 时行为与之前完全一致（直连本机出口）。
+#
+# 配置格式（urlparse 解析）：
+#   http://host:port                          HTTP 代理
+#   http://user:pass@host:port                HTTP 代理 + 认证（Playwright 自动处理凭据弹窗）
+#   socks5://host:port                        SOCKS5 代理（不支持用户名密码认证，Chromium 限制）
+#
+# WebRTC 防泄漏（--enforce-webrtc-ip-handling-policy + --force-webrtc-ip-handling-policy）：
+#   有代理时默认关闭 WebRTC 的非代理 UDP（default_public_interface_only 级策略），
+#   防止 STUN 探测经本机网卡暴露真实 IP（即使流量已走代理）。未配代理时不注入。
+
+_PROXY_BUILTIN_BYPASS = "localhost;127.0.0.1;<local>"
+
+
+def parse_proxy_env(env_path):
+    """读账号 .env 的 DY_PROXY 值，校验格式，返回 (proxy_url or None, err or None)。
+
+    铁律：只读这一行，绝不解析/回传 .env 里其他凭证字段（DY_COOKIES 等）。
+    格式非法时返回 (None, 原因)——调用方记 warning 后按无代理继续（不阻断启动），
+    与"代理配置错误不应导致账号完全不可用"的容错策略一致。
+    """
+    try:
+        if not env_path or not os.path.isfile(env_path):
+            return None, None  # 无 .env 不算错（静默无代理）
+        from urllib.parse import urlparse
+        val = None
+        with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("DY_PROXY="):
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        if not val:
+            return None, None
+        u = urlparse(val)
+        if u.scheme not in ("http", "https", "socks5", "socks4") or not u.hostname or not u.port:
+            return None, f"DY_PROXY 格式非法: {val}（应为 http[s]://[user:pass@]host:port 或 socks5://host:port）"
+        return val, None
+    except Exception as e:
+        return None, f"DY_PROXY 读取失败: {e}"
+
+
+def _proxy_launch_args(proxy_url):
+    """WebRTC 防泄漏启动参数（--proxy-server 本身由 Playwright proxy= 参数注入，勿重复）。"""
+    return [
+        # WebRTC 防泄漏：限制非代理 UDP，防 STUN 经本机网卡暴露真实 IP
+        "--enforce-webrtc-ip-handling-policy",
+        "--force-webrtc-ip-handling-policy=default_public_interface_only",
+    ]
+
+
+def _playwright_proxy_param(proxy_url):
+    """把 DY_PROXY URL 转成 Playwright launch(proxy=) 参数（自动处理 407 认证）。
+
+    返回 dict 或 None。SOCKS 代理不支持用户名密码认证（Chromium 限制），凭据被忽略。
+    """
+    from urllib.parse import urlparse
+    if not proxy_url:
+        return None
+    u = urlparse(proxy_url)
+    scheme = u.scheme or "http"
+    server = f"{scheme}://{u.hostname}:{u.port}"
+    d = {"server": server, "bypass": "localhost,127.0.0.1"}
+    if scheme.startswith("http") and u.username:
+        d["username"] = u.username
+        d["password"] = u.password or ""
+    return d
+
+
+def _proxy_credentials(proxy_url):
+    """从代理 URL 提取 (username, password)；无认证返回 None。仅 http(s) 代理支持。"""
+    from urllib.parse import urlparse
+    u = urlparse(proxy_url)
+    if u.username:
+        return u.username, u.password or ""
+    return None
+
+
+# 出口 IP 校验接口（借鉴 OpenBrowser egress check）。依次尝试，谁先返回 200 用谁。
+# ipify 稳定无风控；抖音自回显仅作兜底（走的是同一浏览器网络栈，失败不影响主链路）。
+_EGRESS_IP_ENDPOINTS = [
+    ("https://api.ipify.org?format=json", lambda d: (d or {}).get("ip")),
+    ("https://httpbin.org/ip", lambda d: (d or {}).get("origin")),
+]
+
+
+async def check_egress_ip(context, proxy_url, timeout_ms=15000):
+    """在已启动的指纹浏览器 context 里开临时页校验出口 IP（借鉴 OpenBrowser egress check）。
+
+    返回 {"ok": bool, "egress_ip": str|None, "expected_ip": str|None, "reason": str}。
+    仅校验并记日志，绝不抛异常阻断启动——代理检测失败不应让账号不可用。
+    预期 IP 解析：代理 URL 的 hostname 本身是 IP 时直接比对；是域名时不做 DNS 解析
+    （backend 无代理解析能力，解析结果不可信），只记录"域名型代理"跳过精确比对。
+    """
+    import re as _re
+    from urllib.parse import urlparse
+
+    out = {"ok": False, "egress_ip": None, "expected_ip": None, "reason": ""}
+    try:
+        expected = None
+        host = urlparse(proxy_url).hostname or ""
+        if _re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+            expected = host
+        out["expected_ip"] = expected
+
+        page = await context.new_page()
+        ip = None
+        try:
+            for url, extractor in _EGRESS_IP_ENDPOINTS:
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    data = await page.evaluate("() => { try { return JSON.parse(document.body.innerText) } catch { return null } }")
+                    ip = extractor(data)
+                    if ip:
+                        break
+                except Exception:
+                    continue
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+        out["egress_ip"] = ip
+        if not ip:
+            out["reason"] = "出口 IP 探测接口全部超时/失败（不影响浏览器使用）"
+        elif expected and ip != expected:
+            out["reason"] = f"出口 IP({ip}) 与代理 IP({expected}) 不一致——代理可能未生效或为转发型代理"
+        elif expected:
+            out["ok"] = True
+            out["reason"] = "出口 IP 与代理 IP 一致"
+        else:
+            # 域名型代理：无法在本地比对，探到出口 IP 即视为代理生效（直连时该接口也可达，此项仅供参考）
+            out["ok"] = True
+            out["reason"] = f"域名型代理，出口 IP={ip}（无法精确比对，仅供参考）"
+    except Exception as e:
+        out["reason"] = f"出口 IP 校验异常: {e}"
+    return out
+
+
+def _env_path_of_account(account):
+    """由账号名找 .env 路径（避免 vbrowser 反向 import accounts 造成循环导入）。"""
+    try:
+        root = app_root()
+        cand = os.path.join(root, "auto_dm", "accounts", account, ".env")
+        if os.path.isfile(cand):
+            return cand
+    except Exception:
+        pass
+    return None
+
+
+def _launch_args_with_proxy(cfg, account=None):
+    """合并 _CHROME_ARGS + 账号级 WebRTC 防泄漏参数，并解析代理 URL。
+
+    返回 (args, proxy_url, pw_proxy)：
+      args     —— 传给 launch_persistent_context 的 args；
+      proxy_url —— 账号 DY_PROXY 原始值（None=无代理）；
+      pw_proxy —— Playwright proxy= 参数 dict（None=无代理）。
+    account 传入时读该账号 .env 的 DY_PROXY；未传时看全局 cfg.DY_PROXY 兜底。
+    """
+    args = list(_CHROME_ARGS)
+    proxy_url = None
+    if account:
+        env_path = _env_path_of_account(account)
+        if env_path:
+            proxy_url, err = parse_proxy_env(env_path)
+            if err:
+                logger.warning(f"[vbrowser] 账号 {account} {err}（按无代理继续）")
+    else:
+        # 兼容：调用方未传 account 时看全局 cfg.DY_PROXY（可全局兜底配置）
+        proxy_url = (getattr(cfg, "DY_PROXY", "") or "").strip() or None
+    pw_proxy = None
+    if proxy_url:
+        args += _proxy_launch_args(proxy_url)
+        pw_proxy = _playwright_proxy_param(proxy_url)
+        logger.info(f"[vbrowser] 已启用账号代理: {_mask_proxy(proxy_url)}")
+    return args, proxy_url, pw_proxy
+
+
+def _mask_proxy(proxy_url):
+    """日志用代理地址脱敏：隐藏用户名密码。"""
+    from urllib.parse import urlparse, urlunparse
+    try:
+        u = urlparse(proxy_url)
+        if u.username or u.password:
+            netloc = f"***:***@{u.hostname}:{u.port}"
+            return urlunparse((u.scheme, netloc, u.path, u.params, u.query, u.fragment))
+        return proxy_url
+    except Exception:
+        return "***"
+
 
 def app_root():
     """应用根目录（持久化数据基准）：
@@ -161,12 +357,15 @@ def is_vb_available(api_base="http://localhost:9000", timeout=3):
 
 # ---------- 统一启动入口（被 3 处浏览器使用点调用）----------
 
-async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=False):
+async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=False, account=None):
     """异步启动指纹内核，返回 (playwright, browser, context, backend)。
 
     backend 用于调用方决定收尾时是否关闭 context：
       - "exe" 模式：context 由我们 launch 出来，结束时需关闭（与原生 Playwright 一致）；
       - "cdp" 模式：context 由外部客户端管理，不应主动关闭。
+
+    account 传入账号名时，读该账号 .env 的 DY_PROXY 注入代理 + WebRTC 防泄漏
+    （借鉴 OpenBrowser per-env proxy）；未配置则与原行为完全一致。
 
     单 profile 铁律（2026-08-17 修订）：
       - 每个账号只有【一个】固定持久化 profile 目录，由调用方显式传入
@@ -199,12 +398,14 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             logger.info(f"[vbrowser] 强制重扫模式：复用固定 profile（不新建临时目录、不清空）: {user_data_dir}")
         else:
             logger.info(f"[vbrowser] 复用固定 profile: {user_data_dir}")
+        launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
             headless=headless,
-            args=_CHROME_ARGS,
+            args=launch_args,
+            proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
@@ -232,8 +433,11 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
     return p, browser, context, "cdp"
 
 
-def launch_sync(mode, cfg, headless=False, user_data_dir=None):
-    """同步版启动指纹内核，返回 (playwright, browser, context, backend)。"""
+def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
+    """同步版启动指纹内核，返回 (playwright, browser, context, backend)。
+
+    account 参数语义同 launch_async（读账号 .env DY_PROXY 注入代理）。
+    """
     from playwright.sync_api import sync_playwright
 
     if mode == "exe":
@@ -249,12 +453,14 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
             raise RuntimeError(
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
+        launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
             headless=headless,
-            args=_CHROME_ARGS,
+            args=launch_args,
+            proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
@@ -274,8 +480,11 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None):
     return p, browser, context, "cdp"
 
 
-async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.com/"):
+async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.com/", account=None):
     """单纯拉起指纹浏览器并打开指定页面（默认抖音主页）。
+
+    account 传入账号名时读该账号 .env DY_PROXY 注入代理（查看模式同样走代理，
+    与守护/重扫保持同一出口环境，避免同账号不同出口触发风控）。
 
     与扫码登录（get_login_auth/force=True）是两条完全不同的路径：
       - 本函数【不扫码、不抓凭证、不写回 .env】，只是“打开浏览器看一眼”；
@@ -295,12 +504,14 @@ async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.
                 f"[vbrowser] 指纹浏览器内核不存在: {exe}（已禁用原生 Playwright，不会回退）。"
                 f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         logger.info(f"[vbrowser] 打开指纹浏览器(查看模式) 内核={exe} profile={profile_dir}")
+        launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(_CFG, account=account)
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=profile_dir,
             executable_path=exe,
             headless=headless,
-            args=_CHROME_ARGS,
+            args=launch_args,
+            proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],

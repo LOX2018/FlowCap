@@ -269,7 +269,8 @@ class BrowserContainer:
         # im/user/info）经实机验证（有头/无头均 44/44）无头完全可行，且零窗口更稳。
         # 扫码登录走独立 get_login_auth(headless=False)，需可见 UI，不在此处。
         self._pw, self._browser, self._context, self._backend = await launch_async(
-            _vb_mode, _cfg, headless=True, user_data_dir=self._profile_dir, force=False)
+            _vb_mode, _cfg, headless=True, user_data_dir=self._profile_dir, force=False,
+            account=self.account)
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         # V16 踩坑：add_init_script 必须在 goto 前注入，否则前端已发完 im/user/info 再注入就截不到
         await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
@@ -844,9 +845,18 @@ class BrowserContainer:
         return None
 
     async def refresh_cookie_to_env(self) -> dict:
-        """读实时 cookie，写回 .env。返回 {ok, cookie_count, sessionid?}。"""
+        """读实时 cookie，写回 .env。返回 {ok, cookie_count, sessionid?}。
+
+        2026-09-06 P0 修复（知识库 08 §24.9 uid 轮换事故）：写回前先校验
+        新 cookie 的身份一致性 —— 用新 cookie 做 uid 探活，与 .env 既有 uid
+        （self._last_uid / .env 中 conv_id 归属）比对：
+          - 探活失败（拿不到 uid）→ 拒绝写入，保住 .env 里最后一份好凭证；
+          - uid 与上次不一致（漂移）→ 拒绝写入并告警（疑似登录态被替换/轮换）。
+        仅探活成功且 uid 一致才允许覆盖，避免好凭证被坏凭证冲掉。
+        """
         from auto_dm import accounts as _acc
         from dy_apis.login_api import DYLoginApi
+        from dy_apis.douyin_api import DouyinAPI
         env_path = _acc.env_path_of(self.account)
         if not env_path:
             return {"ok": False, "msg": "账号 .env 未登记"}
@@ -855,6 +865,31 @@ class BrowserContainer:
         cks = await self.get_cookies()
         if not (cks.get("sessionid") or cks.get("sid_tt")):
             return {"ok": False, "msg": "profile 内无登录态"}
+
+        # ---- P0 门禁 1：新 cookie 必须能探活出 uid（登录态有效的基本判据）----
+        probe_auth = DYLoginApi._load_auth_from_env(env_path)
+        probe_auth.cookie = cks
+        probe_auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
+        probe_auth.uid = None  # 强制走网络探活，不吃缓存
+        try:
+            new_uid = DouyinAPI.get_my_uid(probe_auth)
+        except Exception:
+            new_uid = None
+        if not new_uid:
+            logger.warning(
+                f"[bcc] 拒绝写入 .env：新 cookie 探活失败（无 uid），"
+                f"保留既有凭证。疑似 profile 登录态失效，请重新扫码。")
+            return {"ok": False, "msg": "新 cookie 探活失败（登录态无效），已保留原凭证"}
+
+        # ---- P0 门禁 2：uid 与既有值一致性（漂移 = 身份被替换/轮换）----
+        old_uid = getattr(self, "_last_uid", None)
+        if old_uid and str(old_uid) != str(new_uid):
+            logger.error(
+                f"[bcc] 拒绝写入 .env：uid 漂移！old={old_uid} new={new_uid}。"
+                f"疑似账号身份被轮换/替换，保留既有凭证并告警。")
+            return {"ok": False,
+                    "msg": f"uid 漂移({old_uid}→{new_uid})，已保留原凭证，请重新扫码确认"}
+
         auth.cookie = cks
         auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
         try:
@@ -862,20 +897,41 @@ class BrowserContainer:
         except Exception as e:
             logger.warning(f"[bcc] 写回 .env 失败: {e}")
         self._last_refresh = time.time()
-        return {"ok": True, "cookie_count": len(cks),
+        self._last_uid = new_uid
+        return {"ok": True, "cookie_count": len(cks), "uid": str(new_uid),
                 "sessionid": cks.get("sessionid", "")[:12],
                 "cookies": "; ".join(f"{k}={v}" for k, v in cks.items()),
                 "cookie_dict": cks}
 
     def run_keepalive(self, stop_ev: threading.Event, interval: int = 300) -> None:
-        """每 interval 秒探活一次；uid 探活失败时调 scan_login 刷新。"""
+        """每 interval 秒探活一次；uid 探活失败或漂移时触发刷新/告警。
+
+        2026-09-06 P0 修复（知识库 08 §24.9 uid 轮换事故）：不再只判
+        "能拿到 uid = 正常"。uid 与上次比对，漂移视为凭证异常
+        （疑似身份被轮换/替换），记 error 并触发 scan_login 重扫，
+        而非打"登录态正常"绿标。
+        """
         logger.info(f"[bcc] 保活心跳启动，间隔 {interval}s")
         while not stop_ev.is_set():
             if stop_ev.wait(interval):
                 break
             try:
                 uid = self._load_uid_from_env()
-                if uid:
+                prev_uid = getattr(self, "_last_uid", None)
+                if uid and prev_uid and str(uid) != str(prev_uid):
+                    # uid 漂移：身份被替换/轮换，凭证不可信
+                    logger.error(
+                        f"[bcc] uid 漂移！old={prev_uid} new={uid}，"
+                        f"凭证身份存疑，触发自动刷新…")
+                    self._last_uid = uid  # 记录新值，后续漂移检测以新值为基线
+                    if self._loop:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            self.scan_login(force=False), self._loop)
+                        try:
+                            fut.result(timeout=120)
+                        except Exception as e:
+                            logger.warning(f"[bcc] uid 漂移后自动刷新失败: {e}")
+                elif uid:
                     self._last_uid = uid
                     logger.debug(f"[bcc] 登录态正常(uid={uid})")
                 else:

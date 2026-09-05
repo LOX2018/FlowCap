@@ -6,4 +6,6 @@ from vbrowser import (  # noqa: F401
     app_root,
     open_douyin_home,
     init_vb_config,
+    parse_proxy_env,
+    check_egress_ip,
 )

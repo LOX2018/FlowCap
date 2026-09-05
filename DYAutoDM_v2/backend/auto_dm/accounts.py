@@ -249,11 +249,44 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 uid = None
             if uid:
                 result["uid"] = uid
+            # 2026-09-06 P1 修复（知识库 08 §24.9 uid 轮换事故）：
+            # uid 与 DB 历史会话 uid 交叉验证 —— conv_id 格式
+            # `0:1:<uid_a>:<uid_b>`，该账号历史 conv_id 里必然包含其真实 uid。
+            # 若本次探活 uid 从未出现在历史 conv_id 中，说明身份已漂移/轮换，
+            # Web 接口认新 uid 但 imapi 会话体系仍挂老 uid（本次事故实证），
+            # 凭证不可信。仅在该账号 DB 里已有历史会话时才比对（新账号跳过）。
+            _uid_mismatch = False
+            if uid:
+                try:
+                    from database import get_db
+                    _conn = get_db()
+                    _rows = _conn.execute(
+                        "SELECT conv_id FROM dm_conversations WHERE account=?",
+                        (name,)).fetchall()
+                    if _rows:
+                        _uid_s = str(uid)
+                        _uid_mismatch = not any(
+                            _uid_s in str(r[0]).split(":") for r in _rows)
+                        if _uid_mismatch:
+                            logger.error(
+                                f"[verify] 账号 {name} uid 漂移：探活 uid={uid} "
+                                f"不存在于该账号 {len(_rows)} 条历史会话中，"
+                                f"凭证身份存疑（疑似身份被轮换/替换）。")
+                except Exception as _e:
+                    logger.debug(f"[verify] uid 交叉验证跳过（DB 不可用）: {_e}")
             # 检查 wp 引擎“捕获”的关键签名：web_protect/keys 四件套是否齐全
             _has_sign = bool(auth.ticket and auth.ts_sign and auth.client_cert
                              and auth.private_key and (getattr(auth, "web_protect_str", None)
                                                        or getattr(auth, "ree_public_key", None)))
-            if uid and _has_sign:
+            if uid and _has_sign and _uid_mismatch:
+                result["wp"] = {
+                    "level": "fail",
+                    "label": "uid 漂移（身份存疑）",
+                    "detail": f"探活 uid={uid} 与该账号历史会话 uid 不一致——"
+                              f"疑似登录身份被轮换/替换，imapi 会话体系仍挂老 uid，"
+                              f"私信收发将全部失败。请重新扫码登录该账号。",
+                }
+            elif uid and _has_sign:
                 result["wp"] = {
                     "level": "ok",
                     "label": "正常（捕获齐全）",
