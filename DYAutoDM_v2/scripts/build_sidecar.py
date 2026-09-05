@@ -78,6 +78,12 @@ def build_one(entry: str, name: str) -> None:
         "--clean", "--noconfirm",
     ]
     cmd += _runtime_resources()
+    # 2026-09-05：wp_recv 是 main.py 里 asyncio 动态导入的模块
+    # （from daemon.wp_recv import run_wp_recv_loop 写在 lifespan 内部），
+    # PyInstaller 静态分析扫不到，必须显式 hidden-import，
+    # 否则打包后 WP 通道启动失败（ModuleNotFoundError）。
+    if entry == "main.py":
+        cmd += ["--hidden-import", "daemon.wp_recv"]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))
