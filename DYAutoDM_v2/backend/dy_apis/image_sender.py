@@ -216,7 +216,8 @@ def get_upload_config(auth) -> dict:
     data = resp.json()
     if data.get("status_code") not in (0, None):
         raise RuntimeError(f"upload/config 业务错误: {data}")
-    cfg = data.get("public_image_config_v2") or data.get("public_image_config") or {}
+    cfg = (data.get("public_image_config")
+           or data.get("public_image_config_v2") or {})
     if not cfg.get("access_key_id"):
         raise RuntimeError(f"upload/config 响应缺少凭证字段: {list(data.keys())}")
     return {
@@ -245,13 +246,12 @@ def apply_upload(auth, cfg: dict, file_size: int) -> dict:
         "Version": "2020-11-19",
         "NeedFallback": "true",
     }
-    # 签名用字典序 canonical query
+    # 签名用字典序 canonical query；实际 URL 必须与签名 query 完全一致（SigV4 要求）
     canonical_query = "&".join(
         f"{_uri_encode(k)}={_uri_encode(v)}" for k, v in sorted(params.items()))
     authorization = _aws4_get_authorization(
         cfg["sk"], canonical_query, amz_date, cfg["st"], date_stamp, cfg["ak"])
-    # 实际 URL 按开源 SDK 的插入顺序拼接
-    url = _VOD_HOST + "/?" + "&".join(f"{k}={v}" for k, v in params.items())
+    url = _VOD_HOST + "/?" + canonical_query
     headers = {
         "Accept": "*/*",
         "Authorization": authorization,
@@ -301,7 +301,8 @@ def upload_to_tos(addr: dict, data: bytes) -> None:
     if not host:
         raise RuntimeError("TOS 直传缺 UploadHost")
     url = f"https://{host}/upload/v1/{addr['store_uri']}"
-    crc32 = f"{hashlib.crc32(data) & 0xFFFFFFFF:08x}"
+    import zlib
+    crc32 = f"{zlib.crc32(data) & 0xFFFFFFFF:08x}"
     headers = {
         "accept": "*/*",
         "authorization": addr["auth_token"],
