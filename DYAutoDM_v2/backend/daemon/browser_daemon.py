@@ -130,6 +130,78 @@ CAP_USERINFO_HOOK_JS = r"""
 })()
 """
 
+# ---------------------------------------------------------------------------
+# WP 通道私信消息 hook（2026-09-05 新增）
+# 抖音网页版 douyin.com/chat 的私信收发会走两类请求：
+#   - HTTP: /aweme/v1/web/im/notice/get_message_by_init（全量会话 + 最近消息）
+#   - WebSocket: 实时推送新私信
+# 这里被动 hook 这两类，把原始帧 raw 推入 window.__CAP_WP_MESSAGE__.events，
+# 由后端 wp_recv 轮询读取后统一解析（不在页面内解析，保持 hook 极简、低侵入）。
+# 风控边界：纯被动监听，绝不主动发请求、绝不遍历用户信息（昵称红线 08 §13）。
+CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
+  if (window.__CAP_WP_MESSAGE__) return 'already';
+  window.__CAP_WP_MESSAGE__ = { events: [] };
+  const push = (kind, url, body) => {
+    try {
+      const ev = { kind, url, body, ts: Date.now() };
+      const arr = window.__CAP_WP_MESSAGE__.events;
+      arr.push(ev);
+      if (arr.length > 500) arr.splice(0, arr.length - 500); // 上限防爆
+    } catch(e) {}
+  };
+  // ---- fetch hook ----
+  const origFetch = window.fetch.bind(window);
+  window.fetch = function(u, o) {
+    const p = origFetch(u, o);
+    try {
+      const url = (typeof u === 'string') ? u : (u && u.url) || '';
+      if (/im\/(notice\/)?get_message_by_init|web\/im\/conversation|im\/message\/send/.test(url)) {
+        p.then(r => r.clone().text().catch(()=>null)).then(t => {
+          if (t) push('http', url, t.slice(0, 400000));
+        }).catch(()=>{});
+      }
+    } catch(e) {}
+    return p;
+  };
+  // ---- XMLHttpRequest hook ----
+  const origXHR = window.XMLHttpRequest;
+  window.XMLHttpRequest = function() {
+    const x = new origXHR();
+    const o = x.open; x.open = function(m, u, ...r){ x.__u = u; x.__m = m; return o.call(x, m, u, ...r); };
+    const ob = x.send; x.send = function(d){ return ob.call(x, d); };
+    x.addEventListener('load', function(){
+      try {
+        if (x.__u && /im\/(notice\/)?get_message_by_init|web\/im\/conversation|im\/message\/send/.test(x.__u)) {
+          push('http', x.__u, (x.responseText || '').slice(0, 400000));
+        }
+      } catch(e) {}
+    });
+    return x;
+  };
+  // ---- WebSocket hook（双向：send 发出 + message 收进）----
+  const OrigWS = window.WebSocket;
+  window.WebSocket = function(u, p) {
+    const ws = (typeof p === 'string') ? new OrigWS(u, p) : new OrigWS(u);
+    const origAdd = ws.addEventListener.bind(ws);
+    ws.addEventListener = function(ev, cb) {
+      if (ev === 'message') {
+        return origAdd(ev, (e) => {
+          try {
+            const d = typeof e.data === 'string' ? e.data : '<binary>';
+            if (/im|message|conversation/i.test(d)) push('ws', String(u), d.slice(0, 400000));
+          } catch(e2) {}
+          return cb(e);
+        });
+      }
+      return origAdd(ev, cb);
+    };
+    return ws;
+  };
+  return 'captured';
+})()
+"""
+
+
 
 class BrowserContainer:
     """常驻持有该账号 profile 的唯一 Playwright context。
@@ -185,6 +257,7 @@ class BrowserContainer:
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         # V16 踩坑：add_init_script 必须在 goto 前注入，否则前端已发完 im/user/info 再注入就截不到
         await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
+        await self._context.add_init_script(CAP_WP_MESSAGE_HOOK_JS)  # 2026-09-05 WP
         # 直接打开 chat 页（前端才会自发调 im/user/info）
         try:
             await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=20000)
@@ -532,6 +605,36 @@ class BrowserContainer:
                     f"总耗时 {_time.time() - _t0 + wait:.1f}s（已缓存）")
             return cap
         return await self._exec(_do)
+
+    async def capture_wp_messages(self) -> list[dict]:
+        """读取 BCC hook 截到的 WP 通道私信事件（读后清空）。
+
+        2026-09-05 新增。CAP_WP_MESSAGE_HOOK_JS 已被动把 HTTP 响应 / WS 帧
+        raw 推入 window.__CAP_WP_MESSAGE__.events，这里取回并清空，
+        由后端 wp_recv 统一解析（页面内不做解析，保持 hook 极简）。
+
+        返回 [{kind: 'http'|'ws', url, body, ts}, ...]。
+        """
+        async def _do():
+            if "/chat" not in (self._page.url or ""):
+                await self._page.goto("https://www.douyin.com/chat?isPopup=1",
+                                       wait_until="domcontentloaded", timeout=25000)
+                await self._page.wait_for_timeout(2000)
+            try:
+                evs = await self._page.evaluate(
+                    "() => window.__CAP_WP_MESSAGE__ ? window.__CAP_WP_MESSAGE__.events : []")
+                # 取回后立即清空，避免下次重复处理
+                await self._page.evaluate(
+                    "() => { if (window.__CAP_WP_MESSAGE__) window.__CAP_WP_MESSAGE__.events = []; }")
+            except Exception as e:
+                logger.warning(f"[bcc] 读 wp message 失败: {e}")
+                return []
+            evs = evs or []
+            if evs:
+                logger.info(f"[bcc] 取回 WP 私信事件 {len(evs)} 条")
+            return evs
+        return await self._exec(_do)
+
 
     async def resolve_url(self, url: str) -> dict:
         """浏览器打开链接 → 跟随跳转 → 抠 live_id（替代 link_resolve._browser_resolve）。
