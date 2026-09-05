@@ -465,6 +465,76 @@ class BrowserContainer:
 
         return await self._exec(_do)
 
+    async def wp_send_text(self, conv_id: str, text: str, timeout: int = 30) -> dict:
+        """在 chat 页上下文里发文本私信（WP 通道发送）。
+
+        2026-09-05 新增。与 WS 通道（DouyinAPI.send_msg）并存。
+
+        实现策略 —— **探测优先**：
+        抖音 chat 页把 IM SDK 挂在某个全局对象上，但具体名字/方法签名
+        未文档化且会随前端发版变化。这里按候选顺序尝试调用，
+        全部失败时返回页面里所有疑似 IM 全局对象的清单，
+        供人工在 DevTools 里确认真实调用方式（见计划 Task 6.5）。
+
+        风控说明：发送是用户主动触发的单次操作，不是批量行为，
+        且复用页面已有登录态，不额外登录、不遍历用户信息。
+        
+        返回 {"ok": bool, "via": str, "result": ...} / {"ok": False, "candidates": [...]}
+        """
+        import json as _json
+
+        js = r"""
+        async (args) => {
+          const convId = args.conv_id;
+          const text = args.text;
+          const found = [];
+          // 先扫描全局对象，收集疑似 IM SDK（无论调用成功与否都返回，便于排查）
+          for (const k of Object.keys(window)) {
+            if (/im|chat|message|conversation/i.test(k)) {
+              try {
+                const v = window[k];
+                if (v && typeof v === 'object') {
+                  const methods = Object.keys(v).filter(m => typeof v[m] === 'function');
+                  const sendish = methods.filter(m => /send|create|post/i.test(m));
+                  if (sendish.length) found.push({ obj: k, sendMethods: sendish.slice(0, 20) });
+                }
+              } catch(e) {}
+            }
+          }
+          // 候选调用：常见命名 + 常见签名，逐个尝试
+          const candidates = [
+            ['webImService', (s) => s.sendText({conversation_id: convId, text: text})],
+            ['webImService', (s) => s.sendText(convId, text)],
+            ['DY_IM',        (s) => s.sendText({conversation_id: convId, text: text})],
+            ['__IM_SDK__',   (s) => s.sendText(convId, text)],
+            ['imSdk',        (s) => s.sendText({conversation_id: convId, text: text})],
+          ];
+          for (const [name, fn] of candidates) {
+            const sdk = window[name];
+            if (!sdk) continue;
+            try {
+              const r = await fn(sdk);
+              if (r) return { ok: true, via: name, result: r, candidates: found };
+            } catch(e) {
+              return { ok: false, via: name, error: String(e), candidates: found };
+            }
+          }
+          return {
+            ok: false,
+            error: '未找到可用的 IM SDK 发送方法（需 Task 6.5 实测确认）',
+            candidates: found
+          };
+        }
+        """
+        try:
+            res = await self.exec_js(js, arg={"conv_id": conv_id, "text": text},
+                                     timeout=timeout)
+            return res if isinstance(res, dict) else {"ok": False, "result": res}
+        except Exception as e:
+            logger.warning(f"[bcc] wp_send_text 失败: {e}")
+            return {"ok": False, "error": str(e)}
+
+
     async def capture_userinfo_map(self, wait: int = 15) -> dict:
         """被动 hook 截前端自己发的 im/user/info 响应（零主动请求、零风控）。
 
@@ -1017,6 +1087,30 @@ async def wp_messages() -> dict:
     except Exception as e:
         logger.warning(f"[bcc] /wp_messages 失败: {e}")
         return {"ok": False, "msg": str(e), "events": [], "count": 0}
+
+
+class WpSendBody(BaseModel):
+    account: str
+    conv_id: str
+    text: str
+
+
+@app.post("/wp_send")
+async def wp_send(body: WpSendBody) -> dict:
+    """WP 通道发送文本私信（调 chat 页 IM SDK）。
+
+    2026-09-05 新增。与 WS 通道（recv_daemon /send）并存，
+    由后端 api/messages.py 的 channel 字段路由过来。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "result": None}
+    try:
+        res = await c.wp_send_text(body.conv_id, body.text)
+        return {"ok": res.get("ok", False), "msg": res.get("error", ""), "result": res}
+    except Exception as e:
+        logger.warning(f"[bcc] /wp_send 失败: {e}")
+        return {"ok": False, "msg": str(e), "result": None}
 
 
 @app.post("/scan_login")
