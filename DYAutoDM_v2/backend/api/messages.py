@@ -357,6 +357,9 @@ async def get_conversation(account: str, conv_id: str):
                 "time": _fmt_ts(m["ts"]),  # 2026-09-05:改为完整时间,前端做日期分割线
                 "msg_id": msg_id,
                 "image_url": image_url,  # 前端 <img src> 直接用,None 则降级到缩略图
+                # 2026-09-05 新增：消息来源通道。
+                # wp_recv 落库时写 extra.source="wp"；WS 通道无该字段 → 兜底 "ws"。
+                "source": ex.get("source") or "ws",
             })
         # 字段同时给两套命名,兼容前端不同消费点:
         #   role/msg_type —— 后端原生命名
