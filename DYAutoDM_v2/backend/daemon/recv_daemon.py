@@ -846,6 +846,14 @@ class SendBody(BaseModel):
     text: str
 
 
+class SendImageBody(BaseModel):
+    account: str
+    conv_id: str
+    # 图片二进制 base64（≤20MB 原始大小）
+    image_b64: str
+    filename: str = "image.jpg"
+
+
 @app.post("/send")
 async def send(body: SendBody) -> dict:
     """用该账号的 send_msg 回复。"""
@@ -891,6 +899,72 @@ async def send(body: SendBody) -> dict:
         return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
     except Exception as e:
         logger.error(f"[recv][{body.account}] 回复失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/send_image")
+async def send_image(body: SendImageBody) -> dict:
+    """发送图片私信（后端直发全链路 ①-⑥，不依赖浏览器点击）。
+
+    2026-09-05 方案A落地：dy_apis.image_sender（AWS4 SigV4 + protobuf 27 型）。
+    """
+    from dy_apis.login_api import DYLoginApi
+    from auto_dm import accounts as acc
+
+    ib: AccountInbox | None = _state["inboxes"].get(body.account)
+    if not ib:
+        return {"ok": False, "error": "账号不存在"}
+    peer_id = None
+    with ib.lock:
+        c = ib.convs.get(body.conv_id)
+        if c:
+            peer_id = c.peer_id
+    if not peer_id:
+        return {"ok": False, "error": "无法定位会话对方 uid"}
+    if not body.image_b64:
+        return {"ok": False, "error": "image_b64 为空"}
+    env_path = acc.env_path_of(body.account)
+    if not env_path:
+        return {"ok": False, "error": "账号 .env 路径缺失"}
+    try:
+        import base64 as _b64
+
+        image_data = _b64.b64decode(body.image_b64)
+    except Exception as e:
+        return {"ok": False, "error": f"image_b64 解码失败: {e}"}
+    try:
+        auth = DYLoginApi._load_auth_from_env(env_path)
+        try:
+            DYLoginApi.refresh_cookie_from_profile(auth, env_path)
+        except Exception as _e:
+            logger.warning(f"[recv][{body.account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
+        from dy_apis.image_sender import send_image
+
+        ok, detail, info = send_image(auth, int(peer_id), image_data,
+                                      filename=body.filename or "image.jpg")
+        if ok:
+            # 落库：与接收侧同构（type=image, extra 含 skey/origin_url），
+            # 前端直接复用图片渲染逻辑
+            extra = {
+                "skey": info.get("skey"),
+                "oid": info.get("oid"),
+                "md5": info.get("md5"),
+                "data_size": info.get("data_size"),
+                "width": info.get("width"),
+                "height": info.get("height"),
+            }
+            if info.get("origin_url"):
+                extra["origin_url"] = info["origin_url"]
+            ib.add_message(body.conv_id, "me", "[图片]", peer_id=peer_id,
+                           msg_type="image", extra=extra)
+            logger.info(f"[recv][{body.account}] 图片已发送会话 {body.conv_id[:8]}… "
+                        f"oid={info.get('oid', '')[:40]}")
+            return {"ok": True, "info": {k: info.get(k) for k in
+                                         ("oid", "origin_url", "conversation_id")}}
+        logger.warning(f"[recv][{body.account}] 图片发送失败: {detail}")
+        return {"ok": False, "error": detail or "send_image 返回 False"}
+    except Exception as e:
+        logger.error(f"[recv][{body.account}] 图片发送异常: {e}")
         return {"ok": False, "error": str(e)}
 
 

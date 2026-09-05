@@ -43,6 +43,14 @@ class SendDmRequest(BaseModel):
     channel: str = "ws"
 
 
+class SendImageRequest(BaseModel):
+    account: str
+    conv_id: str
+    # 图片二进制 base64（≤20MB 原始大小）
+    image_b64: str
+    filename: str = "image.jpg"
+
+
 class RequestDmBody(BaseModel):
     name: str
     comment: str = ""
@@ -543,6 +551,28 @@ async def send_dm(body: SendDmRequest):
             "account": body.account,
             "conv_id": body.conv_id,
             "text": body.text,
+        })
+        return d
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"ok": False, "error": "账号私信守护未运行"}
+        return {"ok": False, "error": f"私信守护返回 {e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/send_image")
+async def send_image_dm(body: SendImageRequest):
+    """发送图片私信：转发 recv_daemon /send_image（后端直发全链路 ①-⑥）。"""
+    try:
+        url = _recv_url(body.account, "/send_image")
+        if url is None:
+            return {"ok": False, "error": "端口分配失败"}
+        d = _http_post_json(url, {
+            "account": body.account,
+            "conv_id": body.conv_id,
+            "image_b64": body.image_b64,
+            "filename": body.filename or "image.jpg",
         })
         return d
     except urllib.error.HTTPError as e:
