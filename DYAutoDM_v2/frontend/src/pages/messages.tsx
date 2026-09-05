@@ -774,7 +774,6 @@ export default function MessagesPage(props: PageProps) {
       <div className="section-head">
         <div>
           <h2>私信中心</h2>
-          <div className="desc">WebSocket 实时收发 · 文本 / 表情 / 语音 / 图片 / 视频</div>
         </div>
         <div className="head-row">
           {ready ? (
@@ -796,13 +795,9 @@ export default function MessagesPage(props: PageProps) {
         <div className="head-row">
           {curAcct ? (
             <>
-              <Avatar name={curAcct.name} h={hue(curAcct.name.length)} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 13.5 }}>
                   当前私信账号 · {curAcct.name}
-                </div>
-                <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                  UID {curAcct.uid || "—"} · 会话按账号隔离
                 </div>
               </div>
               <Pill
@@ -1029,6 +1024,7 @@ export default function MessagesPage(props: PageProps) {
             <div className="composer" data-od-id="composer">
               <textarea
                 className="textarea"
+                rows={2}
                 placeholder="输入私信内容…"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
