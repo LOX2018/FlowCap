@@ -8,6 +8,7 @@
 - 3s 轮询 → WebSocket 推送
 """
 from contextlib import asynccontextmanager
+import asyncio
 import os
 import platform
 import subprocess
@@ -246,6 +247,23 @@ async def lifespan(app: FastAPI):
     # 启动后为所有账号拉起 daemon（browser + recv）并触发昵称关联
     # 同步执行，确保 backend 启动完成时 daemon 已就绪
     _auto_start_daemons()
+    # WP 通道私信接收循环（抖音网页版 chat 页 hook）
+    # 2026-09-05 新增。BCC 是单例（所有账号共享一个浏览器，用 names[0] 的端口），
+    # 故 wp_recv 也只对第一个账号轮询。与 WS 通道（recv_daemon）并存、应用层去重。
+    try:
+        from auto_dm import accounts as _acct_wp
+        from daemon.wp_recv import run_wp_recv_loop
+        _wp_names = [
+            n[0] if isinstance(n, (tuple, list)) else n
+            for n in _acct_wp.list_accounts()
+        ]
+        if _wp_names:
+            _wp_task = asyncio.create_task(run_wp_recv_loop(_wp_names[0]))
+            # 防止任务被 GC（asyncio 只持有弱引用）
+            app.state.wp_recv_task = _wp_task
+            logger.info(f"[startup] WP 通道接收循环已启动 (account={_wp_names[0]})")
+    except Exception as e:
+        logger.warning(f"[startup] WP 接收循环启动失败（不影响 WS 通道）: {e}")
     yield
     logger.info("DYAutoDM 后端关闭")
     await app.state.adm.shutdown()
