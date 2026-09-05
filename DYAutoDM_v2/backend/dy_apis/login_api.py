@@ -29,14 +29,31 @@ def _bcc_port(account_name: str) -> int:
 
 
 def _bcc_alive(account_name: str, timeout: float = 0.5) -> bool:
-    """探测该账号的 BCC 是否在运行（端口开 + /status 返回 alive）。"""
+    """探测该账号的 BCC 是否在运行（端口开 + /status alive + 账号匹配）。
+
+    2026-09-06 P1 修复（知识库 08 §24.9 事故 ④）：不只查端口 alive，
+    还校验 /status 返回的 account 与请求的 account_name 一致——
+    防止端口被别的账号 BCC 占用（如手动 --port 启动绕过端口哈希）
+    时，把 A 账号的 cookie 当成 B 账号的刷进 .env。
+    """
     from auto_dm import accounts as _acc
     port = _bcc_port(account_name)
     if not _acc._port_open(port, timeout=timeout):
         return False
     try:
         r = requests.get(f"http://127.0.0.1:{port}/status", timeout=2)
-        return (r.json() or {}).get("alive", False)
+        d = r.json() or {}
+        if not d.get("alive", False):
+            return False
+        # 账号一致性：BCC 挂的账号必须就是请求的账号
+        bcc_account = str(d.get("account") or "")
+        if bcc_account and bcc_account != str(account_name):
+            logger.warning(
+                f"[bcc-client] 端口 {port} 上运行的 BCC 属于账号「{bcc_account}」"
+                f"而非「{account_name}」（端口被占用/手动启动绕过哈希），"
+                f"按未运行处理，拒绝跨账号取 cookie。")
+            return False
+        return True
     except Exception:
         return False
 
@@ -184,11 +201,15 @@ class DYLoginApi:
         page = None
         # 账号独占 profile：exe 模式用 accounts.profile_dir_of 推导，确保每账号独立封存
         _acc_profile = _accounts.profile_dir_of(env_path)
+        # 账号名由 env_path 推导（accounts/<name>/.env -> <name>），供账号级 DY_PROXY 代理注入
+        import os as _os
+        _acc_name = _os.path.basename(_os.path.dirname(_os.path.abspath(env_path))) if env_path else None
         # 指纹内核不可用时 should_use_vb 已直接抛错，此处不会再出现“回退原生 Playwright”
         logger.info(f"[auth] 使用指纹浏览器内核接管登录会话 (mode={_vb_mode})")
         logger.info(f"[auth] 账号专属指纹 profile: {_acc_profile}")
         _pw, _browser, context, _backend = await launch_async(
-            _vb_mode, _cfg, headless=headless, user_data_dir=_acc_profile, force=force)
+            _vb_mode, _cfg, headless=headless, user_data_dir=_acc_profile, force=force,
+            account=_acc_name)
         page = context.pages[0] if context.pages else await context.new_page()
 
         # ===== 以下为指纹内核共用的登录/抓签名流程 =====
@@ -538,7 +559,7 @@ class DYLoginApi:
                 logger.info(f"[auth] profile 刷新 cookie：profile 不存在跳过 profile={profile}")
                 return False
             _vb, _vb_mode = should_use_vb(_cfg)
-            _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=True, user_data_dir=profile)
+            _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=True, user_data_dir=profile, account=account_name)
             try:
                 page = context.pages[0] if context.pages else context.new_page()
                 try:
@@ -769,9 +790,13 @@ class DYLoginApi:
         context = None
         page = None
         _acc_profile = _accounts.profile_dir_of(env_path)
+        # 账号名由 env_path 推导，供账号级 DY_PROXY 代理注入
+        import os as _os
+        _acc_name = _os.path.basename(_os.path.dirname(_os.path.abspath(env_path))) if env_path else None
         logger.info(f"[auth] 从持久化 profile 读取凭证 (mode={_vb_mode}, profile={_acc_profile})")
         _pw, _browser, context, _backend = await launch_async(
-            _vb_mode, _cfg, headless=False, user_data_dir=_acc_profile, force=False)
+            _vb_mode, _cfg, headless=False, user_data_dir=_acc_profile, force=False,
+            account=_acc_name)
         page = context.pages[0] if context.pages else await context.new_page()
 
         if page is None:

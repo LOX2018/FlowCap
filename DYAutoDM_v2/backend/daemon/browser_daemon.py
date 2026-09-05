@@ -1224,7 +1224,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="浏览器容器守护进程（BCC）")
     parser.add_argument("--account", required=True, help="账号名")
     parser.add_argument("--port", type=int, required=True, help="HTTP 控制端口")
+    parser.add_argument(
+        "--allow-any-port", action="store_true",
+        help="允许非哈希端口启动（仅调试用；正常启动一律走端口哈希校验）")
     args = parser.parse_args()
+
+    # 2026-09-06 P1 修复（知识库 08 §24.9 事故 ④）：端口必须与
+    # browser_daemon_port(account) 哈希一致。手动 --port 启动绕过哈希
+    # 会制造双 BCC 并存（同一账号两个端口各挂一个容器，cookie/保活各自为政，
+    # _bcc_alive 的账号校验也会因端口错乱而失灵）。不一致默认拒绝启动。
+    from auto_dm import accounts as _acc
+    _expected_port = _acc.browser_daemon_port(args.account)
+    if args.port != _expected_port and not args.allow_any_port:
+        print(f"[bcc] 拒绝启动：--port {args.port} 与账号「{args.account}」的"
+              f"哈希端口 {_expected_port} 不一致。"
+              f"端口错乱会导致 cookie 串号/双容器并存。"
+              f"（确属调试需要请加 --allow-any-port）")
+        raise SystemExit(2)
 
     _state["account"] = args.account
     _state["port"] = args.port

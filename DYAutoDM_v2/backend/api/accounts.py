@@ -199,7 +199,7 @@ def _do_open_browser(name: str):
         logger.info(f"[open-browser] 账号 {name} 打开指纹浏览器(profile={profile})")
         # 前台常驻：阻塞直到用户关闭浏览器窗口
         asyncio.run(open_douyin_home(profile, headless=False,
-                                     url="https://www.douyin.com/"))
+                                     url="https://www.douyin.com/", account=name))
         st["done"] = True
     except Exception as e:
         logger.error(f"[open-browser] 账号 {name} 打开指纹浏览器异常: {e}")
@@ -650,3 +650,23 @@ async def auto_recapture(name: str) -> ScanLoginResponse:
         )
     except Exception as e:
         return ScanLoginResponse(ok=False, msg=f"自动重新捕获失败: {e}")
+
+
+@router.get("/{name}/proxy-status")
+async def proxy_status(name: str):
+    """账号代理状态查询（借鉴 OpenBrowser egress check 的只读轻量版）。
+
+    返回 {configured, masked, error}：
+      - configured: 该账号 .env 是否配置了 DY_PROXY；
+      - masked: 脱敏后的代理地址（日志/前端展示用，绝不回传明文凭据）；
+      - error: DY_PROXY 配置格式错误信息（无则空串）。
+    纯读 .env 单行，零网络请求、零浏览器操作，可被前端随列表轮询。
+    """
+    env_path = acct_core.env_path_of(name)
+    from auto_dm.vbrowser import parse_proxy_env, _mask_proxy
+    proxy_url, err = parse_proxy_env(env_path)
+    if err:
+        return {"configured": False, "masked": "", "error": err}
+    if not proxy_url:
+        return {"configured": False, "masked": "", "error": ""}
+    return {"configured": True, "masked": _mask_proxy(proxy_url), "error": ""}
