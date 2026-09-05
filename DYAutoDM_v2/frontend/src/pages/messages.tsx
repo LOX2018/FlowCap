@@ -597,6 +597,25 @@ export default function MessagesPage(props: PageProps) {
   const [refreshing, setRefreshing] = useState(false);
   // 图片预览弹层（点击缩略图后展示）
   const [viewer, setViewer] = useState<MediaInfo | null>(null);
+  // 附件菜单显示状态
+  const [showAttach, setShowAttach] = useState(false);
+  // 文件选择
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handlePickFile = (accept: string) => {
+    setShowAttach(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.accept = accept;
+      fileInputRef.current.click();
+    }
+  };
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      push(`已选择文件: ${file.name}`);
+    }
+    e.target.value = "";
+  };
+
   // React Query 客户端：更新会话后用于失效所有缓存（避免显示已删除的旧数据）
   const qc = useQueryClient();
   // 2026-08-31：更新会话耗时 3~6 分钟，按钮显示实时耗时让用户知道还在跑
@@ -1021,23 +1040,52 @@ export default function MessagesPage(props: PageProps) {
                 </div>
               )}
             </div>
+            {/* 隐藏的文件选择 input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              style={{ display: "none" }}
+              onChange={handleFileChange}
+            />
             <div className="composer" data-od-id="composer">
-              <textarea
-                className="textarea"
-                rows={2}
-                placeholder="输入私信内容…"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-              />
-              <button className="btn primary" data-od-id="send-msg" onClick={send}>
-                发送
-              </button>
+              <div className="composer-row">
+                <textarea
+                  className="textarea"
+                  rows={2}
+                  placeholder="输入私信内容…"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                />
+                <button
+                  className="btn attach-btn"
+                  onClick={() => setShowAttach((v) => !v)}
+                  title="添加附件"
+                >
+                  ＋
+                </button>
+                <button className="btn primary" data-od-id="send-msg" onClick={send}>
+                  发送
+                </button>
+              </div>
+              {showAttach && (
+                <div className="attach-menu">
+                  <div className="attach-option" onClick={() => handlePickFile("image/*")}>
+                    🖼️ 图片
+                  </div>
+                  <div className="attach-option" onClick={() => handlePickFile("video/*")}>
+                    🎬 视频
+                  </div>
+                  <div className="attach-option" onClick={() => handlePickFile("*")}>
+                    📎 文件
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
