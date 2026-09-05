@@ -48,6 +48,12 @@ function Header({
         <span className="mark" aria-hidden="true" />
         <h1>抖音数据控制台</h1>
         <span className="sub">Douyin Console</span>
+        {/* 2026-08-31：显示版本号。
+            排查「改了代码但界面没变」时，第一件事就是确认跑的是哪个版本 ——
+            之前因为看不到版本号，反复误判为"缓存问题"。 */}
+        <span className="appver" title="应用版本">
+          v{__APP_VERSION__}
+        </span>
       </div>
       <nav className="tabs" aria-label="主导航">
         {TABS.map(([id, label]) => (

@@ -237,6 +237,12 @@ async def lifespan(app: FastAPI):
     app.state.adm = AutoDM()
     # 后台预热账号校验缓存（并发，不阻塞启动）
     threading.Thread(target=_warm_verify_cache, daemon=True).start()
+    # 原图缓存 TTL 清理(后台延迟 60s,删除过期/超容的本地解密图)
+    try:
+        from auto_dm.origin_image_resolver import sweep_background
+        sweep_background()
+    except Exception as e:
+        logger.warning(f"[origin_image] 启动 TTL 清理失败（不影响使用）: {e}")
     # 启动后为所有账号拉起 daemon（browser + recv）并触发昵称关联
     # 同步执行，确保 backend 启动完成时 daemon 已就绪
     _auto_start_daemons()

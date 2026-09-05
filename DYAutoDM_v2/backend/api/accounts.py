@@ -396,23 +396,106 @@ async def check_account(name: str) -> dict:
 
 
 def _quit_browser_daemon(name: str) -> bool:
-    """向该账号凭证守护端口发 /quit，释放 profile 锁（避免与弹窗的 Chromium 抢锁）。
+    """释放该账号 profile 锁（避免与弹窗的 Chromium 抢锁 SingletonLock 崩溃）。
 
     返回 True 表示守护原本在跑且已发送停止请求；False 表示守护未运行。
+
+    **2026-09-03 加固（孤儿锁 bug 实机定位）**：
+    只探测端口会漏掉一种致命情况 —— browser_daemon 进程已死（端口已释放），
+    但它的 chromium 子进程族仍持有 profile（用户数据目录被前一次 app 实例
+    遗留，或 daemon 异常退出时子进程未被回收）。此时 `_port_open` 返回 False
+    直接跳过 quit → 弹查看浏览器撞上 SingletonLock → exitCode=21
+    「Target page, context or browser has been closed」。
+
+    加固逻辑：
+      1. 端口活着 → 照常发 /quit（旧逻辑）
+      2. 端口已死 → 检查是否仍有 chrome 进程的 --user-data-dir 指向该账号
+         profile：有 → 按进程树 kill（释放孤儿锁）；无 → 正常返回
     """
     bport = acct_core.browser_daemon_port(name)
-    if not acct_core._port_open(bport, timeout=0.3):
-        return False
+    env_path = acct_core.env_path_of(name)
     try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{bport}/quit", method="POST"
+        profile = str(acct_core.profile_dir_of(env_path))
+    except Exception:
+        profile = ""
+    if acct_core._port_open(bport, timeout=0.3):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{bport}/quit", method="POST"
+            )
+            urllib.request.urlopen(req, timeout=3)
+        except Exception as e:
+            logger.warning(f"[open-browser] 停止守护 {name} 失败（可能已退出）: {e}")
+        # 等待 profile 锁释放（Chromium 退出需要一点时间）
+        time.sleep(1.5)
+        return True
+
+    # 端口已死：检查孤儿 chrome 是否仍占着 profile
+    if profile:
+        killed = _kill_profile_holders(profile)
+        if killed:
+            logger.warning(
+                f"[open-browser] 账号 {name} 发现并清理 {killed} 个持有 "
+                f"profile 的孤儿浏览器进程（端口 {bport} 已死但锁未释放）"
+            )
+            return True
+    return False
+
+
+def _kill_profile_holders(profile: str) -> int:
+    """按 --user-data-dir 匹配持有该 profile 的 chrome 进程并按树 kill。
+
+    只杀【指向该固定 profile】的进程，绝不误伤其他账号 / 其他浏览实例。
+    返回清理的进程数。
+    """
+    if not profile:
+        return 0
+    import subprocess
+    import platform
+
+    if platform.system() != "Windows":
+        return 0
+    norm = profile.replace("/", "\\").lower()
+    killed = 0
+    try:
+        # PowerShell 枚举所有 chrome 进程及其命令行，按 user-data-dir 精确匹配
+        ps = (
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+            "Where-Object { $_.CommandLine -like '*user-data-dir*' } | "
+            "ForEach-Object { $_.ProcessId.ToString() + '|' + $_.CommandLine }"
         )
-        urllib.request.urlopen(req, timeout=3)
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", ps],
+            capture_output=True, timeout=15,
+        )
+        # Windows PowerShell 输出是 GBK 编码（中文系统默认 OEM 代码页），
+        # 不能用 text=True(UTF-8) 解码，否则中文 profile 路径处崩 UnicodeDecodeError
+        raw = (out.stdout or b"")
+        try:
+            text = raw.decode("gbk", errors="replace")
+        except Exception:
+            text = raw.decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            line = line.strip()
+            if "|" not in line:
+                continue
+            pid_str, cmd = line.split("|", 1)
+            cmd_norm = cmd.replace("/", "\\").lower()
+            # 只杀命令行里 user-data-dir 精确包含该 profile 的 chrome
+            if f"--user-data-dir=\"{norm}\"" in cmd_norm or \
+               f"--user-data-dir={norm}" in cmd_norm:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", pid_str],
+                        capture_output=True, timeout=10,
+                    )
+                    killed += 1
+                except Exception:
+                    continue
     except Exception as e:
-        logger.warning(f"[open-browser] 停止守护 {name} 失败（可能已退出）: {e if False else e}")
-    # 等待 profile 锁释放（Chromium 退出需要一点时间）
-    time.sleep(1.5)
-    return True
+        logger.warning(f"[open-browser] 清理孤儿 profile 持有进程失败: {e}")
+    return killed
 
 
 @router.post("/{name}/open-browser")

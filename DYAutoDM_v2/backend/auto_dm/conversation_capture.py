@@ -325,6 +325,42 @@ def _norm_inline_pic(s: str) -> str:
     return body + "=" * ((-len(body)) % 4)
 
 
+def _extract_image_secret(obj: dict):
+    """提取图片消息的解密要素：(skey, origin_url) —— 2026-09-01 实机证真。
+
+    来源（开源项目 douyin-chat-export 标注 + 本机实测确认）：
+        消息 protobuf field 8 = content_json（明文 JSON）
+            └─ resource_url.skey               = 64 hex = 32 字节 AES-256 密钥
+            └─ resource_url.origin_url_list[0] = 加密原图 URL
+
+    抖音 IM 图片是 **AES-256-GCM 加密** 的标准格式（此前 §二十七 误判为
+    「私有加密不可得」，实测推翻，见 08 §三十五）：
+        key = bytes.fromhex(skey)
+        iv  = 密文前 12 字节
+        plain = AESGCM(key).decrypt(iv, cipher[12:], None)
+
+    返回 (skey, origin_url)；无则 (None, None)。
+    注意：URL 里的 & 在 JSON 中被转义为 \\u0026，需还原。
+    """
+    res = obj.get("resource_url")
+    if not isinstance(res, dict):
+        return None, None
+    skey = res.get("skey")
+    if not isinstance(skey, str) or not skey:
+        return None, None
+    origin = ""
+    for k in ("origin_url_list", "large_url_list", "medium_url_list", "thumb_url_list"):
+        lst = res.get(k)
+        if isinstance(lst, list) and lst and isinstance(lst[0], str):
+            origin = lst[0]
+            break
+    if not origin:
+        return None, None
+    # JSON 内 & 被转义成 \u0026，必须还原，否则带签名参数的 URL 会失效
+    origin = origin.replace("\\u0026", "&")
+    return skey, origin
+
+
 def _extract_media_text(obj: dict):
     """从富媒体消息体里提取可读文本 + 媒体 URL。
 
@@ -534,9 +570,17 @@ def parse_init_protobuf(raw, my_uid):
             if key in seen_msg:
                 continue
             seen_msg.add(key)
-            # 方向：用消息自带的 sender UID（field 7）判断，不用 aweType
+            # 方向：用消息自带的 sender UID（field 7）判断，不用 aweType。
+            # 首包里 sender 为空时(系统/自动生成的欢迎语等),默认按"我发"处理
+            # 逻辑:在对端会话里,对端发的消息 100% 带 sender UID;空 sender 极可能是
+            # 本系统/自动回复产生,归 me 比归 them 更合理
             sender = _parse_message_sender(sb2)
-            role = "me" if (sender and sender == str(my_uid)) else "them"
+            if not sender:
+                role = "me"
+            elif sender == str(my_uid):
+                role = "me"
+            else:
+                role = "them"
             messages.append({
                 "role": role,
                 "text": txt[0],
@@ -629,7 +673,7 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20):
         from builder.header import HeaderBuilder, HeaderType
         from dy_apis.douyin_api import DouyinAPI
 
-        my_uid = str(DouyinAPI.get_my_uid(auth)).strip()
+        my_uid = str(auth.get_uid()).strip()
         request = ProtoBuilder.build_normal_request(auth, 301)
         body_bytes = request.SerializeToString()
         inner = _build_301_body(cid, short_id, cursor=0, count=count)
@@ -656,10 +700,20 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20):
 
 
 def parse_conversation_301(raw, cid, my_uid):
-    """解析 get_by_conversation(cmd 301) 响应 -> [{role,text,ts,msg_id}]
+    """解析 get_by_conversation(cmd 301) 响应 -> [{role,text,ts,msg_id,skey,origin_url}]
 
     结构：parsed['6']['301']['1'] = 消息数组
       每条: 1=conversation_id 3=msg_id 7=sender 8=content 10=create_time
+
+    2026-09-01 新增 skey/origin_url（08 §三十五 实机证真）：
+      图片消息的 content_json.resource_url.skey 是 AES-256-GCM 密钥，
+      此前被丢弃导致原图无法解密。现在一并返回，由调用方落库到 extra。
+
+    2026-09-04 实测纠错：
+      曾误以为 cmd 301 field 7 语义与首包相反(方向全反)，实机验证推翻了该假设 ——
+      反转后「能看我病历吗 老师」变成 me(实为对方发)完全错误。
+      实锤：cmd 301 的 field 7 与首包(2043)一致 = 发送方 sender_uid，
+      sender == my_uid → me 的原始逻辑正确，不得反转。
     """
     out = []
     try:
@@ -678,6 +732,8 @@ def parse_conversation_301(raw, cid, my_uid):
             continue
         # content -> text
         text = None
+        skey = None
+        origin_url = None
         raw_content = m.get("8", b"")
         s = raw_content
         if isinstance(s, bytes):
@@ -698,17 +754,28 @@ def parse_conversation_301(raw, cid, my_uid):
                 # 前端据此直接渲染缩略图预览。
                 if not text:
                     text = _extract_media_text(obj)
+                # 2026-09-01：图片解密要素（AES-256-GCM），此前恒被丢弃
+                skey, origin_url = _extract_image_secret(obj)
         except Exception:
             text = s if s else None
         if not text:
             continue
         ts = m.get("10", 0) or 0
         sender = str(m.get("7", "")).strip()
+        # 方向：sender 为空时默认 me(自动欢迎语等),sender == my_uid → me,否则 them
+        if not sender:
+            role = "me"
+        elif sender == str(my_uid):
+            role = "me"
+        else:
+            role = "them"
         out.append({
-            "role": "me" if sender == str(my_uid) else "them",
+            "role": role,
             "text": text,
             "ts": (int(ts) / 1000.0) if ts else time.time(),
             "msg_id": str(m.get("3")) if m.get("3") else None,
+            "skey": skey,
+            "origin_url": origin_url,
         })
     return out
 
@@ -840,7 +907,7 @@ HOOK_JS = r"""
 }
 """
 
-def capture_userinfo_via_browser(name, wait=15):
+def capture_userinfo_via_browser(name, wait=15, max_age=None):
     """经 BCC 被动 hook 截前端自发 im/user/info 响应（08 文档验证 44/44）。
 
     BCC 启动后自动导航到 chat 页 + 平滑滚动触发全部 im/user/info。
@@ -854,7 +921,31 @@ def capture_userinfo_via_browser(name, wait=15):
 
     timeout 提到 240s：BCC 浏览器**冷启动**首次调用实测 152.7s
     （含页面导航与首屏渲染），180s 会在冷启动场景超时。
+
+    2026-09-01 新增**结果缓存**（08 §三十七，修复 220s 慢）：
+      BCC 启动后 _prewarm 线程已在后台跑过一次完整捕获（日志
+      「昵称缓存预热完成：277 个」）。但 capture_all 每次都重新调 BCC
+      再跑一遍 176s 的滚动 —— 预热白做了。
+      这里按账号缓存最近一次成功结果，默认 10 分钟内直接复用，
+      让「更新会话」在预热已完成的常见情况下几乎零等待。
+      可用 DY_USERINFO_CACHE_SEC 调整（0 = 关闭缓存）。
     """
+    import time as _t
+
+    # ── 缓存命中检查 ──
+    try:
+        _ttl = (int(os.environ.get("DY_USERINFO_CACHE_SEC", "600"))
+                if max_age is None else int(max_age))
+    except Exception:
+        _ttl = 600
+    if _ttl > 0:
+        _hit = _userinfo_cache.get(name)
+        if _hit and (_t.time() - _hit[0]) < _ttl and _hit[1]:
+            logger.info(
+                f"[capture] 复用昵称缓存（{len(_hit[1])} 个，"
+                f"{_t.time() - _hit[0]:.0f}s 前采集），跳过 BCC 滚动")
+            return _hit[1]
+
     import requests
     from auto_dm import accounts as acc
     try:
@@ -869,10 +960,17 @@ def capture_userinfo_via_browser(name, wait=15):
         if r.status_code == 200:
             data = r.json().get("data") or {}
             logger.info(f"[capture] 经 BCC 截到昵称数: {len(data)}")
+            if data:
+                _userinfo_cache[name] = (_t.time(), data)
             return data
     except Exception as e:
         logger.warning(f"[capture] 调 BCC /capture_userinfo 失败: {e}")
     return {}
+
+
+# 昵称缓存：{账号: (采集时间戳, {sec_uid: {...}})}
+# 配合 BCC 的 _prewarm，避免每次「更新会话」都重跑 176s 的滚动捕获。
+_userinfo_cache: dict[str, tuple] = {}
 
 
 # 模块级缓存：首包解析结果（供 capture_userinfo_via_browser 取 peer_uid）
@@ -901,9 +999,18 @@ def capture_all(name, with_browser=True):
         return (0, 0)
 
     # 1) 首包
+    import time as _tm
+
+    _t_start = _tm.time()
     try:
         raw = DouyinAPI.get_message_by_init(auth)
+        _t_raw = _tm.time()
         convs = parse_init_protobuf(raw, my_uid)
+        _t_parse = _tm.time()
+        logger.info(
+            f"[capture][{name}] 首包 拉取={_t_raw - _t_start:.1f}s "
+            f"解析={_t_parse - _t_raw:.1f}s "
+            f"（{len(raw):,}B -> {len(convs)} 会话）")
     except Exception as e:
         logger.warning(f"[capture][{name}] 首包解析失败: {e}")
         return (0, 0)
@@ -924,13 +1031,52 @@ def capture_all(name, with_browser=True):
         import os as _os
         import time as _time
         if _os.environ.get("DY_HISTORY_FULL", "1") == "1":
-            need = [c for c in convs
-                    if c.get("short_id")
-                    and (c.get("total_msgs") or 0) > len(c.get("messages", []))]
-            # 优先补全消息差距最大的会话（长会话优先）
-            need.sort(key=lambda c: (c.get("total_msgs") or 0)
-                      - len(c.get("messages", [])), reverse=True)
-            max_n = int(_os.environ.get("DY_HISTORY_MAX", "20"))
+            # 2026-09-01 优化：跳过已掌握会话。
+            #
+            # 之前用首包 total_msgs 字段，实测**不可靠**（首包 field 4.2
+            # 与消息内嵌结构混淆，会把 total_msgs 取成 6 而非真实 50）。
+            # 现用「库内条数」+「首包解析条数」综合判断：
+            #   - 已掌握 = 库内条数 ≥ max(首包解析条数, 1)
+            #   - 首包给约 20 条消息；库内补全后 1 页 = 50 条
+            #   - 长会话（>50）库内未到首包数 = 显然未补全
+            #   - 短会话（1~20）库内=首包 = 已掌握
+            # 不再用 total_msgs 字段，彻底绕开解析 bug。
+            _db_counts = {}
+            try:
+                from database import get_db as _getdb
+                _c2 = _getdb()
+                for _r in _c2.execute(
+                    "SELECT conv_id, COUNT(*) n FROM dm_messages "
+                    "WHERE account=? GROUP BY conv_id", (name,)
+                ):
+                    _db_counts[str(_r["conv_id"])] = int(_r["n"] or 0)
+            except Exception:
+                _db_counts = {}
+
+            _FORCE = _os.environ.get("DY_HISTORY_FORCE", "0") == "1"
+
+            def _have(_c):
+                """该会话已掌握消息条数：取 max(库内, 首包解析)"""
+                return max(len(_c.get("messages", [])),
+                           _db_counts.get(str(_c.get("conversation_id")), 0))
+
+            if _FORCE:
+                need = [c for c in convs if c.get("short_id")]
+            else:
+                # DY_HISTORY_SKIP_PAGED=1 才启用「跳过已补全会话」逻辑。
+                # **默认关闭**（= 0）—— 维持旧行为「20 个会话全补」，
+                # 避免在没测透前对真实账号造成新消息漏补。
+                # 启用条件：
+                #   - 长会话（>50 条）：库内 0 补；库内 50（已 1 页）跳
+                #   - 短会话（<=20）：库内 0 补；库内 =首包 跳
+                if _os.environ.get("DY_HISTORY_SKIP_PAGED", "0") == "1":
+                    need = [c for c in convs
+                            if c.get("short_id")
+                            and _db_counts.get(str(c.get("conversation_id")), 0)
+                                < max(len(c.get("messages", [])), 1)]
+                else:
+                    need = [c for c in convs if c.get("short_id")]
+            max_n = int(_os.environ.get("DY_HISTORY_MAX", "45"))
             sleep_s = float(_os.environ.get("DY_HISTORY_SLEEP", "1.5"))
             # 2026-08-31：串行补全实测太慢（20 个会话 × (请求~10s + 间隔1.5s)
             # ≈ 230s，加上首包和浏览器启动总计 365s，用户明确抱怨）。
@@ -940,10 +1086,15 @@ def capture_all(name, with_browser=True):
             # 想更快可调到 6~8，但需承担风控风险。
             workers = max(1, min(8, int(_os.environ.get("DY_HISTORY_WORKERS", "4"))))
             need = need[:max_n]
+            if not need:
+                # 全部会话的历史都已掌握（库内条数 >= total_msgs），
+                # 无需发任何 301 请求 —— 这是重复点「更新会话」的常态。
+                logger.info(
+                    f"[capture][{name}] 长会话补全：{len(convs)} 个会话历史均完整"
+                    f"（库内已有 >= total_msgs），跳过 301 请求")
             if need:
                 logger.info(f"[capture][{name}] 长会话补全：{len(need)} 个会话"
                             f"（并发 {workers}，间隔 {sleep_s}s）")
-
                 from concurrent.futures import ThreadPoolExecutor
 
                 def _fill(_c):
@@ -988,6 +1139,7 @@ def capture_all(name, with_browser=True):
     # 3) 写库
     n_conv = 0
     n_msg = 0
+    _t_write0 = _tm.time()   # 写库开始（配合 _t_start 统计各阶段耗时）
     conn = get_db()
     try:
         # 关联键修正（对应工作记忆/08 §十~§十一）：
@@ -1033,13 +1185,53 @@ def capture_all(name, with_browser=True):
             # 写消息
             for m in c["messages"]:
                 try:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO dm_messages("
-                        "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
-                        "VALUES(?,?,?,?,?,?,?,?)",
-                        (name, cid, m["role"], m["text"], "text", "{}",
-                         m["ts"], m.get("msg_id")),
-                    )
+                    # 2026-09-01：图片消息的解密要素写入 extra（08 §三十五）。
+                    # 此前恒写 "{}"，skey 被丢弃 → 原图无法解密。
+                    # extra = {"skey":..., "origin_url":...}；非图片消息仍为 {}。
+                    _extra = "{}"
+                    _sk = m.get("skey")
+                    _ou = m.get("origin_url")
+                    if _sk and _ou:
+                        try:
+                            import json as _json
+                            _extra = _json.dumps(
+                                {"skey": _sk, "origin_url": _ou}, ensure_ascii=False)
+                        except Exception:
+                            _extra = "{}"
+                    if _extra != "{}":
+                        # 带 skey 的图片消息：先尝试 UPDATE 补写，无影响行再 INSERT。
+                        #
+                        # 为何不用 INSERT OR IGNORE / ON CONFLICT：
+                        #  - 历史图片行大多已存在（extra 是旧的 "{}"），INSERT OR IGNORE
+                        #    会被唯一索引静默跳过 → 旧行永远拿不到 skey；
+                        #  - uniq_dmmsg 是**部分索引**（WHERE msg_id IS NOT NULL），
+                        #    ON CONFLICT(account,conv_id,msg_id) 匹配不上，报
+                        #    "does not match any PRIMARY KEY or UNIQUE constraint"。
+                        # 故用「UPDATE 优先 + 幂等」写法，且只补写尚未有 skey 的行
+                        # （extra NOT LIKE '%skey%'），重复跑不会覆盖已有正确值。
+                        _cur = conn.execute(
+                            "UPDATE dm_messages SET extra=? "
+                            "WHERE account=? AND conv_id=? AND msg_id=? "
+                            "  AND (extra IS NULL OR extra='' "
+                            "       OR extra NOT LIKE '%skey%')",
+                            (_extra, name, cid, m.get("msg_id")),
+                        )
+                        if (_cur.rowcount or 0) == 0:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO dm_messages("
+                                "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
+                                "VALUES(?,?,?,?,?,?,?,?)",
+                                (name, cid, m["role"], m["text"], "text", _extra,
+                                 m["ts"], m.get("msg_id")),
+                            )
+                    else:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO dm_messages("
+                            "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
+                            "VALUES(?,?,?,?,?,?,?,?)",
+                            (name, cid, m["role"], m["text"], "text", _extra,
+                             m["ts"], m.get("msg_id")),
+                        )
                     n_msg += 1
                 except Exception:
                     pass

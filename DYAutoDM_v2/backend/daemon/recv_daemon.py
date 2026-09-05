@@ -503,10 +503,18 @@ class RecvChannel(threading.Thread):
             text, extra = self._extract(content_json, msg_type)
             if text is None:
                 return
+            # 过滤系统引导消息(如"微信"/"在哪个地区受伤的"快捷回复建议):
+            # 这类消息 msg_type=7 且 msg_id=None(非真实聊天),不应展示在聊天记录中
+            if int(msg_type) == 7 and not msg.msg_id:
+                return
             peer_name = content_json.get("sender_nickname") or sender or conv_id
-            logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] 新消息: peer_name={peer_name}, sender={sender}, content_json.sender_nickname={content_json.get('sender_nickname')}")
+            # 08 §13.5 铁律：方向只能用 sender UID 判断，不可用消息类型推断。
+            # sender == 自己 UID → 我发(me)；否则对方发(them)。
+            # 自动欢迎语等自己发送的消息 sender 就是 my_uid，硬编码 them 会错配。
+            role = "me" if sender and str(sender) == str(self.inbox.my_uid) else "them"
+            logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] 新消息: peer_name={peer_name}, sender={sender}, role={role}, content_json.sender_nickname={content_json.get('sender_nickname')}")
             self.inbox.add_message(
-                conv_id, "them", text, peer_id=sender,
+                conv_id, role, text, peer_id=sender,
                 peer_name=peer_name, msg_type=str(msg_type), extra=extra,
             )
             logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] {peer_name}: {text}")
@@ -592,13 +600,25 @@ class RecvChannel(threading.Thread):
                         return lst[0]
                 return ""
 
-            u = _pick(content_json.get("resource_url"), "origin_url_list", "url_list")
+            res = content_json.get("resource_url")
+            u = _pick(res, "origin_url_list", "url_list")
+            # 2026-09-01：图片解密要素必须落库（08 §三十五 实机证真）。
+            # 抖音 IM 图片是 AES-256-GCM 加密，密钥就在 resource_url.skey；
+            # 此前恒返回 {} 导致 skey 丢失、原图永远无法解密。
+            # 注意 JSON 内 & 被转义成 \u0026，必须还原，否则带签名的 URL 失效。
+            extra = {}
+            if isinstance(res, dict) and res.get("skey"):
+                _origin = _pick(res, "origin_url_list", "large_url_list",
+                                "medium_url_list", "thumb_url_list")
+                if _origin:
+                    extra = {"skey": res["skey"],
+                             "origin_url": _origin.replace("\\u0026", "&")}
             if u:
-                return f"[图片] {u}", {}
+                return f"[图片] {u}", extra
             u = _pick(content_json.get("origin_url"), "url_list")
             if u:
-                return f"[图片] {u}", {}
-            return "[图片]", {}
+                return f"[图片] {u}", extra
+            return "[图片]", extra
         elif t == 8:
             return f"[分享视频] 视频ID {content_json.get('itemId', '')}", {}
         elif t == 50001:

@@ -11,10 +11,11 @@
  *   - .catch(() => {}) → .catch(e => push('失败:' + ...))
  *   - requestDm 不在 client.ts，用本地 interface + as unknown as 转换
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import { Avatar, Pill, Dot, hue, nowHM } from "../components/ui";
+import { openExternal } from "../utils/openExternal";
 
 interface Msg {
   id: string;
@@ -24,6 +25,11 @@ interface Msg {
   mt: string;
   dur?: string;
   title?: string;
+  /** 2026-09-02：后端解密后的真原图 URL(本地 http://.../api/messages/origin_image/xxx 或图床 https://tucdn...)。
+   *  与 media.thumb(消息体缩略图)不同 —— image_url 是原图。
+   *  前端 <img src={image_url}> 可直接渲染,无需再去抖音网页。
+   */
+  image_url?: string;
 }
 interface Conv {
   id: string;
@@ -50,6 +56,10 @@ interface RawMessage {
   type?: string;
   text?: string;
   time?: string;
+  /** 抖音消息唯一 ID（protobuf field 3），用于 React key 稳定 */
+  msg_id?: string;
+  /** 2026-09-02：后端解密后的真原图 URL（本地或图床），有则前端优先用它。 */
+  image_url?: string;
 }
 interface RawConversation {
   conv_id?: string;
@@ -158,6 +168,40 @@ function renderTextWithEmoji(s: string): React.ReactNode[] {
 }
 
 /**
+ * 清洗 data URI，剔除 base64 段里的非法字符。
+ *
+ * 2026-08-31 实测：数据库里 43/43 条内联图片的 base64 后面**直接粘着**
+ * `[原图] https://p26-sign.douyinpic.com/...`（中间没有换行），例如：
+ *
+ *   [图片] data:image/webp;base64,UklGRkgCAABXRUJ...gnature=JEgRJP%2F2%2B
+ *          ↑ 本该有 \n，实际紧挨着
+ *
+ * 后果：base64 里混入 `\n`、`[`、`原` 等字符 → 浏览器判定 data URI 非法
+ * → **图片渲染失败**（实测 27/43 条解码失败）。
+ *
+ * 后端写入时确实用了 `\n[原图]`，但库里存在无换行的历史数据，
+ * 故前端必须容错：这里保留合法的 base64 字符，其余一律剔除。
+ */
+function sanitizeDataUri(u: string): string {
+  if (!u.startsWith("data:")) return u;
+  const comma = u.indexOf(",");
+  if (comma < 0) return u;
+  const head = u.slice(0, comma + 1); // "data:image/webp;base64,"
+  let rest = u.slice(comma + 1);
+  // 2026-09-04 修复:base64 里可能混入 URL 编码(%2F→/, %2B→+ 等),
+  // 必须先 decodeURIComponent 再剔除非法字符,否则 % 被直接删掉后
+  // 剩下的 "2F" 不是合法的 base64,图片渲染失败显示灰圈。
+  try {
+    rest = decodeURIComponent(rest);
+  } catch {
+    // 解码失败则保持原样,后面正则兜底
+  }
+  // 标准 base64 字符集（URL 安全变体 + padding）
+  rest = rest.replace(/[^A-Za-z0-9+/=_-]/g, "");
+  return head + rest;
+}
+
+/**
  * 解析媒体消息文本 -> 缩略图 + 原图双 URL。
  *
  * 后端 `_extract_media_text` 输出形态（按行）：
@@ -183,7 +227,19 @@ function parseMedia(text: string): MediaInfo {
     }
     const m = line.match(/^\[(图片|表情包)\]\s*(.+)$/);
     if (m && !thumb) {
-      thumb = m[2].trim();
+      // 2026-08-31：base64 尾部可能粘着 `[原图] <url>`（无换行的历史数据），
+      // 需拆开 —— 否则整个 data URI 非法，图片渲染失败。
+      const seg = m[2].trim();
+      const glue = seg.indexOf("[原图]");
+      if (glue > 0) {
+        thumb = sanitizeDataUri(seg.slice(0, glue).trim());
+        if (!origin) {
+          const om = seg.slice(glue).match(/^\[原图\]\s*(https?:\/\/\S+)/);
+          if (om) origin = om[1];
+        }
+      } else {
+        thumb = sanitizeDataUri(seg);
+      }
       continue;
     }
     // 裸 URL 兜底
@@ -221,42 +277,115 @@ function ImageViewer({
   media: MediaInfo | null;
   onClose: () => void;
 }) {
+  // 2026-08-31：缩放/拖拽状态。
+  // inline_pic 实测只有 160px 级（最大边 73~356px），弹层里放大看会糊，
+  // 用户需要能自己缩放查看细节。滚轮缩放 + 按住拖动。
+  const [scale, setScale] = useState(1);
+  const [drag, setDrag] = useState({ x: 0, y: 0 });
+  const dragging = useRef<{ x: number; y: number } | null>(null);
+
+  // 换图时重置视图
+  useEffect(() => {
+    setScale(1);
+    setDrag({ x: 0, y: 0 });
+  }, [media]);
+
+  // 2026-09-03:原生 wheel 监听阻止事件冒泡到页面背后(合成事件 preventDefault 不够)
+  // ⚠️ 必须放在 early return 之前,否则 hooks 数量不一致导致 React 崩溃
+  useEffect(() => {
+    const stop = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const el = document.querySelector<HTMLElement>(".imgviewer");
+    if (el) {
+      el.addEventListener("wheel", stop, { passive: false });
+      return () => el.removeEventListener("wheel", stop);
+    }
+  }, []);
+
   if (!media) return null;
+
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    setScale((s) => Math.min(8, Math.max(0.3, s - e.deltaY * 0.0015)));
+  };
+  const onDown = (e: React.MouseEvent) => {
+    dragging.current = { x: e.clientX - drag.x, y: e.clientY - drag.y };
+  };
+  const onMove = (e: React.MouseEvent) => {
+    if (!dragging.current) return;
+    setDrag({
+      x: e.clientX - dragging.current.x,
+      y: e.clientY - dragging.current.y,
+    });
+  };
+  const onUp = () => {
+    dragging.current = null;
+  };
+
   return (
     <div className="imgviewer" onClick={onClose}>
       <div className="ivpanel" onClick={(e) => e.stopPropagation()}>
         <div className="ivhead">
-          <span>{media.inline ? "缩略图（点击链接可看原图）" : "图片"}</span>
-          <button className="btn sm ghost" onClick={onClose}>
-            关闭
-          </button>
+          <span>
+            图片
+            {scale !== 1 && (
+              <span className="ivscale">{Math.round(scale * 100)}%</span>
+            )}
+          </span>
+          <div className="ivacts">
+            <button
+              className="btn sm ghost"
+              onClick={() => setScale((s) => Math.max(0.3, s / 1.25))}
+            >
+              −
+            </button>
+            <button className="btn sm ghost" onClick={() => setScale(1)}>
+              重置
+            </button>
+            <button
+              className="btn sm ghost"
+              onClick={() => setScale((s) => Math.min(8, s * 1.25))}
+            >
+              ＋
+            </button>
+            <button className="btn sm ghost" onClick={onClose}>
+              关闭
+            </button>
+          </div>
         </div>
-        <div className="ivbody">
+        <div
+          className="ivbody"
+          onWheel={onWheel}
+          onMouseDown={onDown}
+          onMouseMove={onMove}
+          onMouseUp={onUp}
+          onMouseLeave={onUp}
+        >
           {/* 2026-08-31 实测：抖音 IM 消息里的 inline_pic 本身就是缩略图
               （典型 160×213），消息体内**不含全尺寸原图**；
-              resource_url 的远程链是私有加密（熵 7.999），浏览器解不开。
-              因此弹层只能放大显示已有的缩略图，真正的原图需 BCC 页面内截获
-              （方案 B，尚未实现）。此处如实标注，避免误导用户。 */}
+              resource_url 的远程链是私有加密，真机实测浏览器加载失败
+              （3/3 error，0×0）。因此弹层只能放大显示已有的缩略图。 */}
           {media.inline ? (
-            <img src={media.thumb} alt="预览" className="ivimg" />
+            <img
+              src={media.thumb}
+              alt="预览"
+              className="ivimg"
+              draggable={false}
+              style={{
+                transform: `translate(${drag.x}px, ${drag.y}px) scale(${scale})`,
+                cursor: dragging.current ? "grabbing" : "grab",
+                maxWidth: scale === 1 ? "65%" : "none",
+                maxHeight: scale === 1 ? "68vh" : "none",
+              }}
+            />
           ) : (
             <div className="ivhint">
               该图为抖音私有加密格式，无法在内嵌预览中显示。
               <br />
               请在浏览器中打开查看。
             </div>
-          )}
-        </div>
-        <div className="ivfoot">
-          {media.inline && (
-            <span className="ivnote">
-              当前为抖音下发的缩略图（消息体内无全尺寸原图）
-            </span>
-          )}
-          {media.origin && (
-            <a href={media.origin} target="_blank" rel="noreferrer">
-              在抖音网页打开原图 ↗
-            </a>
           )}
         </div>
       </div>
@@ -288,27 +417,84 @@ function MsgBubble({
   }
 
   // 图片 / 表情包：文本形如「[图片] <url>」「[表情包] <url>」或裸 URL。
-  // 只要识别出媒体标记 + URL 就渲染缩略图；历史数据只有「图片」二字
-  // （URL 在旧版本解析时丢失）则给占位提示，需重新捕获才有图链。
-  if (m.type === "image" || m.type === "sticker" || /^\[(图片|表情包)\]/.test(t) || /^\[?图片\]?$/.test(t)) {
+  //
+  // 2026-08-31 修正：原来这里有 `/^\[?图片\]?$/` —— 它会把用户正常发的
+  // 「图片」两个字也当成图片消息，解析不出 URL 就渲染成
+  // 「[图片]（无图链，需重新捕获）」的脏数据（实测库里有 1 条 text='图片'
+  // 触发，用户反馈"脏数据依旧在前端显示"）。
+  // 去掉该宽松正则；真正无 URL 的图片消息改为显示成普通文本而非脏提示。
+  if (
+    m.type === "image" ||
+    m.type === "sticker" ||
+    /^\[(图片|表情包)\]/.test(t)
+  ) {
     const label = /表情包/.test(t) ? "表情包" : "图片";
     const media = parseMedia(m.text);
+    const isSticker = media.isSticker;
+
+    // 2026-09-02：情况 0 —— 后端已经把 (skey, origin_url) 解密出真原图,
+    // 通过 image_url 字段直接给到前端(<img src> 可用)。
+    // 这是用户最关心的「能看到原图」路径,优先级最高:
+    //   有 image_url → 直接渲染真原图（替换原来「跳抖音」的链接）
+    //   无 image_url → 走情况 1/2 降级到缩略图 / 旧路径
+    if (m.image_url) {
+      // 用 image_url 替代 media.thumb,这样弹层也是高清图
+      const fullMedia: MediaInfo = {
+        thumb: m.image_url,
+        origin: m.image_url,
+        inline: true,
+      };
+      return (
+        <div className={`bubble mediathumb${isSticker ? " sticker" : ""}`}>
+          <img
+            src={m.image_url}
+            alt={label}
+            className="thumbimg"
+            onClick={() => onOpenImage && onOpenImage(fullMedia)}
+            onError={(e) => {
+              // 解密文件缺失或图床 404:降级显示缩略图
+              const img = e.currentTarget;
+              if (media.thumb && img.src !== media.thumb) {
+                img.src = media.thumb;
+              }
+            }}
+          />
+        </div>
+      );
+    }
+
+    // 2026-08-31：解析不出任何图链时，不要渲染「无图链，需重新捕获」——
+    // 那是给开发者看的调试话术，出现在聊天界面里就是脏数据。
+    // 这种情况（历史数据 URL 丢失，或误判的文本）按普通文本展示更合理。
+    if (!media.thumb) {
+      return <div className="bubble">{t}</div>;
+    }
 
     // 情况 1：有内联缩略图（inline_pic，标准 WebP base64）
     //   -> 直接 <img> 渲染缩略图，点击弹出查看原图
     if (media.inline) {
       return (
-        <div className="bubble mediathumb">
+        <div className={`bubble mediathumb${isSticker ? " sticker" : ""}`}>
           <img
             src={media.thumb}
             alt={label}
             className="thumbimg"
             onClick={() => onOpenImage && onOpenImage(media)}
           />
-          {media.origin && (
+          {/* 2026-09-02 修正：原来跳「douyin.com/chat」是因为原图拿不到。
+              现在后端解密后有 image_url 就直接用真原图;只有没 image_url
+              的历史消息（库内无 skey）才退到「去抖音看」。
+              2026-09-03:表情包不显示「去抖音看原图」链接(贴纸走公开CDN,无需跳转) */}
+          {!isSticker && (
             <div className="thumbbar">
-              <a href={media.origin} target="_blank" rel="noreferrer">
-                查看原图
+              <a
+                href={media.origin || "https://www.douyin.com/chat"}
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternal(media.origin || "https://www.douyin.com/chat");
+                }}
+              >
+                {media.origin ? "查看原图 ↗" : "去抖音看原图 ↗"}
               </a>
             </div>
           )}
@@ -321,11 +507,24 @@ function MsgBubble({
     //   降级为可点击链接，不做 <img> 内嵌（会显示破损图标）。
     //   2026-08-31：原文案「[图片] 点击查看（抖音加密格式，不支持内嵌预览）」
     //   暴露内部实现细节且观感差，用户反馈为「污染数据」。改为简洁人话。
+    // 2026-08-31 修正：media.thumb 在这里是抖音私有加密远程链，
+    //   真机实测加载失败（3/3 error，0×0），点了打不开。
+    //   改为跳转抖音私信页 —— 在抖音里点开图片才能看到真原图
+    //   2026-09-03:表情包不显示「去抖音查看」链接(贴纸走公开CDN,无需跳转)
     if (media.thumb) {
+      if (isSticker) {
+        return <div className="bubble">[{label}]</div>;
+      }
       return (
         <div className="bubble medialink">
-          <a href={media.thumb} target="_blank" rel="noreferrer" title={media.thumb}>
-            [{label}] 在抖音查看
+          <a
+            href="https://www.douyin.com/chat"
+            onClick={(e) => {
+              e.preventDefault();
+              void openExternal("https://www.douyin.com/chat");
+            }}
+          >
+            [{label}] 去抖音查看 ↗
           </a>
         </div>
       );
@@ -490,13 +689,18 @@ export default function MessagesPage(props: PageProps) {
       return list
         // 过滤解析噪音：空媒体对象（如 "[未知媒体] {}"）不是真实消息。
         // 后端已修（空对象不入库），此处兜底历史脏数据。
-        .filter((m) => !/^\[未知媒体\]/.test((m.text || "").trim()))
+        // 2026-09-04:加过滤 [分享视频] 脏数据（WS 错误解析噪音）。
+        .filter((m) => {
+          const t = (m.text || "").trim();
+          return !/^\[(未知媒体|分享视频|系统提示)\]/.test(t);
+        })
         .map((m, j) => ({
-        id: "dm" + conv.conv_id + "_" + j,
+        id: m.msg_id ? "mid_" + m.msg_id : "dm" + conv.conv_id + "_" + j,
         dir: (m.dir || (m.role === "me" ? "out" : "in")) as "in" | "out",
         type: m.type || "text",
         text: m.text || "",
         mt: m.time || nowHM(),
+        image_url: m.image_url || undefined,  // 2026-09-02：后端解密后的真原图
       }));
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,
@@ -791,15 +995,31 @@ export default function MessagesPage(props: PageProps) {
               </button>
             </div>
             <div className="msgs">
-              {convMsgs.map((m) => {
-                const sys = isSystemTip(m.text);
-                return (
-                  <div className={"msg " + (sys ? "sys" : m.dir)} key={m.id}>
-                    <MsgBubble m={m} onOpenImage={setViewer} />
-                    <span className="mtm">{m.mt}</span>
-                  </div>
-                );
-              })}
+              {(() => {
+                let lastDate = "";
+                const nodes: React.ReactNode[] = [];
+                convMsgs.forEach((m) => {
+                  // 2026-09-05:日期分割线。mt 格式 YYYY-MM-DD HH:MM:SS,
+                  // 提取日期部分,和上一条不同就插入分隔线。
+                  const fullDate = (m.mt || "").slice(0, 10);
+                  if (fullDate && fullDate !== lastDate) {
+                    lastDate = fullDate;
+                    nodes.push(
+                      <div key={`date-${fullDate}`} className="date-sep">
+                        <span>{fullDate}</span>
+                      </div>
+                    );
+                  }
+                  const sys = isSystemTip(m.text);
+                  nodes.push(
+                    <div className={"msg " + (sys ? "sys" : m.dir)} key={m.id}>
+                      <MsgBubble m={m} onOpenImage={setViewer} />
+                      <span className="mtm">{(m.mt || "").slice(11, 16)}</span>
+                    </div>
+                  );
+                });
+                return nodes;
+              })()}
               {convMsgs.length === 0 && (
                 <div style={{ color: "var(--muted)", fontSize: 12.5, padding: 8 }}>
                   暂无消息

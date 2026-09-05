@@ -16,6 +16,7 @@ import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAct
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageProps } from "../api/client";
+import { openExternal } from "../utils/openExternal";
 import { Avatar, Dot, Pill, TABS, hue, tick } from "../components/ui";
 import { startBrowserDaemonReady, stopBrowserDaemon, startRecvDaemon, stopRecvDaemon } from "../api/sidecar";
 
@@ -841,11 +842,16 @@ export default function AccountsPage(props: PageProps) {
                         {a.lastRun.roomUrl && (
                           <a
                             href={a.lastRun.roomUrl}
-                            target="_blank"
                             rel="noopener noreferrer"
                             className="btn sm ghost"
                             style={{ height: 24, padding: "0 8px", fontSize: 11, lineHeight: 1 }}
-                            onClick={(e) => { e.stopPropagation(); push("已打开直播间：" + a.lastRun.room); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // 2026-09-01：WebView 里 <a target="_blank"> 静默失败，
+                              // 必须走 shell.open()（见 utils/openExternal.ts）
+                              void openExternal(a.lastRun.roomUrl || "");
+                              push("已打开直播间：" + a.lastRun.room);
+                            }}
                           >
                             前往直播间
                           </a>

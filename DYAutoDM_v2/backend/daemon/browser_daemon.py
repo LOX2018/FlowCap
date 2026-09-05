@@ -150,6 +150,9 @@ class BrowserContainer:
         self._started = False
         self._last_uid: Any = None
         self._last_refresh: float = 0.0
+        # 昵称缓存：(采集时间戳, {sec_uid: {...}})。配 _prewarm 使用，
+        # 避免每次「更新会话」都重跑 176s 的滚动捕获（08 §三十七）。
+        self._userinfo_cache: tuple | None = None
         # _loop 由 FastAPI startup 持有，submit 用它把协程投递到主事件循环
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -361,13 +364,62 @@ class BrowserContainer:
 
         return await self._exec(_do)
 
+    async def exec_js(self, js: str, arg=None, timeout: int = 30):
+        """在抖音页面上下文里执行 JS（**只读取数**用途）。
+
+        2026-08-31 新增，用于取私信原图：远程链是抖音私有加密格式，
+        后端/普通 <img> 都解不开，但**抖音前端自己能解码渲染**
+        （用户在网页上看得到图），所以在页面上下文里
+        fetch → canvas → toDataURL 是唯一可行路径。
+
+        js 必须是「单表达式」形式的 async 箭头函数字符串，例如：
+            "async (url) => { const r = await fetch(url); ... return b64 }"
+        Playwright 会把它编译成函数再调用。
+
+        **风控边界**：本方法只执行传入的 JS，自身不发起请求。
+        不得用于遍历/批量查询用户信息（昵称红线）。
+        """
+
+        async def _do():
+            if "/chat" not in (self._page.url or ""):
+                # 取图需要抖音域上下文（同域 fetch + 登录态 + 前端解密）
+                await self._page.goto(
+                    "https://www.douyin.com/chat?isPopup=1",
+                    wait_until="domcontentloaded", timeout=25000)
+                await self._page.wait_for_timeout(1500)
+            self._page.set_default_timeout(timeout * 1000)
+            return await self._page.evaluate(js, arg)
+
+        return await self._exec(_do)
+
     async def capture_userinfo_map(self, wait: int = 15) -> dict:
         """被动 hook 截前端自己发的 im/user/info 响应（零主动请求、零风控）。
 
         复用本容器已持有的常驻浏览器 context/page（不另开浏览器、不抢 profile）。
         在 _lock 内执行，与 bulk_user_info/resolve_url 串行无冲突。
         返回 {sec_uid: {"nickname": str, "avatar": str, "uid": str}}。
+
+        2026-09-01 新增**进程内缓存**（08 §三十七，修复「更新会话 220s」）：
+          本容器启动后 _prewarm 线程会后台跑一次完整捕获（176s，日志
+          「昵称缓存预热完成：N 个」）。若之后 backend 调 /capture_userinfo
+          又从头滚一遍，预热就白做了 —— 这正是 220s 的主因。
+          这里把成功结果缓存 DY_USERINFO_CACHE_SEC 秒（默认 600），
+          命中则直接返回，让「更新会话」在预热完成后几乎零等待。
+          设为 0 可关闭（每次都真跑，用于调试）。
         """
+        # ── 缓存命中检查（在 _lock 外，避免不必要的串行等待）──
+        try:
+            _ttl = int(os.environ.get("DY_USERINFO_CACHE_SEC", "600"))
+        except Exception:
+            _ttl = 600
+        if _ttl > 0 and self._userinfo_cache:
+            _ts, _data = self._userinfo_cache
+            if _data and (time.time() - _ts) < _ttl:
+                logger.info(
+                    f"[bcc] 复用昵称缓存（{len(_data)} 个，"
+                    f"{time.time() - _ts:.0f}s 前采集），跳过滚动")
+                return _data
+
         async def _do():
             # hook 已在 _launch 中 add_init_script 注入，直接等前端发 im/user/info
             if "/chat" not in self._page.url:
@@ -377,15 +429,33 @@ class BrowserContainer:
             # 等待前端首发 im/user/info（首屏会话）
             await self._page.wait_for_timeout(wait * 1000)
 
+            # 2026-09-01 优化：**跳过已点击过的会话**。
+            # 原实现每轮都把当前可见的 12 项全点一遍（含前几轮已点过的），
+            # 但重复点击不会触发新的 im/user/info（前端已有缓存），
+            # 是纯浪费：实测 40 轮 × (12 项 × 400ms) 仅点击就占数十秒。
+            _clicked = set()
+
             async def _click_all():
                 items = await self._page.query_selector_all(
                     ".conversationConversationItemwrapper")
-                for it in items:
+                n_new = 0
+                for idx, it in enumerate(items):
+                    # 用会话文本做稳定标识（DOM 元素会随滚动重建，下标不可靠）
+                    try:
+                        key = (await it.inner_text())[:40]
+                    except Exception:
+                        key = f"__idx{idx}"
+                    if key in _clicked:
+                        continue
+                    _clicked.add(key)
                     try:
                         await it.click(timeout=2000)
+                        n_new += 1
+                        # 仅在【真的点了新会话】时才等待，跳过已点的不付等待成本
                         await self._page.wait_for_timeout(400)
                     except Exception:
                         pass
+                return n_new
 
             # 平滑逐屏滚动 + 每屏点进每个可见会话（覆盖懒加载的全部会话）
             # 抖音私信列表是增量懒加载：大跨度 scrollTop=scrollHeight 跳跃会让
@@ -398,8 +468,11 @@ class BrowserContainer:
             # 后面 30 多轮全是空转。这里连续 3 轮无新增就停，省下大量时间。
             _stall = 0
             _prev = -1
+            import time as _time
+
+            _t0 = _time.time()
             for _round in range(40):  # 上限 40 屏防死循环
-                await _click_all()
+                _n_new = await _click_all()
                 # 先看当前已截获数量，判断是否还在增长
                 try:
                     _cur = await self._page.evaluate(
@@ -407,12 +480,18 @@ class BrowserContainer:
                         "? Object.keys(window.__CAP_USERINFO__.map || {}).length : 0")
                 except Exception:
                     _cur = -1
+                # 可观测性（08 §三十七）：每轮打印耗时/累计/新增，
+                # 让 176s 的黑盒变成能定位的明细，避免下次又靠猜。
+                logger.info(
+                    f"[bcc] 滚动轮次 {_round + 1}: 新点击={_n_new} "
+                    f"累计昵称={_cur} 用时={_time.time() - _t0:.1f}s")
                 if _cur >= 0 and _prev >= 0 and _cur <= _prev:
                     _stall += 1
                     if _stall >= 3:
                         logger.info(
                             f"[bcc] 昵称无新增（连续 {_stall} 轮，当前 {_cur} 个），"
-                            f"提前结束滚动（第 {_round} 轮）")
+                            f"提前结束滚动（第 {_round} 轮，用时 "
+                            f"{_time.time() - _t0:.1f}s）")
                         break
                 else:
                     _stall = 0
@@ -443,7 +522,15 @@ class BrowserContainer:
             except Exception as e:
                 logger.warning(f"[bcc] 读取 hook 结果失败: {e}")
                 cap = {}
-            return cap or {}
+            cap = cap or {}
+            # 写入进程内缓存（供后续 /capture_userinfo 直接命中，
+            # 避免预热完成后又重复跑一遍 176s 的滚动）
+            if cap:
+                self._userinfo_cache = (time.time(), cap)
+                logger.info(
+                    f"[bcc] 昵称捕获完成：{len(cap)} 个，"
+                    f"总耗时 {_time.time() - _t0 + wait:.1f}s（已缓存）")
+            return cap
         return await self._exec(_do)
 
     async def resolve_url(self, url: str) -> dict:
@@ -769,6 +856,43 @@ async def resolve_url(body: ResolveBody) -> dict:
     if not c:
         return {"ok": False, "live_id": None, "msg": "容器未启动"}
     return await c.resolve_url(body.url)
+
+
+class ExecJsBody(BaseModel):
+    """页面内执行 JS（仅用于**只读**取数，如把图片导出为 base64）。"""
+
+    # 必须是「单表达式」形式的 async 箭头函数字符串，
+    # 形如 "async (arg) => { ... return x }"；Playwright 会把它编译成函数。
+    js: str
+    arg: object = None
+    timeout: int = 30  # 秒
+
+
+@app.post("/exec_js")
+async def exec_js(body: ExecJsBody) -> dict:
+    """在抖音页面上下文里执行 JS 并返回结果。
+
+    2026-08-31 新增，用途：**取私信原图**。
+
+    背景：私信图片的远程链（resource_url.*）实测为抖音私有加密格式，
+    后端与普通 <img src> 都无法解码（显示破损图标）。但抖音**前端自己
+    能解密渲染**（用户在网页上看得到图），所以在**页面上下文**里
+    （同域 + 完整登录态 + 前端解密逻辑）fetch → canvas 导出 base64，
+    是拿到原图的唯一可行路径。
+
+    **风控边界（红线）**：本接口只是执行调用方传入的 JS，
+    自身不发起任何请求。昵称/用户信息的批量查询仍然禁止 ——
+    只允许用于**只读取数**（图片导出等），不得用于遍历用户信息。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "result": None}
+    try:
+        res = await c.exec_js(body.js, body.arg, timeout=body.timeout)
+        return {"ok": True, "msg": "", "result": res}
+    except Exception as e:
+        logger.warning(f"[bcc] /exec_js 失败: {e}")
+        return {"ok": False, "msg": str(e), "result": None}
 
 
 @app.post("/scan_login")

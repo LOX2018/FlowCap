@@ -2,6 +2,9 @@
 
 取代原版 WebBridge.getConversations / getConversation / sendDm。
 转发到 recv_daemon 的 HTTP 接口（每账号专属端口）。
+
+2026-09-02 新增:加密原图解析(/origin_image/...)——把 dm_messages.extra 里
+的 (skey, origin_url) 解密出真原图,小图本地静态、大图走图床,前端可直接 <img>。
 """
 from __future__ import annotations
 
@@ -9,12 +12,19 @@ import time
 import urllib.parse
 import urllib.request
 import json
+from pathlib import Path
+
+# 顶层 import 确保 PyInstaller onefile 能追踪到 origin_image_resolver
+# (函数体内动态 import 不会被静态分析,导致 onefile 缺少该模块)
+from auto_dm import origin_image_resolver as _origin_image_resolver
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from loguru import logger
 
 from auto_dm import accounts as acct_core
+from config import settings as _app_settings
 from database import get_db
 
 router = APIRouter()
@@ -62,7 +72,9 @@ def _http_post_json(url: str, payload: dict, timeout: float = 8.0) -> dict:
 def _fmt_ts(ts: float | None) -> str:
     try:
         if ts:
-            return time.strftime("%H:%M:%S", time.localtime(float(ts)))
+            # 2026-09-05:返回完整 ISO 时间 YYYY-MM-DD HH:MM:SS,
+            # 前端用它做日期分隔线 + 每条消息显示。
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
     except Exception:
         pass
     return ""
@@ -267,7 +279,12 @@ async def list_conversations(account: str):
 
 @router.get("/conversation")
 async def get_conversation(account: str, conv_id: str):
-    """会话详情（纯读库 + 标记已读）"""
+    """会话详情（纯读库 + 标记已读）
+
+    2026-09-02:同时把 dm_messages.extra 里存的图片 (skey, origin_url)
+    走 origin_image_resolver 解密 → 前端可直接 <img> 的 image_url。
+    同一 msg_id 解析一次,后续走进程内缓存(30 天)。
+    """
     logger.info(f"[私信拉取] 拉取账号「{account}」会话详情 conv_id={conv_id}")
     try:
         conn = get_db()
@@ -278,23 +295,63 @@ async def get_conversation(account: str, conv_id: str):
         ).fetchone()
         if row is None:
             return {"ok": False, "conversation": {}}
-        # 过滤回执/系统类消息：msg_type=50001 是「对方已读」回执，
-        # recv_daemon 经 WS 反复写入且 msg_id 为 NULL（唯一索引管不到），
-        # 实测单个会话能堆积上千条（全库 1938 条），会把真实聊天记录挤掉。
-        # 聊天框只展示真实对话内容，故在此过滤。
-        # 另：排除解析噪音 "[未知媒体] ..."（空媒体对象，非真实消息）。
+        # 过滤回执/系统类消息:msg_type=50001 是「对方已读」回执,
+        # recv_daemon 经 WS 反复写入且 msg_id 为 NULL(唯一索引管不到),
+        # 实测单个会话能堆积上千条(全库 1938 条),会把真实聊天记录挤掉。
+        # 聊天框只展示真实对话内容,故在此过滤。
+        # 另:排除解析噪音 "[未知媒体] ..."(空媒体对象,非真实消息)。
+        # 2026-09-02 同时读 extra(JSON 含 skey/origin_url),供前端按需解密。
+        # 2026-09-04 过滤系统引导消息(msg_type=7 且 msg_id IS NULL,
+        # 如"微信"/"在哪个地区受伤的"快捷回复建议,非真实聊天)
+        # 和[分享视频]脏数据(WS 错误解析产生的噪音)
         msgs = conn.execute(
-            "SELECT role,text,msg_type,ts FROM dm_messages "
+            "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
             "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
+            "AND NOT (msg_type = '7' AND msg_id IS NULL) "
             "AND text NOT LIKE '[未知媒体]%' "
+            "AND text NOT LIKE '[分享视频]%' "
+            "AND text NOT LIKE 'https://www.iesdouyin.com/share/%' "  # 群聊分享链接脏数据
             "ORDER BY ts ASC",
             (account, str(conv_id)),
         ).fetchall()
-        # 字段同时给两套命名，兼容前端不同消费点：
+        out_messages = []
+        for m in msgs:
+            msg_id = m["msg_id"]
+            extra_raw = m["extra"] or "{}"
+            image_url = None
+            try:
+                ex = json.loads(extra_raw) if extra_raw.startswith("{") else {}
+            except Exception:
+                ex = {}
+            skey = ex.get("skey")
+            origin_url = ex.get("origin_url")
+            if skey and origin_url and _origin_image_resolver is not None:
+                try:
+                    res = _origin_image_resolver.resolve(
+                        account=account, msg_id=str(msg_id or ""),
+                        skey=skey, origin_url=origin_url,
+                    )
+                    if res.get("ok"):
+                        image_url = res["url"]
+                        if image_url.startswith("/"):
+                            image_url = f"http://127.0.0.1:{_app_settings.backend_port}{image_url}"
+                except Exception as e:
+                    logger.debug(f"[私信拉取] 解密图片失败 msg_id={msg_id}: {e}")
+            out_messages.append({
+                "role": m["role"],
+                "text": m["text"],
+                "msg_type": m["msg_type"],
+                "dir": "out" if m["role"] == "me" else "in",
+                "type": m["msg_type"] or "text",
+                "time": _fmt_ts(m["ts"]),  # 2026-09-05:改为完整时间,前端做日期分割线
+                "msg_id": msg_id,
+                "image_url": image_url,  # 前端 <img src> 直接用,None 则降级到缩略图
+            })
+        # 字段同时给两套命名,兼容前端不同消费点:
         #   role/msg_type —— 后端原生命名
         #   dir/type/time —— 前端 messages.tsx 的 Msg 接口命名
-        #     dir: role=me -> out（我发），否则 in（对方发），与气泡左右布局对应
-        #     time: HH:MM 字符串（ts 为 float 秒级时间戳）
+        #     dir: role=me -> out(我发),否则 in(对方发),与气泡左右布局对应
+        #     time: HH:MM 字符串(ts 为 float 秒级时间戳)
         conv = {
             "conv_id": row["conv_id"],
             "name": row["peer_name"] or row["peer_id"] or row["conv_id"] or "会话",
@@ -302,17 +359,7 @@ async def get_conversation(account: str, conv_id: str):
             "peer_name": row["peer_name"],
             "unread": row["unread"] or 0,
             "avatar": row["avatar"] or "",
-            "messages": [
-                {
-                    "role": m["role"],
-                    "text": m["text"],
-                    "msg_type": m["msg_type"],
-                    "dir": "out" if m["role"] == "me" else "in",
-                    "type": m["msg_type"] or "text",
-                    "time": _fmt_hm(m["ts"]),
-                }
-                for m in msgs
-            ],
+            "messages": out_messages,
         }
         # 标记已读
         try:
@@ -328,6 +375,115 @@ async def get_conversation(account: str, conv_id: str):
     except Exception as e:
         logger.warning(f"[私信拉取] 账号「{account}」会话详情异常: {e}")
         return {"ok": False, "conversation": {}}
+
+
+# ---------------------------------------------------------------------------
+# 加密原图解析(2026-09-02)
+# ---------------------------------------------------------------------------
+# 抖音 IM 图片是 AES-256-GCM 加密(MEMORY + 08 §三十五):
+#   skey = resource_url.skey(64 hex = 32 字节),origin_url = 远程加密链
+# 后端从数据库读 extra,拉密文 + AESGCM 解密 → 按字节阈值分流:
+#   小图(默认 ≤ 32KB)→ 本地静态目录 <app_root>/data/origin_images/
+#   大图(> 32KB)→ 走 image_host(tucdn.wpon.cn,实测 0.3s 下载,见 08 末)
+# 同一 (skey, origin_url) 进程内 30 天缓存,二次访问 0 请求。
+# 风控边界:HTTP GET 不带账号 cookie,只靠图片 URL 自带签名参数;
+# 频次 = 首访唯一,后续全缓存。零主动批量,零复用凭证。
+# ---------------------------------------------------------------------------
+class OriginImageResolveRequest(BaseModel):
+    account: str
+    msg_id: str | None = None
+    skey: str
+    origin_url: str
+
+
+@router.post("/origin_image/resolve")
+async def resolve_origin_image(body: OriginImageResolveRequest):
+    """按 (msg_id, skey, origin_url) 触发解密 → 返回可内嵌的 url。
+
+    通常前端无需主动调本端点(会话详情接口已自动解析),本端点用于:
+      - 历史消息的旧 extra 为空时手动补触发
+      - 测试 / 调试
+    """
+    try:
+        from auto_dm import origin_image_resolver
+        res = origin_image_resolver.resolve(
+            account=body.account, msg_id=body.msg_id or "",
+            skey=body.skey, origin_url=body.origin_url,
+        )
+        # 把相对路径补成完整 URL,前端 <img> 可直接用
+        if res.get("ok") and res.get("url", "").startswith("/"):
+            res["url"] = f"http://127.0.0.1:{_app_settings.backend_port}{res['url']}"
+        return res
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/origin_image/stats")
+async def origin_image_stats():
+    """调试:解密缓存命中统计。
+
+    ⚠️ 必须注册在 /origin_image/{filename} **之前** —— FastAPI 按注册顺序
+    匹配路由,"stats" 会被 {filename} 通配吃掉(实测 2026-09-03:GET
+    /origin_image/stats 返回 404「图片不存在」)。
+    """
+    try:
+        from auto_dm import origin_image_resolver as _oir
+        return {"ok": True, "stats": _oir._stats_snapshot()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/origin_image/{filename}")
+async def serve_origin_image(filename: str):
+    """返回本地解密的原图文件。前端 <img src=/api/messages/origin_image/xxx>。
+
+    安全:filename 仅允许 [A-Za-z0-9_.-],杜绝 .. 路径穿越。
+    """
+    # 白名单过滤
+    safe = "".join(c for c in filename if c.isalnum() or c in "._-")
+    if safe != filename or not safe:
+        raise HTTPException(status_code=400, detail="filename 非法")
+    try:
+        from auto_dm import origin_image_resolver as _oir
+        cache_dir = _oir._origin_cache_dir()
+    except Exception:
+        try:
+            from auto_dm import accounts as _acc
+            cache_dir = Path(_acc.app_root()) / "data" / "origin_images"
+        except Exception:
+            raise HTTPException(status_code=500, detail="路径解析失败")
+    fpath = cache_dir / safe
+    if not fpath.exists() or not fpath.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在或已清理")
+    # 命中即刷新 mtime(TTL 清理以 mtime 判龄,确保"最近看过"的图不被回收)
+    try:
+        from auto_dm import origin_image_resolver as _oir
+        _oir.touch_local(safe)
+    except Exception:
+        pass
+    # 按扩展名给 mime
+    ext = fpath.suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".webp": "image/webp",
+        ".gif": "image/gif", ".heic": "image/heic",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(str(fpath), media_type=mime, filename=safe)
+
+
+@router.post("/origin_image/sweep")
+async def sweep_origin_images():
+    """手动触发 TTL 清理(删除过期 / 超容的本地原图)。
+
+    ⚠️ 必须注册在 /origin_image/{filename} **之前**(FastAPI 按注册顺序匹配)。
+    正常无需手动调用 —— backend 启动 60s 后自动清理一次,
+    之后 resolve() 每次写入新图时也会顺手检查(1 小时节流)。
+    """
+    try:
+        from auto_dm import origin_image_resolver as _oir
+        return {"ok": True, "sweep": _oir.sweep(force=True)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @router.post("/request")

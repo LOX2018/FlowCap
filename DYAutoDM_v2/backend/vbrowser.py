@@ -58,6 +58,11 @@ _CHROME_ARGS = [
 def app_root():
     """应用根目录（持久化数据基准）：
 
+    - **最高优先级**：环境变量 `DY_APP_ROOT`。设置后直接返回该路径，
+      用于**源码态指向隔离测试路径**（如 C:\\temp\\dyautodm_test），
+      使账号 .env / data / vb_chromium / logs 全部落到隔离目录，
+      不必再把测试库复制回源码仓库（违反隔离铁律且危险）。
+      正常开发/打包均不设此变量，行为与之前完全一致。
     - 源码态：本文件位于 backend/vbrowser.py，向上两级（backend 的上一级）即项目根
       DYAutoDM_v2/，随附资源（vb_chromium / vb_profile_* / pw_profile_dm / .env / logs）
       都放在项目根下，accounts.py 等也以项目根为基准，保持一致；
@@ -65,6 +70,16 @@ def app_root():
       但存在 resources/vb_chromium（Tauri bundle.resources 分发位置），则返回
       exe 旁的 resources/ 子目录，让 NSIS/MSI 安装场景也能找到随附资源。
     """
+    # 隔离测试专用 override（2026-09-01）：源码态把整套资源根切到隔离路径。
+    # 不设时完全不影响既有行为。
+    _ov = os.environ.get("DY_APP_ROOT", "").strip().strip('"')
+    if _ov:
+        try:
+            if os.path.isdir(_ov):
+                return os.path.abspath(_ov)
+            logger.warning(f"[vbrowser] DY_APP_ROOT 指向的目录不存在，忽略: {_ov}")
+        except Exception:
+            pass
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         # 应用根解析：Tauri sidecar 常被放在 <root>/binaries/ 子目录（或类似 bin/），

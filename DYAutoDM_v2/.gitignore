@@ -80,3 +80,6 @@ _kill_clean.ps1
 _verify_exe.py
 DYAutoDM_v2/日志.md
 _deploy.ps1
+
+# 探针运行输出（含真实图片 URL，不入库）
+scripts/_*.json

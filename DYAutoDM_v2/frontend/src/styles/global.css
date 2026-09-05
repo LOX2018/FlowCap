@@ -337,6 +337,10 @@ input, select, textarea { font: inherit; color: inherit; }
   text-align: center;
 }
 .msg.sys .mtm { align-self: center; }
+/* 2026-09-05:日期分割线 */
+.date-sep { display: flex; align-items: center; margin: 10px 0; }
+.date-sep::before, .date-sep::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.date-sep span { padding: 2px 10px; font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
 /* 图片 / 表情包：抖音图链为私有加密格式，浏览器无法内嵌预览，
    降级为「[图片] 点击查看原图」链接（见 messages.tsx 注释） */
 .medialink { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.5px; }
@@ -345,7 +349,8 @@ input, select, textarea { font: inherit; color: inherit; }
 .medialink .mhint { color: var(--muted); font-size: 11px; }
 
 /* ===== 图片缩略图（图床链接 / 内联 base64，可直接渲染）===== */
-.mediathumb { padding: 4px; background: transparent; }
+.mediathumb { padding: 4px; background: var(--surface-2); border-radius: 6px; }
+.msg.out .bubble.mediathumb { background: var(--surface-2); border-color: transparent; }
 .mediathumb .thumbimg {
   display: block;
   max-width: 200px;
@@ -356,11 +361,17 @@ input, select, textarea { font: inherit; color: inherit; }
   cursor: zoom-in;
   background: var(--border);
 }
+/* 2026-09-03:表情包贴纸缩小50%(原尺寸偏大,视觉上压倒文字消息)
+   2026-09-04 修复:删掉独立的 .sticker 类(76x76 固定尺寸),
+   表情包走 .mediathumb.sticker .thumbimg 自动尺寸,
+   避免固定容器限制图片导致溢出。 */
+.mediathumb.sticker .thumbimg {
+  max-width: 100px;
+  max-height: 130px;
+}
 .mediathumb .thumbimg:hover { opacity: 0.9; }
 .mediathumb .thumbbar { margin-top: 5px; font-size: 11.5px; }
 .mediathumb .thumbbar a { color: var(--accent); text-decoration: underline; }
-
-/* ===== 图片预览弹层 ===== */
 .imgviewer {
   position: fixed;
   inset: 0;
@@ -374,7 +385,7 @@ input, select, textarea { font: inherit; color: inherit; }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  max-width: 90vw;
+  max-width: 65vw;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
@@ -398,11 +409,91 @@ input, select, textarea { font: inherit; color: inherit; }
   justify-content: center;
 }
 .imgviewer .ivimg {
-  max-width: 78vw;
+  max-width: 65vw;
   max-height: 68vh;
   width: auto;
   height: auto;
   border-radius: 6px;
+}
+
+/* 2026-08-31：缩略图放大后的观感优化。
+   inline_pic 实测只有 160px 级（最大边 73~356px），弹层里放大到
+   78vw 会明显模糊。这里：
+     - 渐进入场，避免小图突然撑开的跳变
+     - 放大时用 auto 质量（浏览器默认即平滑插值），
+       比 pixelated 更耐看 —— 虽然细节仍受限于原始 160px */
+.imgviewer .ivimg {
+  animation: ivfade 0.12s ease-out;
+}
+@keyframes ivfade {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 2026-08-31：界面左上角版本号。
+   排查「改了代码但界面没变」时用来确认实际运行的版本。 */
+.brand .appver {
+  margin-left: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* 2026-08-31：缩放控制条。inline_pic 实测仅 160px 级，弹层放大后需要
+   手动缩放看细节，故提供 −/重置/＋ 三键 + 滚轮缩放 + 拖动平移。 */
+.imgviewer .ivacts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.imgviewer .ivacts .btn {
+  min-width: 34px;
+  padding: 2px 8px;
+}
+.imgviewer .ivscale {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+/* 缩放/拖动时禁止选中文字，避免拖动时误选 */
+.imgviewer .ivbody {
+  user-select: none;
+  /* 图片可能被拖到视口外，需要隐藏溢出 */
+  overflow: hidden;
+}
+
+/* 底部说明行：让「去抖音查看原图」链接更显眼（这是唯一能看真原图的路） */
+.imgviewer .ivfoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.imgviewer .ivfoot a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.imgviewer .ivfoot a:hover {
+  text-decoration: underline;
 }
 .imgviewer .ivhint {
   color: var(--muted-foreground);
@@ -420,7 +511,7 @@ input, select, textarea { font: inherit; color: inherit; }
 .voice-bars { display: flex; align-items: center; gap: 2px; height: 18px; }
 .voice-bars i { width: 3px; background: currentColor; border-radius: 2px; opacity: .85; }
 .bubble .vdur { font-family: var(--font-mono); font-size: 12px; }
-.sticker { width: 76px; height: 76px; border-radius: 12px; display: grid; place-items: center; font-size: 30px; }
+
 .imgtile { width: 150px; height: 110px; border-radius: 10px; display: grid; place-items: center; font-size: 12px; color: white; }
 .vshare { display: flex; gap: 10px; align-items: center; min-width: 220px; }
 .vshare .thumb { width: 84px; aspect-ratio: 16/9; border-radius: 8px; flex: none; }
