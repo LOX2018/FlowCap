@@ -104,6 +104,13 @@ interface MessagesApi {
     text: string,
     channel?: "ws" | "wp",
   ): Promise<SendDmResp>;
+  // 2026-09-06：图片发送（后端直发全链路，走 recv_daemon /send_image）
+  sendImage(
+    account: string,
+    convId: string,
+    imageB64: string,
+    filename: string,
+  ): Promise<{ ok: boolean; error?: string; info?: Record<string, unknown> }>;
   requestDm(name: string): Promise<RequestDmResp>;
   refreshConversations(account: string, withBrowser?: boolean): Promise<RefreshConvsResp>;
   getAccounts(): Promise<unknown>;
@@ -622,10 +629,41 @@ export default function MessagesPage(props: PageProps) {
   };
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      push(`已选择文件: ${file.name}`);
-    }
     e.target.value = "";
+    if (!file) return;
+    // 2026-09-06：接入图片发送（后端直发全链路 ①-⑥，走 /api/messages/send_image）
+    if (!file.type.startsWith("image/")) {
+      push("仅支持图片（视频/文件发送尚未接入）");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      push("图片超过 20MB 限制");
+      return;
+    }
+    if (!conv || !conv.conv_id) {
+      push("请先选择有效会话");
+      return;
+    }
+    push(`正在发送图片: ${file.name} (${Math.round(file.size / 1024)}KB)…`);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const b64 = (reader.result as string).split(",")[1] || "";
+      if (!b64) {
+        push("图片读取失败");
+        return;
+      }
+      a.sendImage(activeAcct || "", conv.conv_id || "", b64, file.name)
+        .then((r) => {
+          if (r && r.ok) {
+            push("图片已发送");
+          } else {
+            push("图片发送失败: " + ((r && r.error) || ""));
+          }
+        })
+        .catch((err) => push("图片发送异常: " + errMsg(err)));
+    };
+    reader.onerror = () => push("图片读取失败");
+    reader.readAsDataURL(file);
   };
 
   // React Query 客户端：更新会话后用于失效所有缓存（避免显示已删除的旧数据）

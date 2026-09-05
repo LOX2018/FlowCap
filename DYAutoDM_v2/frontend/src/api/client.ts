@@ -243,6 +243,19 @@ export const api = {
     });
   },
 
+  /** 2026-09-06：图片发送（后端直发全链路 ①-⑥）。 */
+  async sendImage(
+    account: string,
+    convId: string,
+    imageB64: string,
+    filename: string,
+  ): Promise<{ ok: boolean; error?: string; info?: Record<string, unknown> }> {
+    return request("/api/messages/send_image", {
+      method: "POST",
+      body: JSON.stringify({ account, conv_id: convId, image_b64: imageB64, filename }),
+    });
+  },
+
   // ===== tasks =====
   async getTasks(): Promise<unknown> {
     return request("/api/tasks");
