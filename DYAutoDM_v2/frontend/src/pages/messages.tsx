@@ -30,6 +30,8 @@ interface Msg {
    *  前端 <img src={image_url}> 可直接渲染,无需再去抖音网页。
    */
   image_url?: string;
+  /** 2026-09-05：消息来源通道。ws=私信守护(默认) / wp=抖音网页版 chat 页 */
+  source?: "ws" | "wp";
 }
 interface Conv {
   id: string;
@@ -60,6 +62,8 @@ interface RawMessage {
   msg_id?: string;
   /** 2026-09-02：后端解密后的真原图 URL（本地或图床），有则前端优先用它。 */
   image_url?: string;
+  /** 2026-09-05：后端 /conversation 透传的来源通道 */
+  source?: string;
 }
 interface RawConversation {
   conv_id?: string;
@@ -93,7 +97,13 @@ interface RefreshConvsResp {
 interface MessagesApi {
   getConversations(account: string): Promise<unknown>;
   getConversation(account: string, convId: string): Promise<unknown>;
-  sendDm(account: string, convId: string, text: string): Promise<SendDmResp>;
+  // 2026-09-05：channel 指定发送通道 ws(默认) / wp
+  sendDm(
+    account: string,
+    convId: string,
+    text: string,
+    channel?: "ws" | "wp",
+  ): Promise<SendDmResp>;
   requestDm(name: string): Promise<RequestDmResp>;
   refreshConversations(account: string, withBrowser?: boolean): Promise<RefreshConvsResp>;
   getAccounts(): Promise<unknown>;
@@ -592,6 +602,8 @@ export default function MessagesPage(props: PageProps) {
   const setActiveAcct = props.setMsgAcct || (() => {});
   const [active, setActive] = useState("");
   const [draft, setDraft] = useState("");
+  // 2026-09-05：发送通道选择。默认 ws（私信守护，稳定）；wp 为网页版通道。
+  const [sendChannel, setSendChannel] = useState<"ws" | "wp">("ws");
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -720,6 +732,8 @@ export default function MessagesPage(props: PageProps) {
         text: m.text || "",
         mt: m.time || nowHM(),
         image_url: m.image_url || undefined,  // 2026-09-02：后端解密后的真原图
+        // 2026-09-05：来源通道，后端已兜底 'ws'，这里再兜一层
+        source: (m.source === "wp" ? "wp" : "ws") as "ws" | "wp",
       }));
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,
@@ -753,7 +767,7 @@ export default function MessagesPage(props: PageProps) {
       return;
     }
     const convId = conv.conv_id;
-    a.sendDm(activeAcct, convId, draft.trim())
+    a.sendDm(activeAcct, convId, draft.trim(), sendChannel)
       .then((r) => {
         if (r && r.ok) {
           push("私信已发送");
@@ -1029,6 +1043,10 @@ export default function MessagesPage(props: PageProps) {
                     <div className={"msg " + (sys ? "sys" : m.dir)} key={m.id}>
                       <MsgBubble m={m} onOpenImage={setViewer} />
                       <span className="mtm">{(m.mt || "").slice(11, 16)}</span>
+                      {/* 2026-09-05：通道角标，仅在 WP 通道时显示（WS 是默认，不打扰） */}
+                      {m.source === "wp" && (
+                        <span className="chan-badge" title="经抖音网页版通道收发">网页</span>
+                      )}
                     </div>
                   );
                 });
@@ -1047,6 +1065,33 @@ export default function MessagesPage(props: PageProps) {
               style={{ display: "none" }}
               onChange={handleFileChange}
             />
+            {/* 2026-09-05：发送通道选择。
+                ws = 私信守护 HTTP API（默认，稳定）
+                wp = 抖音网页版 chat 页 IM SDK（需浏览器容器就绪） */}
+            <div className="chan-row">
+              <span className="chan-label">发送通道</span>
+              <label className="chan-opt">
+                <input
+                  type="radio"
+                  name="send-channel"
+                  checked={sendChannel === "ws"}
+                  onChange={() => setSendChannel("ws")}
+                />
+                <span>WS 守护</span>
+              </label>
+              <label className="chan-opt">
+                <input
+                  type="radio"
+                  name="send-channel"
+                  checked={sendChannel === "wp"}
+                  onChange={() => setSendChannel("wp")}
+                />
+                <span>网页版</span>
+              </label>
+              {sendChannel === "wp" && (
+                <span className="chan-tip">经浏览器容器发送，需 BCC 已就绪</span>
+              )}
+            </div>
             <div className="composer" data-od-id="composer">
               <div className="composer-row">
                 <textarea

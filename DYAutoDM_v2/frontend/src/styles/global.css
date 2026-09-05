@@ -305,6 +305,36 @@ input, select, textarea { font: inherit; color: inherit; }
 /* 系统提示：居中展示的小气泡，与左右对话气泡区分开 */
 .msg.sys { align-self: center; max-width: 84%; }
 
+/* 2026-09-05：WP 通道角标。仅在 source='wp' 的消息旁显示，
+   WS 是默认通道，不显示以免视觉噪音 */
+.chan-badge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  align-self: center;
+  flex: none;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* 发送通道选择行（输入框上方） */
+.chan-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.chan-label { flex: none; }
+.chan-opt { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.chan-opt input { cursor: pointer; margin: 0; }
+.chan-tip { font-size: 11px; color: var(--muted); opacity: 0.8; }
+
 /* 2026-08-31：抖音文本表情短代码转成 emoji 后的样式（略放大，便于识别） */
 .bubble .emoji {
   font-size: 1.25em;

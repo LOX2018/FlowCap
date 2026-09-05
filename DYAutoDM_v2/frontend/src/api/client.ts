@@ -221,10 +221,18 @@ export const api = {
     );
   },
 
-  async sendDm(account: string, convId: string, text: string): Promise<{ ok: boolean }> {
+  /** 2026-09-05：channel 指定发送通道。
+   *   'ws'=私信守护 HTTP API（默认，稳定）；'wp'=抖音网页版 chat 页 IM SDK。
+   */
+  async sendDm(
+    account: string,
+    convId: string,
+    text: string,
+    channel: "ws" | "wp" = "ws",
+  ): Promise<{ ok: boolean }> {
     return request("/api/messages/send", {
       method: "POST",
-      body: JSON.stringify({ account, conv_id: convId, text }),
+      body: JSON.stringify({ account, conv_id: convId, text, channel }),
     });
   },
 
