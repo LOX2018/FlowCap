@@ -38,6 +38,9 @@ class SendDmRequest(BaseModel):
     account: str
     conv_id: str
     text: str
+    # 发送通道：'ws'=私信守护 HTTP API（默认，稳定）；'wp'=抖音网页版 chat 页 IM SDK
+    # 2026-09-05 新增。两通道并存，默认走 ws（更可靠），wp 作为网页通道备用。
+    channel: str = "ws"
 
 
 class RequestDmBody(BaseModel):
@@ -50,6 +53,14 @@ def _recv_url(account: str, path: str) -> str | None:
     port = acct_core.recv_daemon_port(account)
     return f"http://127.0.0.1:{port}{path}"
 
+
+def _bcc_url(account: str, path: str) -> str:
+    """构造该账号 BCC(browser_daemon) 的 HTTP URL。
+
+    端口用 acct_core.browser_daemon_port（独立稳定哈希，与 recv_daemon 不同）。
+    """
+    port = acct_core.browser_daemon_port(account)
+    return f"http://127.0.0.1:{port}{path}"
 
 def _http_get_json(url: str, timeout: float = 5.0) -> dict:
     req = urllib.request.Request(url, method="GET")
@@ -513,7 +524,14 @@ async def request_dm(body: RequestDmBody, request: Request):
 
 @router.post("/send")
 async def send_dm(body: SendDmRequest):
-    """手动发送私信（转发到 recv_daemon /send）"""
+    """手动发送私信，按 channel 路由到 WS 或 WP 通道。
+
+    2026-09-05：新增双通道。
+      - channel='ws'（默认）：转发 recv_daemon /send，走 DouyinAPI.send_msg HTTP API。
+      - channel='wp'：转发 BCC /wp_send，在 chat 页上下文调页面 IM SDK 发送。
+    """
+    if body.channel == "wp":
+        return await wp_send_dm(body)
     try:
         url = _recv_url(body.account, "/send")
         if url is None:
@@ -530,6 +548,29 @@ async def send_dm(body: SendDmRequest):
         return {"ok": False, "error": f"私信守护返回 {e.code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@router.post("/wp_send")
+async def wp_send_dm(body: SendDmRequest):
+    """WP 通道发送（抖音网页版 chat 页），转发到 BCC /wp_send。
+
+    与 /send?channel=wp 等价，单独暴露便于前端显式指定。
+    BCC 未就绪时返回明确错误（不静默降级到 WS，避免用户以为发成功）。
+    """
+    try:
+        url = _bcc_url(body.account, "/wp_send")
+        d = _http_post_json(url, {
+            "account": body.account,
+            "conv_id": body.conv_id,
+            "text": body.text,
+        }, timeout=30.0)  # 页面内调用较慢，放宽超时
+        return d
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"ok": False, "error": "浏览器容器(BCC)未运行，WP 通道不可用"}
+        return {"ok": False, "error": f"BCC 返回 {e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": f"WP 通道发送失败: {e}"}
 
 
 # ---------------------------------------------------------------------------
