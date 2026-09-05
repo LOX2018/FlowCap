@@ -820,16 +820,16 @@ export default function MessagesPage(props: PageProps) {
           <div className="seg" style={{ marginLeft: 6 }}>
             {realAccts.map((acct) => (
               <button
-                key={acct.name}
-                className={activeAcct === acct.name ? "active" : ""}
-                onClick={() => {
-                  setActiveAcct(acct.name);
-                  setActive("");
-                  push("已切换到 " + acct.name + " 的私信通道");
-                }}
-              >
-                <Avatar name={acct.name} h={hue(acct.name.length)} sm /> {acct.name}
-              </button>
+                                key={acct.name}
+                                className={activeAcct === acct.name ? "active" : ""}
+                                onClick={() => {
+                                  setActiveAcct(acct.name);
+                                  setActive("");
+                                  push("已切换到 " + acct.name + " 的私信通道");
+                                }}
+                              >
+                                {acct.name}
+                              </button>
             ))}
             {realAccts.length === 0 && (
               <span className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
