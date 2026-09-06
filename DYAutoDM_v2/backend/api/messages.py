@@ -547,30 +547,78 @@ async def request_dm(body: RequestDmBody, request: Request):
 
 @router.post("/send")
 async def send_dm(body: SendDmRequest):
-    """手动发送私信，按 channel 路由到 WS 或 WP 通道。
+    """手动发送私信，按 channel 路由到 WS 或 WP 通道，失败自动降级。
 
     2026-09-05：新增双通道。
-      - channel='ws'（默认）：转发 recv_daemon /send，走 DouyinAPI.send_msg HTTP API。
-      - channel='wp'：转发 BCC /wp_send，在 chat 页上下文调页面 IM SDK 发送。
+      - channel='ws'（默认，**主通道**）：转发 recv_daemon /send，走
+        DouyinAPI.send_msg HTTP API。有 ACK、落库含 skey、不依赖浏览器。
+      - channel='wp'（**备用通道**）：转发 BCC /wp_send，在 chat 页上下文
+        走 DOM 流程发送。无 ACK，依赖浏览器常驻。
+
+    2026-09-06 全局治理（2.4 自动降级）：
+      用户明确「WS 优先级比 WP 高」。此前两通道是硬分支——选了 wp 就
+      只用 wp，BCC 一挂发送直接失败，无任何回退。
+      现在引入自动降级：
+        - channel='ws'（或 'auto'）失败 → 自动回退 wp
+        - channel='wp' 失败 → 自动回退 ws
+        - 两个都失败才返回失败，并带上两条通道的错误原因
+      前端无需改动即可受益（默认 ws 自动获得 wp 兜底）。
     """
-    if body.channel == "wp":
-        return await wp_send_dm(body)
-    try:
+    fallback_enabled = body.channel in ("ws", "wp", "auto")
+    first = "wp" if body.channel == "wp" else "ws"
+    second = "ws" if first == "wp" else "wp"
+
+    async def _try(ch: str) -> dict:
+        if ch == "wp":
+            return await wp_send_dm(body)
         url = _recv_url(body.account, "/send")
         if url is None:
             return {"ok": False, "error": "端口分配失败"}
-        d = _http_post_json(url, {
+        return _http_post_json(url, {
             "account": body.account,
             "conv_id": body.conv_id,
             "text": body.text,
         })
-        return d
+
+    errors = {}
+    try:
+        d = await _try(first)
+        if d and d.get("ok"):
+            # 首次尝试成功；若发生过降级则标注实际通道
+            if d.get("channel") is None:
+                d["channel"] = first
+            return d
+        errors[first] = (d or {}).get("error") or (d or {}).get("msg") or "未知失败"
     except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return {"ok": False, "error": "账号私信守护未运行"}
-        return {"ok": False, "error": f"私信守护返回 {e.code}"}
+        errors[first] = ("账号私信守护未运行" if e.code == 404
+                         else f"私信守护返回 {e.code}")
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        errors[first] = str(e)
+
+    if not fallback_enabled:
+        return {"ok": False, "error": errors.get(first), "channel": first}
+
+    # 首次失败 → 自动回退备用通道
+    logger.warning(
+        f"[send][{body.account}] {first.upper()} 通道失败（{errors.get(first)}），"
+        f"自动回退 {second.upper()} 通道")
+    try:
+        d = await _try(second)
+        if d and d.get("ok"):
+            d["channel"] = second
+            d["fallback_from"] = first
+            return d
+        errors[second] = (d or {}).get("error") or (d or {}).get("msg") or "未知失败"
+    except Exception as e:
+        errors[second] = str(e)
+
+    return {
+        "ok": False,
+        "error": f"两条通道均失败：{first.upper()}={errors.get(first)}；"
+                 f"{second.upper()}={errors.get(second)}",
+        "channel": None,
+        "errors": errors,
+    }
 
 
 @router.post("/send_image")

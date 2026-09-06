@@ -24,14 +24,10 @@ from models.enums import AccountRole, AccountStatus
 from models.account import AccountInfo, CheckAccountResponse
 
 
-def account_port(name: str, kind: str) -> int:
-    """端口分配（保留原版 crc32 哈希算法）"""
-    h = zlib.crc32(name.encode("utf-8"))
-    if kind == "browser":
-        return settings.browser_port_base + (h % settings.browser_port_range)
-    elif kind == "recv":
-        return settings.recv_port_base + (h % settings.recv_port_range)
-    raise ValueError(f"未知 kind: {kind}")
+# 2026-09-06 全局治理（2.6 孤儿代码清理）：原 `account_port()` 函数
+# 无任何调用方（grep 全仓 0 次调用），且用的是**裸 crc32**（与
+# auto_dm/accounts.py 的 _stable_port 重复且缺 salt 防护）。删除
+# 统一由 auto_dm/accounts.env_path_of + _stable_port 提供。
 
 
 class AccountService:

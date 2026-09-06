@@ -144,11 +144,13 @@ def env_path_of(name):
 # 每账号守护端口分配：用账号名稳定哈希，保证每个账号的
 # 凭证守护(browser_daemon)与私信守护(recv_daemon)有各自唯一、稳定的端口，
 # 从而实现「每个账号独立启停守护」，互不冲突。
-# 范围 [10000, 10999]，避开 9911/9912/8765/8877/8080 等常用端口。
+# 2026-09-06 全局治理（2.2B 扩大 span）：与 config.py 同步，500 槽位
+# 20 账号碰撞率 ≈32%，扩到 2000 槽位后降到 ≈9.1%。
+# 范围 [10000, 13999]。
 _BPORT_BASE = 10000
-_RPORT_BASE = 10500
-_BPORT_SPAN = 500   # browser 端口段 [10000,10499]
-_RPORT_SPAN = 500   # recv 端口段 [10500,10999]
+_RPORT_BASE = 12000
+_BPORT_SPAN = 2000  # browser 端口段 [10000,11999]
+_RPORT_SPAN = 2000  # recv 端口段 [12000,13999]
 
 
 def _stable_port(name, base, span, salt=""):

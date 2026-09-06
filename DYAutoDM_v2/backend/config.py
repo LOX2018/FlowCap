@@ -51,10 +51,13 @@ class Settings(BaseSettings):
     accounts_dir: Path = Path("accounts")
 
     # ===== 守护进程端口范围 =====
+    # 2026-09-06 全局治理（2.2B 扩大 span）：原 500 槽位 20 账号碰撞率
+    # ≈32%（生日悖论），扩到 2000 后降到 ≈9.1%。
+    # 范围 [10000, 13999]，避开 9911/9912/8765/8877/8080 等常用端口。
     browser_port_base: int = 10000
-    browser_port_range: int = 500
-    recv_port_base: int = 10500
-    recv_port_range: int = 500
+    browser_port_range: int = 2000
+    recv_port_base: int = 12000
+    recv_port_range: int = 2000
 
     # ===== 图片存储策略 =====
     # 2026-08-31 实测（60 张真实私信图片）：

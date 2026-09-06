@@ -990,6 +990,10 @@ class BrowserContainer:
         SCAN_BREAKER_LIMIT = 2       # 连续失败 N 次 -> 熔断
         SCAN_BACKOFF_SEC = 1800      # 熔断退避 30 分钟
         breaker_until = 0.0          # 熔断截止时间戳
+        # 2026-09-06（2.1a）：保活回写 .env 的节流时间戳。
+        # 初始值设成「刚启动」以便启动后第一个探活周期就同步一次新鲜凭证
+        # （原实现从不回写，.env 长期停留在旧凭证）。
+        last_cookie_sync = 0.0
         while not stop_ev.is_set():
             if stop_ev.wait(interval):
                 break
@@ -1053,6 +1057,38 @@ class BrowserContainer:
                         scan_fail_count = 0
                         logger.debug(f"[bcc] 登录态正常(uid={uid}, "
                                      f"conv={page_state.get('conv')})")
+                        # 2026-09-06（2.1a 保活回写）：原实现「保活心跳」
+                        # 只做探活 + scan_login，**从不把浏览器 profile 里的
+                        # 新鲜 cookie 回写 .env** —— 导致 .env 长期停留在
+                        # 上次扫码/POST /cookie 时的旧凭证，而 BCC 手里其实
+                        # 一直有更新鲜的（浏览器会自动续期）。recv_daemon 等
+                        # 消费者读 .env 拿到的就是陈旧凭证。
+                        #
+                        # 修复：登录态正常时【节流】回写（默认 30 分钟一次，
+                        # DY_BCC_COOKIE_SYNC_SEC 可调；设为 0 可关闭）。
+                        # 只在「页面登录态确认正常」时写，绝不覆盖有效凭证。
+                        try:
+                            _sync_sec = int(os.environ.get(
+                                "DY_BCC_COOKIE_SYNC_SEC", "1800"))
+                        except Exception:
+                            _sync_sec = 1800
+                        if _sync_sec > 0 and (now - last_cookie_sync) >= _sync_sec:
+                            last_cookie_sync = now
+                            try:
+                                if self._loop:
+                                    fut = asyncio.run_coroutine_threadsafe(
+                                        self.refresh_cookie_to_env(), self._loop)
+                                    r = fut.result(timeout=60)
+                                    if r and r.get("ok"):
+                                        logger.info(
+                                            f"[bcc] 保活回写：已将 profile 新鲜凭证"
+                                            f"同步至账号 .env（uid={uid}）")
+                                    else:
+                                        logger.debug(
+                                            f"[bcc] 保活回写跳过："
+                                            f"{(r or {}).get('msg', '无更新')}")
+                            except Exception as e:
+                                logger.debug(f"[bcc] 保活回写失败（不影响运行）: {e}")
                 else:
                     logger.warning("[bcc] 登录态失效，自动刷新凭证…")
                     # 在子线程调 async scan_login：投递到主 loop

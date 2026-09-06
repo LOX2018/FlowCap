@@ -129,16 +129,39 @@ class AccountInbox:
         self._api_pulled = False  # 标记是否已调 get_message_by_init 拉全量会话
         # my_uid：用于从 conv_id 0:1:uid_a:uid_b 提取对端 UID（WS 消息 sender 常为空/自己）
         self.my_uid = None
+        self._refresh_my_uid()
+        self._load_from_db()
+
+    def _refresh_my_uid(self) -> bool:
+        """（重新）读取本机 uid。
+
+        2026-09-06 全局治理（2.1b uid 轮换自愈）：
+        原实现只在 AccountInbox.__init__ 里算一次，之后**永不刷新**。
+        而抖音存在 uid 轮换（知识库 08 §24.9 实测：query/user 返回新 uid，
+        imapi 仍挂老 uid），一旦轮换，方向判定 `sender == my_uid` 就全错
+        （自己发的被判成对方发的，反之亦然）。
+
+        改：抽成本方法 + 由 WS 循环定期调用（见 RecvChannel 里的
+        MY_UID_REFRESH_INTERVAL），轮换后自动自愈。
+        返回是否读取成功。
+        """
         try:
             from auto_dm import accounts as _acc
             from dy_apis.login_api import DYLoginApi
-            env_path = _acc.env_path_of(name)
-            if env_path:
-                _auth = DYLoginApi._load_auth_from_env(env_path)
-                self.my_uid = str(_auth.get_uid())
+            env_path = _acc.env_path_of(self.name)
+            if not env_path:
+                return False
+            _auth = DYLoginApi._load_auth_from_env(env_path)
+            new_uid = str(_auth.get_uid()) if _auth else None
+            if new_uid and new_uid != self.my_uid:
+                if self.my_uid:
+                    logger.warning(
+                        f"[recv][{self.name}] my_uid 发生轮换：{self.my_uid} → {new_uid}"
+                        f"（已自动更新方向判定基准）")
+                self.my_uid = new_uid
+            return bool(self.my_uid)
         except Exception:
-            pass
-        self._load_from_db()
+            return False
 
     def _extract_peer_uid(self, conv_id: str) -> str | None:
         """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除自己）。"""
@@ -438,6 +461,13 @@ class RecvChannel(threading.Thread):
             self.inbox.connected = True
             self.inbox.last_error = ""
             logger.info(f"[recv][{self.name}] 私信长连接已建立")
+            # 2026-09-06（2.1b uid 轮换自愈）：每次建连/重连都刷新一次
+            # my_uid —— 放在 on_open 而非定时器，零额外开销且覆盖重连场景。
+            # uid 轮换后方向判定（sender == my_uid）自动恢复正确。
+            try:
+                self.inbox._refresh_my_uid()
+            except Exception:
+                pass
 
         def on_message(ws, message):
             try:
