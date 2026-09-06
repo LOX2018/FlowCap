@@ -978,11 +978,23 @@ class BrowserContainer:
         "能拿到 uid = 正常"。uid 与上次比对，漂移视为凭证异常
         （疑似身份被轮换/替换），记 error 并触发 scan_login 重扫，
         而非打"登录态正常"绿标。
+
+        2026-09-06 P0 熔断（知识库 08 §24.13）：实测发现恶性循环——
+        半登录态 -> scan_login 重启浏览器 -> 仍半登录（session 服务端已死，
+        自动登录救不回）-> 5 分钟后又来。每 5 分钟一次完整浏览器重启 =
+        极强风控信号。修复：scan_login 连续失败 2 次即熔断，退避 30 分钟；
+        期间只记日志告警（人工扫码后自然恢复），不再自动重启浏览器。
         """
         logger.info(f"[bcc] 保活心跳启动，间隔 {interval}s")
+        scan_fail_count = 0          # 连续 scan_login 失败计数
+        SCAN_BREAKER_LIMIT = 2       # 连续失败 N 次 -> 熔断
+        SCAN_BACKOFF_SEC = 1800      # 熔断退避 30 分钟
+        breaker_until = 0.0          # 熔断截止时间戳
         while not stop_ev.is_set():
             if stop_ev.wait(interval):
                 break
+            now = time.time()
+            in_breaker = now < breaker_until
             try:
                 uid = self._load_uid_from_env()
                 prev_uid = getattr(self, "_last_uid", None)
@@ -992,20 +1004,30 @@ class BrowserContainer:
                         f"[bcc] uid 漂移！old={prev_uid} new={uid}，"
                         f"凭证身份存疑，触发自动刷新…")
                     self._last_uid = uid  # 记录新值，后续漂移检测以新值为基线
-                    if self._loop:
+                    if self._loop and not in_breaker:
                         fut = asyncio.run_coroutine_threadsafe(
                             self.scan_login(force=False), self._loop)
                         try:
                             fut.result(timeout=120)
+                            scan_fail_count = 0
                         except Exception as e:
                             logger.warning(f"[bcc] uid 漂移后自动刷新失败: {e}")
+                            scan_fail_count += 1
                 elif uid:
                     # 2026-09-06 P1：uid 探活通过 ≠ 页面登录态有效。
                     # 「半登录态」（页面显示一键登录待激活）下 query/user 仍返回
                     # uid，但页面内 WP 发送/昵称捕获已全部失效（实测）。
-                    # 页面级检查失败 → 触发 scan_login（一键登录可自动点）。
                     page_state = self._page_login_state_sync()
                     if page_state.get("rel") or not page_state.get("conv"):
+                        if in_breaker:
+                            # 熔断中：只告警，绝不重启浏览器（防风控恶性循环）
+                            remain = int(breaker_until - now)
+                            logger.warning(
+                                f"[bcc] 页面仍需重激活（conv={page_state.get('conv')}），"
+                                f"scan_login 已熔断（连续失败 {scan_fail_count} 次），"
+                                f"{remain // 60} 分钟内不再自动重启浏览器，"
+                                f"请在指纹浏览器完成扫码登录")
+                            continue
                         logger.warning(
                             f"[bcc] 页面级登录态失效（conv={page_state.get('conv')} "
                             f"rel={page_state.get('rel')}），uid={uid} 仍有效但页面需重新激活，"
@@ -1015,16 +1037,26 @@ class BrowserContainer:
                                 self.scan_login(force=False), self._loop)
                             try:
                                 fut.result(timeout=120)
+                                scan_fail_count = 0
                             except Exception as e:
                                 logger.warning(f"[bcc] 页面重激活失败: {e}")
+                                scan_fail_count += 1
+                            if scan_fail_count >= SCAN_BREAKER_LIMIT:
+                                breaker_until = time.time() + SCAN_BACKOFF_SEC
+                                logger.error(
+                                    f"[bcc] scan_login 连续失败 {scan_fail_count} 次，"
+                                    f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟。"
+                                    f"session 疑似服务端已失效，自动登录救不回，"
+                                    f"请在指纹浏览器重新扫码；期间仅告警不重启浏览器")
                     else:
                         self._last_uid = uid
+                        scan_fail_count = 0
                         logger.debug(f"[bcc] 登录态正常(uid={uid}, "
                                      f"conv={page_state.get('conv')})")
                 else:
                     logger.warning("[bcc] 登录态失效，自动刷新凭证…")
                     # 在子线程调 async scan_login：投递到主 loop
-                    if self._loop:
+                    if self._loop and not in_breaker:
                         fut = asyncio.run_coroutine_threadsafe(
                             self.scan_login(force=False), self._loop)
                         try:
