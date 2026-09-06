@@ -145,11 +145,24 @@ def parse_http_init(body: str, my_uid: str) -> list[dict]:
 def _norm_msg(m: dict, conv_id: str, peer_uid: str, my_uid: str) -> dict:
     """把不同来源的消息对象归一成统一结构。
 
-    方向判定铁律（08 §13.5）：只能用 sender UID 判断，不可用消息类型推断。
-    sender == 自己 UID → me；否则 them。
+    :param my_uid: 本机账号 UID（用于方向判定）
     """
+    # 08 §13.5 铁律：方向只能用 sender UID 判断，不可用消息类型推断。
+    # sender == 自己 UID → 我发(me)；否则对方发(them)。
+    #
+    # 2026-09-06 全局治理（跨通道方向判定统一）：
+    # 原写法 `sender and my_uid and sender == my_uid` 在 sender 为空时会
+    # 落到 else → them，与 conversation_capture:602 的「空 sender 归 me」
+    # （自动欢迎语/自动回复本系统产生）判定相反 —— 同一条消息走 WS 和走
+    # WP 会得到不同 role，前端展示方向错乱。
+    # 统一为：sender 为空 → me（与 capture 一致）；有 sender → 按 UID 比对。
     sender = str(m.get("sender") or m.get("sender_id") or m.get("from_user_id") or "")
-    role = "me" if sender and my_uid and str(sender) == str(my_uid) else "them"
+    if not sender:
+        role = "me"
+    elif my_uid and str(sender) == str(my_uid):
+        role = "me"
+    else:
+        role = "them"
     # 时间戳：兼容秒 / 毫秒
     raw_ts = m.get("create_time") or m.get("ts") or m.get("created_at") or 0
     try:
@@ -167,6 +180,13 @@ def _norm_msg(m: dict, conv_id: str, peer_uid: str, my_uid: str) -> dict:
         "text": (text or "")[:MAX_TEXT_LEN],
         "msg_type": str(m.get("msg_type") or m.get("type") or "text"),
         "ts": ts,
+        # 2026-09-06 全局治理（跨通道 ID 空间归一化）：
+        # WS 通道落库用【服务端 msg_id】，WP 通道若只用 client_msg_id
+        # 则两者不在同一 ID 空间，uniq_dmmsg 无法跨通道去重。
+        # 这里优先取服务端 msg_id（页面数据通常两者都带），client_msg_id
+        # 仅作兜底并在 extra 里保留，供发送侧溯源。
+        "msg_id": str(m.get("msg_id") or m.get("server_msg_id")
+                      or m.get("client_msg_id") or ""),
         "client_msg_id": str(m.get("client_msg_id") or m.get("msg_id") or ""),
         "sender_nickname": m.get("sender_nickname") or "",
     }
@@ -272,7 +292,7 @@ def process_events(account: str, events: list[dict]) -> int:
                     " VALUES(?,?,?,?,?,?,?,?)",
                     (account, m["conv_id"], m["role"], m["text"],
                      m["msg_type"], json.dumps(extra, ensure_ascii=False), m["ts"],
-                     m["client_msg_id"]),
+                     m.get("msg_id") or m["client_msg_id"] or None),
                 )
                 conn.execute(
                     "UPDATE dm_conversations SET last_ts=?,unread=unread+? "

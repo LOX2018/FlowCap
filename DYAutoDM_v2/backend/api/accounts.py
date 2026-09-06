@@ -343,8 +343,17 @@ async def list_accounts(request: Request):
     if not names:
         return {"ok": True, "accounts": []}
     # 并发校验，避免串行卡顿（删除账号后刷新尤其明显）
-    with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:
-        accounts = list(pool.map(_to_raw_account, names))
+    # 2026-09-06 全局调用链治理：ThreadPoolExecutor 的 pool.map 本身是
+    # 【同步阻塞】调用——虽然池内线程让出了 GIL，但 async 事件循环仍被
+    # 卡住直到最慢的账号返回（timeout=3s）。期间 /api/overview、
+    # /api/live/stream 等 3s 轮询全部排队。整段丢 run_in_executor，
+    # 让事件循环真正空出来。
+    def _run_all() -> list:
+        with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:
+            return list(pool.map(_to_raw_account, names))
+
+    loop = asyncio.get_running_loop()
+    accounts = await loop.run_in_executor(None, _run_all)
     return {"ok": True, "accounts": accounts}
 
 
