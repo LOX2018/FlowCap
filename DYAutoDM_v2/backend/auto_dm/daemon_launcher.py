@@ -84,12 +84,20 @@ def ensure_daemons_for(account: str, wait: bool = True) -> dict:
         elif acct_core._port_open(bport, timeout=0.2):
             result["browser"] = True
         else:
+            # 2026-09-06 全局治理（BCC spawn 路径收敛）：
+            # 本处原本是第 3 条独立 spawn 路径，绕过 accounts.ensure_bcc
+            # 的【启动冷静期】与【防重复拉起】保护 —— 这正是「启动时 BCC
+            # 快闪唤醒」的结构根因之一（更新会话/凭证校验走到这里就直接拉）。
+            # 改为统一委托 ensure_bcc，全项目只剩一个 BCC 拉起入口。
             try:
-                proc = _spawn_sidecar(bcc_binary, ["--account", account, "--port", str(bport)])
-                logger.info(f"[daemon-launcher] 已拉起 browser_daemon (port={bport}, pid={proc.pid})")
-                if wait:
-                    _wait_for_port(bport, timeout=30)
-                result["browser"] = True
+                st = acct_core.ensure_bcc(account, wait_ready=wait)
+                result["browser"] = bool(st.get("ok"))
+                if st.get("ok"):
+                    logger.info(f"[daemon-launcher] BCC 已就绪 (port={bport}) via ensure_bcc")
+                else:
+                    logger.warning(
+                        f"[daemon-launcher] BCC 未拉起（{st.get('msg')}）——"
+                        f"冷静期内或二进制缺失，属预期，不强制拉起")
             except Exception as e:
                 logger.warning(f"[daemon-launcher] 拉起 browser_daemon 失败: {e}")
 
