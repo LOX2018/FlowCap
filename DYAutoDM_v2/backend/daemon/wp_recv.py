@@ -258,11 +258,21 @@ def process_events(account: str, events: list[dict]) -> int:
                     "client_msg_id": m["client_msg_id"],
                     "sender_nickname": m.get("sender_nickname") or "",
                 }
+                # 2026-09-06 全局并发治理（双通道重复落库核心修复）：
+                # WP 通道此前只把 client_msg_id 塞进 extra JSON，不写 msg_id 列
+                # —— uniq_dmmsg(account,conv_id,msg_id) 唯一索引完全管不到它，
+                # 只能靠 fallback 索引（role+text+毫秒 ts）兜底；而 WS 回声与
+                # WP 轮询写入同一条消息时 ts 有毫秒级差异，fallback 也失效，
+                # 导致同一条消息重复入库（前端看到两条一样的）。
+                # 修正：client_msg_id 写入 msg_id 列，让 WS/WP 双通道同一条
+                # 消息命中同一个唯一索引 → 真正去重。
                 conn.execute(
-                    "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts)"
-                    " VALUES(?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO dm_messages("
+                    "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
                     (account, m["conv_id"], m["role"], m["text"],
-                     m["msg_type"], json.dumps(extra, ensure_ascii=False), m["ts"]),
+                     m["msg_type"], json.dumps(extra, ensure_ascii=False), m["ts"],
+                     m["client_msg_id"]),
                 )
                 conn.execute(
                     "UPDATE dm_conversations SET last_ts=?,unread=unread+? "

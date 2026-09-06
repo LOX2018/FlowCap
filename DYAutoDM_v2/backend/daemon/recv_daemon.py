@@ -314,7 +314,8 @@ class AccountInbox:
 
     def add_message(self, conv_id: str, role: str, text: str,
                     peer_id: Any = None, peer_name: str | None = None,
-                    msg_type: str = "text", extra: dict | None = None) -> Conversation:
+                    msg_type: str = "text", extra: dict | None = None,
+                    msg_id: str | None = None) -> Conversation:
         # 回执类消息（msg_type=50001「对方已读」）不落库：
         # 这类消息无 msg_id（唯一索引管不到去重），WS 每次同步都会重复写入，
         # 实测全库堆积 1938 条，把真实聊天记录挤掉、也让会话 last_ts 被无效刷新。
@@ -335,11 +336,18 @@ class AccountInbox:
             # 持久化到 SQLite（单条消息 + 会话 last_ts 更新）
             try:
                 conn = self._db()
+                # 2026-09-06 全局并发治理（双通道重复落库）：
+                # 裸 INSERT 会绕过 uniq_dmmsg / uniq_dmmsg_fallback 两个唯一
+                # 索引而直接抛 IntegrityError（不是去重）。改 OR IGNORE 后
+                # WS 回声与 WP 页面轮询写入同一条消息时自动去重，
+                # 与 conversation_capture / 首包补全路径行为一致。
                 conn.execute(
-                    "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts)"
-                    " VALUES(?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO dm_messages("
+                    "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
                     (self.name, conv_id, role, text, msg_type,
-                     json.dumps(extra or {}, ensure_ascii=False), ts),
+                     json.dumps(extra or {}, ensure_ascii=False), ts,
+                     str(msg_id) if msg_id else None),
                 )
                 conn.execute(
                     "UPDATE dm_conversations SET last_ts=?,unread=unread+? "
@@ -516,6 +524,9 @@ class RecvChannel(threading.Thread):
             self.inbox.add_message(
                 conv_id, role, text, peer_id=sender,
                 peer_name=peer_name, msg_type=str(msg_type), extra=extra,
+                # 2026-09-06 双通道去重：写入抖音消息唯一 ID，让 WS / WP
+                # 两条通道写入同一条消息时命中 uniq_dmmsg 唯一索引去重。
+                msg_id=str(msg.msg_id) if msg.msg_id else None,
             )
             logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] {peer_name}: {text}")
         elif frame.payloadType == "text/json":

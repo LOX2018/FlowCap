@@ -55,9 +55,15 @@ def get_db() -> sqlite3.Connection:
         if _conn is not None:
             return _conn
         p = _db_path()
-        _conn = sqlite3.connect(str(p), check_same_thread=False)
+        _conn = sqlite3.connect(str(p), check_same_thread=False, timeout=30)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")  # 写前日志（并发友好）
+        # 2026-09-06 全局并发治理（多进程写竞争）：
+        # backend + N×recv_daemon + BCC 会并发写同一个 db。WAL 只解决
+        # 「读写不互斥」，不解决「写写竞争」——没有 busy_timeout 时，
+        # 并发写会立刻抛 "database is locked"（默认超时 5s 且不重试）。
+        # 设 30s 忙等 + 进程内串行写锁，彻底消灭并发写崩溃。
+        _conn.execute("PRAGMA busy_timeout=30000")  # 30s 忙等重试
         _conn.execute("PRAGMA synchronous=NORMAL")  # 正常同步（比 FULL 快，仍比 JSON 安全得多）
         _conn.execute("PRAGMA foreign_keys=ON")
         _init_tables(_conn)
@@ -259,13 +265,17 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                          d.get("short_id"), d.get("last_ts", 0), 0),
                     )
                     for msg in d.get("messages", []) or []:
+                        # 2026-09-06 全局并发治理：迁移路径也改 OR IGNORE
+                        # （此前裸 INSERT，重复运行迁移会重复灌入消息）
                         conn.execute(
-                            "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts)"
-                            " VALUES(?,?,?,?,?,?,?)",
+                            "INSERT OR IGNORE INTO dm_messages("
+                            "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                            " VALUES(?,?,?,?,?,?,?,?)",
                             (acct, conv_id, msg.get("role", "them"), msg.get("text", ""),
                              msg.get("msg_type", "text"),
                              json.dumps(msg.get("extra", {}), ensure_ascii=False),
-                             msg.get("ts", 0)),
+                             msg.get("ts", 0),
+                             str(msg.get("msg_id")) if msg.get("msg_id") else None),
                         )
                         m_migrated += 1
                 if m_migrated:
