@@ -151,12 +151,27 @@ _BPORT_SPAN = 500   # browser 端口段 [10000,10499]
 _RPORT_SPAN = 500   # recv 端口段 [10500,10999]
 
 
-def _stable_port(name, base, span):
+def _stable_port(name, base, span, salt=""):
+    """基于账号名的稳定端口分配。
+
+    2026-09-06 全局治理（端口碰撞修复）：
+    原实现对 browser / recv 用**同一个 crc32(name) 值**，只是 base 不同
+    （10000 vs 10500）。这意味着两个守护的端口偏移【完全同步】——
+    一旦某账号在 browser 段撞车，它在 recv 段必然也撞车，且是
+    「同一对账号互撞」，排查时表现为两个账号的守护互相串号。
+
+    加 salt 让 browser / recv 使用**不同的哈希输入**，即使 crc32 值相同
+    也可通过 salt 错开偏移，打破同步性。salt 只为区分用途，
+    不改变「同账号同名 → 同端口」的稳定性（向后兼容）。
+
+    注：500 槽位下 20 账号碰撞率约 32%（生日悖论），这是 span 的固有限制；
+    salt 解决的是「browser/recv 同步撞车」，彻底解决需扩大 span（待评估）。
+    """
     # 用 zlib.crc32 稳定哈希：不依赖 PYTHONHASHSEED（hash() 跨进程随机，会导致
     # web_bridge 算的端口与 subprocess 拉起的守护进程算的端口不一致）。
     try:
         import zlib
-        h = zlib.crc32((name or "").encode("utf-8")) % span
+        h = zlib.crc32(((name or "") + salt).encode("utf-8")) % span
     except Exception:
         h = 0
     return base + h
@@ -165,7 +180,17 @@ def _stable_port(name, base, span):
 def browser_daemon_port(name=None):
     """该账号的凭证守护(browser_daemon)专属端口（稳定分配）。"""
     name = name or current_name()
-    return _stable_port(name, _BPORT_BASE, _BPORT_SPAN)
+    return _stable_port(name, _BPORT_BASE, _BPORT_SPAN, salt="|bcc")
+
+
+def recv_daemon_port(name=None):
+    """该账号的私信守护(recv_daemon)专属端口（稳定分配）。
+
+    2026-09-06：加 salt="|recv" 与 browser 段错开哈希输入，
+    避免两守护端口偏移同步（详见 _stable_port 说明）。
+    """
+    name = name or current_name()
+    return _stable_port(name, _RPORT_BASE, _RPORT_SPAN, salt="|recv")
 
 
 # 2026-09-06 BCC 懒加载（用户架构决策：启动不拉 BCC，按需自动拉起）。
@@ -243,12 +268,6 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45) -> dict:
             time.sleep(0.5)
         return {"ok": False, "port": port, "msg": f"BCC 懒加载后 {timeout}s 端口未就绪"}
     return {"ok": True, "port": port, "msg": "已拉起（未等待就绪）"}
-
-
-def recv_daemon_port(name=None):
-    """该账号的私信守护(recv_daemon)专属端口（稳定分配）。"""
-    name = name or current_name()
-    return _stable_port(name, _RPORT_BASE, _RPORT_SPAN)
 
 
 def _port_open(port, timeout=0.5):
