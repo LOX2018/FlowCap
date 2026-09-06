@@ -200,7 +200,15 @@ def parse_ws_frame(body: str, my_uid: str) -> list[dict]:
     绝不猜测 protobuf schema。
     """
     out: list[dict] = []
-    if not body or body == "<binary>":
+    # 2026-09-06 全局治理：页面 hook 现已上抛二进制帧（B64: 前缀 base64）。
+    # 抖音 IM 二进制帧是 protobuf 且 schema 未逆向，当前仍不解析（绝不猜测），
+    # 但与 '<binary>' 占位不同：B64 帧至少保留了完整原始数据，可离线排查。
+    if not body:
+        return out
+    if body == "<binary>":
+        return out
+    if body.startswith("B64:"):
+        logger.debug(f"[wp_recv] WS 二进制帧（B64，{len(body)-4} B），protobuf 解析未启用，跳过")
         return out
     try:
         obj = json.loads(body)

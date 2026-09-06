@@ -1074,11 +1074,16 @@ async def quit_() -> dict:
 # ----------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(description="私信接收守护进程")
-    parser.add_argument("--accounts", required=True, help="账号名列表（逗号分隔）")
+    parser.add_argument("--accounts", required=False, help="账号名列表（逗号分隔）")
+    # 2026-09-06 全局治理：兼容 daemon_launcher.py:113 历史 bug
+    # 传的是单数 --account（应传 --accounts），加 alias 兜住。
+    parser.add_argument("--account", required=False, help="单账号（兼容历史参数）")
     parser.add_argument("--port", type=int, required=True, help="HTTP 控制端口")
     args = parser.parse_args()
 
-    _state["accounts"] = [a.strip() for a in args.accounts.split(",") if a.strip()]
+    accounts_str = args.accounts or args.account or ""
+
+    _state["accounts"] = [a.strip() for a in accounts_str.split(",") if a.strip()]
     _state["port"] = args.port
 
     # 日志落盘

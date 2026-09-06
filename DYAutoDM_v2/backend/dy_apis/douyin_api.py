@@ -28,6 +28,10 @@ class DouyinAPI:
     douyin_url = 'https://www.douyin.com'
     live_url = 'https://live.douyin.com'
     creator = "https://creator.douyin.com"
+    # 2026-09-06 全局治理：get_my_uid 缓存新鲜度 TTL（秒）。
+    # auth.uid 缓存超过该时长后必须重探活，uid 轮换后自动自愈；
+    # 300s = 5 分钟，风控安全频次（每账号每 5 分钟至多 1 次 query/user）。
+    UID_CACHE_TTL_SEC = 300
 
 
     @staticmethod
@@ -730,9 +734,21 @@ class DouyinAPI:
         if not auth or not getattr(auth, "cookie", None):
             return None
         # 优先返回已由 ensure_uid 设置的 auth.uid（避免重复解析不一致）
+        # 2026-09-06 全局治理（uid 轮换自愈 + 风控平衡）：
+        # 原实现一旦缓存 auth.uid 就永远返回缓存，**uid 轮换后无任何路径更新**。
+        # 加上"缓存新鲜度"门：缓存超过 UID_CACHE_TTL_SEC（默认 300s = 5 分钟）
+        # 视为陈旧，必须重探活。
+        # 风控面：每 5 分钟 1 次 query/user，符合抖音探活频次安全范围；
+        # uid 轮换后下个 5 分钟窗口自动恢复，无需重启进程。
         existing_uid = getattr(auth, "uid", None)
-        if existing_uid:
-            return existing_uid
+        existing_ts = getattr(auth, "_uid_cached_at", None)
+        if existing_uid and existing_ts:
+            try:
+                _now = time.time()
+                if (_now - float(existing_ts)) < DouyinAPI.UID_CACHE_TTL_SEC:
+                    return existing_uid
+            except Exception:
+                pass
         cookie = auth.cookie
         # 真实 uid 优先：uid_tt 是登录态直接下发的数字 uid。
         # 仅当它是纯十进制数字才直接返回（旧版格式）；hex 或其它格式一律走网络接口。
@@ -741,7 +757,14 @@ class DouyinAPI:
             sval = str(uid_tt).strip()
             if sval.isdigit():
                 try:
-                    return int(sval)
+                    _uid = int(sval)
+                    # 写回缓存并打时间戳（即使直接 return，下次 uid 轮换也能感知）
+                    try:
+                        auth.uid = _uid
+                        auth._uid_cached_at = time.time()
+                    except Exception:
+                        pass
+                    return _uid
                 except (ValueError, TypeError):
                     pass
         # 走网络接口 query/user 拿真实十进制 uid（抖音新版唯一可靠来源）。
@@ -762,7 +785,14 @@ class DouyinAPI:
         resp = requests.get(url, params=params.get(), verify=False, headers=headers.get(), cookies=auth.cookie,
                             timeout=kwargs.get("timeout", 10))
         resp_json = json.loads(resp.text)
-        return int(resp_json['user_uid'])
+        # 写回 auth.uid + 时间戳（探活成功是最新鲜的 uid，确保轮换自愈链闭合）
+        try:
+            _fresh_uid = int(resp_json['user_uid'])
+            auth.uid = _fresh_uid
+            auth._uid_cached_at = time.time()
+        except Exception:
+            _fresh_uid = int(resp_json['user_uid'])
+        return _fresh_uid
 
     @staticmethod
     def get_my_sec_uid(auth, **kwargs) -> str:

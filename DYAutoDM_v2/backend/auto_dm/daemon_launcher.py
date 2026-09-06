@@ -110,7 +110,8 @@ def ensure_daemons_for(account: str, wait: bool = True) -> dict:
             result["recv"] = True
         else:
             try:
-                proc = _spawn_sidecar(recv_binary, ["--account", account, "--port", str(rport)])
+                # 2026-09-06 全局治理：原写 "--account" 是历史 bug，recv_daemon 要求 "--accounts"
+                proc = _spawn_sidecar(recv_binary, ["--accounts", account, "--port", str(rport)])
                 logger.info(f"[daemon-launcher] 已拉起 recv_daemon (port={rport}, pid={proc.pid})")
                 if wait:
                     _wait_for_port(rport, timeout=30)

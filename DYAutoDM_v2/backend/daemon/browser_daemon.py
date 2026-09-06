@@ -203,8 +203,25 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
       if (ev === 'message') {
         return origAdd(ev, (e) => {
           try {
-            const d = typeof e.data === 'string' ? e.data : '<binary>';
-            if (/im|message|conversation/i.test(d)) push('ws', String(u), d.slice(0, 400000));
+            // 2026-09-06 全局治理：二进制帧不再丢弃为 '<binary>' 占位。
+            // 抖音 IM 实时推送大量走 protobuf 二进制帧，之前 100% 丢失，
+            // WP 通道只能靠 HTTP 轮询被动补消息。现在转 base64 上抛，
+            // 后端侧按前缀 'B64:' 识别（wp_recv.parse_ws_frame 对非 JSON
+            // 帧本来就只记 debug 跳过，不会误解析；需要实时性时再解码）。
+            let d;
+            if (typeof e.data === 'string') {
+              d = e.data;
+            } else if (e.data instanceof Blob) {
+              d = 'B64:';  // Blob 异步读取复杂度高，先标记等待后续 FileReader 支持
+            } else if (e.data instanceof ArrayBuffer) {
+              const bytes = new Uint8Array(e.data);
+              let bin = '';
+              for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+              d = 'B64:' + btoa(bin);
+            } else {
+              d = String(e.data);
+            }
+            if (/im|message|conversation/i.test(d) || d.startsWith('B64:')) push('ws', String(u), d.slice(0, 400000));
           } catch(e2) {}
           return cb(e);
         });
@@ -950,7 +967,13 @@ class BrowserContainer:
             return {"ok": False, "msg": "新 cookie 探活失败（登录态无效），已保留原凭证"}
 
         # ---- P0 门禁 2：uid 与既有值一致性（漂移 = 身份被替换/轮换）----
-        old_uid = getattr(self, "_last_uid", None)
+        # 2026-09-06 全局治理：原比对 self._last_uid，但 run_keepalive 在
+        # uid 漂移时会【先更新 _last_uid 再触发 scan_login】（browser_daemon
+        # 1006 行注释「记录新值」），等 refresh_cookie_to_env 再跑时 _last_uid
+        # 已经是新值，门禁 2 永远命中不了 —— 自我作废。
+        # 改用独立基线 _uid_at_last_env_write：只在【成功写入 .env】时更新，
+        # 不受 keepalive 漂移检测影响，两条链路互不干扰。
+        old_uid = getattr(self, "_uid_at_last_env_write", None)
         if old_uid and str(old_uid) != str(new_uid):
             logger.error(
                 f"[bcc] 拒绝写入 .env：uid 漂移！old={old_uid} new={new_uid}。"
@@ -966,6 +989,8 @@ class BrowserContainer:
             logger.warning(f"[bcc] 写回 .env 失败: {e}")
         self._last_refresh = time.time()
         self._last_uid = new_uid
+        # 2026-09-06 全局治理：独立基线，只在成功写入 .env 时更新（见上方门禁 2 注释）
+        self._uid_at_last_env_write = new_uid
         return {"ok": True, "cookie_count": len(cks), "uid": str(new_uid),
                 "sessionid": cks.get("sessionid", "")[:12],
                 "cookies": "; ".join(f"{k}={v}" for k, v in cks.items()),
