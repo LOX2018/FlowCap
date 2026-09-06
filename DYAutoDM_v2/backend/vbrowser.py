@@ -54,6 +54,17 @@ _CHROME_ARGS = [
     "--disable-sync",
 ]
 
+# 2026-09-06 风控对齐（用户需求）：BCC「无头」运行改用【真有头 + 窗口移出屏幕】，
+# 不用 Chromium headless 模式。实测依据（知识库 08 §24.9）：同一 profile 下
+# 有头（双击打开的指纹浏览器）登录态正常、无头容器却触发 step-up 重验证
+# 降级为半登录态 —— 抖音风控能识别 headless 模式并判定环境跳变。
+# 把真有头窗口移到屏幕外（-32000,-32000），对抖音是 100% 有头特征，
+# 对用户等效无头（看不到窗口）。加 --window-size 保持常规桌面窗口尺寸。
+_HEADLESS_DISGUISE_ARGS = [
+    "--window-position=-32000,-32000",
+    "--window-size=1440,900",
+]
+
 # ---------- 代理支持（2026-09-06 借鉴 OpenBrowser per-env proxy 设计）----------
 #
 # 每账号可在自己的 .env 里配置 DY_PROXY（如 DY_PROXY=http://user:pass@host:port），
@@ -399,11 +410,17 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         else:
             logger.info(f"[vbrowser] 复用固定 profile: {user_data_dir}")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
+        # 2026-09-06 风控对齐：headless=True 改为「真有头 + 窗口移出屏幕」。
+        # Chromium headless 模式会被抖音风控识别（半登录态事故实证），
+        # 真有头窗口移屏外对抖音与用户双击打开的指纹浏览器特征完全一致。
+        if headless:
+            launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
+            logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=headless,
+            headless=False,  # 恒有头（headless 请求由移屏外参数伪装）
             args=launch_args,
             proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
@@ -454,11 +471,15 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
+        # 2026-09-06 风控对齐：与 launch_async 同策略，headless 转真有头+移屏外。
+        if headless:
+            launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
+            logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=headless,
+            headless=False,  # 恒有头（headless 请求由移屏外参数伪装）
             args=launch_args,
             proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
