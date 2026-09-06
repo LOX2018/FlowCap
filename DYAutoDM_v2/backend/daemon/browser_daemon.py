@@ -482,71 +482,97 @@ class BrowserContainer:
 
         return await self._exec(_do)
 
-    async def wp_send_text(self, conv_id: str, text: str, timeout: int = 30) -> dict:
+    async def wp_send_text(self, conv_id: str, text: str, timeout: int = 60) -> dict:
         """在 chat 页上下文里发文本私信（WP 通道发送）。
 
-        2026-09-05 新增。与 WS 通道（DouyinAPI.send_msg）并存。
+        2026-09-06 重写：废弃「探测式 IM SDK 调用」（页面全局从未有
+        webImService 等候选对象，实测恒失败），改用 **DOM 流程** ——
+        2026-09-06 上午实测验证通过（真有头+无头各一次，对方实收）：
+          搜索会话 → 点开 → 编辑器填字（execCommand insertText）→ Enter 发送。
+        与 wp_send_image 的 8 步流程同源（知识库 08 §24.9/§24.10）。
 
-        实现策略 —— **探测优先**：
-        抖音 chat 页把 IM SDK 挂在某个全局对象上，但具体名字/方法签名
-        未文档化且会随前端发版变化。这里按候选顺序尝试调用，
-        全部失败时返回页面里所有疑似 IM 全局对象的清单，
-        供人工在 DevTools 里确认真实调用方式（见计划 Task 6.5）。
+        风控说明：发送是用户主动触发的单次操作，且复用页面已有登录态。
 
-        风控说明：发送是用户主动触发的单次操作，不是批量行为，
-        且复用页面已有登录态，不额外登录、不遍历用户信息。
-        
-        返回 {"ok": bool, "via": str, "result": ...} / {"ok": False, "candidates": [...]}
+        返回 {"ok": bool, "via": "dom", "result": ...} / {"ok": False, "error": ...}
         """
-        import json as _json
+        # ① 从 conv_id 提取对端 uid，再由 DB 拿 peer_name（DOM 搜索需要昵称）
+        peer_name = None
+        try:
+            from database import get_db
+            _conn = get_db()
+            _row = _conn.execute(
+                "SELECT peer_name FROM dm_conversations WHERE account=? AND conv_id=?",
+                (self.account, conv_id)).fetchone()
+            if _row and _row[0]:
+                peer_name = str(_row[0])
+        except Exception:
+            pass
+        if not peer_name:
+            # conv_id 兜底：0:1:<uid_a>:<uid_b> 取非自身 uid 段当昵称占位
+            parts = str(conv_id).split(":")
+            if len(parts) == 4:
+                my = str(getattr(self, "_last_uid", "") or "")
+                peer_name = parts[3] if parts[2] == my else parts[2]
+            else:
+                return {"ok": False, "error": f"无法确定会话对象（conv_id={conv_id[:30]}）"}
 
         js = r"""
         async (args) => {
-          const convId = args.conv_id;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const kw = args.peer_name;
           const text = args.text;
-          const found = [];
-          // 先扫描全局对象，收集疑似 IM SDK（无论调用成功与否都返回，便于排查）
-          for (const k of Object.keys(window)) {
-            if (/im|chat|message|conversation/i.test(k)) {
-              try {
-                const v = window[k];
-                if (v && typeof v === 'object') {
-                  const methods = Object.keys(v).filter(m => typeof v[m] === 'function');
-                  const sendish = methods.filter(m => /send|create|post/i.test(m));
-                  if (sendish.length) found.push({ obj: k, sendMethods: sendish.slice(0, 20) });
-                }
-              } catch(e) {}
-            }
-          }
-          // 候选调用：常见命名 + 常见签名，逐个尝试
-          const candidates = [
-            ['webImService', (s) => s.sendText({conversation_id: convId, text: text})],
-            ['webImService', (s) => s.sendText(convId, text)],
-            ['DY_IM',        (s) => s.sendText({conversation_id: convId, text: text})],
-            ['__IM_SDK__',   (s) => s.sendText(convId, text)],
-            ['imSdk',        (s) => s.sendText({conversation_id: convId, text: text})],
-          ];
-          for (const [name, fn] of candidates) {
-            const sdk = window[name];
-            if (!sdk) continue;
-            try {
-              const r = await fn(sdk);
-              if (r) return { ok: true, via: name, result: r, candidates: found };
-            } catch(e) {
-              return { ok: false, via: name, error: String(e), candidates: found };
-            }
-          }
-          return {
-            ok: false,
-            error: '未找到可用的 IM SDK 发送方法（需 Task 6.5 实测确认）',
-            candidates: found
-          };
+          // ② 搜索会话
+          const inputs = Array.from(document.querySelectorAll('input'));
+          const search = inputs.find(i => /搜索|查找/.test(i.placeholder || ''));
+          if (!search) return { ok: false, error: '页面无搜索框（可能未登录/未在 chat 页）' };
+          search.focus();
+          const setter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value').set;
+          setter.call(search, kw);
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          await sleep(2500);
+          // ③ 点开会话
+          const items = Array.from(
+            document.querySelectorAll('.conversationConversationItemwrapper'));
+          const tgt = items.find(el => (el.innerText || '').includes(kw));
+          if (!tgt) return { ok: false, error: '搜索结果中无「' + kw + '」会话' };
+          ['mousedown', 'mouseup', 'click'].forEach(ev => {
+            tgt.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true,
+                                                   view: window, button: 0 }));
+          });
+          await sleep(3000);
+          // ④ 编辑器填字 + Enter 发送
+          const editor = document.querySelector(
+            '.messageEditorinputArea, [class*=editor-kit-container]');
+          if (!editor) return { ok: false, error: '聊天编辑器未出现（会话未打开成功）' };
+          editor.focus();
+          document.execCommand('insertText', false, text);
+          await sleep(600);
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+            bubbles: true, cancelable: true }));
+          await sleep(3000);
+          // ⑤ 发送判定：编辑器内容清空 = 消息已发出（抖音行为）
+          // 注意：抖音编辑器清空后残留零宽空格 \u200b，必须剔除再判
+          const editor2 = document.querySelector(
+            '.messageEditorinputArea, [class*=editor-kit-container]');
+          const rest = editor2
+            ? (editor2.innerText || '').replace(/\u200b/g, '').trim()
+            : null;
+          const cleared = rest !== null && rest === '';
+          return { ok: !!cleared, via: 'dom',
+                   error: cleared ? '' : '编辑器内容未清空，发送可能未成功' };
         }
         """
         try:
-            res = await self.exec_js(js, arg={"conv_id": conv_id, "text": text},
-                                     timeout=timeout)
-            return res if isinstance(res, dict) else {"ok": False, "result": res}
+            res = await self.exec_js(
+                js, arg={"peer_name": peer_name, "text": text}, timeout=timeout)
+            if isinstance(res, dict) and res.get("ok"):
+                logger.info(f"[bcc] wp_send_text 成功(DOM) -> {peer_name}: {text[:20]}")
+            else:
+                logger.warning(f"[bcc] wp_send_text 失败: "
+                               f"{res.get('error') if isinstance(res, dict) else res}")
+            return res if isinstance(res, dict) else {"ok": False, "error": str(res)}
         except Exception as e:
             logger.warning(f"[bcc] wp_send_text 失败: {e}")
             return {"ok": False, "error": str(e)}
@@ -1230,14 +1256,20 @@ class WpSendBody(BaseModel):
 
 @app.post("/wp_send")
 async def wp_send(body: WpSendBody) -> dict:
-    """WP 通道发送文本私信（调 chat 页 IM SDK）。
+    """WP 通道发送文本私信（chat 页 DOM 流程）。
 
-    2026-09-05 新增。与 WS 通道（recv_daemon /send）并存，
-    由后端 api/messages.py 的 channel 字段路由过来。
+    2026-09-06 重写：wp_send_text 改用 DOM 流程（搜索→点开→编辑器→Enter），
+    废弃探测式 IM SDK 调用（从未成功过）。
+    2026-09-06 补账号一致性校验（§24.9 事故④a 同源）：请求的 account 必须
+    与本容器账号一致，防止端口错乱时把消息发到别的账号会话里。
     """
     c = _state.get("container")
     if not c:
         return {"ok": False, "msg": "容器未启动", "result": None}
+    if body.account and body.account != c.account:
+        return {"ok": False,
+                "msg": f"账号不匹配：请求 {body.account}，容器是 {c.account}",
+                "result": None}
     try:
         res = await c.wp_send_text(body.conv_id, body.text)
         return {"ok": res.get("ok", False), "msg": res.get("error", ""), "result": res}
