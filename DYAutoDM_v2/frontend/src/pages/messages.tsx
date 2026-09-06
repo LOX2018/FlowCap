@@ -613,6 +613,9 @@ export default function MessagesPage(props: PageProps) {
   const [sendChannel, setSendChannel] = useState<"ws" | "wp">("ws");
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
+  // 2026-09-06：会话搜索 —— 按昵称过滤定位会话（用户要求）
+  const [convSearch, setConvSearch] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // 图片预览弹层（点击缩略图后展示）
   const [viewer, setViewer] = useState<MediaInfo | null>(null);
@@ -727,7 +730,13 @@ export default function MessagesPage(props: PageProps) {
   });
 
   const realAccts = accountsQ.data || [];
-  const shownConvs: Conv[] = convsQ.data || [];
+  const allConvs: Conv[] = convsQ.data || [];
+  // 2026-09-06：按昵称搜索过滤（大小写不敏感的包含匹配）
+  const shownConvs: Conv[] = convSearch.trim()
+    ? allConvs.filter((c) =>
+        (c.name || "").toLowerCase().includes(convSearch.trim().toLowerCase()),
+      )
+    : allConvs;
 
   // 当前选中会话对象（先取出 conv_id，供详情 query 使用）
   const conv: Conv =
@@ -976,12 +985,50 @@ export default function MessagesPage(props: PageProps) {
             </button>
             <button
               className="btn sm ghost"
+              data-od-id="search-conv"
+              title="按昵称搜索会话"
+              onClick={() => {
+                setShowSearch((s) => !s);
+                if (showSearch) setConvSearch(""); // 收起时清空过滤
+              }}
+            >
+              {showSearch ? "✕" : "🔍 搜索"}
+            </button>
+            <button
+              className="btn sm ghost"
               data-od-id="new-conv"
               onClick={() => setShowNew((s) => !s)}
             >
               {showNew ? "取消" : "＋ 新建会话"}
             </button>
           </div>
+          {/* 2026-09-06：会话搜索框（按昵称过滤定位） */}
+          {showSearch && (
+            <div className="head-row" style={{ padding: "2px 8px 8px", gap: 8 }}>
+              <input
+                className="input"
+                style={{ flex: 1, height: 34, fontSize: 12.5 }}
+                autoFocus
+                placeholder="输入昵称关键字过滤会话…"
+                value={convSearch}
+                onChange={(e) => setConvSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setConvSearch("");
+                    setShowSearch(false);
+                  }
+                }}
+              />
+              {convSearch && (
+                <span
+                  className="mono"
+                  style={{ fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }}
+                >
+                  {shownConvs.length}/{allConvs.length} 个
+                </span>
+              )}
+            </div>
+          )}
           <div className="conv-list">
             {showNew && (
               <div
@@ -1006,7 +1053,12 @@ export default function MessagesPage(props: PageProps) {
                 </button>
               </div>
             )}
-            {shownConvs.length === 0 && (
+            {shownConvs.length === 0 && convSearch.trim() && allConvs.length > 0 && (
+              <div style={{ padding: "14px 10px", color: "var(--muted)", fontSize: 12.5 }}>
+                没有昵称包含「{convSearch.trim()}」的会话
+              </div>
+            )}
+            {shownConvs.length === 0 && !(convSearch.trim() && allConvs.length > 0) && (
               <div style={{ padding: "14px 10px", color: "var(--muted)", fontSize: 12.5 }}>
                 暂无会话（接收守护未收到消息）
               </div>
