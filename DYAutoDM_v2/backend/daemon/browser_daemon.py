@@ -844,6 +844,38 @@ class BrowserContainer:
             pass
         return None
 
+    def _page_login_state_sync(self) -> dict:
+        """页面级登录态检查（keepalive 用，同步包装 async exec_js）。
+
+        2026-09-06 P1 修复（WP 通道失效事故）：query/user 在「半登录态」
+        （页面显示"一键登录"待激活）下依然返回 uid，导致 keepalive 误报
+        "登录态正常"，而页面内一切操作（WP 发送/昵称捕获）实际已失效。
+        页面级判据（知识库 08 §24.1 铁律）：convItems>0 且无「一键登录/扫码」。
+        """
+        import asyncio as _aio
+
+        async def _probe():
+            try:
+                res = await self.exec_js(
+                    "() => ({"
+                    " conv: document.querySelectorAll('.conversationConversationItemwrapper').length,"
+                    " rel: /一键登录|扫码登录|二维码失效/.test(document.body.innerText || ''),"
+                    " url: location.href.slice(0, 60)})", timeout=15)
+                if isinstance(res, dict):
+                    return res
+            except Exception as e:
+                logger.debug(f"[bcc] 页面登录态探测异常: {e}")
+            return None
+
+        try:
+            loop = self._loop or asyncio.get_event_loop()
+            fut = _aio.run_coroutine_threadsafe(_probe(), loop) \
+                if loop.is_running() else _aio.ensure_future(_probe())
+            return fut.result(timeout=25) or {}
+        except Exception as e:
+            logger.debug(f"[bcc] 页面登录态探测失败: {e}")
+            return {}
+
     async def refresh_cookie_to_env(self) -> dict:
         """读实时 cookie，写回 .env。返回 {ok, cookie_count, sessionid?}。
 
@@ -867,14 +899,24 @@ class BrowserContainer:
             return {"ok": False, "msg": "profile 内无登录态"}
 
         # ---- P0 门禁 1：新 cookie 必须能探活出 uid（登录态有效的基本判据）----
+        # 2026-09-06 优化：探活结果缓存 60s（类级），避免每条消息发送前的
+        # /cookie 刷新都做一次 query/user 网络探活（实测增加 0.5-1s 延迟）。
+        # 缓存键 = uid 值本身；60s 内已探活过同一 uid 直接复用。
         probe_auth = DYLoginApi._load_auth_from_env(env_path)
         probe_auth.cookie = cks
         probe_auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
-        probe_auth.uid = None  # 强制走网络探活，不吃缓存
-        try:
-            new_uid = DouyinAPI.get_my_uid(probe_auth)
-        except Exception:
-            new_uid = None
+        probe_auth.uid = None  # 强制走网络探活，不吃 auth 缓存
+        now_ts = time.time()
+        cached = getattr(BrowserContainer, "_uid_probe_cache", None)
+        new_uid = None
+        if cached and now_ts - cached[0] < 60:
+            new_uid = cached[1]  # 60s 内探活过，复用
+        else:
+            try:
+                new_uid = DouyinAPI.get_my_uid(probe_auth)
+            except Exception:
+                new_uid = None
+            BrowserContainer._uid_probe_cache = (now_ts, new_uid)
         if not new_uid:
             logger.warning(
                 f"[bcc] 拒绝写入 .env：新 cookie 探活失败（无 uid），"
@@ -932,8 +974,27 @@ class BrowserContainer:
                         except Exception as e:
                             logger.warning(f"[bcc] uid 漂移后自动刷新失败: {e}")
                 elif uid:
-                    self._last_uid = uid
-                    logger.debug(f"[bcc] 登录态正常(uid={uid})")
+                    # 2026-09-06 P1：uid 探活通过 ≠ 页面登录态有效。
+                    # 「半登录态」（页面显示一键登录待激活）下 query/user 仍返回
+                    # uid，但页面内 WP 发送/昵称捕获已全部失效（实测）。
+                    # 页面级检查失败 → 触发 scan_login（一键登录可自动点）。
+                    page_state = self._page_login_state_sync()
+                    if page_state.get("rel") or not page_state.get("conv"):
+                        logger.warning(
+                            f"[bcc] 页面级登录态失效（conv={page_state.get('conv')} "
+                            f"rel={page_state.get('rel')}），uid={uid} 仍有效但页面需重新激活，"
+                            f"触发 scan_login…")
+                        if self._loop:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                self.scan_login(force=False), self._loop)
+                            try:
+                                fut.result(timeout=120)
+                            except Exception as e:
+                                logger.warning(f"[bcc] 页面重激活失败: {e}")
+                    else:
+                        self._last_uid = uid
+                        logger.debug(f"[bcc] 登录态正常(uid={uid}, "
+                                     f"conv={page_state.get('conv')})")
                 else:
                     logger.warning("[bcc] 登录态失效，自动刷新凭证…")
                     # 在子线程调 async scan_login：投递到主 loop

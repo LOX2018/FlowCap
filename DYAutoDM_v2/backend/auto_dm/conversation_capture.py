@@ -176,6 +176,29 @@ def _parse_message_sender(b):
     return None
 
 
+def _parse_message_create_time(b):
+    """从消息对象 bytes 里提取创建时间（protobuf field 10，毫秒时间戳）。
+
+    2026-09-06 黑盒实证（知识库 08 §24.9 分割线事故）：首包(2043)每条
+    message 对象的 field 10 = create_time 毫秒，与 dm_messages 历史时间
+    完全吻合。此前 ts 全部 fallback 到入库 time.time()，导致首包批量
+    解析的会话全部挤在同一天，前端日期分割线只剩一条。
+    返回秒级 float（毫秒/1000），缺失返回 0。
+    """
+    try:
+        for f, wt, v in _parse(b):
+            if f == 10 and wt == WT_VARINT:
+                # 毫秒时间戳范围校验（2020-2030），防误配其它字段
+                if 1577836800000 <= v <= 1893456000000:
+                    return v / 1000.0
+                # 秒级时间戳兜底
+                if 1577836800 <= v <= 1893456000:
+                    return float(v)
+    except Exception:
+        pass
+    return 0
+
+
 def _parse_message_id(b):
     """从消息对象 bytes 里提取消息唯一 ID（protobuf field 3，varint）。
 
@@ -581,10 +604,16 @@ def parse_init_protobuf(raw, my_uid):
                 role = "me"
             else:
                 role = "them"
+            # 时间：优先 message 对象 field 10（create_time 毫秒，2026-09-06
+            # 黑盒实证：首包每条 message 的 field10=毫秒时间戳，与 DB 历史
+            # 时间完全吻合）；缺失时回退 content JSON 的 createdAt，再退入库时间。
+            _msg_ts = _parse_message_create_time(sb2)
+            if not _msg_ts:
+                _msg_ts = (txt[2] / 1000.0) if txt[2] else 0
             messages.append({
                 "role": role,
                 "text": txt[0],
-                "ts": (txt[2] / 1000.0) if txt[2] else time.time(),
+                "ts": _msg_ts if _msg_ts else time.time(),
                 "msg_id": _parse_message_id(sb2),
             })
         # 会话属性（field 4）：含总消息数(field 2) / short_id(field 5)，
