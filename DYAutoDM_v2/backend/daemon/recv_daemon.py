@@ -565,7 +565,23 @@ class RecvChannel(threading.Thread):
         except Exception:
             t = msg_type
         if t == 7:
-            return content_json.get("text", ""), {}
+            text = content_json.get("text", "") or ""
+            # 2026-09-06 系统占位提示过滤（用户实测反馈）：
+            # 抖音在「未发过消息的陌生会话」首次被打开时，会自动塞入一条
+            # msg_type=7 的占位提示，内容形如：
+            #   "对方回复你或互关之前，可发送一条文字消息。请礼貌发言，自觉遵守抖音社区规范"
+            # sender 来自对方（陌生人），role=them 被当真实消息入库污染聊天记录。
+            # 识别特征：文本含固定模板串（"对方回复你或互关之前"/"请礼貌发言"/
+            # "自觉遵守" 三选一即中），一律丢弃返回 None 让调用方不入库。
+            _sys_templates = (
+                "对方回复你或互关之前",
+                "可发送一条文字消息",
+                "请礼貌发言",
+                "自觉遵守",
+            )
+            if any(tpl in text for tpl in _sys_templates):
+                return None, {}
+            return text, {}
         elif t == 5:
             # 表情包：url.url_list[0]，也可能在 resource_url 下
             def _pick(d, *keys):

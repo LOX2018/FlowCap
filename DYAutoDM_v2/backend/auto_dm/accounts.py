@@ -170,6 +170,10 @@ def browser_daemon_port(name=None):
 
 # 2026-09-06 BCC 懒加载（用户架构决策：启动不拉 BCC，按需自动拉起）。
 # spawn 状态去重：并发懒加载只拉一次（模块级锁 + 记录已拉起端口）。
+# 启动冷静期：进程启动后 DY_BCC_LAZY_DELAY 秒内禁止懒加载 BCC（防启动时
+# 快闪唤醒），之后才接受懒加载。
+from datetime import datetime as _datetime
+_PROCESS_START_TS: "_datetime" = _datetime.now()
 _bcc_lazy_lock = threading.Lock()
 _bcc_lazy_spawned: set[str] = set()
 
@@ -185,6 +189,22 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45) -> dict:
     port = browser_daemon_port(name)
     if _port_open(port, timeout=0.3):
         return {"ok": True, "port": port, "msg": "已在运行"}
+    # 2026-09-06 启动冷静期（防「启动时 BCC 快闪唤醒」）：
+    # 后端进程启动后 30s 内禁止懒加载 BCC —— 给前端 / 启动期所有路径
+    # （getAccounts/凭证校验/update_account）充分时间完成，期间只读不拉
+    # 进程；30s 后才接受懒加载。
+    # 同时也覆盖环境变量 DY_BCC_LAZY_DELAY（秒），便于测试 / 紧急回退。
+    try:
+        _delay = int(os.environ.get("DY_BCC_LAZY_DELAY", "30"))
+    except Exception:
+        _delay = 30
+    if _delay > 0:
+        from datetime import datetime as _dt
+        _elapsed = (_dt.now() - _PROCESS_START_TS).total_seconds()
+        if _elapsed < _delay:
+            logger.debug(f"[bcc-lazy] 启动冷静期（{_elapsed:.1f}s/{_delay}s）跳过 BCC 懒加载")
+            return {"ok": False, "port": None,
+                    "msg": f"启动冷静期（{_delay}s）内不自动拉 BCC，请稍后再试"}
     with _bcc_lazy_lock:
         # 双检：等锁期间可能已被并发拉起
         if _port_open(port, timeout=0.3):

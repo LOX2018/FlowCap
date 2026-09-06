@@ -332,6 +332,12 @@ async def get_conversation(account: str, conv_id: str):
             "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
             "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
             "AND NOT (msg_type = '7' AND msg_id IS NULL) "
+            # 2026-09-06 过滤抖音「未发过消息的陌生会话」系统占位提示
+            # （用户实测：对方回复你或互关之前，可发送一条文字消息...）；
+            # 此前 sender 来自陌生人被当真实消息入库污染聊天记录
+            "AND text NOT LIKE '%对方回复你或互关之前%' "
+            "AND text NOT LIKE '%请礼貌发言%' "
+            "AND text NOT LIKE '%自觉遵守%' "
             "AND text NOT LIKE '[未知媒体]%' "
             "AND text NOT LIKE '[分享视频]%' "
             "AND text NOT LIKE 'https://www.iesdouyin.com/share/%' "  # 群聊分享链接脏数据
