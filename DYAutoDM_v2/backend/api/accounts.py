@@ -7,6 +7,7 @@
 - /check 复用 auto_dm.accounts.verify_account 做双引擎校验（含私信列表拉取）
 """
 import os
+import asyncio
 import threading
 import time
 import urllib.request
@@ -31,7 +32,15 @@ _scan_state: dict[str, dict] = {}
 # 单次耗时 1~3s。为避免每次轮询都卡顿，对单账号 verify 结果做 TTL 缓存（与轮询间隔一致），
 # 命中缓存瞬时返回，把列表刷新延迟从 2.6s 降到亚秒级。
 _VERIFY_CACHE: dict[str, tuple[float, dict]] = {}
-_VERIFY_TTL = 3.0  # 秒，与前端 getAccounts 轮询间隔对齐
+# 2026-09-06 全局调用链治理（缓存错配修复）：
+# 原值 3s 与前端实际轮询间隔严重错配 —— App.tsx 的 ["accounts"] 查询
+# refetchInterval=30000（30s）、main.tsx staleTime=20000（20s），
+# 3s TTL 意味着 30s 轮询【永远命中不了缓存】，每次都真实跑
+# verify_account（含 get_my_uid 外网探活），N 账号串行下来就是
+# 每 30s 一轮 N 次外网请求 + 列表卡顿。
+# 改为 25s：略小于 30s 轮询间隔，既保证状态足够新鲜（25s 内凭证
+# 失效能被感知），又让绝大多数轮询命中缓存（省掉重复外网探活）。
+_VERIFY_TTL = 25.0  # 秒，略小于前端 30s 轮询间隔（原 3s 导致缓存永不命中）
 _VERIFY_LOCK = threading.Lock()
 
 
@@ -350,8 +359,11 @@ async def self_check(request: Request):
     """
     raw = acct_core.list_accounts()
     names = [n[0] if isinstance(n, (tuple, list)) else n for n in raw]
-    items = []
-    for name in names:
+    # 2026-09-06 全局调用链治理（串行阻塞 + 事件循环阻塞）：
+    # 原实现在 async 路由里【串行】跑 N 个账号的 verify_account（每个
+    # 含外网探活 1~8s），N 账号就是 N×8s 的事件循环阻塞 —— 前端整体卡死。
+    # 改为：整段丢线程池 + 池内并发（与 list_accounts 一致）。
+    def _verify_one(name: str) -> dict:
         entry = {"name": name, "wp": None, "dm": None, "ok": False}
         try:
             verify = acct_core.verify_account(name, timeout=8, dm_loopback=True)
@@ -364,7 +376,16 @@ async def self_check(request: Request):
             logger.error(f"[self-check] 账号 {name} 校验异常: {e}")
             entry["wp"] = {"level": "error", "label": "校验异常"}
             entry["dm"] = {"level": "error", "label": "校验异常"}
-        items.append(entry)
+        return entry
+
+    def _run_all() -> list:
+        if not names:
+            return []
+        with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:
+            return list(pool.map(_verify_one, names))
+
+    loop = asyncio.get_running_loop()
+    items = await loop.run_in_executor(None, _run_all)
     # 整体是否全部可用（无 fail/error/unknown，且至少一个账号）
     any_fail = any(
         it["wp"] and it["wp"].get("level") in ("fail", "warn", "error", "unknown")
@@ -385,7 +406,14 @@ async def check_account(name: str) -> dict:
     """
     logger.info(f"[check] 账号 {name} 发起双引擎校验（含私信列表拉取）")
     try:
-        verify = acct_core.verify_account(name, timeout=8, dm_loopback=True)
+        # 2026-09-06 全局调用链治理（事件循环阻塞）：
+        # verify_account 是同步重型函数（含 get_my_uid 外网探活 + 私信列表
+        # 拉取，1~8s）。在 async 路由里直接同步调用会【阻塞 uvicorn 事件
+        # 循环】——期间所有其他 API（含 3s/5s 高频轮询）全部排队等待，
+        # 表现为整个前端卡死。改 run_in_executor 丢线程池执行。
+        loop = asyncio.get_running_loop()
+        verify = await loop.run_in_executor(
+            None, lambda: acct_core.verify_account(name, timeout=8, dm_loopback=True))
         logger.success(
             f"[check] 账号 {name} 校验完成 · wp:{verify['wp']['label']} · dm:{verify['dm']['label']}"
         )

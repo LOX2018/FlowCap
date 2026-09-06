@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 import urllib.parse
 import urllib.request
 import json
@@ -648,12 +649,19 @@ async def refresh_conversations(account: str, body: RefreshConvsRequest | None =
     t0 = _time.time()
     use_browser = body.with_browser if body else True
     try:
-        # 捕获依赖 BCC（browser_daemon）常驻浏览器；先幂等拉起（端口已开则跳过）
-        launched = ensure_daemons_for(account)
-        if use_browser and not launched.get("browser"):
-            logger.warning(f"[refresh][{account}] browser_daemon 未拉起，昵称关联可能失效")
+        # 2026-09-06 全局调用链治理（事件循环阻塞）：
+        # ensure_daemons_for（可能拉起浏览器进程）+ capture_all（含浏览器
+        # 操作，数秒~数十秒）都是同步重型调用。在 async 路由里同步执行会
+        # 阻塞 uvicorn 事件循环，期间所有其他 API（含 3s/5s 高频轮询）全部
+        # 排队 → 前端整体卡死。改 run_in_executor 丢线程池。
+        def _do_refresh():
+            launched = ensure_daemons_for(account)
+            if use_browser and not launched.get("browser"):
+                logger.warning(f"[refresh][{account}] browser_daemon 未拉起，昵称关联可能失效")
+            return capture_all(account, with_browser=use_browser)
 
-        n_conv, n_msg = capture_all(account, with_browser=use_browser)
+        loop = asyncio.get_running_loop()
+        n_conv, n_msg = await loop.run_in_executor(None, _do_refresh)
         elapsed = round(_time.time() - t0, 1)
         logger.info(f"[refresh][{account}] 更新会话完成：会话 {n_conv}（消息 {n_msg}），耗时 {elapsed}s")
         return {
