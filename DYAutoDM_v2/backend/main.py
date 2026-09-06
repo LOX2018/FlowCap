@@ -121,29 +121,32 @@ def _auto_start_daemons() -> None:
             logger.info("[startup] 无账号，跳过 daemon 自动拉起")
             return
 
-        # 1. 拉起 browser_daemon（BCC 容器，单例，所有账号共享一个浏览器）
+        # 2026-09-06 性能修复（用户实测：前端启动 40s）：串行拉起 + 逐个
+        # _wait_for_port 导致 N 个账号 ≈ N×15s 阻塞。改为【全部并行 spawn】
+        # 后统一轮询等端口 —— recv_daemon 之间互不依赖，BCC 与它们也无依赖，
+        # 并行后总耗时 ≈ 最慢一个（~15s），N 账号不再线性叠加。
+        spawned = []  # (port, pid, label)
+
+        # 1. browser_daemon（BCC 容器，单例，用第一个账号的哈希端口）
         bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
         if bcc_binary is None:
             logger.warning("[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
         else:
             try:
-                # browser_daemon 用第一个账号的端口（单例模式）
                 bport = acct_core.browser_daemon_port(names[0])
                 if acct_core._port_open(bport, timeout=0.2):
                     logger.info(f"[startup] browser_daemon 已在运行 (port={bport})，跳过")
                 else:
                     proc = _spawn_sidecar(bcc_binary, ["--account", names[0], "--port", str(bport)])
-                    logger.info(f"[startup] 已拉起 browser_daemon (port={bport}, pid={proc.pid})，等待端口就绪…")
-                    _wait_for_port(bport, timeout=30)
+                    spawned.append((bport, proc.pid, f"browser_daemon({names[0]})"))
             except Exception as e:
                 logger.warning(f"[startup] 拉起 browser_daemon 失败: {e}")
 
-        # 2. 为每个账号拉起 recv_daemon
+        # 2. 每个账号的 recv_daemon（并行 spawn，不等待）
         recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")
         if recv_binary is None:
             logger.warning("[startup] 未找到 dyautodm-recv-daemon 二进制，跳过 recv_daemon 拉起")
             return
-
         for name in names:
             try:
                 port = acct_core.recv_daemon_port(name)
@@ -151,10 +154,16 @@ def _auto_start_daemons() -> None:
                     logger.info(f"[startup] {name} 的 recv_daemon 已在运行 (port={port})，跳过")
                     continue
                 proc = _spawn_sidecar(recv_binary, ["--accounts", name, "--port", str(port)])
-                logger.info(f"[startup] 已拉起 {name} 的 recv_daemon (port={port}, pid={proc.pid})，等待端口就绪…")
-                _wait_for_port(port, timeout=30)
+                spawned.append((port, proc.pid, f"recv_daemon({name})"))
             except Exception as e:
                 logger.warning(f"[startup] 拉起 {name} 的 recv_daemon 失败: {e}")
+
+        # 3. 统一等端口就绪（并行后总耗时 ≈ 最慢一个）
+        for port, pid, label in spawned:
+            ok = _wait_for_port(port, timeout=30)
+            logger.info(
+                f"[startup] {label} (pid={pid}) "
+                + ("端口已就绪" if ok else "等待端口超时(30s)，继续启动不阻塞"))
 
         # 3. 昵称关联（数字 UID → 昵称/头像）
         #    2026-08-29 风控收敛（用户要求）：启动【不再自动】触发 capture_all。
