@@ -127,20 +127,30 @@ def _auto_start_daemons() -> None:
         # 并行后总耗时 ≈ 最慢一个（~15s），N 账号不再线性叠加。
         spawned = []  # (port, pid, label)
 
-        # 1. browser_daemon（BCC 容器，单例，用第一个账号的哈希端口）
+        # 1. browser_daemon（BCC 容器）—— 2026-09-06 改为【默认不随启动拉起】
+        #    历史理由（昵称自动捕获）已于 2026-08-29 废除（风控保护，改手动触发）。
+        #    BCC 的消费者（WP 发送/昵称捕获/回声轮询）全部按需或可延后，
+        #    启动时不该为「可能不用」的功能预付 15s 启动成本 + 风控暴露。
+        #    需要随启动拉起时设 DY_BCC_ON_START=1。
         bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
         if bcc_binary is None:
             logger.warning("[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
         else:
-            try:
-                bport = acct_core.browser_daemon_port(names[0])
-                if acct_core._port_open(bport, timeout=0.2):
-                    logger.info(f"[startup] browser_daemon 已在运行 (port={bport})，跳过")
-                else:
-                    proc = _spawn_sidecar(bcc_binary, ["--account", names[0], "--port", str(bport)])
-                    spawned.append((bport, proc.pid, f"browser_daemon({names[0]})"))
-            except Exception as e:
-                logger.warning(f"[startup] 拉起 browser_daemon 失败: {e}")
+            import os as _os
+            if _os.environ.get("DY_BCC_ON_START", "0") == "1":
+                try:
+                    bport = acct_core.browser_daemon_port(names[0])
+                    if acct_core._port_open(bport, timeout=0.2):
+                        logger.info(f"[startup] browser_daemon 已在运行 (port={bport})，跳过")
+                    else:
+                        proc = _spawn_sidecar(bcc_binary, ["--account", names[0], "--port", str(bport)])
+                        spawned.append((bport, proc.pid, f"browser_daemon({names[0]})"))
+                except Exception as e:
+                    logger.warning(f"[startup] 拉起 browser_daemon 失败: {e}")
+            else:
+                logger.info(
+                    "[startup] BCC 不随启动拉起（懒加载：WP 发送/更新会话首次使用时自动拉起；"
+                    "设 DY_BCC_ON_START=1 可恢复随启动拉起）")
 
         # 2. 每个账号的 recv_daemon（并行 spawn，不等待）
         recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")

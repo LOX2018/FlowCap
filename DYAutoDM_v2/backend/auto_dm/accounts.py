@@ -20,6 +20,8 @@ import os
 import json
 import time
 import asyncio
+import platform
+import subprocess
 import threading
 from dotenv import load_dotenv, dotenv_values
 from loguru import logger
@@ -164,6 +166,63 @@ def browser_daemon_port(name=None):
     """该账号的凭证守护(browser_daemon)专属端口（稳定分配）。"""
     name = name or current_name()
     return _stable_port(name, _BPORT_BASE, _BPORT_SPAN)
+
+
+# 2026-09-06 BCC 懒加载（用户架构决策：启动不拉 BCC，按需自动拉起）。
+# spawn 状态去重：并发懒加载只拉一次（模块级锁 + 记录已拉起端口）。
+_bcc_lazy_lock = threading.Lock()
+_bcc_lazy_spawned: set[str] = set()
+
+
+def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45) -> dict:
+    """确保该账号的 BCC 正在运行；不在则拉起并等端口就绪（懒加载）。
+
+    消费者（WP 发送 / 更新会话 / 昵称捕获）在调用 BCC 接口前先调本函数。
+    已运行 -> 直接返回；未运行 -> spawn 后轮询端口（onefile 冷启动 ~15s）。
+    返回 {"ok": bool, "port": int|None, "msg": str}。
+    """
+    name = name or current_name()
+    port = browser_daemon_port(name)
+    if _port_open(port, timeout=0.3):
+        return {"ok": True, "port": port, "msg": "已在运行"}
+    with _bcc_lazy_lock:
+        # 双检：等锁期间可能已被并发拉起
+        if _port_open(port, timeout=0.3):
+            return {"ok": True, "port": port, "msg": "已在运行"}
+        binary = os.path.join(_ROOT, "binaries",
+                              "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
+        if not os.path.isfile(binary):
+            # 打包根随 app_root：源码态=项目根/src-tauri/binaries
+            binary = os.path.join(_ROOT, "src-tauri", "binaries",
+                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
+        if not os.path.isfile(binary):
+            return {"ok": False, "port": None, "msg": f"BCC 二进制不存在: {binary}"}
+        if name in _bcc_lazy_spawned:
+            # 之前拉过但端口没开 -> 上次失败，不重复拉（防循环）
+            return {"ok": False, "port": None,
+                    "msg": "BCC 此前懒加载失败（端口未就绪），请查看 BCC 日志"}
+        try:
+            kwargs = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if platform.system() == "Windows":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen([binary, "--account", name, "--port", str(port)], **kwargs)
+            _bcc_lazy_spawned.add(name)
+            logger.info(f"[bcc-lazy] 已懒加载 BCC account={name} port={port}")
+        except Exception as e:
+            return {"ok": False, "port": None, "msg": f"BCC 拉起失败: {e}"}
+    if wait_ready:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if _port_open(port, timeout=0.4):
+                return {"ok": True, "port": port, "msg": "懒加载就绪"}
+            time.sleep(0.5)
+        return {"ok": False, "port": port, "msg": f"BCC 懒加载后 {timeout}s 端口未就绪"}
+    return {"ok": True, "port": port, "msg": "已拉起（未等待就绪）"}
 
 
 def recv_daemon_port(name=None):

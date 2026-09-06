@@ -66,7 +66,12 @@ def _bcc_url(account: str, path: str) -> str:
     """构造该账号 BCC(browser_daemon) 的 HTTP URL。
 
     端口用 acct_core.browser_daemon_port（独立稳定哈希，与 recv_daemon 不同）。
+    2026-09-06 懒加载：调用前先 ensure_bcc —— BCC 不随启动拉起（用户架构
+    决策），WP 发送/更新会话首次使用时自动拉起（onefile 冷启动 ~15s）。
     """
+    st = acct_core.ensure_bcc(account)
+    if not st.get("ok"):
+        raise RuntimeError(f"BCC 未就绪: {st.get('msg')}")
     port = acct_core.browser_daemon_port(account)
     return f"http://127.0.0.1:{port}{path}"
 

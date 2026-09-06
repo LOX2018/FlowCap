@@ -303,8 +303,15 @@ async def poll_once(account: str) -> int:
 
 
 async def run_wp_recv_loop(account: str, interval: float = POLL_INTERVAL) -> None:
-    """长跑轮询循环，异常自动重试（不退出）。"""
-    logger.info(f"[wp_recv][{account}] 启动 WP 通道轮询（BCC port={_bcc_port(account)}）")
+    """长跑轮询循环，异常自动重试（不退出）。
+
+    2026-09-06 适配 BCC 懒加载（用户架构决策：启动不拉 BCC）：
+    BCC 未运行时轮询空转（debug 级静默，poll_once 已兜底），
+    不主动拉起 BCC —— 用户点「更新会话」/WP 发送时 ensure_bcc 才拉起，
+    之后本循环自动恢复取数。
+    """
+    logger.info(f"[wp_recv][{account}] 启动 WP 通道轮询（BCC port={_bcc_port(account)}，"
+                f"BCC 未运行时空转等待，懒加载后自动恢复）")
     while True:
         try:
             await poll_once(account)
