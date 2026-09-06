@@ -31,6 +31,13 @@ from fastapi import FastAPI, HTTPException
 from loguru import logger
 from pydantic import BaseModel
 
+# 2026-09-06 全局治理（D：系统死代理隔离，同 main.py）：
+# 独立 exe 进程同样被 Windows 注册表系统代理毒害（requests 继承
+# getproxies_registry）。本进程 requests 全链路不用代理（DY_PROXY 只进浏览器），
+# NO_PROXY=* 禁用环境/注册表代理探测——仅本进程，不动系统设置。
+os.environ.setdefault("NO_PROXY", "*")
+os.environ.setdefault("no_proxy", "*")
+
 # 无控制台模式下 sys.stdout/stderr 可能为 None
 if sys.stdout is not None:
     try:

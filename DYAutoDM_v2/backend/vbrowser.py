@@ -241,12 +241,65 @@ def _launch_args_with_proxy(cfg, account=None):
     else:
         # 兼容：调用方未传 account 时看全局 cfg.DY_PROXY（可全局兜底配置）
         proxy_url = (getattr(cfg, "DY_PROXY", "") or "").strip() or None
+    # 2026-09-06 全局治理（C：系统代理死端口防护）：
+    # Windows 注册表系统代理（v2rayN 等写入的 ProxyEnable=1）会被 Chromium
+    # 自动跟随。若该端口已死（代理核心没跑），浏览器所有请求连接拒绝——
+    # BCC「快闪重启循环」的诱因之一。账号没配 DY_PROXY 且系统代理端口
+    # 探测不通时，对该进程加 --no-proxy-server 直连（不动系统注册表，
+    # 不影响其它软件；系统代理活着则尊重，不干预）。
+    if not proxy_url:
+        _sys_proxy = _dead_system_proxy_arg()
+        if _sys_proxy:
+            args.append(_sys_proxy)
+            logger.warning(
+                "[vbrowser] 账号未配 DY_PROXY，但检测到 Windows 系统代理指向已死端口"
+                "——本次启动加 --no-proxy-server 直连（不动系统设置）")
     pw_proxy = None
     if proxy_url:
         args += _proxy_launch_args(proxy_url)
         pw_proxy = _playwright_proxy_param(proxy_url)
         logger.info(f"[vbrowser] 已启用账号代理: {_mask_proxy(proxy_url)}")
     return args, proxy_url, pw_proxy
+
+
+def _dead_system_proxy_arg():
+    """检测 Windows 系统代理是否指向死端口。死 → 返回 '--no-proxy-server'，否则 None。
+
+    2026-09-06 全局治理（C）：只读注册表 + TCP 探测，绝不动系统设置。
+    - ProxyEnable=0 / 非本机代理 / 端口活着 → None（尊重现状）
+    - 127.0.0.1 代理端口连不通（代理核心未运行）→ '--no-proxy-server'
+    非 Windows 或读取失败一律返回 None（不干预）。
+    """
+    import sys as _sys
+    if _sys.platform != "win32":
+        return None
+    try:
+        import winreg  # noqa: S404 仅读
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+        if not enabled:
+            return None
+        server, _ = winreg.QueryValueEx(key, "ProxyServer")
+        winreg.CloseKey(key)
+        # ProxyServer 形如 "127.0.0.1:10808" 或 "http=...;https=..."（取整体/常见形态）
+        host_port = server.split(";")[0].strip()
+        if "=" in host_port:  # 分协议形态 "http=127.0.0.1:10808"
+            host_port = host_port.split("=", 1)[1].strip()
+        host, _, port_s = host_port.rpartition(":")
+        if not host or not port_s.isdigit():
+            return None
+        if host not in ("127.0.0.1", "localhost"):
+            return None  # 远程代理无法本机判定，尊重现状
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex((host, int(port_s))) == 0:
+                return None  # 端口活着，系统代理有效
+        return "--no-proxy-server"
+    except Exception:
+        return None
 
 
 def _mask_proxy(proxy_url):

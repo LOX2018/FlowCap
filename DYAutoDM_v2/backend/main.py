@@ -23,6 +23,17 @@ from config import settings
 from api import accounts, engine, live, messages, overview, settings as settings_api, tasks, logs as logs_api
 from core.auto_dm import AutoDM
 
+# 2026-09-06 全局治理（D：系统死代理隔离）：
+# Windows 注册表系统代理（ProxyEnable=1，如 v2rayN 写入的 127.0.0.1:10808）
+# 会被 Python requests 自动继承（urllib.getproxies_registry）。代理软件核心
+# 没运行时，本进程所有 douyin API 请求全部 ProxyError（实测 20:36 日志：
+# 10808 积极拒绝 → capture/verify 全灭）。而本项目 requests 全链路【从不使用
+# 代理】——账号代理(DY_PROXY)只注入 Playwright 浏览器，不作用于 requests。
+# 故在本进程内禁用 requests 的环境/注册表代理探测（仅本进程生效，
+# 不动系统设置、不影响其它软件；浏览器侧代理防护见 vbrowser._dead_system_proxy_arg）。
+os.environ.setdefault("NO_PROXY", "*")
+os.environ.setdefault("no_proxy", "*")
+
 
 def _target_triple() -> str:
     """返回当前平台的 Rust target triple（与 Tauri externalBin / build_sidecar.py 命名一致）。"""

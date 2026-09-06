@@ -516,11 +516,20 @@ class DYLoginApi:
         return auth
 
     @staticmethod
-    def refresh_cookie_from_profile(auth, env_path=None):
+    def refresh_cookie_from_profile(auth, env_path=None, allow_launch=False):
         """刷新 auth 的 cookie 为浏览器 profile 里的实时值（写回 .env）。
 
         优先通过 BCC HTTP /cookie 接口（常驻浏览器容器，不抢锁）；
-        BCC 未运行时退回直开 Playwright（旧路径，可能抢锁但保证功能可用）。
+        2026-09-06 全局治理（BCC 快闪根治）：**默认绝不兜底直开 Playwright**。
+        原实现在 BCC 未运行时 fallback 到 launch_sync 直开浏览器——而 WS 每次
+        重连（recv_daemon:434 _build_auth）、启动补捕获（capture_all:1027）
+        都会调本函数 → 失败 → 3~5s 重试 → 再开浏览器 = 无限快闪循环
+        （2026-09-06 20:36 实测 154 次 launch）。
+        现语义：
+          allow_launch=False（默认）—— BCC 不在线直接返回 False（沿用 .env 凭证），
+            绝不为"刷新"开浏览器。高频路径（WS建连/API拉取/发送）全部安全。
+          allow_launch=True —— 仅用户显式动作（更新会话按钮/手动校验）允许
+            兜底开浏览器（旧行为）。
         """
         import os
         # 解析账号名（env_path -> account name）
@@ -546,7 +555,11 @@ class DYLoginApi:
                     return True
             logger.warning(f"[auth] BCC /cookie 返回失败: {r.get('msg', '')}，退回直开浏览器")
 
-        # 后备：直开 Playwright（BCC 未运行时）
+        # 后备：直开 Playwright —— 2026-09-06 起【仅 allow_launch=True】才走。
+        # （BCC 未运行时默认直接沿用 .env 凭证，绝不为刷新开浏览器，见函数 docstring）
+        if not allow_launch:
+            logger.debug("[auth] profile 刷新 cookie：BCC 不在线且 allow_launch=False，沿用 .env 凭证")
+            return False
         try:
             from auto_dm import accounts as _acc
             from auto_dm.vbrowser import should_use_vb, launch_sync

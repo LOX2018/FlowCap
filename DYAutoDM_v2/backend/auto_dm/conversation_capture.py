@@ -1021,7 +1021,26 @@ def capture_all(name, with_browser=True):
     env_path = acc.env_path_of(name)
     try:
         auth = DYLoginApi._load_auth_from_env(env_path)
-        DYLoginApi.refresh_cookie_from_profile(auth, env_path)
+        # 2026-09-06 全局治理（BCC 快闪根治）：
+        # refresh_cookie_from_profile 在 BCC 不在线时会走"后备路径"
+        # 直开 Playwright chromium（login_api.py:562 launch_sync）——
+        # with_browser=False 的语义是"启动补捕获不碰浏览器"，但原来这行
+        # 无条件执行，导致 recv_daemon startup 每账号反复拉浏览器（快闪）。
+        # 修复：with_browser=False 时跳过 profile 刷新，直接用 .env 凭证。
+        # 首包 get_message_by_init 是 HTTP API，不依赖浏览器 cookie 新鲜度；
+        # BCC 在线时仍走 /cookie 刷新（不抢锁、不开新浏览器）。
+        if with_browser:
+            # 用户显式动作（更新会话按钮）→ 允许 BCC 不在线时兜底开浏览器
+            DYLoginApi.refresh_cookie_from_profile(auth, env_path, allow_launch=True)
+        else:
+            # BCC 在线时仍走 /cookie 刷新（不抢锁、不开新浏览器）；
+            # BCC 不在线就绝不为启动补捕获开浏览器。
+            try:
+                from dy_apis.login_api import _bcc_alive as _alive
+                if _alive(name):
+                    DYLoginApi.refresh_cookie_from_profile(auth, env_path)
+            except Exception:
+                pass
         my_uid = str(auth.get_uid())
     except Exception as e:
         logger.warning(f"[capture][{name}] 加载凭证失败: {e}")
