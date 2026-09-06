@@ -326,6 +326,21 @@ class AccountInbox:
                 peer_id or self._extract_peer_uid(conv_id),
                 peer_name,
             )
+        # 2026-09-06 全局治理（脏数据过滤前移到写侧）：
+        # 此前过滤只在【读侧】SQL（api/messages.py 的 NOT LIKE），脏数据
+        # 依然入库且 unread+1 已累加 ⇒ 会话列表显示未读数，点开却是空白/
+        # 内容对不上。这里在写库前拦截，与读侧规则保持一致：
+        #   - 系统占位提示（陌生会话首次打开，抖音自动塞入）
+        #   - [未知媒体] 解析噪音 / [分享视频] 脏数据 / iesdouyin 分享链接
+        # 命中则不写 dm_messages、不累加 unread。
+        if _is_noise_text(text):
+            logger.debug(f"[recv][{self.name}] 写侧拦截脏数据（不入库/不计未读）: "
+                         f"{(text or '')[:40]}")
+            return self.get_or_create(
+                conv_id,
+                peer_id or self._extract_peer_uid(conv_id),
+                peer_name,
+            )
         ts = time.time()
         with self.lock:
             # peer_id 为空/等于自己 → 从 conv_id 提取对端 UID（WS sender 常空/自己）
@@ -667,6 +682,27 @@ class RecvChannel(threading.Thread):
 # ----------------------------------------------------------------------------
 # FastAPI 路由
 # ----------------------------------------------------------------------------
+# 2026-09-06 全局治理：脏数据判定（写侧与读侧共用的唯一规则源）
+# 必须与 api/messages.py 读侧 SQL 的 NOT LIKE 规则保持一致，
+# 否则会出现「写侧认为正常入库 + 读侧过滤不显示」⇒ 未读数虚高、点开空白。
+_NOISE_PATTERNS = (
+    "对方回复你或互关之前",   # 陌生会话系统占位提示
+    "可发送一条文字消息",
+    "请礼貌发言",
+    "自觉遵守",
+    "[未知媒体]",                          # 解析噪音
+    "[分享视频]",                          # WS 错误解析脏数据
+    "https://www.iesdouyin.com/share/",    # 群聊分享链接脏数据
+)
+
+
+def _is_noise_text(text: str | None) -> bool:
+    """是否为应丢弃的脏数据/系统占位提示（不入库、不计未读）。"""
+    if not text:
+        return False
+    return any(p in text for p in _NOISE_PATTERNS)
+
+
 def _safe_capture(name):
     """守护启动补一次捕获（首包解析+写库，不抢 profile）。失败不影响守护运行。"""
     try:
