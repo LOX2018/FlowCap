@@ -1037,6 +1037,31 @@ async def send(body: SendBody) -> dict:
         c = ib.convs.get(body.conv_id)
         if c:
             peer_id = c.peer_id
+    # 2026-09-07：会话整理防线——peer_id 绝不能是本账号 uid。
+    # 实测（09 台账第六轮）capture 写入时 peer_id 曾被污染成 my_uid，
+    # 若直接拿去 create_conversation 会「发给自己」。此处用 conv_id
+    # 重解析真实对端，与 services/dm_dispatch 的整理池保持一致。
+    try:
+        _my = ""
+        try:
+            from services.uid_probe import get_uid as _gu
+            _my = str(_gu(body.account) or "")
+        except Exception:
+            pass
+        _parts = (body.conv_id or "").split(":")
+        if len(_parts) >= 4 and _parts[2] != _parts[3] and _my:
+            _real = _parts[3] if _parts[2] == _my else (
+                _parts[2] if _parts[3] == _my else None)
+            if _real and str(peer_id) != _real:
+                logger.warning(
+                    f"[recv][{body.account}] 会话 peer_id 已订正: "
+                    f"{peer_id} -> {_real}（conv_id 重解析）")
+                peer_id = _real
+        if _my and str(peer_id) == _my:
+            return {"ok": False,
+                    "error": f"拒绝发送：对端 uid 等于本账号 uid（{_my}）"}
+    except Exception:
+        pass
     if not peer_id:
         return {"ok": False, "error": "无法定位会话对方 uid"}
     env_path = acc.env_path_of(body.account)
@@ -1140,6 +1165,25 @@ async def send_image(body: SendImageBody) -> dict:
             peer_id = c.peer_id
     if not peer_id:
         return {"ok": False, "error": "无法定位会话对方 uid"}
+    # 2026-09-07：会话整理防线（同 /send）：peer_id 绝不能是本账号 uid
+    try:
+        _my = ""
+        try:
+            from services.uid_probe import get_uid as _gu
+            _my = str(_gu(body.account) or "")
+        except Exception:
+            pass
+        _parts = (body.conv_id or "").split(":")
+        if len(_parts) >= 4 and _parts[2] != _parts[3] and _my:
+            _real = _parts[3] if _parts[2] == _my else (
+                _parts[2] if _parts[3] == _my else None)
+            if _real and str(peer_id) != _real:
+                peer_id = _real
+        if _my and str(peer_id) == _my:
+            return {"ok": False,
+                    "error": f"拒绝发送：对端 uid 等于本账号 uid（{_my}）"}
+    except Exception:
+        pass
     if not body.image_b64:
         return {"ok": False, "error": "image_b64 为空"}
     env_path = acc.env_path_of(body.account)

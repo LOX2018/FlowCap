@@ -95,11 +95,72 @@ def build_one(entry: str, name: str) -> None:
     print(f"产出: {out}")
 
 
+def inject_test_whitelist() -> None:
+    """【调试版专用】把测试账号白名单注入 services/dm_dispatch.py。
+
+    仅在显式传 `--debug-whitelist` 时执行。产出的二进制**禁止对外发布**：
+    它限制私信只能发给白名单账号，是测试期防误发真人的护栏。
+
+    正式版：**不调用本函数** → 模块内 _TEST_WHITELIST 保持空壳、
+    TEST_WHITELIST_ON 恒 False → 白名单逻辑物理不执行。
+    """
+    import re
+    from pathlib import Path
+
+    # 两个测试账号的 uid（由账号 .env / uid 探活得到，写死以防扫错）
+    WL = {
+        "尚进工伤小助理": "316276709526638",
+        "四川工伤张老师": "4175297014664416",
+    }
+    target = Path(__file__).resolve().parent.parent / "backend" / "services" / "dm_dispatch.py"
+    src = target.read_text(encoding="utf-8")
+    start = "# ---DM_TEST_WHITELIST_INJECT_START---"
+    end = "# ---DM_TEST_WHITELIST_INJECT_END---"
+    if start not in src or end not in src:
+        print("[warn] 未找到注入标记，跳过白名单注入")
+        return
+    body = (
+        f'_TEST_WHITELIST = {{\n'
+        f'    "{WL and list(WL)[0]}": {{"{WL[list(WL)[1]]}"}},\n'
+        f'    "{list(WL)[1]}": {{"{WL[list(WL)[0]]}"}},\n'
+        f'}}\n'
+        f'TEST_WHITELIST_ON = True\n'
+    )
+    new = re.sub(re.escape(start) + r".*?" + re.escape(end),
+                 start + "\n" + body + end, src, flags=re.S)
+    target.write_text(new, encoding="utf-8")
+    print(f"[debug] 已注入测试白名单（仅调试版）: {WL}")
+
+
+def restore_whitelist() -> None:
+    """打包后把注入还原（避免污染工作区源码 → 正式版不含白名单）。"""
+    import subprocess
+    try:
+        subprocess.run(["git", "checkout", "--",
+                        "backend/services/dm_dispatch.py"],
+                       cwd=str(Path(__file__).resolve().parent.parent),
+                       capture_output=True)
+        print("[debug] 已还原 dm_dispatch.py（工作区恢复为正式版空壳）")
+    except Exception as e:
+        print(f"[warn] 还原失败（请手动 git checkout）: {e}")
+
+
 def main() -> None:
-    build_one("main.py", "dyautodm-backend")
-    build_one("daemon/browser_daemon.py", "dyautodm-browser-daemon")
-    build_one("daemon/recv_daemon.py", "dyautodm-recv-daemon")
-    print("\n全部打包完成，二进制位于:", BINARIES)
+    import sys
+    debug_wl = "--debug-whitelist" in sys.argv
+    if debug_wl:
+        inject_test_whitelist()
+    try:
+        build_one("main.py", "dyautodm-backend")
+        build_one("daemon/browser_daemon.py", "dyautodm-browser-daemon")
+        build_one("daemon/recv_daemon.py", "dyautodm-recv-daemon")
+        print("\n全部打包完成，二进制位于:", BINARIES)
+        if debug_wl:
+            print("[警告] 本次为**调试版**构建（含测试白名单限制），"
+                  "禁止对外发布！")
+    finally:
+        if debug_wl:
+            restore_whitelist()
 
 
 if __name__ == "__main__":

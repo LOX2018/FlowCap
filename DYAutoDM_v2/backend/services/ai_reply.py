@@ -1024,11 +1024,24 @@ class AutoReplyWorker:
     def _send_via_chain(self, account: str, conv_id: str, text: str) -> bool:
         """复用 /api/messages/send 双通道（与前端手动发送同一链路）。"""
         try:
-            from api.messages import _recv_url, _bcc_url, _http_post_json
+            # 2026-09-07：私信统一调度——AI 回复也走「会话整理池」，
+            # 与手动/批量共享同一 per-account 串行队列（源=ai，优先级 1）。
+            # 好处：① 会话 peer 被整理校验（防发给污染 uid）② 与手动发送
+            # 不抢不重 ③ 高频 AI 回复受队列 + 既有频率闸门双重约束。
+            from services.dm_dispatch import submit as _dm_submit
+            r = _dm_submit(account, conv_id, text, "ai", 1)
+            if r.accepted:
+                # 入池即受理：AI 场景不阻塞等结果（延迟线程本就是异步的），
+                # 结果由 task 状态记录，失败会记日志。
+                logger.info(f"[ai] 已入池待发 (task={r.task_id}): {text[:30]}")
+                return True
+            logger.warning(f"[ai] 入池被拒: {r.error}")
+            if r.error == "duplicate":
+                return True      # 重复消息视为已处理，不重试
         except Exception as e:
-            logger.warning(f"[ai] 无法复用发送链路: {e}")
-            return False
+            logger.warning(f"[ai] 调度入池异常: {e}")
         try:
+            from api.messages import _recv_url, _bcc_url, _http_post_json
             d = _http_post_json(_recv_url(account, "/send"), {
                 "account": account, "conv_id": conv_id, "text": text,
             }, timeout=15.0)

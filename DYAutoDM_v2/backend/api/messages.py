@@ -571,14 +571,41 @@ async def send_dm(body: SendDmRequest):
     async def _try(ch: str) -> dict:
         if ch == "wp":
             return await wp_send_dm(body)
-        url = _recv_url(body.account, "/send")
-        if url is None:
-            return {"ok": False, "error": "端口分配失败"}
-        return _http_post_json(url, {
-            "account": body.account,
-            "conv_id": body.conv_id,
-            "text": body.text,
-        })
+        # 2026-09-07：私信发送统一调度（架构重构）。
+        # WS 通道先经「会话整理池」归一化/去重/校验，再由 per-account
+        # 串行调度器出队发送——解决多板块并发时同会话乱序/重复、
+        # 以及 peer_id 被污染导致"发给自己"的事故。
+        # 注：wp 通道走 BCC 页内 DOM（实时交互），不进队列，保持原链路。
+        try:
+            from services.dm_dispatch import submit as _dm_submit
+            r = await asyncio.to_thread(
+                _dm_submit, body.account, body.conv_id, body.text,
+                "manual", 0)
+            if r.accepted:
+                # 入池成功 = 已受理，但**尚未发出**（异步调度）。
+                # 同步等待发送结果（最多 90s）后再返回，避免前端误判
+                # "已发送"（用户明确要求：验证后才算成功）。
+                from services.dm_dispatch import get_dispatcher as _get_disp
+                import time as _t
+                disp = _get_disp()
+                deadline = _t.time() + 90
+                while _t.time() < deadline:
+                    st = await asyncio.to_thread(disp.task_status, r.task_id)
+                    if not st or st.get("status") in ("done", "failed"):
+                        if st and st.get("status") == "done":
+                            return {"ok": True, "task_id": r.task_id,
+                                    "queued": True}
+                        return {"ok": False,
+                                "error": (st or {}).get("error") or "调度发送失败"}
+                    await asyncio.sleep(0.5)
+                return {"ok": False, "error": "调度发送超时（90s）",
+                        "task_id": r.task_id}
+            # 入池被拒（会话无效/重复/队列满）→ 交给降级逻辑走 wp
+            return {"ok": False,
+                    "error": r.error or "入池被拒",
+                    "pool_rejected": True}
+        except Exception as e:
+            return {"ok": False, "error": f"调度入池异常: {e}"}
 
     errors = {}
     try:
