@@ -33,6 +33,17 @@ class DouyinAPI:
     # 300s = 5 分钟，风控安全频次（每账号每 5 分钟至多 1 次 query/user）。
     UID_CACHE_TTL_SEC = 300
 
+    # 2026-09-06 第五轮治理 P1-C（09 台账 5.2B1）：进程级探活缓存。
+    # 此前 verify_account / live_hook 心跳 / recv_daemon / accounts 校验
+    # 4 处独立调 get_my_uid → 同账号同 IP 的 query/user 规律性外网探测
+    # 叠加 = 风控信号。现按 sessionid 键控做进程级缓存：
+    #   成功 → UID_PROBE_TTL_OK（默认 300s）内直接复用；
+    #   失败 → UID_PROBE_TTL_FAIL（默认 60s）内不再重复打接口。
+    # force_probe=True 跳过缓存（refresh_cookie_to_env 门禁等必须真探活的路径用）。
+    UID_PROBE_TTL_OK = 300
+    UID_PROBE_TTL_FAIL = 60
+    _uid_probe_cache: dict = {}   # class attr: {sessionid_key: (ts, uid_or_None)}
+
 
     @staticmethod
     def get_user_all_work_info(auth, user_url: str, **kwargs) -> list:
@@ -730,9 +741,32 @@ class DouyinAPI:
         hex，网络接口 query/user 仍返回真实十进制 uid（如 3887506227210423）。
         故本函数【不再基于 cookie 格式提前拦截】，uid_tt 解析失败一律走网络
         query/user 拿真实 uid。
+
+        【P1-C 2026-09-06】进程级探活缓存：按 sessionid 键控（同账号所有 auth
+        副本共享同一份缓存），成功 300s / 失败 60s 内不重复发 query/user。
+        kwargs 传 force_probe=True 时跳过进程缓存（凭证落盘门禁等必须真探活的路径）。
         """
         if not auth or not getattr(auth, "cookie", None):
             return None
+        # ---- P1-C 进程级缓存查询（在 auth.uid 缓存之前：跨副本共享）----
+        _force = bool(kwargs.get("force_probe"))
+        _sess = (auth.cookie.get("sessionid") or auth.cookie.get("sessionid_ss") or "")
+        _cache_key = _sess[:32] if _sess else ""
+        if _cache_key and not _force:
+            try:
+                _ts, _cached_uid = DouyinAPI._uid_probe_cache.get(_cache_key, (0.0, None))
+                _ttl = (DouyinAPI.UID_PROBE_TTL_OK if _cached_uid
+                        else DouyinAPI.UID_PROBE_TTL_FAIL)
+                if _cached_uid and (time.time() - _ts) < _ttl:
+                    # 回写本副本 auth.uid（方向判定等消费方依赖）
+                    try:
+                        auth.uid = int(_cached_uid)
+                        auth._uid_cached_at = _ts
+                    except Exception:
+                        pass
+                    return int(_cached_uid)
+            except Exception:
+                pass
         # 优先返回已由 ensure_uid 设置的 auth.uid（避免重复解析不一致）
         # 2026-09-06 全局治理（uid 轮换自愈 + 风控平衡）：
         # 原实现一旦缓存 auth.uid 就永远返回缓存，**uid 轮换后无任何路径更新**。
@@ -764,6 +798,12 @@ class DouyinAPI:
                         auth._uid_cached_at = time.time()
                     except Exception:
                         pass
+                    # P1-C：uid_tt 短路成功同样写进程级缓存
+                    if _cache_key:
+                        try:
+                            DouyinAPI._uid_probe_cache[_cache_key] = (time.time(), _uid)
+                        except Exception:
+                            pass
                     return _uid
                 except (ValueError, TypeError):
                     pass
@@ -792,6 +832,12 @@ class DouyinAPI:
             auth._uid_cached_at = time.time()
         except Exception:
             _fresh_uid = int(resp_json['user_uid'])
+        # P1-C：写进程级缓存（成功）
+        if _cache_key:
+            try:
+                DouyinAPI._uid_probe_cache[_cache_key] = (time.time(), _fresh_uid)
+            except Exception:
+                pass
         return _fresh_uid
 
     @staticmethod

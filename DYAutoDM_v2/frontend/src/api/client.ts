@@ -342,6 +342,105 @@ export const api = {
       body: JSON.stringify({ files }),
     });
   },
+
+  // ===== AI 获客自动回复（嵌入 douyin-auto-reply-assistant，2026-09-06）=====
+  async aiGetConfig(): Promise<{ ok: boolean; config: Record<string, unknown> }> {
+    return request("/api/ai/config");
+  },
+  async aiSaveConfig(config: Record<string, unknown>): Promise<{ ok: boolean; config: Record<string, unknown>; running: boolean }> {
+    return request("/api/ai/config", {
+      method: "POST",
+      body: JSON.stringify({ config }),
+    });
+  },
+  async aiTest(): Promise<{ ok: boolean; msg: string }> {
+    return request("/api/ai/test", { method: "POST" });
+  },
+  async aiTestVision(): Promise<{ ok: boolean; msg: string }> {
+    return request("/api/ai/test_vision", { method: "POST" });
+  },
+  async aiStatus(): Promise<Record<string, unknown>> {
+    return request("/api/ai/status");
+  },
+  async aiStart(): Promise<{ ok: boolean; running: boolean }> {
+    return request("/api/ai/start", { method: "POST" });
+  },
+  async aiStop(): Promise<{ ok: boolean; running: boolean }> {
+    return request("/api/ai/stop", { method: "POST" });
+  },
+  async aiKbList(): Promise<{ ok: boolean; items: { id: number; question: string; answer: string }[] }> {
+    return request("/api/ai/knowledge");
+  },
+  async aiKbSave(item: { id: number; question: string; answer: string }): Promise<{ ok: boolean; msg?: string }> {
+    return request("/api/ai/knowledge", {
+      method: "POST",
+      body: JSON.stringify(item),
+    });
+  },
+  async aiKbDelete(id: number): Promise<{ ok: boolean; msg?: string }> {
+    return request(`/api/ai/knowledge/${id}`, { method: "DELETE" });
+  },
+  /** 上传文件生成知识库 QA（预览，不入库）。用 XMLHttpRequest 上报进度。 */
+  async aiKbImport(
+    file: File,
+    onProgress?: (pct: number) => void,
+  ): Promise<{ ok: boolean; filename: string; items: { question: string; answer: string; source?: string }[]; chars: number; chunks: number; mode: string }> {
+    await ensureBackendReady();
+    const form = new FormData();
+    form.append("file", file);
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE}/api/ai/knowledge/import`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        try {
+          const r = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(r);
+          else reject(new Error(r.detail || `导入失败 (${xhr.status})`));
+        } catch (err) {
+          reject(new Error(`导入失败 (${xhr.status})`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("网络错误"));
+      xhr.send(form);
+    });
+  },
+  async aiKbImportConfirm(
+    items: { question: string; answer: string; source?: string }[],
+    replace = false,
+  ): Promise<{ ok: boolean; added: number; total: number; msg: string }> {
+    return request("/api/ai/knowledge/import/confirm", {
+      method: "POST",
+      body: JSON.stringify({ items, replace }),
+    });
+  },
+  async aiLeads(limit = 200): Promise<{ ok: boolean; items: Record<string, unknown>[] }> {
+    return request(`/api/ai/leads?limit=${limit}`);
+  },
+  async aiLeadStatus(id: number, status: string): Promise<{ ok: boolean }> {
+    return request("/api/ai/leads/status", {
+      method: "POST",
+      body: JSON.stringify({ id, status }),
+    });
+  },
+  async aiBlacklist(): Promise<{ ok: boolean; items: string[] }> {
+    return request("/api/ai/blacklist");
+  },
+  async aiBlacklistAdd(userId: string): Promise<{ ok: boolean; items: string[] }> {
+    return request("/api/ai/blacklist", {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    });
+  },
+  async aiBlacklistRemove(userId: string): Promise<{ ok: boolean; items: string[] }> {
+    return request(`/api/ai/blacklist?user_id=${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    });
+  },
 };
 
 // ===== 页面组件统一 Props 类型（1:1 对应旧版 app.js 传给页面的 props）=====

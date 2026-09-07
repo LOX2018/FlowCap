@@ -14,6 +14,7 @@ import OverviewPage from "./pages/overview";
 import CrawlPage from "./pages/crawl";
 import LivePage from "./pages/live";
 import MessagesPage from "./pages/messages";
+import AiPage from "./pages/ai";
 import AccountsPage from "./pages/accounts";
 import TasksPage from "./pages/tasks";
 import SettingsPage from "./pages/settings";
@@ -287,6 +288,7 @@ export default function App() {
             {tab === "crawl" && <CrawlPage {...pageProps} />}
             {tab === "live" && <LivePage {...pageProps} />}
             {tab === "msg" && <MessagesPage {...pageProps} />}
+            {tab === "ai" && <AiPage {...pageProps} />}
             {tab === "accounts" && <AccountsPage {...pageProps} />}
             {tab === "tasks" && <TasksPage {...pageProps} />}
             {tab === "settings" && <SettingsPage {...pageProps} />}

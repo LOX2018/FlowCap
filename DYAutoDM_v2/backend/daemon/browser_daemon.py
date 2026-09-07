@@ -65,6 +65,36 @@ logger.add(
 
 app = FastAPI(title="browser-container")
 
+
+# ============================================================================
+# P2-B（2026-09-06 第五轮治理，09 台账 5.3）：独占期 busy 快速失败
+# ----------------------------------------------------------------------------
+# scan_login 要先关闭容器 context 独占 profile 完成扫码，再重启容器——
+# 独占窗口内（可达 300s）其他浏览器端点若照常排队，会干等到 HTTP 超时，
+# 上层（发送降级/AI 回复）还白白重试。现用 _scan_exclusive 标志 +
+# ContainerBusy 异常 + 全局异常处理器：独占期内其他端点立即返回
+# {ok:false, busy:"scan_login"}，FastAPI HTTP 层不阻塞、不排队。
+# ============================================================================
+class ContainerBusy(Exception):
+    def __init__(self, holder: str = "scan_login"):
+        self.holder = holder
+        super().__init__(f"容器被独占操作占用: {holder}")
+
+
+_scan_exclusive = {"holder": None}  # None=空闲；否则是独占操作名
+
+
+def _is_busy() -> bool:
+    return _scan_exclusive["holder"] is not None
+
+
+@app.exception_handler(ContainerBusy)
+async def _container_busy_handler(request, exc: ContainerBusy):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=200, content={
+        "ok": False, "busy": exc.holder,
+        "msg": f"容器正被 {exc.holder} 独占（扫码/重登录），请稍后重试"})
+
 # 全局状态
 _state: dict[str, Any] = {
     "account": "",
@@ -250,6 +280,8 @@ class BrowserContainer:
         self._browser = None
         self._context = None
         self._page = None
+        # P2-A：独立导航 tab（resolve_url 专用，不占用常驻 chat 页）
+        self._nav_page = None
         self._backend = ""  # "exe" / "cdp"
         self._profile_dir = ""
         self._started = False
@@ -320,6 +352,7 @@ class BrowserContainer:
             self._browser = None
             self._context = None
             self._page = None
+            self._nav_page = None  # P2-A：context 已重建，导航 tab 引用作废
             await self._launch()
 
     async def submit(self, coro):
@@ -334,7 +367,14 @@ class BrowserContainer:
         return await coro
 
     async def _exec(self, coro_factory):
-        """在 _lock 内执行浏览器操作（自愈 + 串行）。coro_factory 是无参 callable 返回 coroutine。"""
+        """在 _lock 内执行浏览器操作（自愈 + 串行）。coro_factory 是无参 callable 返回 coroutine。
+
+        P2-B：scan_login 独占窗口内（context 已关、扫码中）快速失败，
+        避免调用方排队干等到 HTTP 超时。注意 _launch 自身不走本检查
+        （scan_login 的 _do 内部会调 _launch）。
+        """
+        if _is_busy():
+            raise ContainerBusy(_scan_exclusive["holder"])
         async with self._lock:
             await self._ensure_alive()
             return await coro_factory()
@@ -769,6 +809,13 @@ class BrowserContainer:
     async def resolve_url(self, url: str) -> dict:
         """浏览器打开链接 → 跟随跳转 → 抠 live_id（替代 link_resolve._browser_resolve）。
 
+        2026-09-06 第五轮治理 P2-A（09 台账 5.2A2）：改走**独立导航 tab**。
+        原实现用常驻主 page 直接 goto —— 会把 chat 页导航走，解析期间
+        被动昵称 hook、WP 发送、页面级登录态探测全部失效（直播功能与私信
+        功能互踩）。现在：懒创建 nav tab（同 context 同指纹同登录态），
+        在 nav tab 里导航+等待跳转，结束后导回 about:blank 释放资源，
+        **主 chat 页全程不动**。nav tab 的创建/导航仍在 _exec 锁内串行。
+
         返回 {live_id, final_url, source}。
         """
         import re
@@ -782,35 +829,52 @@ class BrowserContainer:
             return m.group(1) if m else None
 
         async def _do():
-            await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            live_id = None
-            final_url = None
-            for _ in range(20):
-                await self._page.wait_for_timeout(1000)
-                u = self._page.url
-                if "live.douyin.com" in u and "/user/" not in u:
-                    lid = _extract(u)
-                    if lid:
-                        live_id = lid
-                        final_url = u
-                        break
-            if not live_id:
-                u = self._page.url
-                # 用户主页里找直播间入口
-                try:
-                    links = await self._page.eval_on_selector_all(
-                        "a[href*='live.douyin.com']",
-                        "els => els.map(e => e.href)")
-                except Exception:
-                    links = []
-                for link in (links or []):
-                    lid = _extract(link)
-                    if lid:
-                        live_id = lid
-                        final_url = link
-                        break
-            return {"live_id": live_id, "final_url": final_url,
-                    "source": "browser_container" if live_id else "browser_failed"}
+            # 懒创建导航 tab（与主 chat 页同 context：同指纹、同 cookie、同代理出口）
+            page = getattr(self, "_nav_page", None)
+            try:
+                if page is None or page.is_closed():
+                    page = await self._context.new_page()
+                    self._nav_page = page
+            except Exception as e:
+                logger.warning(f"[bcc] 导航 tab 创建失败（退回主 page）: {e}")
+                page = self._page
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                live_id = None
+                final_url = None
+                for _ in range(20):
+                    await page.wait_for_timeout(1000)
+                    u = page.url
+                    if "live.douyin.com" in u and "/user/" not in u:
+                        lid = _extract(u)
+                        if lid:
+                            live_id = lid
+                            final_url = u
+                            break
+                if not live_id:
+                    u = page.url
+                    # 用户主页里找直播间入口
+                    try:
+                        links = await page.eval_on_selector_all(
+                            "a[href*='live.douyin.com']",
+                            "els => els.map(e => e.href)")
+                    except Exception:
+                        links = []
+                    for link in (links or []):
+                        lid = _extract(link)
+                        if lid:
+                            live_id = lid
+                            final_url = link
+                            break
+                return {"live_id": live_id, "final_url": final_url,
+                        "source": "browser_container" if live_id else "browser_failed"}
+            finally:
+                # 导航 tab 用完即复位，不残留直播间页面（省资源、避免后台自动刷新弹幕 WS）
+                if page is not self._page:
+                    try:
+                        await page.goto("about:blank", wait_until="commit", timeout=5000)
+                    except Exception:
+                        pass
         return await self._exec(_do)
 
     async def scan_login(self, force: bool = False, timeout: int = 300) -> dict:
@@ -829,26 +893,33 @@ class BrowserContainer:
         # 本容器的 context。但该函数当前不支持外部注入 context，最简方案：临时关闭
         # 本容器 context，让 DYLoginApi 独占 profile 完成扫码，完成后重启容器。
         async def _do():
-            # 关闭本容器 context，让 DYLoginApi 独占 profile
+            # P2-B：标记独占窗口。从 context 关闭到 _launch 完成期间，
+            # 其他浏览器操作走 _exec 时会快速失败而非排队干等
+            _scan_exclusive["holder"] = "scan_login"
             try:
-                if self._backend == "exe" and self._context is not None:
-                    await self._context.close()
-                if self._pw is not None:
-                    await self._pw.stop()
-            except Exception:
-                pass
-            self._pw = None
-            self._browser = None
-            self._context = None
-            self._page = None
-            api = DYLoginApi()
-            auth = await api.get_login_auth(
-                headless=False, env_path=env_path, force=force,
-                landing_url="https://www.douyin.com/chat?isPopup=1")
-            ok = bool(auth and getattr(auth, "cookie", None))
-            # 重启容器 context
-            await self._launch()
-            return {"ok": ok, "uid": getattr(auth, "uid", None) if auth else None}
+                # 关闭本容器 context，让 DYLoginApi 独占 profile
+                try:
+                    if self._backend == "exe" and self._context is not None:
+                        await self._context.close()
+                    if self._pw is not None:
+                        await self._pw.stop()
+                except Exception:
+                    pass
+                self._pw = None
+                self._browser = None
+                self._context = None
+                self._page = None
+                self._nav_page = None  # P2-A：context 已关闭，导航 tab 引用作废
+                api = DYLoginApi()
+                auth = await api.get_login_auth(
+                    headless=False, env_path=env_path, force=force,
+                    landing_url="https://www.douyin.com/chat?isPopup=1")
+                ok = bool(auth and getattr(auth, "cookie", None))
+                # 重启容器 context
+                await self._launch()
+                return {"ok": ok, "uid": getattr(auth, "uid", None) if auth else None}
+            finally:
+                _scan_exclusive["holder"] = None
         return await self._exec(_do)
 
     # -------------------- 健康与保活 --------------------
@@ -956,7 +1027,9 @@ class BrowserContainer:
             new_uid = cached[1]  # 60s 内探活过，复用
         else:
             try:
-                new_uid = DouyinAPI.get_my_uid(probe_auth)
+                # P1-C：force_probe=True —— 本门禁写入 .env 前必须真探活，
+                # 绝不能吃进程级探活缓存（否则可能把陈旧登录态当有效写入）
+                new_uid = DouyinAPI.get_my_uid(probe_auth, force_probe=True)
             except Exception:
                 new_uid = None
             BrowserContainer._uid_probe_cache = (now_ts, new_uid)

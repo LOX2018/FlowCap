@@ -154,7 +154,11 @@ class AutoDM:
             env_path = os.path.join(app_root(), env_path)
         if os.path.exists(env_path):
             load_dotenv(env_path, override=True)
-        cookies = os.getenv("DY_COOKIES", "") or ""
+        # P3（09 台账 5.3）：进程级 os.environ 是多账号交叉污染源——
+        # 本函数只负责构造「这一个 env_path」的 auth，凭证值直接从文件读。
+        from dotenv import dotenv_values
+        _vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
+        cookies = _vals.get("DY_COOKIES") or ""
 
         if force_fresh:
             logger.info(f"[auth] 强制重新扫码（忽略现有凭证）：{env_path}")
@@ -417,6 +421,14 @@ class AutoDM:
             self.monitor_auth = await asyncio.to_thread(
                 self._build_one_auth, m_env, False, 0
             )
+            # P1-B（09 台账 5.3）：把账号名挂到 auth 上，sender 才能经
+            # recv_daemon /send_by_uid 直发（发送闸门需 account 定位端口）
+            try:
+                from auto_dm.accounts import current_name as _cn
+                _m_name = getattr(config, "acct", None) or _cn()
+                setattr(self.monitor_auth, "account_name", _m_name)
+            except Exception:
+                pass
             if not getattr(self.monitor_auth, "cookie", None):
                 logger.error("[auth] 监测账号未获取到登录 cookie，无法监听。")
                 self.status_msg = "监测登录失败"
@@ -430,6 +442,14 @@ class AutoDM:
                 logger.info("[auth] 发送账号与监测账号共用 .env，复用现场会话凭证")
             else:
                 self.auth = await asyncio.to_thread(self._build_one_auth, s_env, False, 0)
+                # P1-B：独立发送账号同样标记 account_name
+                try:
+                    from auto_dm.accounts import name_of_env_path
+                    _s_name = name_of_env_path(s_env)
+                    if _s_name:
+                        setattr(self.auth, "account_name", _s_name)
+                except Exception:
+                    pass
             if not getattr(self.auth, "cookie", None):
                 logger.error("[auth] 发送账号未获取到登录 cookie，无法发私信。")
                 self.status_msg = "发送登录失败"

@@ -28,6 +28,50 @@ from dy_apis.douyin_api import DouyinAPI
 _RECAP_MARKERS = ("签名三件套缺失", "INVALID_REQUEST")
 
 
+# ============================================================================
+# 统一发送闸门客户端（2026-09-06 第五轮治理 P1-B，09 台账 5.3）
+# ----------------------------------------------------------------------------
+# 直播 dispatch 的私信发送原先是本进程 imapi 直发，与 recv_daemon /send
+# （手动 + AI 回复）互不知晓，同账号三源同时活跃时发送频率叠加 = 频率风控面。
+# 现改为：优先 HTTP 调 recv_daemon /send_by_uid（闸门在那边，三源一配额）；
+# recv_daemon 不可达（守护未启动/网络异常）才兜底本进程直发——功能不丢，
+# 但闸门失效时会打 warning 提示。
+# ============================================================================
+def _send_via_recv_daemon(auth: Any, user_id: int, content: str,
+                          timeout: float = 30.0):
+    """尝试经 recv_daemon /send_by_uid 直发。返回 (handled, ok, reason)。
+
+    handled=False 表示守护不可达（调用方应兜底直发）；
+    handled=True 时 ok/reason 是最终结果。
+    """
+    account = getattr(auth, "account_name", None)
+    if not account:
+        return False, False, "auth 未标记 account_name"
+    try:
+        from auto_dm.accounts import recv_daemon_port
+    except Exception as e:
+        return False, False, f"导入失败: {e}"
+    try:
+        port = recv_daemon_port(account)
+    except Exception:
+        port = None
+    if not port:
+        return False, False, "recv_daemon 端口解析失败"
+    import requests as _rq
+    try:
+        r = _rq.post(f"http://127.0.0.1:{port}/send_by_uid",
+                     json={"account": account, "peer_uid": int(user_id),
+                           "text": content},
+                     timeout=timeout)
+        d = r.json() or {}
+    except Exception as e:
+        return False, False, f"recv_daemon 不可达: {e}"
+    # 守护可达：无论成功/限流都是最终结果，不再兜底
+    if d.get("ok"):
+        return True, True, "ok"
+    return True, False, d.get("error") or d.get("msg") or "send_by_uid 返回失败"
+
+
 def _maybe_auto_recapture(auth: Any, reason: str) -> None:
     """发送失败且属于凭证失效类时，best-effort 触发自动重捕获（不阻塞）。"""
     if not any(m in reason for m in _RECAP_MARKERS):
@@ -77,6 +121,21 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
         )
         _maybe_auto_recapture(auth, "签名三件套缺失(ticket/client_cert/private_key)")
         return False, "签名三件套缺失(ticket/client_cert/private_key)，需重新扫码"
+
+    # ---- P1-B：优先经 recv_daemon /send_by_uid（统一发送闸门，三源一配额）----
+    _handled, _ok, _reason = _send_via_recv_daemon(auth, user_id, content)
+    if _handled:
+        if _ok:
+            logger.info(f"[私信] 发送结果: 目标「{user_id}」=成功 文案前20字={content[:20]!r}")
+            return True, "ok"
+        if "rate_limited" in str(_reason):
+            logger.warning(f"[私信] 发送被闸门限流 uid={user_id}: {_reason}")
+            return False, _reason
+        logger.warning(f"[私信] 经 recv_daemon 直发失败 uid={user_id}: {_reason}")
+        return False, _reason
+    # 守护不可达：兜底本进程直发（此时无统一闸门，仅本条自身的重试间隔）
+    logger.warning(f"[私信] recv_daemon 不可达（{_reason}），兜底本进程直发——"
+                   f"发送闸门失效，注意频率风控")
 
     for attempt in range(1, max_retry + 1):
         try:

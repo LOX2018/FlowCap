@@ -21,6 +21,7 @@ from loguru import logger
 
 from config import settings
 from api import accounts, engine, live, messages, overview, settings as settings_api, tasks, logs as logs_api
+from api import ai as ai_api
 from core.auto_dm import AutoDM
 
 # 2026-09-06 全局治理（D：系统死代理隔离）：
@@ -294,6 +295,15 @@ async def lifespan(app: FastAPI):
             logger.info(f"[startup] WP 通道接收循环已启动 (account={_wp_names[0]})")
     except Exception as e:
         logger.warning(f"[startup] WP 接收循环启动失败（不影响 WS 通道）: {e}")
+    # AI 获客自动回复：建表 + 若配置启用则自启监听（2026-09-06 嵌入）
+    try:
+        from services import ai_reply as _ai
+        _ai.ensure_tables()
+        if _ai.get_config().get("enabled"):
+            _ai.WORKER.start()
+            logger.info("[startup] AI 获客自动回复已按配置自启")
+    except Exception as e:
+        logger.warning(f"[startup] AI 自动回复初始化失败（不影响主流程）: {e}")
     yield
     logger.info("DYAutoDM 后端关闭")
     await app.state.adm.shutdown()
@@ -324,6 +334,8 @@ app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
 app.include_router(logs_api.router, prefix="/api/logs", tags=["logs"])
+# AI 获客自动回复（嵌入自 douyin-auto-reply-assistant，2026-09-06）
+app.include_router(ai_api.router, prefix="/api/ai", tags=["ai"])
 
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
 logger.remove()

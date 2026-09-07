@@ -141,6 +141,24 @@ def env_path_of(name):
     return _env_path_of(name)
 
 
+def name_of_env_path(env_path):
+    """P1-B 辅助：.env 绝对路径反查账号名（accounts/<name>/.env 形态）。
+
+    sender 经 recv_daemon /send_by_uid 直发时需要 account 名定位端口；
+    非 accounts/<name>/.env 形态（开发调试态）返回 None。
+    """
+    if not env_path:
+        return None
+    try:
+        p = os.path.abspath(env_path)
+        parent = os.path.basename(os.path.dirname(p))
+        if parent and parent != "accounts":
+            return parent
+    except Exception:
+        pass
+    return None
+
+
 # 每账号守护端口分配：用账号名稳定哈希，保证每个账号的
 # 凭证守护(browser_daemon)与私信守护(recv_daemon)有各自唯一、稳定的端口，
 # 从而实现「每个账号独立启停守护」，互不冲突。

@@ -519,7 +519,15 @@ class RecvChannel(threading.Thread):
     def _restart_ws(self) -> None:
         try:
             self._ws = self._make_ws()
-            self._ws.run_forever(origin="https://www.douyin.com")
+            # 2026-09-07：加 ping 保活。实测不加时抖音 imapi 每 ~30s 掐一次
+            # 空闲连接（recv_daemon_20260907.log：4 建连/2 断连），频繁重连
+            # 既浪费又增加风控暴露。ping_interval=20s < 30s 空闲阈值，
+            # ping_timeout=10s：10s 内无 pong 判死重连。
+            self._ws.run_forever(
+                origin="https://www.douyin.com",
+                ping_interval=20,
+                ping_timeout=10,
+            )
         except Exception as e:
             if not self._stop.is_set() and self.auto_reconnect:
                 time.sleep(5)
@@ -946,6 +954,12 @@ class SendBody(BaseModel):
     text: str
 
 
+class SendByUidBody(BaseModel):
+    account: str
+    peer_uid: str | int
+    text: str
+
+
 class SendImageBody(BaseModel):
     account: str
     conv_id: str
@@ -954,10 +968,64 @@ class SendImageBody(BaseModel):
     filename: str = "image.jpg"
 
 
+# ============================================================================
+# 统一发送闸门（2026-09-06 第五轮治理 P1-A）
+# ----------------------------------------------------------------------------
+# 背景（09 台账 5.2B1）：同账号三个发送源——① dispatch 直播弹幕私信（backend 进程
+# imapi 直发）② AI 智能回复（经本 daemon /send）③ 手动发送（/send）——各自为政，
+# 同时活跃时频率叠加，是最现实的频率风控面。
+#
+# 收敛方式：本 daemon 是所有发送的唯一点（后端 /send、AI 回复都转发到这里），
+# 在此加 per-account 令牌闸门，dispatch 也改走 /send_by_uid（见 core/sender.py），
+# 三源一配额。
+#
+# 闸门参数（可调）：
+#   DY_SEND_MIN_INTERVAL —— 同账号两次发送的最小间隔（秒），默认 8s。
+#   超过等待上限（DY_SEND_MAX_WAIT，默认 30s）仍拿不到令牌则快速失败
+#   {ok:false, error:"rate_limited"}，调用方自行决定重试/放弃——绝不静默堆积。
+# ============================================================================
+_SEND_GATE_MIN_INTERVAL = float(os.environ.get("DY_SEND_MIN_INTERVAL", "8") or 8)
+_SEND_GATE_MAX_WAIT = float(os.environ.get("DY_SEND_MAX_WAIT", "30") or 30)
+_send_gate_lock = threading.Lock()
+_send_gate_last: dict[str, float] = {}   # account -> 上次放行时间戳
+
+
+def _send_gate_acquire(account: str) -> tuple[bool, float]:
+    """尝试获取该账号的发送令牌。返回 (ok, 等待秒数)。
+
+    忙等实现（轮询 0.2s）：发送频率低（秒级间隔），锁内 sleep 可接受；
+    且保证「先到先得」的发出顺序，避免两个源同时发同一会话时乱序。
+    """
+    deadline = time.time() + _SEND_GATE_MAX_WAIT
+    waited = 0.0
+    while True:
+        with _send_gate_lock:
+            now = time.time()
+            last = _send_gate_last.get(account, 0.0)
+            remain = _SEND_GATE_MIN_INTERVAL - (now - last)
+            if remain <= 0:
+                _send_gate_last[account] = now
+                return True, waited
+        if now >= deadline:
+            return False, waited
+        time.sleep(min(0.2, max(remain, 0.05)))
+        waited = time.time() - (deadline - _SEND_GATE_MAX_WAIT)
+
+
+def _load_send_auth(account: str, env_path: str):
+    """加载发送用 auth 并刷新实时 cookie（/send 与 /send_by_uid 共用）。"""
+    from dy_apis.login_api import DYLoginApi
+    auth = DYLoginApi._load_auth_from_env(env_path)
+    try:
+        DYLoginApi.refresh_cookie_from_profile(auth, env_path)
+    except Exception as _e:
+        logger.warning(f"[recv][{account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
+    return auth
+
+
 @app.post("/send")
 async def send(body: SendBody) -> dict:
-    """用该账号的 send_msg 回复。"""
-    from dy_apis.login_api import DYLoginApi
+    """用该账号的 send_msg 回复（统一发送闸门内，P1-A）。"""
     from dy_apis.douyin_api import DouyinAPI
     from auto_dm import accounts as acc
 
@@ -974,17 +1042,16 @@ async def send(body: SendBody) -> dict:
     env_path = acc.env_path_of(body.account)
     if not env_path:
         return {"ok": False, "error": "账号 .env 路径缺失"}
+    # 统一发送闸门：三源（手动/AI/直播 dispatch）一配额
+    ok_gate, waited = _send_gate_acquire(body.account)
+    if not ok_gate:
+        logger.warning(
+            f"[recv][{body.account}] 发送闸门限流：等待 {waited:.0f}s 仍未放行"
+            f"（最小间隔 {_SEND_GATE_MIN_INTERVAL}s），快速失败")
+        return {"ok": False, "error": "rate_limited",
+                "msg": f"发送过于频繁（≥{_SEND_GATE_MIN_INTERVAL:.0f}s/条），请稍后重试"}
     try:
-        auth = DYLoginApi._load_auth_from_env(env_path)
-        # 2026-09-05 修复：.env 里的 cookie 会过期，导致 imapi 返回空/损坏响应
-        # （实测症状：响应用户解析失败 / Wire format was corrupt）。
-        # _pull_conversations_api 早已这么做了（知识库 07 §L66），
-        # 但 /send 漏了 → 用陈旧凭证发消息必失败。
-        # refresh_cookie_from_profile 从账号 profile（常驻浏览器持有）读实时 cookie。
-        try:
-            DYLoginApi.refresh_cookie_from_profile(auth, env_path)
-        except Exception as _e:
-            logger.warning(f"[recv][{body.account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
+        auth = _load_send_auth(body.account, env_path)
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
             auth, int(peer_id)
         )
@@ -1002,13 +1069,65 @@ async def send(body: SendBody) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+@app.post("/send_by_uid")
+async def send_by_uid(body: SendByUidBody) -> dict:
+    """按对端数字 uid 直发私信（P1-A 新增，直播 dispatch 专用入口）。
+
+    与 /send 同闸门、同凭证链（_load_send_auth），区别只在于定位目标的方式：
+    /send 用 conv_id 反查 peer_id（需要会话已存在），本端点直接带 peer_uid——
+    直播弹幕捕获的数字 user.id 无需建会话即可直发（对齐 core/sender.send_by_uid）。
+
+    成功后同样落库（会话不存在则创建骨架），保证前端列表可见。
+    """
+    from dy_apis.douyin_api import DouyinAPI
+    from auto_dm import accounts as acc
+
+    ib: AccountInbox | None = _state["inboxes"].get(body.account)
+    if not ib:
+        return {"ok": False, "error": "账号不存在"}
+    env_path = acc.env_path_of(body.account)
+    if not env_path:
+        return {"ok": False, "error": "账号 .env 路径缺失"}
+    try:
+        peer_id = int(body.peer_uid)
+    except Exception:
+        return {"ok": False, "error": f"peer_uid 非数字: {body.peer_uid}"}
+
+    # 统一发送闸门：三源一配额（与 /send 同一把锁）
+    ok_gate, waited = _send_gate_acquire(body.account)
+    if not ok_gate:
+        logger.warning(
+            f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行")
+        return {"ok": False, "error": "rate_limited",
+                "msg": f"发送过于频繁（≥{_SEND_GATE_MIN_INTERVAL:.0f}s/条），请稍后重试"}
+    try:
+        auth = _load_send_auth(body.account, env_path)
+        conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
+            auth, peer_id
+        )
+        ok, detail = DouyinAPI.send_msg(
+            auth, conversation_id, conversation_short_id, ticket, body.text
+        )
+        if ok:
+            # conv_id 骨架：0:1:my_uid:peer_uid（方向判定 / 落库与 WS 侧同构）
+            conv_id = f"0:1:{ib.my_uid}:{peer_id}" if ib.my_uid else f"0:1::{peer_id}"
+            ib.add_message(conv_id, "me", body.text, peer_id=str(peer_id))
+            logger.info(f"[recv][{body.account}] 已直发 uid={peer_id}: {body.text[:40]}")
+            return {"ok": True, "conv_id": conv_id}
+        logger.warning(f"[recv][{body.account}] 直发 uid={peer_id} 失败: {detail}")
+        return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
+    except Exception as e:
+        logger.error(f"[recv][{body.account}] 直发 uid={peer_id} 异常: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/send_image")
 async def send_image(body: SendImageBody) -> dict:
     """发送图片私信（后端直发全链路 ①-⑥，不依赖浏览器点击）。
 
     2026-09-05 方案A落地：dy_apis.image_sender（AWS4 SigV4 + protobuf 27 型）。
+    2026-09-06 P1-A：纳入统一发送闸门。
     """
-    from dy_apis.login_api import DYLoginApi
     from auto_dm import accounts as acc
 
     ib: AccountInbox | None = _state["inboxes"].get(body.account)
@@ -1026,6 +1145,11 @@ async def send_image(body: SendImageBody) -> dict:
     env_path = acc.env_path_of(body.account)
     if not env_path:
         return {"ok": False, "error": "账号 .env 路径缺失"}
+    # 统一发送闸门（图片同样计入配额）
+    ok_gate, waited = _send_gate_acquire(body.account)
+    if not ok_gate:
+        return {"ok": False, "error": "rate_limited",
+                "msg": f"发送过于频繁（≥{_SEND_GATE_MIN_INTERVAL:.0f}s/条），请稍后重试"}
     try:
         import base64 as _b64
 
@@ -1033,11 +1157,7 @@ async def send_image(body: SendImageBody) -> dict:
     except Exception as e:
         return {"ok": False, "error": f"image_b64 解码失败: {e}"}
     try:
-        auth = DYLoginApi._load_auth_from_env(env_path)
-        try:
-            DYLoginApi.refresh_cookie_from_profile(auth, env_path)
-        except Exception as _e:
-            logger.warning(f"[recv][{body.account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
+        auth = _load_send_auth(body.account, env_path)
         from dy_apis.image_sender import send_image
 
         ok, detail, info = send_image(auth, int(peer_id), image_data,

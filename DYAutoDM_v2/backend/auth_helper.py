@@ -221,8 +221,9 @@ def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
     env_path = accounts.current_env_path()
     cookies = ""
     if env_path and os.path.exists(env_path):
-        load_dotenv(env_path, override=True)
-        cookies = os.getenv("DY_COOKIES", "") or ""
+        # P3（09 台账 5.3）：dotenv_values 纯文件读，不写 os.environ
+        from dotenv import dotenv_values
+        cookies = dotenv_values(env_path).get("DY_COOKIES") or ""
     auth = DouyinAuth()
     if cookies:
         auth.perepare_auth(cookies, "", "")

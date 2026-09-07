@@ -60,10 +60,88 @@ _CHROME_ARGS = [
 # 降级为半登录态 —— 抖音风控能识别 headless 模式并判定环境跳变。
 # 把真有头窗口移到屏幕外（-32000,-32000），对抖音是 100% 有头特征，
 # 对用户等效无头（看不到窗口）。加 --window-size 保持常规桌面窗口尺寸。
+#
+# ⚠️ 副作用（2026-09-06 实测）：持久化 profile 会把窗口位置写进 Preferences，
+# 伪装模式跑过一次后，下一次【可见启动】（扫码登录 / 查看模式）窗口会从
+# -32000 屏外位置恢复 —— 二维码在桌面外，用户无法重新扫码。
+# 修复：可见启动路径统一调 _ensure_window_visible()（CDP setWindowBounds 归位），
+# 见 launch_async / launch_sync / open_douyin_home。
 _HEADLESS_DISGUISE_ARGS = [
     "--window-position=-32000,-32000",
     "--window-size=1440,900",
 ]
+
+# 窗口归位的判定阈值：只命中 -32000 级别的屏外遗留，避免误伤
+# 多显示器 legitimately 的负坐标窗口（如左侧副屏 -1920）。
+_OFFSCREEN_COORD_THRESHOLD = 30000
+
+
+async def _ensure_window_visible(context):
+    """把屏外遗留窗口（伪装模式 -32000 写进 profile）拉回屏幕内。
+
+    仅当坐标达到 _OFFSCREEN_COORD_THRESHOLD 级别才归位 —— 正常/多显示器
+    坐标一律不动。失败只告警不阻塞（扫码登录不因归位失败而中止）。
+    """
+    try:
+        pages = context.pages
+        if not pages:
+            return
+        session = await context.new_cdp_session(pages[0])
+        try:
+            info = await session.send("Browser.getWindowForTarget")
+            wid = info.get("windowId")
+            b = info.get("bounds") or {}
+            left, top = int(b.get("left", 0)), int(b.get("top", 0))
+            t = _OFFSCREEN_COORD_THRESHOLD
+            if -t <= left <= t and -t <= top <= t:
+                return  # 正常位置（含多显示器负坐标），不动
+            await session.send("Browser.setWindowBounds", {
+                "windowId": wid,
+                "bounds": {"left": 80, "top": 80,
+                           "width": int(b.get("width", 1440)),
+                           "height": int(b.get("height", 900))},
+            })
+            logger.info(f"[vbrowser] 窗口从屏外遗留位置 (left={left}, top={top}) 归位到 (80,80)"
+                        "（伪装模式 profile 残留，保证扫码/查看可见）")
+        finally:
+            try:
+                await session.detach()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
+
+
+def _ensure_window_visible_sync(context):
+    """_ensure_window_visible 的同步版（launch_sync 用）。"""
+    try:
+        pages = context.pages
+        if not pages:
+            return
+        session = context.new_cdp_session(pages[0])
+        try:
+            info = session.send("Browser.getWindowForTarget")
+            wid = info.get("windowId")
+            b = info.get("bounds") or {}
+            left, top = int(b.get("left", 0)), int(b.get("top", 0))
+            t = _OFFSCREEN_COORD_THRESHOLD
+            if -t <= left <= t and -t <= top <= t:
+                return
+            session.send("Browser.setWindowBounds", {
+                "windowId": wid,
+                "bounds": {"left": 80, "top": 80,
+                           "width": int(b.get("width", 1440)),
+                           "height": int(b.get("height", 900))},
+            })
+            logger.info(f"[vbrowser] 窗口从屏外遗留位置 (left={left}, top={top}) 归位到 (80,80)"
+                        "（伪装模式 profile 残留，保证扫码/查看可见）")
+        finally:
+            try:
+                session.detach()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
 
 # ---------- 代理支持（2026-09-06 借鉴 OpenBrowser per-env proxy 设计）----------
 #
@@ -476,10 +554,14 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             _mode = (_os.environ.get("DY_BCC_HEADLESS_MODE") or "disguise").lower()
             if _mode == "native":
                 logger.info("[vbrowser] 无头模式=native（纯 Playwright headless）")
+                _disguise = False
             else:
                 launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
                 headless = False  # 伪装模式：恒真有头
+                _disguise = True  # 伪装窗口必须留在屏外，绝不能被归位逻辑拉回
                 logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
+        else:
+            _disguise = False
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -491,6 +573,11 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
         )
+        # 2026-09-06：真可见启动（扫码/登录等）必须把窗口归位屏幕内
+        # ——持久化 profile 可能残留伪装模式的 -32000 屏外位置，二维码会落在桌面外。
+        # 伪装启动（_disguise=True）恰恰要留在屏外，绝不能归位。
+        if not headless and not _disguise:
+            await _ensure_window_visible(context)
         browser = context.browser
         return p, browser, context, "exe"
 
@@ -536,8 +623,10 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
         # 2026-09-06 风控对齐：与 launch_async 同策略，headless 转真有头+移屏外。
+        _disguise = False
         if headless:
             launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
+            _disguise = True  # 伪装窗口必须留在屏外，绝不能被归位逻辑拉回
             logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
@@ -550,6 +639,9 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
         )
+        # 2026-09-06：同步可见启动同样归位屏外遗留窗口；伪装启动不归位。
+        if not _disguise:
+            _ensure_window_visible_sync(context)
         browser = context.browser
         return p, browser, context, "exe"
 
@@ -601,6 +693,9 @@ async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
         )
+        # 2026-09-06：查看模式恒可见，必须把伪装模式残留的屏外窗口归位，
+        # 否则用户双击打开的浏览器窗口落在桌面外、无法操作。
+        await _ensure_window_visible(context)
     else:
         port = launch_vb_env(_CFG.VB_ENV_ID, _CFG.VB_API_BASE, _CFG.VB_LAUNCH_TIMEOUT)
         if not port:

@@ -486,25 +486,45 @@ class DYLoginApi:
 
     @staticmethod
     def _load_auth_from_env(env_path):
-        """从指定 .env 读取并构造 DouyinAuth（替代 common_util.load_env 的写死路径）。"""
-        from dotenv import load_dotenv
+        """从指定 .env 读取并构造 DouyinAuth（替代 common_util.load_env 的写死路径）。
+
+        P3（2026-09-06 第五轮治理，09 台账 5.2B3）：改用 dotenv_values 纯文件读，
+        **不再把凭证写进进程级 os.environ**——backend 单进程多账号场景下，
+        旧实现 load_dotenv(override=True) 会让后加载的账号环境变量覆盖先加载的，
+        各处 os.getenv 拿到串号凭证。现按 env_path 精确读取；
+        文件缺某键时回退 os.getenv（兼容扫码流程先写环境的旧路径）。
+        """
+        from dotenv import load_dotenv, dotenv_values
         from builder.auth import DouyinAuth
         if env_path and env_path != ".env":
-            load_dotenv(env_path, override=True)
+            vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
+            # 兼容：仅当文件不存在时才退回环境变量（存在但不完整以文件为准，
+            # 避免陈旧环境值覆盖刚扫码的新凭证）
+            if not os.path.exists(env_path):
+                load_dotenv(env_path, override=True)
+                vals = {}
         else:
             load_dotenv(override=True)
-        cookies = os.getenv("DY_COOKIES")
-        web_protect = os.getenv("DY_WEB_PROTECT") or ""
-        keys = os.getenv("DY_KEYS") or ""
+            vals = {}
+
+        def _val(key):
+            v = vals.get(key)
+            if v is None or v == "":
+                v = os.getenv(key)
+            return v
+
+        cookies = _val("DY_COOKIES")
+        web_protect = _val("DY_WEB_PROTECT") or ""
+        keys = _val("DY_KEYS") or ""
         auth = DouyinAuth()
         # 优先用持久化的 web_protect/keys（完整还原签名，含 ree_public_key 等派生字段）；
         # 旧 .env 无这两个键时退回仅四件套。
         auth.perepare_auth(cookies, web_protect, keys)
         if not (web_protect and keys):
-            auth.ticket = os.getenv("DY_TICKET") or None
-            auth.ts_sign = os.getenv("DY_TS_SIGN") or None
-            auth.client_cert = os.getenv("DY_CLIENT_CERT") or None
-            auth.private_key = DYLoginApi._decode_private_key(os.getenv("DY_PRIVATE_KEY"))
+            auth.ticket = _val("DY_TICKET") or None
+            auth.ts_sign = _val("DY_TS_SIGN") or None
+            auth.client_cert = _val("DY_CLIENT_CERT") or None
+            auth.private_key = DYLoginApi._decode_private_key(_val("DY_PRIVATE_KEY"))
             # 补齐 ree_public_key（perepare_auth 用 web_protect/keys 时才派生；
             # 旧 .env 无 web_protect/keys 键时手动补，避免私信签名缺字段）
             if auth.private_key:
