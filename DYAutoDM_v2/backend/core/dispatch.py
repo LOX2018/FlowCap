@@ -305,7 +305,30 @@ class DispatchCenter:
                 content = ""
 
         try:
-            ok, reason = await send_target_async(self.auth, target, content)
+            # 2026-09-07：视频采集 / 直播监听的私信统一走 dm_dispatch 调度。
+            # 这两个来源目标**绝大多数是陌生人首发**，必须进入
+            # 「2 次/分钟、30 次/天 + 频控降权冷静」体系，否则会直接把
+            # 账号打到频控。按 uid 直发（目标没有 conv_id）。
+            _uid = str(target.get("user_id") or target.get("uid") or "").strip()
+            _acct = getattr(self.auth, "account_name", "") or ""
+            _routed = False
+            if _uid and _acct:
+                try:
+                    from services.dm_dispatch import get_dispatcher as _gd
+                    _r = _gd().submit_by_uid(_acct, _uid, content,
+                                             source="dispatch")
+                    if _r.accepted:
+                        ok, reason = True, "已入池（调度器异步发送）"
+                        _routed = True
+                    else:
+                        ok, reason = False, (_r.error or "调度器拒绝入池")
+                        _routed = True
+                        logger.warning(
+                            f"[调度] 私信未入池（账号={_acct} 目标={_uid}）: {reason}")
+                except Exception as _e:
+                    logger.warning(f"[调度] dm_dispatch 接入失败，回退直发: {_e}")
+            if not _routed:
+                ok, reason = await send_target_async(self.auth, target, content)
         except Exception as e:
             ok, reason = False, f"发送异常: {e}"
 

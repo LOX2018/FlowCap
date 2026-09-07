@@ -134,7 +134,20 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         payload TEXT DEFAULT '[]',           -- 完整结果 JSON
         ts REAL NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_crawl_history_ts ON crawl_history(ts DESC);
+    -- 直播弹幕/视频采集 UID 沉淀池（2026-09-07）：
+    -- 同一 UID 多次发弹幕只保留一次有效记录，避免对同一陌生人重复发送私信。
+    -- 跨任务/跨来源（采集 + 监听）共享，进程重启不丢。
+    CREATE TABLE IF NOT EXISTS dm_uid_sink (
+        account TEXT NOT NULL,
+        peer_uid TEXT NOT NULL,
+        nickname TEXT DEFAULT '',
+        source TEXT DEFAULT '',          -- live(弹幕) | crawl(采集) | manual
+        first_seen_ts REAL NOT NULL,     -- 首次沉淀时间
+        sent_ts REAL,                    -- 已发送时间（NULL=仅沉淀未发）
+        send_count INTEGER DEFAULT 0,    -- 已发送次数（正常应 <=1）
+        PRIMARY KEY (account, peer_uid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_uid_sink_ts ON dm_uid_sink(sent_ts DESC);
     """)
     conn.commit()
 

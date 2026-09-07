@@ -83,6 +83,33 @@ DEDUP_WINDOW = float(os.environ.get("DY_DM_DEDUP_WINDOW", "5"))
 # 需求（用户 2026-09-07）：测试私信发送时，只能「尚进工伤小助理」与
 # 「四川工伤张老师」两个账号互发，绝不得发给任何其他真实会话对象。
 #
+# ---------------------------------------------------------------------------
+# ★ 隔离机制说明（为什么这样设计，改动前务必读）
+# ---------------------------------------------------------------------------
+# 两个测试账号互为收发方，但**两类来源的"会话性质"不同**，白名单必须
+# 让它们都能测到，否则频控/降权永远测不出来：
+#
+#   ┌──────────────┬──────────────┬────────────┬─────────────────────┐
+#   │ 来源          │ 会话性质      │ 发送入口    │ 白名单判定           │
+#   ├──────────────┼──────────────┼────────────┼─────────────────────┤
+#   │ 视频采集      │ **陌生人首发** │ submit_by_uid │ 必须放行（否则测不到 │
+#   │ 直播监听      │ **陌生人首发** │ submit_by_uid │ 2/分钟、30/天限流   │
+#   │              │              │            │ 与频控降权/冷静）    │
+#   ├──────────────┼──────────────┼────────────┼─────────────────────┤
+#   │ 私信中心      │ 熟客沟通      │ submit()   │ 放行（有 conv_id，   │
+#   │ AI 自动回复   │ 熟客沟通      │ submit()   │ 不计入首发额度）     │
+#   └──────────────┴──────────────┴────────────┴─────────────────────┘
+#
+# 关键：**首发来源绝不能被"对端不在白名单"挡在限流之前** ——
+# 若首发也被白名单按"会话"拦截，就永远走不到 can_stranger_first()，
+# 频控降权、冷静期、权重恢复**全部无法测试**。因此：
+#   - submit_by_uid（采集/监听）：只校验"账号在白名单 + 目标是对端测试
+#     账号"，放行后**正常计入陌生人首发额度**（限流/降权照常生效）；
+#   - submit（私信中心/AI）：按 conv_id 解析对端后校验，同样只放行
+#     对端测试账号。
+#
+# 这样调试期既能保证「绝不发给真人」，又能完整压测限流与降权链路。
+#
 # 实现：白名单 uid 在**打包时由脚本注入**到本文件末尾的注入区
 # （见 scripts/build_sidecar.py 的 --test-whitelist 分支）。
 # 正式构建不注入 → TEST_WHITELIST_ON 恒为 False → 本段代码物理不执行。
@@ -282,10 +309,23 @@ class AccountQuota:
             return True, ""
 
     def note_stranger_sent(self) -> None:
+        """记一次陌生人首发（入池时**预占**）。"""
         now = time.time()
         with self.lock:
             self._stranger_minute.append(now)
             self._stranger_day.append(now)
+
+    def refund_stranger(self) -> None:
+        """归还一次预占额度（发送失败时调用：失败不该占额度）。
+
+        只退最近一条，且仅从分钟窗退（当日窗同样退一个），避免误退
+        其他任务的额度。额度为 0 时安全空转。
+        """
+        with self.lock:
+            if self._stranger_minute:
+                self._stranger_minute.pop()
+            if self._stranger_day:
+                self._stranger_day.pop()
 
     # ---------- 回执处理 ----------
     def on_result(self, ok: bool, detail: str = "") -> None:
@@ -345,6 +385,139 @@ class AccountQuota:
                 "limit_per_day": max(1, int(STRANGER_PER_DAY * self._weight_unlocked())),
                 "cooldown_left_sec": max(0, int(self.cooldown_until - now)),
             }
+
+
+# ===========================================================================
+# 2026-09-07：UID 沉淀池（用户要求）
+# ---------------------------------------------------------------------------
+# 直播监听/视频采集时，**同一 UID 会反复发弹幕**（同一个人刷很多条）。
+# 若不做沉淀，会对同一个人重复发送私信 = 骚扰 + 风控。
+#
+# 沉淀池职责：
+#   - 同一 (account, peer_uid) **只保留一次有效记录**，后续弹幕直接丢弃；
+#   - 跨来源共享（直播监听 + 视频采集 + 中控台采集走同一张表）；
+#   - **DB 持久化**（dm_uid_sink），进程重启不丢——避免今天发了，
+#     明天重启后又对同一批人重发一遍；
+#   - 冷却期：已发送的 UID 在 COOLDOWN 内不再重复发送（默认 7 天）。
+# ===========================================================================
+UID_SINK_COOLDOWN = float(
+    os.environ.get("DY_UID_SINK_COOLDOWN", str(7 * 86400)))   # 默认 7 天
+# 冷却期内是否直接丢弃（True=丢弃；False=放行但记录次数，便于排查）
+UID_SINK_STRICT = os.environ.get("DY_UID_SINK_STRICT", "1") not in (
+    "0", "false", "False")
+
+
+class UidSink:
+    """UID 沉淀池：同 UID 多次弹幕 → 只保留一次有效发送目标。
+
+    与 core/dispatch 内的 `_already_seen` 的区别：
+      - dispatch 那份是**进程内、单次任务**的内存集合，重启/新任务即失效；
+      - 本类是**会话池级别的持久化沉淀**，跨任务、跨来源、跨进程重启有效。
+    两者叠加：dispatch 拦瞬时重复（快），本池拦跨任务重复（准）。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # 内存一级缓存（避免每条弹幕都查库）：{(account,uid): ts}
+        self._cache: Dict[Tuple[str, str], float] = {}
+        self._loaded = False
+
+    def _ensure_loaded(self, account: str) -> None:
+        """首次使用时把该账号已发送过的 UID 载入内存缓存。"""
+        with self._lock:
+            if self._loaded:
+                return
+            try:
+                from database import get_db
+                conn = get_db()
+                rows = conn.execute(
+                    "SELECT account, peer_uid, sent_ts FROM dm_uid_sink "
+                    "WHERE sent_ts IS NOT NULL").fetchall()
+                for r in rows:
+                    self._cache[(r["account"], str(r["peer_uid"]))] = \
+                        float(r["sent_ts"] or 0)
+                self._loaded = True
+            except Exception as e:
+                logger.debug(f"[uid-sink] 载入失败（降级为纯内存去重）: {e}")
+                self._loaded = True
+
+    def should_send(self, account: str, peer_uid: str) -> tuple:
+        """该 UID 是否应发送。返回 (ok, reason)。
+
+        判定：
+          1. 冷却期内已发送过 → 拒绝（默认 7 天）；
+          2. 否则放行（并沉淀"已见过"）。
+        """
+        if not account or not peer_uid:
+            return False, "账号或 UID 为空"
+        key = (account, str(peer_uid).strip())
+        self._ensure_loaded(account)
+        now = time.time()
+        with self._lock:
+            last = self._cache.get(key)
+        if last and (now - last) < UID_SINK_COOLDOWN:
+            left = int(UID_SINK_COOLDOWN - (now - last))
+            if UID_SINK_STRICT:
+                return False, (f"UID 已发送过，冷却期内（剩余 {left // 86400} 天）")
+            return True, f"（非严格模式放行，{left // 86400} 天前发过）"
+        return True, ""
+
+    def mark_sent(self, account: str, peer_uid: str, nickname: str = "",
+                  source: str = "") -> None:
+        """标记该 UID 已发送（写入 DB + 内存）。"""
+        key = (account, str(peer_uid).strip())
+        now = time.time()
+        with self._lock:
+            self._cache[key] = now
+        try:
+            from database import get_db
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO dm_uid_sink("
+                "account,peer_uid,nickname,source,first_seen_ts,"
+                "sent_ts,send_count) VALUES(?,?,?,?,?,?,1) "
+                "ON CONFLICT(account,peer_uid) DO UPDATE SET "
+                "sent_ts=excluded.sent_ts, "
+                "send_count=dm_uid_sink.send_count+1, "
+                "nickname=COALESCE(excluded.nickname, dm_uid_sink.nickname)",
+                (account, str(peer_uid).strip(), nickname or "", source or "",
+                 now, now))
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[uid-sink] 落库失败（仅内存生效）: {e}")
+
+    def mark_seen(self, account: str, peer_uid: str, nickname: str = "",
+                  source: str = "") -> None:
+        """仅沉淀（未发送）：同 UID 多次弹幕只记一次，不占用发送额度。"""
+        try:
+            from database import get_db
+            conn = get_db()
+            conn.execute(
+                "INSERT OR IGNORE INTO dm_uid_sink("
+                "account,peer_uid,nickname,source,first_seen_ts) "
+                "VALUES(?,?,?,?,?)",
+                (account, str(peer_uid).strip(), nickname or "", source or "",
+                 time.time()))
+            conn.commit()
+        except Exception:
+            pass
+
+    def stats(self, account: str = "") -> dict:
+        try:
+            from database import get_db
+            conn = get_db()
+            if account:
+                row = conn.execute(
+                    "SELECT COUNT(*) n, SUM(CASE WHEN sent_ts IS NOT NULL "
+                    "THEN 1 ELSE 0 END) sent FROM dm_uid_sink WHERE account=?",
+                    (account,)).fetchone()
+                return {"total": row["n"] or 0, "sent": row["sent"] or 0}
+            row = conn.execute(
+                "SELECT COUNT(*) n, SUM(CASE WHEN sent_ts IS NOT NULL "
+                "THEN 1 ELSE 0 END) sent FROM dm_uid_sink").fetchone()
+            return {"total": row["n"] or 0, "sent": row["sent"] or 0}
+        except Exception:
+            return {"total": len(self._cache), "sent": len(self._cache)}
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +633,8 @@ class DmDispatcher:
 
     def __init__(self, pool: Optional[ConvPool] = None) -> None:
         self.pool = pool or ConvPool()
+        # 2026-09-07：UID 沉淀池（同 UID 多次弹幕只保留一次）
+        self.uid_sink = UidSink()
         self._queues: Dict[str, "queue.PriorityQueue"] = {}
         self._workers: Dict[str, threading.Thread] = {}
         self._tasks: Dict[str, SendTask] = {}      # task_id -> task（查状态用）
@@ -562,6 +737,7 @@ class DmDispatcher:
                 logger.warning(
                     f"[dm-dispatch][{account}] 陌生人首发被限流: {reason}")
                 return SubmitResult(False, error=f"陌生人首发达限: {reason}")
+            q.note_stranger_sent()      # 预占额度（失败由 _send_one 归还）
 
         # ④ 入队
         prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
@@ -583,6 +759,83 @@ class DmDispatcher:
             f"会话={conv_id[:12]}… peer={peer_uid} 源={source} "
             f"优先级={prio} 队列={q.qsize()}")
         return SubmitResult(True, task_id=task.task_id, queue_size=q.qsize())
+
+    def submit_by_uid(self, account: str, peer_uid: str, text: str,
+                      source: str = "dispatch",
+                      priority: Optional[int] = None) -> SubmitResult:
+        """按对端 uid 直发（**视频采集 / 直播监听专用**）。
+
+        这两个来源的目标**绝大多数是陌生人首发**（从未往来，没有 conv_id），
+        所以不能走需要 conv_id 的 `submit()`。此处：
+          - conv_id 置空，peer_uid 直接给定（已是真实对端）；
+          - **强制标记 is_stranger_first=True**（用户确认：采集/监听基本都是首发），
+            从而进入 2/分钟、30/天 的严格限流与降权/冷静体系；
+          - 同样做 key 校验（peer_uid 不得等于本账号 uid）。
+        """
+        if not account or not peer_uid or not text:
+            return SubmitResult(False, error="账号/对端 uid/内容缺失")
+        peer_uid = str(peer_uid).strip()
+
+        # ① 绝不能发给自己
+        my_uid = self.pool._my_uid_of(account)
+        if my_uid and peer_uid == my_uid:
+            return SubmitResult(False, error=f"拒绝：对端 uid 等于本账号（{my_uid}）")
+
+        # ② 测试白名单（调试版专属，见 submit 内说明）
+        if TEST_WHITELIST_ON:
+            allowed = _TEST_WHITELIST.get(account)
+            if allowed is None:
+                msg = f"[测试白名单] 账号「{account}」不在测试白名单，拒绝发送"
+                logger.error(f"[dm-dispatch] {msg}")
+                return SubmitResult(False, error=msg)
+            if allowed and peer_uid not in allowed:
+                msg = (f"[测试白名单] 账号「{account}」仅允许发给 "
+                       f"{sorted(allowed)}，目标 {peer_uid} 被拒绝")
+                logger.error(f"[dm-dispatch] {msg}")
+                return SubmitResult(False, error=msg)
+            logger.info(f"[dm-dispatch] [测试白名单] 放行(uid直发)："
+                        f"{account} -> {peer_uid}")
+
+        # ②-b UID 沉淀池：同一 UID 多次弹幕只保留一次有效目标。
+        # 直播/采集场景同一个人会刷很多条弹幕，若无此层会对同一人重复发
+        # 私信（骚扰 + 风控）。冷却期默认 7 天，跨任务/跨重启有效。
+        ok_sink, sink_reason = self.uid_sink.should_send(account, peer_uid)
+        if not ok_sink:
+            logger.info(
+                f"[dm-dispatch][{account}] UID 沉淀池拦截（同 UID 已发过）: "
+                f"{peer_uid} - {sink_reason}")
+            return SubmitResult(False, error=f"UID 沉淀池: {sink_reason}")
+
+        # ③ 陌生人首发限流（采集/监听目标默认按陌生人首发计）
+        # **预占额度**：入池即记账，不等发送成功才记。否则"入池→发送"之间
+        # 的窗口期可以无限入池（检查通过但都还没发送，额度始终为 0），
+        # 限流形同虚设。发送失败时由 _send_one 调 quota.refund_stranger() 归还。
+        q = self.quota_of(account)
+        ok_q, reason = q.can_stranger_first()
+        if not ok_q:
+            logger.warning(
+                f"[dm-dispatch][{account}] 陌生人首发被限流(uid直发): {reason}")
+            return SubmitResult(False, error=f"陌生人首发达限: {reason}")
+        q.note_stranger_sent()          # 预占
+
+        # ④ 入队（conv_id 留空，发送时按 peer_uid 走 /send_by_uid）
+        prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
+            source, PRIO_BATCH)
+        q_ = self._queue_of(account)
+        if q_.qsize() >= QUEUE_MAX:
+            return SubmitResult(False, error=f"队列已满（{QUEUE_MAX}）")
+        task = SendTask(task_id=uuid.uuid4().hex[:12], account=account,
+                        conv_id="", peer_uid=peer_uid, text=text,
+                        source=source, priority=prio,
+                        account_key=account, is_stranger_first=True)
+        with self._reg_lock:
+            self._tasks[task.task_id] = task
+        q_.put(task)
+        self._ensure_worker(account)
+        logger.info(
+            f"[dm-dispatch] 入池(uid直发) task={task.task_id} 账号={account} "
+            f"peer={peer_uid} 源={source} 队列={q_.qsize()}")
+        return SubmitResult(True, task_id=task.task_id, queue_size=q_.qsize())
 
     # ---------- 队列 / worker ----------
     def _queue_of(self, account: str) -> "queue.PriorityQueue":
@@ -642,6 +895,9 @@ class DmDispatcher:
             task.error = (f"key 核对失败：task.account_key="
                           f"{task.account_key} != account={task.account}")
             logger.error(f"[dm-dispatch] {task.error}，已拒绝发送")
+            # 被拒绝=没发出去 → 归还预占额度
+            if task.is_stranger_first:
+                self.quota_of(task.account).refund_stranger()
             return
         task.status = "sending"
         quota = self.quota_of(task.account)
@@ -649,22 +905,35 @@ class DmDispatcher:
             import requests
             from auto_dm import accounts as acct_core
             port = acct_core.recv_daemon_port(task.account)
-            url = f"http://127.0.0.1:{port}/send"
-            payload = {"account": task.account, "conv_id": task.conv_id,
-                       "text": task.text}
+            if task.conv_id:
+                # 有会话 → 走 /send（conv_id 定位对端）
+                url = f"http://127.0.0.1:{port}/send"
+                payload = {"account": task.account, "conv_id": task.conv_id,
+                           "text": task.text}
+            else:
+                # 无会话（视频采集/直播监听的 uid 直发）→ 走 /send_by_uid
+                url = f"http://127.0.0.1:{port}/send_by_uid"
+                payload = {"account": task.account, "peer_uid": int(task.peer_uid),
+                           "text": task.text}
             r = requests.post(url, json=payload, timeout=60)
             data = r.json() if r.status_code == 200 else {}
             ok = bool(data.get("ok"))
             if ok:
                 task.status = "done"
-                if task.is_stranger_first:
-                    quota.note_stranger_sent()
+                # 额度已在入池时预占（note_stranger_sent），成功不重复记
+                # uid 直发（采集/监听）成功 → 写入沉淀池，防止日后重复打扰
+                if task.is_stranger_first and not task.conv_id:
+                    self.uid_sink.mark_sent(task.account, task.peer_uid,
+                                            source=task.source)
                 logger.info(f"[dm-dispatch] 已发送 task={task.task_id} "
-                            f"账号={task.account} 会话={task.conv_id[:12]}…"
+                            f"账号={task.account} 会话={(task.conv_id or task.peer_uid)[:12]}…"
                             f"{' [陌生人首发]' if task.is_stranger_first else ''}")
             else:
                 task.status = "failed"
                 task.error = data.get("error") or data.get("msg") or f"HTTP{r.status_code}"
+                # 发送失败 → 归还预占的首发额度（失败的发送不该占额度）
+                if task.is_stranger_first:
+                    quota.refund_stranger()
                 logger.warning(f"[dm-dispatch] 发送失败 task={task.task_id}: "
                                f"{task.error}")
             # 回执交给配额统计（命中频控 -> 降权 + 冷静期）
@@ -672,6 +941,8 @@ class DmDispatcher:
         except Exception as e:
             task.status = "failed"
             task.error = str(e)
+            if task.is_stranger_first:
+                quota.refund_stranger()     # 异常=没发出去，归还额度
             quota.on_result(False, str(e))
             raise
 
