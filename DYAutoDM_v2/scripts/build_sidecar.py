@@ -112,9 +112,11 @@ def inject_test_whitelist() -> None:
     # 3887506227210423」**不一致**（两套 uid 体系，日志持续报 uid 漂移）。
     # 白名单比对的是**发送目标的 peer_uid**（来自 conv_id，属会话体系），
     # 故此处必须用会话 uid，用探活 uid 会误拒（2026-09-07 真机踩坑）。
+    #
+    # 语义：WL[账号] = 该账号**允许发送的目标 peer_uid**（对方会话 uid）
     WL = {
-        "尚进工伤小助理": "3887506227210423",   # 张老师作为对端的会话 uid
-        "四川工伤张老师": "316276709526638",   # 尚进作为对端的会话 uid
+        "尚进工伤小助理": "3887506227210423",   # 尚进 -> 张老师(会话uid)
+        "四川工伤张老师": "316276709526638",   # 张老师 -> 尚进(会话uid)
     }
     target = Path(__file__).resolve().parent.parent / "backend" / "services" / "dm_dispatch.py"
     src = target.read_text(encoding="utf-8")
@@ -123,13 +125,11 @@ def inject_test_whitelist() -> None:
     if start not in src or end not in src:
         print("[warn] 未找到注入标记，跳过白名单注入")
         return
-    body = (
-        f'_TEST_WHITELIST = {{\n'
-        f'    "{WL and list(WL)[0]}": {{"{WL[list(WL)[1]]}"}},\n'
-        f'    "{list(WL)[1]}": {{"{WL[list(WL)[0]]}"}},\n'
-        f'}}\n'
-        f'TEST_WHITELIST_ON = True\n'
-    )
+    # 直接按 WL 的语义生成，不做任何对称推导
+    # （2026-09-07 踩坑：旧代码用 WL[对方名] 取值生成，导致收发关系反转）
+    lines = ",\n".join(
+        f'    "{k}": {{"{v}"}}' for k, v in WL.items())
+    body = f'_TEST_WHITELIST = {{\n{lines},\n}}\nTEST_WHITELIST_ON = True\n'
     new = re.sub(re.escape(start) + r".*?" + re.escape(end),
                  start + "\n" + body + end, src, flags=re.S)
     target.write_text(new, encoding="utf-8")
