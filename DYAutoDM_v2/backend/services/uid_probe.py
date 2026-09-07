@@ -97,6 +97,33 @@ def _valid(name: str, ttl_override: Optional[float] = None) -> Optional[int]:
     return None
 
 
+def _uid_consistent_with_history(account: str, uid) -> bool:
+    """探活 uid 是否与该账号历史会话一致（防陈旧/错误 uid 被缓存）。
+
+    判据：该 uid 必须出现在该账号**至少一条**历史 conv_id 中。
+    无历史会话（新账号）时返回 True（无从比对，不冤枉）。
+    DB 不可用时也返回 True（降级放行，避免误伤）。
+
+    2026-09-07 实测依据：张老师真实 uid=3887506227210423 在 278/278 条
+    会话中出现；而错误值 4175297014664416 出现 0 次。
+    """
+    try:
+        from database import get_db
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT conv_id FROM dm_conversations WHERE account=? LIMIT 500",
+            (account,)).fetchall()
+        if not rows:
+            return True
+        s = str(uid)
+        for (cid,) in rows:
+            if s in (cid or "").split(":"):
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def _do_probe(name: str) -> Optional[int]:
     """真正发一次 query/user（本模块内唯一的网络出口）。"""
     try:
@@ -154,6 +181,19 @@ def get_uid(name: str, force: bool = False,
             if cached is not None:
                 return cached
         uid = _do_probe(name)
+        # 2026-09-07 事实更正 + 加固：**不存在"两套 uid"**，探活 uid 必须
+        # 与该账号历史会话一致。实测事故：张老师真实 uid=3887506227210423
+        # （278/278 会话 + 抖音 query/user 双重确认），但日志里长期出现
+        # 4175297014664416（09-04 的陈旧值），被本缓存按 300s TTL 反复复用，
+        # 导致上游误判"uid 漂移"、账号校验误报。
+        # 加固：探活成功后与历史会话交叉验证 —— 若该 uid 从未出现在该账号
+        # conv_id 中，视为**陈旧/不可信**，不写入缓存、不返回（返回 None 让
+        # 调用方走兜底），并告警。这样陈旧值不会污染后续 300s。
+        if uid and not _uid_consistent_with_history(name, uid):
+            logger.warning(
+                f"[uid-probe] 账号「{name}」探活 uid={uid} 与该账号历史会话"
+                f"不一致 —— 判为陈旧/不可信，不缓存（真实 uid 以 conv_id 为准）")
+            return None
         with _registry_lock:
             _cache[name] = (time.time(), uid)
         if uid:

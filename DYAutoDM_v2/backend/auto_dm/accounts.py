@@ -370,77 +370,51 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 uid = None
             if uid:
                 result["uid"] = uid
-            # 2026-09-07 修正（09 台账第九轮）：**两套 uid 体系**。
-            # 探活 uid（web query/user）与会话 uid（imapi conv_id）可能不同
-            # （实测张老师：探活=4175...、会话=3887...），这是 uid 轮换/换绑
-            # 后的正常状态，**不是凭证失效**。原逻辑只要探活 uid 不在历史
-            # 会话里就判 fail「请重新扫码」，会长期误报。
+            # 2026-09-06 P1 修复（知识库 08 §24.9 uid 轮换事故）：
+            # uid 与 DB 历史会话 uid 交叉验证 —— conv_id 格式
+            # `0:1:<uid_a>:<uid_b>`，该账号历史 conv_id 里必然包含其真实 uid。
+            # 若本次探活 uid 从未出现在历史 conv_id 中，说明身份已漂移/轮换，
+            # Web 接口认新 uid 但 imapi 会话体系仍挂老 uid（本次事故实证），
+            # 凭证不可信。仅在该账号 DB 里已有历史会话时才比对（新账号跳过）。
             #
-            # 正确判定：以**会话 uid 为权威**（它决定私信能否发出去）：
-            #   - 能推断出会话 uid → 账号在 imapi 侧身份明确，正常；
-            #   - 探活 uid 与会话 uid 不同 → 记为「双 uid 体系」提示（warn，
-            #     非 fail），说明该账号换过绑，属已知正常现象；
-            #   - 两者都取不到 → 才是真问题（fail）。
-            _uid_mismatch = False      # 真漂移（无会话 uid 且探活也对不上）
-            _dual_uid = False          # 双 uid 体系（正常，仅提示）
-            _sess_uid = ""
+            # 2026-09-07 事实更正：**不存在"双 uid 体系"**。
+            # 实测直接问抖音（query/user）：张老师凭证回答 user_uid=
+            # 3887506227210423，与其 278/278 条会话完全一致；此前日志里的
+            # 4175297014664416 是 **09-04 的陈旧值**（被 uid_probe 缓存复用），
+            # 且带着它拉取会话 conv=0（页面级登录态失效）。原判 fail 是对的，
+            # 中间那版"双 uid → warn"改动前提错误，已撤回。
+            _uid_mismatch = False
             if uid:
                 try:
-                    from services.uid_probe import session_uid as _sess_uid_of
-                    _sess_uid = _sess_uid_of(name)
-                except Exception:
-                    _sess_uid = ""
-                if _sess_uid:
-                    # 有明确会话 uid → imapi 身份正常；与探活不同只是双体系
-                    _dual_uid = (str(uid) != _sess_uid)
-                    if _dual_uid:
-                        logger.info(
-                            f"[verify] 账号 {name} 双 uid 体系（正常）："
-                            f"探活 uid={uid} / 会话 uid={_sess_uid}；"
-                            f"该账号可能经历过 uid 轮换或换绑，"
-                            f"私信以会话 uid 为准，功能正常。")
-                else:
-                    # 无会话 uid（新账号无历史会话）：沿用原交叉验证
-                    try:
-                        from database import get_db
-                        _conn = get_db()
-                        _rows = _conn.execute(
-                            "SELECT conv_id FROM dm_conversations WHERE account=?",
-                            (name,)).fetchall()
-                        if _rows:
-                            _uid_s = str(uid)
-                            _uid_mismatch = not any(
-                                _uid_s in str(r[0]).split(":") for r in _rows)
-                            if _uid_mismatch:
-                                logger.error(
-                                    f"[verify] 账号 {name} uid 漂移：探活 uid={uid} "
-                                    f"不存在于该账号 {len(_rows)} 条历史会话中，"
-                                    f"凭证身份存疑（疑似身份被轮换/替换）。")
-                    except Exception as _e:
-                        logger.debug(f"[verify] uid 交叉验证跳过（DB 不可用）: {_e}")
+                    from database import get_db
+                    _conn = get_db()
+                    _rows = _conn.execute(
+                        "SELECT conv_id FROM dm_conversations WHERE account=?",
+                        (name,)).fetchall()
+                    if _rows:
+                        _uid_s = str(uid)
+                        _uid_mismatch = not any(
+                            _uid_s in str(r[0]).split(":") for r in _rows)
+                        if _uid_mismatch:
+                            logger.error(
+                                f"[verify] 账号 {name} uid 漂移：探活 uid={uid} "
+                                f"不存在于该账号 {len(_rows)} 条历史会话中，"
+                                f"凭证身份存疑（疑似身份被轮换/替换）。")
+                except Exception as _e:
+                    logger.debug(f"[verify] uid 交叉验证跳过（DB 不可用）: {_e}")
             # 检查 wp 引擎“捕获”的关键签名：web_protect/keys 四件套是否齐全
             _has_sign = bool(auth.ticket and auth.ts_sign and auth.client_cert
                              and auth.private_key and (getattr(auth, "web_protect_str", None)
                                                        or getattr(auth, "ree_public_key", None)))
             if uid and _has_sign and _uid_mismatch:
-                # 真漂移：无会话 uid 且探活 uid 对不上历史 → 才判 fail
+                # 真漂移 → 判 fail（2026-09-07：经实测确认此判定正确，
+                # 中间那版"双 uid → warn"的前提不成立，已撤回）
                 result["wp"] = {
                     "level": "fail",
                     "label": "uid 漂移（身份存疑）",
                     "detail": f"探活 uid={uid} 与该账号历史会话 uid 不一致——"
                               f"疑似登录身份被轮换/替换，imapi 会话体系仍挂老 uid，"
                               f"私信收发将全部失败。请重新扫码登录该账号。",
-                }
-            elif uid and _has_sign and _dual_uid:
-                # 2026-09-07：双 uid 体系是**正常状态**，不是故障。
-                # 判 warn（可用），避免用户被误导去重新扫码（那反而会丢凭证）。
-                result["wp"] = {
-                    "level": "warn",
-                    "label": "正常（双 uid 体系）",
-                    "detail": f"凭证有效。该账号存在两套 uid："
-                              f"探活 uid={uid}、会话 uid={_sess_uid}——"
-                              f"通常因 uid 轮换/换绑导致，属已知正常现象。"
-                              f"私信以会话 uid 为准，收发功能不受影响，无需重新扫码。",
                 }
             elif uid and _has_sign:
                 result["wp"] = {
