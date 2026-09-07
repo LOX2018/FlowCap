@@ -540,7 +540,37 @@ class ConvPool:
     # ---------- 核心：解析真实对端 uid ----------
     @staticmethod
     def _my_uid_of(account: str) -> str:
-        """取本账号 uid（走统一探活调度器，零额外网络）。"""
+        """取本账号 uid（走统一探活调度器，零额外网络）。
+
+        2026-09-07 真机修正：**探活 uid 与私信会话 uid 可能不是同一个**
+        （实测「四川工伤张老师」探活=4175297014664416，但 278 条会话里
+        本账号 uid 恒为 3887506227210423 —— 两套 uid 体系，也是日志里
+        持续报「uid 漂移」的根因）。因此：
+          1. 先用会话池统计推断（**权威**：本账号 uid 必然出现在该账号
+             的每一个 conv_id 中，出现次数 ≈ 会话数）；
+          2. 统计不可用时才回退探活 uid。
+        这样"排除自身"才不会误判——否则会把真实对端当成本账号排除掉。
+        """
+        try:
+            from database import get_db
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT conv_id FROM dm_conversations WHERE account=?",
+                (account,)).fetchall()
+            if rows:
+                cnt: Dict[str, int] = {}
+                for (cid,) in rows:
+                    p = (cid or "").split(":")
+                    if len(p) >= 4:
+                        cnt[p[2]] = cnt.get(p[2], 0) + 1
+                        cnt[p[3]] = cnt.get(p[3], 0) + 1
+                n = len(rows)
+                # 本账号 uid 出现在【每一个】conv_id 中
+                for uid, c in cnt.items():
+                    if c >= n * 0.9:
+                        return uid
+        except Exception:
+            pass
         try:
             from services.uid_probe import get_uid
             return str(get_uid(account) or "")

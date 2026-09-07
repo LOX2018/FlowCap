@@ -107,10 +107,14 @@ def inject_test_whitelist() -> None:
     import re
     from pathlib import Path
 
-    # 两个测试账号的 uid（由账号 .env / uid 探活得到，写死以防扫错）
+    # 两个测试账号的**私信会话 uid**（不是探活 uid！）。
+    # 实测：四川工伤张老师「探活 uid=4175297014664416」与「会话 uid=
+    # 3887506227210423」**不一致**（两套 uid 体系，日志持续报 uid 漂移）。
+    # 白名单比对的是**发送目标的 peer_uid**（来自 conv_id，属会话体系），
+    # 故此处必须用会话 uid，用探活 uid 会误拒（2026-09-07 真机踩坑）。
     WL = {
-        "尚进工伤小助理": "316276709526638",
-        "四川工伤张老师": "4175297014664416",
+        "尚进工伤小助理": "3887506227210423",   # 张老师作为对端的会话 uid
+        "四川工伤张老师": "316276709526638",   # 尚进作为对端的会话 uid
     }
     target = Path(__file__).resolve().parent.parent / "backend" / "services" / "dm_dispatch.py"
     src = target.read_text(encoding="utf-8")
