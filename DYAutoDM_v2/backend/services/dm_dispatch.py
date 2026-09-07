@@ -109,14 +109,23 @@ class SendTask:
     # 图片发送用（可选）
     image_b64: str = ""
     filename: str = ""
+    # ---- 2026-09-07 多账号 key + 来源标注 ----
+    account_key: str = ""          # 账号唯一 key（=account），发送时二次核对
+    is_stranger_first: bool = False  # 是否「陌生人首发」（无历史会话）
     # 结果回填
     status: str = "pending"   # pending / sending / done / failed
     error: str = ""
 
     def __lt__(self, other: "SendTask") -> bool:
-        """优先级队列排序：先比优先级，再比入池时间（FIFO 保证顺序）。"""
+        """优先级队列排序：先比优先级，再比入池时间（FIFO 保证顺序）。
+
+        2026-09-07：陌生人首发额外降权——同类优先级下排在熟会话之后，
+        避免批量陌生首发挤占真实对话（抖音对陌生首发限制最严）。
+        """
         if self.priority != other.priority:
             return self.priority < other.priority
+        if self.is_stranger_first != other.is_stranger_first:
+            return not self.is_stranger_first   # 熟会话优先
         return self.enqueued_at < other.enqueued_at
 
 
@@ -126,6 +135,216 @@ class SubmitResult:
     task_id: str = ""
     error: str = ""
     queue_size: int = 0
+
+
+# ===========================================================================
+# 2026-09-07：per-account 配额 / 权重估算 / 冷静期（多账号 key 隔离）
+# ===========================================================================
+# 背景（用户要求）：
+#   1. 多账号模式下每个账号都要有自己的 key，配额与状态按 key 隔离；
+#   2. 直播监听的待发送**多数是给陌生人首发**，抖音对此限制最严：
+#      **每分钟 ≤2 次、每天 ≤30 次**；
+#   3. 不同账号权重不同（注意：**真实权重是抖音服务端内部值，无公开接口，
+#      本地无法直接捕获，只能用可观测信号估算**）；
+#   4. 发送回执若提示「频繁」，陌生人首发需**降权 + 强制冷静周期**。
+#
+# 设计要点：
+#   - **零额外网络请求**：陌生判定 = 本地 dm_messages 无历史消息；
+#   - 权重**只做本地估算**（成功率 + 频控次数），不声称是平台真实权重；
+#   - 所有配额按 account key 独立记账，互不干扰。
+# ===========================================================================
+# 陌生人首发硬限额（抖音平台侧限制，保守取用户给定值）
+STRANGER_PER_MINUTE = int(os.environ.get("DY_STRANGER_PER_MINUTE", "2"))
+STRANGER_PER_DAY = int(os.environ.get("DY_STRANGER_PER_DAY", "30"))
+# 收到"频繁"回执后的强制冷静期（秒），期间暂停该账号的陌生人首发
+COOLDOWN_ON_FREQUENT = float(os.environ.get("DY_DM_COOLDOWN_FREQ", "600"))
+# 冷静期递增：连续触发则翻倍（上限 1 小时），避免刚解封又撞墙
+COOLDOWN_MAX = float(os.environ.get("DY_DM_COOLDOWN_MAX", "3600"))
+# 2026-09-07 补：**权重恢复周期**（用户指出不能"降到底就永久停用"）
+# freq_hits 每过 HALFLIFE 秒衰减一半 —— 被频控的账号会随时间自动"刑满释放"，
+# 且只要期间表现正常就能逐步回到满权重。设为 0 可关闭衰减（不推荐）。
+WEIGHT_RECOVER_HALFLIFE = float(
+    os.environ.get("DY_WEIGHT_RECOVER_HALFLIFE", "21600"))   # 默认 6 小时
+# 静默恢复：距上次频控超过该秒数且后续发送正常 → 冷静等级自动清零
+WEIGHT_FORGIVE_AFTER = float(
+    os.environ.get("DY_WEIGHT_FORGIVE_AFTER", "86400"))      # 默认 24 小时
+
+
+class AccountQuota:
+    """单个账号（key）的发送配额、权重估算与冷静期状态。
+
+    每个 account 一份实例，由 DmDispatcher 按 key 持有 —— 账目完全隔离，
+    不会出现 A 账号的额度被 B 账号消耗、或 A 被频控连累 B 的情况。
+    """
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        # 用**可重入锁**：snapshot/日志等路径会在持锁时再调 weight 类方法，
+        # 普通 Lock 会死锁（实测 2026-09-07 踩过）。RLock 保证同类调用安全。
+        self.lock = threading.RLock()
+        # 陌生人首发记账：分钟滑窗 + 当日计数
+        self._stranger_minute: list = []      # 最近 60s 内的首发时间戳
+        self._stranger_day: list = []         # 当日首发时间戳
+        self._day_stamp: str = time.strftime("%Y-%m-%d")
+        # 权重估算（纯本地统计，非平台真实权重）
+        self.sent_total = 0
+        self.sent_ok = 0
+        self.freq_hits = 0                    # 被频控次数
+        # 2026-09-07 补：权重恢复机制（用户指出"降至 0 后不能永久停用"）
+        # freq_hits 带**半衰期**：每过 WEIGHT_RECOVER_HALFLIFE 秒衰减一半，
+        # 保证账号被频控后能随时间自动恢复，不会永久判死。
+        self.freq_hits_f = 0.0                # 浮点保留（衰减用）
+        self.last_freq_at = 0.0               # 上次频控时间戳
+        self.last_decay_at = time.time()      # 上次衰减结算时间
+        # 冷静期
+        self.cooldown_until = 0.0
+        self.cooldown_level = 0               # 连续触发次数（用于递增）
+
+    # ---------- 日切 ----------
+    def _roll_day(self) -> None:
+        today = time.strftime("%Y-%m-%d")
+        if today != self._day_stamp:
+            self._day_stamp = today
+            self._stranger_day.clear()
+            self.cooldown_level = 0           # 新的一天重置递增
+
+    # ---------- 权重估算（本地可观测信号，非平台真实权重） ----------
+    def _decay_freq(self) -> None:
+        """频控计数的时间衰减（半衰期）。调用方需持锁。
+
+        freq_hits_f 每过 WEIGHT_RECOVER_HALFLIFE 秒衰减一半：
+          t=0h: 4.0  t=6h: 2.0  t=12h: 1.0  t=18h: 0.5 ...
+        低于 0.05 视为完全恢复 → 归零（避免永远留个尾巴）。
+        """
+        if WEIGHT_RECOVER_HALFLIFE <= 0 or self.freq_hits_f <= 0:
+            return
+        now = time.time()
+        elapsed = now - self.last_decay_at
+        if elapsed <= 0:
+            return
+        halves = elapsed / WEIGHT_RECOVER_HALFLIFE
+        self.freq_hits_f *= (0.5 ** halves)
+        self.last_decay_at = now
+        if self.freq_hits_f < 0.05:
+            self.freq_hits_f = 0.0
+            self.freq_hits = 0
+            self.cooldown_level = 0
+            logger.info(
+                f"[dm-dispatch][{self.key}] 频控记录已随时间衰减归零，"
+                f"权重恢复（刑满释放）")
+        else:
+            self.freq_hits = int(self.freq_hits_f + 0.5)
+
+    def _weight_unlocked(self) -> float:
+        """权重计算（**调用方必须已持锁**，内部不再加锁，避免死锁）。"""
+        self._roll_day()
+        self._decay_freq()
+        if self.sent_total < 5:
+            return 1.0
+        rate = self.sent_ok / max(self.sent_total, 1)
+        penalty = min(self.freq_hits_f * 0.15, 0.6)
+        return max(0.3, min(1.0, rate - penalty))
+
+    def weight(self) -> float:
+        """本地估算权重 [0.3, 1.0]（线程安全版，对外用）。"""
+        with self.lock:
+            return self._weight_unlocked()
+
+    def effective_stranger_limit(self, base: int) -> int:
+        """按权重缩放陌生人首发限额（权重低 → 额度更低、更保守）。
+
+        线程安全：内部取锁调 _weight_unlocked，不会死锁。
+        """
+        with self.lock:
+            return max(1, int(base * self._weight_unlocked()))
+
+    # ---------- 陌生人首发限流 ----------
+    def can_stranger_first(self) -> tuple:
+        """是否允许再发一条陌生人首发。返回 (ok, reason)。"""
+        now = time.time()
+        with self.lock:
+            self._roll_day()
+            if now < self.cooldown_until:
+                left = int(self.cooldown_until - now)
+                return False, f"冷静期内（剩余 {left}s），暂停陌生人首发"
+            # 分钟窗
+            self._stranger_minute = [t for t in self._stranger_minute
+                                     if now - t < 60]
+            limit_min = max(1, int(STRANGER_PER_MINUTE * self._weight_unlocked()))
+            if len(self._stranger_minute) >= limit_min:
+                return False, (f"陌生人首发已达分钟上限 "
+                               f"{limit_min} 次（权重 {self._weight_unlocked():.2f}）")
+            # 当日窗
+            limit_day = max(1, int(STRANGER_PER_DAY * self._weight_unlocked()))
+            if len(self._stranger_day) >= limit_day:
+                return False, (f"陌生人首发已达当日上限 "
+                               f"{limit_day} 次（权重 {self._weight_unlocked():.2f}）")
+            return True, ""
+
+    def note_stranger_sent(self) -> None:
+        now = time.time()
+        with self.lock:
+            self._stranger_minute.append(now)
+            self._stranger_day.append(now)
+
+    # ---------- 回执处理 ----------
+    def on_result(self, ok: bool, detail: str = "") -> None:
+        """根据发送回执更新统计；遇到"频繁"强制进入冷静期。"""
+        with self.lock:
+            self.sent_total += 1
+            if ok:
+                self.sent_ok += 1
+                # 成功后缓解递增（连续成功可降冷静等级）
+                if self.cooldown_level > 0:
+                    self.cooldown_level -= 1
+                return
+        d = (detail or "").upper()
+        # 命中"频繁/频控"类回执（与 douyin_api._classify_send_fail 对齐）
+        if any(k in d for k in ("FREQUENT", "RATE", "TOO_", "LIMIT",
+                                "SPAM", "FREQUENCY", "频繁", "频控")):
+            with self.lock:
+                self.freq_hits_f += 1.0       # 浮点计数（供半衰期衰减）
+                self.freq_hits = int(self.freq_hits_f + 0.5)
+                self.last_freq_at = time.time()
+                self.cooldown_level = min(self.cooldown_level + 1, 6)
+                # 冷静期随连续触发翻倍：10min -> 20 -> 40 ... 上限 COOLDOWN_MAX
+                dur = min(COOLDOWN_ON_FREQUENT * (2 ** (self.cooldown_level - 1)),
+                          COOLDOWN_MAX)
+                self.cooldown_until = time.time() + dur
+                logger.warning(
+                    f"[dm-dispatch][{self.key}] 回执命中频控 → 权重降至 "
+                    f"{self._weight_unlocked():.2f}，强制冷静 {dur / 60:.0f} 分钟"
+                    f"（第 {self.cooldown_level} 次，半衰期 "
+                    f"{WEIGHT_RECOVER_HALFLIFE / 3600:.0f}h 后自动恢复）")
+
+    def snapshot(self) -> dict:
+        now = time.time()
+        with self.lock:
+            self._roll_day()
+            self._decay_freq()
+            # 距"完全恢复"还需多久（按当前 freq_hits_f 与半衰期估算）
+            if self.freq_hits_f > 0 and WEIGHT_RECOVER_HALFLIFE > 0:
+                import math
+                halves = math.log(max(self.freq_hits_f, 1e-9) / 0.05, 2)
+                recover_in = int(max(0.0, halves) * WEIGHT_RECOVER_HALFLIFE)
+            else:
+                recover_in = 0
+            return {
+                "key": self.key,
+                # 注意：已持锁，必须用 _weight_unlocked（再调 weight() 会死锁）
+                "weight": round(self._weight_unlocked(), 2),
+                "weight_floor": 0.3,          # 硬保底，永不归零
+                "sent": f"{self.sent_ok}/{self.sent_total}",
+                "freq_hits": round(self.freq_hits_f, 2),
+                "recover_in_sec": recover_in,  # 权重完全恢复预计剩余秒
+                "stranger_last_min": len([t for t in self._stranger_minute
+                                          if now - t < 60]),
+                "stranger_today": len(self._stranger_day),
+                # 已持锁，直接算（不能调 effective_stranger_limit，会二次取锁死锁）
+                "limit_per_min": max(1, int(STRANGER_PER_MINUTE * self._weight_unlocked())),
+                "limit_per_day": max(1, int(STRANGER_PER_DAY * self._weight_unlocked())),
+                "cooldown_left_sec": max(0, int(self.cooldown_until - now)),
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +463,41 @@ class DmDispatcher:
         self._queues: Dict[str, "queue.PriorityQueue"] = {}
         self._workers: Dict[str, threading.Thread] = {}
         self._tasks: Dict[str, SendTask] = {}      # task_id -> task（查状态用）
+        # 2026-09-07：per-account key 配额（账目隔离）
+        self._quotas: Dict[str, "AccountQuota"] = {}
         self._reg_lock = threading.Lock()
         self._stop = threading.Event()
+
+    # ---------- 陌生人首发判定（本地，零网络请求） ----------
+    @staticmethod
+    def _is_stranger_first(account: str, conv_id: str) -> bool:
+        """该会话是否「从未往来」=> 陌生人首发。
+
+        判定：**本地 dm_messages 无该会话的任何历史消息**。
+        不查抖音接口（零风控），与平台无关，纯本地事实。
+        查库失败时保守返回 False（不误判为陌生人而误限流熟会话）。
+        """
+        if not conv_id:
+            return False
+        try:
+            from database import get_db
+            conn = get_db()
+            row = conn.execute(
+                "SELECT COUNT(*) n FROM dm_messages "
+                "WHERE account=? AND conv_id=?",
+                (account, conv_id)).fetchone()
+            return int(row["n"] if row else 0) == 0
+        except Exception:
+            return False
+
+    def quota_of(self, account: str) -> "AccountQuota":
+        """取（或建）该账号的独立配额。每个 key 一份，互不影响。"""
+        with self._reg_lock:
+            q = self._quotas.get(account)
+            if q is None:
+                q = AccountQuota(account)
+                self._quotas[account] = q
+            return q
 
     # ---------- 入池 ----------
     def submit(self, account: str, conv_id: str, text: str,
@@ -298,6 +550,19 @@ class DmDispatcher:
             logger.debug(f"[dm-dispatch] 重复消息已丢弃: {account}/{conv_id}")
             return SubmitResult(False, error="duplicate")
 
+        # ③-b 【2026-09-07】陌生人首发判定 + 限流（per-account key）
+        # 判定依据（**零额外网络请求**）：本地 dm_messages 中该会话无历史
+        # 消息 => 从未往来 => 陌生人首发。直播监听的待发送绝大多数属此类，
+        # 抖音对其限制最严（每分钟 ≤2、每天 ≤30，且按账号权重缩放）。
+        is_stranger = self._is_stranger_first(account, conv_id)
+        if is_stranger:
+            q = self.quota_of(account)
+            ok_q, reason = q.can_stranger_first()
+            if not ok_q:
+                logger.warning(
+                    f"[dm-dispatch][{account}] 陌生人首发被限流: {reason}")
+                return SubmitResult(False, error=f"陌生人首发达限: {reason}")
+
         # ④ 入队
         prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
             source, PRIO_BATCH)
@@ -307,7 +572,8 @@ class DmDispatcher:
         task = SendTask(task_id=uuid.uuid4().hex[:12], account=account,
                         conv_id=conv_id, peer_uid=peer_uid, text=text,
                         source=source, priority=prio,
-                        image_b64=image_b64, filename=filename)
+                        image_b64=image_b64, filename=filename,
+                        account_key=account, is_stranger_first=is_stranger)
         with self._reg_lock:
             self._tasks[task.task_id] = task
         q.put(task)
@@ -363,8 +629,22 @@ class DmDispatcher:
         logger.info(f"[dm-dispatch] worker 退出：{account}")
 
     def _send_one(self, task: SendTask) -> None:
-        """实际发送：转发到 recv_daemon（复用既有双通道 + 频率闸门）。"""
+        """实际发送：转发到 recv_daemon（复用既有双通道 + 频率闸门）。
+
+        2026-09-07 新增：
+          - **发送前核对 account_key**（防止任务被错投到别的账号队列）；
+          - 发送后把**回执结果**交给 AccountQuota 统计（命中"频繁"则
+            该账号陌生人首发进入强制冷静期 + 降权）。
+        """
+        # ★ 发送前 key 核对：任务所属账号必须与本 worker 的账号一致
+        if task.account_key and task.account_key != task.account:
+            task.status = "failed"
+            task.error = (f"key 核对失败：task.account_key="
+                          f"{task.account_key} != account={task.account}")
+            logger.error(f"[dm-dispatch] {task.error}，已拒绝发送")
+            return
         task.status = "sending"
+        quota = self.quota_of(task.account)
         try:
             import requests
             from auto_dm import accounts as acct_core
@@ -374,18 +654,25 @@ class DmDispatcher:
                        "text": task.text}
             r = requests.post(url, json=payload, timeout=60)
             data = r.json() if r.status_code == 200 else {}
-            if data.get("ok"):
+            ok = bool(data.get("ok"))
+            if ok:
                 task.status = "done"
+                if task.is_stranger_first:
+                    quota.note_stranger_sent()
                 logger.info(f"[dm-dispatch] 已发送 task={task.task_id} "
-                            f"账号={task.account} 会话={task.conv_id[:12]}…")
+                            f"账号={task.account} 会话={task.conv_id[:12]}…"
+                            f"{' [陌生人首发]' if task.is_stranger_first else ''}")
             else:
                 task.status = "failed"
                 task.error = data.get("error") or data.get("msg") or f"HTTP{r.status_code}"
                 logger.warning(f"[dm-dispatch] 发送失败 task={task.task_id}: "
                                f"{task.error}")
+            # 回执交给配额统计（命中频控 -> 降权 + 冷静期）
+            quota.on_result(ok, task.error)
         except Exception as e:
             task.status = "failed"
             task.error = str(e)
+            quota.on_result(False, str(e))
             raise
 
     # ---------- 观测 ----------
@@ -395,8 +682,12 @@ class DmDispatcher:
                 "queues": {a: q.qsize() for a, q in self._queues.items()},
                 "workers": {a: bool(w and w.is_alive())
                             for a, w in self._workers.items()},
+                # 2026-09-07：各账号 key 的配额/权重/冷静期快照
+                "quotas": {k: v.snapshot() for k, v in self._quotas.items()},
                 "resolved_cache": len(self.pool._resolved),
                 "queue_max": QUEUE_MAX,
+                "stranger_limit": {"per_minute": STRANGER_PER_MINUTE,
+                                   "per_day": STRANGER_PER_DAY},
             }
 
     def task_status(self, task_id: str) -> Optional[dict]:
