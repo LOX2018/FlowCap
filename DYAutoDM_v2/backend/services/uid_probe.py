@@ -62,8 +62,10 @@ LOCK_WAIT = float(os.environ.get("DY_UID_PROBE_LOCK_WAIT", "10"))
 # ---------------------------------------------------------------------------
 # 状态
 # ---------------------------------------------------------------------------
-# {账号名: (ts, uid_or_None)}
+# {账号名: (ts, uid_or_None)}  —— 探活体系（web query/user）
 _cache: Dict[str, Tuple[float, Optional[int]]] = {}
+# {账号名: (ts, uid)}  —— 会话体系（imapi conv_id 推断），两套 uid 分开存
+_valid_session: Dict[str, Tuple[float, str]] = {}
 # 每账号一把锁：同账号并发只让一个线程打网，其余等结果（防惊群）
 _locks: Dict[str, threading.Lock] = {}
 _registry_lock = threading.Lock()
@@ -164,13 +166,64 @@ def get_uid(name: str, force: bool = False,
         lk.release()
 
 
+def _session_uid_of(account: str) -> str:
+    """取账号在**私信会话体系**中的 uid（权威，用于"对端是谁"判定）。
+
+    2026-09-07 真机实测（09 台账第九轮）：**探活 uid 与会话 uid 可能是
+    两个值**。例如「四川工伤张老师」：
+      - 会话 uid（imapi，conv_id 内）= 3887506227210423
+      - 探活 uid（web query/user）= 4175297014664416
+    原因是该账号经历过 uid 轮换/换绑：web 侧 user_uid 变了，但 imapi
+    历史会话体系仍挂老 uid。
+
+    推断原理：本账号 uid 必然出现在该账号的**每一个** conv_id 中
+    （自己与所有人聊天），故出现次数 ≈ 会话数的那个 uid 即本账号。
+    实测：张老师 278/278、尚进 78/79 命中。
+
+    返回 "" 表示无法推断（无历史会话 / DB 不可用）。
+    """
+    try:
+        from database import get_db
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT conv_id FROM dm_conversations WHERE account=?",
+            (account,)).fetchall()
+        if not rows:
+            return ""
+        cnt: Dict[str, int] = {}
+        for (cid,) in rows:
+            p = (cid or "").split(":")
+            if len(p) >= 4:
+                cnt[p[2]] = cnt.get(p[2], 0) + 1
+                cnt[p[3]] = cnt.get(p[3], 0) + 1
+        n = len(rows)
+        for u, c in cnt.items():
+            if c >= n * 0.9:
+                return u
+    except Exception:
+        pass
+    return ""
+
+
+def session_uid(account: str) -> str:
+    """会话体系 uid（带缓存，TTL 同 _cache）。供外部判定"对端是谁"用。"""
+    hit = _valid_session.get(account)
+    if hit and (time.time() - hit[0]) < 300:
+        return hit[1]
+    u = _session_uid_of(account)
+    _valid_session[account] = (time.time(), u)
+    return u
+
+
 def invalidate(name: str = "") -> None:
     """作废缓存（凭证刷新/重扫后调用，让下次 get_uid 取鲜值）。"""
     with _registry_lock:
         if name:
             _cache.pop(name, None)
+            _valid_session.pop(name, None)
         else:
             _cache.clear()
+            _valid_session.clear()
 
 
 def refresh_now(name: str) -> None:
