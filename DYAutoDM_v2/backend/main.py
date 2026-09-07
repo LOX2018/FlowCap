@@ -22,6 +22,7 @@ from loguru import logger
 from config import settings
 from api import accounts, engine, live, messages, overview, settings as settings_api, tasks, logs as logs_api
 from api import ai as ai_api
+from api import crawl as crawl_api
 from core.auto_dm import AutoDM
 
 # 2026-09-06 全局治理（D：系统死代理隔离）：
@@ -267,6 +268,22 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
     # 引擎主控单例（替代原版 WebBridge.adm）
     app.state.adm = AutoDM()
+    # 2026-09-07：UID 探活统一调度器预热（架构重构）。
+    # 启动即由 services.uid_probe 按账号错峰探活一次并缓存，后续
+    # verify_account（30s 轮询）/ live_hook 心跳 / bcc keepalive 全部
+    # 只读取缓存 —— 把原先 8 处各自打网收敛为「每账号每 300s 至多 1 次」。
+    try:
+        from services import uid_probe as _uid_probe
+        from auto_dm import accounts as _acct_core
+        _names = [n[0] if isinstance(n, (tuple, list)) else n
+                  for n in _acct_core.list_accounts()]
+        if _names:
+            threading.Thread(
+                target=_uid_probe.warm_all, args=(_names,), daemon=True
+            ).start()
+            logger.info(f"[uid-probe] 已启动统一探活预热（{len(_names)} 个账号）")
+    except Exception as e:
+        logger.warning(f"[uid-probe] 预热启动失败（不影响使用）: {e}")
     # 后台预热账号校验缓存（并发，不阻塞启动）
     threading.Thread(target=_warm_verify_cache, daemon=True).start()
     # 原图缓存 TTL 清理(后台延迟 60s,删除过期/超容的本地解密图)
@@ -336,6 +353,8 @@ app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"
 app.include_router(logs_api.router, prefix="/api/logs", tags=["logs"])
 # AI 获客自动回复（嵌入自 douyin-auto-reply-assistant，2026-09-06）
 app.include_router(ai_api.router, prefix="/api/ai", tags=["ai"])
+# 数据采集（关键词搜索视频/用户 + 评论采集 + 评论转私信截流）
+app.include_router(crawl_api.router, prefix="/api/crawl", tags=["crawl"])
 
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
 logger.remove()

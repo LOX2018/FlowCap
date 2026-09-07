@@ -1,337 +1,336 @@
 /**
- * 采集页
+ * 采集页（2026-09-07 整合 GitHub cxiniao/- 抖音截流获客系统功能规格）
  *
  * 迁移自: DY_Spider_base/web/pages/crawl.js
- * 原版职责: 搜索用户/视频/直播、点赞收藏、作品详情
- * 迁移要点:
- *   - React.createElement -> JSX
- *   - window.ApiBridge.ready -> props.ready
- *   - search / diggVideo / favoriteVideo / resolveLive 后端暂未实现，
- *     保留 UI 但调用时提示"功能开发中"（规则 12）
+ * 整合: cxiniao/- 的「关键词搜视频 -> 拉评论区 -> 评论用户一键私信截流」闭环
+ * 链路: 基座 DouyinAPI.search_some_general_work / search_some_user /
+ *       get_work_out_comment + V2 core.sender.send_by_uid（统一发送闸门）
+ * 风控约束: 采集复用账号 .env 凭证被动签名，昵称/uid 全部取自结果自带字段，
+ *       绝不批量查询用户信息（昵称关联风控红线）。
+ * 账号数据源: /api/accounts（overview 无 accounts 字段，勿改回 overview）。
  */
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageProps } from "../api/client";
 import { Avatar, hue } from "../components/ui";
 
+// 2026-09-07 移除用户搜索：基座 /aweme/v1/web/discover/search 已被抖音 verify_check
+// 全面风控，"按关键词搜用户"在 2025-2026 已不可用；前端入口已关闭，仅保留视频搜索 +
+// 评论截流完整闭环（视频作者 uid 从评论数据自带字段零成本获取，覆盖原搜人用例）。
 export default function CrawlPage(props: PageProps) {
-  const { push, ready, goMsg } = props;
-  const [mode, setMode] = useState("video");
+  const { push, ready, api } = props;
   const [q, setQ] = useState("");
-  const [range, setRange] = useState("24h");
-  const [order, setOrder] = useState("综合");
-  const [detail, setDetail] = useState<{ type: string; v: any } | null>(null);
-  const [liked] = useState<Set<string>>(new Set());
-  const [fav] = useState<Set<string>>(new Set());
-  const [searching] = useState(false);
+  const [order, setOrder] = useState("0"); // 0 综合 / 1 最多点赞 / 2 最新发布
+  const [pt, setPt] = useState("0"); // 0 不限 / 1 一天 / 7 一周 / 180 半年
+  const [dur, setDur] = useState(""); // '' 不限 / 0-1 / 1-5 / 5-10000
+  const [searching, setSearching] = useState(false);
   const [did, setDid] = useState(false);
   const [results, setResults] = useState<any[]>([]);
+  // 账号选择：加载 /api/accounts 取 loggedIn 账号（overview 不含 accounts 字段）
+  const [accounts, setAccounts] = useState<{ name: string; loggedIn: boolean }[]>([]);
+  // 评论抽屉
+  const [cmtFor, setCmtFor] = useState<any | null>(null);
+  const [cmts, setCmts] = useState<any[]>([]);
+  const [cmtLoading, setCmtLoading] = useState(false);
+  // 评论私信模板与发送状态（uid -> 'sending' | 'sent' | fail-reason）
+  const [dmTpl, setDmTpl] = useState("你好，看到你评论了我的内容，想和你聊聊～");
+  const [authorTpl, setAuthorTpl] = useState(
+    "你好，刷到你的作品很感兴趣，想和你聊聊合作～",
+  );
+  const [dmState, setDmState] = useState<Record<string, string>>({});
+  // 评论筛选关键词 + 批量发送状态
+  const [cmtFilter, setCmtFilter] = useState("");
+  const [batching, setBatching] = useState(false);
 
-  const runSearch = () => {
+  const [account, setAccount] = useState("");
+  useEffect(() => {
+    let alive = true;
+    api
+      .getAccounts()
+      .then((list: any) => {
+        if (!alive) return;
+        const ls = (list || []).filter((a: any) => a.loggedIn);
+        setAccounts(ls);
+        if (!account && ls.length) setAccount(ls[0].name);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const runSearch = async () => {
     const kw = q.trim();
-    if (!kw) {
-      push("请输入搜索关键词");
-      return;
-    }
-    if (!ready) {
-      push("未连接后端，无法搜索");
-      return;
-    }
+    if (!kw) return push("请输入搜索关键词");
+    if (!ready) return push("未连接后端，无法搜索");
+    if (!account) return push("请先在账号管理页登录一个账号");
+    setSearching(true);
     setDid(true);
     setResults([]);
-    push("功能开发中：搜索接口暂未实现");
+    try {
+      const r = await api.crawlSearch({
+        account,
+        query: kw,
+        kind: "video",
+        sort_type: order,
+        publish_time: pt,
+        filter_duration: dur,
+        num: 24,
+      });
+      setResults(r.items || []);
+      push(`搜索完成，命中 ${r.total} 条`);
+    } catch (e: any) {
+      push(`搜索失败：${e?.message || e}`);
+    } finally {
+      setSearching(false);
+    }
   };
 
-  const filtered = results;
-  const empty = did && filtered.length === 0;
+  const openComments = async (v: any) => {
+    setCmtFor(v);
+    setCmts([]);
+    if (!account) return push("请先登录账号");
+    setCmtLoading(true);
+    try {
+      const r = await api.crawlComments({ account, aweme_id: v.awemeId, limit: 100 });
+      setCmts(r.items || []);
+      push(`评论采集完成，共 ${r.total} 条`);
+    } catch (e: any) {
+      push(`评论采集失败：${e?.message || e}`);
+    } finally {
+      setCmtLoading(false);
+    }
+  };
+
+  const sendDm = async (uid: string, nickname: string) => {
+    if (!uid) return push("该评论缺少 uid，无法私信");
+    if (!dmTpl.trim()) return push("请先填写私信文案");
+    setDmState((s) => ({ ...s, [uid]: "sending" }));
+    try {
+      const r = await api.crawlDm({ account, uid, text: dmTpl });
+      setDmState((s) => ({ ...s, [uid]: r.ok ? "sent" : `失败:${r.reason}` }));
+      push(r.ok ? `已向 ${nickname || uid} 发送私信` : `发送失败：${r.reason}`);
+    } catch (e: any) {
+      setDmState((s) => ({ ...s, [uid]: `失败:${e?.message || e}` }));
+      push(`发送失败：${e?.message || e}`);
+    }
+  };
+
+  // 视频作者私信（独立话术 authorTpl，与评论截流话术分离）
+  const sendAuthorDm = async (v: any) => {
+    if (!v.uid) return push("该作品缺少作者 uid，无法私信");
+    if (!authorTpl.trim()) return push("请先填写私信作者文案");
+    setDmState((s) => ({ ...s, [v.uid]: "sending" }));
+    try {
+      const r = await api.crawlDm({ account, uid: v.uid, text: authorTpl });
+      setDmState((s) => ({ ...s, [v.uid]: r.ok ? "sent" : `失败:${r.reason}` }));
+      push(r.ok ? `已向作者 ${v.nickname || v.uid} 发送私信` : `发送失败：${r.reason}`);
+    } catch (e: any) {
+      setDmState((s) => ({ ...s, [v.uid]: `失败:${e?.message || e}` }));
+      push(`发送失败：${e?.message || e}`);
+    }
+  };
+
+  // 批量截流：按关键词筛选评论区用户 → 批量私信（走统一闸门，自动限速）
+  const sendBatch = async () => {
+    if (!cmtFor) return;
+    if (!dmTpl.trim()) return push("请先填写私信文案");
+    if (batching) return;
+    setBatching(true);
+    try {
+      const r = await api.crawlBatch({
+        account,
+        aweme_id: cmtFor.awemeId,
+        text: dmTpl,
+        keyword: cmtFilter.trim(),
+        limit: 200,
+        max_send: 0,
+        interval: 0,
+      });
+      push(
+        `批量完成：候选 ${r.candidates} · 成功 ${r.sent_ok} · 失败 ${r.sent_fail} · 限流 ${r.rate_limited}`,
+      );
+      // 刷新单条状态
+      const ns: Record<string, string> = {};
+      (r.results || []).forEach((x) => {
+        ns[x.uid] = x.ok ? "sent" : `失败:${x.reason}`;
+      });
+      setDmState((s) => ({ ...s, ...ns }));
+    } catch (e: any) {
+      push(`批量私信失败：${e?.message || e}`);
+    } finally {
+      setBatching(false);
+    }
+  };
+
+  const fmtNum = (n: any) => {
+    const v = Number(n) || 0;
+    return v >= 10000 ? (v / 10000).toFixed(1) + "w" : String(v);
+  };
+  const fmtTs = (ts: any) => {
+    const v = Number(ts);
+    if (!v) return "";
+    try {
+      return new Date(v * 1000).toLocaleString("zh-CN", { hour12: false });
+    } catch {
+      return "";
+    }
+  };
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDetail(null);
+      if (e.key === "Escape") setCmtFor(null);
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  const onAct = (kind: string) => {
-    if (kind === "like") {
-      push("功能开发中：点赞接口暂未实现");
-    }
-    if (kind === "fav") {
-      push("功能开发中：收藏接口暂未实现");
-    }
-    if (kind === "comment") {
-      push("评论发布功能需在对应采集模块对接");
-    }
-    if (kind === "export") {
-      push("已导出为 JSON · comment_v1.json");
-    }
-  };
-
-  const detailV = detail?.v;
+  const empty = did && !searching && results.length === 0;
 
   return (
     <div>
       <div className="section-head">
         <div>
-          <h2>数据采集</h2>
-          <div className="desc">搜索用户 / 作品 / 直播，采集主页、评论与粉丝数据</div>
+          <h2>数据采集 · 评论截流</h2>
+          <div className="desc">
+            关键词搜视频 → 采集评论区 → 评论用户一键私信截流
+          </div>
         </div>
-        <span className="demo-tag">{ready ? "真实搜索接口" : "未连接"}</span>
+        <span className="demo-tag">{ready ? "后端已连接" : "后端未连接"}</span>
       </div>
 
-      <div className="card" style={{ marginBottom: 14 }} data-od-id="search-panel">
+      {/* 账号 + 搜索面板 */}
+      <div className="card" style={{ marginBottom: 14 }}>
         <div className="searchbar">
-          <div className="seg" data-od-id="search-mode">
-            {([["video", "视频"], ["user", "用户"], ["live", "直播"]] as [string, string][]).map(
-              ([id, l]) => (
-                <button
-                  key={id}
-                  className={mode === id ? "active" : ""}
-                  onClick={() => {
-                    setMode(id);
-                    setDid(false);
-                  }}
-                >
-                  {l}
-                </button>
-              ),
-            )}
-          </div>
+          <select
+            className="select"
+            value={account}
+            onChange={(e) => setAccount(e.target.value)}
+            aria-label="采集账号"
+            style={{ maxWidth: 170 }}
+          >
+            {accounts.length === 0 && <option value="">（无可登录账号）</option>}
+            {accounts.map((a: any) => (
+              <option key={a.name} value={a.name}>
+                {a.name}
+              </option>
+            ))}
+          </select>
           <input
             className="input"
-            data-od-id="search-input"
-            placeholder={
-              mode === "video" ? "搜索视频关键词 / 作者" : mode === "user" ? "搜索用户昵称" : "搜索直播间"
-            }
+            placeholder="搜索视频关键词"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && runSearch()}
           />
-          <select
-            className="select"
-            value={range}
-            onChange={(e) => setRange(e.target.value)}
-            aria-label="时间范围"
-          >
-            <option value="24h">近 24 小时</option>
-            <option value="7d">近 7 天</option>
-            <option value="30d">近 30 天</option>
-            <option value="all">全部时间</option>
-          </select>
-          <select
-            className="select"
-            value={order}
-            onChange={(e) => setOrder(e.target.value)}
-            aria-label="排序"
-          >
-            <option value="综合">综合排序</option>
-            <option value="latest">最新发布</option>
-            <option value="hot">热度最高</option>
-          </select>
-          <button
-            className="btn primary"
-            data-od-id="search-submit"
-            disabled={searching}
-            onClick={runSearch}
-          >
+          <button className="btn primary" disabled={searching} onClick={runSearch}>
             {searching ? "搜索中…" : "搜索"}
           </button>
         </div>
-        <div style={{ fontSize: 12, color: "var(--muted)", fontFamily: "var(--font-mono)" }}>
-          {"类型："}
-          {mode === "video" ? "视频" : mode === "user" ? "用户" : "直播"}
-          {" · 时间："}
-          {range === "24h" ? "近24小时" : range}
-          {" · 排序："}
-          {order}
-        </div>
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            marginTop: 10,
+              flexWrap: "wrap",
+              fontSize: 12,
+              color: "var(--muted)",
+            }}
+          >
+            <label>
+              排序{" "}
+              <select className="select" value={order} onChange={(e) => setOrder(e.target.value)}>
+                <option value="0">综合排序</option>
+                <option value="1">最多点赞</option>
+                <option value="2">最新发布</option>
+              </select>
+            </label>
+            <label>
+              发布时间{" "}
+              <select className="select" value={pt} onChange={(e) => setPt(e.target.value)}>
+                <option value="0">不限</option>
+                <option value="1">一天内</option>
+                <option value="7">一周内</option>
+                <option value="180">半年内</option>
+              </select>
+            </label>
+            <label>
+              视频时长{" "}
+              <select className="select" value={dur} onChange={(e) => setDur(e.target.value)}>
+                <option value="">不限</option>
+                <option value="0-1">1分钟内</option>
+                <option value="1-5">1-5分钟</option>
+                <option value="5-10000">5分钟以上</option>
+              </select>
+            </label>
+          </div>
       </div>
 
       {searching ? (
-        <div className="result-grid" data-od-id="search-loading" aria-busy="true">
+        <div className="result-grid">
           {[0, 1, 2, 3].map((i) => (
             <div className="card vcard" key={i}>
               <div className="sk sk-thumb" />
               <div className="sk sk-line" />
               <div className="sk sk-line w60" />
-              <div className="sk sk-line w40" />
             </div>
           ))}
-        </div>
-      ) : !did ? (
-        <div
-          className="card"
-          style={{ padding: "46px 16px", textAlign: "center", color: "var(--muted)", fontSize: 13 }}
-        >
-          输入关键词并点击「搜索」，查看结果集
         </div>
       ) : empty ? (
         <div
           className="card"
           style={{ padding: "46px 16px", textAlign: "center", color: "var(--muted)", fontSize: 13 }}
         >
-          未命中「{q}」，换一个关键词试试
+          {did ? `未命中「${q}」，换一个关键词试试` : "输入关键词并点击「搜索」，查看结果集"}
         </div>
-      ) : mode === "video" ? (
-        <div className="result-grid" data-od-id="video-results">
-          {filtered.map((v: any, i: number) => {
+      ) : (
+        <div className="result-grid">
+          {results.map((v: any, i: number) => {
             const vId = v.awemeId || "v" + i;
             const hu = Number(hue(i + 1)) % 360;
             return (
-              <div className="card vcard" data-od-id={"video-card-" + vId} key={vId}>
+              <div className="card vcard" key={vId}>
                 <div
                   className="thumb"
                   style={{
-                    background:
-                      "linear-gradient(135deg, oklch(40% 0.13 " + hu + "), oklch(24% 0.08 " + hu + "))",
+                    background: v.cover
+                      ? undefined
+                      : "linear-gradient(135deg, oklch(40% 0.13 " +
+                        hu +
+                        "), oklch(24% 0.08 " +
+                        hu +
+                        "))",
+                    backgroundImage: v.cover ? `url("${v.cover}")` : undefined,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
                   }}
-                  onClick={() => setDetail({ type: "video", v })}
+                  onClick={() => openComments(v)}
+                  title="点击采集该视频评论区"
                 >
                   <span className="src">douyin</span>
                   <span className="play" aria-hidden="true" />
-                  <span className="dur">▶</span>
+                  <span className="dur">💬 {fmtNum(v.cmts)}</span>
                 </div>
                 <div className="t">{v.title || "（无标题）"}</div>
                 <div className="m">
-                  <span>▶ {v.plays || 0}</span>
-                  <span>♥ {v.likes || 0}</span>
-                  <span>评论 {v.cmts || 0}</span>
+                  <span>▶ {fmtNum(v.plays)}</span>
+                  <span>♥ {fmtNum(v.likes)}</span>
+                  <span>{v.nickname || "未知作者"}</span>
                 </div>
                 <div className="row-ops">
-                  <button
-                    className="btn sm ghost"
-                    data-od-id={"like-" + vId}
-                    style={
-                      liked.has(vId)
-                        ? {
-                            background: "var(--accent)",
-                            color: "var(--accent-ink)",
-                            borderColor: "transparent",
-                          }
-                        : {}
-                    }
-                    onClick={() => push("功能开发中：点赞接口暂未实现")}
-                  >
-                    点赞
+                  <button className="btn sm ghost" onClick={() => openComments(v)}>
+                    采评论
                   </button>
-                  <button
-                    className="btn sm ghost"
-                    data-od-id={"fav-" + vId}
-                    style={
-                      fav.has(vId)
-                        ? {
-                            background: "var(--accent)",
-                            color: "var(--accent-ink)",
-                            borderColor: "transparent",
-                          }
-                        : {}
-                    }
-                    onClick={() => push("功能开发中：收藏接口暂未实现")}
-                  >
-                    收藏
-                  </button>
-                  <button
-                    className="btn sm ghost"
-                    onClick={() => push("已导出为 Excel · video_data.xlsx")}
-                  >
-                    导出
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : mode === "user" ? (
-        <div className="card" data-od-id="user-results">
-          {filtered.map((u: any, i: number) => {
-            const uId = u.uid || u.secUid || "u" + i;
-            return (
-              <div className="urow" key={uId} data-od-id={"user-row-" + uId}>
-                <Avatar name={u.nickname || "未知"} h={hue(i + 1)} />
-                <div className="info">
-                  <div className="nm">
-                    {u.nickname || "未知"}
-                    {u.secUid ? <span className="tag">已采集</span> : null}
-                  </div>
-                  <div className="sub">{u.signature || "暂无简介"}</div>
-                </div>
-                <div
-                  className="m mono"
-                  style={{
-                    color: "var(--muted)",
-                    fontSize: 12,
-                    gap: 14,
-                    display: "flex",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <span>粉丝 {u.fans || 0}</span>
-                  <span>关注 {u.follow || 0}</span>
-                  <span>作品 {u.works || 0}</span>
-                </div>
-                <div className="row-ops">
-                  <button
-                    className="btn sm ghost"
-                    onClick={() => push("已采集 " + u.nickname + " 主页信息")}
-                  >
-                    采集主页
-                  </button>
-                  <button
-                    className="btn sm ghost"
-                    onClick={() => push("已采集 " + u.nickname + " 全部作品")}
-                  >
-                    采集作品
-                  </button>
-                  <button
-                    className="btn sm ghost"
-                    onClick={() => push("已导出 JSON · user_" + uId + ".json")}
-                  >
-                    导出
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="result-grid" data-od-id="live-results">
-          {filtered.map((l: any, i: number) => {
-            const lId = l.uid || "l" + i;
-            return (
-              <div className="card vcard" key={lId} data-od-id={"live-card-" + lId}>
-                <div
-                  className="thumb"
-                  style={{
-                    background: l.cover
-                      ? "url(" + l.cover + ") center/cover"
-                      : "linear-gradient(135deg, oklch(42% 0.13 280), oklch(24% 0.09 320))",
-                  }}
-                >
-                  <span className="src">直播中</span>
-                  <span className="play" aria-hidden="true" />
-                  <span className="dur">LIVE</span>
-                </div>
-                <div className="t">{l.title || "（无标题直播）"}</div>
-                <div className="m">
-                  <span>♥ {l.viewers || 0} 在看</span>
-                  <span className="tag" style={{ marginLeft: 0 }}>
-                    {l.nickname || "主播"}
-                  </span>
-                </div>
-                <div className="row-ops">
-                  <button
-                    className="btn sm ghost"
-                    onClick={() => push("已采集直播信息 · " + (l.title || ""))}
-                  >
-                    采集详情
-                  </button>
-                  <button
-                    className="btn sm ghost"
-                    onClick={() => push("功能开发中：直播解析接口暂未实现")}
-                  >
-                    监听
-                  </button>
+                  {v.uid && (
+                    <button
+                      className="btn sm ghost"
+                      onClick={() =>
+                        sendAuthorDm(v).then(() => {})
+                      }
+                    >
+                      私信作者
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -339,127 +338,148 @@ export default function CrawlPage(props: PageProps) {
         </div>
       )}
 
+      {/* 评论区抽屉 */}
       <AnimatePresence>
-        {detail && (
+        {cmtFor && (
           <motion.div
-            key="video-detail"
+            key="comments"
             className="overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            data-od-id="video-detail"
           >
             <div className="overlay-head">
-              <h2>{detailV.title || "作品详情"}</h2>
+              {cmtFor.cover && (
+                <div
+                  className="thumb"
+                  style={{
+                    width: 56,
+                    height: 56,
+                    backgroundImage: `url("${cmtFor.cover}")`,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
+                    borderRadius: 8,
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+              <h2>评论区 · {cmtFor.title?.slice(0, 24) || cmtFor.awemeId}</h2>
               <div style={{ flex: 1 }} />
-              <button className="btn ghost" onClick={() => setDetail(null)}>
+              <button className="btn ghost" onClick={() => setCmtFor(null)}>
                 关闭
               </button>
             </div>
             <div className="overlay-body">
-              <div className="grid cols-2">
-                <div>
-                  <div
-                    className="thumb"
-                    style={{
-                      background:
-                        "linear-gradient(135deg, oklch(42% 0.13 " +
-                        (Number(hue((detailV.awemeId || "x").length + 1)) % 360) +
-                        "), oklch(24% 0.08 " +
-                        (Number(hue((detailV.awemeId || "x").length + 1)) % 360) +
-                        "))",
-                      aspectRatio: "16/9",
-                    }}
-                  >
-                    <span className="play" aria-hidden="true" />
-                    <span className="dur">▶</span>
-                  </div>
-                  <div className="head-row" style={{ marginTop: 12 }}>
-                    <Avatar name={detailV.nickname || "作者"} h={hue(7)} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600 }}>{detailV.nickname || "作者"}</div>
-                      <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
-                        {"▶ " +
-                          (detailV.plays || 0) +
-                          " · ♥ " +
-                          (detailV.likes || 0) +
-                          " · 评论 " +
-                          (detailV.cmts || 0)}
-                      </div>
-                    </div>
-                    <button
-                      className="btn ghost"
-                      onClick={() =>
-                        push("已导出为 JSON · video_" + (detailV.awemeId || "") + ".json")
-                      }
-                    >
-                      导出
-                    </button>
-                  </div>
+              <div className="card" style={{ marginBottom: 12 }}>
+                <div className="head-row">
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>评论话术</span>
+                  <input
+                    className="input"
+                    style={{ flex: 1 }}
+                    value={dmTpl}
+                    onChange={(e) => setDmTpl(e.target.value)}
+                    placeholder="发给评论用户的话术"
+                  />
                 </div>
+                <div className="head-row" style={{ marginTop: 8 }}>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>按内容筛选</span>
+                  <input
+                    className="input"
+                    style={{ flex: 1 }}
+                    value={cmtFilter}
+                    onChange={(e) => setCmtFilter(e.target.value)}
+                    placeholder="只对评论含该关键词的用户发（留空=全部）"
+                  />
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--muted)",
+                    marginTop: 6,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span>
+                    命中 {cmtFilter ? filteredCmts.length : cmts.length} 条评论的用户，可单发或批量。
+                  </span>
+                  <div style={{ flex: 1 }} />
+                  <button
+                    className="btn sm"
+                    disabled={batching || !dmTpl.trim()}
+                    onClick={sendBatch}
+                  >
+                    {batching ? "批量发送中…" : "批量私信全部"}
+                  </button>
+                </div>
+              </div>
+
+              {cmtLoading ? (
+                <div
+                  className="card"
+                  style={{ padding: 30, textAlign: "center", color: "var(--muted)" }}
+                >
+                  评论采集中…
+                </div>
+              ) : cmts.length === 0 ? (
+                <div
+                  className="card"
+                  style={{ padding: 30, textAlign: "center", color: "var(--muted)" }}
+                >
+                  未采到评论
+                </div>
+              ) : (
                 <div className="card">
-                  <h3>
-                    评论区{" "}
-                    <span
-                      style={{
-                        color: "var(--muted)",
-                        fontFamily: "var(--font-mono)",
-                        fontWeight: 400,
-                      }}
-                    >
-                      真实评论采集
-                    </span>
-                  </h3>
-                  <div
-                    style={{
-                      padding: "26px 10px",
-                      textAlign: "center",
-                      color: "var(--muted)",
-                      fontSize: 13,
-                    }}
-                  >
-                    <div style={{ fontSize: 24, marginBottom: 6 }}>💬</div>
-                    评论列表将随采集任务在后续版本展示（当前已接通真实搜索链路）
-                  </div>
-                  <div className="head-row" style={{ marginTop: 12 }}>
-                    <input className="input" style={{ flex: 1 }} placeholder="写下你的评论…" />
-                    <button className="btn primary" onClick={() => onAct("comment")}>
-                      发布评论
-                    </button>
-                  </div>
+                  {cmts.map((c: any) => {
+                    const st = dmState[c.uid];
+                    return (
+                      <div
+                        key={c.cid}
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 10,
+                          padding: "9px 2px",
+                          borderBottom: "1px solid var(--border)",
+                        }}
+                      >
+                        <Avatar name={c.nickname || "路人"} h={hue((c.cid || "x").length)} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>
+                            {c.nickname || "匿名"}
+                            <span
+                              className="mono"
+                              style={{ marginLeft: 8, fontSize: 11, color: "var(--muted)" }}
+                            >
+                              {c.ip || ""}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 13, margin: "3px 0" }}>{c.text}</div>
+                          <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+                            ♥ {fmtNum(c.digg)} · {fmtTs(c.ts)}
+                          </div>
+                        </div>
+                        {c.uid && (
+                          <button
+                            className="btn sm ghost"
+                            disabled={st === "sending" || st === "sent"}
+                            style={
+                              st === "sent"
+                                ? { background: "var(--accent)", color: "var(--accent-ink)" }
+                                : {}
+                            }
+                            onClick={() => sendDm(c.uid, c.nickname)}
+                          >
+                            {st === "sending" ? "发送中…" : st === "sent" ? "已私信" : "私信"}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-              <div className="head-row" style={{ marginTop: 14 }}>
-                <button
-                  className="btn ghost"
-                  onClick={() => onAct("like")}
-                  style={
-                    liked.has(detailV.awemeId)
-                      ? { background: "var(--accent)", color: "var(--accent-ink)" }
-                      : {}
-                  }
-                >
-                  {liked.has(detailV.awemeId) ? "已点赞" : "点赞"}
-                </button>
-                <button
-                  className="btn ghost"
-                  onClick={() => onAct("fav")}
-                  style={
-                    fav.has(detailV.awemeId)
-                      ? { background: "var(--accent)", color: "var(--accent-ink)" }
-                      : {}
-                  }
-                >
-                  {fav.has(detailV.awemeId) ? "已收藏" : "收藏"}
-                </button>
-                <button
-                  className="btn ghost"
-                  onClick={() => goMsg?.("你好，我是内容运营，看了你的作品想聊聊合作")}
-                >
-                  发私信
-                </button>
-              </div>
+              )}
             </div>
           </motion.div>
         )}

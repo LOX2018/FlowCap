@@ -71,16 +71,62 @@ _HEADLESS_DISGUISE_ARGS = [
     "--window-size=1440,900",
 ]
 
-# 窗口归位的判定阈值：只命中 -32000 级别的屏外遗留，避免误伤
-# 多显示器 legitimately 的负坐标窗口（如左侧副屏 -1920）。
-_OFFSCREEN_COORD_THRESHOLD = 30000
+# 窗口归位判定（2026-09-06 二次修正，实机数据）：
+# 伪装模式写 --window-position=-32000，但 Chromium 会把窗口钳制到虚拟桌面
+# 边界，实测 profile 里残留的 window_placement.left = -26214（四川工伤张老师
+# 实测）/ -1268（尚进工伤小助理，窗口主体在屏外仅边角在屏内）。旧阈值
+# 30000 > 26214，把屏外遗留误判成「多显示器正常负坐标」直接跳过归位
+# → 可见启动窗口仍落在桌面外。
+# 新判据 = EnumDisplayMonitors 拿真实全部显示器工作区 +「与任一工作区
+# 可见相交 ≥200px」。跨屏窗口只要主体落在任何一块真实屏幕上都放行；
+# -26214 / -1268 两类伪装遗留与所有真实屏幕相交均 <200px，正确归位。
+import ctypes as _ctypes
+from ctypes import wintypes as _wintypes
+
+
+def _enum_workareas():
+    """枚举全部显示器工作区。失败退回主屏假设 (0,0)-(1536,864)。"""
+    try:
+        user32 = _ctypes.windll.user32
+        out = []
+
+        def _cb(hMonitor, hdc, lprc, lParam):
+            rc = lprc.contents
+            out.append({"left": rc.left, "top": rc.top,
+                        "right": rc.right, "bottom": rc.bottom})
+            return True
+
+        proc = _ctypes.WINFUNCTYPE(
+            _ctypes.c_int, _ctypes.c_void_p, _ctypes.c_void_p,
+            _ctypes.POINTER(_wintypes.RECT), _ctypes.c_double)
+        if user32.EnumDisplayMonitors(0, 0, proc(_cb), 0) and out:
+            return out
+    except Exception:
+        pass
+    return [{"left": 0, "top": 0, "right": 1536, "bottom": 864}]
+
+
+_VISIBLE_MIN_OVERLAP = 200  # 窗口须至少 200px 落在某块真实屏幕工作区内
+
+
+def _window_visible_on_any_monitor(left, top, width, height, workareas=None):
+    """窗口是否与任一真实显示器工作区可见相交（≥200px 双向）。"""
+    was = workareas if workareas is not None else _enum_workareas()
+    for wa in was:
+        ox = min(left + width, wa["right"]) - max(left, wa["left"])
+        oy = min(top + height, wa["bottom"]) - max(top, wa["top"])
+        if ox >= _VISIBLE_MIN_OVERLAP and oy >= _VISIBLE_MIN_OVERLAP:
+            return True
+    return False
 
 
 async def _ensure_window_visible(context):
-    """把屏外遗留窗口（伪装模式 -32000 写进 profile）拉回屏幕内。
+    """把屏外遗留窗口（伪装模式 -32000/-26214 写进 profile）拉回屏幕内。
 
-    仅当坐标达到 _OFFSCREEN_COORD_THRESHOLD 级别才归位 —— 正常/多显示器
-    坐标一律不动。失败只告警不阻塞（扫码登录不因归位失败而中止）。
+    2026-09-06 二次修正：改用「与任一真实显示器工作区可见相交」判据
+    （_window_visible_on_any_monitor），旧版仅比较 left/top 是否超过
+    30000，被 Chromium 钳制后的 -26214 漏判。maximized/minimized 状态
+    需先置 normal 才能改坐标。失败只告警不阻塞。
     """
     try:
         pages = context.pages
@@ -92,17 +138,19 @@ async def _ensure_window_visible(context):
             wid = info.get("windowId")
             b = info.get("bounds") or {}
             left, top = int(b.get("left", 0)), int(b.get("top", 0))
-            t = _OFFSCREEN_COORD_THRESHOLD
-            if -t <= left <= t and -t <= top <= t:
-                return  # 正常位置（含多显示器负坐标），不动
-            await session.send("Browser.setWindowBounds", {
-                "windowId": wid,
-                "bounds": {"left": 80, "top": 80,
-                           "width": int(b.get("width", 1440)),
-                           "height": int(b.get("height", 900))},
-            })
-            logger.info(f"[vbrowser] 窗口从屏外遗留位置 (left={left}, top={top}) 归位到 (80,80)"
-                        "（伪装模式 profile 残留，保证扫码/查看可见）")
+            width = int(b.get("width", 1440))
+            height = int(b.get("height", 900))
+            state = b.get("windowState", "normal")
+            if _window_visible_on_any_monitor(left, top, width, height):
+                return  # 窗口主体可见（含多显示器任意屏），不动
+            bounds = {"left": 80, "top": 80, "width": max(width, 1000),
+                      "height": max(height, 700)}
+            if state in ("minimized", "maximized", "fullscreen"):
+                bounds["windowState"] = "normal"
+            await session.send("Browser.setWindowBounds", {"windowId": wid, "bounds": bounds})
+            logger.info(
+                f"[vbrowser] 窗口从屏外/不可见位置 (left={left}, top={top}, "
+                f"state={state}) 归位到 (80,80)（伪装模式 profile 残留，保证扫码/查看可见）")
         finally:
             try:
                 await session.detach()
@@ -124,17 +172,19 @@ def _ensure_window_visible_sync(context):
             wid = info.get("windowId")
             b = info.get("bounds") or {}
             left, top = int(b.get("left", 0)), int(b.get("top", 0))
-            t = _OFFSCREEN_COORD_THRESHOLD
-            if -t <= left <= t and -t <= top <= t:
+            width = int(b.get("width", 1440))
+            height = int(b.get("height", 900))
+            state = b.get("windowState", "normal")
+            if _window_visible_on_any_monitor(left, top, width, height):
                 return
-            session.send("Browser.setWindowBounds", {
-                "windowId": wid,
-                "bounds": {"left": 80, "top": 80,
-                           "width": int(b.get("width", 1440)),
-                           "height": int(b.get("height", 900))},
-            })
-            logger.info(f"[vbrowser] 窗口从屏外遗留位置 (left={left}, top={top}) 归位到 (80,80)"
-                        "（伪装模式 profile 残留，保证扫码/查看可见）")
+            bounds = {"left": 80, "top": 80, "width": max(width, 1000),
+                      "height": max(height, 700)}
+            if state in ("minimized", "maximized", "fullscreen"):
+                bounds["windowState"] = "normal"
+            session.send("Browser.setWindowBounds", {"windowId": wid, "bounds": bounds})
+            logger.info(
+                f"[vbrowser] 窗口从屏外/不可见位置 (left={left}, top={top}, "
+                f"state={state}) 归位到 (80,80)（伪装模式 profile 残留，保证扫码/查看可见）")
         finally:
             try:
                 session.detach()

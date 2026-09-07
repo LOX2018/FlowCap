@@ -359,10 +359,13 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
             }
         else:
             auth = DYLoginApi._load_auth_from_env(env_path)
+            # 2026-09-07 架构重构：UID 探活统一由 services.uid_probe 调度
+            # （此前此处直接调 DouyinAPI.get_my_uid，8 处调用点各自打网，
+            #  频次不可控）。现在只读取调度器的缓存结果，默认零网络请求。
             uid = None
             try:
-                from dy_apis.douyin_api import DouyinAPI
-                uid = DouyinAPI.get_my_uid(auth)
+                from services.uid_probe import get_uid as _uid_get
+                uid = _uid_get(name)
             except Exception:
                 uid = None
             if uid:
@@ -906,9 +909,19 @@ def _probe(env_path, timeout):
                     auth.private_key = _DL._decode_private_key(vals.get("DY_PRIVATE_KEY") or "")
                 if not getattr(auth, "cookie_str", None) and auth.cookie:
                     auth.cookie_str = "; ".join(f"{k}={v}" for k, v in auth.cookie.items())
+                # 2026-09-07：此处是【凭证构建/落盘门禁】——auth 刚从扫码结果
+                # 组装，可能尚未写入 .env，调度器按账号名拿不到这份新凭证，
+                # 且门禁必须用鲜值判断登录态有效性，故保留直接探活（写入方）。
+                # 成功落盘后应调 services.uid_probe.invalidate(name) 让缓存取鲜值。
                 uid = DouyinAPI.get_my_uid(auth)
                 if not uid:
                     return None
+                # 探活成功 -> 同步给统一调度器，后续消费方直接读缓存（零打网）
+                try:
+                    from services import uid_probe as _up
+                    _up._cache[name] = (time.time(), int(uid))
+                except Exception:
+                    pass
                 # 严格校验：对自身 uid 建会话，验证服务端是否真的接受私信签名(web_protect/keys)。
                 # 与启动 _verify_credential 一致，避免“四件套在但服务端拒绝签名”被误判为有效。
                 try:

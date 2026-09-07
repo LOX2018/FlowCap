@@ -99,15 +99,16 @@ _DEFAULT_CONFIG = {
     "enabled": False,            # 总开关（全自动监听）
     # ---- 主 LLM（文本）----
     "api_key": "",
-    "base_url": "https://api.minimaxi.com/anthropic",   # Anthropic 兼容协议
-    "model": "MiniMax-M2.7",
+    "api_protocol": "openai",    # openai(/chat/completions) | anthropic(/v1/messages)
+    "base_url": "http://127.0.0.1:31415/v1",   # 默认本机 FreeLLM（OpenAI 兼容）
+    "model": "glm-5.2",
     "max_tokens": 1000,
     "temperature": 0.7,
     # ---- 视觉模型（独立，OpenAI 兼容 /chat/completions）----
     "vision_enabled": False,
-    "vision_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "vision_base_url": "http://127.0.0.1:31415/v1",
     "vision_api_key": "",
-    "vision_model": "doubao-1-5-vision-pro-32k-250115",
+    "vision_model": "nemotron-3-nano-omni-reasoning",
     "vision_prompt": (
         "客观描述这张图片的内容，重点提取与产品咨询/故障/需求相关的信息，"
         "30字以内，不要评论图片质量。"
@@ -120,6 +121,12 @@ _DEFAULT_CONFIG = {
     "max_lead_ask": 2,           # 单会话最多主动索要联系方式次数
     # ---- 知识库/兜底 ----
     "knowledge_first": True,
+    # ---- 语义检索（三级漏斗第2级；本机 FreeLLM OpenAI 兼容 /embeddings）----
+    "sem_enabled": False,
+    "sem_base_url": "http://127.0.0.1:31415/v1",
+    "sem_api_key": "",
+    "sem_model": "nvidia/nemotron-3-embed-1b",   # 本机 FreeLLM 实测唯一可用 embedding 模型
+    "sem_threshold": 0.40,                        # 实测：同义聚簇 0.44~0.59，跨意图 <0.21
     "min_delay": 8,
     "max_delay": 20,
     "max_history": 10,
@@ -228,7 +235,12 @@ class KnowledgeBase:
             raise ValueError("问题和答案都不能为空")
         with self.lock:
             items = self._load()
-            item = {"id": int(time.time() * 1000), "question": q, "answer": a}
+            # id：毫秒时间戳 + 序号防同毫秒冲突（曾因同毫秒 id 相同导致两条互相覆盖）
+            existing_ids = {it.get("id") for it in items}
+            new_id = int(time.time() * 1000)
+            while new_id in existing_ids:
+                new_id += 1
+            item = {"id": new_id, "question": q, "answer": a}
             items.append(item)
             self._save(items)
             return item
@@ -251,15 +263,27 @@ class KnowledgeBase:
             self._save([it for it in items if it.get("id") != item_id])
 
     def find_match(self, question: str, threshold: float = 0.7) -> Optional[str]:
+        """三级漏斗：①精确/包含 ②语义向量（可配） ③Jaccard 兜底。"""
         qtext = (question or "").lower().strip()
         if not qtext:
             return None
+        cfg = get_config()
         for item in self._load():
             q = (item.get("question") or "").lower().strip()
             if not q:
                 continue
+            # ① 精确/包含（零成本，最高置信）
             if q in qtext or qtext in q:
                 return item.get("answer", "")
+        # ② 语义向量匹配（sem_enabled 且配置齐全时；失败自动落 ③）
+        sem = find_match_semantic(question, cfg)
+        if sem:
+            return sem
+        # ③ Jaccard 兜底（embedding 不可用/未启用时唯一防线）
+        for item in self._load():
+            q = (item.get("question") or "").lower().strip()
+            if not q:
+                continue
             qw, uw = set(q), set(qtext)
             union = qw | uw
             overlap = (len(qw & uw) / len(union)) if union else 0
@@ -272,7 +296,182 @@ KB = KnowledgeBase()
 
 
 # ---------------------------------------------------------------------------
-# AIClient —— 主 LLM（Anthropic 兼容）+ 视觉模型（OpenAI 兼容）
+# 语义检索（三级漏斗第 2 级）：OpenAI 兼容 /embeddings + 余弦相似度暴力遍历。
+# 知识库条目向量缓存在 kv_store（key 前缀 ai_reply_semv_），导入/编辑时预计算。
+# ---------------------------------------------------------------------------
+
+def _embedRemote(base_url: str, api_key: str, model: str,
+                 texts: list[str], timeout: float = 20.0) -> Optional[list[list[float]]]:
+    """调 OpenAI 兼容 /v1/embeddings，批量向量化。失败返回 None（调用方降级）。"""
+    if not base_url or not texts:
+        return None
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        resp = requests.post(
+            f"{str(base_url).rstrip('/')}/embeddings",
+            headers=headers,
+            json={"model": model, "input": texts},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[ai] embeddings {resp.status_code}: {resp.text[:120]}")
+            return None
+        d = resp.json()
+        data = d.get("data") or []
+        if len(data) != len(texts):
+            logger.warning(f"[ai] embeddings 返回数不符: {len(data)}/{len(texts)}")
+            return None
+        # 按 index 排序保证顺序
+        data.sort(key=lambda x: x.get("index", 0))
+        return [item["embedding"] for item in data]
+    except Exception as e:
+        logger.warning(f"[ai] embeddings 调用失败: {e}")
+        return None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return dot / (na ** 0.5 * nb ** 0.5)
+
+
+_KV_SEM_PREFIX = "ai_reply_semv_"       # + item_id -> 向量 JSON
+_KV_SEM_MDL = "ai_reply_sem_model"      # 生成缓存时用的模型（模型换了缓存作废）
+
+
+def kb_rebuild_semantic_cache(cfg: Optional[dict] = None) -> dict:
+    """为全部知识库条目预计算向量并写 kv 缓存。返回统计。
+
+    模型或内容变化时调用；单条失败跳过（该条退回 Jaccard 兜底）。
+    """
+    cfg = cfg or get_config()
+    items = KB.list_items()
+    if not items:
+        return {"ok": True, "embedded": 0, "total": 0}
+    # 只向量化的 question：实测混合 answer 会稀释语义（0.358→纯问句 0.582，
+    # 同义改写「你们这个什么价格呀」因此掉到阈值之下漏召回）
+    texts = [it.get("question", "") for it in items]
+    vecs = _embedRemote(cfg.get("sem_base_url", ""), cfg.get("sem_api_key", ""),
+                        cfg.get("sem_model", ""), texts)
+    if vecs is None:
+        return {"ok": False, "error": "embedding 调用失败（检查语义检索配置）"}
+    n = 0
+    for it, v in zip(items, vecs):
+        _kv_set(_KV_SEM_PREFIX + str(it["id"]), v)
+        n += 1
+    _kv_set(_KV_SEM_MDL, cfg.get("sem_model", ""))
+    return {"ok": True, "embedded": n, "total": len(items)}
+
+
+def find_match_semantic(question: str, cfg: dict,
+                        threshold: Optional[float] = None) -> Optional[str]:
+    """语义检索：问题向量化 → 与缓存向量逐条余弦 → 最高分≥阈值即命中。
+
+    缓存缺失的条目自动跳过（不现场补算，避免消息路径阻塞）。
+    embedding 调用失败返回 None（调用方走 Jaccard 兜底）。
+    """
+    if not cfg.get("sem_enabled") or not cfg.get("sem_base_url"):
+        return None
+    qvec = _embedRemote(cfg.get("sem_base_url", ""), cfg.get("sem_api_key", ""),
+                        cfg.get("sem_model", ""), [question])
+    if qvec is None:
+        return None
+    qv = qvec[0]
+    th = float(threshold if threshold is not None else cfg.get("sem_threshold", 0.40))
+    best_score = 0.0
+    best_answer: Optional[str] = None
+    for it in KB.list_items():
+        cached = _kv_get(_KV_SEM_PREFIX + str(it["id"]), None)
+        if not cached:
+            continue
+        score = _cosine(qv, cached)
+        if score > best_score:
+            best_score = score
+            best_answer = it.get("answer", "")
+    if best_answer and best_score >= th:
+        logger.info(f"[ai] 语义命中 score={best_score:.3f} (阈值{th})")
+        return best_answer
+    logger.debug(f"[ai] 语义未过阈值 best={best_score:.3f} th={th}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 思考过程泄漏检测：推理模型 max_tokens 不足时 content 会是分析文本
+#（实测 glm-5.2 样例：'1. **分析请求：**\n * 角色：客服…'）。特征：
+# 数字编号列表开头 + 分析/思考类词汇。命中且 finish=length 则丢弃。
+# ---------------------------------------------------------------------------
+
+_REASONING_PATTERN = re.compile(
+    r"^\s*(?:\d+[\.\)、]\s*)?[\*\#]*\s*"
+    r"(?:分析|思考|第一步|步骤|让我|首先|Okay|Let me|I need to|Sure,)",
+    re.IGNORECASE)
+
+
+def _looks_like_reasoning(text: str) -> bool:
+    return bool(_REASONING_PATTERN.match(text or ""))
+
+
+# ---------------------------------------------------------------------------
+# 模型提供商预设（前端下拉框数据源；用户自主选择，不默认绑定任何一家）
+# provider_type: openai | anthropic —— 端点协议
+# ---------------------------------------------------------------------------
+
+PROVIDER_PRESETS = [
+    {"id": "freellm", "name": "FreeLLM（本机聚合，优先推荐）",
+     "base_url": "http://127.0.0.1:31415/v1", "api_protocol": "openai",
+     "needs_key": False, "key_hint": "本机部署可留空",
+     "models_chat": ["glm-5.2", "deepseek-v3.2", "kimi-k2.6", "minimax-m3",
+                     "qwen3-235b-a22b", "nemotron-3-ultra"],
+     "models_vision": ["nemotron-3-nano-omni-reasoning", "glm-4.6v-flash"]},
+    {"id": "deepseek", "name": "DeepSeek 深度求索",
+     "base_url": "https://api.deepseek.com/v1", "api_protocol": "openai",
+     "needs_key": True, "key_hint": "sk-…（platform.deepseek.com）",
+     "models_chat": ["deepseek-chat", "deepseek-reasoner"], "models_vision": []},
+    {"id": "zhipu", "name": "智谱 GLM",
+     "base_url": "https://open.bigmodel.cn/api/paas/v4", "api_protocol": "openai",
+     "needs_key": True, "key_hint": "…（open.bigmodel.cn）",
+     "models_chat": ["glm-4-plus", "glm-4-flash", "glm-4.5"],
+     "models_vision": ["glm-4v-plus", "glm-4v-flash"]},
+    {"id": "dashscope", "name": "阿里云百炼（通义千问）",
+     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+     "api_protocol": "openai", "needs_key": True, "key_hint": "sk-…（百炼控制台）",
+     "models_chat": ["qwen-plus", "qwen-max", "qwen-turbo", "qwen3-235b-a22b"],
+     "models_vision": ["qwen-vl-plus", "qwen-vl-max"]},
+    {"id": "moonshot", "name": "月之暗面 Kimi",
+     "base_url": "https://api.moonshot.cn/v1", "api_protocol": "openai",
+     "needs_key": True, "key_hint": "sk-…（platform.moonshot.cn）",
+     "models_chat": ["kimi-k2-0905-preview", "moonshot-v1-32k"], "models_vision": []},
+    {"id": "volces", "name": "火山方舟（豆包）",
+     "base_url": "https://ark.cn-beijing.volces.com/api/v3", "api_protocol": "openai",
+     "needs_key": True, "key_hint": "…（方舟控制台，模型用接入点 ID）",
+     "models_chat": ["doubao-1-5-pro-32k-250115"],
+     "models_vision": ["doubao-1-5-vision-pro-32k-250115"]},
+    {"id": "minimax", "name": "MiniMax（Anthropic 兼容端点）",
+     "base_url": "https://api.minimaxi.com/anthropic", "api_protocol": "anthropic",
+     "needs_key": True, "key_hint": "eyJ…（MiniMax 开放平台）",
+     "models_chat": ["MiniMax-M2.7", "MiniMax-M3"], "models_vision": []},
+    {"id": "custom", "name": "自定义（手填 Base URL + 模型名）",
+     "base_url": "", "api_protocol": "openai", "needs_key": True,
+     "key_hint": "按服务商要求", "models_chat": [], "models_vision": []},
+]
+
+
+def get_providers() -> list:
+    """前端下拉框数据：预设 + 可选的 FreeLLM 在线模型列表合并标记。"""
+    return [dict(p) for p in PROVIDER_PRESETS]
+
+
+# ---------------------------------------------------------------------------
+# AIClient —— 主 LLM（OpenAI 兼容 + Anthropic 兼容双协议）
 # ---------------------------------------------------------------------------
 
 class AIClient:
@@ -285,8 +484,8 @@ class AIClient:
              system_prompt: str = "", history_extra: Optional[list] = None
              ) -> Optional[str]:
         cfg = self.cfg
-        if not cfg.get("api_key"):
-            return None
+        if not cfg.get("api_key") and str(cfg.get("base_url", "")).find("127.0.0.1") < 0:
+            return None  # 云端提供商必须配 Key；本机服务（FreeLLM 等）可免 Key
         with self.session_lock:
             history = list(self.session_history.get(user_id, []))
         if history_extra:
@@ -296,29 +495,85 @@ class AIClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.extend(history[-int(cfg.get("max_history", 10)):])
         messages.append({"role": "user", "content": message})
+        protocol = str(cfg.get("api_protocol", "openai")).lower()
+        try:
+            if protocol == "anthropic":
+                reply = self._chat_anthropic(cfg, messages)
+            else:
+                reply = self._chat_openai(cfg, messages)
+        except Exception as e:
+            logger.warning(f"[ai] AI 请求失败: {e}")
+            return None
+        if reply:
+            with self.session_lock:
+                h = self.session_history.setdefault(user_id, [])
+                h.append({"role": "user", "content": message})
+                h.append({"role": "assistant", "content": reply})
+                del h[:-40]
+        return reply
+
+    def _chat_openai(self, cfg: dict, messages: list) -> Optional[str]:
+        """OpenAI 兼容 /chat/completions（FreeLLM/DeepSeek/GLM/Qwen 等通用）。"""
+        headers = {"Content-Type": "application/json"}
+        if cfg.get("api_key"):
+            headers["Authorization"] = f"Bearer {cfg['api_key']}"
+        resp = requests.post(
+            f"{str(cfg.get('base_url', '')).rstrip('/')}/chat/completions",
+            headers=headers,
+            json={
+                "model": cfg.get("model", ""),
+                "messages": messages,
+                "max_tokens": int(cfg.get("max_tokens", 1000)),
+                "temperature": float(cfg.get("temperature", 0.7)),
+            },
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
+            return None
+        result = resp.json()
+        msg = (result.get("choices") or [{}])[0].get("message") or {}
+        reply = (msg.get("content") or "").strip()
+        if not reply and msg.get("reasoning_content"):
+            # 推理模型（glm-5.2/deepseek-r1 等）：content 可能被思考占用，
+            # 从 reasoning_content 提取正文兜底；仍取不到则视为失败
+            rc = str(msg.get("reasoning_content") or "")
+            logger.info("[ai] content 为空，尝试 reasoning_content 兜底")
+            reply = rc.strip()[-200:] if rc else ""
+        if not reply:
+            logger.warning(f"[ai] AI 返回为空: {str(result)[:200]}")
+            return None
+        # 推理模型 max_tokens 不足时会把思考过程当 content 输出
+        #（实测 glm-5.2: finish_reason=length 且 content 以「1. **分析**」开头）。
+        # 此类文本绝不能发给客户 —— 视为本次生成失败，走兜底话术。
+        finish = str((result.get("choices") or [{}])[0].get("finish_reason") or "")
+        if finish == "length" and _looks_like_reasoning(reply):
+            logger.warning("[ai] 检测到思考过程被截断输出（finish=length），丢弃改兜底")
+            return None
+        return reply
+
+    def _chat_anthropic(self, cfg: dict, messages: list) -> Optional[str]:
+        """Anthropic 兼容 /v1/messages（MiniMax anthropic 端点、Claude 官方）。"""
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {cfg.get('api_key', '')}",
             "anthropic-version": "2023-06-01",
         }
-        data = {
-            "model": cfg.get("model", ""),
-            "messages": messages,
-            "max_tokens": int(cfg.get("max_tokens", 1000)),
-            "temperature": float(cfg.get("temperature", 0.7)),
-        }
-        try:
-            resp = requests.post(
-                f"{str(cfg.get('base_url', '')).rstrip('/')}/v1/messages",
-                headers=headers, json=data, timeout=30,
-            )
-            if resp.status_code != 200:
-                logger.warning(f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
-                return None
-            result = resp.json()
-        except Exception as e:
-            logger.warning(f"[ai] AI 请求失败: {e}")
+        resp = requests.post(
+            f"{str(cfg.get('base_url', '')).rstrip('/')}/v1/messages",
+            headers=headers,
+            json={
+                "model": cfg.get("model", ""),
+                "messages": messages,
+                "max_tokens": int(cfg.get("max_tokens", 1000)),
+                "temperature": float(cfg.get("temperature", 0.7)),
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
             return None
+        result = resp.json()
         reply = ""
         content = result.get("content", [])
         if isinstance(content, list):
@@ -329,29 +584,31 @@ class AIClient:
         if not reply:
             logger.warning(f"[ai] AI 返回为空: {str(result)[:200]}")
             return None
-        with self.session_lock:
-            h = self.session_history.setdefault(user_id, [])
-            h.append({"role": "user", "content": message})
-            h.append({"role": "assistant", "content": reply})
-            del h[:-40]
         return reply
 
     # -- 视觉模型（独立配置，OpenAI 兼容 /chat/completions）---------------
 
     def describe_image(self, image_b64: str, mime: str = "jpeg") -> Optional[str]:
         cfg = self.cfg
-        if not cfg.get("vision_api_key") or not cfg.get("vision_base_url"):
+        base = str(cfg.get("vision_base_url") or "")
+        # 本机服务（127.0.0.1）可免 Key；云端必须配 Key
+        if not base or (not cfg.get("vision_api_key") and "127.0.0.1" not in base):
             return None
         data_url = f"data:image/{mime};base64,{image_b64}"
+        vision_model = cfg.get("vision_model", "")
+        # omni/reasoning 系视觉模型：先思考后作答，max_tokens 须给足
+        is_reasoner = any(k in vision_model.lower()
+                          for k in ("omni", "reasoning", "thinking"))
         try:
             resp = requests.post(
-                f"{str(cfg['vision_base_url']).rstrip('/')}/chat/completions",
+                f"{base.rstrip('/')}/chat/completions",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {cfg['vision_api_key']}",
+                    **({"Authorization": f"Bearer {cfg['vision_api_key']}"}
+                       if cfg.get("vision_api_key") else {}),
                 },
                 json={
-                    "model": cfg.get("vision_model", ""),
+                    "model": vision_model,
                     "messages": [{
                         "role": "user",
                         "content": [
@@ -359,16 +616,21 @@ class AIClient:
                             {"type": "text", "text": cfg.get("vision_prompt", "描述图片")},
                         ],
                     }],
-                    "max_tokens": 200,
+                    "max_tokens": 800 if is_reasoner else 200,
                 },
-                timeout=45,
+                timeout=60 if is_reasoner else 45,
             )
             if resp.status_code != 200:
                 logger.warning(f"[ai] 视觉 API {resp.status_code}: {resp.text[:200]}")
                 return None
             r = resp.json()
-            return ((r.get("choices") or [{}])[0].get("message") or {}).get(
-                "content", "").strip() or None
+            msg = (r.get("choices") or [{}])[0].get("message") or {}
+            text = (msg.get("content") or "").strip()
+            if not text and msg.get("reasoning_content"):
+                # omni/reasoning 视觉模型可能把描述写进思考段
+                rc = str(msg.get("reasoning_content") or "").strip()
+                text = rc[-120:] if rc else ""
+            return text or None
         except Exception as e:
             logger.warning(f"[ai] 视觉请求失败: {e}")
             return None
@@ -655,6 +917,12 @@ class AutoReplyWorker:
         history = self._build_history(account, conv_id, before_id)
         raw = client.chat(text, user_id=f"{account}:{conv_id}",
                           system_prompt=prompt, history_extra=history)
+        if raw:
+            # 二次防线：推理模型思考过程泄漏（首层在 _chat_openai 已拦，
+            # 这里兜住 reasoning 兜底提取出的残留思考文本）
+            if _looks_like_reasoning(raw) and len(raw) > 40:
+                logger.warning(f"[ai] 回复疑似思考过程残留，丢弃改兜底: {raw[:40]}")
+                raw = None
         if raw:
             cleaned = validate_reply(raw, cfg)
             if cleaned:

@@ -84,6 +84,11 @@ def build_one(entry: str, name: str) -> None:
     # 否则打包后 WP 通道启动失败（ModuleNotFoundError）。
     if entry == "main.py":
         cmd += ["--hidden-import", "daemon.wp_recv"]
+        # 2026-09-07：AI 知识库文件导入用了 UploadFile/Form，python-multipart
+        # 是隐式依赖（PyInstaller 扫不到），缺失时 backend 启动即崩
+        # （RuntimeError: Form data requires "python-multipart"）。
+        cmd += ["--hidden-import", "multipart"]
+        cmd += ["--hidden-import", "python_multipart"]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))

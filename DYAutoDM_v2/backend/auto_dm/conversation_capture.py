@@ -499,6 +499,36 @@ def parse_init_protobuf(raw, my_uid):
     """
     if not raw:
         return []
+    # 2026-09-07 根因修复（D 方案）：my_uid 失效导致 peer_uid 恒取 uid_a。
+    # 实测：auth.get_uid() 偶发返回空/None（凭证刷新时序），my_uid 变成 ""
+    # 或 "None"，使下方 564 行 `uid_b if uid_a == my_uid else uid_a` 恒走
+    # else 分支取 uid_a —— 而抖音 conv_id 里 uid_a 常是本账号，结果 32/77
+    # 个会话的 peer_uid 被写成自己，peer_name 全填成"尚进工伤小助理"。
+    # 自愈：conv_id 形如 0:1:uidA:uidB，本账号 UID 必然出现在【每一个】
+    # conv_id 中（自己与所有人聊天），故出现次数 == 会话数 的 UID 即本账号。
+    # 仅当传入 my_uid 无效时才覆盖，不干扰正常路径。
+    _mu = str(my_uid or "").strip()
+    if _mu in ("", "None", "none", "0"):
+        try:
+            import re as _re
+            from collections import Counter as _Counter
+            _probe = _re.findall(rb"0:1:(\d{6,20}):(\d{6,20})", raw)
+            if _probe:
+                _cnt = _Counter()
+                for _a, _b in _probe:
+                    _cnt[_a.decode()] += 1
+                    _cnt[_b.decode()] += 1
+                _n = len(_probe)
+                # 本账号出现次数应接近会话数（每个 conv_id 至少含一次）
+                _cand = [(u, c) for u, c in _cnt.items() if c >= _n * 0.9]
+                if _cand:
+                    _mu = max(_cand, key=lambda x: x[1])[0]
+                    logger.warning(
+                        f"[capture] my_uid 无效({my_uid!r})，从 {_n} 个 conv_id "
+                        f"自愈推断本账号 UID={_mu}（出现 {_cand[0][1]} 次）")
+                    my_uid = _mu
+        except Exception:
+            pass
     top = _parse(raw)
     # 顶层 conversation 数组 = field 6 的响应体（cmd 2043 包裹）内的 repeated 元素。
     # 结构：top.field6(bytes) -> parse -> field(2043)(bytes) -> parse -> 多个 field(1, WT_LEN) 每个 = 一个 conversation。
@@ -562,6 +592,13 @@ def parse_init_protobuf(raw, my_uid):
             if uid_a == uid_b:
                 continue
             peer_uid = uid_b if uid_a == my_uid else uid_a
+            # 第二道防线（2026-09-07）：my_uid 失效时会恒取 uid_a，导致
+            # peer_uid 变成自己 → 昵称被回填成本账号。此处显式拦截：
+            # 若取出的 peer_uid 恰等于 my_uid（两侧都不是自己 -> 数据异常），
+            # 说明 my_uid 不可信，peer_uid 置 None 让其降级为裸 UID，
+            # 绝不用"自己"冒充对端。
+            if my_uid and peer_uid == my_uid:
+                peer_uid = None
         # sec_uid：取“非自己、非异常高频、长度合理”的（低频对端串）
         sec_uid = None
         for s in _extract_str(cbuf):
@@ -871,6 +908,10 @@ def _fallback_regex(raw, my_uid):
         if uid_a == uid_b:
             continue
         peer_uid = uid_b if uid_a == my_uid else uid_a
+        # 同主解析路径的第二道防线：peer_uid 等于自己说明 my_uid 不可信，
+        # 降级为 None（裸 UID），绝不用"自己"冒充对端。
+        if my_uid and peer_uid == my_uid:
+            peer_uid = None
         result.append({
             "conversation_id": cid,
             "peer_uid": peer_uid,
@@ -1214,6 +1255,23 @@ def capture_all(name, with_browser=True):
                     _by_sec += 1
             nickname = info.get("nickname") or ""
             avatar = info.get("avatar") or ""
+            # 2026-09-07 存量修复（D 方案）：历史污染会话 peer_id 被写成
+            # my_uid、peer_name 被写成"本账号昵称"。此处用 conv_id 重新解析
+            # 真实对端 UID 并修正；若解析失败（peer_uid=None）则把错误的
+            # 本账号昵称降级为裸 UID，让下次 BCC 截获到真实昵称时再回填。
+            _cid_parts = cid.split(":")
+            if len(_cid_parts) == 4:
+                _a, _b = _cid_parts[2], _cid_parts[3]
+                _real = _b if _a == str(_myuid) else (_a if _b == str(_myuid) else None)
+                if _real and str(peer_uid) != _real:
+                    peer_uid = _real
+                    # peer 变了，之前按错误 peer_uid 查到的昵称不可信
+                    _info2 = _userinfo_by_uid.get(str(peer_uid))
+                    nickname = (_info2 or {}).get("nickname") or ""
+                    avatar = (_info2 or {}).get("avatar") or ""
+            if not peer_uid:
+                # 无法判定对端：绝不写"自己"，昵称降级为对端 UID 占位
+                nickname = ""
             # upsert 会话骨架
             conn.execute(
                 "INSERT OR IGNORE INTO dm_conversations("
@@ -1221,6 +1279,13 @@ def capture_all(name, with_browser=True):
                 "VALUES(?,?,?,?,?,?,?,?)",
                 (name, cid, peer_uid, nickname or peer_uid, None, 0, 0, avatar or None),
             )
+            # 存量污染订正：已存在但 peer_id 是自己的记录 → 改回真实对端 UID
+            if peer_uid:
+                conn.execute(
+                    "UPDATE dm_conversations SET peer_id=? "
+                    "WHERE account=? AND conv_id=? AND peer_id<>?",
+                    (peer_uid, name, cid, peer_uid),
+                )
             if nickname or avatar:
                 # capture_all 是昵称/头像的权威写入方（08 方案经 BCC 截获）。
                 # 无条件覆盖：recv_daemon 可能已先写入数字 UID/自身 UID 占位，
@@ -1285,6 +1350,43 @@ def capture_all(name, with_browser=True):
                     pass
             n_conv += 1
         conn.commit()
+        # 2026-09-07 存量污染一次性订正（D 方案）：
+        # 历史库里 peer_id 被写成 my_uid、peer_name 被写成"本账号昵称"的会话
+        # （实测尚进工伤小助理 32/77 条）。上面循环只订正本次首包命中的会话，
+        # 这里扫全表把漏网的也修好：用 conv_id 解析真实对端 → 改写 peer_id，
+        # 并把错误的本账号昵称降级为裸 UID（下次 BCC 截到真实昵称会回填）。
+        try:
+            _myuid_fix = str(auth.get_uid()) if "auth" in dir() else ""
+            _dirty = conn.execute(
+                "SELECT conv_id, peer_id, peer_name FROM dm_conversations "
+                "WHERE account=? AND peer_id=?",
+                (name, _myuid_fix),
+            ).fetchall()
+            _fixed = 0
+            for _row in _dirty:
+                _cid = _row["conv_id"]
+                _p = _cid.split(":")
+                if len(_p) != 4:
+                    continue
+                _ua, _ub = _p[2], _p[3]
+                _real = _ub if _ua == str(_myuid_fix) else (
+                    _ua if _ub == str(_myuid_fix) else None)
+                if not _real:
+                    continue
+                _newname = (_userinfo_by_uid.get(_real) or {}).get("nickname") or _real
+                conn.execute(
+                    "UPDATE dm_conversations SET peer_id=?, peer_name=? "
+                    "WHERE account=? AND conv_id=?",
+                    (_real, _newname, name, _cid),
+                )
+                _fixed += 1
+            if _fixed:
+                conn.commit()
+                logger.info(
+                    f"[capture][{name}] 存量订正 {_fixed} 条 "
+                    f"peer_id=自己的污染会话（peer_id 已改回真实对端）")
+        except Exception as e:
+            logger.warning(f"[capture][{name}] 存量污染订正失败: {e}")
         # 兜底：recv_daemon 可能已写入 capture_all 首包未解析到的会话（WS 增量等，
         # 其 peer_id 是对端 UID 但 peer_name 仍是占位/自己）。用已截获的 BCC 昵称补全库内
         # 所有「peer_name 为空/等于 peer_id（数字 UID）/等于自己 UID」的会话，

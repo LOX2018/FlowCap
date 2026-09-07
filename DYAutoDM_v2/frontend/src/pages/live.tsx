@@ -19,6 +19,59 @@ import { motion, AnimatePresence } from "framer-motion";
 import { PageProps, ReusePayload } from "../api/client";
 import { Avatar, Dot, Pill, hue, KIND_NAME, tick } from "../components/ui";
 
+/** AI 自动回复控制卡（直播监听场景的启停入口；参数调整在 AI 页） */
+function AiReplyCard(props: { push: (msg: string, holdMs?: number) => void }) {
+  const { push } = props;
+  const { data: status, refetch } = useQuery({
+    queryKey: ["ai-status"],
+    queryFn: () => useAiStatus(),
+    refetchInterval: 5000,
+  });
+  const running = !!(status as { running?: boolean } | undefined)?.running;
+  const st = (status || {}) as { replied?: number; leads_total?: number; processed?: number; errors?: number };
+  const toggle = () => {
+    const call = running ? apiCallStop : apiCallStart;
+    call()
+      .then((r: { ok: boolean }) => {
+        push(r.ok ? (running ? "AI 自动回复已停止" : "AI 自动回复已启动") : "操作失败");
+        void refetch();
+      })
+      .catch((e: unknown) => push("操作异常: " + (e instanceof Error ? e.message : String(e))));
+  };
+  return (
+    <div className="card" style={{ marginBottom: 14 }} data-od-id="live-ai-reply">
+      <div className="head-row" style={{ justifyContent: "space-between" }}>
+        <div className="head-row">
+          <h3 style={{ marginBottom: 0 }}>AI 自动回复</h3>
+          <Pill c={running ? "ok" : "mute"}>{running ? "运行中" : "已停止"}</Pill>
+        </div>
+        <button
+          className="btn ghost"
+          style={{ color: running ? "var(--danger)" : "var(--accent)" }}
+          onClick={toggle}
+        >
+          {running ? "⏹ 停止 AI 回复" : "▶ 开启 AI 回复"}
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
+        监听私信新消息 → 知识库/智能回复 → 留资捕获。已回复 <b>{st.replied ?? 0}</b> ·
+        留资 <b>{st.leads_total ?? 0}</b> · 处理 <b>{st.processed ?? 0}</b> · 错误{" "}
+        <b>{st.errors ?? 0}</b>
+        <span style={{ marginLeft: 6, opacity: 0.8 }}>
+          （档位/模型/知识库等参数在「AI」页调整）
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// 独立于组件外的 api 调用（避免循环依赖；client.ts 的 api 由调用处传入更佳，
+// 但此处为最小改动直接引 request 语义 —— 见下方 useAiStatus/apiCall* 实现）
+import { api as _api } from "../api/client";
+const useAiStatus = () => _api.aiStatus() as Promise<Record<string, unknown>>;
+const apiCallStart = () => _api.aiStart();
+const apiCallStop = () => _api.aiStop();
+
 type DmStatus = "un" | "wait" | "sent" | "fail";
 type PillColor = "ok" | "warn" | "danger" | "accent" | "mute";
 
@@ -843,6 +896,7 @@ export default function LivePage(props: PageProps) {
           </div>
 
           <div className="card" style={{ marginBottom: 14 }} data-od-id="live-auto-dm">
+            <AiReplyCard push={push} />
             <h3>自动私信配置</h3>
             <div className="grid cols-3" style={{ marginBottom: 14 }}>
               <div className="field">

@@ -202,7 +202,16 @@ class LiveChatHook(DouyinLive):
             if not self.auth_ or not getattr(self.auth_, "cookie", None):
                 continue
             try:
-                uid = DouyinAPI.get_my_uid(self.auth_)
+                # 2026-09-07：UID 探活统一由 services.uid_probe 调度。
+                # 心跳只【读取】调度结果，不再自己打网（此前每 300s 一次
+                # 独立 query/user，与 verify_account 等叠加 = 风控信号）。
+                from services.uid_probe import get_uid as _uid_get
+                uid = _uid_get(getattr(self.auth_, "_account_name", "") or
+                               getattr(self, "account_name", "") or "")
+                if uid is None:
+                    # 调度器无缓存（账号名未知）→ 退化为直接探活，保证心跳可用
+                    from dy_apis.douyin_api import DouyinAPI
+                    uid = DouyinAPI.get_my_uid(self.auth_)
             except Exception as e:
                 logger.error(f"[心跳] 登录态探活异常（将自动重新扫码）: {e}")
                 uid = None

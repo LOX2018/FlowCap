@@ -347,6 +347,12 @@ export const api = {
   async aiGetConfig(): Promise<{ ok: boolean; config: Record<string, unknown> }> {
     return request("/api/ai/config");
   },
+  async aiProviders(): Promise<{ ok: boolean; providers: { id: string; name: string; base_url: string; api_protocol: string; needs_key: boolean; key_hint: string; models_chat: string[]; models_vision: string[] }[] }> {
+    return request("/api/ai/providers");
+  },
+  async aiFreellmModels(): Promise<{ ok: boolean; chat: string[]; vision: string[]; embed: string[]; total: number; error?: string }> {
+    return request("/api/ai/providers/freellm_models");
+  },
   async aiSaveConfig(config: Record<string, unknown>): Promise<{ ok: boolean; config: Record<string, unknown>; running: boolean }> {
     return request("/api/ai/config", {
       method: "POST",
@@ -379,6 +385,18 @@ export const api = {
   },
   async aiKbDelete(id: number): Promise<{ ok: boolean; msg?: string }> {
     return request(`/api/ai/knowledge/${id}`, { method: "DELETE" });
+  },
+  async aiSemTest(textA?: string, textB?: string): Promise<{ ok: boolean; score?: number; threshold?: number; msg: string }> {
+    return request("/api/ai/semantic/test", {
+      method: "POST",
+      body: JSON.stringify({ text_a: textA || "价格是多少", text_b: textB || "咋收费的啊" }),
+    });
+  },
+  async aiSemRebuild(): Promise<{ ok: boolean; embedded: number; total: number; msg: string }> {
+    return request("/api/ai/semantic/rebuild", { method: "POST" });
+  },
+  async aiSemCacheStatus(): Promise<{ ok: boolean; total: number; embedded: number; model: string; cached_model: string; stale: boolean }> {
+    return request("/api/ai/semantic/cache_status");
   },
   /** 上传文件生成知识库 QA（预览，不入库）。用 XMLHttpRequest 上报进度。 */
   async aiKbImport(
@@ -440,6 +458,87 @@ export const api = {
     return request(`/api/ai/blacklist?user_id=${encodeURIComponent(userId)}`, {
       method: "DELETE",
     });
+  },
+
+  // ===== 数据采集（关键词搜索 + 评论采集 + 评论转私信截流）=====
+  async crawlSearch(body: {
+    account: string;
+    query: string;
+    kind: "video" | "user";
+    sort_type?: string;
+    publish_time?: string;
+    filter_duration?: string;
+    num?: number;
+  }): Promise<{
+    ok: boolean;
+    items: Record<string, unknown>[];
+    total: number;
+    detail?: string;
+  }> {
+    return request("/api/crawl/search", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  async crawlComments(body: {
+    account: string;
+    aweme_id: string;
+    limit?: number;
+  }): Promise<{ ok: boolean; items: Record<string, unknown>[]; total: number; detail?: string }> {
+    return request("/api/crawl/comments", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  async crawlDm(body: {
+    account: string;
+    uid: string;
+    text: string;
+  }): Promise<{ ok: boolean; reason: string; detail?: string }> {
+    return request("/api/crawl/dm", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  async crawlBatch(body: {
+    account: string;
+    aweme_id: string;
+    text: string;
+    keyword?: string;
+    limit?: number;
+    max_send?: number;
+    interval?: number;
+  }): Promise<{
+    ok: boolean;
+    candidates: number;
+    sent_ok: number;
+    sent_fail: number;
+    rate_limited: number;
+    results: { uid: string; nickname: string; ok: boolean; reason: string }[];
+    detail?: string;
+  }> {
+    return request("/api/crawl/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  async crawlHistory(limit = 50): Promise<{
+    ok: boolean;
+    items: {
+      id: number;
+      account: string;
+      kind: string;
+      keyword: string;
+      target: string;
+      result_count: number;
+      ts: string;
+    }[];
+  }> {
+    return request(`/api/crawl/history?limit=${limit}`);
   },
 };
 

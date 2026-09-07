@@ -953,6 +953,15 @@ class BrowserContainer:
         try:
             auth = DYLoginApi._load_auth_from_env(env_path)
             if auth and auth.cookie:
+                # 2026-09-07：UID 探活统一由 services.uid_probe 调度。
+                # keepalive 只读取调度结果（此前此处每轮独立打 query/user）。
+                try:
+                    from services.uid_probe import get_uid as _uid_get
+                    _u = _uid_get(self.account)
+                    if _u is not None:
+                        return _u
+                except Exception:
+                    pass
                 return DouyinAPI.get_my_uid(auth)
         except Exception:
             pass

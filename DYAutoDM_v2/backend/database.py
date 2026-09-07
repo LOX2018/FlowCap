@@ -122,6 +122,19 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         key TEXT PRIMARY KEY,
         value TEXT  -- JSON 字符串
     );
+
+    -- 数据采集历史（crawl.py）：关键词搜索 / 评论采集的结果摘要
+    CREATE TABLE IF NOT EXISTS crawl_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'video',  -- video | user | comment
+        keyword TEXT DEFAULT '',             -- 搜索关键词（comment 类为空）
+        target TEXT DEFAULT '',              -- 评论类=aweme_id
+        result_count INTEGER DEFAULT 0,
+        payload TEXT DEFAULT '[]',           -- 完整结果 JSON
+        ts REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crawl_history_ts ON crawl_history(ts DESC);
     """)
     conn.commit()
 

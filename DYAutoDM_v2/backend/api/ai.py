@@ -52,8 +52,11 @@ async def save_config(body: SaveConfigBody):
 
 @router.post("/test")
 async def test_ai():
+    """主模型连通性：timeout 放宽到 60s（推理模型首 token 慢）。"""
     cfg = ai_reply.get_config()
-    client = ai_reply.AIClient(cfg)
+    if not cfg.get("api_key") and "127.0.0.1" not in str(cfg.get("base_url", "")):
+        return {"ok": False, "msg": "未配置 API Key（本机服务可留空）"}
+    client = ai_reply.AIClient({**cfg, "max_tokens": max(int(cfg.get("max_tokens", 1000)), 200)})
     ok, msg = client.test_connection()
     return {"ok": ok, "msg": msg}
 
@@ -93,8 +96,10 @@ async def kb_add(body: KBItemBody):
     try:
         if body.id:
             ai_reply.KB.update(body.id, body.question, body.answer)
+            _rebuild_sem_cache_bg()
             return {"ok": True, "msg": "已更新"}
         item = ai_reply.KB.add(body.question, body.answer)
+        _rebuild_sem_cache_bg()
         return {"ok": True, "item": item, "msg": "已添加"}
     except Exception as e:
         raise HTTPException(400, str(e))
@@ -103,6 +108,14 @@ async def kb_add(body: KBItemBody):
 @router.delete("/knowledge/{item_id}")
 async def kb_delete(item_id: int):
     ai_reply.KB.delete(item_id)
+    # 清掉该条向量缓存
+    try:
+        conn = ai_reply.database.get_db()
+        conn.execute("DELETE FROM kv_store WHERE key=?",
+                     (ai_reply._KV_SEM_PREFIX + str(item_id),))
+        conn.commit()
+    except Exception:
+        pass
     return {"ok": True, "msg": "已删除"}
 
 
@@ -166,9 +179,75 @@ async def kb_import_confirm(body: KbImportConfirmBody):
                 n += 1
             except Exception:
                 pass
+    # 知识库变更 → 语义缓存失效重算（后台尽力，失败不阻塞）
+    _rebuild_sem_cache_bg()
     return {"ok": True, "added": n,
             "total": len(ai_reply.KB.list_items()),
             "msg": f"已导入 {n} 条"}
+
+
+# ---------------------------------------------------------------------------
+# 语义检索（三级漏斗第 2 级）
+# ---------------------------------------------------------------------------
+
+def _rebuild_sem_cache_bg() -> None:
+    """后台重建语义向量缓存（尽力而为，失败只记日志）。"""
+    def _run():
+        try:
+            r = ai_reply.kb_rebuild_semantic_cache()
+            if r.get("ok"):
+                logger.info(f"[ai] 语义缓存已重建: {r.get('embedded')}/{r.get('total')}")
+            else:
+                logger.warning(f"[ai] 语义缓存重建失败: {r.get('error')}")
+        except Exception as e:
+            logger.warning(f"[ai] 语义缓存重建异常: {e}")
+    import threading
+    threading.Thread(target=_run, daemon=True, name="ai-sem-cache").start()
+
+
+class SemTestBody(BaseModel):
+    text_a: str = "价格是多少"
+    text_b: str = "咋收费的啊"
+
+
+@router.post("/semantic/test")
+async def semantic_test(body: SemTestBody):
+    """语义检索连通性+效果测试：两句话向量化算余弦，直观验证阈值。"""
+    cfg = ai_reply.get_config()
+    if not cfg.get("sem_base_url"):
+        return {"ok": False, "msg": "未配置语义检索 Base URL"}
+    vecs = ai_reply._embedRemote(cfg.get("sem_base_url", ""),
+                                 cfg.get("sem_api_key", ""),
+                                 cfg.get("sem_model", ""),
+                                 [body.text_a, body.text_b])
+    if vecs is None:
+        return {"ok": False,
+                "msg": "embedding 调用失败：检查 Base URL/Key/模型名（本机 FreeLLM 需 nvidia/nemotron-3-embed-1b）"}
+    score = ai_reply._cosine(vecs[0], vecs[1])
+    th = float(cfg.get("sem_threshold", 0.40))
+    return {"ok": True, "score": round(score, 4), "threshold": th,
+            "msg": f"相似度 {score:.3f}（阈值 {th}）→ {'✅ 会命中' if score >= th else '❌ 低于阈值不命中'}"}
+
+
+@router.post("/semantic/rebuild")
+async def semantic_rebuild():
+    """手动重建全部知识库条目的向量缓存（同步，前端可等待结果）。"""
+    r = ai_reply.kb_rebuild_semantic_cache()
+    if not r.get("ok"):
+        raise HTTPException(500, r.get("error", "重建失败"))
+    return {"ok": True, **r, "msg": f"已向量化 {r.get('embedded')}/{r.get('total')} 条"}
+
+
+@router.get("/semantic/cache_status")
+async def semantic_cache_status():
+    """缓存覆盖情况：多少条目有向量缓存。"""
+    items = ai_reply.KB.list_items()
+    have = sum(1 for it in items if ai_reply._kv_get(ai_reply._KV_SEM_PREFIX + str(it["id"]), None))
+    cfg = ai_reply.get_config()
+    cached_model = ai_reply._kv_get(ai_reply._KV_SEM_MDL, "")
+    return {"ok": True, "total": len(items), "embedded": have,
+            "model": cfg.get("sem_model", ""), "cached_model": cached_model,
+            "stale": bool(cached_model and cached_model != cfg.get("sem_model", ""))}
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +273,42 @@ async def bl_add(body: BlackBody):
 async def bl_remove(user_id: str):
     ai_reply.blacklist_remove(user_id)
     return {"ok": True, "items": ai_reply.blacklist_list()}
+
+
+# ---------------------------------------------------------------------------
+# 模型提供商（前端下拉框数据源）
+# ---------------------------------------------------------------------------
+
+@router.get("/providers")
+async def list_providers():
+    return {"ok": True, "providers": ai_reply.get_providers()}
+
+
+@router.get("/providers/freellm_models")
+async def freellm_models():
+    """在线拉取本机 FreeLLM 的 /v1/models，分为 chat/vision/embed 三组。"""
+    cfg = ai_reply.get_config()
+    base = cfg.get("sem_base_url") or "http://127.0.0.1:31415/v1"
+    key = cfg.get("sem_api_key") or ""
+    try:
+        import requests as _rq
+        headers = {}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        resp = _rq.get(f"{base.rstrip('/')}/models", headers=headers, timeout=8)
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+        ids = sorted(m.get("id", "") for m in resp.json().get("data", []))
+    except Exception as e:
+        return {"ok": False, "error": f"FreeLLM 不可达: {e}",
+                "chat": [], "vision": [], "embed": []}
+    vis_kw = ("vision", "-vl", "4o", "omni", "gemini", "v-plus", "4v")
+    emb_kw = ("embed", "bge", "gte", "e5", "nemotron-3-embed")
+    chat = [i for i in ids if not any(k in i.lower() for k in vis_kw + emb_kw)]
+    vision = [i for i in ids if any(k in i.lower() for k in vis_kw)]
+    embed = [i for i in ids if any(k in i.lower() for k in emb_kw)]
+    return {"ok": True, "chat": chat, "vision": vision, "embed": embed,
+            "total": len(ids)}
 
 
 # ---------------------------------------------------------------------------

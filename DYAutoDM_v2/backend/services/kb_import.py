@@ -265,10 +265,10 @@ def generate_qa_fallback(chunk: str) -> list[dict]:
     # xlsx 式 "问题: 答案" 行；同时支持无表头的 QA 表（两列拼接行拆出第 2 列后）
     for line in chunk.splitlines():
         s = line.strip()
-        if s.startswith("【") or s.startswith("问题:") or s.startswith("问题："):
+        if s.startswith("【"):
             continue
-        # xlsx 两列表被拼成 "问题: X; 答案: Y" —— 拆出真 QA
-        m2 = re.match(r"^问题[:：]\s*(.+?);\s*答案[:：]\s*(.+)$", s)
+        # xlsx 两列表被拼成 "问题: X; 答案: Y" —— 拆出真 QA（必须先于通用 m）
+        m2 = re.match(r"^问题[:：]\s*(.+?);?\s*答案[:：]\s*(.+)$", s)
         if m2:
             qa.append({"question": m2.group(1).strip(),
                        "answer": m2.group(2).strip()})
@@ -276,7 +276,7 @@ def generate_qa_fallback(chunk: str) -> list[dict]:
                 return qa
             continue
         m = re.match(r"^(.{2,30}?)[:：]\s*(.{2,80})$", s)
-        if m:
+        if m and m.group(1).strip() not in ("问题", "答案"):
             qa.append({"question": m.group(1).strip(),
                        "answer": m.group(2).strip()})
             if len(qa) >= 10:
