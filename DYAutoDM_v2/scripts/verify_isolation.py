@@ -60,13 +60,50 @@ check("熟客->真人 拒绝", (not r2.accepted) and "白名单" in r2.error,
       f"error={r2.error[:40]}")
 
 # ---- 3. 私信中心/AI = 熟客（conv_id 有历史）----
-print("\n--- 3. 私信中心/AI（submit，熟客会话）---")
-q_before = d.quota_of("尚进工伤小助理").snapshot()["stranger_today"]
-r = d.submit("尚进工伤小助理", "0:1:316276709526638:4175297014664416",
-             "熟客回复", "manual")
-check("熟客会话 放行", r.accepted, f"task={r.task_id}")
-q_after = d.quota_of("尚进工伤小助理").snapshot()["stranger_today"]
-check("熟客不占首发额度", q_after == q_before, f"{q_before} -> {q_after}")
+# 注意：熟客/陌生人由【本地 dm_messages 是否有历史消息】判定，
+# 不是由来源决定。测试 DB 里该 conv_id 无历史 → 会被判为陌生人首发，
+# 从而**正常受限流约束**（这是正确行为）。
+# 因此"熟客不占额度"这一项，必须先造一条历史消息再测，否则测的是首发。
+print("\n--- 3. 私信中心/AI（submit）---")
+CID = "0:1:316276709526638:4175297014664416"
+ACC = "尚进工伤小助理"
+
+# 3a) 无历史 -> 判为陌生人首发（受限流约束，属正确行为）
+is_stranger = dd.DmDispatcher._is_stranger_first(ACC, CID)
+print(f"  当前 conv_id 判定: {'陌生人首发' if is_stranger else '熟客会话'}"
+      f"（由本地历史消息决定，非来源决定）")
+
+# 3b) 造一条历史消息 -> 变成熟客，再验证不占首发额度
+made_history = False
+try:
+    import sqlite3
+    from database import get_db
+    conn = get_db()
+    conn.execute(
+        "INSERT OR IGNORE INTO dm_messages("
+        "account,conv_id,role,text,msg_type,ts,msg_id) "
+        "VALUES(?,?,'them','历史消息','text',?,?)",
+        (ACC, CID, __import__("time").time(), "test_history_1"))
+    conn.commit()
+    made_history = True
+except Exception as e:
+    print(f"  [warn] 造历史消息失败: {e}")
+
+if made_history:
+    now_stranger = dd.DmDispatcher._is_stranger_first(ACC, CID)
+    check("有历史后判定为熟客", now_stranger is False,
+          f"is_stranger={now_stranger}")
+    q_before = d.quota_of(ACC).snapshot()["stranger_today"]
+    r = d.submit(ACC, CID, "熟客回复", "manual")
+    check("熟客会话 放行", r.accepted, f"error={r.error[:36]}")
+    q_after = d.quota_of(ACC).snapshot()["stranger_today"]
+    check("熟客不占首发额度", q_after == q_before, f"{q_before} -> {q_after}")
+    # 清理测试历史
+    try:
+        conn.execute("DELETE FROM dm_messages WHERE msg_id='test_history_1'")
+        conn.commit()
+    except Exception:
+        pass
 
 # ---- 4. 反向（四川张老师 -> 尚进）----
 print("\n--- 4. 反向互发 ---")
