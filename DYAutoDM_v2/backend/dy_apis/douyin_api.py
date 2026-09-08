@@ -2149,6 +2149,19 @@ class DouyinAPI:
         try:
             responseProto.ParseFromString(resp.content)
         except Exception as e:
+            # 2026-09-08：抖音风控/异常时返回 JSON（如 {"decision":"KICK"}）
+            # 而非 protobuf——原日志报"Wire format was corrupt"误导排查。
+            # 先尝试 JSON 解析，给出真实风控原因。
+            try:
+                import json as _json
+                _j = _json.loads(resp.content.decode("utf-8", "replace"))
+                _dec = _j.get("decision") or _j.get("message") or str(_j)[:80]
+                logger.error(
+                    f"私信发送被抖音拒绝（JSON 响应）：decision={_dec} | "
+                    f"full={str(_j)[:200]}")
+                return False, f"抖音拒绝发送：{_dec}（风控/限流，建议冷却后重试）"
+            except Exception:
+                pass
             logger.error(f'私信发送响应 protobuf 解析失败: {e} | raw[:120]={resp.content[:120]!r}')
             return False, f'响应用户解析失败: {e}'
         resp_json = protobuf_to_dict(responseProto)
