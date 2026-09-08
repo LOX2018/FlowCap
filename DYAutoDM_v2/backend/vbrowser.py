@@ -593,23 +593,24 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
         # 2026-09-06 风控对齐：headless=True 默认转「真有头 + 窗口移出屏幕」。
         # 环境变量 DY_BCC_HEADLESS_MODE 可切:
-        #   disguise (默认) = 真有头+移屏外 —— 对抖音与双击打开的指纹浏览器
-        #                     特征一致（风控对齐）
-        #   native          = 纯 Playwright headless（省资源；2026-09-06 复盘:
-        #                     半登录态根因是 session 生命周期而非 headless，
-        #                     00:42-00:54 headless 一直正常即为反例。保留此
-        #                     模式供用户选择/回退）
+        #   native (默认 2026-09-08 改回) = 纯 Playwright headless（省资源；
+        #                                   2026-09-08 双账号实测：小助理
+        #                                   ws 发送成功、张老师 wp 成功，
+        #                                   无头完全可用）
+        #   disguise = 真有头+移屏外 —— 对抖音与双击打开的指纹浏览器
+        #              特征一致（风控对齐）；副作用：持久化 profile 残留
+        #              屏外窗口位置，可见启动需归位（_ensure_window_visible）
         if headless:
             import os as _os
-            _mode = (_os.environ.get("DY_BCC_HEADLESS_MODE") or "disguise").lower()
-            if _mode == "native":
-                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless）")
-                _disguise = False
-            else:
+            _mode = (_os.environ.get("DY_BCC_HEADLESS_MODE") or "native").lower()
+            if _mode == "disguise":
                 launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
                 headless = False  # 伪装模式：恒真有头
                 _disguise = True  # 伪装窗口必须留在屏外，绝不能被归位逻辑拉回
                 logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
+            else:
+                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless）")
+                _disguise = False
         else:
             _disguise = False
         p = await async_playwright().start()
@@ -673,16 +674,23 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
         # 2026-09-06 风控对齐：与 launch_async 同策略，headless 转真有头+移屏外。
+        # 2026-09-08：默认改回 native（纯 headless），disguise 需显式设
+        # DY_BCC_HEADLESS_MODE=disguise（与 launch_async 保持一致）。
         _disguise = False
         if headless:
-            launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
-            _disguise = True  # 伪装窗口必须留在屏外，绝不能被归位逻辑拉回
-            logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
+            import os as _os
+            _mode = (_os.environ.get("DY_BCC_HEADLESS_MODE") or "native").lower()
+            if _mode == "disguise":
+                launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
+                _disguise = True  # 伪装窗口必须留在屏外，绝不能被归位逻辑拉回
+                logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
+            else:
+                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=False,  # 恒有头（headless 请求由移屏外参数伪装）
+            headless=headless,  # disguise 已置 False；native 保持 True
             args=launch_args,
             proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
