@@ -96,7 +96,7 @@ def _follow_redirects(url, cookies=None, timeout=15):
                             headers=headers, cookies=cookies, verify=False)
         return resp.url
     except Exception as e:
-        logger.warning(f"[resolve] 跟随重定向失败: {e}")
+        logger.warning("LIVE-009", f"[resolve] 跟随重定向失败: {e}")
         return url
 
 
@@ -124,7 +124,7 @@ def _xbogus_sign(query_string, ua):
     try:
         return _xb_sign().sign(stub_hex, ua)
     except Exception as e:
-        logger.warning(f"[resolve] X-Bogus 签名失败: {e}")
+        logger.warning("LIVE-010", f"[resolve] X-Bogus 签名失败: {e}")
         return ""
 
 
@@ -136,7 +136,7 @@ def _reflow_resolve(room_id, sec_user_id, auth=None, ua="Mozilla/5.0"):
     try:
         xb = _xbogus_sign(query, ua)
     except Exception as e:
-        logger.warning(f"[resolve] X-Bogus 签名失败: {e}")
+        logger.warning("LIVE-011", f"[resolve] X-Bogus 签名失败: {e}")
         xb = ""
     url = f"{_REFLOW_URL}?{query}&X-Bogus={xb}"
     headers = {
@@ -149,7 +149,7 @@ def _reflow_resolve(room_id, sec_user_id, auth=None, ua="Mozilla/5.0"):
         resp = requests.get(url, headers=headers, cookies=cookies, timeout=15, verify=False)
         data = resp.json()
     except Exception as e:
-        logger.warning(f"[resolve] reflow 请求失败: {e}")
+        logger.warning("LIVE-012", f"[resolve] reflow 请求失败: {e}")
         return None, None
     try:
         room = data["data"]["room"]
@@ -157,7 +157,7 @@ def _reflow_resolve(room_id, sec_user_id, auth=None, ua="Mozilla/5.0"):
         anchor_sec_uid = room["owner"].get("sec_uid") or sec_user_id
         return web_rid, anchor_sec_uid
     except Exception as e:
-        logger.warning(f"[resolve] reflow 响应解析失败（可能未开播/接口变更）: {e}")
+        logger.warning("LIVE-013", f"[resolve] reflow 响应解析失败（可能未开播/接口变更）: {e}")
         return None, None
 
 
@@ -199,7 +199,7 @@ def resolve_via_reflow(raw, auth=None):
                 sec_user_id = info["sec_uid"]
                 logger.info(f"[resolve] reflow 主引擎：用 get_live_info 补全 sec_uid={sec_user_id}")
         except Exception as e:
-            logger.warning(f"[resolve] get_live_info 补全 sec_uid 失败: {e}")
+            logger.warning("LIVE-014", f"[resolve] get_live_info 补全 sec_uid 失败: {e}")
 
     # 情形B：有 sec_user_id 缺 room_id（典型：用户主页，正在直播）
     if sec_user_id and not room_id and auth is not None:
@@ -216,7 +216,7 @@ def resolve_via_reflow(raw, auth=None):
             if room_id:
                 logger.info(f"[resolve] reflow 主引擎：从主页 HTML 补全 room_id={room_id}")
         except Exception as e:
-            logger.warning(f"[resolve] 主页 HTML 补全 room_id 失败: {e}")
+            logger.warning("LIVE-015", f"[resolve] 主页 HTML 补全 room_id 失败: {e}")
 
     # 只要拿到 room_id（即真实直播间号 web_rid），主引擎即可成功返回直播间号；
     # 主播 sec_uid 能补全最好（用于私信/主页），补不到也不影响进入直播间。
@@ -259,9 +259,9 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account
                 if lid:
                     logger.info(f"[resolve] BCC /resolve_url 成功 live_id={lid}")
                     return lid, r.get("final_url")
-                logger.warning(f"[resolve] BCC /resolve_url 返回失败: {r.get('msg', '')}，退回直开浏览器")
+                logger.warning("LIVE-016", f"[resolve] BCC /resolve_url 返回失败: {r.get('msg', '')}，退回直开浏览器")
         except Exception as e:
-            logger.warning(f"[resolve] BCC /resolve_url 异常，退回直开浏览器: {e}")
+            logger.warning("LIVE-017", f"[resolve] BCC /resolve_url 异常，退回直开浏览器: {e}")
 
     from auto_dm import config as _cfg
     from auto_dm.vbrowser import should_use_vb, launch_sync
@@ -273,7 +273,7 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account
         logger.info(f"[resolve] 使用指纹浏览器内核解析跳转 (mode={_vb_mode})")
         _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=headless)
     except RuntimeError as e:
-        logger.error(f"[resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：{e}")
+        logger.error("LIVE-018", f"[resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：{e}")
         return None, None
     page = context.new_page()
     try:
@@ -304,9 +304,9 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account
                         final_url = link
                         break
                 if not live_id:
-                    logger.warning(f"[resolve] 用户 {sec_uid} 当前未在直播或无法解析房间")
+                    logger.warning("LIVE-019", f"[resolve] 用户 {sec_uid} 当前未在直播或无法解析房间")
     except Exception as e:
-        logger.warning(f"[resolve] 浏览器解析失败: {e}")
+        logger.warning("LIVE-020", f"[resolve] 浏览器解析失败: {e}")
     finally:
         # exe 模式 context 由我们 launch，需关闭；cdp 模式由外部客户端管理，不关。
         # （原生 Playwright 已禁用，无“原生模式”收尾分支）

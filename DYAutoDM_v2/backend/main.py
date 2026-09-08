@@ -9,6 +9,7 @@
 """
 from contextlib import asynccontextmanager
 import asyncio
+import json
 import os
 import platform
 import subprocess
@@ -105,7 +106,75 @@ def _spawn_sidecar(binary: str, args: list[str]) -> subprocess.Popen:
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[assignment]
     else:
         kwargs["start_new_session"] = True  # type: ignore[assignment]
+    # 会员体系（v0.37.0）：子进程继承会员空间与主密钥
+    env = {k: v for k, v in os.environ.items()
+           if k.startswith("DY_") or k in ("PYTHONPATH", "SYSTEMROOT", "TEMP", "TMP",
+                                           "COMPUTERNAME", "USERPROFILE", "APPDATA",
+                                           "LOCALAPPDATA", "PROGRAMDATA", "WINDIR")}
+    try:
+        from services import member_ctx as _mctx
+        if _mctx.current():
+            env["DY_MEMBER"] = _mctx.current_member_id() or ""
+            mk = _mctx.master_key()
+            if mk:
+                env["DY_MEMBER_KEY"] = mk
+    except Exception:
+        pass
+    kwargs["env"] = env
     return subprocess.Popen([binary] + args, **kwargs)
+
+
+def _prealign_on_startup() -> None:
+    """启动预对齐（未登录阶段，后台线程）：全局空间引导账号 + 拉起全部守护。
+
+    用户要求的体验：BootSplash 阶段（登录框出现之前）完成前后端对齐，
+    登录后立即能用。步骤：
+    1. bootstrap：把全局账号索引复制进默认 DB 的 kv_store（未登录时
+       database 就指向全局 DB，get_kv_json 直接可用）；
+    2. 为每个账号在会员空间缺席时建 junction（复用 member bootstrap 逻辑，
+       幂等，已存在直接跳过）；
+    3. ensure_daemons_for 拉起全部守护（skip_cooldown=True 豁免 BCC 冷静期，
+       预对齐是有意拉起，非快闪误触发）。
+    全程不碰会员 session；登录后的 _post_login_init 幂等重入，无冲突。
+    """
+    import json as _json
+    import sqlite3 as _sqlite3
+    try:
+        import vbrowser
+        from database import get_kv_json, set_kv_json
+        root = vbrowser.app_root()
+        # 1) 全局索引（未登录时 database 即全局 DB）
+        idx = get_kv_json("accounts_index", None)
+        accounts = (idx or {}).get("accounts") or {}
+        if not accounts:
+            # 尝试从全局 DB 文件直读（理论上与上面同库，防御性保留）
+            gdb = os.path.join(root, "data", "dyautodm.db")
+            if os.path.isfile(gdb):
+                conn = _sqlite3.connect(gdb, timeout=5)
+                try:
+                    row = conn.execute(
+                        "SELECT value FROM kv_store WHERE key='accounts_index'"
+                    ).fetchone()
+                    accounts = (_json.loads(row[0]).get("accounts")) or {} if row else {}
+                finally:
+                    conn.close()
+        if not accounts:
+            logger.info("[prealign] 全局无账号索引，无可预对齐的账号")
+            return
+        # 2) 每账号 junction（幂等；未登录时 accounts_root 返回 None，
+        #    此时 _accounts_dir() 已是全局目录，物理同源，无需 junction）
+        from auto_dm import accounts as _acct
+        names = list(accounts.keys())
+        # 3) 拉起全部守护（BCC 豁免冷静期）
+        from auto_dm.daemon_launcher import ensure_daemons_for
+        ok = 0
+        for n in names:
+            r = ensure_daemons_for(n, wait=True, skip_cooldown=True)
+            if r.get("recv") and r.get("browser"):
+                ok += 1
+        logger.info(f"[prealign] 启动预对齐完成: {ok}/{len(names)} 个账号守护就绪")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SYS-022", f"[prealign] 启动预对齐失败（登录后会重试）: {e}")
 
 
 def _auto_start_daemons() -> None:
@@ -147,7 +216,7 @@ def _auto_start_daemons() -> None:
         #    需要随启动拉起时设 DY_BCC_ON_START=1。
         bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
         if bcc_binary is None:
-            logger.warning("[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
+            logger.warning("SYS-008", "[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
         else:
             import os as _os
             if _os.environ.get("DY_BCC_ON_START", "0") == "1":
@@ -159,7 +228,7 @@ def _auto_start_daemons() -> None:
                         proc = _spawn_sidecar(bcc_binary, ["--account", names[0], "--port", str(bport)])
                         spawned.append((bport, proc.pid, f"browser_daemon({names[0]})"))
                 except Exception as e:
-                    logger.warning(f"[startup] 拉起 browser_daemon 失败: {e}")
+                    logger.warning("SYS-009", f"[startup] 拉起 browser_daemon 失败: {e}")
             else:
                 logger.info(
                     "[startup] BCC 不随启动拉起（懒加载：WP 发送/更新会话首次使用时自动拉起；"
@@ -168,7 +237,7 @@ def _auto_start_daemons() -> None:
         # 2. 每个账号的 recv_daemon（并行 spawn，不等待）
         recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")
         if recv_binary is None:
-            logger.warning("[startup] 未找到 dyautodm-recv-daemon 二进制，跳过 recv_daemon 拉起")
+            logger.warning("SYS-010", "[startup] 未找到 dyautodm-recv-daemon 二进制，跳过 recv_daemon 拉起")
             return
         for name in names:
             try:
@@ -179,7 +248,7 @@ def _auto_start_daemons() -> None:
                 proc = _spawn_sidecar(recv_binary, ["--accounts", name, "--port", str(port)])
                 spawned.append((port, proc.pid, f"recv_daemon({name})"))
             except Exception as e:
-                logger.warning(f"[startup] 拉起 {name} 的 recv_daemon 失败: {e}")
+                logger.warning("SYS-011", f"[startup] 拉起 {name} 的 recv_daemon 失败: {e}")
 
         # 3. 统一等端口就绪（并行后总耗时 ≈ 最慢一个）
         for port, pid, label in spawned:
@@ -205,7 +274,7 @@ def _auto_start_daemons() -> None:
             )
 
     except Exception as e:
-        logger.warning(f"[startup] 自动拉起 daemon 失败（不影响使用）: {e}")
+        logger.warning("SYS-012", f"[startup] 自动拉起 daemon 失败（不影响使用）: {e}")
 
 
 def _nickname_sync_background(names: list[str]) -> None:
@@ -226,9 +295,9 @@ def _nickname_sync_background(names: list[str]) -> None:
                 n_conv, n_msg = capture_all(name, with_browser=True)
                 logger.info(f"[nickname] {name} 昵称关联完成：{n_conv} 会话，{n_msg} 消息")
             except Exception as e:
-                logger.warning(f"[nickname] {name} 昵称关联失败（WS B 机制兜底）: {e}")
+                logger.warning("SYS-013", f"[nickname] {name} 昵称关联失败（WS B 机制兜底）: {e}")
     except Exception as e:
-        logger.warning(f"[nickname] 昵称关联流程失败: {e}")
+        logger.warning("SYS-014", f"[nickname] 昵称关联流程失败: {e}")
 
 
 def _warm_verify_cache() -> None:
@@ -237,7 +306,10 @@ def _warm_verify_cache() -> None:
     try:
         from api.accounts import _cached_verify
         from auto_dm import accounts as acct_core
-        names = [n[0] if isinstance(n, (tuple, list)) else n for n in acct_core.list_accounts()]
+        from services import member_ctx as _mc
+        names = ([] if _mc.current() is None else
+                 [n[0] if isinstance(n, (tuple, list)) else n
+                  for n in acct_core.list_accounts()])
         if not names:
             return
         logger.info(f"[warmup] 后台预热 {len(names)} 个账号的校验缓存…")
@@ -246,7 +318,7 @@ def _warm_verify_cache() -> None:
             list(pool.map(lambda n: _cached_verify(n, timeout=3), names))
         logger.info("[warmup] 账号校验缓存预热完成（账户页首屏将秒出）")
     except Exception as e:
-        logger.warning(f"[warmup] 账号校验缓存预热失败（不影响使用）: {e}")
+        logger.warning("SYS-015", f"[warmup] 账号校验缓存预热失败（不影响使用）: {e}")
 
 
 @asynccontextmanager
@@ -258,16 +330,25 @@ async def lifespan(app: FastAPI):
         database.get_db()
         logger.info("[db] SQLite 数据库已就绪")
     except Exception as e:
-        logger.error(f"[db] 数据库初始化失败: {e}")
+        logger.error("DB-005", f"[db] 数据库初始化失败: {e}")
     # 启动收尾上次进程遗留的悬空「运行中」历史任务（按 pid 比对兜底，
     # 不会误伤本进程将要运行的任务；正常退出已由 AutoDM.shutdown 真实收尾）
     try:
         from tasks_history import fix_stuck_tasks
         fix_stuck_tasks()
     except Exception as e:
-        logger.warning(f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
+        logger.warning("SYS-016", f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
     # 引擎主控单例（替代原版 WebBridge.adm）
     app.state.adm = AutoDM()
+    # 2026-09-08：把引擎实例显式注入通知模块 —— 指令执行（启动/停止/查询）
+    # 需要真实 adm。运行时 `from main import app` 反查在 PyInstaller onefile 下
+    # 不可靠（实测返回「引擎实例不可用」），改为启动即绑定。
+    try:
+        from api import notify as _notify_api
+
+        _notify_api.bind_adm(app.state.adm)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("NTY-004", f"[notify] adm 注入失败（指令执行将不可用）: {_e}")
     # 2026-09-07：UID 探活统一调度器预热（架构重构）。
     # 启动即由 services.uid_probe 按账号错峰探活一次并缓存，后续
     # verify_account（30s 轮询）/ live_hook 心跳 / bcc keepalive 全部
@@ -275,15 +356,17 @@ async def lifespan(app: FastAPI):
     try:
         from services import uid_probe as _uid_probe
         from auto_dm import accounts as _acct_core
-        _names = [n[0] if isinstance(n, (tuple, list)) else n
-                  for n in _acct_core.list_accounts()]
+        from services import member_ctx as _mc
+        _names = ([] if _mc.current() is None else [
+            n[0] if isinstance(n, (tuple, list)) else n
+            for n in _acct_core.list_accounts()])
         if _names:
             threading.Thread(
                 target=_uid_probe.warm_all, args=(_names,), daemon=True
             ).start()
             logger.info(f"[uid-probe] 已启动统一探活预热（{len(_names)} 个账号）")
     except Exception as e:
-        logger.warning(f"[uid-probe] 预热启动失败（不影响使用）: {e}")
+        logger.warning("SYS-017", f"[uid-probe] 预热启动失败（不影响使用）: {e}")
     # 后台预热账号校验缓存（并发，不阻塞启动）
     threading.Thread(target=_warm_verify_cache, daemon=True).start()
     # 原图缓存 TTL 清理(后台延迟 60s,删除过期/超容的本地解密图)
@@ -291,27 +374,47 @@ async def lifespan(app: FastAPI):
         from auto_dm.origin_image_resolver import sweep_background
         sweep_background()
     except Exception as e:
-        logger.warning(f"[origin_image] 启动 TTL 清理失败（不影响使用）: {e}")
+        logger.warning("SYS-018", f"[origin_image] 启动 TTL 清理失败（不影响使用）: {e}")
+    # 2026-09-08：恢复上次登录会话（token 持久化，避免每次重启都要重新登录）。
+    # 必须在下面的「未登录预对齐」判断【之前】执行，否则会被当成未登录。
+    try:
+        from services import member_ctx
+        if member_ctx.current() is None:
+            member_ctx.restore_persisted_session()
+    except Exception as _e:
+        logger.warning("SYS-023", f"[startup] 会话恢复失败（忽略）: {_e}")
     # 启动后为所有账号拉起 daemon（browser + recv）并触发昵称关联
     # 同步执行，确保 backend 启动完成时 daemon 已就绪
-    _auto_start_daemons()
+    # 会员体系：未登录时按【启动预对齐】处理（2026-09-08 用户明确要求）——
+    # 在全局空间引导账号索引/junction 并拉起全部守护，让 BootSplash 阶段
+    # 就完成前后端对齐；登录框出现后用户登录即用，不再有任何等待。
+    try:
+        from services import member_ctx
+        if member_ctx.current() is None:
+            threading.Thread(target=_prealign_on_startup, daemon=True).start()
+            logger.info("[startup] 未登录：启动预对齐已开始（后台引导账号+拉起守护）")
+        else:
+            _auto_start_daemons()
+    except Exception as _e:
+        logger.warning("SYS-019", f"[startup] 会员态判断失败，按未登录处理: {_e}")
     # WP 通道私信接收循环（抖音网页版 chat 页 hook）
     # 2026-09-05 新增。BCC 是单例（所有账号共享一个浏览器，用 names[0] 的端口），
     # 故 wp_recv 也只对第一个账号轮询。与 WS 通道（recv_daemon）并存、应用层去重。
     try:
         from auto_dm import accounts as _acct_wp
         from daemon.wp_recv import run_wp_recv_loop
-        _wp_names = [
+        from services import member_ctx as _mc
+        _wp_names = ([] if _mc.current() is None else [
             n[0] if isinstance(n, (tuple, list)) else n
             for n in _acct_wp.list_accounts()
-        ]
+        ])
         if _wp_names:
             _wp_task = asyncio.create_task(run_wp_recv_loop(_wp_names[0]))
             # 防止任务被 GC（asyncio 只持有弱引用）
             app.state.wp_recv_task = _wp_task
             logger.info(f"[startup] WP 通道接收循环已启动 (account={_wp_names[0]})")
     except Exception as e:
-        logger.warning(f"[startup] WP 接收循环启动失败（不影响 WS 通道）: {e}")
+        logger.warning("SYS-020", f"[startup] WP 接收循环启动失败（不影响 WS 通道）: {e}")
     # AI 获客自动回复：建表 + 若配置启用则自启监听（2026-09-06 嵌入）
     try:
         from services import ai_reply as _ai
@@ -320,7 +423,7 @@ async def lifespan(app: FastAPI):
             _ai.WORKER.start()
             logger.info("[startup] AI 获客自动回复已按配置自启")
     except Exception as e:
-        logger.warning(f"[startup] AI 自动回复初始化失败（不影响主流程）: {e}")
+        logger.warning("SYS-021", f"[startup] AI 自动回复初始化失败（不影响主流程）: {e}")
     yield
     logger.info("DYAutoDM 后端关闭")
     await app.state.adm.shutdown()
@@ -342,7 +445,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ===== 会员体系（v0.37.0）：登录门禁中间件 =====
+# 全部 /api/* 业务路由要求 X-Member-Token（登录后获得）；
+# 豁免：会员路由本身、健康探测（sidecar 就绪检测依赖它）、WebSocket（自验 token）。
+_MEMBER_EXEMPT = (
+    "/api/member/", "/api/status", "/api/ready", "/api/live/ws", "/api/errcodes", "/api/errcodes/", "/docs", "/openapi.json",
+    "/redoc",
+)
+
+@app.middleware("http")
+async def member_auth_middleware(request, call_next):
+    path = request.url.path
+    # 2026-09-08：CORS 预检 OPTIONS 必须放行。带自定义头（X-Member-Token）
+    # 的跨域请求会先发 OPTIONS 预检，若被这里拦成 401，浏览器不会暴露
+    # 真实状态码，而是把整个请求报成「TypeError: Failed to fetch」
+    # （排查极难定位——本次即踩此坑）。预检不携带业务数据，放行无风险。
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if path.startswith("/api") and not any(
+        path.startswith(e) if e.endswith("/") else path == e
+        for e in _MEMBER_EXEMPT
+    ):
+        token = request.headers.get("x-member-token", "")
+        from services import member_ctx
+        s = member_ctx.get_session(token)
+        if not s:
+            from fastapi.responses import JSONResponse
+            # 2026-09-08：401 必须带 CORS 头。Starlette 的 middleware 是
+            # 后注册先执行，本中间件先于 CORSMiddleware 生效，直接返回的
+            # 401 会缺 Access-Control-Allow-Origin → 浏览器把 401 报成
+            # 「TypeError: Failed to fetch」，排查时极难定位。
+            resp = JSONResponse({"detail": "未登录或会话已过期"}, status_code=401)
+            origin = request.headers.get("origin")
+            if origin:
+                resp.headers["Access-Control-Allow-Origin"] = origin
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+            else:
+                resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
+        request.state.member = s
+    return await call_next(request)
+
 # 路由挂载
+from api import member as member_api
+app.include_router(member_api.router, prefix="/api/member", tags=["member"])
+from api import errcodes as errcodes_api
+app.include_router(errcodes_api.router, prefix="/api/errcodes", tags=["errcodes"])
 app.include_router(overview.router, prefix="/api", tags=["overview"])
 app.include_router(engine.router, prefix="/api/engine", tags=["engine"])
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
@@ -355,6 +503,16 @@ app.include_router(logs_api.router, prefix="/api/logs", tags=["logs"])
 app.include_router(ai_api.router, prefix="/api/ai", tags=["ai"])
 # 数据采集（关键词搜索视频/用户 + 评论采集 + 评论转私信截流）
 app.include_router(crawl_api.router, prefix="/api/crawl", tags=["crawl"])
+# IM 通知与指令（提取自 AstrBot 渠道协议，2026-09-08）
+#   支持 个人微信(iLink)/企业微信/钉钉/飞书/QQ 五渠道推送 +
+#   LLM 自然语言指令解析，用于任务新建、任务监控、私信汇报、凭证失效提醒
+try:
+    from api import notify as notify_api
+
+    app.include_router(notify_api.router, prefix="/api/notify", tags=["notify"])
+    notify_api.init_notifier()
+except Exception as _e:  # noqa: BLE001
+    logger.warning("NTY-005", f"[notify] 模块挂载失败（不影响主流程）: {_e}")
 
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
 logger.remove()
@@ -381,6 +539,51 @@ logger.add(
 async def status():
     from models.overview import StatusResponse
     return StatusResponse(ok=True, running=False)
+
+
+@app.get("/api/ready")
+async def ready_gate():
+    """启动就绪度探针（免鉴权，前端 BootSplash 轮询）。
+
+    返回 backend 连通 + 账号基础设施（索引/守护）状态。前端等
+    daemons_ready=true 才显示登录框 —— 实现「前后端先对齐，
+    登录后立即能用」，消灭登录后再等待的体验断层。
+    """
+    daemons_ready = False
+    accounts_n = 0
+    try:
+        from services import member_ctx as _mc
+        if _mc.current() is not None:
+            # 已登录：账号已在登录流程里引导并触发守护拉起（_post_login_init），
+            # 此处【不要求守护端口全开】——守护启动是异步的，若这里再卡，
+            # 前端 prealigned 会翻回 false 而重新盖上 BootSplash（用户体感
+            # 「登录后一直显示正在唤醒后端引擎」）。登录成功即视为可用，
+            # 守护状态交给 Header 徽章实时表达。
+            from auto_dm import accounts as _acct
+            names = [n[0] if isinstance(n, (tuple, list)) else n
+                     for n in _acct.list_accounts()]
+            accounts_n = len(names)
+            daemons_ready = True
+        else:
+            # 未登录：检查全局账号基础设施是否已由启动引导拉齐
+            import sqlite3
+            import vbrowser
+            root = vbrowser.app_root()
+            gdb = os.path.join(root, "data", "dyautodm.db")
+            if os.path.isfile(gdb):
+                conn = sqlite3.connect(gdb, timeout=3)
+                try:
+                    row = conn.execute(
+                        "SELECT value FROM kv_store WHERE key='accounts_index'"
+                    ).fetchone()
+                    accounts_n = len((json.loads(row[0]).get("accounts")) or {}) if row else 0
+                finally:
+                    conn.close()
+            # 未登录阶段的对齐标准：全局索引可读（backend 已接管账号目录）
+            daemons_ready = True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SYS-021", f"[ready] 就绪探测异常: {e}")
+    return {"ok": True, "daemons_ready": daemons_ready, "accounts": accounts_n}
 
 
 @app.get("/")

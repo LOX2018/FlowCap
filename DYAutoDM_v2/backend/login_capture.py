@@ -60,9 +60,18 @@ def snapshot_old_env(env_path):
     except Exception:
         pass
     try:
-        load_dotenv(env_path, override=True)
+        # 会员体系（v0.37.0）：会员空间内走解密视图（.enc），外部原样 dotenv
         from dotenv import dotenv_values
-        vals = dotenv_values(env_path)
+        try:
+            from services import member_ctx
+            if member_ctx.is_member_env(env_path):
+                vals = member_ctx.parse_env_dict(env_path)
+            else:
+                load_dotenv(env_path, override=True)
+                vals = dotenv_values(env_path)
+        except ImportError:
+            load_dotenv(env_path, override=True)
+            vals = dotenv_values(env_path)
         for k in list(_SIGN_KEYS) + ["DY_COOKIES"]:
             v = vals.get(k)
             if v is None:
@@ -215,6 +224,6 @@ def analyze_login_capture(auth, old_snap, env_path):
                 f.write(report + "\n")
             logger.info(f"[捕获分析] 报告已保存: {log_path}")
         except Exception as e:
-            logger.warning(f"[捕获分析] 报告落盘失败: {e}")
+            logger.warning("ACC-017", f"[捕获分析] 报告落盘失败: {e}")
 
     return report, log_path

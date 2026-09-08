@@ -162,7 +162,7 @@ class AccountInbox:
             new_uid = str(_auth.get_uid()) if _auth else None
             if new_uid and new_uid != self.my_uid:
                 if self.my_uid:
-                    logger.warning(
+                    logger.warning("RECV-001", 
                         f"[recv][{self.name}] my_uid 发生轮换：{self.my_uid} → {new_uid}"
                         f"（已自动更新方向判定基准）")
                 self.my_uid = new_uid
@@ -208,7 +208,7 @@ class AccountInbox:
             if self.convs:
                 logger.info(f"[recv][{self.name}] 已从数据库加载 {len(self.convs)} 个会话")
         except Exception as e:
-            logger.warning(f"[recv][{self.name}] 数据库加载会话失败: {e}")
+            logger.warning("RECV-002", f"[recv][{self.name}] 数据库加载会话失败: {e}")
 
     def get_or_create(self, conv_id: str, peer_id: Any = None,
                       peer_name: str | None = None) -> Conversation:
@@ -324,7 +324,7 @@ class AccountInbox:
                     "avatar": row["avatar"] or "",
                 }
             except Exception as e:
-                logger.warning(f"[recv][{self.name}] 数据库加载会话详情失败: {e}")
+                logger.warning("RECV-003", f"[recv][{self.name}] 数据库加载会话详情失败: {e}")
                 return None
 
     def mark_read(self, conv_id: str) -> None:
@@ -413,7 +413,7 @@ class AccountInbox:
                     )
                 conn.commit()
             except Exception as e:
-                logger.warning(f"[recv][{self.name}] 消息持久化失败: {e}")
+                logger.warning("RECV-004", f"[recv][{self.name}] 消息持久化失败: {e}")
         return c
 
 
@@ -480,12 +480,12 @@ class RecvChannel(threading.Thread):
             try:
                 self._handle(message)
             except Exception as e:
-                logger.warning(f"[recv][{self.name}] 消息解析异常: {e}")
+                logger.warning("RECV-005", f"[recv][{self.name}] 消息解析异常: {e}")
 
         def on_error(ws, error):
             self.inbox.connected = False
             self.inbox.last_error = str(error)
-            logger.warning(f"[recv][{self.name}] WS 错误: {error}")
+            logger.warning("RECV-006", f"[recv][{self.name}] WS 错误: {error}")
             if self.auto_reconnect and not self._stop.is_set():
                 logger.info(f"[recv][{self.name}] 5s 后重连…")
                 time.sleep(5)
@@ -754,7 +754,7 @@ def _safe_capture(name):
         from auto_dm.conversation_capture import capture_all
         capture_all(name, with_browser=False)
     except Exception as e:
-        logger.warning(f"[recv][{name}] 启动前移捕获失败（忽略）: {e}")
+        logger.warning("RECV-007", f"[recv][{name}] 启动前移捕获失败（忽略）: {e}")
 
 
 @app.on_event("startup")
@@ -769,7 +769,7 @@ async def _startup() -> None:
         import database
         database.get_db()
     except Exception as e:
-        logger.error(f"[recv] 数据库初始化失败: {e}")
+        logger.error("RECV-008", f"[recv] 数据库初始化失败: {e}")
     for name in _state["accounts"]:
         try:
             env_path = acc.env_path_of(name)
@@ -786,9 +786,9 @@ async def _startup() -> None:
                     target=lambda: _safe_capture(name), daemon=True
                 ).start()
             except Exception as e:
-                logger.warning(f"[recv] 启动捕获注册失败: {e}")
+                logger.warning("RECV-009", f"[recv] 启动捕获注册失败: {e}")
         except Exception as e:
-            logger.error(f"[recv] 账号 {name} 启动失败: {e}")
+            logger.error("RECV-010", f"[recv] 账号 {name} 启动失败: {e}")
 
 
 @app.on_event("shutdown")
@@ -847,20 +847,20 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         DYLoginApi.refresh_cookie_from_profile(auth, env_path)
         my_uid = str(auth.get_uid())
     except Exception as e:
-        logger.warning(f"[recv][{ib.name}] 加载凭证失败: {e}")
+        logger.warning("RECV-011", f"[recv][{ib.name}] 加载凭证失败: {e}")
         return 0
 
     # 1) get_message_by_init 拉全量会话（250KB，含全部会话 ID + 消息 + peer uid）
     try:
         raw = DouyinAPI.get_message_by_init(auth)
         if len(raw) < 2000:
-            logger.warning(f"[recv][{ib.name}] get_message_by_init 返回 {len(raw)} 字节"
+            logger.warning("RECV-012", f"[recv][{ib.name}] get_message_by_init 返回 {len(raw)} 字节"
                            f"（非全量，疑似凭证失效/限频）：{raw[:80]}")
         # 新版：protobuf 精确解析（field 6 = conversation 数组，消息内嵌 conv_id 链接键）
         from auto_dm.conversation_capture import parse_init_protobuf
         convs = parse_init_protobuf(raw, my_uid)
     except Exception as e:
-        logger.warning(f"[recv][{ib.name}] get_message_by_init 失败: {e}")
+        logger.warning("RECV-013", f"[recv][{ib.name}] get_message_by_init 失败: {e}")
         return 0
     if not convs:
         logger.info(f"[recv][{ib.name}] get_message_by_init 返回 0 个会话")
@@ -1019,7 +1019,7 @@ def _load_send_auth(account: str, env_path: str):
     try:
         DYLoginApi.refresh_cookie_from_profile(auth, env_path)
     except Exception as _e:
-        logger.warning(f"[recv][{account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
+        logger.warning("RECV-014", f"[recv][{account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
     return auth
 
 
@@ -1053,7 +1053,7 @@ async def send(body: SendBody) -> dict:
             _real = _parts[3] if _parts[2] == _my else (
                 _parts[2] if _parts[3] == _my else None)
             if _real and str(peer_id) != _real:
-                logger.warning(
+                logger.warning("RECV-015", 
                     f"[recv][{body.account}] 会话 peer_id 已订正: "
                     f"{peer_id} -> {_real}（conv_id 重解析）")
                 peer_id = _real
@@ -1070,7 +1070,7 @@ async def send(body: SendBody) -> dict:
     # 统一发送闸门：三源（手动/AI/直播 dispatch）一配额
     ok_gate, waited = _send_gate_acquire(body.account)
     if not ok_gate:
-        logger.warning(
+        logger.warning("RECV-016", 
             f"[recv][{body.account}] 发送闸门限流：等待 {waited:.0f}s 仍未放行"
             f"（最小间隔 {_SEND_GATE_MIN_INTERVAL}s），快速失败")
         return {"ok": False, "error": "rate_limited",
@@ -1087,10 +1087,10 @@ async def send(body: SendBody) -> dict:
             ib.add_message(body.conv_id, "me", body.text, peer_id=peer_id)
             logger.info(f"[recv][{body.account}] 已回复会话 {body.conv_id[:8]}…: {body.text}")
             return {"ok": True}
-        logger.warning(f"[recv][{body.account}] 回复失败原因: {detail}")
+        logger.warning("RECV-017", f"[recv][{body.account}] 回复失败原因: {detail}")
         return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
     except Exception as e:
-        logger.error(f"[recv][{body.account}] 回复失败: {e}")
+        logger.error("RECV-018", f"[recv][{body.account}] 回复失败: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -1121,7 +1121,7 @@ async def send_by_uid(body: SendByUidBody) -> dict:
     # 统一发送闸门：三源一配额（与 /send 同一把锁）
     ok_gate, waited = _send_gate_acquire(body.account)
     if not ok_gate:
-        logger.warning(
+        logger.warning("RECV-019", 
             f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行")
         return {"ok": False, "error": "rate_limited",
                 "msg": f"发送过于频繁（≥{_SEND_GATE_MIN_INTERVAL:.0f}s/条），请稍后重试"}
@@ -1139,10 +1139,10 @@ async def send_by_uid(body: SendByUidBody) -> dict:
             ib.add_message(conv_id, "me", body.text, peer_id=str(peer_id))
             logger.info(f"[recv][{body.account}] 已直发 uid={peer_id}: {body.text[:40]}")
             return {"ok": True, "conv_id": conv_id}
-        logger.warning(f"[recv][{body.account}] 直发 uid={peer_id} 失败: {detail}")
+        logger.warning("RECV-020", f"[recv][{body.account}] 直发 uid={peer_id} 失败: {detail}")
         return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
     except Exception as e:
-        logger.error(f"[recv][{body.account}] 直发 uid={peer_id} 异常: {e}")
+        logger.error("RECV-021", f"[recv][{body.account}] 直发 uid={peer_id} 异常: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -1225,10 +1225,10 @@ async def send_image(body: SendImageBody) -> dict:
                         f"oid={info.get('oid', '')[:40]}")
             return {"ok": True, "info": {k: info.get(k) for k in
                                          ("oid", "origin_url", "conversation_id")}}
-        logger.warning(f"[recv][{body.account}] 图片发送失败: {detail}")
+        logger.warning("RECV-022", f"[recv][{body.account}] 图片发送失败: {detail}")
         return {"ok": False, "error": detail or "send_image 返回 False"}
     except Exception as e:
-        logger.error(f"[recv][{body.account}] 图片发送异常: {e}")
+        logger.error("RECV-023", f"[recv][{body.account}] 图片发送异常: {e}")
         return {"ok": False, "error": str(e)}
 
 

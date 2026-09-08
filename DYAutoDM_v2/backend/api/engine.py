@@ -5,6 +5,8 @@
 """
 import asyncio
 
+from loguru import logger
+
 from fastapi import APIRouter, Request, HTTPException
 from models.task import TaskConfig
 from models.enums import EngineState
@@ -29,20 +31,25 @@ async def start_engine(request: Request, config: TaskConfig):
     cfg = config.resolved()
     # 空直播间链接属于不合法的启动参数，应返回结构化 400 而非 500 崩溃
     if not cfg.live_url or not cfg.live_url.strip():
+        logger.warning("ENG-010", "[engine] 启动被拒：live_url 为空")
         raise HTTPException(400, "live_url 不能为空（需提供直播间链接或房间号）")
     # 已在运行/启动中则直接返回当前状态（不重复拉起）
     if adm.state in (EngineState.RUNNING, EngineState.STARTING):
+        logger.info(f"[engine] start 请求但已在 {adm.state.value}，忽略重复启动")
         return {"ok": True, "state": adm.state.value, "already": True}
     try:
+        logger.info(f"[engine] 引擎启动中 live_url={cfg.live_url}")
         asyncio.create_task(adm.start(cfg))
         return {"ok": True, "state": "starting"}
     except Exception as e:
+        logger.exception("ENG-011", f"[engine] 启动失败: {e}")
         raise HTTPException(500, f"启动失败: {e}")
 
 
 @router.post("/pause")
 async def pause_engine(request: Request):
     adm: AutoDM = request.app.state.adm
+    logger.info("[engine] 引擎暂停")
     await adm.pause()
     return {"ok": True, "state": adm.state.value}
 
@@ -50,6 +57,7 @@ async def pause_engine(request: Request):
 @router.post("/resume")
 async def resume_engine(request: Request):
     adm: AutoDM = request.app.state.adm
+    logger.info("[engine] 引擎恢复")
     await adm.resume()
     return {"ok": True, "state": adm.state.value}
 
@@ -58,6 +66,7 @@ async def resume_engine(request: Request):
 async def stop_engine(request: Request):
     """硬停止：立即清队列"""
     adm: AutoDM = request.app.state.adm
+    logger.warning("ENG-012", "[engine] 引擎硬停止（清空队列）")
     await adm.stop(hard=True)
     return {"ok": True, "state": adm.state.value}
 
@@ -66,5 +75,6 @@ async def stop_engine(request: Request):
 async def stop_soft(request: Request):
     """软停止：停止监听，存量队列发完"""
     adm: AutoDM = request.app.state.adm
+    logger.info("[engine] 引擎软停止（存量队列发完）")
     await adm.stop(hard=False)
     return {"ok": True, "state": adm.state.value}

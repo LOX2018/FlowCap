@@ -25,6 +25,10 @@ src-tauri/binaries/*.app
 # 必须忽略；上方 *.exe 规则只挡了二进制本体，挡不住这两个目录。
 src-tauri/binaries/data/
 src-tauri/binaries/auto_dm/
+# 2026-09-08：PyInstaller **onedir** 产物是目录（<name>-<triple>/，不带 .exe），
+# 上方 *.exe 规则挡不住 —— 曾被误 add 1.9 万个文件（1.2G）进暂存区。
+# 整个 binaries 目录都是构建产物，一律忽略（部署时从构建输出拷贝）。
+src-tauri/binaries/
 
 # Frontend
 frontend/dist/

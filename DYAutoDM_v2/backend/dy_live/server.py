@@ -6,6 +6,8 @@ from urllib.parse import urlencode
 
 from websocket import WebSocketApp
 
+from loguru import logger
+
 import static.Live_pb2 as Live_pb2
 from dy_apis.douyin_api import DouyinAPI
 from builder.header import HeaderBuilder
@@ -41,7 +43,7 @@ class DouyinLive:
                 break
 
     def on_open(self, ws):
-        print("\033[32m### opened ###\033[m")
+        logger.info("LIVE-022", "[live-ws] 连接已建立")
         threading.Thread(target=self.ping, args=(ws,)).start()
 
     def on_message(self, ws, message):
@@ -64,52 +66,47 @@ class DouyinLive:
                     message.ParseFromString(item.payload)
                     # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送出 \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
                     # 谁给谁送了什么礼物
-                    print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
+                    logger.debug(f'[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname} 送给 {message.toUser.sec_uid} - {message.toUser.nickname} {message.gift.name} x {message.comboCount}')
                 elif item.method == "WebcastChatMessage":
                     message = Live_pb2.ChatMessage()
                     message.ParseFromString(item.payload)
                     # 用户等级
                     # print(message.user.badge_image_list[0])
-                    print(f'\033[1;37;40m[消息]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m : \033[4;30;44m{message.content}\033[m')
+                    logger.debug(f'[消息]SEC_UID = {message.user.sec_uid} - {message.user.nickname} : {message.content}')
                 elif item.method == "WebcastMemberMessage":
                     message = Live_pb2.MemberMessage()
                     message.ParseFromString(item.payload)
-                    print(f'\033[1;37;40m[进入]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 进入直播间')
+                    logger.debug(f'[进入]SEC_UID = {message.user.sec_uid} - {message.user.nickname} 进入直播间')
                 elif item.method == "WebcastLikeMessage":
                     message = Live_pb2.LikeMessage()
                     message.ParseFromString(item.payload)
-                    print(f'\033[1;37;40m[点赞]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 点赞了 {message.count} 次')
-                    print(f'\033[1;37;40m[点赞]点赞总数 = {message.total}\033[m')
+                    logger.debug(f'[点赞]SEC_UID = {message.user.sec_uid} - {message.user.nickname} 点赞了 {message.count} 次')
+                    logger.debug(f'[点赞]点赞总数 = {message.total}')
                 elif item.method == "WebcastSocialMessage":
                     message = Live_pb2.SocialMessage()
                     message.ParseFromString(item.payload)
                     if message.action == 1:
-                        print(f'\033[1;37;40m[关注]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 关注主播')
+                        logger.debug(f'[关注]SEC_UID = {message.user.sec_uid} - {message.user.nickname} 关注主播')
                 elif item.method == "WebcastRoomStatsMessage":
                     message = Live_pb2.RoomStatsMessage()
                     message.ParseFromString(item.payload)
-                    print(f'\033[1;37;40m[房间信息] {message.displayLong}')
+                    logger.debug(f'[房间信息] {message.displayLong}')
 
             # s = zlib.decompress(decode_str).decode()
         except Exception as e:
-            print('error')
-            print(str(e))
+            logger.error("LIVE-020", f"[live-ws] 消息回调异常: {e}")
 
     def on_error(self, ws, error):
-        print("\033[31m### error ###")
-        print(error)
-        print("### ===error=== ###\033[m")
+        logger.error("LIVE-024", f"[live-ws] WebSocket on_error: {error}")
 
     def on_close(self, ws, close_status_code, close_msg):
         # 若主动停止（stop() 已置 _should_stop），不再自动重连，确保 WS 真正断开
         if getattr(self, "_should_stop", False):
-            print("\033[31m### closed (主动停止，不重连) ###\033[m")
+            logger.info("LIVE-025", "[live-ws] closed（主动停止，不重连）")
             return
         # 此处判断是否需要重连 判断直播间是否关闭
         self.start_ws()
-        print("\033[31m### closed ###")
-        print(f"status_code: {close_status_code}, msg: {close_msg}")
-        print("### ===closed=== ###\033[m")
+        logger.warning("LIVE-026", f"[live-ws] closed status_code={close_status_code} msg={close_msg}")
 
     def start_ws(self, room_info=None):
         # room_info：可选，由调用方预查并传入（避免重复查询同一直播间，加速启动）。
@@ -119,7 +116,7 @@ class DouyinLive:
         else:
             room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
             if not room_info or not isinstance(room_info, dict):
-                print("\033[31m### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###\033[m")
+                logger.error("LIVE-023", "### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###")
                 return
             logger_info = room_info
         room_id = logger_info['room_id']
@@ -185,7 +182,7 @@ class DouyinLive:
         try:
             self.ws.run_forever(origin='https://live.douyin.com')
         except Exception as e:
-            print(str(e))
+            logger.debug(str(e))
             self.ws.close()
 
 

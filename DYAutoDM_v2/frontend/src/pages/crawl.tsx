@@ -40,6 +40,10 @@ export default function CrawlPage(props: PageProps) {
   const [dmState, setDmState] = useState<Record<string, string>>({});
   // 评论筛选关键词 + 批量发送状态
   const [cmtFilter, setCmtFilter] = useState("");
+  // 按关键词过滤后的评论列表（供命中数与批量发送使用）
+  const filteredCmts = cmtFilter.trim()
+    ? cmts.filter((c) => (c?.content || c?.text || "").includes(cmtFilter.trim()))
+    : cmts;
   const [batching, setBatching] = useState(false);
 
   const [account, setAccount] = useState("");
@@ -284,6 +288,17 @@ export default function CrawlPage(props: PageProps) {
           {did ? `未命中「${q}」，换一个关键词试试` : "输入关键词并点击「搜索」，查看结果集"}
         </div>
       ) : (
+        <>
+        <div className="card" style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }}>作者话术</span>
+          <input
+            className="input"
+            style={{ flex: 1 }}
+            value={authorTpl}
+            onChange={(e) => setAuthorTpl(e.target.value)}
+            placeholder="「私信作者」按钮使用的话术（与评论区话术分离）"
+          />
+        </div>
         <div className="result-grid">
           {results.map((v: any, i: number) => {
             const vId = v.awemeId || "v" + i;
@@ -336,6 +351,7 @@ export default function CrawlPage(props: PageProps) {
             );
           })}
         </div>
+        </>
       )}
 
       {/* 评论区抽屉 */}

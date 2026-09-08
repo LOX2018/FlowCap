@@ -61,22 +61,35 @@ def _runtime_resources() -> list[str]:
     return []
 
 
-def build_one(entry: str, name: str) -> None:
-    """打包单个 sidecar，产物名直接带 target-triple 后缀（Tauri externalBin 要求）。"""
+def build_one(entry: str, name: str, mode: str = "onefile") -> None:
+    """打包单个 sidecar，产物名直接带 target-triple 后缀（Tauri externalBin 要求）。
+
+    mode="onefile"：单 exe（旧模式，每次启动解包 ~114MB 到 %TEMP%，慢）。
+    mode="onedir" ：目录模式（免解压，秒级启动）。产物是
+        src-tauri/binaries/<full>/ 目录（内含 <full>.exe + _internal/ 依赖），
+        Tauri 侧 resolve_sidecar 会优先探测该目录形态。
+    """
     triple = _target_triple()
     full = f"{name}-{triple}"
-    print(f"\n=== 打包 {name} (-> {full}{EXT}) ===")
+    print(f"\n=== 打包 {name} (mode={mode} -> {full}{EXT}) ===")
     BINARIES.mkdir(parents=True, exist_ok=True)
     out = BINARIES / f"{full}{EXT}"
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--onefile",
         "--name", full,
         "--distpath", str(BINARIES),
         "--workpath", str(BACKEND / "build" / name),
         "--specpath", str(BACKEND / "build" / name),
         "--clean", "--noconfirm",
     ]
+    if mode == "onedir":
+        cmd.append("--onedir")
+        # 排除内容目录（_internal 是 PyInstaller 6 的默认布局，无需额外参数），
+        # 产物为 BINARIES/<full>/<full>.exe —— sidecar.rs 与 daemon_launcher
+        # 均已支持目录形态探测。
+    else:
+        cmd.append("--onefile")
+        out = BINARIES / f"{full}{EXT}"
     cmd += _runtime_resources()
     # 2026-09-05：wp_recv 是 main.py 里 asyncio 动态导入的模块
     # （from daemon.wp_recv import run_wp_recv_loop 写在 lifespan 内部），
@@ -89,6 +102,30 @@ def build_one(entry: str, name: str) -> None:
         # （RuntimeError: Form data requires "python-multipart"）。
         cmd += ["--hidden-import", "multipart"]
         cmd += ["--hidden-import", "python_multipart"]
+        # 2026-09-08：IM 通知模块（backend/notify 新包）。main.py 在
+        # try/except 里 import api.notify（挂载失败要降级而非崩溃），
+        # 这种「容错 import」易被静态分析判为可选依赖而漏打，故显式声明；
+        # notify 内部还按渠道动态 import aiohttp，一并兜底。
+        for _m in (
+            "notify",
+            "notify.channels",
+            "notify.cmd_parser",
+            "notify.notifier",
+            "api.notify",
+            "aiohttp",
+        ):
+            cmd += ["--hidden-import", _m]
+        # 2026-09-09：会员体系（v0.37.0）。api/member.py 与 services/member_ctx
+        # 都在 main.py 内「函数体内 import」（登录后初始化），静态分析扫不到
+        # 必须显式声明，缺失时登录直接 500。
+        for _m in (
+            "api.member",
+            "services.member_store",
+            "services.member_ctx",
+            "cryptography",
+            "cryptography.fernet",
+        ):
+            cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))
@@ -152,13 +189,16 @@ def restore_whitelist() -> None:
 def main() -> None:
     import sys
     debug_wl = "--debug-whitelist" in sys.argv
+    # --onedir：免解压目录模式（启动提速重点）。三份 sidecar 全部切换。
+    # 回退：不带 --onedir 参数即恢复 onefile。
+    mode = "onedir" if "--onedir" in sys.argv else "onefile"
     if debug_wl:
         inject_test_whitelist()
     try:
-        build_one("main.py", "dyautodm-backend")
-        build_one("daemon/browser_daemon.py", "dyautodm-browser-daemon")
-        build_one("daemon/recv_daemon.py", "dyautodm-recv-daemon")
-        print("\n全部打包完成，二进制位于:", BINARIES)
+        build_one("main.py", "dyautodm-backend", mode=mode)
+        build_one("daemon/browser_daemon.py", "dyautodm-browser-daemon", mode=mode)
+        build_one("daemon/recv_daemon.py", "dyautodm-recv-daemon", mode=mode)
+        print(f"\n全部打包完成（mode={mode}），产物位于:", BINARIES)
         if debug_wl:
             print("[警告] 本次为**调试版**构建（含测试白名单限制），"
                   "禁止对外发布！")

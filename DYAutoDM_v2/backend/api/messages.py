@@ -260,7 +260,7 @@ async def list_conversations(account: str):
             # 库里还没有会话：若守护未启动则提示前端拉起，否则返回空
             port = acct_core.recv_daemon_port(account)
             if not acct_core._port_open(port, timeout=0.3):
-                logger.warning(f"[私信拉取] 账号「{account}」库空且守护未运行(port={port})")
+                logger.warning("MSG-001", f"[私信拉取] 账号「{account}」库空且守护未运行(port={port})")
                 return {"ok": True, "conversations": [], "recvDaemonDown": True}
             return {"ok": True, "conversations": []}
         convs = []
@@ -298,7 +298,7 @@ async def list_conversations(account: str):
             )
         return {"ok": True, "conversations": convs}
     except Exception as e:
-        logger.warning(f"[私信拉取] 账号「{account}」读库异常: {e}")
+        logger.warning("MSG-002", f"[私信拉取] 账号「{account}」读库异常: {e}")
         return {"ok": False, "conversations": [], "error": str(e)}
 
 
@@ -407,7 +407,7 @@ async def get_conversation(account: str, conv_id: str):
         logger.info(f"[私信拉取] 账号「{account}」会话 {conv_id} 详情: name={conv['name']}, messages={len(conv['messages'])} 条")
         return {"ok": True, "conversation": conv}
     except Exception as e:
-        logger.warning(f"[私信拉取] 账号「{account}」会话详情异常: {e}")
+        logger.warning("MSG-003", f"[私信拉取] 账号「{account}」会话详情异常: {e}")
         return {"ok": False, "conversation": {}}
 
 
@@ -626,7 +626,7 @@ async def send_dm(body: SendDmRequest):
         return {"ok": False, "error": errors.get(first), "channel": first}
 
     # 首次失败 → 自动回退备用通道
-    logger.warning(
+    logger.warning("SEND-001", 
         f"[send][{body.account}] {first.upper()} 通道失败（{errors.get(first)}），"
         f"自动回退 {second.upper()} 通道")
     try:
@@ -732,7 +732,7 @@ async def refresh_conversations(account: str, body: RefreshConvsRequest | None =
         def _do_refresh():
             launched = ensure_daemons_for(account)
             if use_browser and not launched.get("browser"):
-                logger.warning(f"[refresh][{account}] browser_daemon 未拉起，昵称关联可能失效")
+                logger.warning("CAP-001", f"[refresh][{account}] browser_daemon 未拉起，昵称关联可能失效")
             return capture_all(account, with_browser=use_browser)
 
         loop = asyncio.get_running_loop()
@@ -746,7 +746,7 @@ async def refresh_conversations(account: str, body: RefreshConvsRequest | None =
             "elapsed": elapsed,
         }
     except Exception as e:
-        logger.warning(f"[refresh][{account}] 更新会话失败: {e}")
+        logger.warning("CAP-002", f"[refresh][{account}] 更新会话失败: {e}")
         return {
             "ok": False,
             "error": str(e),

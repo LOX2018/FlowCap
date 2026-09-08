@@ -190,7 +190,7 @@ def get_uid(name: str, force: bool = False,
         # conv_id 中，视为**陈旧/不可信**，不写入缓存、不返回（返回 None 让
         # 调用方走兜底），并告警。这样陈旧值不会污染后续 300s。
         if uid and not _uid_consistent_with_history(name, uid):
-            logger.warning(
+            logger.warning("AUTH-050", 
                 f"[uid-probe] 账号「{name}」探活 uid={uid} 与该账号历史会话"
                 f"不一致 —— 判为陈旧/不可信，不缓存（真实 uid 以 conv_id 为准）")
             return None
@@ -199,7 +199,7 @@ def get_uid(name: str, force: bool = False,
         if uid:
             logger.info(f"[uid-probe] 账号「{name}」uid={uid}（已缓存 {UID_TTL_OK:.0f}s）")
         else:
-            logger.warning(
+            logger.warning("AUTH-051", 
                 f"[uid-probe] 账号「{name}」探活失败（{UID_TTL_FAIL:.0f}s 内不再重试）")
         return uid
     finally:

@@ -157,7 +157,7 @@ async def _ensure_window_visible(context):
             except Exception:
                 pass
     except Exception as e:
-        logger.warning(f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
+        logger.warning("BCC-035", f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
 
 
 def _ensure_window_visible_sync(context):
@@ -191,7 +191,7 @@ def _ensure_window_visible_sync(context):
             except Exception:
                 pass
     except Exception as e:
-        logger.warning(f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
+        logger.warning("BCC-036", f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
 
 # ---------- 代理支持（2026-09-06 借鉴 OpenBrowser per-env proxy 设计）----------
 #
@@ -219,16 +219,30 @@ def parse_proxy_env(env_path):
     与"代理配置错误不应导致账号完全不可用"的容错策略一致。
     """
     try:
-        if not env_path or not os.path.isfile(env_path):
+        if not env_path:
             return None, None  # 无 .env 不算错（静默无代理）
+        # 会员体系（v0.37.0）：会员空间内 .env 加密存 <path>.enc，
+        # 经 member_ctx.parse_env_dict 解密读；外部路径沿用逐行读。
         from urllib.parse import urlparse
         val = None
-        with open(env_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("DY_PROXY="):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    break
+        _dec = None
+        try:
+            from services import member_ctx
+            if member_ctx.is_member_env(env_path):
+                _dec = member_ctx.parse_env_dict(env_path)
+        except Exception:
+            _dec = None
+        if _dec is not None:
+            val = (_dec.get("DY_PROXY") or "").strip().strip('"').strip("'") or None
+        else:
+            if not os.path.isfile(env_path):
+                return None, None
+            with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("DY_PROXY="):
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
         if not val:
             return None, None
         u = urlparse(val)
@@ -365,7 +379,7 @@ def _launch_args_with_proxy(cfg, account=None):
         if env_path:
             proxy_url, err = parse_proxy_env(env_path)
             if err:
-                logger.warning(f"[vbrowser] 账号 {account} {err}（按无代理继续）")
+                logger.warning("BCC-037", f"[vbrowser] 账号 {account} {err}（按无代理继续）")
     else:
         # 兼容：调用方未传 account 时看全局 cfg.DY_PROXY（可全局兜底配置）
         proxy_url = (getattr(cfg, "DY_PROXY", "") or "").strip() or None
@@ -379,7 +393,7 @@ def _launch_args_with_proxy(cfg, account=None):
         _sys_proxy = _dead_system_proxy_arg()
         if _sys_proxy:
             args.append(_sys_proxy)
-            logger.warning(
+            logger.warning("BCC-038", 
                 "[vbrowser] 账号未配 DY_PROXY，但检测到 Windows 系统代理指向已死端口"
                 "——本次启动加 --no-proxy-server 直连（不动系统设置）")
     pw_proxy = None
@@ -465,7 +479,7 @@ def app_root():
         try:
             if os.path.isdir(_ov):
                 return os.path.abspath(_ov)
-            logger.warning(f"[vbrowser] DY_APP_ROOT 指向的目录不存在，忽略: {_ov}")
+            logger.warning("BCC-039", f"[vbrowser] DY_APP_ROOT 指向的目录不存在，忽略: {_ov}")
         except Exception:
             pass
     if getattr(sys, "frozen", False):
@@ -473,9 +487,14 @@ def app_root():
         # 应用根解析：Tauri sidecar 常被放在 <root>/binaries/ 子目录（或类似 bin/），
         # 而随附资源（vb_chromium / vb_profile_* / .env / logs）在 <root> 下。
         # 若 exe 父目录名为 binaries/bin，则上溯一级作为应用根。
+        # 2026-09-08 onedir：exe 在 <root>/binaries/<full>/ 下（目录名含 triple，
+        # 非 binaries/bin）→ 须上溯两级；先探测父目录是否 binaries/bin。
         parent = os.path.dirname(exe_dir)
         if os.path.basename(exe_dir).lower() in ("binaries", "bin"):
             root_candidates = [parent, exe_dir]
+        elif os.path.basename(parent).lower() in ("binaries", "bin"):
+            # onedir：exe_dir=<root>/binaries/<full>/，parent=<root>/binaries/
+            root_candidates = [os.path.dirname(parent), exe_dir, parent]
         else:
             root_candidates = [exe_dir, parent]
         for cand in root_candidates:
@@ -487,6 +506,9 @@ def app_root():
             res_dir = os.path.join(cand, "resources")
             if os.path.isdir(os.path.join(res_dir, "vb_chromium")):
                 return res_dir
+        # 再退：上溯到 binaries/bin 的上一级（onydri/onefile 通用，无 vb_chromium 时）
+        if os.path.basename(parent).lower() in ("binaries", "bin"):
+            return os.path.dirname(parent)
         # 退化返回 exe 所在目录，让上层报明确的"找不到"错误
         return exe_dir
     # 本文件: <root>/backend/vbrowser.py -> 向上两级(backend 的上一级) = <root>
@@ -525,14 +547,14 @@ def launch_vb_env(env_id, api_base="http://localhost:9000", timeout=30):
         )
         data = resp.json()
     except Exception as e:
-        logger.warning(f"[vbrowser] 调用启动 API 失败（服务未启动？）: {e}")
+        logger.warning("BCC-040", f"[vbrowser] 调用启动 API 失败（服务未启动？）: {e}")
         return None
     if not data.get("success"):
-        logger.warning(f"[vbrowser] 启动环境失败: {data}")
+        logger.warning("BCC-041", f"[vbrowser] 启动环境失败: {data}")
         return None
     port = (data.get("data") or {}).get("debuggingPort")
     if not port:
-        logger.warning(f"[vbrowser] 响应缺少 debuggingPort: {data}")
+        logger.warning("BCC-042", f"[vbrowser] 响应缺少 debuggingPort: {data}")
         return None
     logger.info(f"[vbrowser] 环境 {env_id} 已启动，CDP 端口={port}")
     return int(port)

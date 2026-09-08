@@ -103,7 +103,7 @@ class DispatchCenter:
             except asyncio.QueueEmpty:
                 break
         self.pending.clear()
-        logger.warning("[调度] 硬停止：已清空待发队列，不再发送任何私信")
+        logger.warning("SEND-002", "[调度] 硬停止：已清空待发队列，不再发送任何私信")
 
     def stop_soft(self) -> None:
         """软停止：停止接收新目标，但保留已入队的延迟私信继续发完。"""
@@ -270,7 +270,7 @@ class DispatchCenter:
                     try:
                         await self.on_idle() if asyncio.iscoroutinefunction(self.on_idle) else self.on_idle()
                     except Exception as e:
-                        logger.warning(f"[调度] on_idle 异常: {e}")
+                        logger.warning("SEND-003", f"[调度] on_idle 异常: {e}")
                     self.on_idle = None
                 continue
 
@@ -280,7 +280,7 @@ class DispatchCenter:
                 await asyncio.sleep(item.send_at - now)
 
             if self._stopped or self._clear_queue:
-                logger.warning(f"[调度] 停止中，丢弃待发私信「{item.target.get('nickname')}」")
+                logger.warning("SEND-004", f"[调度] 停止中，丢弃待发私信「{item.target.get('nickname')}」")
                 continue
 
             await self._do_send(item.key, item.target)
@@ -301,7 +301,7 @@ class DispatchCenter:
             try:
                 content = self.pick_dm_message()
             except Exception as e:
-                logger.warning(f"[调度] pick_dm_message 异常: {e}")
+                logger.warning("SEND-005", f"[调度] pick_dm_message 异常: {e}")
                 content = ""
 
         try:
@@ -323,10 +323,10 @@ class DispatchCenter:
                     else:
                         ok, reason = False, (_r.error or "调度器拒绝入池")
                         _routed = True
-                        logger.warning(
+                        logger.warning("SEND-006", 
                             f"[调度] 私信未入池（账号={_acct} 目标={_uid}）: {reason}")
                 except Exception as _e:
-                    logger.warning(f"[调度] dm_dispatch 接入失败，回退直发: {_e}")
+                    logger.warning("SEND-007", f"[调度] dm_dispatch 接入失败，回退直发: {_e}")
             if not _routed:
                 ok, reason = await send_target_async(self.auth, target, content)
         except Exception as e:
@@ -362,7 +362,7 @@ class DispatchCenter:
             # 发送失败不计入 sent，但必须从 pending 移除，
             # 否则 wait_done（软停止等存量）会永久卡在 STOPPING（pending 永不空）。
             self.pending.pop(key, None)
-            logger.warning(
+            logger.warning("SEND-008", 
                 f"[私信发送结果] 目标「{target.get('nickname')}」=失败\n"
                 f"   原因: {reason}\n"
                 f"   文案: {content!r}"

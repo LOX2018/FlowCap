@@ -1927,7 +1927,7 @@ class DouyinAPI:
             try:
                 page = DouyinAPI.get_conversation_list(auth, conversation_short_id=cursor)
             except Exception as e:
-                logger.warning(f"[im] 分页拉取会话列表第 {_+1} 页失败: {e}")
+                logger.warning("AUTH-022", f"[im] 分页拉取会话列表第 {_+1} 页失败: {e}")
                 break
             if not page:
                 break
@@ -2086,7 +2086,7 @@ class DouyinAPI:
         )
         data = json.loads(resp.text)
         if data.get("status_code") != 0:
-            logger.warning(f"[im] get_im_user_info uid={uid} status={data.get('status_code')}")
+            logger.warning("AUTH-023", f"[im] get_im_user_info uid={uid} status={data.get('status_code')}")
             return {}
         items = data.get("data") or []
         if not items:
@@ -2116,11 +2116,11 @@ class DouyinAPI:
         """
         # 文案为空防护：抖音对空消息会返回 OK 但实际未发送（被截断的根因之一）
         if not content or not str(content).strip():
-            logger.error("[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
+            logger.error("AUTH-024", "[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
             return False, "文案为空，拒绝发送"
         # 私信文案长度受限：超长会被平台截断/静默丢弃，先本地拦截
         if len(str(content)) > 500:
-            logger.warning(f"[私信] 文案长度 {len(str(content))} 超过 500 字，可能被平台截断，仅前 500 字发送")
+            logger.warning("AUTH-025", f"[私信] 文案长度 {len(str(content))} 超过 500 字，可能被平台截断，仅前 500 字发送")
         url = 'https://imapi.douyin.com/v1/message/send'
         # IM 私有网关靠 protobuf body 内签名鉴权，不叠加 bd-ticket-guard-* HTTP 头
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
@@ -2143,7 +2143,7 @@ class DouyinAPI:
         resp = requests.post(url, params=params, headers=headers.get(), verify=False, cookies=auth.cookie,
                              data=requestProto.SerializeToString())
         if resp.status_code != 200:
-            logger.error(f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}')
+            logger.error("AUTH-026", f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}')
             return False, f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}'
         responseProto = ResponseProto.Response()
         try:
@@ -2156,13 +2156,13 @@ class DouyinAPI:
                 import json as _json
                 _j = _json.loads(resp.content.decode("utf-8", "replace"))
                 _dec = _j.get("decision") or _j.get("message") or str(_j)[:80]
-                logger.error(
+                logger.error("AUTH-027", 
                     f"私信发送被抖音拒绝（JSON 响应）：decision={_dec} | "
                     f"full={str(_j)[:200]}")
                 return False, f"抖音拒绝发送：{_dec}（风控/限流，建议冷却后重试）"
             except Exception:
                 pass
-            logger.error(f'私信发送响应 protobuf 解析失败: {e} | raw[:120]={resp.content[:120]!r}')
+            logger.error("AUTH-028", f'私信发送响应 protobuf 解析失败: {e} | raw[:120]={resp.content[:120]!r}')
             return False, f'响应用户解析失败: {e}'
         resp_json = protobuf_to_dict(responseProto)
         success = resp_json.get('message') == 'OK'
@@ -2170,7 +2170,7 @@ class DouyinAPI:
             logger.info(f'私信发送成功 conversation_id={conversation_id}')
             return True, 'ok'
         detail = DouyinAPI._classify_send_fail(resp_json)
-        logger.error(f'私信发送失败 conversation_id={conversation_id} resp_json={resp_json}')
+        logger.error("AUTH-029", f'私信发送失败 conversation_id={conversation_id} resp_json={resp_json}')
         return False, detail
 
     @staticmethod

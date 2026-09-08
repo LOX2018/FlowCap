@@ -151,6 +151,6 @@ async def resolve_live(body: ResolveRequest):
         data["live_id"] = live_id
         set_kv_json("config", data)
     except Exception as e:
-        logger.warning(f"[resolve] 配置落盘失败（不影响本次解析）: {e}")
+        logger.warning("LIVE-001", f"[resolve] 配置落盘失败（不影响本次解析）: {e}")
 
     return {"ok": True, "liveId": live_id, "liveUrl": raw}

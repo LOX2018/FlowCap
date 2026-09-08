@@ -139,6 +139,26 @@ fn list_daemons(state: tauri::State<'_, AppState>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 把前端启动诊断日志写入文件（排查用；写入 exe 同目录 logs/frontend_boot.log）
+#[tauri::command]
+fn write_boot_log(text: String) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "无法获取 exe 目录".to_string())?;
+    let logs = dir.join("logs");
+    std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
+    let path = logs.join("frontend_boot.log");
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    writeln!(f, "{}", text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -199,6 +219,7 @@ pub fn run() {
             start_recv_daemon,
             stop_recv_daemon,
             list_daemons,
+            write_boot_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

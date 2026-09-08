@@ -20,6 +20,8 @@ import TasksPage from "./pages/tasks";
 import SettingsPage from "./pages/settings";
 import LogsPage from "./pages/logs";
 import SelfCheckModal, { SelfCheckItem } from "./components/SelfCheckModal";
+import MemberGate from "./components/MemberGate";
+import { memberApi, getMemberToken } from "./api/client";
 
 type TabId = (typeof TABS)[number][0];
 
@@ -29,11 +31,15 @@ function Header({
   setTab,
   overview,
   ready,
+  memberName,
+  onLogout,
 }: {
   tab: string;
   setTab: (t: string) => void;
   overview: Overview | null | undefined;
   ready: boolean;
+  memberName?: string;
+  onLogout?: () => void;
 }) {
   const ov = overview || ({} as Partial<Overview>);
   const running = !!ov.running;
@@ -75,6 +81,16 @@ function Header({
           <Dot c={bd.alive ? "ok" : "danger"} pulse={bd.alive} /> 凭证守护{" "}
           <b>{bd.alive ? (bd.signReady ? "已就绪" : "登录中") : "离线"}</b>
         </span>
+        {memberName && (
+          <span className="badge-conn member-badge" title="当前会员">
+            <Dot c="ok" /> {memberName}
+          </span>
+        )}
+        {onLogout && (
+          <button className="btn member-logout" onClick={onLogout} title="退出登录">
+            退出
+          </button>
+        )}
         <span className="badge-conn">
           <Dot c={rd.alive ? "ok" : "danger"} pulse={rd.alive} /> 私信守护{" "}
           <b>{rd.alive ? "在线" : "离线"}</b>
@@ -95,7 +111,12 @@ function Header({
 
 /** 启动闪屏：双击 exe 后窗口立即出现品牌页，后端引擎就绪（overview 首帧数据到达）
  *  才滑入主界面，把 PyInstaller 后端冷启动的 ~3s 变成有进度的等待，而不是白屏/未连接。 */
-function BootSplash() {
+function BootSplash({ onSkip }: { onSkip?: () => void }) {
+  const [showSkip, setShowSkip] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setShowSkip(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
   return (
     <div
       style={{
@@ -130,11 +151,84 @@ function BootSplash() {
       <div style={{ fontSize: 16, fontWeight: 600 }}>抖音数据控制台</div>
       <div className="spinner" style={{ marginTop: 4 }} />
       <div style={{ color: "var(--muted)", fontSize: 12.5 }}>正在唤醒后端引擎并准备数据…</div>
+      {showSkip && onSkip && (
+        <button className="btn" onClick={onSkip} style={{ marginTop: 8, fontSize: 12.5 }}>
+          等待过久？点此直接进入
+        </button>
+      )}
     </div>
   );
 }
 
 export default function App() {
+  // ===== 会员门禁（v0.37.0）：未登录不渲染任何业务 UI =====
+  // 启动诊断：每次渲染打印门状态（写文件，便于脱离 DevTools 核查）
+  useEffect(() => {
+    try {
+      const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      if (w) {
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("write_boot_log", {
+            text: `[render] memberName=${memberName} memberChecked=${memberChecked} prealigned=${prealigned} ready=${ready} overviewEverOk=${overviewEverOk}`,
+          }).catch(() => {});
+        });
+      }
+    } catch { /* ignore */ }
+  });
+  const [memberName, setMemberName] = useState<string | null>(null);
+  const [memberChecked, setMemberChecked] = useState(false);
+  // 启动预对齐门（2026-09-08 用户要求）：后端+守护全部就绪才放行登录框，
+  // 登录后立即能用 —— 消灭「登录了还要等对齐」的体验断层。
+  const [prealigned, setPrealigned] = useState(false);
+  const [overviewEverOk, setOverviewEverOk] = useState(false);
+
+  // 启动预对齐轮询（1.5s）：等 /api/ready 的 daemons_ready=true
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      if (prealigned || memberName) return; // 已对齐/已登录：停止轮询，杜绝状态回退
+      const r = await api.getReadyGate();
+      if (!alive) return;
+      if (r.daemons_ready) { setPrealigned(true); return; }
+      setTimeout(poll, 1500);
+    };
+    poll();
+    return () => { alive = false; };
+  }, [prealigned, memberName]);
+
+  // 会话有效性轮询（30s）：token 失效（后端重启/过期）自动回登录页
+  // 2026-09-08 修复：原实现无 try/catch —— memberApi.state() 在 backend 刚起、
+  // 网络未通时抛错，memberChecked 永远停在 false，主界面/登录框被全屏
+  // BootSplash 永久盖住（用户体感「一直显示正在唤醒后端引擎」）。
+  // 改为：失败重试（1.5s），最长 20s 兜底放行登录框。
+  useEffect(() => {
+    let alive = true;
+    const started = Date.now();
+    const check = async () => {
+      try {
+        if (!getMemberToken()) {
+          if (alive) { setMemberName(null); setMemberChecked(true); }
+          return;
+        }
+        const s = await memberApi.state();
+        if (!alive) return;
+        if (s.loggedIn && s.username) setMemberName(s.username);
+        else { setMemberName(null); setMemberChecked(true); }
+      } catch {
+        if (!alive) return;
+        if (Date.now() - started < 20000) {
+          setTimeout(check, 1500);
+        } else {
+          setMemberName(null);
+          setMemberChecked(true);
+        }
+      }
+    };
+    check();
+    const t = setInterval(check, 30000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
   const [tab, setTabState] = useState<TabId>(() => {
     try {
       return (localStorage.getItem("dy:tab") as TabId) || "overview";
@@ -152,9 +246,36 @@ export default function App() {
   // overview 3s 轮询（替代旧版 setInterval；Tauri 模式首次触发 ensureBackendReady）
   const { data: overview, isSuccess: ready } = useQuery({
     queryKey: ["overview"],
-    queryFn: api.getOverview,
+    queryFn: async () => {
+      try {
+        const r = await api.getOverview();
+        try {
+          const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+          if (w) {
+            import("@tauri-apps/api/core").then(({ invoke }) => {
+              invoke("write_boot_log", { text: "[overview.OK] " + JSON.stringify(r).slice(0, 300) }).catch(() => {});
+            });
+          }
+        } catch { /* ignore */ }
+        return r;
+      } catch (e) {
+        try {
+          const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+          if (w) {
+            import("@tauri-apps/api/core").then(({ invoke }) => {
+              invoke("write_boot_log", { text: `[overview.ERROR] ${String(e)}` }).catch(() => {});
+            });
+          }
+        } catch { /* ignore */ }
+        throw e;
+      }
+    },
     refetchInterval: 3000,
   });
+
+  useEffect(() => {
+    if (ready && !overviewEverOk) setOverviewEverOk(true);
+  }, [ready, overviewEverOk]);
 
   // ===== 共享数据常驻轮询（「前端启动拉一次、后端数据一直热着」）=====
   // App 永不卸载，这些查询一直订阅刷缓存；各页面用相同 key 读缓存，
@@ -271,10 +392,30 @@ export default function App() {
     setMsgAcct,
   }; 
 
+  // ===== 会员门禁 + 启动预对齐门（2026-09-08）：对齐完成才显示登录框 =====
+  if (!memberName) {
+    // 预对齐未完成才盖闪屏；已完成则必须放行登录框（不再受 ready 影响）
+    if (!prealigned) return <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />;
+    return memberChecked ? (
+      <MemberGate onLogin={(u) => { setMemberName(u); setPrealigned(true); }} />
+    ) : (
+      <BootSplash onSkip={() => setMemberChecked(true)} />
+    );
+  }
+
   return (
     <div className="app">
-      {!ready && <BootSplash />}
-      <Header tab={tab} setTab={setTab} overview={overview} ready={ready} />
+      {/* 2026-09-08：登录后不再用全屏闪屏盖住主界面。
+          原逻辑 `!ready && <BootSplash />` 在 overview 首帧未到（最多 3s）或查询
+          偶发失败时会把主界面整个盖住，用户体感「登录后一直转圈不消失」。
+          改为：仅当 overview 从未成功过（首次）才盖；之后主界面直接呈现，
+          连接状态由 Header 徽章表达（不阻塞操作）。 */}
+      {/* 登录后不再用全屏闪屏阻塞：ready 依赖 overview（需登录态），
+          未登录时必然 401 → 闪屏盖住 → 无法登录的死循环。
+          连接状态改由 Header 徽章实时表达。 */}
+      <Header tab={tab} setTab={setTab} overview={overview} ready={ready}
+        memberName={memberName}
+        onLogout={async () => { await memberApi.logout(); setMemberName(null); }} />
       <main className="main">
         <AnimatePresence mode="wait">
           <motion.div

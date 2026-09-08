@@ -420,7 +420,7 @@ def build_signed_url(auth, oid: str):
             params=params, headers=headers, cookies=auth.cookie,
             data=json.dumps(body_obj, separators=(",", ":")), verify=False, timeout=30)
         if resp.status_code != 200:
-            logger.warning(f"[img-send] ⑤ batch_build_image HTTP {resp.status_code}")
+            logger.warning("SEND-019", f"[img-send] ⑤ batch_build_image HTTP {resp.status_code}")
             return None
         packs = ((resp.json().get("data") or {}).get("pack_results") or [])
         urls = (packs[0].get("UrlList") or []) if packs else []
@@ -429,7 +429,7 @@ def build_signed_url(auth, oid: str):
             logger.info(f"[img-send] ⑤ 拿到签名 URL: {url[:80]}…")
         return url
     except Exception as e:
-        logger.warning(f"[img-send] ⑤ batch_build_image 失败（忽略）: {e}")
+        logger.warning("SEND-020", f"[img-send] ⑤ batch_build_image 失败（忽略）: {e}")
         return None
 
 
@@ -528,7 +528,7 @@ def send_image_message(auth, conversation_id: str, conversation_short_id: int,
         return True, "ok"
     from dy_apis.douyin_api import DouyinAPI
     detail = DouyinAPI._classify_send_fail(resp_json)
-    logger.error(f"[img-send] ⑥ 发送失败 conversation_id={conversation_id} "
+    logger.error("SEND-021", f"[img-send] ⑥ 发送失败 conversation_id={conversation_id} "
                  f"resp_json={resp_json}")
     return False, detail
 
@@ -548,7 +548,7 @@ def _image_size(data: bytes, filename: str = "") -> tuple:
         with PILImage.open(io.BytesIO(data)) as im:
             return im.width, im.height
     except Exception as e:
-        logger.warning(f"[img-send] 读取图片尺寸失败（退化 800x600）: {e}")
+        logger.warning("SEND-022", f"[img-send] 读取图片尺寸失败（退化 800x600）: {e}")
         return 800, 600
 
 
@@ -588,7 +588,7 @@ def send_image(auth, peer_id: int, image_data: bytes,
     upload_to_tos(addr, image_data)                     # ③
     enc = commit_upload(auth, cfg, addr["session_key"])  # ④
     if enc["source_md5"] and enc["source_md5"] != md5:
-        logger.warning(f"[img-send] ④ SourceMd5({enc['source_md5']}) 与本地 md5({md5}) "
+        logger.warning("SEND-023", f"[img-send] ④ SourceMd5({enc['source_md5']}) 与本地 md5({md5}) "
                        f"不一致，以本地为准")
     ok, detail = send_image_message(                    # ⑥
         auth, conversation_id, short_id, ticket,

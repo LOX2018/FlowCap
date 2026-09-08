@@ -16,18 +16,150 @@ import { ensureBackendReady, BACKEND_BASE } from "./sidecar";
 // 后端地址：Tauri 模式与浏览器模式都用 127.0.0.1:8000
 const BASE = BACKEND_BASE;
 
+// ===== 会员体系（v0.37.0）：token 管理 =====
+const MEMBER_TOKEN_KEY = "dy_member_token";
+export function getMemberToken(): string {
+  try {
+    return localStorage.getItem(MEMBER_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+export function setMemberToken(t: string) {
+  try {
+    if (t) localStorage.setItem(MEMBER_TOKEN_KEY, t);
+    else localStorage.removeItem(MEMBER_TOKEN_KEY);
+  } catch { /* ignore */ }
+}
+
+/** 启动就绪度（免鉴权）：前端 BootSplash 轮询，等 daemons_ready 才放行。 */
+// ===== 启动诊断日志（2026-09-08 排查用）：写 localStorage，可从 DevTools 或
+//      Rust 侧读取；同时也 console 输出，便于 webview 控制台查看 =====
+function _diag(msg: string, data?: unknown) {
+  try {
+    const line = `[${new Date().toISOString()}] ${msg}` + (data !== undefined ? ` :: ${JSON.stringify(data)}` : "");
+    const key = "dy:bootlog";
+    const prev = localStorage.getItem(key) || "";
+    localStorage.setItem(key, (prev + String.fromCharCode(10) + line).slice(-20000));
+    console.log("[BOOT]" + line);
+    // 同步写文件（经 Rust 命令），便于脱离 DevTools 直接核查
+    try {
+      const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      if (w) {
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("write_boot_log", { text: line }).catch(() => {});
+        });
+      }
+    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+}
+export function getBootLog(): string {
+  try { return localStorage.getItem("dy:bootlog") || ""; } catch { return ""; }
+}
+
+export async function getReadyGate(): Promise<{ ok: boolean; daemons_ready: boolean; accounts: number }> {
+  try {
+    _diag("ready.fetch.start", { base: BASE });
+    const r = await fetch(`${BASE}/api/ready`, { method: "GET" });
+    _diag("ready.fetch.done", { status: r.status, ok: r.ok });
+    if (!r.ok) return { ok: false, daemons_ready: false, accounts: 0 };
+    const j = (await r.json()) as { ok: boolean; daemons_ready: boolean; accounts: number };
+    _diag("ready.json", j);
+    return j;
+  } catch (e) {
+    _diag("ready.fetch.error", { err: String(e) });
+    return { ok: false, daemons_ready: false, accounts: 0 };
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  // 首次请求前确保 backend sidecar 已就绪（Tauri 模式自动拉起，浏览器模式 no-op）
-  await ensureBackendReady();
+  // 首次请求前确保 backend sidecar 已就绪（Tauri 模式自动拉起，浏览器模式 no-op）。
+  // 2026-09-08 修复：ensureBackendReady() 在 backend 未就绪时会 throw
+  // （waitBackendReady 超时/探测失败），导致首个请求（overview）被 reject 成
+  // 「Failed to fetch」，而 ready 恒 false → BootSplash 永不消失。
+  // 就绪等待只是优化，失败不应阻断请求本身 —— 降级为直接发起，由 fetch 结果说话。
+  try {
+    await ensureBackendReady();
+  } catch {
+    // 忽略就绪等待失败，继续发请求
+  }
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const tk = getMemberToken();
+  if (tk) headers["X-Member-Token"] = tk;
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...init,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    // 401 = 会话过期：清除本地 token（UI 层据 state 轮询回到登录页）
+    if (res.status === 401 && !path.startsWith("/api/member/")) {
+      setMemberToken("");
+    }
     throw new Error(`API ${path} 失败 (${res.status}): ${text}`);
   }
   return res.json() as Promise<T>;
+}
+
+// ===== 会员 API（v0.37.0）=====
+
+export interface MemberState {
+  loggedIn: boolean;
+  username?: string;
+  memberId?: string;
+}
+
+export interface LoginResult {
+  ok: boolean;
+  token: string;
+  memberId: string;
+  username: string;
+}
+
+export const memberApi = {
+  async state(): Promise<MemberState> {
+    try {
+      return await request<MemberState>("/api/member/state");
+    } catch {
+      return { loggedIn: false };
+    }
+  },
+  async login(username: string, password: string): Promise<LoginResult> {
+    const r = await request<LoginResult>("/api/member/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    setMemberToken(r.token);
+    return r;
+  },
+  async register(username: string, password: string): Promise<{ ok: boolean; memberId: string }> {
+    return request("/api/member/register", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+  },
+  async logout(): Promise<void> {
+    try {
+      await request("/api/member/logout", { method: "POST" });
+    } finally {
+      setMemberToken("");
+    }
+  },
+  async changePassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+    return request("/api/member/change-password", {
+      method: "POST",
+      body: JSON.stringify({ oldPassword, newPassword }),
+    });
+  },
+  async list(): Promise<{ members: { memberId: string; username: string; createdAt: string }[] }> {
+    return request("/api/member/list");
+  },
+  async delete(memberId: string, password: string): Promise<{ ok: boolean }> {
+    return request("/api/member/delete", {
+      method: "POST",
+      body: JSON.stringify({ memberId, password }),
+    });
+  },
 }
 
 // ===== 协议类型（待 openapi-typescript 生成替换）=====
@@ -56,6 +188,9 @@ export interface Overview {
 // ===== API 客户端 =====
 
 export const api = {
+  // ===== 启动就绪度（免鉴权，BootSplash 预对齐轮询用） =====
+  getReadyGate,
+
   // ===== overview =====
   async getBackendStatus(): Promise<BackendStatus> {
     return request("/api/status");

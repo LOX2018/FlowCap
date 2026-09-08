@@ -29,15 +29,38 @@ from loguru import logger
 from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
 
 _ROOT = app_root()  # DY_Spider_base（源码态）/ exe 所在目录（打包态，随附资源根）
-_ACCOUNTS_DIR = os.path.join(_ROOT, "auto_dm", "accounts")
+
+# 会员体系（v0.37.0）：登录后账号目录切到会员数据空间
+# <app_root>/members/<member_id>/auto_dm/accounts，各会员完全隔离；
+# 未登录时保持原路径（老数据兼容）。当前会员身份由 DY_MEMBER 环境变量
+# （backend 登录后注入）或运行时上下文提供。
+def _member_accounts_dir():
+    try:
+        from services import member_ctx
+        d = member_ctx.accounts_root()
+        if d:
+            return d
+    except Exception:
+        pass
+    return None
+
+_MEMBER_ACC_DIR = _member_accounts_dir()
+_ACCOUNTS_DIR = _MEMBER_ACC_DIR or os.path.join(_ROOT, "auto_dm", "accounts")
 _INDEX_PATH = os.path.join(_ACCOUNTS_DIR, "accounts.json")
+
+def _accounts_dir() -> str:
+    """每次调用动态解析账号根目录（会员登录后切到会员数据空间）。"""
+    d = _member_accounts_dir()
+    if d:
+        return d
+    return _ACCOUNTS_DIR
 
 # 探活结果缓存（避免频繁请求）：name -> (ts, ok, info)
 _status_cache = {}
 
 
 def _ensure_dirs():
-    os.makedirs(_ACCOUNTS_DIR, exist_ok=True)
+    os.makedirs(_accounts_dir(), exist_ok=True)
 
 
 def _load_index():
@@ -56,14 +79,14 @@ def _load_index():
         idx = {"current": None, "accounts": {}}
 
     # 归一化：旧版可能把 rel 存成 "accounts/<name>/.env"（带前缀），
-    # 与 _ACCOUNTS_DIR 拼接会变成双重 accounts 前缀。这里归一化为 "<name>/.env"，
+    # 与 _accounts_dir() 拼接会变成双重 accounts 前缀。这里归一化为 "<name>/.env"，
     # 并把旧错误路径下已生成的 .env 文件迁移到正确位置。
     fixed = False
     for name, rel in list(idx.get("accounts", {}).items()):
         if rel.startswith("accounts/") or rel.startswith("accounts\\"):
             clean_rel = rel[len("accounts/"):] if rel.startswith("accounts/") else rel[len("accounts\\"):]
-            bad_path = os.path.join(_ACCOUNTS_DIR, rel)
-            good_path = os.path.join(_ACCOUNTS_DIR, clean_rel)
+            bad_path = os.path.join(_accounts_dir(), rel)
+            good_path = os.path.join(_accounts_dir(), clean_rel)
             if os.path.exists(bad_path) and not os.path.exists(good_path):
                 os.makedirs(os.path.dirname(good_path), exist_ok=True)
                 try:
@@ -73,7 +96,7 @@ def _load_index():
                 # 清理旧的双重前缀目录
                 try:
                     bad_dir = os.path.dirname(bad_path)
-                    if bad_dir.startswith(_ACCOUNTS_DIR) and os.path.isdir(bad_dir):
+                    if bad_dir.startswith(_accounts_dir()) and os.path.isdir(bad_dir):
                         import shutil
                         shutil.rmtree(bad_dir, ignore_errors=True)
                 except Exception:
@@ -94,7 +117,7 @@ def _save_index(idx):
         from database import set_kv_json
         set_kv_json("accounts_index", idx)
     except Exception as e:
-        logger.warning(f"[accounts] 保存账号索引失败: {e}")
+        logger.warning("ACC-006", f"[accounts] 保存账号索引失败: {e}")
 
 
 def list_accounts():
@@ -105,7 +128,7 @@ def list_accounts():
     idx = _load_index()
     out = []
     for name, rel in idx.get("accounts", {}).items():
-        out.append((name, os.path.join(_ACCOUNTS_DIR, rel)))
+        out.append((name, os.path.join(_accounts_dir(), rel)))
     return out
 
 
@@ -125,7 +148,7 @@ def current_env_path():
     rel = idx.get("accounts", {}).get(name)
     if not rel:
         return None
-    return os.path.join(_ACCOUNTS_DIR, rel)
+    return os.path.join(_accounts_dir(), rel)
 
 
 def _env_path_of(name):
@@ -133,7 +156,7 @@ def _env_path_of(name):
     rel = idx.get("accounts", {}).get(name)
     if not rel:
         return None
-    return os.path.join(_ACCOUNTS_DIR, rel)
+    return os.path.join(_accounts_dir(), rel)
 
 
 def env_path_of(name):
@@ -223,11 +246,14 @@ _bcc_lazy_lock = threading.Lock()
 _bcc_lazy_spawned: set[str] = set()
 
 
-def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45) -> dict:
+def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
+               skip_cooldown: bool = False) -> dict:
     """确保该账号的 BCC 正在运行；不在则拉起并等端口就绪（懒加载）。
 
     消费者（WP 发送 / 更新会话 / 昵称捕获）在调用 BCC 接口前先调本函数。
     已运行 -> 直接返回；未运行 -> spawn 后轮询端口（onefile 冷启动 ~15s）。
+    skip_cooldown=True：豁免启动冷静期（预对齐路径专用——启动时主动拉齐
+    BCC 正是冷静期当初要防的「快闪唤醒」的有意形式，非误触发）。
     返回 {"ok": bool, "port": int|None, "msg": str}。
     """
     name = name or current_name()
@@ -239,25 +265,37 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45) -> dict:
     # （getAccounts/凭证校验/update_account）充分时间完成，期间只读不拉
     # 进程；30s 后才接受懒加载。
     # 同时也覆盖环境变量 DY_BCC_LAZY_DELAY（秒），便于测试 / 紧急回退。
-    try:
-        _delay = int(os.environ.get("DY_BCC_LAZY_DELAY", "30"))
-    except Exception:
-        _delay = 30
-    if _delay > 0:
-        from datetime import datetime as _dt
-        _elapsed = (_dt.now() - _PROCESS_START_TS).total_seconds()
-        if _elapsed < _delay:
-            logger.debug(f"[bcc-lazy] 启动冷静期（{_elapsed:.1f}s/{_delay}s）跳过 BCC 懒加载")
-            return {"ok": False, "port": None,
-                    "msg": f"启动冷静期（{_delay}s）内不自动拉 BCC，请稍后再试"}
+    # 2026-09-08：预对齐路径（启动即拉齐守护，skip_cooldown=True）豁免——
+    # 该路径是用户明确要求「登录前对齐」的实现，不是误触发。
+    if not skip_cooldown:
+        try:
+            _delay = int(os.environ.get("DY_BCC_LAZY_DELAY", "30"))
+        except Exception:
+            _delay = 30
+        if _delay > 0:
+            from datetime import datetime as _dt
+            _elapsed = (_dt.now() - _PROCESS_START_TS).total_seconds()
+            if _elapsed < _delay:
+                logger.debug(f"[bcc-lazy] 启动冷静期（{_elapsed:.1f}s/{_delay}s）跳过 BCC 懒加载")
+                return {"ok": False, "port": None,
+                        "msg": f"启动冷静期（{_delay}s）内不自动拉 BCC，请稍后再试"}
     with _bcc_lazy_lock:
         # 双检：等锁期间可能已被并发拉起
         if _port_open(port, timeout=0.3):
             return {"ok": True, "port": port, "msg": "已在运行"}
         binary = os.path.join(_ROOT, "binaries",
+                              "dyautodm-browser-daemon-x86_64-pc-windows-msvc",
                               "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
+        # onedir 目录形态（免解压）优先；不存在回退 onefile 单文件
         if not os.path.isfile(binary):
-            # 打包根随 app_root：源码态=项目根/src-tauri/binaries
+            binary = os.path.join(_ROOT, "binaries",
+                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
+        if not os.path.isfile(binary):
+            # 打包根随 app_root：源码态=项目根/src-tauri/binaries（同样 onedir 优先）
+            binary = os.path.join(_ROOT, "src-tauri", "binaries",
+                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc",
+                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
+        if not os.path.isfile(binary):
             binary = os.path.join(_ROOT, "src-tauri", "binaries",
                                   "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
         if not os.path.isfile(binary):
@@ -271,6 +309,18 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45) -> dict:
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
             }
+            # 会员体系（v0.37.0）：子进程继承会员空间（DY_MEMBER）与主密钥（DY_MEMBER_KEY）
+            _menv = {k: v for k, v in os.environ.items() if k.startswith("DY_") or k in ("PYTHONPATH", "SYSTEMROOT", "TEMP", "TMP", "COMPUTERNAME", "USERPROFILE")}
+            try:
+                from services import member_ctx as _mctx
+                if _mctx.current():
+                    _menv["DY_MEMBER"] = _mctx.current_member_id() or ""
+                    _mk = _mctx.master_key()
+                    if _mk:
+                        _menv["DY_MEMBER_KEY"] = _mk
+            except Exception:
+                pass
+            kwargs["env"] = _menv
             if platform.system() == "Windows":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
@@ -396,7 +446,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                         _uid_mismatch = not any(
                             _uid_s in str(r[0]).split(":") for r in _rows)
                         if _uid_mismatch:
-                            logger.error(
+                            logger.error("ACC-007", 
                                 f"[verify] 账号 {name} uid 漂移：探活 uid={uid} "
                                 f"不存在于该账号 {len(_rows)} 条历史会话中，"
                                 f"凭证身份存疑（疑似身份被轮换/替换）。")
@@ -485,7 +535,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 " 捕获成功后凭证将写回 .env 并交守护进程保活。原始判定：" + _old_label
             )
         except Exception as e:
-            logger.warning(f"[verify] 账号 {name} 自动重捕触发失败: {e}")
+            logger.warning("ACC-008", f"[verify] 账号 {name} 自动重捕触发失败: {e}")
 
     # ---- 私信引擎校验（只校验「私信守护」有效性，不做列表捕获）----
     # 2026-08-29 收敛（用户要求）：引擎校验 = 校验守护凭证(wp) + 私信守护有效性(dm)。
@@ -646,8 +696,8 @@ def add_account(name):
     idx = _load_index()
     if name in idx.get("accounts", {}):
         raise ValueError(f"账号已存在: {name}")
-    rel = os.path.join(name, ".env")   # 相对 _ACCOUNTS_DIR，避免与 _ACCOUNTS_DIR 拼接出双重前缀
-    env_path = os.path.join(_ACCOUNTS_DIR, name, ".env")
+    rel = os.path.join(name, ".env")   # 相对 _accounts_dir()，避免与 _accounts_dir() 拼接出双重前缀
+    env_path = os.path.join(_accounts_dir(), name, ".env")
     os.makedirs(os.path.dirname(env_path), exist_ok=True)
     # 创建完全空的 .env（不预置任何凭证内容，仅扫码后才会写入）
     if not os.path.exists(env_path):
@@ -692,7 +742,7 @@ def clear_credentials_of(env_path):
             os.environ.pop(k, None)
         return _strip_credential_lines(env_path)
     except Exception as e:
-        logger.warning(f"[账号] 清空凭证失败 {env_path}: {e}")
+        logger.warning("ACC-009", f"[账号] 清空凭证失败 {env_path}: {e}")
         return False
 
 
@@ -756,7 +806,7 @@ def remove_account(name):
     if name not in idx.get("accounts", {}):
         raise ValueError(f"账号不存在: {name}")
     rel = idx["accounts"].pop(name)
-    env_path = os.path.join(_ACCOUNTS_DIR, rel)
+    env_path = os.path.join(_accounts_dir(), rel)
     try:
         if os.path.isdir(os.path.dirname(env_path)):
             import shutil
@@ -777,10 +827,17 @@ def _read_status(env_path):
     其他账号环境变量（否则空 .env 的账号会误读到上一个账号的 DY_COOKIES/TICKET，
     导致跨账号 UID 重复、凭证误判）。
     """
-    if not os.path.exists(env_path):
+    # 会员体系（v0.37.0）：会员空间内经解密视图读（.enc 加密文件也算存在）
+    _exists = os.path.exists(env_path)
+    _enc_exists = os.path.exists(env_path + ".enc") if env_path else False
+    if not _exists and not _enc_exists:
         return {"exists": False, "has_ticket": False, "has_private_key": False,
                 "has_cookie": False, "has_web_protect": False}
-    vals = dotenv_values(env_path)
+    try:
+        from services import member_ctx
+        vals = member_ctx.parse_env_dict(env_path)
+    except ImportError:
+        vals = dotenv_values(env_path)
     ticket = vals.get("DY_TICKET")
     pkey = vals.get("DY_PRIVATE_KEY")
     cookie = vals.get("DY_COOKIES")
@@ -813,9 +870,22 @@ def credentials_complete(env_path):
 
     返回 (complete: bool, reason: str)。
     """
-    if not env_path or not os.path.exists(env_path):
+    # 会员体系（v0.37.0）：会员空间内支持加密 .enc（经解密视图读）
+    _exists = os.path.exists(env_path) if env_path else False
+    if env_path and not _exists:
+        try:
+            from services import member_ctx
+            if member_ctx.is_member_env(env_path):
+                _exists = os.path.exists(env_path + ".enc")
+        except Exception:
+            pass
+    if not env_path or not _exists:
         return False, "账号 .env 不存在（请先新增账号并扫码）"
-    vals = dotenv_values(env_path)
+    try:
+        from services import member_ctx
+        vals = member_ctx.parse_env_dict(env_path)
+    except ImportError:
+        vals = dotenv_values(env_path)
     cookie = vals.get("DY_COOKIES") or ""
     ticket = vals.get("DY_TICKET")
     ts_sign = vals.get("DY_TS_SIGN")
@@ -984,7 +1054,7 @@ def auto_recapture(name: str = None, landing_url: str = "https://www.douyin.com/
         t = threading.Thread(target=_do_auto_recapture, args=(name, landing_url), daemon=True)
         t.start()
     except Exception as e:
-        logger.warning(f"[recap] 账号 {name} 发起自动重捕获失败: {e}")
+        logger.warning("ACC-010", f"[recap] 账号 {name} 发起自动重捕获失败: {e}")
 
 
 def _do_auto_recapture(name: str, landing_url: str):
@@ -998,7 +1068,7 @@ def _do_auto_recapture(name: str, landing_url: str):
             from api.accounts import _quit_browser_daemon
             _quit_browser_daemon(name)
         except Exception as e:
-            logger.warning(f"[recap] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
+            logger.warning("ACC-011", f"[recap] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
         from auth_helper import enrich_auth
         env_path = env_path_of(name)
         logger.info(f"[recap] 账号 {name} 私信凭证失效，自动拉起指纹浏览器重新捕获（{landing_url}）")
@@ -1007,7 +1077,7 @@ def _do_auto_recapture(name: str, landing_url: str):
         logger.success(f"[recap] 账号 {name} 自动重新捕获完成")
     except Exception as e:
         st["error"] = str(e)
-        logger.error(f"[recap] 账号 {name} 自动重新捕获异常: {e}")
+        logger.error("ACC-012", f"[recap] 账号 {name} 自动重新捕获异常: {e}")
     finally:
         st["running"] = False
 
@@ -1066,7 +1136,7 @@ def _do_recapture_from_profile(name: str, landing_url: str):
             from api.accounts import _quit_browser_daemon
             _quit_browser_daemon(name)
         except Exception as e:
-            logger.warning(f"[recap-profile] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
+            logger.warning("ACC-013", f"[recap-profile] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
         from dy_apis.login_api import DYLoginApi
         from dy_apis.login_api import RiskControlError as _RC
         env_path = env_path_of(name)
@@ -1079,13 +1149,13 @@ def _do_recapture_from_profile(name: str, landing_url: str):
         except _RC as _rc:
             # 风控/验证码污染：浏览器保持打开，明确提示用户在指纹浏览器处理验证码
             st["error"] = str(_rc)
-            logger.warning(
+            logger.warning("ACC-014", 
                 f"[recap-profile] 账号 {name} 读取被风控验证页污染，已拒绝写盘，"
                 f"指纹浏览器保持打开请手动处理验证码: {_rc}")
             return
         except Exception as e:
             st["error"] = str(e)
-            logger.error(f"[recap-profile] 账号 {name} 从 profile 读取凭证失败: {e}")
+            logger.error("ACC-015", f"[recap-profile] 账号 {name} 从 profile 读取凭证失败: {e}")
             return
         # 确认 clean 后才写盘
         DYLoginApi().save_credential(auth, env_path=env_path)
@@ -1093,6 +1163,6 @@ def _do_recapture_from_profile(name: str, landing_url: str):
         logger.success(f"[recap-profile] 账号 {name} 已从持久化 profile 读取并写回有效凭证")
     except Exception as e:
         st["error"] = str(e)
-        logger.error(f"[recap-profile] 账号 {name} 重读异常: {e}")
+        logger.error("ACC-016", f"[recap-profile] 账号 {name} 重读异常: {e}")
     finally:
         st["running"] = False

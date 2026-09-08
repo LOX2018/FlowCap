@@ -18,7 +18,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { PageProps } from "../api/client";
 import { openExternal } from "../utils/openExternal";
 import { Avatar, Dot, Pill, TABS, hue, tick } from "../components/ui";
-import { startBrowserDaemonReady, stopBrowserDaemon, startRecvDaemon, stopRecvDaemon } from "../api/sidecar";
+import { stopBrowserDaemon, stopRecvDaemon } from "../api/sidecar";
 
 // ===== 类型定义 =====
 
@@ -447,7 +447,16 @@ export default function AccountsPage(props: PageProps) {
     // 启动（等待 BCC /status 就绪后再置真，避免 alive=false 期间调用方撞“容器未启动”）
     push("正在启动凭证守护（BCC），等待浏览器就绪…");
     api.addLog("INFO", `正在启动凭证守护 · ${a.name}（等待 BCC 就绪）`).catch(() => {});
-    startBrowserDaemonReady(a.name, a.browserDaemonPort || 0)
+    // 会员体系（v0.37.0）：改走 backend /ensure-bcc（backend 进程内 spawn 自带
+    // DY_MEMBER/DY_MEMBER_KEY 环境变量；Rust 直 spawn 不带会员环境，BCC 无法解密凭证）
+    fetch(`http://127.0.0.1:8000/api/accounts/${encodeURIComponent(a.name)}/ensure-bcc`, {
+      method: "POST",
+      headers: { "X-Member-Token": (window.localStorage.getItem("dy_member_token") || "") },
+    })
+      .then((r) => r.json())
+      .then((st) => {
+        if (!st.ok) throw new Error(st.msg || "BCC 启动失败");
+      })
       .then(() => {
         qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
           (old || []).map((x) => (x.name === a.name ? { ...x, browserDaemonAlive: true } : x)),
@@ -511,7 +520,15 @@ export default function AccountsPage(props: PageProps) {
         });
       return;
     }
-    startRecvDaemon([a.name], a.recvDaemonPort || 0)
+    // 会员体系（v0.37.0）：改走 backend /ensure-recv（进程内 spawn 自带会员环境）
+    fetch(`http://127.0.0.1:8000/api/accounts/${encodeURIComponent(a.name)}/ensure-recv`, {
+      method: "POST",
+      headers: { "X-Member-Token": (window.localStorage.getItem("dy_member_token") || "") },
+    })
+      .then((r) => r.json())
+      .then((st) => {
+        if (!st.ok) throw new Error(st.msg || "私信守护启动失败");
+      })
       .then(() => {
         qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
           (old || []).map((x) => (x.name === a.name ? { ...x, recvDaemonAlive: true } : x)),

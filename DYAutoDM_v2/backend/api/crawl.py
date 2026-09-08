@@ -167,7 +167,7 @@ async def _save_history(account: str, kind: str, keyword: str, target: str,
              json.dumps(items, ensure_ascii=False), time.time()),
         )
     except Exception as e:
-        logger.warning(f"[crawl] 采集历史落库失败（不影响本次结果）: {e}")
+        logger.warning("CRAWL-001", f"[crawl] 采集历史落库失败（不影响本次结果）: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ async def crawl_search(body: CrawlSearchRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[crawl] 搜索失败 account={body.account} q={q}: {e}")
+        logger.error("CRAWL-002", f"[crawl] 搜索失败 account={body.account} q={q}: {e}")
         raise HTTPException(502, f"搜索失败: {e}") from e
 
     await _save_history(body.account, body.kind, q, "", items)
@@ -246,7 +246,7 @@ async def crawl_comments(body: CrawlCommentsRequest):
     try:
         raw = await asyncio.to_thread(_fetch)
     except Exception as e:
-        logger.error(f"[crawl] 评论采集失败 account={body.account} aweme={aweme_id}: {e}")
+        logger.error("CRAWL-003", f"[crawl] 评论采集失败 account={body.account} aweme={aweme_id}: {e}")
         raise HTTPException(502, f"评论采集失败: {e}") from e
 
     items = [_map_comment(c) for c in raw]
@@ -279,7 +279,7 @@ async def crawl_dm(body: CrawlDmRequest):
     try:
         ok, reason = await asyncio.to_thread(send_by_uid, auth, uid, text)
     except Exception as e:
-        logger.error(f"[crawl] 私信发送异常 account={body.account} uid={uid}: {e}")
+        logger.error("CRAWL-004", f"[crawl] 私信发送异常 account={body.account} uid={uid}: {e}")
         raise HTTPException(502, f"私信发送异常: {e}") from e
 
     logger.info(f"[crawl] 私信发送 account={body.account} uid={uid} ok={ok} reason={reason}")
@@ -336,7 +336,7 @@ async def crawl_batch(body: CrawlBatchRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[crawl] 批量评论采集失败 account={body.account} aweme={aweme_id}: {e}")
+        logger.error("CRAWL-005", f"[crawl] 批量评论采集失败 account={body.account} aweme={aweme_id}: {e}")
         raise HTTPException(502, f"评论采集失败: {e}") from e
 
     # 提取候选（uid 非空 + 关键词筛选）

@@ -191,7 +191,7 @@ def _do_scan(name: str):
         st["loggedIn"] = bool(getattr(auth, "cookie", None))
         st["done"] = True
     except Exception as e:
-        logger.error(f"[scan] 账号 {name} 扫码异常: {e}")
+        logger.error("ACC-001", f"[scan] 账号 {name} 扫码异常: {e}")
         st["error"] = str(e)
         st["done"] = True
     finally:
@@ -218,7 +218,7 @@ def _do_open_browser(name: str):
                                      url="https://www.douyin.com/", account=name))
         st["done"] = True
     except Exception as e:
-        logger.error(f"[open-browser] 账号 {name} 打开指纹浏览器异常: {e}")
+        logger.error("BCC-001", f"[open-browser] 账号 {name} 打开指纹浏览器异常: {e}")
         st["error"] = str(e)
         st["done"] = True
     finally:
@@ -389,7 +389,7 @@ async def self_check(request: Request):
             entry["ok"] = bool(verify.get("ok"))
             entry["autoFixTriggered"] = bool(verify.get("auto_fix_triggered"))
         except Exception as e:  # 单账号校验异常不阻断其他账号
-            logger.error(f"[self-check] 账号 {name} 校验异常: {e}")
+            logger.error("ACC-002", f"[self-check] 账号 {name} 校验异常: {e}")
             entry["wp"] = {"level": "error", "label": "校验异常"}
             entry["dm"] = {"level": "error", "label": "校验异常"}
         return entry
@@ -435,7 +435,7 @@ async def check_account(name: str) -> dict:
         )
         return {"ok": True, "verify": verify}
     except Exception as e:
-        logger.error(f"[check] 账号 {name} 校验异常: {e}")
+        logger.error("ACC-003", f"[check] 账号 {name} 校验异常: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -469,7 +469,7 @@ def _quit_browser_daemon(name: str) -> bool:
             )
             urllib.request.urlopen(req, timeout=3)
         except Exception as e:
-            logger.warning(f"[open-browser] 停止守护 {name} 失败（可能已退出）: {e}")
+            logger.warning("BCC-002", f"[open-browser] 停止守护 {name} 失败（可能已退出）: {e}")
         # 等待 profile 锁释放（Chromium 退出需要一点时间）
         time.sleep(1.5)
         return True
@@ -478,7 +478,7 @@ def _quit_browser_daemon(name: str) -> bool:
     if profile:
         killed = _kill_profile_holders(profile)
         if killed:
-            logger.warning(
+            logger.warning("BCC-003", 
                 f"[open-browser] 账号 {name} 发现并清理 {killed} 个持有 "
                 f"profile 的孤儿浏览器进程（端口 {bport} 已死但锁未释放）"
             )
@@ -538,8 +538,39 @@ def _kill_profile_holders(profile: str) -> int:
                 except Exception:
                     continue
     except Exception as e:
-        logger.warning(f"[open-browser] 清理孤儿 profile 持有进程失败: {e}")
+        logger.warning("BCC-004", f"[open-browser] 清理孤儿 profile 持有进程失败: {e}")
     return killed
+
+
+@router.post("/{name}/ensure-bcc")
+async def ensure_bcc_ep(name: str):
+    """确保该账号 BCC 运行（会员体系 v0.37.0 前端入口）。
+
+    前端账号管理页「启动凭证守护」改走本端点：backend 进程内 spawn 的
+    BCC 自带 DY_MEMBER/DY_MEMBER_KEY 环境变量，能解密会员空间内的
+    加密凭证；Rust 直 spawn 不带会员环境，会因主密钥不可用而失败。
+    幂等：已在运行直接返回 ok。
+    """
+    try:
+        st = acct_core.ensure_bcc(name, wait_ready=True, timeout=60)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "msg": f"BCC 拉起异常: {e}"}
+    return {"ok": bool(st.get("ok")), "port": st.get("port"), "msg": st.get("msg", "")}
+
+
+@router.post("/{name}/ensure-recv")
+async def ensure_recv_ep(name: str):
+    """确保该账号 recv_daemon 运行（会员体系 v0.37.0 前端入口）。
+
+    同 ensure-bcc：backend 进程内 spawn 自带会员环境变量。
+    """
+    from auto_dm.daemon_launcher import ensure_daemons_for
+    try:
+        r = ensure_daemons_for(name, wait=True)
+        ok = bool(r.get("recv"))
+        return {"ok": ok, "msg": "私信守护已就绪" if ok else "私信守护拉起失败，请查看日志"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "msg": f"私信守护拉起异常: {e}"}
 
 
 @router.post("/{name}/open-browser")
@@ -616,7 +647,7 @@ async def add_account(body: AddAccountRequest):
         acct_core.add_account(body.name)
         return {"ok": True, "name": body.name}
     except ValueError as e:
-        logger.warning(f"[accounts] add_account 失败: {e}")
+        logger.warning("ACC-004", f"[accounts] add_account 失败: {e}")
         return {"ok": False, "error": str(e), "name": body.name}
 
 
@@ -626,7 +657,7 @@ async def remove_account(name: str):
         acct_core.remove_account(name)
         return {"ok": True, "name": name}
     except ValueError as e:
-        logger.warning(f"[accounts] remove_account 失败: {e}")
+        logger.warning("ACC-005", f"[accounts] remove_account 失败: {e}")
         return {"ok": False, "error": str(e), "name": name}
 
 

@@ -152,7 +152,7 @@ async def kb_import_upload(file: UploadFile):
     except kb_import.ImportError_ as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        logger.warning(f"[ai-kb-import] 解析异常: {e}")
+        logger.warning("AI-001", f"[ai-kb-import] 解析异常: {e}")
         raise HTTPException(500, f"解析失败: {e}")
     finally:
         try:
@@ -198,9 +198,9 @@ def _rebuild_sem_cache_bg() -> None:
             if r.get("ok"):
                 logger.info(f"[ai] 语义缓存已重建: {r.get('embedded')}/{r.get('total')}")
             else:
-                logger.warning(f"[ai] 语义缓存重建失败: {r.get('error')}")
+                logger.warning("AI-002", f"[ai] 语义缓存重建失败: {r.get('error')}")
         except Exception as e:
-            logger.warning(f"[ai] 语义缓存重建异常: {e}")
+            logger.warning("AI-003", f"[ai] 语义缓存重建异常: {e}")
     import threading
     threading.Thread(target=_run, daemon=True, name="ai-sem-cache").start()
 

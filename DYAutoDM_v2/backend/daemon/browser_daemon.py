@@ -328,7 +328,7 @@ class BrowserContainer:
         try:
             await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=20000)
         except Exception as e:
-            logger.warning(f"[bcc] 打开 chat 页失败（不阻塞，后续接口自愈）: {e}")
+            logger.warning("BCC-005", f"[bcc] 打开 chat 页失败（不阻塞，后续接口自愈）: {e}")
 
     async def _ensure_alive(self) -> None:
         """context/page 失活时重启。在 _lock 内调用。"""
@@ -340,7 +340,7 @@ class BrowserContainer:
                 self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
             await self._page.evaluate("1")
         except Exception as e:
-            logger.warning(f"[bcc] context/page 失活，重启: {e}")
+            logger.warning("BCC-006", f"[bcc] context/page 失活，重启: {e}")
             try:
                 if self._backend == "exe" and self._context is not None:
                     await self._context.close()
@@ -436,7 +436,7 @@ class BrowserContainer:
                 try:
                     result = await self._page.evaluate(js)
                 except Exception as e:
-                    logger.warning(f"[bcc] 批量查昵称 evaluate 失败: {e}")
+                    logger.warning("BCC-007", f"[bcc] 批量查昵称 evaluate 失败: {e}")
                     continue
                 items = (result or {}).get("data") or []
                 for u in items:
@@ -494,7 +494,7 @@ class BrowserContainer:
                     result = await self._page.evaluate(js)
                     logger.info(f"[bcc] 批量查昵称(uid) 响应: {str(result)[:500]}")
                 except Exception as e:
-                    logger.warning(f"[bcc] 批量查昵称(uid) evaluate 失败: {e}")
+                    logger.warning("BCC-008", f"[bcc] 批量查昵称(uid) evaluate 失败: {e}")
                     continue
                 items = (result or {}).get("data") or []
                 for u in items:
@@ -627,11 +627,11 @@ class BrowserContainer:
             if isinstance(res, dict) and res.get("ok"):
                 logger.info(f"[bcc] wp_send_text 成功(DOM) -> {peer_name}: {text[:20]}")
             else:
-                logger.warning(f"[bcc] wp_send_text 失败: "
+                logger.warning("BCC-009", f"[bcc] wp_send_text 失败: "
                                f"{res.get('error') if isinstance(res, dict) else res}")
             return res if isinstance(res, dict) else {"ok": False, "error": str(res)}
         except Exception as e:
-            logger.warning(f"[bcc] wp_send_text 失败: {e}")
+            logger.warning("BCC-010", f"[bcc] wp_send_text 失败: {e}")
             return {"ok": False, "error": str(e)}
 
 
@@ -763,7 +763,7 @@ class BrowserContainer:
                 cap = await self._page.evaluate(
                     "() => window.__CAP_USERINFO__ ? window.__CAP_USERINFO__.map : {}")
             except Exception as e:
-                logger.warning(f"[bcc] 读取 hook 结果失败: {e}")
+                logger.warning("BCC-011", f"[bcc] 读取 hook 结果失败: {e}")
                 cap = {}
             cap = cap or {}
             # 写入进程内缓存（供后续 /capture_userinfo 直接命中，
@@ -797,7 +797,7 @@ class BrowserContainer:
                 await self._page.evaluate(
                     "() => { if (window.__CAP_WP_MESSAGE__) window.__CAP_WP_MESSAGE__.events = []; }")
             except Exception as e:
-                logger.warning(f"[bcc] 读 wp message 失败: {e}")
+                logger.warning("BCC-012", f"[bcc] 读 wp message 失败: {e}")
                 return []
             evs = evs or []
             if evs:
@@ -836,7 +836,7 @@ class BrowserContainer:
                     page = await self._context.new_page()
                     self._nav_page = page
             except Exception as e:
-                logger.warning(f"[bcc] 导航 tab 创建失败（退回主 page）: {e}")
+                logger.warning("BCC-013", f"[bcc] 导航 tab 创建失败（退回主 page）: {e}")
                 page = self._page
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -975,7 +975,7 @@ class BrowserContainer:
                     if _fallback_uid and _uid_ok(self.account, _fallback_uid):
                         return _fallback_uid
                     if _fallback_uid:
-                        logger.warning(
+                        logger.warning("BCC-014", 
                             f"[bcc] 账号「{self.account}」裸探活 uid={_fallback_uid} "
                             f"与历史会话不一致，判为不可信（拒绝返回）")
                     return None
@@ -1061,7 +1061,7 @@ class BrowserContainer:
                 new_uid = None
             BrowserContainer._uid_probe_cache = (now_ts, new_uid)
         if not new_uid:
-            logger.warning(
+            logger.warning("BCC-015", 
                 f"[bcc] 拒绝写入 .env：新 cookie 探活失败（无 uid），"
                 f"保留既有凭证。疑似 profile 登录态失效，请重新扫码。")
             return {"ok": False, "msg": "新 cookie 探活失败（登录态无效），已保留原凭证"}
@@ -1074,7 +1074,7 @@ class BrowserContainer:
         try:
             from services.uid_probe import _uid_consistent_with_history as _uid_ok
             if not _uid_ok(self.account, new_uid):
-                logger.error(
+                logger.error("BCC-016", 
                     f"[bcc] 拒绝写入 .env：探活 uid={new_uid} 与该账号「{self.account}」"
                     f"历史会话不一致（幽灵 uid，0 命中）。profile 登录态疑似"
                     f"失效/残留他人凭证，请重新扫码登录本账号。")
@@ -1093,7 +1093,7 @@ class BrowserContainer:
         # 不受 keepalive 漂移检测影响，两条链路互不干扰。
         old_uid = getattr(self, "_uid_at_last_env_write", None)
         if old_uid and str(old_uid) != str(new_uid):
-            logger.error(
+            logger.error("BCC-017", 
                 f"[bcc] 拒绝写入 .env：uid 漂移！old={old_uid} new={new_uid}。"
                 f"疑似账号身份被轮换/替换，保留既有凭证并告警。")
             return {"ok": False,
@@ -1104,7 +1104,7 @@ class BrowserContainer:
         try:
             DYLoginApi().save_credential(auth, env_path)
         except Exception as e:
-            logger.warning(f"[bcc] 写回 .env 失败: {e}")
+            logger.warning("BCC-018", f"[bcc] 写回 .env 失败: {e}")
         self._last_refresh = time.time()
         self._last_uid = new_uid
         # 2026-09-06 全局治理：独立基线，只在成功写入 .env 时更新（见上方门禁 2 注释）
@@ -1147,7 +1147,7 @@ class BrowserContainer:
                 prev_uid = getattr(self, "_last_uid", None)
                 if uid and prev_uid and str(uid) != str(prev_uid):
                     # uid 漂移：身份被替换/轮换，凭证不可信
-                    logger.error(
+                    logger.error("BCC-019", 
                         f"[bcc] uid 漂移！old={prev_uid} new={uid}，"
                         f"凭证身份存疑，触发自动刷新…")
                     self._last_uid = uid  # 记录新值，后续漂移检测以新值为基线
@@ -1158,7 +1158,7 @@ class BrowserContainer:
                             fut.result(timeout=120)
                             scan_fail_count = 0
                         except Exception as e:
-                            logger.warning(f"[bcc] uid 漂移后自动刷新失败: {e}")
+                            logger.warning("BCC-020", f"[bcc] uid 漂移后自动刷新失败: {e}")
                             scan_fail_count += 1
                 elif uid:
                     # 2026-09-06 P1：uid 探活通过 ≠ 页面登录态有效。
@@ -1169,13 +1169,13 @@ class BrowserContainer:
                         if in_breaker:
                             # 熔断中：只告警，绝不重启浏览器（防风控恶性循环）
                             remain = int(breaker_until - now)
-                            logger.warning(
+                            logger.warning("BCC-021", 
                                 f"[bcc] 页面仍需重激活（conv={page_state.get('conv')}），"
                                 f"scan_login 已熔断（连续失败 {scan_fail_count} 次），"
                                 f"{remain // 60} 分钟内不再自动重启浏览器，"
                                 f"请在指纹浏览器完成扫码登录")
                             continue
-                        logger.warning(
+                        logger.warning("BCC-022", 
                             f"[bcc] 页面级登录态失效（conv={page_state.get('conv')} "
                             f"rel={page_state.get('rel')}），uid={uid} 仍有效但页面需重新激活，"
                             f"触发 scan_login…")
@@ -1186,11 +1186,11 @@ class BrowserContainer:
                                 fut.result(timeout=120)
                                 scan_fail_count = 0
                             except Exception as e:
-                                logger.warning(f"[bcc] 页面重激活失败: {e}")
+                                logger.warning("BCC-023", f"[bcc] 页面重激活失败: {e}")
                                 scan_fail_count += 1
                             if scan_fail_count >= SCAN_BREAKER_LIMIT:
                                 breaker_until = time.time() + SCAN_BACKOFF_SEC
-                                logger.error(
+                                logger.error("BCC-024", 
                                     f"[bcc] scan_login 连续失败 {scan_fail_count} 次，"
                                     f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟。"
                                     f"session 疑似服务端已失效，自动登录救不回，"
@@ -1233,7 +1233,7 @@ class BrowserContainer:
                             except Exception as e:
                                 logger.debug(f"[bcc] 保活回写失败（不影响运行）: {e}")
                 else:
-                    logger.warning("[bcc] 登录态失效，自动刷新凭证…")
+                    logger.warning("BCC-025", "[bcc] 登录态失效，自动刷新凭证…")
                     # 在子线程调 async scan_login：投递到主 loop
                     if self._loop and not in_breaker:
                         fut = asyncio.run_coroutine_threadsafe(
@@ -1241,9 +1241,9 @@ class BrowserContainer:
                         try:
                             fut.result(timeout=120)
                         except Exception as e:
-                            logger.warning(f"[bcc] 自动刷新凭证失败: {e}")
+                            logger.warning("BCC-026", f"[bcc] 自动刷新凭证失败: {e}")
             except Exception as e:
-                logger.warning(f"[bcc] 探活异常: {e}")
+                logger.warning("BCC-027", f"[bcc] 探活异常: {e}")
         logger.info("[bcc] 保活心跳退出")
 
 
@@ -1279,7 +1279,7 @@ async def _startup() -> None:
     try:
         await container.start()
     except Exception as e:
-        logger.error(f"[bcc] 浏览器容器启动失败（后续接口会自愈）: {e}")
+        logger.error("BCC-028", f"[bcc] 浏览器容器启动失败（后续接口会自愈）: {e}")
     # 保活心跳（后台线程）
     stop_ev = threading.Event()
     _state["keepalive_stop"] = stop_ev
@@ -1309,7 +1309,7 @@ async def _startup() -> None:
             data = fut.result(timeout=300)
             logger.info(f"[bcc] 昵称缓存预热完成：{len(data)} 个")
         except Exception as e:
-            logger.warning(f"[bcc] 昵称缓存预热失败（不影响功能）: {e}")
+            logger.warning("BCC-029", f"[bcc] 昵称缓存预热失败（不影响功能）: {e}")
 
     threading.Thread(target=_prewarm, daemon=True).start()
 
@@ -1367,7 +1367,7 @@ async def capture_userinfo(body: WaitBody) -> dict:
     try:
         out = await c.capture_userinfo_map(wait=body.wait or 15)
     except Exception as e:
-        logger.warning(f"[bcc] /capture_userinfo 失败: {e}")
+        logger.warning("BCC-030", f"[bcc] /capture_userinfo 失败: {e}")
         return {"ok": False, "msg": str(e), "data": {}}
     return {"ok": True, "data": out}
 
@@ -1387,7 +1387,7 @@ async def user_info_by_uids(body: UidsBody) -> dict:
     try:
         out = await c.bulk_user_info_by_uid(body.uids)
     except Exception as e:
-        logger.warning(f"[bcc] /user_info_by_uids 失败: {e}")
+        logger.warning("BCC-031", f"[bcc] /user_info_by_uids 失败: {e}")
         return {"ok": False, "msg": str(e), "data": {}}
     return {"ok": True, "data": out}
 
@@ -1434,7 +1434,7 @@ async def exec_js(body: ExecJsBody) -> dict:
         res = await c.exec_js(body.js, body.arg, timeout=body.timeout)
         return {"ok": True, "msg": "", "result": res}
     except Exception as e:
-        logger.warning(f"[bcc] /exec_js 失败: {e}")
+        logger.warning("BCC-032", f"[bcc] /exec_js 失败: {e}")
         return {"ok": False, "msg": str(e), "result": None}
 
 
@@ -1455,7 +1455,7 @@ async def wp_messages() -> dict:
         events = await c.capture_wp_messages()
         return {"ok": True, "msg": "", "events": events, "count": len(events)}
     except Exception as e:
-        logger.warning(f"[bcc] /wp_messages 失败: {e}")
+        logger.warning("BCC-033", f"[bcc] /wp_messages 失败: {e}")
         return {"ok": False, "msg": str(e), "events": [], "count": 0}
 
 
@@ -1485,7 +1485,7 @@ async def wp_send(body: WpSendBody) -> dict:
         res = await c.wp_send_text(body.conv_id, body.text)
         return {"ok": res.get("ok", False), "msg": res.get("error", ""), "result": res}
     except Exception as e:
-        logger.warning(f"[bcc] /wp_send 失败: {e}")
+        logger.warning("BCC-034", f"[bcc] /wp_send 失败: {e}")
         return {"ok": False, "msg": str(e), "result": None}
 
 

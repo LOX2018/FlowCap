@@ -48,7 +48,7 @@ def _bcc_alive(account_name: str, timeout: float = 0.5) -> bool:
         # 账号一致性：BCC 挂的账号必须就是请求的账号
         bcc_account = str(d.get("account") or "")
         if bcc_account and bcc_account != str(account_name):
-            logger.warning(
+            logger.warning("AUTH-030", 
                 f"[bcc-client] 端口 {port} 上运行的 BCC 属于账号「{bcc_account}」"
                 f"而非「{account_name}」（端口被占用/手动启动绕过哈希），"
                 f"按未运行处理，拒绝跨账号取 cookie。")
@@ -137,7 +137,7 @@ class DYLoginApi:
                                     wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
             except Exception as e:
-                logger.warning(f"[auth] 生成初始数据：新开标签页打开私信落地页({landing_url})失败: {e}")
+                logger.warning("AUTH-031", f"[auth] 生成初始数据：新开标签页打开私信落地页({landing_url})失败: {e}")
             # 凭证读取切到私信新标签页（干净登录态上下文）；失败时退回首页标签页
             _read_page = msg_page if (msg_page is not None and not msg_page.is_closed()) else page
             keys_str = None
@@ -260,7 +260,7 @@ class DYLoginApi:
                                     wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
             except Exception as e:
-                logger.warning(f"[auth] 新开标签页打开私信落地页({landing_url})失败（将继续重试）: {e}")
+                logger.warning("AUTH-032", f"[auth] 新开标签页打开私信落地页({landing_url})失败（将继续重试）: {e}")
 
         async def _wait_sign_and_login(ctx, deadline):
             """轮询直到：① 真实登录 cookie 出现（用户已扫码）且 ② web_protect 有效。
@@ -304,7 +304,7 @@ class DYLoginApi:
                     "异常请求", "验证中心", "人机验证", "账号存在风险"))
                 if _risk_hit:
                     if not _risk_notified:
-                        logger.warning(
+                        logger.warning("AUTH-033", 
                             f"[风控] 检测到验证码/风控验证页（{_page_url}）。"
                             f"【指纹浏览器保持打开】，请在其中手动完成验证码/滑块验证，"
                             f"完成后程序将自动继续抓取凭证；无需重新扫码。")
@@ -360,7 +360,7 @@ class DYLoginApi:
                 _home_loaded = True
                 break
             except Exception as _e:
-                logger.warning(f"[auth] 打开抖音首页失败(第{_attempt+1}次): {_e}")
+                logger.warning("AUTH-034", f"[auth] 打开抖音首页失败(第{_attempt+1}次): {_e}")
                 await asyncio.sleep(2)
         if not _home_loaded:
             if _backend == "exe":
@@ -400,7 +400,7 @@ class DYLoginApi:
                 try:
                     keys_str, web_protect_str = await _wait_sign_and_login(context, time.time() + 30)
                 except TimeoutError:
-                    logger.warning("[auth] 已登录会话签名未就绪，降级为重新扫码")
+                    logger.warning("AUTH-035", "[auth] 已登录会话签名未就绪，降级为重新扫码")
                     try:
                         await page.evaluate('''() => {
                             const nodes = Array.from(document.querySelectorAll('button, span, div, a'));
@@ -478,6 +478,18 @@ class DYLoginApi:
             "DY_KEYS": getattr(auth, "keys_str", "") or "",
         }
         set_values = {k: v for k, v in values.items() if v}
+        # 会员体系（v0.37.0）：会员空间内整文件 Fernet 加密写 <path>.enc；
+        # 外部路径保持原 dotenv set_key 行为。
+        try:
+            from services import member_ctx
+            if member_ctx.is_member_env(env_file):
+                member_ctx.write_env_file(env_file, set_values, merge=True)
+                logger.debug(f"[auth] 凭证已加密写回 {env_file}.enc")
+                return os.path.abspath(env_file + ".enc")
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
         from dotenv import set_key
         for key, value in set_values.items():
             set_key(env_file, key, value, quote_mode="never")
@@ -497,12 +509,24 @@ class DYLoginApi:
         from dotenv import load_dotenv, dotenv_values
         from builder.auth import DouyinAuth
         if env_path and env_path != ".env":
-            vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
-            # 兼容：仅当文件不存在时才退回环境变量（存在但不完整以文件为准，
-            # 避免陈旧环境值覆盖刚扫码的新凭证）
-            if not os.path.exists(env_path):
-                load_dotenv(env_path, override=True)
-                vals = {}
+            # 会员体系（v0.37.0）：会员空间内 .env 是 Fernet 加密的 <path>.enc，
+            # 统一经 member_ctx.parse_env_dict 解密读取；外部路径原样 dotenv。
+            _vals_member = None
+            try:
+                from services import member_ctx
+                if member_ctx.is_member_env(env_path):
+                    _vals_member = member_ctx.parse_env_dict(env_path)
+            except Exception:
+                _vals_member = None
+            if _vals_member is not None:
+                vals = _vals_member
+            else:
+                vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
+                # 兼容：仅当文件不存在时才退回环境变量（存在但不完整以文件为准，
+                # 避免陈旧环境值覆盖刚扫码的新凭证）
+                if not os.path.exists(env_path):
+                    load_dotenv(env_path, override=True)
+                    vals = {}
         else:
             load_dotenv(override=True)
             vals = {}
@@ -573,7 +597,7 @@ class DYLoginApi:
                     auth.cookie_str = cks_str
                     logger.info(f"[auth] BCC /cookie 刷新成功（{len(auth.cookie)} 项）")
                     return True
-            logger.warning(f"[auth] BCC /cookie 返回失败: {r.get('msg', '')}，退回直开浏览器")
+            logger.warning("AUTH-036", f"[auth] BCC /cookie 返回失败: {r.get('msg', '')}，退回直开浏览器")
 
         # 后备：直开 Playwright —— 2026-09-06 起【仅 allow_launch=True】才走。
         # （BCC 未运行时默认直接沿用 .env 凭证，绝不为刷新开浏览器，见函数 docstring）
@@ -599,7 +623,7 @@ class DYLoginApi:
                     page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=20000)
                     page.wait_for_timeout(2500)
                 except Exception:
-                    logger.warning("[auth] profile 刷新 cookie：打开 chat 页失败，退回原凭证")
+                    logger.warning("AUTH-037", "[auth] profile 刷新 cookie：打开 chat 页失败，退回原凭证")
                     return False
                 cks = {}
                 for c in context.cookies():
@@ -613,7 +637,7 @@ class DYLoginApi:
                         pass
                     logger.info(f"[auth] profile 刷新 cookie 成功（{len(cks)} 项，已写回 .env）")
                     return True
-                logger.warning("[auth] profile 刷新 cookie：profile 内无登录态（无 sessionid）")
+                logger.warning("AUTH-038", "[auth] profile 刷新 cookie：profile 内无登录态（无 sessionid）")
                 return False
             finally:
                 try:
@@ -662,7 +686,7 @@ class DYLoginApi:
                 logger.info(f"[auth] BCC /user_info 批量查昵称："
                             f"{len(data)}/{len(sec_uids)} 个成功")
                 return data
-            logger.warning(f"[auth] BCC /user_info 返回失败: "
+            logger.warning("AUTH-039", f"[auth] BCC /user_info 返回失败: "
                            f"{r.get('msg', '')}，退回直开浏览器")
         # 后备：直开 Playwright（BCC 未运行时）
         from playwright.sync_api import sync_playwright
@@ -686,10 +710,10 @@ class DYLoginApi:
                 page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=25000)
                 page.wait_for_timeout(2500)
             except Exception:
-                logger.warning("[auth] 批量查昵称：打开 chat 页失败")
+                logger.warning("AUTH-040", "[auth] 批量查昵称：打开 chat 页失败")
                 return out
             if not page.url.startswith("https://www.douyin.com"):
-                logger.warning("[auth] 批量查昵称：未落在 douyin.com 域，跳过")
+                logger.warning("AUTH-041", "[auth] 批量查昵称：未落在 douyin.com 域，跳过")
                 return out
             api_url = "/aweme/v1/web/im/user/info/?device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&update_version_code=170400&version_code=170400&version_name=17.4.0&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Mozilla&browser_version=5.0&browser_online=true&os_name=Windows&os_version=10&platform=PC&downlink=10&effective_type=4g&round_trip_time=100"
             # 分批（每批 6 个），浏览器单次 fetch 批量查询
@@ -714,7 +738,7 @@ class DYLoginApi:
                 try:
                     result = page.evaluate(js)
                 except Exception as e:
-                    logger.warning(f"[auth] 批量查昵称 evaluate 失败: {e}")
+                    logger.warning("AUTH-042", f"[auth] 批量查昵称 evaluate 失败: {e}")
                     continue
                 items = (result or {}).get("data") or []
                 for u in items:
@@ -730,7 +754,7 @@ class DYLoginApi:
             logger.info(f"[auth] 浏览器批量查昵称：{len(out)}/{len(sec_uids)} 个成功")
             return out
         except Exception as e:
-            logger.warning(f"[auth] 浏览器批量查昵称失败: {e}")
+            logger.warning("AUTH-043", f"[auth] 浏览器批量查昵称失败: {e}")
             return out
         finally:
             try:
@@ -765,9 +789,9 @@ class DYLoginApi:
                         logger.info("[auth] 凭证有效，跳过扫码（私信签名来自首页 security-sdk 自动生成，无需打开私信页）")
                         return auth
                 except Exception as e:
-                    logger.warning(f"[auth] 已有凭证但校验失败，将重新扫码: {e}")
+                    logger.warning("AUTH-044", f"[auth] 已有凭证但校验失败，将重新扫码: {e}")
             elif auth.cookie and not _has_sign:
-                logger.warning("[auth] 登录 cookie 存在但私信签名缺失，将重新扫码以抓取 web_protect/keys")
+                logger.warning("AUTH-045", "[auth] 登录 cookie 存在但私信签名缺失，将重新扫码以抓取 web_protect/keys")
         else:
             logger.info("[auth] 强制重新扫码（忽略现有凭证）…")
         logger.info("[auth] 打开浏览器扫码登录…")
@@ -780,7 +804,7 @@ class DYLoginApi:
         except RiskControlError as _rc:
             # 风控/验证码拦截：本次凭证被污染或抓取中触发风控页，绝不写 .env。
             # 提示用户在指纹浏览器中手动处理验证码，期间继续监测验证码处理进度与污染状态。
-            logger.warning(f"[风控] {_rc}（指纹浏览器保持打开，请在其中手动处理验证码/滑块）")
+            logger.warning("AUTH-046", f"[风控] {_rc}（指纹浏览器保持打开，请在其中手动处理验证码/滑块）")
             raise
         # —— 写回 .env 前，先比对旧→新并生成捕获分析报告（你扫码，程序自动分析）——
         analyze_login_capture(auth, old_snap, env_path)
@@ -871,7 +895,7 @@ class DYLoginApi:
                 await msg_page.goto(landing_url, wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(3)
             except Exception as e:
-                logger.warning(f"[auth] 新开标签页打开私信落地页({landing_url})失败（将继续重试）: {e}")
+                logger.warning("AUTH-047", f"[auth] 新开标签页打开私信落地页({landing_url})失败（将继续重试）: {e}")
 
         # 首页加载（带重试一次），失败则明确报错（浏览器保持打开）
         _home_loaded = False
@@ -881,7 +905,7 @@ class DYLoginApi:
                 _home_loaded = True
                 break
             except Exception as _e:
-                logger.warning(f"[auth] 打开抖音首页失败(第{_attempt+1}次): {_e}")
+                logger.warning("AUTH-048", f"[auth] 打开抖音首页失败(第{_attempt+1}次): {_e}")
                 await asyncio.sleep(2)
         if not _home_loaded:
             if _backend == "exe":
@@ -919,7 +943,7 @@ class DYLoginApi:
                 "异常请求", "验证中心", "人机验证", "账号存在风险"))
             if _risk_hit:
                 if not _risk_notified:
-                    logger.warning(
+                    logger.warning("AUTH-049", 
                         f"[风控] 检测到验证码/风控验证页（{_page_url}）。【指纹浏览器保持打开】，"
                         f"请在其中手动完成验证码/滑块验证，完成后程序将自动继续读取凭证；"
                         f"在您验证通过、页面离开风控页之前，本程序不会关闭浏览器、也不会写入被污染的凭证。")

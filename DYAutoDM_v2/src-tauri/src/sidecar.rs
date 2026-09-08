@@ -40,25 +40,36 @@ fn target_triple() -> &'static str {
     }
 }
 
-/// 解析 sidecar 可执行文件路径：
-/// 优先用 exe 同目录的 `binaries/<name>-<triple>.exe`（发布态直接复制 exe 场景，最可靠）；
-/// 若不存在则回退到 Tauri externalBin（`sidecar()`，处理开发态 src-tauri/binaries 回退）。
+/// 解析 sidecar 可执行文件路径（onedir 免解压优先，onefile 回退）：
+/// 1) exe 同目录/binaries/<name>-<triple>/<name>-<triple>.exe（onedir 目录模式，免解压秒启）
+/// 2) exe 同目录/binaries/<name>-<triple>.exe（onefile 单文件，旧模式）
+/// 3) Tauri externalBin（`sidecar()`，开发态 src-tauri/binaries 回退）
 fn resolve_sidecar(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
-    // 1) 优先：exe 同目录/binaries/<name>-<triple>.exe（确定存在则直接用绝对路径）
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or_else(|| "无法获取 exe 所在目录".to_string())?;
-    let fname = format!("{name}-{}.exe", target_triple());
-    let cand = dir.join("binaries").join(&fname);
-    if cand.exists() {
-        return Ok(cand);
+    // PyInstaller onedir 部署目录名 = <name>-<triple>（无 .exe），目录内 exe 带 .exe
+    let stem = format!("{name}-{}", target_triple());
+    let fname = format!("{stem}.exe");
+    // 1) onedir 目录形态：binaries/<full>/<full>.exe（PyInstaller 6 onedir 默认布局）
+    //    ⚠️ 2026-09-08 实测修复：目录段必须是【不带 .exe 的 stem】，
+    //    旧写法两段都 join(fname) 拼出 "...exe\...exe" 永不命中 → 永远回退 onefile。
+    let onedir = dir.join("binaries").join(&stem).join(&fname);
+    if onedir.exists() {
+        return Ok(onedir);
     }
-    // 2) 回退：Tauri externalBin（开发态 src-tauri/binaries 回退）
+    // 2) onefile 单文件形态（旧部署）
+    let onefile = dir.join("binaries").join(&fname);
+    if onefile.exists() {
+        return Ok(onefile);
+    }
+    // 3) 回退：Tauri externalBin（开发态 src-tauri/binaries 回退）
     if app.shell().sidecar(name).is_ok() {
         return Ok(PathBuf::from(name));
     }
     Err(format!(
-        "找不到 sidecar {name}：{} 不存在，且 externalBin 不可用",
-        cand.display()
+        "找不到 sidecar {name}：{} / {} 均不存在，且 externalBin 不可用",
+        onedir.display(),
+        onefile.display()
     ))
 }
 

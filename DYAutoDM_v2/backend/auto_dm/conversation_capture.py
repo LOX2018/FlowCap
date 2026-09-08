@@ -523,7 +523,7 @@ def parse_init_protobuf(raw, my_uid):
                 _cand = [(u, c) for u, c in _cnt.items() if c >= _n * 0.9]
                 if _cand:
                     _mu = max(_cand, key=lambda x: x[1])[0]
-                    logger.warning(
+                    logger.warning("CAP-003", 
                         f"[capture] my_uid 无效({my_uid!r})，从 {_n} 个 conv_id "
                         f"自愈推断本账号 UID={_mu}（出现 {_cand[0][1]} 次）")
                     my_uid = _mu
@@ -756,12 +756,12 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20):
             data=body_bytes, verify=False, timeout=timeout,
         )
         if resp.status_code != 200 or len(resp.content) < 100:
-            logger.warning(f"[capture][301] HTTP {resp.status_code} "
+            logger.warning("CAP-004", f"[capture][301] HTTP {resp.status_code} "
                            f"len={len(resp.content)} cid={cid}")
             return []
         return parse_conversation_301(resp.content, cid, my_uid)
     except Exception as e:
-        logger.warning(f"[capture][301] 拉取失败 cid={cid}: {e}")
+        logger.warning("CAP-005", f"[capture][301] 拉取失败 cid={cid}: {e}")
         return []
 
 
@@ -790,7 +790,7 @@ def parse_conversation_301(raw, cid, my_uid):
         if isinstance(msgs, dict):
             msgs = [msgs]
     except Exception as e:
-        logger.warning(f"[capture][301] 解析失败: {e}")
+        logger.warning("CAP-006", f"[capture][301] 解析失败: {e}")
         return out
 
     for m in msgs:
@@ -1034,7 +1034,7 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None):
                 _userinfo_cache[name] = (_t.time(), data)
             return data
     except Exception as e:
-        logger.warning(f"[capture] 调 BCC /capture_userinfo 失败: {e}")
+        logger.warning("CAP-007", f"[capture] 调 BCC /capture_userinfo 失败: {e}")
     return {}
 
 
@@ -1084,7 +1084,7 @@ def capture_all(name, with_browser=True):
                 pass
         my_uid = str(auth.get_uid())
     except Exception as e:
-        logger.warning(f"[capture][{name}] 加载凭证失败: {e}")
+        logger.warning("CAP-008", f"[capture][{name}] 加载凭证失败: {e}")
         return (0, 0)
 
     # 1) 首包
@@ -1101,7 +1101,7 @@ def capture_all(name, with_browser=True):
             f"解析={_t_parse - _t_raw:.1f}s "
             f"（{len(raw):,}B -> {len(convs)} 会话）")
     except Exception as e:
-        logger.warning(f"[capture][{name}] 首包解析失败: {e}")
+        logger.warning("CAP-009", f"[capture][{name}] 首包解析失败: {e}")
         return (0, 0)
     if not convs:
         return (0, 0)
@@ -1208,14 +1208,14 @@ def capture_all(name, with_browser=True):
                         batch = need[b:b + workers]
                         for peer_uid, n, err in ex.map(_fill, batch):
                             if err:
-                                logger.warning(
+                                logger.warning("CAP-010", 
                                     f"[capture][{name}] 301 补全失败 {peer_uid}:"
                                     f" {err}")
                             else:
                                 logger.info(
                                     f"[capture][{name}] 301 补全 {peer_uid}: {n} 条")
     except Exception as e:
-        logger.warning(f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")
+        logger.warning("CAP-011", f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")
 
     # 2) 浏览器昵称（可选，单 profile 独占）
     userinfo = {}
@@ -1223,7 +1223,7 @@ def capture_all(name, with_browser=True):
         try:
             userinfo = capture_userinfo_via_browser(name)
         except Exception as e:
-            logger.warning(f"[capture][{name}] 浏览器昵称捕获失败（降级仅首包）: {e}")
+            logger.warning("CAP-012", f"[capture][{name}] 浏览器昵称捕获失败（降级仅首包）: {e}")
 
     # 3) 写库
     n_conv = 0
@@ -1386,7 +1386,7 @@ def capture_all(name, with_browser=True):
                     f"[capture][{name}] 存量订正 {_fixed} 条 "
                     f"peer_id=自己的污染会话（peer_id 已改回真实对端）")
         except Exception as e:
-            logger.warning(f"[capture][{name}] 存量污染订正失败: {e}")
+            logger.warning("CAP-013", f"[capture][{name}] 存量污染订正失败: {e}")
         # 兜底：recv_daemon 可能已写入 capture_all 首包未解析到的会话（WS 增量等，
         # 其 peer_id 是对端 UID 但 peer_name 仍是占位/自己）。用已截获的 BCC 昵称补全库内
         # 所有「peer_name 为空/等于 peer_id（数字 UID）/等于自己 UID」的会话，
@@ -1424,9 +1424,9 @@ def capture_all(name, with_browser=True):
                 conn.commit()
                 logger.info(f"[capture][{name}] 兜底补全 {_bf} 个库内会话昵称/降级")
         except Exception as e:
-            logger.warning(f"[capture][{name}] 兜底补全失败: {e}")
+            logger.warning("CAP-014", f"[capture][{name}] 兜底补全失败: {e}")
     except Exception as e:
-        logger.warning(f"[capture][{name}] 写库失败: {e}")
+        logger.warning("CAP-015", f"[capture][{name}] 写库失败: {e}")
         traceback.print_exc()
     logger.info(f"[capture][{name}] 写库完成：会话 {n_conv}（含消息 {n_msg}），"
                 f"昵称命中 uid关联={_by_uid} sec_uid关联={_by_sec} "

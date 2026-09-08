@@ -16,7 +16,7 @@ def _safe(fn_name, auth, *args, **kwargs):
     try:
         return {"ok": True, "data": getattr(DouyinAPI, fn_name)(auth, *args, **kwargs)}
     except Exception as e:
-        logger.warning(f"[feature] {fn_name} 失败: {e}")
+        logger.warning("SYS-007", f"[feature] {fn_name} 失败: {e}")
         return {"ok": False, "error": str(e)}
 
 

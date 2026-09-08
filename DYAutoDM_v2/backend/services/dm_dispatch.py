@@ -351,7 +351,7 @@ class AccountQuota:
                 dur = min(COOLDOWN_ON_FREQUENT * (2 ** (self.cooldown_level - 1)),
                           COOLDOWN_MAX)
                 self.cooldown_until = time.time() + dur
-                logger.warning(
+                logger.warning("SEND-024", 
                     f"[dm-dispatch][{self.key}] 回执命中频控 → 权重降至 "
                     f"{self._weight_unlocked():.2f}，强制冷静 {dur / 60:.0f} 分钟"
                     f"（第 {self.cooldown_level} 次，半衰期 "
@@ -484,7 +484,7 @@ class UidSink:
                  now, now))
             conn.commit()
         except Exception as e:
-            logger.warning(f"[uid-sink] 落库失败（仅内存生效）: {e}")
+            logger.warning("SEND-025", f"[uid-sink] 落库失败（仅内存生效）: {e}")
 
     def mark_seen(self, account: str, peer_uid: str, nickname: str = "",
                   source: str = "") -> None:
@@ -719,7 +719,7 @@ class DmDispatcher:
         if not peer_uid:
             msg = (f"会话整理失败：无法从 conv_id 解析真实对端 uid"
                    f"（conv_id={conv_id}）")
-            logger.warning(f"[dm-dispatch] {msg}")
+            logger.warning("SEND-026", f"[dm-dispatch] {msg}")
             if POOL_STRICT:
                 return SubmitResult(False, error=msg)
             peer_uid = ""     # 非严格模式放行，交给下游兜底
@@ -728,7 +728,7 @@ class DmDispatcher:
         my_uid = self.pool._my_uid_of(account)
         if my_uid and peer_uid == my_uid:
             msg = f"会话整理拒绝：对端 uid 等于本账号 uid（{peer_uid}），疑似污染"
-            logger.error(f"[dm-dispatch] {msg}")
+            logger.error("SEND-027", f"[dm-dispatch] {msg}")
             return SubmitResult(False, error=msg)
 
         # ②-b 【调试版专用白名单】只允许测试账号之间互发，防误发真人。
@@ -741,12 +741,12 @@ class DmDispatcher:
             if allowed is None:
                 msg = (f"[测试白名单] 账号「{account}」不在测试白名单内，"
                        f"拒绝发送（调试版只允许多测试账号互发）")
-                logger.error(f"[dm-dispatch] {msg}")
+                logger.error("SEND-028", f"[dm-dispatch] {msg}")
                 return SubmitResult(False, error=msg)
             if allowed and peer_uid not in allowed:
                 msg = (f"[测试白名单] 账号「{account}」仅允许发给 "
                        f"{sorted(allowed)}，本次目标 {peer_uid} 被拒绝")
-                logger.error(f"[dm-dispatch] {msg}")
+                logger.error("SEND-029", f"[dm-dispatch] {msg}")
                 return SubmitResult(False, error=msg)
             logger.info(f"[dm-dispatch] [测试白名单] 放行：{account} -> {peer_uid}")
 
@@ -764,7 +764,7 @@ class DmDispatcher:
             q = self.quota_of(account)
             ok_q, reason = q.can_stranger_first()
             if not ok_q:
-                logger.warning(
+                logger.warning("SEND-030", 
                     f"[dm-dispatch][{account}] 陌生人首发被限流: {reason}")
                 return SubmitResult(False, error=f"陌生人首发达限: {reason}")
             q.note_stranger_sent()      # 预占额度（失败由 _send_one 归还）
@@ -816,12 +816,12 @@ class DmDispatcher:
             allowed = _TEST_WHITELIST.get(account)
             if allowed is None:
                 msg = f"[测试白名单] 账号「{account}」不在测试白名单，拒绝发送"
-                logger.error(f"[dm-dispatch] {msg}")
+                logger.error("SEND-031", f"[dm-dispatch] {msg}")
                 return SubmitResult(False, error=msg)
             if allowed and peer_uid not in allowed:
                 msg = (f"[测试白名单] 账号「{account}」仅允许发给 "
                        f"{sorted(allowed)}，目标 {peer_uid} 被拒绝")
-                logger.error(f"[dm-dispatch] {msg}")
+                logger.error("SEND-032", f"[dm-dispatch] {msg}")
                 return SubmitResult(False, error=msg)
             logger.info(f"[dm-dispatch] [测试白名单] 放行(uid直发)："
                         f"{account} -> {peer_uid}")
@@ -843,7 +843,7 @@ class DmDispatcher:
         q = self.quota_of(account)
         ok_q, reason = q.can_stranger_first()
         if not ok_q:
-            logger.warning(
+            logger.warning("SEND-033", 
                 f"[dm-dispatch][{account}] 陌生人首发被限流(uid直发): {reason}")
             return SubmitResult(False, error=f"陌生人首发达限: {reason}")
         q.note_stranger_sent()          # 预占
@@ -906,7 +906,7 @@ class DmDispatcher:
             except Exception as e:
                 task.status = "failed"
                 task.error = str(e)
-                logger.error(f"[dm-dispatch] 发送异常 task={task.task_id}: {e}")
+                logger.error("SEND-034", f"[dm-dispatch] 发送异常 task={task.task_id}: {e}")
             finally:
                 q.task_done()
         logger.info(f"[dm-dispatch] worker 退出：{account}")
@@ -924,7 +924,7 @@ class DmDispatcher:
             task.status = "failed"
             task.error = (f"key 核对失败：task.account_key="
                           f"{task.account_key} != account={task.account}")
-            logger.error(f"[dm-dispatch] {task.error}，已拒绝发送")
+            logger.error("SEND-035", f"[dm-dispatch] {task.error}，已拒绝发送")
             # 被拒绝=没发出去 → 归还预占额度
             if task.is_stranger_first:
                 self.quota_of(task.account).refund_stranger()
@@ -964,7 +964,7 @@ class DmDispatcher:
                 # 发送失败 → 归还预占的首发额度（失败的发送不该占额度）
                 if task.is_stranger_first:
                     quota.refund_stranger()
-                logger.warning(f"[dm-dispatch] 发送失败 task={task.task_id}: "
+                logger.warning("SEND-036", f"[dm-dispatch] 发送失败 task={task.task_id}: "
                                f"{task.error}")
             # 回执交给配额统计（命中频控 -> 降权 + 冷静期）
             quota.on_result(ok, task.error)

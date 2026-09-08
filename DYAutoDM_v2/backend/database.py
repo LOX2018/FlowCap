@@ -29,6 +29,18 @@ _conn: sqlite3.Connection | None = None
 
 
 def _db_path() -> Path:
+    # 会员体系（v0.37.0）：登录后数据库切到会员数据空间
+    # <app_root>/members/<member_id>/data/dyautodm.db，各会员完全隔离；
+    # 未登录（如刚启动/未登录态健康探测）保持原路径不变。
+    try:
+        from services import member_ctx
+        mp = member_ctx.db_path()
+        if mp:
+            p = Path(mp)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            return p
+    except Exception:
+        pass
     try:
         from vbrowser import app_root
         p = Path(app_root()) / "data" / "dyautodm.db"
@@ -42,15 +54,47 @@ def _db_path() -> Path:
     return p
 
 
+def reset_connection() -> None:
+    """关闭并丢弃当前全局连接（会员切换/登出时调用）。
+
+    下一处 get_db() 会按新会员的 _db_path() 重新建连并跑建表/迁移。
+    recv_daemon 等子进程各自持有独立连接，不受影响。
+    """
+    global _conn
+    with _lock:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
+
+
 def get_db() -> sqlite3.Connection:
     """获取全局 SQLite 连接（线程安全，WAL 模式）。
+
+    会员体系（v0.37.0）：每次调用校验当前连接指向的库文件与
+    当前会员数据空间是否一致 —— 不一致（登录了别的会员）自动重建，
+    防止任何绕过 reset_connection 的路径把上个会员的数据读出来。
 
     recv_daemon 是独立进程，也会打开同一个 db 文件——WAL 模式允许
     多进程并发读 + 单写者，桌面应用量级完全够用。
     """
     global _conn
     if _conn is not None:
-        return _conn
+        # 会员一致性校验：连接的库文件必须属于当前会员空间
+        try:
+            from services import member_ctx
+            want = member_ctx.db_path()
+            if want:
+                cur_path = str(_conn.execute("PRAGMA database_list").fetchone()[2])
+                if os.path.abspath(cur_path) != os.path.abspath(want):
+                    _conn.close()
+                    _conn = None
+        except Exception:
+            pass
+        if _conn is not None:
+            return _conn
     with _lock:
         if _conn is not None:
             return _conn
@@ -219,7 +263,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 logger.info(f"[db] 从 task_history.json 迁移 {migrated} 条任务")
                 conn.commit()
         except Exception as e:
-            logger.warning(f"[db] task_history.json 迁移失败（不影响使用）: {e}")
+            logger.warning("DB-001", f"[db] task_history.json 迁移失败（不影响使用）: {e}")
 
     # 1.5) config.json -> kv_store("config")
     try:
@@ -241,7 +285,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 conn.commit()
                 logger.info("[db] 从 config.json 迁移运行时配置")
         except Exception as e:
-            logger.warning(f"[db] config.json 迁移失败: {e}")
+            logger.warning("DB-002", f"[db] config.json 迁移失败: {e}")
 
     # 1.6) accounts.json -> kv_store("accounts_index")
     try:
@@ -260,7 +304,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 conn.commit()
                 logger.info("[db] 从 accounts.json 迁移账号索引")
     except Exception as e:
-        logger.warning(f"[db] accounts.json 迁移失败: {e}")
+        logger.warning("DB-003", f"[db] accounts.json 迁移失败: {e}")
 
     # 2) accounts/[name]/dm_history.json -> dm_conversations + dm_messages
     try:
@@ -307,7 +351,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 if m_migrated:
                     logger.info(f"[db] 从 {acct}/dm_history.json 迁移 {m_migrated} 条消息")
             except Exception as e:
-                logger.warning(f"[db] {acct}/dm_history.json 迁移失败: {e}")
+                logger.warning("DB-004", f"[db] {acct}/dm_history.json 迁移失败: {e}")
         conn.commit()
 
 

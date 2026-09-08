@@ -45,7 +45,7 @@ async def get_history(request: Request, limit: int = 0, offset: int = 0) -> dict
         total = count_history() if limit else len(items)
         return {"ok": True, "list": items, "total": total}
     except Exception as e:
-        logger.warning(f"[tasks] 读取历史任务失败: {e}")
+        logger.warning("TSK-001", f"[tasks] 读取历史任务失败: {e}")
         return {"ok": False, "list": [], "total": 0, "error": str(e)}
 
 
@@ -62,7 +62,7 @@ async def get_current_task(request: Request) -> dict:
     try:
         return adm.snapshot()
     except Exception as e:
-        logger.warning(f"[tasks] 读取任务容器失败: {e}")
+        logger.warning("TSK-002", f"[tasks] 读取任务容器失败: {e}")
         return {"ok": False, "has_task": False, "error": str(e)}
 
 
@@ -170,7 +170,7 @@ async def save_config(body: TaskConfig, request: Request):
         })
         set_kv_json("config", data)
     except Exception as e:
-        logger.warning(f"[tasks] 配置落盘失败（不影响本次保存）: {e}")
+        logger.warning("TSK-003", f"[tasks] 配置落盘失败（不影响本次保存）: {e}")
     return {"ok": True}
 
 
@@ -253,5 +253,5 @@ async def export_stats(request: Request):
                                     getattr(r, "capture_ts", ""), getattr(r, "send_ts", "")])
             return {"ok": True, "path": str(csv_path), "count": len(records)}
     except Exception as e:
-        logger.warning(f"[tasks] 导出失败: {e}")
+        logger.warning("TSK-004", f"[tasks] 导出失败: {e}")
         return {"ok": False, "error": str(e)}

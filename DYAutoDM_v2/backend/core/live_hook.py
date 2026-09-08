@@ -213,10 +213,10 @@ class LiveChatHook(DouyinLive):
                     from dy_apis.douyin_api import DouyinAPI
                     uid = DouyinAPI.get_my_uid(self.auth_)
             except Exception as e:
-                logger.error(f"[心跳] 登录态探活异常（将自动重新扫码）: {e}")
+                logger.error("LIVE-002", f"[心跳] 登录态探活异常（将自动重新扫码）: {e}")
                 uid = None
             if not uid:
-                logger.error(
+                logger.error("LIVE-003", 
                     "[心跳] 登录态失效（get_my_uid 无返回，cookie 可能过期/账号被挤下线）。\n"
                     "       自动触发重新扫码以恢复监测账号有效会话，避免弹幕昵称被加密。"
                 )
@@ -241,9 +241,9 @@ class LiveChatHook(DouyinLive):
             try:
                 self.controller.rescan_and_rebuild()
             except Exception as e:
-                logger.error(f"[心跳] 自动重新扫码失败（请手动点【重新扫码】）: {e}")
+                logger.error("LIVE-004", f"[心跳] 自动重新扫码失败（请手动点【重新扫码】）: {e}")
         else:
-            logger.warning("[心跳] 未绑定控制器，无法自动重扫，请手动重新扫码。")
+            logger.warning("LIVE-005", "[心跳] 未绑定控制器，无法自动重扫，请手动重新扫码。")
 
     @staticmethod
     def _is_encrypted_nickname(nickname: str) -> bool:
@@ -305,7 +305,7 @@ class LiveChatHook(DouyinLive):
                             if not sec_uid:
                                 self._enc_no_secuid += 1
                                 if self._enc_no_secuid == 1 or self._enc_no_secuid % 20 == 0:
-                                    logger.error(
+                                    logger.error("LIVE-006", 
                                         f"[昵称加密] 检测到昵称加密且 sec_uid 为空（累计 {self._enc_no_secuid} 次）。\n"
                                         f"       这是监测账号凭证/会话异常的典型表现。\n"
                                         f"       请对该监测账号执行【重新扫码】以恢复正常会话。"
@@ -342,9 +342,9 @@ class LiveChatHook(DouyinLive):
                         except Exception:
                             pass
                 except Exception as e:
-                    logger.warning(f"live_hook item error: {e}")
+                    logger.warning("LIVE-007", f"live_hook item error: {e}")
         except Exception as e:
-            logger.warning(f"live_hook on_message error: {e}")
+            logger.warning("LIVE-008", f"live_hook on_message error: {e}")
 
     # ------------------------------------------------------------------
     # async wrapper（供 AutoDM 在 asyncio 上下文调用）
