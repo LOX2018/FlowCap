@@ -984,8 +984,37 @@ class SendImageBody(BaseModel):
 #   超过等待上限（DY_SEND_MAX_WAIT，默认 30s）仍拿不到令牌则快速失败
 #   {ok:false, error:"rate_limited"}，调用方自行决定重试/放弃——绝不静默堆积。
 # ============================================================================
+# ⚠️ 以下两个常量仅作**兜底**（配置中心不可用时保持接线前行为）。
+# 运行时实际值走 `services.app_config`（统一配置中心），每次调用读取
+# → 改为热生效：设置页保存后无需重启本 daemon。
 _SEND_GATE_MIN_INTERVAL = float(os.environ.get("DY_SEND_MIN_INTERVAL", "8") or 8)
 _SEND_GATE_MAX_WAIT = float(os.environ.get("DY_SEND_MAX_WAIT", "30") or 30)
+
+
+def _cfg_min_interval() -> float:
+    """发送闸门最小间隔（配置中心优先，失败回落模块级兜底）。"""
+    try:
+        from services.app_config import get
+
+        v = get("send", "min_interval")
+        if v:
+            return float(v)
+    except Exception:
+        pass
+    return _SEND_GATE_MIN_INTERVAL
+
+
+def _cfg_max_wait() -> float:
+    """闸门排队等待上限（配置中心优先，失败回落模块级兜底）。"""
+    try:
+        from services.app_config import get
+
+        v = get("send", "max_wait")
+        if v:
+            return float(v)
+    except Exception:
+        pass
+    return _SEND_GATE_MAX_WAIT
 _send_gate_lock = threading.Lock()
 _send_gate_last: dict[str, float] = {}   # account -> 上次放行时间戳
 
@@ -995,21 +1024,26 @@ def _send_gate_acquire(account: str) -> tuple[bool, float]:
 
     忙等实现（轮询 0.2s）：发送频率低（秒级间隔），锁内 sleep 可接受；
     且保证「先到先得」的发出顺序，避免两个源同时发同一会话时乱序。
+
+    2026-09-08：闸门参数改为**每次调用时**从统一配置中心读取（热生效），
+    不再是模块级常量——设置页保存后无需重启本 daemon。
     """
-    deadline = time.time() + _SEND_GATE_MAX_WAIT
+    min_interval = _cfg_min_interval()
+    max_wait = _cfg_max_wait()
+    deadline = time.time() + max_wait
     waited = 0.0
     while True:
         with _send_gate_lock:
             now = time.time()
             last = _send_gate_last.get(account, 0.0)
-            remain = _SEND_GATE_MIN_INTERVAL - (now - last)
+            remain = min_interval - (now - last)
             if remain <= 0:
                 _send_gate_last[account] = now
                 return True, waited
         if now >= deadline:
             return False, waited
         time.sleep(min(0.2, max(remain, 0.05)))
-        waited = time.time() - (deadline - _SEND_GATE_MAX_WAIT)
+        waited = time.time() - (deadline - max_wait)
 
 
 def _load_send_auth(account: str, env_path: str):
@@ -1072,9 +1106,9 @@ async def send(body: SendBody) -> dict:
     if not ok_gate:
         logger.warning("RECV-016", 
             f"[recv][{body.account}] 发送闸门限流：等待 {waited:.0f}s 仍未放行"
-            f"（最小间隔 {_SEND_GATE_MIN_INTERVAL}s），快速失败")
+            f"（最小间隔 {_cfg_min_interval()}s），快速失败")
         return {"ok": False, "error": "rate_limited",
-                "msg": f"发送过于频繁（≥{_SEND_GATE_MIN_INTERVAL:.0f}s/条），请稍后重试"}
+                "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
     try:
         auth = _load_send_auth(body.account, env_path)
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
@@ -1124,7 +1158,7 @@ async def send_by_uid(body: SendByUidBody) -> dict:
         logger.warning("RECV-019", 
             f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行")
         return {"ok": False, "error": "rate_limited",
-                "msg": f"发送过于频繁（≥{_SEND_GATE_MIN_INTERVAL:.0f}s/条），请稍后重试"}
+                "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
     try:
         auth = _load_send_auth(body.account, env_path)
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
@@ -1193,7 +1227,7 @@ async def send_image(body: SendImageBody) -> dict:
     ok_gate, waited = _send_gate_acquire(body.account)
     if not ok_gate:
         return {"ok": False, "error": "rate_limited",
-                "msg": f"发送过于频繁（≥{_SEND_GATE_MIN_INTERVAL:.0f}s/条），请稍后重试"}
+                "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
     try:
         import base64 as _b64
 
