@@ -66,8 +66,66 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 # 配置
 # ---------------------------------------------------------------------------
-QUEUE_MAX = int(os.environ.get("DY_DM_QUEUE_MAX", "200"))
-POOL_STRICT = os.environ.get("DY_DM_POOL_STRICT", "1") not in ("0", "false", "False")
+# ⚠️ 以下常量仅作**兜底**（配置中心不可用时保持接线前行为，勿改默认值）。
+# 运行时实际值走 `services.app_config`（统一配置中心）——见下方 `_LazyCfg`。
+# 2026-09-08 接线：风控核心参数，默认值逐字保持与接线前一致
+# （200 / True / 5.0 / 2 / 30 / 600 / 3600 / 21600 / 86400 / 604800 / True）。
+_FALLBACK_QUEUE_MAX = int(os.environ.get("DY_DM_QUEUE_MAX", "200"))
+_FALLBACK_POOL_STRICT = os.environ.get("DY_DM_POOL_STRICT", "1") not in ("0", "false", "False")
+
+
+# ---------------------------------------------------------------------------
+# 配置中心接线（2026-09-08）
+# ---------------------------------------------------------------------------
+# 做法：常量**重命名**为 `_FALLBACK_<原名>`，再用模块级 `__getattr__`
+# 对外提供原名 —— 这样十余处既有调用点（写的是 STRANGER_PER_MINUTE 等）
+# **无需任何改动**就自动走配置中心，且配置中心异常时回落兜底常量。
+#
+# 为什么不用「保留原名 + 逐个改调用点」：这些常量散落在十余处，
+# 改调用点必漏；漏一处 = 该参数永远用旧值，且极难发现。
+_LAZY_MAP = {
+    "QUEUE_MAX": ("send", "queue_max"),
+    "POOL_STRICT": ("send", "pool_strict"),
+    "DEDUP_WINDOW": ("send", "dedup_window"),
+    "STRANGER_PER_MINUTE": ("send", "stranger_per_minute"),
+    "STRANGER_PER_DAY": ("send", "stranger_per_day"),
+    "COOLDOWN_ON_FREQUENT": ("send", "cooldown_freq"),
+    "COOLDOWN_MAX": ("send", "cooldown_max"),
+    "WEIGHT_RECOVER_HALFLIFE": ("send", "weight_recover_halflife"),
+    "WEIGHT_FORGIVE_AFTER": ("send", "weight_forgive_after"),
+    "UID_SINK_COOLDOWN": ("send", "uid_sink_cooldown"),
+    "UID_SINK_STRICT": ("send", "uid_sink_strict"),
+}
+
+
+def cfg(name: str):
+    """取一个风控参数的运行时值（配置中心优先，失败回落兜底常量）。
+
+    消费方推荐显式用 `cfg("XXX")`；直接读 `XXX` 也等价（走 __getattr__）。
+    """
+    if name not in _LAZY_MAP:
+        raise KeyError(name)
+    sec, key = _LAZY_MAP[name]
+    try:
+        from services.app_config import get
+
+        v = get(sec, key)
+        if v is not None:
+            return v
+    except Exception:
+        pass
+    return globals()["_FALLBACK_" + name]
+
+
+def __getattr__(name: str):
+    """PEP 562 模块级惰性属性。
+
+    原名常量已改名为 `_FALLBACK_<原名>`（故这里必然未命中而触发本函数），
+    于是十余处既有调用点自动获得配置中心的值。
+    """
+    if name in _LAZY_MAP:
+        return cfg(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 # 优先级常量（数字小 = 优先）
 PRIO_MANUAL = 0
 PRIO_AI = 1
@@ -75,7 +133,7 @@ PRIO_BATCH = 2
 _PRIO_BY_SOURCE = {"manual": PRIO_MANUAL, "ai": PRIO_AI,
                    "batch": PRIO_BATCH, "dispatch": PRIO_BATCH}
 # 同名会话去重窗口：同 (account, conv_id, text) 在该秒数内重复入池视为重复
-DEDUP_WINDOW = float(os.environ.get("DY_DM_DEDUP_WINDOW", "5"))
+_FALLBACK_DEDUP_WINDOW = float(os.environ.get("DY_DM_DEDUP_WINDOW", "5"))
 
 # ===========================================================================
 # 【调试版专用】测试账号白名单 —— 正式版不生效、不打包
@@ -181,19 +239,19 @@ class SubmitResult:
 #   - 所有配额按 account key 独立记账，互不干扰。
 # ===========================================================================
 # 陌生人首发硬限额（抖音平台侧限制，保守取用户给定值）
-STRANGER_PER_MINUTE = int(os.environ.get("DY_STRANGER_PER_MINUTE", "2"))
-STRANGER_PER_DAY = int(os.environ.get("DY_STRANGER_PER_DAY", "30"))
+_FALLBACK_STRANGER_PER_MINUTE = int(os.environ.get("DY_STRANGER_PER_MINUTE", "2"))
+_FALLBACK_STRANGER_PER_DAY = int(os.environ.get("DY_STRANGER_PER_DAY", "30"))
 # 收到"频繁"回执后的强制冷静期（秒），期间暂停该账号的陌生人首发
-COOLDOWN_ON_FREQUENT = float(os.environ.get("DY_DM_COOLDOWN_FREQ", "600"))
+_FALLBACK_COOLDOWN_ON_FREQUENT = float(os.environ.get("DY_DM_COOLDOWN_FREQ", "600"))
 # 冷静期递增：连续触发则翻倍（上限 1 小时），避免刚解封又撞墙
-COOLDOWN_MAX = float(os.environ.get("DY_DM_COOLDOWN_MAX", "3600"))
+_FALLBACK_COOLDOWN_MAX = float(os.environ.get("DY_DM_COOLDOWN_MAX", "3600"))
 # 2026-09-07 补：**权重恢复周期**（用户指出不能"降到底就永久停用"）
 # freq_hits 每过 HALFLIFE 秒衰减一半 —— 被频控的账号会随时间自动"刑满释放"，
 # 且只要期间表现正常就能逐步回到满权重。设为 0 可关闭衰减（不推荐）。
-WEIGHT_RECOVER_HALFLIFE = float(
+_FALLBACK_WEIGHT_RECOVER_HALFLIFE = float(
     os.environ.get("DY_WEIGHT_RECOVER_HALFLIFE", "21600"))   # 默认 6 小时
 # 静默恢复：距上次频控超过该秒数且后续发送正常 → 冷静等级自动清零
-WEIGHT_FORGIVE_AFTER = float(
+_FALLBACK_WEIGHT_FORGIVE_AFTER = float(
     os.environ.get("DY_WEIGHT_FORGIVE_AFTER", "86400"))      # 默认 24 小时
 
 
@@ -400,10 +458,10 @@ class AccountQuota:
 #     明天重启后又对同一批人重发一遍；
 #   - 冷却期：已发送的 UID 在 COOLDOWN 内不再重复发送（默认 7 天）。
 # ===========================================================================
-UID_SINK_COOLDOWN = float(
+_FALLBACK_UID_SINK_COOLDOWN = float(
     os.environ.get("DY_UID_SINK_COOLDOWN", str(7 * 86400)))   # 默认 7 天
 # 冷却期内是否直接丢弃（True=丢弃；False=放行但记录次数，便于排查）
-UID_SINK_STRICT = os.environ.get("DY_UID_SINK_STRICT", "1") not in (
+_FALLBACK_UID_SINK_STRICT = os.environ.get("DY_UID_SINK_STRICT", "1") not in (
     "0", "false", "False")
 
 
