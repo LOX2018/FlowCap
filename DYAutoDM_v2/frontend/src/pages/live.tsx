@@ -130,6 +130,10 @@ interface SendRecord {
   sec_uid?: string | null;
   status?: string;
   reason?: string | null;
+  /** 2026-09-08：结构化失败分类（后端 models/task.py 下发） */
+  fail_kind?: string | null;
+  fail_label?: string | null;
+  fail_advice?: string | null;
   captured_at: number;
   send_at?: number | null;
   sent_at?: number | null;
@@ -186,6 +190,230 @@ interface Row {
   dmTime: string;
   ts: number;
   reason?: string;
+  /** 2026-09-08：结构化失败分类（弹窗展示具体原因） */
+  failKind?: string | null;
+  failLabel?: string | null;
+  failAdvice?: string | null;
+}
+
+// ============================================================================
+// 失败原因结构化说明（2026-09-08 用户要求）
+// ----------------------------------------------------------------------------
+// 目标：私信发送失败时，弹窗明确告知是「调度堵塞 / 凭证失效 / 账号风控 /
+// 频控限流 / 参数错误 / 网络异常」中的哪一类，并给出可操作建议，
+// 而不是只显示一行原始报错。
+// 后端 models/task.py 已下发 fail_kind / fail_label / fail_advice；
+// 老后端未下发时，前端用 localClassifyFail 兜底（保持兼容）。
+// ============================================================================
+const FAIL_KIND_META: Record<string, { label: string; color: string; advice: string }> = {
+  credential: {
+    label: "凭证失效",
+    color: "var(--danger)",
+    advice: "该账号私信签名已失效。请到「账号」页面点【重新扫码】重新抓取签名后重试。",
+  },
+  risk: {
+    label: "账号风控",
+    color: "var(--danger)",
+    advice:
+      "抖音对该账号的私信行为判定为风控（多见于向陌生用户频繁首发）。建议：降低发送频率、暂停该账号 30 分钟以上，或换账号发送。",
+  },
+  ratelimit: {
+    label: "频控限流",
+    color: "var(--warn)",
+    advice:
+      "已达发送频率上限（统一闸门限流）。建议等待冷却结束再发，不要手动连续重发，否则会加重限流。",
+  },
+  blocked: {
+    label: "调度堵塞",
+    color: "var(--warn)",
+    advice:
+      "发送队列/调度被占满或排队超时。建议：暂停当前监听任务，等队列消化后再启动；若持续出现请重启后端。",
+  },
+  param: {
+    label: "参数错误",
+    color: "var(--muted-foreground)",
+    advice: "发送参数不合法（目标 uid 或文案为空/格式错误）。请检查该目标的会话数据是否完整。",
+  },
+  network: {
+    label: "网络异常",
+    color: "var(--warn)",
+    advice: "网络或守护进程不可达。请检查后端与 recv_daemon 是否在运行。",
+  },
+  other: {
+    label: "其他原因",
+    color: "var(--muted-foreground)",
+    advice: "未能归类的失败。可查看下方原始原因，或到「日志」页查看后端详细日志定位。",
+  },
+};
+
+/** 后端未下发分类时的本地兜底（规则与后端 core/sender.classify_fail 保持一致） */
+function localClassifyFail(reason: string): string {
+  const r = (reason || "").trim();
+  const low = r.toLowerCase();
+  if (!r) return "other";
+  // ① 账号级风控必须最先判：KICK 文案常同时含 INVALID_REQUEST，
+  //    但按后端 sender.py 注释，KICK 多为账号级反 spam 风控，不是签名失效。
+  if (r.toUpperCase().includes("KICK") || r.includes("风控") || low.includes("spam") || r.includes("被限制"))
+    return "risk";
+  if (
+    r.includes("签名三件套缺失") ||
+    r.includes("需重新扫码") ||
+    r.includes("INVALID_REQUEST") ||
+    low.includes("unauthorized") ||
+    r.includes("登录态") ||
+    (low.includes("cookie") && r.includes("失效"))
+  )
+    return "credential";
+  if (
+    low.includes("rate_limited") ||
+    r.includes("频繁") ||
+    r.includes("冷静期") ||
+    r.includes("冷却") ||
+    r.includes("上限") ||
+    r.includes("限流")
+  )
+    return "ratelimit";
+  if (
+    r.includes("堵塞") ||
+    r.includes("队列") ||
+    low.includes("queue") ||
+    r.includes("超时") ||
+    low.includes("timeout") ||
+    low.includes("busy") ||
+    r.includes("调度")
+  )
+    return "blocked";
+  if (
+    r.includes("为空") ||
+    r.includes("非数字") ||
+    (r.includes("缺失") && r.includes("账号")) ||
+    (low.includes("uid") && r.includes("解析")) ||
+    r.includes("会话整理")
+  )
+    return "param";
+  if (
+    r.includes("不可达") ||
+    low.includes("connection") ||
+    r.includes("连接") ||
+    low.includes("network") ||
+    r.includes("HTTP 5")
+  )
+    return "network";
+  return "other";
+}
+
+/** 取最终展示用的失败说明（优先后端下发，缺失时本地兜底） */
+function failInfoOf(row: Row): { kind: string; label: string; color: string; advice: string; raw: string } {
+  const raw = String(row.reason || "");
+  const kind = row.failKind || localClassifyFail(raw);
+  const meta = FAIL_KIND_META[kind] || FAIL_KIND_META.other;
+  return {
+    kind,
+    label: row.failLabel || meta.label,
+    color: meta.color,
+    advice: row.failAdvice || meta.advice,
+    raw,
+  };
+}
+
+/** 失败原因弹窗 */
+function FailReasonModal({
+  row,
+  onClose,
+}: {
+  row: Row | null;
+  onClose: () => void;
+}) {
+  if (!row) return null;
+  const info = failInfoOf(row);
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(520px, 100%)",
+          background: "var(--card)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          padding: 20,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <span
+            style={{
+              padding: "3px 10px",
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#fff",
+              background: info.color,
+            }}
+          >
+            {info.label}
+          </span>
+          <b style={{ fontSize: 15 }}>私信发送失败</b>
+        </div>
+
+        <div style={{ fontSize: 13, color: "var(--muted-foreground)", marginBottom: 10 }}>
+          目标：{row.name || "未知"}
+        </div>
+
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.7,
+            padding: "10px 12px",
+            borderRadius: 6,
+            background: "var(--accent)",
+            marginBottom: 12,
+          }}
+        >
+          {info.advice}
+        </div>
+
+        {info.raw ? (
+          <details style={{ fontSize: 12 }}>
+            <summary style={{ cursor: "pointer", color: "var(--muted-foreground)" }}>
+              原始原因（点击展开）
+            </summary>
+            <pre
+              style={{
+                marginTop: 8,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                fontSize: 11.5,
+                color: "var(--foreground)",
+                background: "var(--accent)",
+                padding: 10,
+                borderRadius: 6,
+              }}
+            >
+              {info.raw}
+            </pre>
+          </details>
+        ) : null}
+
+        <div style={{ marginTop: 16, textAlign: "right" }}>
+          <button className="btn" onClick={onClose}>
+            我知道了
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** 后端英文枚举 status -> 前端 DmStatus（修复旧版中文字符串永不匹配的 bug） */
@@ -229,6 +457,9 @@ function recordsToRows(src: Record<string, unknown>[]): Row[] {
     dmTime: r.send_ts ? String(r.send_ts) : "",
     ts: (Number(r.captured_at) || 0) * 1000,
     reason: String(r.reason || ""),
+    failKind: (r.fail_kind as string) || null,
+    failLabel: (r.fail_label as string) || null,
+    failAdvice: (r.fail_advice as string) || null,
   }));
 }
 
@@ -400,6 +631,9 @@ export default function LivePage(props: PageProps) {
         dmTime: r.sent_at ? fmtTime(r.sent_at) : "",
         ts: (r.captured_at || 0) * 1000,
         reason: String(r.reason || ""),
+        failKind: (r.fail_kind as string) || null,
+        failLabel: (r.fail_label as string) || null,
+        failAdvice: (r.fail_advice as string) || null,
       })),
     [records],
   );
@@ -1283,6 +1517,8 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
   const [st, setSt] = useState<"all" | DmStatus>("all");
   const [asc, setAsc] = useState(false);
   const [exp, setExp] = useState<number | null>(null);
+  /** 2026-09-08：私信发送失败详情弹窗（点行内失败提示打开） */
+  const [failRow, setFailRow] = useState<Row | null>(null);
 
   const filtered = useMemo(() => {
     let list = rows.slice();
@@ -1505,6 +1741,8 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
                               )}
                               {r.dmStatus === "fail" && r.reason && (
                                 <div
+                                  onClick={() => setFailRow(r)}
+                                  title="点击查看失败原因详情与处理建议"
                                   style={{
                                     marginTop: 6,
                                     padding: "6px 10px",
@@ -1512,9 +1750,35 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
                                     background: "var(--danger-bg)",
                                     color: "var(--danger)",
                                     fontSize: 12,
+                                    cursor: "pointer",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
                                   }}
                                 >
-                                  失败原因：{r.reason}
+                                  <span
+                                    style={{
+                                      padding: "1px 7px",
+                                      borderRadius: 999,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      color: "#fff",
+                                      background: failInfoOf(r).color,
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    {failInfoOf(r).label}
+                                  </span>
+                                  <span
+                                    style={{
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    {r.reason}
+                                  </span>
+                                  <span style={{ flexShrink: 0, opacity: 0.75 }}>详情 ›</span>
                                 </div>
                               )}
                             </div>
@@ -1529,6 +1793,8 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
           </div>
         </div>
       </div>
+      {/* 2026-09-08：私信发送失败原因弹窗（区分调度堵塞/凭证失效/风控等） */}
+      <FailReasonModal row={failRow} onClose={() => setFailRow(null)} />
     </motion.div>
   );
 }

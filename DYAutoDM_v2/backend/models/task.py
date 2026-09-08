@@ -16,6 +16,10 @@ class SendRecord(BaseModel):
     sec_uid: str | None = None
     status: RecordStatus
     reason: str | None = None  # 失败原因（status=fail 时）
+    # 2026-09-08：失败原因结构化分类（前端弹窗区分调度堵塞/凭证失效/风控等）
+    fail_kind: str | None = None      # credential/risk/ratelimit/blocked/param/network/other
+    fail_label: str | None = None     # 中文类名，如「凭证失效」
+    fail_advice: str | None = None    # 可操作建议（弹窗展示）
     captured_at: float  # 捕获时间戳
     send_at: float | None = None  # 计划发送时间
     sent_at: float | None = None  # 实际发送时间

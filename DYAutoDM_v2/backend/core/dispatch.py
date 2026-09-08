@@ -350,6 +350,15 @@ class DispatchCenter:
         else:
             rec.status = RecordStatus.FAIL
             rec.reason = reason
+            # 2026-09-08：结构化失败分类（前端弹窗展示具体原因 + 可操作建议）
+            try:
+                from core.sender import explain_fail
+                _exp = explain_fail(str(reason or ""))
+                rec.fail_kind = _exp["kind"]
+                rec.fail_label = _exp["label"]
+                rec.fail_advice = _exp["advice"]
+            except Exception:
+                pass
             # 发送失败不计入 sent，但必须从 pending 移除，
             # 否则 wait_done（软停止等存量）会永久卡在 STOPPING（pending 永不空）。
             self.pending.pop(key, None)

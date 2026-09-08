@@ -102,6 +102,10 @@ def _records_from_adm(adm) -> list[dict]:
             "sec_uid": d.get("sec_uid"),
             "status": d.get("status", "captured"),
             "reason": d.get("reason"),
+            # 2026-09-08：失败原因结构化分类（前端弹窗区分调度堵塞/凭证失效/风控等）
+            "fail_kind": d.get("fail_kind"),
+            "fail_label": d.get("fail_label"),
+            "fail_advice": d.get("fail_advice"),
             "captured_at": d.get("captured_at", 0),
             "send_at": d.get("send_at"),
             "send_ts": d.get("sent_at"),

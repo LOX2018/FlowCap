@@ -24,8 +24,83 @@ from loguru import logger
 from dy_apis.douyin_api import DouyinAPI
 
 
-# 触发自动重捕获的失败原因关键字（仅“凭证失效类”，排除账号级风控 KICK）
+# 触发自动重捕获的失败原因关键字（仅"凭证失效类"，排除账号级风控 KICK）
 _RECAP_MARKERS = ("签名三件套缺失", "INVALID_REQUEST")
+
+
+# ============================================================================
+# 失败原因结构化分类（2026-09-08，用户要求：失败弹窗须区分
+# 「调度堵塞 / 凭证失效 / 账号风控 / 频控限流 / 参数错误 / 其他」）
+# ----------------------------------------------------------------------------
+# 只做**纯文本归类**（零网络、零副作用），供前端弹窗给出可操作建议。
+# 规则顺序即优先级：越具体的排在越前面（先判风控/凭证，再判堵塞）。
+# ============================================================================
+FAIL_KINDS = {
+    "credential": "凭证失效",
+    "risk": "账号风控",
+    "ratelimit": "频控限流",
+    "blocked": "调度堵塞",
+    "param": "参数错误",
+    "network": "网络异常",
+    "other": "其他原因",
+}
+
+# 每类的用户可读建议（前端弹窗直接展示，给用户下一步动作）
+FAIL_ADVICE = {
+    "credential": "该账号私信签名已失效。请到「账号」页面点【重新扫码】重新抓取签名后重试。",
+    "risk": "抖音对该账号的私信行为判定为风控（多见于向陌生用户频繁首发）。建议：降低发送频率、暂停该账号 30 分钟以上，或换账号发送。",
+    "ratelimit": "已达发送频率上限（统一闸门限流）。建议等待冷却结束再发，不要手动连续重发，否则会加重限流。",
+    "blocked": "发送队列/调度被占满或任务排队超时。建议：暂停当前监听任务，等队列消化后再启动；若持续出现请重启后端。",
+    "param": "发送参数不合法（目标 uid 或文案为空/格式错误）。请检查该目标的会话数据是否完整。",
+    "network": "网络或守护进程不可达。请检查后端与 recv_daemon 是否在运行。",
+    "other": "未能归类的失败。请展开原始原因或查看后端日志定位。",
+}
+
+
+def classify_fail(reason: str) -> str:
+    """把原始失败原因归类为 FAIL_KINDS 的 key（纯文本匹配，零副作用）。"""
+    r = (reason or "").strip()
+    low = r.lower()
+    if not r:
+        return "other"
+    # ① 账号级风控：KICK / 反 spam（**必须最先判**）
+    #    后端 sender.py 注释明确：KICK 多为账号级私信风控（反 spam），
+    #    不是签名失效。而该文案同时含 INVALID_REQUEST，若先判凭证会误归。
+    if "KICK" in r.upper() or "风控" in r or "spam" in low or "被限制" in r:
+        return "risk"
+    # ② 凭证失效：签名缺失 / 服务端拒签名（此时已排除 KICK）
+    if ("签名三件套缺失" in r or "需重新扫码" in r
+            or "INVALID_REQUEST" in r or "unauthorized" in low
+            or "登录态" in r or "cookie" in low and "失效" in r):
+        return "credential"
+    # ③ 频控限流：闸门 rate_limited / 频繁 / 冷却期 / 上限
+    if ("rate_limited" in low or "频繁" in r or "冷静期" in r
+            or "冷却" in r or "上限" in r or "限流" in r):
+        return "ratelimit"
+    # ④ 调度堵塞：队列满 / 排队超时 / 调度器忙 / 守护不可达时的排队失败
+    if ("堵塞" in r or "队列" in r or "queue" in low or "超时" in r
+            or "timeout" in low or "busy" in low or "调度" in r):
+        return "blocked"
+    # ⑤ 参数错误
+    if ("为空" in r or "非数字" in r or "缺失" in r and "账号" in r
+            or "uid" in low and "解析" in r or "会话整理" in r):
+        return "param"
+    # ⑥ 网络/连接
+    if ("不可达" in r or "connection" in low or "连接" in r
+            or "network" in low or "HTTP 5" in r):
+        return "network"
+    return "other"
+
+
+def explain_fail(reason: str) -> dict:
+    """返回结构化失败说明：{kind, label, advice, raw}（供前端弹窗展示）。"""
+    kind = classify_fail(reason)
+    return {
+        "kind": kind,
+        "label": FAIL_KINDS.get(kind, "其他原因"),
+        "advice": FAIL_ADVICE.get(kind, ""),
+        "raw": reason or "",
+    }
 
 
 # ============================================================================
