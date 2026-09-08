@@ -38,10 +38,31 @@ from loguru import logger
 # 阈值:解密后字节数 ≤ 该值 → 本地静态托管(避免每次都调图床);
 #                     > 该值 → 上图床。
 # 与 image_host._inline_max_kb 保持同一阈值,语义一致。
+def _cfg(section: str, key: str):
+    """读统一配置中心（services.app_config）；不可用返回 None。
+
+    2026-09-08 接线：在各读取点**最前面**调用，命中即返回；
+    未命中继续走原有的 settings / env 兜底 —— 行为与接线前一致。
+    """
+    try:
+        from services.app_config import get
+
+        return get(section, key)
+    except Exception:
+        return None
+
+
 def _local_threshold_bytes() -> int:
     """解密后字节阈值;≤ 该值本地托管,> 该值走图床。
     默认 32KB,与 image_host 内联 base64 阈值一致——保持"小图内联,大图外链"统一语义。
     """
+    v = _cfg("capture", "image_inline_max_kb")
+    if v is not None:
+        try:
+            return int(v) * 1024
+        except Exception:
+            pass
+
     try:
         from config import settings
         v = getattr(settings, "image_inline_max_kb", None)
@@ -78,6 +99,13 @@ def _ttl_seconds() -> int:
     ⚠️ 与 resolve() 的 max_age_sec 默认保持一致 —— 否则会出现
     「内存缓存说命中、但磁盘文件已被 sweep 删除」→ 前端 404。
     """
+    v = _cfg("capture", "origin_image_ttl_days")
+    if v is not None:
+        try:
+            return int(v) * 86400
+        except Exception:
+            pass
+
     try:
         from config import settings
         v = getattr(settings, "origin_image_ttl_days", None)
@@ -98,6 +126,13 @@ def _max_cache_bytes() -> int:
     设置理由:实测单张原图 170~410KB,2GB 约容纳 5000~10000 张,
     对私信场景足够,同时兜住磁盘不被长跑撑爆。
     """
+    v = _cfg("capture", "origin_image_max_mb")
+    if v is not None:
+        try:
+            return int(v) * 1024 * 1024
+        except Exception:
+            pass
+
     try:
         from config import settings
         v = getattr(settings, "origin_image_max_mb", None)
@@ -314,7 +349,9 @@ def resolve(account: str, msg_id: str, skey: str, origin_url: str,
     # imgbb 频繁 SSL 超时。对原图场景(每张都解密后上传),
     # 网络抖动会拖累会话详情响应,且 30 天缓存已能避免重复拉取。
     # 故大图也走本地,仅在显式开启 IMAGE_FORCE_HOSTED=1 时上图床。
-    force_hosted = os.environ.get("IMAGE_FORCE_HOSTED", "0") == "1"
+    _fh = _cfg("capture", "image_force_hosted")
+    force_hosted = bool(_fh) if _fh is not None else (
+        os.environ.get("IMAGE_FORCE_HOSTED", "0") == "1")
     if size <= threshold or not force_hosted:
         # 小图:本地静态托管,文件名带 sha 防撞
         cache_dir = _origin_cache_dir()

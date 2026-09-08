@@ -309,6 +309,21 @@ def _parse_message_text(b):
 # ---------------------------------------------------------------------------
 # 首包精确解析（V23 实证：field 6 = conversation 数组）
 # ---------------------------------------------------------------------------
+
+
+def _cfg(section: str, key: str):
+    """读统一配置中心（services.app_config）；不可用返回 None。
+
+    2026-09-08 接线：替换散落的 os.environ.get 读取点，
+    未命中（返回 None）时由调用方的 `or <默认值>` 兜底 —— 行为与接线前一致。
+    """
+    try:
+        from services.app_config import get
+
+        return get(section, key)
+    except Exception:
+        return None
+
 def _inline_max_kb() -> int:
     """内联 base64 的体积上限（KB）。超过才走图床。
 
@@ -328,7 +343,7 @@ def _inline_max_kb() -> int:
     import os
 
     try:
-        return int(os.environ.get("IMAGE_INLINE_MAX_KB", "32"))
+        return int(_cfg("capture", "image_inline_max_kb") or 32)
     except Exception:
         return 32
 
@@ -1004,7 +1019,7 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None):
 
     # ── 缓存命中检查 ──
     try:
-        _ttl = (int(os.environ.get("DY_USERINFO_CACHE_SEC", "600"))
+        _ttl = (int(_cfg("capture", "userinfo_cache_sec") or 600)
                 if max_age is None else int(max_age))
     except Exception:
         _ttl = 600
@@ -1119,7 +1134,8 @@ def capture_all(name, with_browser=True):
     try:
         import os as _os
         import time as _time
-        if _os.environ.get("DY_HISTORY_FULL", "1") == "1":
+        if str(_cfg("capture", "history_full") if _cfg("capture", "history_full") is not None
+       else _os.environ.get("DY_HISTORY_FULL", "1")) == "1":
             # 2026-09-01 优化：跳过已掌握会话。
             #
             # 之前用首包 total_msgs 字段，实测**不可靠**（首包 field 4.2
@@ -1142,7 +1158,8 @@ def capture_all(name, with_browser=True):
             except Exception:
                 _db_counts = {}
 
-            _FORCE = _os.environ.get("DY_HISTORY_FORCE", "0") == "1"
+            _FORCE = str(_cfg("capture", "history_force") if _cfg("capture", "history_force") is not None
+             else _os.environ.get("DY_HISTORY_FORCE", "0")) == "1"
 
             def _have(_c):
                 """该会话已掌握消息条数：取 max(库内, 首包解析)"""
@@ -1158,22 +1175,23 @@ def capture_all(name, with_browser=True):
                 # 启用条件：
                 #   - 长会话（>50 条）：库内 0 补；库内 50（已 1 页）跳
                 #   - 短会话（<=20）：库内 0 补；库内 =首包 跳
-                if _os.environ.get("DY_HISTORY_SKIP_PAGED", "0") == "1":
+                if str(_cfg("capture", "history_skip_paged") if _cfg("capture", "history_skip_paged") is not None
+       else _os.environ.get("DY_HISTORY_SKIP_PAGED", "0")) == "1":
                     need = [c for c in convs
                             if c.get("short_id")
                             and _db_counts.get(str(c.get("conversation_id")), 0)
                                 < max(len(c.get("messages", [])), 1)]
                 else:
                     need = [c for c in convs if c.get("short_id")]
-            max_n = int(_os.environ.get("DY_HISTORY_MAX", "45"))
-            sleep_s = float(_os.environ.get("DY_HISTORY_SLEEP", "1.5"))
+            max_n = int(_cfg("capture", "history_max") or 45)
+            sleep_s = float(_cfg("capture", "history_sleep") or 1.5)
             # 2026-08-31：串行补全实测太慢（20 个会话 × (请求~10s + 间隔1.5s)
             # ≈ 230s，加上首包和浏览器启动总计 365s，用户明确抱怨）。
             # 改为**可配置并发**：DY_HISTORY_WORKERS（默认 4）。
             # 保守取值的原因：本项目曾因短时高频调用抖音接口触发风控
             # （首包返回 50 字节空响应、cookie 失效），故不做激进并发。
             # 想更快可调到 6~8，但需承担风控风险。
-            workers = max(1, min(8, int(_os.environ.get("DY_HISTORY_WORKERS", "4"))))
+            workers = max(1, min(8, int(_cfg("capture", "history_workers") or 4)))
             need = need[:max_n]
             if not need:
                 # 全部会话的历史都已掌握（库内条数 >= total_msgs），

@@ -52,12 +52,44 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 # 配置（均可用环境变量覆盖，便于测试期调参而不改代码）
 # ---------------------------------------------------------------------------
+# ⚠️ 以下常量仅作**兜底**（配置中心不可用时保持接线前行为，勿改默认值）。
+# 运行时实际值走 `services.app_config` —— 原名已改为 _FALLBACK_<原名>，
+# 由下方 __getattr__ 对外提供（与 dm_dispatch.py 同款接线手法）。
 # 缓存有效期：成功 300s（与风控安全频次一致，每账号每 5 分钟至多 1 次）
-UID_TTL_OK = float(os.environ.get("DY_UID_PROBE_TTL_OK", "300"))
+_FALLBACK_UID_TTL_OK = float(os.environ.get("DY_UID_PROBE_TTL_OK", "300"))
 # 失败后的退避期：60s 内不再重试（防凭证失效时疯狂打网）
-UID_TTL_FAIL = float(os.environ.get("DY_UID_PROBE_TTL_FAIL", "60"))
+_FALLBACK_UID_TTL_FAIL = float(os.environ.get("DY_UID_PROBE_TTL_FAIL", "60"))
 # 同账号并发探活的加锁等待上限（超时则本线程自己去打网，不无限等）
-LOCK_WAIT = float(os.environ.get("DY_UID_PROBE_LOCK_WAIT", "10"))
+_FALLBACK_LOCK_WAIT = float(os.environ.get("DY_UID_PROBE_LOCK_WAIT", "10"))
+
+_LAZY_MAP = {
+    "UID_TTL_OK": ("capture", "uid_probe_ttl_ok"),
+    "UID_TTL_FAIL": ("capture", "uid_probe_ttl_fail"),
+    "LOCK_WAIT": ("capture", "uid_probe_lock_wait"),
+}
+
+
+def cfg(name: str):
+    """取运行时配置值（配置中心优先，失败回落兜底常量）。"""
+    if name not in _LAZY_MAP:
+        raise KeyError(name)
+    sec, key = _LAZY_MAP[name]
+    try:
+        from services.app_config import get
+
+        v = get(sec, key)
+        if v is not None:
+            return v
+    except Exception:
+        pass
+    return globals()["_FALLBACK_" + name]
+
+
+def __getattr__(name: str):
+    """PEP 562：原名已改名，既有调用点自动走配置中心。"""
+    if name in _LAZY_MAP:
+        return cfg(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # ---------------------------------------------------------------------------
 # 状态
