@@ -962,7 +962,25 @@ class BrowserContainer:
                         return _u
                 except Exception:
                     pass
-                return DouyinAPI.get_my_uid(auth)
+                # 2026-09-08 加固：fallback 裸探活同样要过历史一致性校验。
+                # 事故实证：张老师 .env 被保活回写污染为 4175 的凭证后，
+                # 裸探活稳定返回 4175（幽灵 uid，历史会话 0 命中），导致
+                # keepalive 每轮判「uid 漂移」→ 无限 scan_login 重启循环。
+                # 这里复用 uid_probe 的一致性判据：不一致即视为不可信，
+                # 返回 None（让上游走兜底），绝不把幽灵 uid 当有效身份。
+                try:
+                    from services.uid_probe import (
+                        _uid_consistent_with_history as _uid_ok)
+                    _fallback_uid = DouyinAPI.get_my_uid(auth)
+                    if _fallback_uid and _uid_ok(self.account, _fallback_uid):
+                        return _fallback_uid
+                    if _fallback_uid:
+                        logger.warning(
+                            f"[bcc] 账号「{self.account}」裸探活 uid={_fallback_uid} "
+                            f"与历史会话不一致，判为不可信（拒绝返回）")
+                    return None
+                except Exception:
+                    return DouyinAPI.get_my_uid(auth)
         except Exception:
             pass
         return None
@@ -1047,6 +1065,24 @@ class BrowserContainer:
                 f"[bcc] 拒绝写入 .env：新 cookie 探活失败（无 uid），"
                 f"保留既有凭证。疑似 profile 登录态失效，请重新扫码。")
             return {"ok": False, "msg": "新 cookie 探活失败（登录态无效），已保留原凭证"}
+
+        # ---- P0 门禁 1.5（2026-09-08）：探活 uid 必须与该账号历史会话一致 ----
+        # 事故实证：张老师 profile 残留 4175 凭证（登录态失效后遗留），
+        # 首次回写（基线 None 放行）把 4175 写进 .env → 后续所有探活全
+        # 返回 4175 → keepalive 每轮「uid 漂移」→ 无限 scan_login 重启。
+        # 幽灵 uid 在该账号历史 conv_id 中 0 命中，此门禁永远拦得住。
+        try:
+            from services.uid_probe import _uid_consistent_with_history as _uid_ok
+            if not _uid_ok(self.account, new_uid):
+                logger.error(
+                    f"[bcc] 拒绝写入 .env：探活 uid={new_uid} 与该账号「{self.account}」"
+                    f"历史会话不一致（幽灵 uid，0 命中）。profile 登录态疑似"
+                    f"失效/残留他人凭证，请重新扫码登录本账号。")
+                return {"ok": False,
+                        "msg": f"探活 uid={new_uid} 与历史会话不一致，"
+                               f"疑似残留凭证，已拒绝写入（请重新扫码）"}
+        except Exception:
+            pass
 
         # ---- P0 门禁 2：uid 与既有值一致性（漂移 = 身份被替换/轮换）----
         # 2026-09-06 全局治理：原比对 self._last_uid，但 run_keepalive 在
