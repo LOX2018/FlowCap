@@ -20,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import { Avatar, Pill, hue } from "../components/ui";
 import UnifiedConfigSection from "../components/UnifiedConfigSection";
+import AgentSection from "../components/AgentSection";
 
 interface Account {
   name: string;
@@ -224,7 +225,7 @@ export default function SettingsPage(props: PageProps) {
 
   // 子导航：默认配置 / 启动策略 / 独立账号 / 通用配置
   const [section, setSection] = useState<
-    "default" | "strategy" | "accounts" | "unified"
+    "default" | "strategy" | "accounts" | "unified" | "agent"
   >("default");
 
   // 从 tasks API 加载运行时配置
@@ -318,7 +319,7 @@ export default function SettingsPage(props: PageProps) {
   }, [maxTarget, dmInterval, delay, forceRescan, enableDanmaku, enableConsole, enableSend, api, push]);
 
   const navBtn = (
-    key: "default" | "strategy" | "accounts" | "unified",
+    key: "default" | "strategy" | "accounts" | "unified" | "agent",
     label: string,
     count?: number,
   ) => (
@@ -364,6 +365,7 @@ export default function SettingsPage(props: PageProps) {
           {navBtn("strategy", "启动策略")}
           {navBtn("accounts", "独立账号", realAccts.length)}
           {navBtn("unified", "通用配置")}
+          {navBtn("agent", "AI 与 Agent")}
         </div>
 
         {/* 右侧内容区 */}
@@ -613,6 +615,7 @@ export default function SettingsPage(props: PageProps) {
             </div>
           )}
           {section === "unified" && <UnifiedConfigSection {...props} />}
+          {section === "agent" && <AgentSection {...props} />}
         </div>
       </div>
 

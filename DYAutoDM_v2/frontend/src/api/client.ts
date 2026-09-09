@@ -306,6 +306,26 @@ export interface SettingsSectionSchema {
 /** 后端下发的完整 schema：{ sectionKey: SettingsSectionSchema } */
 export type SettingsSchema = Record<string, SettingsSectionSchema>;
 
+// ===== AI Agent（v0.38.0）=====
+
+export interface AiAgentSummary {
+  id: string;
+  name: string;
+  model: string;
+  strict_level: string;
+  merchant_name: string;
+  enabled: boolean;
+  kb_count: number;
+  updated_at: number;
+}
+
+export interface AiAgent {
+  id: string;
+  name: string;
+  config: Record<string, unknown>;
+  updated_at: number;
+}
+
 // ===== API 客户端 =====
 
 export const api = {
@@ -601,6 +621,50 @@ export const api = {
     return request("/api/settings", {
       method: "POST",
       body: JSON.stringify({ sections }),
+    });
+  },
+
+  // ===== AI Agent 模版 + 账号绑定（v0.38.0）=====
+  /**
+   * Agent 是**模版**，账号绑定 Agent。
+   * 绑定关系在设置页维护（不在 AI 页），改 Agent 一次 → 所有绑定账号同步生效。
+   */
+  async listAgents(): Promise<{
+    ok: boolean;
+    agents: AiAgentSummary[];
+    bindings: Record<string, string>;
+  }> {
+    return request("/api/ai/agents");
+  },
+
+  async saveAgent(body: {
+    id?: string;
+    name: string;
+    config: Record<string, unknown>;
+  }): Promise<{ ok: boolean; agent: AiAgent; agents: AiAgentSummary[] }> {
+    return request("/api/ai/agents", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  async deleteAgent(id: string): Promise<{
+    ok: boolean;
+    unbound_accounts: string[];
+  }> {
+    return request(`/api/ai/agents/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  },
+
+  /** 绑定账号到 Agent；agentId 为空串 = 解绑 */
+  async bindAgent(account: string, agentId: string): Promise<{
+    ok: boolean;
+    bindings: Record<string, string>;
+  }> {
+    return request("/api/ai/bind", {
+      method: "POST",
+      body: JSON.stringify({ account, agent_id: agentId }),
     });
   },
 

@@ -25,6 +25,82 @@ router = APIRouter()
 # 配置
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Agent 模版 + 账号绑定（v0.38.0）
+#
+# 设计（用户 2026-09-09 拍板）：Agent 是**模版**，账号绑定 Agent。
+# 绑定关系在**设置页**维护（不在 AI 页），避免两处配置分裂。
+# 改 Agent 一次 → 所有绑定它的账号同步生效。
+# ---------------------------------------------------------------------------
+
+@router.get("/agents")
+async def list_agents():
+    from services import ai_agent
+
+    return {"ok": True,
+            "agents": ai_agent.list_agents(),
+            "bindings": ai_agent.get_bindings()}
+
+
+@router.get("/agents/{agent_id}")
+async def get_agent(agent_id: str):
+    from services import ai_agent
+
+    a = ai_agent.get_agent(agent_id)
+    if not a:
+        raise HTTPException(404, "Agent 不存在")
+    return {"ok": True, "agent": a}
+
+
+class SaveAgentBody(BaseModel):
+    id: str = ""
+    name: str = ""
+    config: dict = {}
+
+
+@router.post("/agents")
+async def save_agent(body: SaveAgentBody):
+    from services import ai_agent
+
+    # 只认 ai_reply._DEFAULT_CONFIG 里已有的键，防止脏键污染
+    allowed = set(ai_reply._DEFAULT_CONFIG.keys()) | {
+        "knowledge_base", "blacklist"}
+    cfg = {k: v for k, v in (body.config or {}).items() if k in allowed}
+    a = ai_agent.save_agent(body.id, body.name or "未命名 Agent", cfg)
+    return {"ok": True, "agent": a, "agents": ai_agent.list_agents()}
+
+
+@router.delete("/agents/{agent_id}")
+async def delete_agent(agent_id: str):
+    from services import ai_agent
+
+    return ai_agent.delete_agent(agent_id)
+
+
+class BindBody(BaseModel):
+    account: str
+    agent_id: str = ""   # 空 = 解绑
+
+
+@router.post("/bind")
+async def bind_account(body: BindBody):
+    from services import ai_agent
+
+    if body.agent_id:
+        a = ai_agent.get_agent(body.agent_id)
+        if not a:
+            raise HTTPException(404, "Agent 不存在")
+    return ai_agent.bind(body.account, body.agent_id)
+
+
+@router.get("/bind")
+async def get_bindings():
+    from services import ai_agent
+
+    return {"ok": True, "bindings": ai_agent.get_bindings(),
+            "agents": ai_agent.list_agents()}
+
+
 @router.get("/config")
 async def get_config():
     return {"ok": True, "config": ai_reply.get_config()}

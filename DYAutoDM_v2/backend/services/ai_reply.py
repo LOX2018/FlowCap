@@ -262,13 +262,30 @@ class KnowledgeBase:
             items = self._load()
             self._save([it for it in items if it.get("id") != item_id])
 
-    def find_match(self, question: str, threshold: float = 0.7) -> Optional[str]:
-        """三级漏斗：①精确/包含 ②语义向量（可配） ③Jaccard 兜底。"""
+    def find_match(self, question: str, threshold: float = 0.7,
+                   account: str = "") -> Optional[str]:
+        """三级漏斗：①精确/包含 ②语义向量（可配） ③Jaccard 兜底。
+
+        v0.38.0：新增 account 参数 —— 绑定了 Agent 时用 Agent 的知识库
+        （用户决策：知识库跟随 Agent）。account 为空则走全局知识库（零回归）。
+        """
         qtext = (question or "").lower().strip()
         if not qtext:
             return None
         cfg = get_config()
-        for item in self._load():
+
+        items = self._load()
+        # v0.38.0：Agent 级知识库隔离
+        if account:
+            try:
+                from services import ai_agent
+
+                items = ai_agent.resolve_knowledge(account, items)
+                cfg = ai_agent.resolve_config(account, cfg)
+            except Exception:
+                pass
+
+        for item in items:
             q = (item.get("question") or "").lower().strip()
             if not q:
                 continue
@@ -276,11 +293,11 @@ class KnowledgeBase:
             if q in qtext or qtext in q:
                 return item.get("answer", "")
         # ② 语义向量匹配（sem_enabled 且配置齐全时；失败自动落 ③）
-        sem = find_match_semantic(question, cfg)
+        sem = find_match_semantic(question, cfg, items=items)
         if sem:
             return sem
         # ③ Jaccard 兜底（embedding 不可用/未启用时唯一防线）
-        for item in self._load():
+        for item in items:
             q = (item.get("question") or "").lower().strip()
             if not q:
                 continue
@@ -373,11 +390,14 @@ def kb_rebuild_semantic_cache(cfg: Optional[dict] = None) -> dict:
 
 
 def find_match_semantic(question: str, cfg: dict,
-                        threshold: Optional[float] = None) -> Optional[str]:
+                        threshold: Optional[float] = None,
+                        items: Optional[list] = None) -> Optional[str]:
     """语义检索：问题向量化 → 与缓存向量逐条余弦 → 最高分≥阈值即命中。
 
     缓存缺失的条目自动跳过（不现场补算，避免消息路径阻塞）。
     embedding 调用失败返回 None（调用方走 Jaccard 兜底）。
+
+    v0.38.0：items 可显式传入（Agent 级知识库），默认 None 走全局 KB。
     """
     if not cfg.get("sem_enabled") or not cfg.get("sem_base_url"):
         return None
@@ -389,7 +409,7 @@ def find_match_semantic(question: str, cfg: dict,
     th = float(threshold if threshold is not None else cfg.get("sem_threshold", 0.40))
     best_score = 0.0
     best_answer: Optional[str] = None
-    for it in KB.list_items():
+    for it in (items if items is not None else KB.list_items()):
         cached = _kv_get(_KV_SEM_PREFIX + str(it["id"]), None)
         if not cached:
             continue
@@ -844,7 +864,24 @@ class AutoReplyWorker:
         peer_name = row["peer_name"] or row["peer_id"] or "对方"
         key = f"{account}:{conv_id}"
 
+        # v0.38.0：Agent 模版解析 —— 按账号绑定的 Agent 覆盖全局配置。
+        # 未绑定 Agent 时原样返回 cfg（零回归），绑定则用 Agent 的
+        # 模型/档位/prompt/知识库/黑名单/兜底话术。
+        try:
+            from services import ai_agent
+
+            cfg = ai_agent.resolve_config(account, cfg)
+        except Exception:  # Agent 模块异常绝不影响回复主流程
+            pass
+
         bl = set(blacklist_list())
+        # v0.38.0：黑名单跟随 Agent（用户决策：知识库/黑名单/兜底全部 Agent 级）
+        try:
+            from services import ai_agent
+
+            bl = set(ai_agent.resolve_blacklist(account, list(bl)))
+        except Exception:
+            pass
         if (row["peer_id"] and row["peer_id"] in bl) or peer_name in bl:
             return
 
@@ -902,7 +939,9 @@ class AutoReplyWorker:
     def _generate_reply(self, cfg: dict, text: str, account: str,
                         conv_id: str, before_id: int) -> tuple[Optional[str], str]:
         level = cfg.get("strict_level", "rag")
-        kb_hit = KB.find_match(text) if cfg.get("knowledge_first", True) else None
+        # v0.38.0：传 account → 命中 Agent 时用 Agent 的知识库
+        kb_hit = (KB.find_match(text, account=account)
+                  if cfg.get("knowledge_first", True) else None)
         if kb_hit:
             return kb_hit, "知识库"
 
