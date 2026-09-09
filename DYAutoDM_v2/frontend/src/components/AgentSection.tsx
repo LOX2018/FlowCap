@@ -338,32 +338,22 @@ function Section(props: {
   children: React.ReactNode;
 }) {
   return (
-    <div
-      style={{
-        background: "var(--panel)",
-        border: "1px solid var(--line)",
-        borderRadius: 10,
-        marginBottom: 10,
-        padding: "12px 14px",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+    <div className="set-card">
+      <div className="set-card-head is-open">
         <span style={{ fontWeight: 700, fontSize: 13.5 }}>{props.title}</span>
         {props.subtitle && (
           <span style={{ fontSize: 12, color: "var(--muted)" }}>{props.subtitle}</span>
         )}
       </div>
-      {props.children}
+      <div className="set-card-body">{props.children}</div>
     </div>
   );
 }
 
 function Field(props: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ flex: "1 0 220px", minWidth: 0, maxWidth: "100%" }}>
-      <div style={{ color: "var(--muted)", fontSize: 11.5, marginBottom: 2 }}>
-        {props.label}
-      </div>
+    <div className="set-field">
+      <div style={{ color: "var(--muted)", fontSize: 11.5 }}>{props.label}</div>
       {props.children}
     </div>
   );

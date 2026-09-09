@@ -45,25 +45,10 @@ function SectionCard(props: {
 }) {
   const [open, setOpen] = useState(!!props.defaultOpen);
   return (
-    <div
-      style={{
-        background: "var(--panel)",
-        border: "1px solid var(--line)",
-        borderRadius: 10,
-        marginBottom: 10,
-        overflow: "hidden",
-      }}
-    >
+    <div className="set-card">
       <div
+        className={"set-card-head" + (open ? " is-open" : "")}
         onClick={() => setOpen(!open)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 14px",
-          cursor: "pointer",
-          userSelect: "none",
-        }}
       >
         <span
           style={{
@@ -95,26 +80,11 @@ function SectionCard(props: {
         <span style={{ fontSize: 11, color: "var(--muted)" }}>{open ? "收起" : "展开"}</span>
       </div>
       {open && (
-        <div
-          style={{
-            padding: "12px 14px",
-            borderTop: "1px solid var(--border)",
-            background: "var(--surface-2)",
-          }}
-        >
+        <div className="set-card-body">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             {props.children}
           </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              gap: 8,
-              marginTop: 12,
-              paddingTop: 10,
-              borderTop: "1px dashed var(--border)",
-            }}
-          >
+          <div className="set-card-foot">
             <button className="btn sm" onClick={props.onReset} disabled={props.saving}>
               恢复默认
             </button>
@@ -176,19 +146,11 @@ function SchemaField(props: {
 
   return (
     <div
-      style={{
-        flex: "1 0 220px",
-        minWidth: 0,
-        maxWidth: "100%",
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-        padding: "8px 10px",
-        background: "var(--surface)",
-        borderRadius: 8,
-        border: `1px solid ${s.risk ? "var(--warn, #d8962c)" : "var(--border)"}`,
-        fontSize: 12.5,
-      }}
+      className={
+        "set-field" +
+        (s.risk ? " is-risk" : "") +
+        (props.dirty ? " is-dirty" : "")
+      }
     >
       <span style={{ color: "var(--muted)", fontSize: 11.5, display: "flex", gap: 6 }}>
         <span>{s.label}</span>

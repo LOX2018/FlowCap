@@ -20,6 +20,14 @@
   --danger-bg: color-mix(in oklch, var(--danger) 15%, transparent);
   --accent-bg: color-mix(in oklch, var(--accent) 14%, transparent);
 
+  /* 以下三个别名此前**从未定义**，但设置页与新组件一直在 var() 引用
+     → 边框/面板背景/文字色全部回落浏览器默认，表现为「没有边界感」。
+     2026-09-09 补齐：panel 比 surface 更亮一层（卡片浮起），
+     line 是分隔用弱边框，text 等价于 fg。 */
+  --panel: oklch(21.5% 0.017 245);
+  --line: oklch(31% 0.022 245);
+  --text: var(--fg);
+
   --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
   --font-body: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -755,3 +763,122 @@ input, select, textarea { font: inherit; color: inherit; }
 .member-foot { color: var(--muted); font-size: 11.5px; line-height: 1.6; margin-top: 4px; }
 .member-badge { gap: 6px; }
 .member-logout { padding: 4px 10px; font-size: 12px; }
+
+
+/* ===========================================================================
+   设置页专用（2026-09-09 视觉重做）
+   目标：① 侧栏 tab 有明显选中态与容器边界 ② 各分组卡片有层次与边界
+        ③ 字段气泡内部有留白、边框、hover 反馈
+   =========================================================================== */
+
+/* 左侧子导航容器：卡片化，与右侧内容区形成明确分界 */
+.set-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 148px;
+  flex: none;
+  position: sticky;
+  top: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 1px 2px color-mix(in oklch, black 30%, transparent);
+}
+
+/* 单个 tab：默认弱存在感，选中时左侧色条 + 背景 + 文字提亮 */
+.set-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background .14s, color .14s, border-color .14s;
+}
+.set-nav-item:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.set-nav-item.is-active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 42%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* 分组卡片：面板底色 + 外边框 + 轻微阴影，与页面背景拉开层次 */
+.set-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px color-mix(in oklch, black 26%, transparent);
+}
+
+/* 卡片头：点击区，底部有分隔线 */
+.set-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  cursor: pointer;
+  user-select: none;
+  background: color-mix(in oklch, var(--surface-2) 55%, transparent);
+  border-bottom: 1px solid transparent;
+  transition: background .14s;
+}
+.set-card-head:hover { background: var(--surface-2); }
+.set-card-head.is-open {
+  border-bottom-color: var(--line);
+}
+
+/* 卡片体：比卡片头更深一层，形成「头浅体深」的层次 */
+.set-card-body {
+  padding: 14px;
+  background: color-mix(in oklch, var(--bg) 40%, var(--panel));
+}
+
+/* 字段气泡：独立边框 + 背景，hover 提亮，聚焦时描边 */
+.set-field {
+  flex: 1 0 220px;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 11px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 12.5px;
+  transition: border-color .14s, background .14s;
+}
+.set-field:hover {
+  border-color: var(--line);
+  background: var(--surface-2);
+}
+.set-field.is-risk {
+  border-color: color-mix(in oklch, var(--warn) 45%, var(--border));
+}
+.set-field.is-dirty {
+  border-color: color-mix(in oklch, var(--accent) 55%, var(--border));
+}
+
+/* 卡片内操作区（保存/恢复按钮） */
+.set-card-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px dashed var(--line);
+}

@@ -57,25 +57,10 @@ function Collapsible(props: {
 }) {
   const [open, setOpen] = useState(!!props.defaultOpen);
   return (
-    <div
-      style={{
-        background: "var(--panel)",
-        border: "1px solid var(--line)",
-        borderRadius: 10,
-        marginBottom: 10,
-        overflow: "hidden",
-      }}
-    >
+    <div className="set-card">
       <div
+        className={"set-card-head" + (open ? " is-open" : "")}
         onClick={() => setOpen(!open)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 14px",
-          cursor: "pointer",
-          userSelect: "none",
-        }}
       >
         <span
           style={{
@@ -95,13 +80,7 @@ function Collapsible(props: {
         <span style={{ fontSize: 11, color: "var(--muted)" }}>{open ? "收起" : "展开"}</span>
       </div>
       {open && (
-        <div
-          style={{
-            padding: "12px 14px",
-            borderTop: "1px solid var(--border)",
-            background: "var(--surface-2)",
-          }}
-        >
+        <div className="set-card-body">
           {/* 参数项目自动换行：每个气泡 flex:1 0 220px 独立包裹，不固定宫格 */}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{props.children}</div>
           {props.footer && (
@@ -126,15 +105,7 @@ function Collapsible(props: {
 /** 收缩内容区的参数气泡包装：自适应宽度，上下排列 label/输入/hint */
 function FieldWrap(props: { children: React.ReactNode }) {
   return (
-    <div
-      style={{
-        flex: "1 0 220px",
-        minWidth: 0,
-        maxWidth: "100%",
-      }}
-    >
-      {props.children}
-    </div>
+    <div className="set-field">{props.children}</div>
   );
 }
 
@@ -324,12 +295,24 @@ export default function SettingsPage(props: PageProps) {
     count?: number,
   ) => (
     <button
-      className={"btn sm" + (section === key ? " accent" : " ghost")}
+      className={"set-nav-item" + (section === key ? " is-active" : "")}
       onClick={() => setSection(key)}
-      style={{ width: "100%", justifyContent: "flex-start", textAlign: "left" }}
     >
-      {label}
-      {count != null ? `（${count}）` : ""}
+      <span style={{ flex: 1 }}>{label}</span>
+      {count != null && (
+        <span
+          style={{
+            fontSize: 11,
+            padding: "1px 6px",
+            borderRadius: 999,
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            color: "var(--muted)",
+          }}
+        >
+          {count}
+        </span>
+      )}
     </button>
   );
 
@@ -346,21 +329,7 @@ export default function SettingsPage(props: PageProps) {
       {/* 主体：左侧竖式子导航栏 + 右侧内容 */}
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
         {/* 左侧竖式子导航栏 */}
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            width: 130,
-            flex: "none",
-            position: "sticky",
-            top: 0,
-            border: "1px solid var(--line)",
-            borderRadius: 10,
-            padding: 6,
-            background: "var(--panel)",
-          }}
-        >
+        <div className="set-nav">
           {navBtn("default", "默认配置")}
           {navBtn("strategy", "启动策略")}
           {navBtn("accounts", "独立账号", realAccts.length)}
@@ -369,7 +338,16 @@ export default function SettingsPage(props: PageProps) {
         </div>
 
         {/* 右侧内容区 */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: "color-mix(in oklch, var(--bg) 55%, transparent)",
+            border: "1px solid var(--border)",
+            borderRadius: 12,
+            padding: 14,
+          }}
+        >
           {section === "default" && (
             <div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
