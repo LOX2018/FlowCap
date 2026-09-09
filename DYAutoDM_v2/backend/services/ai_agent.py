@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 import time
 from typing import Optional
 
@@ -73,7 +74,13 @@ def _kv_set(key: str, value) -> None:
 # ---------------------------------------------------------------------------
 
 def _new_id() -> str:
-    return f"ag_{int(time.time() * 1000):d}_{id(object()) % 10000:04d}"
+    """生成唯一 Agent id。
+
+    曾用 int(time.time()*1000) + id(object())：同毫秒内建两个 Agent 会
+    **生成相同 id**（CPython 复用临时对象地址）→ 后者覆盖前者。
+    与 config_tag._new_id 同款缺陷，改用 uuid4。
+    """
+    return "ag_" + uuid.uuid4().hex[:16]
 
 
 def list_agents() -> list[dict]:

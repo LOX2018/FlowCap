@@ -98,10 +98,13 @@ _LAZY_MAP = {
 }
 
 
-def cfg(name: str):
+def cfg(name: str, account: str = ""):
     """取一个风控参数的运行时值（配置中心优先，失败回落兜底常量）。
 
     消费方推荐显式用 `cfg("XXX")`；直接读 `XXX` 也等价（走 __getattr__）。
+
+    v0.38.2：传 account 时按该账号绑定的**配置标签**取值（标签优先于全局），
+    未绑定标签则与不传完全一致（零回归）。
     """
     if name not in _LAZY_MAP:
         raise KeyError(name)
@@ -109,7 +112,15 @@ def cfg(name: str):
     try:
         from services.app_config import get
 
-        v = get(sec, key)
+        scope = None
+        if account:
+            try:
+                from services import config_tag
+
+                scope = config_tag.scope_of(account)
+            except Exception:
+                scope = None
+        v = get(sec, key, scope=scope)
         if v is not None:
             return v
     except Exception:

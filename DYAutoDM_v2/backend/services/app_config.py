@@ -25,6 +25,8 @@ import os
 import threading
 from typing import Any
 
+import database
+
 _KV_KEY = "app_config"
 _ENV_PREFIX = "DY_"
 
@@ -309,22 +311,52 @@ SECTIONS: dict[str, dict[str, Any]] = {
 # 读写
 # ---------------------------------------------------------------------------
 
-def _load() -> dict:
+def _load(scope_key: str | None = None) -> dict:
+    """读配置。scope_key 为 None 读全局；否则读该 scope（如标签）的配置。
+
+    v0.38.2：标签只是「指引」，参数仍由本模块（原单位）按 scope 隔离存储，
+    标签自身不持有任何副本 —— 避免两处存储不一致。
+    """
     try:
         from database import get_kv_json
-        data = get_kv_json(_KV_KEY, {})
+        data = get_kv_json(scope_key or _KV_KEY, {})
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
-def _save(data: dict) -> None:
+def _save(data: dict, scope_key: str | None = None) -> None:
     try:
         from database import set_kv_json
-        set_kv_json(_KV_KEY, data)
+        set_kv_json(scope_key or _KV_KEY, data)
     except Exception:
         # 落盘失败不影响内存语义，消费方仍能读到本次值
         pass
+
+
+def scope_key(scope: str | None) -> str:
+    """scope（如标签 id）→ kv key。None 返回全局 key。"""
+    return f"{_KV_KEY}::{scope}" if scope else _KV_KEY
+
+
+def drop_scope(scope: str) -> bool:
+    """删除某 scope 的全部参数（删标签时清理，避免孤儿数据残留）。
+
+    返回是否删除成功。**不吞异常** —— 曾因漏 import database 导致
+    NameError 被 except 静默吞掉，表现为「删了标签但参数还在」。
+    """
+    try:
+        conn = database.get_db()
+        cur = conn.execute("DELETE FROM kv_store WHERE key=?", (scope_key(scope),))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        try:
+            from loguru import logger
+            logger.warning("CFG-010", f"[config] drop_scope 失败: {e}")
+        except Exception:
+            pass
+        return False
 
 
 def _field_meta(section: str, key: str) -> dict | None:
@@ -381,13 +413,26 @@ def _coerce(value: Any, ftype: str, meta: dict):
     return v
 
 
-def get(section: str, key: str, default: Any = None) -> Any:
-    """取一个配置值。优先级：配置中心 → 环境变量 → schema 默认 → default。"""
+def get(section: str, key: str, default: Any = None,
+        scope: str | None = None) -> Any:
+    """取一个配置值。优先级：scope（标签）→ 全局 → 环境变量 → schema 默认。
+
+    v0.38.2：scope 为标签 id 时先读该标签的值，未配则回落全局。
+    标签只作「指引」，参数仍由本模块按 scope 隔离存储。
+    """
     meta = _field_meta(section, key)
     if meta is None:
         return default
     ftype = meta.get("type", "str")
 
+    # ① scope（标签）优先
+    if scope:
+        sv = (_load(scope_key(scope)).get(section) or {}).get(key)
+        if sv is not None:
+            cv = _coerce(sv, ftype, meta)
+            if cv is not None:
+                return cv
+    # ② 全局
     stored = (_load().get(section) or {}).get(key)
     if stored is not None:
         v = _coerce(stored, ftype, meta)
@@ -404,28 +449,28 @@ def get(section: str, key: str, default: Any = None) -> Any:
     return dv if dv is not None else default
 
 
-def get_section(section: str) -> dict:
-    """取整节配置（含默认值）。"""
+def get_section(section: str, scope: str | None = None) -> dict:
+    """取整节配置（含默认值）。scope 为标签 id 时叠加标签值。"""
     sec = SECTIONS.get(section)
     if not sec:
         return {}
-    return {k: get(section, k) for k in (sec.get("fields") or {})}
+    return {k: get(section, k, scope=scope) for k in (sec.get("fields") or {})}
 
 
 def get_all() -> dict:
     return {s: get_section(s) for s in SECTIONS}
 
 
-def save_section(section: str, values: dict) -> dict:
+def save_section(section: str, values: dict, scope: str | None = None) -> dict:
     """保存整节（只认 schema 内字段，越界/非法值直接丢弃）。
 
-    返回最终生效值。
+    返回最终生效值。scope 为标签 id 时写入该标签的隔离存储。
     """
     if section not in SECTIONS:
         return {}
     fields = SECTIONS[section].get("fields") or {}
     with _lock:
-        data = _load()
+        data = _load(scope_key(scope))
         cur = dict(data.get(section) or {})
         for k, v in (values or {}).items():
             meta = fields.get(k)
@@ -436,17 +481,17 @@ def save_section(section: str, values: dict) -> dict:
                 continue
             cur[k] = cv
         data[section] = cur
-        _save(data)
-    return get_section(section)
+        _save(data, scope_key(scope))
+    return get_section(section, scope=scope)
 
 
-def reset_section(section: str) -> dict:
-    """清空某节回默认值。"""
+def reset_section(section: str, scope: str | None = None) -> dict:
+    """清空某节回默认值。scope 为标签 id 时只清该标签的覆盖值。"""
     with _lock:
-        data = _load()
+        data = _load(scope_key(scope))
         data.pop(section, None)
-        _save(data)
-    return get_section(section)
+        _save(data, scope_key(scope))
+    return get_section(section, scope=scope)
 
 
 def schema() -> dict:

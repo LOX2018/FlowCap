@@ -319,6 +319,21 @@ export interface AiAgentSummary {
   updated_at: number;
 }
 
+export interface ConfigTagSummary {
+  id: string;
+  name: string;
+  sections: string[];
+  field_count: number;
+  updated_at: number;
+}
+
+export interface ConfigTag {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface AiAgent {
   id: string;
   name: string;
@@ -666,6 +681,73 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ account, agent_id: agentId }),
     });
+  },
+
+  // ===== 配置标签（v0.38.2）=====
+  /**
+   * 标签是**指引**，参数仍由 app_config 按 scope 隔离存储，标签不存副本。
+   * 标签管「怎么发」（发送风控/直播监听/捕获策略），与 Agent（管「回什么」）并列。
+   */
+  async listTags(): Promise<{
+    ok: boolean;
+    tags: ConfigTagSummary[];
+    bindings: Record<string, string>;
+  }> {
+    return request("/api/settings/tags");
+  },
+
+  async saveTag(name: string, id?: string): Promise<{
+    ok: boolean;
+    tag: ConfigTag;
+    tags: ConfigTagSummary[];
+  }> {
+    return request("/api/settings/tags", {
+      method: "POST",
+      body: JSON.stringify({ id: id || "", name }),
+    });
+  },
+
+  async deleteTag(id: string): Promise<{
+    ok: boolean;
+    unbound_accounts: string[];
+  }> {
+    return request(`/api/settings/tags/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  },
+
+  /** 账号绑定标签；tagId 空串 = 解绑（回落全局） */
+  async bindTag(account: string, tagId: string): Promise<{
+    ok: boolean;
+    bindings: Record<string, string>;
+  }> {
+    return request("/api/settings/tags/bind", {
+      method: "POST",
+      body: JSON.stringify({ account, tag_id: tagId }),
+    });
+  },
+
+  /** 保存某标签的参数（实际写入 app_config 的 scope 存储） */
+  async saveScoped(
+    scope: string,
+    sections: Record<string, Record<string, unknown>>,
+  ): Promise<{
+    ok: boolean;
+    saved_sections: string[];
+    config: Record<string, Record<string, unknown>>;
+  }> {
+    return request("/api/settings/scoped", {
+      method: "POST",
+      body: JSON.stringify({ scope, sections }),
+    });
+  },
+
+  /** 读某标签存了哪些参数（不含全局回落） */
+  async getScoped(tagId: string): Promise<{
+    ok: boolean;
+    config: Record<string, Record<string, unknown>>;
+  }> {
+    return request(`/api/settings/scoped/${encodeURIComponent(tagId)}`);
   },
 
   /** 清空指定 section 回默认值（不传则全清） */

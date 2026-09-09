@@ -16,7 +16,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel
 
@@ -68,6 +68,90 @@ async def save_config(body: SaveBody) -> dict:
         "restart_required": sorted(restart),
         "config": ac.get_all(),
     }
+
+
+class TagMetaBody(BaseModel):
+    """标签元数据（不存参数值）。"""
+    id: str = ""
+    name: str = ""
+
+
+@router.get("/tags")
+async def list_tags():
+    from services import config_tag
+
+    return {"ok": True, "tags": config_tag.list_tags(),
+            "bindings": config_tag.get_bindings()}
+
+
+@router.post("/tags")
+async def save_tag(body: TagMetaBody):
+    from services import config_tag
+
+    t = config_tag.save_tag(body.id, body.name or "未命名标签")
+    return {"ok": True, "tag": t, "tags": config_tag.list_tags()}
+
+
+@router.delete("/tags/{tag_id}")
+async def delete_tag(tag_id: str):
+    from services import config_tag
+
+    if not config_tag.get_tag(tag_id):
+        raise HTTPException(404, "标签不存在")
+    return config_tag.delete_tag(tag_id)
+
+
+class TagBindBody(BaseModel):
+    account: str
+    tag_id: str = ""   # 空 = 解绑
+
+
+@router.post("/tags/bind")
+async def bind_tag(body: TagBindBody):
+    from services import config_tag
+
+    if body.tag_id and not config_tag.get_tag(body.tag_id):
+        raise HTTPException(404, "标签不存在")
+    return config_tag.bind(body.account, body.tag_id)
+
+
+@router.get("/tags/bind")
+async def get_tag_bindings():
+    from services import config_tag
+
+    return {"ok": True, "bindings": config_tag.get_bindings(),
+            "tags": config_tag.list_tags()}
+
+
+class SaveScopedBody(BaseModel):
+    """按 section 保存到指定 scope（标签）。"""
+    sections: dict[str, dict[str, Any]] = {}
+    scope: str = ""
+
+
+@router.post("/scoped")
+async def save_scoped(body: SaveScopedBody):
+    """保存某标签的参数。scope 为空则等同全局保存。"""
+    from services import config_tag
+
+    scope = body.scope or None
+    if scope and not config_tag.get_tag(scope):
+        raise HTTPException(404, "标签不存在")
+    saved = []
+    for sec, values in (body.sections or {}).items():
+        if sec not in ac.SECTIONS:
+            continue
+        ac.save_section(sec, values or {}, scope=scope)
+        saved.append(sec)
+    return {"ok": True, "saved_sections": saved,
+            "config": {s: ac.get_section(s, scope=scope) for s in saved},
+            "tags": config_tag.list_tags()}
+
+
+@router.get("/scoped/{tag_id}")
+async def get_scoped(tag_id: str):
+    """读某标签的参数（不含全局回落，纯看标签存了什么）。"""
+    return {"ok": True, "config": ac._load(ac.scope_key(tag_id))}
 
 
 class ResetBody(BaseModel):

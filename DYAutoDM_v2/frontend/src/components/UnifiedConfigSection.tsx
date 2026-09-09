@@ -246,13 +246,36 @@ function SchemaField(props: {
   );
 }
 
-export default function UnifiedConfigSection(props: PageProps) {
+export default function UnifiedConfigSection(
+  props: PageProps & {
+    scope?: string;
+    scopeName?: string;
+    /** 只渲染指定分区（设置页按功能拆 tab 用）；不传则显示全部 */
+    onlySections?: string[];
+  },
+) {
   const { api, ready, push } = props;
   const qc = useQueryClient();
+  // scope = 标签 id；为空则编辑全局配置。
+  // 参数仍由后端 app_config 按 scope 隔离存储，此处只决定读写哪个 scope。
+  const scope = props.scope || "";
 
   const q = useQuery({
-    queryKey: ["unified-settings"],
-    queryFn: () => api.getSettings(),
+    queryKey: ["unified-settings", scope],
+    queryFn: async () => {
+      const base = await api.getSettings();
+      if (!scope) return base;
+      // 标签模式：额外拉该标签已存的参数，覆盖进 config
+      const sc = await api.getScoped(scope).catch(() => ({ ok: false, config: {} }));
+      const cfg = { ...(base.config || {}) } as Record<
+        string,
+        Record<string, Val>
+      >;
+      for (const [sec, vals] of Object.entries(sc.config || {})) {
+        cfg[sec] = { ...(cfg[sec] || {}), ...(vals as Record<string, Val>) };
+      }
+      return { ...base, config: cfg };
+    },
     enabled: !!ready,
     staleTime: 10_000,
   });
@@ -299,9 +322,17 @@ export default function UnifiedConfigSection(props: PageProps) {
   );
 
   const saveMut = useMutation({
-    mutationFn: (sec: string) => api.saveSettings({ [sec]: draft[sec] || {} }),
+    mutationFn: async (sec: string) => {
+      const body = { [sec]: draft[sec] || {} };
+      if (scope) {
+        // 标签模式：saveScoped 不返回 restart_required（标签参数多为 hot）
+        const r = await api.saveScoped(scope, body);
+        return { ...r, restart_required: [] as string[] };
+      }
+      return api.saveSettings(body);
+    },
     onSuccess: (data, sec) => {
-      qc.setQueryData(["unified-settings"], (old: unknown) => {
+      qc.setQueryData(["unified-settings", scope], (old: unknown) => {
         const o = old as { ok: boolean; schema: SettingsSchema; config: unknown } | undefined;
         return o ? { ...o, config: data.config } : o;
       });
@@ -321,7 +352,7 @@ export default function UnifiedConfigSection(props: PageProps) {
   const resetMut = useMutation({
     mutationFn: (sec: string) => api.resetSettings([sec]),
     onSuccess: (data, sec) => {
-      qc.setQueryData(["unified-settings"], (old: unknown) => {
+      qc.setQueryData(["unified-settings", scope], (old: unknown) => {
         const o = old as { ok: boolean; schema: SettingsSchema; config: unknown } | undefined;
         return o ? { ...o, config: data.config } : o;
       });
@@ -331,14 +362,17 @@ export default function UnifiedConfigSection(props: PageProps) {
     onError: (e) => push(`恢复失败：${errMsg(e)}`),
   });
 
+  const only = props.onlySections;
   const sections = useMemo(
     () =>
-      Object.entries(schema).map(([key, s]) => ({
-        key,
-        label: s.label,
-        fields: Object.entries(s.fields || {}),
-      })),
-    [schema],
+      Object.entries(schema)
+        .filter(([key]) => !only || only.includes(key))
+        .map(([key, s]) => ({
+          key,
+          label: s.label,
+          fields: Object.entries(s.fields || {}),
+        })),
+    [schema, only],
   );
 
   if (q.isLoading) {
