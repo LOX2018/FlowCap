@@ -50,6 +50,7 @@ export const TABS: [string, string][] = [
   ["accounts", "账号管理"],
   ["tasks", "任务中心"],
   ["settings", "设置"],
+  ["notify", "IM 通知"],
   ["logs", "运行日志"],
 ];
 

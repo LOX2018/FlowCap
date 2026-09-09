@@ -523,6 +523,16 @@ class AutoDM:
             self.state = EngineState.RUNNING
             self.status_msg = f"监听中 {self.live_id}"
             self.room_title = room_title or ""
+            # 2026-09-08：任务启动 IM 汇报
+            try:
+                from notify import events as _ev
+
+                _ev.task_started(
+                    f"直播间：{self.live_id}\n标题：{room_title or '(无)'}\n"
+                    f"账号：{acct}"
+                )
+            except Exception as _e:  # noqa: BLE001
+                logger.debug(f"[notify] 任务启动汇报跳过: {_e}")
             self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch, controller=self)
             self.live.room_status = room_status
             # 心跳间隔默认 300s
@@ -535,6 +545,13 @@ class AutoDM:
         except Exception as e:
             logger.error("ENG-006", f"[引擎] 运行异常: {e}")
             self.status_msg = f"运行异常: {e}"
+            # 2026-09-08：运行异常 IM 告警
+            try:
+                from notify import events as _ev
+
+                _ev.task_failed(str(e))
+            except Exception as _ne:  # noqa: BLE001
+                logger.debug(f"[notify] 任务异常告警跳过: {_ne}")
         finally:
             # 启动失败（登录/凭证等）已在 _run 内把状态置回 IDLE：保留失败信息，任务标为停止
             if self.state == EngineState.IDLE:
@@ -675,6 +692,20 @@ class AutoDM:
             f"[引擎] 私信收尾：共捕获 {count} 条，实际成功发送 {sent} 条，"
             f"整体停止（状态={status}）"
         )
+        # 2026-09-08：任务结束 IM 汇报（复用上面真实计数，绝不另算一套）
+        try:
+            from notify import events as _ev
+
+            _ev.task_finished(
+                {
+                    "sent": sent,
+                    "failed": max(count - sent, 0),
+                    "total": count,
+                    "reason": status,
+                }
+            )
+        except Exception as _e:  # noqa: BLE001
+            logger.debug(f"[notify] 任务结束汇报跳过: {_e}")
 
     async def _on_dispatch_idle(self) -> None:
         """私信延迟队列自然发空后的收尾

@@ -148,12 +148,24 @@ def _send_via_recv_daemon(auth: Any, user_id: int, content: str,
 
 
 def _maybe_auto_recapture(auth: Any, reason: str) -> None:
-    """发送失败且属于凭证失效类时，best-effort 触发自动重捕获（不阻塞）。"""
+    """发送失败且属于凭证失效类时，best-effort 触发自动重捕获（不阻塞）。
+
+    2026-09-08：同时发 IM 告警（凭证失效是最高优先级事件，必须让人知道）。
+    节流 10 分钟由 notify.events 内部负责 —— 发送链路会反复重试，不节流会刷屏。
+    """
     if not any(m in reason for m in _RECAP_MARKERS):
         return
+    name = getattr(auth, "account_name", None) or None
+    # 先告警（即使后续重捕获失败，人也已经收到通知）
+    try:
+        from notify import events as _ev
+
+        _ev.cred_expired(name or "(未知账号)", reason, auto_fixing=True)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[notify] 凭证失效告警跳过: {e}")
     try:
         from auto_dm.accounts import auto_recapture
-        name = getattr(auth, "account_name", None) or None
+
         auto_recapture(name)
     except Exception as e:
         logger.warning("SEND-009", f"[recap] 触发自动重捕获失败: {e}")

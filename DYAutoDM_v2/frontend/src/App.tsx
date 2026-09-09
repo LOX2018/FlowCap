@@ -18,6 +18,7 @@ import AiPage from "./pages/ai";
 import AccountsPage from "./pages/accounts";
 import TasksPage from "./pages/tasks";
 import SettingsPage from "./pages/settings";
+import NotifyPage from "./pages/notify";
 import LogsPage from "./pages/logs";
 import SelfCheckModal, { SelfCheckItem } from "./components/SelfCheckModal";
 import MemberGate from "./components/MemberGate";
@@ -433,6 +434,7 @@ export default function App() {
             {tab === "accounts" && <AccountsPage {...pageProps} />}
             {tab === "tasks" && <TasksPage {...pageProps} />}
             {tab === "settings" && <SettingsPage {...pageProps} />}
+            {tab === "notify" && <NotifyPage {...pageProps} />}
             {tab === "logs" && <LogsPage {...pageProps} />}
           </motion.div>
         </AnimatePresence>

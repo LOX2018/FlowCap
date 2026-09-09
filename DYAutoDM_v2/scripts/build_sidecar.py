@@ -113,6 +113,10 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "notify.notifier",
             "api.notify",
             "aiohttp",
+            # 2026-09-08 追加：events 是业务侧（core/sender.py、core/auto_dm.py）
+            # 在**函数体内**动态 import 的（`from notify import events as _ev`），
+            # 静态分析扫不到，必须显式声明，否则打包后事件告警静默失效。
+            "notify.events",
         ):
             cmd += ["--hidden-import", _m]
         # 2026-09-09：会员体系（v0.37.0）。api/member.py 与 services/member_ctx
