@@ -221,6 +221,39 @@ SECTIONS: dict[str, dict[str, Any]] = {
         },
     },
 
+    # ===== 通知（IM 通知指令解析用模型）=====
+    # 2026-09-09：通知页原自带 llm 配置（notify_config.json），与全局模型
+    # 割裂。现收敛到此处，由设置页统一管理（用户要求）。
+    "notify": {
+        "label": "通知与指令",
+        "fields": {
+            "llm_base_url": {
+                "label": "通知解析 API 地址",
+                "type": "str", "default": "http://127.0.0.1:31415/v1",
+                "env": None, "apply": "hot",
+                "hint": "IM 通知指令解析用的模型地址；留空则回落到 AI 全局配置",
+            },
+            "llm_model": {
+                "label": "通知解析模型",
+                "type": "str", "default": "glm-5.2",
+                "env": None, "apply": "hot",
+                "hint": "用于把自然语言指令转成结构化操作",
+            },
+            "llm_api_key": {
+                "label": "通知解析 API Key",
+                "type": "str", "default": "",
+                "env": None, "apply": "hot",
+                "hint": "留空则回落到 AI 全局配置的 api_key",
+            },
+            "llm_enabled": {
+                "label": "启用模型指令解析",
+                "type": "bool", "default": False,
+                "env": None, "apply": "hot",
+                "hint": "关闭则只用规则解析（零模型调用）",
+            },
+        },
+    },
+
     # ===== 捕获与存储 =====
     "capture": {
         "label": "捕获与存储",
@@ -332,6 +365,14 @@ def _save(data: dict, scope_key: str | None = None) -> None:
     except Exception:
         # 落盘失败不影响内存语义，消费方仍能读到本次值
         pass
+
+
+def section_stored(section: str) -> dict:
+    """读该分区**用户实际保存过**的原始值（不含默认值/环境变量）。
+
+    v0.38.3：供一次性迁移判断「统一中心是否配置过该分区」。
+    """
+    return dict(_load().get(section) or {})
 
 
 def scope_key(scope: str | None) -> str:

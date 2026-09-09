@@ -190,7 +190,12 @@ export default function TagSection(props: PageProps) {
           >
             正在编辑标签「{sel?.name}」的参数 —— 只影响绑定它的账号
           </div>
-          <UnifiedConfigSection {...props} scope={selId} scopeName={sel?.name} />
+          <UnifiedConfigSection
+            {...props}
+            scope={selId}
+            scopeName={sel?.name}
+            hideScopeBar
+          />
         </div>
       )}
 

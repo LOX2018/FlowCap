@@ -217,15 +217,21 @@ export default function NotifyPage({ api, push }: PageProps) {
         <div style={{ fontSize: 12, marginBottom: 8, color: "var(--fg)" }}>
           LLM 指令解析（可选）—— 未配置时自动使用规则解析
         </div>
-        <Field label="API 地址" value={String(cfg.llm?.base_url || "")}
-               placeholder="http://127.0.0.1:31415/v1"
-               onChange={(v) => patch((c) => { c.llm = { ...(c.llm || {}), base_url: v }; })} />
-        <Field label="模型" value={String(cfg.llm?.model || "")}
-               placeholder="如 qwen2.5-7b-instruct"
-               onChange={(v) => patch((c) => { c.llm = { ...(c.llm || {}), model: v }; })} />
-        <Field label="API Key" secret value={String(cfg.llm?.api_key || "")}
-               placeholder="留空或 •••• = 不修改"
-               onChange={(v) => patch((c) => { c.llm = { ...(c.llm || {}), api_key: v }; })} />
+        <div
+          style={{
+            fontSize: 11.5,
+            color: "var(--muted)",
+            padding: "8px 10px",
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            lineHeight: 1.6,
+          }}
+        >
+          模型配置已统一到
+          <b>「设置 → 通知与指令」</b>
+          页管理，此处不再重复配置。 留空的字段会自动回落到 AI 全局配置。
+        </div>
       </Card>
 
       {/* 渠道列表 */}

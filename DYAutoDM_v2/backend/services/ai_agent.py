@@ -171,6 +171,20 @@ def agent_of(account: str) -> Optional[str]:
 # 配置解析（消费方唯一入口）
 # ---------------------------------------------------------------------------
 
+def resolve_config_for(agent_id: str, base_config: dict) -> dict:
+    """按 agent_id 直接解析配置（AI 页编辑指定 Agent 用）。
+
+    与 resolve_config(account, base) 的区别：不需要账号，直接给 agent_id。
+    Agent 不存在返回 base。
+    """
+    a = get_agent(agent_id)
+    if not a:
+        return base_config
+    merged = dict(base_config)
+    merged.update(a.get("config") or {})
+    return merged
+
+
 def resolve_config(account: str, base_config: dict) -> dict:
     """按账号解析最终生效的 AI 配置。
 

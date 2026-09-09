@@ -26,7 +26,8 @@ type SectionKey =
   | "live"
   | "capture"
   | "agent"
-  | "tag";
+  | "tag"
+  | "notify";
 
 const TABS: { key: SectionKey; label: string; hint: string }[] = [
   { key: "general", label: "通用配置", hint: "前端与系统行为（非业务）" },
@@ -35,6 +36,7 @@ const TABS: { key: SectionKey; label: string; hint: string }[] = [
   { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片" },
   { key: "agent", label: "AI 与 Agent", hint: "回复内容：回什么" },
   { key: "tag", label: "配置标签", hint: "发送策略：怎么发" },
+  { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型" },
 ];
 
 export default function SettingsPage(props: PageProps) {
@@ -104,6 +106,9 @@ export default function SettingsPage(props: PageProps) {
           )}
           {section === "agent" && <AgentSection {...props} />}
           {section === "tag" && <TagSection {...props} />}
+          {section === "notify" && (
+            <UnifiedConfigSection {...props} onlySections={["notify"]} />
+          )}
         </div>
       </div>
     </div>

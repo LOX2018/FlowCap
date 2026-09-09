@@ -252,13 +252,33 @@ export default function UnifiedConfigSection(
     scopeName?: string;
     /** 只渲染指定分区（设置页按功能拆 tab 用）；不传则显示全部 */
     onlySections?: string[];
+    /** 隐藏顶部标签切换栏（被 TagSection 内嵌时，外层已决定 scope） */
+    hideScopeBar?: boolean;
   },
 ) {
   const { api, ready, push } = props;
   const qc = useQueryClient();
-  // scope = 标签 id；为空则编辑全局配置。
-  // 参数仍由后端 app_config 按 scope 隔离存储，此处只决定读写哪个 scope。
-  const scope = props.scope || "";
+
+  // ---- v0.38.3：顶部标签切换栏状态（业务分区才有）----
+  // 选「全局」= 编辑全局参数；选某标签 = 编辑该标签的参数。
+  // 删除标签只能在「配置标签」页做，这里只切换，不提供删除。
+  const isBusiness =
+    !props.hideScopeBar &&
+    (!props.onlySections || !props.onlySections.includes("general"));
+  const [activeTag, setActiveTag] = useState<string>("");
+
+  const tagsQ = useQuery({
+    queryKey: ["tag-switcher"],
+    queryFn: () => api.listTags(),
+    enabled: !!ready && isBusiness,
+    staleTime: 30_000,
+  });
+  const tagList = (tagsQ.data?.tags || []) as {
+    id: string; name: string; field_count: number;
+  }[];
+
+  // 当前生效的 scope：外部传入优先（标签页内嵌时用），否则用顶部选择
+  const scope = props.scope !== undefined ? props.scope : activeTag;
 
   const q = useQuery({
     queryKey: ["unified-settings", scope],
@@ -337,13 +357,14 @@ export default function UnifiedConfigSection(
         return o ? { ...o, config: data.config } : o;
       });
       const need = data.restart_required || [];
+      const who = scope ? `标签「${scopeName}」` : "全局";
       if (need.length > 0) {
         push(
-          `已保存「${schema[sec]?.label || sec}」。` +
+          `已保存到${who}：「${schema[sec]?.label || sec}」。` +
             `以下组件需重启才生效：${need.join("、")}`,
         );
       } else {
-        push(`已保存「${schema[sec]?.label || sec}」，立即生效`);
+        push(`已保存到${who}：「${schema[sec]?.label || sec}」，立即生效`);
       }
     },
     onError: (e) => push(`保存失败：${errMsg(e)}`),
@@ -386,19 +407,85 @@ export default function UnifiedConfigSection(
     );
   }
 
+  const scopeName = scope
+    ? tagList.find((t) => t.id === scope)?.name || props.scopeName || "标签"
+    : "全局";
+
   return (
     <div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "var(--muted)",
-          marginBottom: 10,
-          lineHeight: 1.6,
-        }}
-      >
-        全站通用参数集中在此处管理。带 <b style={{ color: "var(--warn, #d8962c)" }}>⚠</b>{" "}
-        的是风控敏感项，下限受保护；改动后请点「保存此分组」。
-      </div>
+      {/* 顶部标签切换栏：决定下面参数保存到哪里（全局 / 某标签） */}
+      {isBusiness && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+            padding: "8px 10px",
+            marginBottom: 12,
+            background: "var(--panel)",
+            border: "1px solid var(--line)",
+            borderRadius: 10,
+          }}
+        >
+          <span style={{ fontSize: 11.5, color: "var(--muted)", marginRight: 2 }}>
+            保存到
+          </span>
+          <button
+            className={"btn sm" + (scope === "" ? " accent" : " ghost")}
+            onClick={() => setActiveTag("")}
+          >
+            全局
+          </button>
+          {tagList.map((t) => (
+            <button
+              key={t.id}
+              className={"btn sm" + (scope === t.id ? " accent" : " ghost")}
+              onClick={() => setActiveTag(t.id)}
+              title={`编辑标签「${t.name}」的参数`}
+            >
+              {t.name}
+            </button>
+          ))}
+          <div style={{ flex: 1 }} />
+          <span
+            style={{
+              fontSize: 11.5,
+              padding: "2px 8px",
+              borderRadius: 999,
+              background: scope ? "var(--accent-bg)" : "var(--surface-2)",
+              color: scope ? "var(--accent)" : "var(--muted)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            当前：{scopeName}
+          </span>
+        </div>
+      )}
+
+      {isBusiness && (
+        <div
+          style={{
+            fontSize: 11.5,
+            color: "var(--muted)",
+            marginBottom: 10,
+            lineHeight: 1.6,
+          }}
+        >
+          {scope ? (
+            <>
+              正在编辑标签「{scopeName}」的参数 —— 只影响
+              <b>在「配置标签」页绑定了该标签的账号</b>。
+              标签的新建与删除请到「配置标签」页。
+            </>
+          ) : (
+            <>
+              正在编辑<b>全局</b>参数 —— 对未绑定标签的账号生效。
+              若某账号绑定了标签，则以标签值为准。
+            </>
+          )}
+        </div>
+      )}
 
       {sections.map((sec, i) => (
         <SectionCard

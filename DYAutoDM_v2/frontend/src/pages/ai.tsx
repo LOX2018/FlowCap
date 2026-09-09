@@ -243,11 +243,28 @@ export default function AiPage(props: PageProps) {
   const { push, api } = props;
   const qc = useQueryClient();
 
-  const { data: cfg } = useQuery({
-    queryKey: ["ai-config"],
-    queryFn: async () =>
-      (await api.aiGetConfig()).config as unknown as AiConfig,
+  // v0.38.3：AI 页变成 Agent 编辑器 —— 顶部选哪个 Agent 就编辑哪个。
+  // 不选择（" "）时编辑全局默认；Agent 的新建/删除/绑定在设置页。
+  const [agentId, setAgentId] = useState<string>("");
+
+  const agentsQ = useQuery({
+    queryKey: ["ai-agents-list"],
+    queryFn: () => api.listAgents(),
+    staleTime: 30_000,
   });
+  const agentList = agentsQ.data?.agents || [];
+
+  const { data: cfg } = useQuery({
+    queryKey: ["ai-config", agentId],
+    queryFn: async () =>
+      (await api.aiGetConfig(agentId || undefined))
+        .config as unknown as AiConfig,
+  });
+  // 切 Agent 时丢弃未保存草稿（否则会把 A 的草稿写到 B）
+  const switchAgent = useCallback((id: string) => {
+    setDraft({});
+    setAgentId(id);
+  }, []);
   const { data: status } = useQuery({
     queryKey: ["ai-status"],
     queryFn: () => api.aiStatus() as unknown as Promise<AiStatus>,
@@ -276,15 +293,25 @@ export default function AiPage(props: PageProps) {
 
   const save = useCallback(async () => {
     try {
-      await api.aiSaveConfig(draft as Record<string, unknown>);
+      await api.aiSaveConfig(
+        draft as Record<string, unknown>,
+        agentId || undefined,
+      );
       setDraft({});
-      await qc.invalidateQueries({ queryKey: ["ai-config"] });
+      await qc.invalidateQueries({ queryKey: ["ai-config", agentId] });
       await qc.invalidateQueries({ queryKey: ["ai-status"] });
-      push("AI 配置已保存", 4000);
+      push(
+        agentId
+          ? `已保存到 Agent「${
+              agentList.find((a) => a.id === agentId)?.name || agentId
+            }」`
+          : "AI 全局配置已保存",
+        4000,
+      );
     } catch (e) {
       push(`保存失败: ${errMsg(e)}`, 8000);
     }
-  }, [draft, api, push, qc]);
+  }, [draft, api, push, qc, agentId, agentList]);
 
   const toggleRun = useCallback(async () => {
     try {
@@ -433,6 +460,79 @@ export default function AiPage(props: PageProps) {
 
   return (
     <div>
+      {/* ===== v0.38.3：Agent 选择器 ===== */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          flexWrap: "wrap",
+          padding: "8px 10px",
+          marginBottom: 12,
+          background: "var(--panel)",
+          border: "1px solid var(--line)",
+          borderRadius: 10,
+        }}
+      >
+        <span style={{ fontSize: 11.5, color: "var(--muted)", marginRight: 2 }}>
+          编辑目标
+        </span>
+        <button
+          className={"btn sm" + (agentId === "" ? " accent" : " ghost")}
+          onClick={() => switchAgent("")}
+        >
+          全局默认
+        </button>
+        {agentList.map((a) => (
+          <button
+            key={a.id}
+            className={"btn sm" + (agentId === a.id ? " accent" : " ghost")}
+            onClick={() => switchAgent(a.id)}
+            title={`编辑 Agent「${a.name}」`}
+          >
+            {a.name}
+          </button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <span
+          style={{
+            fontSize: 11.5,
+            padding: "2px 8px",
+            borderRadius: 999,
+            background: agentId ? "var(--accent-bg)" : "var(--surface-2)",
+            color: agentId ? "var(--accent)" : "var(--muted)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          当前：
+          {agentId
+            ? agentList.find((a) => a.id === agentId)?.name || agentId
+            : "全局默认"}
+        </span>
+      </div>
+      <div
+        style={{
+          fontSize: 11.5,
+          color: "var(--muted)",
+          marginBottom: 12,
+          lineHeight: 1.6,
+        }}
+      >
+        {agentId ? (
+          <>
+            正在编辑 Agent「
+            {agentList.find((a) => a.id === agentId)?.name}」的回复内容 ——
+            影响<b>在设置页绑定了该 Agent 的账号</b>。 Agent
+            的新建、删除与账号绑定请到「设置 → AI 与 Agent」。
+          </>
+        ) : (
+          <>
+            正在编辑<b>全局默认</b> ——
+            对未绑定 Agent 的账号生效。多账号请用 Agent 区分，避免配置串号。
+          </>
+        )}
+      </div>
+
       {/* ===== 标题 + 运行控制 ===== */}
       <Section
         title="🤖 AI 获客自动回复"

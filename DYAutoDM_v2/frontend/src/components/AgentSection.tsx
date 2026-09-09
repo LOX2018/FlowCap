@@ -148,6 +148,9 @@ export default function AgentSection(props: PageProps) {
         账号同步生效。知识库 / 黑名单 / 兜底话术都跟随 Agent，账号不单独持有。
       </div>
 
+      {/* ⓪ 全局模型配置（v0.38.3：模型配置在设置中体现，与 AI 页同源） */}
+      <GlobalModelCard api={api} ready={ready} push={push} />
+
       {/* ① Agent 列表 */}
       <Section title="Agent 列表" subtitle={`${agents.length} 个`}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
@@ -356,5 +359,88 @@ function Field(props: { label: string; children: React.ReactNode }) {
       <div style={{ color: "var(--muted)", fontSize: 11.5 }}>{props.label}</div>
       {props.children}
     </div>
+  );
+}
+
+/**
+ * 全局模型配置卡片（v0.38.3）。
+ *
+ * 用户要求「模型的配置应该在设置中体现」——这里与 AI 页**同源**读写
+ * `/api/ai/config`（全局那份），不是第二份存储。AI 页改了这里刷新即见，
+ * 这里改了 AI 页刷新即见。
+ * 语义与 AI 页完全一致：api_key 明文存储、password 框显示；
+ * 保存只传**变更字段**（patch），未动过的键绝不发送（避免误清 api_key）。
+ */
+function GlobalModelCard(props: PageProps) {
+  const { api, ready, push } = props;
+  const qc = useQueryClient();
+
+  const q = useQuery({
+    queryKey: ["ai-config", ""],
+    queryFn: () => api.aiGetConfig(),
+    enabled: !!ready,
+    staleTime: 10_000,
+  });
+  const cfg = (q.data?.config || {}) as Record<string, unknown>;
+
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const cur = (k: string) =>
+    draft[k] !== undefined ? draft[k] : String(cfg[k] ?? "");
+  const set = (k: string, v: string) => setDraft({ ...draft, [k]: v });
+
+  const saveMut = useMutation({
+    // patch 语义：只传用户改过的字段（与 AI 页一致）
+    mutationFn: () => api.aiSaveConfig(draft),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ai-config"] });
+      setDraft({});
+      push("全局模型配置已保存（AI 页同步生效）");
+    },
+    onError: (e) => push(`保存失败：${errMsg(e)}`),
+  });
+
+  return (
+    <Section title="全局模型配置" subtitle="AI 页同源 · 未绑定 Agent 的账号用这份">
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        <Field label="API 地址（base_url）">
+          <input
+            value={cur("base_url")}
+            onChange={(e) => set("base_url", e.target.value)}
+            placeholder="http://127.0.0.1:31415/v1"
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="主模型（model）">
+          <input
+            value={cur("model")}
+            onChange={(e) => set("model", e.target.value)}
+            placeholder="如 qwen2.5-7b-instruct"
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="API Key">
+          <input
+            type="password"
+            value={cur("api_key")}
+            onChange={(e) => set("api_key", e.target.value)}
+            placeholder="sk-...（本机服务可留空）"
+            style={inputStyle}
+          />
+        </Field>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button
+          className="btn accent sm"
+          onClick={() => saveMut.mutate()}
+          disabled={saveMut.isPending || Object.keys(draft).length === 0}
+        >
+          {saveMut.isPending ? "保存中…" : "保存模型配置"}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+        与「AI 获客」页共享同一份全局配置；各 Agent 可在 AI 页覆盖主模型。
+        IM 通知的指令解析模型在「设置 → 通知与指令」。
+      </div>
+    </Section>
   );
 }

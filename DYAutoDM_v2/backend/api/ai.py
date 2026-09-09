@@ -102,23 +102,57 @@ async def get_bindings():
 
 
 @router.get("/config")
-async def get_config():
-    return {"ok": True, "config": ai_reply.get_config()}
+async def get_config(agent_id: str = ""):
+    """读配置。带 agent_id 时读该 Agent 的（叠加在全局之上）。
+
+    v0.38.3：AI 页变成 Agent 编辑器 —— 顶部选了哪个 Agent，本页就编辑哪个。
+    不传 agent_id 时与改造前完全一致（全局配置，零回归）。
+    """
+    base = ai_reply.get_config()
+    if not agent_id:
+        return {"ok": True, "config": base, "scope": "global"}
+    from services import ai_agent
+
+    a = ai_agent.get_agent(agent_id)
+    if not a:
+        raise HTTPException(404, "Agent 不存在")
+    merged = ai_agent.resolve_config_for(agent_id, base)
+    return {"ok": True, "config": merged, "scope": agent_id,
+            "agent_name": a.get("name")}
 
 
 class SaveConfigBody(BaseModel):
     config: dict
+    agent_id: str = ""   # 空 = 存全局；否则存到该 Agent
 
 
 @router.post("/config")
 async def save_config(body: SaveConfigBody):
+    if body.agent_id:
+        # Agent 模式：只写该 Agent，不动全局
+        from services import ai_agent
+
+        a = ai_agent.get_agent(body.agent_id)
+        if not a:
+            raise HTTPException(404, "Agent 不存在")
+        allowed = set(ai_reply._DEFAULT_CONFIG.keys()) | {
+            "knowledge_base", "blacklist"}
+        cfg = {k: v for k, v in (body.config or {}).items() if k in allowed}
+        cur = dict(a.get("config") or {})
+        cur.update(cfg)
+        ai_agent.save_agent(body.agent_id, a.get("name") or "", cur)
+        merged = ai_agent.resolve_config_for(body.agent_id, ai_reply.get_config())
+        return {"ok": True, "config": merged, "scope": body.agent_id,
+                "running": ai_reply.WORKER.status["running"]}
+
+    # 全局模式（原行为不变）
     merged = ai_reply.save_config(body.config)
     # enabled 变化时联动 WORKER 启停
     if merged.get("enabled"):
         ai_reply.WORKER.start()
     else:
         ai_reply.WORKER.stop()
-    return {"ok": True, "config": merged,
+    return {"ok": True, "config": merged, "scope": "global",
             "running": ai_reply.WORKER.status["running"]}
 
 

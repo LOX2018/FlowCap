@@ -820,8 +820,18 @@ export const api = {
   },
 
   // ===== AI 获客自动回复（嵌入 douyin-auto-reply-assistant，2026-09-06）=====
-  async aiGetConfig(): Promise<{ ok: boolean; config: Record<string, unknown> }> {
-    return request("/api/ai/config");
+  /**
+   * 读 AI 配置。agentId 为空读全局；否则读该 Agent 的（叠加在全局之上）。
+   * v0.38.3：AI 页 = Agent 编辑器，顶部选哪个就编辑哪个。
+   */
+  async aiGetConfig(agentId?: string): Promise<{
+    ok: boolean;
+    config: Record<string, unknown>;
+    scope?: string;
+    agent_name?: string;
+  }> {
+    const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+    return request(`/api/ai/config${q}`);
   },
   async aiProviders(): Promise<{ ok: boolean; providers: { id: string; name: string; base_url: string; api_protocol: string; needs_key: boolean; key_hint: string; models_chat: string[]; models_vision: string[] }[] }> {
     return request("/api/ai/providers");
@@ -829,10 +839,19 @@ export const api = {
   async aiFreellmModels(): Promise<{ ok: boolean; chat: string[]; vision: string[]; embed: string[]; total: number; error?: string }> {
     return request("/api/ai/providers/freellm_models");
   },
-  async aiSaveConfig(config: Record<string, unknown>): Promise<{ ok: boolean; config: Record<string, unknown>; running: boolean }> {
+  /** 保存 AI 配置。agentId 为空存全局；否则只存该 Agent。 */
+  async aiSaveConfig(
+    config: Record<string, unknown>,
+    agentId?: string,
+  ): Promise<{
+    ok: boolean;
+    config: Record<string, unknown>;
+    running: boolean;
+    scope?: string;
+  }> {
     return request("/api/ai/config", {
       method: "POST",
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, agent_id: agentId || "" }),
     });
   },
   async aiTest(): Promise<{ ok: boolean; msg: string }> {

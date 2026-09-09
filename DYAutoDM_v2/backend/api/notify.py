@@ -130,6 +130,79 @@ async def test_push(body: TestPush) -> dict:
     return {"ok": any(v.get("ok") for v in results.values()), "results": results}
 
 
+def _resolve_llm(cfg: dict) -> dict:
+    """解析通知指令用的模型配置（v0.38.3）。
+
+    优先级：**统一配置中心 notify 分区** → 通知页自带的 llm 配置（旧，一次性迁入）
+    → 空 dict（规则解析）。
+
+    用户要求：通知复用设置页的统一模型配置，不再各自维护一份。
+    迁移（一次性，守卫 key 记 kv）：notify_config.json 里配过 llm 且统一中心
+    notify 分区从未保存过 → 原值迁入（llm_enabled=True），此后旧文件字段不再读。
+    未启用（llm_enabled=False）或迁移后字段仍不全 → 回落 AI 全局配置补齐，
+    仍缺 base_url/model 才走规则解析（零模型调用）。
+    """
+    try:
+        from services import app_config as ac
+
+        _migrate_legacy_llm(ac)
+
+        if not ac.get("notify", "llm_enabled"):
+            return {}
+        out = {
+            "base_url": ac.get("notify", "llm_base_url") or "",
+            "model": ac.get("notify", "llm_model") or "",
+            "api_key": ac.get("notify", "llm_api_key") or "",
+        }
+        # 留空的字段回落到 AI 全局配置（避免重复填一遍）
+        try:
+            from services import ai_reply
+
+            ai = ai_reply.get_config()
+            out["base_url"] = out["base_url"] or ai.get("base_url") or ""
+            out["model"] = out["model"] or ai.get("model") or ""
+            out["api_key"] = out["api_key"] or ai.get("api_key") or ""
+        except Exception:
+            pass
+        if out["base_url"] and out["model"]:
+            return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("NTY-010", f"[notify] 统一模型配置解析失败: {e}")
+    # 兜底：统一中心不可用时直接用旧配置，保证指令解析不中断
+    return cfg.get("llm") or {}
+
+
+_MIGRATED_KEY = "notify.llm.migrated"
+
+
+def _migrate_legacy_llm(ac) -> None:
+    """notify_config.json 的旧 llm 配置一次性迁入统一配置中心。
+
+    守卫：统一中心 notify 分区**从未保存过**（section_stored 为空）才迁移，
+    用户在设置页保存过之后旧文件永远不再生效。kv 记标记防重复执行。
+    """
+    try:
+        from database import get_kv, set_kv
+
+        if get_kv(_MIGRATED_KEY):
+            return
+        set_kv(_MIGRATED_KEY, True)  # 先占位防并发双迁
+        if ac.section_stored("notify"):
+            return  # 用户已配置过统一中心，旧值作废
+        legacy = load_config().get("llm") or {}
+        if not (legacy.get("base_url") and legacy.get("model")):
+            return  # 旧配置本来就没配过模型，无事可迁
+        ac.save_section("notify", {
+            "llm_enabled": True,
+            "llm_base_url": legacy.get("base_url") or "",
+            "llm_model": legacy.get("model") or "",
+            "llm_api_key": legacy.get("api_key") or "",
+        })
+        logger.info("[notify] 旧 llm 配置已迁入设置页统一配置（一次性）")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("NTY-011", f"[notify] llm 配置迁移失败（不影响运行）: {e}")
+
+
 @router.post("/command")
 async def command(body: CommandIn) -> dict:
     """IM 指令入口：解析 → (需确认则回确认语) / 执行。
@@ -137,7 +210,7 @@ async def command(body: CommandIn) -> dict:
     执行动作全部走 DYAutoDM 已有内部函数，不新增抖音请求。
     """
     cfg = load_config()
-    parsed = await parse_command(body.text, cfg.get("llm") or {})
+    parsed = await parse_command(body.text, _resolve_llm(cfg))
     intent = parsed["intent"]
 
     if parsed["need_confirm"] and not body.confirmed:
