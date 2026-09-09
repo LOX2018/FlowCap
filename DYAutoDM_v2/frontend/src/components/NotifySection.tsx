@@ -221,6 +221,12 @@ export default function NotifySection({ api, push }: PageProps) {
   const addChannel = (kind: NotifyKind) => {
     patch((c) => {
       const list = c.channels || (c.channels = []);
+      // v0.38.5：同一平台只保留一个渠道实例 —— 重复添加会让同一 QQ bot
+      // 建两条 WS 连接，同一条消息生成两份待授权（实测踩中）。
+      if (list.some((x) => x.kind === kind)) {
+        push(`已有一个「${CHANNEL_META[kind].label}」渠道，直接在下方卡片里编辑即可`);
+        return;
+      }
       list.push({
         id: `${kind}_${Date.now().toString(36)}`,
         kind,

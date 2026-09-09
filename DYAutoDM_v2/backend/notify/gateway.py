@@ -153,6 +153,9 @@ class Gateway:
             "note": note or entry.get("first_text", "")[:50],
             "approved_at": int(time.time()),
             "channel_id": entry.get("channel_id", ""),
+            # v0.38.5：kind（weixin_oc/qqofficial）—— 同 kind 不同实例 id
+            # 视为同一来源（用户重复配置同一 bot 时的去重依据）
+            "kind": entry.get("kind") or str(entry.get("channel_id", "")).split("_", 1)[0],
             "sender_id": entry.get("sender_id", ""),
         }
         self._save_gw(gw)
@@ -180,7 +183,8 @@ class Gateway:
 
     # ---------------- 网关核心：入站判定 ----------------
 
-    def check(self, channel_id: str, sender_id: str, text: str) -> dict[str, Any]:
+    def check(self, channel_id: str, sender_id: str, text: str,
+              channel_kind: str = "") -> dict[str, Any]:
         """入站消息过网关。返回 decision:
 
         {action: allow|reject|pending, role, reason, reply_hint}
@@ -197,6 +201,14 @@ class Gateway:
 
         grants = gw.get("grants", {})
         g = grants.get(key)
+        if g is None:
+            # 同 kind + sender 的其他实例 key 也算已授权（防重复配置导致重复待审）
+            ck = channel_kind or channel_id.split("_", 1)[0]
+            for k2, g2 in grants.items():
+                if (str(g2.get("kind") or g2.get("channel_id", "")) == ck
+                        and str(g2.get("sender_id")) == str(sender_id)):
+                    g = g2
+                    break
         if g:
             role = str(g.get("role", "viewer"))
             if role == "blocked":
@@ -207,10 +219,22 @@ class Gateway:
                     "reason": "已授权"}
 
         # 未授权：进待审（去重，同一 sender 只留一条，更新最近消息与时间）
+        # v0.38.5 补丁：同一 sender 经由**同 kind 的不同渠道实例**（用户重复配置
+        # 同一 QQ bot 会产生多个实例 id）到达时，视为同一来源 —— 待审与授权都按
+        # 「kind + sender_id」归并，避免同一人出现两条不同抬头的待审。
         pending = gw.setdefault("pending", [])
         now = int(time.time())
+        channel_kind = channel_kind or channel_id.split("_", 1)[0]
         for p in pending:
-            if p.get("key") == key:
+            same = (
+                p.get("key") == key
+                or (str(p.get("kind") or p.get("channel_id", "")) == channel_kind
+                    and str(p.get("sender_id")) == str(sender_id))
+            )
+            if same:
+                if p.get("key") != key:
+                    # 归并到首条：key 统一为已有条目（授权后对所有实例生效）
+                    p.setdefault("alias_keys", []).append(key)
                 p["last_text"] = (text or "")[:80]
                 p["last_at"] = now
                 p["msg_count"] = int(p.get("msg_count", 0)) + 1
@@ -220,6 +244,7 @@ class Gateway:
         pending.append({
             "key": key,
             "channel_id": channel_id,
+            "kind": channel_kind or channel_id.split("_", 1)[0],
             "sender_id": sender_id,
             "first_text": (text or "")[:80],
             "last_text": (text or "")[:80],

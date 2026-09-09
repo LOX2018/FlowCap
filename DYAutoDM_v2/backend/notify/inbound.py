@@ -87,9 +87,13 @@ class InboundManager:
 
     # ------------------------------------------------------------------
     async def _dispatch(self, channel_id: str, sender_id: str, text: str,
-                        meta: dict[str, Any]) -> Optional[str]:
-        """入站消息统一入口：网关 → 处理器。返回应回复的文本。"""
-        d = gateway.check(channel_id, sender_id, text)
+                        meta: dict[str, Any], channel_kind: str = "") -> Optional[str]:
+        """入站消息统一入口：网关 → 处理器。返回应回复的文本。
+
+        channel_kind：渠道类型（weixin_oc/qqofficial），供网关按
+        「kind+sender」归并去重（渠道实例 id 可能有多个，来源只有一个）。
+        """
+        d = gateway.check(channel_id, sender_id, text, channel_kind)
         if d["action"] == "pending":
             return ("你好，我是 DYAutoDM 助手。你的身份待管理员确认，"
                     "确认后即可使用指令功能，请稍候。")
@@ -178,7 +182,8 @@ class InboundManager:
                         ch.remember_context(sender, ctx)
                     text = _ilink_text(msg)
                     reply = await self._dispatch(cid, sender, text,
-                                                 {"context_token": ctx})
+                                                 {"context_token": ctx},
+                                                 channel_kind="weixin_oc")
                     if reply and ctx:
                         try:
                             await ch.send(sender, reply)
@@ -222,7 +227,8 @@ class InboundManager:
                 if not sender or not text:
                     return
                 reply = await mgr._dispatch(cid, sender, text,
-                                            {"msg_id": getattr(message, "id", "")})
+                                            {"msg_id": getattr(message, "id", "")},
+                                            channel_kind="qqofficial")
                 if reply:
                     try:
                         await message.reply(content=reply[:800])
@@ -239,7 +245,8 @@ class InboundManager:
                 if not group or not text:
                     return
                 reply = await mgr._dispatch(cid, f"group_{group}", text,
-                                            {"msg_id": getattr(message, "id", "")})
+                                            {"msg_id": getattr(message, "id", "")},
+                                            channel_kind="qqofficial")
                 if reply:
                     try:
                         await message.reply(content=reply[:800])
