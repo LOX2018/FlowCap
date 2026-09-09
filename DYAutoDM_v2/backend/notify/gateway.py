@@ -69,9 +69,27 @@ class Gateway:
         self._get_cfg = get_config
         self._save_cfg = save_config
 
+    def ensure_bound(self) -> bool:
+        """模块级自举绑定（v0.38.5）：避免「忘了调 init_notifier 就全空」。
+
+        gateway 与 api/notify.py 双向依赖（gateway 不 import api，api import
+        gateway），故此处**延迟** import—— 首个消费方触发时完成绑定。
+        """
+        if self._get_cfg is not None:
+            return True
+        try:
+            from api.notify import load_config, save_config_file
+
+            self.bind_store(load_config, save_config_file)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     # ---------------- 配置存取 ----------------
 
     def _gw(self) -> dict[str, Any]:
+        if self._get_cfg is None:
+            self.ensure_bound()
         if self._get_cfg is None:
             return {"mode": "pairing", "grants": {}, "pending": []}
         cfg = self._get_cfg() or {}
@@ -82,6 +100,8 @@ class Gateway:
         return gw
 
     def _save_gw(self, gw: dict[str, Any]) -> None:
+        if self._save_cfg is None:
+            self.ensure_bound()
         if self._save_cfg is None:
             return
         cfg = self._get_cfg() or {}

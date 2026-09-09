@@ -597,10 +597,10 @@ export default function NotifySection({ api, push }: PageProps) {
             </label>
 
             <Field
-              label="默认接收目标"
+              label="默认接收目标（可选）"
               value={String(ch.default_target || "")}
-              placeholder={meta?.targetHint || "接收方 ID"}
-              hint={meta?.targetHint}
+              placeholder="留空 = 自动推送给已授权的会话"
+              hint={`${meta?.targetHint || ""} · 已在下方「远程操作授权」中授权的会话会自动接收推送，无需手填`}
               onChange={(v) => updateChannel(i, "default_target", v)}
             />
 

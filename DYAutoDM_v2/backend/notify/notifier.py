@@ -146,6 +146,38 @@ class Notifier:
         )
 
     # ---------------- 内部派发 ----------------
+    def _targets_for(self, cid: str) -> list[str]:
+        """渠道 cid 的推送目标列表（v0.38.5 自动推导）。
+
+        优先级：default_target（手填，兼容保留）→ **网关已授权来源**
+        （v0.38.5：入站授权过的 sender 本身就是合法推送目标，
+        iLink 有 context_token 能回推；QQ 被动消息窗口外可能失败，
+        由 send 失败路径自行记录，不在此过滤）。
+        """
+        out: list[str] = []
+        ch_cfg = self._cfg_of(cid)
+        manual = str(ch_cfg.get("default_target", "")).strip()
+        if manual:
+            out.append(manual)
+        try:
+            from .gateway import gateway
+
+            # grants.channel_id 存的是 kind（weixin_oc/qqofficial，来自
+            # sender_key 前缀），派发循环的 cid 是渠道实例 id（如 ch_wx）
+            # —— 两者都要匹配，渠道实例 id 与 kind 一致时自然重叠。
+            kinds = {cid, str(ch_cfg.get("kind", ""))}
+            gw = gateway.overview()
+            for key, g in (gw.get("grants") or {}).items():
+                if g.get("role") == "blocked":
+                    continue
+                if str(g.get("channel_id", "")) in kinds:
+                    sid = str(g.get("sender_id", "")).strip()
+                    if sid and sid not in out:
+                        out.append(sid)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[notify] 网关目标推导失败（用默认）: {e}")
+        return out
+
     async def _dispatch(
         self,
         event_type: str,
@@ -164,15 +196,16 @@ class Notifier:
             )
             if lvl < min_lvl and lvl < LEVELS["critical"]:
                 continue
-            target = targets.get(cid) or str(
-                self._cfg_of(cid).get("default_target", "")
-            )
-            if not target:
-                logger.debug(f"[notify] 渠道 {cid} 无目标，跳过")
-                continue
-            r: ChannelResult = await ch.send(target, text)
-            if not r.ok:
-                logger.warning("NTY-012", f"[notify] {cid} 推送失败: {r.error}")
+            explicit = targets.get(cid)
+            dests = [explicit] if explicit else self._targets_for(cid)
+            for target in dests:
+                if not target:
+                    continue
+                r: ChannelResult = await ch.send(target, text)
+                if not r.ok:
+                    logger.warning(
+                        "NTY-012", f"[notify] {cid} 推送失败 -> {target[:12]}…: {r.error}"
+                    )
 
     def _cfg_of(self, cid: str) -> dict[str, Any]:
         for item in self.cfg.get("channels", []) or []:
