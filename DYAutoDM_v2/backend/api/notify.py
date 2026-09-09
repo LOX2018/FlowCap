@@ -131,45 +131,54 @@ async def test_push(body: TestPush) -> dict:
 
 
 def _resolve_llm(cfg: dict) -> dict:
-    """解析通知指令用的模型配置（v0.38.3）。
+    """解析通知指令用的模型配置（v0.38.4：对接模型链路中心）。
 
-    优先级：**统一配置中心 notify 分区** → 通知页自带的 llm 配置（旧，一次性迁入）
-    → 空 dict（规则解析）。
+    优先级：**模型链路中心 notify_cmd 绑定**（未绑定跟随 ai_main）→
+    统一配置中心 notify 分区（v0.38.3 过渡层，仍在则继续生效）→
+    空 dict（规则解析）。
 
-    用户要求：通知复用设置页的统一模型配置，不再各自维护一份。
-    迁移（一次性，守卫 key 记 kv）：notify_config.json 里配过 llm 且统一中心
-    notify 分区从未保存过 → 原值迁入（llm_enabled=True），此后旧文件字段不再读。
-    未启用（llm_enabled=False）或迁移后字段仍不全 → 回落 AI 全局配置补齐，
-    仍缺 base_url/model 才走规则解析（零模型调用）。
+    用户拍板（2026-09-09）：模型配置为独立模块，AI 与 IM 通知都对接该模块，
+    复用其中的提供商（链路），各自只选模型和链路。
     """
+    # ① 模型链路中心（v0.38.4 起，唯一正源）
+    try:
+        from services import model_hub as hub
+
+        r = hub.resolve("notify_cmd")
+        if r and r.get("base_url") and r.get("model"):
+            return {"base_url": r["base_url"], "model": r["model"],
+                    "api_key": r["api_key"] or ""}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("NTY-012", f"[notify] model_hub 解析失败: {e}")
+
+    # ② 统一配置中心 notify 分区（过渡层：设置页手动配过的仍生效）
     try:
         from services import app_config as ac
 
         _migrate_legacy_llm(ac)
 
-        if not ac.get("notify", "llm_enabled"):
-            return {}
-        out = {
-            "base_url": ac.get("notify", "llm_base_url") or "",
-            "model": ac.get("notify", "llm_model") or "",
-            "api_key": ac.get("notify", "llm_api_key") or "",
-        }
-        # 留空的字段回落到 AI 全局配置（避免重复填一遍）
-        try:
-            from services import ai_reply
+        if ac.get("notify", "llm_enabled"):
+            out = {
+                "base_url": ac.get("notify", "llm_base_url") or "",
+                "model": ac.get("notify", "llm_model") or "",
+                "api_key": ac.get("notify", "llm_api_key") or "",
+            }
+            try:
+                from services import ai_reply
 
-            ai = ai_reply.get_config()
-            out["base_url"] = out["base_url"] or ai.get("base_url") or ""
-            out["model"] = out["model"] or ai.get("model") or ""
-            out["api_key"] = out["api_key"] or ai.get("api_key") or ""
-        except Exception:
-            pass
-        if out["base_url"] and out["model"]:
-            return out
+                ai = ai_reply.get_config()
+                out["base_url"] = out["base_url"] or ai.get("base_url") or ""
+                out["model"] = out["model"] or ai.get("model") or ""
+                out["api_key"] = out["api_key"] or ai.get("api_key") or ""
+            except Exception:
+                pass
+            if out["base_url"] and out["model"]:
+                return out
     except Exception as e:  # noqa: BLE001
         logger.warning("NTY-010", f"[notify] 统一模型配置解析失败: {e}")
-    # 兜底：统一中心不可用时直接用旧配置，保证指令解析不中断
-    return cfg.get("llm") or {}
+
+    # ③ 兜底：规则解析（零模型调用），保证指令链路永不断
+    return {}
 
 
 _MIGRATED_KEY = "notify.llm.migrated"

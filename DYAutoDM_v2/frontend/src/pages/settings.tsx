@@ -19,6 +19,8 @@ import { PageProps } from "../api/client";
 import UnifiedConfigSection from "../components/UnifiedConfigSection";
 import AgentSection from "../components/AgentSection";
 import TagSection from "../components/TagSection";
+import ModelHubSection from "../components/ModelHubSection";
+import NotifySection from "../components/NotifySection";
 
 type SectionKey =
   | "general"
@@ -104,11 +106,15 @@ export default function SettingsPage(props: PageProps) {
           {section === "capture" && (
             <UnifiedConfigSection {...props} onlySections={["capture"]} />
           )}
-          {section === "agent" && <AgentSection {...props} />}
-          {section === "tag" && <TagSection {...props} />}
-          {section === "notify" && (
-            <UnifiedConfigSection {...props} onlySections={["notify"]} />
+          {section === "agent" && (
+            <>
+              {/* 模型链路中心（v0.38.4）：AI 与 IM 通知共用的模型唯一真源 */}
+              <ModelHubSection {...props} />
+              <AgentSection {...props} />
+            </>
           )}
+          {section === "tag" && <TagSection {...props} />}
+          {section === "notify" && <NotifySection {...props} />}
         </div>
       </div>
     </div>

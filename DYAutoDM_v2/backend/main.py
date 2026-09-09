@@ -491,6 +491,9 @@ from api import member as member_api
 app.include_router(member_api.router, prefix="/api/member", tags=["member"])
 from api import errcodes as errcodes_api
 app.include_router(errcodes_api.router, prefix="/api/errcodes", tags=["errcodes"])
+# 模型链路中心（v0.38.4）：模型配置唯一真源，AI / IM 通知都对接此模块
+from api import model_hub as model_hub_api
+app.include_router(model_hub_api.router, prefix="/api/modelhub", tags=["modelhub"])
 app.include_router(overview.router, prefix="/api", tags=["overview"])
 app.include_router(engine.router, prefix="/api/engine", tags=["engine"])
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])

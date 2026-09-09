@@ -171,6 +171,22 @@ export interface BackendStatus {
   limit?: number;
 }
 
+/** 模型提供商预设（/api/ai/providers 返回结构） */
+export interface ModelProvider {
+  id: string; name: string; base_url: string; api_protocol: string;
+  needs_key: boolean; key_hint: string;
+  models_chat: string[]; models_vision: string[];
+}
+
+/** 模型链路（v0.38.4 模型链路中心）：一条可用的模型服务连接 */
+export interface ModelHubEndpoint {
+  id: string;
+  name: string;
+  base_url: string;
+  api_protocol: string;
+  api_key?: string;
+}
+
 export interface Overview {
   running: boolean;
   paused?: boolean;
@@ -816,6 +832,50 @@ export const api = {
     return request("/api/logs/sessions", {
       method: "DELETE",
       body: JSON.stringify({ files }),
+    });
+  },
+
+  // ===== 模型链路中心（v0.38.4：模型配置唯一真源，AI/IM通知共用）=====
+  async modelhubOverview(): Promise<{
+    ok: boolean;
+    endpoints: ModelHubEndpoint[];
+    consumers_meta: { id: string; label: string; module: string }[];
+    bindings: Record<string, { endpoint_id: string; model: string }>;
+    presets: ModelProvider[];
+  }> {
+    return request("/api/modelhub/overview");
+  },
+  async modelhubSaveEndpoint(ep: Partial<ModelHubEndpoint>): Promise<{
+    ok: boolean;
+    endpoint: ModelHubEndpoint;
+    endpoints: ModelHubEndpoint[];
+  }> {
+    return request("/api/modelhub/endpoints", {
+      method: "POST",
+      body: JSON.stringify(ep),
+    });
+  },
+  async modelhubDeleteEndpoint(epId: string): Promise<{
+    ok: boolean;
+    endpoints: ModelHubEndpoint[];
+    bindings: Record<string, { endpoint_id: string; model: string }>;
+    unbound_consumers: string[];
+  }> {
+    return request(`/api/modelhub/endpoints/${encodeURIComponent(epId)}`, {
+      method: "DELETE",
+    });
+  },
+  async modelhubBind(
+    consumer: string,
+    endpointId: string,
+    model: string,
+  ): Promise<{
+    ok: boolean;
+    bindings: Record<string, { endpoint_id: string; model: string }>;
+  }> {
+    return request("/api/modelhub/bindings", {
+      method: "POST",
+      body: JSON.stringify({ consumer, endpoint_id: endpointId, model }),
     });
   },
 

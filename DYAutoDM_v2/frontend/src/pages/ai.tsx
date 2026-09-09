@@ -52,13 +52,6 @@ interface AiStatus {
   last_reply: string;
 }
 
-/** 模型提供商预设（/api/ai/providers 返回结构） */
-export interface ModelProvider {
-  id: string; name: string; base_url: string; api_protocol: string;
-  needs_key: boolean; key_hint: string;
-  models_chat: string[]; models_vision: string[];
-}
-
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -121,123 +114,6 @@ const miniBtn: React.CSSProperties = {
   color: "var(--foreground)", fontSize: 12.5,
 };
 
-/** 识别当前 base_url 对应哪个预设提供商 id */
-function matchProviderId(baseUrl: string, providers: ModelProvider[]): string {
-  const hit = providers.find(
-    (p) => p.base_url && baseUrl && p.base_url.replace(/\/$/, "") === baseUrl.replace(/\/$/, ""));
-  return hit?.id || "custom";
-}
-
-/** 模型配置主体：主 LLM / 视觉 / 嵌入 三组，提供商下拉联动模型列表。
- *  FreeLLM 预设额外支持在线拉取 /v1/models 全量列表。 */
-function ProviderSelects(props: {
-  cfg: AiConfig;
-  set: (k: keyof AiConfig, v: unknown) => void;
-  push: (msg: string, holdMs?: number) => void;
-  api: PageProps["api"];
-  onTestAi: () => void;
-}) {
-  const { cfg: c, set, push, api, onTestAi } = props;
-  const { data: provData } = useQuery({
-    queryKey: ["ai-providers"],
-    queryFn: () => api.aiProviders(),
-  });
-  const providers: ModelProvider[] = provData?.providers || [];
-  const [flm, setFlm] = useState<{ chat: string[]; vision: string[]; embed: string[] } | null>(null);
-  const [flmLoading, setFlmLoading] = useState(false);
-
-  const mainPid = matchProviderId(c.base_url || "", providers);
-  const mainPreset = providers.find((p) => p.id === mainPid);
-
-  const pickProvider = (kind: "main" | "vision", pid: string) => {
-    const p = providers.find((x) => x.id === pid);
-    if (!p) return;
-    if (kind === "main") {
-      set("base_url", p.base_url);
-      set("api_protocol", p.api_protocol);
-      if (p.models_chat.length) set("model", p.models_chat[0]);
-    } else {
-      set("vision_base_url", p.base_url);
-      if (p.models_vision.length) set("vision_model", p.models_vision[0]);
-    }
-  };
-
-  const loadFlm = useCallback(async () => {
-    setFlmLoading(true);
-    try {
-      const r = await api.aiFreellmModels();
-      if (r.ok) {
-        setFlm({ chat: r.chat, vision: r.vision, embed: r.embed });
-        push(`FreeLLM 在线模型 ${r.total} 个已加载`, 4000);
-      } else push(`❌ ${r.error || "FreeLLM 不可达"}`, 6000);
-    } catch (e) { push(`加载失败: ${errMsg(e)}`, 6000); }
-    finally { setFlmLoading(false); }
-  }, [api, push]);
-
-  const flmActive = mainPid === "freellm" || c.sem_enabled;
-  const mainModelOpts = mainPid === "freellm" && flm ? flm.chat : (mainPreset?.models_chat || []);
-
-  return (
-    <>
-      <Field label="AI 服务商（下拉选择；FreeLLM 为本机聚合网关，优先推荐）">
-        <select style={inputStyle} value={mainPid}
-                onChange={(e) => pickProvider("main", e.target.value)}>
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-      </Field>
-      <div style={{ display: "flex", gap: 12 }}>
-        <div style={{ flex: 1 }}>
-          <Field label={`Base URL（${mainPreset?.api_protocol === "anthropic" ? "Anthropic 兼容 /v1/messages" : "OpenAI 兼容 /chat/completions"}）`}
-                 hint={mainPid === "custom" ? "自定义服务商：完整填到 /v1 这一级" : undefined}>
-            <input style={inputStyle} value={c.base_url || ""}
-                   onChange={(e) => set("base_url", e.target.value)} />
-          </Field>
-        </div>
-        <div style={{ width: 260 }}>
-          <Field label="模型名">
-            {mainModelOpts.length > 0 && mainPid !== "custom" ? (
-              <select style={inputStyle} value={
-                  mainModelOpts.includes(c.model || "") ? c.model : (c.model || mainModelOpts[0])}
-                      onChange={(e) => set("model", e.target.value)}>
-                {!mainModelOpts.includes(c.model || "") && c.model && (
-                  <option value={c.model}>{c.model}（当前）</option>
-                )}
-                {mainModelOpts.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-            ) : (
-              <input style={inputStyle} value={c.model || ""}
-                     onChange={(e) => set("model", e.target.value)} placeholder="模型名" />
-            )}
-            {c.model === "auto" && (
-              <div style={{ fontSize: 11.5, color: "var(--warn)", marginTop: 3, lineHeight: 1.5 }}>
-                ⚠️ 实测 auto 路由不稳定（中文请求可能被路由到英文模型），建议改成固定模型。
-              </div>
-            )}
-          </Field>
-        </div>
-      </div>
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-        <div style={{ flex: 1 }}>
-          <Field label={`API Key（${mainPreset?.key_hint || "按服务商要求"}）`}>
-            <input style={inputStyle} type="password" value={c.api_key || ""}
-                   onChange={(e) => set("api_key", e.target.value)}
-                   placeholder={mainPreset?.needs_key ? "sk-…" : "本机服务可留空"} />
-          </Field>
-        </div>
-        <div style={{ display: "flex", gap: 8, paddingTop: 20 }}>
-          <button onClick={onTestAi} style={miniBtn}>测试 AI 连接</button>
-          {flmActive && (
-            <button onClick={loadFlm} style={miniBtn} disabled={flmLoading}>
-              {flmLoading ? "拉取中…" : "⟳ 拉取 FreeLLM 模型列表"}
-            </button>
-          )}
-        </div>
-        </div>
-        </>
-        );
-        }
 
 export default function AiPage(props: PageProps) {
   const { push, api } = props;
@@ -333,37 +209,6 @@ export default function AiPage(props: PageProps) {
     } catch (e) { push(`测试失败: ${errMsg(e)}`, 8000); }
   }, [api, push]);
 
-  const testVision = useCallback(async () => {
-    push("正在测试视觉模型…", 10000);
-    try {
-      const r = await api.aiTestVision();
-      push(r.ok ? `✅ ${r.msg}` : `❌ ${r.msg}`, 8000);
-    } catch (e) { push(`测试失败: ${errMsg(e)}`, 8000); }
-  }, [api, push]);
-
-  // ---- 语义检索 ----
-  const [semTestResult, setSemTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
-  const { data: semCache, refetch: refetchSemCache } = useQuery({
-    queryKey: ["ai-sem-cache"],
-    queryFn: () => api.aiSemCacheStatus(),
-    enabled: !!c.sem_enabled,
-  });
-  const testSem = useCallback(async () => {
-    push("正在测试语义检索…", 10000);
-    try {
-      const r = await api.aiSemTest();
-      setSemTestResult(r);
-      push(r.ok ? `✅ ${r.msg}` : `❌ ${r.msg}`, 8000);
-    } catch (e) { push(`测试失败: ${errMsg(e)}`, 8000); }
-  }, [api, push]);
-  const rebuildSem = useCallback(async () => {
-    push("正在重建向量缓存…", 15000);
-    try {
-      const r = await api.aiSemRebuild();
-      push(`✅ ${r.msg}`, 6000);
-      void refetchSemCache();
-    } catch (e) { push(`重建失败: ${errMsg(e)}`, 8000); }
-  }, [api, push, refetchSemCache]);
 
   // ---- 知识库编辑 ----
   const [kbQ, setKbQ] = useState(""); const [kbA, setKbA] = useState("");
@@ -620,116 +465,17 @@ export default function AiPage(props: PageProps) {
                      onChange={(e) => set("max_delay", Number(e.target.value))} />
             </Field>
           </div>
+          <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 10 }}>
+            <button onClick={testAi} style={miniBtn}>测试 AI 连接</button>
+          </div>
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--muted-foreground)", lineHeight: 1.6 }}>
+          模型 / 提供商连接已统一到「设置 → AI 与 Agent →
+          模型链路中心」，本页只保留回复内容与行为参数。
         </div>
       </Section>
 
-      {/* ===== 模型配置 ===== */}
-      <Section title="🧠 模型配置" subtitle={`主 LLM：${c.model || "未配置"}${c.vision_enabled ? ` · 视觉：${c.vision_model}` : ""}${c.sem_enabled ? ` · 嵌入：${c.sem_model}` : ""}`}>
-        <ProviderSelects
-          cfg={c} set={set} push={push} api={api}
-          onTestAi={testAi}
-        />
-
-        <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
-          <Field label="视觉模型（独立配置，用于理解客户发来的图片；主 LLM 不必支持多模态）">
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-              <input type="checkbox" checked={!!c.vision_enabled}
-                     onChange={(e) => set("vision_enabled", e.target.checked)} />
-              启用视觉模型（未启用时图片消息回兜底话术，绝不瞎猜）
-            </label>
-          </Field>
-          {c.vision_enabled && (
-            <>
-              <div style={{ display: "flex", gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <Field label="视觉 Base URL（OpenAI 兼容 /chat/completions）">
-                    <input style={inputStyle} value={c.vision_base_url || ""}
-                           onChange={(e) => set("vision_base_url", e.target.value)}
-                           placeholder="https://ark.cn-beijing.volces.com/api/v3" />
-                  </Field>
-                </div>
-                <div style={{ width: 220 }}>
-                  <Field label="视觉模型名">
-                    <input style={inputStyle} value={c.vision_model || ""}
-                           onChange={(e) => set("vision_model", e.target.value)}
-                           placeholder="doubao-1-5-vision-pro-32k-250115" />
-                  </Field>
-                </div>
-              </div>
-              <Field label="视觉 API Key">
-                <input style={inputStyle} type="password" value={c.vision_api_key || ""}
-                       onChange={(e) => set("vision_api_key", e.target.value)} />
-              </Field>
-              <Field label="视觉提示词">
-                <input style={inputStyle} value={c.vision_prompt || ""}
-                       onChange={(e) => set("vision_prompt", e.target.value)} />
-              </Field>
-              <div style={{ fontSize: 11.5, color: "var(--muted-foreground)", marginBottom: 6, lineHeight: 1.5 }}>
-                💡 视觉模型是主 LLM 的补充：仅当主 LLM 不支持图片理解时才需要独立配置。
-                若主 LLM 本身是多模态（如 gemini / qwen-vl 系），可直接在上方主 LLM 处选它并勾选启用即可，无需此配置。
-                FreeLLM 推荐用 nemotron-3-nano-omni-reasoning（glm-4.6v-flash 限流频繁）。
-              </div>
-              <button onClick={testVision} style={{ ...miniBtn, marginBottom: 6 }}>
-                测试视觉模型
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* ---- 语义检索（三级漏斗第 2 级）---- */}
-        <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
-          <Field label="语义检索（知识库匹配升级：同义改写也能命中，如「咋收费」→「价格是多少」）">
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-              <input type="checkbox" checked={!!c.sem_enabled}
-                     onChange={(e) => set("sem_enabled", e.target.checked)} />
-              启用语义检索（OpenAI 兼容 /embeddings；关闭时仅精确+字符匹配）
-            </label>
-          </Field>
-          {c.sem_enabled && (
-            <>
-              <div style={{ display: "flex", gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <Field label="Embeddings Base URL（OpenAI 兼容）">
-                    <input style={inputStyle} value={c.sem_base_url || ""}
-                           onChange={(e) => set("sem_base_url", e.target.value)}
-                           placeholder="http://127.0.0.1:31415/v1" />
-                  </Field>
-                </div>
-                <div style={{ width: 260 }}>
-                  <Field label="向量模型名">
-                    <input style={inputStyle} value={c.sem_model || ""}
-                           onChange={(e) => set("sem_model", e.target.value)}
-                           placeholder="nvidia/nemotron-3-embed-1b" />
-                  </Field>
-                </div>
-              </div>
-              <Field label="API Key（本机 FreeLLM 留空也行，填了更稳）">
-                <input style={inputStyle} type="password" value={c.sem_api_key || ""}
-                       onChange={(e) => set("sem_api_key", e.target.value)} />
-              </Field>
-              <Field label={`相似度阈值：${(c.sem_threshold ?? 0.4).toFixed(2)}`} hint="实测参考：同义改写聚簇 0.44~0.59，跨意图 <0.21。调低召回多但易误匹配，调高反之">
-                <input type="range" min={0.2} max={0.7} step={0.01} style={{ width: "100%" }}
-                       value={c.sem_threshold ?? 0.4}
-                       onChange={(e) => set("sem_threshold", Number(e.target.value))} />
-              </Field>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <button onClick={testSem} style={miniBtn}>测试语义检索</button>
-                <button onClick={rebuildSem} style={miniBtn}>重建向量缓存</button>
-                {semCache && (
-                  <span style={{ fontSize: 12, color: semCache.stale ? "var(--warn)" : "var(--muted-foreground)" }}>
-                    缓存 {semCache.embedded}/{semCache.total} 条{semCache.stale ? "（⚠️ 模型已变，请重建）" : ""}
-                  </span>
-                )}
-              </div>
-              {semTestResult && (
-                <div style={{ fontSize: 12.5, marginTop: 6, color: semTestResult.ok ? "var(--ok)" : "var(--danger)" }}>
-                  {semTestResult.ok ? "✅" : "❌"} {semTestResult.msg}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </Section>
+      {/* v0.38.4：模型配置已迁至「设置 → AI 与 Agent → 模型链路中心」(model_hub)，本页不再重复配置。 */}
 
       {/* ===== 知识库 ===== */}
       <Section title="📚 知识库" subtitle={`${kb?.items?.length ?? 0} 条 · 专业性来源 / RAG 资料`} defaultOpen>

@@ -160,6 +160,39 @@ def get_config() -> dict:
     return cfg
 
 
+def apply_model_hub(cfg: dict) -> dict:
+    """把模型链路中心的绑定**叠加**进配置（v0.38.4，返回副本不改原 dict）。
+
+    AI 的三个消费方（主模型/视觉/语义）改为绑 model_hub 的链路；
+    hub 解析结果覆盖 cfg 里对应三组键 —— 下游 AIClient / describe_image /
+    _embedRemote 等消费代码零改动。hub 不可用或未解析到时保持原值
+    （即 ai_reply_config 里存的全局值，兜底零回归）。
+    """
+    try:
+        from services import model_hub as hub
+
+        out = dict(cfg)
+        mapping = {
+            "ai_main": ("base_url", "model", "api_key", "api_protocol"),
+            "ai_vision": ("vision_base_url", "vision_model",
+                          "vision_api_key", None),
+            "ai_sem": ("sem_base_url", "sem_model", "sem_api_key", None),
+        }
+        for cid, (k_base, k_model, k_key, k_proto) in mapping.items():
+            r = hub.resolve(cid)
+            if not r:
+                continue
+            out[k_base] = r["base_url"]
+            out[k_model] = r["model"]
+            out[k_key] = r["api_key"]
+            if k_proto:
+                out[k_proto] = r["api_protocol"]
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("AI-030", f"[ai] model_hub 叠加失败（用原配置）: {e}")
+        return cfg
+
+
 def save_config(cfg: dict) -> dict:
     merged = get_config()
     for k in _DEFAULT_CONFIG:
@@ -824,7 +857,9 @@ class AutoReplyWorker:
             self._stop.wait(self.POLL_INTERVAL)
 
     def _tick(self):
-        cfg = get_config()
+        # v0.38.4：模型链路中心叠加 —— 主模型/视觉/语义的连接参数以
+        # model_hub 绑定为准（未配置时返回原 cfg，零回归）。
+        cfg = apply_model_hub(get_config())
         conn = database.get_db()
         row = conn.execute("SELECT COALESCE(MAX(id),0) FROM dm_messages").fetchone()
         max_id = row[0] if row else 0
