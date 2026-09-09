@@ -117,6 +117,15 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             # 在**函数体内**动态 import 的（`from notify import events as _ev`），
             # 静态分析扫不到，必须显式声明，否则打包后事件告警静默失效。
             "notify.events",
+            # 2026-09-09 追加：IM 网关 + 入站通道（v0.38.5）。gateway 在
+            # api/notify.py 顶部 import，但 inbound 在函数体内 import
+            # （init_notifier / save_config），botpy 由 inbound 内部
+            # 条件 import（未装也能启动主流程）—— 均需显式声明。
+            "notify.gateway",
+            "notify.inbound",
+            "botpy",
+            "botpy.message",
+            "botpy.gateway",
         ):
             cmd += ["--hidden-import", _m]
         # 2026-09-09：会员体系（v0.37.0）。api/member.py 与 services/member_ctx

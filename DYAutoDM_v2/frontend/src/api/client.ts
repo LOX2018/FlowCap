@@ -290,6 +290,29 @@ export interface NotifyStatus {
   channels: NotifyChannelStatus[];
 }
 
+/** IM 网关授权条目（v0.38.5） */
+export interface GatewayGrant {
+  key: string;
+  role: "admin" | "operator" | "viewer" | "blocked";
+  allow_intents: string[];
+  note: string;
+  approved_at: number;
+  channel_id: string;
+  sender_id: string;
+}
+
+/** IM 网关待授权条目 */
+export interface GatewayPending {
+  key: string;
+  channel_id: string;
+  sender_id: string;
+  first_text: string;
+  last_text: string;
+  first_at: number;
+  last_at: number;
+  msg_count: number;
+}
+
 export interface NotifyTestResult {
   ok: boolean;
   results?: Record<string, { ok: boolean; error?: string }>;
@@ -794,6 +817,49 @@ export const api = {
     return request("/api/notify/config", {
       method: "POST",
       body: JSON.stringify(config),
+    });
+  },
+
+  // ===== IM 网关：授权 / 权限组（v0.38.5）=====
+  async gatewayOverview(): Promise<{
+    ok: boolean;
+    mode: "pairing" | "open";
+    grants: Record<string, GatewayGrant>;
+    pending: GatewayPending[];
+  }> {
+    return request("/api/notify/gateway");
+  },
+  async gatewaySetMode(mode: string): Promise<{ ok: boolean; mode?: string; error?: string }> {
+    return request("/api/notify/gateway/mode", {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    });
+  },
+  async gatewayApprove(key: string, role: string, note = ""): Promise<{
+    ok: boolean;
+    grants?: Record<string, GatewayGrant>;
+    pending?: GatewayPending[];
+    error?: string;
+  }> {
+    return request("/api/notify/gateway/approve", {
+      method: "POST",
+      body: JSON.stringify({ key, role, note }),
+    });
+  },
+  async gatewayRevoke(key: string): Promise<{
+    ok: boolean;
+    grants?: Record<string, GatewayGrant>;
+    pending?: GatewayPending[];
+  }> {
+    return request("/api/notify/gateway/revoke", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    });
+  },
+  async gatewayAllow(key: string, intents: string[]): Promise<{ ok: boolean; grant?: unknown; error?: string }> {
+    return request("/api/notify/gateway/allow", {
+      method: "POST",
+      body: JSON.stringify({ key, intents }),
     });
   },
 

@@ -34,6 +34,7 @@ function Header({
   ready,
   memberName,
   onLogout,
+  gwPending,
 }: {
   tab: string;
   setTab: (t: string) => void;
@@ -41,6 +42,7 @@ function Header({
   ready: boolean;
   memberName?: string;
   onLogout?: () => void;
+  gwPending: number;
 }) {
   const ov = overview || ({} as Partial<Overview>);
   const running = !!ov.running;
@@ -71,6 +73,25 @@ function Header({
             onClick={() => setTab(id)}
           >
             {label}
+            {/* IM 网关待授权角标（v0.38.5）：设置 tab 上提示有待审来源 */}
+            {id === "settings" && gwPending > 0 && (
+              <span
+                style={{
+                  marginLeft: 5,
+                  background: "var(--warn, #d89614)",
+                  color: "#fff",
+                  borderRadius: 999,
+                  fontSize: 10.5,
+                  padding: "0 6px",
+                  lineHeight: "16px",
+                  display: "inline-block",
+                  verticalAlign: "middle",
+                }}
+                title={`${gwPending} 个来源待授权（设置 → 通知与指令）`}
+              >
+                {gwPending}
+              </span>
+            )}
           </button>
         ))}
       </nav>
@@ -376,6 +397,31 @@ export default function App() {
     setTab("live");
   }, [setTab]);
 
+  // ===== IM 网关待授权轮询（v0.38.5）：导航角标 + 新待审 toast 提醒 =====
+  const gwQ = useQuery({
+    queryKey: ["notify-gateway"],
+    queryFn: () => api.gatewayOverview(),
+    enabled: ready,
+    refetchInterval: 20_000,
+  });
+  const gwPendingCount = gwQ.data?.mode === "pairing" ? (gwQ.data?.pending || []).length : 0;
+  const gwSeen = useRef<Set<string>>(new Set());
+  const gwInitialized = useRef(false);
+  useEffect(() => {
+    const list = gwQ.data?.pending || [];
+    if (!gwInitialized.current) {
+      gwInitialized.current = true;
+      gwSeen.current = new Set(list.map((p) => p.key));
+      return;
+    }
+    for (const p of list) {
+      if (!gwSeen.current.has(p.key)) {
+        gwSeen.current.add(p.key);
+        push(`\u{1F514} 收到来自「${p.channel_id}」的新消息，待授权甄别（设置 → 通知与指令）`, 8000);
+      }
+    }
+  }, [gwQ.data, push]);
+
   // 页面公共 props（1:1 对应旧版 app.js 传给页面的 props）
   const pageProps: PageProps = {
     push,
@@ -415,7 +461,7 @@ export default function App() {
           未登录时必然 401 → 闪屏盖住 → 无法登录的死循环。
           连接状态改由 Header 徽章实时表达。 */}
       <Header tab={tab} setTab={setTab} overview={overview} ready={ready}
-        memberName={memberName}
+        memberName={memberName} gwPending={gwPendingCount}
         onLogout={async () => { await memberApi.logout(); setMemberName(null); }} />
       <main className="main">
         <AnimatePresence mode="wait">

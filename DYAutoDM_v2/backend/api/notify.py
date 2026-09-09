@@ -12,11 +12,13 @@ import json
 import os
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel
 
 from notify import notifier
+from notify.gateway import gateway
+from notify.inbound import inbound
 from notify.cmd_parser import parse_command
 
 router = APIRouter()
@@ -99,7 +101,119 @@ async def save_config(body: NotifyConfig) -> dict:
         return {"ok": False, "error": str(e)}
     notifier.configure(cfg)
     notifier.start_worker()
+    inbound.configure(cfg)  # 入站通道随配置热启停（v0.38.5）
     return {"ok": True, "status": notifier.status()}
+
+
+def save_config_file(cfg: dict) -> None:
+    """供 notify.inbound 落盘（登录凭证 / sync_buf 游标）。"""
+    with open(_cfg_path(), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# IM 网关：授权 / 权限组（v0.38.5）
+# ---------------------------------------------------------------------------
+
+class GatewayActionBody(BaseModel):
+    key: str
+    role: str = "viewer"
+    note: str = ""
+
+
+class GatewayModeBody(BaseModel):
+    mode: str  # pairing | open
+
+
+class GatewayAllowBody(BaseModel):
+    key: str
+    intents: list[str] = []
+
+
+@router.get("/gateway")
+async def gateway_overview() -> dict:
+    """设置页一次拉全：网关模式 + 已授权 + 待审列表。"""
+    return {"ok": True, **gateway.overview()}
+
+
+@router.post("/gateway/mode")
+async def gateway_mode(body: GatewayModeBody) -> dict:
+    r = gateway.set_mode(body.mode)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "失败")
+    return r
+
+
+@router.post("/gateway/approve")
+async def gateway_approve(body: GatewayActionBody) -> dict:
+    """批准（或改组/拉黑）。role ∈ admin/operator/viewer/blocked。"""
+    r = gateway.approve(body.key, body.role, body.note)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "失败")
+    return r
+
+
+@router.post("/gateway/revoke")
+async def gateway_revoke(body: GatewayActionBody) -> dict:
+    r = gateway.revoke(body.key)
+    return r
+
+
+@router.post("/gateway/allow")
+async def gateway_allow(body: GatewayAllowBody) -> dict:
+    """细粒度意图白名单（在权限组之上收窄；空 = 按权限组默认）。"""
+    r = gateway.set_allow_intents(body.key, body.intents)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "失败")
+    return r
+
+
+# ---------------------------------------------------------------------------
+# 入站指令处理器（inbound.py 回调）：网关已放行，做意图级权限校验后执行
+# ---------------------------------------------------------------------------
+
+async def handle_inbound_command(channel_id: str, sender_id: str,
+                                 text: str, meta: dict) -> str | None:
+    """入站消息 → 解析 → 权限校验 → 执行 → 回复文本。
+
+    与 /command HTTP 端点共用 _execute，区别在于多了 sender 权限层。
+    """
+    key = meta.get("sender_key") or gateway.sender_key(channel_id, sender_id)
+    cfg = load_config()
+    parsed = await parse_command(text, _resolve_llm(cfg))
+    intent = parsed["intent"]
+
+    # 意图级权限校验（权限组 + 细粒度白名单）
+    perm = gateway.check_intent(key, intent)
+    if not perm.get("ok"):
+        reason = perm.get("reason", "权限不足")
+        return f"权限不足：{reason}。如需调整请联系管理员。"
+
+    if parsed.get("need_confirm"):
+        confirm = parsed.get("confirm_text") or "请确认是否执行"
+        return f"{confirm}\n（回复「确认」执行；本会话 5 分钟内有效）"
+
+    try:
+        result = await _execute(intent, parsed.get("params") or {})
+    except Exception as e:  # noqa: BLE001
+        logger.exception("NTY-020", f"[notify] 入站指令执行失败: {e}")
+        return "指令执行失败，请稍后再试。"
+    return _format_result(intent, result)
+
+
+def _format_result(intent: str, result: Any) -> str:
+    """执行结果 → 人类可读回复。"""
+    if not isinstance(result, dict):
+        return str(result)
+    if intent == "query_status":
+        return (f"当前状态：{result.get('state', '未知')}\n"
+                f"进度：已发 {result.get('sent', 0)} / 失败 {result.get('failed', 0)}\n"
+                f"{result.get('status_msg', '')}")
+    if result.get("reply"):
+        return str(result["reply"])
+    if result.get("state"):
+        return f"已执行（state={result['state']}）"
+    return json.dumps(result, ensure_ascii=False)[:300]
 
 
 @router.post("/test")
@@ -375,12 +489,15 @@ def _build_task_config(params: dict[str, Any], adm) -> Any:
 
 
 def init_notifier() -> None:
-    """后端启动时调用：加载配置 + 启动派发 worker。"""
+    """后端启动时调用：加载配置 + 启动派发 worker + 入站通道/网关绑定。"""
     try:
+        gateway.bind_store(load_config, save_config_file)
+        inbound.bind_handler(handle_inbound_command)
         cfg = load_config()
         notifier.configure(cfg)
         if cfg.get("enabled"):
             notifier.start_worker()
-            logger.info("[notify] 通知模块已启动")
+            inbound.configure(cfg)  # 入站通道（iLink/QQ）随通知开关启停
+            logger.info("[notify] 通知模块已启动（含入站网关）")
     except Exception as e:  # noqa: BLE001
         logger.warning("NTY-003", f"[notify] 启动失败（不影响主流程）: {e}")
