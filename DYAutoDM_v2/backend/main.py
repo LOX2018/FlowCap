@@ -347,8 +347,11 @@ async def lifespan(app: FastAPI):
         from api import notify as _notify_api
 
         _notify_api.bind_adm(app.state.adm)
+        # v0.38.5 修复：入站通道（QQ/iLink）与派发 worker 需要 running loop ——
+        # 模块级调用曾因 no running event loop 静默失败（NTY-005 处注释）。
+        _notify_api.init_notifier()
     except Exception as _e:  # noqa: BLE001
-        logger.warning("NTY-004", f"[notify] adm 注入失败（指令执行将不可用）: {_e}")
+        logger.warning("NTY-004", f"[notify] adm 注入/通知启动失败: {_e}")
     # 2026-09-07：UID 探活统一调度器预热（架构重构）。
     # 启动即由 services.uid_probe 按账号错峰探活一次并缓存，后续
     # verify_account（30s 轮询）/ live_hook 心跳 / bcc keepalive 全部
@@ -513,7 +516,10 @@ try:
     from api import notify as notify_api
 
     app.include_router(notify_api.router, prefix="/api/notify", tags=["notify"])
-    notify_api.init_notifier()
+    # v0.38.5 修复：init_notifier 内的 start_worker / inbound.configure 都要
+    # asyncio.create_task —— 必须在事件循环内调用。模块级（import 时）无 loop，
+    # 实测 RuntimeError("no running event loop")（str 为空，日志只见 NTY-003），
+    # QQ/iLink 入站通道从未启动。改为 lifespan 内调用（见 bind_adm 处）。
 except Exception as _e:  # noqa: BLE001
     logger.warning("NTY-005", f"[notify] 模块挂载失败（不影响主流程）: {_e}")
 

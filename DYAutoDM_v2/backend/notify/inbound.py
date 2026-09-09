@@ -69,10 +69,15 @@ class InboundManager:
                     )
                     self._tasks.append(t)
             except Exception as e:  # noqa: BLE001
-                logger.warning("IB-001", f"[inbound] {cid}({kind}) 启动失败: {e}")
+                logger.warning(f"[IB-001] [inbound] {cid}({kind}) 启动失败: {type(e).__name__}: {e}",
+                )
         self.running = bool(self._tasks)
         if self.running:
-            logger.info(f"[inbound] 入站通道已启动: {len(self._tasks)} 个")
+            logger.info(
+                f"[inbound] 入站通道已启动: {[t.get_name() for t in self._tasks]}"
+            )
+        else:
+            logger.info("[inbound] 无已启用的入站渠道（只推送不收消息）")
 
     def stop(self) -> None:
         for t in self._tasks:
@@ -138,7 +143,7 @@ class InboundManager:
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                logger.warning("IB-003", f"[inbound] {cid} iLink 扫码登录失败: {e}")
+                logger.warning(f"[IB-003] [inbound] {cid} iLink 扫码登录失败: {e}")
                 return
         if not token:
             return
@@ -154,7 +159,7 @@ class InboundManager:
                 )
                 if str(data.get("ret", "0")) not in ("0", "None") and data.get("ret") != 0:
                     # 会话过期等错误 → 提示重新扫码
-                    logger.warning("IB-004", f"[inbound] {cid} getupdates 错误: {data}")
+                    logger.warning(f"[IB-004] [inbound] {cid} getupdates 错误: {data}")
                     await asyncio.sleep(5)
                     continue
                 new_buf = data.get("get_updates_buf")
@@ -178,11 +183,11 @@ class InboundManager:
                         try:
                             await ch.send(sender, reply)
                         except Exception as e:  # noqa: BLE001
-                            logger.warning("IB-005", f"[inbound] {cid} 回复失败: {e}")
+                            logger.warning(f"[IB-005] [inbound] {cid} 回复失败: {e}")
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                logger.warning("IB-006", f"[inbound] {cid} 轮询异常: {e}")
+                logger.warning(f"[IB-006] [inbound] {cid} 轮询异常: {e}")
                 await asyncio.sleep(5)
 
     # ==================================================================
@@ -192,12 +197,12 @@ class InboundManager:
         try:
             import botpy
         except ImportError:
-            logger.warning("IB-007", "[inbound] qq-botpy 未安装，QQ 入站不可用")
+            logger.warning(f"[IB-007] qq-botpy 未安装，QQ 入站不可用")
             return
         appid = str(cfg.get("appid", "")).strip()
         secret = str(cfg.get("secret", "")).strip()
         if not appid or not secret:
-            logger.warning("IB-008", f"[inbound] {cid} 缺 appid/secret，QQ 入站不启动")
+            logger.warning(f"[IB-008] [inbound] {cid} 缺 appid/secret，QQ 入站不启动")
             return
 
         mgr = self
@@ -223,7 +228,7 @@ class InboundManager:
                         await message.reply(content=reply[:800])
                     except Exception as e:  # noqa: BLE001
                         # 被动回复 5 分钟窗口外的失败如实记录
-                        logger.warning("IB-009", f"[inbound] {cid} QQ 回复失败: {e}")
+                        logger.warning(f"[IB-009] [inbound] {cid} QQ 回复失败: {e}")
 
             async def on_group_at_message_create(self, message):  # 群@机器人
                 sender = str(getattr(getattr(message, "author", None),
@@ -239,15 +244,27 @@ class InboundManager:
                     try:
                         await message.reply(content=reply[:800])
                     except Exception as e:  # noqa: BLE001
-                        logger.warning("IB-009", f"[inbound] {cid} QQ 群回复失败: {e}")
+                        logger.warning(f"[IB-009] [inbound] {cid} QQ 群回复失败: {e}")
 
         client = _Client()
-        try:
-            await client.start(appid=appid, secret=secret)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            logger.warning("IB-010", f"[inbound] {cid} QQ WS 断开: {e}")
+        # v0.38.5：botpy 的异常 message 经常为空（robot.py raise RuntimeError(str(data))
+        # 而 data 可能是 None），必须打异常类型；且 token 失败常是 QQ 后台
+        # 「沙箱/正式版本未发布」或 intents 未开通 —— 是可恢复状态，30s 后重试。
+        attempt = 0
+        while True:
+            try:
+                attempt += 1
+                await client.start(appid=appid, secret=secret)
+                break  # 正常退出（如被取消后干净返回）
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                reason = repr(e) or "(空异常)"
+                logger.warning(f"[IB-010] [inbound] {cid} QQ 连接失败(第{attempt}次): {type(e).__name__}: {reason}；"
+                    f"请核对：①appid/secret ②QQ开放平台该机器人是否已发布(沙箱需在沙箱列表) "
+                    f"③C2C/群消息 intents 是否开通。30s 后重试",
+                )
+                await asyncio.sleep(30)
 
 
 # ----------------------------------------------------------------------
@@ -353,7 +370,7 @@ def _save_login(cid: str, cfg: dict[str, Any], token: str,
                 break
         save_config_file(cfg_full)
     except Exception as e:  # noqa: BLE001
-        logger.warning("IB-011", f"[inbound] 登录凭证保存失败: {e}")
+        logger.warning(f"[IB-011] [inbound] 登录凭证保存失败: {e}")
 
 
 # 全局单例

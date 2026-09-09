@@ -43,7 +43,7 @@ def load_config() -> dict[str, Any]:
             with open(p, encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:  # noqa: BLE001
-            logger.warning("NTY-001", f"[notify] 配置读取失败: {e}")
+            logger.warning(f"[NTY-001] [notify] 配置读取失败: {e}")
     return {"enabled": False, "channels": []}
 
 
@@ -263,7 +263,7 @@ def _resolve_llm(cfg: dict) -> dict:
             return {"base_url": r["base_url"], "model": r["model"],
                     "api_key": r["api_key"] or ""}
     except Exception as e:  # noqa: BLE001
-        logger.warning("NTY-012", f"[notify] model_hub 解析失败: {e}")
+        logger.warning(f"[NTY-012] [notify] model_hub 解析失败: {e}")
 
     # ② 统一配置中心 notify 分区（过渡层：设置页手动配过的仍生效）
     try:
@@ -289,7 +289,7 @@ def _resolve_llm(cfg: dict) -> dict:
             if out["base_url"] and out["model"]:
                 return out
     except Exception as e:  # noqa: BLE001
-        logger.warning("NTY-010", f"[notify] 统一模型配置解析失败: {e}")
+        logger.warning(f"[NTY-010] [notify] 统一模型配置解析失败: {e}")
 
     # ③ 兜底：规则解析（零模型调用），保证指令链路永不断
     return {}
@@ -323,7 +323,7 @@ def _migrate_legacy_llm(ac) -> None:
         })
         logger.info("[notify] 旧 llm 配置已迁入设置页统一配置（一次性）")
     except Exception as e:  # noqa: BLE001
-        logger.warning("NTY-011", f"[notify] llm 配置迁移失败（不影响运行）: {e}")
+        logger.warning(f"[NTY-011] [notify] llm 配置迁移失败（不影响运行）: {e}")
 
 
 @router.post("/command")
@@ -500,4 +500,4 @@ def init_notifier() -> None:
             inbound.configure(cfg)  # 入站通道（iLink/QQ）随通知开关启停
             logger.info("[notify] 通知模块已启动（含入站网关）")
     except Exception as e:  # noqa: BLE001
-        logger.warning("NTY-003", f"[notify] 启动失败（不影响主流程）: {e}")
+        logger.warning(f"[NTY-003] [notify] 启动失败（不影响主流程）: {e}")
