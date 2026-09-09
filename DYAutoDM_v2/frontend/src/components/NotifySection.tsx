@@ -237,9 +237,24 @@ export default function NotifySection({ api, push }: PageProps) {
   };
 
   const removeChannel = (idx: number) => {
+    const removed = channels[idx];
     patch((c) => {
       (c.channels || []).splice(idx, 1);
     });
+    // v0.38.5：级联清理该渠道的待审条目（渠道删了，挂着它的待审只会造成
+    // "明明删了还在"的困惑）。已授权 grants 保留（换渠道重配后原授权仍可复用，
+    // 且 gateway 授权按 kind+sender 归并，同平台新实例自动继承）。
+    if (removed?.id) {
+      api
+        .gatewayOverview()
+        .then((g) => {
+          const stale = (g.pending || []).filter(
+            (x) => x.channel_id === removed.id,
+          );
+          for (const x of stale) void api.gatewayRevoke(x.key);
+        })
+        .catch(() => {});
+    }
   };
 
   const updateChannel = (idx: number, key: string, val: unknown) => {

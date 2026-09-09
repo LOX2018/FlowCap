@@ -16,7 +16,7 @@
 import { Fragment, useState, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { PageProps, ReusePayload } from "../api/client";
+import { PageProps, ReusePayload, RoomConfig } from "../api/client";
 import { Avatar, Dot, Pill, hue, KIND_NAME, tick } from "../components/ui";
 
 /** AI 自动回复控制卡（直播监听场景的启停入口；参数调整在 AI 页） */
@@ -488,6 +488,10 @@ export default function LivePage(props: PageProps) {
     { text: "唐律还在直播，我是助理，可以留个联系方式，唐律下播后帮你分析", enabled: true },
   ]);
   const [forceRescan, setForceRescan] = useState(false);
+  // 直播间配置管理弹窗（按直播间号管理配置 + 自动申请连麦）
+  const [cfgMgr, setCfgMgr] = useState(false);
+  // 申请连麦进行中（防重复点击）
+  const [linkMicBusy, setLinkMicBusy] = useState(false);
   // 任务中心「复用」载荷（标记已应用，避免容器回读覆盖用户刚改的字段）
   const reuseRef = useRef<ReusePayload | null>(null);
 
@@ -724,6 +728,30 @@ export default function LivePage(props: PageProps) {
   const doLike = () => push("功能开发中：点赞");
   const doBatch = () => push("功能开发中：批量点赞");
   const sendDm = (r: Row) => push("功能开发中：发送私信 → " + r.name);
+
+  /** 从输入框提取直播间号（纯数字或 URL 里的 /<digits>），失败返回空串 */
+  const extractRoomId = (raw: string): string => {
+    const s = (raw || "").trim();
+    if (/^\d+$/.test(s)) return s;
+    const m = s.match(/live\.douyin\.com\/(\d+)/);
+    return m ? m[1] : "";
+  };
+
+  /** 申请连麦（对当前输入框对应的直播间） */
+  const doApplyLinkMic = () => {
+    const rid = extractRoomId(room) || (ls?.room_id ? String(ls.room_id) : "");
+    if (!rid) {
+      setAlert({ title: "请先解析直播间", msg: "请先在上方填写并解析直播间地址，再申请连麦。" });
+      return;
+    }
+    if (linkMicBusy) return;
+    setLinkMicBusy(true);
+    api
+      .requestLinkMic(rid, "audio")
+      .then((r) => push(r.ok ? "已发起连麦申请 · 直播间 " + rid + (r.msg ? " · " + r.msg : "") : "申请连麦失败: " + (r.error || "未知错误")))
+      .catch((e: unknown) => push("申请连麦异常: " + errMsg(e)))
+      .finally(() => setLinkMicBusy(false));
+  };
 
   // 进入查阅模式：优先用实时记录；实时无数据时回读任务容器/历史任务 records，
   // 避免「进入查阅模式后一片空白未写入数据」。

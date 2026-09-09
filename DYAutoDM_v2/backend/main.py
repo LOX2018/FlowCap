@@ -493,6 +493,7 @@ async def member_auth_middleware(request, call_next):
 from api import member as member_api
 app.include_router(member_api.router, prefix="/api/member", tags=["member"])
 from api import errcodes as errcodes_api
+from api import live_config as live_config_api
 app.include_router(errcodes_api.router, prefix="/api/errcodes", tags=["errcodes"])
 # 模型链路中心（v0.38.4）：模型配置唯一真源，AI / IM 通知都对接此模块
 from api import model_hub as model_hub_api
@@ -501,6 +502,7 @@ app.include_router(overview.router, prefix="/api", tags=["overview"])
 app.include_router(engine.router, prefix="/api/engine", tags=["engine"])
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 app.include_router(live.router, prefix="/api/live", tags=["live"])
+app.include_router(live_config_api.router, prefix="/api/live/room-configs", tags=["live"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])

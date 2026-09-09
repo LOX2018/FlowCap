@@ -519,6 +519,39 @@ export const api = {
     });
   },
 
+  // ===== 直播间配置管理（按直播间号存取，含自动申请连麦） =====
+
+  async listRoomConfigs(): Promise<{ ok: boolean; items: RoomConfig[] }> {
+    return request("/api/live/room-configs");
+  },
+
+  async saveRoomConfig(cfg: Partial<RoomConfig> & { room_id: string }): Promise<{ ok: boolean; config?: RoomConfig; error?: string }> {
+    return request("/api/live/room-configs", {
+      method: "POST",
+      body: JSON.stringify(cfg),
+    });
+  },
+
+  async deleteRoomConfig(roomId: string): Promise<{ ok: boolean; deleted?: string; error?: string }> {
+    return request(`/api/live/room-configs/${encodeURIComponent(roomId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async applyRoomConfig(roomId: string): Promise<{ ok: boolean; config?: Record<string, unknown>; error?: string }> {
+    return request(`/api/live/room-configs/${encodeURIComponent(roomId)}/apply`, {
+      method: "POST",
+    });
+  },
+
+  /** 申请连麦（对当前监听直播间）。mode: audio=语音 / video=视频 */
+  async requestLinkMic(roomId: string, mode: "audio" | "video" = "audio"): Promise<{ ok: boolean; msg?: string; error?: string }> {
+    return request("/api/live/linkmic/apply", {
+      method: "POST",
+      body: JSON.stringify({ room_id: roomId, mode }),
+    });
+  },
+
   // ===== messages =====
 
   /**
@@ -1175,6 +1208,22 @@ export interface TaskHistoryItem {
   result_count: number;
   records?: Record<string, unknown>[];
   config?: Partial<TaskConfigSnapshot>;
+}
+
+/** 直播间配置（按直播间号管理，含自动申请连麦） */
+export interface RoomConfig {
+  room_id: string;
+  name?: string;
+  live_url?: string;
+  max_target?: number;
+  interval?: number;
+  delay?: string;
+  force_rescan?: boolean;
+  dm_pool?: { text: string; enabled: boolean }[];
+  acct?: string | null;
+  auto_link_mic?: boolean;
+  link_mic_mode?: "audio" | "video";
+  updated_at?: number;
 }
 
 /** 任务容器里「当前任务」的配置快照（进入任务 / 复用回读） */
