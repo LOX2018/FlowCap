@@ -115,6 +115,23 @@ def _records_from_adm(adm) -> list[dict]:
     return out
 
 
+def _flag(key: str, settings_obj) -> bool:
+    """读全局开关：统一配置中心优先，回落 settings 实例（零回归）。
+
+    2026-09-08 接线：三个开关（enable_danmaku/enable_console/enable_send）
+    原只存 settings 单例，改后优先读 app_config；未写入过时回落，行为不变。
+    """
+    try:
+        from services.app_config import get
+
+        v = get("task", key)
+        if v is not None:
+            return bool(v)
+    except Exception:
+        pass
+    return bool(getattr(settings_obj, key, True))
+
+
 @router.get("")
 async def get_tasks(request: Request) -> dict:
     """任务配置 + 发送记录（对齐前端 tasks.tsx / live.tsx 字段）"""
@@ -131,9 +148,10 @@ async def get_tasks(request: Request) -> dict:
         "delay": delay_str,
         "forceRescan": bool(getattr(adm, "force_rescan", getattr(settings, "force_rescan", False))),
         "liveUrl": getattr(adm, "live_url", "") or "",
-        "enableDanmaku": bool(getattr(settings, "enable_danmaku", True)),
-        "enableConsole": bool(getattr(settings, "enable_console", True)),
-        "enableSend": bool(getattr(settings, "enable_send", True)),
+        # 三个全局开关：优先读统一配置中心（未配置时回落到 settings 实例，零回归）
+        "enableDanmaku": _flag("enable_danmaku", settings),
+        "enableConsole": _flag("enable_console", settings),
+        "enableSend": _flag("enable_send", settings),
         "records": _records_from_adm(adm),
     }
 
@@ -155,6 +173,17 @@ async def save_config(body: TaskConfig, request: Request):
         settings.enable_danmaku = cfg.enable_danmaku
         settings.enable_console = cfg.enable_console
         settings.enable_send = cfg.enable_send
+        # 同时写入统一配置中心（设置页与任务页双向同步，B4）
+        try:
+            from services.app_config import save_section
+
+            save_section("task", {
+                "enable_danmaku": bool(cfg.enable_danmaku),
+                "enable_console": bool(cfg.enable_console),
+                "enable_send": bool(cfg.enable_send),
+            })
+        except Exception as e:  # 配置中心失败不影响原保存路径
+            logger.warning("TSK-004", f"[tasks] 开关写入配置中心失败: {e}")
         # 落盘到 SQLite kv_store（替代 config.json）
         from database import get_kv_json, set_kv_json
         data = get_kv_json("config", {}) or {}
