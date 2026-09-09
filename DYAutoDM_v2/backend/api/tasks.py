@@ -116,19 +116,17 @@ def _records_from_adm(adm) -> list[dict]:
 
 
 def _flag(key: str, settings_obj) -> bool:
-    """读全局开关：统一配置中心优先，回落 settings 实例（零回归）。
+    """读全局开关：**settings 实例优先**，配置中心仅作镜像同步。
 
-    2026-09-08 接线：三个开关（enable_danmaku/enable_console/enable_send）
-    原只存 settings 单例，改后优先读 app_config；未写入过时回落，行为不变。
+    2026-09-09 定调（用户决策）：配置中心不反向覆盖 settings。
+    理由：app_config.get() 在 reset 后会返回 schema 默认 True，
+    若让配置中心优先，则 settings 里的 False 永不可达（回落路径是死代码），
+    会出现「用户在任务页关了开关、切到设置页又被重置为开」的错乱。
+
+    分工：
+      - 读：一律以 settings 为准（保留接线前行为，零回归）
+      - 写：save_config 双写，把值镜像进配置中心，供设置页展示
     """
-    try:
-        from services.app_config import get
-
-        v = get("task", key)
-        if v is not None:
-            return bool(v)
-    except Exception:
-        pass
     return bool(getattr(settings_obj, key, True))
 
 
@@ -177,7 +175,7 @@ async def save_config(body: TaskConfig, request: Request):
         try:
             from services.app_config import save_section
 
-            save_section("task", {
+            save_section("live", {
                 "enable_danmaku": bool(cfg.enable_danmaku),
                 "enable_console": bool(cfg.enable_console),
                 "enable_send": bool(cfg.enable_send),

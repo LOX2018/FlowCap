@@ -19,6 +19,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import { Avatar, Pill, hue } from "../components/ui";
+import UnifiedConfigSection from "../components/UnifiedConfigSection";
 
 interface Account {
   name: string;
@@ -221,8 +222,10 @@ export default function SettingsPage(props: PageProps) {
   const { push, api, ready } = props;
   const [expandedAcct, setExpandedAcct] = useState<string | null>(null);
 
-  // 子导航：默认配置 / 启动策略 / 独立账号
-  const [section, setSection] = useState<"default" | "strategy" | "accounts">("default");
+  // 子导航：默认配置 / 启动策略 / 独立账号 / 通用配置
+  const [section, setSection] = useState<
+    "default" | "strategy" | "accounts" | "unified"
+  >("default");
 
   // 从 tasks API 加载运行时配置
   const tasksQ = useQuery({
@@ -314,7 +317,11 @@ export default function SettingsPage(props: PageProps) {
       .catch((e) => push("失败:保存异常 " + errMsg(e)));
   }, [maxTarget, dmInterval, delay, forceRescan, enableDanmaku, enableConsole, enableSend, api, push]);
 
-  const navBtn = (key: "default" | "strategy" | "accounts", label: string, count?: number) => (
+  const navBtn = (
+    key: "default" | "strategy" | "accounts" | "unified",
+    label: string,
+    count?: number,
+  ) => (
     <button
       className={"btn sm" + (section === key ? " accent" : " ghost")}
       onClick={() => setSection(key)}
@@ -356,6 +363,7 @@ export default function SettingsPage(props: PageProps) {
           {navBtn("default", "默认配置")}
           {navBtn("strategy", "启动策略")}
           {navBtn("accounts", "独立账号", realAccts.length)}
+          {navBtn("unified", "通用配置")}
         </div>
 
         {/* 右侧内容区 */}
@@ -604,6 +612,7 @@ export default function SettingsPage(props: PageProps) {
               </div>
             </div>
           )}
+          {section === "unified" && <UnifiedConfigSection {...props} />}
         </div>
       </div>
 

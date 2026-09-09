@@ -185,6 +185,127 @@ export interface Overview {
   statusMsg?: string;
 }
 
+// ===== IM 通知类型（v0.37.0，2026-09-09）=====
+
+/** 支持的渠道类型 */
+export type NotifyKind = "weixin_oc" | "wecom" | "dingtalk" | "lark" | "qqofficial";
+
+/** 渠道中文名与字段说明（供 UI 展示，避免把密钥用途写错） */
+export const CHANNEL_META: Record<
+  NotifyKind,
+  { label: string; fields: { key: string; label: string; secret?: boolean; hint?: string }[]; targetHint: string }
+> = {
+  weixin_oc: {
+    label: "个人微信（iLink）",
+    targetHint: "对方微信用户 ID（形如 xxx@im.wechat）",
+    fields: [
+      { key: "token", label: "Bot Token", secret: true, hint: "扫码登录后由系统保存" },
+      { key: "base_url", label: "API 地址", hint: "默认 https://ilinkai.weixin.qq.com" },
+      { key: "account_id", label: "Bot ID", hint: "登录成功后自动保存" },
+    ],
+  },
+  wecom: {
+    label: "企业微信",
+    targetHint: "成员 UserID，多人用 | 分隔（留空=@all）",
+    fields: [
+      { key: "corpid", label: "企业 ID" },
+      { key: "corpsecret", label: "应用 Secret", secret: true },
+      { key: "agent_id", label: "AgentId", hint: "整型，应用设置页可查" },
+      { key: "webhook", label: "群机器人 Webhook", hint: "选填；填了则走群机器人，无需 corpid" },
+    ],
+  },
+  dingtalk: {
+    label: "钉钉",
+    targetHint: "员工 staffId（私聊）",
+    fields: [
+      { key: "client_id", label: "AppKey / Client ID" },
+      { key: "client_secret", label: "AppSecret", secret: true },
+      { key: "robot_code", label: "RobotCode", hint: "选填，默认同 Client ID" },
+      { key: "webhook", label: "自定义机器人 Webhook", hint: "选填" },
+      { key: "webhook_secret", label: "加签密钥", secret: true, hint: "选填" },
+    ],
+  },
+  lark: {
+    label: "飞书",
+    targetHint: "open_id（私聊）或 chat_id（群，oc_ 开头）",
+    fields: [
+      { key: "app_id", label: "App ID" },
+      { key: "app_secret", label: "App Secret", secret: true },
+      { key: "webhook", label: "自定义机器人 Webhook", hint: "选填" },
+    ],
+  },
+  qqofficial: {
+    label: "QQ 官方机器人",
+    targetHint: "openid（私聊）或 group_群号（群）",
+    fields: [
+      { key: "appid", label: "AppID" },
+      { key: "secret", label: "AppSecret", secret: true },
+    ],
+  },
+};
+
+/** 单个渠道配置。id/kind/enabled/default_target 为通用字段，其余按 kind 不同 */
+export interface NotifyChannelCfg {
+  id?: string;
+  kind: NotifyKind | string;
+  enabled?: boolean;
+  default_target?: string;
+  [key: string]: unknown;
+}
+
+export interface NotifyConfig {
+  enabled?: boolean;
+  channels?: NotifyChannelCfg[];
+  llm?: { base_url?: string; api_key?: string; model?: string };
+}
+
+export interface NotifyChannelStatus {
+  id: string;
+  kind: string;
+  enabled: boolean;
+  loaded: boolean;
+  missing: string[];
+  ready: boolean;
+}
+
+export interface NotifyStatus {
+  ok?: boolean;
+  enabled: boolean;
+  channels: NotifyChannelStatus[];
+}
+
+export interface NotifyTestResult {
+  ok: boolean;
+  results?: Record<string, { ok: boolean; error?: string }>;
+  error?: string;
+}
+
+// ===== 统一配置中心（v0.37.1，2026-09-09）=====
+
+/** 单个字段的表单元数据（后端 schema 下发，前端据此自动渲染） */
+export interface SettingsFieldSchema {
+  label: string;
+  type: "int" | "float" | "bool" | "str";
+  default: unknown;
+  min?: number;
+  max?: number;
+  env?: string | null;
+  /** 生效方式：hot=立即 / restart_daemon=需重启守护 / restart_backend=需重启后端 */
+  apply?: "hot" | "restart_daemon" | "restart_backend";
+  hint?: string;
+  /** 风控敏感项：UI 需醒目标注且下限保护 */
+  risk?: boolean;
+  options?: { value: string; label: string }[];
+}
+
+export interface SettingsSectionSchema {
+  label: string;
+  fields: Record<string, SettingsFieldSchema>;
+}
+
+/** 后端下发的完整 schema：{ sectionKey: SettingsSectionSchema } */
+export type SettingsSchema = Record<string, SettingsSectionSchema>;
+
 // ===== API 客户端 =====
 
 export const api = {
@@ -445,6 +566,80 @@ export const api = {
     return request("/api/settings", {
       method: "POST",
       body: JSON.stringify(config),
+    });
+  },
+
+  // ===== 统一配置中心（v0.37.1，2026-09-09）=====
+  /**
+   * 全量配置 + schema。
+   * schema 描述每个字段的 label/type/default/min/max/hint/apply，
+   * 前端据此自动生成表单，无需为每个参数手写 UI。
+   */
+  async getSettings(): Promise<{
+    ok: boolean;
+    config: Record<string, Record<string, unknown>>;
+    schema: SettingsSchema;
+  }> {
+    return request("/api/settings");
+  },
+
+  /** 仅下发表单元数据（首屏用，比全量轻量） */
+  async getSettingsSchema(): Promise<{ ok: boolean; schema: SettingsSchema }> {
+    return request("/api/settings/schema");
+  },
+
+  /**
+   * 按 section 保存。
+   * @returns restart_required：需要重启才生效的目标（daemon / backend）
+   */
+  async saveSettings(sections: Record<string, Record<string, unknown>>): Promise<{
+    ok: boolean;
+    saved_sections: string[];
+    restart_required: string[];
+    config: Record<string, Record<string, unknown>>;
+  }> {
+    return request("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({ sections }),
+    });
+  },
+
+  /** 清空指定 section 回默认值（不传则全清） */
+  async resetSettings(sections?: string[]): Promise<{
+    ok: boolean;
+    reset_sections: string[];
+    config: Record<string, Record<string, unknown>>;
+  }> {
+    return request("/api/settings/reset", {
+      method: "POST",
+      body: JSON.stringify({ sections: sections || [] }),
+    });
+  },
+
+  // ===== IM 通知（v0.37.0，2026-09-09）=====
+  /** 各渠道就绪状态 */
+  async getNotifyStatus(): Promise<NotifyStatus> {
+    return request("/api/notify/status");
+  },
+
+  /** 读取通知配置（敏感字段已由后端脱敏为 •••• ） */
+  async getNotifyConfig(): Promise<{ ok: boolean; config: NotifyConfig }> {
+    return request("/api/notify/config");
+  },
+
+  /** 保存通知配置。脱敏占位符（全 • ）不会被回写，保留原值 */
+  async saveNotifyConfig(config: NotifyConfig): Promise<{ ok: boolean; status?: NotifyStatus; error?: string }> {
+    return request("/api/notify/config", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+  },
+
+  /** 真发一条测试消息 */
+  async testNotify(channelId: string, target: string, text?: string): Promise<NotifyTestResult> {
+    return request("/api/notify/test", {
+      method: "POST",
+      body: JSON.stringify({ channel_id: channelId, target, text: text || "" }),
     });
   },
 
