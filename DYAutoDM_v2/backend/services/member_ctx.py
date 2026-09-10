@@ -187,11 +187,69 @@ def current_member_id() -> str | None:
 
 
 def master_key() -> str | None:
-    """当前主密钥：优先内存会话，子进程（daemon）回退环境变量。"""
+    """当前主密钥：优先内存会话 → 环境变量（子进程）→ 盘上会话文件（独立进程）。
+
+    2026-09-10 补第三层回退（账号管理校验失效事故）：
+      独立 Python 进程 / 未走 set_current() 的调用方既没有内存会话、
+      也没有 DY_MEMBER_KEY 环境变量，master_key() 返回 None →
+      is_member_env 判据② 失效 → .env.enc 读不出来。
+      盘上 members/.session.json 是登录时写入的（含 master_key），
+      且只在用户登出/换会员时改写，作为最后回退可让独立进程也能解密凭证。
+      **注意**：这只是「读取兜底」，不改变登录态语义，也不写回任何文件。
+    """
     c = current()
     if c:
         return c["master_key"]
-    return os.environ.get("DY_MEMBER_KEY") or None
+    env_key = os.environ.get("DY_MEMBER_KEY")
+    if env_key:
+        return env_key
+    return _session_file_key()
+
+
+# 盘上会话文件里主密钥的进程内缓存（避免每次读盘；文件 mtime 变化自动失效）
+_SESSION_KEY_CACHE: dict = {}
+
+
+def _session_file_key() -> str | None:
+    """从 <app_root>/members/.session.json 读主密钥（最后回退，带 mtime 缓存）。"""
+    global _SESSION_KEY_CACHE
+    try:
+        from vbrowser import app_root
+        sf = os.path.join(app_root(), "members", ".session.json")
+    except Exception:
+        return None
+    if not os.path.exists(sf):
+        return None
+    try:
+        mtime = os.path.getmtime(sf)
+        if _SESSION_KEY_CACHE.get("mtime") == mtime:
+            return _SESSION_KEY_CACHE.get("key")
+        import json as _json
+        with open(sf, "r", encoding="utf-8") as f:
+            d = _json.load(f)
+        k = d.get("master_key") or None
+        _SESSION_KEY_CACHE = {"mtime": mtime, "key": k}
+        return k
+    except Exception:
+        return None
+
+
+def _session_file_member_id() -> str | None:
+    """从 <app_root>/members/.session.json 读 member_id（最后回退）。"""
+    try:
+        from vbrowser import app_root
+        sf = os.path.join(app_root(), "members", ".session.json")
+    except Exception:
+        return None
+    if not os.path.exists(sf):
+        return None
+    try:
+        import json as _json
+        with open(sf, "r", encoding="utf-8") as f:
+            d = _json.load(f)
+        return d.get("member_id") or None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -199,20 +257,32 @@ def master_key() -> str | None:
 # ---------------------------------------------------------------------------
 
 def member_space_root() -> str | None:
-    """当前会员的数据空间根目录；未登录返回 None（调用方回退 app_root()）。"""
+    """当前会员的数据空间根目录；未登录返回 None（调用方回退 app_root()）。
+
+    2026-09-10：member_id 增加「盘上会话文件」回退（与 master_key 同理），
+    让独立进程也能解析到会员空间，避免账号路径落到非会员空间后
+    .env.enc 读不出来（账号管理校验失效事故）。
+    """
     mid = current_member_id() or os.environ.get("DY_MEMBER") or ""
+    if not mid:
+        mid = _session_file_member_id() or ""
     if not mid:
         return None
     return member_store.member_dir(mid)
 
 
 def accounts_root() -> str | None:
-    """当前会员的账号目录 <space>/auto_dm/accounts；未登录 None。"""
+    """当前会员的账号目录 <space>/auto_dm/accounts；未登录 None。
+
+    2026-09-10：member_id 增加「盘上会话文件」回退，与 member_space_root() 保持
+    一致，避免这里拿不到 id 而拼出 <members>/auto_dm/accounts（空 id 目录）。
+    """
     r = member_space_root()
     if r is None:
         return None
     return member_store.member_accounts_dir(current_member_id()
-                                            or os.environ.get("DY_MEMBER", ""))
+                                            or os.environ.get("DY_MEMBER", "")
+                                            or _session_file_member_id() or "")
 
 
 def db_path() -> str | None:
@@ -233,16 +303,44 @@ _SIGN_KEYS = ("DY_COOKIES", "DY_TICKET", "DY_TS_SIGN", "DY_CLIENT_CERT",
 
 
 def is_member_env(env_path: str) -> bool:
-    """该 .env 是否位于当前会员数据空间内（决定读写是否走加密封装）。"""
+    """该 .env 是否走会员加密封装（决定读写是否走加密视图）。
+
+    2026-09-10 修复（账号管理校验失效事故）：
+      原实现**只靠路径前缀**判断 env_path 是否位于 member_space_root() 内，
+      但 member_space_root() 依赖 current()（进程内内存会话）——子进程、
+      独立 Python 进程、以及未登录/会话态丢失的场景一律返回 None，
+      于是 is_member_env 恒 False → parse_env_dict 走明文分支 →
+      实际存在的 <env_path>.enc 被无视 → credentials_complete 判
+      「账号 .env 不存在」→ wp 引擎 fail → 无谓重捕获循环。
+      （凭证本身是好的：指纹浏览器可发私信、探活 uid 正确。）
+
+    现改为**双判据**（任一成立即视为会员加密凭证）：
+      ① 路径位于当前会员数据空间内（原语义，保留）；
+      ② 存在 <env_path>.enc 且主密钥可用——**以文件事实为准**，
+         不再依赖路径归属与进程会话态。
+
+    判据 ② 是根治：无论路径是否错配、会话态是否注入，
+    只要磁盘上确有该账号的加密凭证且密钥在手，就按会员加密凭证读。
+    """
+    if not env_path:
+        return False
+    # ① 原路径归属判据（会员空间内）
     root = member_space_root()
-    if not root or not env_path:
-        return False
+    if root:
+        try:
+            p = os.path.abspath(env_path)
+            r = os.path.abspath(root)
+            if p.startswith(r + os.sep) or p == r:
+                return True
+        except Exception:
+            pass
+    # ② 文件事实判据：存在 .enc 加密凭证 + 主密钥可用 → 按加密凭证处理
     try:
-        p = os.path.abspath(env_path)
-        r = os.path.abspath(root)
-        return p.startswith(r + os.sep) or p == r
+        if os.path.exists(_enc_path(env_path)) and master_key():
+            return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def _enc_path(env_path: str) -> str:

@@ -123,7 +123,7 @@ def _valid(name: str, ttl_override: Optional[float] = None) -> Optional[int]:
         return None
     ts, uid = hit
     ttl = ttl_override if ttl_override is not None else (
-        UID_TTL_OK if uid else UID_TTL_FAIL)
+        cfg("UID_TTL_OK") if uid else cfg("UID_TTL_FAIL"))
     if (time.time() - ts) < ttl:
         return uid
     return None
@@ -198,12 +198,12 @@ def get_uid(name: str, force: bool = False,
         with _registry_lock:
             hit = _cache.get(name)
         if hit and not hit[1]:
-            ttl_fail = ttl if ttl is not None else UID_TTL_FAIL
+            ttl_fail = ttl if ttl is not None else cfg("UID_TTL_FAIL")
             if (time.time() - hit[0]) < ttl_fail:
                 return None
 
     lk = _lock_for(name)
-    if not lk.acquire(timeout=LOCK_WAIT):
+    if not lk.acquire(timeout=cfg("LOCK_WAIT")):
         # 拿不到锁（极端并发）：退化为读缓存，绝不无限等待
         return _valid(name, ttl)
     try:
@@ -229,10 +229,10 @@ def get_uid(name: str, force: bool = False,
         with _registry_lock:
             _cache[name] = (time.time(), uid)
         if uid:
-            logger.info(f"[uid-probe] 账号「{name}」uid={uid}（已缓存 {UID_TTL_OK:.0f}s）")
+            logger.info(f"[uid-probe] 账号「{name}」uid={uid}（已缓存 {cfg('UID_TTL_OK'):.0f}s）")
         else:
             logger.warning("AUTH-051", 
-                f"[uid-probe] 账号「{name}」探活失败（{UID_TTL_FAIL:.0f}s 内不再重试）")
+                f"[uid-probe] 账号「{name}」探活失败（{cfg('UID_TTL_FAIL'):.0f}s 内不再重试）")
         return uid
     finally:
         lk.release()
@@ -328,7 +328,7 @@ def stats() -> dict:
     with _registry_lock:
         return {
             n: {"uid": u, "age_sec": round(now - ts, 1),
-                "valid": (now - ts) < (UID_TTL_OK if u else UID_TTL_FAIL)}
+                "valid": (now - ts) < (cfg("UID_TTL_OK") if u else cfg("UID_TTL_FAIL"))}
             for n, (ts, u) in _cache.items()
         }
 
