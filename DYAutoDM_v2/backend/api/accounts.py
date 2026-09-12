@@ -619,14 +619,13 @@ async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
         req = urllib.request.Request(
             f"http://127.0.0.1:{bport}/show", data=data,
             headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=180) as resp:
             out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
         if not out.get("ok"):
             return ScanLoginResponse(ok=False, msg=f"切换可见模式失败: {out.get('msg')}")
     except Exception as e:  # noqa: BLE001
         logger.error("BCC-031", f"[open-browser] 账号 {name} 切换可见模式失败: {e}")
         return ScanLoginResponse(ok=False, msg=f"切换可见模式失败: {e}")
-
     changed = out.get("changed")
     hint = "（容器已切为可见，登录态即当前真实态）" if changed else "（容器已是可见模式）"
     return ScanLoginResponse(
