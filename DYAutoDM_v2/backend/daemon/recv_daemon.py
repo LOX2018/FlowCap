@@ -1323,6 +1323,19 @@ def main() -> None:
     except Exception:
         pass
 
+    # 2026-09-13 抓真因：traceback.print_exc() 输出到 stderr，而 sidecar 的
+    # stderr 被桌面端吞掉，导致 CAP-015 等异常的堆栈永远看不到。
+    # 这里把 stderr 重定向到独立文件（与日志同目录），抓完即移除。
+    try:
+        import sys as _sys
+        _stderr_log = os.path.join(
+            log_dir, f"recv_stderr_{datetime.now().strftime('%Y%m%d')}.log")
+        _sf = open(_stderr_log, "a", encoding="utf-8")
+        _sys.stderr = _sf
+        _sys.stdout = _sf
+    except Exception:
+        pass
+
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
 
