@@ -322,6 +322,14 @@ class BrowserContainer:
         self._userinfo_cache: tuple | None = None
         # _loop 由 FastAPI startup 持有，submit 用它把协程投递到主事件循环
         self._loop: asyncio.AbstractEventLoop | None = None
+        # 2026-09-12 切换冷却期：set_visible 无头↔有头重启 context 后，给新
+        # context 一段加载窗口。此期间 _ensure_alive / keepalive 探活只告警、
+        # 绝不强杀重启 —— 否则刚加载一半的页面被误杀，抖音会弹「环境异常」
+        # （实测：13:52 切有头 → 13:54 探活误判失效 → BCC-006 重启 → 页面
+        # 加载中断 → 抖音异常页）。
+        self._switch_cool_until: float = 0.0
+        # 冷却期时长（秒）：有头指纹内核冷启动实测约 2~3 分钟，取 180s 兜底。
+        _SWITCH_COOLDOWN_SEC = 180
 
     async def start(self) -> None:
         """启动浏览器 context（持有 profile 锁）。失败抛 RuntimeError。"""
@@ -370,6 +378,15 @@ class BrowserContainer:
                 self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
             await self._page.evaluate("1")
         except Exception as e:
+            # 切换冷却期：context 刚重启完，页面可能还在加载（有头冷启动可达
+            # 2~3 分钟）。此时探活失败是正常的，绝不能强杀重启 —— 否则刚加载
+            # 一半的页面被杀，抖音会弹「环境异常」（实测 13:52 切换事故）。
+            if time.time() < self._switch_cool_until:
+                remain = int(self._switch_cool_until - time.time())
+                logger.warning(
+                    "BCC-006", f"[bcc] context 探活失败（切换冷却期内，{remain}s "
+                    f"后恢复强杀）: {e} —— 页面加载中，跳过重启，等冷却结束")
+                return
             logger.warning("BCC-006", f"[bcc] context/page 失活，重启: {e}")
             try:
                 if self._backend == "exe" and self._context is not None:
@@ -427,6 +444,12 @@ class BrowserContainer:
             self._nav_page = None
             self._headless = target
             await self._launch()
+            # 切换冷却期开始：新 context 需要加载窗口（有头冷启动约 2~3 分钟），
+            # 期间探活/业务调用失败只告警，绝不 _ensure_alive 强杀（防抖音异常页）。
+            self._switch_cool_until = time.time() + _SWITCH_COOLDOWN_SEC
+            logger.info(
+                f"[bcc] {self.account} 可见性切换完成(headless={target})，"
+                f"进入 {_SWITCH_COOLDOWN_SEC}s 切换冷却期（探活只告警不强杀）")
             if url and self._page is not None:
                 try:
                     await self._page.goto(url, wait_until="domcontentloaded",
@@ -1299,6 +1322,14 @@ class BrowserContainer:
                 break
             now = time.time()
             in_breaker = now < breaker_until
+            # 切换冷却期：set_visible 无头↔有头重启 context 后，新页面还在加载，
+            # 探活会误判失效并触发 BCC-006 强杀（→ 页面加载中断 → 抖音「环境异常」）。
+            # 冷却期内跳过整个探活周期，只记 debug；冷却结束自然恢复。
+            if now < self._switch_cool_until:
+                remain = int(self._switch_cool_until - now)
+                logger.debug(
+                    f"[bcc] 切换冷却期内({remain}s)，跳过探活（防误杀新 context）")
+                continue
             try:
                 uid = self._load_uid_from_env()
                 prev_uid = getattr(self, "_last_uid", None)
