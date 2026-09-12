@@ -58,7 +58,6 @@ from loguru import logger
 # 绝不会触碰物理设备。
 _FAKE_MEDIA_ARGS = [
     "--use-fake-device-for-media-stream",
-    "--use-fake-ui-for-media-stream",
     "--allow-file-access-from-files",
     "--mute-audio",
     "--deny-permission-prompts",
