@@ -481,6 +481,20 @@ class RecvChannel(threading.Thread):
                 self._handle(message)
             except Exception as e:
                 logger.warning("RECV-005", f"[recv][{self.name}] 消息解析异常: {e}")
+                # 2026-09-13 抓真因：loguru 的 warning(code, detail) 会把 detail
+                # 当 format 参数吞掉，只显示错误码。这里把完整堆栈落到独立文件，
+                # 便于定位「WS 收到消息但不落库」的真实异常（抓完即移除）。
+                try:
+                    import traceback
+                    _tp = r"C:\temp\dyautodm_test\logs\recv005_trace.log"
+                    with open(_tp, "a", encoding="utf-8") as _f:
+                        _f.write(
+                            "\n===== " + time.strftime('%Y-%m-%d %H:%M:%S')
+                            + f" account={self.name} =====\n"
+                            + f"ERR: {type(e).__name__}: {e}\n"
+                            + traceback.format_exc() + "\n")
+                except Exception:
+                    pass
 
         def on_error(ws, error):
             self.inbox.connected = False
@@ -573,7 +587,7 @@ class RecvChannel(threading.Thread):
                 return
             # 过滤系统引导消息(如"微信"/"在哪个地区受伤的"快捷回复建议):
             # 这类消息 msg_type=7 且 msg_id=None(非真实聊天),不应展示在聊天记录中
-            if int(msg_type) == 7 and not msg.msg_id:
+            if int(msg_type) == 7 and not getattr(msg, "msg_id", None):
                 return
             peer_name = content_json.get("sender_nickname") or sender or conv_id
             # 08 §13.5 铁律：方向只能用 sender UID 判断，不可用消息类型推断。
@@ -586,7 +600,7 @@ class RecvChannel(threading.Thread):
                 peer_name=peer_name, msg_type=str(msg_type), extra=extra,
                 # 2026-09-06 双通道去重：写入抖音消息唯一 ID，让 WS / WP
                 # 两条通道写入同一条消息时命中 uniq_dmmsg 唯一索引去重。
-                msg_id=str(msg.msg_id) if msg.msg_id else None,
+                msg_id=str(mid) if (mid := getattr(msg, "msg_id", None)) else None,
             )
             logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] {peer_name}: {text}")
         elif frame.payloadType == "text/json":
