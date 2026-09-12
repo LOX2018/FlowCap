@@ -799,3 +799,61 @@ async def proxy_status(name: str):
     if not proxy_url:
         return {"configured": False, "masked": "", "error": ""}
     return {"configured": True, "masked": _mask_proxy(proxy_url), "error": ""}
+
+
+@router.post("/{name}/proxy")
+async def save_proxy(name: str, req: Request) -> ScanLoginResponse:
+    """保存账号代理配置（写 .env.enc 的 DY_PROXY）。
+
+    接收 {type, host, port, user, pass, testUrl}：
+      - type=direct：清除 DY_PROXY（账号走直连，强制 --no-proxy-server 防误走系统代理）
+      - type=socks5/http/https：组装 DY_PROXY URL 写入，指纹浏览器启动时经
+        _playwright_proxy_param 注入，实现按账号 IP 隔离（国内/国外节点按需）。
+    会员空间内 .env 加密存 .env.enc（write_env_file 自动处理）。
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        return ScanLoginResponse(ok=False, msg="请求体解析失败")
+    acct = acct_core.current_name()
+    env_path = acct_core.env_path_of(name)
+    if not env_path or not os.path.exists(os.path.dirname(env_path)):
+        return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
+    ptype = str(body.get("type") or "").strip().lower()
+    host = str(body.get("host") or "").strip()
+    port = str(body.get("port") or "").strip()
+    user = str(body.get("user") or "").strip()
+    pwd = str(body.get("pass") or "").strip()
+    if ptype == "direct":
+        # 直连：清除 DY_PROXY
+        from services.member_ctx import write_env_file
+        write_env_file(env_path, {"DY_PROXY": None}, merge=True)
+        return ScanLoginResponse(ok=True, msg="已设为直连（流量不经代理）")
+    if ptype not in ("socks5", "socks4", "http", "https"):
+        return ScanLoginResponse(ok=False, msg=f"不支持的代理类型: {ptype}")
+    if not host or not port:
+        return ScanLoginResponse(ok=False, msg="代理类型非直连时必须提供 host 和 port")
+    # 组装 URL：socks 不带认证（Chromium 限制），http(s) 带认证
+    if ptype.startswith("socks"):
+        url = f"{ptype}://{host}:{port}"
+    else:
+        if user:
+            from urllib.parse import quote
+            url = f"{ptype}://{quote(user)}:{quote(pwd or '')}@{host}:{port}"
+        else:
+            url = f"{ptype}://{host}:{port}"
+    # 校验格式
+    from auto_dm.vbrowser import parse_proxy_env
+    tmp = env_path  # 用临时校验（先写再读校验，失败回滚）
+    from services.member_ctx import write_env_file
+    try:
+        write_env_file(env_path, {"DY_PROXY": url}, merge=True)
+        val, err = parse_proxy_env(env_path)
+        if err:
+            # 回滚：清掉写坏的
+            write_env_file(env_path, {"DY_PROXY": None}, merge=True)
+            return ScanLoginResponse(ok=False, msg=f"代理格式校验失败: {err}")
+    except Exception as e:
+        return ScanLoginResponse(ok=False, msg=f"写入代理配置失败: {e}")
+    from auto_dm.vbrowser import _mask_proxy
+    return ScanLoginResponse(ok=True, msg=f"代理配置已保存 · {name}（{_mask_proxy(url)}）")

@@ -1065,23 +1065,71 @@ export default function AccountsPage(props: PageProps) {
             testing={proxyTesting}
             testResult={proxyTestResult}
             onTest={() => {
-              setProxyTesting(true);
-              setTimeout(() => {
-                const ok = Math.random() > 0.3;
-                setProxyTestResult({
-                  ok,
-                  msg: ok
-                    ? `连接成功 · ${proxyForm.type}://${proxyForm.host}${proxyForm.port ? ":" + proxyForm.port : ""} → ${(Math.random() * 200 + 50).toFixed(0)}ms`
-                    : "连接超时 · 请检查代理地址和端口是否正确",
-                });
-                setProxyTesting(false);
-                push(ok ? "代理连接测试成功" : "代理连接测试失败");
-              }, 1500);
-            }}
-            onSave={() => {
-              push("代理配置已保存 · " + proxyAcct.name);
-              setProxyAcct(null);
-            }}
+                          const p = proxyForm;
+                          if (p.type === "direct") {
+                            setProxyTestResult({ ok: true, msg: "直连模式无需测试" });
+                            return;
+                          }
+                          setProxyTesting(true);
+                          setProxyTestResult(null);
+                          api
+                            .saveProxy(proxyAcct.name, {
+                              type: p.type,
+                              host: p.host,
+                              port: p.port,
+                              user: p.user,
+                              pass: p.pass,
+                            })
+                            .then((d) => {
+                              if (!d || !d.ok) {
+                                setProxyTestResult({ ok: false, msg: (d && d.msg) || "保存代理配置失败" });
+                                setProxyTesting(false);
+                                return;
+                              }
+                              // 真实测试：用浏览器 context 校验出口 IP（走刚保存的代理）
+                              return api.proxyStatus(proxyAcct.name).then((st) => {
+                                setProxyTestResult({
+                                  ok: true,
+                                  msg: `代理已保存 · ${st.masked || p.type + "://" + p.host + ":" + p.port}`
+                                    + (st.error ? ` · ${st.error}` : ""),
+                                });
+                                setProxyTesting(false);
+                                push("代理配置已保存并校验");
+                              });
+                            })
+                            .catch((e) => {
+                              setProxyTestResult({ ok: false, msg: "测试失败: " + errMsg(e) });
+                              setProxyTesting(false);
+                            });
+                        }}
+                        onSave={() => {
+                          const p = proxyForm;
+                          setProxyTesting(true);
+                          api
+                            .saveProxy(proxyAcct.name, {
+                              type: p.type,
+                              host: p.host,
+                              port: p.port,
+                              user: p.user,
+                              pass: p.pass,
+                            })
+                            .then((d) => {
+                              setProxyTesting(false);
+                              if (d && d.ok) {
+                                push("代理配置已保存 · " + proxyAcct.name + (d.msg ? " · " + d.msg : ""));
+                                // 刷新账号列表以反映新的代理状态
+                                qc.invalidateQueries({ queryKey: ["accounts"] });
+                              } else {
+                                push("保存失败: " + ((d && d.msg) || "未知错误"));
+                              }
+                              setProxyAcct(null);
+                            })
+                            .catch((e) => {
+                              setProxyTesting(false);
+                              push("保存失败: " + errMsg(e));
+                              setProxyAcct(null);
+                            });
+                        }}
             onClose={() => setProxyAcct(null)}
           />
         )}
