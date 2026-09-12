@@ -454,9 +454,10 @@ class BrowserContainer:
             self._switching = True
             asyncio.get_event_loop().create_task(
                 self._do_switch_background(target, url))
+            mode_str = "有头可见" if visible else "纯无头"
             return {"ok": True, "headless": target, "changed": True,
                     "switching": True,
-                    "msg": f"正在切换为{'有头可见' if target else '纯无头'}，"
+                    "msg": f"正在切换为{mode_str}，"
                            f"窗口就绪后自动完成（冷启动约 1~3 分钟）"}
 
     async def _do_switch_background(self, target: bool, url: str = "") -> None:
@@ -477,7 +478,7 @@ class BrowserContainer:
         except Exception as e:
             logger.error("BCC-006",
                 f"[bcc] 可见性切换失败(切换为{'有头' if target else '无头'}): {e} —— "
-                f"将在冷却期后由探活自愈（不自动重启，防误杀）")
+                f"将在冷却期后由探活自愈（不自动重启，防误杀）", exc_info=True)
         finally:
             self._switching = False
 
