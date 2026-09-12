@@ -207,3 +207,69 @@ Playwright 无法运行中切 headless，因此切换 = **重启 context**（约
   或强制 --no-proxy-server，否则代理特征泄露被抖音拦截。
 - **账号代理 = IP 隔离的载体**：国内账号配国内节点，国外访问配国外节点，
   保存后即时生效，不匹配=环境异常。
+
+
+---
+
+## 【2026-09-13 方案】UID 漂移 = 凭证失效（待实施 · 明日）
+
+> 用户强调（2026-09-13）：**UID 漂移 = 凭证失效**。
+> 探活 uid 与该账号历史 conv_id 不一致（AUTH-050）即是凭证失效的铁证，
+> 不能仅当作「uid 数据陈旧」而继续用失效凭证干活。
+
+### 一、现状缺口（实测坐实）
+
+`services/uid_probe.py:193`（AUTH-050）：
+```python
+logger.warning("AUTH-050", "...判为陈旧/不可信，不缓存")
+return None          # ← 只不缓存 uid；调用方"走兜底"继续用失效凭证
+```
+- 把漂移当**数据层不可信**，没当**账号层凭证失效** → 继续发消息、继续用 WS token。
+
+### 二、今日故障链（凭此定性）
+
+```
+UID 漂移（AUTH-050 反复告警，03:36 仍在报）→ 代码继续用失效凭证
+   ↓
+发消息 → create_conversation INVALID_REQUEST（cmd 609）← 凭证失效铁证
+   ↓（静置 28 分钟不恢复 → 非临时限流，是账号/凭证持久失效）
+WS 的 token(sessionid) 同效失效 → 推送停止 → 对方消息收不到 → AI 不触发
+```
+
+**关键纠正**：凭证字段「看起来新」（ticket / web_protect / keys 齐全）
+**≠ 有效**；**UID 与账号匹配才是有效判据**。曾被字段齐全误导。
+
+### 三、改造目标
+
+UID 漂移 → 判定凭证失效 → 触发重新捕获 → 捕获成功前**不发消息**（避免
+INVALID_REQUEST 刷屏 + 加重风控）→ 成功后恢复。
+
+### 四、改动点（明日实施）
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `services/uid_probe.py:193` | AUTH-050 除 return None 外，**标记该账号凭证失效**（写入失效态，如 kv_store `cred_invalid_<account>` + 时间戳） |
+| 2 | `services/dm_dispatch.py`（send 闸门） | 发送前检查失效标记：命中则**直接拒绝并返回"凭证失效待重捕获"**，不发请求（杜绝 INVALID_REQUEST 刷屏） |
+| 3 | `daemon/recv_daemon.py` | 收到失效标记 → 停止用旧 token 的 WS 重连，等待新凭证 |
+| 4 | `daemon/browser_daemon.py` | 已有 BCC-016 拒绝回写（保留）；补充：漂移时**主动触发 auto_recapture** |
+| 5 | 重捕获入口 | `auto_dm.accounts.auto_recapture(name)` / `POST /api/accounts/{name}/auto-recapture`；成功后**清除失效标记**并重建 WS |
+
+### 五、实施后验证步骤（按顺序，硬验证）
+
+1. 制造/等待一次 UID 漂移（或手动置失效标记模拟）
+2. 确认：**不再有 INVALID_REQUEST 刷屏**（发送被闸门拦住）
+3. 确认：触发 auto_recapture（日志出现重新捕获）
+4. 重捕获成功 → 失效标记清除
+5. 手动发消息 → **DB 落库 role=them** ✅（硬证据，非日志推断）
+6. AI 生成回复 → 目标在白名单内 → **发送成功并落库 role=me** ✅
+
+### 六、教训（防复发）
+
+- **日志只显示错误码不显示详情**：loguru 的 `logger.warning("CODE", detail)`
+  会把 detail 当 format 参数吞掉 → 排查时**先落文件抓堆栈**（本次靠
+  `recv005_trace.log` 才抓到 `AttributeError: msg_id`）。
+- **验证必须硬**：本次曾把「AI 生成回复」误报为「AI 已回复」，实际
+  SEND-029 白名单拦截 / INVALID_REQUEST 发送失败 → 抖音端根本没收到。
+  铁律：**DB 落库 + 实际收到**才算数。
+- **测试白名单是安全设计**：`_TEST_WHITELIST` 只允许测试账号互发，
+  SEND-029 拒绝发给真实客户属**正确行为**，不是 bug。
