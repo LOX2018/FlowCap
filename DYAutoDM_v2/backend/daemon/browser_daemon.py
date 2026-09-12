@@ -463,6 +463,12 @@ class BrowserContainer:
     async def _do_switch_background(self, target: bool, url: str = "") -> None:
         """后台执行可见性切换的 _launch 部分。失败只告警、不卡死容器。"""
         try:
+            # 切换核心：先确保旧 profile 锁完全释放再启动新 context。
+            # 否则 close()+stop() 是异步的，chromium 进程可能还没退，
+            # 新 launch_persistent_context 立即启动会 TargetClosed
+            # （实测：BCC 切有头时 90% 命中此竞态，TargetClosedError）。
+            # 给旧进程最多 10s 退出时间，避免永久卡死。
+            await self._wait_profile_released()
             await self._launch()
             self._switch_cool_until = time.time() + _SWITCH_COOLDOWN_SEC
             logger.info(
@@ -481,6 +487,25 @@ class BrowserContainer:
                 f"将在冷却期后由探活自愈（不自动重启，防误杀）", exc_info=True)
         finally:
             self._switching = False
+
+    async def _wait_profile_released(self, timeout: float = 10.0) -> None:
+        """等待 profile 的 SingletonLock 被释放（chromium 进程完全退出）。
+
+        切换可见性时 close()+stop() 是异步的，chromium 进程可能还没退，
+        新 launch_persistent_context 立即启动会 TargetClosed。这里轮询
+        profile/SingletonLock 消失；超时则继续（不再等，避免永久卡死）。
+        """
+        lock = os.path.join(self._profile_dir, "SingletonLock")
+        if not os.path.exists(lock):
+            return
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not os.path.exists(lock):
+                logger.info(f"[bcc] {self.account} profile 锁已释放，可安全启动新 context")
+                return
+            await asyncio.sleep(0.3)
+        logger.warning(
+            f"[bcc] {self.account} profile 锁 {timeout:.0f}s 未释放，继续启动（可能仍冲突）")
 
 
     async def submit(self, coro):
