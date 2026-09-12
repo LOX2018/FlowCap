@@ -105,6 +105,11 @@ _state: dict[str, Any] = {
     "keepalive_stop": None,
 }
 
+# 可见性切换冷却期时长（秒）。有头指纹内核冷启动实测约 2~3 分钟，取 180s 兜底。
+# 模块级常量（勿放 __init__ 局部——set_visible/_do_switch_background 等
+# 多个方法都要引用，局部作用域会 NameError）。
+_SWITCH_COOLDOWN_SEC = 180
+
 
 # 模块级 hook 脚本：截 im/user/info 响应（必须在 context 创建后、goto 前 add_init_script 注入）
 # V16 踩坑：evaluate 注入太晚（前端已发完 im/user/info），必须 add_init_script 在 goto 前
@@ -330,8 +335,6 @@ class BrowserContainer:
         self._switch_cool_until: float = 0.0
         # 切换中标志：_launch 在后台任务执行，期间探活/业务调用短暂失败只告警。
         self._switching: bool = False
-        # 冷却期时长（秒）：有头指纹内核冷启动实测约 2~3 分钟，取 180s 兜底。
-        _SWITCH_COOLDOWN_SEC = 180
 
     async def start(self) -> None:
         """启动浏览器 context（持有 profile 锁）。失败抛 RuntimeError。"""
@@ -490,23 +493,32 @@ class BrowserContainer:
             self._switching = False
 
     async def _wait_profile_released(self, timeout: float = 10.0) -> None:
-        """等待 profile 的 SingletonLock 被释放（chromium 进程完全退出）。
+        """等待 profile 的锁文件消失（chromium 进程完全退出）。
 
         切换可见性时 close()+stop() 是异步的，chromium 进程可能还没退，
         新 launch_persistent_context 立即启动会 TargetClosed。这里轮询
-        profile/SingletonLock 消失；超时则继续（不再等，避免永久卡死）。
+        profile 下的锁文件消失；超时则继续（不再等，避免永久卡死）。
+
+        Chromium 锁文件命名随内核/版本变化：官方 Chromium 用 SingletonLock，
+        ungoogled-chromium 实测是 lockfile（2026-09-12 现场核实）。两者都查。
         """
-        lock = os.path.join(self._profile_dir, "SingletonLock")
-        if not os.path.exists(lock):
+        if not self._profile_dir:
+            return
+        lock_files = [os.path.join(self._profile_dir, n)
+                      for n in ("SingletonLock", "lockfile")]
+        locks = [p for p in lock_files if os.path.exists(p)]
+        if not locks:
             return
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if not os.path.exists(lock):
+            locks = [p for p in lock_files if os.path.exists(p)]
+            if not locks:
                 logger.info(f"[bcc] {self.account} profile 锁已释放，可安全启动新 context")
                 return
             await asyncio.sleep(0.3)
         logger.warning(
-            f"[bcc] {self.account} profile 锁 {timeout:.0f}s 未释放，继续启动（可能仍冲突）")
+            f"[bcc] {self.account} profile 锁 {timeout:.0f}s 未释放（{locks}），"
+            f"继续启动（可能仍冲突）")
 
 
     async def submit(self, coro):
