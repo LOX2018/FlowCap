@@ -13,7 +13,7 @@
 import { useCallback, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps, Overview, TaskHistoryItem, ReusePayload } from "../api/client";
-import { Avatar, Pill, Dot } from "../components/ui";
+import { Avatar, Pill } from "../components/ui";
 
 type OverviewExt = Overview & {
   liveUrl?: string;
@@ -120,15 +120,8 @@ export default function TasksPage(props: PageProps) {
           <div className="desc">采集 / 监听 / 导出任务与断线重连状态</div>
         </div>
         <div className="head-row">
-          {ready ? (
-            <span className="badge-conn">
-              <Dot c={ov.running ? (ov.paused ? "warn" : "ok") : "danger"} pulse={!!ov.running && !ov.paused} />{" "}
-              已发 {ov.sent || 0}/{ov.limit || 0}
-              {ov.queue ? " · 待发 " + ov.queue : ""}
-            </span>
-          ) : (
-            <span className="demo-tag">未连接</span>
-          )}
+          {/* 2026-09-10：页头「已发 X/Y」徽章删除，连接状态统一在顶栏显示 */}
+          {!ready && <span className="demo-tag">未连接</span>}
           {ready && (
             <button
               className="btn sm primary"

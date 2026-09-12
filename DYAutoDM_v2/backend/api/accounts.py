@@ -8,6 +8,7 @@
 """
 import os
 import asyncio
+import json
 import threading
 import time
 import urllib.request
@@ -575,30 +576,61 @@ async def ensure_recv_ep(name: str):
 
 @router.post("/{name}/open-browser")
 async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
-    """单纯打开该账号绑定的指纹浏览器并打开默认抖音主页（查看/手动操作）。
+    """查看/操作登录态：把该账号的【常驻 BCC 容器就地切为有头可见】。
 
-    与“重新获取凭证/扫码登录”是两条不同的路径：本接口【不扫码、不抓凭证、
-    不写回 .env】，只拉起浏览器让用户查看或手动操作抖音页面。
-    为避免与常驻的凭证守护争抢 Chromium profile 锁，先临时停止该账号凭证守护，
-    浏览器关闭后请在前端重新启动守护以恢复凭证保活。
+    2026-09-12 根治（用户明确需求：「打开浏览器的目的是能直观看到登录态」）：
+
+    旧实现在这里另起一个**有头 Chromium 实例**指向同一 profile，与常驻的无头
+    BCC **抢 SingletonLock**，后启动者拿到失效页面 —— 实测事故：
+      · BCC 12:43 启动 → 探活 uid 与历史会话不符 → BCC-014/AUTH-050
+      · 紧接着 BCC-016「拒绝写入 .env：疑似幽灵 uid」→ 凭证回写被拦
+      · 昵称捕获 0 个（页面根本没登录态）
+      · 用户此后手动打开的浏览器又反抢 profile，BCC 更不可用
+    而用户真正的诉求只是「看一眼登录态」，不该付出一份 profile 冲突的代价。
+
+    新实现：**不另起实例**。先确保 BCC 在跑（懒加载），再 POST 它的 /show
+    让**同一个容器**以有头模式重启 context。于是：
+      · 用户看到的窗口就是 BCC 自己 → 登录态真实、非副本；
+      · 保活心跳 / cookie 刷新 / 凭证回写链路**全程不中断**（不再需要停守护）；
+      · profile 始终单实例持有，零锁冲突。
+
+    关闭窗口不会结束容器（那是 BCC 的窗口）；如需恢复无头省资源，
+    调 `/api/accounts/{name}/hide-browser`。
     """
     env_path = acct_core.env_path_of(name)
     if not os.path.exists(os.path.dirname(env_path)):
         return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
-    prev = _scan_state.get(name)
-    if prev and prev.get("running"):
-        return ScanLoginResponse(ok=True, msg=f"账号 {name} 指纹浏览器已打开，请完成操作")
-    # 先停守护释放 profile 锁
-    daemon_was_alive = _quit_browser_daemon(name)
-    t = threading.Thread(target=_do_open_browser, args=(name,), daemon=True)
-    t.start()
-    # 捕获立即发生的失败（如指纹内核缺失），否则前端永远 ok=True 却看不到浏览器
-    err = _wait_scan_error(name)
-    if err:
-        return ScanLoginResponse(ok=False, msg=f"打开指纹浏览器失败: {err}")
-    hint = "（已先停止凭证守护释放浏览器，操作完后请在卡片重新启动守护）" if daemon_was_alive \
-        else "（该账号守护未运行，直接打开）"
-    return ScanLoginResponse(ok=True, msg=f"已打开指纹浏览器（查看模式）· {name}{hint}")
+    bport = acct_core.browser_daemon_port(name)
+    # 1) 确保 BCC 在运行（懒加载；已在跑则立即返回）
+    if not acct_core._port_open(bport, timeout=0.3):
+        try:
+            st = acct_core.ensure_bcc(name, wait_ready=True, skip_cooldown=True)
+            if not st.get("ok"):
+                return ScanLoginResponse(
+                    ok=False,
+                    msg=f"拉起浏览器容器失败（{st.get('msg')}），请稍后重试")
+        except Exception as e:  # noqa: BLE001
+            logger.error("BCC-030", f"[open-browser] 账号 {name} 拉起容器失败: {e}")
+            return ScanLoginResponse(ok=False, msg=f"拉起浏览器容器失败: {e}")
+
+    # 2) 就地切为有头可见（不另起实例、不停守护）
+    try:
+        data = json.dumps({"visible": True}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/show", data=data,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        if not out.get("ok"):
+            return ScanLoginResponse(ok=False, msg=f"切换可见模式失败: {out.get('msg')}")
+    except Exception as e:  # noqa: BLE001
+        logger.error("BCC-031", f"[open-browser] 账号 {name} 切换可见模式失败: {e}")
+        return ScanLoginResponse(ok=False, msg=f"切换可见模式失败: {e}")
+
+    changed = out.get("changed")
+    hint = "（容器已切为可见，登录态即当前真实态）" if changed else "（容器已是可见模式）"
+    return ScanLoginResponse(
+        ok=True, msg=f"已显示该账号浏览器窗口 · {name}{hint}（凭证保活未中断）")
 
 
 @router.post("/{name}/scan")
@@ -678,6 +710,29 @@ def _quit_daemon_http(port: int) -> bool:
         return True
     except Exception:
         return False
+
+
+@router.post("/{name}/hide-browser")
+async def hide_fingerprint_browser(name: str) -> ScanLoginResponse:
+    """恢复该账号 BCC 容器为纯无头（省资源、减少风控暴露）。
+
+    与 open-browser 配对：open 切可见（用户看登录态），hide 切回无头。
+    同样**不重启实例**，只是让容器以无头模式重启 context，保活链路不中断。
+    """
+    bport = acct_core.browser_daemon_port(name)
+    if not acct_core._port_open(bport, timeout=0.3):
+        return ScanLoginResponse(ok=True, msg=f"账号 {name} 容器未运行（本就无窗口）")
+    try:
+        data = json.dumps({"visible": False}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/show", data=data,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        return ScanLoginResponse(ok=bool(out.get("ok")), msg=f"已恢复无头模式 · {name}")
+    except Exception as e:  # noqa: BLE001
+        logger.error("BCC-032", f"[hide-browser] 账号 {name} 恢复无头失败: {e}")
+        return ScanLoginResponse(ok=False, msg=f"恢复无头失败: {e}")
 
 
 @router.post("/{name}/stop-browser")

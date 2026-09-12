@@ -328,3 +328,110 @@ def import_file(path: Path, cfg: dict,
             _p(f"达到单文件上限 {MAX_QA_PER_FILE} 条，截断")
     return {"items": items, "chars": len(text), "chunks": len(chunks),
             "mode": "ai" if has_key else "fallback"}
+
+
+# ---------------------------------------------------------------------------
+# 专业知识库（前置参考库）提纯 —— 思维导图结构：主题 → 子分类 → 正文 → 总结
+# ---------------------------------------------------------------------------
+
+def _parse_pro_json(raw: str) -> list:
+    """解析 AI 返回的思维导图条目 JSON。"""
+    import json as _json
+    import re as _re
+
+    if not raw:
+        return []
+    t = raw.strip()
+    t = _re.sub(r"^```(?:json)?|```$", "", t, flags=_re.M).strip()
+    m = _re.search(r"\[.*\]", t, _re.S)
+    if m:
+        t = m.group(0)
+    try:
+        data = _json.loads(t)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for it in data:
+        if not isinstance(it, dict):
+            continue
+        topic = str(it.get("topic") or "").strip()
+        content = str(it.get("content") or "").strip()
+        if not topic or not content:
+            continue
+        out.append({
+            "topic": topic[:40],
+            "category": str(it.get("category") or "").strip()[:40],
+            "content": content[:4000],
+            "summary": str(it.get("summary") or "").strip()[:120],
+            "enabled": True,
+        })
+    return out
+
+
+def generate_pro_with_ai(cfg: dict, chunk: str, merchant: str) -> list:
+    """调主 LLM 把资料提纯成思维导图条目（专业库/前置参考库）。
+
+    输出格式：[{topic, category, content, summary}]
+    - topic：大主题（如「工伤等级」）
+    - category：子分类（如「十级」「神经损伤」）
+    - content：正文资料（保留关键数字/标准/流程，供 AI 全文参考）
+    - summary：一句话总结（列表展示/快速检索用）
+    """
+    from services.ai_reply import AIClient
+
+    prompt = f"""你是「{merchant or '本机构'}」的专业知识库管理员。把下面的资料整理成**思维导图结构**的专业参考资料。
+
+结构要求：
+- topic：大主题（4-8 字，如「工伤等级」「赔偿标准」「办理流程」「地区政策」）
+- category：子分类（2-8 字，如「十级」「神经损伤」「四川」；无合适分类可留空）
+- content：该分类下的完整专业资料正文。**保留关键数字、标准、条件、流程**，供后续 AI 参考回答时引用，不要口语化改写、不要压缩掉信息量
+- summary：一句话总结（不超过 40 字，用于列表快速浏览）
+
+要求：
+- 一条资料可拆成多条；同一 topic 下的条目归到同一 topic
+- 跳过目录、页码、落款、免责声明等无关内容
+- 最多 10 条
+- 只输出 JSON 数组：[{{"topic":"...","category":"...","content":"...","summary":"..."}}]
+
+资料：
+{chunk}"""
+    client = AIClient(cfg)
+    raw = client.chat(prompt, user_id="__pro_kb_import__",
+                      system_prompt="只输出 JSON 数组，不要其他内容。")
+    return _parse_pro_json(raw)[:10]
+
+
+def generate_pro_fallback(chunk: str) -> list:
+    """无 Key 时降级：按段落粗切为「主题=文件名/首句」，保证可用不报错。"""
+    lines = [l.strip() for l in chunk.split("\n") if l.strip()]
+    if not lines:
+        return []
+    body = "\n".join(lines)[:4000]
+    return [{
+        "topic": (lines[0][:20] if lines else "导入资料"),
+        "category": "",
+        "content": body,
+        "summary": (lines[0][:40] if lines else ""),
+        "enabled": True,
+    }]
+
+
+def import_pro_file(path, cfg: dict, progress=None) -> dict:
+    """解析文件 → 提纯为思维导图条目（专业库）。返回 {items, chars, chunks, mode}。"""
+    text = extract_text(path, cfg)
+    chunks = make_chunks(text)
+    has_key = bool(cfg.get("api_key"))
+    items: list = []
+    for i, chunk in enumerate(chunks):
+        if len(items) >= MAX_QA_PER_FILE:
+            break
+        got = generate_pro_with_ai(cfg, chunk, cfg.get("merchant_name", "")) if has_key else []
+        if not got:
+            got = generate_pro_fallback(chunk)
+        items.extend(got)
+        if len(items) >= MAX_QA_PER_FILE:
+            items = items[:MAX_QA_PER_FILE]
+    return {"items": items, "chars": len(text), "chunks": len(chunks),
+            "mode": "ai" if has_key else "fallback"}

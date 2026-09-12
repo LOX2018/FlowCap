@@ -1,0 +1,1110 @@
+/* ============================================================================
+ * 设计风格移植层 —— 移植自 zn0wii/satelite-proxy（style3 "macOS glass + mission console"）
+ *
+ * 本文件在 global.css **之后**导入，采用「叠加式」改造：
+ *   · 只补变量、加新组件类、覆盖需要换材质的那几条规则；
+ *   · 不改动 global.css 里 22 个页面依赖的既有选择器结构，
+ *     因此页面级布局零破坏风险。
+ *
+ * 变量命名对齐本项目既有约定（不改名 22 个页面的引用）：
+ *   源 --primary/--on-primary/--primary-muted  →  本 --accent/--accent-ink/--accent-bg
+ *   源 --text                                  →  本 --fg（--text 作为别名保留）
+ *   源 --surface/--surface-2/--muted/--border  →  同名沿用
+ * 氛围光专用变量 --glow-rgb / --glow-deep-rgb 沿用源名，由 accents.ts 运行时注入。
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * 0. 补齐历史遗漏变量
+ *    此前 --card / --foreground / --muted-foreground 被引用但从未定义（前者 2 次、
+ *    后者 39 次），边框/面板/文字色全部回落浏览器默认，表现为「没有边界感」。
+ * ------------------------------------------------------------------------- */
+:root {
+  --card: var(--surface);
+  --foreground: var(--fg);
+  --muted-foreground: var(--muted);
+
+  /* 源项目设计体系里的通用 token（本项目原本没有，补齐后新组件可直接用） */
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-xs: 5px;
+  --radius-pill: 999px;
+
+  --bg-deep: var(--bg);
+  --panel-solid: var(--surface);
+  --panel-elevated: var(--surface-2);
+  --faint: color-mix(in oklch, var(--muted) 70%, transparent);
+  --placeholder: color-mix(in oklch, var(--muted) 80%, transparent);
+  --hover-wash: color-mix(in oklch, var(--fg) 7%, transparent);
+  --nav-label: var(--muted);
+  --code-bg: var(--bg);
+  --code-fg: var(--fg);
+  --input-bg: var(--bg);
+  --input-border: var(--border);
+
+  --shadow-card: none;
+  --shadow-elevated: 0 12px 32px rgb(0 0 0 / 0.35);
+  --shadow-modal: 0 24px 50px rgb(0 0 0 / 0.45);
+  --overlay: rgb(8 10 14 / 0.62);
+
+  /* 语义色别名（与 --accent 家族并列，供玻璃控件着色用） */
+  --accent-hover: var(--accent);
+  --accent-glow: var(--accent-bg);
+  --accent-border: color-mix(in oklch, var(--accent) 35%, transparent);
+  --accent-border-strong: color-mix(in oklch, var(--accent) 55%, transparent);
+  --danger-border: color-mix(in oklch, var(--danger) 32%, transparent);
+  --danger-hover: color-mix(in oklch, var(--danger) 82%, white);
+
+  /* 顶栏玻璃基色 */
+  --nav-bg: color-mix(in oklch, var(--surface) 82%, transparent);
+
+  /* 氛围光兜底（accent 为绿色时的暗色值；运行时由 accents.ts 覆盖） */
+  --glow-rgb: 104, 203, 110;
+  --glow-deep-rgb: 22, 43, 24;
+  --hero-glow: radial-gradient(
+    ellipse 70% 55% at 50% 40%,
+    rgba(var(--glow-rgb), 0.1),
+    transparent 70%
+  );
+  --page-glow: radial-gradient(
+    ellipse 90% 60% at 50% -10%,
+    rgba(var(--glow-rgb), 0.07),
+    transparent 55%
+  );
+
+  /* 页面入场动画时长（源项目同款） */
+  --page-enter-ms: 240ms;
+}
+
+/* ---------------------------------------------------------------------------
+ * 1. 亮色主题（day）
+ *    源项目为亮色单独写了一大段覆写；这里同样给出**完整** token 集，
+ *    保证 885 行既有样式在亮底上都有确定值可取，不出现「半亮半暗」。
+ * ------------------------------------------------------------------------- */
+[data-theme="day"] {
+  color-scheme: light;
+
+  --bg: #eef0f4;
+  --bg-deep: #e4e7ed;
+  /* 亮色下卡片以「白色磨砂」呈现：页面底色是近白，纯白玻璃会看不见，
+     故 surface 保留一点透明让背景色透出来。 */
+  --surface: rgb(255 255 255 / 0.72);
+  --surface-2: rgb(255 255 255 / 0.86);
+  --panel: #ffffff;
+  --panel-solid: #ffffff;
+  --panel-elevated: #f3f4f7;
+
+  --fg: #12161c;
+  --text: var(--fg);
+  --foreground: var(--fg);
+  --muted: #5b656f;
+  --muted-foreground: var(--muted);
+  --faint: rgb(18 22 28 / 0.45);
+
+  --border: rgb(0 0 0 / 0.1);
+  --line: rgb(0 0 0 / 0.08);
+  --border-strong: rgb(0 0 0 / 0.16);
+  --placeholder: rgb(18 22 28 / 0.45);
+  --nav-label: rgb(18 22 28 / 0.55);
+  --hover-wash: rgb(0 0 0 / 0.045);
+  --code-bg: rgb(0 0 0 / 0.05);
+  --code-fg: rgb(18 22 28 / 0.82);
+
+  --accent-ink: #ffffff;
+  --ok: #1f9a72;
+  --warn: #a67c2a;
+  --danger: #c45a32;
+  --ok-bg: rgb(31 154 114 / 0.12);
+  --warn-bg: rgb(166 124 42 / 0.12);
+  --danger-bg: rgb(196 90 50 / 0.1);
+  --accent-bg: rgb(31 154 114 / 0.12);
+  --danger-border: rgb(196 90 50 / 0.3);
+  --danger-hover: #d06a42;
+
+  --input-bg: #ffffff;
+  --input-border: rgb(0 0 0 / 0.14);
+  --bg-deep: #e4e7ed;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.05);
+  --shadow-elevated: 0 12px 32px rgb(0 0 0 / 0.1);
+  --shadow-modal: 0 24px 50px rgb(0 0 0 / 0.16);
+  --overlay: rgb(20 24 28 / 0.4);
+
+  --nav-bg: rgb(255 255 255 / 0.72);
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. 页面底纹：从「44px 网格线」换成源项目的「径向氛围光」
+ *    网格线与径向光叠加会显脏，故二者取一（用户已确认改径向光）。
+ * ------------------------------------------------------------------------- */
+body {
+  background: var(--bg);
+  background-image: none;
+}
+
+.app {
+  min-height: 100vh;
+  background:
+    radial-gradient(
+      ellipse 105% 68% at 50% 18%,
+      rgba(var(--glow-deep-rgb), 0.32) 0%,
+      rgba(var(--glow-deep-rgb), 0.2) 34%,
+      rgba(var(--glow-deep-rgb), 0.08) 58%,
+      transparent 76%
+    ),
+    var(--page-glow),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  background-attachment: fixed;
+}
+
+/* 亮色底上氛围光要更淡，否则整体发绿/发脏 */
+[data-theme="day"] .app {
+  background:
+    radial-gradient(
+      ellipse 105% 68% at 50% 12%,
+      rgba(var(--glow-deep-rgb), 0.16) 0%,
+      rgba(var(--glow-deep-rgb), 0.09) 36%,
+      transparent 72%
+    ),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. 卡片：实心块 → 磨砂玻璃
+ *    isolation:isolate 是必须的 —— 顶栏 backdrop-filter 的重绘会往卡片/表头
+ *    渗出一层白，隔离后不再发生（源项目踩过的坑）。
+ * ------------------------------------------------------------------------- */
+.card,
+.set-card,
+.modal-card.self-check,
+.member-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  isolation: isolate;
+}
+
+/* 语义面板（设置页卡片）在亮色下用实心底，避免透出网格状的脏底 */
+[data-theme="day"] .set-card {
+  background: var(--panel-solid);
+}
+
+/* 关于入场闪烁：源项目用一个**临时**的 .page-enter 类在入场期间关掉卡片的
+   backdrop-filter。本项目入场动画由 framer-motion 承担、且没有「入场结束」的
+   回调来移除类，类一旦常驻会让卡片永久失去磨砂，故不采用该做法 ——
+   宁可接受极短的一次重绘，也要保证玻璃质感是常态。 */
+
+/* ---------------------------------------------------------------------------
+ * 4. 顶栏：通栏 sticky  →  浮动玻璃胶囊 + 滑动指示器
+ *    —— 用户已选定「照搬源项目浮动胶囊顶栏 + 滑动指示器」
+ * ------------------------------------------------------------------------- */
+.topnav-wrap {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0.7rem 1rem 0.3rem;
+  z-index: 40;
+  position: sticky;
+  top: 0;
+  width: 100%;
+}
+
+.topnav {
+  --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.06rem 0.3rem 0.06rem 0.5rem;
+  border-radius: var(--radius-pill);
+  /* 玻璃主体：纵向渐变让表面读作「被打光的玻璃」而不是一块死色 */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--nav-bg) 88%, #ffffff 4%) 0%,
+    var(--nav-bg) 48%,
+    color-mix(in srgb, var(--nav-bg) 92%, #000000 4%) 100%
+  );
+  border: 1px solid rgb(255 255 255 / 0.075);
+  box-shadow:
+    0 18px 52px rgb(0 0 0 / 0.28),
+    0 4px 14px rgb(0 0 0 / 0.14),
+    inset 0 1px 0 rgb(255 255 255 / 0.1),
+    inset 0 -1px 0 rgb(255 255 255 / 0.02);
+  -webkit-backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+  backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+  /* 这里不能 overflow:hidden —— 会裁掉下面弹出的菜单（光晕由 .topnav-glow 裁） */
+  scrollbar-width: none;
+}
+
+/* 左上角高光：模拟玻璃边缘的全反射 */
+.topnav::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    linear-gradient(
+      135deg,
+      rgb(255 255 255 / 0.26) 0%,
+      rgb(255 255 255 / 0.13) 5%,
+      rgb(255 255 255 / 0.055) 13%,
+      rgb(255 255 255 / 0.018) 23%,
+      rgb(255 255 255 / 0) 39%
+    ),
+    linear-gradient(
+      180deg,
+      rgb(255 255 255 / 0.065) 0%,
+      rgb(255 255 255 / 0.018) 28%,
+      rgb(255 255 255 / 0) 62%
+    );
+}
+
+.topnav-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.topnav-glow::after {
+  content: "";
+  position: absolute;
+  width: 220px;
+  height: 96px;
+  top: -36px;
+  left: 8px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    rgb(255 255 255 / 0.22) 0%,
+    rgb(255 255 255 / 0.12) 28%,
+    rgb(255 255 255 / 0.05) 48%,
+    rgb(255 255 255 / 0) 73%
+  );
+  filter: blur(13px);
+  opacity: 0.9;
+}
+
+[data-theme="day"] .topnav {
+  background: rgb(255 255 255 / 0.55);
+  border-color: rgb(0 0 0 / 0.07);
+  box-shadow:
+    0 14px 40px rgb(0 0 0 / 0.1),
+    0 3px 10px rgb(0 0 0 / 0.06),
+    inset 0 1px 0 rgb(255 255 255 / 0.9);
+}
+
+[data-theme="day"] .topnav-glow::after {
+  opacity: 0.35;
+}
+
+/* ---- 品牌区 ---- */
+.topnav-brand {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0 0.5rem 0 0.25rem;
+  flex-shrink: 0;
+}
+
+.topnav-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--accent);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.topnav-mark::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 2px;
+  background: var(--accent-ink);
+}
+
+.topnav-brand h1 {
+  font-size: 0.82rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--fg);
+  margin: 0;
+  white-space: nowrap;
+}
+
+.topnav-brand .sub {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.topnav-brand .appver {
+  margin-left: 0.15rem;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--surface-2) 70%, transparent);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.topnav-divider {
+  position: relative;
+  z-index: 1;
+  width: 1px;
+  height: 1rem;
+  background: var(--border);
+  margin: 0 0.2rem;
+  flex-shrink: 0;
+}
+
+/* ---- 导航项 + 滑动指示器 ---- */
+.topnav-items {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.topnav-items::-webkit-scrollbar {
+  display: none;
+}
+
+.topnav-indicator {
+  position: absolute;
+  top: 0.14rem;
+  bottom: 0.14rem;
+  left: 0;
+  width: 0;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgb(255 255 255 / 0.075);
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.19) 0%,
+    rgb(255 255 255 / 0.11) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.16),
+    inset 1px 0 0 rgb(255 255 255 / 0.045),
+    inset 0 -1px 0 rgb(0 0 0 / 0.1),
+    0 2px 5px rgb(0 0 0 / 0.13);
+  pointer-events: none;
+  z-index: 0;
+  transition:
+    transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.18s ease;
+}
+
+.topnav-indicator::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 1px;
+  width: 65%;
+  height: 45%;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(
+    ellipse at top left,
+    rgb(255 255 255 / 0.13),
+    rgb(255 255 255 / 0) 70%
+  );
+  pointer-events: none;
+}
+
+.topnav-item {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  padding: 0.42rem 0.78rem;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease;
+  box-shadow: none;
+  position: relative;
+  z-index: 1;
+}
+
+.topnav-item:hover:not(:disabled):not(.active) {
+  color: var(--fg);
+  background: var(--hover-wash);
+}
+
+.topnav-item.active {
+  color: var(--fg);
+  background: transparent;
+  font-weight: 600;
+}
+
+.topnav-item:focus-visible {
+  outline: none;
+  color: var(--fg);
+}
+
+[data-theme="day"] .topnav-indicator {
+  border-color: rgb(0 0 0 / 0.08);
+  background: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.9),
+    0 1px 3px rgb(0 0 0 / 0.12);
+}
+
+[data-theme="day"] .topnav-indicator::before {
+  display: none;
+}
+
+/* ---- 右侧工具区（主题切换 / 状态 / 退出）---- */
+.topnav-tools {
+  position: relative;
+  isolation: isolate;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.25rem 0.15rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--topnav-liquid);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 5px 16px rgb(0 0 0 / 0.1);
+}
+
+.topnav-theme-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 1.45rem);
+  align-items: center;
+  gap: 0.05rem;
+  padding: 0.12rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--bg) 30%, transparent);
+}
+
+.topnav-theme-btn {
+  appearance: none;
+  width: 1.45rem;
+  height: 1.45rem;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--faint);
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-grid;
+  place-items: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.topnav-theme-btn:hover:not(.active) {
+  color: var(--fg);
+  background: var(--hover-wash);
+}
+
+.topnav-theme-btn.active {
+  color: var(--fg);
+  background: var(--surface-2);
+  box-shadow:
+    inset 0 0 0 1px var(--border),
+    0 2px 7px rgb(0 0 0 / 0.12);
+}
+
+.topnav-theme-btn:focus-visible {
+  outline: none;
+}
+
+.topnav-status {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
+  padding: 0.2rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+/* 顶栏内的会员徽章与退出按钮改为玻璃化 */
+.topnav-tools .badge-conn {
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  font-size: 0.68rem;
+}
+
+.topnav-tools .member-logout {
+  height: 26px;
+  padding: 0 0.7rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  color: var(--fg);
+}
+
+.topnav-tools .member-logout:hover {
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+/* 注意：**不要**在这里写 `header.nav { … }` 之类的中和规则。
+   accounts.tsx 的「查阅模式」全屏 overlay 里还有一个 <header className="nav">，
+   它与 App 顶栏同名同结构；TopNav 已改用独立的 .topnav* 命名空间，
+   因此既不需要、也绝不能去改 .nav —— 否则那个只读页的顶栏会被一起中和掉。 */
+
+/* ---------------------------------------------------------------------------
+ * 5. 玻璃控件族：GlassButton / GlassSeg / GlassSwitch
+ *    单一材质语言：底部实心填充 + 顶部受光渐变 +胶囊圆角。
+ *    刻意**不用** backdrop-filter —— 大量重复控件叠加模糊层是 GPU 显存
+ *    的最大消耗项（源项目 docs/webview2-memory-optimization-plan.md）。
+ *    需要磨砂时由 [data-glass-frost] 统一开启。
+ * ------------------------------------------------------------------------- */
+.glass-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.34rem 0.85rem;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--surface-2) 88%, var(--bg));
+  border: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 8px 24px rgb(0 0 0 / 0.16);
+  background-image: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.08) 0%,
+    rgb(255 255 255 / 0.02) 100%
+  );
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-image 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.glass-btn .glass-btn-icon {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.glass-btn:hover:not(:disabled) {
+  background-image: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.14) 0%,
+    rgb(255 255 255 / 0.05) 100%
+  );
+  border-color: color-mix(in oklch, var(--border) 60%, var(--fg));
+}
+
+.glass-btn:active:not(:disabled) {
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 0.25),
+    0 2px 8px rgb(0 0 0 / 0.16);
+}
+
+.glass-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.glass-btn.icon-only {
+  padding: 0.34rem 0.55rem;
+}
+
+.glass-btn.primary {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 22%, rgb(255 255 255 / 0.1)) 0%,
+    color-mix(in srgb, var(--accent) 10%, rgb(255 255 255 / 0.04)) 100%
+  );
+}
+
+.glass-btn.primary:hover:not(:disabled) {
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+.glass-btn.danger {
+  border-color: var(--danger-border);
+  color: var(--danger);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger) 20%, rgb(255 255 255 / 0.08)) 0%,
+    color-mix(in srgb, var(--danger) 9%, rgb(255 255 255 / 0.03)) 100%
+  );
+}
+
+.glass-btn.danger:hover:not(:disabled) {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger) 28%, rgb(255 255 255 / 0.1)) 0%,
+    color-mix(in srgb, var(--danger) 14%, rgb(255 255 255 / 0.04)) 100%
+  );
+}
+
+/* ---- 分段控件 ---- */
+.glass-seg {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0.18rem;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--surface-2) 88%, var(--bg));
+  border: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 8px 24px rgb(0 0 0 / 0.16);
+}
+
+.glass-seg-indicator {
+  position: absolute;
+  top: 0.18rem;
+  bottom: 0.18rem;
+  left: 0.18rem;
+  /* 宽度 = 单个槽位；轨道左右各 0.18rem 内边距已由 calc 扣除 */
+  width: calc((100% - 0.36rem) / var(--count, 3));
+  border-radius: var(--radius-pill);
+  border: 1px solid rgb(255 255 255 / 0.075);
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.19) 0%,
+    rgb(255 255 255 / 0.11) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.16),
+    inset 1px 0 0 rgb(255 255 255 / 0.045),
+    inset 0 -1px 0 rgb(0 0 0 / 0.1),
+    0 2px 5px rgb(0 0 0 / 0.13);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-seg-indicator.no-anim {
+  transition: none;
+}
+
+.glass-seg-indicator::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 1px;
+  width: 65%;
+  height: 45%;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(
+    ellipse at top left,
+    rgb(255 255 255 / 0.13),
+    rgb(255 255 255 / 0) 70%
+  );
+  pointer-events: none;
+}
+
+.glass-seg-btn {
+  position: relative;
+  z-index: 1;
+  appearance: none;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.32rem 0.7rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none;
+  transition: color 0.18s ease;
+}
+
+.glass-seg-btn:hover:not(:disabled):not(.active) {
+  color: var(--fg);
+}
+
+.glass-seg-btn.active {
+  color: var(--fg);
+}
+
+.glass-seg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- 开关 ---- */
+.glass-switch {
+  appearance: none;
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.glass-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.glass-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.glass-switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.glass-switch-row.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.glass-switch-label {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.glass-switch-capsule .glass-switch-label {
+  color: inherit;
+}
+
+.glass-switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 70%, var(--surface-2));
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.3);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  display: inline-block;
+}
+
+.glass-switch-track.on {
+  border-color: var(--accent-border);
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 0.22),
+    0 0 10px var(--accent-glow);
+}
+
+.glass-switch-track.sm {
+  width: 32px;
+  height: 18px;
+}
+
+.glass-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.92) 0%,
+    rgb(255 255 255 / 0.7) 100%
+  );
+  border: 1px solid rgb(255 255 255 / 0.4);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+  transition:
+    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.2s ease;
+}
+
+.glass-switch-track.on .glass-switch-thumb {
+  transform: translateX(18px);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 75%, #fff) 0%,
+    var(--accent) 100%
+  );
+}
+
+.glass-switch-track.sm .glass-switch-thumb {
+  width: 13px;
+  height: 13px;
+}
+
+.glass-switch-track.sm.on .glass-switch-thumb {
+  transform: translateX(14px);
+}
+
+.glass-switch-capsule {
+  cursor: pointer;
+}
+
+.glass-switch-capsule.on {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 22%, rgb(255 255 255 / 0.1)) 0%,
+    color-mix(in srgb, var(--accent) 10%, rgb(255 255 255 / 0.04)) 100%
+  );
+}
+
+.glass-switch-capsule:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+/* 首帧无动画落位（持久化值晚到时不允许滑块滑动） */
+.glass-switch-capsule.no-anim,
+.glass-switch-track.no-anim .glass-switch-thumb {
+  transition: none;
+}
+
+/* ---- 亮色下的玻璃控件（源项目整段覆写：亮底上白玻璃+白阴影会糊成一团）---- */
+[data-theme="day"] .glass-btn:not(.primary):not(.danger),
+[data-theme="day"] .glass-seg {
+  background: rgb(255 255 255 / 0.85);
+  border-color: rgb(0 0 0 / 0.09);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.9),
+    0 4px 14px rgb(0 0 0 / 0.07);
+  background-image: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.95) 0%,
+    rgb(255 255 255 / 0.6) 100%
+  );
+  color: var(--fg);
+}
+
+[data-theme="day"] .glass-btn:not(.primary):not(.danger):hover:not(:disabled) {
+  background-image: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 1) 0%,
+    rgb(255 255 255 / 0.75) 100%
+  );
+}
+
+[data-theme="day"] .glass-btn.primary {
+  background: var(--accent-bg);
+  background-image: none;
+  border-color: var(--accent-border);
+  color: var(--accent);
+  box-shadow: none;
+}
+
+[data-theme="day"] .glass-btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--accent-border-strong);
+}
+
+[data-theme="day"] .glass-btn.danger {
+  background: var(--danger-bg);
+  background-image: none;
+  border-color: var(--danger-border);
+  color: var(--danger);
+  box-shadow: none;
+}
+
+[data-theme="day"] .glass-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger-hover);
+}
+
+[data-theme="day"] .glass-switch-track {
+  background: rgb(0 0 0 / 0.09);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.14);
+}
+
+[data-theme="day"] .glass-switch-thumb {
+  background: linear-gradient(180deg, #fff 0%, #f0f0f0 100%);
+  border-color: rgb(0 0 0 / 0.06);
+}
+
+[data-theme="day"] .glass-seg-indicator {
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.12),
+    inset 0 1px 0 rgb(255 255 255 / 0.9);
+}
+
+/* 弹窗内不用磨砂（弹窗自带背景，叠加模糊既费性能又看不清） */
+.modal-card .glass-seg,
+.modal-card .glass-btn:not(.primary):not(.danger),
+.modal-card .glass-switch-track {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * 6. 磨砂总开关：<html data-glass-frost> （由 ThemeContext 控制）
+ * ------------------------------------------------------------------------- */
+[data-glass-frost] .glass-seg,
+[data-glass-frost] .glass-btn {
+  background-color: rgb(16 24 26 / 0.36);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+}
+
+[data-glass-frost] .glass-switch-track {
+  background-color: rgb(16 24 26 / 0.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
+}
+
+[data-theme="day"][data-glass-frost] .glass-seg,
+[data-theme="day"][data-glass-frost] .glass-btn {
+  background-color: rgb(255 255 255 / 0.55);
+}
+
+/* ---------------------------------------------------------------------------
+ * 7. 滚动条（源项目同款极细胶囊滚动条）
+ * ------------------------------------------------------------------------- */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: color-mix(in oklch, var(--surface) 40%, transparent);
+  border-radius: var(--radius-pill);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-width: 28px;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background:
+    linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--fg) 30%, transparent),
+        color-mix(in oklch, var(--fg) 15%, transparent)
+      )
+      padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--accent) 70%, white 10%),
+        color-mix(in oklch, var(--accent) 42%, transparent)
+      )
+      padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * 8. 页面入场动画（源项目同款，与 exit 由 framer-motion 负责）
+ * ------------------------------------------------------------------------- */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 页面入场的**视觉**过渡由 App.tsx 的 framer-motion 负责（opacity + translateY），
+   此处不再叠一层 keyframes 动画 —— 两者同时作用会让入场变慢一倍并互相抵消。
+   .page-enter 只作为「正在入场」的标记类，用来关掉入场期间的卡片 backdrop-filter。 */
+.page-enter {
+  /* marker only */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter {
+    animation: none;
+  }
+  * {
+    scroll-behavior: auto;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 9. 亮色下的表单控件与遮罩微调（沿用源项目的「白底+清晰描边」主张）
+ * ------------------------------------------------------------------------- */
+[data-theme="day"] .input,
+[data-theme="day"] .select,
+[data-theme="day"] .textarea,
+[data-theme="day"] .member-input {
+  background: var(--input-bg);
+  border-color: var(--input-border);
+  color: var(--fg);
+}
+
+[data-theme="day"] .overlay,
+[data-theme="day"] .modal-mask {
+  background: rgb(20 24 28 / 0.35);
+}
+
+/* 亮色下 --bg 变浅，`.overlay` 原本直接用 --bg 铺满会导致「白屏遮罩」，
+   这里改用半透明暗色，保持弹窗背后仍是页面内容。 */
+.overlay {
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}

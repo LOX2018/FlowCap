@@ -14,11 +14,359 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from typing import Optional
 from loguru import logger
 
 from services import ai_reply
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# 对话回复库（命中库 v0.39.0）：案例命中零 token 直接回复
+# ---------------------------------------------------------------------------
+
+@router.get("/replies")
+async def replies_list():
+    from services import reply_kb
+
+    return {"ok": True, "items": reply_kb.list_items()}
+
+
+class ReplyItemBody(BaseModel):
+    id: Optional[int] = None
+    question: str = ""
+    answer: str = ""
+    enabled: Optional[bool] = None
+
+
+@router.post("/replies")
+async def replies_save(body: ReplyItemBody):
+    from services import reply_kb
+
+    if body.id:
+        it = reply_kb.update_item(body.id, body.question, body.answer,
+                                  enabled=body.enabled)
+        if not it:
+            return {"ok": False, "error": "条目不存在"}
+        return {"ok": True, "item": it, "items": reply_kb.list_items()}
+    it = reply_kb.add_item(body.question, body.answer, source="manual")
+    return {"ok": True, "item": it, "items": reply_kb.list_items()}
+
+
+@router.delete("/replies/{item_id}")
+async def replies_delete(item_id: int):
+    from services import reply_kb
+
+    ok = reply_kb.delete_item(item_id)
+    return {"ok": ok, "items": reply_kb.list_items()}
+
+
+@router.post("/replies/learn")
+async def replies_learn(account: str = "", limit: int = 200):
+    """从聊天记录自动总结学习话术 → 入命中库。"""
+    from services import reply_kb
+
+    try:
+        r = reply_kb.learn_from_history(account=account or "", limit=limit)
+        return {"ok": True, **r, "items": reply_kb.list_items()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# 专业知识库（思维导图结构 v0.39.1）：主题→子分类→正文→总结
+# ---------------------------------------------------------------------------
+
+@router.get("/prokb")
+async def prokb_list():
+    from services import pro_kb
+
+    return {"ok": True, "items": pro_kb.list_items(), "tree": pro_kb.tree()}
+
+
+class ProKbItemBody(BaseModel):
+    id: Optional[int] = None
+    topic: str = ""
+    category: str = ""
+    content: str = ""
+    summary: str = ""
+    enabled: Optional[bool] = None
+
+
+@router.post("/prokb")
+async def prokb_save(body: ProKbItemBody):
+    from services import pro_kb
+
+    if body.id:
+        it = pro_kb.update_item(body.id, topic=body.topic,
+                                category=body.category, content=body.content,
+                                summary=body.summary, enabled=body.enabled)
+        if not it:
+            return {"ok": False, "error": "条目不存在"}
+    else:
+        try:
+            it = pro_kb.add_item(body.topic, body.category, body.content,
+                                 body.summary)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+    return {"ok": True, "item": it, "items": pro_kb.list_items(),
+            "tree": pro_kb.tree()}
+
+
+@router.delete("/prokb/{item_id}")
+async def prokb_delete(item_id: int):
+    from services import pro_kb
+
+    ok = pro_kb.delete_item(item_id)
+    return {"ok": ok, "items": pro_kb.list_items(), "tree": pro_kb.tree()}
+
+
+class ProImportConfirmBody(BaseModel):
+    items: list[dict]
+    replace: bool = False
+
+
+@router.post("/prokb/import")
+async def prokb_import_upload(file: UploadFile):
+    """上传文件 → 解析 + AI 提纯为思维导图条目（主题/子分类/正文/总结）。
+
+    返回预览列表，不直接入库；前端确认后调 /prokb/import/confirm。
+    支持格式：txt/md/docx/xlsx/pdf；图片需先配置视觉模型。
+    """
+    from services import kb_import
+    import tempfile
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in kb_import.SUPPORTED_EXT:
+        raise HTTPException(400, f"不支持的格式 {suffix}（支持: txt/md/docx/xlsx/pdf/png/jpg）")
+    data = await file.read()
+    if len(data) > kb_import.MAX_FILE_MB * 1024 * 1024:
+        raise HTTPException(400, f"文件超过 {kb_import.MAX_FILE_MB}MB 上限")
+    tmp = Path(tempfile.gettempdir()) / f"pro_kb_import_{int(time.time())}{suffix}"
+    try:
+        tmp.write_bytes(data)
+        cfg = ai_reply.get_config()
+        result = await asyncio.to_thread(kb_import.import_pro_file, tmp, cfg)
+    except Exception as e:
+        logger.warning("AI-002", f"[ai-prokb-import] 解析异常: {e}")
+        raise HTTPException(500, f"提纯失败: {e}")
+    finally:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+    return {"ok": True, "filename": file.filename, **result}
+
+
+@router.post("/prokb/import/confirm")
+async def prokb_import_confirm(body: ProImportConfirmBody):
+    """把预览的思维导图条目写入专业知识库。replace=true 先清空。"""
+    from services import pro_kb
+
+    if not body.items:
+        raise HTTPException(400, "没有可写入的条目")
+    if body.replace:
+        pro_kb.clear_items()
+    n = pro_kb.bulk_add(body.items)
+    return {"ok": True, "added": n, "items": pro_kb.list_items(), "tree": pro_kb.tree()}
+
+
+@router.post("/prokb/migrate_qa")
+async def prokb_migrate_qa():
+    """把旧 QA 知识库（Agent config 内）迁移到对话回复库。"""
+    from services import ai_agent, reply_kb
+
+    a = ai_agent.get_agent('ag_fa502e7decb547b7')
+    kb = (a or {}).get('config', {}).get('knowledge_base', [])
+    existing = {(it.get('question') or '').strip()
+                for it in reply_kb.list_items()}
+    added = 0
+    for it in kb:
+        q = (it.get('question') or '').strip()
+        ans = (it.get('answer') or '').strip()
+        if q and ans and q not in existing:
+            reply_kb.add_item(q, ans, source='migrated')
+            existing.add(q)
+            added += 1
+    return {"ok": True, "added": added,
+            "items": reply_kb.list_items()}
+
+
+# ---------------------------------------------------------------------------
+# 知识维护与自动学习（v0.40，移植自 MalogBot 知识演化体系）
+# 删除一律：扫描出报告 → 人工确认 → 回收站 30 天 → 真删
+# ---------------------------------------------------------------------------
+
+class ProKbPatchBody(BaseModel):
+    topic: Optional[str] = None
+    category: Optional[str] = None
+    content: Optional[str] = None
+    summary: Optional[str] = None
+    enabled: Optional[bool] = None
+    importance: Optional[float] = None
+
+
+@router.patch("/prokb/{item_id}")
+async def prokb_patch(item_id: int, body: ProKbPatchBody):
+    """单字段/多字段局部更新（表格视图的单元格直接编辑用）。"""
+    from services import pro_kb
+
+    it = pro_kb.update_item(item_id, topic=body.topic,
+                            category=body.category, content=body.content,
+                            summary=body.summary, enabled=body.enabled,
+                            importance=body.importance)
+    if not it:
+        return {"ok": False, "error": "条目不存在"}
+    return {"ok": True, "item": it, "tree": pro_kb.tree()}
+
+
+@router.get("/prokb/topics")
+async def prokb_topics():
+    """全库主题/子分类清单（导入提纯时复用，保证全局一棵树）。"""
+    from services import pro_kb
+
+    return {"ok": True, "topics": pro_kb.topics(),
+            "categories": pro_kb.categories()}
+
+
+class RenameTopicBody(BaseModel):
+    old: str
+    new: str
+
+
+@router.post("/prokb/rename_topic")
+async def prokb_rename_topic(body: RenameTopicBody):
+    """主题改名（级联该主题下所有条目）——统一树的关键操作。"""
+    from services import pro_kb
+
+    n = pro_kb.rename_topic(body.old, body.new)
+    return {"ok": True, "renamed": n, "items": pro_kb.list_items(),
+            "tree": pro_kb.tree()}
+
+
+@router.get("/prokb/maintain/status")
+async def prokb_maintain_status():
+    """维护体系状态：定时器 / 上次运行 / 上次扫描报告。"""
+    from services import kb_maintain
+
+    st = kb_maintain.get_state()
+    return {"ok": True, "state": {
+        "enabled": st.get("enabled"),
+        "interval_hours": st.get("interval_hours"),
+        "last_run_at": st.get("last_run_at"),
+        "next_run_at": st.get("next_run_at"),
+        "runs": st.get("runs"),
+        "last_run_result": st.get("last_run_result"),
+        "errors": st.get("errors", [])[-5:],
+    }, "last_scan": kb_maintain.get_last_scan()}
+
+
+@router.post("/prokb/maintain/scan")
+async def prokb_maintain_scan():
+    """立即执行一次维护扫描（只出报告，不动数据）。"""
+    from services import kb_maintain
+
+    r = await asyncio.to_thread(kb_maintain.run_scan_job)
+    return {"ok": r.get("ok", False), "report": r.get("report"),
+            "error": r.get("error")}
+
+
+class MaintainApplyBody(BaseModel):
+    items: list = []
+    ids: list = []
+    action: str = "recycle"
+
+    def pick_ids(self) -> list:
+        out = list(self.ids or [])
+        for it in self.items or []:
+            if isinstance(it, dict):
+                _id = it.get("id") or it.get("drop_id")
+            else:
+                _id = it
+            if _id is not None:
+                out.append(_id)
+        return out
+
+
+@router.post("/prokb/maintain/apply")
+async def prokb_maintain_apply(body: MaintainApplyBody):
+    """执行确认过的维护项：进回收站（默认）或打陈旧标记。"""
+    from services import pro_kb
+
+    ids = body.pick_ids()
+    if not ids:
+        raise HTTPException(400, "未选择任何条目")
+    r = pro_kb.apply_maintenance(ids, action=body.action)
+    return {**r, "items": pro_kb.list_items(), "tree": pro_kb.tree()}
+
+
+@router.post("/prokb/maintain/merge")
+async def prokb_maintain_merge(body: MaintainApplyBody):
+    """合并重复：保留 keep_id，drop_id 进回收站。"""
+    from services import kb_maintain, pro_kb
+
+    pairs = [it for it in (body.items or []) if isinstance(it, dict)]
+    r = kb_maintain.merge_duplicate_pairs(pairs)
+    return {**r, "items": pro_kb.list_items(), "tree": pro_kb.tree()}
+
+
+@router.post("/prokb/maintain/learn")
+async def prokb_maintain_learn(account: str = "", limit: int = 200):
+    """手动触发一次自动学习（从聊天记录提炼话术 → 命中库）。"""
+    from services import kb_maintain
+
+    r = await asyncio.to_thread(kb_maintain.run_learn_job,
+                                account=account or "", limit=limit)
+    return r
+
+
+@router.post("/prokb/maintain/run")
+async def prokb_maintain_run():
+    """手动跑一轮完整周期任务（学习 + 扫描 + 回收站清理）。"""
+    from services import kb_maintain
+
+    r = await asyncio.to_thread(kb_maintain.run_all_jobs)
+    return {"ok": True, **r}
+
+
+@router.post("/prokb/maintain/scheduler")
+async def prokb_maintain_scheduler(enable: bool = True,
+                                   interval_hours: float = 84):
+    """启停常驻定时器（默认 84 小时一轮）。"""
+    from services import kb_maintain
+
+    if enable:
+        return kb_maintain.start_scheduler(interval_hours=interval_hours)
+    return kb_maintain.stop_scheduler()
+
+
+# ---- 回收站 ----
+
+@router.get("/prokb/recycle")
+async def prokb_recycle_list():
+    from services import pro_kb
+
+    return {"ok": True, "items": pro_kb.list_recycle_bin(),
+            "retention_days": pro_kb.RECYCLE_DAYS}
+
+
+@router.post("/prokb/recycle/{item_id}/restore")
+async def prokb_recycle_restore(item_id: int):
+    from services import pro_kb
+
+    ok = pro_kb.restore_item(item_id)
+    return {"ok": ok, "items": pro_kb.list_recycle_bin(),
+            "tree": pro_kb.tree()}
+
+
+@router.post("/prokb/recycle/purge")
+async def prokb_recycle_purge():
+    """立即清空回收站（真删，慎用）。"""
+    from services import pro_kb
+
+    n = pro_kb.clear_recycle_bin()
+    return {"ok": True, "purged": n, "items": pro_kb.list_recycle_bin()}
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +386,31 @@ async def list_agents():
     from services import ai_agent
 
     return {"ok": True,
-            "agents": ai_agent.list_agents(),
+            "agents": [a for a in ai_agent.list_agents()
+                       if a.get("kind") != "dispatch"],
             "bindings": ai_agent.get_bindings()}
+
+
+@router.get("/dispatch_agent")
+async def get_dispatch_agent():
+    """调度 Agent（IM Bot 默认，仅一个）。不存在自动预置。"""
+    from services import ai_agent
+
+    a = ai_agent.get_dispatch_agent()
+    return {"ok": True, "agent": a}
+
+
+class SaveDispatchBody(BaseModel):
+    config: dict = {}
+
+
+@router.post("/dispatch_agent")
+async def save_dispatch_agent(body: SaveDispatchBody):
+    """更新调度 Agent（只允许 system_prompt/permissions/enabled）。"""
+    from services import ai_agent
+
+    a = ai_agent.save_dispatch_agent(body.config or {})
+    return {"ok": True, "agent": a}
 
 
 @router.get("/agents/{agent_id}")
@@ -65,7 +436,22 @@ async def save_agent(body: SaveAgentBody):
     # 只认 ai_reply._DEFAULT_CONFIG 里已有的键，防止脏键污染
     allowed = set(ai_reply._DEFAULT_CONFIG.keys()) | {
         "knowledge_base", "blacklist"}
-    cfg = {k: v for k, v in (body.config or {}).items() if k in allowed}
+    incoming = {k: v for k, v in (body.config or {}).items() if k in allowed}
+
+    # 2026-09-10 事故修复：save_agent 是整体覆盖 config。前端编辑器只传
+    # 表单里的几个键（name/model/enabled/scopes…），直接覆盖会把既有
+    # system_prompt/knowledge_base 等清空（唐律助理曾因此丢人格+30条KB）。
+    # 改为合并语义：已存在的 Agent 先取旧 config，再把传入的键盖上去；
+    # 传入 None 的键视为"不修改"。新建时保持原样。
+    existing = ai_agent.get_agent(body.id) if body.id else None
+    if existing:
+        merged = dict(existing.get("config") or {})
+        for k, v in incoming.items():
+            if v is not None:
+                merged[k] = v
+        cfg = merged
+    else:
+        cfg = incoming
     a = ai_agent.save_agent(body.id, body.name or "未命名 Agent", cfg)
     return {"ok": True, "agent": a, "agents": ai_agent.list_agents()}
 
@@ -136,7 +522,7 @@ async def save_config(body: SaveConfigBody):
         if not a:
             raise HTTPException(404, "Agent 不存在")
         allowed = set(ai_reply._DEFAULT_CONFIG.keys()) | {
-            "knowledge_base", "blacklist"}
+            "knowledge_base", "blacklist", "scopes"}
         cfg = {k: v for k, v in (body.config or {}).items() if k in allowed}
         cur = dict(a.get("config") or {})
         cur.update(cfg)

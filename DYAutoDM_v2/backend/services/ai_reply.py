@@ -43,6 +43,28 @@ import database
 # 表结构：ai_leads（留资线索）。幂等建表，import 后由 ensure_tables 调用。
 # ---------------------------------------------------------------------------
 
+# === 测试专用探测针（2026-09-12 端到端实测注入）===
+# 格式：PROBE|{trace_id}|{环节}|{结果}|{字段}
+# 单独落文件，便于全流程追踪；不影响业务日志。
+import os as _os, json as _json, time as _time
+
+_PROBE_LOG = _os.environ.get(
+    "AI_PROBE_LOG",
+    _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "ai_probe.log"),
+)
+
+
+def _probe(trace_id, stage, result, **kw):
+    try:
+        rec = {"ts": _time.strftime("%H:%M:%S"), "trace": trace_id,
+               "stage": stage, "result": result}
+        rec.update(kw)
+        with open(_PROBE_LOG, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def ensure_tables() -> None:
     conn = database.get_db()
     conn.executescript("""
@@ -117,8 +139,11 @@ _DEFAULT_CONFIG = {
     "merchant_name": "",         # 商家名（注入 prompt）
     "strict_level": "rag",       # kb_only / rag / free
     "system_prompt": "",         # 获客 prompt 模板（空 = 用内置默认）
-    "lead_confirm": "收到～稍后这边联系你哈",   # 留资成功后的确认话术
+    "lead_confirm": "好的～稍后这边联系你哈",   # 留资成功后的确认话术
     "max_lead_ask": 2,           # 单会话最多主动索要联系方式次数
+    # ---- Agent 分类与作用域（v0.38.6）----
+    "kind": "dm",                # dm=私信 Agent | dispatch=调度 Agent（IM Bot）
+    "scopes": ["dm", "live", "crawl"],  # 作用域：AI 智能回复注入哪些模块
     # ---- 知识库/兜底 ----
     "knowledge_first": True,
     # ---- 语义检索（三级漏斗第2级；本机 FreeLLM OpenAI 兼容 /embeddings）----
@@ -138,9 +163,8 @@ _DEFAULT_CONFIG = {
     ],
     "fallback_image": "图我看到了哈，稍等我看看再回你",
     "forbidden_words": [
-        "微信", "vx", "VX", "weixin", "加我",  # 站外引流敏感词
-        "保证", "肯定", "一定", "承诺",          # 承诺类
-        "作为一个AI", "作为一个ai", "抱歉", "亲~",
+        "微信", "vx", "VX", "weixin",  # 站外引流敏感词（"加我"单字误杀率高，已用 prompt 铁律约束）
+        "作为一个AI", "作为一个ai",
     ],
     "max_reply_len": 60,         # 超长截第一句
 }
@@ -193,6 +217,28 @@ def apply_model_hub(cfg: dict) -> dict:
         return cfg
 
 
+# ---------------------------------------------------------------------------
+# 避障链路引擎（v0.39.0）：hub 链候选按序尝试，全部失败返回 None。
+# ---------------------------------------------------------------------------
+
+def resolve_chain_hub(consumer_id: str) -> Optional[dict]:
+    """取消费方的 hub 避障链（未配置/异常返回 None，调用方回落旧单配置）。"""
+    try:
+        from services import model_hub as hub
+
+        return hub.resolve_chain(consumer_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("AI-030", f"[ai] model_hub 链路解析失败: {e}")
+        return None
+
+
+def _cand_cfg(c: dict) -> dict:
+    """hub 候选 → AIClient 认的四键 cfg。"""
+    return {"base_url": c["base_url"], "api_key": c["api_key"],
+            "api_protocol": c["api_protocol"], "model": c["model"]}
+
+
+
 def save_config(cfg: dict) -> dict:
     merged = get_config()
     for k in _DEFAULT_CONFIG:
@@ -228,16 +274,70 @@ _RAG_SUFFIX = """
 客户消息：{text}"""
 
 
+_LAST_PROMPT_STATS = {"kb_mode": "none", "pro_kb_chars": 0}
+
+
 def build_system_prompt(cfg: dict, kb_items: list, text: str) -> str:
+    global _LAST_PROMPT_STATS
+    _LAST_PROMPT_STATS = {"kb_mode": "none", "pro_kb_chars": 0}
     merchant = cfg.get("merchant_name") or "本店"
     base = (cfg.get("system_prompt") or "").strip() or _DEFAULT_AGENT_PROMPT
     base = (base.replace("{merchant}", merchant)
                 .replace("{max_ask}", str(cfg.get("max_lead_ask", 2))))
     if cfg.get("strict_level") == "rag":
-        lines = []
-        for it in kb_items[:40]:
-            lines.append(f"- 问：{it.get('question','')} → 答：{it.get('answer','')}")
-        kb_text = "\n".join(lines) if lines else "（知识库暂无条目）"
+        # v0.39.1：专业库改为思维导图结构（主题→子分类→正文→总结），
+        # RAG 注入条目全文（相关性由漏斗/向量负责，不本地切分）。
+        # 两库职责明确：专业库=RAG 参考；命中库=直接回复。不互相回落。
+        # v0.40：注入前跑质量门槛（低质量且从未命中 → 不进提示词），
+        #        按时间衰减排序（越久没用到的越靠后），并给注入条目记 hits。
+        try:
+            from services import pro_kb
+
+            pro = pro_kb.list_items()
+            pro = [it for it in pro if it.get("enabled", True)]
+            # 质量门槛：importance<0.3 且 hits==0 的低质条目不进提示词
+            pro = [it for it in pro if pro_kb.quality_ok(it)]
+        except Exception:
+            pro = []
+        if pro:
+            # 2026-09-12：专业库改为**语义筛选**（用户拍板：不能全库注入）。
+            # 原因：旧实现 list_items()[:40] 全文注入可达 3 万字符，
+            # 撑爆模型上下文 → AI 返回空 → 全部降级兜底话术。
+            # 新流程：客户问题 → 语义 TopK(5) → 仅注入最相关条目（≤6000 字）。
+            # embedding 不可用 → 降级为「时间衰减排序取前 5」，绝不阻塞。
+            try:
+                hits = pro_kb.semantic_topk(text, pro, k=5, threshold=0.0,
+                                            max_chars=6000)
+            except Exception:
+                hits = None
+            if hits:
+                picked = hits
+                kb_mode = "semantic"
+            else:
+                now = time.time()
+                picked = sorted(
+                    pro, key=lambda it: pro_kb.time_decay_factor(it, now=now),
+                    reverse=True)[:5]
+                kb_mode = "fallback_decay"
+            lines = []
+            for it in picked:
+                head = it.get("topic", "")
+                if it.get("category"):
+                    head += f" / {it['category']}"
+                summ = it.get("summary") or ""
+                lines.append(
+                    f"【{head}】{summ}\n{it.get('content', '')}".strip())
+            kb_text = "\n\n".join(lines)
+            _LAST_PROMPT_STATS = {"kb_mode": kb_mode, "pro_kb_chars": len(kb_text),
+                                  "picked": len(picked)}
+            # 记命中：喂 hits/last_accessed_at（下次排序与陈旧判定用）
+            try:
+                for it in picked:
+                    pro_kb.touch(it.get("id"))
+            except Exception:
+                pass
+        else:
+            kb_text = "（知识库暂无条目）"
         base += _RAG_SUFFIX.format(kb=kb_text, text=text)
     return base
 
@@ -381,6 +481,29 @@ def _embedRemote(base_url: str, api_key: str, model: str,
         return None
 
 
+def _embed_failover(texts: list[str], consumer_id: str = "ai_sem",
+                    timeout: float = 20.0) -> tuple:
+    """语义避障链：sem 链候选按序尝试（sem 链无兜底）。
+
+    返回 (vecs, model_name)；链未配置回落旧单配置路径。
+    返回实际生效的模型名，供缓存一致性校验（不同 embedding 模型的向量
+    空间不可比，混用会让余弦相似度失真）。
+    """
+    chain = resolve_chain_hub(consumer_id)
+    if not chain or not chain.get("candidates"):
+        cfg = get_config()
+        m = cfg.get("sem_model", "")
+        v = _embedRemote(cfg.get("sem_base_url", ""),
+                         cfg.get("sem_api_key", ""), m, texts, timeout)
+        return (v, m) if v is not None else (None, None)
+    for c in chain["candidates"]:
+        v = _embedRemote(c["base_url"], c["api_key"], c["model"],
+                         texts, timeout)
+        if v is not None:
+            return v, c["model"]
+        logger.warning("AI-033", f"[ai] 语义候选失败，切下一个: {c['model']}")
+    return None, None
+
 def _cosine(a: list[float], b: list[float]) -> float:
     dot = 0.0
     na = 0.0
@@ -410,15 +533,14 @@ def kb_rebuild_semantic_cache(cfg: Optional[dict] = None) -> dict:
     # 只向量化的 question：实测混合 answer 会稀释语义（0.358→纯问句 0.582，
     # 同义改写「你们这个什么价格呀」因此掉到阈值之下漏召回）
     texts = [it.get("question", "") for it in items]
-    vecs = _embedRemote(cfg.get("sem_base_url", ""), cfg.get("sem_api_key", ""),
-                        cfg.get("sem_model", ""), texts)
+    vecs, used_model = _embed_failover(texts)
     if vecs is None:
-        return {"ok": False, "error": "embedding 调用失败（检查语义检索配置）"}
+        return {"ok": False, "error": "embedding 调用失败（检查语义链路配置）"}
     n = 0
     for it, v in zip(items, vecs):
         _kv_set(_KV_SEM_PREFIX + str(it["id"]), v)
         n += 1
-    _kv_set(_KV_SEM_MDL, cfg.get("sem_model", ""))
+    _kv_set(_KV_SEM_MDL, used_model or "")
     return {"ok": True, "embedded": n, "total": len(items)}
 
 
@@ -434,8 +556,19 @@ def find_match_semantic(question: str, cfg: dict,
     """
     if not cfg.get("sem_enabled") or not cfg.get("sem_base_url"):
         return None
-    qvec = _embedRemote(cfg.get("sem_base_url", ""), cfg.get("sem_api_key", ""),
-                        cfg.get("sem_model", ""), [question])
+    qvec, used_model = _embed_failover([question])
+    if qvec is None:
+        return None
+    # 向量空间一致性：缓存是别的 embedding 模型生成的 → 余弦不可比，
+    # 直接跳过语义级（落 Jaccard 兜底），防跨模型混算出假命中。
+    try:
+        cached_mdl = _kv_get(_KV_SEM_MDL, "")
+        if cached_mdl and used_model and cached_mdl != used_model:
+            logger.warning("AI-034", f"[ai] 语义缓存模型不一致（缓存={cached_mdl} "
+                           f"现用={used_model}），本次跳过语义级")
+            return None
+    except Exception:
+        pass
     if qvec is None:
         return None
     qv = qvec[0]
@@ -465,7 +598,7 @@ def find_match_semantic(question: str, cfg: dict,
 
 _REASONING_PATTERN = re.compile(
     r"^\s*(?:\d+[\.\)、]\s*)?[\*\#]*\s*"
-    r"(?:分析|思考|第一步|步骤|让我|首先|Okay|Let me|I need to|Sure,)",
+    r"(?:分析|思考|第一步|步骤|让我|首先|The user|Let me|I need to|Sure[,.]|Okay[,.]|Based on|Alright)",
     re.IGNORECASE)
 
 
@@ -594,14 +727,13 @@ class AIClient:
             logger.info("[ai] content 为空，尝试 reasoning_content 兜底")
             reply = rc.strip()[-200:] if rc else ""
         if not reply:
-            logger.warning("AI-010", f"[ai] AI 返回为空: {str(result)[:200]}")
+            logger.warning(f"[ai] AI 返回为空: {str(result)[:200]}")
             return None
-        # 推理模型 max_tokens 不足时会把思考过程当 content 输出
-        #（实测 glm-5.2: finish_reason=length 且 content 以「1. **分析**」开头）。
-        # 此类文本绝不能发给客户 —— 视为本次生成失败，走兜底话术。
-        finish = str((result.get("choices") or [{}])[0].get("finish_reason") or "")
-        if finish == "length" and _looks_like_reasoning(reply):
-            logger.warning("AI-011", "[ai] 检测到思考过程被截断输出（finish=length），丢弃改兜底")
+        # 思考过程泄漏检测（含中英文）：推理模型 max_tokens 不足或跑偏时
+        # content 会是分析文本（"1. **分析请求**…" / "The user has already…"），
+        # 此类文本绝不能发给客户 —— 丢弃走兜底话术。
+        if _looks_like_reasoning(reply):
+            logger.warning(f"[ai] 思考过程泄漏检测命中，丢弃: {reply[:60]}")
             return None
         return reply
 
@@ -640,6 +772,36 @@ class AIClient:
         return reply
 
     # -- 视觉模型（独立配置，OpenAI 兼容 /chat/completions）---------------
+
+    def chat_failover(self, message: str, consumer_id: str = "ai_main",
+                      user_id: str = "default", system_prompt: str = "",
+                      history_extra: Optional[list] = None) -> Optional[str]:
+        """沿 hub 避障链按序尝试：候选失败（异常/HTTP错/空回复/思考泄漏）
+        自动切下一个；llm 链末尾自动附加兜底模型。链未配置时回落旧
+        单配置 chat()，全部失败返回 None（调用方走兜底话术）。
+        """
+        chain = resolve_chain_hub(consumer_id)
+        if not chain or not chain.get("candidates"):
+            return self.chat(message, user_id=user_id,
+                             system_prompt=system_prompt,
+                             history_extra=history_extra)
+        attempts = list(chain["candidates"])
+        if chain.get("fallback"):
+            attempts.append(chain["fallback"])
+        for c in attempts:
+            cfg = dict(self.cfg)
+            cfg.update(_cand_cfg(c))
+            reply = AIClient(cfg).chat(message, user_id=user_id,
+                                       system_prompt=system_prompt,
+                                       history_extra=history_extra)
+            if reply:
+                if len(attempts) > 1:
+                    logger.info(f"[ai] 避障命中模型 {c['model']}（候选"
+                                f"{attempts.index(c) + 1}/{len(attempts)}）")
+                return reply
+            logger.warning("AI-031", f"[ai] 链路候选失败，切下一个: {c['model']}")
+        return None
+
 
     def describe_image(self, image_b64: str, mime: str = "jpeg") -> Optional[str]:
         cfg = self.cfg
@@ -688,6 +850,29 @@ class AIClient:
             logger.warning("AI-015", f"[ai] 视觉请求失败: {e}")
             return None
 
+    def describe_image_failover(self, image_b64: str, mime: str = "jpeg",
+                                consumer_id: str = "ai_vision") -> Optional[str]:
+        """视觉避障链：vision 链候选按序尝试（兜底模型附末尾）；
+        链未配置回落旧单配置 describe_image()。"""
+        chain = resolve_chain_hub(consumer_id)
+        if not chain or not chain.get("candidates"):
+            return self.describe_image(image_b64, mime)
+        attempts = list(chain["candidates"])
+        if chain.get("fallback"):
+            attempts.append(chain["fallback"])
+        for c in attempts:
+            cfg = dict(self.cfg)
+            cfg["vision_base_url"] = c["base_url"]
+            cfg["vision_api_key"] = c["api_key"]
+            cfg["vision_model"] = c["model"]
+            text = AIClient(cfg).describe_image(image_b64, mime)
+            if text:
+                if len(attempts) > 1:
+                    logger.info(f"[ai] 视觉避障命中 {c['model']}")
+                return text
+            logger.warning("AI-032", f"[ai] 视觉候选失败，切下一个: {c['model']}")
+        return None
+
     def test_connection(self) -> tuple[bool, str]:
         reply = self.chat("你好", user_id="__api_test__",
                           system_prompt="请用一句话回复")
@@ -701,6 +886,8 @@ class AIClient:
 # ---------------------------------------------------------------------------
 
 _PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+_PHONE_SPACED_RE = re.compile(  # 手机号带空格/横线分隔：138 1234 5678 / 138-1234-5678
+    r"(?<!\d)1[3-9]\d[-\s]?\d{4}[-\s]?\d{4}(?!\d)")
 # 微信号：宽松匹配 wx/wxid/v_/weixin 开头 6-20 位字母数字下划线（用户主动发才算）
 _WECHAT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:wx|weixin|wxid|v_)[A-Za-z0-9_-]{5,19}(?![A-Za-z0-9_-])",
@@ -712,8 +899,14 @@ def extract_contacts(text: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     if not text:
         return out
-    for m in _PHONE_RE.findall(text):
+    compact = re.sub(r"[-\s]", "", text)  # 去掉空格/横线再匹配手机号
+    for m in _PHONE_RE.findall(compact):
         out.append(("phone", m))
+    # 分隔格式（138 1234 5678）可能因去空格后跨字粘连产生误报，单独提取并还原
+    for m in _PHONE_SPACED_RE.finditer(text):
+        v = re.sub(r"[-\s]", "", m.group(0))
+        if ("phone", v) not in out and re.fullmatch(r"1[3-9]\d{9}", v):
+            out.append(("phone", v))
     for m in _WECHAT_RE.findall(text):
         out.append(("wechat", m))
     # 去重保序
@@ -882,11 +1075,24 @@ class AutoReplyWorker:
         for r in rows:
             last_id = max(last_id, r["id"])
             _kv_set(_KV_MARKER, last_id)
+            # [PROBE-1] 水位/捞取：记录进入决策链的消息
+            try:
+                _probe(r["id"], "TICK", "pick",
+                       account=r["account"], conv_id=r["conv_id"],
+                       peer=r.get("peer_name") or r.get("peer_id"),
+                       text=(r["text"] or "")[:80],
+                       msg_type=r["msg_type"], last_id=last_id)
+            except Exception:
+                pass
             try:
                 self._handle(r, cfg)
                 self.status["processed"] += 1
             except Exception as e:
                 self.status["errors"] += 1
+                try:
+                    _probe(r["id"], "TICK", "error", err=str(e)[:160])
+                except Exception:
+                    pass
                 logger.warning("AI-018", f"[ai] 单条处理异常: {e}")
         self.status["last_tick"] = time.time()
 
@@ -908,6 +1114,9 @@ class AutoReplyWorker:
             cfg = ai_agent.resolve_config(account, cfg)
         except Exception:  # Agent 模块异常绝不影响回复主流程
             pass
+        # 2026-09-10：Agent 作用域（scopes）决定该 Agent 应用到哪些模块
+        #（私信中心/直播监听/视频采集）。作用域检查由各消费方自行判断，
+        # 此处只做配置解析，不做账号级拦截。
 
         bl = set(blacklist_list())
         # v0.38.0：黑名单跟随 Agent（用户决策：知识库/黑名单/兜底全部 Agent 级）
@@ -918,7 +1127,11 @@ class AutoReplyWorker:
         except Exception:
             pass
         if (row["peer_id"] and row["peer_id"] in bl) or peer_name in bl:
+            _probe(row["id"], "BLACKLIST", "hit", account=account,
+                   peer_id=row["peer_id"], peer_name=peer_name)
             return
+        _probe(row["id"], "BLACKLIST", "pass", account=account,
+               peer_id=row["peer_id"], peer_name=peer_name, bl_size=len(bl))
 
         # 会话维度防重：同会话同文本 60s 内只处理一次（WS+WP 双通道落库去重）
         with self._lock:
@@ -932,12 +1145,19 @@ class AutoReplyWorker:
 
         # ---- 0) 留资提取（最高优先级：客户主动留的号原样入库，不过护栏）----
         contacts = extract_contacts(text)
+        _probe(row["id"], "LEAD_EXTRACT", "hit" if contacts else "miss",
+               account=account, conv_id=conv_id,
+               types=[c[0] for c in contacts],
+               masked=[(c[1][:3] + "****" + c[1][-2:]) if len(c[1]) > 6 else "***"
+                       for c in contacts])
         if contacts:
             n_new = 0
             for ctype, cvalue in contacts:
                 if save_lead(account, conv_id, peer_name, ctype, cvalue, text):
                     n_new += 1
                     self.status["leads"] += 1
+            _probe(row["id"], "LEAD_SAVE", "saved" if n_new else "dup",
+                   n_new=n_new, types=[c[0] for c in contacts])
             if n_new:
                 logger.info(f"[ai] 🎯 留资成功 {peer_name}: "
                             f"{[v for _, v in contacts]} → ai_leads")
@@ -974,35 +1194,69 @@ class AutoReplyWorker:
     def _generate_reply(self, cfg: dict, text: str, account: str,
                         conv_id: str, before_id: int) -> tuple[Optional[str], str]:
         level = cfg.get("strict_level", "rag")
-        # v0.38.0：传 account → 命中 Agent 时用 Agent 的知识库
-        kb_hit = (KB.find_match(text, account=account)
-                  if cfg.get("knowledge_first", True) else None)
-        if kb_hit:
-            return kb_hit, "知识库"
+        _probe(before_id, "GEN_REPLY", "enter", level=level,
+               account=account, conv_id=conv_id, text=text[:80])
+
+        # v0.39.0：① 对话回复库（命中库）—— 案例命中直接回复，零 token。
+        try:
+            from services import reply_kb
+
+            hit = reply_kb.find_match(text, account=account)
+            _probe(before_id, "REPLY_KB", "hit" if hit else "miss",
+                   level=level, reply=(hit or "")[:100])
+            if hit:
+                return hit, "回复库"
+        except Exception as e:
+            _probe(before_id, "REPLY_KB", "error", error=str(e)[:120])
+
+        # 2026-09-10 用户拍板：两库职责明确，不混淆——
+        #   命中即回只走 ①对话回复库（reply_kb）；
+        #   ②专业知识库只做 RAG 参考（build_system_prompt 内 pro_kb 全文注入），
+        #     绝不直接回复。旧 KB.find_match 从回复链路移除（旧 QA 已迁入回复库）。
 
         if level == "kb_only":
             # 严格档：AI 完全不参与 → 兜底话术池
+            _probe(before_id, "LEVEL", "kb_only_fallback", level=level)
             return fallback_reply(cfg), "兜底"
 
-        # rag / free：调 AI
+        # rag / free：调 AI（RAG 注入专业库条目全文）
+        _probe(before_id, "LEVEL", "ai_call", level=level)
         client = AIClient(cfg)
         kb_items = KB.list_items()
+        try:
+            from services import ai_agent
+
+            kb_items = ai_agent.resolve_knowledge(account, kb_items)
+        except Exception:
+            pass
         prompt = build_system_prompt(cfg, kb_items, text)
+        _probe(before_id, "PROMPT", "built", level=level,
+               prompt_len=len(prompt), kb_items=len(kb_items),
+               **_LAST_PROMPT_STATS)
         history = self._build_history(account, conv_id, before_id)
-        raw = client.chat(text, user_id=f"{account}:{conv_id}",
-                          system_prompt=prompt, history_extra=history)
+        raw = client.chat_failover(text, consumer_id="ai_main",
+                                   user_id=f"{account}:{conv_id}",
+                                   system_prompt=prompt, history_extra=history)
+        _probe(before_id, "AI_RAW", "ok" if raw else "empty", level=level,
+               raw=(raw or "")[:200])
         if raw:
             # 二次防线：推理模型思考过程泄漏（首层在 _chat_openai 已拦，
             # 这里兜住 reasoning 兜底提取出的残留思考文本）
             if _looks_like_reasoning(raw) and len(raw) > 40:
+                _probe(before_id, "GUARD", "reasoning_leak", raw=raw[:80])
                 logger.warning("AI-019", f"[ai] 回复疑似思考过程残留，丢弃改兜底: {raw[:40]}")
                 raw = None
         if raw:
             cleaned = validate_reply(raw, cfg)
+            _probe(before_id, "GUARD", "pass" if cleaned else "blocked",
+                   level=level, cleaned=(cleaned or "")[:120],
+                   raw=raw[:120])
             if cleaned:
                 return cleaned, "AI"
             logger.info(f"[ai] AI 输出被护栏拦截，改发兜底: {raw[:40]}")
-        return fallback_reply(cfg), "兜底"
+        fb = fallback_reply(cfg)
+        _probe(before_id, "FALLBACK", "used", level=level, reply=fb[:120])
+        return fb, "兜底"
 
     # -- 图片 → 视觉模型 ---------------------------------------------------
 
@@ -1057,7 +1311,7 @@ class AutoReplyWorker:
         if not img_bytes:
             return None
         client = AIClient(cfg)
-        return client.describe_image(
+        return client.describe_image_failover(
             base64.b64encode(img_bytes).decode(), mime)
 
     # -- 上下文 / 发送 -----------------------------------------------------
@@ -1104,15 +1358,22 @@ class AutoReplyWorker:
             # 不抢不重 ③ 高频 AI 回复受队列 + 既有频率闸门双重约束。
             from services.dm_dispatch import submit as _dm_submit
             r = _dm_submit(account, conv_id, text, "ai", 1)
+            _probe("send", "DISPATCH_POOL", "accepted", account=account,
+                   conv_id=conv_id, task_id=getattr(r, "task_id", None),
+                   text=text[:60])
             if r.accepted:
                 # 入池即受理：AI 场景不阻塞等结果（延迟线程本就是异步的），
                 # 结果由 task 状态记录，失败会记日志。
                 logger.info(f"[ai] 已入池待发 (task={r.task_id}): {text[:30]}")
                 return True
+            _probe("send", "DISPATCH_POOL", "rejected", account=account,
+                   conv_id=conv_id, error=str(getattr(r, "error", ""))[:120])
             logger.warning("AI-023", f"[ai] 入池被拒: {r.error}")
             if r.error == "duplicate":
                 return True      # 重复消息视为已处理，不重试
         except Exception as e:
+            _probe("send", "DISPATCH_POOL", "error", account=account,
+                   conv_id=conv_id, error=str(e)[:120])
             logger.warning("AI-024", f"[ai] 调度入池异常: {e}")
         try:
             from api.messages import _recv_url, _bcc_url, _http_post_json
@@ -1120,20 +1381,34 @@ class AutoReplyWorker:
                 "account": account, "conv_id": conv_id, "text": text,
             }, timeout=15.0)
             if d and d.get("ok"):
+                _probe("send", "WS", "ok", account=account, conv_id=conv_id,
+                       text=text[:60])
                 logger.info(f"[ai] 已发送 (WS): {text[:30]}")
                 return True
+            _probe("send", "WS", "fail", account=account, conv_id=conv_id,
+                   resp=str(d)[:150])
         except Exception as e:
+            _probe("send", "WS", "error", account=account, conv_id=conv_id,
+                   error=str(e)[:150])
             logger.warning("AI-025", f"[ai] WS 通道失败: {e}")
         try:
             d = _http_post_json(_bcc_url(account, "/wp_send"), {
                 "account": account, "conv_id": conv_id, "text": text,
             }, timeout=30.0)
             if d and d.get("ok"):
+                _probe("send", "WP", "ok", account=account, conv_id=conv_id,
+                       text=text[:60])
                 logger.info(f"[ai] 已发送 (WP): {text[:30]}")
                 return True
+            _probe("send", "WP", "fail", account=account, conv_id=conv_id,
+                   resp=str(d)[:150])
             logger.warning("AI-026", f"[ai] WP 通道失败: {(d or {}).get('error')}")
         except Exception as e:
+            _probe("send", "WP", "error", account=account, conv_id=conv_id,
+                   error=str(e)[:150])
             logger.warning("AI-027", f"[ai] WP 通道异常: {e}")
+        _probe("send", "ALL_CHANNELS", "failed", account=account,
+               conv_id=conv_id, text=text[:60])
         return False
 
     def _mark_recent(self, key: str, text: str, now: float) -> None:

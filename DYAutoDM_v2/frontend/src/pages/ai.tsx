@@ -12,7 +12,7 @@
  *
  * 铁律对齐：本页只读写 /api/ai，不触发任何捕获/昵称查询。
  */
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import { Pill } from "../components/ui";
@@ -210,69 +210,6 @@ export default function AiPage(props: PageProps) {
   }, [api, push]);
 
 
-  // ---- 知识库编辑 ----
-  const [kbQ, setKbQ] = useState(""); const [kbA, setKbA] = useState("");
-  const [kbEditId, setKbEditId] = useState<number | null>(null);
-  const kbSave = useCallback(async () => {
-    if (!kbQ.trim() || !kbA.trim()) { push("问题和答案都不能为空"); return; }
-    try {
-      await api.aiKbSave({ id: kbEditId || 0, question: kbQ, answer: kbA });
-      setKbQ(""); setKbA(""); setKbEditId(null);
-      await qc.invalidateQueries({ queryKey: ["ai-kb"] });
-      push(kbEditId ? "已更新" : "知识库条目已添加");
-    } catch (e) { push(`保存失败: ${errMsg(e)}`, 6000); }
-  }, [kbQ, kbA, kbEditId, api, push, qc]);
-  const kbDel = useCallback(async (id: number) => {
-    try {
-      await api.aiKbDelete(id);
-      await qc.invalidateQueries({ queryKey: ["ai-kb"] });
-      push("已删除");
-    } catch (e) { push(`删除失败: ${errMsg(e)}`, 6000); }
-  }, [api, push, qc]);
-
-  // ---- 文件导入（上传 → AI 生成 QA → 预览 → 确认写入）----
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [importError, setImportError] = useState("");
-  const [preview, setPreview] = useState<{ question: string; answer: string; source?: string }[]>([]);
-  const [previewName, setPreviewName] = useState("");
-  const [importMode, setImportMode] = useState("ai");
-  const [replaceKb, setReplaceKb] = useState(false);
-
-  const onFilePicked = useCallback(async (f: File | null) => {
-    if (!f) return;
-    setImporting(true); setProgress(0); setImportError(""); setPreview([]);
-    try {
-      const r = await api.aiKbImport(f, setProgress);
-      if (!r.items || r.items.length === 0) {
-        setImportError("未生成任何问答对（文档可能没有可用内容）");
-      } else {
-        setPreview(r.items);
-        setPreviewName(r.filename);
-        setImportMode(r.mode);
-        push(`解析完成：${r.chars} 字 → ${r.items.length} 条问答对`, 5000);
-      }
-    } catch (e) {
-      setImportError(errMsg(e));
-    } finally {
-      setImporting(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  }, [api, push]);
-
-  const confirmImport = useCallback(async () => {
-    try {
-      const r = await api.aiKbImportConfirm(preview, replaceKb);
-      setPreview([]);
-      setReplaceKb(false);
-      await qc.invalidateQueries({ queryKey: ["ai-kb"] });
-      push(r.msg || `已导入 ${r.added} 条`, 5000);
-    } catch (e) {
-      push(`导入失败: ${errMsg(e)}`, 8000);
-    }
-  }, [preview, replaceKb, api, push, qc]);
-
   // ---- 黑名单 ----
   const [blInput, setBlInput] = useState("");
   const blAdd = useCallback(async () => {
@@ -381,7 +318,6 @@ export default function AiPage(props: PageProps) {
       {/* ===== 标题 + 运行控制 ===== */}
       <Section
         title="🤖 AI 获客自动回复"
-        subtitle="全自动监听新消息 → 知识库/AI 回复 → 留资捕获"
         defaultOpen
         right={
           <Pill c={running ? "ok" : c.enabled ? "warn" : "mute"}>
@@ -410,10 +346,6 @@ export default function AiPage(props: PageProps) {
             最近回复：{st.last_reply}
           </div>
         )}
-        <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 8, lineHeight: 1.6 }}>
-          监听只读本地数据库；回复经 WS 主通道发送、失败自动走 WP 兜底；
-          客户发来手机号/微信号自动捕获入线索表。历史消息不会触发回复。
-        </div>
       </Section>
 
       {/* ===== Agent 设定 ===== */}
@@ -477,95 +409,34 @@ export default function AiPage(props: PageProps) {
 
       {/* v0.38.4：模型配置已迁至「设置 → AI 与 Agent → 模型链路中心」(model_hub)，本页不再重复配置。 */}
 
-      {/* ===== 知识库 ===== */}
-      <Section title="📚 知识库" subtitle={`${kb?.items?.length ?? 0} 条 · 专业性来源 / RAG 资料`} defaultOpen>
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <input style={{ ...inputStyle, flex: 1 }} value={kbQ}
-                 onChange={(e) => setKbQ(e.target.value)} placeholder="客户问…（例：价格是多少）" />
-          <input style={{ ...inputStyle, flex: 1 }} value={kbA}
-                 onChange={(e) => setKbA(e.target.value)} placeholder="标准答案…" />
-          <button onClick={kbSave} style={miniBtn} disabled={!dirty && !kbQ && !kbA}>
-            {kbEditId ? "更新" : "添加"}
-          </button>
-          {kbEditId !== null && (
-            <button onClick={() => { setKbEditId(null); setKbQ(""); setKbA(""); }} style={miniBtn}>
-              取消
+      {/* v0.39.0：知识库改为卡片入口 → 专用管理页（kb） */}
+      <Section title="📚 知识库" subtitle="点击进入管理">
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {([
+            ["pro", "🧠 专业知识库",
+             "思维导图结构（主题→子分类→正文→总结）：向量模型的前置参考，AI 分析问题时检索条目全文，不直接回复。",
+             `${kb?.items?.length ?? 0} 条`],
+            ["reply", "💬 对话回复库",
+             "命中库：对方消息符合库内案例 → 零 token 直接自动回复。支持从聊天记录自动学习话术。",
+             "点击管理"],
+          ] as const).map(([id, title, desc, badge]) => (
+            <button key={id}
+                    onClick={() => props.setTab?.("kb")}
+                    style={{
+                      flex: "1 1 240px", textAlign: "left", cursor: "pointer",
+                      background: "var(--card)", border: "1px solid var(--border)",
+                      borderRadius: 12, padding: "14px 16px",
+                      display: "flex", flexDirection: "column", gap: 6,
+                    }}>
+              <span style={{ fontSize: 14, fontWeight: 700, display: "flex", justifyContent: "space-between", width: "100%" }}>
+                {title}
+                <span style={{ fontSize: 11.5, fontWeight: 400, color: "var(--muted-foreground)" }}>{badge}</span>
+              </span>
+              <span style={{ fontSize: 12, color: "var(--muted-foreground)", lineHeight: 1.6 }}>{desc}</span>
+              <span style={{ fontSize: 12, color: "var(--accent)", marginTop: 2 }}>进入管理 →</span>
             </button>
-          )}
+          ))}
         </div>
-
-        {/* ---- 文件导入：上传 → AI 生成 QA → 预览确认 ---- */}
-        <div style={{
-          border: "1px dashed var(--border)", borderRadius: 10,
-          padding: "10px 12px", marginBottom: 12, fontSize: 12.5,
-        }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input ref={fileInputRef} type="file" accept=".txt,.md,.docx,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.webp"
-                   style={{ display: "none" }} onChange={(e) => onFilePicked(e.target.files?.[0] ?? null)} />
-            <button onClick={() => fileInputRef.current?.click()} style={miniBtn} disabled={importing}>
-              📄 上传文件自动生成
-            </button>
-            <span style={{ color: "var(--muted-foreground)" }}>
-              支持 docx / xlsx / pdf / txt / md{c.vision_enabled ? " / 图片(OCR)" : "（图片需先启用视觉模型）"}，≤20MB
-            </span>
-            {importing && <Pill c="accent">{`解析中 ${progress}%`}</Pill>}
-          </div>
-          {importError && (
-            <div style={{ color: "var(--danger)", marginTop: 6 }}>❌ {importError}</div>
-          )}
-          {preview.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ marginBottom: 6, color: "var(--muted-foreground)" }}>
-                从「{previewName}」生成 {preview.length} 条（AI 模式：{importMode === "ai" ? "是" : "降级·原文切分"}），可删改后确认：
-              </div>
-              <div style={{ maxHeight: 240, overflowY: "auto", marginBottom: 8 }}>
-                {preview.map((it, i) => (
-                  <div key={i} style={{ display: "flex", gap: 6, alignItems: "center",
-                                        padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
-                    <input style={{ ...inputStyle, flex: 1, padding: "4px 8px", fontSize: 12 }}
-                           value={it.question}
-                           onChange={(e) => setPreview((p) => p.map((x, j) => j === i ? { ...x, question: e.target.value } : x))} />
-                    <input style={{ ...inputStyle, flex: 1, padding: "4px 8px", fontSize: 12 }}
-                           value={it.answer}
-                           onChange={(e) => setPreview((p) => p.map((x, j) => j === i ? { ...x, answer: e.target.value } : x))} />
-                    <button onClick={() => setPreview((p) => p.filter((_, j) => j !== i))}
-                            style={{ ...miniBtn, color: "var(--danger)", flexShrink: 0 }}>删</button>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={confirmImport} style={miniBtn}>
-                  ✅ 确认导入 {preview.length} 条
-                </button>
-                <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, cursor: "pointer" }}>
-                  <input type="checkbox" checked={replaceKb}
-                         onChange={(e) => setReplaceKb(e.target.checked)} />
-                  导入前清空现有知识库
-                </label>
-                <button onClick={() => { setPreview([]); setImportError(""); }} style={miniBtn}>
-                  放弃
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-        {(kb?.items || []).map((it) => (
-          <div key={it.id}
-               style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 0",
-                        borderBottom: "1px solid var(--border)", fontSize: 12.5 }}>
-            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              <b>Q:</b> {it.question}
-            </span>
-            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                           color: "var(--muted-foreground)" }}>
-              <b>A:</b> {it.answer}
-            </span>
-            <button onClick={() => { setKbEditId(it.id); setKbQ(it.question); setKbA(it.answer); }}
-                    style={miniBtn}>编辑</button>
-            <button onClick={() => kbDel(it.id)}
-                    style={{ ...miniBtn, color: "var(--danger)" }}>删除</button>
-          </div>
-        ))}
       </Section>
 
       {/* ===== 留资线索 ===== */}

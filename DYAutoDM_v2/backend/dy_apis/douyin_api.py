@@ -1685,6 +1685,180 @@ class DouyinAPI:
         return res.content
 
     @staticmethod
+    # ================= 直播间连麦（2026-09-10，实测逆向：知识库 05 §5.8.1） =================
+    # 实测抓包（v23~v30 探针）：申请 POST body 为
+    #   anchor_id=<主播uid>&apply_type=0&guest_supported_vendor=4&link_type=2&room_id=<真实room_id>
+    # 响应：{"data":{"linkmic_id_str":..., "auto_join":..., "waiting_list_offset":1,...},"status_code":0}
+    # 查询类：waiting_list（排队人数 total_count）/ list/v2（连线者）/ check_audience_linkers（action）
+    # 签名：与 diggLiveRoom 同范式（msToken + with_a_bogus），FORM 头 + csrf
+
+    @staticmethod
+    def linkmicApply(auth, room_id: str, anchor_id: str, apply_type: str = '0',
+                     link_type: str = '2'):
+        api = "/webcast/linkmic_audience/apply/"
+        headers = HeaderBuilder().build(HeaderType.FORM)
+        refer = f"https://live.douyin.com/{room_id}"
+        headers.set_header("origin", DouyinAPI.live_url)
+        headers.with_csrf(auth.cookie_str)
+        headers.set_referer(refer)
+        params = Params()
+        params.add_param("aid", '6383')
+        params.add_param("app_name", 'douyin_web')
+        params.add_param("live_id", '1')
+        params.add_param("device_platform", 'web')
+        params.add_param("language", 'zh-CN')
+        params.add_param("enter_from", 'link_share')
+        params.add_param("cookie_enabled", 'true')
+        params.add_param("screen_width", '1280')
+        params.add_param("screen_height", '720')
+        params.add_param("browser_language", 'zh-CN')
+        params.add_param("browser_platform", 'Win32')
+        params.add_param("browser_name", 'Chrome')
+        params.add_param("browser_version", '148.0.0.0')
+        params.add_param("os_name", 'Windows')
+        params.add_param("os_version", '10')
+        params.add_param("msToken", auth.msToken)
+        data = {
+            "anchor_id": str(anchor_id),
+            "apply_type": str(apply_type),
+            "guest_supported_vendor": '4',
+            "link_type": str(link_type),
+            "room_id": str(room_id),
+        }
+        params.with_a_bogus(data)
+        res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
+                            params=params.get(), cookies=auth.cookie, data=data, verify=False)
+        return res.json()
+
+    @staticmethod
+    def linkmicWaitingList(auth, room_id: str):
+        """排队列表：total_count 即「排队人数」（申请成功的体现）。"""
+        api = "/webcast/linkmic_audience/waiting_list/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        refer = f"https://live.douyin.com/{room_id}"
+        headers.set_header("origin", DouyinAPI.live_url)
+        headers.with_csrf(auth.cookie_str)
+        headers.set_referer(refer)
+        params = Params()
+        params.add_param("aid", '6383')
+        params.add_param("app_name", 'douyin_web')
+        params.add_param("live_id", '1')
+        params.add_param("device_platform", 'web')
+        params.add_param("language", 'zh-CN')
+        params.add_param("enter_from", 'link_share')
+        params.add_param("cookie_enabled", 'true')
+        params.add_param("screen_width", '1280')
+        params.add_param("screen_height", '720')
+        params.add_param("browser_language", 'zh-CN')
+        params.add_param("browser_platform", 'Win32')
+        params.add_param("browser_name", 'Chrome')
+        params.add_param("browser_version", '148.0.0.0')
+        params.add_param("os_name", 'Windows')
+        params.add_param("os_version", '10')
+        params.add_param("room_id", str(room_id))
+        params.add_param("msToken", auth.msToken)
+        params.with_a_bogus()
+        res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
+                           params=params.get(), cookies=auth.cookie, verify=False)
+        return res.json()
+
+    @staticmethod
+    def linkmicList(auth, room_id: str):
+        """连线者列表：审批通过/连线建立后含主播与自己 uid。"""
+        api = "/webcast/linkmic_audience/list/v2/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        refer = f"https://live.douyin.com/{room_id}"
+        headers.set_header("origin", DouyinAPI.live_url)
+        headers.with_csrf(auth.cookie_str)
+        headers.set_referer(refer)
+        params = Params()
+        params.add_param("aid", '6383')
+        params.add_param("app_name", 'douyin_web')
+        params.add_param("live_id", '1')
+        params.add_param("device_platform", 'web')
+        params.add_param("language", 'zh-CN')
+        params.add_param("enter_from", 'link_share')
+        params.add_param("cookie_enabled", 'true')
+        params.add_param("screen_width", '1280')
+        params.add_param("screen_height", '720')
+        params.add_param("browser_language", 'zh-CN')
+        params.add_param("browser_platform", 'Win32')
+        params.add_param("browser_name", 'Chrome')
+        params.add_param("browser_version", '148.0.0.0')
+        params.add_param("os_name", 'Windows')
+        params.add_param("os_version", '10')
+        params.add_param("room_id", str(room_id))
+        params.add_param("msToken", auth.msToken)
+        params.with_a_bogus()
+        res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
+                           params=params.get(), cookies=auth.cookie, verify=False)
+        return res.json()
+
+    @staticmethod
+    def linkmicCheck(auth, room_id: str):
+        """状态轮询（页面原生 20s 一次）：action / sleep_second / silence_status。"""
+        api = "/webcast/linkmic_audience/check_audience_linkers/"
+        headers = HeaderBuilder().build(HeaderType.FORM)
+        refer = f"https://live.douyin.com/{room_id}"
+        headers.set_header("origin", DouyinAPI.live_url)
+        headers.with_csrf(auth.cookie_str)
+        headers.set_referer(refer)
+        params = Params()
+        params.add_param("aid", '6383')
+        params.add_param("app_name", 'douyin_web')
+        params.add_param("live_id", '1')
+        params.add_param("device_platform", 'web')
+        params.add_param("language", 'zh-CN')
+        params.add_param("enter_from", 'link_share')
+        params.add_param("cookie_enabled", 'true')
+        params.add_param("screen_width", '1280')
+        params.add_param("screen_height", '720')
+        params.add_param("browser_language", 'zh-CN')
+        params.add_param("browser_platform", 'Win32')
+        params.add_param("browser_name", 'Chrome')
+        params.add_param("browser_version", '148.0.0.0')
+        params.add_param("os_name", 'Windows')
+        params.add_param("os_version", '10')
+        params.add_param("room_id", str(room_id))
+        params.add_param("msToken", auth.msToken)
+        data = {"room_id": str(room_id)}
+        params.with_a_bogus(data)
+        res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
+                            params=params.get(), cookies=auth.cookie, data=data, verify=False)
+        return res.json()
+
+    @staticmethod
+    def linkmicLeave(auth, room_id: str):
+        api = "/webcast/linkmic_audience/leave/"
+        headers = HeaderBuilder().build(HeaderType.FORM)
+        refer = f"https://live.douyin.com/{room_id}"
+        headers.set_header("origin", DouyinAPI.live_url)
+        headers.with_csrf(auth.cookie_str)
+        headers.set_referer(refer)
+        params = Params()
+        params.add_param("aid", '6383')
+        params.add_param("app_name", 'douyin_web')
+        params.add_param("live_id", '1')
+        params.add_param("device_platform", 'web')
+        params.add_param("language", 'zh-CN')
+        params.add_param("enter_from", 'link_share')
+        params.add_param("cookie_enabled", 'true')
+        params.add_param("screen_width", '1280')
+        params.add_param("screen_height", '720')
+        params.add_param("browser_language", 'zh-CN')
+        params.add_param("browser_platform", 'Win32')
+        params.add_param("browser_name", 'Chrome')
+        params.add_param("browser_version", '148.0.0.0')
+        params.add_param("os_name", 'Windows')
+        params.add_param("os_version", '10')
+        params.add_param("room_id", str(room_id))
+        params.add_param("msToken", auth.msToken)
+        data = {"room_id": str(room_id)}
+        params.with_a_bogus(data)
+        res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
+                            params=params.get(), cookies=auth.cookie, data=data, verify=False)
+        return res.json()
+
     def diggLiveRoom(auth, room_id: str, count: str = '1'):
         api = "/webcast/room/like/"
         headers = HeaderBuilder().build(HeaderType.FORM)

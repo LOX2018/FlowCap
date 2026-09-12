@@ -16,6 +16,12 @@ from loguru import logger
 
 from auto_dm import accounts as acct_core
 
+# sidecar pid 台账（backend 退出时统一清扫；跨 spawn 路径共享一份）
+try:
+    import daemon_registry as _dreg
+except Exception:  # 极端情况：路径未就绪，退化为不登记（不影响主流程）
+    _dreg = None
+
 
 def _target_triple() -> str:
     return "x86_64-pc-windows-msvc"
@@ -83,13 +89,17 @@ def _spawn_sidecar(binary: str, args: list) -> subprocess.Popen:
                 env["DY_MEMBER_KEY"] = mk
     except Exception:
         pass
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         [binary, *args],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    # 登记 pid：backend 退出时清扫，避免孤儿进程占端口
+    if _dreg is not None:
+        _dreg.register(proc.pid)
+    return proc
 
 
 def _wait_for_port(port: int, timeout: int = 30) -> bool:

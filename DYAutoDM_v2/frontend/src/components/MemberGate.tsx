@@ -81,7 +81,7 @@ export default function MemberGate({ onLogin }: { onLogin: (username: string) =>
           <span className="mark" aria-hidden="true" />
           <span className="member-title">抖音数据控制台</span>
         </div>
-        <div className="member-sub">会员登录后使用 · 数据本地加密隔离存储</div>
+        {/* 2026-09-10：功能说明文案移至开放说明文档（项目说明.md），前端不展示 */}
 
         <div className="member-tabs">
           <button
@@ -132,7 +132,7 @@ export default function MemberGate({ onLogin }: { onLogin: (username: string) =>
         </button>
 
         <div className="member-foot">
-          每个会员独立数据空间：账号、会话、配置互相隔离；凭证 AES 加密存储。
+          {/* 2026-09-10：底部功能说明文案移至开放说明文档（项目说明.md），前端不展示 */}
         </div>
       </div>
     </div>

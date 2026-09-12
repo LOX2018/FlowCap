@@ -1,20 +1,24 @@
 /**
  * App 根组件 —— 1:1 迁移自 DY_Spider_base/web/app.js。
  *
- * 结构：Header（导航 + 4 状态徽章）+ AnimatePresence 页面切换 + Toast。
+ * 结构：TopNav（浮动玻璃胶囊导航）+ AnimatePresence 页面切换 + Toast。
  * overview 用 React Query 3s 轮询（替代旧版 setInterval）。
  * Tauri 模式下首次查询会触发 ensureBackendReady 自动拉起 sidecar。
+ *
+ * 设计风格移植（2026-09-11）：顶栏由通栏 sticky 改为浮动玻璃胶囊 + 滑动指示器，
+ * 原内联 Header 已抽成 ./components/TopNav.tsx（移植自 zn0wii/satelite-proxy）。
  */
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { api, Overview, PageProps, ReviewPayload, ReusePayload } from "./api/client";
-import { TABS, Dot } from "./components/ui";
+import { api, PageProps, ReviewPayload, ReusePayload } from "./api/client";
+import { TABS } from "./components/ui";
 import OverviewPage from "./pages/overview";
 import CrawlPage from "./pages/crawl";
 import LivePage from "./pages/live";
 import MessagesPage from "./pages/messages";
 import AiPage from "./pages/ai";
+import KbPage from "./pages/kb";
 import AccountsPage from "./pages/accounts";
 import TasksPage from "./pages/tasks";
 import SettingsPage from "./pages/settings";
@@ -22,114 +26,10 @@ import NotifyPage from "./pages/notify";
 import LogsPage from "./pages/logs";
 import SelfCheckModal, { SelfCheckItem } from "./components/SelfCheckModal";
 import MemberGate from "./components/MemberGate";
+import TopNav from "./components/TopNav";
 import { memberApi, getMemberToken } from "./api/client";
 
 type TabId = (typeof TABS)[number][0];
-
-/** 导航栏 + 状态徽章（1:1 迁移自 framework.js Header） */
-function Header({
-  tab,
-  setTab,
-  overview,
-  ready,
-  memberName,
-  onLogout,
-  gwPending,
-}: {
-  tab: string;
-  setTab: (t: string) => void;
-  overview: Overview | null | undefined;
-  ready: boolean;
-  memberName?: string;
-  onLogout?: () => void;
-  gwPending: number;
-}) {
-  const ov = overview || ({} as Partial<Overview>);
-  const running = !!ov.running;
-  const paused = !!ov.paused;
-  const statusColor = !ready ? "mute" : running ? (paused ? "warn" : "ok") : "danger";
-  const statusText = !ready ? "未连接" : running ? (paused ? "已暂停" : "运行中") : "已停止";
-  const bd = ov.browserDaemon || { alive: false };
-  const rd = ov.recvDaemon || { alive: false };
-
-  return (
-    <header className="nav">
-      <div className="brand">
-        <span className="mark" aria-hidden="true" />
-        <h1>抖音数据控制台</h1>
-        <span className="sub">Douyin Console</span>
-        {/* 2026-08-31：显示版本号。
-            排查「改了代码但界面没变」时，第一件事就是确认跑的是哪个版本 ——
-            之前因为看不到版本号，反复误判为"缓存问题"。 */}
-        <span className="appver" title="应用版本">
-          v{__APP_VERSION__}
-        </span>
-      </div>
-      <nav className="tabs" aria-label="主导航">
-        {TABS.map(([id, label]) => (
-          <button
-            key={id}
-            className={"tab" + (tab === id ? " active" : "")}
-            onClick={() => setTab(id)}
-          >
-            {label}
-            {/* IM 网关待授权角标（v0.38.5）：设置 tab 上提示有待审来源 */}
-            {id === "settings" && gwPending > 0 && (
-              <span
-                style={{
-                  marginLeft: 5,
-                  background: "var(--warn, #d89614)",
-                  color: "#fff",
-                  borderRadius: 999,
-                  fontSize: 10.5,
-                  padding: "0 6px",
-                  lineHeight: "16px",
-                  display: "inline-block",
-                  verticalAlign: "middle",
-                }}
-                title={`${gwPending} 个来源待授权（设置 → 通知与指令）`}
-              >
-                {gwPending}
-              </span>
-            )}
-          </button>
-        ))}
-      </nav>
-      <div className="nav-status">
-        <span className="badge-conn">
-          <Dot c={statusColor} pulse={running && !paused} /> 引擎 <b>{statusText}</b>
-        </span>
-        <span className="badge-conn">
-          <Dot c={bd.alive ? "ok" : "danger"} pulse={bd.alive} /> 凭证守护{" "}
-          <b>{bd.alive ? (bd.signReady ? "已就绪" : "登录中") : "离线"}</b>
-        </span>
-        {memberName && (
-          <span className="badge-conn member-badge" title="当前会员">
-            <Dot c="ok" /> {memberName}
-          </span>
-        )}
-        {onLogout && (
-          <button className="btn member-logout" onClick={onLogout} title="退出登录">
-            退出
-          </button>
-        )}
-        <span className="badge-conn">
-          <Dot c={rd.alive ? "ok" : "danger"} pulse={rd.alive} /> 私信守护{" "}
-          <b>{rd.alive ? "在线" : "离线"}</b>
-        </span>
-        {ready && (
-          <span className="badge-conn">
-            <b>
-              已发 {ov.sent}/{ov.limit}
-              {ov.queue ? ` · 待发 ${ov.queue}` : ""}
-            </b>
-          </span>
-        )}
-        {!ready && <span className="demo-tag">未连接</span>}
-      </div>
-    </header>
-  );
-}
 
 /** 启动闪屏：双击 exe 后窗口立即出现品牌页，后端引擎就绪（overview 首帧数据到达）
  *  才滑入主界面，把 PyInstaller 后端冷启动的 ~3s 变成有进度的等待，而不是白屏/未连接。 */
@@ -417,7 +317,7 @@ export default function App() {
     for (const p of list) {
       if (!gwSeen.current.has(p.key)) {
         gwSeen.current.add(p.key);
-        push(`\u{1F514} 收到来自「${p.channel_id}」的新消息，待授权甄别（设置 → 通知与指令）`, 8000);
+        push(`🔔 收到来自「${p.channel_id}」的新消息，待授权甄别（设置 → 通知与指令）`, 8000);
       }
     }
   }, [gwQ.data, push]);
@@ -460,7 +360,7 @@ export default function App() {
       {/* 登录后不再用全屏闪屏阻塞：ready 依赖 overview（需登录态），
           未登录时必然 401 → 闪屏盖住 → 无法登录的死循环。
           连接状态改由 Header 徽章实时表达。 */}
-      <Header tab={tab} setTab={setTab} overview={overview} ready={ready}
+      <TopNav tab={tab} setTab={setTab} ready={ready}
         memberName={memberName} gwPending={gwPendingCount}
         onLogout={async () => { await memberApi.logout(); setMemberName(null); }} />
       <main className="main">
@@ -477,6 +377,7 @@ export default function App() {
             {tab === "live" && <LivePage {...pageProps} />}
             {tab === "msg" && <MessagesPage {...pageProps} />}
             {tab === "ai" && <AiPage {...pageProps} />}
+            {tab === "kb" && <KbPage {...pageProps} />}
             {tab === "accounts" && <AccountsPage {...pageProps} />}
             {tab === "tasks" && <TasksPage {...pageProps} />}
             {tab === "settings" && <SettingsPage {...pageProps} />}

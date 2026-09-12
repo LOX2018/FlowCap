@@ -9,6 +9,7 @@
 """
 from contextlib import asynccontextmanager
 import asyncio
+import atexit
 import json
 import os
 import platform
@@ -36,6 +37,11 @@ from core.auto_dm import AutoDM
 # 不动系统设置、不影响其它软件；浏览器侧代理防护见 vbrowser._dead_system_proxy_arg）。
 os.environ.setdefault("NO_PROXY", "*")
 os.environ.setdefault("no_proxy", "*")
+
+# 本进程拉起的 sidecar 守护 pid 台账（recv_daemon / browser_daemon）。
+# 退出时由 _kill_spawned_daemons() 逐个清扫，避免孤儿进程长期占端口。
+# 台账实现放在 daemon_registry（daemon_launcher 等其它 spawn 路径共用同一份）。
+import daemon_registry as _dreg
 
 
 def _target_triple() -> str:
@@ -121,7 +127,10 @@ def _spawn_sidecar(binary: str, args: list[str]) -> subprocess.Popen:
     except Exception:
         pass
     kwargs["env"] = env
-    return subprocess.Popen([binary] + args, **kwargs)
+    proc = subprocess.Popen([binary] + args, **kwargs)
+    # 登记 pid：退出时统一清扫，避免孤儿（见 _kill_spawned_daemons）
+    _dreg.register(proc.pid)
+    return proc
 
 
 def _prealign_on_startup() -> None:
@@ -177,6 +186,28 @@ def _prealign_on_startup() -> None:
         logger.warning("SYS-022", f"[prealign] 启动预对齐失败（登录后会重试）: {e}")
 
 
+def _kill_spawned_daemons() -> None:
+    """终止本进程曾拉起的 sidecar 子进程（recv_daemon / browser_daemon）。
+
+    修复「前端关闭未连带关闭后端」的孤儿进程缺陷：
+      - Tauri 侧 on_window_event 只清理它自己 spawn 的句柄，但前端从未调用
+        start_backend/start_recv_daemon（实测 invoke 只有 write_boot_log），
+        故 AppState.backend=None、daemons=[]，清理逻辑杀的是空气；
+      - backend（PyInstaller onefile）拉起的 daemon 是 Python 子进程，
+        Windows 不会因父进程退出而级联回收 → 实测残留 9 小时的孤儿。
+    因此清扫必须由 backend 自己负责：记录 spawn 的 pid，退出时逐个 kill。
+
+    只杀**本进程记录的 pid**（daemon_registry 台账），绝不按进程名/端口全杀。
+    BCC（browser_daemon）**有意常驻**（保活凭证），spawn 后即从台账注销，
+    因此不会被此处清扫 —— 铁律：不强杀 BCC/指纹浏览器。
+    """
+    killed = _dreg.kill_all(reason="shutdown")
+    if killed:
+        logger.info(f"[shutdown] 已终止本进程拉起的守护 pid={killed}")
+    else:
+        logger.info("[shutdown] 无本进程拉起的守护需清理（或已自行退出）")
+
+
 def _auto_start_daemons() -> None:
     """启动后为所有账号拉起 browser_daemon + recv_daemon sidecar。
 
@@ -226,6 +257,9 @@ def _auto_start_daemons() -> None:
                         logger.info(f"[startup] browser_daemon 已在运行 (port={bport})，跳过")
                     else:
                         proc = _spawn_sidecar(bcc_binary, ["--account", names[0], "--port", str(bport)])
+                        # BCC 有意常驻（保活凭证，退出后不清凭证的依据），
+                        # 不随 backend 退出清扫 —— 从台账注销。铁律：不强杀 BCC。
+                        _dreg.unregister(proc.pid)
                         spawned.append((bport, proc.pid, f"browser_daemon({names[0]})"))
                 except Exception as e:
                     logger.warning("SYS-009", f"[startup] 拉起 browser_daemon 失败: {e}")
@@ -427,10 +461,28 @@ async def lifespan(app: FastAPI):
             logger.info("[startup] AI 获客自动回复已按配置自启")
     except Exception as e:
         logger.warning("SYS-021", f"[startup] AI 自动回复初始化失败（不影响主流程）: {e}")
+    # 知识维护常驻定时器（v0.40）：每 84h 一轮 = 自动学习 + 陈旧扫描 + 回收站清理
+    # 首次延迟 30 分钟（避开启动初始化高峰）；扫描只出报告，删除需人工确认。
+    try:
+        from services import kb_maintain
+        kb_maintain.start_scheduler(interval_hours=kb_maintain.LEARN_INTERVAL_HOURS)
+        logger.info("[startup] 知识维护定时器已启动（每 84h 一轮，首次延迟 30 分钟）")
+    except Exception as e:
+        logger.warning("SYS-024", f"[startup] 知识维护定时器启动失败（不影响主流程）: {e}")
     yield
     logger.info("DYAutoDM 后端关闭")
+    # 先清扫本进程拉起的 sidecar（前端窗口关闭不保证会走到这里，
+    # 另有 atexit 兜底；见 _kill_spawned_daemons 的根因说明）
+    try:
+        _kill_spawned_daemons()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"SYS-025 [shutdown] 清扫守护进程失败: {e}")
     await app.state.adm.shutdown()
 
+
+# 兜底：uvicorn 被强杀 / 信号退出时 lifespan 可能不执行，atexit 再扫一次。
+# 幂等（台账 kill_all 后清空），重复调用无副作用。
+atexit.register(_kill_spawned_daemons)
 
 app = FastAPI(
     title="DYAutoDM API",
@@ -503,6 +555,8 @@ app.include_router(engine.router, prefix="/api/engine", tags=["engine"])
 app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 app.include_router(live.router, prefix="/api/live", tags=["live"])
 app.include_router(live_config_api.router, prefix="/api/live/room-configs", tags=["live"])
+from api import linkmic as linkmic_api
+app.include_router(linkmic_api.router, prefix="/api/live/linkmic", tags=["live"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])

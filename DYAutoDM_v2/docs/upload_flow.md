@@ -116,8 +116,30 @@ GET  login.douyin.com/passport/web/get_qrcode/
 → 会话被踢回登录页。**批量自动发图明确触发风控**，
 实现必须限速 + 单条 + 失败即停，禁止无人值守群发。
 
-## 待补（下一步抓）
+## 实现状态（2026-09-11 校准）
 
-- ⑥ send 的**完整 content JSON 结构**（resource_url 各字段精确命名）
-  本轮 ⑤ 之后未捕获到 send 的响应体，需再抓一次。
-- 视频（FileType=video）的 ApplyUploadInner 参数差异
+本文所述的 ①②③④⑤⑥ 六步**均已实现**，落在 `backend/dy_apis/image_sender.py`（630 行）：
+
+| 步骤 | 实现函数 |
+|---|---|
+| ① STS 配置 | `get_upload_config()` |
+| ② ApplyUploadInner | `apply_upload()` |
+| ③ TOS 直传 | `upload_to_tos()`（含 AWS4 签名 `_aws4_post_authorization`） |
+| ④ CommitUploadInner | `commit_upload()` |
+| ⑤ batch_build_image | `build_signed_url()` |
+| ⑥ 发图消息 | `build_image_content_json()` + `build_image_send_request()` + `send_image_message()` |
+
+### 原先「待补」两项的现状
+
+1. **⑥ send 的 content JSON 结构** —— ✅ **已实现**。`build_image_content_json()` 与真实抓包帧逐字段一致：
+   ```json
+   {"resource_url":{"oid":"...","skey":"...","data_size":N,"md5":"..."},
+    "cover_height":H,"cover_width":W,"check_pics":[],"md5":"...","from_gallery":1,"aweType":2702}
+   ```
+   发送走 cmd=100、`message_type=27`（文本为 7），签名公式与文本一致。
+2. **视频发送** —— ❌ **未实现**（与 [`architecture.md`](architecture.md) 一致）：`image_sender.py` 中 `2703` / `2704` / `duration` / `video` 出现次数均为 **0**，仅支持图片 `aweType=2702`。
+   → 视频（`FileType=video`）的 `ApplyUploadInner` 参数差异仍待抓包。
+
+### 接收侧闭环
+
+`auto_dm/origin_image_resolver.py` 用 `resource_url.skey`（AES-256-GCM）解密原图，HEIC 经 pillow-heif 转码 —— 与本文 ④ 的 `Encryption.SecretKey` 完全对应，**收发两侧已闭环**。

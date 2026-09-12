@@ -16,7 +16,8 @@
 import { Fragment, useState, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { PageProps, ReusePayload, RoomConfig } from "../api/client";
+import { PageProps, ReusePayload } from "../api/client";
+import RoomConfigManager from "../components/RoomConfigManager";
 import { Avatar, Dot, Pill, hue, KIND_NAME, tick } from "../components/ui";
 
 /** AI 自动回复控制卡（直播监听场景的启停入口；参数调整在 AI 页） */
@@ -54,12 +55,9 @@ function AiReplyCard(props: { push: (msg: string, holdMs?: number) => void }) {
         </button>
       </div>
       <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
-        监听私信新消息 → 知识库/智能回复 → 留资捕获。已回复 <b>{st.replied ?? 0}</b> ·
+        已回复 <b>{st.replied ?? 0}</b> ·
         留资 <b>{st.leads_total ?? 0}</b> · 处理 <b>{st.processed ?? 0}</b> · 错误{" "}
         <b>{st.errors ?? 0}</b>
-        <span style={{ marginLeft: 6, opacity: 0.8 }}>
-          （档位/模型/知识库等参数在「AI」页调整）
-        </span>
       </div>
     </div>
   );
@@ -737,21 +735,22 @@ export default function LivePage(props: PageProps) {
     return m ? m[1] : "";
   };
 
-  /** 申请连麦（对当前输入框对应的直播间） */
-  const doApplyLinkMic = () => {
-    const rid = extractRoomId(room) || (ls?.room_id ? String(ls.room_id) : "");
-    if (!rid) {
-      setAlert({ title: "请先解析直播间", msg: "请先在上方填写并解析直播间地址，再申请连麦。" });
-      return;
-    }
-    if (linkMicBusy) return;
-    setLinkMicBusy(true);
-    api
-      .requestLinkMic(rid, "audio")
-      .then((r) => push(r.ok ? "已发起连麦申请 · 直播间 " + rid + (r.msg ? " · " + r.msg : "") : "申请连麦失败: " + (r.error || "未知错误")))
-      .catch((e: unknown) => push("申请连麦异常: " + errMsg(e)))
-      .finally(() => setLinkMicBusy(false));
-  };
+  // v0.38.5d 遗留未用函数（其他会话），暂注释避免 noUnusedLocals 卡构建
+    /** 申请连麦（对当前输入框对应的直播间） */
+    // const doApplyLinkMic = () => {
+    //   const rid = extractRoomId(room) || (ls?.room_id ? String(ls.room_id) : "");
+    //   if (!rid) {
+    //     setAlert({ title: "请先解析直播间", msg: "请先在上方填写并解析直播间地址，再申请连麦。" });
+    //     return;
+    //   }
+    //   if (linkMicBusy) return;
+    //   setLinkMicBusy(true);
+    //   api
+    //     .requestLinkMic(rid, "audio")
+    //     .then((r) => push(r.ok ? "已发起连麦申请 · 直播间 " + rid + (r.msg ? " · " + r.msg : "") : "申请连麦失败: " + (r.error || "未知错误")))
+    //     .catch((e: unknown) => push("申请连麦异常: " + errMsg(e)))
+    //     .finally(() => setLinkMicBusy(false));
+    // };
 
   // 进入查阅模式：优先用实时记录；实时无数据时回读任务容器/历史任务 records，
   // 避免「进入查阅模式后一片空白未写入数据」。
@@ -791,6 +790,27 @@ export default function LivePage(props: PageProps) {
           </div>
         </div>
       )}
+      <RoomConfigManager
+        open={cfgMgr}
+        onClose={() => setCfgMgr(false)}
+        currentRoom={room}
+        push={push}
+        onApply={(cfg) => {
+          if (cfg.live_url) setRoom(cfg.live_url);
+          else if (cfg.room_id) setRoom(cfg.room_id);
+          if (cfg.max_target != null) setDmLimit(String(cfg.max_target));
+          if (cfg.interval != null) setDmInterval(String(cfg.interval));
+          if (cfg.delay) setDmJitter(cfg.delay);
+          if (cfg.force_rescan != null) setForceRescan(cfg.force_rescan);
+          if (Array.isArray(cfg.dm_pool) && cfg.dm_pool.length) {
+            setDmTemplates(cfg.dm_pool.map((d) => ({
+              text: String((d as { text?: string }).text ?? ""),
+              enabled: (d as { enabled?: boolean }).enabled !== false,
+            })));
+          }
+          if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
+        }}
+      />
       <div className="section-head">
         <div>
           <h2>直播监听</h2>
@@ -991,7 +1011,8 @@ export default function LivePage(props: PageProps) {
                       push("已切换到 " + a.name);
                     }}
                   >
-                    <Avatar name={a.name} h={hue(a.name.length)} sm /> {a.name}
+                    {/* 2026-09-10：切换按钮头像 logo 删除，只留账号名 */}
+                    {a.name}
                   </button>
                 ))}
                 {realAccts.length === 0 && (
@@ -1045,6 +1066,49 @@ export default function LivePage(props: PageProps) {
                 }}
               >
                 解析房间号
+              </button>
+              <button
+                className="btn ghost"
+                data-od-id="live-linkmic"
+                disabled={linkMicBusy || !activeAcct}
+                title="对当前直播间发起连麦申请（经账号浏览器执行）"
+                onClick={() => {
+                  const rid = extractRoomId(room) || (ls?.room_id ? String(ls.room_id) : "");
+                  if (!rid) {
+                    setAlert({ title: "请先解析直播间", msg: "请先填写并解析直播间地址，再申请连麦。" });
+                    return;
+                  }
+                  if (!activeAcct) {
+                    setAlert({ title: "请先选择账号", msg: "申请连麦需要指定监听账号（申请将以该账号身份发起）。" });
+                    return;
+                  }
+                  if (linkMicBusy) return;
+                  setLinkMicBusy(true);
+                  push("正在发起连麦申请（接口直调 · " + activeAcct + "）…");
+                  api
+                    .requestLinkMic(activeAcct, rid, "audio")
+                    .then((r) => {
+                      if (r.ok) {
+                        const q = r.data?.waiting_list_offset;
+                        const autoJoin = r.data?.auto_join;
+                        push(`连麦申请成功 · 排队第 ${q ?? "?"} 位${autoJoin ? " · 免审批自动通过" : " · 等待主播接受"}`);
+                      } else {
+                        push("申请连麦失败: " + (r.error || r.data?.prompts || r.status_code || "未知错误"));
+                      }
+                    })
+                    .catch((e: unknown) => push("申请连麦异常: " + errMsg(e)))
+                    .finally(() => setLinkMicBusy(false));
+                }}
+              >
+                {linkMicBusy ? "申请中…" : "申请连麦"}
+              </button>
+              <button
+                className="btn ghost"
+                data-od-id="live-room-configs"
+                title="按直播间号管理配置（含自动申请连麦）"
+                onClick={() => setCfgMgr(true)}
+              >
+                直播间配置管理
               </button>
               {ready && !!cfgLiveUrl && room !== cfgLiveUrl && (
                 <button className="btn ghost" onClick={() => setRoom(cfgLiveUrl)}>

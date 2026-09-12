@@ -186,11 +186,17 @@ function SchemaField(props: {
             outline: "none",
           }}
         >
-          {s.options.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
+          {s.options.map((o) => {
+            // 后端 schema 的 options 当前是字符串数组（如 ["native"]），
+            // 也兼容 { value, label } 对象数组；两种形状都要能正确渲染出文本。
+            const val = typeof o === "string" ? o : o.value;
+            const lbl = typeof o === "string" ? o : o.label;
+            return (
+              <option key={val} value={val}>
+                {lbl}
+              </option>
+            );
+          })}
         </select>
       ) : (
         <input

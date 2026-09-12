@@ -71,3 +71,62 @@
    必须在 `_launch` 的 `goto` **之前**调用，且直接 `goto douyin.com/chat?isPopup=1`（不能先停
    首页）；超时放宽至 120s。否则前端已发完 `im/user/info` 后 hook 才注入 → 截到 0 条。落地实测
    被动截 81 项，`parse_init_protobuf` 解出的 44 会话 `peer_uid ↔ im/user/info.uid` 桥接 44/44。
+
+
+---
+
+## 【2026-09-12 根治】「查看登录态」不再另起实例 —— BCC 就地切可见（`/show`）
+
+### 用户需求原话
+> 「我喜欢打开浏览器的目的是**浏览器能够直观地看到登录态**」
+
+### 旧实现的致命设计冲突
+`POST /api/accounts/{name}/open-browser` 会**另起一个有头 Chromium 实例**指向同一 profile，
+与常驻的无头 BCC **抢 SingletonLock**。实测事故链（2026-09-12 13:43 现场）：
+
+| 时间 | 事件 | 后果 |
+|---|---|---|
+| 12:43:43 | BCC 容器启动（复用 profile） | — |
+| 12:43:57 | `AUTH-050` + `BCC-014`（裸探活 uid 与历史会话不符） | 判为不可信 |
+| 12:43:58 | `BCC-016` **拒绝写入 .env**（幽灵 uid，0 命中） | 凭证回写被拦 |
+| 12:44:18 | `[bcc] 滚动轮次 1: 新点击=0 累计昵称=0` | **页面根本没登录态** |
+| 12:47:40 | 用户手动打开浏览器 → Cookies 被更新 | 又反抢 profile，BCC 更不可用 |
+
+**关键认知**：`BCC-016` 门禁**不是 bug**（它是防凭证污染的安全设计，见 §幽灵 uid 门禁）。
+真正的缺陷是**"想看一眼"这个诉求被迫付出 profile 冲突的代价**。
+
+### 根治方案：同一实例就地切换可见性
+Playwright 无法运行中切 headless，因此切换 = **重启 context**（约 2~3s），
+但**实例、profile、保活链路全部不变**：
+
+- `daemon/browser_daemon.py`：
+  · `BrowserContainer.__init__` 新增 `self._headless: bool = True`
+  · `_launch()` 改用 `headless=self._headless`（原为硬编码 `headless=True`）
+  · 新增 `async def set_visible(visible, url="") -> dict`：
+    在 `_lock` 内关旧 context → 设 `_headless` → `_launch()` 重建（可选导航）
+  · 新增 `POST /show` 端点
+- `api/accounts.py`：
+  · `open-browser` **重写**：先确保 BCC 在跑（懒加载 `ensure_bcc(skip_cooldown=True)`），
+    再 POST BCC 的 `/show {"visible": true}`。**不再 `_quit_browser_daemon`、不再另起线程**。
+  · 新增 `POST /{name}/hide-browser` → `/show {"visible": false}`
+- `frontend/src/api/client.ts`：新增 `hideFingerprintBrowser()`（`openFingerprintBrowser` 签名不变）
+
+### 实测验证（源码态 BCC，端口 10042）
+| 调用 | 返回 | 耗时 |
+|---|---|---|
+| `visible=true` | `{"ok":true,"headless":false,"changed":true}` | 3.2s |
+| `visible=false` | `{"ok":true,"headless":true,"changed":true}` | 2.3s |
+| `visible=true`（复切） | `{"ok":true,"headless":false,"changed":true}` | 2.3s |
+
+**决定性佐证**：切为可见后 `[bcc] 滚动轮次 1..14: 累计昵称=169`（持续增长）
+→ 页面**真实已登录**；而旧路径同一账号是 `累计昵称=0`。
+
+### 坑（必看）
+1. **FastAPI 把 `visible: bool = True` 当 query 参数**，前端发 JSON body 会被**静默忽略**
+   → 切回无头失效（实测返回 `headless:false`）。修法：端点加 `req: Request`，
+   显式 `json.loads(await req.body())` 覆盖，body 优先、兼容 query。
+2. **改源码后必须用源码态启动 BCC 验证**：`binaries/` 下的 BCC 是**旧二进制**
+   （09-08 打包），新端点恒 404。开发态启动：
+   `PYTHONPATH=<backend绝对路径> DY_APP_ROOT=... python daemon/browser_daemon.py --account <名> --port <端口>`
+3. `_headless` **不读环境变量**（`DY_BCC_HEADLESS_MODE` 已废弃）：历史上 `disguise`
+   （有头+移屏外）模式因 profile 残留屏外坐标等副作用被移除，此处不复活它。

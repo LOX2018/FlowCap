@@ -14,7 +14,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
-import { Avatar, Pill, Dot, hue, nowHM } from "../components/ui";
+import { Avatar, Pill, hue, nowHM } from "../components/ui";
 import { openExternal } from "../utils/openExternal";
 
 interface Msg {
@@ -856,18 +856,7 @@ export default function MessagesPage(props: PageProps) {
           <h2>私信中心</h2>
         </div>
         <div className="head-row">
-          {ready ? (
-            <span className="badge-conn">
-              <Dot c="ok" pulse />{" "}已连接（真实后端）
-            </span>
-          ) : (
-            <>
-              <span className="badge-conn">
-                <Dot c="warn" />{" "}未连接
-              </span>
-              <span className="demo-tag">未连接</span>
-            </>
-          )}
+          {/* 2026-09-10：页头连接徽章删除，连接状态统一在顶栏会员徽章右侧显示 */}
         </div>
       </div>
 

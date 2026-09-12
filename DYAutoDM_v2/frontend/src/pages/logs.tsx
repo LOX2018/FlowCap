@@ -169,7 +169,7 @@ export default function LogsPage(props: PageProps) {
             实时读取后端落盘的日志文件 · {activeQ.data?.file ? activeQ.data.file : "等待数据"}
           </div>
         </div>
-        <span className="demo-tag">{ready ? "已连接" : "未连接"}</span>
+        {/* 2026-09-10：页头连接状态删除，统一在顶栏会员徽章右侧显示 */}
       </div>
 
       {/* 模式切换 + 批量管理 */}

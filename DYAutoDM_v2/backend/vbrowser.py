@@ -44,6 +44,26 @@ from loguru import logger
 # 该参数是 Playwright 用来隐藏 navigator.webdriver 的，但 ungoogled-chromium
 # 指纹内核在编译期已移除 webdriver 痕迹，此参数对我们是冗余的；而且它会触发
 # 内核“不受支持的命令行标记”警告。自动化特征伪装交给指纹内核自身处理即可。
+# 2026-09-09 安全边界（用户明确要求）：【禁止任何真实外接采集设备】
+#   本项目任何环节、任何模块都不得使用真实麦克风 / 摄像头。
+#   键盘、鼠标、网卡等输入/网络设备不受影响。
+#
+# 实现方式：在启动参数层强制注入 Chromium 虚拟设备 + 自动授权：
+#   --use-fake-device-for-media-stream  用虚拟采集源替代真实麦克风/摄像头
+#   --use-fake-ui-for-media-stream      自动同意权限请求（不弹系统授权框）
+#   --allow-file-access-from-files      配合虚拟设备的本地回环
+#   --mute-audio                        不占用/不输出真实音频设备
+#   --deny-permission-prompts           不弹权限框（配合上面的自动授权）
+# 这四条保证即使页面调用 getUserMedia，拿到的也是 Fake Audio/Video Input，
+# 绝不会触碰物理设备。
+_FAKE_MEDIA_ARGS = [
+    "--use-fake-device-for-media-stream",
+    "--use-fake-ui-for-media-stream",
+    "--allow-file-access-from-files",
+    "--mute-audio",
+    "--deny-permission-prompts",
+]
+
 _CHROME_ARGS = [
     "--disable-gpu",
     "--disable-dev-shm-usage",
@@ -52,24 +72,24 @@ _CHROME_ARGS = [
     "--disable-background-networking",
     "--disable-extensions",
     "--disable-sync",
-]
+] + _FAKE_MEDIA_ARGS
 
-# 2026-09-06 风控对齐（用户需求）：BCC「无头」运行改用【真有头 + 窗口移出屏幕】，
-# 不用 Chromium headless 模式。实测依据（知识库 08 §24.9）：同一 profile 下
-# 有头（双击打开的指纹浏览器）登录态正常、无头容器却触发 step-up 重验证
-# 降级为半登录态 —— 抖音风控能识别 headless 模式并判定环境跳变。
-# 把真有头窗口移到屏幕外（-32000,-32000），对抖音是 100% 有头特征，
-# 对用户等效无头（看不到窗口）。加 --window-size 保持常规桌面窗口尺寸。
+# 2026-09-09 变更（用户要求）：【废弃】「真有头 + 窗口移出屏幕」伪装模式。
 #
-# ⚠️ 副作用（2026-09-06 实测）：持久化 profile 会把窗口位置写进 Preferences，
-# 伪装模式跑过一次后，下一次【可见启动】（扫码登录 / 查看模式）窗口会从
-# -32000 屏外位置恢复 —— 二维码在桌面外，用户无法重新扫码。
-# 修复：可见启动路径统一调 _ensure_window_visible()（CDP setWindowBounds 归位），
-# 见 launch_async / launch_sync / open_douyin_home。
-_HEADLESS_DISGUISE_ARGS = [
-    "--window-position=-32000,-32000",
-    "--window-size=1440,900",
-]
+# 原设计（2026-09-06）：BCC「无头」改用真有头窗口移到屏幕外（-32000,-32000），
+#   理由是抖音风控能识别 Chromium headless，需保持有头特征。
+#
+# 废弃原因：
+#   1) 副作用严重 —— 持久化 profile 会把屏外坐标写进 Preferences，导致后续
+#      可见启动（扫码登录 / 查看模式）窗口恢复在桌面外，用户无法扫码。
+#      为兜底不得不额外维护 _ensure_window_visible() 归位逻辑。
+#   2) 实测证伪必要性 —— 2026-09-08 双账号实测：纯 native 无头下
+#      小助理 ws 发送成功、张老师 wp 发送成功，无头完全可用（见下 native 分支注释）。
+#   3) 用户明确要求删除全部移屏外设定。
+#
+# 现在 headless 一律走纯 Playwright headless（native），不再有任何屏外窗口。
+# _HEADLESS_DISGUISE_ARGS 保留为空列表仅为兼容旧引用，调用方加它是无操作。
+_HEADLESS_DISGUISE_ARGS: list = []
 
 # 窗口归位判定（2026-09-06 二次修正，实机数据）：
 # 伪装模式写 --window-position=-32000，但 Chromium 会把窗口钳制到虚拟桌面
@@ -613,28 +633,11 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         else:
             logger.info(f"[vbrowser] 复用固定 profile: {user_data_dir}")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-06 风控对齐：headless=True 默认转「真有头 + 窗口移出屏幕」。
-        # 环境变量 DY_BCC_HEADLESS_MODE 可切:
-        #   native (默认 2026-09-08 改回) = 纯 Playwright headless（省资源；
-        #                                   2026-09-08 双账号实测：小助理
-        #                                   ws 发送成功、张老师 wp 成功，
-        #                                   无头完全可用）
-        #   disguise = 真有头+移屏外 —— 对抖音与双击打开的指纹浏览器
-        #              特征一致（风控对齐）；副作用：持久化 profile 残留
-        #              屏外窗口位置，可见启动需归位（_ensure_window_visible）
+        # 2026-09-09：disguise（真有头+移屏外）已废弃，headless 一律 native 纯无头。
+        # 不再读 DY_BCC_HEADLESS_MODE，不再产生任何屏外窗口。
+        _disguise = False
         if headless:
-            import os as _os
-            _mode = (_os.environ.get("DY_BCC_HEADLESS_MODE") or "native").lower()
-            if _mode == "disguise":
-                launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
-                headless = False  # 伪装模式：恒真有头
-                _disguise = True  # 伪装窗口必须留在屏外，绝不能被归位逻辑拉回
-                logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
-            else:
-                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless）")
-                _disguise = False
-        else:
-            _disguise = False
+            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，无屏外窗口）")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -695,24 +698,16 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-06 风控对齐：与 launch_async 同策略，headless 转真有头+移屏外。
-        # 2026-09-08：默认改回 native（纯 headless），disguise 需显式设
-        # DY_BCC_HEADLESS_MODE=disguise（与 launch_async 保持一致）。
+        # 2026-09-09：disguise（真有头+移屏外）已废弃，与 launch_async 一致，
+        # headless 一律 native 纯无头，不再读 DY_BCC_HEADLESS_MODE。
         _disguise = False
         if headless:
-            import os as _os
-            _mode = (_os.environ.get("DY_BCC_HEADLESS_MODE") or "native").lower()
-            if _mode == "disguise":
-                launch_args = list(launch_args) + list(_HEADLESS_DISGUISE_ARGS)
-                _disguise = True  # 伪装窗口必须留在屏外，绝不能被归位逻辑拉回
-                logger.info("[vbrowser] 无头请求已转为 真有头+窗口移屏外（风控对齐模式）")
-            else:
-                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless）")
+            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，无屏外窗口）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=headless,  # disguise 已置 False；native 保持 True
+            headless=headless,  # native：True 纯无头
             args=launch_args,
             proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，

@@ -178,13 +178,25 @@ export interface ModelProvider {
   models_chat: string[]; models_vision: string[];
 }
 
-/** 模型链路（v0.38.4 模型链路中心）：一条可用的模型服务连接 */
-export interface ModelHubEndpoint {
-  id: string;
-  name: string;
-  base_url: string;
-  api_protocol: string;
+/** 模型中心（v0.39.0）：提供商 / 模型 / 避障链路 / 兜底 / 消费方 */
+export interface HubProvider {
+  id: string; name: string; base_url: string; api_protocol: string;
   api_key?: string;
+  key_status?: { ok: boolean; checked_at?: number; detail?: string };
+  models_fetched_at?: number;
+}
+
+export interface HubModel {
+  id: string; provider_id: string; model: string;
+  caps: string[]; source: string;
+}
+
+export type HubRouteKind = "llm" | "vision" | "sem";
+
+export interface HubConsumerBinding {
+  mode: "route" | "fixed";
+  route?: HubRouteKind;
+  model_id?: string;
 }
 
 export interface Overview {
@@ -324,7 +336,7 @@ export interface NotifyTestResult {
 /** 单个字段的表单元数据（后端 schema 下发，前端据此自动渲染） */
 export interface SettingsFieldSchema {
   label: string;
-  type: "int" | "float" | "bool" | "str";
+  type: "int" | "float" | "bool" | "str" | "select";
   default: unknown;
   min?: number;
   max?: number;
@@ -334,7 +346,12 @@ export interface SettingsFieldSchema {
   hint?: string;
   /** 风控敏感项：UI 需醒目标注且下限保护 */
   risk?: boolean;
-  options?: { value: string; label: string }[];
+  /**
+   * 下拉选项（type=select）。
+   * 后端 app_config.SECTIONS 目前下发的是**字符串数组**（如 ["native","disguise"]），
+   * 早期契约注释写的是 {value,label} 对象数组——两种形状前端都要兼容。
+   */
+  options?: (string | { value: string; label: string })[] | null;
 }
 
 export interface SettingsSectionSchema {
@@ -350,12 +367,89 @@ export type SettingsSchema = Record<string, SettingsSectionSchema>;
 export interface AiAgentSummary {
   id: string;
   name: string;
+  kind?: string;
+  scopes?: string[];
+  permissions?: Record<string, boolean>;
   model: string;
   strict_level: string;
   merchant_name: string;
   enabled: boolean;
   kb_count: number;
   updated_at: number;
+}
+
+/** 专业知识库（思维导图）条目 */
+export interface ProKbItem {
+  id: number;
+  topic: string;
+  category: string;
+  content: string;
+  summary: string;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  /** v0.40 知识演化字段 */
+  importance?: number;
+  hits?: number;
+  occurrence?: number;
+  last_accessed_at?: number | null;
+  is_stale?: boolean;
+  stale_reason?: string;
+  deleted_at?: number | null;
+}
+
+/** v0.40 维护扫描报告 */
+export interface ProKbScanReport {
+  scanned: number;
+  cold: ProKbStaleItem[];
+  low_value: ProKbStaleItem[];
+  duplicate: ProKbDupPair[];
+  generated_at: number;
+}
+
+export interface ProKbStaleItem {
+  id: number;
+  topic: string;
+  category: string;
+  summary: string;
+  reason: string;
+  detail?: string;
+}
+
+export interface ProKbDupPair {
+  topic: string;
+  keep_id: number;
+  drop_id: number;
+  keep_summary: string;
+  drop_summary: string;
+  similarity: number;
+  reason: string;
+}
+
+export interface ProKbMaintainState {
+  enabled: boolean;
+  interval_hours: number;
+  last_run_at: number | null;
+  next_run_at: number | null;
+  runs: number;
+  last_run_result?: Record<string, unknown> | null;
+  errors: string[];
+}
+
+export interface ProKbTree {
+  topic: string;
+  children: { category: string; items: ProKbItem[] }[];
+}
+
+/** 对话回复库（命中库）条目 */
+export interface ReplyKbItem {
+  id: number;
+  question: string;
+  answer: string;
+  source: string; // manual | auto
+  enabled: boolean;
+  hits: number;
+  created_at: number;
 }
 
 export interface ConfigTagSummary {
@@ -462,9 +556,23 @@ export const api = {
     });
   },
 
-  /** 打开该账号绑定的指纹浏览器窗口（先停守护释放 profile 锁再弹窗） */
+  /**
+   * 查看/操作该账号登录态：把常驻 BCC 容器**就地切为有头可见**窗口。
+   *
+   * 2026-09-12 根治：不再另起浏览器实例（旧实现会与 BCC 抢 profile 锁，
+   * 导致 BCC 读到失效页面、凭证回写被幽灵 uid 门禁拦截）。
+   * 现在窗口就是 BCC 自己——登录态真实，且保活/凭证回写全程不中断。
+   * 看完可用 hideFingerprintBrowser 恢复无头省资源。
+   */
   async openFingerprintBrowser(name: string): Promise<{ ok: boolean; msg: string }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/open-browser`, {
+      method: "POST",
+    });
+  },
+
+  /** 恢复该账号 BCC 容器为纯无头（与 openFingerprintBrowser 配对） */
+  async hideFingerprintBrowser(name: string): Promise<{ ok: boolean; msg: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/hide-browser`, {
       method: "POST",
     });
   },
@@ -544,11 +652,34 @@ export const api = {
     });
   },
 
-  /** 申请连麦（对当前监听直播间）。mode: audio=语音 / video=视频 */
-  async requestLinkMic(roomId: string, mode: "audio" | "video" = "audio"): Promise<{ ok: boolean; msg?: string; error?: string }> {
+  /** 申请连麦（接口直调：账号凭证 + msToken/a_bogus 签名，与直播监听同链路）。
+   *  roomId 传真实 room_id（解析房间号可得）；成功响应 data.waiting_list_offset = 排队位次 */
+  async requestLinkMic(account: string, roomId: string, linkType: "audio" | "video" = "audio"): Promise<{
+    ok: boolean; status_code?: number; error?: string;
+    data?: { linkmic_id_str?: string; auto_join?: boolean; waiting_list_offset?: number; prompts?: string };
+  }> {
     return request("/api/live/linkmic/apply", {
       method: "POST",
-      body: JSON.stringify({ room_id: roomId, mode }),
+      body: JSON.stringify({ account, room_id: roomId, link_type: linkType === "video" ? "1" : "2" }),
+    });
+  },
+
+  /** 连麦状态：排队人数 + 连线者 + linked 判定 */
+  async linkmicStatus(account: string, roomId?: string): Promise<{
+    ok: boolean;
+    status?: { room_id: string; my_uid: string; waiting_total?: number | null;
+               linkers?: { id: string; nickname: string }[]; me_in_linkers?: boolean | null;
+               linked?: boolean; check?: Record<string, unknown> };
+  }> {
+    const q = roomId ? `&room_id=${encodeURIComponent(roomId)}` : "";
+    return request(`/api/live/linkmic/status?account=${encodeURIComponent(account)}${q}`);
+  },
+
+  /** 退出连麦 */
+  async linkmicLeave(account: string, roomId?: string): Promise<{ ok: boolean; data?: Record<string, unknown> }> {
+    return request("/api/live/linkmic/leave", {
+      method: "POST",
+      body: JSON.stringify({ account, room_id: roomId }),
     });
   },
 
@@ -934,47 +1065,105 @@ export const api = {
     });
   },
 
-  // ===== 模型链路中心（v0.38.4：模型配置唯一真源，AI/IM通知共用）=====
+  // ===== 模型中心（v0.39.0：提供商/模型/避障链路/兜底/消费方）=====
   async modelhubOverview(): Promise<{
     ok: boolean;
-    endpoints: ModelHubEndpoint[];
-    consumers_meta: { id: string; label: string; module: string }[];
-    bindings: Record<string, { endpoint_id: string; model: string }>;
-    presets: ModelProvider[];
+    providers: HubProvider[];
+    models: HubModel[];
+    routes: Record<HubRouteKind, { models: string[] }>;
+    fallback: { model_id: string };
+    consumers: Record<string, HubConsumerBinding>;
+    consumers_meta: { id: string; label: string; module: string;
+      suggest_route: HubRouteKind }[];
+    presets: { id: string; name: string; base_url: string;
+      api_protocol: string; needs_key: boolean; key_hint: string }[];
+    max_chain: number;
   }> {
     return request("/api/modelhub/overview");
   },
-  async modelhubSaveEndpoint(ep: Partial<ModelHubEndpoint>): Promise<{
-    ok: boolean;
-    endpoint: ModelHubEndpoint;
-    endpoints: ModelHubEndpoint[];
+  async modelhubSaveProvider(p: Partial<HubProvider>): Promise<{
+    ok: boolean; provider: HubProvider; providers: HubProvider[];
+    models: HubModel[];
   }> {
-    return request("/api/modelhub/endpoints", {
+    return request("/api/modelhub/providers", {
       method: "POST",
-      body: JSON.stringify(ep),
+      body: JSON.stringify(p),
     });
   },
-  async modelhubDeleteEndpoint(epId: string): Promise<{
-    ok: boolean;
-    endpoints: ModelHubEndpoint[];
-    bindings: Record<string, { endpoint_id: string; model: string }>;
-    unbound_consumers: string[];
+  async modelhubDeleteProvider(pid: string): Promise<{
+    ok: boolean; removed_models: number; providers: HubProvider[];
+    models: HubModel[];
   }> {
-    return request(`/api/modelhub/endpoints/${encodeURIComponent(epId)}`, {
+    return request(`/api/modelhub/providers/${encodeURIComponent(pid)}`, {
       method: "DELETE",
     });
   },
-  async modelhubBind(
-    consumer: string,
-    endpointId: string,
-    model: string,
-  ): Promise<{
+  async modelhubTestProvider(pid: string): Promise<{
     ok: boolean;
-    bindings: Record<string, { endpoint_id: string; model: string }>;
+    result: { ok: boolean; detail?: string; checked_at?: number };
   }> {
-    return request("/api/modelhub/bindings", {
+    return request(`/api/modelhub/providers/${encodeURIComponent(pid)}/test`, {
       method: "POST",
-      body: JSON.stringify({ consumer, endpoint_id: endpointId, model }),
+      body: JSON.stringify({}),
+    });
+  },
+  async modelhubFetchModels(pid: string): Promise<{
+    ok: boolean; total: number; added: number; warning?: string;
+    providers: HubProvider[]; models: HubModel[];
+  }> {
+    return request(`/api/modelhub/providers/${encodeURIComponent(pid)}/fetch`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+  async modelhubAddModel(providerId: string, model: string,
+                         caps: string[] = []): Promise<{
+    ok: boolean; model: HubModel;
+  }> {
+    return request("/api/modelhub/models", {
+      method: "POST",
+      body: JSON.stringify({ provider_id: providerId, model, caps }),
+    });
+  },
+  async modelhubSetCaps(mid: string, caps: string[]): Promise<{ ok: boolean }> {
+    return request(`/api/modelhub/models/${encodeURIComponent(mid)}/caps`, {
+      method: "POST",
+      body: JSON.stringify({ caps }),
+    });
+  },
+  async modelhubDeleteModel(mid: string): Promise<{
+    ok: boolean; providers: HubProvider[]; models: HubModel[];
+    routes: Record<HubRouteKind, { models: string[] }>;
+    fallback: { model_id: string };
+    consumers: Record<string, HubConsumerBinding>;
+  }> {
+    return request(`/api/modelhub/models/${encodeURIComponent(mid)}`, {
+      method: "DELETE",
+    });
+  },
+  async modelhubSaveRoute(kind: HubRouteKind, modelIds: string[]): Promise<{
+    ok: boolean; routes: Record<HubRouteKind, { models: string[] }>;
+  }> {
+    return request(`/api/modelhub/routes/${encodeURIComponent(kind)}`, {
+      method: "POST",
+      body: JSON.stringify({ model_ids: modelIds }),
+    });
+  },
+  async modelhubSetFallback(modelId: string): Promise<{
+    ok: boolean; fallback: { model_id: string };
+  }> {
+    return request("/api/modelhub/fallback", {
+      method: "POST",
+      body: JSON.stringify({ model_id: modelId }),
+    });
+  },
+  async modelhubSetConsumer(consumer: string, mode: "route" | "fixed",
+                            route = "", modelId = ""): Promise<{
+    ok: boolean; consumers: Record<string, HubConsumerBinding>;
+  }> {
+    return request("/api/modelhub/consumers", {
+      method: "POST",
+      body: JSON.stringify({ consumer, mode, route, model_id: modelId }),
     });
   },
 
@@ -1040,6 +1229,68 @@ export const api = {
   async aiKbDelete(id: number): Promise<{ ok: boolean; msg?: string }> {
     return request(`/api/ai/knowledge/${id}`, { method: "DELETE" });
   },
+  // ---- 对话回复库（命中库 v0.39.0）----
+  async aiReplyKbList(): Promise<{ ok: boolean; items: ReplyKbItem[] }> {
+    return request("/api/ai/replies");
+  },
+  async aiReplyKbSave(item: { id?: number; question: string; answer: string; enabled?: boolean }): Promise<{ ok: boolean; error?: string }> {
+    return request("/api/ai/replies", {
+      method: "POST",
+      body: JSON.stringify(item),
+    });
+  },
+  async aiReplyKbDelete(id: number): Promise<{ ok: boolean }> {
+    return request(`/api/ai/replies/${id}`, { method: "DELETE" });
+  },
+  // ---- 专业知识库（思维导图 v0.39.1）----
+  async aiProKbList(): Promise<{ ok: boolean; items: ProKbItem[]; tree: ProKbTree[] }> {
+    return request("/api/ai/prokb");
+  },
+  async aiProKbSave(item: { id?: number; topic: string; category: string; content: string; summary: string; enabled?: boolean }): Promise<{ ok: boolean; error?: string }> {
+    return request("/api/ai/prokb", { method: "POST", body: JSON.stringify(item) });
+  },
+  async aiProKbDelete(id: number): Promise<{ ok: boolean }> {
+    return request(`/api/ai/prokb/${id}`, { method: "DELETE" });
+  },
+  // ---- v0.40 表格视图 / 统一树 / 知识维护 ----
+  async aiProKbPatch(id: number, patch: Partial<ProKbItem>): Promise<{ ok: boolean; item?: ProKbItem; tree?: ProKbTree[]; error?: string }> {
+    return request(`/api/ai/prokb/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+  },
+  async aiProKbTopics(): Promise<{ ok: boolean; topics: string[]; categories: string[] }> {
+    return request("/api/ai/prokb/topics");
+  },
+  async aiProKbRenameTopic(oldName: string, newName: string): Promise<{ ok: boolean; renamed: number; items: ProKbItem[]; tree: ProKbTree[] }> {
+    return request("/api/ai/prokb/rename_topic", { method: "POST", body: JSON.stringify({ old: oldName, new: newName }) });
+  },
+  async aiProKbMaintainStatus(): Promise<{ ok: boolean; state: ProKbMaintainState; last_scan: ProKbScanReport | null }> {
+    return request("/api/ai/prokb/maintain/status");
+  },
+  async aiProKbMaintainScan(): Promise<{ ok: boolean; report?: ProKbScanReport; error?: string }> {
+    return request("/api/ai/prokb/maintain/scan", { method: "POST" });
+  },
+  async aiProKbMaintainApply(ids: number[], action = "recycle"): Promise<{ ok: boolean; count?: number; items?: ProKbItem[]; tree?: ProKbTree[] }> {
+    return request("/api/ai/prokb/maintain/apply", { method: "POST", body: JSON.stringify({ ids, action }) });
+  },
+  async aiProKbMaintainMerge(pairs: ProKbDupPair[]): Promise<{ ok: boolean; merged?: number; items?: ProKbItem[]; tree?: ProKbTree[] }> {
+    return request("/api/ai/prokb/maintain/merge", { method: "POST", body: JSON.stringify({ items: pairs }) });
+  },
+  async aiProKbMaintainLearn(account?: string): Promise<{ ok: boolean; scanned?: number; extracted?: number; added?: number; error?: string }> {
+    const q = account ? `?account=${encodeURIComponent(account)}` : "";
+    return request(`/api/ai/prokb/maintain/learn${q}`, { method: "POST" });
+  },
+  async aiProKbRecycle(): Promise<{ ok: boolean; items: ProKbItem[]; retention_days: number }> {
+    return request("/api/ai/prokb/recycle");
+  },
+  async aiProKbRecycleRestore(id: number): Promise<{ ok: boolean; items: ProKbItem[]; tree: ProKbTree[] }> {
+    return request(`/api/ai/prokb/recycle/${id}/restore`, { method: "POST" });
+  },
+  async aiProKbRecyclePurge(): Promise<{ ok: boolean; purged: number; items: ProKbItem[] }> {
+    return request("/api/ai/prokb/recycle/purge", { method: "POST" });
+  },
+  async aiReplyKbLearn(account?: string): Promise<{ ok: boolean; scanned?: number; extracted?: number; added?: number; error?: string }> {
+    const q = account ? `?account=${encodeURIComponent(account)}` : "";
+    return request(`/api/ai/replies/learn${q}`, { method: "POST" });
+  },
   async aiSemTest(textA?: string, textB?: string): Promise<{ ok: boolean; score?: number; threshold?: number; msg: string }> {
     return request("/api/ai/semantic/test", {
       method: "POST",
@@ -1053,6 +1304,48 @@ export const api = {
     return request("/api/ai/semantic/cache_status");
   },
   /** 上传文件生成知识库 QA（预览，不入库）。用 XMLHttpRequest 上报进度。 */
+  /** 专业库文件导入：上传 → AI 提纯为思维导图条目（不落库）。 */
+  async aiProKbImport(
+    file: File,
+    onProgress?: (pct: number) => void,
+  ): Promise<{ ok: boolean; filename: string; items: { topic: string; category: string; content: string; summary: string }[]; chars: number; chunks: number; mode: string; error?: string }> {
+    await ensureBackendReady();
+    const form = new FormData();
+    form.append("file", file);
+    const tk = getMemberToken();
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE}/api/ai/prokb/import`);
+      if (tk) xhr.setRequestHeader("X-Member-Token", tk);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        try {
+          const r = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(r);
+          else reject(new Error(r.detail || `提纯失败 (${xhr.status})`));
+        } catch {
+          reject(new Error(`提纯失败 (${xhr.status})`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("网络错误"));
+      xhr.send(form);
+    });
+  },
+
+  async aiProKbImportConfirm(
+    items: { topic: string; category: string; content: string; summary: string }[],
+    replace = false,
+  ): Promise<{ ok: boolean; added: number; error?: string }> {
+    return request("/api/ai/prokb/import/confirm", {
+      method: "POST",
+      body: JSON.stringify({ items, replace }),
+    });
+  },
+
   async aiKbImport(
     file: File,
     onProgress?: (pct: number) => void,
@@ -1060,9 +1353,13 @@ export const api = {
     await ensureBackendReady();
     const form = new FormData();
     form.append("file", file);
+    // v0.37.0 会员门禁：/api/* 全部要求 X-Member-Token（普通 request() 自动带，
+    // 这个 XHR 直传必须手动补，否则 401「未登录或会话已过期」）
+    const tk = getMemberToken();
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${BASE}/api/ai/knowledge/import`);
+      if (tk) xhr.setRequestHeader("X-Member-Token", tk);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) {
           onProgress(Math.round((e.loaded / e.total) * 100));

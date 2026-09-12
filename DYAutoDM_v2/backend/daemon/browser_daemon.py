@@ -33,7 +33,7 @@ import threading
 import time
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from loguru import logger
 
@@ -266,6 +266,29 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
 
 
 
+def _cred_refresh_mode() -> str:
+    """读取「凭证更新方式」（两套路径共存，由用户配置）。
+
+    取值：
+      observe（默认）—— 观测态静默更新：保活心跳读实时 cookie + 页面最新签名
+                        写回 .env，不弹窗、零打扰，适合无人值守。
+      popup          —— 仅弹窗激活更新：检测到页面需重激活时弹指纹浏览器，
+                        请用户手动点一下，适合习惯人工确认的账号。
+      both           —— 观测优先；确认页面登录态失效才弹窗。
+
+    取值优先级：统一配置中心(app_config.general.cred_refresh_mode)
+              → 环境变量 DY_CRED_REFRESH_MODE → 默认 observe。
+    """
+    try:
+        from services import app_config
+        v = app_config.get("general", "cred_refresh_mode", None)
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    return (os.environ.get("DY_CRED_REFRESH_MODE") or "observe").strip() or "observe"
+
+
 class BrowserContainer:
     """常驻持有该账号 profile 的唯一 Playwright context。
 
@@ -275,6 +298,13 @@ class BrowserContainer:
 
     def __init__(self, account: str) -> None:
         self.account = account
+        # 可见模式开关（2026-09-12 用户需求根治）：
+        #   False = 默认 native 纯无头（零窗口，保活/捕获用）
+        #   True  = 有头可见（窗口就是本容器，用户可直接查看登录态；
+        #           同一实例继续保活+回写凭证，**不与"打开浏览器"抢 profile**）
+        # 由 POST /show 动态切换（重启 context 生效），不读环境变量，避免历史
+        # disguise 模式的副作用（profile 残留屏外坐标）。
+        self._headless: bool = True
         self._lock = asyncio.Lock()
         self._pw = None
         self._browser = None
@@ -318,8 +348,8 @@ class BrowserContainer:
         # im/user/info）经实机验证（有头/无头均 44/44）无头完全可行，且零窗口更稳。
         # 扫码登录走独立 get_login_auth(headless=False)，需可见 UI，不在此处。
         self._pw, self._browser, self._context, self._backend = await launch_async(
-            _vb_mode, _cfg, headless=True, user_data_dir=self._profile_dir, force=False,
-            account=self.account)
+            _vb_mode, _cfg, headless=self._headless, user_data_dir=self._profile_dir,
+            force=False, account=self.account)
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         # V16 踩坑：add_init_script 必须在 goto 前注入，否则前端已发完 im/user/info 再注入就截不到
         await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
@@ -354,6 +384,57 @@ class BrowserContainer:
             self._page = None
             self._nav_page = None  # P2-A：context 已重建，导航 tab 引用作废
             await self._launch()
+
+    async def set_visible(self, visible: bool, url: str = "") -> dict:
+        """切换容器可见性：把无头容器重启为有头可见（或反向）。
+
+        根治「打开浏览器」与「BCC 保活」抢同一 profile 的设计冲突：
+          - 旧路径：open-browser 另起一个**有头** Chromium 实例指向同一 profile
+            → 与常驻无头 BCC 抢 SingletonLock，后启动者拿到失效页面
+            （实测：BCC 12:43 启动后探活 uid 与历史不符 → BCC-016 拒绝回写凭证）。
+          - 新路径：**不另起实例**，直接让本容器以有头模式重启 context。
+            用户看到的窗口就是 BCC 自己，登录态真实、且保活/回写链路不中断。
+
+        重启 context 是必要的：Playwright 无法在运行中切换 headless。
+        重启期间 _lock 串行，业务调用会排队（约 3~6s），不影响凭证。
+        """
+        async with self._lock:
+            target = not bool(visible)
+            if self._headless == target and self._context is not None:
+                # 已是目标模式，仅按需导航
+                if url and self._page is not None and not self._page.is_closed():
+                    try:
+                        await self._page.goto(url, wait_until="domcontentloaded",
+                                               timeout=20000)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("BCC-038", f"[bcc] {self.account} 导航失败: {e}")
+                return {"ok": True, "headless": target, "changed": False}
+            logger.info(
+                f"[bcc] {self.account} 切换浏览器可见性: "
+                f"headless={self._headless} -> {target}")
+            # 关旧 context（释放 profile 内窗口，但保持 profile 目录不动）
+            try:
+                if self._backend == "exe" and self._context is not None:
+                    await self._context.close()
+                if self._pw is not None:
+                    await self._pw.stop()
+            except Exception:
+                pass
+            self._pw = None
+            self._browser = None
+            self._context = None
+            self._page = None
+            self._nav_page = None
+            self._headless = target
+            await self._launch()
+            if url and self._page is not None:
+                try:
+                    await self._page.goto(url, wait_until="domcontentloaded",
+                                           timeout=20000)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("BCC-039", f"[bcc] {self.account} 导航失败: {e}")
+            return {"ok": True, "headless": target, "changed": True}
+
 
     async def submit(self, coro):
         """把协程投递到主事件循环，串行执行（_lock 保证同一时刻只有一个浏览器操作）。"""
@@ -1017,6 +1098,45 @@ class BrowserContainer:
             logger.debug(f"[bcc] 页面登录态探测失败: {e}")
             return {}
 
+    async def _read_page_sign(self) -> dict:
+        """从当前页面读取 security-sdk 的最新签名数据（web_protect / keys）。
+
+        返回 {"web_protect": str, "keys": str}；任一缺失返回 {}（视为失败）。
+        在 _lock 内执行（浏览器串行铁律）。
+
+        背景：抖音私信走 imapi.douyin.com 私有网关，靠 protobuf 体内的
+        ticket/ts_sign/sdk_cert（均由 security-sdk 的 web_protect/keys 派生）
+        鉴权，与 cookie 是**两套独立时效**。只更新 cookie 不更新签名，
+        网关会返回 cmd=609 INVALID_REQUEST。
+        """
+        async def _do():
+            page = self._page
+            if page is None or page.is_closed():
+                return {}
+            keys_str = None
+            wp_str = None
+            # 与 login_api 的读取姿势对齐：轻滚动 + 多次重试（SDK 异步生成）
+            for _ in range(4):
+                try:
+                    keys_str = await page.evaluate(
+                        'localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                    wp_str = await page.evaluate(
+                        'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+                except Exception:
+                    return {}
+                if keys_str and wp_str:
+                    break
+                try:
+                    await page.mouse.wheel(0, 600)
+                except Exception:
+                    pass
+                await asyncio.sleep(1.5)
+            if not (keys_str and wp_str):
+                return {}
+            return {"web_protect": wp_str, "keys": keys_str}
+
+        return await self._exec(_do)
+
     async def refresh_cookie_to_env(self) -> dict:
         """读实时 cookie，写回 .env。返回 {ok, cookie_count, sessionid?}。
 
@@ -1099,6 +1219,36 @@ class BrowserContainer:
             return {"ok": False,
                     "msg": f"uid 漂移({old_uid}→{new_uid})，已保留原凭证，请重新扫码确认"}
 
+        # ---- 2026-09-12 根治：签名必须随 cookie 一起刷新 ----
+        # 旧实现只覆盖 auth.cookie，而 auth 的 ticket/ts_sign/web_protect 来自
+        # **_load_auth_from_env（即 .env 里的旧值）** —— 于是写回的是
+        # 「新 cookie + 旧签名」。抖音 IM 网关按 protobuf 体内签名鉴权，
+        # 签名过期即返回 cmd=609 INVALID_REQUEST（实测张老师 create_conversation
+        # 必失败，而 cookie 完全有效，极易误判为「账号被风控」）。
+        # 修复：顺手从**当前页面**读一次最新的 security-sdk 签名数据，
+        # 成功才一并写回；读不到则保持原签名（不阻塞、不写残缺凭证）。
+        try:
+            _fresh = await self._read_page_sign()
+            if _fresh:
+                auth.web_protect_str = _fresh.get("web_protect") or auth.web_protect_str
+                auth.keys_str = _fresh.get("keys") or getattr(auth, "keys_str", "")
+                # perepare_auth 会重新派生 ticket/ts_sign/ree_public_key 等
+                try:
+                    auth.perepare_auth("", auth.web_protect_str, auth.keys_str)
+                except Exception:
+                    pass
+                _has_sdk = bool(getattr(auth, "ticket", None) or
+                                getattr(auth, "ts_sign", None))
+                logger.info(
+                    f"[bcc] 观测态写回：已同步页面最新签名"
+                    f"（web_protect={'有' if auth.web_protect_str else '无'}, "
+                    f"keys={'有' if auth.keys_str else '无'}, "
+                    f"ticket={'有' if _has_sdk else '无'}）")
+            else:
+                logger.debug("[bcc] 观测态写回：未读到页面签名，沿用既有签名")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[bcc] 观测态写回：读取页面签名失败（沿用既有）: {e}")
+
         auth.cookie = cks
         auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
         try:
@@ -1128,7 +1278,14 @@ class BrowserContainer:
         极强风控信号。修复：scan_login 连续失败 2 次即熔断，退避 30 分钟；
         期间只记日志告警（人工扫码后自然恢复），不再自动重启浏览器。
         """
-        logger.info(f"[bcc] 保活心跳启动，间隔 {interval}s")
+        # 凭证更新方式（2026-09-12 用户需求：两套更新路径共存、由用户自选）：
+        #   observe = 观测态静默更新（读实时 cookie+页面签名写回 .env，不弹窗）
+        #   popup   = 仅弹窗激活更新（检测到需重激活时弹指纹浏览器请用户点）
+        #   both    = 观测优先，确认页面登录态失效才弹窗（默认兼容）
+        cred_mode = _cred_refresh_mode()
+        logger.info(
+            f"[bcc] 保活心跳启动，间隔 {interval}s，凭证更新方式={cred_mode}"
+            f"（{'观测态静默/弹窗激活/两者兼容' if cred_mode=='both' else cred_mode}）")
         scan_fail_count = 0          # 连续 scan_login 失败计数
         SCAN_BREAKER_LIMIT = 2       # 连续失败 N 次 -> 熔断
         SCAN_BACKOFF_SEC = 1800      # 熔断退避 30 分钟
@@ -1178,7 +1335,13 @@ class BrowserContainer:
                         logger.warning("BCC-022", 
                             f"[bcc] 页面级登录态失效（conv={page_state.get('conv')} "
                             f"rel={page_state.get('rel')}），uid={uid} 仍有效但页面需重新激活，"
-                            f"触发 scan_login…")
+                            f"凭证更新方式={cred_mode}"
+                            + ("（observe：不弹窗，等用户自行激活）"
+                               if cred_mode == "observe" else "，触发 scan_login…"))
+                        # observe 模式：用户明确选择「不弹窗」，只在日志/前端提示，
+                        # 绝不自动重启浏览器（避免风控暴露）。both/popup 才走 scan_login。
+                        if cred_mode == "observe":
+                            continue
                         if self._loop:
                             fut = asyncio.run_coroutine_threadsafe(
                                 self.scan_login(force=False), self._loop)
@@ -1215,7 +1378,13 @@ class BrowserContainer:
                                 "DY_BCC_COOKIE_SYNC_SEC", "1800"))
                         except Exception:
                             _sync_sec = 1800
-                        if _sync_sec > 0 and (now - last_cookie_sync) >= _sync_sec:
+                        # 2026-09-12：popup 模式明确要求「只弹窗激活更新」，
+                        # 故不做静默回写（把更新时机交给用户手动激活）。
+                        if cred_mode == "popup":
+                            logger.debug(
+                                "[bcc] 凭证更新方式=popup，跳过观测态静默回写"
+                                "（等待用户弹窗激活）")
+                        elif _sync_sec > 0 and (now - last_cookie_sync) >= _sync_sec:
                             last_cookie_sync = now
                             try:
                                 if self._loop:
@@ -1438,6 +1607,64 @@ async def exec_js(body: ExecJsBody) -> dict:
         return {"ok": False, "msg": str(e), "result": None}
 
 
+class LinkmicRunBody(BaseModel):
+    """连麦链路执行（2026-09-10 新增）。
+
+    action:
+      goto    —— 导航到直播间页（room_url 必填），并在页面稳定后返回
+      apply   —— 在直播间页执行申请连麦 DOM 流程（js 由 backend api/linkmic.py 提供）
+      status  —— 查询连麦状态（waiting_list + list/v2）
+      mute    —— 闭麦（track.enabled=false，0 输入）
+      leave   —— 退出连麦
+
+    风控边界：与 /exec_js 一致，本接口只执行调用方传入的页面 JS；
+    连麦申请/闭麦是用户主动单次操作（对应真人点按钮），非批量行为。
+    """
+
+    action: str
+    js: str = ""
+    room_url: str = ""
+    timeout: int = 120
+
+
+@app.post("/linkmic_run")
+async def linkmic_run(body: LinkmicRunBody) -> dict:
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "result": None}
+
+    async def _do():
+        page = c._page
+        # goto：先导航（exec_js 硬限制 /chat，连麦必须驻留直播间页 —— 知识库 05 §5.5）
+        if body.action == "goto":
+            await page.goto(body.room_url, wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(20000)
+            return {"url": page.url, "title": await page.title()}
+        # 其他 action：若当前不在直播间页，先导航
+        if "live.douyin.com" not in (page.url or ""):
+            await page.goto(body.room_url or "https://live.douyin.com/",
+                            wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(15000)
+        if body.action in ("apply", "mute", "leave"):
+            if not body.js:
+                return {"ok": False, "error": f"action={body.action} 缺 js"}
+            page.set_default_timeout(body.timeout * 1000)
+            return await page.evaluate(body.js)
+        if body.action == "status":
+            page.set_default_timeout(30_000)
+            return await page.evaluate(body.js)
+        return {"ok": False, "error": f"未知 action: {body.action}"}
+
+    try:
+        async with c._lock:
+            await c._ensure_alive()
+            res = await _do()
+        return {"ok": True, "msg": "", "result": res}
+    except Exception as e:
+        logger.warning("BCC-040", f"[bcc] /linkmic_run action={body.action} 失败: {e}")
+        return {"ok": False, "msg": str(e), "result": None}
+
+
 @app.post("/wp_messages")
 async def wp_messages() -> dict:
     """拉取 BCC 被动 hook 截到的 WP 通道私信事件（读后清空）。
@@ -1505,6 +1732,38 @@ async def refresh(force: bool = False) -> dict:
     if not c:
         return {"ok": False, "msg": "容器未启动"}
     return await c.scan_login(force=force)
+
+
+@app.post("/show")
+async def show(req: Request, visible: bool = True, url: str = "") -> dict:
+    """切换容器可见性（默认切到有头可见）。
+
+    供前端「查看登录态」按钮使用：把常驻 BCC 容器**就地切为有头可见**，
+    而不是另起一个浏览器抢同一 profile。用户看到的窗口就是 BCC 自己，
+    保活/凭证回写链路不中断。
+
+    visible=false 恢复纯无头（省资源、防风控暴露）。
+    url 可选：切换后导航到指定页面（默认保持当前页）。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动（请先拉起 BCC）"}
+    # 2026-09-12 修复：FastAPI 把 visible 当 **query 参数**（非 body），
+    # 前端用 JSON body 传参时会被静默忽略 → 永远按默认 True 执行，
+    # 「切回无头」失效（实测：POST body {"visible": false} 返回 headless=false）。
+    # 这里显式读 body 覆盖（body 优先，兼容 query 调用）。
+    try:
+        raw = await req.body()
+        if raw:
+            _b = json.loads(raw.decode("utf-8", "replace"))
+            if isinstance(_b, dict):
+                if "visible" in _b:
+                    visible = bool(_b["visible"])
+                if _b.get("url"):
+                    url = str(_b["url"])
+    except Exception:
+        pass
+    return await c.set_visible(bool(visible), url or "")
 
 
 @app.post("/quit")

@@ -200,7 +200,7 @@ export default function CrawlPage(props: PageProps) {
             关键词搜视频 → 采集评论区 → 评论用户一键私信截流
           </div>
         </div>
-        <span className="demo-tag">{ready ? "后端已连接" : "后端未连接"}</span>
+        {/* 2026-09-10：页头连接状态删除，统一在顶栏会员徽章右侧显示 */}
       </div>
 
       {/* 账号 + 搜索面板 */}

@@ -1,4 +1,26 @@
-# DYAutoDM v2 重构项目分析
+# DYAutoDM v2 重构项目分析（历史快照）
+
+> ## ⚠️ 本文是重构早期（0.3x 阶段）的分析快照，非当前状态
+>
+> 文中大量数字与结论**已被后续开发取代**，请勿据此判断现状。主要过时点：
+>
+> | 文中所述 | 当前实际（0.41.1） |
+> |---|---|
+> | 前端「7 页面」 | **11 个页面 / 8,490 行** + 14 组件 |
+> | 后端「~30+ .py」 | **114 个 `.py` / 34,961 行** |
+> | 「7 个路由模块」 | **16 个路由模块 / 157 端点** |
+> | Tauri「6 个命令」「窗口 1440×900」 | **9 个命令**，窗口 **1280×720** |
+> | 样式「410 行 global.css」 | `global.css` **884 行** + `theme-glass.css` **1,110 行** |
+> | §11「后端 stub 未持久化」 | **已全部落地**（账号/任务/配置均持久化） |
+> | §11「WebSocket 未实现」 | 端点已注册但**仍未接线**（`api/live.py` 3 处 TODO），前端仍 5s 轮询 |
+> | §11「设置保存 422」 | 已修复 |
+> | 「SPA 无 URL 路由」 | 仍无 URL 路由（tab 用 `localStorage` 持久化，属既有设计） |
+> | 仅「4 份文档」 | 现有多份，权威文档为 [`架构与业务逻辑全解.md`](架构与业务逻辑全解.md) |
+>
+> **当前状态请以** [`架构与业务逻辑全解.md`](架构与业务逻辑全解.md)、[`项目说明.md`](../项目说明.md) **为准。**
+> 本文保留价值：记录重构动机、V1 缺陷清单与「重构→验收」对照，供追溯。
+
+---
 
 > 基于 DY_Spider_base 重构，架构：Tauri 2 + FastAPI + PyInstaller Sidecar + React/TypeScript
 
@@ -569,10 +591,16 @@ env_logger@0.11.0 (日志)
 
 ---
 
-## 十一、当前限制
+## 十一、当时记录的「当前限制」（**均已过时，见下方逐条更新**）
 
-1. **后端 stub**：`POST /api/accounts`、`POST /api/tasks/config`、`POST /api/tasks/dm-pool` 等写入端点仅返回 `{"ok": true}` 未持久化，需对接 `AutoDM` / `DispatchCenter` 实际逻辑
-2. **设置保存**：`POST /api/settings` 之前返回 422（已修复，需重新打包）
-3. **前端路由**：SPA 无 URL 路由，直接访问 `/live` 等路径不工作（需从首页点击 tab）
-4. **WebSocket**：规划中未实现，live 页仍用 3s 轮询替代实时推送
+> 以下为重构早期快照，**不可作为现状依据**：
+
+1. ~~**后端 stub**：`POST /api/accounts`、`POST /api/tasks/config`、`POST /api/tasks/dm-pool` 等写入端点仅返回 `{"ok": true}` 未持久化~~
+   → **已落地**：`add_account` 写 `.env` + `_save_index()`；`POST /api/tasks/config` 落 SQLite `kv_store` 并双写配置中心；`/api/settings` 走 `services/app_config`（`kv_store["app_config"]`）。
+2. ~~**设置保存**：`POST /api/settings` 之前返回 422~~
+   → **已修复**，且已由空壳实现重写为统一配置中心（5 分区 / 45 字段 + apply 三分类）。
+3. **前端路由**：SPA 无 URL 路由，直接访问 `/live` 等路径不工作
+   → **仍如此**（属既有设计，tab 选择用 `localStorage` 持久化）。
+4. ~~**WebSocket**：规划中未实现，live 页仍用 **3s** 轮询~~
+   → **一半仍成立**：`WS /api/live/ws` 端点已注册但**尚未接线**（`backend/api/live.py` 3 处 `TODO`）；前端 `live.tsx` 仍为 **5s** 轮询（文中「3s」亦不准）。
 5. **E2E 测试**：后端 stub 填充后才能完成完整 E2E 链路

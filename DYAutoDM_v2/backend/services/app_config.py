@@ -68,9 +68,24 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "bcc_headless_mode": {
                 "label": "BCC 无头模式",
                 "type": "select", "default": "native", "env": "DY_BCC_HEADLESS_MODE",
-                "options": ["native", "disguise"],
+                "options": ["native"],
                 "apply": "restart_backend",
-                "hint": "native=纯无头（默认，实测可用）；disguise=真有头+窗口移屏外",
+                "hint": "仅 native（纯无头）；disguise（移屏外）已于 2026-09-09 废弃移除",
+            },
+            "cred_refresh_mode": {
+                "label": "凭证更新方式",
+                "type": "select", "default": "observe", "env": "DY_CRED_REFRESH_MODE",
+                "options": [
+                    {"value": "observe", "label": "观测态静默更新（推荐）"},
+                    {"value": "popup", "label": "弹窗激活更新（需人工点一下）"},
+                    {"value": "both", "label": "两者兼容（观测优先，失效再弹窗）"},
+                ],
+                "apply": "restart_daemon",
+                "hint": ("observe=观测态静默更新（保活心跳读实时 cookie 写回 .env，"
+                         "不弹窗、零打扰，推荐）；popup=仅弹窗激活更新"
+                         "（发现登录态待激活时弹指纹浏览器请用户点一下，"
+                         "适合习惯人工确认的账号）；both=先观测态、"
+                         "观察到登录态失效再弹窗"),
             },
             "auto_capture_on_start": {
                 "label": "启动时自动捕获会话",

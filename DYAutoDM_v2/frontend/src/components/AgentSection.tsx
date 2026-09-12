@@ -23,6 +23,14 @@ const LEVELS = [
   { value: "free", label: "free（纯 prompt 约束）" },
 ];
 
+/** Agent 作用域（私信 Agent）：AI 智能回复注入哪些模块 */
+const AGENT_SCOPES = ["dm", "live", "crawl"] as const;
+const SCOPE_LABELS: Record<string, string> = {
+  dm: "私信中心",
+  live: "直播监听",
+  crawl: "视频采集",
+};
+
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -32,7 +40,7 @@ export default function AgentSection(props: PageProps) {
   const qc = useQueryClient();
 
   const [selId, setSelId] = useState<string>("");
-  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState<Record<string, string | string[]>>({});
 
   const q = useQuery({
     queryKey: ["ai-agents"],
@@ -72,7 +80,8 @@ export default function AgentSection(props: PageProps) {
       strict_level: sel.strict_level || "rag",
       model: sel.model || "",
       enabled: String(!!sel.enabled),
-    });
+      scopes: sel.scopes || ["dm"],
+    } as Record<string, string | string[]>);
   }, [sel?.id]);
 
   const saveMut = useMutation({
@@ -115,10 +124,11 @@ export default function AgentSection(props: PageProps) {
       strict_level: draft.strict_level || "rag",
       model: draft.model || "",
       enabled: draft.enabled === "true",
+      scopes: Array.isArray(draft.scopes) ? draft.scopes : (["dm"] as string[]),
     };
     saveMut.mutate({
       id: selId || undefined,
-      name: draft.name || "未命名 Agent",
+      name: (typeof draft.name === "string" ? draft.name : "") || "未命名 Agent",
       config: cfg,
     });
   }, [draft, selId, saveMut]);
@@ -254,6 +264,42 @@ export default function AgentSection(props: PageProps) {
               </select>
             </Field>
           </div>
+          {/* 作用域：该 Agent 的 AI 智能回复注入哪些模块 */}
+          <Field label="作用域（AI 智能回复应用到哪些模块）">
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12.5 }}>
+              {(Array.isArray(draft.scopes) ? draft.scopes : ["dm"]).map((s: string) => (
+                <label key={s} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={true}
+                    onChange={() =>
+                      setDraft({
+                        ...draft,
+                        scopes: (Array.isArray(draft.scopes) ? draft.scopes : []).filter(
+                          (x: string) => x !== s,
+                        ),
+                      })
+                    }
+                  />
+                  {SCOPE_LABELS[s] || s}
+                </label>
+              ))}
+              {AGENT_SCOPES.filter(
+                (s) => !(Array.isArray(draft.scopes) ? draft.scopes : ["dm"]).includes(s),
+              ).map((s: string) => (
+                <label key={s} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={false}
+                    onChange={() =>
+                      setDraft({ ...draft, scopes: [...(draft.scopes || []), s] })
+                    }
+                  />
+                  {SCOPE_LABELS[s]}
+                </label>
+              ))}
+            </div>
+          </Field>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
             <button
               className="btn accent sm"
@@ -300,22 +346,56 @@ export default function AgentSection(props: PageProps) {
                 }
                 style={{ ...inputStyle, flex: 1 }}
               >
-                <option value="">（未绑定 · 使用全局配置）</option>
+                <option value="">（未绑定 · 不参与 AI 智能回复）</option>
                 {agents.map((a: AiAgentSummary) => (
                   <option key={a.id} value={a.id}>
                     {a.name}
                   </option>
                 ))}
               </select>
-              <span
-                style={{
-                  flex: "0 0 auto",
-                  fontSize: 11,
-                  color: boundName ? "var(--accent)" : "var(--muted)",
-                }}
-              >
-                {boundName || "全局"}
-              </span>
+              {/* 作用域显示：绑定后该账号 AI 智能回复的实际生效状态 */}
+              {bound ? (
+                (() => {
+                  const ag = agents.find((a: AiAgentSummary) => a.id === bound);
+                  const effOn = !!ag?.enabled;
+                  return (
+                    <span
+                      style={{
+                        flex: "0 0 auto",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "flex-end",
+                        gap: 2,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: effOn ? "var(--accent)" : "var(--muted)",
+                        }}
+                      >
+                        {boundName || "全局"}
+                        {effOn ? " · AI回复开启" : " · AI回复关闭"}
+                      </span>
+                      <span style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                        {ag?.strict_level || "rag"} · {ag?.model || "auto"} ·
+                        知识库{ag?.kb_count ?? 0}条
+                      </span>
+                    </span>
+                  );
+                })()
+              ) : (
+                <span
+                  style={{
+                    flex: "0 0 auto",
+                    fontSize: 11,
+                    color: "var(--muted)",
+                  }}
+                >
+                  不在 AI 作用域
+                </span>
+              )}
             </div>
           );
         })}
@@ -383,7 +463,7 @@ function GlobalModelCard(props: PageProps) {
   });
   const cfg = (q.data?.config || {}) as Record<string, unknown>;
 
-  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState<Record<string, string | string[]>>({});
   const cur = (k: string) =>
     draft[k] !== undefined ? draft[k] : String(cfg[k] ?? "");
   const set = (k: string, v: string) => setDraft({ ...draft, [k]: v });

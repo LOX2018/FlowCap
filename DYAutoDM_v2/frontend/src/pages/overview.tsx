@@ -13,7 +13,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageProps, Overview } from "../api/client";
-import { Avatar, Pill, Dot, KIND_NAME } from "../components/ui";
+import { Avatar, Pill, KIND_NAME } from "../components/ui";
 
 /** 后端 overview 实际带 liveUrl/status 字段（client.ts 精简类型未覆盖），本地扩展 */
 type OverviewExt = Overview & { liveUrl?: string; status?: string };
@@ -259,27 +259,6 @@ export default function OverviewPage(props: PageProps) {
               多账户总览
             </button>
           </div>
-          <span className="badge-conn">
-            <Dot
-              c={!ready ? "mute" : ov.running ? (ov.paused ? "warn" : "ok") : "danger"}
-              pulse={!!ready && !!ov.running && !ov.paused}
-            />{" "}
-            {ready
-              ? ov.running
-                ? ov.paused
-                  ? "已暂停"
-                  : "引擎运行中"
-                : "引擎已停止"
-              : "未连接"}
-          </span>
-          {ready && (
-            <span className="badge-conn">
-              <b>
-                已发 {ov.sent}/{ov.limit}
-                {ov.queue ? " · 待发 " + ov.queue : ""}
-              </b>
-            </span>
-          )}
         </div>
       </div>
 
@@ -319,11 +298,7 @@ export default function OverviewPage(props: PageProps) {
                 className="head-row"
                 style={{ marginTop: 10, fontSize: 12, color: "var(--muted)" }}
               >
-                <span>UID: {curAcct.uid || "—"}</span>
-                <span>登录: {curAcct.loggedIn ? "是" : "否"}</span>
-                <span>签名: {curAcct.signReady ? "就绪" : "未就绪"}</span>
-                <span>监测: {curAcct.isMonitor ? "是" : "否"}</span>
-                <span>发送: {curAcct.isSender ? "是" : "否"}</span>
+                {/* 2026-09-10：UID/登录/签名/监测/发送 明细行删除（账号明细在账号管理页看） */}
               </div>
             )}
           </div>

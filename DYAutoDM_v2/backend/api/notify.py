@@ -258,7 +258,7 @@ def _resolve_llm(cfg: dict) -> dict:
     try:
         from services import model_hub as hub
 
-        r = hub.resolve("notify_cmd")
+        r = hub.resolve("notify_cmd")  # 链首模型（llm 链/固定绑定）
         if r and r.get("base_url") and r.get("model"):
             return {"base_url": r["base_url"], "model": r["model"],
                     "api_key": r["api_key"] or ""}

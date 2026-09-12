@@ -84,7 +84,7 @@ def _new_id() -> str:
 
 
 def list_agents() -> list[dict]:
-    """返回全部 Agent（不含 config 全量字段，列表页用）。"""
+    """返回全部 Agent（不含 config 全量字段，列表页用）。kind 可选过滤。"""
     data = _kv_get(_KV_AGENTS, {}) or {}
     out = []
     for aid, a in data.items():
@@ -92,6 +92,9 @@ def list_agents() -> list[dict]:
         out.append({
             "id": aid,
             "name": a.get("name") or aid,
+            "kind": a.get("kind") or "dm",
+            "scopes": cfg.get("scopes") or ["dm"],
+            "permissions": cfg.get("permissions") or {},
             "model": cfg.get("model", ""),
             "strict_level": cfg.get("strict_level", ""),
             "merchant_name": cfg.get("merchant_name", ""),
@@ -102,6 +105,78 @@ def list_agents() -> list[dict]:
     return sorted(out, key=lambda x: x.get("updated_at") or 0, reverse=True)
 
 
+# Agent 作用域（私信 Agent 用）：AI 智能回复注入哪些模块
+AGENT_SCOPES = ("dm", "live", "crawl")
+SCOPE_LABELS = {
+    "dm": "私信中心",
+    "live": "直播监听",
+    "crawl": "视频采集",
+}
+
+
+def ensure_default_dispatch_agent() -> dict:
+    """预置默认调度 Agent（IM Bot 指令解析用）。幂等：存在即返回。
+
+    调度 Agent 只有一个（固定 id），管理 IM Bot 能对项目做什么：
+    permissions 控制各能力的开/关（高危项默认关）。
+    """
+    with _lock:
+        data = _kv_get(_KV_AGENTS, {}) or {}
+        if _DISPATCH_ID in data:
+            return _KV_AGENTS, data[_DISPATCH_ID]  # 已存在
+        data[_DISPATCH_ID] = {
+            "name": "调度 Agent（IM Bot 默认）",
+            "kind": "dispatch",
+            "config": {
+                "enabled": True,
+                "kind": "dispatch",
+                "scopes": [],  # 调度 Agent 不适用模块作用域
+                # 指令解析 prompt（cmd_parser 用；空=用内置默认）
+                "system_prompt": "",
+                # 能力权限（IM Bot 能对项目做什么；用户拍板方案）
+                "permissions": {
+                    "query_status": True,       # 查询任务进度与收获
+                    "create_crawl_task": True,  # 创建视频采集任务（需确认）
+                    "create_live_task": True,   # 创建/启动直播监听任务（需确认）
+                    "stop_task": True,          # 停止任务
+                    "update_kb": True,          # 更新 Agent 知识库（需确认）
+                    "create_agent": False,      # 新建私信 Agent（高危，默认关）
+                    "recapture": False,         # 凭证重捕获（高危，默认关）
+                    # 管理提供商不开放（纯通知即可，用户拍板）
+                },
+            },
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        _kv_set(_KV_AGENTS, data)
+        return _KV_AGENTS, data[_DISPATCH_ID]
+
+
+_DISPATCH_ID = "ag_dispatch_default"
+
+
+def get_dispatch_agent() -> Optional[dict]:
+    """取默认调度 Agent（不存在则自动预置）。"""
+    ensure_default_dispatch_agent()
+    return get_agent(_DISPATCH_ID)
+
+
+def save_dispatch_agent(cfg_update: dict) -> dict:
+    """更新默认调度 Agent（只允许改 system_prompt/permissions/enabled）。"""
+    ensure_default_dispatch_agent()
+    with _lock:
+        data = _kv_get(_KV_AGENTS, {}) or {}
+        a = data[_DISPATCH_ID]
+        cfg = a.get("config") or {}
+        for k in ("system_prompt", "permissions", "enabled"):
+            if k in cfg_update:
+                cfg[k] = cfg_update[k]
+        a["config"] = cfg
+        a["updated_at"] = time.time()
+        _kv_set(_KV_AGENTS, data)
+        return get_agent(_DISPATCH_ID)
+
+
 def get_agent(agent_id: str) -> Optional[dict]:
     data = _kv_get(_KV_AGENTS, {}) or {}
     a = data.get(agent_id)
@@ -109,6 +184,7 @@ def get_agent(agent_id: str) -> Optional[dict]:
         return None
     return {"id": agent_id,
             "name": a.get("name") or agent_id,
+            "kind": a.get("kind") or "dm",
             "config": a.get("config") or {},
             "updated_at": a.get("updated_at", 0)}
 

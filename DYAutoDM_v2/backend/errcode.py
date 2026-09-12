@@ -32,6 +32,7 @@ DOMAIN_INFO = {
     "MEM": ["会员体系", "会员 DB 初始化 / 登录迁移", "初始化失败不阻塞登录属预期降级"],
     "MSG": ["私信读取", "纯读库接口异常 / 守护未运行", "私信页纯读 SQLite，绝不触发网络捕获（铁律）"],
     "NTY": ["IM通知指令", "通知通道 / 指令解析", "启动失败不影响主流程属预期"],
+    "HUB": ["模型中心", "提供商密钥 / 模型拉取 / 链路解析", "测密钥/拉模型走提供商上的按钮；链路空=回落旧配置"],
     "RECV": ["接收守护", "WS 断连(无 ping 30s 被掐) / msg 解析 / 方向判定", "每 30s Connection lost=ping_interval 缺失；KICK 时 protobuf 解析失败实为 JSON 风控响应"],
     "SEND": ["发送链路", "统一闸门限速 / 通道回退 / KICK 风控", "rate_limited=8s 闸门属预期；KICK=账号信誉；必须 DB 落库 role=me 才算成功"],
     "SYS": ["系统与启动", "daemon 拉起 / 路由挂载 / 配置", "BCC frozen exe 必须带 DY_APP_ROOT；并行拉起 ~15s"],
@@ -345,6 +346,14 @@ ERRCODES = {
     "TSK-002": {"meaning": "tasks] 读取任务容器失败:", "file": "api/tasks.py", "line": 65},
     "TSK-003": {"meaning": "tasks] 配置落盘失败（不影响本次保存）:", "file": "api/tasks.py", "line": 173},
     "TSK-004": {"meaning": "tasks] 导出失败:", "file": "api/tasks.py", "line": 256},
+    "HUB-001": {"meaning": "model_hub] kv 读取失败:", "file": "services/model_hub.py", "line": 0},
+    "HUB-002": {"meaning": "model_hub] kv 写入失败:", "file": "services/model_hub.py", "line": 0},
+    "HUB-003": {"meaning": "model_hub] v1 配置迁移失败（不影响运行）:", "file": "services/model_hub.py", "line": 0},
+    "AI-030": {"meaning": "ai] model_hub 链路解析失败（用旧配置兜底）:", "file": "services/ai_reply.py", "line": 0},
+    "AI-031": {"meaning": "ai] 链路候选失败，切下一个:", "file": "services/ai_reply.py", "line": 0},
+    "AI-032": {"meaning": "ai] 视觉候选失败，切下一个:", "file": "services/ai_reply.py", "line": 0},
+    "AI-033": {"meaning": "ai] 语义候选失败，切下一个:", "file": "services/ai_reply.py", "line": 0},
+    "AI-034": {"meaning": "ai] 语义缓存模型不一致，本次跳过语义级:", "file": "services/ai_reply.py", "line": 0},
 }
 
 SPECIAL = {}  # 特码覆盖: code -> (常见原因, 建议处置)；未覆盖回退域默认

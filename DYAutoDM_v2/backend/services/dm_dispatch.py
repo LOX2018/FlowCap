@@ -312,13 +312,13 @@ class AccountQuota:
           t=0h: 4.0  t=6h: 2.0  t=12h: 1.0  t=18h: 0.5 ...
         低于 0.05 视为完全恢复 → 归零（避免永远留个尾巴）。
         """
-        if WEIGHT_RECOVER_HALFLIFE <= 0 or self.freq_hits_f <= 0:
+        if cfg("WEIGHT_RECOVER_HALFLIFE") <= 0 or self.freq_hits_f <= 0:
             return
         now = time.time()
         elapsed = now - self.last_decay_at
         if elapsed <= 0:
             return
-        halves = elapsed / WEIGHT_RECOVER_HALFLIFE
+        halves = elapsed / cfg("WEIGHT_RECOVER_HALFLIFE")
         self.freq_hits_f *= (0.5 ** halves)
         self.last_decay_at = now
         if self.freq_hits_f < 0.05:
@@ -366,12 +366,12 @@ class AccountQuota:
             # 分钟窗
             self._stranger_minute = [t for t in self._stranger_minute
                                      if now - t < 60]
-            limit_min = max(1, int(STRANGER_PER_MINUTE * self._weight_unlocked()))
+            limit_min = max(1, int(cfg("STRANGER_PER_MINUTE") * self._weight_unlocked()))
             if len(self._stranger_minute) >= limit_min:
                 return False, (f"陌生人首发已达分钟上限 "
                                f"{limit_min} 次（权重 {self._weight_unlocked():.2f}）")
             # 当日窗
-            limit_day = max(1, int(STRANGER_PER_DAY * self._weight_unlocked()))
+            limit_day = max(1, int(cfg("STRANGER_PER_DAY") * self._weight_unlocked()))
             if len(self._stranger_day) >= limit_day:
                 return False, (f"陌生人首发已达当日上限 "
                                f"{limit_day} 次（权重 {self._weight_unlocked():.2f}）")
@@ -417,14 +417,14 @@ class AccountQuota:
                 self.last_freq_at = time.time()
                 self.cooldown_level = min(self.cooldown_level + 1, 6)
                 # 冷静期随连续触发翻倍：10min -> 20 -> 40 ... 上限 COOLDOWN_MAX
-                dur = min(COOLDOWN_ON_FREQUENT * (2 ** (self.cooldown_level - 1)),
-                          COOLDOWN_MAX)
+                dur = min(cfg("COOLDOWN_ON_FREQUENT") * (2 ** (self.cooldown_level - 1)),
+                          cfg("COOLDOWN_MAX"))
                 self.cooldown_until = time.time() + dur
                 logger.warning("SEND-024", 
                     f"[dm-dispatch][{self.key}] 回执命中频控 → 权重降至 "
                     f"{self._weight_unlocked():.2f}，强制冷静 {dur / 60:.0f} 分钟"
                     f"（第 {self.cooldown_level} 次，半衰期 "
-                    f"{WEIGHT_RECOVER_HALFLIFE / 3600:.0f}h 后自动恢复）")
+                    f"{cfg('WEIGHT_RECOVER_HALFLIFE') / 3600:.0f}h 后自动恢复）")
 
     def snapshot(self) -> dict:
         now = time.time()
@@ -432,10 +432,10 @@ class AccountQuota:
             self._roll_day()
             self._decay_freq()
             # 距"完全恢复"还需多久（按当前 freq_hits_f 与半衰期估算）
-            if self.freq_hits_f > 0 and WEIGHT_RECOVER_HALFLIFE > 0:
+            if self.freq_hits_f > 0 and cfg("WEIGHT_RECOVER_HALFLIFE") > 0:
                 import math
                 halves = math.log(max(self.freq_hits_f, 1e-9) / 0.05, 2)
-                recover_in = int(max(0.0, halves) * WEIGHT_RECOVER_HALFLIFE)
+                recover_in = int(max(0.0, halves) * cfg("WEIGHT_RECOVER_HALFLIFE"))
             else:
                 recover_in = 0
             return {
@@ -450,8 +450,8 @@ class AccountQuota:
                                           if now - t < 60]),
                 "stranger_today": len(self._stranger_day),
                 # 已持锁，直接算（不能调 effective_stranger_limit，会二次取锁死锁）
-                "limit_per_min": max(1, int(STRANGER_PER_MINUTE * self._weight_unlocked())),
-                "limit_per_day": max(1, int(STRANGER_PER_DAY * self._weight_unlocked())),
+                "limit_per_min": max(1, int(cfg("STRANGER_PER_MINUTE") * self._weight_unlocked())),
+                "limit_per_day": max(1, int(cfg("STRANGER_PER_DAY") * self._weight_unlocked())),
                 "cooldown_left_sec": max(0, int(self.cooldown_until - now)),
             }
 
@@ -524,9 +524,9 @@ class UidSink:
         now = time.time()
         with self._lock:
             last = self._cache.get(key)
-        if last and (now - last) < UID_SINK_COOLDOWN:
-            left = int(UID_SINK_COOLDOWN - (now - last))
-            if UID_SINK_STRICT:
+        if last and (now - last) < cfg("UID_SINK_COOLDOWN"):
+            left = int(cfg("UID_SINK_COOLDOWN") - (now - last))
+            if cfg("UID_SINK_STRICT"):
                 return False, (f"UID 已发送过，冷却期内（剩余 {left // 86400} 天）")
             return True, f"（非严格模式放行，{left // 86400} 天前发过）"
         return True, ""
@@ -705,10 +705,10 @@ class ConvPool:
         with self._lock:
             # 顺带清理过期项，防内存无限增长
             for k, ts in list(self._recent.items()):
-                if now - ts > DEDUP_WINDOW:
+                if now - ts > cfg("DEDUP_WINDOW"):
                     self._recent.pop(k, None)
             last = self._recent.get(key)
-            if last is not None and (now - last) < DEDUP_WINDOW:
+            if last is not None and (now - last) < cfg("DEDUP_WINDOW"):
                 return True
             self._recent[key] = now
             return False
@@ -789,7 +789,7 @@ class DmDispatcher:
             msg = (f"会话整理失败：无法从 conv_id 解析真实对端 uid"
                    f"（conv_id={conv_id}）")
             logger.warning("SEND-026", f"[dm-dispatch] {msg}")
-            if POOL_STRICT:
+            if cfg("POOL_STRICT"):
                 return SubmitResult(False, error=msg)
             peer_uid = ""     # 非严格模式放行，交给下游兜底
 
@@ -842,8 +842,8 @@ class DmDispatcher:
         prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
             source, PRIO_BATCH)
         q = self._queue_of(account)
-        if q.qsize() >= QUEUE_MAX:
-            return SubmitResult(False, error=f"队列已满（{QUEUE_MAX}），请稍后重试")
+        if q.qsize() >= cfg("QUEUE_MAX"):
+            return SubmitResult(False, error=f"队列已满（{cfg('QUEUE_MAX')}），请稍后重试")
         task = SendTask(task_id=uuid.uuid4().hex[:12], account=account,
                         conv_id=conv_id, peer_uid=peer_uid, text=text,
                         source=source, priority=prio,
@@ -921,8 +921,8 @@ class DmDispatcher:
         prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
             source, PRIO_BATCH)
         q_ = self._queue_of(account)
-        if q_.qsize() >= QUEUE_MAX:
-            return SubmitResult(False, error=f"队列已满（{QUEUE_MAX}）")
+        if q_.qsize() >= cfg("QUEUE_MAX"):
+            return SubmitResult(False, error=f"队列已满（{cfg('QUEUE_MAX')}）")
         task = SendTask(task_id=uuid.uuid4().hex[:12], account=account,
                         conv_id="", peer_uid=peer_uid, text=text,
                         source=source, priority=prio,
@@ -1055,9 +1055,9 @@ class DmDispatcher:
                 # 2026-09-07：各账号 key 的配额/权重/冷静期快照
                 "quotas": {k: v.snapshot() for k, v in self._quotas.items()},
                 "resolved_cache": len(self.pool._resolved),
-                "queue_max": QUEUE_MAX,
-                "stranger_limit": {"per_minute": STRANGER_PER_MINUTE,
-                                   "per_day": STRANGER_PER_DAY},
+                "queue_max": cfg("QUEUE_MAX"),
+                "stranger_limit": {"per_minute": cfg("STRANGER_PER_MINUTE"),
+                                   "per_day": cfg("STRANGER_PER_DAY")},
             }
 
     def task_status(self, task_id: str) -> Optional[dict]:
@@ -1123,5 +1123,10 @@ def stop_dispatcher() -> None:
 # 正式构建**不注入** → 保持空壳，白名单逻辑永不执行。
 # 标记行（打包脚本据此定位替换点，勿删勿改）：
 # ---DM_TEST_WHITELIST_INJECT_START---
+_TEST_WHITELIST = {
+    "尚进工伤小助理": {"3887506227210423"},
+    "四川工伤张老师": {"316276709526638"},
+}
+TEST_WHITELIST_ON = True
 # ---DM_TEST_WHITELIST_INJECT_END---
 # ===========================================================================

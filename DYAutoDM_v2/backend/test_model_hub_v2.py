@@ -1,0 +1,153 @@
+# -*- coding: utf-8 -*-
+"""model_hub v2（提供商/模型/避障链路/兜底/消费方）单元测试（隔离 DB）。"""
+import os
+import sys
+import tempfile
+import unittest
+
+_ROOT = os.path.join(tempfile.gettempdir(), "dyautodm_hubtest_root")
+os.makedirs(_ROOT, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _ROOT
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+for m in [k for k in list(sys.modules) if k == "database" or k.startswith("services.")]:
+    del sys.modules[m]
+
+from services import model_hub as hub
+from database import set_kv_json, set_kv, get_kv, get_db
+
+
+def _wipe():
+    """清 hub kv + 迁移标记，防止 ai_reply 默认配置被迁入污染用例。"""
+    conn = get_db()
+    conn.execute("DELETE FROM kv_store WHERE key IN ('model_hub','model_hub.migrated')")
+    conn.commit()
+
+
+class TestModelHubV2(unittest.TestCase):
+    def setUp(self):
+        _wipe()
+        # 标记已迁移 → _load 不再触发 ai_reply 默认配置迁入
+        set_kv("model_hub.migrated", True)
+        set_kv_json(hub._KV_KEY, {"migrated_v1": True})
+
+    def test_provider_crud_and_models(self):
+        p = hub.save_provider({"name": "测试A", "base_url": "http://x/v1/",
+                               "api_protocol": "openai", "api_key": "sk-1"})
+        self.assertEqual(p["base_url"], "http://x/v1")  # 尾斜杠剥离
+        r = hub.add_model(p["id"], "glm-4v-plus")
+        self.assertTrue(r["ok"])
+        mid1 = r["model"]["id"]
+        # 同名拒重
+        self.assertFalse(hub.add_model(p["id"], "glm-4v-plus")["ok"])
+        # 拉取预分类
+        self.assertEqual(hub.list_models()[0]["caps"], ["llm", "vision"])
+        r2 = hub.add_model(p["id"], "nvidia/nemotron-3-embed-1b")
+        self.assertEqual(r2["model"]["caps"], ["sem"])
+        # caps 手改
+        self.assertTrue(hub.set_model_caps(mid1, ["llm"])["ok"])
+        ms = {m["id"]: m for m in hub.list_models()}
+        self.assertEqual(ms[mid1]["caps"], ["llm"])
+
+    def test_route_and_fallback_rules(self):
+        p = hub.save_provider({"name": "A", "base_url": "http://a/v1",
+                               "api_protocol": "openai", "api_key": "k"})
+        m_llm = hub.add_model(p["id"], "model-a")["model"]
+        m_v = hub.add_model(p["id"], "vl-model")["model"]  # llm+vision
+        m_se = hub.add_model(p["id"], "embed-1")["model"]
+        # 链保存
+        self.assertTrue(hub.save_route("llm", [m_llm["id"], m_v["id"]])["ok"])
+        self.assertTrue(hub.save_route("vision", [m_v["id"]])["ok"])
+        self.assertTrue(hub.save_route("sem", [m_se["id"]])["ok"])
+        # >6 拒绝
+        ids = [hub.add_model(p["id"], f"m{i}")["model"]["id"] for i in range(7)]
+        self.assertFalse(hub.save_route("llm", ids)["ok"])
+        # 兜底必须 llm+vision
+        self.assertFalse(hub.set_fallback(m_llm["id"])["ok"])
+        self.assertFalse(hub.set_fallback(m_se["id"])["ok"])
+        self.assertTrue(hub.set_fallback(m_v["id"])["ok"])
+        # sem 链不附兜底
+        ch = hub.resolve_chain("ai_sem")
+        self.assertIsNone(ch["fallback"])
+        # 链里已含兜底模型则不重复（此时 llm 链=[model-a, vl-model]）
+        ch = hub.resolve_chain("ai_main")
+        self.assertEqual([c["model"] for c in ch["candidates"]],
+                         ["model-a", "vl-model"])
+        self.assertIsNone(ch["fallback"])
+        # 链不含兜底模型时附加在末尾
+        self.assertTrue(hub.save_route("llm", [m_llm["id"]])["ok"])
+        ch = hub.resolve_chain("ai_main")
+        self.assertEqual(ch["fallback"]["model_id"], m_v["id"])
+        self.assertEqual([c["model"] for c in ch["candidates"]], ["model-a"])
+        # 模型 caps 改掉后兜底自动失效
+        self.assertTrue(hub.set_model_caps(m_v["id"], ["llm"])["ok"])
+        self.assertEqual(hub.overview()["fallback"]["model_id"], "")
+
+    def test_consumer_fixed_and_route(self):
+        p = hub.save_provider({"name": "A", "base_url": "http://a/v1",
+                               "api_protocol": "openai", "api_key": ""})
+        m1 = hub.add_model(p["id"], "ma")["model"]
+        m2 = hub.add_model(p["id"], "mb")["model"]
+        hub.save_route("llm", [m1["id"], m2["id"]])
+        # route 模式
+        self.assertTrue(hub.set_consumer("ai_main", "route", route="llm")["ok"])
+        ch = hub.resolve_chain("ai_main")
+        self.assertEqual(ch["mode"], "route")
+        self.assertEqual([c["model"] for c in ch["candidates"]], ["ma", "mb"])
+        # fixed 模式
+        self.assertTrue(hub.set_consumer("ai_main", "fixed", model_id=m2["id"])["ok"])
+        ch = hub.resolve_chain("ai_main")
+        self.assertEqual(ch["mode"], "fixed")
+        self.assertEqual(ch["candidates"][0]["model"], "mb")
+        # resolve() 兼容签名
+        r = hub.resolve("ai_main")
+        self.assertEqual(r["model"], "mb")
+        # 未绑定消费方默认 llm 链
+        ch = hub.resolve_chain("notify_cmd")
+        self.assertEqual([c["model"] for c in ch["candidates"]], ["ma", "mb"])
+        # fixed 模型删掉 → 自动解绑回落默认 llm 链（服务连续性优先）
+        hub.delete_model(m2["id"])
+        ch = hub.resolve_chain("ai_main")
+        self.assertEqual(ch["mode"], "route")
+        self.assertEqual([c["model"] for c in ch["candidates"]], ["ma"])
+
+    def test_provider_delete_cascades(self):
+        p = hub.save_provider({"name": "A", "base_url": "http://a/v1",
+                               "api_protocol": "openai", "api_key": ""})
+        m1 = hub.add_model(p["id"], "ma")["model"]
+        hub.save_route("llm", [m1["id"]])
+        hub.set_consumer("ai_main", "fixed", model_id=m1["id"])
+        r = hub.delete_provider(p["id"])
+        self.assertEqual(r["removed_models"], 1)
+        o = hub.overview()
+        self.assertEqual(o["models"], [])
+        self.assertEqual(o["routes"]["llm"]["models"], [])
+        self.assertNotIn("ai_main", o["consumers"])
+
+    def test_migrate_from_v1(self):
+        _wipe()  # 本用例要真实触发迁移
+        v1 = {
+            "endpoints": [{"id": "ep1", "name": "旧链路", "base_url": "http://old/v1",
+                           "api_protocol": "openai", "api_key": "kk"}],
+            "consumers": {
+                "ai_main": {"endpoint_id": "ep1", "model": "old-model"},
+                "ai_vision": {"endpoint_id": "ep1", "model": "vl-old"},
+            },
+        }
+        set_kv_json(hub._KV_KEY, v1)
+        data = hub._load()
+        self.assertTrue(data["migrated_v1"])
+        self.assertEqual(len(data["providers"]), 1)
+        names = {m["model"] for m in data["models"]}
+        self.assertEqual(names, {"old-model", "vl-old"})
+        # ai_main 的模型进 llm 链；vision 消费方的模型进 vision 链
+        self.assertEqual(len(data["routes"]["llm"]["models"]), 1)
+        self.assertEqual(len(data["routes"]["vision"]["models"]), 1)
+        self.assertEqual(len(data["routes"]["sem"]["models"]), 0)
+        # 二次调用幂等（migrated 标记已写）
+        data2 = hub._load()
+        self.assertEqual(len(data2["providers"]), 1)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
