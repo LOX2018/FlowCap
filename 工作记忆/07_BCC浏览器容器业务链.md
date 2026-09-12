@@ -164,3 +164,46 @@ Playwright 无法运行中切 headless，因此切换 = **重启 context**（约
 - **新引入的模块级常量/可复用常量绝不放 `__init__` 局部**，多方法引用即 NameError。
 - **Chromium 锁文件名随内核变化**：官方用 SingletonLock，ungoogled-chromium 用 lockfile，
   判断 profile 是否被占用要两者都查，不能盲等单一名。
+
+
+## 【2026-09-12 代理根治】前端代理配置真实生效 + 账号未配代理强制直连（IP 隔离）
+
+### 用户需求原话
+> 「代理功能本来就是需要的，因为涉及到访问 IP 隔离的问题，只是我目前需要访问
+> 一些国外的网站，所以节点是国外的，在后续正式投入运行的时候，是需要针对账号
+> 环境设置国内 IP 隔离的」
+
+### 根因（代理配置失效 → 误走系统代理）
+前端账号管理页「代理配置」入口是**占位实现**，配置不生效：
+- onTest 用 `Math.random()` 假随机测连接（accounts.tsx）
+- onSave 只弹 toast「已保存」，不调后端、不写 .env
+- 后端只有 proxy-status 读接口，无保存接口
+→ 账号 .env 的 DY_PROXY 永远为空 → 指纹浏览器默认跟随系统代理
+（satelite 10808 国外节点，ProxyEnable=1）→ 抖音检测到代理特征+出口IP
+与账号不符 → 弹「安全风险阻止访问」（首页+私信都弹）。
+
+### 修复（三层）
+1. **后端 `POST /{name}/proxy` 保存接口**：接收 {type,host,port,user,pass}，
+   组装 DY_PROXY 写 .env.enc（write_env_file 自动加密），direct 清除。
+   socks 不带认证（Chromium 限制），http(s) 带认证并 quote 特殊字符。
+2. **前端真实化**：saveProxy/proxyStatus API + onTest/onSave 改调后端
+   （不再假随机），保存后 invalidateQueries 刷新列表。
+3. **vbrowser 直连保护**：账号未配 DY_PROXY 时**无论系统代理死活都强制
+   --no-proxy-server**（不再跟随系统代理/satelite）；配了代理按账号 IP 隔离。
+   同时移除 _FAKE_MEDIA_ARGS 的 --use-fake-ui-for-media-stream
+   （ungoogled 内核提示不受支持的命令行标记，--deny-permission-prompts 已够）。
+
+### 实测验证（部署二进制）
+- 保存 socks5/http+认证 → .env.enc 正确写入、parse_proxy_env 读回正确、
+  _mask_proxy 脱敏正确；direct/None/'' 清除都返回未配置。
+- 账号未配代理时 BCC 日志出现：
+  `[vbrowser] 账号未配 DY_PROXY，强制 --no-proxy-server 直连（防误走系统代理/satelite…）`
+- 无「不受支持的命令行标记」警告（use-fake-ui 移除生效）。
+- exec_js 正常、chrome 进程正常、直连出口 IP 23.191.200.205。
+
+### 铁律
+- **前端占位实现必须杜绝**：测试/保存要真调后端，禁止 Math.random() 假模拟。
+- **指纹浏览器默认跟随系统代理**（Chromium 行为）→ 账号必须显式配 DY_PROXY
+  或强制 --no-proxy-server，否则代理特征泄露被抖音拦截。
+- **账号代理 = IP 隔离的载体**：国内账号配国内节点，国外访问配国外节点，
+  保存后即时生效，不匹配=环境异常。
