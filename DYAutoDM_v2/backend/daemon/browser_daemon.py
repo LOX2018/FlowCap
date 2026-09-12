@@ -353,6 +353,11 @@ class BrowserContainer:
         self._profile_dir = _acc.profile_dir_of(env_path)
         if not self._profile_dir or not os.path.isdir(self._profile_dir):
             raise RuntimeError(f"[bcc] profile 目录不存在: {self._profile_dir}")
+        # 统一调度（BCC 作为 profile 唯一持有者）：重建 context 前先确保旧进程
+        # 完全退出（SingletonLock 消失），否则新 launch 会 TargetClosed
+        # （close()+stop() 异步，chromium 进程未退净即启动新 context 的竞态）。
+        # 所有 _launch 调用点统一走这里，无需各处手动处理。
+        await self._wait_profile_released()
         _vb, _vb_mode = should_use_vb(_cfg)
         # 常驻浏览器容器默认无头：捕获链路（capture_userinfo_map 被动 hook 截前端自发
         # im/user/info）经实机验证（有头/无头均 44/44）无头完全可行，且零窗口更稳。
@@ -463,12 +468,8 @@ class BrowserContainer:
     async def _do_switch_background(self, target: bool, url: str = "") -> None:
         """后台执行可见性切换的 _launch 部分。失败只告警、不卡死容器。"""
         try:
-            # 切换核心：先确保旧 profile 锁完全释放再启动新 context。
-            # 否则 close()+stop() 是异步的，chromium 进程可能还没退，
-            # 新 launch_persistent_context 立即启动会 TargetClosed
-            # （实测：BCC 切有头时 90% 命中此竞态，TargetClosedError）。
-            # 给旧进程最多 10s 退出时间，避免永久卡死。
-            await self._wait_profile_released()
+            # _launch 内部已统一调用 _wait_profile_released（BCC 作为 profile
+            # 唯一持有者的调度：重建 context 前先等旧进程完全退出，防 TargetClosed）。
             await self._launch()
             self._switch_cool_until = time.time() + _SWITCH_COOLDOWN_SEC
             logger.info(
