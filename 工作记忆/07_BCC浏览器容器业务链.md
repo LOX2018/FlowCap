@@ -130,3 +130,37 @@ Playwright 无法运行中切 headless，因此切换 = **重启 context**（约
    `PYTHONPATH=<backend绝对路径> DY_APP_ROOT=... python daemon/browser_daemon.py --account <名> --port <端口>`
 3. `_headless` **不读环境变量**（`DY_BCC_HEADLESS_MODE` 已废弃）：历史上 `disguise`
    （有头+移屏外）模式因 profile 残留屏外坐标等副作用被移除，此处不复活它。
+
+
+## 【2026-09-12 二次根治】set_visible 切换两个作用域 bug（NameError 误判 TargetClosed）
+
+### 症状
+`/show` 切有头：HTTP 秒回 `{switching:true}`（不再超时，这部分首次修复成功），
+但每次后台切换后必报 `BCC-006`；且每次伴随 2 次「复用固定 profile」日志。
+曾误判为 TargetClosed（profile 锁竞争），实际是作用域 NameError。
+
+### 根因（两个，均为作用域 bug）
+1. **`_SWITCH_COOLDOWN_SEC` 定义在 `__init__` 局部**，`set_visible`/`_do_switch_background`
+   引用直接 NameError → 切换后崩在冷却期赋值行。Error 堆栈坐实：
+   `NameError: name '_SWITCH_COOLDOWN_SEC' is not defined`（browser_daemon.py:449）。
+2. **`_wait_profile_released` 只查 `SingletonLock`**，但 ungoogled-chromium 实测
+   锁文件是 **`lockfile`**（2026-09-12 现场核实）→ 永远检测不到锁 → 竞态未挡住，
+   launch 撞 TargetClosed。
+
+### 修复
+- `_SWITCH_COOLDOWN_SEC` 提为**模块级常量**（勿放 `__init__` 局部）。
+- `_wait_profile_released` 同时查 `SingletonLock` 和 `lockfile`。
+- 该等待收敛到 `_launch()` 内部统一调用（所有重建 context 路径生效：
+  start / _ensure_alive / set_visible / scan_login）。
+
+### 实测验证（源码态 + 部署二进制）
+4 轮往返切换（有头→无头→有头→无头）全部成功：
+- 每次 `/show` 秒回 switching:true，无超时
+- **BCC-006: 0 次**（此前每次切换必报）
+- 每次切换 2-3s 完成，进入 180s 切换冷却期，探活只告警不强杀
+- lockfile 正确识别，锁释放等待生效
+
+### 铁律
+- **新引入的模块级常量/可复用常量绝不放 `__init__` 局部**，多方法引用即 NameError。
+- **Chromium 锁文件名随内核变化**：官方用 SingletonLock，ungoogled-chromium 用 lockfile，
+  判断 profile 是否被占用要两者都查，不能盲等单一名。
