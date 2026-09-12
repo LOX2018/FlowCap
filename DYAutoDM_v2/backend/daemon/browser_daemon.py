@@ -328,6 +328,8 @@ class BrowserContainer:
         # （实测：13:52 切有头 → 13:54 探活误判失效 → BCC-006 重启 → 页面
         # 加载中断 → 抖音异常页）。
         self._switch_cool_until: float = 0.0
+        # 切换中标志：_launch 在后台任务执行，期间探活/业务调用短暂失败只告警。
+        self._switching: bool = False
         # 冷却期时长（秒）：有头指纹内核冷启动实测约 2~3 分钟，取 180s 兜底。
         _SWITCH_COOLDOWN_SEC = 180
 
@@ -381,10 +383,12 @@ class BrowserContainer:
             # 切换冷却期：context 刚重启完，页面可能还在加载（有头冷启动可达
             # 2~3 分钟）。此时探活失败是正常的，绝不能强杀重启 —— 否则刚加载
             # 一半的页面被杀，抖音会弹「环境异常」（实测 13:52 切换事故）。
-            if time.time() < self._switch_cool_until:
+            # _switching 时 _launch 在后台跑，context 尚在重建，同样只告警。
+            if self._switching or time.time() < self._switch_cool_until:
                 remain = int(self._switch_cool_until - time.time())
+                phase = "切换中(_launch后台)" if self._switching else "切换冷却期"
                 logger.warning(
-                    "BCC-006", f"[bcc] context 探活失败（切换冷却期内，{remain}s "
+                    "BCC-006", f"[bcc] context 探活失败（{phase}，{max(remain,0)}s "
                     f"后恢复强杀）: {e} —— 页面加载中，跳过重启，等冷却结束")
                 return
             logger.warning("BCC-006", f"[bcc] context/page 失活，重启: {e}")
@@ -443,20 +447,39 @@ class BrowserContainer:
             self._page = None
             self._nav_page = None
             self._headless = target
+            # 切换改为后台执行：有头指纹内核冷启动 + 页面加载可能远超 HTTP 调用方
+            # 超时（实测冷启动 2~8 分钟）。若同步 await self._launch()，/show 请求会
+            # 在 60~180s 超时，前端误报「打开失败」，且 BCC 主循环被阻塞卡死。
+            # 改后台任务：立即返回「切换中」，launch 完成后设冷却期保护探活不误杀。
+            self._switching = True
+            asyncio.get_event_loop().create_task(
+                self._do_switch_background(target, url))
+            return {"ok": True, "headless": target, "changed": True,
+                    "switching": True,
+                    "msg": f"正在切换为{'有头可见' if target else '纯无头'}，"
+                           f"窗口就绪后自动完成（冷启动约 1~3 分钟）"}
+
+    async def _do_switch_background(self, target: bool, url: str = "") -> None:
+        """后台执行可见性切换的 _launch 部分。失败只告警、不卡死容器。"""
+        try:
             await self._launch()
-            # 切换冷却期开始：新 context 需要加载窗口（有头冷启动约 2~3 分钟），
-            # 期间探活/业务调用失败只告警，绝不 _ensure_alive 强杀（防抖音异常页）。
             self._switch_cool_until = time.time() + _SWITCH_COOLDOWN_SEC
             logger.info(
                 f"[bcc] {self.account} 可见性切换完成(headless={target})，"
                 f"进入 {_SWITCH_COOLDOWN_SEC}s 切换冷却期（探活只告警不强杀）")
-            if url and self._page is not None:
+            if url and self._page is not None and not self._page.is_closed():
                 try:
                     await self._page.goto(url, wait_until="domcontentloaded",
                                            timeout=20000)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("BCC-039", f"[bcc] {self.account} 导航失败: {e}")
-            return {"ok": True, "headless": target, "changed": True}
+                    logger.warning("BCC-039",
+                        f"[bcc] {self.account} 切换后导航失败: {e}")
+        except Exception as e:
+            logger.error("BCC-006",
+                f"[bcc] 可见性切换失败(切换为{'有头' if target else '无头'}): {e} —— "
+                f"将在冷却期后由探活自愈（不自动重启，防误杀）")
+        finally:
+            self._switching = False
 
 
     async def submit(self, coro):
@@ -1322,13 +1345,14 @@ class BrowserContainer:
                 break
             now = time.time()
             in_breaker = now < breaker_until
-            # 切换冷却期：set_visible 无头↔有头重启 context 后，新页面还在加载，
-            # 探活会误判失效并触发 BCC-006 强杀（→ 页面加载中断 → 抖音「环境异常」）。
-            # 冷却期内跳过整个探活周期，只记 debug；冷却结束自然恢复。
-            if now < self._switch_cool_until:
+            # 切换中/切换冷却期：set_visible 无头↔有头重启 context 后，新页面还在
+            # 加载，探活会误判失效并触发 BCC-006 强杀（→ 页面加载中断 → 抖音「环境
+            # 异常」）。此期间跳过整个探活周期，只记 debug；切换完成冷却期结束自然恢复。
+            if self._switching or now < self._switch_cool_until:
                 remain = int(self._switch_cool_until - now)
+                phase = "切换中(_launch后台)" if self._switching else "切换冷却期"
                 logger.debug(
-                    f"[bcc] 切换冷却期内({remain}s)，跳过探活（防误杀新 context）")
+                    f"[bcc] {phase}({max(remain,0)}s)，跳过探活（防误杀新 context）")
                 continue
             try:
                 uid = self._load_uid_from_env()
