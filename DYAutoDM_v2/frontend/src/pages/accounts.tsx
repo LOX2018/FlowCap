@@ -1651,11 +1651,14 @@ function ProxyDrawer({
   onClose: () => void;
 }) {
   const a = account;
+  // 代理模式（环境门阀）：模式由这里的选择单方面决定，与本机环境无关。
+  //   system → 走系统代理；direct → 走本机 IP；socks5/http/https → 走独立节点。
   const proxyTypes: { id: string; label: string; desc: string }[] = [
-    { id: "socks5", label: "SOCKS5", desc: "推荐 · 支持UDP/TCP" },
-    { id: "http", label: "HTTP", desc: "兼容性好" },
-    { id: "https", label: "HTTPS", desc: "加密传输" },
-    { id: "direct", label: "直连", desc: "不使用代理" },
+    { id: "socks5", label: "SOCKS5", desc: "独立节点 · 支持UDP/TCP" },
+    { id: "http", label: "HTTP", desc: "独立节点 · 兼容性好" },
+    { id: "https", label: "HTTPS", desc: "独立节点 · 加密传输" },
+    { id: "system", label: "系统代理", desc: "跟随本机系统代理设置" },
+    { id: "direct", label: "不走代理", desc: "走本机 IP · 豁免代理端口" },
   ];
   return (
     <>
@@ -1729,7 +1732,7 @@ function ProxyDrawer({
             </div>
           </div>
 
-          {form.type !== "direct" && (
+          {form.type !== "direct" && form.type !== "system" && (
             <div className="card" style={{ marginBottom: 14 }}>
               <h3>连接设置</h3>
               <div className="grid cols-2" style={{ gap: 12 }}>
@@ -1847,7 +1850,7 @@ function ProxyDrawer({
                 </div>
               </div>
             )}
-            {form.type === "direct" && (
+            {(form.type === "direct" || form.type === "system") && (
               <div
                 style={{
                   padding: "10px 14px",
@@ -1857,7 +1860,9 @@ function ProxyDrawer({
                   color: "var(--muted)",
                 }}
               >
-                直连模式下无需测试，流量将不经过代理直接发出
+                {form.type === "direct"
+                  ? "不走代理：流量直接以本机 IP 发出（豁免代理软件端口），无需测试"
+                  : "系统代理：跟随本机系统代理设置，无需填写节点信息"}
               </div>
             )}
           </div>

@@ -424,56 +424,123 @@ def _env_path_of_account(account):
 
 
 def _launch_args_with_proxy(cfg, account=None):
-    """合并 _CHROME_ARGS + 账号级 WebRTC 防泄漏参数，并解析代理 URL。
+    """合并 _CHROME_ARGS + 账号级 WebRTC 防泄漏参数，并按【代理配置】决定环境。
 
     返回 (args, proxy_url, pw_proxy)：
-      args     —— 传给 launch_persistent_context 的 args；
-      proxy_url —— 账号 DY_PROXY 原始值（None=无代理）；
-      pw_proxy —— Playwright proxy= 参数 dict（None=无代理）。
-    account 传入时读该账号 .env 的 DY_PROXY；未传时看全局 cfg.DY_PROXY 兜底。
+      args      —— 传给 launch_persistent_context 的 args；
+      proxy_url —— 生效的代理 URL（None=不走代理）；
+      pw_proxy  —— Playwright proxy= 参数 dict（None=不走代理）。
+
+    ===== 环境门阀（2026-09-13 用户架构定义）=====
+    环境由【代理配置的显式选择】单方面决定，判断条件与本机环境完全无关：
+
+      DY_PROXY_MODE = "node"    → 走独立节点（DY_PROXY 必须填了节点信息）
+      DY_PROXY_MODE = "system"  → 走系统代理（跟随本机系统代理设置）
+      DY_PROXY_MODE = "direct"  → 不走代理，走本机 IP（豁免代理软件端口）
+
+    铁律：
+    - 代码【绝不自行探测/推断】该走哪种模式，模式只能来自配置；
+    - 项目与浏览器恒同一套环境 → 杜绝中途 IP 跳变触发风控；
+    - 缺省（未配置任何模式）按 direct 处理（走本机 IP，最保守）。
     """
     args = list(_CHROME_ARGS)
-    proxy_url = None
-    if account:
-        env_path = _env_path_of_account(account)
-        if env_path:
-            proxy_url, err = parse_proxy_env(env_path)
-            if err:
-                logger.warning("BCC-037", f"[vbrowser] 账号 {account} {err}（按无代理继续）")
-    else:
-        # 兼容：调用方未传 account 时看全局 cfg.DY_PROXY（可全局兜底配置）
-        proxy_url = (getattr(cfg, "DY_PROXY", "") or "").strip() or None
-    # 2026-09-06 全局治理（C：系统代理死端口防护）：
-    # Windows 注册表系统代理（v2rayN 等写入的 ProxyEnable=1）会被 Chromium
-    # 自动跟随。若该端口已死（代理核心没跑），浏览器所有请求连接拒绝——
-    # BCC「快闪重启循环」的诱因之一。账号没配 DY_PROXY 且系统代理端口
-    # 探测不通时，对该进程加 --no-proxy-server 直连（不动系统注册表，
-    # 不影响其它软件；系统代理活着则尊重，不干预）。
-    # ===== 环境门阀：由「代理配置」单方面决定（2026-09-13 用户架构定义）=====
-    # 三级优先级，绝不由本机环境（系统代理是否开着）以外的因素决定：
-    #   ① 账号配了独立节点 DY_PROXY → 走该节点（最高优先）
-    #   ② 未配独立节点，但系统已设置代理 → 【跟随系统代理】
-    #   ③ 都没配 → 默认国内直连（--no-proxy-server）
-    # 铁律：浏览器环境 = 代理配置的映射，项目与浏览器恒同一套环境，杜绝 IP 跳变。
-    if proxy_url:
-        # ① 独立节点
-        args += _proxy_launch_args(proxy_url)
-        pw_proxy = _playwright_proxy_param(proxy_url)
-        logger.info(f"[vbrowser] 环境门阀①：账号独立节点 → {_mask_proxy(proxy_url)}")
-        return args, proxy_url, pw_proxy
-    # ② 跟随系统代理（读 Windows 注册表；非本机代理不干预，交 Chromium 默认行为）
-    sys_proxy = _system_proxy_url()
-    if sys_proxy:
-        args += _proxy_launch_args(sys_proxy)
-        pw_proxy = _playwright_proxy_param(sys_proxy)
-        logger.info(
-            f"[vbrowser] 环境门阀②：未配独立节点，跟随系统代理 → {_mask_proxy(sys_proxy)}"
-            "（与用户手动打开浏览器同一出口，杜绝环境跳变）")
-        return args, sys_proxy, pw_proxy
-    # ③ 默认国内直连
+    env_path = _env_path_of_account(account) if account else None
+
+    # ---- 解析配置：mode + node_url ----
+    mode, node_url = None, None
+    if env_path:
+        mode, node_url, err = parse_proxy_config(env_path)
+        if err:
+            logger.warning("BCC-037", f"[vbrowser] 账号 {account} {err}")
+    if not mode:
+        # 未传 account 或账号未配模式 → 看全局兜底
+        mode = (getattr(cfg, "DY_PROXY_MODE", "") or "").strip().lower() or None
+        if not node_url:
+            node_url = (getattr(cfg, "DY_PROXY", "") or "").strip() or None
+    mode = mode or "direct"
+
+    # ---- 按模式落地（只认配置，不探测本机来选模式）----
+    if mode == "node" and node_url:
+        args += _proxy_launch_args(node_url)
+        pw_proxy = _playwright_proxy_param(node_url)
+        logger.info(f"[vbrowser] 环境门阀：独立节点 → {_mask_proxy(node_url)}")
+        return args, node_url, pw_proxy
+
+    if mode == "system":
+        sys_url = _system_proxy_url()
+        if sys_url:
+            args += _proxy_launch_args(sys_url)
+            pw_proxy = _playwright_proxy_param(sys_url)
+            logger.info(f"[vbrowser] 环境门阀：系统代理 → {_mask_proxy(sys_url)}")
+            return args, sys_url, pw_proxy
+        # 选了系统代理但本机没开：如实告警仍走直连，不静默改变语义
+        logger.warning(
+            "BCC-038",
+            "[vbrowser] 环境门阀：配置选了「系统代理」但本机未设置系统代理 → 本次走直连"
+            "（请在代理配置中改选「独立节点」或确认系统代理已开启）")
+        args.append("--no-proxy-server")
+        return args, None, None
+
+    if mode == "node" and not node_url:
+        logger.warning(
+            "BCC-038",
+            "[vbrowser] 环境门阀：配置选了「独立节点」但未填写节点信息 → 本次走直连"
+            "（请在代理配置中补全节点 host:port）")
+        args.append("--no-proxy-server")
+        return args, None, None
+
+    # direct（含缺省）：走本机 IP，显式豁免代理软件端口
     args.append("--no-proxy-server")
-    logger.info("[vbrowser] 环境门阀③：未配节点且系统无代理 → 默认直连")
+    logger.info("[vbrowser] 环境门阀：不走代理 → 本机 IP 直连（豁免代理软件端口）")
     return args, None, None
+
+
+def parse_proxy_config(env_path):
+    """读账号 .env：返回 (mode, node_url, err)。
+
+    mode ∈ {"node","system","direct",None}；None 表示该账号未配置模式（交调用方兜底）。
+    兼容旧数据：仅有 DY_PROXY（无 DY_PROXY_MODE）时按 "node" 处理，
+    保持 09-12 之前已配独立节点的账号行为不变。默认 direct。
+    铁律：只读代理相关字段，绝不解析/回传其它凭证。
+    """
+    try:
+        if not env_path:
+            return None, None, None
+        dec = None
+        try:
+            from services import member_ctx
+            if member_ctx.is_member_env(env_path):
+                dec = member_ctx.parse_env_dict(env_path)
+        except Exception:
+            dec = None
+        vals = {}
+        if dec is not None:
+            vals = {k: (v or "").strip().strip('"').strip("'")
+                    for k, v in dec.items() if k in ("DY_PROXY", "DY_PROXY_MODE")}
+        else:
+            if not os.path.isfile(env_path):
+                return None, None, None
+            with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    for k in ("DY_PROXY=", "DY_PROXY_MODE="):
+                        if line.startswith(k):
+                            vals[k[:-1]] = line.split("=", 1)[1].strip().strip('"').strip("'")
+        mode = (vals.get("DY_PROXY_MODE") or "").strip().lower()
+        node = (vals.get("DY_PROXY") or "").strip() or None
+        if mode not in ("node", "system", "direct"):
+            # 无模式字段：有节点按 node（兼容旧数据），否则视为未配置
+            if not mode:
+                return ("node" if node else None), node, None
+            return None, node, f"DY_PROXY_MODE 取值非法: {mode}（应为 node/system/direct）"
+        if mode == "node" and node:
+            from urllib.parse import urlparse
+            u = urlparse(node)
+            if u.scheme not in ("http", "https", "socks5", "socks4") or not u.hostname or not u.port:
+                return mode, None, f"DY_PROXY 格式非法: {node}"
+        return mode, node, None
+    except Exception as e:
+        return None, None, f"代理配置读取失败: {e}"
 
 
 def _system_proxy_url():

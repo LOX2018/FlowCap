@@ -792,13 +792,17 @@ async def proxy_status(name: str):
     纯读 .env 单行，零网络请求、零浏览器操作，可被前端随列表轮询。
     """
     env_path = acct_core.env_path_of(name)
-    from auto_dm.vbrowser import parse_proxy_env, _mask_proxy
-    proxy_url, err = parse_proxy_env(env_path)
+    from auto_dm.vbrowser import parse_proxy_config, _mask_proxy
+    # 环境门阀模式（node/system/direct）由配置显式决定，一并回传供前端回填
+    mode, node_url, err = parse_proxy_config(env_path)
     if err:
-        return {"configured": False, "masked": "", "error": err}
-    if not proxy_url:
-        return {"configured": False, "masked": "", "error": ""}
-    return {"configured": True, "masked": _mask_proxy(proxy_url), "error": ""}
+        return {"configured": False, "masked": "", "error": err, "mode": mode or ""}
+    mode = mode or "direct"
+    if mode == "node":
+        return {"configured": True, "masked": _mask_proxy(node_url or ""), "error": "", "mode": "node"}
+    if mode == "system":
+        return {"configured": True, "masked": "系统代理", "error": "", "mode": "system"}
+    return {"configured": False, "masked": "", "error": "", "mode": "direct"}
 
 
 @router.post("/{name}/proxy")
@@ -825,10 +829,15 @@ async def save_proxy(name: str, req: Request) -> ScanLoginResponse:
     user = str(body.get("user") or "").strip()
     pwd = str(body.get("pass") or "").strip()
     if ptype == "direct":
-        # 直连：清除 DY_PROXY
+        # 不走代理：显式写 MODE=direct（走本机 IP，豁免代理软件端口），清节点
         from services.member_ctx import write_env_file
-        write_env_file(env_path, {"DY_PROXY": None}, merge=True)
-        return ScanLoginResponse(ok=True, msg="已设为直连（流量不经代理）")
+        write_env_file(env_path, {"DY_PROXY_MODE": "direct", "DY_PROXY": None}, merge=True)
+        return ScanLoginResponse(ok=True, msg="已设为「不走代理」（走本机 IP，豁免代理端口）")
+    if ptype == "system":
+        # 走系统代理：显式写 MODE=system，清节点（由 vbrowser 读系统代理落地）
+        from services.member_ctx import write_env_file
+        write_env_file(env_path, {"DY_PROXY_MODE": "system", "DY_PROXY": None}, merge=True)
+        return ScanLoginResponse(ok=True, msg="已设为「系统代理」（跟随本机系统代理设置）")
     if ptype not in ("socks5", "socks4", "http", "https"):
         return ScanLoginResponse(ok=False, msg=f"不支持的代理类型: {ptype}")
     if not host or not port:
@@ -844,14 +853,14 @@ async def save_proxy(name: str, req: Request) -> ScanLoginResponse:
             url = f"{ptype}://{host}:{port}"
     # 校验格式
     from auto_dm.vbrowser import parse_proxy_env
-    tmp = env_path  # 用临时校验（先写再读校验，失败回滚）
     from services.member_ctx import write_env_file
     try:
-        write_env_file(env_path, {"DY_PROXY": url}, merge=True)
+        # 独立节点：显式写 MODE=node + 节点 URL（环境门阀由该模式决定）
+        write_env_file(env_path, {"DY_PROXY_MODE": "node", "DY_PROXY": url}, merge=True)
         val, err = parse_proxy_env(env_path)
         if err:
-            # 回滚：清掉写坏的
-            write_env_file(env_path, {"DY_PROXY": None}, merge=True)
+            # 回滚：清掉写坏的（连模式一并回滚为不走代理）
+            write_env_file(env_path, {"DY_PROXY_MODE": "direct", "DY_PROXY": None}, merge=True)
             return ScanLoginResponse(ok=False, msg=f"代理格式校验失败: {err}")
     except Exception as e:
         return ScanLoginResponse(ok=False, msg=f"写入代理配置失败: {e}")
