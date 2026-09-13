@@ -523,27 +523,42 @@ def parse_init_protobuf(raw, my_uid):
     # conv_id 中（自己与所有人聊天），故出现次数 == 会话数 的 UID 即本账号。
     # 仅当传入 my_uid 无效时才覆盖，不干扰正常路径。
     _mu = str(my_uid or "").strip()
-    if _mu in ("", "None", "none", "0"):
-        try:
-            import re as _re
-            from collections import Counter as _Counter
-            _probe = _re.findall(rb"0:1:(\d{6,20}):(\d{6,20})", raw)
-            if _probe:
-                _cnt = _Counter()
-                for _a, _b in _probe:
-                    _cnt[_a.decode()] += 1
-                    _cnt[_b.decode()] += 1
-                _n = len(_probe)
-                # 本账号出现次数应接近会话数（每个 conv_id 至少含一次）
-                _cand = [(u, c) for u, c in _cnt.items() if c >= _n * 0.9]
-                if _cand:
-                    _mu = max(_cand, key=lambda x: x[1])[0]
-                    logger.warning("CAP-003", 
+    try:
+        import re as _re
+        from collections import Counter as _Counter
+        _probe = _re.findall(rb"0:1:(\d{6,20}):(\d{6,20})", raw)
+        if _probe:
+            _cnt = _Counter()
+            for _a, _b in _probe:
+                _cnt[_a.decode()] += 1
+                _cnt[_b.decode()] += 1
+            _n = len(_probe)
+            # 本账号 UID 必然出现在【每一个】conv_id 中（自己与所有人聊天）
+            _cand = [(u, c) for u, c in _cnt.items() if c >= _n * 0.9]
+            _common = max(_cand, key=lambda x: x[1])[0] if _cand else None
+            if _common:
+                if _mu in ("", "None", "none", "0"):
+                    # 原场景：my_uid 失效（None/空）→ 直接自愈
+                    logger.warning("CAP-003",
                         f"[capture] my_uid 无效({my_uid!r})，从 {_n} 个 conv_id "
-                        f"自愈推断本账号 UID={_mu}（出现 {_cand[0][1]} 次）")
-                    my_uid = _mu
-        except Exception:
-            pass
+                        f"自愈推断本账号 UID={_common}（出现 {_cnt[_common]} 次）")
+                    my_uid = _common
+                elif _mu != _common:
+                    # 2026-09-13 新增场景（用户实测：更新会话后 66 个会话的
+                    # peer_id 全是本号）：my_uid 【有值但不对】——抖音 web 侧
+                    # query/user 的 user_uid 与 imapi 会话体系绑定的 uid 并非
+                    # 永远同一个值（技能 §9.8 已记录该轮换现象，实测出现
+                    # 2609… 与 316… 两个值）。conv_id 里的本号段才是与私信体系
+                    # 一致的身份，必须以此为准，否则
+                    #   peer_uid = uid_b if uid_a == my_uid else uid_a
+                    # 因 uid_a(本号) != my_uid(错值) 恒取 uid_a → 对端全变成自己。
+                    logger.warning("CAP-003",
+                        f"[capture] my_uid({_mu}) 与 {_n} 个 conv_id 的共同项"
+                        f"({_common}，出现 {_cnt[_common]} 次) 不一致 —— "
+                        f"以 conv_id 为准（web user_uid 与 imapi 会话 uid 可能轮换）")
+                    my_uid = _common
+    except Exception:
+        pass
     top = _parse(raw)
     # 顶层 conversation 数组 = field 6 的响应体（cmd 2043 包裹）内的 repeated 元素。
     # 结构：top.field6(bytes) -> parse -> field(2043)(bytes) -> parse -> 多个 field(1, WT_LEN) 每个 = 一个 conversation。
@@ -1260,6 +1275,35 @@ def capture_all(name, with_browser=True):
                 _userinfo_by_uid[str(_u)] = _v
         _by_uid = 0
         _by_sec = 0
+        # 2026-09-13 第三道防线：写库前的「本号 UID」同样以 conv_id 共同项为准。
+        # 原实现在 L1283 直接用 _myuid，而该名字在部分路径并未定义（dir() 检查
+        # 出现在更靠后的 L1377），一旦取值失败 _real 恒为 None → 订正失效、
+        # peer_id 保持错误值。此处独立算一遍，不依赖任何外部变量。
+        _auth_uid = None
+        try:
+            from collections import Counter as _C2
+            _cc = _C2()
+            _nn = 0
+            for _c in convs:
+                _pp = str(_c.get("conversation_id") or "").split(":")
+                if len(_pp) == 4:
+                    _cc[_pp[2]] += 1
+                    _cc[_pp[3]] += 1
+                    _nn += 1
+            if _nn:
+                _top = [(u, k) for u, k in _cc.items() if k >= _nn * 0.9]
+                if _top:
+                    _auth_uid = max(_top, key=lambda x: x[1])[0]
+        except Exception:
+            _auth_uid = None
+        if not _auth_uid:
+            try:
+                _auth_uid = str(locals().get("_myuid") or "") or None
+            except Exception:
+                _auth_uid = None
+        if _auth_uid:
+            logger.info(
+                f"[capture][{name}] 本号 UID（conv_id 共同项）= {_auth_uid}")
         for c in convs:
             cid = c["conversation_id"]
             peer_uid = c["peer_uid"]
@@ -1280,7 +1324,8 @@ def capture_all(name, with_browser=True):
             _cid_parts = cid.split(":")
             if len(_cid_parts) == 4:
                 _a, _b = _cid_parts[2], _cid_parts[3]
-                _real = _b if _a == str(_myuid) else (_a if _b == str(_myuid) else None)
+                _real = (_b if _a == str(_auth_uid)
+                         else (_a if _b == str(_auth_uid) else None))
                 if _real and str(peer_uid) != _real:
                     peer_uid = _real
                     # peer 变了，之前按错误 peer_uid 查到的昵称不可信
@@ -1374,10 +1419,19 @@ def capture_all(name, with_browser=True):
         # 这里扫全表把漏网的也修好：用 conv_id 解析真实对端 → 改写 peer_id，
         # 并把错误的本账号昵称降级为裸 UID（下次 BCC 截到真实昵称会回填）。
         try:
-            _myuid_fix = str(auth.get_uid()) if "auth" in dir() else ""
+            # 2026-09-13：本号 uid 必须用 conv_id 共同项（_auth_uid），不能用
+            # auth.get_uid() —— 后者是 web query/user 的 user_uid，与 imapi
+            # 会话体系的 uid 可能不同值（§9.8 轮换现象）。用错值会导致
+            # WHERE peer_id=? 匹配不到任何行 → 订正静默失效（正是本次
+            # 「更新会话后全是本号 UID」未被自动修正的原因）。
+            _myuid_fix = str(_auth_uid or "")
+            if not _myuid_fix:
+                raise RuntimeError("本号 uid 无法确定，跳过存量订正")
+            # 同时覆盖「peer_id == 本号」与「peer_id 为空」两类污染
             _dirty = conn.execute(
                 "SELECT conv_id, peer_id, peer_name FROM dm_conversations "
-                "WHERE account=? AND peer_id=?",
+                "WHERE account=? AND (peer_id=? OR peer_id IS NULL "
+                "OR peer_id='' OR peer_id=peer_name)",
                 (name, _myuid_fix),
             ).fetchall()
             _fixed = 0
@@ -1410,7 +1464,7 @@ def capture_all(name, with_browser=True):
         # 所有「peer_name 为空/等于 peer_id（数字 UID）/等于自己 UID」的会话，
         # 保证展示层无裸 UID、也不出现「自己」的冗余显示。
         try:
-            _myuid = str(auth.get_uid()) if "auth" in dir() else ""
+            _myuid = str(_auth_uid or "")   # 2026-09-13：同上，用 conv_id 共同项
             _backfill = conn.execute(
                 "SELECT conv_id, peer_id, peer_name FROM dm_conversations "
                 "WHERE account=? AND (peer_name IS NULL OR peer_name='' "
