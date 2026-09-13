@@ -597,6 +597,16 @@ except Exception as _e:  # noqa: BLE001
     logger.warning("NTY-005", f"[notify] 模块挂载失败（不影响主流程）: {_e}")
 
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
+# 错误码日志补丁：loguru 会把第一个位置参数当格式模板，导致
+# logger.warning("BCC-006", "描述") 的描述被丢弃（运行日志只剩代码）。
+# 此处安装兼容层，让「码 + 描述」正常输出（一处生效，覆盖全项目 345 处调用）。
+try:
+    from utils.code_logger import install_code_logger_patch as _inst_code_log
+    _inst_code_log()
+except Exception as _e_code_log:  # 补丁失败绝不阻塞启动
+    import sys as _sys_cl
+    print(f"[code_logger] 补丁安装失败（不影响运行）: {_e_code_log}", file=_sys_cl.stderr)
+
 logger.remove()
 logger.add(
     "logs/run_{time:YYYYMMDD_HHMMSS}.log",

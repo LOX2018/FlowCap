@@ -54,6 +54,16 @@ from vbrowser import app_root
 _ROOT = app_root()
 _DAEMON_DIR = os.path.join(_ROOT, "auto_dm")
 
+# 错误码日志补丁：loguru 会把第一个位置参数当格式模板，导致
+# logger.warning("BCC-006", "描述") 的描述被丢弃（运行日志只剩代码）。
+# 此处安装兼容层，让「码 + 描述」正常输出（一处生效，覆盖全项目 345 处调用）。
+try:
+    from utils.code_logger import install_code_logger_patch as _inst_code_log
+    _inst_code_log()
+except Exception as _e_code_log:  # 补丁失败绝不阻塞启动
+    import sys as _sys_cl
+    print(f"[code_logger] 补丁安装失败（不影响运行）: {_e_code_log}", file=_sys_cl.stderr)
+
 logger.remove()
 logger.add(
     sys.stderr,
@@ -338,6 +348,8 @@ class BrowserContainer:
         self._switch_cool_until: float = 0.0
         # 切换中标志：_launch 在后台任务执行，期间探活/业务调用短暂失败只告警。
         self._switching: bool = False
+        # 切换起始时间（看门狗用：_switching 卡死超时后强制复位，保证窗口能被重新唤醒）
+        self._switch_started_at: float = 0.0
 
     async def start(self) -> None:
         """启动浏览器 context（持有 profile 锁）。失败抛 RuntimeError。"""
@@ -396,7 +408,35 @@ class BrowserContainer:
             logger.warning("BCC-005", f"[bcc] 打开 chat 页失败（不阻塞，后续接口自愈）: {e}")
 
     async def _ensure_alive(self) -> None:
-        """context/page 失活时重启。在 _lock 内调用。"""
+        """context/page 失活时重启。在 _lock 内调用。
+
+        ⚠️ 2026-09-13 修复「双击唤醒闪退 + 之后无法唤醒」：
+        切换期间（_switching）_context 被置 None、_launch 在后台重建 context，
+        此时若前端/WP 轮询经 _exec 调到这里，会立刻抛「context 已关闭」→
+        误判失活 → 触发重启 → 与后台 _launch 抢 profile → 失败 → 再次误判 →
+        **3.6 秒一轮的死循环**（日志 BCC-006 刷屏，浏览器闪退、二次双击无响应）。
+        run_keepalive 早有此保护（L1417），但 _exec → _ensure_alive 这条路径没有，
+        现补齐：切换中/冷却期一律「等切换完成」而不是判定失活。
+        """
+        # 切换卡死看门狗：_switching 卡住超过阈值（如 _launch 抛错未复位、
+        # 或后台任务被取消）会让窗口永久无法唤醒。冷启动最坏 2~8 分钟，
+        # 取 15 分钟阈值，超时强制复位让后续双击能重新走重建流程。
+        if self._switching and self._switch_started_at:
+            if time.time() - self._switch_started_at > 900:
+                logger.error(
+                    "BCC-006",
+                    f"[bcc] {self.account} 可见性切换卡死超 900s，强制复位 "
+                    f"_switching（否则窗口将永久无法唤醒）")
+                self._switching = False
+                self._switch_started_at = 0.0
+        # 切换中/冷却期保护：等后台 _launch 完成，绝不在此期间判失活重启
+        if self._switching or time.time() < self._switch_cool_until:
+            remain = int(self._switch_cool_until - time.time())
+            phase = "切换中(_launch后台)" if self._switching else "切换冷却期"
+            logger.debug(
+                f"[bcc] {self.account} {phase}({max(remain, 0)}s)，"
+                f"等待 context 重建完成（跳过失活判定，防重启死循环）")
+            return
         try:
             if self._context is None or not self._context.pages:
                 raise RuntimeError("context 已关闭")
@@ -447,14 +487,33 @@ class BrowserContainer:
         async with self._lock:
             target = not bool(visible)
             if self._headless == target and self._context is not None:
-                # 已是目标模式，仅按需导航
-                if url and self._page is not None and not self._page.is_closed():
-                    try:
-                        await self._page.goto(url, wait_until="domcontentloaded",
-                                               timeout=20000)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("BCC-038", f"[bcc] {self.account} 导航失败: {e}")
-                return {"ok": True, "headless": target, "changed": False}
+                # 已是目标模式：先确认 context/page 真的还活着再只导航。
+                # ⚠️ 2026-09-13 修复「关闭浏览器后二次双击没反应」：
+                # 用户手动关掉可见窗口后，_context 仍非 None 但页面已失效，
+                # 旧逻辑只尝试 goto 就静默失败（BCC-038），窗口永不回来。
+                # 现改为：探活失败即视为需要重建 → 落到下方重建分支唤醒窗口。
+                alive = False
+                try:
+                    if self._context.pages:
+                        _pg = self._page if (self._page is not None
+                                             and not self._page.is_closed()) \
+                            else self._context.pages[0]
+                        await _pg.evaluate("1")
+                        alive = True
+                except Exception as e:  # noqa: BLE001
+                    logger.info(
+                        f"[bcc] {self.account} 页面已失效（{type(e).__name__}），"
+                        f"需重建 context 唤醒窗口")
+                    alive = False
+                if alive:
+                    if url and self._page is not None and not self._page.is_closed():
+                        try:
+                            await self._page.goto(url, wait_until="domcontentloaded",
+                                                   timeout=20000)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("BCC-038", f"[bcc] {self.account} 导航失败: {e}")
+                    return {"ok": True, "headless": target, "changed": False}
+                # 不 alive → 继续走下面的重建流程（会真正把窗口唤醒）
             logger.info(
                 f"[bcc] {self.account} 切换浏览器可见性: "
                 f"headless={self._headless} -> {target}")
@@ -477,6 +536,7 @@ class BrowserContainer:
             # 在 60~180s 超时，前端误报「打开失败」，且 BCC 主循环被阻塞卡死。
             # 改后台任务：立即返回「切换中」，launch 完成后设冷却期保护探活不误杀。
             self._switching = True
+            self._switch_started_at = time.time()
             asyncio.get_event_loop().create_task(
                 self._do_switch_background(target, url))
             mode_str = "有头可见" if visible else "纯无头"
@@ -508,6 +568,7 @@ class BrowserContainer:
                 f"将在冷却期后由探活自愈（不自动重启，防误杀）", exc_info=True)
         finally:
             self._switching = False
+            self._switch_started_at = 0.0
 
     async def _wait_profile_released(self, timeout: float = 10.0) -> None:
         """等待 profile 的锁文件消失（chromium 进程完全退出）。
@@ -559,6 +620,11 @@ class BrowserContainer:
         if _is_busy():
             raise ContainerBusy(_scan_exclusive["holder"])
         async with self._lock:
+            # 切换期（_launch 后台重建 context）快速失败：此时 _context 为
+            # None，继续执行只会拿到 None 崩溃或误判失活触发重启死循环
+            # （2026-09-13 BCC-006 刷屏事故）。调用方按「容器忙」重试即可。
+            if self._switching:
+                raise ContainerBusy("切换可见性中（context 重建），请稍后重试")
             await self._ensure_alive()
             return await coro_factory()
 
