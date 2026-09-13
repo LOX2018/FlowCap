@@ -102,6 +102,189 @@ def _is_busy() -> bool:
     return _scan_exclusive["holder"] is not None
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# 浏览器租约（Lease）—— 2026-09-13 调度器体系 S2
+#
+# ## 为什么需要（根因）
+#   原设计里 services/browser_gate.py 声称"要求 BCC 让出 profile"，但：
+#     ① 它读的 st["exclusive"] 来自 /status，而 /status **从不返回该字段**
+#        （实测只返回 alive/account/profile/uid/last_refresh/logged_in/version）
+#        → j.get("exclusive") 恒为 None → if not st["exclusive"] 恒为真
+#     ② 全仓没有任何代码写入 /status.exclusive
+#     ③ BCC 内部真正的独占标志是私有 _scan_exclusive，未对外暴露
+#   ⇒ gate 的"独占"分支永远只打一行日志，然后 return ok=True（静默假成功）。
+#
+# ## 正确抽象：租约（而不是"让出"）
+#   BCC 始终是 profile 的唯一所有者（独立进程，跨进程"交出 profile"不可能实现）。
+#   业务操作向 BCC **申请租约**，BCC 仲裁授予；操作结束 release，或 TTL 到期自动释放。
+#
+# ## 与既有 _scan_exclusive 的关系
+#   _scan_exclusive 是"scan_login 独占"的临时标志，保留兼容；
+#   租约成为**统一入口**，scan_login 也走租约（同时置 _scan_exclusive 以兼容旧检查）。
+#
+# ## 优先级与 TTL 硬上限（防"P2 霸占"把调度器架空）
+#   P0 用户显式（更新会话/打开浏览器/扫码）  TTL ≤ 300s
+#   P1 业务自动（AI 回复/私信发送/凭证刷新） TTL ≤ 180s
+#   P2 后台保活（keepalive/昵称预热/uid轮询）TTL ≤  30s
+#
+# ## 不做真抢占
+#   浏览器操作大多不可中断（DOM 流程、context 重建），抢占会导致状态不一致。
+#   用「P2 限时 + 快速失败 + retry_after」解决"低优先级霸占"。
+# ════════════════════════════════════════════════════════════════════════════
+LEASE_PRIO_TTL_LIMIT = {0: 300.0, 1: 180.0, 2: 30.0}
+LEASE_PRIO_NAME = {0: "用户显式", 1: "业务自动", 2: "后台保活"}
+
+_lease: dict = {
+    "holder": None, "purpose": None, "prio": None, "lease_id": None,
+    "acquired_at": 0.0, "ttl": 0.0, "expires_at": 0.0, "renew_count": 0,
+}
+
+
+def _lease_reset() -> None:
+    _lease.update(holder=None, purpose=None, prio=None, lease_id=None,
+                  acquired_at=0.0, ttl=0.0, expires_at=0.0, renew_count=0)
+
+
+def _lease_current():
+    """返回当前有效租约 dict；已过期则惰性释放并返回 None。
+
+    **惰性判定**（无需后台定时器）：任何读取都先检查 expires_at——
+    这样持有者崩溃/忘记 release 时，TTL 到期即自动释放，不会永久独占。
+    """
+    if not _lease["holder"]:
+        return None
+    if time.time() > _lease["expires_at"]:
+        logger.warning(
+            "BCC-046",
+            f"[lease] {_lease['holder']}（prio={_lease['prio']} "
+            f"{LEASE_PRIO_NAME.get(_lease['prio'], '?')}）租约超时 "
+            f"{_lease['ttl']:.0f}s 未释放，强制回收"
+            f"（持有者可能崩溃或忘记 release）")
+        _lease_reset()
+        return None
+    return _lease
+
+
+def _lease_status() -> dict:
+    """对外可读的租约状态（空闲时 holder=None）。"""
+    cur = _lease_current()
+    if not cur:
+        return {"holder": None, "purpose": None, "prio": None,
+                "lease_id": None, "expires_at": 0.0, "remaining": 0.0,
+                "renew_count": 0}
+    return {
+        "holder": cur["holder"], "purpose": cur["purpose"],
+        "prio": cur["prio"], "lease_id": cur["lease_id"],
+        "expires_at": cur["expires_at"],
+        "remaining": max(0.0, round(cur["expires_at"] - time.time(), 1)),
+        "renew_count": cur["renew_count"],
+    }
+
+
+def _lease_acquire(holder: str, purpose: str = "auto", prio: int = 2,
+                   ttl: float = 0.0, lease_id: str = "") -> dict:
+    """申请租约。
+
+    返回 {ok, lease_id, expires_at, waited, renew} 或
+         {ok: False, busy, busy_prio, retry_after, reason}
+
+    规则：
+      · 同 lease_id 重入 → 复用（renew，不新建）
+      · 同 holder 且未持 id → 视为重入，复用现有租约
+      · 已被他人持有 → 拒绝（不抢占），给出 retry_after
+      · ttl 超该 prio 上限 → 拒绝（防"续租绕过上限"）
+    """
+    prio = int(prio) if prio is not None else 2
+    if prio not in LEASE_PRIO_TTL_LIMIT:
+        prio = 2
+    limit = LEASE_PRIO_TTL_LIMIT[prio]
+    if not ttl or ttl <= 0:
+        ttl = limit
+    if ttl > limit:
+        logger.warning(
+            "BCC-048",
+            f"[lease] {holder} 申请 ttl={ttl:.0f}s 超过 prio={prio}"
+            f"（{LEASE_PRIO_NAME[prio]}）上限 {limit:.0f}s，已按上限授予")
+        ttl = limit
+
+    cur = _lease_current()
+    if cur is not None:
+        # 重入：同一 lease_id，或同一 holder（调用链内层再取）
+        if (lease_id and cur["lease_id"] == lease_id) or                 (not lease_id and cur["holder"] == holder):
+            return {"ok": True, "lease_id": cur["lease_id"],
+                    "expires_at": cur["expires_at"], "waited": 0.0,
+                    "renew": True}
+        retry = max(0.5, round(cur["expires_at"] - time.time(), 1))
+        logger.debug(
+            "BCC-047",
+            f"[lease] {holder}(prio={prio}) 被拒：当前 {cur['holder']}"
+            f"(prio={cur['prio']}) 持有，剩余 {retry}s")
+        return {"ok": False, "busy": cur["holder"], "busy_prio": cur["prio"],
+                "retry_after": retry, "reason": "busy"}
+
+    import uuid as _uuid
+    _lease.update(
+        holder=holder, purpose=purpose, prio=prio,
+        lease_id=lease_id or _uuid.uuid4().hex[:12],
+        acquired_at=time.time(), ttl=ttl,
+        expires_at=time.time() + ttl, renew_count=0)
+    logger.debug(
+        f"[lease] {holder} 获得租约（prio={prio} {LEASE_PRIO_NAME[prio]}, "
+        f"ttl={ttl:.0f}s, id={_lease['lease_id']}）")
+    return {"ok": True, "lease_id": _lease["lease_id"],
+            "expires_at": _lease["expires_at"], "waited": 0.0, "renew": False}
+
+
+def _lease_renew(lease_id: str, ttl: float = 0.0) -> dict:
+    """续租。累计时长不得超过该 prio 上限（防绕过 TTL 上限）。"""
+    cur = _lease_current()
+    if not cur or (lease_id and cur["lease_id"] != lease_id):
+        return {"ok": False, "reason": "not_holder"}
+    prio = cur["prio"]
+    limit = LEASE_PRIO_TTL_LIMIT.get(prio, 30.0)
+    new_ttl = ttl if (ttl and ttl > 0) else limit
+    total = new_ttl * (cur["renew_count"] + 1)
+    if total > limit:
+        logger.warning(
+            "BCC-048",
+            f"[lease] {cur['holder']} renew 被拒：累计 {total:.0f}s 超 "
+            f"prio={prio} 上限 {limit:.0f}s（防续租绕过 TTL 上限）")
+        return {"ok": False, "reason": "ttl_exceeds_limit",
+                "limit": limit, "total": total}
+    cur["renew_count"] += 1
+    cur["ttl"] = new_ttl
+    cur["expires_at"] = time.time() + new_ttl
+    logger.debug(f"[lease] {cur['holder']} 续租 {new_ttl:.0f}s"
+                 f"（第 {cur['renew_count']} 次）")
+    return {"ok": True, "expires_at": cur["expires_at"],
+            "renew_count": cur["renew_count"]}
+
+
+def _lease_release(lease_id: str, holder: str = "") -> dict:
+    """释放租约（必须 id 匹配，防误释放他人租约）。"""
+    cur = _lease_current()
+    if not cur:
+        return {"ok": True, "msg": "本就空闲"}
+    if lease_id and cur["lease_id"] != lease_id:
+        logger.debug("BCC-049",
+                     f"[lease] release 被拒：id 不匹配"
+                     f"（当前 {cur['lease_id']}，请求 {lease_id}）")
+        return {"ok": False, "reason": "not_holder"}
+    if not lease_id and holder and cur["holder"] != holder:
+        return {"ok": False, "reason": "not_holder"}
+    _h = cur["holder"]
+    _lease_reset()
+    logger.debug(f"[lease] {_h} 释放租约")
+    return {"ok": True}
+
+
+def _lease_owned_by(holder: str) -> bool:
+    cur = _lease_current()
+    return bool(cur and cur["holder"] == holder)
+
+
+
+
 @app.exception_handler(ContainerBusy)
 async def _container_busy_handler(request, exc: ContainerBusy):
     from fastapi.responses import JSONResponse
@@ -399,7 +582,23 @@ class BrowserContainer:
         from auto_dm.vbrowser import should_use_vb, launch_async
         env_path = _acc.env_path_of(self.account)
         if not env_path:
-            raise RuntimeError(f"[bcc] 账号 {self.account} 无 .env（索引未登记？）")
+            # ⚠️ 2026-09-13 实测事故：凭证读不到时 _launch 抛错 → _ensure_alive
+            # 判定「context 失活」→ 每 3~4 秒重启一次（日志 BCC-006 刷屏），
+            # 用户看到的就是「浏览器窗口一闪一闪」（快闪）。
+            # 这是**不可自愈**的条件：env 路径拿不到，重启一万次也一样。
+            # 必须熔断并给出可操作提示，绝不进入重启风暴。
+            _msg = (f"账号「{self.account}」的凭证文件不可用（env_path 为空）——"
+                    f"常见原因：① 应用未以会员身份运行（子进程缺 DY_MEMBER/"
+                    f"DY_MEMBER_KEY，读不到 .env.enc）；② 账号未登记进索引；"
+                    f"③ 账号已被删除。请从应用界面启动浏览器守护，"
+                    f"或在账号管理页重新登记该账号。")
+            logger.error("BCC-051", f"[bcc] {_msg}（已熔断，不再自动重启）")
+            # 置长熔断：让 _ensure_alive 在较长时间内只告警不重启
+            try:
+                self._fatal_until = time.time() + 1800   # 30 分钟
+            except Exception:
+                pass
+            raise RuntimeError(f"[bcc] {_msg}")
         self._env_path = env_path
         self._profile_dir = _acc.profile_dir_of(env_path)
         if not self._profile_dir:
@@ -462,6 +661,18 @@ class BrowserContainer:
                     f"_switching（否则窗口将永久无法唤醒）")
                 self._switching = False
                 self._switch_started_at = 0.0
+        # 2026-09-13：致命态熔断（凭证不可用等不可自愈错误）——
+        # 原逻辑会每 3~4 秒重启一次，用户看到窗口「快闪」。
+        # 熔断期内只告警不重启，避免重启风暴与风控暴露。
+        _ft = getattr(self, "_fatal_until", 0.0)
+        if _ft and time.time() < _ft:
+            remain = int(_ft - time.time())
+            logger.warning("BCC-043",
+                f"[bcc] {self.account} 处于致命态熔断中（剩余 {remain // 60} 分钟），"
+                f"不再自动重启容器；请先解决凭证/索引问题（见启动日志 BCC-043）")
+            raise RuntimeError(
+                f"[bcc] 容器处于致命态熔断（{remain // 60} 分钟）：凭证不可用，"
+                f"请从应用界面启动或重新登记账号")
         # 切换中/冷却期保护：等后台 _launch 完成，绝不在此期间判失活重启
         if self._switching or time.time() < self._switch_cool_until:
             remain = int(self._switch_cool_until - time.time())
@@ -685,8 +896,19 @@ class BrowserContainer:
             return await asyncio.wrap_future(fut)
         return await coro
 
-    async def _exec(self, coro_factory):
-        """在 _lock 内执行浏览器操作（自愈 + 串行）。coro_factory 是无参 callable 返回 coroutine。
+    async def _exec(self, coro_factory, holder: str = "",
+                   purpose: str = "auto", prio: int = 2,
+                   ttl: float = 0.0, lease_id: str = ""):
+        """在 _lock 内执行浏览器操作（租约 + 自愈 + 串行）。
+
+        coro_factory 是无参 callable 返回 coroutine。
+
+        ## 租约（2026-09-13 S2）
+        所有走本函数的端点**自动纳入租约调度**——这是最小侵入的接入点：
+        无需逐个改造 11 个端点。未显式声明 holder 的调用方按 **P2 后台保活**
+        保守授权（ttl≤30s）。
+          · 同 holder / 同 lease_id 重入 → 复用租约（不自己和自己冲突）
+          · 已被他人持有 → 立即失败（不抢占），调用方按 retry_after 重试
 
         P2-B：scan_login 独占窗口内（context 已关、扫码中）快速失败，
         避免调用方排队干等到 HTTP 超时。注意 _launch 自身不走本检查
@@ -694,14 +916,33 @@ class BrowserContainer:
         """
         if _is_busy():
             raise ContainerBusy(_scan_exclusive["holder"])
-        async with self._lock:
-            # 切换期（_launch 后台重建 context）快速失败：此时 _context 为
-            # None，继续执行只会拿到 None 崩溃或误判失活触发重启死循环
-            # （2026-09-13 BCC-006 刷屏事故）。调用方按「容器忙」重试即可。
-            if self._switching:
-                raise ContainerBusy("切换可见性中（context 重建），请稍后重试")
-            await self._ensure_alive()
-            return await coro_factory()
+        # 租约门（_lease_acquire 内部处理重入复用）
+        _lid = lease_id
+        _need_release = False
+        _cur_l = _lease_current()
+        # 重入判据**只有**显式 lease_id 匹配 —— _lock 非重入，_exec 不可能嵌套，
+        # 因此任何"同 holder"都不是重入，而是并发冲突（必须拒绝）。
+        _is_reentry = bool(lease_id and _cur_l and _cur_l["lease_id"] == lease_id)
+        if not _is_reentry:
+            _r = _lease_acquire(holder or "bcc-internal", purpose, prio,
+                                ttl, lease_id)
+            if not _r.get("ok"):
+                raise ContainerBusy(_r.get("busy") or "busy")
+            _lid = _r["lease_id"]
+            _need_release = not _r.get("renew")
+        try:
+            async with self._lock:
+                # 切换期（_launch 后台重建 context）快速失败：此时 _context 为
+                # None，继续执行只会拿到 None 崩溃或误判失活触发重启死循环
+                # （2026-09-13 BCC-006 刷屏事故）。调用方按「容器忙」重试即可。
+                if self._switching:
+                    raise ContainerBusy("切换可见性中（context 重建），请稍后重试")
+                await self._ensure_alive()
+                return await coro_factory()
+        finally:
+            # 单次调用型端点：用完即释放（跨调用窗口由调用方显式 lease_id）
+            if _need_release and _lid:
+                _lease_release(_lid)
 
     # -------------------- 业务方法（在 _lock 内执行）--------------------
 
@@ -989,6 +1230,9 @@ class BrowserContainer:
 
         async def _do():
             # hook 已在 _launch 中 add_init_script 注入，直接等前端发 im/user/info
+            # ⚠️ 2026-09-13 根因修复说明：hook 一直没生效，**不是**抖音改版，
+            #    而是 **patchright 屏蔽了脚本注入通道**（见 _launch 的注入改动）。
+            #    修好注入后，此处恢复为原本的 hook 截获路径。
             if "/chat" not in self._page.url:
                 await self._page.goto("https://www.douyin.com/chat?isPopup=1",
                                        wait_until="domcontentloaded", timeout=25000)
@@ -1081,7 +1325,7 @@ class BrowserContainer:
                     "return el.scrollTop + el.clientHeight >= el.scrollHeight - 4; }")
                 if at_bottom:
                     break
-            # 到底后再点一轮，确保末屏会话也点进（触发其 im/user/info）
+            # 到底后再点一轮，确保末屏会话也点进
             await _click_all()
             try:
                 cap = await self._page.evaluate(
@@ -1090,6 +1334,12 @@ class BrowserContainer:
                 logger.warning("BCC-011", f"[bcc] 读取 hook 结果失败: {e}")
                 cap = {}
             cap = cap or {}
+            # ⚠️ 2026-09-13：此前的 DOM 采集方案已**撤回**。
+            # 原因（知识库 08 §24 明确记载）：DOM 列表项无 conv_id/sec_uid，
+            # 与首包只能靠**列表顺序软关联**，而懒加载 + 新消息置顶会错位 →
+            # 昵称张冠李戴。且效率远低于 hook（每轮全量解析 DOM）。
+            # 正解是修好 hook 注入通道（见 _launch：改走 playwright 注入），
+            # 恢复「截 im/user/info 响应 → uid 精确桥接」这一唯一可靠路径。
             # 写入进程内缓存（供后续 /capture_userinfo 直接命中，
             # 避免预热完成后又重复跑一遍 176s 的滚动）
             if cap:
@@ -1220,6 +1470,11 @@ class BrowserContainer:
             # P2-B：标记独占窗口。从 context 关闭到 _launch 完成期间，
             # 其他浏览器操作走 _exec 时会快速失败而非排队干等
             _scan_exclusive["holder"] = "scan_login"
+            # 2026-09-13 S2：scan_login 同时走租约（统一仲裁入口）。
+            # _scan_exclusive 保留以兼容既有 _is_busy() 检查。
+            _sl_lease = _lease_acquire("scan_login", "exclusive", 0,
+                                      ttl=LEASE_PRIO_TTL_LIMIT[0])
+            _sl_lid = _sl_lease.get("lease_id")
             try:
                 # 关闭本容器 context，让 DYLoginApi 独占 profile
                 try:
@@ -1267,6 +1522,10 @@ class BrowserContainer:
                 return {"ok": ok, "uid": _uid}
             finally:
                 _scan_exclusive["holder"] = None
+                try:
+                    _lease_release(_sl_lid)
+                except Exception:
+                    pass
         return await self._exec(_do)
 
     # -------------------- 健康与保活 --------------------
@@ -1290,6 +1549,11 @@ class BrowserContainer:
             "logged_in": bool(env_path and os.path.exists(env_path)),
             # 2026-09-13：上报自身版本，供桌面端比对「前端新/后端旧」
             "version": _app_version(),
+            # 2026-09-13 S2：暴露租约状态（browser_gate 此前读的 "exclusive"
+            # 字段**从未存在**，导致其独占分支恒为假成功——此处补齐真值源）
+            "lease": _lease_status(),
+            # 兼容旧的 exclusive 读取（值为当前 holder，空闲为 None）
+            "exclusive": (_lease_status() or {}).get("holder"),
         }
 
     def _load_uid_from_env(self) -> Any:
@@ -1831,6 +2095,69 @@ async def status() -> dict:
     return c.status()
 
 
+@app.get("/lease_status")
+async def lease_status() -> dict:
+    """只读：当前租约状态（谁在用浏览器、还剩多久）。
+
+    零副作用、零行为变化 —— 调度器（services.browser_gate）与前端据此判断
+    能否立刻拿到浏览器，而不是像此前那样"猜"（gate 曾读一个从不存在的
+    /status.exclusive 字段，导致独占分支恒为假成功）。
+    """
+    return {"ok": True, "lease": _lease_status(),
+            "prios": {"0": "用户显式(ttl<=300s)",
+                      "1": "业务自动(ttl<=180s)",
+                      "2": "后台保活(ttl<=30s)"}}
+
+
+class LeaseBody(BaseModel):
+    holder: str = ""
+    purpose: str = "auto"
+    prio: int = 2
+    ttl: float = 0.0
+    lease_id: str = ""
+
+
+@app.post("/lease")
+async def lease_acquire(body: LeaseBody) -> dict:
+    """申请浏览器租约（调度器统一仲裁入口）。
+
+    规则（见 docs/调度器租约设计细节.md §3）：
+      · **不抢占**：已被他人持有则立即返回 busy + retry_after，绝不打断
+        正在执行的浏览器操作（DOM 流程/context 重建不可中断）。
+      · **同 lease_id 重入**复用现有租约（不自己和自己冲突）。
+      · **ttl 超该优先级上限**按上限授予（P0=300s/P1=180s/P2=30s），
+        防"低优先级长期霸占"把调度器架空。
+      · **惰性 TTL**：到期未 release 会在下次读取时自动回收（BCC-046），
+        持有者崩溃不会造成永久独占。
+    """
+    r = _lease_acquire(body.holder or "anonymous", body.purpose,
+                       body.prio, body.ttl, body.lease_id)
+    if not r.get("ok"):
+        return {"ok": False, "busy": r.get("busy"),
+                "busy_prio": r.get("busy_prio"),
+                "retry_after": r.get("retry_after"),
+                "msg": (f"浏览器正被 {r.get('busy')}"
+                        f"（{LEASE_PRIO_NAME.get(r.get('busy_prio'), '?')}）使用，"
+                        f"约 {r.get('retry_after')}s 后可用")}
+    return {"ok": True, "lease_id": r["lease_id"],
+            "expires_at": r["expires_at"], "renew": r.get("renew", False),
+            "lease": _lease_status()}
+
+
+@app.post("/lease/renew")
+async def lease_renew(body: LeaseBody) -> dict:
+    """续租。累计时长不得超过该优先级上限（防续租绕过 TTL 上限）。"""
+    r = _lease_renew(body.lease_id, body.ttl)
+    return r
+
+
+@app.post("/lease/release")
+async def lease_release(body: LeaseBody) -> dict:
+    """释放租约（必须 lease_id 匹配，防误释放他人租约）。"""
+    r = _lease_release(body.lease_id, body.holder)
+    return r
+
+
 @app.post("/cookie")
 async def refresh_cookie() -> dict:
     """读实时 cookie 返回 + 写回 .env。"""
@@ -2108,6 +2435,51 @@ async def quit_() -> dict:
 # ----------------------------------------------------------------------------
 # 主入口
 # ----------------------------------------------------------------------------
+# ───────────────────────────────────────────────────────────────────────────
+# 单例检测（2026-09-13）：启动前确认该账号没有第二个 BCC / 浏览器在跑
+# ───────────────────────────────────────────────────────────────────────────
+def _detect_existing_bcc(account, port):
+    """检测同一账号是否已有 BCC 在运行；有则返回描述串（用于拒绝启动）。
+
+    两层判据，任一命中即视为「已有实例」（宁可拦错也不许并存）：
+      ① **端口层**：该账号哈希端口已被监听，且 /status 回的是同一账号。
+         （只判端口被占不够——可能是别的进程；必须核对 /status.account）
+      ② **profile 层（根本）**：该账号 profile 目录存在 Chromium 锁文件
+         （SingletonLock / lockfile）。浏览器所有权最终体现在该目录上，
+         有人持锁就说明有活着的浏览器；比端口判据更根本、与端口无关。
+    """
+    # ① 端口层
+    try:
+        from auto_dm import accounts as _acc
+        if _acc._port_open(port, timeout=0.3):
+            _who = ""
+            try:
+                import json as _json
+                import urllib.request as _ur
+                with _ur.urlopen("http://127.0.0.1:%d/status" % port,
+                                 timeout=4) as _r:
+                    _j = _json.loads(_r.read().decode("utf-8", "replace"))
+                _who = str(_j.get("account") or "")
+            except Exception:
+                _who = ""
+            if not _who or _who == account:
+                return "port=%d%s" % (port, (", account=%s" % _who) if _who else "")
+    except Exception:
+        pass
+    # ② profile 层
+    try:
+        from auto_dm import accounts as _acc
+        _env = _acc.env_path_of(account)
+        _prof = _acc.profile_dir_of(_env) if _env else ""
+        if _prof and os.path.isdir(_prof):
+            for _n in ("SingletonLock", "lockfile"):
+                if os.path.exists(os.path.join(_prof, _n)):
+                    return "profile 被占用（%s 存在 %s）" % (_prof, _n)
+    except Exception:
+        pass
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="浏览器容器守护进程（BCC）")
     parser.add_argument("--account", required=True, help="账号名")
@@ -2115,6 +2487,9 @@ def main() -> None:
     parser.add_argument(
         "--allow-any-port", action="store_true",
         help="允许非哈希端口启动（仅调试用；正常启动一律走端口哈希校验）")
+    parser.add_argument(
+        "--force-duplicate", action="store_true",
+        help="允许同账号第二个 BCC 并存（仅极端调试；正常一律走调度器 services.browser_gate）")
     args = parser.parse_args()
 
     # 2026-09-06 P1 修复（知识库 08 §24.9 事故 ④）：端口必须与
@@ -2129,6 +2504,30 @@ def main() -> None:
               f"端口错乱会导致 cookie 串号/双容器并存。"
               f"（确属调试需要请加 --allow-any-port）")
         raise SystemExit(2)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 2026-09-13【单例硬守卫】落实用户铁律：
+    #   「任何操作前先核对 BCC 状态；只能有一个 BCC，统一交给调度器切换」
+    #
+    # 为什么要做在二进制里（而不是只靠调用方自觉）：
+    #   main() 此前只有「端口哈希校验」，没有「该账号已有实例在跑」的守卫
+    #   —— 单例全靠调用方自觉，调度器因此可被任意路径绕过。
+    #   实测事故：手工起的第二个 BCC 与常驻 BCC 抢同一 profile，且缺会员态
+    #   导致 _launch 抛错 → 每 3~4 秒重启一次（用户所见「快闪」）。
+    #   现在改为**二进制自证**：自己确认没有第二个实例，否则拒绝启动。
+    #
+    # 逃生口：--force-duplicate（显式调试用，会打 BCC-044 审计）。
+    # ═══════════════════════════════════════════════════════════════════════
+    if not args.force_duplicate:
+        _dup = _detect_existing_bcc(args.account, args.port)
+        if _dup:
+            print(f"[bcc] 拒绝启动：账号「{args.account}」已有一个 BCC 在运行"
+                  f"（{_dup}）。"
+                  f"单账号只允许一个 BCC 常驻 —— 请把操作交给调度器："
+                  f"services.browser_gate.ensure_browser(account, purpose)，"
+                  f"由它复用/切换现有容器，绝不再起第二个。"
+                  f"（确属极端调试需要请加 --force-duplicate）")
+            raise SystemExit(3)
 
     _state["account"] = args.account
     _state["port"] = args.port

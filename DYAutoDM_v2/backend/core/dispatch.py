@@ -326,7 +326,15 @@ class DispatchCenter:
                         logger.warning("SEND-006", 
                             f"[调度] 私信未入池（账号={_acct} 目标={_uid}）: {reason}")
                 except Exception as _e:
-                    logger.warning("SEND-007", f"[调度] dm_dispatch 接入失败，回退直发: {_e}")
+                    # 2026-09-13 S2.7：**不再回退直发**。
+                    # 直发绕过 dm_dispatch 的统一风控闸门（2次/分钟、
+                    # 30次/天 + 频控降权冷静）——发送是最高频风控面，
+                    # 绕过闸门等于把账号暴露给风控。宁可"这次不发"，
+                    # 也不破坏闸门（用户可从前端看到「调度堵塞」类失败原因）。
+                    logger.warning(
+                        "SEND-037",
+                        f"[调度] dm_dispatch 接入失败，已放弃发送（不再回退直发绕过风控闸门）: {_e}")
+                    _routed = True   # 标记已处理，阻止下方回退直发分支
             if not _routed:
                 ok, reason = await send_target_async(self.auth, target, content)
         except Exception as e:

@@ -68,7 +68,11 @@ def bcc_state(account: str) -> dict:
         with _ur.urlopen(rq, timeout=5) as r:
             j = _json.loads(r.read().decode("utf-8", "replace"))
         out["alive"] = bool(j.get("alive"))
-        out["exclusive"] = j.get("exclusive")
+        # 2026-09-13 S2：真值源。此前只读 j.get("exclusive")，而 /status
+        # 从不返回该字段 → 恒为 None → 独占分支永远走假成功路径。
+        out["lease"] = j.get("lease") or {}
+        out["exclusive"] = (j.get("lease") or {}).get("holder") \
+            or j.get("exclusive")
         out["version"] = j.get("version")
         out["account"] = j.get("account") or account
         out["msg"] = "ok"
@@ -77,11 +81,71 @@ def bcc_state(account: str) -> dict:
     return out
 
 
+# 优先级映射（与 BCC 侧 LEASE_PRIO_TTL_LIMIT 一致：0=用户显式 1=业务自动 2=后台保活）
+_PRIO_BY_PURPOSE = {
+    PURPOSE_AUTO: 1,         # 更新会话/凭证刷新/采集 → 业务自动
+    PURPOSE_EXCLUSIVE: 0,    # 扫码/读 profile → 用户显式
+}
+_TTL_LIMIT = {0: 300.0, 1: 180.0, 2: 30.0}
+
+
+def _lease_http(port: int, path: str, payload: dict, timeout: float = 8.0) -> dict:
+    """调 BCC 租约端点（零副作用失败：异常一律转为 {ok:False, msg}）。"""
+    import json as _json
+    import urllib.request as _ur
+    try:
+        rq = _ur.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with _ur.urlopen(rq, timeout=timeout) as r:
+            return _json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return {"ok": False, "msg": f"租约请求失败({path}): {str(e)[:80]}"}
+
+
+def acquire_lease(account: str, holder: str, purpose: str = PURPOSE_AUTO,
+                  prio: Optional[int] = None, ttl: float = 0.0) -> dict:
+    """向该账号 BCC 申请浏览器租约 —— **业务侧取用浏览器的唯一正路**。
+
+    返回 {ok, lease_id, expires_at, busy, retry_after, msg}。
+    调用方拿到 lease_id 后应在 BCC 请求里带上（BCC 据此判定"确实持有"），
+    用完调 release_lease(account, lease_id)。
+    """
+    st = bcc_state(account)
+    if not st.get("online"):
+        return {"ok": False, "msg": st.get("msg") or "BCC 未在线"}
+    _prio = _PRIO_BY_PURPOSE.get(purpose, 1) if prio is None else int(prio)
+    _ttl = ttl or _TTL_LIMIT.get(_prio, 30.0)
+    return _lease_http(st["port"], "/lease",
+                       {"holder": holder, "purpose": purpose,
+                        "prio": _prio, "ttl": _ttl})
+
+
+def release_lease(account: str, lease_id: str, holder: str = "") -> dict:
+    """释放租约（务必放在 finally，否则要等 TTL 到期才回收）。"""
+    if not lease_id:
+        return {"ok": True, "msg": "无租约需释放"}
+    st = bcc_state(account)
+    if not st.get("online"):
+        return {"ok": False, "msg": "BCC 不在线，租约将随进程退出/TTL 回收"}
+    return _lease_http(st["port"], "/lease/release",
+                       {"lease_id": lease_id, "holder": holder})
+
+
+def lease_status(account: str) -> dict:
+    """只读查询该账号 BCC 的租约状态（谁在用、还剩多久）。"""
+    st = bcc_state(account)
+    return st.get("state", {}).get("lease") if "state" in st else st.get("lease")
+
+
 def ensure_browser(account: str, purpose: str = PURPOSE_AUTO,
-                   wait: bool = True) -> dict:
+                   wait: bool = True, holder: str = "",
+                   prio: "int|None" = None, ttl: float = 0.0) -> dict:
     """统一入口：确保该账号有**且仅有一个**浏览器所有者。
 
-    返回 {ok, owner, port, state, msg}。永不新开独立浏览器实例。
+    返回 {ok, owner, port, state, lease_id, msg}。永不新开独立浏览器实例。
+    拿到 lease_id 即持租约 —— **用完必须 release_lease()**（或等 TTL）。
 
     - purpose=AUTO      : 复用 BCC；离线则先拉起 BCC 再复用
     - purpose=EXCLUSIVE : 要求独占（扫码/读 profile）；仍由 BCC 进程让出 profile
@@ -109,15 +173,30 @@ def ensure_browser(account: str, purpose: str = PURPOSE_AUTO,
             return {"ok": False, "owner": None, "port": st.get("port"),
                     "state": st, "msg": msg}
 
-    # 已在线 → 复用（不新开）
-    if purpose == PURPOSE_AUTO:
-        logger.info(f"[gate][{account}] 复用 BCC 容器 (port={st['port']}, "
-                    f"alive={st['alive']}, exclusive={st['exclusive']})")
-    else:
-        if not st["exclusive"]:
-            logger.info(f"[gate][{account}] 独占用途 {purpose}：需先令 BCC 让出 profile")
+    # 已在线 → **真取租约**（2026-09-13 S2：消除此前的静默空壳）
+    #
+    # 原实现的问题：EXCLUSIVE 分支只打一行日志就 return ok=True，
+    # 因为它读的 st["exclusive"] 来自 /status，而该字段此前从不返回。
+    # 调用方以为拿到独占，实际什么都没发生 —— 比报错更糟（完全无感）。
+    _prio = _PRIO_BY_PURPOSE.get(purpose, 1)
+    _ttl = _TTL_LIMIT.get(_prio, 30.0)
+    _lr = _lease_http(st["port"], "/lease",
+                      {"holder": holder or f"gate:{purpose}",
+                       "purpose": purpose, "prio": _prio, "ttl": _ttl})
+    if not _lr.get("ok"):
+        _busy = _lr.get("busy")
+        _retry = _lr.get("retry_after")
+        logger.info(f"[gate][{account}] 浏览器被 {_busy} 占用（约 {_retry}s），"
+                    f"purpose={purpose} —— 显式失败，不再起第二个实例")
+        return {"ok": False, "owner": "bcc", "port": st["port"],
+                "state": st, "busy": _busy, "retry_after": _retry,
+                "msg": f"浏览器正被 {_busy} 使用，约 {_retry}s 后可用"}
+    logger.info(f"[gate][{account}] 取得租约 (port={st['port']}, "
+                f"purpose={purpose}, prio={_prio}, "
+                f"lease_id={_lr.get('lease_id')})")
     return {"ok": True, "owner": "bcc", "port": st["port"],
-            "state": st, "msg": "ok"}
+            "state": st, "lease_id": _lr.get("lease_id"),
+            "expires_at": _lr.get("expires_at"), "msg": "ok"}
 
 
 def refresh_cookie_via_owner(account: str, auth: Any, env_path: Optional[str]) -> bool:
