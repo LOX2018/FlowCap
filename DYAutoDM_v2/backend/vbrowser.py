@@ -64,7 +64,13 @@ _FAKE_MEDIA_ARGS = [
 ]
 
 _CHROME_ARGS = [
-    "--disable-gpu",
+    # ⚠️ 2026-09-13 实测移除 --disable-gpu：
+    #   原为「无头稳定性」保留，但它使内核的 GPU/WebGL 指纹伪装失效，实测
+    #   WebGL renderer 变成 "ANGLE (Microsoft, Microsoft Basic Render Driver ...)"
+    #   ——Windows 软件渲染兜底值，正常用户浏览器绝不会是这个值，是极强的
+    #   自动化/虚拟机特征（对照：去掉本参数后为真实 "AMD Radeon(TM) Graphics"）。
+    #   现所有启动均已转为「真有头+最小化」，不再需要它换稳定。
+    #   如需回退：设环境变量 DY_DISABLE_GPU=1。
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
@@ -544,6 +550,22 @@ def _env_path_of_account(account):
     return None
 
 
+def fingerprint_seed_of(account):
+    """账号级【固定】指纹种子（决定内核指纹伪装的确定性输出）。
+
+    用账号名做 crc32 得到稳定数字种子 → 同一账号每次启动指纹完全一致
+    （杜绝环境漂移），不同账号得到不同指纹（互相隔离，防关联）。
+    设 DY_FP_SEED_OFF=1 可关闭（回到内核默认；默认值经实测也是稳定的，
+    但不做账号间隔离）。
+    """
+    if (os.environ.get("DY_FP_SEED_OFF") or "").strip() in ("1", "true", "yes"):
+        return None
+    if not account:
+        return None
+    import zlib as _zlib
+    return _zlib.crc32(account.encode("utf-8")) % 100000000
+
+
 def _launch_args_with_proxy(cfg, account=None):
     """合并 _CHROME_ARGS + 账号级 WebRTC 防泄漏参数，并按【代理配置】决定环境。
 
@@ -565,6 +587,17 @@ def _launch_args_with_proxy(cfg, account=None):
     - 缺省（未配置任何模式）按 direct 处理（走本机 IP，最保守）。
     """
     args = list(_CHROME_ARGS)
+    # 回退开关：DY_DISABLE_GPU=1 时恢复旧的 --disable-gpu（此项会让 WebGL 暴露
+    # 软件渲染特征，仅在 GPU 环境异常导致浏览器不稳定时使用）
+    if (os.environ.get("DY_DISABLE_GPU") or "").strip() in ("1", "true", "yes"):
+        args.append("--disable-gpu")
+        logger.warning("BCC-038", "[vbrowser] 已按 DY_DISABLE_GPU 恢复 --disable-gpu"
+                                  "（注意：会使 WebGL 暴露软件渲染特征）")
+    # 账号级固定指纹种子（跨启动恒定 + 账号间隔离）
+    _seed = fingerprint_seed_of(account)
+    if _seed is not None:
+        args.append(f"--fingerprint={_seed}")
+        logger.info(f"[vbrowser] 指纹种子(固定)={_seed} account={account}")
     env_path = _env_path_of_account(account) if account else None
 
     # ---- 解析配置：mode + node_url ----
