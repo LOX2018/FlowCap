@@ -797,16 +797,25 @@ def app_root():
         # 若 exe 父目录名为 binaries/bin，则上溯一级作为应用根。
         # 2026-09-08 onedir：exe 在 <root>/binaries/<full>/ 下（目录名含 triple，
         # 非 binaries/bin）→ 须上溯两级；先探测父目录是否 binaries/bin。
+        # ⚠️ 部署位置铁律（2026-09-13 用户要求）：sidecar 一律在【应用根目录】，
+        # 资源（vb_chromium 等）也在根目录；binaries/ 子目录仅为历史容错。
+        # exe 形态：<root>/<full>/<full>.exe（onedir）或 <root>/<full>.exe（onefile）
+        #          或 <root>/binaries/...（旧部署）
         parent = os.path.dirname(exe_dir)
-        if os.path.basename(exe_dir).lower() in ("binaries", "bin"):
-            root_candidates = [parent, exe_dir]
-        elif os.path.basename(parent).lower() in ("binaries", "bin"):
-            # onedir：exe_dir=<root>/binaries/<full>/，parent=<root>/binaries/
-            root_candidates = [os.path.dirname(parent), exe_dir, parent]
-        else:
-            root_candidates = [exe_dir, parent]
+        root_candidates = []
+        b_exe = os.path.basename(exe_dir)
+        b_par = os.path.basename(parent)
+        if b_exe.endswith("-msvc") or b_exe.endswith("-gnu"):      # onedir 目录内
+            root_candidates.append(parent)
+        if b_par.lower() in ("binaries", "bin"):                   # 旧部署
+            root_candidates += [os.path.dirname(parent), exe_dir, parent]
+        root_candidates += [exe_dir, parent]
+        # 去重保序
+        _seen = set()
+        root_candidates = [c for c in root_candidates
+                           if not (c in _seen or _seen.add(c))]
         for cand in root_candidates:
-            # 直接有 vb_chromium（复制 exe / 解压资源场景）
+            # 直接有 vb_chromium（标准：资源与 sidecar 同在应用根）
             if os.path.isdir(os.path.join(cand, "vb_chromium")):
                 return cand
         # fallback: Tauri resources/ 子目录（NSIS 安装场景）
@@ -814,8 +823,8 @@ def app_root():
             res_dir = os.path.join(cand, "resources")
             if os.path.isdir(os.path.join(res_dir, "vb_chromium")):
                 return res_dir
-        # 再退：上溯到 binaries/bin 的上一级（onydri/onefile 通用，无 vb_chromium 时）
-        if os.path.basename(parent).lower() in ("binaries", "bin"):
+        # 再退：上溯到 binaries/bin 的上一级（无 vb_chromium 时）
+        if b_par.lower() in ("binaries", "bin"):
             return os.path.dirname(parent)
         # 退化返回 exe 所在目录，让上层报明确的"找不到"错误
         return exe_dir

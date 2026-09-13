@@ -61,22 +61,39 @@ def _target_triple() -> str:
 def _resolve_sidecar_binary(name: str) -> str | None:
     """解析 sidecar 二进制路径（recv-daemon / browser-daemon）。
 
-    Backend exe 在发布态位于 <app_root>/binaries/ 下，与其他 sidecar 同级。
-    搜索顺序：
-      1) backend exe 所在目录 / <name>-<triple>.exe
-      2) backend exe 所在目录 / <name>.exe（无 triple 别名）
-      3) 开发态：<root>/src-tauri/binaries/<name>-<triple>.exe
+    ⚠️ 部署位置铁律（2026-09-13 用户要求）：所有 sidecar 与主程序一律
+    **直接放在应用根目录**，禁止放 <root>/binaries/ 子目录（曾因两处部署
+    导致版本混乱）。搜索顺序：根目录优先 → 兼容历史 binaries/（仅容错）。
     """
     exe_dir = os.path.dirname(os.path.abspath(sys.executable))
     triple = _target_triple()
-    # 1) 同目录 / <name>-<triple>.exe
-    cand = os.path.join(exe_dir, f"{name}-{triple}.exe")
-    if os.path.isfile(cand):
-        return cand
-    # 2) 同目录 / <name>.exe
-    cand = os.path.join(exe_dir, f"{name}.exe")
-    if os.path.isfile(cand):
-        return cand
+    full = f"{name}-{triple}"
+    _roots = [exe_dir]
+    # 后端以 onedir 形态运行时 exe 在 <root>/<full>/ 内，应用根需上溯一级
+    if os.path.basename(exe_dir) == full:
+        _roots.insert(0, os.path.dirname(exe_dir))
+    try:
+        import vbrowser as _vb
+        _r = _vb.app_root()
+        if _r and _r not in _roots:
+            _roots.append(_r)
+    except Exception:
+        pass
+    for _r in _roots:
+        # 根目录：onedir 目录 / onefile / 无 triple 别名
+        for cand in (os.path.join(_r, full, f"{full}.exe"),
+                     os.path.join(_r, f"{full}.exe"),
+                     os.path.join(_r, f"{name}.exe")):
+            if os.path.isfile(cand):
+                return cand
+    # 兼容历史部署（仅容错，不用于新部署）
+    for _r in _roots:
+        base = os.path.join(_r, "binaries")
+        for cand in (os.path.join(base, full, f"{full}.exe"),
+                     os.path.join(base, f"{full}.exe"),
+                     os.path.join(base, f"{name}.exe")):
+            if os.path.isfile(cand):
+                return cand
     # 3) 开发态：backend 在 <root>/backend/，需上溯到 <root>/src-tauri/binaries/
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)

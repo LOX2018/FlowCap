@@ -50,26 +50,33 @@ fn resolve_sidecar(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
     // PyInstaller onedir 部署目录名 = <name>-<triple>（无 .exe），目录内 exe 带 .exe
     let stem = format!("{name}-{}", target_triple());
     let fname = format!("{stem}.exe");
-    // 1) onedir 目录形态：binaries/<full>/<full>.exe（PyInstaller 6 onedir 默认布局）
-    //    ⚠️ 2026-09-08 实测修复：目录段必须是【不带 .exe 的 stem】，
-    //    旧写法两段都 join(fname) 拼出 "...exe\...exe" 永不命中 → 永远回退 onefile。
-    let onedir = dir.join("binaries").join(&stem).join(&fname);
-    if onedir.exists() {
-        return Ok(onedir);
+    // ⚠️ 部署位置铁律（2026-09-13 用户要求）：**sidecar 直接放应用根目录**，
+    //    不再放 <root>/binaries/ 子目录（曾因两处部署导致版本混乱）。
+    //    搜索顺序：根目录优先，再兼容历史 binaries/ 子目录（旧部署不破坏）。
+    //    ⚠️ onedir 目录段必须是【不带 .exe 的 stem】，
+    //    旧写法两段都 join(fname) 会拼出 "...exe\...exe" 永不命中。
+    let candidates = [
+        // 1) 【新·标准】根目录 onedir：<root>/<full>/<full>.exe
+        dir.join(&stem).join(&fname),
+        // 2) 根目录 onefile：<root>/<full>.exe
+        dir.join(&fname),
+        // 3) 兼容旧部署：binaries/<full>/<full>.exe
+        dir.join("binaries").join(&stem).join(&fname),
+        // 4) 兼容旧部署：binaries/<full>.exe
+        dir.join("binaries").join(&fname),
+    ];
+    for cand in candidates.iter() {
+        if cand.exists() {
+            return Ok(cand.clone());
+        }
     }
-    // 2) onefile 单文件形态（旧部署）
-    let onefile = dir.join("binaries").join(&fname);
-    if onefile.exists() {
-        return Ok(onefile);
-    }
-    // 3) 回退：Tauri externalBin（开发态 src-tauri/binaries 回退）
+    // 5) 回退：Tauri externalBin（开发态 src-tauri/binaries 回退）
     if app.shell().sidecar(name).is_ok() {
         return Ok(PathBuf::from(name));
     }
     Err(format!(
-        "找不到 sidecar {name}：{} / {} 均不存在，且 externalBin 不可用",
-        onedir.display(),
-        onefile.display()
+        "找不到 sidecar {name}：已尝试 根目录/<full>/、根目录/<full>.exe、\
+         binaries/<full>/、binaries/<full>.exe 均不存在，且 externalBin 不可用"
     ))
 }
 

@@ -283,23 +283,28 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
         # 双检：等锁期间可能已被并发拉起
         if _port_open(port, timeout=0.3):
             return {"ok": True, "port": port, "msg": "已在运行"}
-        binary = os.path.join(_ROOT, "binaries",
-                              "dyautodm-browser-daemon-x86_64-pc-windows-msvc",
-                              "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
-        # onedir 目录形态（免解压）优先；不存在回退 onefile 单文件
-        if not os.path.isfile(binary):
-            binary = os.path.join(_ROOT, "binaries",
-                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
-        if not os.path.isfile(binary):
-            # 打包根随 app_root：源码态=项目根/src-tauri/binaries（同样 onedir 优先）
-            binary = os.path.join(_ROOT, "src-tauri", "binaries",
-                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc",
-                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
-        if not os.path.isfile(binary):
-            binary = os.path.join(_ROOT, "src-tauri", "binaries",
-                                  "dyautodm-browser-daemon-x86_64-pc-windows-msvc.exe")
-        if not os.path.isfile(binary):
-            return {"ok": False, "port": None, "msg": f"BCC 二进制不存在: {binary}"}
+        # ⚠️ 部署位置铁律（2026-09-13）：sidecar 一律在【应用根目录】，
+        # 禁止 <root>/binaries/（仅对被删除的历史部署保留容错）。
+        _full = "dyautodm-browser-daemon-x86_64-pc-windows-msvc"
+        binary = ""
+        for _cand in (
+            # 1) 标准：应用根目录（onedir 目录 → 单文件 → 无 triple 别名）
+            os.path.join(_ROOT, _full, f"{_full}.exe"),
+            os.path.join(_ROOT, f"{_full}.exe"),
+            os.path.join(_ROOT, "dyautodm-browser-daemon.exe"),
+            # 2) 兼容历史 binaries/ 部署（仅容错）
+            os.path.join(_ROOT, "binaries", _full, f"{_full}.exe"),
+            os.path.join(_ROOT, "binaries", f"{_full}.exe"),
+            # 3) 开发态：源码树 src-tauri/binaries
+            os.path.join(_ROOT, "src-tauri", "binaries", _full, f"{_full}.exe"),
+            os.path.join(_ROOT, "src-tauri", "binaries", f"{_full}.exe"),
+        ):
+            if os.path.isfile(_cand):
+                binary = _cand
+                break
+        if not binary:
+            return {"ok": False, "port": None,
+                    "msg": f"BCC 二进制不存在（应在应用根目录 {_ROOT}）"}
         if name in _bcc_lazy_spawned:
             # 之前拉过但端口没开 -> 上次失败，不重复拉（防循环）
             return {"ok": False, "port": None,

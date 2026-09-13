@@ -30,25 +30,41 @@ def _target_triple() -> str:
 def _resolve_sidecar_binary(name: str) -> str | None:
     """解析 sidecar 二进制路径（recv-daemon / browser-daemon）。
 
-    搜索顺序（onedir 免解压优先）：
-      1) backend exe 所在目录 / <name>-<triple>/<name>-<triple>.exe（onedir 目录）
-      2) backend exe 所在目录 / <name>-<triple>.exe（onefile 单文件）
-      3) 开发态：<root>/src-tauri/binaries/（onedir 目录与单文件都试）
+    ⚠️ 部署位置铁律（2026-09-13 用户要求）：sidecar 直接放**应用根目录**，
+    不再放 <root>/binaries/ 子目录。搜索顺序：根目录优先 → 兼容历史 binaries/。
+
+      1) <root>/<name>-<triple>/<name>-<triple>.exe（onedir 目录，标准）
+      2) <root>/<name>-<triple>.exe（onefile 单文件）
+      3) 兼容旧部署：<root>/binaries/ 下同名（目录/单文件）
+      4) 开发态：<root>/src-tauri/binaries/
     """
     exe_dir = os.path.dirname(os.path.abspath(sys.executable))
     triple = _target_triple()
     fname = f"{name}-{triple}.exe"
-    # 1) onedir 目录形态（免解压）：<exe_dir>/<full>/<full>.exe
-    cand = os.path.join(exe_dir, f"{name}-{triple}", fname)
-    if os.path.isfile(cand):
-        return cand
-    # 2) onefile 单文件（旧部署）
-    cand = os.path.join(exe_dir, fname)
-    if os.path.isfile(cand):
-        return cand
-    cand = os.path.join(exe_dir, f"{name}.exe")
-    if os.path.isfile(cand):
-        return cand
+    # 应用根：exe 在根目录 → exe_dir 自身；exe 在 onedir 目录内 → 上溯一级
+    _root_cands = [exe_dir]
+    if os.path.basename(exe_dir) == f"{name}-{triple}":
+        _root_cands.insert(0, os.path.dirname(exe_dir))
+    try:
+        import vbrowser as _vb
+        _r = _vb.app_root()
+        if _r and _r not in _root_cands:
+            _root_cands.append(_r)
+    except Exception:
+        pass
+    # 1~3) 根目录优先，其次兼容 binaries/ 子目录
+    for _r in _root_cands:
+        for _sub in ("", "binaries"):
+            base = os.path.join(_r, _sub) if _sub else _r
+            cand = os.path.join(base, f"{name}-{triple}", fname)
+            if os.path.isfile(cand):
+                return cand
+            cand = os.path.join(base, fname)
+            if os.path.isfile(cand):
+                return cand
+            cand = os.path.join(base, f"{name}.exe")
+            if os.path.isfile(cand):
+                return cand
     # 3) 开发态
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
@@ -58,20 +74,8 @@ def _resolve_sidecar_binary(name: str) -> str | None:
     cand = os.path.join(project_root, "src-tauri", "binaries", fname)
     if os.path.isfile(cand):
         return cand
-    # 4) app_root 兜底（backend 以 onedir 形态运行时 exe_dir 在目录内一层，
-    #    上面各档落空——从 app_root()/binaries 再找一遍，onedir 优先）
-    try:
-        import vbrowser
-        root = vbrowser.app_root()
-        cand = os.path.join(root, "binaries", f"{name}-{triple}", fname)
-        if os.path.isfile(cand):
-            return cand
-        cand = os.path.join(root, "binaries", fname)
-        if os.path.isfile(cand):
-            return cand
-    except Exception:
-        pass
     return None
+
 
 
 def _spawn_sidecar(binary: str, args: list) -> subprocess.Popen:
