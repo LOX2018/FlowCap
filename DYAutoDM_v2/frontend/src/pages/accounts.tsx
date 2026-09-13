@@ -1811,6 +1811,9 @@ function ProxyDrawer({
 
           <div className="card" style={{ marginBottom: 14 }}>
             <h3>连接测试</h3>
+            <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+              三种模式均可测试，返回真实出口 IP 与归属地（直连=走本机 IP）
+            </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               <input
                 className="input"
@@ -1821,7 +1824,7 @@ function ProxyDrawer({
               />
               <button
                 className="btn primary"
-                disabled={testing || form.type === "direct"}
+                disabled={testing}
                 onClick={onTest}
               >
                 {testing ? "测试中…" : "测试连接"}
