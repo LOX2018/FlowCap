@@ -188,6 +188,13 @@ export default function App() {
   const [goReview, setGoReview] = useState<ReviewPayload | null>(null);
   const [goReuse, setGoReuse] = useState<ReusePayload | null>(null);
   const [msgAcct, setMsgAcct] = useState<string>("");
+  // 2026-09-13 用户反馈修复：「更新会话状态不持续，切到其他页面回来就丢」。
+  // 原因：refreshing 原本是 messages.tsx 组件内 useState —— 切页即卸载组件，
+  // 状态归零，回来显示成「未在更新」。现提升到 App 级（App 全程常驻）：
+  // 切页不丢，且 startedAt 让回来时能继续正确计时。
+  const [refreshState, setRefreshState] = useState<{
+    account: string; startedAt: number;
+  } | null>(null);
   const cidRef = useRef(0);
 
   // overview 3s 轮询（替代旧版 setInterval；Tauri 模式首次触发 ensureBackendReady）
@@ -362,6 +369,8 @@ export default function App() {
     reusePayload: goReuse,
     msgAcct,
     setMsgAcct,
+    refreshState,
+    setRefreshState,
   }; 
 
   // ===== 会员门禁 + 启动预对齐门（2026-09-08）：对齐完成才显示登录框 =====

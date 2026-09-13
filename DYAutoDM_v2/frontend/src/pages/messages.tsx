@@ -616,7 +616,15 @@ export default function MessagesPage(props: PageProps) {
   // 2026-09-06：会话搜索 —— 按昵称过滤定位会话（用户要求）
   const [convSearch, setConvSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  // 2026-09-13 用户反馈修复：更新状态提升到 App 级（切页不丢）。
+  // 兜底：App 未提供时退回本地 state（保持组件可独立使用）。
+  const refreshState = props.refreshState;
+  const setRefreshState = props.setRefreshState;
+  const refreshing = !!refreshState;
+  const setRefreshing = (v: boolean) => {
+    if (!setRefreshState) return;
+    setRefreshState(v ? { account: activeAcct, startedAt: Date.now() } : null);
+  };
   // 图片预览弹层（点击缩略图后展示）
   const [viewer, setViewer] = useState<MediaInfo | null>(null);
   // 附件菜单显示状态
@@ -676,16 +684,17 @@ export default function MessagesPage(props: PageProps) {
 
   // 2026-08-31：更新会话期间每秒累加耗时，让用户看到任务仍在推进
   useEffect(() => {
-    if (!refreshing) {
+    if (!refreshing || !refreshState) {
       setRefreshElapsed(0);
       return;
     }
-    const t = setInterval(
-      () => setRefreshElapsed((s) => s + 1),
-      1000,
-    );
+    // 基于 startedAt 计算：切页回来能接着正确计时（原来切页归零重计）
+    const tick = () => setRefreshElapsed(
+      Math.max(0, Math.floor((Date.now() - refreshState.startedAt) / 1000)));
+    tick();
+    const t = setInterval(tick, 1000);
     return () => clearInterval(t);
-  }, [refreshing]);
+  }, [refreshing, refreshState]);
 
   // 账号列表（读取 App 常驻轮询的共享缓存）
   const accountsQ = useQuery({

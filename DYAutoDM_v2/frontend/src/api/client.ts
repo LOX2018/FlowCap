@@ -1654,6 +1654,11 @@ export interface PageProps {
   msgAcct?: string;
   /** 设置私信页当前账号 */
   setMsgAcct?: (name: string) => void;
+  /** 更新会话进行态（2026-09-13 提升到 App 级：切页不丢状态）。
+   *  refreshing 原本是 messages.tsx 组件内 state，切页即卸载 → 状态归零，
+   *  用户看到「更新中」效果消失。提到 App 级后切页/切回来都保持。 */
+  refreshState?: { account: string; startedAt: number } | null;
+  setRefreshState?: (s: { account: string; startedAt: number } | null) => void;
 }
 
 

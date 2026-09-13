@@ -550,6 +550,48 @@ class BrowserContainer:
             logger.info(
                 f"[bcc] {self.account} 切换浏览器可见性: "
                 f"headless={self._headless} -> {target}")
+            # ═══════════════════════════════════════════════════════════════
+            # 2026-09-13【架构修正】切换可见性**只改窗口状态，不重建 context**。
+            #
+            # 为什么（用户实测的三个症状同源）：
+            #   ① 「更新会话状态不持续，切页面回来就丢」——切页触发了这里的
+            #      context 重建，重建期间 _switching/冷却期使业务全部排队或失败；
+            #   ② 「浏览器频繁自启」——每次重建都是一次 3~6s 的 launch churn；
+            #   ③ 重建期间昵称/头像捕获链路（依赖页面持续存活）断档。
+            # 前提：容器现在常驻「真有头 + 最小化」（vbrowser 已改），
+            #       所以“可见/不可见”本来就是窗口状态差异，无需重启 context。
+            # 传 set_visible(True)  → 恢复窗口（normal）
+            # 传 set_visible(False) → 最小化到任务栏
+            # 回退：DY_BCC_SWITCH_MODE=rebuild 可恢复旧的「重建 context」行为。
+            _switch_mode = str(os.environ.get(
+                "DY_BCC_SWITCH_MODE", "window")).strip().lower()
+            if _switch_mode == "window" and self._backend == "exe" \
+                    and self._context is not None:
+                try:
+                    from vbrowser import _set_window_state
+                    _st = "normal" if target is False else "minimized"
+                    _okw = await _set_window_state(self._context, _st)
+                    if _okw:
+                        self._headless = target
+                        self._switch_cool_until = time.time() + 5.0
+                        logger.info(
+                            f"[bcc] {self.account} 可见性已切换为"
+                            f"{'有头可见' if visible else '最小化'}（仅改窗口状态，"
+                            f"未重建 context —— 业务不中断）")
+                        if url and self._page is not None and not self._page.is_closed():
+                            try:
+                                await self._page.goto(url, wait_until="domcontentloaded",
+                                                       timeout=20000)
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning("BCC-038", f"[bcc] {self.account} 导航失败: {e}")
+                        return {"ok": True, "headless": target, "changed": True,
+                                "switching": False, "mode": "window",
+                                "msg": f"已切换为{'有头可见' if visible else '窗口最小化'}"}
+                    logger.info(f"[bcc] {self.account} 窗口状态设置失败，"
+                                f"回退到重建 context 流程")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("BCC-035", f"[bcc] {self.account} 窗口状态切换异常"
+                                               f"（回退重建）: {e}")
             # 关旧 context（释放 profile 内窗口，但保持 profile 目录不动）
             try:
                 if self._backend == "exe" and self._context is not None:

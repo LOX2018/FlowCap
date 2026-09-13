@@ -677,11 +677,32 @@ def parse_init_protobuf(raw, my_uid):
             _msg_ts = _parse_message_create_time(sb2)
             if not _msg_ts:
                 _msg_ts = (txt[2] / 1000.0) if txt[2] else 0
+            # 2026-09-13 修复「聊天图片不解码，只显示『前往抖音查看』」：
+            # 首包路径此前只取文本 txt[0]，**从不提取图片解密要素**，
+            # 导致图片消息落库 extra={}（实测 3 条 [图片] 消息 extra 全空）
+            # → 后端 origin_image_resolver 拿不到 skey/origin_url 无法解密
+            # → 前端只能降级显示「前往抖音查看」。cmd 301 路径早有该提取
+            # （_parse_message_text 返回 skey/origin_url），首包路径漏了，此处补齐。
+            _skey, _origin = None, None
+            try:
+                for _f3, _wt3, _v3 in _parse(sb2):
+                    if _f3 == 8 and _wt3 == WT_LEN and isinstance(_v3, bytes):
+                        try:
+                            _obj3 = json.loads(_v3.decode("utf-8", "ignore"))
+                        except Exception:
+                            _obj3 = None
+                        if isinstance(_obj3, dict):
+                            _skey, _origin = _extract_image_secret(_obj3)
+                        break
+            except Exception:
+                _skey, _origin = None, None
             messages.append({
                 "role": role,
                 "text": txt[0],
                 "ts": _msg_ts if _msg_ts else time.time(),
                 "msg_id": _parse_message_id(sb2),
+                "skey": _skey,
+                "origin_url": _origin,
             })
         # 会话属性（field 4）：含总消息数(field 2) / short_id(field 5)，
         # 用于长会话历史补全（cmd 301）。cbuf 是原始 bytes，须从 cparsed 取。

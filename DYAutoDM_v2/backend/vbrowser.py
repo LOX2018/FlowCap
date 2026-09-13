@@ -237,6 +237,59 @@ _PROXY_BUILTIN_BYPASS = "localhost;127.0.0.1;<local>"
 
 
 
+async def _set_window_state(context, state: str) -> bool:
+    """把窗口设为 normal / minimized（异步版）。返回是否成功。
+
+    2026-09-13 新增：容器常驻「真有头+最小化」后，切换可见性**不再重建 context**，
+    只需改窗口状态 —— 这同时解决三件事：
+      · 消除 context 重建带来的 3~6s 抖动与重启 churn（用户所见"闪退"）；
+      · 昵称/头像捕获链路全程不中断（不再出现切换期间 im/user/info 断档）；
+      · 登录态与环境零跳变（抖音看不到环境突变 → 不触发 step-up）。
+    """
+    try:
+        pages = context.pages
+        if not pages:
+            return False
+        session = await context.new_cdp_session(pages[0])
+        try:
+            info = await session.send("Browser.getWindowForTarget")
+            wid = info.get("windowId")
+            await session.send("Browser.setWindowBounds",
+                               {"windowId": wid, "bounds": {"windowState": state}})
+            return True
+        finally:
+            try:
+                await session.detach()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"[vbrowser] 设置窗口状态({state})失败: {e}")
+        return False
+
+
+def _set_window_state_sync(context, state: str) -> bool:
+    """同步版：把窗口设为 normal / minimized。"""
+    try:
+        pages = context.pages
+        if not pages:
+            return False
+        session = context.new_cdp_session(pages[0])
+        try:
+            info = session.send("Browser.getWindowForTarget")
+            wid = info.get("windowId")
+            session.send("Browser.setWindowBounds",
+                         {"windowId": wid, "bounds": {"windowState": state}})
+            return True
+        finally:
+            try:
+                session.detach()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"[vbrowser] 设置窗口状态({state})失败: {e}")
+        return False
+
+
 async def _minimize_window(context):
     """异步版：最小化 BCC 窗口到任务栏。"""
     try:
@@ -1026,20 +1079,44 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         #   - 最小化而非移屏外（-32000 屏外坐标会写进 profile 污染后续可见启动，
         #     09-09 已废弃）；
         #   - 最小化不改变 JS 可检测特征（screen/window 尺寸正常），风控视角=有头。
-        # 2026-09-13 回滚：恢复「纯无头」（9-10 的已知良好配置）。
-        # 原「有头+最小化」方案被证伪并引入回归：
-        #   · 无头特征并非弹窗原因（真因是出口 IP 分叉，见 _launch_args_with_proxy）；
-        #   · 有头窗口可被用户误关 → 关窗即杀死捕获链路 → 重启 churn（用户所见"闪退"）。
-        # 可观测态仍走 set_visible(headless=False) 显式切换，不受影响。
-        _disguise = False
-        _minimize = False
+        # 2026-09-13 【最终定案】常驻容器一律「真有头 + 窗口最小化」。
+        #
+        # 证据（昵称/头像全空的真因，实测日志对比）：
+        #   09-01 22:25 「真有头+窗口移屏外」→ 昵称捕获 277 个 ✅
+        #   09-03 23:13 「真有头+窗口移屏外」→ 昵称捕获 280 个 ✅
+        #   09-06 22:02 「真有头+窗口移屏外」→ 昵称捕获  81 个 ✅
+        #   09-13 20:22 「无头模式=native（纯 headless）」→ 累计昵称 0 个 🔴
+        #     （日志：滚动轮次 1 新点击=12 累计昵称=0 → 3 轮无新增终止 →
+        #      昵称缓存预热完成：0 个 → 头像/昵称全部降级为裸 UID）
+        # 结论：**抖音前端在纯 headless 下不发 im/user/info**（hook 截不到），
+        #   于是昵称/头像捕获全灭。这是「更新会话只剩首包内容」的直接原因。
+        #
+        # 关于「有头窗口会被误关 → 闪退」的顾虑（此前据此回滚）：
+
+        #   窗口可被误关是真问题，但解法不是退回纯无头（会废掉昵称捕获），
+        #   而是【最小化到任务栏】：用户不会误关一个最小化的窗口，
+        #   而有头特征完整保留（CDP setWindowBounds 不改变 JS 可检测特征）。
+        #   配合 set_visible 的「只改窗口状态、不重建 context」（见 browser_daemon），
+        #   彻底消除切换 churn。
+        #
+        # 回退开关：DY_BCC_HEADLESS_MODE=native 可恢复纯无头（仅调试用）。
+        import os as _os
+        _legacy_native = (str(_os.environ.get("DY_BCC_HEADLESS_MODE", "")).strip().lower()
+                          == "native")
+        _disguise = bool(headless) and not _legacy_native
+        _minimize = _disguise
         if headless:
-            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）")
+            if _legacy_native:
+                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）"
+                            "〔DY_BCC_HEADLESS_MODE=native 显式指定〕")
+            else:
+                logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化"
+                            "（风控对齐：与扫码/查看同环境，且保留前端 im/user/info 触发）")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=headless,  # disguise 模式已置 False；native 保持 True
+            headless=(False if _disguise else headless),  # 伪装模式恒有头
             args=launch_args,
             proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
@@ -1103,16 +1180,26 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-13 回滚：恢复「纯无头」（同 launch_async）。
-        _disguise = False
-        _minimize = False
+        # 2026-09-13【最终定案】常驻「真有头+窗口最小化」（同 launch_async，理由见该处）。
+        # 纯 headless 会让抖音前端不发 im/user/info → 昵称/头像捕获全灭
+        # （实测：native 累计昵称 0 个；有头模式历史值 277~282 个）。
+        import os as _os
+        _legacy_native = (str(_os.environ.get("DY_BCC_HEADLESS_MODE", "")).strip().lower()
+                          == "native")
+        _disguise = bool(headless) and not _legacy_native
+        _minimize = _disguise
         if headless:
-            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）")
+            if _legacy_native:
+                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）"
+                            "〔DY_BCC_HEADLESS_MODE=native 显式指定〕")
+            else:
+                logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化"
+                            "（风控对齐：与扫码/查看同环境，且保留前端 im/user/info 触发）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=headless,  # native：True 纯无头
+            headless=(False if _disguise else headless),  # 伪装模式恒有头
             args=launch_args,
             proxy=pw_proxy,
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
@@ -1120,7 +1207,7 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
             ignore_default_args=["--no-sandbox"],
         )
         # 2026-09-06：同步可见启动同样归位屏外遗留窗口；伪装启动不归位。
-        if not _disguise:
+        if not headless and not _disguise:
             _ensure_window_visible_sync(context)
         if _minimize:
             _minimize_window_sync(context)
