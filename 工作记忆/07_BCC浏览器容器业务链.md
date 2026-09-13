@@ -331,3 +331,61 @@ BCC headless 启动 → 抖音识别无头特征 → 环境跳变
   当时未被判风险；09-13 双账号强制下线证明 headless 终会被识别。
 - **凭证字段齐全 ≠ 凭证有效**：ticket/web_protect/keys 都在，但 UID 漂移
   已证明身份不匹配 → 凭证实际失效（与「UID 漂移=凭证失效」铁律一致）。
+
+
+## 【2026-09-13 三Bug 修复】BCC 切换死循环闪退 / 二次双击不唤醒 / 日志吞掉描述
+
+### 用户反馈
+> 「双击浏览器唤醒可观测态出现闪退，关闭浏览器后二次双击没有唤醒浏览器。
+> 运行日志的报错信息，只有报错代码，没有描述该代码对应的报错说明」
+
+### 一、日志只有代码没描述（根因：loguru 参数语义误用）
+**机制**：loguru 把**第一个位置参数当格式模板**（等价 str.format 的模板），
+第二个参数仅作 `{}` 占位符填充值。因此项目按「统一报错代码体系」写的
+```python
+logger.warning("BCC-006", f"[bcc] context/page 失活，重启: {e}")
+```
+**描述被静默丢弃**，运行日志只剩一行 `BCC-006` —— 排查价值归零。
+**全项目 345 处**这种写法（45 个文件：browser_daemon 35、ai_reply 28、
+recv_daemon 23、main 21、login_api 20 …）。
+
+**修法（零侵入，一处生效）**：新增 `backend/utils/code_logger.py`
+`install_code_logger_patch()`，包装 logger 各级方法，检测「纯错误码 + 后续描述」
+时自动合并为 `CODE | 描述`。在 3 个日志配置点（main / browser_daemon /
+recv_daemon）的 `logger.remove()` 之前安装。**未改 345 处调用点**，
+`{}` 占位符正常用法不受影响，幂等可重复调用。
+
+**⚠️ 连带教训**：正因为这个 bug，此前所有「崩溃只看到代码看不到异常」的排查
+都被它挡住。**修日志是诊断下一步的前提**，遇到"日志信息不足"先修可观测性。
+
+### 二、双击唤醒闪退 = _ensure_alive 缺切换期保护（3.6s 死循环）
+**根因链**：
+```
+双击 → set_visible：关旧 context → _context=None → _switching=True
+     → 后台 _do_switch_background 重建 context（实测耗时 ~17.6s）
+   ↓ 同期前端 / WP 轮询经 _exec → _ensure_alive()
+   ↓ _context is None → 立刻 raise "context 已关闭"
+   ↓ 误判「失活」→ 触发重启 → 与后台 _launch 抢 profile → TargetClosed
+   ↓ 再次误判 → 【3.6 秒一轮死循环】（BCC-006 刷屏 = 用户看到的"闪退"）
+```
+`run_keepalive` 早就有此保护（跳过探活），但 **`_exec → _ensure_alive`
+这条路径漏了** —— 同一保护必须覆盖**所有**探活入口。
+
+**修复**：
+- `_ensure_alive` 加「切换中/冷却期」保护（等待重建，不判失活）
+- `_exec` 在 `_switching` 时快速失败（`ContainerBusy`），不继续执行拿 None context
+- 新增**切换卡死看门狗**：`_switching` 超 900s 强制复位（`_switch_started_at`），
+  防切换异常导致窗口永久无法唤醒
+
+### 三、二次双击无反应 = set_visible 只 goto 不探活
+用户手动关掉可见窗口后，`_context` 仍非 None 但**页面已失效**；
+旧逻辑在「已是目标模式」分支只尝试 `goto` → 静默失败（BCC-038）→ 窗口永不回来。
+**修复**：该分支先探活 context/page，失效则**落到重建流程**真正唤醒窗口。
+
+### 铁律（新增）
+1. **同一保护必须覆盖全部同类入口**：`run_keepalive` 有、`_exec/_ensure_alive`
+   没有 = 等于没有。加保护时先 grep 出**所有**调用该状态的路径。
+2. **手动关窗后 `_context` 非 None 不代表可用**：任何"已是目标态"的短路分支
+   都必须先探活再复用，否则无法自愈。
+3. **状态标志要配看门狗**：`_switching` 这类"进行中"标志一旦因异常未复位，
+   会让功能永久失效（窗口再也唤不醒）；必须带超时强制复位。

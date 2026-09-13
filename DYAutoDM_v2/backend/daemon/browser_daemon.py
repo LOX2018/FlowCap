@@ -1579,15 +1579,39 @@ class BrowserContainer:
                             except Exception as e:
                                 logger.debug(f"[bcc] 保活回写失败（不影响运行）: {e}")
                 else:
+                    # 2026-09-13 止血：此处原为「探活拿不到 uid → 直接 scan_login」
+                    # 且【从不累加 scan_fail_count、从不置 breaker_until】——
+                    # 熔断逻辑写了却未接线，导致无限循环：
+                    #   探活失败 → scan_login 抢占 profile → 容器 context 失活
+                    #   → BCC-006 重启 → 又探活失败 → …（实测单日 155 次失活、
+                    #   78 次自动刷新、90 次 AUTH-050，肉眼所见即「浏览器频繁自启」）
+                    # 反复重启 + 反复刷新凭证对抖音是极强风控信号，必须熔断。
                     logger.warning("BCC-025", "[bcc] 登录态失效，自动刷新凭证…")
+                    if in_breaker:
+                        remain = int(breaker_until - now)
+                        logger.warning("BCC-021",
+                            f"[bcc] 探活仍拿不到有效 uid，scan_login 已熔断"
+                            f"（连续失败 {scan_fail_count} 次），{remain // 60} 分钟内"
+                            f"不再自动重启浏览器，请在指纹浏览器完成扫码登录")
+                        continue
                     # 在子线程调 async scan_login：投递到主 loop
-                    if self._loop and not in_breaker:
+                    if self._loop:
                         fut = asyncio.run_coroutine_threadsafe(
                             self.scan_login(force=False), self._loop)
                         try:
                             fut.result(timeout=120)
+                            scan_fail_count += 1
                         except Exception as e:
+                            scan_fail_count += 1
                             logger.warning("BCC-026", f"[bcc] 自动刷新凭证失败: {e}")
+                        # 关键：探活失败路径同样要触发熔断（原缺失）
+                        if scan_fail_count >= SCAN_BREAKER_LIMIT:
+                            breaker_until = time.time() + SCAN_BACKOFF_SEC
+                            logger.error("BCC-024",
+                                f"[bcc] 探活/scan_login 连续失败 {scan_fail_count} 次，"
+                                f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟（防浏览器频繁重启"
+                                f"引发风控）。session 疑似服务端已失效，自动登录救不回，"
+                                f"请在指纹浏览器重新扫码；期间仅告警不重启浏览器")
             except Exception as e:
                 logger.warning("BCC-027", f"[bcc] 探活异常: {e}")
         logger.info("[bcc] 保活心跳退出")

@@ -650,15 +650,10 @@ def _launch_args_with_proxy(cfg, account=None):
         mode = (getattr(cfg, "DY_PROXY_MODE", "") or "").strip().lower() or None
         if not node_url:
             node_url = (getattr(cfg, "DY_PROXY", "") or "").strip() or None
-    # ⚠️ 2026-09-13 关键修复（对照 9-10 已知良好版本 + 实测）：
-    # 默认【不强制直连】，而是恢复 Chromium 默认行为=跟随系统代理。
-    # 实测出口 IP：用户手动双击浏览器(跟随系统代理)=23.191.200.205(美国)，
-    # 而 BCC 被 9-12 起的「无条件强制直连」改走 171.218.232.73(成都)
-    # ⇒ 同账号同 profile 出口跨国跳变 ⇒ 抖音判异地登录 ⇒ 弹「安全风险阻止
-    # 访问」+ 强制下线。这正是用户证言的「9/11 之前从未出现」的分界点
-    # （9-11 无提交；分界提交=50897b8，9-12 19:21 引入无条件强制直连）。
-    # 现默认走 _default_proxy_mode()：系统代理活着→跟随；死了→直连（防连接拒绝）。
-    mode = mode or _default_proxy_mode()
+    # 环境模式【完全由配置决定】，与本机环境无关（用户设计理念，两次澄清）：
+    #   配了独立节点 → node；配了系统代理 → system；什么都没配 → direct（本机 IP）。
+    # 绝不读注册表/探测本机状态来自行决定模式。
+    mode = mode or "direct"
 
     # ---- 按模式落地（只认配置，不探测本机来选模式）----
     if mode == "node" and node_url:
@@ -747,49 +742,6 @@ def parse_proxy_config(env_path):
         return None, None, f"代理配置读取失败: {e}"
 
 
-def _default_proxy_mode():
-    """未显式配置时的默认环境模式。
-
-    2026-09-13 恢复 9-10 的已知良好语义（用户证言该期间从未弹窗）：
-      · 系统代理端口活着 → "system"（跟随系统代理，与「手动双击浏览器」同环境）
-      · 系统代理端口已死 → "direct"（加 --no-proxy-server，防浏览器连接全拒）
-      · 本机未设系统代理 → "direct"
-    ⚠️ 这里读本机只是为了「判断端口死活」，不改变用户显式选择的语义：
-       显式配置 node/system/direct 时永远以配置为准。
-    """
-    import sys as _sys
-    if _sys.platform != "win32":
-        return "direct"
-    try:
-        import winreg  # noqa: S404 仅读
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
-        try:
-            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
-            if not enabled:
-                return "direct"
-            server, _ = winreg.QueryValueEx(key, "ProxyServer")
-        finally:
-            winreg.CloseKey(key)
-        host_port = (server or "").strip().split(";")[0].strip()
-        if "=" in host_port:
-            host_port = host_port.split("=", 1)[1].strip()
-        host, _, port = host_port.rpartition(":")
-        if not host or not port.isdigit():
-            return "direct"
-        host = host.strip().strip("[]")
-        if host not in ("127.0.0.1", "localhost"):
-            # 远程代理无法本机判活 → 交给 Chromium 默认跟随
-            return "system"
-        import socket as _sk
-        with _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM) as s:
-            s.settimeout(0.5)
-            if s.connect_ex((host, int(port))) == 0:
-                return "system"      # 端口活着 → 跟随系统代理（与手动打开一致）
-        return "direct"              # 端口死了 → 直连，防连接被拒
-    except Exception:
-        return "direct"
 
 
 def _system_proxy_url():
