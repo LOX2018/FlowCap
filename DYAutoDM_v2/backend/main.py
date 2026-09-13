@@ -501,6 +501,28 @@ async def lifespan(app: FastAPI):
 # 幂等（台账 kill_all 后清空），重复调用无副作用。
 atexit.register(_kill_spawned_daemons)
 
+_BOOT_TS = time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _read_version_file() -> str:
+    """读应用根目录的 version.json（构建时生成）；失败返回 "unknown"。"""
+    for base in (os.environ.get("DY_APP_ROOT"), os.getcwd(),
+                 os.path.dirname(os.path.abspath(__file__))):
+        if not base:
+            continue
+        for rel in (("version.json",), ("..", "version.json")):
+            try:
+                fp = os.path.join(base, *rel)
+                if os.path.isfile(fp):
+                    with open(fp, encoding="utf-8") as f:
+                        v = (json.load(f) or {}).get("version")
+                    if v:
+                        return str(v)
+            except Exception:
+                continue
+    return "unknown"
+
+
 app = FastAPI(
     title="DYAutoDM API",
     version="0.1.0",
@@ -625,6 +647,55 @@ logger.add(
     enqueue=True,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
 )
+
+
+# ---------------------------------------------------------------------------
+# 版本一致性（2026-09-13 用户提出：前后端版本必须匹配，防「前端新/后端旧」）
+#
+# 背景：sidecar 与桌面端是分别构建、分别部署的产物。此前【无任何版本校验】，
+# 实践中出现过 sidecar 目录被旧进程占用、部署未生效，导致"代码已改但跑的
+# 还是旧逻辑"的排查黑洞（当日 v0.42.6→v0.42.8 期间一度在跑旧 sidecar）。
+#
+# 判据：backend 版本由构建时注入的 env（PY_BUILD_VERSION，由 build_sidecar.py
+# 写入），兜底读源码根 version.json；前端把自身版本经请求头 X-App-Version 带上。
+# 二者不一致即响应头回 X-Version-Mismatch=1，前端据此显式告警（不静默）。
+# ---------------------------------------------------------------------------
+APP_VERSION = (
+    (os.environ.get("DY_APP_VERSION") or "").strip()
+    or _read_version_file()
+)
+
+
+@app.middleware("http")
+async def _version_guard(request, call_next):
+    """版本一致性守卫（2026-09-13）：前端经 X-App-Version 声明自身版本。
+
+    不一致时不阻断（避免误伤），但回两个响应头，前端/日志可据此显式告警：
+      X-App-Version-Backend / X-Version-Mismatch: 1
+    """
+    resp = await call_next(request)
+    try:
+        fe = (request.headers.get("x-app-version") or "").strip()
+        resp.headers["X-App-Version-Backend"] = APP_VERSION
+        if fe and APP_VERSION not in ("unknown", "") and fe != APP_VERSION:
+            resp.headers["X-Version-Mismatch"] = "1"
+            logger.warning(
+                f"[版本] 前后端版本不一致：前端 {fe} ≠ 后端 {APP_VERSION}"
+                f"（sidecar 可能未重新构建/部署未生效）")
+    except Exception:
+        pass
+    return resp
+
+
+@app.get("/api/version")
+async def api_version():
+    """免鉴权版本探针：返回 backend 自身版本，供桌面端/前端校验一致性。"""
+    return {
+        "backend": APP_VERSION,
+        "pid": os.getpid(),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "started_at": _BOOT_TS,
+    }
 
 
 @app.get("/api/status")

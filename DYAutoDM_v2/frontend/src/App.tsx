@@ -33,6 +33,10 @@ type TabId = (typeof TABS)[number][0];
 
 /** 启动闪屏：双击 exe 后窗口立即出现品牌页，后端引擎就绪（overview 首帧数据到达）
  *  才滑入主界面，把 PyInstaller 后端冷启动的 ~3s 变成有进度的等待，而不是白屏/未连接。 */
+function _verDiag(msg: string) {
+  try { console.warn("[VERSION] " + msg); } catch { /* ignore */ }
+}
+
 function BootSplash({ onSkip }: { onSkip?: () => void }) {
   const [showSkip, setShowSkip] = useState(false);
   useEffect(() => {
@@ -103,6 +107,27 @@ export default function App() {
   // 登录后立即能用 —— 消灭「登录了还要等对齐」的体验断层。
   const [prealigned, setPrealigned] = useState(false);
   const [overviewEverOk, setOverviewEverOk] = useState(false);
+
+  // 版本一致性校验（2026-09-13 用户要求）：
+  // 前后端分别构建部署，必须显式比对，杜绝「前端新/后端旧」静默不一致。
+  const [verMismatch, setVerMismatch] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      try {
+        const v = await api.checkVersionConsistency();
+        if (!alive) return;
+        if (!v.match && v.backend !== "unknown") {
+          setVerMismatch(`版本不一致：前端 ${v.frontend} / 后端 ${v.backend} — ${v.detail}`);
+          _verDiag("mismatch " + v.detail);
+        } else if (v.backend === "unknown") {
+          _verDiag("backend version unknown: " + v.detail);
+        }
+      } catch { /* ignore */ }
+    };
+    const t = setTimeout(run, 1200);
+    return () => { alive = false; clearTimeout(t); };
+  }, []);
 
   // 启动预对齐轮询（1.5s）：等 /api/ready 的 daemons_ready=true
   useEffect(() => {
@@ -352,6 +377,17 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* 版本不一致告警条（2026-09-13）：前端/后端 sidecar 版本必须一致。
+          用户明确要求 —— 不许"前端新版本、后端旧版本"静默存在。 */}
+      {verMismatch && (
+        <div style={{
+          background: "#7f1d1d", color: "#fff", padding: "6px 12px",
+          fontSize: 12, fontFamily: "monospace", zIndex: 9999,
+          position: "sticky", top: 0,
+        }}>
+          ⚠️ {verMismatch}（请重新打包部署 sidecar）
+        </div>
+      )}
       {/* 2026-09-08：登录后不再用全屏闪屏盖住主界面。
           原逻辑 `!ready && <BootSplash />` 在 overview 首帧未到（最多 3s）或查询
           偶发失败时会把主界面整个盖住，用户体感「登录后一直转圈不消失」。

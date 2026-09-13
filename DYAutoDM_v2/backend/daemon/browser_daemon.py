@@ -281,6 +281,29 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
 
 
 
+def _app_version() -> str:
+    """本守护进程的构建版本（读 exe 同级 version.json；失败=unknown）。
+
+    2026-09-13：与 backend /api/version 配套，解决「前端新/后端旧」无校验缺口。
+    sidecar 与桌面端分别构建，必须能自查版本，避免部署未生效却无人察觉。
+    """
+    try:
+        import json as _json
+        base = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False)
+                                              else __file__))
+        for rel in ("version.json", os.path.join("..", "version.json"),
+                    os.path.join("..", "..", "version.json")):
+            fp = os.path.normpath(os.path.join(base, rel))
+            if os.path.isfile(fp):
+                with open(fp, encoding="utf-8") as f:
+                    v = (_json.load(f) or {}).get("version")
+                if v:
+                    return str(v)
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _cred_refresh_mode() -> str:
     """读取「凭证更新方式」（两套路径共存，由用户配置）。
 
@@ -1190,6 +1213,8 @@ class BrowserContainer:
             "uid": uid,
             "last_refresh": int(self._last_refresh),
             "logged_in": bool(env_path and os.path.exists(env_path)),
+            # 2026-09-13：上报自身版本，供桌面端比对「前端新/后端旧」
+            "version": _app_version(),
         }
 
     def _load_uid_from_env(self) -> Any:

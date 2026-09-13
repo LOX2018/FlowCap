@@ -75,6 +75,25 @@ logger.add(
     format="{time:HH:mm:ss} | {level: <8} | {message}",
 )
 
+
+def _rt_version() -> str:
+    """本守护构建版本（读 exe 同级 version.json），供版本一致性校验。"""
+    try:
+        import json as _json
+        base = os.path.dirname(os.path.abspath(
+            sys.executable if getattr(sys, "frozen", False) else __file__))
+        for rel in ("version.json", os.path.join("..", "version.json")):
+            fp = os.path.normpath(os.path.join(base, rel))
+            if os.path.isfile(fp):
+                with open(fp, encoding="utf-8") as f:
+                    v = (_json.load(f) or {}).get("version")
+                if v:
+                    return str(v)
+    except Exception:
+        pass
+    return "unknown"
+
+
 app = FastAPI(title="recv-daemon")
 
 # 全局状态
@@ -831,7 +850,7 @@ async def status() -> dict:
             "conv_count": len(ib.convs),
             "total_unread": sum(c.unread for c in ib.convs.values()),
         }
-    return {"ok": True, "accounts": out}
+    return {"ok": True, "accounts": out, "version": _rt_version()}
 
 
 @app.get("/conversations")

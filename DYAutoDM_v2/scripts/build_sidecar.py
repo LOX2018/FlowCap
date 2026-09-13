@@ -26,6 +26,36 @@ BINARIES = ROOT / "src-tauri" / "binaries"
 EXT = ".exe" if platform.system() == "Windows" else ""
 
 
+def _app_version() -> str:
+    """从 tauri.conf.json 读当前版本（唯一真源），供构建时注入 sidecar。
+
+    2026-09-13：解决「前端新版本 / 后端旧版本」无校验的缺口。
+    构建时把版本写进 backend/version.json（随源码打包进 sidecar），
+    后端 /api/version 读它，桌面端启动时比对，不一致即在 UI 上显式告警。
+    """
+    try:
+        import json as _json
+        conf = ROOT / "src-tauri" / "tauri.conf.json"
+        with open(conf, encoding="utf-8") as f:
+            return str((_json.load(f) or {}).get("version") or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _write_version_file() -> str:
+    """把版本写入 backend/version.json（打包进 sidecar，作为后端自述版本）。"""
+    v = _app_version()
+    try:
+        import json as _json
+        fp = BACKEND / "version.json"
+        fp.write_text(_json.dumps({"version": v}, ensure_ascii=False),
+                      encoding="utf-8")
+        print(f"[版本] backend/version.json = {v}")
+    except Exception as e:
+        print(f"[版本] 写入失败: {e}")
+    return v
+
+
 def _target_triple() -> str:
     """返回当前平台的 Rust target triple（与 Tauri externalBin 命名一致）。"""
     sys_name = platform.system()
@@ -222,6 +252,8 @@ def main() -> None:
     mode = "onedir" if "--onedir" in sys.argv else "onefile"
     if debug_wl:
         inject_test_whitelist()
+    _v = _write_version_file()   # 2026-09-13：构建时固化版本，供 /api/version 校验
+    print(f"[版本] 本次构建版本 = {_v}")
     try:
         build_one("main.py", "dyautodm-backend", mode=mode)
         build_one("daemon/browser_daemon.py", "dyautodm-browser-daemon", mode=mode)

@@ -84,6 +84,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // 忽略就绪等待失败，继续发请求
   }
   const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // 2026-09-13：每个请求附带本前端版本，后端据此可识别「前端新/后端旧」
+  try { headers["X-App-Version"] = String(__APP_VERSION__); } catch { /* ignore */ }
   const tk = getMemberToken();
   if (tk) headers["X-Member-Token"] = tk;
   const res = await fetch(`${BASE}${path}`, {
@@ -479,6 +481,8 @@ export interface AiAgent {
 export const api = {
   // ===== 启动就绪度（免鉴权，BootSplash 预对齐轮询用） =====
   getReadyGate,
+  // ===== 版本一致性（2026-09-13）：前端 vs 后端 sidecar 版本比对 =====
+  checkVersionConsistency,
 
   // ===== overview =====
   async getBackendStatus(): Promise<BackendStatus> {
@@ -1652,3 +1656,38 @@ export interface PageProps {
   setMsgAcct?: (name: string) => void;
 }
 
+
+
+// ===== 版本一致性校验（2026-09-13）=====
+// 用户提出：前后端分别构建部署，可能出现「前端新版本 / 后端旧版本」而无任何察觉。
+// 判据：前端 __APP_VERSION__（vite 注入，源=package.json）对比后端 /api/version.backend
+//      （构建时由 build_sidecar.py 写入 backend/version.json，随 sidecar 打包）。
+export interface VersionCheck {
+  frontend: string;
+  backend: string;
+  match: boolean;
+  detail: string;
+}
+
+export async function checkVersionConsistency(): Promise<VersionCheck> {
+  const fe = String(__APP_VERSION__);
+  let be = "unknown";
+  let detail = "";
+  try {
+    const r = await fetch(`${BASE}/api/version`, { method: "GET" });
+    if (r.ok) {
+      const j = (await r.json()) as { backend?: string };
+      be = String(j.backend || "unknown");
+    } else {
+      detail = `/api/version 返回 ${r.status}`;
+    }
+  } catch (e) {
+    detail = `无法连接后端: ${String(e)}`;
+  }
+  const match = be !== "unknown" && be === fe;
+  if (!match && !detail) {
+    detail = `前端 ${fe} ≠ 后端 ${be}（sidecar 未更新或部署未生效）`;
+  }
+  _diag("version.check", { frontend: fe, backend: be, match, detail });
+  return { frontend: fe, backend: be, match, detail };
+}
