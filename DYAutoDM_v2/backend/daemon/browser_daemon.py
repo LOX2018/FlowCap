@@ -37,6 +37,10 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from loguru import logger
 
+# 2026-09-13：标记「本进程是浏览器守护」——供 services.browser_gate 豁免
+# 自身启动告警（否则 BCC 拉自己的容器会误报 BCC-042 环境分叉）。
+os.environ.setdefault("DY_BROWSER_DAEMON", "1")
+
 # 无控制台模式下 sys.stdout/stderr 可能为 None
 if sys.stdout is not None:
     try:

@@ -1101,8 +1101,26 @@ def capture_all(name, with_browser=True):
         # 首包 get_message_by_init 是 HTTP API，不依赖浏览器 cookie 新鲜度；
         # BCC 在线时仍走 /cookie 刷新（不抢锁、不开新浏览器）。
         if with_browser:
-            # 用户显式动作（更新会话按钮）→ 允许 BCC 不在线时兜底开浏览器
-            DYLoginApi.refresh_cookie_from_profile(auth, env_path, allow_launch=True)
+            # 2026-09-13 统一入口收敛（用户要求：所有启动路径走同一入口，杜绝环境分叉）：
+            # 原实现 allow_launch=True —— BCC 不在线时【兜底直开一个浏览器】，
+            # 于是可能「BCC 容器 + 这个临时浏览器」同时持有同一 profile → 抢锁
+            # → 环境跳变 → 风控（实测日志 19:44:50「强制重扫模式：复用固定 profile」
+            # 即 BCC 离线时另起的实例，同时 19:46:41 又见 profile 锁 10s 未释放）。
+            # 现：交给统一门禁 ensure_browser —— 复用 BCC；离线则先拉起 BCC 再复用；
+            # 拿不到就显式失败（调用方提示用户），【绝不静默开第二个浏览器】。
+            try:
+                from services.browser_gate import (
+                    ensure_browser, refresh_cookie_via_owner, PURPOSE_AUTO)
+                _g = ensure_browser(name, purpose=PURPOSE_AUTO)
+                if not _g.get("ok"):
+                    logger.warning("CAP-016",
+                        f"[capture][{name}] 浏览器统一入口未就绪：{_g.get('msg')}"
+                        f"（不新开独立浏览器，将只用 .env 凭证跑 HTTP 首包）")
+                else:
+                    refresh_cookie_via_owner(name, auth, env_path)
+            except Exception as _e:
+                logger.warning("CAP-016",
+                    f"[capture][{name}] 统一入口调用异常（沿用 .env 凭证）: {_e}")
         else:
             # BCC 在线时仍走 /cookie 刷新（不抢锁、不开新浏览器）；
             # BCC 不在线就绝不为启动补捕获开浏览器。

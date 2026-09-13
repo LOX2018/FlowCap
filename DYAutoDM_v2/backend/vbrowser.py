@@ -989,6 +989,16 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
       - force=True 仅表示“不复用已有登录态、强制重新扫码”，仍使用同一固定 profile 目录，
         不清空、不新建临时目录（清空/临时化都是风控根因）。
     """
+    # 2026-09-13 统一入口审计（用户要求：所有启动路径走同一入口，杜绝环境分叉）：
+    # 本函数是**所有**浏览器启动的最底层出口（login_api / web_probe / link_resolve /
+    # api.accounts / browser_daemon 共 12 处调用点都经过这里）。在此统一登记：
+    # 若该账号的 BCC 容器已在运行且未处于独占让出态，说明同一 profile 将被
+    # 第二个所有者持有 → 记 BCC-042 环境分叉告警（先观测，验证后再收紧为阻断）。
+    try:
+        from services.browser_gate import audit_standalone_launch as _audit
+        _audit(account, "vbrowser.launch_async", allowed=False)
+    except Exception:
+        pass
     async_playwright = pw_async_api()
 
     if mode == "exe":
@@ -1071,6 +1081,12 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
 
     account 参数语义同 launch_async（读账号 .env DY_PROXY 注入代理）。
     """
+    # 统一入口审计（同 launch_async，见其说明）
+    try:
+        from services.browser_gate import audit_standalone_launch as _audit
+        _audit(account, "vbrowser.launch_sync", allowed=False)
+    except Exception:
+        pass
     sync_playwright = pw_sync_api()
 
     if mode == "exe":
