@@ -650,7 +650,15 @@ def _launch_args_with_proxy(cfg, account=None):
         mode = (getattr(cfg, "DY_PROXY_MODE", "") or "").strip().lower() or None
         if not node_url:
             node_url = (getattr(cfg, "DY_PROXY", "") or "").strip() or None
-    mode = mode or "direct"
+    # ⚠️ 2026-09-13 关键修复（对照 9-10 已知良好版本 + 实测）：
+    # 默认【不强制直连】，而是恢复 Chromium 默认行为=跟随系统代理。
+    # 实测出口 IP：用户手动双击浏览器(跟随系统代理)=23.191.200.205(美国)，
+    # 而 BCC 被 9-12 起的「无条件强制直连」改走 171.218.232.73(成都)
+    # ⇒ 同账号同 profile 出口跨国跳变 ⇒ 抖音判异地登录 ⇒ 弹「安全风险阻止
+    # 访问」+ 强制下线。这正是用户证言的「9/11 之前从未出现」的分界点
+    # （9-11 无提交；分界提交=50897b8，9-12 19:21 引入无条件强制直连）。
+    # 现默认走 _default_proxy_mode()：系统代理活着→跟随；死了→直连（防连接拒绝）。
+    mode = mode or _default_proxy_mode()
 
     # ---- 按模式落地（只认配置，不探测本机来选模式）----
     if mode == "node" and node_url:
@@ -662,10 +670,13 @@ def _launch_args_with_proxy(cfg, account=None):
     if mode == "system":
         sys_url = _system_proxy_url()
         if sys_url:
+            # ⚠️ 不显式注入 pw_proxy：让 Chromium 走它自己的系统代理路径，
+            # 与「用户手动双击浏览器」行为逐项一致（实测手动打开即跟随系统代理）。
+            # 只加 WebRTC 防泄漏参数，不改变代理走向。
             args += _proxy_launch_args(sys_url)
-            pw_proxy = _playwright_proxy_param(sys_url)
-            logger.info(f"[vbrowser] 环境门阀：系统代理 → {_mask_proxy(sys_url)}")
-            return args, sys_url, pw_proxy
+            logger.info(f"[vbrowser] 环境门阀：系统代理 → {_mask_proxy(sys_url)}"
+                        "（与手动打开浏览器同环境）")
+            return args, sys_url, None
         # 选了系统代理但本机没开：如实告警仍走直连，不静默改变语义
         logger.warning(
             "BCC-038",
@@ -734,6 +745,51 @@ def parse_proxy_config(env_path):
         return mode, node, None
     except Exception as e:
         return None, None, f"代理配置读取失败: {e}"
+
+
+def _default_proxy_mode():
+    """未显式配置时的默认环境模式。
+
+    2026-09-13 恢复 9-10 的已知良好语义（用户证言该期间从未弹窗）：
+      · 系统代理端口活着 → "system"（跟随系统代理，与「手动双击浏览器」同环境）
+      · 系统代理端口已死 → "direct"（加 --no-proxy-server，防浏览器连接全拒）
+      · 本机未设系统代理 → "direct"
+    ⚠️ 这里读本机只是为了「判断端口死活」，不改变用户显式选择的语义：
+       显式配置 node/system/direct 时永远以配置为准。
+    """
+    import sys as _sys
+    if _sys.platform != "win32":
+        return "direct"
+    try:
+        import winreg  # noqa: S404 仅读
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        try:
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if not enabled:
+                return "direct"
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+        finally:
+            winreg.CloseKey(key)
+        host_port = (server or "").strip().split(";")[0].strip()
+        if "=" in host_port:
+            host_port = host_port.split("=", 1)[1].strip()
+        host, _, port = host_port.rpartition(":")
+        if not host or not port.isdigit():
+            return "direct"
+        host = host.strip().strip("[]")
+        if host not in ("127.0.0.1", "localhost"):
+            # 远程代理无法本机判活 → 交给 Chromium 默认跟随
+            return "system"
+        import socket as _sk
+        with _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex((host, int(port))) == 0:
+                return "system"      # 端口活着 → 跟随系统代理（与手动打开一致）
+        return "direct"              # 端口死了 → 直连，防连接被拒
+    except Exception:
+        return "direct"
 
 
 def _system_proxy_url():
@@ -1008,13 +1064,15 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         #   - 最小化而非移屏外（-32000 屏外坐标会写进 profile 污染后续可见启动，
         #     09-09 已废弃）；
         #   - 最小化不改变 JS 可检测特征（screen/window 尺寸正常），风控视角=有头。
+        # 2026-09-13 回滚：恢复「纯无头」（9-10 的已知良好配置）。
+        # 原「有头+最小化」方案被证伪并引入回归：
+        #   · 无头特征并非弹窗原因（真因是出口 IP 分叉，见 _launch_args_with_proxy）；
+        #   · 有头窗口可被用户误关 → 关窗即杀死捕获链路 → 重启 churn（用户所见"闪退"）。
+        # 可观测态仍走 set_visible(headless=False) 显式切换，不受影响。
         _disguise = False
         _minimize = False
         if headless:
-            headless = False
-            _minimize = True
-            logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化（风控对齐："
-                        "同 profile 同环境，杜绝环境跳变）")
+            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -1077,14 +1135,11 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-13 风控根治（同 launch_async）：无头请求一律转为「真有头+窗口最小化」。
+        # 2026-09-13 回滚：恢复「纯无头」（同 launch_async）。
         _disguise = False
         _minimize = False
         if headless:
-            headless = False
-            _minimize = True
-            logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化（风控对齐："
-                        "同 profile 同环境，杜绝环境跳变）")
+            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
