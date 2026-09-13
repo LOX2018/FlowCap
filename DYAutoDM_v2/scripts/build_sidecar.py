@@ -137,6 +137,12 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "services.member_ctx",
             "cryptography",
             "cryptography.fernet",
+            # 2026-09-13：出口 IP 探测支持 socks5 节点（urllib 原生不支持
+            # socks://，需 PySocks 的 SocksiPyHandler）。这两个模块在
+            # vbrowser.probe_egress_ip_direct 里函数体内 import，静态分析
+            # 扫不到，必须显式声明，否则代理连接测试的 socks5 模式失效。
+            "socks",
+            "sockshandler",
         ):
             cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]

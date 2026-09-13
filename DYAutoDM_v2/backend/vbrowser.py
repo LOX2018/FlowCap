@@ -351,9 +351,130 @@ def _proxy_credentials(proxy_url):
 
 # 出口 IP 校验接口（借鉴 OpenBrowser egress check）。依次尝试，谁先返回 200 用谁。
 # ipify 稳定无风控；抖音自回显仅作兜底（走的是同一浏览器网络栈，失败不影响主链路）。
+_IPAPI_IS_URL = "https://api.ipapi.is/?key=5dc5e8145af003394288"
+
 _EGRESS_IP_ENDPOINTS = [
     ("https://api.ipify.org?format=json", lambda d: (d or {}).get("ip")),
     ("https://httpbin.org/ip", lambda d: (d or {}).get("origin")),
+]
+
+
+def probe_egress_ip_direct(timeout=12, retries=2):
+    """按【代理配置模式】探测出口 IP 与归属地（直连/system/node 三态通用）。
+
+    主用 ipapi.is（用户指定，带 key），失败自动回退备用端点。
+    返回：
+      {"ok", "ip", "country", "city", "region", "isp", "timezone",
+       "is_proxy", "is_datacenter", "mode", "via", "error"}
+    mode: direct=本机直连（显式禁代理）｜system=系统代理｜node=独立节点
+    铁律：与浏览器启动同一套环境决策 → "测试结果 = 浏览器实际出口"。
+    """
+    import json as _json
+    from urllib.request import (Request as _Req, build_opener as _bo,
+                                ProxyHandler as _PH)
+    out = {"ok": False, "ip": "", "country": "", "city": "", "region": "",
+           "isp": "", "timezone": "", "is_proxy": None, "is_datacenter": None,
+           "mode": "", "via": "", "error": ""}
+    # 浏览器式请求头：ipapi.is 等端点会拒绝 python-urllib 默认 UA
+    _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+    _HDR = {"User-Agent": _UA, "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+    try:
+        mode = (os.environ.get("DY_PROXY_TEST_MODE") or "").strip().lower() or "direct"
+        node = (os.environ.get("DY_PROXY_TEST_NODE") or "").strip()
+        out["mode"] = mode
+        if mode == "node" and node:
+            # SOCKS 需 PySocks 注册（urllib 原生不支持 socks5://）
+            if node.startswith("socks"):
+                try:
+                    import socks as _socks
+                    from sockshandler import SocksiPyHandler as _SH
+                    from urllib.parse import urlparse as _up
+                    _u = _up(node)
+                    _kw = {"proxy_type": (_socks.SOCKS5 if _u.scheme.startswith("socks5")
+                                          else _socks.SOCKS4),
+                           "addr": _u.hostname, "port": int(_u.port)}
+                    if _u.username:
+                        _kw["username"] = _u.username
+                        _kw["password"] = _u.password or ""
+                    opener = _bo(_SH(**_kw))
+                except Exception as _e:
+                    out["error"] = f"SOCKS 支持缺失（{type(_e).__name__}: {_e}）"
+                    return out
+            else:
+                opener = _bo(_PH({"http": node, "https": node}))
+            out["via"] = "node"
+        elif mode == "system":
+            opener = _bo(_PH({}))     # 显式不带代理 → 由 urllib 读系统代理
+            out["via"] = "system"
+        else:
+            opener = _bo(_PH({}))     # 空 dict = 禁用代理（urllib 语义）→ 直连
+            out["via"] = "direct"
+            if mode == "system":
+                pass
+        # system 模式需真正使用系统代理：ProxyHandler({}) 会禁用。
+        # 用 getproxies() 显式构造（读注册表），确保系统代理生效。
+        if mode == "system":
+            from urllib.request import getproxies as _gp
+            px = _gp()
+            opener = _bo(_PH(px)) if px else opener
+
+        errors = []
+        for url, extractor in _EGRESS_PROBE_ENDPOINTS:
+            for attempt in range(retries + 1):
+                try:
+                    req = _Req(url, headers=_HDR)
+                    with opener.open(req, timeout=timeout) as r:
+                        data = _json.loads(r.read().decode("utf-8", "replace"))
+                    info = extractor(data)
+                    if info and info.get("ip"):
+                        out.update(info)
+                        out["ok"] = True
+                        return out
+                    errors.append(f"{url}: 无 ip 字段")
+                    break
+                except Exception as e:
+                    errors.append(f"{url}#{attempt+1}: {type(e).__name__}")
+                    if attempt < retries:
+                        import time as _t
+                        _t.sleep(1.0)
+        out["error"] = "所有端点失败 → " + " | ".join(errors[-4:])
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
+def _ex_ipapi_is(d):
+    loc = (d or {}).get("location") or {}
+    asn = (d or {}).get("asn") or {}
+    return {"ip": str(d.get("ip") or ""), "country": str(loc.get("country") or ""),
+            "city": str(loc.get("city") or ""), "region": str(loc.get("state") or ""),
+            "isp": str(asn.get("org") or asn.get("name") or ""),
+            "timezone": str(loc.get("timezone") or ""),
+            "is_proxy": d.get("is_proxy"), "is_datacenter": d.get("is_datacenter")}
+
+
+def _ex_ipinfo(d):
+    return {"ip": str((d or {}).get("ip") or ""),
+            "country": str(d.get("country") or ""),
+            "city": str(d.get("city") or ""), "region": str(d.get("region") or ""),
+            "isp": str(d.get("org") or ""), "timezone": str(d.get("timezone") or ""),
+            "is_proxy": None, "is_datacenter": None}
+
+
+def _ex_ipsb(d):
+    return {"ip": str((d or {}).get("ip") or ""),
+            "country": str(d.get("country") or ""),
+            "city": str(d.get("city") or ""), "region": str(d.get("region") or ""),
+            "isp": str(d.get("isp") or d.get("organization") or ""),
+            "timezone": "", "is_proxy": None, "is_datacenter": None}
+
+
+_EGRESS_PROBE_ENDPOINTS = [
+    (_IPAPI_IS_URL, _ex_ipapi_is),          # 主：用户指定（信息最全）
+    ("https://ipinfo.io/json", _ex_ipinfo),  # 备 1
+    ("https://api.ip.sb/geoip", _ex_ipsb),   # 备 2
 ]
 
 

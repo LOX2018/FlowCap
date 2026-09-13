@@ -588,11 +588,36 @@ export const api = {
     });
   },
 
-  /** 查询账号代理配置状态（configured/masked/error） */
+  /** 真实探测该账号代理配置下的出口 IP 与归属地（三态通用，不拉起浏览器） */
+  async proxyTest(
+    name: string,
+    form: { type: string; host: string; port: string; user: string; pass: string },
+  ): Promise<{
+    ok: boolean;
+    ip: string;
+    country: string;
+    city: string;
+    region: string;
+    isp: string;
+    timezone: string;
+    is_proxy?: boolean | null;
+    is_datacenter?: boolean | null;
+    mode: string;
+    via: string;
+    error: string;
+  }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/proxy-test`, {
+      method: "POST",
+      body: JSON.stringify(form),
+    });
+  },
+
+  /** 查询账号代理配置状态（configured/masked/error/mode） */
   async proxyStatus(name: string): Promise<{
     configured: boolean;
     masked: string;
     error: string;
+    mode?: string;
   }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/proxy-status`, {
       method: "GET",

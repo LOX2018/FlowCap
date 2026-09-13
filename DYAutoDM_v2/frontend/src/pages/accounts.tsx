@@ -1066,14 +1066,11 @@ export default function AccountsPage(props: PageProps) {
             testResult={proxyTestResult}
             onTest={() => {
                           const p = proxyForm;
-                          if (p.type === "direct") {
-                            setProxyTestResult({ ok: true, msg: "直连模式无需测试" });
-                            return;
-                          }
                           setProxyTesting(true);
                           setProxyTestResult(null);
+                          // 真实探测：三态通用（含直连），返回真实出口 IP + 归属地
                           api
-                            .saveProxy(proxyAcct.name, {
+                            .proxyTest(proxyAcct.name, {
                               type: p.type,
                               host: p.host,
                               port: p.port,
@@ -1082,20 +1079,28 @@ export default function AccountsPage(props: PageProps) {
                             })
                             .then((d) => {
                               if (!d || !d.ok) {
-                                setProxyTestResult({ ok: false, msg: (d && d.msg) || "保存代理配置失败" });
+                                setProxyTestResult({
+                                  ok: false,
+                                  msg: (d && d.error) || "连接测试失败（无法获取出口 IP）",
+                                });
                                 setProxyTesting(false);
                                 return;
                               }
-                              // 真实测试：用浏览器 context 校验出口 IP（走刚保存的代理）
-                              return api.proxyStatus(proxyAcct.name).then((st) => {
-                                setProxyTestResult({
-                                  ok: true,
-                                  msg: `代理已保存 · ${st.masked || p.type + "://" + p.host + ":" + p.port}`
-                                    + (st.error ? ` · ${st.error}` : ""),
-                                });
-                                setProxyTesting(false);
-                                push("代理配置已保存并校验");
+                              const loc = [d.country, d.region, d.city].filter(Boolean).join(" · ");
+                              const flag: Record<string, string> = {
+                                China: "🇨🇳", "United States": "🇺🇸", Japan: "🇯🇵",
+                                "Hong Kong": "🇭🇰", Singapore: "🇸🇬", Taiwan: "🇹🇼",
+                              };
+                              const fl = flag[d.country] || "🌐";
+                              const modeLabel =
+                                d.mode === "direct" ? "不走代理" : d.mode === "system" ? "系统代理" : "独立节点";
+                              const warn = d.is_proxy ? " ⚠️该IP被标记为代理" : "";
+                              setProxyTestResult({
+                                ok: true,
+                                msg: `出口 IP：${d.ip}\n归属：${fl} ${loc || "未知"}｜${modeLabel}${warn}`
+                                  + (d.isp ? `\n运营商：${d.isp}` : ""),
                               });
+                              setProxyTesting(false);
                             })
                             .catch((e) => {
                               setProxyTestResult({ ok: false, msg: "测试失败: " + errMsg(e) });
@@ -1844,7 +1849,15 @@ function ProxyDrawer({
                   >
                     {testResult.ok ? "连接成功" : "连接失败"}
                   </div>
-                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--muted)",
+                      marginTop: 2,
+                      whiteSpace: "pre-line",
+                      lineHeight: 1.6,
+                    }}
+                  >
                     {testResult.msg}
                   </div>
                 </div>

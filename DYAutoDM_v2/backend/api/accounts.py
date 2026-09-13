@@ -805,6 +805,58 @@ async def proxy_status(name: str):
     return {"configured": False, "masked": "", "error": "", "mode": "direct"}
 
 
+@router.post("/{name}/proxy-test")
+async def proxy_test(name: str, req: Request) -> dict:
+    """真实探测该账号【当前代理配置】下的出口 IP 与归属地。
+
+    接收 {type, host, port, user, pass}（未保存的临时表单值，便于"先测后存"）：
+      - type=direct → 走本机 IP（显式禁用代理）
+      - type=system → 走系统代理
+      - socks5/http/https → 走该独立节点
+    说明：用 urllib 按模式探测（与浏览器启动同一套环境决策），不走浏览器，
+    避免"测试即拉起浏览器"的副作用；三态均返回真实 IP + 国家。
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    ptype = str(body.get("type") or "direct").strip().lower()
+    host = str(body.get("host") or "").strip()
+    port = str(body.get("port") or "").strip()
+    user = str(body.get("user") or "").strip()
+    pwd = str(body.get("pass") or "").strip()
+
+    # 组装临时环境（供 probe_egress_ip_direct 读取，不落盘、不污染账号配置）
+    if ptype == "direct":
+        mode, node = "direct", ""
+    elif ptype == "system":
+        mode, node = "system", ""
+    elif ptype in ("socks5", "socks4", "http", "https"):
+        if not host or not port:
+            return {"ok": False, "error": "请先填写主机地址与端口"}
+        if ptype.startswith("socks"):
+            node = f"{ptype}://{host}:{port}"
+        else:
+            from urllib.parse import quote
+            node = (f"{ptype}://{quote(user)}:{quote(pwd or '')}@{host}:{port}"
+                    if user else f"{ptype}://{host}:{port}")
+        mode = "node"
+    else:
+        return {"ok": False, "error": f"不支持的类型: {ptype}"}
+
+    from auto_dm.vbrowser import probe_egress_ip_direct
+    import os as _os
+    _os.environ["DY_PROXY_TEST_MODE"] = mode
+    _os.environ["DY_PROXY_TEST_NODE"] = node
+    try:
+        r = probe_egress_ip_direct()
+    finally:
+        _os.environ.pop("DY_PROXY_TEST_MODE", None)
+        _os.environ.pop("DY_PROXY_TEST_NODE", None)
+    r["type"] = ptype
+    return r
+
+
 @router.post("/{name}/proxy")
 async def save_proxy(name: str, req: Request) -> ScanLoginResponse:
     """保存账号代理配置（写 .env.enc 的 DY_PROXY）。
