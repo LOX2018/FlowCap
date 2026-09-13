@@ -1192,10 +1192,33 @@ class BrowserContainer:
                 auth = await api.get_login_auth(
                     headless=False, env_path=env_path, force=force,
                     landing_url="https://www.douyin.com/chat?isPopup=1")
-                ok = bool(auth and getattr(auth, "cookie", None))
+                # ⚠️ 2026-09-13 关键修正：原实现 ok = bool(auth.cookie) —— 只要
+                # .env 里【存在】cookie 就报「刷新成功」，完全不验证凭证是否真的
+                # 有效。凭证失效时它照样返回 ok=True，导致上游「连续失败计数」
+                # 永不累加、熔断永不触发 → 每轮探活都去 scan_login → 抢占 profile
+                # → context 失活 → BCC-006 重启 → 无限循环（实测单日 155 次）。
+                # 现改为：必须【探活通过 + 与历史会话一致】才算真正刷新成功。
+                ok = False
+                _uid = None
+                if auth and getattr(auth, "cookie", None):
+                    try:
+                        from services.uid_probe import (
+                            get_uid as _uid_get,
+                            _uid_consistent_with_history as _uid_ok)
+                        _uid = _uid_get(self.account, force=True)
+                        if _uid and _uid_ok(self.account, _uid):
+                            ok = True
+                        else:
+                            logger.warning("BCC-036",
+                                f"[bcc] 刷新后凭证仍未通过校验"
+                                f"（uid={_uid}，与历史会话不一致或探活为空）"
+                                f"—— 判定为仍需人工扫码，不再视为成功")
+                    except Exception as e:
+                        logger.warning("BCC-036",
+                            f"[bcc] 刷新后凭证校验异常，判为未成功: {e}")
                 # 重启容器 context
                 await self._launch()
-                return {"ok": ok, "uid": getattr(auth, "uid", None) if auth else None}
+                return {"ok": ok, "uid": _uid}
             finally:
                 _scan_exclusive["holder"] = None
         return await self._exec(_do)
@@ -1520,11 +1543,25 @@ class BrowserContainer:
                         fut = asyncio.run_coroutine_threadsafe(
                             self.scan_login(force=False), self._loop)
                         try:
-                            fut.result(timeout=120)
-                            scan_fail_count = 0
+                            _r = fut.result(timeout=120) or {}
+                            # 2026-09-13：以「刷新后凭证是否真的有效」为判据
+                            # （scan_login 内部已改为探活校验），不再仅看有无 cookie
+                            if _r.get("ok"):
+                                scan_fail_count = 0
+                            else:
+                                scan_fail_count += 1
+                                logger.warning("BCC-020",
+                                    f"[bcc] uid 漂移后自动刷新未通过校验"
+                                    f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
                         except Exception as e:
                             logger.warning("BCC-020", f"[bcc] uid 漂移后自动刷新失败: {e}")
                             scan_fail_count += 1
+                        if scan_fail_count >= SCAN_BREAKER_LIMIT:
+                            breaker_until = time.time() + SCAN_BACKOFF_SEC
+                            logger.error("BCC-024",
+                                f"[bcc] 凭证刷新连续未通过 {scan_fail_count} 次，"
+                                f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟（自动救不回，"
+                                f"请在指纹浏览器重新扫码）")
                 elif uid:
                     # 2026-09-06 P1：uid 探活通过 ≠ 页面登录态有效。
                     # 「半登录态」（页面显示一键登录待激活）下 query/user 仍返回
@@ -1554,8 +1591,14 @@ class BrowserContainer:
                             fut = asyncio.run_coroutine_threadsafe(
                                 self.scan_login(force=False), self._loop)
                             try:
-                                fut.result(timeout=120)
-                                scan_fail_count = 0
+                                _r = fut.result(timeout=120) or {}
+                                if _r.get("ok"):
+                                    scan_fail_count = 0
+                                else:
+                                    scan_fail_count += 1
+                                    logger.warning("BCC-023",
+                                        f"[bcc] 页面重激活未通过校验"
+                                        f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
                             except Exception as e:
                                 logger.warning("BCC-023", f"[bcc] 页面重激活失败: {e}")
                                 scan_fail_count += 1
@@ -1630,8 +1673,12 @@ class BrowserContainer:
                         fut = asyncio.run_coroutine_threadsafe(
                             self.scan_login(force=False), self._loop)
                         try:
-                            fut.result(timeout=120)
+                            _r = fut.result(timeout=120) or {}
                             scan_fail_count += 1
+                            if not _r.get("ok"):
+                                logger.warning("BCC-026",
+                                    f"[bcc] 自动刷新凭证未通过校验"
+                                    f"（连续 {scan_fail_count} 次，uid={_r.get('uid')}）")
                         except Exception as e:
                             scan_fail_count += 1
                             logger.warning("BCC-026", f"[bcc] 自动刷新凭证失败: {e}")
