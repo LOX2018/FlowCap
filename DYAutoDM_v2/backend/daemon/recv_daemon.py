@@ -79,6 +79,12 @@ logger.add(
 def _rt_version() -> str:
     """本守护构建版本（读 exe 同级 version.json），供版本一致性校验。"""
     try:
+        from _build_version import BUILD_VERSION as _bv
+        if _bv:
+            return str(_bv)
+    except Exception:
+        pass
+    try:
         import json as _json
         base = os.path.dirname(os.path.abspath(
             sys.executable if getattr(sys, "frozen", False) else __file__))

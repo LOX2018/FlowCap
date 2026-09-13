@@ -660,10 +660,23 @@ logger.add(
 # 写入），兜底读源码根 version.json；前端把自身版本经请求头 X-App-Version 带上。
 # 二者不一致即响应头回 X-Version-Mismatch=1，前端据此显式告警（不静默）。
 # ---------------------------------------------------------------------------
-APP_VERSION = (
-    (os.environ.get("DY_APP_VERSION") or "").strip()
-    or _read_version_file()
-)
+def _build_version() -> str:
+    """后端自身版本：优先编译期常量（_build_version.py，随 sidecar 打包）。
+
+    其次 env DY_APP_VERSION，最后兜底读 version.json / 返回 unknown。
+    注：Frozen 后 __file__ 在解压目录，外部 version.json 读不到，
+    故必须以【编译期常量】为主，才能保证版本一定跟着 sidecar 走。
+    """
+    try:
+        from _build_version import BUILD_VERSION as _bv
+        if _bv:
+            return str(_bv)
+    except Exception:
+        pass
+    return (os.environ.get("DY_APP_VERSION") or "").strip() or _read_version_file()
+
+
+APP_VERSION = _build_version()
 
 
 @app.middleware("http")

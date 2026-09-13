@@ -1,0 +1,8 @@
+fix(v0.42.9): 版本常量改为编译期模块（version.json 冻结后读不到）
+
+【隐患】version.json 不会被 PyInstaller 打进 sidecar，Frozen 后 __file__ 指向
+ 解压目录，运行时读不到 → 版本退化成 unknown，校验失效（等于没做）。
+【修复】build_sidecar.py 改为生成 backend/_build_version.py（编译期常量），
+ 三份 sidecar 均加 --hidden-import _build_version 确保打进去；
+ main.py/browser_daemon/recv_daemon 的取版本函数改为【优先编译期常量】，
+ env 与文件降为兜底。已本地验证生成内容 = BUILD_VERSION = "0.42.9"。

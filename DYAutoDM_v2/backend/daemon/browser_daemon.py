@@ -288,6 +288,12 @@ def _app_version() -> str:
     sidecar 与桌面端分别构建，必须能自查版本，避免部署未生效却无人察觉。
     """
     try:
+        from _build_version import BUILD_VERSION as _bv
+        if _bv:
+            return str(_bv)
+    except Exception:
+        pass
+    try:
         import json as _json
         base = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False)
                                               else __file__))

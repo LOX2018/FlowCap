@@ -43,14 +43,20 @@ def _app_version() -> str:
 
 
 def _write_version_file() -> str:
-    """把版本写入 backend/version.json（打包进 sidecar，作为后端自述版本）。"""
+    """把版本固化进 backend/_build_version.py（编译期常量）。
+
+    2026-09-13：不用 version.json 外部文件 —— 该文件不会被 PyInstaller 打进
+    sidecar，Frozen 后 __file__ 指向解压目录，运行时根本读不到，版本会退化成
+    unknown。改成生成一个 Python 模块，随源码一起编译进 sidecar，100% 可靠。
+    """
     v = _app_version()
     try:
-        import json as _json
-        fp = BACKEND / "version.json"
-        fp.write_text(_json.dumps({"version": v}, ensure_ascii=False),
-                      encoding="utf-8")
-        print(f"[版本] backend/version.json = {v}")
+        fp = BACKEND / "_build_version.py"
+        fp.write_text(
+            '"""构建期生成的版本常量（勿手改；由 scripts/build_sidecar.py 写入）。"""\n'
+            f'BUILD_VERSION = "{v}"\n',
+            encoding="utf-8")
+        print(f"[版本] backend/_build_version.py = {v}")
     except Exception as e:
         print(f"[版本] 写入失败: {e}")
     return v
@@ -125,6 +131,10 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
     # （from daemon.wp_recv import run_wp_recv_loop 写在 lifespan 内部），
     # PyInstaller 静态分析扫不到，必须显式 hidden-import，
     # 否则打包后 WP 通道启动失败（ModuleNotFoundError）。
+    # 2026-09-13：版本常量模块由本脚本构建期生成（backend/_build_version.py），
+    # 三份 sidecar 都要能 import 到它（backend 目录已在 paths 里），
+    # 显式 hidden-import 防静态分析漏打 —— 版本校验依赖它。
+    cmd += ["--hidden-import", "_build_version"]
     if entry == "main.py":
         cmd += ["--hidden-import", "daemon.wp_recv"]
         # 2026-09-07：AI 知识库文件导入用了 UploadFile/Form，python-multipart
