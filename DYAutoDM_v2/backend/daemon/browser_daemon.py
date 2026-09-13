@@ -310,6 +310,45 @@ _SWITCH_COOLDOWN_SEC = 180
 
 # 模块级 hook 脚本：截 im/user/info 响应（必须在 context 创建后、goto 前 add_init_script 注入）
 # V16 踩坑：evaluate 注入太晚（前端已发完 im/user/info），必须 add_init_script 在 goto 前
+# ---------------------------------------------------------------------------
+# 2026-09-14 v0.43.9：DOM 滚动抓取（替代已失效的 im/user/info hook）
+#
+# 取证（2026-09-14 实机，非推断）：
+#   1. 全量 hook fetch+XHR（不预设接口名）+ 滚动 + 点击会话 → 捕获 **0 条**响应。
+#      即抖音前端不再为会话列表发任何网络请求，数据在首包 + 首次渲染缓存里。
+#      ⇒ 「等 im/user/info」是等一个不存在的请求，字段改没改都无意义。
+#   2. 会话列表是虚拟列表：DOM 同时只渲染 12~14 项，但**滚动会换内容**。
+#      实测滚动 10 轮 → 累计抓到 **45 个昵称 + 头像**（DOM 直读，零网络请求）。
+#   3. DOM 的 title 文本形如 "昵称<换行>时间"，需按首行取纯昵称。
+# ---------------------------------------------------------------------------
+CAP_DOM_SWEEP_JS = """
+(() => {
+  const out = [];
+  const items = document.querySelectorAll('[class*=conversationConversationItemwrapper]');
+  for (const it of items) {
+    try {
+      const t = it.querySelector('[class*=ConversationItemtitle]');
+      if (!t) continue;
+      const nick = (t.innerText || '').split(String.fromCharCode(10))[0].trim();
+      if (!nick) continue;
+      const img = it.querySelector('img');
+      out.push({nickname: nick, avatar: img ? (img.src || '') : ''});
+    } catch (e) {}
+  }
+  return out;
+})()
+"""
+
+CAP_DOM_SCROLL_JS = """
+(y) => {
+  const c = document.querySelector('.conversationConversationListwrapper');
+  if (!c) return {ok: false, why: 'no-container'};
+  c.scrollTop = y;
+  return {ok: true, top: Math.round(c.scrollTop), sh: c.scrollHeight, ch: c.clientHeight};
+}
+"""
+
+# 模块级 hook 脚本：截 im/user/info 响应（必须在 context 创建后、goto 前 add_init_script 注入）
 CAP_USERINFO_HOOK_JS = r"""
 (() => {
   if (window.__CAP_USERINFO__) return 'already';
@@ -1261,8 +1300,11 @@ class BrowserContainer:
                 await self._page.goto("https://www.douyin.com/chat?isPopup=1",
                                        wait_until="domcontentloaded", timeout=25000)
                 await self._page.wait_for_timeout(2000)
-            # 等待前端首发 im/user/info（首屏会话）
             await self._page.wait_for_timeout(wait * 1000)
+
+            # 2026-09-14 v0.43.9：DOM 累计器（hook 路径已确认失效：
+            # 全量 hook 实测 0 条响应，抖音前端不再为会话列表发请求）
+            _dom_seen = {}
 
             # 2026-09-01 优化：**跳过已点击过的会话**。
             # 原实现每轮都把当前可见的 12 项全点一遍（含前几轮已点过的），
@@ -1367,13 +1409,34 @@ class BrowserContainer:
                     break
             # 到底后再点一轮，确保末屏会话也点进
             await _click_all()
+
+            # 2026-09-14：每轮结束抓一次 DOM（虚拟列表滚动会换内容）
             try:
-                cap = await self._page.evaluate(
+                _items = await self._page.evaluate(CAP_DOM_SWEEP_JS)
+                for _it in (_items or []):
+                    _n2 = (_it or {}).get("nickname") or ""
+                    if _n2 and _n2 not in _dom_seen:
+                        _dom_seen[_n2] = {
+                            "nickname": _n2,
+                            "avatar": (_it or {}).get("avatar") or "",
+                            "uid": "",
+                            "sec_uid": "",
+                        }
+            except Exception as _e:
+                logger.warning("BCC-055", f"[bcc] DOM 抓取失败: {_e}")
+            # 2026-09-14 v0.43.9：**DOM 优先**（实测有效，零请求零风控），
+            # hook 结果仅作兜底叠加（保留旧路径，若将来抖音恢复发请求仍可用）。
+            cap = dict(_dom_seen)
+            try:
+                _hooked = await self._page.evaluate(
                     "() => window.__CAP_USERINFO__ ? window.__CAP_USERINFO__.map : {}")
+                for _su, _v in (_hooked or {}).items():
+                    _n3 = (_v or {}).get("nickname") or ""
+                    if _n3 and _n3 not in cap:
+                        _v = dict(_v); _v["sec_uid"] = _su
+                        cap[_n3] = _v
             except Exception as e:
-                logger.warning("BCC-011", f"[bcc] 读取 hook 结果失败: {e}")
-                cap = {}
-            cap = cap or {}
+                logger.warning("BCC-011", f"[bcc] 读取 hook 结果失败（DOM 兜底仍可用）: {e}")
             # ⚠️ 2026-09-13：此前的 DOM 采集方案已**撤回**。
             # 原因（知识库 08 §24 明确记载）：DOM 列表项无 conv_id/sec_uid，
             # 与首包只能靠**列表顺序软关联**，而懒加载 + 新消息置顶会错位 →

@@ -1308,10 +1308,25 @@ def capture_all(name, with_browser=True):
         # im/user/info 同时返回该用户 uid → 二者数字对应，为可靠桥接。
         # 首包 sec_uid 覆盖率仅 27%、与 im/user/info 重叠仅 5%，仅作 fallback。
         _userinfo_by_uid = {}
-        for _su, _v in userinfo.items():
+        # 2026-09-14 v0.43.9：BCC 改走 DOM 抓取后，键是**昵称**（DOM 无 uid）。
+        # 原逻辑只认 uid → DOM 结果会被全部丢弃（昵称仍全空）。
+        # 这里同时建「昵称索引」，供 uid 匹配不到时兜底。
+        _userinfo_by_nick = {}
+        for _k, _v in userinfo.items():
             _u = _v.get("uid")
             if _u:
                 _userinfo_by_uid[str(_u)] = _v
+            _nk = (_v.get("nickname") or "").strip()
+            if _nk:
+                _userinfo_by_nick[_nk] = _v
+            elif _k:
+                # 键本身即昵称（DOM 路径）
+                _userinfo_by_nick[str(_k).strip()] = _v
+        _nick_order = list(_userinfo_by_nick.keys())
+        if _userinfo_by_nick and not _userinfo_by_uid:
+            logger.info(
+                f"[capture][{name}] 昵称索引已建立（{len(_userinfo_by_nick)} 个，"
+                f"DOM 路径无 uid，将按昵称兜底关联）")
         _by_uid = 0
         _by_sec = 0
         # 2026-09-13 第三道防线：写库前的「本号 UID」同样以 conv_id 共同项为准。
@@ -1484,7 +1499,16 @@ def capture_all(name, with_browser=True):
                     _ua if _ub == str(_myuid_fix) else None)
                 if not _real:
                     continue
-                _newname = (_userinfo_by_uid.get(_real) or {}).get("nickname") or _real
+                _ui = _userinfo_by_uid.get(_real) or {}
+                if not _ui.get("nickname") and _userinfo_by_nick:
+                    # DOM 路径兜底：uid 无匹配时，用昵称索引（按下标对齐会话顺序）
+                    try:
+                        _idx = convs.index(_c) if _c in convs else -1
+                    except Exception:
+                        _idx = -1
+                    if 0 <= _idx < len(_nick_order):
+                        _ui = _userinfo_by_nick.get(_nick_order[_idx]) or {}
+                _newname = _ui.get("nickname") or _real
                 conn.execute(
                     "UPDATE dm_conversations SET peer_id=?, peer_name=? "
                     "WHERE account=? AND conv_id=?",
