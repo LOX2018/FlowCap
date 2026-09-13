@@ -246,6 +246,50 @@ _bcc_lazy_lock = threading.Lock()
 _bcc_lazy_spawned: set[str] = set()
 
 
+
+# ── 2026-09-14 v0.43.8：BCC「用户主动停止」状态 ──────────────────────
+# 背景：v0.43.6 改为「随启动拉起」后，任何 API 请求经 ensure_bcc /
+# ensure_daemons_for / browser_gate 都会发现 BCC 不在 → 立刻重新拉起，
+# 导致用户「刚关掉又被拉起」——关不掉。
+# 修法：把「停止」提升为一等状态。停止后所有自动路径只读不拉，
+# 直到用户显式恢复（UI 启动守护 / 删除标记 / 重启应用）。
+_BCC_USER_STOPPED: bool = False   # 进程内状态（本进程生命周期有效）
+
+
+def bcc_user_stopped() -> bool:
+    """BCC 是否被用户主动停止（进程内状态 + 持久化标记文件 双判据）。"""
+    if _BCC_USER_STOPPED:
+        return True
+    try:
+        import app_root as _ar
+        _root = _ar.app_root()
+    except Exception:
+        _root = os.environ.get("DY_APP_ROOT", "") or os.getcwd()
+    try:
+        return os.path.exists(os.path.join(_root, ".bcc_user_stopped"))
+    except Exception:
+        return False
+
+
+def bcc_mark_user_stopped(stopped: bool = True) -> None:
+    """用户显式停止/恢复 BCC：写进程内状态 + 持久化标记文件。"""
+    global _BCC_USER_STOPPED
+    _BCC_USER_STOPPED = bool(stopped)
+    try:
+        import app_root as _ar
+        _root = _ar.app_root()
+    except Exception:
+        _root = os.environ.get("DY_APP_ROOT", "") or os.getcwd()
+    _fp = os.path.join(_root, ".bcc_user_stopped")
+    try:
+        if stopped:
+            io.open(_fp, "w", encoding="utf-8").write("1")
+        else:
+            if os.path.exists(_fp):
+                os.remove(_fp)
+    except Exception:
+        pass
+
 def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
                skip_cooldown: bool = False) -> dict:
     """确保该账号的 BCC 正在运行；不在则拉起并等端口就绪（懒加载）。
@@ -258,6 +302,10 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
     """
     name = name or current_name()
     port = browser_daemon_port(name)
+    # 2026-09-14 v0.43.8：用户主动停止后，自动路径**绝不**重新拉起。
+    if bcc_user_stopped():
+        return {"ok": False, "port": None,
+                "msg": "BCC 已被用户停止（自动拉起已禁用）；请从界面显式启动"}
     if _port_open(port, timeout=0.3):
         return {"ok": True, "port": port, "msg": "已在运行"}
     # 2026-09-06 启动冷静期（防「启动时 BCC 快闪唤醒」）：

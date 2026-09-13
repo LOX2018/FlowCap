@@ -167,6 +167,15 @@ def ensure_browser(account: str, purpose: str = PURPOSE_AUTO,
     - purpose=AUTO      : 复用 BCC；离线则先拉起 BCC 再复用
     - purpose=EXCLUSIVE : 要求独占（扫码/读 profile）；仍由 BCC 进程让出 profile
     """
+    # 2026-09-14 v0.43.8：用户主动停止 → 不拉起，直接返回未就绪。
+    try:
+        from auto_dm.accounts import bcc_user_stopped as _st
+        if _st():
+            return {"ok": False, "port": None, "holder": None,
+                    "msg": "BCC 已被用户停止（自动拉起已禁用）"}
+    except Exception:
+        pass
+    
     a = _acc()
     st = bcc_state(account)
 

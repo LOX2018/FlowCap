@@ -552,6 +552,12 @@ async def ensure_bcc_ep(name: str):
     加密凭证；Rust 直 spawn 不带会员环境，会因主密钥不可用而失败。
     幂等：已在运行直接返回 ok。
     """
+    # 2026-09-14 v0.43.8：用户显式启动 → 清除停止态，恢复自动拉起。
+    try:
+        from auto_dm.accounts import bcc_mark_user_stopped as _mark
+        _mark(False)
+    except Exception:
+        pass
     try:
         # 用户点按钮 → 豁免启动冷静期（2026-09-13）
         st = acct_core.ensure_bcc(name, wait_ready=True, timeout=60,
@@ -739,6 +745,16 @@ async def hide_fingerprint_browser(name: str) -> ScanLoginResponse:
 @router.post("/{name}/stop-browser")
 async def stop_browser_daemon(name: str):
     """停止该账号的凭证守护（经由守护自身 HTTP /quit 端口，不依赖 Rust label 匹配）。"""
+    # 2026-09-14 v0.43.8：用户主动停止 → 记录停止态，
+    # 之后所有自动路径（ensure_bcc / ensure_daemons_for / browser_gate）
+    # 一律不再拉起，直到用户显式启动。
+    try:
+        from auto_dm.accounts import bcc_mark_user_stopped as _mark
+        _mark(True)
+        logger.info("[api] 用户已停止 BCC：自动拉起已禁用"
+                    "（需从界面显式启动才恢复）")
+    except Exception as _e:
+        logger.warning(f"[api] 记录 BCC 停止态失败: {_e}")
     bport = acct_core.browser_daemon_port(name)
     if not acct_core._port_open(bport, timeout=0.3):
         return {"ok": True, "wasRunning": False, "msg": f"凭证守护 {name} 未运行"}

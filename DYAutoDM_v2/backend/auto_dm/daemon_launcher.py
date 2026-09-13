@@ -128,6 +128,17 @@ def ensure_daemons_for(account: str, wait: bool = True,
     幂等：端口已开则跳过。返回 {browser: bool, recv: bool} 表示拉起是否成功。
     skip_cooldown：透传给 ensure_bcc，预对齐路径（启动即拉齐）豁免冷静期。
     """
+    # 2026-09-14 v0.43.8：用户主动停止 BCC → 自动路径一律不拉起（关得掉）。
+    try:
+        from auto_dm.accounts import bcc_user_stopped as _stopped
+    except Exception:
+        _stopped = None
+    if _stopped and _stopped():
+        logger.info(
+            "[daemon-launcher] BCC 已被用户停止，跳过自动拉起")
+        return {"browser": False, "recv": False,
+                "msg": "BCC 已被用户停止（自动拉起已禁用）"}
+    
     result = {"browser": False, "recv": False}
     try:
         # 1. browser_daemon（单例，用首个账号端口；这里直接用本账号端口）
