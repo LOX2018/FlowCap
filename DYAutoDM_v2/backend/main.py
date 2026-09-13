@@ -543,7 +543,11 @@ app.add_middleware(
 # 全部 /api/* 业务路由要求 X-Member-Token（登录后获得）；
 # 豁免：会员路由本身、健康探测（sidecar 就绪检测依赖它）、WebSocket（自验 token）。
 _MEMBER_EXEMPT = (
-    "/api/member/", "/api/status", "/api/ready", "/api/live/ws", "/api/errcodes", "/api/errcodes/", "/docs", "/openapi.json",
+    "/api/member/", "/api/status", "/api/ready", "/api/live/ws", "/api/errcodes",
+    "/api/errcodes/", "/docs", "/openapi.json",
+    # 2026-09-13：版本探针必须免鉴权 —— 前端要在登录前就能校验前后端版本，
+    # 否则 401 会让 checkVersionConsistency 拿到 unknown，校验形同虚设。
+    "/api/version",
     "/redoc",
 )
 
