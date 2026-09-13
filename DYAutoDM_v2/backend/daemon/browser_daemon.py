@@ -357,8 +357,20 @@ class BrowserContainer:
             raise RuntimeError(f"[bcc] 账号 {self.account} 无 .env（索引未登记？）")
         self._env_path = env_path
         self._profile_dir = _acc.profile_dir_of(env_path)
-        if not self._profile_dir or not os.path.isdir(self._profile_dir):
-            raise RuntimeError(f"[bcc] profile 目录不存在: {self._profile_dir}")
+        if not self._profile_dir:
+            raise RuntimeError(f"[bcc] 无法推导 profile 目录: account={self.account}")
+        # 2026-09-13：浏览器环境被清空后（用户要求摧毁旧环境、全新扫码），
+        # profile 目录不存在属正常 → 首次启动自动创建全新环境，不再报错。
+        # 单 profile 铁律不变：仍是该账号独占的那一个目录，不新建临时目录。
+        if not os.path.isdir(self._profile_dir):
+            try:
+                os.makedirs(self._profile_dir, exist_ok=True)
+                logger.info(
+                    f"[bcc] profile 目录不存在，已创建全新环境: {self._profile_dir}"
+                    "（全新环境：需扫码登录建立登录态）")
+            except Exception as e:
+                raise RuntimeError(
+                    f"[bcc] profile 目录创建失败: {self._profile_dir} ({e})") from e
         # 统一调度（BCC 作为 profile 唯一持有者）：重建 context 前先确保旧进程
         # 完全退出（SingletonLock 消失），否则新 launch 会 TargetClosed
         # （close()+stop() 异步，chromium 进程未退净即启动新 context 的竞态）。
