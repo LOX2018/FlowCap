@@ -40,6 +40,91 @@ DOMAIN_INFO = {
     "MISC": ["未分类", "", "按消息里的 [tag] 定位模块"],
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# 域级「设计契约」（2026-09-13 用户要求：报错必须回归设计理念，不能只看现状）
+#
+# 为什么：只有「发生了什么」→ 排查会在终端现状打转；
+#        必须同时给出「本该是什么」→ 才能判断偏在哪、从哪一环断的。
+#
+# 字段（对应调试六步闭环）：
+#   intent    该模块**应该做什么**（设计意图 / 一句话契约）
+#   invariant 必须成立的**不变式**（破了即 bug，与实现无关）
+#   chain     正常**链路**（源头 → 传播 → 终端）——排查从源头开始
+#   verify    **实机**判据（命令/现象/DB 证据；禁止纯代码推断定论）
+# ════════════════════════════════════════════════════════════════════════════
+DOMAIN_DESIGN = {
+    "BCC": {
+        "intent": "每账号唯一浏览器所有者：常驻持有该账号 profile，对外只通过 HTTP "
+                  "端点提供「读凭证/截昵称/发送/切换可见性」；绝不新开第二个实例"
+                  "（抢 profile → 环境跳变 → 风控）。",
+        "invariant": "① 同账号同刻最多 1 个 BCC 持有 profile；② 浏览器动作串行"
+                     "（单 _lock + 租约）；③ 可见性切换/自愈重建不得产生用户可见"
+                     "副作用（不弹窗、不闪窗）。",
+        "chain": "调用方(更新会话/发送/扫码) → services.browser_gate（唯一门禁）→ "
+                 "租约仲裁 → BrowserContainer._exec → Playwright context → 抖音页面。"
+                 "源头是「谁在申请浏览器」，不是「页面为何异常」。",
+        "verify": "Get-CimInstance Win32_Process 看 browser-daemon 数量恒为 1；"
+                  "curl :11231/status 看 alive/uid/lease；chrome 主实例命令行有无 "
+                  "--headless（有无头判据）。",
+    },
+    "CAP": {
+        "intent": "会话捕获 = 把抖音的会话/消息/昵称/头像如实写进本地库，供私信页纯读。"
+                  "昵称/头像唯一来源 = BCC 被动 hook 截前端自发 im/user/info"
+                  "（零主动请求，昵称关联风控红线）。",
+        "invariant": "① 昵称链路绝不主动批量查询用户信息；② peer_uid 必须来自首包 "
+                     "conv_id（0:1:my:peer），绝不用「自己」冒充对端；"
+                     "③ 首包(2043)与 cmd301 两条解析路径逐字段对齐。",
+        "chain": "点「更新会话」→ api/messages.refresh → capture_all → "
+                 "①.env 凭证 → ②BCC 就绪(gate) → ③首包 HTTP(parse_init_protobuf) → "
+                 "④cmd301 补全 → ⑤BCC 滚动截昵称 → ⑥写 dm_conversations/dm_messages。"
+                 "源头是「按钮是否真的拿到了浏览器与凭证」。",
+        "verify": "curl :8000/api/messages/conversations 看 peer_name 是否仍等于 "
+                  "peer_id（等于=昵称未关联）；日志「滚动轮次 N: 新点击=X 累计昵称=Y」"
+                  "——Y 恒 0 即 hook 未生效；DB SELECT COUNT(*) FROM dm_conversations "
+                  "WHERE peer_name<>peer_id。",
+    },
+    "AUTH": {
+        "intent": "凭证唯一真相在账号 .env（会员空间为 .env.enc）；探活 uid 与账号历史 "
+                  "conv_id 一致才算凭证有效。",
+        "invariant": "UID 漂移 = 凭证失效（用户铁律）——必须触发重新捕获，"
+                     "不能「不缓存 uid 继续用旧凭证」。",
+        "chain": "扫码/BCC 保活回写 → .env → services.uid_probe（唯一探活出口）→ "
+                 "query/user → 与历史 conv_id 交叉校验 → 消费方读缓存。",
+        "verify": "curl :8000/api/accounts 看 level；uid_probe.stats()；"
+                  "SELECT DISTINCT conv_id FROM dm_conversations WHERE account=?。",
+    },
+    "SEND": {
+        "intent": "所有私信发送过统一闸门（per-account 限速 + 风控配额），"
+                  "任何旁路直发都算缺陷。",
+        "invariant": "① 发送成功必须有 DB 落库 role=me 佐证；② dm_dispatch 不可用时"
+                     "宁可不发，绝不绕过闸门直发。",
+        "chain": "调用方(直播/采集/AI/手动) → recv_daemon /send*（闸门）→ imapi "
+                 "create_conversation → message/send → 响应 KICK/INVALID_REQUEST → DB 落库。",
+        "verify": "DB SELECT role,msg_type,ts FROM dm_messages WHERE conv_id=? ORDER BY ts "
+                  "DESC LIMIT 3 必须见 role=me；日志看 rate_limited/KICK 原文"
+                  "（KICK 是账号信誉，非代码）。",
+    },
+    "SYS": {
+        "intent": "启动/守护/路由的基础设施层：保证 backend、recv_daemon、BCC 在应用"
+                  "可用前就绪，且进程可被正确清理（不残留孤儿）。",
+        "invariant": "① BCC 只走 /quit 优雅退出，绝不强杀；② sidecar 二进制必须在"
+                     "应用根目录（禁止 binaries/）；③ 版本五处一致（tauri.conf 为真源）。",
+        "chain": "主程序(Tauri) → backend spawn → daemon_launcher → ensure_daemons_for "
+                 "→ 各 sidecar。",
+        "verify": "curl :8000/api/version 比对 :11231/status.version；进程路径核对。",
+    },
+    "RECV": {
+        "intent": "私信接收守护：WS 长连接把新消息实时落库，是「新消息/AI 回复/未读」"
+                  "的数据源。",
+        "invariant": "① 方向只能用 sender UID 判定；② msg_type=7 且 msg_id 为空的系统"
+                     "占位不入库；③ WS 必须带 ping 保活（否则 30s 被服务端掐断）。",
+        "chain": "recv_daemon 建 WS → 服务端推 → _handle → 落 dm_messages → （B机制）"
+                 "回填会话昵称 → 前端轮询读库。",
+        "verify": "日志 WS 断连计数（稳态 2 分钟应 0）；DB 新消息 ts 增量；"
+                  "/status 的 connected/conv_count。",
+    },
+}
+
 # ---- 全量代码注册表（由扫描脚本生成，meaning 取自原日志文本）----
 ERRCODES = {
     "ACC-001": {"meaning": "scan] 账号  扫码异常:", "file": "api/accounts.py", "line": 194},
@@ -364,6 +449,135 @@ ERRCODES = {
     "AI-034": {"meaning": "ai] 语义缓存模型不一致，本次跳过语义级:", "file": "services/ai_reply.py", "line": 0},
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# 码级「设计契约 + 偏离 + 溯源链」（2026-09-13 用户要求）
+#
+# 域级说明"这个域该怎样"；这里说明"这一条报错偏在哪、从哪断的、怎么实机验证"。
+# 字段：design(本该做什么) contract(被破的不变式) deviation(实际差异)
+#       chain(源头→传播→终端) root(为何在这一环断) verify(实机判据)
+#
+# ⚠️ 铁律：新增错误码必须至少填 design + verify（无设计契约的报错不许提交）。
+# ════════════════════════════════════════════════════════════════════════════
+CODE_DESIGN = {
+    "BCC-005": {
+        "design": "打开 chat 页是 BCC 一切能力（昵称 hook/发送/页面探活）的前置；"
+                  "失败应降级为后续接口自愈，不阻塞容器启动。",
+        "deviation": "chat 页未打开 → 页面停在 about:blank/首页",
+        "chain": "BCC 启动 → vbrowser.launch_async(profile) → page.goto(chat)",
+        "root": "网络/代理/页面加载超时，或 profile 未登录被重定向",
+        "verify": "GET :11231/status 后 POST /exec_js {js:'location.href'} 看是否含 "
+                  "/chat；页面 convItems 数 >0。",
+    },
+    "BCC-006": {
+        "design": "容器 context/page 应持续可用；失活才重建（自愈），重建不得产生"
+                  "用户可见副作用。",
+        "contract": "稳态下 context 不应反复失活——频繁重建=有外力在破坏它。",
+        "deviation": "单位时间重建次数异常（实测曾 155 次/日；故障期每 3~4s 一次 → "
+                     "用户可见「窗口快闪」）",
+        "chain": "源头候选：① 另一进程抢同一 profile（如手工起的第二个 BCC）"
+                 "② set_visible 重建 context ③ _ensure_alive 误判 "
+                 "④ 浏览器被外部关闭 → 终端：context.pages 为空报「已关闭」",
+        "root": "先查是不是有第二个实例/别的进程在动同一个 profile，再看探活判据是否"
+                "过严（页面加载中被误判失活）",
+        "verify": "① Get-CimInstance Win32_Process 看 browser-daemon 是否 =1；"
+                  "② 日志 BCC-052 计数（每次重建一条）；③ profile 锁文件"
+                  "（SingletonLock/lockfile）是否存在。",
+    },
+    "BCC-028": {
+        "design": "_launch 是容器唯一启动路径，应能在任何入口下都拿到该账号的 .env"
+                  "（含会员加密 .env.enc）。",
+        "deviation": "报「账号 X 无 .env（索引未登记？）」——不是索引坏，而是凭证读不到",
+        "chain": "BCC 启动 → _launch → accounts.env_path_of(account) → "
+                 "services.member_ctx（会员态解密）",
+        "root": "① 进程缺 DY_MEMBER/DY_MEMBER_KEY（手工启动最常见）② accounts_index "
+                "未登记 ③ 账号已删",
+        "verify": "python -c \"from services import member_ctx as m; "
+                  "print(m.member_space_root(), m.is_member_env('<env_path>'))\"；"
+                  "手工启动必须带 DY_APP_ROOT + DY_MEMBER + DY_MEMBER_KEY。",
+    },
+    "BCC-041": {
+        "design": "services.browser_gate 是浏览器唯一门禁：自动路径复用 BCC，离线则先"
+                  "拉起 BCC，拿不到就显式失败（绝不新开实例）。",
+        "contract": "门禁失败时调用方必须停止依赖浏览器的步骤，而不是继续跑"
+                    "（否则产生假成功）。",
+        "deviation": "门禁返回 not-ready，但调用方仍继续 → 后续 CAP-007 连接失败、"
+                     "昵称 0 个，前端却显示「更新完成」",
+        "chain": "调用方 → gate.ensure_browser → bcc_state(端口/status) → "
+                 "ensure_daemons_for(拉起)",
+        "root": "实测两类：① 启动冷静期(DY_BCC_LAZY_DELAY=30s)拦住了用户显式操作；"
+                "② 二进制缺失/端口未就绪",
+        "verify": "看 gate 日志的 skip_cooldown= 与 purpose；curl :8000/api/version "
+                  "确认 backend 已起多久（<30s 则命中冷静期）。",
+    },
+    "BCC-051": {
+        "design": "凭证不可用属不可自愈条件，容器应熔断退出重启循环并给出可操作提示。",
+        "deviation": "进入熔断（30 分钟内不再自动重启）",
+        "chain": "_ensure_alive → _launch(env 不可用) → 致命态标记",
+        "root": "同 BCC-028（凭证读不到）——必须解决根因，重启无用",
+        "verify": "同 BCC-028 的会员态核查。",
+    },
+    "BCC-052": {
+        "design": "context 失活自愈：重建一律按最小化启动，不继承上次可见态"
+                  "（避免窗口快闪）。",
+        "deviation": "发生了一次容器重建（信息级，用于观测重建频率）",
+        "chain": "_ensure_alive 探活失败 → close → _launch(headless=True)",
+        "root": "重建本身是自愈行为；若频率高，回到 BCC-006 查外力",
+        "verify": "统计当日 BCC-052 次数；配合 Win32_Process 看实例数是否曾 >1。",
+    },
+    "CAP-001": {
+        "design": "「更新会话」必须依赖 BCC 才能截昵称；拿不到 BCC 时必须让用户知道，"
+                  "而不是静默降级。",
+        "deviation": "browser_daemon 未拉起 → 昵称关联必失效（仅告警，用户无感）",
+        "chain": "refresh → ensure_daemons_for → BCC 端口",
+        "root": "启动冷静期拦截 / 二进制缺失 / 端口被占",
+        "verify": "同 BCC-041；并在前端确认是否提示了「未拿到浏览器」。",
+    },
+    "CAP-007": {
+        "design": "capture_userinfo_via_browser 经 BCC 被动 hook 截昵称"
+                  "（零主动请求、零风控）。",
+        "deviation": "调 BCC /capture_userinfo 连接失败（端口不通）",
+        "chain": "capture_all → capture_userinfo_via_browser → "
+                 "requests.post(:11231/capture_userinfo)",
+        "root": "BCC 根本没起来（上一环 gate 失败未被阻断）——不是捕获逻辑有 bug",
+        "verify": "Get-CimInstance Win32_Process 过滤 browser-daemon 数量是否为 0；"
+                  "curl :11231/status。",
+    },
+    "CAP-016": {
+        "design": "所有浏览器启动路径收敛到 browser_gate 统一入口（杜绝环境分叉）。",
+        "deviation": "统一入口未就绪（拿不到浏览器）",
+        "chain": "capture_all → gate.ensure_browser → BCC 状态",
+        "root": "与 BCC-041 同源；注意此处不 return 会继续跑出假成功",
+        "verify": "日志紧跟的 CAP-007（连接失败）即证据链下一环。",
+    },
+    "SYS-002": {
+        "design": "守护拉起应幂等，且可被用户显式操作随时触发。",
+        "deviation": "BCC 未拉起（冷静期内或二进制缺失）",
+        "chain": "ensure_daemons_for → ensure_bcc → 冷静期判定",
+        "root": "启动冷静期(30s)拦截——原设计为防启动期自动路径乱拉，但用户显式操作"
+                "也被一并拦住（实测事故）",
+        "verify": "对照 backend 启动时间与用户点击时间间隔（<30s 即命中）；"
+                  "echo $DY_BCC_LAZY_DELAY。",
+    },
+    "AUTH-050": {
+        "design": "探活 uid 必须与账号历史 conv_id 的 uid 段一致（身份判据）。",
+        "contract": "UID 漂移 = 凭证失效（用户铁律）",
+        "deviation": "探活得到的 uid 不出现在任何历史 conv_id 中",
+        "chain": "uid_probe.get_uid(force) → query/user → 与 dm_conversations.conv_id "
+                 "交叉校验",
+        "root": "① 凭证已失效（登录态被踢/环境跳变）② profile 里登录的是他人（幽灵 uid）",
+        "verify": "SELECT DISTINCT conv_id FROM dm_conversations WHERE account=? 手工比对"
+                  "探活 uid；0 命中 → 触发重新扫码。",
+    },
+    "SEND-037": {
+        "design": "dm_dispatch 是发送的唯一风控闸门；不可用时宁可不发。",
+        "contract": "任何直发旁路都算缺陷（发送是最高频风控面）。",
+        "deviation": "dm_dispatch 接入失败，本次已放弃发送（不再回退直发）",
+        "chain": "dispatch._do_send → dm_dispatch.submit → 失败分支",
+        "root": "调度器内部异常（非账号风控）",
+        "verify": "日志前后是否有 SEND-006/007；DB 无 role=me 新增即为放弃成功。",
+    },
+}
+
 SPECIAL = {}  # 特码覆盖: code -> (常见原因, 建议处置)；未覆盖回退域默认
 
 def _fmt(code: str, message) -> str:
@@ -381,17 +595,65 @@ def ec_exc(code: str, message, *args, **kwargs):
     logger.exception(_fmt(code, message))
 
 def lookup(code: str):
+    """查码：返回 设计契约 + 偏离 + 溯源链 + 实机判据（2026-09-13 升级）。
+
+    使用顺序（对应调试六步闭环）：
+      1. 读 design / contract —— 先回归设计理念，明确该模块本该做什么；
+      2. 读 deviation —— 明确实际与预期的具体差异（不是"报错了"）；
+      3. 沿 chain 从源头查，不要只盯终端现象；
+      4. root 给出常见的断裂点（为什么在这一环断）；
+      5. verify 是实机判据（禁止纯代码/静态分析定论）。
+    域级 domain_design 提供该模块整体规划（intent/invariant/chain/verify）。
+    """
     c = ERRCODES.get(code)
     if not c:
         return None
     dom = code.split("-")[0]
     d = DOMAIN_INFO.get(dom, ("", "", ""))
     sp = SPECIAL.get(code, ("", ""))
+    dd = DOMAIN_DESIGN.get(dom, {})
+    cd = CODE_DESIGN.get(code, {})
     return {
         "code": code, "domain": dom, "domain_name": d[0],
         "meaning": c["meaning"], "file": c["file"], "line": c["line"],
         "cause": sp[0] or d[1], "action": sp[1] or d[2],
+        # ── Step1 设计契约（先回归设计理念，再看现状）──
+        "design": cd.get("design") or dd.get("intent", ""),
+        "contract": cd.get("contract") or dd.get("invariant", ""),
+        # ── Step2/3/4 偏离 / 溯源链 / 断裂点 ──
+        "deviation": cd.get("deviation", ""),
+        "chain": cd.get("chain") or dd.get("chain", ""),
+        "root": cd.get("root", ""),
+        # ── Step5 实机判据 ──
+        "verify": cd.get("verify") or dd.get("verify", ""),
+        "domain_design": {
+            "intent": dd.get("intent", ""),
+            "invariant": dd.get("invariant", ""),
+            "chain": dd.get("chain", ""),
+            "verify": dd.get("verify", ""),
+        } if dd else {},
+        "has_contract": bool(cd.get("design") or dd.get("intent")),
     }
 
-def all_codes() -> list:
+def all_codes() -> list:
     return [lookup(c) for c in sorted(ERRCODES)]
+
+
+def contract_gaps() -> dict:
+    """审计：哪些错误码缺设计契约（违反"新增码必须填 design"铁律）。
+
+    用法：python -c "from errcode import contract_gaps as g; print(g()['missing'])"
+    """
+    missing = []
+    for c in sorted(ERRCODES):
+        dom = c.split("-")[0]
+        cd = CODE_DESIGN.get(c, {})
+        dd = DOMAIN_DESIGN.get(dom, {})
+        if not (cd.get("design") or dd.get("intent")):
+            missing.append(c)
+    return {
+        "total_codes": len(ERRCODES),
+        "domain_ok": sorted(DOMAIN_DESIGN.keys()),
+        "code_ok": sorted(CODE_DESIGN.keys()),
+        "missing": missing,
+    }

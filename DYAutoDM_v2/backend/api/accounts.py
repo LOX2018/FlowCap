@@ -553,7 +553,9 @@ async def ensure_bcc_ep(name: str):
     幂等：已在运行直接返回 ok。
     """
     try:
-        st = acct_core.ensure_bcc(name, wait_ready=True, timeout=60)
+        # 用户点按钮 → 豁免启动冷静期（2026-09-13）
+        st = acct_core.ensure_bcc(name, wait_ready=True, timeout=60,
+                                  skip_cooldown=True)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "msg": f"BCC 拉起异常: {e}"}
     return {"ok": bool(st.get("ok")), "port": st.get("port"), "msg": st.get("msg", "")}
@@ -567,7 +569,7 @@ async def ensure_recv_ep(name: str):
     """
     from auto_dm.daemon_launcher import ensure_daemons_for
     try:
-        r = ensure_daemons_for(name, wait=True)
+        r = ensure_daemons_for(name, wait=True, skip_cooldown=True)
         ok = bool(r.get("recv"))
         return {"ok": ok, "msg": "私信守护已就绪" if ok else "私信守护拉起失败，请查看日志"}
     except Exception as e:  # noqa: BLE001

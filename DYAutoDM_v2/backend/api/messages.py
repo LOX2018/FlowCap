@@ -70,7 +70,20 @@ def _bcc_url(account: str, path: str) -> str:
     2026-09-06 懒加载：调用前先 ensure_bcc —— BCC 不随启动拉起（用户架构
     决策），WP 发送/更新会话首次使用时自动拉起（onefile 冷启动 ~15s）。
     """
-    st = acct_core.ensure_bcc(account)
+    # 2026-09-13：走统一调度入口 + 用户显式豁免冷静期。
+    # 此前直接调 ensure_bcc 未豁免 → 用户在 backend 启动 30s 内点
+    # 「更新会话」必然拿不到 BCC（实测：日志 SYS-002 冷静期拦截）。
+    _st = None
+    try:
+        from services.browser_gate import (ensure_browser as _eb,
+                                          PURPOSE_USER as _PU)
+        _st = _eb(account, purpose=_PU, wait=True)
+    except Exception as _e:
+        logger.debug(f"[bcc-url] gate 调用异常（回退 ensure_bcc）: {_e}")
+    if _st is None:
+        # 调度器不可用时退回原路径（仍豁免冷静期）
+        _st = acct_core.ensure_bcc(account, skip_cooldown=True)
+    st = _st
     if not st.get("ok"):
         raise RuntimeError(f"BCC 未就绪: {st.get('msg')}")
     port = acct_core.browser_daemon_port(account)
@@ -730,7 +743,8 @@ async def refresh_conversations(account: str, body: RefreshConvsRequest | None =
         # 阻塞 uvicorn 事件循环，期间所有其他 API（含 3s/5s 高频轮询）全部
         # 排队 → 前端整体卡死。改 run_in_executor 丢线程池。
         def _do_refresh():
-            launched = ensure_daemons_for(account)
+            # 用户点「更新会话」→ 豁免启动冷静期
+            launched = ensure_daemons_for(account, skip_cooldown=True)
             if use_browser and not launched.get("browser"):
                 logger.warning("CAP-001", f"[refresh][{account}] browser_daemon 未拉起，昵称关联可能失效")
             return capture_all(account, with_browser=use_browser)

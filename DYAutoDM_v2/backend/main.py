@@ -257,17 +257,33 @@ def _auto_start_daemons() -> None:
         # 并行后总耗时 ≈ 最慢一个（~15s），N 账号不再线性叠加。
         spawned = []  # (port, pid, label)
 
-        # 1. browser_daemon（BCC 容器）—— 2026-09-06 改为【默认不随启动拉起】
-        #    历史理由（昵称自动捕获）已于 2026-08-29 废除（风控保护，改手动触发）。
-        #    BCC 的消费者（WP 发送/昵称捕获/回声轮询）全部按需或可延后，
-        #    启动时不该为「可能不用」的功能预付 15s 启动成本 + 风控暴露。
-        #    需要随启动拉起时设 DY_BCC_ON_START=1。
+        # ═══════════════════════════════════════════════════════════════
+        # 1. browser_daemon（BCC 容器）—— 2026-09-13【改为默认随启动拉起】
+        #
+        # Step1 设计契约：应用启动后，用户点任何按钮时其依赖的守护必须已就绪；
+        #   用户不该感知「守护还没起」。
+        #
+        # Step4 为什么改（前提已消失）：
+        #   旧规范（git d0b9163, 09-06）理由是「不为可能不用的功能预付 15s+ 成本」，
+        #   但那个 15s 是 **onefile** 时代的数字（每次启动解包 114MB 到 %TEMP%）。
+        #   09-08 已改 onedir（免解压）：知识库实测 onefile 13.24s → onedir 1.10s；
+        #   **BCC 冷启动实测 4 秒**（22:08:35 启动 → 22:08:39 容器就绪）。
+        #   而这套「懒加载」留下的代价是：三处路径对「该不该拉 BCC」结论相反、
+        #   30s 冷静期拦住用户显式操作、拿不到 BCC 时静默空跑（前端显示"更新完成"
+        #   实则昵称 0 个）——用户实测「点更新会话连 BCC 都没唤醒」。
+        #
+        # 回退：DY_BCC_ON_START=0 恢复「不随启动拉起」（极端省资源场景）。
+        # ═══════════════════════════════════════════════════════════════
         bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
         if bcc_binary is None:
             logger.warning("SYS-008", "[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
         else:
             import os as _os
-            if _os.environ.get("DY_BCC_ON_START", "0") == "1":
+            if _os.environ.get("DY_BCC_ON_START", "1") == "0":
+                logger.info(
+                    "[startup] BCC 不随启动拉起（DY_BCC_ON_START=0 显式关闭）；"
+                    "首次使用时会自动拉起，但用户操作会先撞启动冷静期，请谨慎使用")
+            else:
                 try:
                     bport = acct_core.browser_daemon_port(names[0])
                     if acct_core._port_open(bport, timeout=0.2):
@@ -278,12 +294,11 @@ def _auto_start_daemons() -> None:
                         # 不随 backend 退出清扫 —— 从台账注销。铁律：不强杀 BCC。
                         _dreg.unregister(proc.pid)
                         spawned.append((bport, proc.pid, f"browser_daemon({names[0]})"))
+                        logger.info(
+                            f"[startup] 已随启动拉起 browser_daemon (port={bport}, "
+                            f"pid={proc.pid})—— 保证用户点任何按钮时浏览器已就绪")
                 except Exception as e:
                     logger.warning("SYS-009", f"[startup] 拉起 browser_daemon 失败: {e}")
-            else:
-                logger.info(
-                    "[startup] BCC 不随启动拉起（懒加载：WP 发送/更新会话首次使用时自动拉起；"
-                    "设 DY_BCC_ON_START=1 可恢复随启动拉起）")
 
         # 2. 每个账号的 recv_daemon（并行 spawn，不等待）
         recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")

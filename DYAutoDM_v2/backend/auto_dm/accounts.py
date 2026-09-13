@@ -269,7 +269,10 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
     # 该路径是用户明确要求「登录前对齐」的实现，不是误触发。
     if not skip_cooldown:
         try:
-            _delay = int(os.environ.get("DY_BCC_LAZY_DELAY", "30"))
+            # 2026-09-13：默认 30 → **0**（BCC 已改为随启动拉起，冷静期无存在
+            # 必要）。保留环境变量以便极端场景回退；>0 时**用户显式操作会被
+            # browser_gate 自动豁免**（见 _SKIP_COOLDOWN_BY_PURPOSE）。
+            _delay = int(os.environ.get("DY_BCC_LAZY_DELAY", "0"))
         except Exception:
             _delay = 30
         if _delay > 0:

@@ -30,7 +30,9 @@ from typing import Any, Optional
 from loguru import logger
 
 # 用途分类
-PURPOSE_AUTO = "auto"            # 自动/后台路径：更新会话、凭证刷新、采集
+PURPOSE_AUTO = "auto"            # 纯自动/后台路径（启动期预对齐等）
+PURPOSE_USER = "user"            # **用户显式操作**（点「更新会话」/「启动守护」/
+                                 # 「打开浏览器」）—— 一律豁免启动冷静期
 PURPOSE_EXCLUSIVE = "exclusive"  # 用户显式独占：扫码登录、重扫、读 profile 凭证
 
 
@@ -83,8 +85,22 @@ def bcc_state(account: str) -> dict:
 
 # 优先级映射（与 BCC 侧 LEASE_PRIO_TTL_LIMIT 一致：0=用户显式 1=业务自动 2=后台保活）
 _PRIO_BY_PURPOSE = {
-    PURPOSE_AUTO: 1,         # 更新会话/凭证刷新/采集 → 业务自动
+    PURPOSE_AUTO: 1,         # 纯后台路径 → 业务自动
+    PURPOSE_USER: 0,         # 用户点了按钮 → 用户显式（最高）
     PURPOSE_EXCLUSIVE: 0,    # 扫码/读 profile → 用户显式
+}
+
+# 冷静期豁免：用户显式操作一律放行。
+#
+# 为什么（2026-09-13 实测事故）：启动冷静期（DY_BCC_LAZY_DELAY）本意是防
+# 「启动期自动路径乱拉 BCC」，但用户点「更新会话」被拦后：既没有 BCC 可用，
+# 采集还继续空跑 → 用户看到「连 BCC 都没唤醒」。
+# 注：BCC 现已改为随启动拉起（DY_BCC_ON_START 默认 1），冷静期默认 0；
+# 此表仍保留——用户显式操作永远不该被任何节流机制拦住。
+_SKIP_COOLDOWN_BY_PURPOSE = {
+    PURPOSE_AUTO: False,      # 纯后台：仍受冷静期保护（若显式开启）
+    PURPOSE_USER: True,       # 用户显式：豁免
+    PURPOSE_EXCLUSIVE: True,  # 扫码等：豁免
 }
 _TTL_LIMIT = {0: 300.0, 1: 180.0, 2: 30.0}
 
@@ -141,7 +157,8 @@ def lease_status(account: str) -> dict:
 
 def ensure_browser(account: str, purpose: str = PURPOSE_AUTO,
                    wait: bool = True, holder: str = "",
-                   prio: "int|None" = None, ttl: float = 0.0) -> dict:
+                   prio: "int|None" = None, ttl: float = 0.0,
+                   skip_cooldown: "bool|None" = None) -> dict:
     """统一入口：确保该账号有**且仅有一个**浏览器所有者。
 
     返回 {ok, owner, port, state, lease_id, msg}。永不新开独立浏览器实例。
@@ -155,11 +172,14 @@ def ensure_browser(account: str, purpose: str = PURPOSE_AUTO,
 
     if not st["online"]:
         # 自动拉起 BCC（唯一入口 ensure_bcc，带冷静期/防重复保护）
+        # 用户显式操作豁免启动冷静期（见 _SKIP_COOLDOWN_BY_PURPOSE）。
+        _sk = (skip_cooldown if skip_cooldown is not None
+               else _SKIP_COOLDOWN_BY_PURPOSE.get(purpose, False))
         logger.info(f"[gate][{account}] BCC 未运行，委托调度器拉起"
-                    f"（purpose={purpose}）")
+                    f"（purpose={purpose}, skip_cooldown={_sk}）")
         try:
             from auto_dm.daemon_launcher import ensure_daemons_for
-            r = ensure_daemons_for(account, wait=wait)
+            r = ensure_daemons_for(account, wait=wait, skip_cooldown=_sk)
             ok = bool(r.get("browser"))
         except Exception as e:
             logger.warning("BCC-040",
