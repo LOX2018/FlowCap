@@ -357,6 +357,45 @@ def _proxy_credentials(proxy_url):
 
 # 出口 IP 校验接口（借鉴 OpenBrowser egress check）。依次尝试，谁先返回 200 用谁。
 # ipify 稳定无风控；抖音自回显仅作兜底（走的是同一浏览器网络栈，失败不影响主链路）。
+# ===== Playwright 后端选择（2026-09-13）=====
+# patchright = Playwright 的「反检测」分支（Apache-2.0，90 天内 22 次提交，活跃度高）。
+# 它修补了 CDP 协议层泄漏（Runtime.enable / Console.enable leak、
+# --disable-component-update 被识别为 Stealth Driver 等），而这些**内核遮不住**：
+# 即使 navigator.webdriver=False，服务端仍可通过 CDP 行为特征判定自动化。
+# 用法是 drop-in 替换（API 完全一致），故统一走下面两个工厂函数。
+# 回退：设 DY_PW_BACKEND=playwright 即恢复原生 Playwright。
+def _pw_backend_name():
+    return (os.environ.get("DY_PW_BACKEND") or "patchright").strip().lower()
+
+
+def pw_async_api():
+    """返回 async_playwright 工厂（默认 patchright，可按 DY_PW_BACKEND 回退）。"""
+    if _pw_backend_name() == "playwright":
+        from playwright.async_api import async_playwright as _f
+        return _f
+    try:
+        from patchright.async_api import async_playwright as _f
+        return _f
+    except Exception as e:  # 未安装时自动回退，绝不因缺库中断
+        logger.warning("BCC-040", f"[vbrowser] patchright 不可用（{e}），回退原生 Playwright")
+        from playwright.async_api import async_playwright as _f
+        return _f
+
+
+def pw_sync_api():
+    """返回 sync_playwright 工厂（默认 patchright）。"""
+    if _pw_backend_name() == "playwright":
+        from playwright.sync_api import sync_playwright as _f
+        return _f
+    try:
+        from patchright.sync_api import sync_playwright as _f
+        return _f
+    except Exception as e:
+        logger.warning("BCC-040", f"[vbrowser] patchright 不可用（{e}），回退原生 Playwright")
+        from playwright.sync_api import sync_playwright as _f
+        return _f
+
+
 _IPAPI_IS_URL = "https://api.ipapi.is/?key=5dc5e8145af003394288"
 
 _EGRESS_IP_ENDPOINTS = [
@@ -942,7 +981,7 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
       - force=True 仅表示“不复用已有登录态、强制重新扫码”，仍使用同一固定 profile 目录，
         不清空、不新建临时目录（清空/临时化都是风控根因）。
     """
-    from playwright.async_api import async_playwright
+    async_playwright = pw_async_api()
 
     if mode == "exe":
         exe = _resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")
@@ -1022,7 +1061,7 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
 
     account 参数语义同 launch_async（读账号 .env DY_PROXY 注入代理）。
     """
-    from playwright.sync_api import sync_playwright
+    sync_playwright = pw_sync_api()
 
     if mode == "exe":
         exe = _resolve_exe(getattr(cfg, "VB_CHROME_EXE", "") or "")
@@ -1091,7 +1130,7 @@ async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.
     适用于“账号管理双击指纹浏览器”这类纯查看/手动操作场景。
     """
     import asyncio
-    from playwright.async_api import async_playwright
+    async_playwright = pw_async_api()
 
     mode = getattr(_CFG, "VB_MODE", "exe")
     if mode == "exe":

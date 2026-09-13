@@ -137,6 +137,15 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "services.member_ctx",
             "cryptography",
             "cryptography.fernet",
+            # 2026-09-13：patchright（反检测版 Playwright，接管 CDP 协议层泄漏）。
+            # vbrowser.pw_async_api/pw_sync_api 在**函数体内** import，静态分析扫不到，
+            # 必须显式声明，否则打包后回退原生 Playwright（等于没接）。
+            "patchright",
+            "patchright.async_api",
+            "patchright.sync_api",
+            "patchright._impl",
+            "patchright._impl._browser_type",
+            "patchright._impl._browser",
             # 2026-09-13：出口 IP 探测支持 socks5 节点（urllib 原生不支持
             # socks://，需 PySocks 的 SocksiPyHandler）。这两个模块在
             # vbrowser.probe_egress_ip_direct 里函数体内 import，静态分析

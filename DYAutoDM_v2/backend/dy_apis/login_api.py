@@ -692,7 +692,8 @@ class DYLoginApi:
             logger.warning("AUTH-039", f"[auth] BCC /user_info 返回失败: "
                            f"{r.get('msg', '')}，退回直开浏览器")
         # 后备：直开 Playwright（BCC 未运行时）
-        from playwright.sync_api import sync_playwright
+        from auto_dm.vbrowser import pw_sync_api
+        sync_playwright = pw_sync_api()
         from auto_dm import accounts as _acc
         from auto_dm.vbrowser import should_use_vb, launch_sync
         from auto_dm import config as _cfg
