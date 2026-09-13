@@ -449,23 +449,79 @@ def _launch_args_with_proxy(cfg, account=None):
     # BCC「快闪重启循环」的诱因之一。账号没配 DY_PROXY 且系统代理端口
     # 探测不通时，对该进程加 --no-proxy-server 直连（不动系统注册表，
     # 不影响其它软件；系统代理活着则尊重，不干预）。
-    if not proxy_url:
-        # 2026-09-12 根治（用户确认：账号代理必须按 IP 隔离生效）：
-        # 账号没配 DY_PROXY 时，【无论系统代理死活】都强制 --no-proxy-server 直连。
-        # 否则指纹浏览器会默认跟随系统代理（ProxyEnable=1 → 如 satelite 的
-        # 10808 国外节点），抖音检测到代理特征+出口IP与账号环境不符 → 弹
-        # 「安全风险阻止访问」；且国内账号误走国外节点违反 IP 隔离要求。
-        # 配了 DY_PROXY 的账号走下面的账号代理分支（国内/国外按需）。
-        args.append("--no-proxy-server")
-        logger.info(
-            "[vbrowser] 账号未配 DY_PROXY，强制 --no-proxy-server 直连"
-            "（防误走系统代理/satelite，避免代理特征泄露）")
-    pw_proxy = None
+    # ===== 环境门阀：由「代理配置」单方面决定（2026-09-13 用户架构定义）=====
+    # 三级优先级，绝不由本机环境（系统代理是否开着）以外的因素决定：
+    #   ① 账号配了独立节点 DY_PROXY → 走该节点（最高优先）
+    #   ② 未配独立节点，但系统已设置代理 → 【跟随系统代理】
+    #   ③ 都没配 → 默认国内直连（--no-proxy-server）
+    # 铁律：浏览器环境 = 代理配置的映射，项目与浏览器恒同一套环境，杜绝 IP 跳变。
     if proxy_url:
+        # ① 独立节点
         args += _proxy_launch_args(proxy_url)
         pw_proxy = _playwright_proxy_param(proxy_url)
-        logger.info(f"[vbrowser] 已启用账号代理: {_mask_proxy(proxy_url)}")
-    return args, proxy_url, pw_proxy
+        logger.info(f"[vbrowser] 环境门阀①：账号独立节点 → {_mask_proxy(proxy_url)}")
+        return args, proxy_url, pw_proxy
+    # ② 跟随系统代理（读 Windows 注册表；非本机代理不干预，交 Chromium 默认行为）
+    sys_proxy = _system_proxy_url()
+    if sys_proxy:
+        args += _proxy_launch_args(sys_proxy)
+        pw_proxy = _playwright_proxy_param(sys_proxy)
+        logger.info(
+            f"[vbrowser] 环境门阀②：未配独立节点，跟随系统代理 → {_mask_proxy(sys_proxy)}"
+            "（与用户手动打开浏览器同一出口，杜绝环境跳变）")
+        return args, sys_proxy, pw_proxy
+    # ③ 默认国内直连
+    args.append("--no-proxy-server")
+    logger.info("[vbrowser] 环境门阀③：未配节点且系统无代理 → 默认直连")
+    return args, None, None
+
+
+def _system_proxy_url():
+    """读 Windows 系统代理，归一化为 URL；无/不可用返回 None。
+
+    仅只读注册表，绝不修改系统设置。ProxyEnable=0 → None。
+    支持 "127.0.0.1:10808" 与 "http=...;https=..." 两种形态。
+    """
+    import sys as _sys
+    if _sys.platform != "win32":
+        return None
+    try:
+        import winreg  # noqa: S404 仅读
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        try:
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if not enabled:
+                return None
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+        finally:
+            winreg.CloseKey(key)
+        server = (server or "").strip()
+        if not server:
+            return None
+        # "http=127.0.0.1:10808;https=..." 形态：优先取 https，其次 http，再次首段
+        host_port = server.split(";")[0].strip()
+        if "=" in server:
+            for proto in ("https", "http", "socks5", "socks"):
+                for seg in server.split(";"):
+                    seg = seg.strip()
+                    if seg.lower().startswith(proto + "="):
+                        host_port = seg.split("=", 1)[1].strip()
+                        break
+                else:
+                    continue
+                break
+        host, _, port = host_port.rpartition(":")
+        if not host or not port.isdigit():
+            return None
+        host = host.strip().strip("[]")
+        # 已是带 scheme 的完整 URL
+        if "://" in host_port:
+            return host_port
+        return f"http://{host}:{port}"
+    except Exception:
+        return None
 
 
 def _dead_system_proxy_arg():

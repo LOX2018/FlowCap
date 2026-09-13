@@ -271,7 +271,8 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account
     try:
         _vb, _vb_mode = should_use_vb(_cfg)
         logger.info(f"[resolve] 使用指纹浏览器内核解析跳转 (mode={_vb_mode})")
-        _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=headless)
+        _pw, _browser, context, _backend = launch_sync(
+            _vb_mode, _cfg, headless=headless, account=account_name)
     except RuntimeError as e:
         logger.error("LIVE-018", f"[resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：{e}")
         return None, None

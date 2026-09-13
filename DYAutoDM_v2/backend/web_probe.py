@@ -103,7 +103,9 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
     try:
         _vb, _vb_mode = should_use_vb(_cfg)
         logger.info(f"[web_probe] 使用指纹浏览器内核接管中控台采集 (mode={_vb_mode})")
-        _pw, _browser, context, _backend = await launch_async(_vb_mode, _cfg, headless=headless)
+        # 2026-09-13 环境门阀：中控台采集也须走账号代理（与 BCC 同环境）
+        _pw, _browser, context, _backend = await launch_async(
+            _vb_mode, _cfg, headless=headless, account=getattr(_cfg, "WEB_PROBE_ACCOUNT", None) or None)
     except RuntimeError as e:
         logger.error("BCC-044", f"[web_probe] 中控台采集无法启动（已禁用原生 Playwright，不采集）：{e}")
         return

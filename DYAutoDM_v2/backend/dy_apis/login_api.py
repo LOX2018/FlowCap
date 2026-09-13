@@ -113,8 +113,11 @@ class DYLoginApi:
         from auto_dm.vbrowser import should_use_vb, launch_async
 
         _vb, _vb_mode = should_use_vb(_cfg)
+        # 2026-09-13 环境门阀：传 account 让账号级 DY_PROXY 生效（无则按三级优先级）
+        import os as _os
+        _acc_name = _os.path.basename(_os.path.dirname(_os.path.abspath(env_path))) if env_path else None
         _pw, _browser, context, _backend = await launch_async(
-            _vb_mode, _cfg, headless=headless, force=True)
+            _vb_mode, _cfg, headless=headless, force=True, account=_acc_name)
         try:
             if cookie_str:
                 await context.add_cookies([
@@ -704,7 +707,9 @@ class DYLoginApi:
         _browser = None
         context = None
         try:
-            _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=False, user_data_dir=profile)
+            import os as _os2
+            _acc2 = _os2.path.basename(_os2.dirname(_os2.path.abspath(env_path))) if env_path else None
+            _pw, _browser, context, _backend = launch_sync(_vb_mode, _cfg, headless=False, user_data_dir=profile, account=_acc2)
             page = context.pages[0] if context.pages else context.new_page()
             try:
                 page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=25000)
