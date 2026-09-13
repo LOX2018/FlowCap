@@ -303,12 +303,15 @@ class BrowserContainer:
 
     def __init__(self, account: str) -> None:
         self.account = account
-        # 可见模式开关（2026-09-12 用户需求根治）：
-        #   False = 默认 native 纯无头（零窗口，保活/捕获用）
+        # 可见模式开关（2026-09-12 用户需求根治；2026-09-13 风控语义修正）：
+        #   False(默认) = 无头请求 → vbrowser 层转为「真有头+窗口最小化」
+        #                 （有头特征与扫码/查看一致，杜绝环境跳变；最小化不
+        #                 污染 profile，也不打扰用户）
         #   True  = 有头可见（窗口就是本容器，用户可直接查看登录态；
         #           同一实例继续保活+回写凭证，**不与"打开浏览器"抢 profile**）
-        # 由 POST /show 动态切换（重启 context 生效），不读环境变量，避免历史
-        # disguise 模式的副作用（profile 残留屏外坐标）。
+        # 由 POST /show 动态切换（重启 context 生效），不读环境变量。
+        # ⚠️ 2026-09-13：纯 headless 会被抖音识别导致登录态强制下线（§24.10
+        #    复发实证），故本字段只作「用户请求的可见性」，实际启动恒有头。
         self._headless: bool = True
         self._lock = asyncio.Lock()
         self._pw = None
@@ -362,8 +365,10 @@ class BrowserContainer:
         # 所有 _launch 调用点统一走这里，无需各处手动处理。
         await self._wait_profile_released()
         _vb, _vb_mode = should_use_vb(_cfg)
-        # 常驻浏览器容器默认无头：捕获链路（capture_userinfo_map 被动 hook 截前端自发
-        # im/user/info）经实机验证（有头/无头均 44/44）无头完全可行，且零窗口更稳。
+        # 常驻浏览器容器默认无头请求（vbrowser 层转为真有头+最小化）：捕获链路
+        # （capture_userinfo_map 被动 hook 截前端自发 im/user/info）经实机验证
+        # 有头/无头均 44/44；但 2026-09-13 实证纯 headless 会被抖音识别触发登录态
+        # 强制下线，故统一转有头最小化（风控对齐，§24.10 复发修复）。
         # 扫码登录走独立 get_login_auth(headless=False)，需可见 UI，不在此处。
         self._pw, self._browser, self._context, self._backend = await launch_async(
             _vb_mode, _cfg, headless=self._headless, user_data_dir=self._profile_dir,

@@ -230,6 +230,47 @@ def _ensure_window_visible_sync(context):
 _PROXY_BUILTIN_BYPASS = "localhost;127.0.0.1;<local>"
 
 
+
+async def _minimize_window(context):
+    """异步版：最小化 BCC 窗口到任务栏。"""
+    try:
+        pages = context.pages
+        if not pages:
+            return
+        session = await context.new_cdp_session(pages[0])
+        try:
+            info = await session.send("Browser.getWindowForTarget")
+            wid = info.get("windowId")
+            await session.send("Browser.setWindowBounds",
+                               {"windowId": wid, "bounds": {"windowState": "minimized"}})
+            logger.info("[vbrowser] 窗口已最小化到任务栏（有头特征保留，风控对齐）")
+        finally:
+            try: await session.detach()
+            except Exception: pass
+    except Exception as e:
+        logger.warning("BCC-035", f"[vbrowser] 窗口最小化失败（不阻塞启动）: {e}")
+
+
+def _minimize_window_sync(context):
+    """同步版：最小化 BCC 窗口到任务栏（launch_sync 用）。"""
+    try:
+        pages = context.pages
+        if not pages:
+            return
+        session = context.new_cdp_session(pages[0])
+        try:
+            info = session.send("Browser.getWindowForTarget")
+            wid = info.get("windowId")
+            session.send("Browser.setWindowBounds",
+                         {"windowId": wid, "bounds": {"windowState": "minimized"}})
+            logger.info("[vbrowser] 窗口已最小化到任务栏（有头特征保留，风控对齐）")
+        finally:
+            try: session.detach()
+            except Exception: pass
+    except Exception as e:
+        logger.warning("BCC-035", f"[vbrowser] 窗口最小化失败（不阻塞启动）: {e}")
+
+
 def parse_proxy_env(env_path):
     """读账号 .env 的 DY_PROXY 值，校验格式，返回 (proxy_url or None, err or None)。
 
@@ -636,11 +677,19 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         else:
             logger.info(f"[vbrowser] 复用固定 profile: {user_data_dir}")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-09：disguise（真有头+移屏外）已废弃，headless 一律 native 纯无头。
-        # 不再读 DY_BCC_HEADLESS_MODE，不再产生任何屏外窗口。
+        # 2026-09-13 风控根治（§24.10 复发实证）：无头请求一律转为「真有头+窗口最小化」。
+        #   - 有头特征与扫码/查看模式完全一致（同 profile 同环境，杜绝环境跳变触发
+        #     step-up 降级 → 登录态被强制下线）；
+        #   - 最小化而非移屏外（-32000 屏外坐标会写进 profile 污染后续可见启动，
+        #     09-09 已废弃）；
+        #   - 最小化不改变 JS 可检测特征（screen/window 尺寸正常），风控视角=有头。
         _disguise = False
+        _minimize = False
         if headless:
-            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，无屏外窗口）")
+            headless = False
+            _minimize = True
+            logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化（风控对齐："
+                        "同 profile 同环境，杜绝环境跳变）")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -657,6 +706,8 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         # 伪装启动（_disguise=True）恰恰要留在屏外，绝不能归位。
         if not headless and not _disguise:
             await _ensure_window_visible(context)
+        if _minimize:
+            await _minimize_window(context)
         browser = context.browser
         return p, browser, context, "exe"
 
@@ -701,11 +752,14 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-09：disguise（真有头+移屏外）已废弃，与 launch_async 一致，
-        # headless 一律 native 纯无头，不再读 DY_BCC_HEADLESS_MODE。
+        # 2026-09-13 风控根治（同 launch_async）：无头请求一律转为「真有头+窗口最小化」。
         _disguise = False
+        _minimize = False
         if headless:
-            logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，无屏外窗口）")
+            headless = False
+            _minimize = True
+            logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化（风控对齐："
+                        "同 profile 同环境，杜绝环境跳变）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -720,6 +774,8 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
         # 2026-09-06：同步可见启动同样归位屏外遗留窗口；伪装启动不归位。
         if not _disguise:
             _ensure_window_visible_sync(context)
+        if _minimize:
+            _minimize_window_sync(context)
         browser = context.browser
         return p, browser, context, "exe"
 
