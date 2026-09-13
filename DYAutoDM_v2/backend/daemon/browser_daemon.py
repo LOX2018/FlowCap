@@ -626,8 +626,24 @@ class BrowserContainer:
         # 有头/无头均 44/44；但 2026-09-13 实证纯 headless 会被抖音识别触发登录态
         # 强制下线，故统一转有头最小化（风控对齐，§24.10 复发修复）。
         # 扫码登录走独立 get_login_auth(headless=False)，需可见 UI，不在此处。
+        # ⚠️ 2026-09-13 快闪修复：**重建一律按「最小化」启动**。
+        # 原实现在这里传 self._headless，而 set_visible(True) 会把它置为
+        # False（并持久保留）→ 之后任何 BCC-006 context 失活触发的重建
+        # 都会**再创建一个可见窗口**；而 launch_persistent_context
+        # (headless=False) 是「先建可见窗口、再 minimize」→ 中间的时间差
+        # 就是用户看到的「快闪」（实测 22:09:02 / 22:10:20 两次重建各闪一次）。
+        # 重建是**异常自愈路径**，不该顺带弹窗；用户要可见态时走 /show（只改
+        # 窗口状态、不重建 context）。
+        # 回退开关：DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH=1（恢复旧行为，仅调试）。
+        _restore_vis = (str(os.environ.get(
+            "DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH", "")).strip() == "1")
+        _launch_headless = self._headless if _restore_vis else True
+        if not _restore_vis and not self._headless:
+            logger.info(
+                "[bcc] 容器重建：按最小化启动（不继承上次可见态，避免窗口快闪）；"
+                "需要查看登录态请走 /show")
         self._pw, self._browser, self._context, self._backend = await launch_async(
-            _vb_mode, _cfg, headless=self._headless, user_data_dir=self._profile_dir,
+            _vb_mode, _cfg, headless=_launch_headless, user_data_dir=self._profile_dir,
             force=False, account=self.account)
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         # V16 踩坑：add_init_script 必须在 goto 前注入，否则前端已发完 im/user/info 再注入就截不到
@@ -713,6 +729,14 @@ class BrowserContainer:
             self._context = None
             self._page = None
             self._nav_page = None  # P2-A：context 已重建，导航 tab 引用作废
+            # 2026-09-13：重建一律最小化启动 → 自我状态同步为"不可见"，
+            # 否则 _headless 残留 False 会让下一次 set_visible(True) 误判
+            # 「已是目标模式」而跳过窗口恢复（用户点了却看不到窗口）。
+            if str(os.environ.get(
+                    "DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH", "")).strip() != "1":
+                self._headless = True
+            logger.info("BCC-052", "[bcc] context 失活自愈：已重建容器"
+                        "（按最小化启动，窗口不再快闪）")
             await self._launch()
 
     async def set_visible(self, visible: bool, url: str = "") -> dict:
@@ -1249,6 +1273,15 @@ class BrowserContainer:
             async def _click_all():
                 items = await self._page.query_selector_all(
                     ".conversationConversationItemwrapper")
+                # 2026-09-13 人类化：每轮**打乱顺序**（脚本总是从第一个开始，
+                # 顺序确定性也是特征；真人会从看到的地方点）。
+                if _human_on():
+                    import random as _r
+                    try:
+                        items = list(items)
+                        _r.shuffle(items)
+                    except Exception:
+                        pass
                 n_new = 0
                 for idx, it in enumerate(items):
                     # 用会话文本做稳定标识（DOM 元素会随滚动重建，下标不可靠）
@@ -1259,11 +1292,15 @@ class BrowserContainer:
                     if key in _clicked:
                         continue
                     _clicked.add(key)
+                    # 2026-09-13 人类化（用户风控要求）：随机坐标 + 分步
+                    # 鼠标轨迹；间隔用对数正态（多数短、偶尔长停顿），
+                    # 而非固定 400ms —— 固定位置+固定频率是脚本指纹。
                     try:
-                        await it.click(timeout=2000)
-                        n_new += 1
-                        # 仅在【真的点了新会话】时才等待，跳过已点的不付等待成本
-                        await self._page.wait_for_timeout(400)
+                        if await _human_click(self._page, it, timeout=2000):
+                            n_new += 1
+                            # 仅在【真的点了新会话】时才等待
+                            await self._page.wait_for_timeout(
+                                int(_human_gap(0.4, 0.6) * 1000))
                     except Exception:
                         pass
                 return n_new
@@ -1313,8 +1350,11 @@ class BrowserContainer:
                     "() => { const el = document.querySelector("
                     "'.conversationConversationListwrapper'); "
                     "if (!el) return false; "
-                    "const before = el.scrollTop; "
-                    "el.scrollTop = before + el.clientHeight; "
+                    # 2026-09-13 人类化：滚动步长随机（0.65~0.95 屏），
+                    # 而非恒整屏 —— 整屏滚动是脚本特征。
+                    f"const before = el.scrollTop; "
+                    f"el.scrollTop = before + el.clientHeight * "
+                    f"{_human_scroll_ratio():.3f}; "
                     "return el.scrollTop > before; }")
                 await self._page.wait_for_timeout(1200)  # 等该屏渲染 + 触发 im/user/info
                 # 到底判定：已滚到接近底部 或 高度不再增长
@@ -2438,6 +2478,98 @@ async def quit_() -> dict:
 # ───────────────────────────────────────────────────────────────────────────
 # 单例检测（2026-09-13）：启动前确认该账号没有第二个 BCC / 浏览器在跑
 # ───────────────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# 人类行为模式（2026-09-13 用户风控要求）
+#
+# 用户原话：「点击的时候要符合不规律感，固定点击位置和频率容易被判定为脚本
+#            导致封控」。
+#
+# 原理：脚本特征 = **确定性**。固定坐标（元素正中心）、固定间隔（400ms）、
+#   固定滚动步长（整屏）三者叠加即成指纹。人则是「有抖动、有停顿、有回退」。
+#
+# 实现要点：
+#   · 间隔用**对数正态**（多数短、偶尔长停顿）——比均匀分布更接近真人节奏
+#     （真人打字/浏览的停顿是长尾的，均匀随机仍会被统计识别）
+#   · 点击点避开正中心与边缘（中心是脚本最爱，边缘易误点）
+#   · 滚动不总是整屏（真人会滚多滚少、偶尔回看）
+#   · 鼠标分步移动而非瞬移（teleport 是 Playwright click 的默认行为）
+#
+# 回退：DY_HUMAN_PATTERN=off（调试复现用，恢复确定性行为）
+# ════════════════════════════════════════════════════════════════════════════
+def _human_on() -> bool:
+    return str(os.environ.get("DY_HUMAN_PATTERN", "on")).strip().lower() != "off"
+
+
+def _human_gap(base: float = 0.4, spread: float = 0.6) -> float:
+    """人类化停顿：对数正态分布，多数接近 base，偶尔长停顿。
+
+    base=0.4s 时典型取值 0.2~1.2s，长尾可达 2~3s（像人在看内容）。
+    下限 0.12s（比这更快就明显是机器）。
+    """
+    import random as _r
+    if not _human_on():
+        return base
+    # 对数正态：median=base, sigma 控制离散度
+    v = _r.lognormvariate(0.0, spread) * base
+    return max(0.12, min(v, base * 8.0))
+
+
+def _human_scroll_ratio() -> float:
+    """滚动步长比例（0.65~0.95 屏；真人很少每次整屏）。"""
+    import random as _r
+    return 1.0 if not _human_on() else _r.uniform(0.65, 0.95)
+
+
+async def _human_click(page, element, timeout: int = 2000) -> bool:
+    """人类化点击：元素内随机取点 + 分步移动鼠标 + 抖动延时。
+
+    返回是否点击成功。失败**不抛异常**（与原 it.click 的容错语义一致）。
+    """
+    try:
+        box = await element.bounding_box()
+        if not box or box.get("width", 0) < 8 or box.get("height", 0) < 8:
+            await element.click(timeout=timeout)
+            return True
+        import random as _r
+        if not _human_on():
+            await element.click(timeout=timeout)
+            return True
+        # 取点：避开正中心 20% 区域与 15% 边缘（在"舒适区"内随机）
+        w, h = box["width"], box["height"]
+        cx = box["x"] + w * _r.uniform(0.32, 0.68)
+        cy = box["y"] + h * _r.uniform(0.32, 0.68)
+        # 偶尔偏向侧边（真人点文字不太会精确居中）
+        if _r.random() < 0.3:
+            cx = box["x"] + w * _r.uniform(0.18, 0.82)
+        # 分步移动（3~5 步），模拟轨迹；步间微停
+        steps = _r.randint(3, 5)
+        cur = await page.evaluate("() => ({x: window.__lmx || 0, y: window.__lmy || 0})")
+        sx, sy = cur.get("x", 0), cur.get("y", 0)
+        for i in range(1, steps + 1):
+            t = i / steps
+            mx = sx + (cx - sx) * t + _r.uniform(-2.5, 2.5)
+            my = sy + (cy - sy) * t + _r.uniform(-2.5, 2.5)
+            try:
+                await page.mouse.move(mx, my)
+            except Exception:
+                pass
+            await page.wait_for_timeout(_r.uniform(0.012, 0.05))
+        await page.mouse.click(cx, cy)
+        # 记录光标位置，供下次轨迹连续（真实鼠标不会跳回原点）
+        try:
+            await page.evaluate(f"() => {{ window.__lmx = {cx}; window.__lmy = {cy}; }}")
+        except Exception:
+            pass
+        return True
+    except Exception:
+        # 坐标点击失败 → 退回元素点击（保证功能不因人类化而降级）
+        try:
+            await element.click(timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+
 def _detect_existing_bcc(account, port):
     """检测同一账号是否已有 BCC 在运行；有则返回描述串（用于拒绝启动）。
 

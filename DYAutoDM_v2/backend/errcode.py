@@ -188,6 +188,7 @@ ERRCODES = {
     "BCC-049": {"meaning": "[lease] 持有者不匹配或未持租约", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-050": {"meaning": "[bcc] 单例守卫命中：该账号已有 BCC 在运行，拒绝启动第二个", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-051": {"meaning": "[bcc] 致命态熔断：凭证不可用（env_path 为空），不再自动重启", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-052": {"meaning": "[bcc] context 失活自愈：已重建容器（按最小化启动，窗口不再快闪）", "file": "daemon/browser_daemon.py", "line": 0},
     "SEND-037": {"meaning": "[调度] dm_dispatch 接入失败，已放弃发送（不再回退直发绕过风控闸门）", "file": "core/dispatch.py", "line": 0},
     "CAP-001": {"meaning": "refresh][] browser_daemon 未拉起，昵称关联可能失效", "file": "api/messages.py", "line": 735},
     "CAP-002": {"meaning": "refresh][] 更新会话失败:", "file": "api/messages.py", "line": 749},
