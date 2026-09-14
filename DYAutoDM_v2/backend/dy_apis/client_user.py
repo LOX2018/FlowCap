@@ -322,11 +322,65 @@ class UserMixin:
         if fb:
             return str(fb)
 
+        # ══ 主路径（★ 2026-09-15 实测确定，照源项目接口）══
+        # `/aweme/v1/web/user/profile/self/`（源项目逆向情报中确有此接口）
+        # 实测：HTTP 200 / 17954 字节 / 返回 `user.sec_uid` + `user.uid` + `user.nickname`，
+        #       uid 与 `get_my_uid`（query/user）实测值一致（316276709526638）⇒ 可信。
+        # 相比 HTML 正则：结构化、稳定、一次请求即可。
+        try:
+            api_path = "/aweme/v1/web/user/profile/self/"
+            params = Params()
+            (params.add_param("device_platform", "webapp")
+             .add_param("aid", "6383")
+             .add_param("channel", "channel_pc_web")
+             .add_param("pc_client_type", "1")
+             .add_param("version_code", "170400")
+             .add_param("version_name", "17.4.0")
+             .add_param("cookie_enabled", "true")
+             .add_param("browser_language", "zh-CN")
+             .add_param("browser_platform", "Win32")
+             .add_param("browser_name", get_profile()["browser_name"])
+             .add_param("browser_version", get_profile()["browser_version"])
+             .add_param("browser_online", "true")
+             .add_param("engine_name", "Blink")
+             .add_param("os_name", "Windows")
+             .add_param("os_version", "10")
+             .add_param("platform", "PC")
+             .add_param("publish_video_strategy_type", "2"))
+            params.with_web_id(auth, "https://www.douyin.com/user/self")
+            params.with_a_bogus()
+            hh = HeaderBuilder().build(HeaderType.GET)
+            hh.set_referer("https://www.douyin.com/user/self")
+            rr = requests.get(f"{DouyinAPI.domain_for(api_path)}{api_path}",
+                              headers=hh.get(), cookies=auth.cookie,
+                              params=params.get(), verify=False,
+                              timeout=kwargs.get("timeout", 15))
+            if rr.status_code == 200:
+                js = rr.json()
+                u = (js or {}).get("user") or {}
+                sec = u.get("sec_uid") or ""
+                if sec and sec.startswith("MS4wLjABAAAA"):
+                    # 顺带把 uid/nickname 回写 auth（消费方可能依赖）
+                    try:
+                        if u.get("uid") and not getattr(auth, "uid", None):
+                            auth.uid = int(u["uid"])
+                        if u.get("nickname"):
+                            auth.nickname = u["nickname"]
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return str(sec)
+                logger.warning("SEC-UID-001", f"profile/self 返回异常：status_code={js.get('status_code')}")
+            else:
+                logger.warning("SEC-UID-002", f"profile/self HTTP {rr.status_code}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SEC-UID-003", f"profile/self 取 sec_uid 失败，回落到 HTML：{type(e).__name__}")
+
+        # ══ 回落：旧 HTML 正则路径（保留兼容，但不再直接 [0] 索引）══
         headers = HeaderBuilder().build(HeaderType.GET)
         url = "https://www.douyin.com/user/self"
-        params = {"from_tab_name": "main"}
+        params_raw = {"from_tab_name": "main"}
         response = requests.get(url, headers=headers.get(),
-                                cookies=auth.cookie, params=params,
+                                cookies=auth.cookie, params=params_raw,
                                 timeout=kwargs.get("timeout", 15), verify=False)
         text = response.text or ""
 

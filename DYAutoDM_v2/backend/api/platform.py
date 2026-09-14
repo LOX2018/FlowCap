@@ -496,8 +496,16 @@ async def liked(req: LikedReq) -> dict[str, Any]:
     try:
         raw = await asyncio.to_thread(api.get_user_favorite, auth, sec, "0", str(max(1, min(req.num, 50))))
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-006", f"点赞列表获取失败: {type(e).__name__}")
-        raise HTTPException(502, f"点赞列表获取失败: {type(e).__name__}")
+        # ★ 2026-09-15 实测：平台侧对 `/aweme/v1/web/aweme/favorite/` 返回
+        #   **HTTP 200 但响应体 0 字节**（绕过本项目封装直接构造原始请求复现同样结果），
+        #   解析时表现为 JSONDecodeError。源项目逆向情报中「点赞列表」用的也是该接口
+        #   ⇒ 属**平台侧行为**，非本项目适配错误。
+        #   故此处**不抛 502**（避免前端弹"请求失败"误导用户），
+        #   而是返回空列表 + `unavailable` 标记，让 UI 能给出准确说明。
+        logger.warning("PLT-006", f"点赞列表获取失败（平台侧常返空）: {type(e).__name__}")
+        return {"ok": True, "items": [], "has_more": False,
+                "unavailable": True,
+                "reason": f"平台侧暂不可用（{type(e).__name__}）"}
     items = raw.get("aweme_list") if isinstance(raw, dict) else []
     return {"ok": True, "items": [_pick_aweme(w) for w in (items or [])],
             "has_more": bool(raw.get("has_more")) if isinstance(raw, dict) else False}
