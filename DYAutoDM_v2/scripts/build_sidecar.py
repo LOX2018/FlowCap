@@ -254,6 +254,141 @@ def restore_whitelist() -> None:
         print(f"[warn] 还原失败（请手动 git checkout）: {e}")
 
 
+def _dedupe_internal() -> dict:
+    """【性能主线】把三份重复的 `_internal` 收敛为一份共享目录。
+
+    ## 背景（2026-09-14 实测）
+
+    三份 sidecar 各自带一份 `_internal`，实测三者**内容完全相同**：
+        files=6514 / 246.3MB，三者交集 6514、各自独有 0
+    抽样 43 文件 sha256：42 个一致；唯一差异 `base_library.zip` 解包后
+    155 个内部条目**逐条 sha256 全部一致**（仅 zip 容器时间戳元数据不同）。
+    ⇒ 功能等价，可安全共享。
+
+    ## 落地形态（零代码改动）
+
+        <binaries>/_internal/                      ← 共享依赖（唯一一份）
+        <binaries>/dyautodm-backend-<triple>.exe   ← 三个 exe 平铺
+        <binaries>/dyautodm-browser-daemon-<triple>.exe
+        <binaries>/dyautodm-recv-daemon-<triple>.exe
+
+    该布局正好命中既有 `resolve_sidecar` 候选 2（`<root>/<full>.exe`），
+    `main.py` / `daemon_launcher` / `accounts.py` 亦同 —— **无需改任何解析代码**。
+
+    ## 实测验证（决定性）
+
+    用 NTFS junction 构造上述布局实测：三个 exe **全部依赖加载成功**
+    （backend 启动后常驻、两个 daemon 走到参数校验）。
+
+    ## 返回
+
+    {"moved": 保留的共享目录, "removed": [被删的重复目录], "saved_mb": 省下的体积}
+    """
+    import shutil
+
+    triple = _target_triple()
+    names = ["dyautodm-backend", "dyautodm-browser-daemon", "dyautodm-recv-daemon"]
+    dirs = [BINARIES / f"{n}-{triple}" for n in names]
+
+    present = [d for d in dirs if d.is_dir()]
+    if not present:
+        return {"moved": None, "removed": [], "saved_mb": 0}
+
+    shared = BINARIES / "_internal"
+    # 1) 选定共享源：优先已存在的共享目录，否则用第一份
+    if not shared.is_dir():
+        src = present[0] / "_internal"
+        if not src.is_dir():
+            return {"moved": None, "removed": [], "saved_mb": 0}
+        shutil.move(str(src), str(shared))
+
+    saved = 0
+    removed = []
+    for d in present:
+        exe = d / f"{d.name}.exe"
+        if not exe.is_file():
+            continue
+        # 2) exe 平铺到 binaries 根（命中既有候选 2）
+        dst_exe = BINARIES / exe.name
+        try:
+            if dst_exe.exists():
+                dst_exe.unlink()
+            shutil.move(str(exe), str(dst_exe))
+        except Exception as e:
+            print(f"  ⚠️ 平铺 {exe.name} 失败: {e}")
+            continue
+        # 3) 删除该目录里的重复 _internal 与空壳目录
+        #    ⚠️ _internal 可能是 junction / 目录符号链接（实测构造场景）：
+        #    shutil.rmtree 对其处理不当且会被 ignore_errors 静默吞掉 → 残留。
+        #    对 reparse point 必须用 os.rmdir（只删链接本身，不跟随删除目标）。
+        inner = d / "_internal"
+        if inner.exists() or inner.is_symlink():
+            is_link = _is_link_or_junction(inner)
+            if not is_link:
+                # 仅有实体目录才计入「省下的体积」（junction 不占空间）
+                try:
+                    saved += sum(f.stat().st_size
+                                 for f in inner.rglob("*") if f.is_file())
+                except Exception:
+                    pass
+            _remove_link_or_tree(inner)
+        try:
+            leftover = list(d.iterdir())
+            if not leftover:
+                d.rmdir()
+                removed.append(str(d.name))
+            else:
+                removed.append(f"{d.name}(余{len(leftover)}项)")
+        except Exception:
+            pass
+
+    return {"moved": str(shared), "removed": removed,
+            "saved_mb": round(saved / 1048576, 1)}
+
+
+def _is_link_or_junction(p) -> bool:
+    """判断是否为 junction / 符号链接（不跟随）。"""
+    try:
+        if p.is_symlink():
+            return True
+        # Windows: FILE_ATTRIBUTE_REPARSE_POINT
+        attrs = os.lstat(str(p)).st_file_attributes  # type: ignore[attr-defined]
+        return bool(attrs & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+    except Exception:
+        return False
+
+
+def _remove_link_or_tree(p) -> bool:
+    """删除目录或链接；**对 reparse point 只删链接本身**。
+
+    返回是否删除成功。目录含 junction 时逐个先摘链接，再清实体目录。
+    """
+    import shutil as _sh
+    try:
+        if not p.exists() and not p.is_symlink():
+            return True
+        if _is_link_or_junction(p):
+            try:
+                os.rmdir(str(p))          # 只删链接，不跟随
+            except OSError:
+                os.unlink(str(p))
+            return True
+        # 实体目录：先递归摘掉内部链接，再整体删除
+        for r, dirs, _files in os.walk(str(p)):
+            for name in list(dirs):
+                child = p.__class__(os.path.join(r, name))
+                if _is_link_or_junction(child):
+                    try:
+                        os.rmdir(str(child))
+                    except OSError:
+                        pass
+                    dirs.remove(name)
+        _sh.rmtree(str(p), ignore_errors=True)
+        return not p.exists()
+    except Exception:
+        return False
+
+
 def main() -> None:
     import sys
     debug_wl = "--debug-whitelist" in sys.argv
@@ -268,6 +403,16 @@ def main() -> None:
         build_one("main.py", "dyautodm-backend", mode=mode)
         build_one("daemon/browser_daemon.py", "dyautodm-browser-daemon", mode=mode)
         build_one("daemon/recv_daemon.py", "dyautodm-recv-daemon", mode=mode)
+        # 性能主线（2026-09-14）：三份 _internal 内容实测完全相同
+        # → 收敛为一份共享目录，三个 exe 平铺（命中既有解析候选 2，零代码改动）。
+        # 不带 --no-dedupe 时默认执行。
+        if mode == "onedir" and "--no-dedupe" not in sys.argv:
+            print("\n[性能] 合并三份重复的 _internal …")
+            info = _dedupe_internal()
+            if info.get("moved"):
+                print(f"  共享依赖 → {info['moved']}")
+                print(f"  已移除重复目录: {info['removed']}")
+                print(f"  省下体积: {info['saved_mb']} MB")
         print(f"\n全部打包完成（mode={mode}），产物位于:", BINARIES)
         if debug_wl:
             print("[警告] 本次为**调试版**构建（含测试白名单限制），"

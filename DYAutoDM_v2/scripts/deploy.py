@@ -110,6 +110,16 @@ def norm(v: str) -> str:
     return _s
 
 
+def _dir_size_mb(p) -> str:
+    """目录体积展示（仅用于日志，失败不抛）。"""
+    try:
+        from pathlib import Path as _P
+        tot = sum(f.stat().st_size for f in _P(p).rglob("*") if f.is_file())
+        return "%.1f MB" % (tot / 1048576)
+    except Exception:
+        return "?"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--app-root", default=os.environ.get("DY_APP_ROOT")
@@ -148,14 +158,20 @@ def main() -> int:
     log("  ✅ 一致")
 
     # ---- 校验 3：三份 sidecar 构建产物存在 ----
+    # 2026-09-14 性能主线：产物有两种形态，都要支持
+    #   A) 共享形态（新，默认）：binaries/_internal + binaries/<full>.exe 平铺
+    #   B) 传统形态（旧）：binaries/<full>/ （目录内含 exe + _internal）
     log("\n[校验3] sidecar 构建产物")
     bins = ROOT / "src-tauri" / "binaries"
+    shared_internal = (bins / "_internal").is_dir()
+    layout = "共享 _internal（三 exe 平铺）" if shared_internal else "传统（每份独立目录）"
+    log("  形态：%s" % layout)
     for name in SIDECARS:
         full = f"{name}-{TRIPLE}"
-        d = bins / full
-        f = d / f"{full}.exe"
-        if not f.is_file():
-            log("  ❌ 缺失：%s" % f)
+        cands = [bins / f"{full}.exe", bins / full / f"{full}.exe"]
+        f = next((c for c in cands if c.is_file()), None)
+        if f is None:
+            log("  ❌ 缺失：%s（尝试 %s）" % (full, " / ".join(str(c) for c in cands)))
             return 5
         log("  ✅ %-46s %s" % (full[:46], _md5(f)[:12]))
 
@@ -183,18 +199,34 @@ def main() -> int:
                 log("     ⚠️ 移除 %s 失败：%s" % (p.name, str(e)[:60]))
 
     # sidecar：md5 必须一致
+    # 2026-09-14：共享形态（_internal 一份 + 三 exe 平铺）与传统形态都要支持。
     ok_all = True
+    if shared_internal:
+        # 共享依赖：只拷一次
+        src_i = bins / "_internal"
+        dst_i = app_root / "_internal"
+        if dst_i.exists():
+            shutil.rmtree(dst_i, ignore_errors=True)
+        shutil.copytree(src_i, dst_i)
+        log("  ✅ %-46s %s" % ("_internal（共享依赖，唯一一份）", _dir_size_mb(dst_i)))
     for name in SIDECARS:
         full = f"{name}-{TRIPLE}"
-        src = bins / full
-        dst = app_root / full
-        if dst.exists():
-            shutil.rmtree(dst, ignore_errors=True)
-        shutil.copytree(src, dst)
-        a, b = _md5(src / f"{full}.exe"), _md5(dst / f"{full}.exe")
-        same = a == b
+        # 源：共享形态在 binaries 根；传统形态在 binaries/<full>/
+        src_exe = bins / f"{full}.exe"
+        if not src_exe.is_file():
+            src_exe = bins / full / f"{full}.exe"
+        if shared_internal:
+            dst_exe = app_root / f"{full}.exe"
+            shutil.copy2(src_exe, dst_exe)
+        else:
+            dst_dir = app_root / full
+            if dst_dir.exists():
+                shutil.rmtree(dst_dir, ignore_errors=True)
+            shutil.copytree(bins / full, dst_dir)
+            dst_exe = dst_dir / f"{full}.exe"
+        same = _md5(src_exe) == _md5(dst_exe)
         ok_all = ok_all and same
-        log("  %s %-46s md5=%s" % ("✅" if same else "❌", full[:46], b[:12]))
+        log("  %s %-46s md5=%s" % ("✅" if same else "❌", full[:46], _md5(dst_exe)[:12]))
 
     log("\n" + "=" * 74)
     if ok_all:

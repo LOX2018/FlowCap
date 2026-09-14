@@ -637,6 +637,16 @@ try:
 except Exception as _e:  # noqa: BLE001
     logger.warning("NTY-005", f"[notify] 模块挂载失败（不影响主流程）: {_e}")
 
+# MCP 服务（本机 HTTP + stdio 双入口，对标 better-douyin mcp.rs，2026-09-14）
+#   把既有业务能力（会话/消息读取、发送确认）按 READ/WRITE 分级暴露给 AI 客户端；
+#   只监听 127.0.0.1，Bearer 令牌 + 写操作确认闸。挂载失败降级而非崩溃。
+try:
+    from api import mcp as mcp_api
+
+    app.include_router(mcp_api.router, prefix="/api/mcp", tags=["mcp"])
+except Exception as _e_mcp:  # noqa: BLE001
+    logger.warning("MCP-005", f"[mcp] 模块挂载失败（不影响主流程）: {_e_mcp}")
+
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
 # 错误码日志补丁：loguru 会把第一个位置参数当格式模板，导致
 # logger.warning("BCC-006", "描述") 的描述被丢弃（运行日志只剩代码）。

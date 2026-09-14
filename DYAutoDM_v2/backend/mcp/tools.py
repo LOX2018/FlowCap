@@ -1,0 +1,190 @@
+# -*- coding: utf-8 -*-
+"""MCP 工具集 —— 把既有业务能力暴露给 AI 客户端。
+
+## 铁律：只包装既有能力，不新增主动查询路径
+
+本项目昵称唯一来源 = BCC 被动 hook（用户风控红线，见 `工作目录/00_铁律_最高优先级.md`）。
+因此本模块**不注册任何主动拉取昵称/资料的工具**——读取一律走本地 SQLite
+（`dm_conversations` / `dm_messages`），零平台请求、零风控面。
+
+## 分级
+
+- **READ**：纯本地读库 / 读状态。默认可用。
+- **WRITE**：会向平台发起写操作（发送）。需 `allow_write_actions=true`
+  **且**一次性确认票据（`require_confirmation`）。
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from .registry import READ, WRITE, Tool, register
+
+
+# ---------------- 只读工具 ----------------
+
+def _list_accounts() -> list[dict[str, Any]]:
+    """列出已登记账号（仅名称与是否已配置，不返回任何凭据）。"""
+    try:
+        from auto_dm.accounts import list_accounts
+        return [{"name": n} for n in list_accounts()]
+    except Exception:
+        return []
+
+
+def _list_conversations(account: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    """读本地会话列表（纯 SQLite，不触发任何网络请求）。
+
+    排序口径对齐既有实现：有消息的优先，其次按时间。**不返回凭据**。
+    """
+    from database import exec_query
+
+    limit = max(1, min(int(limit or 50), 500))
+    if account:
+        rows = exec_query(
+            """SELECT c.account, c.conv_id, c.peer_id, c.peer_name, c.unread,
+                      c.last_ts,
+                      (SELECT COUNT(1) FROM dm_messages m
+                        WHERE m.account=c.account AND m.conv_id=c.conv_id
+                          AND m.msg_type <> '50001') AS n
+                 FROM dm_conversations c
+                WHERE c.account=?
+                ORDER BY COALESCE(n,0) DESC, c.last_ts DESC, c.conv_id ASC
+                LIMIT ?""", (account, limit))
+    else:
+        rows = exec_query(
+            """SELECT c.account, c.conv_id, c.peer_id, c.peer_name, c.unread,
+                      c.last_ts,
+                      (SELECT COUNT(1) FROM dm_messages m
+                        WHERE m.account=c.account AND m.conv_id=c.conv_id
+                          AND m.msg_type <> '50001') AS n
+                 FROM dm_conversations c
+                ORDER BY COALESCE(n,0) DESC, c.last_ts DESC, c.conv_id ASC
+                LIMIT ?""", (limit,))
+    return [{
+        "account": r.get("account"),
+        "conv_id": r.get("conv_id"),
+        "peer_name": r.get("peer_name") or "",
+        "unread": int(r.get("unread") or 0),
+        "message_count": int(r.get("n") or 0),
+        "last_ts": float(r.get("last_ts") or 0),
+    } for r in rows]
+
+
+def _read_messages(account: str, conv_id: str, limit: int = 30) -> list[dict[str, Any]]:
+    """读某会话最近消息（纯本地库）。
+
+    ⚠️ 过滤 `msg_type=50001`（「对方已读」回执无 msg_id，属脏数据，
+    见 `dyautodm-dev-guards` §九·乙）。
+    """
+    from database import exec_query
+
+    limit = max(1, min(int(limit or 30), 200))
+    rows = exec_query(
+        """SELECT role, text, msg_type, ts FROM dm_messages
+            WHERE account=? AND conv_id=? AND msg_type <> '50001'
+            ORDER BY ts DESC LIMIT ?""", (account, conv_id, limit))
+    rows.reverse()
+    return [{
+        "role": r.get("role"),
+        "text": r.get("text") or "",
+        "msg_type": r.get("msg_type") or "text",
+        "ts": float(r.get("ts") or 0),
+    } for r in rows]
+
+
+def _overview() -> dict[str, Any]:
+    """汇总统计（纯本地库）。"""
+    from database import exec_query
+    out: dict[str, Any] = {}
+    try:
+        out["conversations"] = int(
+            (exec_query("SELECT COUNT(1) AS n FROM dm_conversations")[0] or {}).get("n") or 0)
+        out["messages"] = int(
+            (exec_query("SELECT COUNT(1) AS n FROM dm_messages")[0] or {}).get("n") or 0)
+        out["accounts"] = len(_list_accounts())
+    except Exception as e:
+        out["error"] = type(e).__name__
+    return out
+
+
+def _errcode(code: str) -> dict[str, Any]:
+    """查统一报错体系里某个错误码的设计契约（只读）。"""
+    try:
+        from errcode import lookup
+        return lookup(code) or {"code": code, "found": False}
+    except Exception as e:
+        return {"code": code, "found": False, "error": type(e).__name__}
+
+
+# ---------------- 写入工具（默认不可达） ----------------
+
+def _send_dm(account: str, conv_id: str, text: str) -> dict[str, Any]:
+    """向指定会话发送私信。
+
+    ⚠️ 必须满足全部条件才允许：
+      1) 配置 `allow_write_actions=true`
+      2) 配置 `require_confirmation=true` 时持一次性确认票据
+      3) **既有发送闸门仍生效** —— 这里不绕过 `recv_daemon` 的限速闸门，
+         仅调用既有服务层，避免出现第二条发送旁路（发送是最高频风控面）。
+    """
+    if not account or not conv_id or not text:
+        return {"ok": False, "message": "account / conv_id / text 均为必填"}
+    # 走既有发送服务，绝不自行直发（禁止新增 imapi 直发调用点）
+    try:
+        from services.browser_gate import ensure_browser  # noqa: F401
+    except Exception:
+        pass
+    return {
+        "ok": False,
+        "message": "写工具已登记但未接线：发送必须经既有发布闸门，需单独评审后启用",
+        "note": "本占位确保注册表/票据链路可测，不产生真实发送行为",
+    }
+
+
+def _refresh_write_confirm(account: str = "") -> dict[str, Any]:
+    """内部用：为写操作签发确认票据（由管理面调用，不直接暴露给外部客户端）。"""
+    from .registry import issue_ticket
+    return issue_ticket("send_dm", {"account": account})
+
+
+# ---------------- 注册 ----------------
+
+def register_all() -> int:
+    """注册全部工具，返回注册数量（幂等）。"""
+    tools = [
+        Tool(name="list_accounts",
+             level=READ,
+             summary="列出已登记账号（仅名称，不含任何凭据）",
+             handler=_list_accounts),
+        Tool(name="list_conversations",
+             level=READ,
+             summary="读本地会话列表（纯 SQLite，零网络请求）",
+             handler=_list_conversations,
+             params={"account": "账号名，留空=全部", "limit": "返回条数，默认50"},
+             audit_fields=("account",)),
+        Tool(name="read_messages",
+             level=READ,
+             summary="读某会话最近消息（纯本地库，自动过滤回执脏数据）",
+             handler=_read_messages,
+             params={"account": "账号名", "conv_id": "会话 id", "limit": "条数，默认30"},
+             audit_fields=("account", "conv_id")),
+        Tool(name="overview",
+             level=READ,
+             summary="本地数据汇总统计",
+             handler=_overview),
+        Tool(name="lookup_errcode",
+             level=READ,
+             summary="查错误码的设计契约（design/contract/chain/root/verify）",
+             handler=_errcode,
+             params={"code": "错误码，如 BCC-046"},
+             audit_fields=("code",)),
+        Tool(name="send_dm",
+             level=WRITE,
+             summary="向指定会话发送私信（默认关闭；需显式开启+确认票据）",
+             handler=_send_dm,
+             params={"account": "账号名", "conv_id": "会话 id", "text": "消息正文"},
+             audit_fields=("account", "conv_id", "text")),
+    ]
+    for t in tools:
+        register(t)
+    return len(tools)
