@@ -115,6 +115,14 @@ def run_task(task: TK.DownloadTask, aweme: dict[str, Any], *, base_dir: str,
              mgr: Optional[TK.TaskManager] = None) -> TK.DownloadTask:
     """执行一个下载任务（**单任务串行**，供批量调用方并发编排）。"""
     mgr = mgr or TK.manager()
+    # 2026-09-14 修复（实测暴露的静默失败）：
+    #   原实现直接 `mgr.mark(task_id, ...)`，而 `TaskManager.mark()` 内部是
+    #   `self._tasks.get(task_id)` → 返回 None 时**静默 return**。
+    #   后果：调用方若没先 `mgr.add(task)`，任务**实际下载成功但状态永远停在
+    #   `queued`**（实测：bytes=4,187,401 已落盘，status 仍报 queued）。
+    #   ⇒ 这里显式保证任务在表中（幂等），消除"流程走完但状态不对"。
+    if mgr.get(task.task_id) is None:
+        mgr.add(task)
     media = MR.extract_media(aweme)
     task.media_type = media["type"]
     task.quality = quality

@@ -256,6 +256,9 @@ class TaskManager:
         with self._lock:
             t = self._tasks.get(task_id)
             if not t:
+                # 2026-09-14：原为静默 return —— 实测导致"下载成功但状态停在 queued"
+                # 这类**静默失败**（调用方忘了 add）。改为显式告警，便于定位。
+                logger.warning("DL-005", f"mark 目标不存在: {task_id}（调用方是否漏了 mgr.add?）")
                 return
             for k, v in fields.items():
                 if hasattr(t, k):
