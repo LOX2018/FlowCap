@@ -1387,6 +1387,29 @@ class BrowserContainer:
                     _stall = 0
                 _prev = _cur
 
+                # 2026-09-14 v0.43.10：**每轮抓一次 DOM**（虚拟列表滚动会换内容，
+                # 必须逐屏累积才能覆盖全部会话；原实现误放在循环外，
+                # 只抓到最后一屏 → 实测仅 14 个）。
+                try:
+                    _ditems = await self._page.evaluate(CAP_DOM_SWEEP_JS)
+                    _dnew = 0
+                    for _dit in (_ditems or []):
+                        _dn = (_dit or {}).get("nickname") or ""
+                        if _dn and _dn not in _dom_seen:
+                            _dom_seen[_dn] = {
+                                "nickname": _dn,
+                                "avatar": (_dit or {}).get("avatar") or "",
+                                "uid": "",
+                                "sec_uid": "",
+                            }
+                            _dnew += 1
+                    if _dnew:
+                        logger.info(
+                            f"[bcc] DOM 抓取: 本屏新增昵称={_dnew} "
+                            f"累计={len(_dom_seen)}")
+                except Exception as _de:
+                    logger.warning("BCC-055", f"[bcc] DOM 抓取失败: {_de}")
+
                 # 平滑滚下一屏（一次一个 clientHeight，不跳到底）
                 moved = await self._page.evaluate(
                     "() => { const el = document.querySelector("
@@ -1409,8 +1432,7 @@ class BrowserContainer:
                     break
             # 到底后再点一轮，确保末屏会话也点进
             await _click_all()
-
-            # 2026-09-14：每轮结束抓一次 DOM（虚拟列表滚动会换内容）
+            # 末屏再抓一次（补漏）
             try:
                 _items = await self._page.evaluate(CAP_DOM_SWEEP_JS)
                 for _it in (_items or []):
@@ -1422,6 +1444,7 @@ class BrowserContainer:
                             "uid": "",
                             "sec_uid": "",
                         }
+                logger.info(f"[bcc] DOM 末屏补充：累计昵称={len(_dom_seen)}")
             except Exception as _e:
                 logger.warning("BCC-055", f"[bcc] DOM 抓取失败: {_e}")
             # 2026-09-14 v0.43.9：**DOM 优先**（实测有效，零请求零风控），
