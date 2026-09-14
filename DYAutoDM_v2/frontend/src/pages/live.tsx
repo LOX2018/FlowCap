@@ -1771,7 +1771,9 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto w-full max-w-[1680px] px-5 pb-10 pt-4.5">
+        {/* 查阅模式是全屏 overlay，独立于 PageContainer；其内容宽度须与
+            PageContainer 的默认 maxWidth 保持一致（否则此页的留白与其它页不一致）。 */}
+        <div className="mx-auto w-full max-w-[1180px] px-5 pb-10 pt-4.5">
           <Toolbar className="mb-3">
             <Input
               className="min-w-[200px] flex-1"
