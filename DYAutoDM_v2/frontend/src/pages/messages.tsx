@@ -1,5 +1,5 @@
 /**
- * 私信页
+ * 私信页（重设计版 · 对标 better-douyin 设计体系）
  *
  * 迁移自: DY_Spider_base/web/pages/messages.js
  * 原版职责: 会话列表、会话详情、手动回复
@@ -10,12 +10,42 @@
  *   - 删除 mock 会话假数据（cid 计数器、本地 convs 兜底、"你好，很高兴认识你"）
  *   - .catch(() => {}) → .catch(e => push('失败:' + ...))
  *   - requestDm 不在 client.ts，用本地 interface + as unknown as 转换
+ *
+ * ## 本次改动（重设计 · 只动呈现层）
+ * - 旧 `.card` / `.section-head` / `.head-row` / `.conv` / `.bubble` / `.btn` 等
+ *   global.css 类 → `components/page/kit` + `components/ui/*` 组件 + 设计令牌类
+ * - 三栏信息架构保留：左「会话列表」/ 右「对话详情」/ 底部「输入框 + 发送」
+ * - 发送通道（ws / wp）由原生 radio 手搓 → `SegmentedTabs`（`sendChannel` 状态与
+ *   传给 `sendDm` 的 channel 参数完全不变）
+ * - 图片查看器 ImageViewer：缩放/拖拽/滚轮交互与数值语义（65% / 68vh / 0.3~8）保留
+ * - **业务逻辑零改动**：查询 key/interval、API 参数与顺序、状态机、文案、
+ *   表情渲染 / data URI 清洗 / 媒体双 URL 解析 / 系统提示判定全部原样
  */
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  RefreshCw,
+  Loader2,
+  Search as SearchIcon,
+  X,
+  Plus,
+  Paperclip,
+  Image as ImageIcon,
+  Video as VideoIcon,
+  FileText,
+  Download,
+  Play,
+} from "lucide-react";
 import { PageProps } from "../api/client";
-import { Avatar, Pill, hue, nowHM } from "../components/ui";
+import { Avatar, hue, nowHM } from "../components/ui";
 import { openExternal } from "../utils/openExternal";
+import { PageContainer, PageHeader } from "@/components/layout/app-shell";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input, Textarea } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
+import { Section, Row, Tone, SegmentedTabs, Blank, Toolbar } from "@/components/page/kit";
+import { cn } from "@/lib/utils";
 
 interface Msg {
   id: string;
@@ -175,7 +205,11 @@ function renderTextWithEmoji(s: string): React.ReactNode[] {
     const m = p.match(/^\[([^\[\]]{1,10})\]$/);
     if (m && EMOJI_MAP[m[1]]) {
       return (
-        <span key={i} className="emoji" title={m[1]}>
+        <span
+          key={i}
+          title={m[1]}
+          className="text-[1.25em] leading-none align-[-0.1em] not-italic"
+        >
           {EMOJI_MAP[m[1]]}
         </span>
       );
@@ -300,6 +334,8 @@ function ImageViewer({
   const [scale, setScale] = useState(1);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const dragging = useRef<{ x: number; y: number } | null>(null);
+  // 弹层根节点（供原生 wheel 监听使用；语义与原 `.imgviewer` 选择器一致）
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   // 换图时重置视图
   useEffect(() => {
@@ -314,7 +350,7 @@ function ImageViewer({
       e.preventDefault();
       e.stopPropagation();
     };
-    const el = document.querySelector<HTMLElement>(".imgviewer");
+    const el = rootRef.current;
     if (el) {
       el.addEventListener("wheel", stop, { passive: false });
       return () => el.removeEventListener("wheel", stop);
@@ -342,38 +378,66 @@ function ImageViewer({
   };
 
   return (
-    <div className="imgviewer" onClick={onClose}>
-      <div className="ivpanel" onClick={(e) => e.stopPropagation()}>
-        <div className="ivhead">
-          <span>
+    <div
+      ref={rootRef}
+      className="fixed inset-0 z-[999] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] max-w-[65vw] flex-col overflow-hidden
+                   rounded-[var(--radius-md)] border border-[var(--color-border)]
+                   bg-[var(--color-surface-solid)] shadow-[var(--shadow-lg)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          className="flex items-center justify-between gap-4 border-b
+                     border-[var(--color-border)] px-3 py-2 text-[0.78rem]
+                     text-[var(--color-text-secondary)]"
+        >
+          <span className="flex items-center gap-2">
             图片
             {scale !== 1 && (
-              <span className="ivscale">{Math.round(scale * 100)}%</span>
+              <span
+                className="ml-2 rounded-full border border-[var(--color-border)]
+                           bg-[var(--color-surface)] px-2 py-0.5 font-mono
+                           text-[0.7rem] tabular-nums text-[var(--color-text-muted)]"
+              >
+                {Math.round(scale * 100)}%
+              </span>
             )}
           </span>
-          <div className="ivacts">
-            <button
-              className="btn sm ghost"
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="min-w-[34px] px-2"
               onClick={() => setScale((s) => Math.max(0.3, s / 1.25))}
             >
               −
-            </button>
-            <button className="btn sm ghost" onClick={() => setScale(1)}>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="min-w-[34px] px-2"
+              onClick={() => setScale(1)}
+            >
               重置
-            </button>
-            <button
-              className="btn sm ghost"
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="min-w-[34px] px-2"
               onClick={() => setScale((s) => Math.min(8, s * 1.25))}
             >
               ＋
-            </button>
-            <button className="btn sm ghost" onClick={onClose}>
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onClose}>
               关闭
-            </button>
+            </Button>
           </div>
         </div>
         <div
-          className="ivbody"
+          className="flex select-none items-center justify-center overflow-hidden p-3.5"
           onWheel={onWheel}
           onMouseDown={onDown}
           onMouseMove={onMove}
@@ -388,7 +452,7 @@ function ImageViewer({
             <img
               src={media.thumb}
               alt="预览"
-              className="ivimg"
+              className="h-auto w-auto rounded-[var(--radius-sm)]"
               draggable={false}
               style={{
                 transform: `translate(${drag.x}px, ${drag.y}px) scale(${scale})`,
@@ -398,7 +462,10 @@ function ImageViewer({
               }}
             />
           ) : (
-            <div className="ivhint">
+            <div
+              className="px-5 py-5 text-center text-[0.78rem] leading-[1.7]
+                         text-[var(--color-text-secondary)]"
+            >
               该图为抖音私有加密格式，无法在内嵌预览中显示。
               <br />
               请在浏览器中打开查看。
@@ -412,9 +479,12 @@ function ImageViewer({
 
 function MsgBubble({
   m,
+  sys,
   onOpenImage,
 }: {
   m: Msg;
+  /** 是否为系统提示消息（判定在父层用 isSystemTip，语义不变；仅用于样式） */
+  sys?: boolean;
   onOpenImage?: (media: MediaInfo) => void;
 }) {
   const t = (m.text || "").trim();
@@ -424,14 +494,50 @@ function MsgBubble({
   // 后端已改为输出 "[系统提示] 文案"，这里居中弱化展示。
   const sysM = t.match(/^\[系统提示\]\s*(.*)$/);
   if (sysM) {
-    return <div className="bubble recalled">{sysM[1] || "系统提示"}</div>;
+    return (
+      <div
+        className="rounded-[var(--radius-md)] border border-dashed
+                   border-[var(--color-border)] bg-[var(--color-surface-raised)]
+                   px-2.5 py-1 text-center text-[0.72rem] italic
+                   text-[var(--color-text-muted)] opacity-85"
+      >
+        {sysM[1] || "系统提示"}
+      </div>
+    );
   }
 
   // 2026-08-31：撤回消息。抖音把已撤回的消息体替换成占位串
   // 「Recall Content Hided」（英文原文，实测 5 条），直接展示会像乱码。
   if (t === "Recall Content Hided" || t === "Recall Content Hidden") {
-    return <div className="bubble recalled">消息已撤回</div>;
+    return (
+      <div
+        className="rounded-[var(--radius-md)] border border-dashed
+                   border-[var(--color-border)] bg-[var(--color-surface-raised)]
+                   px-2.5 py-1 text-center text-[0.72rem] italic
+                   text-[var(--color-text-muted)] opacity-85"
+      >
+        消息已撤回
+      </div>
+    );
   }
+
+  // 气泡样式：系统提示走弱化样式（旧 `.msg.sys .bubble`），
+  // 否则按方向取色（旧 `.bubble` / `.msg.out .bubble`）
+  const out = m.dir === "out";
+  const bubble = cn(
+    "rounded-[var(--radius-md)] border px-3 py-2 text-[0.8125rem] leading-[1.55]",
+    sys
+      ? "border-dashed border-[var(--color-border)] bg-[var(--color-surface-raised)] text-center text-[0.72rem] text-[var(--color-text-muted)]"
+      : out
+        ? "border-transparent bg-[var(--color-accent)] text-[var(--accent-ink)]"
+        : "border-[var(--color-border)] bg-[var(--color-surface-raised)] text-[var(--color-text)]",
+  );
+  // 缩略图气泡：无论方向都用弱底色（旧 `.msg.out .bubble.mediathumb` 去掉了主色底与描边）
+  const mediaBubble = cn(
+    "rounded-[var(--radius-md)] p-1 bg-[var(--color-surface-raised)]",
+    out ? "border border-transparent" : "border border-[var(--color-border)]",
+    sys && "border-dashed",
+  );
 
   // 图片 / 表情包：文本形如「[图片] <url>」「[表情包] <url>」或裸 URL。
   //
@@ -462,11 +568,15 @@ function MsgBubble({
         inline: true,
       };
       return (
-        <div className={`bubble mediathumb${isSticker ? " sticker" : ""}`}>
+        <div className={mediaBubble}>
           <img
             src={m.image_url}
             alt={label}
-            className="thumbimg"
+            className={cn(
+              "block h-auto w-auto cursor-zoom-in rounded-[var(--radius-sm)]",
+              "bg-[var(--color-border)] transition-opacity hover:opacity-90",
+              isSticker ? "max-h-[130px] max-w-[100px]" : "max-h-[260px] max-w-[200px]",
+            )}
             onClick={() => onOpenImage && onOpenImage(fullMedia)}
             onError={(e) => {
               // 解密文件缺失或图床 404:降级显示缩略图
@@ -484,18 +594,22 @@ function MsgBubble({
     // 那是给开发者看的调试话术，出现在聊天界面里就是脏数据。
     // 这种情况（历史数据 URL 丢失，或误判的文本）按普通文本展示更合理。
     if (!media.thumb) {
-      return <div className="bubble">{t}</div>;
+      return <div className={bubble}>{t}</div>;
     }
 
     // 情况 1：有内联缩略图（inline_pic，标准 WebP base64）
     //   -> 直接 <img> 渲染缩略图，点击弹出查看原图
     if (media.inline) {
       return (
-        <div className={`bubble mediathumb${isSticker ? " sticker" : ""}`}>
+        <div className={mediaBubble}>
           <img
             src={media.thumb}
             alt={label}
-            className="thumbimg"
+            className={cn(
+              "block h-auto w-auto cursor-zoom-in rounded-[var(--radius-sm)]",
+              "bg-[var(--color-border)] transition-opacity hover:opacity-90",
+              isSticker ? "max-h-[130px] max-w-[100px]" : "max-h-[260px] max-w-[200px]",
+            )}
             onClick={() => onOpenImage && onOpenImage(media)}
           />
           {/* 2026-09-02 修正：原来跳「douyin.com/chat」是因为原图拿不到。
@@ -503,9 +617,10 @@ function MsgBubble({
               的历史消息（库内无 skey）才退到「去抖音看」。
               2026-09-03:表情包不显示「去抖音看原图」链接(贴纸走公开CDN,无需跳转) */}
           {!isSticker && (
-            <div className="thumbbar">
+            <div className="mt-1.5 text-[0.72rem]">
               <a
                 href={media.origin || "https://www.douyin.com/chat"}
+                className="text-[var(--color-accent)] underline"
                 onClick={(e) => {
                   e.preventDefault();
                   void openExternal(media.origin || "https://www.douyin.com/chat");
@@ -530,12 +645,13 @@ function MsgBubble({
     //   2026-09-03:表情包不显示「去抖音查看」链接(贴纸走公开CDN,无需跳转)
     if (media.thumb) {
       if (isSticker) {
-        return <div className="bubble">[{label}]</div>;
+        return <div className={bubble}>[{label}]</div>;
       }
       return (
-        <div className="bubble medialink">
+        <div className={cn(bubble, "flex flex-wrap items-center gap-2 text-[0.78rem]")}>
           <a
             href="https://www.douyin.com/chat"
+            className="text-[var(--color-accent)] underline"
             onClick={(e) => {
               e.preventDefault();
               void openExternal("https://www.douyin.com/chat");
@@ -547,54 +663,66 @@ function MsgBubble({
       );
     }
 
-    return <div className="bubble">[{label}]（无图链，需重新捕获）</div>;
+    return <div className={bubble}>[{label}]（无图链，需重新捕获）</div>;
   }
   if (m.type === "text")
-    return <div className="bubble">{renderTextWithEmoji(m.text || "")}</div>;
+    return <div className={bubble}>{renderTextWithEmoji(m.text || "")}</div>;
   if (m.type === "voice")
     return (
-      <div className="bubble">
-        <div className="voice">
-          <span className="voice-bars">
+      <div className={bubble}>
+        <div className="flex items-center gap-2">
+          <span className="flex h-[18px] items-center gap-0.5">
             {[10, 18, 14, 22, 12, 20, 8, 16].map((hgt, i) => (
-              <i key={i} style={{ height: hgt }} />
+              <i
+                key={i}
+                style={{ height: hgt }}
+                className="w-[3px] rounded-[2px] bg-current opacity-85"
+              />
             ))}
           </span>
-          <span className="vdur">{m.dur}</span>
+          <span className="font-mono text-[0.75rem]">{m.dur}</span>
         </div>
       </div>
     );
   if (m.type === "sticker")
     return (
-      <div className="sticker" style={{ background: "oklch(70% 0.13 300)" }}>
+      <div
+        className="grid h-[76px] w-[76px] place-items-center rounded-[var(--radius-md)]
+                   bg-[var(--color-accent-soft)] text-[1.15rem]"
+      >
         ✨
       </div>
     );
   if (m.type === "image")
     return (
       <div
-        className="imgtile"
-        style={{
-          background: "linear-gradient(135deg, oklch(48% 0.13 210), oklch(26% 0.09 250))",
-        }}
+        className="grid h-[110px] w-[150px] place-items-center rounded-[var(--radius-md)]
+                   bg-[linear-gradient(135deg,var(--color-accent-soft),var(--color-info-soft))]
+                   text-[0.75rem] text-[var(--color-text-secondary)]"
       >
         图片消息
       </div>
     );
   return (
-    <div className="bubble">
-      <div className="vshare">
+    <div className={bubble}>
+      <div className="flex min-w-[220px] items-center gap-2.5">
         <div
-          className="thumb"
-          style={{
-            background: "linear-gradient(135deg, oklch(46% 0.13 150), oklch(26% 0.09 190))",
-          }}
+          className="relative grid aspect-video w-[84px] shrink-0 place-items-center
+                     rounded-[var(--radius-sm)]
+                     bg-[linear-gradient(135deg,var(--color-accent-soft),var(--color-info-soft))]"
         >
-          <span className="play" aria-hidden="true" />
+          <span
+            className="grid h-[34px] w-[34px] place-items-center rounded-full
+                       border border-[color-mix(in_srgb,white_25%,transparent)] bg-black/55"
+          >
+            <Play className="ml-0.5 h-3 w-3 text-white" aria-hidden="true" />
+          </span>
         </div>
         <div>
-          <div className="ti">{m.title}</div>
-          <div className="st">分享的视频</div>
+          <div className="text-[0.78rem] font-medium leading-relaxed">{m.title}</div>
+          <div className="font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+            分享的视频
+          </div>
         </div>
       </div>
     </div>
@@ -859,27 +987,21 @@ export default function MessagesPage(props: PageProps) {
   };
 
   return (
-    <div>
-      <div className="section-head">
-        <div>
-          <h2>私信中心</h2>
-        </div>
-        <div className="head-row">
-          {/* 2026-09-10：页头连接徽章删除，连接状态统一在顶栏会员徽章右侧显示 */}
-        </div>
-      </div>
+    <PageContainer>
+      <PageHeader
+        title="私信中心"
+        description="会话列表 · 聊天记录 · 手动回复（WS 守护 / 网页版双通道发送）"
+      />
 
-      <div className="card" style={{ marginBottom: 12 }} data-od-id="msg-acct-select">
-        <div className="head-row">
+      <Section className="mb-3" data-od-id="msg-acct-select">
+        <div className="flex flex-wrap items-center gap-3">
           {curAcct ? (
             <>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 13.5 }}>
-                  当前私信账号 · {curAcct.name}
-                </div>
-              </div>
-              <Pill
-                c={
+              <span className="text-[0.82rem] font-semibold text-[var(--color-text)]">
+                当前私信账号 · {curAcct.name}
+              </span>
+              <Tone
+                tone={
                   curAcct.loggedIn
                     ? "ok"
                     : curAcct.level === "nosign"
@@ -888,124 +1010,149 @@ export default function MessagesPage(props: PageProps) {
                 }
               >
                 {curAcct.label || "凭证状态未知"}
-              </Pill>
+              </Tone>
             </>
           ) : (
-            <div style={{ flex: 1, fontSize: 13.5, color: "var(--muted)" }}>
+            <span className="text-[0.82rem] text-[var(--color-text-muted)]">
               暂无账号 · 请在「账号」页添加并登录
-            </div>
+            </span>
           )}
-          <div className="seg" style={{ marginLeft: 6 }}>
-            {realAccts.map((acct) => (
-              <button
-                                key={acct.name}
-                                className={activeAcct === acct.name ? "active" : ""}
-                                onClick={() => {
-                                  setActiveAcct(acct.name);
-                                  setActive("");
-                                  push("已切换到 " + acct.name + " 的私信通道");
-                                }}
-                              >
-                                {acct.name}
-                              </button>
-            ))}
-            {realAccts.length === 0 && (
-              <span className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
-                无已授权账号
-              </span>
-            )}
-          </div>
+          <div className="flex-1" />
+          {realAccts.length > 0 ? (
+            <SegmentedTabs
+              value={activeAcct}
+              onChange={(name) => {
+                setActiveAcct(name);
+                setActive("");
+                push("已切换到 " + name + " 的私信通道");
+              }}
+              items={realAccts.map((acct) => ({ value: acct.name, label: acct.name }))}
+            />
+          ) : (
+            <span className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
+              无已授权账号
+            </span>
+          )}
         </div>
-      </div>
+      </Section>
 
-      <div className="grid cols-3-7" data-od-id="messages-panel">
-        <div className="card" style={{ padding: 8 }}>
-          <div className="head-row" style={{ padding: "4px 8px 10px" }}>
-            <h3 style={{ marginBottom: 0 }}>会话列表</h3>
-            <div style={{ flex: 1 }} />
-            {/* 更新会话：按需触发前移捕获（BCC 拉会话列表 + 会话详情/聊天记录）后写库。
-                与账号页「引擎校验」区分：引擎校验只判守护活性，不跑捕获。 */}
-            <button
-              className="btn sm ghost"
-              data-od-id="refresh-conv"
-              disabled={refreshing || !activeAcct}
-              title={
-                activeAcct
-                  ? `经 BCC 重新拉取 ${activeAcct} 的会话列表与聊天记录`
-                  : "请先选择账号"
-              }
-              onClick={() => {
-                if (!activeAcct || refreshing) return;
-                setRefreshing(true);
-                // 长任务（3~6 分钟）：提示停留 12s，否则用户错过结果
-                push(
-                  `正在更新会话 · ${activeAcct} · 经 BCC 拉取会话列表与聊天记录…（约需 3~6 分钟）`,
-                  12000,
-                );
-                a.addLog("INFO", `更新会话开始 · ${activeAcct}`).catch(() => {});
-                a.refreshConversations(activeAcct, true)
-                  .then((r) => {
-                    if (r && r.ok) {
-                      push(
-                        `更新完成 · ${activeAcct} · 会话 ${r.n_conv} 个（消息 ${r.n_msg} 条）· 耗时 ${r.elapsed}s`,
-                        12000,
-                      );
-                      a.addLog(
-                        "SUCCESS",
-                        `更新会话完成 · ${activeAcct} · 会话 ${r.n_conv}（消息 ${r.n_msg}）· ${r.elapsed}s`,
-                      ).catch(() => {});
-                    } else {
-                      push("更新失败: " + ((r && r.error) || "未知错误"));
-                      a.addLog(
-                        "ERROR",
-                        `更新会话失败 · ${activeAcct}: ${(r && r.error) || "未知错误"}`,
-                      ).catch(() => {});
-                    }
-                  })
-                  .catch((e: unknown) => {
-                    const msg = e instanceof Error ? e.message : String(e);
-                    push("更新失败: " + msg);
-                    a.addLog("ERROR", `更新会话失败 · ${activeAcct}: ${msg}`).catch(() => {});
-                  })
-                  .finally(() => {
-                    setRefreshing(false);
-                    // 2026-08-31：更新会话后必须**失效**缓存，而不只是 refetch。
-                    // 实测：清空数据库后前端仍显示旧数据（React Query
-                    // staleTime 10~20s + WebView2 磁盘缓存），
-                    // 用户会看到已删除的污染数据和旧昵称。
-                    // 此处 invalidateQueries 强制丢弃旧缓存重新拉取。
-                    qc.invalidateQueries().catch(() => {});
-                    convsQ.refetch().catch(() => {});
-                  });
-              }}
-            >
-              {refreshing ? `更新中… ${refreshElapsed}s` : "⟳ 更新会话"}
-            </button>
-            <button
-              className="btn sm ghost"
-              data-od-id="search-conv"
-              title="按昵称搜索会话"
-              onClick={() => {
-                setShowSearch((s) => !s);
-                if (showSearch) setConvSearch(""); // 收起时清空过滤
-              }}
-            >
-              {showSearch ? "✕" : "🔍 搜索"}
-            </button>
-            <button
-              className="btn sm ghost"
-              data-od-id="new-conv"
-              onClick={() => setShowNew((s) => !s)}
-            >
-              {showNew ? "取消" : "＋ 新建会话"}
-            </button>
-          </div>
+      <div className="grid grid-cols-[3fr_7fr] items-start gap-3.5" data-od-id="messages-panel">
+        {/* ── 左：会话列表 ── */}
+        <Section
+          title="会话列表"
+          actions={
+            <Toolbar>
+              {/* 更新会话：按需触发前移捕获（BCC 拉会话列表 + 会话详情/聊天记录）后写库。
+                  与账号页「引擎校验」区分：引擎校验只判守护活性，不跑捕获。 */}
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="refresh-conv"
+                disabled={refreshing || !activeAcct}
+                title={
+                  activeAcct
+                    ? `经 BCC 重新拉取 ${activeAcct} 的会话列表与聊天记录`
+                    : "请先选择账号"
+                }
+                onClick={() => {
+                  if (!activeAcct || refreshing) return;
+                  setRefreshing(true);
+                  // 长任务（3~6 分钟）：提示停留 12s，否则用户错过结果
+                  push(
+                    `正在更新会话 · ${activeAcct} · 经 BCC 拉取会话列表与聊天记录…（约需 3~6 分钟）`,
+                    12000,
+                  );
+                  a.addLog("INFO", `更新会话开始 · ${activeAcct}`).catch(() => {});
+                  a.refreshConversations(activeAcct, true)
+                    .then((r) => {
+                      if (r && r.ok) {
+                        push(
+                          `更新完成 · ${activeAcct} · 会话 ${r.n_conv} 个（消息 ${r.n_msg} 条）· 耗时 ${r.elapsed}s`,
+                          12000,
+                        );
+                        a.addLog(
+                          "SUCCESS",
+                          `更新会话完成 · ${activeAcct} · 会话 ${r.n_conv}（消息 ${r.n_msg}）· ${r.elapsed}s`,
+                        ).catch(() => {});
+                      } else {
+                        push("更新失败: " + ((r && r.error) || "未知错误"));
+                        a.addLog(
+                          "ERROR",
+                          `更新会话失败 · ${activeAcct}: ${(r && r.error) || "未知错误"}`,
+                        ).catch(() => {});
+                      }
+                    })
+                    .catch((e: unknown) => {
+                      const msg = e instanceof Error ? e.message : String(e);
+                      push("更新失败: " + msg);
+                      a.addLog("ERROR", `更新会话失败 · ${activeAcct}: ${msg}`).catch(() => {});
+                    })
+                    .finally(() => {
+                      setRefreshing(false);
+                      // 2026-08-31：更新会话后必须**失效**缓存，而不只是 refetch。
+                      // 实测：清空数据库后前端仍显示旧数据（React Query
+                      // staleTime 10~20s + WebView2 磁盘缓存），
+                      // 用户会看到已删除的污染数据和旧昵称。
+                      // 此处 invalidateQueries 强制丢弃旧缓存重新拉取。
+                      qc.invalidateQueries().catch(() => {});
+                      convsQ.refetch().catch(() => {});
+                    });
+                }}
+              >
+                {refreshing ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    更新中… {refreshElapsed}s
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    更新会话
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="search-conv"
+                title="按昵称搜索会话"
+                onClick={() => {
+                  setShowSearch((s) => !s);
+                  if (showSearch) setConvSearch(""); // 收起时清空过滤
+                }}
+              >
+                {showSearch ? (
+                  <X className="h-3.5 w-3.5" />
+                ) : (
+                  <>
+                    <SearchIcon className="h-3.5 w-3.5" />
+                    搜索
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="new-conv"
+                onClick={() => setShowNew((s) => !s)}
+              >
+                {showNew ? (
+                  "取消"
+                ) : (
+                  <>
+                    <Plus className="h-3.5 w-3.5" />
+                    新建会话
+                  </>
+                )}
+              </Button>
+            </Toolbar>
+          }
+        >
           {/* 2026-09-06：会话搜索框（按昵称过滤定位） */}
           {showSearch && (
-            <div className="head-row" style={{ padding: "2px 8px 8px", gap: 8 }}>
-              <input
-                className="input"
-                style={{ flex: 1, height: 34, fontSize: 12.5 }}
+            <div className="flex items-center gap-2 pb-2">
+              <Input
+                className="h-[34px] flex-1 text-[0.78rem]"
                 autoFocus
                 placeholder="输入昵称关键字过滤会话…"
                 value={convSearch}
@@ -1018,25 +1165,20 @@ export default function MessagesPage(props: PageProps) {
                 }}
               />
               {convSearch && (
-                <span
-                  className="mono"
-                  style={{ fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }}
-                >
+                <span className="whitespace-nowrap font-mono text-[0.72rem] text-[var(--color-text-muted)]">
                   {shownConvs.length}/{allConvs.length} 个
                 </span>
               )}
             </div>
           )}
-          <div className="conv-list">
+          <div className="mt-3 flex max-h-[calc(100vh-186px)] flex-col gap-0.5 overflow-y-auto">
             {showNew && (
               <div
-                className="head-row"
-                style={{ padding: "2px 8px 8px", gap: 8 }}
+                className="flex items-center gap-2 pb-2"
                 data-od-id="new-conv-form"
               >
-                <input
-                  className="input"
-                  style={{ flex: 1, height: 34, fontSize: 12.5 }}
+                <Input
+                  className="h-[34px] flex-1 text-[0.78rem]"
                   autoFocus
                   placeholder="输入对方昵称，回车创建…"
                   value={newName}
@@ -1046,71 +1188,75 @@ export default function MessagesPage(props: PageProps) {
                     if (e.key === "Escape") setShowNew(false);
                   }}
                 />
-                <button className="btn sm ghost" onClick={createConv}>
+                <Button variant="secondary" size="sm" onClick={createConv}>
                   创建
-                </button>
+                </Button>
               </div>
             )}
             {shownConvs.length === 0 && convSearch.trim() && allConvs.length > 0 && (
-              <div style={{ padding: "14px 10px", color: "var(--muted)", fontSize: 12.5 }}>
+              <div className="px-2.5 py-3 text-[0.78rem] text-[var(--color-text-muted)]">
                 没有昵称包含「{convSearch.trim()}」的会话
               </div>
             )}
             {shownConvs.length === 0 && !(convSearch.trim() && allConvs.length > 0) && (
-              <div style={{ padding: "14px 10px", color: "var(--muted)", fontSize: 12.5 }}>
+              <div className="px-2.5 py-3 text-[0.78rem] text-[var(--color-text-muted)]">
                 暂无会话（接收守护未收到消息）
               </div>
             )}
             {shownConvs.map((c) => (
-              <button
-                className={"conv" + (c.id === active ? " active" : "")}
-                data-od-id={"conv-" + c.id}
-                key={c.id}
-                onClick={() => openConv(c.id)}
-              >
-                <Avatar name={c.name} h={c.hue} src={c.avatar} />
-                <span className="info">
-                  <span className="nm">
-                    {c.name}
-                    <span className="t">
-                      {c.msgs && c.msgs.length ? c.msgs[c.msgs.length - 1].mt : ""}
-                    </span>
-                  </span>
-                  <span className="pre">
-                    {c.msgs && c.msgs.length
-                      ? c.msgs[c.msgs.length - 1].type === "text"
-                        ? c.msgs[c.msgs.length - 1].text
-                        : c.msgs[c.msgs.length - 1].dir === "in"
-                          ? "收到一条新消息"
-                          : "已发送"
-                      : ""}
-                  </span>
-                </span>
-                {c.unread > 0 && <span className="unread">{c.unread}</span>}
-              </button>
+              <div key={c.id} data-od-id={"conv-" + c.id}>
+                <Row active={c.id === active} onClick={() => openConv(c.id)}>
+                  <Avatar name={c.name} h={c.hue} src={c.avatar} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex justify-between gap-2 text-[0.82rem] font-medium text-[var(--color-text)]">
+                      <span className="truncate">{c.name}</span>
+                      <span className="shrink-0 font-mono text-[0.68rem] font-normal text-[var(--color-text-muted)]">
+                        {c.msgs && c.msgs.length ? c.msgs[c.msgs.length - 1].mt : ""}
+                      </span>
+                    </div>
+                    <div className="truncate text-[0.74rem] text-[var(--color-text-muted)]">
+                      {c.msgs && c.msgs.length
+                        ? c.msgs[c.msgs.length - 1].type === "text"
+                          ? c.msgs[c.msgs.length - 1].text
+                          : c.msgs[c.msgs.length - 1].dir === "in"
+                            ? "收到一条新消息"
+                            : "已发送"
+                        : ""}
+                    </div>
+                  </div>
+                  {c.unread > 0 && (
+                    <Badge variant="accent" className="shrink-0 font-mono">
+                      {c.unread}
+                    </Badge>
+                  )}
+                </Row>
+              </div>
             ))}
           </div>
-        </div>
+        </Section>
 
-        <div className="card thread-wrap" style={{ padding: 0 }}>
-          <div className="thread">
-            <div className="thread-head">
+        {/* ── 右：对话详情 + 输入区 ── */}
+        <Card className="min-w-0 overflow-hidden">
+          <div className="flex h-[calc(100vh-136px)] min-h-[480px] flex-col">
+            <div className="flex items-center gap-2.5 border-b border-[var(--color-border)] px-3.5 py-3">
               <Avatar name={conv.name} h={conv.hue} sm src={conv.avatar} />
-              <span className="nm">{conv.name}</span>
-              <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+              <span className="font-semibold text-[var(--color-text)]">{conv.name}</span>
+              <span className="font-mono text-[0.7rem] text-[var(--color-text-muted)]">
                 会话 ID {conv.id}
               </span>
-              <div style={{ flex: 1 }} />
-              <button
-                className="btn sm ghost"
+              <div className="flex-1" />
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   push("已导出该会话为 JSON");
                 }}
               >
+                <Download className="h-3.5 w-3.5" />
                 导出会话
-              </button>
+              </Button>
             </div>
-            <div className="msgs">
+            <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3.5">
               {(() => {
                 let lastDate = "";
                 const nodes: React.ReactNode[] = [];
@@ -1121,19 +1267,46 @@ export default function MessagesPage(props: PageProps) {
                   if (fullDate && fullDate !== lastDate) {
                     lastDate = fullDate;
                     nodes.push(
-                      <div key={`date-${fullDate}`} className="date-sep">
-                        <span>{fullDate}</span>
+                      <div
+                        key={`date-${fullDate}`}
+                        className="my-2.5 flex items-center gap-2 text-[0.68rem]
+                                   text-[var(--color-text-muted)]"
+                      >
+                        <span className="h-px flex-1 bg-[var(--color-border)]" />
+                        <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-0.5">
+                          {fullDate}
+                        </span>
+                        <span className="h-px flex-1 bg-[var(--color-border)]" />
                       </div>
                     );
                   }
                   const sys = isSystemTip(m.text);
                   nodes.push(
-                    <div className={"msg " + (sys ? "sys" : m.dir)} key={m.id}>
-                      <MsgBubble m={m} onOpenImage={setViewer} />
-                      <span className="mtm">{(m.mt || "").slice(11, 16)}</span>
+                    <div
+                      className={cn(
+                        "flex max-w-[78%] items-center gap-2.5",
+                        // 旧 `.msg { animation: slidein .3s ease both }` 保留（keyframes 在 global.css）
+                        "animate-[slidein_0.3s_ease_both]",
+                        sys ? "max-w-[84%] self-center" : m.dir === "out"
+                          ? "flex-row-reverse self-end"
+                          : "self-start",
+                      )}
+                      key={m.id}
+                    >
+                      <MsgBubble m={m} sys={sys} onOpenImage={setViewer} />
+                      <span className="shrink-0 self-center font-mono text-[0.66rem] text-[var(--color-text-muted)]">
+                        {(m.mt || "").slice(11, 16)}
+                      </span>
                       {/* 2026-09-05：通道角标，仅在 WP 通道时显示（WS 是默认，不打扰） */}
                       {m.source === "wp" && (
-                        <span className="chan-badge" title="经抖音网页版通道收发">网页</span>
+                        <span
+                          className="shrink-0 self-center rounded border border-[var(--color-border)]
+                                     bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[0.6rem]
+                                     leading-none text-[var(--color-text-muted)]"
+                          title="经抖音网页版通道收发"
+                        >
+                          网页
+                        </span>
                       )}
                     </div>
                   );
@@ -1141,49 +1314,45 @@ export default function MessagesPage(props: PageProps) {
                 return nodes;
               })()}
               {convMsgs.length === 0 && (
-                <div style={{ color: "var(--muted)", fontSize: 12.5, padding: 8 }}>
-                  暂无消息
-                </div>
+                <Blank className="py-2">暂无消息</Blank>
               )}
             </div>
             {/* 隐藏的文件选择 input */}
             <input
               ref={fileInputRef}
               type="file"
-              style={{ display: "none" }}
+              className="hidden"
               onChange={handleFileChange}
             />
             {/* 2026-09-05：发送通道选择。
                 ws = 私信守护 HTTP API（默认，稳定）
                 wp = 抖音网页版 chat 页 IM SDK（需浏览器容器就绪） */}
-            <div className="chan-row">
-              <span className="chan-label">发送通道</span>
-              <label className="chan-opt">
-                <input
-                  type="radio"
-                  name="send-channel"
-                  checked={sendChannel === "ws"}
-                  onChange={() => setSendChannel("ws")}
-                />
-                <span>WS 守护</span>
-              </label>
-              <label className="chan-opt">
-                <input
-                  type="radio"
-                  name="send-channel"
-                  checked={sendChannel === "wp"}
-                  onChange={() => setSendChannel("wp")}
-                />
-                <span>网页版</span>
-              </label>
+            <div
+              className="flex flex-wrap items-center gap-3 border-t border-[var(--color-border)]
+                         px-3.5 py-1.5 text-[0.72rem] text-[var(--color-text-muted)]"
+            >
+              <span className="shrink-0">发送通道</span>
+              <SegmentedTabs
+                value={sendChannel}
+                onChange={setSendChannel}
+                items={[
+                  { value: "ws", label: "WS 守护" },
+                  { value: "wp", label: "网页版" },
+                ]}
+              />
               {sendChannel === "wp" && (
-                <span className="chan-tip">经浏览器容器发送，需 BCC 已就绪</span>
+                <span className="text-[0.68rem] opacity-80">
+                  经浏览器容器发送，需 BCC 已就绪
+                </span>
               )}
             </div>
-            <div className="composer" data-od-id="composer">
-              <div className="composer-row">
-                <textarea
-                  className="textarea"
+            <div
+              className="flex flex-col gap-1.5 border-t border-[var(--color-border)] p-3.5"
+              data-od-id="composer"
+            >
+              <div className="flex items-center gap-2.5">
+                <Textarea
+                  className="min-h-0 flex-1 resize-none"
                   rows={2}
                   placeholder="输入私信内容…"
                   value={draft}
@@ -1195,35 +1364,47 @@ export default function MessagesPage(props: PageProps) {
                     }
                   }}
                 />
-                <button
-                  className="btn attach-btn"
-                  onClick={() => setShowAttach((v) => !v)}
+                <Button
+                  variant="secondary"
+                  size="icon"
                   title="添加附件"
+                  onClick={() => setShowAttach((v) => !v)}
                 >
-                  ＋
-                </button>
-                <button className="btn primary" data-od-id="send-msg" onClick={send}>
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+                <Button data-od-id="send-msg" onClick={send}>
                   发送
-                </button>
+                </Button>
               </div>
               {showAttach && (
-                <div className="attach-menu">
-                  <div className="attach-option" onClick={() => handlePickFile("image/*")}>
-                    🖼️ 图片
-                  </div>
-                  <div className="attach-option" onClick={() => handlePickFile("video/*")}>
-                    🎬 视频
-                  </div>
-                  <div className="attach-option" onClick={() => handlePickFile("*")}>
-                    📎 文件
-                  </div>
+                <div className="flex gap-2 py-1">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handlePickFile("image/*")}
+                  >
+                    <ImageIcon className="h-3.5 w-3.5" />
+                    图片
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handlePickFile("video/*")}
+                  >
+                    <VideoIcon className="h-3.5 w-3.5" />
+                    视频
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => handlePickFile("*")}>
+                    <FileText className="h-3.5 w-3.5" />
+                    文件
+                  </Button>
                 </div>
               )}
             </div>
           </div>
-        </div>
+        </Card>
       </div>
       <ImageViewer media={viewer} onClose={() => setViewer(null)} />
-    </div>
+    </PageContainer>
   );
 }

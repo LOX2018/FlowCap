@@ -16,9 +16,29 @@
 import { Fragment, useState, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
+import {
+  Play, Pause, Square, Heart, Send, Settings2, Mic,
+  Search as SearchIcon, Download, ArrowUpDown, Eye,
+  LogIn, Users, X,
+} from "lucide-react";
 import { PageProps, ReusePayload } from "../api/client";
 import RoomConfigManager from "../components/RoomConfigManager";
-import { Avatar, Dot, Pill, hue, KIND_NAME, tick } from "../components/ui";
+import { Avatar, hue, KIND_NAME, tick } from "../components/ui";
+import { PageContainer, PageHeader } from "@/components/layout/app-shell";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
+import { StatusDot } from "@/components/ui/status-dot";
+import { EmptyState } from "@/components/ui/empty-state";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
+import {
+  Section, Tone, Blank, SegmentedTabs, Toolbar, FormField,
+} from "@/components/page/kit";
+import { cn } from "@/lib/utils";
 
 /** AI 自动回复控制卡（直播监听场景的启停入口；参数调整在 AI 页） */
 function AiReplyCard(props: { push: (msg: string, holdMs?: number) => void }) {
@@ -39,27 +59,38 @@ function AiReplyCard(props: { push: (msg: string, holdMs?: number) => void }) {
       })
       .catch((e: unknown) => push("操作异常: " + (e instanceof Error ? e.message : String(e))));
   };
+  const num = "font-mono tabular-nums text-[var(--color-text)]";
   return (
-    <div className="card" style={{ marginBottom: 14 }} data-od-id="live-ai-reply">
-      <div className="head-row" style={{ justifyContent: "space-between" }}>
-        <div className="head-row">
-          <h3 style={{ marginBottom: 0 }}>AI 自动回复</h3>
-          <Pill c={running ? "ok" : "mute"}>{running ? "运行中" : "已停止"}</Pill>
-        </div>
-        <button
-          className="btn ghost"
-          style={{ color: running ? "var(--danger)" : "var(--accent)" }}
-          onClick={toggle}
-        >
-          {running ? "⏹ 停止 AI 回复" : "▶ 开启 AI 回复"}
-        </button>
+    <Section
+      className="mb-3.5"
+      data-od-id="live-ai-reply"
+      title="AI 自动回复"
+      actions={
+        <>
+          <Tone tone={running ? "ok" : "mute"}>{running ? "运行中" : "已停止"}</Tone>
+          <Button
+            variant={running ? "danger-outline" : "secondary"}
+            size="sm"
+            onClick={toggle}
+          >
+            {running
+              ? <><Square className="h-3.5 w-3.5" />停止 AI 回复</>
+              : <><Play className="h-3.5 w-3.5" />开启 AI 回复</>}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.76rem]
+                      text-[var(--color-text-secondary)]">
+        <span>已回复 <b className={num}>{st.replied ?? 0}</b></span>
+        <span className="text-[var(--color-text-muted)]">·</span>
+        <span>留资 <b className={num}>{st.leads_total ?? 0}</b></span>
+        <span className="text-[var(--color-text-muted)]">·</span>
+        <span>处理 <b className={num}>{st.processed ?? 0}</b></span>
+        <span className="text-[var(--color-text-muted)]">·</span>
+        <span>错误 <b className={num}>{st.errors ?? 0}</b></span>
       </div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
-        已回复 <b>{st.replied ?? 0}</b> ·
-        留资 <b>{st.leads_total ?? 0}</b> · 处理 <b>{st.processed ?? 0}</b> · 错误{" "}
-        <b>{st.errors ?? 0}</b>
-      </div>
-    </div>
+    </Section>
   );
 }
 
@@ -206,40 +237,40 @@ interface Row {
 const FAIL_KIND_META: Record<string, { label: string; color: string; advice: string }> = {
   credential: {
     label: "凭证失效",
-    color: "var(--danger)",
+    color: "var(--color-danger)",
     advice: "该账号私信签名已失效。请到「账号」页面点【重新扫码】重新抓取签名后重试。",
   },
   risk: {
     label: "账号风控",
-    color: "var(--danger)",
+    color: "var(--color-danger)",
     advice:
       "抖音对该账号的私信行为判定为风控（多见于向陌生用户频繁首发）。建议：降低发送频率、暂停该账号 30 分钟以上，或换账号发送。",
   },
   ratelimit: {
     label: "频控限流",
-    color: "var(--warn)",
+    color: "var(--color-warning)",
     advice:
       "已达发送频率上限（统一闸门限流）。建议等待冷却结束再发，不要手动连续重发，否则会加重限流。",
   },
   blocked: {
     label: "调度堵塞",
-    color: "var(--warn)",
+    color: "var(--color-warning)",
     advice:
       "发送队列/调度被占满或排队超时。建议：暂停当前监听任务，等队列消化后再启动；若持续出现请重启后端。",
   },
   param: {
     label: "参数错误",
-    color: "var(--muted-foreground)",
+    color: "var(--color-text-muted)",
     advice: "发送参数不合法（目标 uid 或文案为空/格式错误）。请检查该目标的会话数据是否完整。",
   },
   network: {
     label: "网络异常",
-    color: "var(--warn)",
+    color: "var(--color-warning)",
     advice: "网络或守护进程不可达。请检查后端与 recv_daemon 是否在运行。",
   },
   other: {
     label: "其他原因",
-    color: "var(--muted-foreground)",
+    color: "var(--color-text-muted)",
     advice: "未能归类的失败。可查看下方原始原因，或到「日志」页查看后端详细日志定位。",
   },
 };
@@ -327,87 +358,50 @@ function FailReasonModal({
   return (
     <div
       onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 9999,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-      }}
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/45 p-5"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{
-          width: "min(520px, 100%)",
-          background: "var(--card)",
-          border: "1px solid var(--border)",
-          borderRadius: 10,
-          padding: 20,
-          boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
-        }}
+        className="w-full max-w-[520px] rounded-[var(--radius-md)]
+                   border border-[var(--color-border)] bg-[var(--color-surface-solid)] p-5
+                   shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div className="mb-3 flex items-center gap-2.5">
           <span
-            style={{
-              padding: "3px 10px",
-              borderRadius: 999,
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#fff",
-              background: info.color,
-            }}
+            className="rounded-full px-2.5 py-[3px] text-[0.75rem] font-semibold text-white"
+            style={{ background: info.color }}
           >
             {info.label}
           </span>
-          <b style={{ fontSize: 15 }}>私信发送失败</b>
+          <b className="text-[0.95rem] text-[var(--color-text)]">私信发送失败</b>
         </div>
 
-        <div style={{ fontSize: 13, color: "var(--muted-foreground)", marginBottom: 10 }}>
+        <div className="mb-2.5 text-[0.82rem] text-[var(--color-text-muted)]">
           目标：{row.name || "未知"}
         </div>
 
-        <div
-          style={{
-            fontSize: 13,
-            lineHeight: 1.7,
-            padding: "10px 12px",
-            borderRadius: 6,
-            background: "var(--accent)",
-            marginBottom: 12,
-          }}
-        >
+        <div className="mb-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] px-3 py-2.5
+                        text-[0.82rem] leading-[1.7] text-[var(--color-text)]">
           {info.advice}
         </div>
 
         {info.raw ? (
-          <details style={{ fontSize: 12 }}>
-            <summary style={{ cursor: "pointer", color: "var(--muted-foreground)" }}>
+          <details className="text-[0.75rem]">
+            <summary className="cursor-pointer text-[var(--color-text-muted)]">
               原始原因（点击展开）
             </summary>
             <pre
-              style={{
-                marginTop: 8,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-                fontSize: 11.5,
-                color: "var(--foreground)",
-                background: "var(--accent)",
-                padding: 10,
-                borderRadius: 6,
-              }}
+              className="mt-2 whitespace-pre-wrap break-all rounded-[var(--radius-sm)]
+                         bg-[var(--color-background-soft)] p-2.5 text-[0.72rem] leading-relaxed
+                         text-[var(--color-text)]"
             >
               {info.raw}
             </pre>
           </details>
         ) : null}
 
-        <div style={{ marginTop: 16, textAlign: "right" }}>
-          <button className="btn" onClick={onClose}>
-            我知道了
-          </button>
+        <div className="mt-4 text-right">
+          <Button onClick={onClose}>我知道了</Button>
         </div>
       </div>
     </div>
@@ -459,6 +453,66 @@ function recordsToRows(src: Record<string, unknown>[]): Row[] {
     failLabel: (r.fail_label as string) || null,
     failAdvice: (r.fail_advice as string) || null,
   }));
+}
+
+/* ── 表格具名单元（避免每处重复 className，见 tasks.tsx 范式） ── */
+
+function Th({
+  children,
+  className,
+  width,
+}: {
+  children?: React.ReactNode;
+  className?: string;
+  width?: number;
+}) {
+  return (
+    <th
+      style={width ? { width } : undefined}
+      className={cn(
+        "whitespace-nowrap border-b border-[var(--color-border)] px-2.5 py-2 text-left",
+        "text-[0.7rem] font-semibold tracking-[0.03em] text-[var(--color-text-secondary)]",
+        className
+      )}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  mono,
+  muted,
+  className,
+  colSpan,
+  title,
+  style,
+}: {
+  children?: React.ReactNode;
+  mono?: boolean;
+  muted?: boolean;
+  className?: string;
+  colSpan?: number;
+  title?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <td
+      colSpan={colSpan}
+      title={title}
+      style={style}
+      className={cn(
+        "border-b border-[var(--color-border)] px-2.5 py-2 align-middle",
+        "text-[0.78rem] text-[var(--color-text)]",
+        mono && "font-mono tabular-nums",
+        muted && "text-[var(--color-text-muted)]",
+        className
+      )}
+    >
+      {children}
+    </td>
+  );
 }
 
 export default function LivePage(props: PageProps) {
@@ -666,14 +720,9 @@ export default function LivePage(props: PageProps) {
     if (!data || !data.length) {
       return (
         <div
-          style={{
-            height: h,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--muted)",
-            fontSize: 12,
-          }}
+          className="flex items-center justify-center text-[0.75rem]
+                     text-[var(--color-text-muted)]"
+          style={{ height: h }}
         >
           等待房间热度数据 · 引擎运行后自动生成
         </div>
@@ -690,21 +739,24 @@ export default function LivePage(props: PageProps) {
         width={w}
         height={h}
         viewBox={`0 0 ${w} ${h}`}
-        style={{ width: "100%", height: "auto" }}
+        className="block h-auto w-full"
         role="img"
         aria-label="房间热度曲线"
       >
         {[0.25, 0.5, 0.75].map((g) => (
-          <line key={g} className="chart-grid" x1="0" x2={w} y1={h * g} y2={h * g} />
+          <line
+            key={g}
+            stroke="var(--color-border)"
+            strokeWidth={1}
+            x1="0"
+            x2={w}
+            y1={h * g}
+            y2={h * g}
+          />
         ))}
-        <path className="chart-area" d={`${d} L${w} ${h} L0 ${h} Z`} />
-        <path className="chart-line" d={d} />
-        <circle
-          className="chart-last"
-          cx={x(data.length - 1)}
-          cy={y(data[data.length - 1])}
-          r="3.4"
-        />
+        <path fill="var(--color-accent)" opacity={0.1} d={`${d} L${w} ${h} L0 ${h} Z`} />
+        <path fill="none" stroke="var(--color-accent)" strokeWidth={2} d={d} />
+        <circle fill="var(--color-accent)" cx={x(data.length - 1)} cy={y(data[data.length - 1])} r="3.4" />
       </svg>
     );
   };
@@ -773,19 +825,41 @@ export default function LivePage(props: PageProps) {
   const cfgLiveUrl = tasksCfg?.config?.live_url || "";
 
   return (
-    <div>
+    <PageContainer>
       {alert && (
-        <div className="modal-mask" onClick={() => setAlert(null)}>
-          <div className="modal-card self-check" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <h3>{alert.title}</h3>
-              <span className="x" style={{ cursor: "pointer" }} onClick={() => setAlert(null)}>×</span>
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55
+                     p-5 backdrop-blur-sm"
+          onClick={() => setAlert(null)}
+        >
+          <div
+            className="w-full max-w-[460px] rounded-[var(--radius-lg)]
+                       border border-[var(--color-border)] bg-[var(--color-surface-solid)]
+                       p-5 shadow-[var(--shadow-lg)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-[0.95rem] font-semibold text-[var(--color-text)]">
+                {alert.title}
+              </h3>
+              <button
+                type="button"
+                aria-label="关闭"
+                className="cursor-pointer rounded-[var(--radius-sm)] p-1
+                           text-[var(--color-text-muted)] transition-colors
+                           hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
+                onClick={() => setAlert(null)}
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-            <div className="modal-body">
-              <div className="warn-line">{alert.msg}</div>
+            <div className="rounded-[var(--radius-sm)] border border-[var(--color-warning-soft)]
+                            bg-[var(--color-warning-soft)] px-3 py-2.5 text-[0.82rem]
+                            leading-relaxed text-[var(--color-text-secondary)]">
+              {alert.msg}
             </div>
-            <div className="modal-foot">
-              <button className="btn primary" onClick={() => setAlert(null)}>我知道了</button>
+            <div className="mt-4 text-right">
+              <Button onClick={() => setAlert(null)}>我知道了</Button>
             </div>
           </div>
         </div>
@@ -811,163 +885,149 @@ export default function LivePage(props: PageProps) {
           if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
         }}
       />
-      <div className="section-head">
-        <div>
-          <h2>直播监听</h2>
-          <div className="desc">实时弹幕 / 礼物 / 评论采集与私信自动化</div>
-        </div>
-        <div className="head-row">
-          <div className="seg">
-            <button
-              className={viewMode === "single" ? "active" : ""}
-              onClick={() => setViewMode("single")}
-            >
-              单账户
-            </button>
-            <button
-              className={viewMode === "grid" ? "active" : ""}
-              onClick={() => setViewMode("grid")}
-            >
-              多账户总览
-            </button>
-          </div>
-          <span className="badge-conn">
-            <Dot c={streaming ? "ok" : engineBusy ? "warn" : "mute"} pulse={streaming} />{" "}
-            {ls ? engineLabel : "未连接"}
-          </span>
-          <span className="demo-tag">
-            {ready
-              ? engineBusy
-                ? ls?.statusMsg || (streaming ? "实时监听中" : "引擎运行中")
-                : "等待启动"
-              : "未连接"}
-          </span>
-          <span className="badge-conn" style={{ marginLeft: 8 }}>
-            <Dot c={ls?.dmRunning ? "ok" : "warn"} pulse={!!ls?.dmRunning} />{" "}
-            {ls
-              ? ls.dmRunning
-                ? ls.dmPaused
-                  ? "私信引擎已暂停"
-                  : "私信引擎发送中"
-                : "私信引擎待命"
-              : "未连接"}
-          </span>
-        </div>
-      </div>
+
+      <PageHeader
+        title="直播监听"
+        description="实时弹幕 / 礼物 / 评论采集与私信自动化"
+        actions={
+          <>
+            <SegmentedTabs
+              value={viewMode}
+              onChange={setViewMode}
+              items={[
+                { value: "single", label: "单账户", icon: <LogIn className="h-3.5 w-3.5" /> },
+                { value: "grid", label: "多账户总览", icon: <Users className="h-3.5 w-3.5" /> },
+              ]}
+            />
+            <Badge variant={streaming ? "success" : engineBusy ? "warning" : "outline"}>
+              <StatusDot
+                tone={streaming ? "ok" : engineBusy ? "warn" : "muted"}
+                pulse={streaming}
+              />
+              {ls ? engineLabel : "未连接"}
+            </Badge>
+            <Badge variant="outline">
+              {ready
+                ? engineBusy
+                  ? ls?.statusMsg || (streaming ? "实时监听中" : "引擎运行中")
+                  : "等待启动"
+                : "未连接"}
+            </Badge>
+            <Badge variant={ls?.dmRunning ? "accent" : "outline"}>
+              <StatusDot
+                tone={ls?.dmRunning ? "ok" : "warn"}
+                pulse={!!ls?.dmRunning}
+              />
+              {ls
+                ? ls.dmRunning
+                  ? ls.dmPaused
+                    ? "私信引擎已暂停"
+                    : "私信引擎发送中"
+                  : "私信引擎待命"
+                : "未连接"}
+            </Badge>
+          </>
+        }
+      />
 
       {viewMode === "grid" ? (
-        <div className="grid cols-2" data-od-id="live-grid">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2" data-od-id="live-grid">
           {realAccts.slice(0, 2).map((acct) => (
-            <div className="card" key={acct.name} style={{ padding: 0, overflow: "hidden" }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "12px 16px",
-                  borderBottom: "1px solid var(--border)",
-                  background: "var(--surface-2)",
-                }}
-              >
+            <Card key={acct.name} className="overflow-hidden">
+              <div className="flex items-center gap-2.5 border-b border-[var(--color-border)]
+                              bg-[var(--color-surface-raised)] px-4 py-3">
                 <Avatar name={acct.name} h={hue(acct.name.length)} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{acct.name}</div>
-                  <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[0.88rem] font-semibold text-[var(--color-text)]">
+                    {acct.name}
+                  </div>
+                  <div className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
                     UID: {acct.uid || "—"}
                   </div>
                 </div>
-                <Pill c={isAcctOnline(acct) ? "ok" : "danger"}>
+                <Tone tone={isAcctOnline(acct) ? "ok" : "danger"}>
                   {isAcctOnline(acct) ? "在线" : "离线"}
-                </Pill>
+                </Tone>
               </div>
-              <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)" }}>
-                <div className="head-row" style={{ marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: "var(--muted)" }}>直播间</span>
-                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>
+
+              <div className="space-y-1.5 border-b border-[var(--color-border)] px-4 py-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[0.75rem] text-[var(--color-text-muted)]">直播间</span>
+                  <span className="truncate font-mono text-[0.75rem] font-semibold
+                                   text-[var(--color-text)]">
                     {ls?.roomTitle || ls?.liveUrl || "未解析"}
                   </span>
                 </div>
-                <div className="head-row">
-                  <span style={{ fontSize: 12, color: "var(--muted)" }}>在线人数</span>
-                  <span className="mono" style={{ fontSize: 12 }}>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[0.75rem] text-[var(--color-text-muted)]">在线人数</span>
+                  <span className="font-mono text-[0.75rem] text-[var(--color-text)]">
                     {online ? online.toLocaleString() : "—"}
                   </span>
                 </div>
               </div>
-              <div className="grid cols-2" style={{ padding: "10px 16px", gap: 8 }}>
-                <div className="card stat" style={{ padding: "8px 10px" }}>
-                  <span className="label" style={{ fontSize: 11 }}>
-                    弹幕
-                  </span>
-                  <span className="num" style={{ fontSize: 18 }}>
+
+              <div className="grid grid-cols-2 gap-2 px-4 py-2.5">
+                <div className="rounded-[var(--radius-sm)] border border-[var(--color-border)]
+                                bg-[var(--color-surface)] px-2.5 py-2">
+                  <div className="text-[0.68rem] text-[var(--color-text-muted)]">弹幕</div>
+                  <div className="font-mono text-[1.1rem] tabular-nums text-[var(--color-text)]">
                     {rows.length.toLocaleString()}
-                  </span>
+                  </div>
                 </div>
-                <div className="card stat" style={{ padding: "8px 10px" }}>
-                  <span className="label" style={{ fontSize: 11 }}>
-                    已私信
-                  </span>
-                  <span className="num" style={{ fontSize: 18 }}>
+                <div className="rounded-[var(--radius-sm)] border border-[var(--color-border)]
+                                bg-[var(--color-surface)] px-2.5 py-2">
+                  <div className="text-[0.68rem] text-[var(--color-text-muted)]">已私信</div>
+                  <div className="font-mono text-[1.1rem] tabular-nums text-[var(--color-text)]">
                     {sentCount}
-                  </span>
+                  </div>
                 </div>
               </div>
-              <div style={{ padding: "10px 16px", borderTop: "1px solid var(--border)" }}>
-                <div className="head-row" style={{ marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600 }}>
+
+              <div className="border-t border-[var(--color-border)] px-4 py-2.5">
+                <div className="mb-1.5 flex items-center justify-between gap-3">
+                  <span className="text-[0.75rem] font-semibold text-[var(--color-text)]">
                     房间热度
                   </span>
-                  <span className="mono" style={{ fontSize: 12, color: "var(--accent)" }}>
+                  <span className="font-mono text-[0.75rem] text-[var(--color-accent)]">
                     {online ? online.toLocaleString() : 0} 人
                   </span>
                 </div>
-                <div style={{ height: 60 }}>{heatChart(heat.length ? heat : [0], 400, 60)}</div>
+                <div className="h-[60px]">{heatChart(heat.length ? heat : [0], 400, 60)}</div>
               </div>
-              <div
-                style={{
-                  padding: "10px 16px",
-                  borderTop: "1px solid var(--border)",
-                  maxHeight: 120,
-                  overflow: "auto",
-                }}
-              >
+
+              <div className="max-h-[120px] overflow-auto border-t border-[var(--color-border)]
+                              px-4 py-2.5">
                 {feed.slice(0, 5).map((f) => (
-                  <div className="feed-item" key={f.id} style={{ padding: "3px 0" }}>
-                    <span className="tm" style={{ fontSize: 10 }}>
+                  <div
+                    key={f.id}
+                    className="flex items-baseline gap-2.5 rounded-[var(--radius-sm)] px-2 py-[3px]
+                               transition-colors hover:bg-[var(--color-surface-raised)]"
+                  >
+                    <span className="w-[52px] shrink-0 font-mono text-[0.62rem] tabular-nums
+                                     text-[var(--color-text-muted)]">
                       {f.t}
                     </span>
-                    <span className={"kind k-" + f.k} style={{ fontSize: 10 }}>
+                    <span className="w-[34px] shrink-0 font-mono text-[0.62rem]
+                                     tracking-[0.04em] text-[var(--color-text-secondary)]">
                       {KIND_NAME[f.k] || f.k}
                     </span>
-                    <span className="txt" style={{ fontSize: 11 }}>
-                      <b>{f.n}</b> {f.x}
+                    <span className="min-w-0 truncate text-[0.68rem] text-[var(--color-text-secondary)]">
+                      <b className="font-semibold text-[var(--color-text)]">{f.n}</b> {f.x}
                     </span>
                   </div>
                 ))}
                 {feed.length === 0 && (
-                  <div
-                    style={{
-                      padding: "10px 0",
-                      color: "var(--muted)",
-                      fontSize: 11,
-                      textAlign: "center",
-                    }}
-                  >
+                  <div className="py-2.5 text-center text-[0.68rem] text-[var(--color-text-muted)]">
                     暂无实时信息
                   </div>
                 )}
               </div>
-              <div
-                style={{
-                  padding: "8px 16px",
-                  borderTop: "1px solid var(--border)",
-                  display: "flex",
-                  gap: 6,
-                }}
-              >
-                <button
-                  className="btn sm ghost"
-                  style={{ flex: 1 }}
+
+              <div className="flex gap-1.5 border-t border-[var(--color-border)] px-4 py-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="flex-1"
                   onClick={() => {
                     setViewMode("single");
                     setActiveAcct(acct.name);
@@ -975,75 +1035,80 @@ export default function LivePage(props: PageProps) {
                   }}
                 >
                   进入监听
-                </button>
-                <button
-                  className="btn sm ghost"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => push("已导出 " + acct.name + " 数据")}
                 >
                   导出
-                </button>
+                </Button>
               </div>
-            </div>
+            </Card>
           ))}
           {realAccts.length === 0 && (
-            <div
-              className="card"
-              style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}
-            >
-              <div style={{ fontSize: 26, marginBottom: 8 }}>👥</div>
-              暂无已授权账号 · 请到「账号管理」添加并完成扫码
-            </div>
+            <Card className="md:col-span-2">
+              <CardContent className="p-0">
+                <EmptyState
+                  icon={<Users className="h-6 w-6" />}
+                  title="暂无已授权账号"
+                  description="请到「账号管理」添加账号并完成扫码授权。"
+                />
+              </CardContent>
+            </Card>
           )}
         </div>
       ) : (
         <>
-          <div className="card" style={{ marginBottom: 14 }} data-od-id="live-acct-select">
-            <div className="head-row">
-              <span style={{ fontSize: 13, fontWeight: 600 }}>当前监听账号</span>
-              <div style={{ flex: 1 }} />
-              <div className="seg">
-                {realAccts.map((a) => (
-                  <button
-                    key={a.name}
-                    className={activeAcct === a.name ? "active" : ""}
-                    onClick={() => {
-                      setActiveAcct(a.name);
-                      push("已切换到 " + a.name);
+          <Section
+            className="mb-3.5"
+            data-od-id="live-acct-select"
+            title="当前监听账号"
+            description="多账号时需手动选择一个；引擎启动前会校验凭证有效性"
+            actions={
+              <>
+                {realAccts.length > 0 ? (
+                  <SegmentedTabs
+                    value={activeAcct || ""}
+                    onChange={(v) => {
+                      setActiveAcct(v);
+                      push("已切换到 " + v);
                     }}
-                  >
-                    {/* 2026-09-10：切换按钮头像 logo 删除，只留账号名 */}
-                    {a.name}
-                  </button>
-                ))}
-                {realAccts.length === 0 && (
-                  <span className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
+                    items={realAccts.map((a) => ({ value: a.name, label: a.name }))}
+                  />
+                ) : (
+                  <span className="font-mono text-[0.75rem] text-[var(--color-text-muted)]">
                     无已授权账号
                   </span>
                 )}
                 {realAccts.length > 1 && !activeAcct && (
-                  <span
-                    className="mono"
-                    style={{ fontSize: 12, color: "var(--warn)", marginLeft: 8 }}
-                  >
+                  <span className="font-mono text-[0.75rem] text-[var(--color-warning)]">
                     有多个账号，请手动选择一个
                   </span>
                 )}
-              </div>
+              </>
+            }
+          >
+            <div className="text-[0.75rem] text-[var(--color-text-muted)]">
+              当前选择：
+              <span className="font-mono text-[var(--color-text)]">
+                {activeAcct || "（未选择）"}
+              </span>
             </div>
-          </div>
+          </Section>
 
-          <div className="card" style={{ marginBottom: 14 }} data-od-id="live-input">
-            <div className="searchbar" style={{ marginBottom: 0 }}>
-              <input
-                className="input"
-                style={{ flex: 1, fontFamily: "var(--font-mono)" }}
+          <Section className="mb-3.5" data-od-id="live-input">
+            <Toolbar>
+              <Input
+                className="min-w-[200px] flex-1 font-mono"
                 value={room}
                 onChange={(e) => setRoom(e.target.value)}
                 placeholder="直播间 URL 或 room_id"
                 aria-label="直播间地址"
               />
-              <button
-                className="btn ghost"
+              <Button
+                variant="ghost"
+                size="sm"
                 data-od-id="live-parse"
                 onClick={() => {
                   const u = room.trim();
@@ -1065,10 +1130,11 @@ export default function LivePage(props: PageProps) {
                     .catch((e: unknown) => push("解析异常: " + errMsg(e)));
                 }}
               >
-                解析房间号
-              </button>
-              <button
-                className="btn ghost"
+                <SearchIcon className="h-3.5 w-3.5" />解析房间号
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 data-od-id="live-linkmic"
                 disabled={linkMicBusy || !activeAcct}
                 title="对当前直播间发起连麦申请（经账号浏览器执行）"
@@ -1100,30 +1166,31 @@ export default function LivePage(props: PageProps) {
                     .finally(() => setLinkMicBusy(false));
                 }}
               >
+                <Mic className="h-3.5 w-3.5" />
                 {linkMicBusy ? "申请中…" : "申请连麦"}
-              </button>
-              <button
-                className="btn ghost"
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 data-od-id="live-room-configs"
                 title="按直播间号管理配置（含自动申请连麦）"
                 onClick={() => setCfgMgr(true)}
               >
-                直播间配置管理
-              </button>
+                <Settings2 className="h-3.5 w-3.5" />直播间配置管理
+              </Button>
               {ready && !!cfgLiveUrl && room !== cfgLiveUrl && (
-                <button className="btn ghost" onClick={() => setRoom(cfgLiveUrl)}>
+                <Button variant="ghost" size="sm" onClick={() => setRoom(cfgLiveUrl)}>
                   填入已配置
-                </button>
+                </Button>
               )}
               {!ready && (
-                <span className="mono" style={{ fontSize: 12, color: "var(--warn)" }}>
+                <span className="font-mono text-[0.75rem] text-[var(--color-warning)]">
                   backend not connected - cannot listen
                 </span>
               )}
               {ready && (
                 <>
-                  <button
-                    className="btn primary"
+                  <Button
                     data-od-id="live-start"
                     disabled={engineBusy || (realAccts.length > 1 && !activeAcct)}
                     onClick={() => {
@@ -1168,10 +1235,11 @@ export default function LivePage(props: PageProps) {
                         .catch((e: unknown) => push("启动异常: " + errMsg(e)));
                     }}
                   >
-                    开始自动私信
-                  </button>
-                  <button
-                    className="btn ghost"
+                    <Play className="h-3.5 w-3.5" />开始自动私信
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     data-od-id="live-pause"
                     disabled={engineState !== "running"}
                     onClick={() =>
@@ -1181,10 +1249,11 @@ export default function LivePage(props: PageProps) {
                         .catch((e: unknown) => push("暂停异常: " + errMsg(e)))
                     }
                   >
-                    暂停
-                  </button>
-                  <button
-                    className="btn ghost"
+                    <Pause className="h-3.5 w-3.5" />暂停
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     data-od-id="live-resume"
                     disabled={engineState !== "paused"}
                     onClick={() =>
@@ -1194,10 +1263,11 @@ export default function LivePage(props: PageProps) {
                         .catch((e: unknown) => push("继续异常: " + errMsg(e)))
                     }
                   >
-                    继续
-                  </button>
-                  <button
-                    className="btn ghost danger"
+                    <Play className="h-3.5 w-3.5" />继续
+                  </Button>
+                  <Button
+                    variant="danger-outline"
+                    size="sm"
                     data-od-id="live-stop"
                     disabled={!engineBusy}
                     onClick={() =>
@@ -1207,109 +1277,90 @@ export default function LivePage(props: PageProps) {
                         .catch((e: unknown) => push("停止异常: " + errMsg(e)))
                     }
                   >
-                    停止监听
-                  </button>
+                    <Square className="h-3.5 w-3.5" />停止监听
+                  </Button>
                 </>
               )}
-            </div>
-            <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 6 }}>
+            </Toolbar>
+            <div className="mt-1.5 text-[0.72rem] text-[var(--color-text-muted)]">
               {ready
                 ? engineBusy
                   ? "引擎运行中" + (streaming ? "（真实监听）" : `（${ls?.statusMsg || "等待开播"}）`)
                   : "引擎未运行 · 配置后点「开始自动私信」"
                 : "未连接后端 · 请先确保后端已启动"}
             </div>
-          </div>
+          </Section>
 
-          <div className="card" style={{ marginBottom: 14 }} data-od-id="live-auto-dm">
-            <AiReplyCard push={push} />
-            <h3>自动私信配置</h3>
-            <div className="grid cols-3" style={{ marginBottom: 14 }}>
-              <div className="field">
-                <label>发送上限</label>
-                <input
-                  className="input"
+          <AiReplyCard push={push} />
+
+          <Section className="mb-3.5" data-od-id="live-auto-dm" title="自动私信配置">
+            <div className="mb-3.5 grid grid-cols-1 gap-3.5 md:grid-cols-3">
+              <FormField label="发送上限" hint="每场直播最多发送私信条数">
+                <Input
                   type="number"
                   min="1"
                   max="100"
                   value={dmLimit}
                   onChange={(e) => setDmLimit(e.target.value)}
-                  style={{ width: "100%", fontFamily: "var(--font-mono)" }}
+                  className="font-mono"
                   aria-label="每场最多发送私信条数"
                 />
-                <span className="hint">每场直播最多发送私信条数</span>
-              </div>
-              <div className="field">
-                <label>间隔（秒）</label>
-                <input
-                  className="input"
+              </FormField>
+              <FormField label="间隔（秒）" hint="两条私信之间的等待时间">
+                <Input
                   type="number"
                   min="1"
                   step="0.1"
                   value={dmInterval}
                   onChange={(e) => setDmInterval(e.target.value)}
-                  style={{ width: "100%", fontFamily: "var(--font-mono)" }}
+                  className="font-mono"
                   aria-label="两条私信之间的间隔秒数"
                 />
-                <span className="hint">两条私信之间的等待时间</span>
-              </div>
-              <div className="field">
-                <label>延迟抖动（秒）</label>
-                <input
-                  className="input"
+              </FormField>
+              <FormField label="延迟抖动（秒）" hint="格式：50,120 = 随机区间；60 = 固定延迟">
+                <Input
                   value={dmJitter}
                   onChange={(e) => setDmJitter(e.target.value)}
-                  style={{ width: "100%", fontFamily: "var(--font-mono)" }}
+                  className="font-mono"
                   aria-label="延迟抖动区间"
                 />
-                <span className="hint">格式：50,120 = 随机区间；60 = 固定延迟</span>
-              </div>
+              </FormField>
             </div>
 
-            <label className="head-row" style={{ gap: 8, marginBottom: 12, fontSize: 12 }}>
-              <span className="switch" style={{ flex: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={forceRescan}
-                  onChange={(e) => setForceRescan(e.target.checked)}
-                  aria-label="强制重扫"
-                />
-                <i />
-              </span>
-              <span style={{ color: "var(--muted)" }}>
+            <div className="mb-3 flex items-center gap-2 text-[0.76rem]">
+              <Switch
+                checked={forceRescan}
+                onCheckedChange={setForceRescan}
+                aria-label="强制重扫"
+              />
+              <span className="text-[var(--color-text-muted)]">
                 强制重扫（忽略已处理记录，重新匹配私信目标）
               </span>
-            </label>
+            </div>
 
             <div>
-              <div className="head-row" style={{ marginBottom: 10 }}>
-                <h3 style={{ marginBottom: 0 }}>私信词库</h3>
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>
+              <Toolbar className="mb-2.5">
+                <span className="text-[0.88rem] font-semibold text-[var(--color-text)]">
+                  私信词库
+                </span>
+                <span className="text-[0.75rem] text-[var(--color-text-muted)]">
                   每行一条，勾选 = 启用，发送时随机抽已启用的一条
                 </span>
-              </div>
-              <div
-                style={{ display: "flex", flexDirection: "column", gap: 8 }}
-                data-od-id="dm-templates"
-              >
+              </Toolbar>
+              <div className="flex flex-col gap-2" data-od-id="dm-templates">
                 {dmTemplates.map((t, i) => (
-                  <div key={i} className="head-row" style={{ gap: 10 }}>
-                    <span className="switch" style={{ flex: "none" }}>
-                      <input
-                        type="checkbox"
-                        checked={t.enabled}
-                        onChange={(e) => {
-                          const next = [...dmTemplates];
-                          next[i] = { ...next[i], enabled: e.target.checked };
-                          setDmTemplates(next);
-                        }}
-                        aria-label={"启用模板 " + (i + 1)}
-                      />
-                      <i />
-                    </span>
-                    <input
-                      className="input"
-                      style={{ flex: 1 }}
+                  <div key={i} className="flex items-center gap-2.5">
+                    <Switch
+                      checked={t.enabled}
+                      onCheckedChange={(v) => {
+                        const next = [...dmTemplates];
+                        next[i] = { ...next[i], enabled: v };
+                        setDmTemplates(next);
+                      }}
+                      aria-label={"启用模板 " + (i + 1)}
+                    />
+                    <Input
+                      className="flex-1"
                       value={t.text}
                       onChange={(e) => {
                         const next = [...dmTemplates];
@@ -1321,40 +1372,44 @@ export default function LivePage(props: PageProps) {
                   </div>
                 ))}
               </div>
-              <div className="head-row" style={{ marginTop: 10, gap: 8 }}>
-                <button
-                  className="btn sm ghost"
+              <Toolbar className="mt-2.5">
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => setDmTemplates(dmTemplates.map((t) => ({ ...t, enabled: true })))}
                 >
                   全选
-                </button>
-                <button
-                  className="btn sm ghost"
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() =>
                     setDmTemplates(dmTemplates.map((t) => ({ ...t, enabled: false })))
                   }
                 >
                   全不选
-                </button>
-                <button
-                  className="btn sm ghost"
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => setDmTemplates([...dmTemplates, { text: "", enabled: true }])}
                 >
                   添加一条
-                </button>
-                <button
-                  className="btn sm ghost"
+                </Button>
+                <Button
+                  variant="danger-outline"
+                  size="sm"
                   onClick={() => setDmTemplates(dmTemplates.filter((t) => t.enabled))}
                 >
                   删除选中
-                </button>
-                <span className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                </Button>
+                <span className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
                   已启用 {dmTemplates.filter((t) => t.enabled).length} / {dmTemplates.length} 条
                 </span>
                 {ready && (
                   <>
-                    <button
-                      className="btn sm primary"
+                    <Button
+                      size="sm"
                       onClick={() =>
                         api
                           .saveDmPool(
@@ -1369,9 +1424,10 @@ export default function LivePage(props: PageProps) {
                       }
                     >
                       保存词库
-                    </button>
-                    <button
-                      className="btn sm ghost"
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() =>
                         api
                           .saveConfig({
@@ -1386,79 +1442,100 @@ export default function LivePage(props: PageProps) {
                       }
                     >
                       保存配置
-                    </button>
+                    </Button>
                   </>
                 )}
-              </div>
+              </Toolbar>
             </div>
-          </div>
+          </Section>
 
-          <div className="live-layout" style={{ marginBottom: 14 }}>
-            <div className="card" data-od-id="live-feed">
-              <h3>
-                <span>
-                  实时信息流{" "}
-                  <span className="mono" style={{ color: "var(--accent)", fontWeight: 400 }}>
-                    {KIND_NAME.danmaku} / {KIND_NAME.gift} / {KIND_NAME.enter}
-                  </span>
+          <div className="mb-3.5 grid grid-cols-1 gap-3.5 lg:grid-cols-2">
+            <Section
+              data-od-id="live-feed"
+              title="实时信息流"
+              description={`${KIND_NAME.danmaku} / ${KIND_NAME.gift} / ${KIND_NAME.enter}`}
+              actions={
+                <span className="font-mono text-[0.8rem] text-[var(--color-text-secondary)]">
+                  <Heart className="mr-1 inline h-3.5 w-3.5 text-[var(--color-danger)]" />
+                  {roomLikes.toLocaleString()}
                 </span>
-                <span className="mono like-total">♥ {roomLikes.toLocaleString()}</span>
-              </h3>
-              <div className="feed" style={{ maxHeight: 236 }}>
+              }
+            >
+              <div className="flex max-h-[236px] flex-col gap-0.5 overflow-y-auto">
                 {feed.map((f) => (
-                  <div className="feed-item" key={f.id}>
-                    <span className="tm">{f.t}</span>
-                    <span className={"kind k-" + f.k}>{KIND_NAME[f.k] || f.k}</span>
-                    <span className="txt">
-                      <b>{f.n}</b>　{f.x}
+                  <div
+                    key={f.id}
+                    className="flex items-baseline gap-2.5 rounded-[var(--radius-sm)] px-2 py-[7px]
+                               transition-colors hover:bg-[var(--color-surface-raised)]"
+                  >
+                    <span className="w-[52px] shrink-0 font-mono text-[0.72rem] tabular-nums
+                                     text-[var(--color-text-muted)]">
+                      {f.t}
                     </span>
-                    {f.l > 0 && <span className="lv">Lv.{f.l}</span>}
+                    <span className="w-[34px] shrink-0 font-mono text-[0.7rem]
+                                     tracking-[0.04em] text-[var(--color-text-secondary)]">
+                      {KIND_NAME[f.k] || f.k}
+                    </span>
+                    <span className="min-w-0 truncate text-[0.82rem] text-[var(--color-text-secondary)]">
+                      <b className="font-semibold text-[var(--color-text)]">{f.n}</b>　{f.x}
+                    </span>
+                    {f.l > 0 && (
+                      <span className="shrink-0 font-mono text-[0.7rem] text-[var(--color-warning)]">
+                        Lv.{f.l}
+                      </span>
+                    )}
                   </div>
                 ))}
                 {feed.length === 0 && (
-                  <div
-                    style={{
-                      padding: "28px 12px",
-                      textAlign: "center",
-                      color: "var(--muted)",
-                      fontSize: 12,
-                    }}
-                  >
+                  <div className="px-3 py-7 text-center text-[0.75rem] text-[var(--color-text-muted)]">
                     暂无实时信息 · 引擎运行后自动展示弹幕 / 礼物 / 进场 / 点赞 / 关注
                   </div>
                 )}
               </div>
-              <div
-                className="head-row"
-                style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}
-              >
-                <input
-                  className="input"
-                  style={{ flex: 1 }}
+
+              <Toolbar className="mt-3 border-t border-[var(--color-border)] pt-3">
+                <Input
+                  className="min-w-[160px] flex-1"
                   placeholder="发送弹幕到直播间…"
                   value={dmDraft}
                   onChange={(e) => setDmDraft(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendDanmaku()}
                 />
-                <button className="btn ghost" data-od-id="live-send-danmaku" onClick={sendDanmaku}>
-                  发送
-                </button>
-                <button className="btn ghost like-btn" data-od-id="live-like" onClick={doLike}>
-                  ♥ 点赞
-                  {myLikes > 0 && <span className="like-cnt">×{myLikes}</span>}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="live-send-danmaku"
+                  onClick={sendDanmaku}
+                >
+                  <Send className="h-3.5 w-3.5" />发送
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="live-like"
+                  onClick={doLike}
+                >
+                  <Heart className="h-3.5 w-3.5" />点赞
+                  {myLikes > 0 && (
+                    <span className="font-mono text-[0.7rem] text-[var(--color-text-muted)]">
+                      ×{myLikes}
+                    </span>
+                  )}
                   {burst > 0 && (
-                    <span className="burst" key={myLikes}>
+                    <span key={myLikes} className="font-mono text-[0.7rem]
+                                                   text-[var(--color-success)]">
                       +{burst}
                     </span>
                   )}
-                </button>
-              </div>
-              <div className="head-row batch-row" data-od-id="live-batch-like">
-                <span className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
+                </Button>
+              </Toolbar>
+
+              <Toolbar className="mt-2" data-od-id="live-batch-like">
+                <span className="font-mono text-[0.75rem] text-[var(--color-text-muted)]">
                   批量点赞
                 </span>
-                <input
-                  className="input batch-input"
+                <Input
+                  className="h-8 w-[100px]"
                   type="number"
                   min="1"
                   max="1000"
@@ -1467,108 +1544,126 @@ export default function LivePage(props: PageProps) {
                   onChange={(e) => setBatchN(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && doBatch()}
                 />
-                <button className="btn ghost" onClick={doBatch}>
+                <Button variant="ghost" size="sm" onClick={doBatch}>
                   批量点赞
-                </button>
-                <span className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                </Button>
+                <span className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
                   每次按输入数量执行，上限 1000
                 </span>
+              </Toolbar>
+            </Section>
+
+            <Section
+              data-od-id="heat-chart"
+              title="房间热度"
+              description={`${
+                heat.length
+                  ? heat[heat.length - 1].toLocaleString()
+                  : online
+                    ? online.toLocaleString()
+                    : 0
+              } 人在线`}
+            >
+              <div className="relative [&_svg]:block [&_svg]:w-full">
+                {heatChart(heat)}
               </div>
-            </div>
-            <div className="card" data-od-id="heat-chart">
-              <h3>
-                房间热度{" "}
-                <span className="mono" style={{ color: "var(--accent)", fontWeight: 400 }}>
-                  {heat.length
-                    ? heat[heat.length - 1].toLocaleString()
-                    : online
-                      ? online.toLocaleString()
-                      : 0}{" "}
-                  人在线
-                </span>
-              </h3>
-              <div className="chart-wrap">{heatChart(heat)}</div>
-            </div>
+            </Section>
           </div>
 
-          <div className="card" data-od-id="comment-stats">
-            <div className="table-tools">
-              <div style={{ flex: 1, minWidth: 240 }}>
-                <h3 style={{ marginBottom: 0 }}>实时评论统计列表</h3>
-              </div>
-<button className="btn ghost" data-od-id="review-open" onClick={openReview}>
-                  进入查阅模式
-                </button>
+          <Section
+            data-od-id="comment-stats"
+            title="实时评论统计列表"
+            actions={
+              <Button variant="ghost" size="sm" data-od-id="review-open" onClick={openReview}>
+                <Eye className="h-3.5 w-3.5" />进入查阅模式
+              </Button>
+            }
+          >
+            <div className="mb-2.5 text-[0.75rem] text-[var(--color-text-muted)]">
+              共 <b className="font-mono font-semibold text-[var(--color-text)]">{rows.length}</b> 条弹幕记录 · 去重{" "}
+              <b className="font-mono font-semibold text-[var(--color-text)]">{dedupCount}</b> 条 · 实际发言{" "}
+              <b className="font-mono font-semibold text-[var(--color-text)]">{dedup}</b> 人 · 待发送私信{" "}
+              <b className="font-mono font-semibold text-[var(--color-text)]">{waitCount}</b> 条 · 已发送私信{" "}
+              <b className="font-mono font-semibold text-[var(--color-text)]">{sentCount}</b> 条
             </div>
-            <div className="count-line">
-              共 <b>{rows.length}</b> 条弹幕记录 · 去重 <b>{dedupCount}</b> 条 · 实际发言{" "}
-              <b>{dedup}</b> 人 · 待发送私信 <b>{waitCount}</b> 条 · 已发送私信{" "}
-              <b>{sentCount}</b> 条
-            </div>
-            <div className="table-scroll">
-              <table className="comment-table">
+            <div className="-mx-4 -mb-4 overflow-x-auto">
+              <table className="w-full border-collapse">
                 <thead>
                   <tr>
-                    <th>发送时间</th>
-                    <th>发言人</th>
-                    <th>评论内容</th>
-                    <th>私信状态</th>
-                    <th>私信文案</th>
-                    <th>私信时间</th>
+                    <Th>发送时间</Th>
+                    <Th>发言人</Th>
+                    <Th>评论内容</Th>
+                    <Th>私信状态</Th>
+                    <Th>私信文案</Th>
+                    <Th>私信时间</Th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.length === 0 && (
                     <tr>
-                      <td
-                        colSpan={6}
-                        style={{
-                          padding: "30px 12px",
-                          textAlign: "center",
-                          color: "var(--muted)",
-                          fontSize: 13,
-                        }}
-                      >
-                        <div style={{ fontSize: 24, marginBottom: 6 }}>📭</div>
-                        暂无评论记录 · 引擎运行后自动捕获
-                      </td>
+                      <Td colSpan={6}>
+                        <Blank>
+                          <span className="text-[1.4rem]">📭</span>
+                          暂无评论记录 · 引擎运行后自动捕获
+                        </Blank>
+                      </Td>
                     </tr>
                   )}
                   {rows.slice(0, 12).map((r) => (
-                    <tr key={r.id}>
-                      <td className="mono">{r.time}</td>
-                      <td>
-                        <span className="speaker">
+                    <tr key={r.id} className="transition-colors
+                                              hover:bg-[var(--color-surface-raised)]">
+                      <Td mono className="whitespace-nowrap">{r.time}</Td>
+                      <Td>
+                        <span className="inline-flex items-center gap-2">
                           <Avatar name={r.name} h={hue(r.name.length)} sm />
-                          <span className="nm">{r.name}</span>
-                          {r.lv < 99 && <span className="lv">Lv.{r.lv}</span>}
+                          <span className="whitespace-nowrap font-medium">{r.name}</span>
+                          {r.lv < 99 && (
+                            <span className="rounded-[4px] border
+                                             border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]
+                                             px-1 font-mono text-[0.66rem]
+                                             text-[var(--color-warning)]">
+                              Lv.{r.lv}
+                            </span>
+                          )}
                         </span>
-                      </td>
-                      <td className="content-cell" title={r.content}>
-                        <span className="cmt-text">{r.content}</span>
-                      </td>
-                      <td>
+                      </Td>
+                      <Td className="max-w-[260px]" title={r.content}>
+                        <span className="block truncate">{r.content}</span>
+                      </Td>
+                      <Td>
                         {r.dmStatus === "un" ? (
-                          <span className="blank">—</span>
+                          <span className="text-[var(--color-text-muted)]">—</span>
                         ) : (
-                          <Pill c={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Pill>
+                          <Tone tone={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Tone>
                         )}
-                      </td>
-                      <td className="dm-cell">
+                      </Td>
+                      <Td
+                        title={
+                          r.dmStatus === "fail" && r.reason
+                            ? `${r.dmText}\n失败原因: ${r.reason}`
+                            : r.dmText
+                        }
+                      >
                         <span
-                          className={"dm-text" + (r.dmText ? " has" : "")}
-                          title={r.dmStatus === "fail" && r.reason ? `${r.dmText}\n失败原因: ${r.reason}` : r.dmText}
+                          className={cn(
+                            "block truncate",
+                            r.dmText
+                              ? "text-[var(--color-text)]"
+                              : "text-[var(--color-text-muted)]"
+                          )}
                         >
-                          {r.dmText || <span className="blank">未发送</span>}
+                          {r.dmText || "未发送"}
                         </span>
-                      </td>
-                      <td className="mono">{r.dmTime || <span className="blank">—</span>}</td>
+                      </Td>
+                      <Td mono className="whitespace-nowrap">
+                        {r.dmTime || <span className="text-[var(--color-text-muted)]">—</span>}
+                      </Td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </div>
+          </Section>
         </>
       )}
 
@@ -1587,7 +1682,7 @@ export default function LivePage(props: PageProps) {
           />
         )}
       </AnimatePresence>
-    </div>
+    </PageContainer>
   );
 }
 
@@ -1658,231 +1753,268 @@ function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
 
   return (
     <motion.div
-      className="overlay"
+      className="fixed inset-0 z-[60] flex flex-col bg-[var(--color-background)]"
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
       data-od-id="live-review"
     >
-      <div className="overlay-head">
-        <button className="btn ghost" data-od-id="review-back" onClick={onClose}>
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b
+                      border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-3.5">
+        <Button variant="ghost" size="sm" data-od-id="review-back" onClick={onClose}>
           ‹ 返回实时流
-        </button>
-        <h2>评论查阅模式</h2>
-        <div style={{ flex: 1 }} />
-        <span className="demo-tag">只读 · 实时入库</span>
+        </Button>
+        <h2 className="text-[0.95rem] font-semibold text-[var(--color-text)]">评论查阅模式</h2>
+        <div className="min-w-0 flex-1" />
+        <Badge variant="outline">只读 · 实时入库</Badge>
       </div>
-      <div className="overlay-body">
-        <div className="table-tools">
-          <input
-            className="input"
-            placeholder="搜索昵称 / 评论内容 / 私信文案…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <select
-            className="select"
-            value={st}
-            onChange={(e) => setSt(e.target.value as "all" | DmStatus)}
-            aria-label="私信状态筛选"
-          >
-            <option value="all">全部状态</option>
-            <option value="un">未私信</option>
-            <option value="wait">待发送</option>
-            <option value="sent">已发送</option>
-            <option value="fail">发送失败</option>
-          </select>
-          <button className="btn ghost" onClick={() => setAsc((s) => !s)}>
-            {asc ? "时间 ↑" : "时间 ↓"}
-          </button>
-          <button
-            className="btn ghost"
-            onClick={() => {
-              setSt("all");
-              setQ("");
-            }}
-          >
-            重置
-          </button>
-          <button className="btn primary" data-od-id="review-export" onClick={exportCSV}>
-            导出 CSV
-          </button>
-        </div>
-        <div className="count-line">
-          共 <b>{filtered.length}</b> 条 ·{" "}
-          <span
-            className="filter-pills"
-            style={{ display: "inline-flex", marginLeft: 10, verticalAlign: "middle" }}
-          >
-            {pills.map(([id, l, c]) => (
-              <button
-                key={id}
-                className={"fpill" + (st === id ? " active" : "")}
-                onClick={() => setSt(id as "all" | DmStatus)}
-              >
-                {l}
-                <span className="c">{c}</span>
-              </button>
-            ))}
-          </span>
-        </div>
-        <div className="card" style={{ padding: 0 }}>
-          <div className="table-scroll">
-            <table className="comment-table">
-              <thead>
-                <tr>
-                  <th style={{ width: 30 }} />
-                  <th>发送时间</th>
-                  <th>发言人</th>
-                  <th>评论内容</th>
-                  <th>私信状态</th>
-                  <th>私信文案</th>
-                  <th>私信时间</th>
-                  <th style={{ width: 150 }}>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((r) => (
-                  <Fragment key={r.id}>
-                    <tr>
-                      <td>
-                        <span className="mono" style={{ color: "var(--muted)" }}>
-                          {exp === r.id ? "▾" : "▸"}
-                        </span>
-                      </td>
-                      <td className="mono">{r.time}</td>
-                      <td>
-                        <span className="speaker">
-                          <Avatar name={r.name} h={hue(r.name.length)} sm />
-                          <span className="nm">{r.name}</span>
-                          {r.lv < 99 && <span className="lv">Lv.{r.lv}</span>}
-                        </span>
-                      </td>
-                      <td className="content-cell">
-                        <span className="cmt-text">{r.content}</span>
-                      </td>
-                      <td>
-                        {r.dmStatus === "un" ? (
-                          <span className="blank">—</span>
-                        ) : (
-                          <Pill c={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Pill>
-                        )}
-                      </td>
-                      <td className="dm-cell">
-                        <span
-                          className={"dm-text" + (r.dmText ? " has" : "")}
-                          title={r.dmStatus === "fail" && r.reason ? `${r.dmText}\n失败原因: ${r.reason}` : r.dmText}
-                        >
-                          {r.dmText || <span className="blank">未发送</span>}
-                        </span>
-                      </td>
-                      <td className="mono">{r.dmTime || <span className="blank">—</span>}</td>
-                      <td>
-                        <div className="head-row" style={{ gap: 6 }}>
-                          <button
-                            className="btn text sm"
-                            onClick={() => setExp(exp === r.id ? null : r.id)}
-                          >
-                            详情
-                          </button>
-                          <button className="btn text sm" onClick={() => sendDm(r)}>
-                            发私信
-                          </button>
-                          <button
-                            className="btn text sm"
-                            onClick={() => goMsg?.(r.name, r.dmText || "")}
-                          >
-                            去私信中心
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                    {exp === r.id && (
-                      <tr key={r.id + "-d"}>
-                        <td
-                          colSpan={8}
-                          style={{ padding: "6px 10px 14px", background: "var(--surface-2)" }}
-                        >
-                          <div className="detail-panel">
-                            <h4>发言历史 · {r.name}</h4>
-                            <div className="history-list">
-                              {rows
-                                .filter((x) => x.name === r.name)
-                                .slice(0, 5)
-                                .map((x, i) => (
-                                  <div className="history-item" key={i}>
-                                    <span className="tm">{x.time}</span>
-                                    <span>{x.content}</span>
-                                  </div>
-                                ))}
-                            </div>
-                            <h4>私信内容</h4>
-                            <div style={{ fontSize: 13 }}>
-                              {r.dmStatus === "un" ? (
-                                <span className="blank">尚未对该发言人发送私信</span>
-                              ) : (
-                                <span>
-                                  <Pill c={DM_META[r.dmStatus][1]}>
-                                    {DM_META[r.dmStatus][0]}
-                                  </Pill>
-                                  {"　"}
-                                  {r.dmText || "（文案未填写）"}
-                                  {r.dmTime ? "　·　" + r.dmTime : ""}
-                                </span>
-                              )}
-                              {r.dmStatus === "fail" && r.reason && (
-                                <div
-                                  onClick={() => setFailRow(r)}
-                                  title="点击查看失败原因详情与处理建议"
-                                  style={{
-                                    marginTop: 6,
-                                    padding: "6px 10px",
-                                    borderRadius: 6,
-                                    background: "var(--danger-bg)",
-                                    color: "var(--danger)",
-                                    fontSize: 12,
-                                    cursor: "pointer",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 8,
-                                  }}
-                                >
-                                  <span
-                                    style={{
-                                      padding: "1px 7px",
-                                      borderRadius: 999,
-                                      fontSize: 11,
-                                      fontWeight: 600,
-                                      color: "#fff",
-                                      background: failInfoOf(r).color,
-                                      flexShrink: 0,
-                                    }}
-                                  >
-                                    {failInfoOf(r).label}
-                                  </span>
-                                  <span
-                                    style={{
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}
-                                  >
-                                    {r.reason}
-                                  </span>
-                                  <span style={{ flexShrink: 0, opacity: 0.75 }}>详情 ›</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="mx-auto w-full max-w-[1680px] px-5 pb-10 pt-4.5">
+          <Toolbar className="mb-3">
+            <Input
+              className="min-w-[200px] flex-1"
+              placeholder="搜索昵称 / 评论内容 / 私信文案…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <Select
+              value={st}
+              onValueChange={(v) => setSt(v as "all" | DmStatus)}
+            >
+              <SelectTrigger className="h-8 w-[124px]" aria-label="私信状态筛选">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部状态</SelectItem>
+                <SelectItem value="un">未私信</SelectItem>
+                <SelectItem value="wait">待发送</SelectItem>
+                <SelectItem value="sent">已发送</SelectItem>
+                <SelectItem value="fail">发送失败</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="ghost" size="sm" onClick={() => setAsc((s) => !s)}>
+              <ArrowUpDown className="h-3.5 w-3.5" />
+              {asc ? "时间 ↑" : "时间 ↓"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSt("all");
+                setQ("");
+              }}
+            >
+              重置
+            </Button>
+            <Button size="sm" data-od-id="review-export" onClick={exportCSV}>
+              <Download className="h-3.5 w-3.5" />导出 CSV
+            </Button>
+          </Toolbar>
+
+          <div className="mb-2.5 flex flex-wrap items-center gap-2.5 text-[0.75rem]
+                          text-[var(--color-text-muted)]">
+            <span>
+              共 <b className="font-mono font-semibold text-[var(--color-text)]">
+                {filtered.length}
+              </b> 条
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {pills.map(([id, l, c]) => {
+                const on = st === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setSt(id as "all" | DmStatus)}
+                    className={cn(
+                      "inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1",
+                      "text-[0.75rem] transition-colors duration-200",
+                      on
+                        ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] " +
+                          "font-semibold text-[var(--color-accent)]"
+                        : "border-[var(--color-border)] bg-[var(--color-surface)] " +
+                          "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
                     )}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
+                  >
+                    {l}
+                    <span className="font-mono text-[0.68rem] opacity-80">{c}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
+
+          <Card className="overflow-hidden p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr>
+                    <Th width={30} />
+                    <Th>发送时间</Th>
+                    <Th>发言人</Th>
+                    <Th>评论内容</Th>
+                    <Th>私信状态</Th>
+                    <Th>私信文案</Th>
+                    <Th>私信时间</Th>
+                    <Th width={150}>操作</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((r) => (
+                    <Fragment key={r.id}>
+                      <tr className="transition-colors hover:bg-[var(--color-surface-raised)]">
+                        <Td>
+                          <span className="font-mono text-[var(--color-text-muted)]">
+                            {exp === r.id ? "▾" : "▸"}
+                          </span>
+                        </Td>
+                        <Td mono className="whitespace-nowrap">{r.time}</Td>
+                        <Td>
+                          <span className="inline-flex items-center gap-2">
+                            <Avatar name={r.name} h={hue(r.name.length)} sm />
+                            <span className="whitespace-nowrap font-medium">{r.name}</span>
+                            {r.lv < 99 && (
+                              <span className="rounded-[4px] border
+                                               border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]
+                                               px-1 font-mono text-[0.66rem]
+                                               text-[var(--color-warning)]">
+                                Lv.{r.lv}
+                              </span>
+                            )}
+                          </span>
+                        </Td>
+                        <Td className="max-w-[260px]">
+                          <span className="block truncate">{r.content}</span>
+                        </Td>
+                        <Td>
+                          {r.dmStatus === "un" ? (
+                            <span className="text-[var(--color-text-muted)]">—</span>
+                          ) : (
+                            <Tone tone={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Tone>
+                          )}
+                        </Td>
+                        <Td
+                          title={
+                            r.dmStatus === "fail" && r.reason
+                              ? `${r.dmText}\n失败原因: ${r.reason}`
+                              : r.dmText
+                          }
+                        >
+                          <span
+                            className={cn(
+                              "block truncate",
+                              r.dmText
+                                ? "text-[var(--color-text)]"
+                                : "text-[var(--color-text-muted)]"
+                            )}
+                          >
+                            {r.dmText || "未发送"}
+                          </span>
+                        </Td>
+                        <Td mono className="whitespace-nowrap">
+                          {r.dmTime || <span className="text-[var(--color-text-muted)]">—</span>}
+                        </Td>
+                        <Td>
+                          <Toolbar className="gap-1">
+                            <Button
+                              variant="link"
+                              size="sm"
+                              onClick={() => setExp(exp === r.id ? null : r.id)}
+                            >
+                              详情
+                            </Button>
+                            <Button variant="link" size="sm" onClick={() => sendDm(r)}>
+                              发私信
+                            </Button>
+                            <Button
+                              variant="link"
+                              size="sm"
+                              onClick={() => goMsg?.(r.name, r.dmText || "")}
+                            >
+                              去私信中心
+                            </Button>
+                          </Toolbar>
+                        </Td>
+                      </tr>
+                      {exp === r.id && (
+                        <tr key={r.id + "-d"}>
+                          <Td colSpan={8} className="bg-[var(--color-surface-raised)] pt-1.5 pb-3.5">
+                            <div className="my-2.5 rounded-[var(--radius-md)]
+                                            border border-[var(--color-border)]
+                                            bg-[var(--color-surface)] p-3.5">
+                              <h4 className="mb-2 text-[0.72rem] tracking-[0.06em]
+                                             text-[var(--color-text-muted)]">
+                                发言历史 · {r.name}
+                              </h4>
+                              <div className="mb-3 flex flex-col gap-1.5">
+                                {rows
+                                  .filter((x) => x.name === r.name)
+                                  .slice(0, 5)
+                                  .map((x, i) => (
+                                    <div key={i} className="flex items-baseline gap-2.5
+                                                             text-[0.78rem]">
+                                      <span className="shrink-0 font-mono text-[0.68rem]
+                                                       text-[var(--color-text-muted)]">
+                                        {x.time}
+                                      </span>
+                                      <span className="text-[var(--color-text)]">{x.content}</span>
+                                    </div>
+                                  ))}
+                              </div>
+                              <h4 className="mb-2 text-[0.72rem] tracking-[0.06em]
+                                             text-[var(--color-text-muted)]">
+                                私信内容
+                              </h4>
+                              <div className="text-[0.82rem] text-[var(--color-text)]">
+                                {r.dmStatus === "un" ? (
+                                  <span className="text-[var(--color-text-muted)]">
+                                    尚未对该发言人发送私信
+                                  </span>
+                                ) : (
+                                  <span>
+                                    <Tone tone={DM_META[r.dmStatus][1]}>
+                                      {DM_META[r.dmStatus][0]}
+                                    </Tone>
+                                    {"　"}
+                                    {r.dmText || "（文案未填写）"}
+                                    {r.dmTime ? "　·　" + r.dmTime : ""}
+                                  </span>
+                                )}
+                                {r.dmStatus === "fail" && r.reason && (
+                                  <div
+                                    onClick={() => setFailRow(r)}
+                                    title="点击查看失败原因详情与处理建议"
+                                    className="mt-1.5 flex cursor-pointer items-center gap-2
+                                               rounded-[var(--radius-sm)] border
+                                               border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)]
+                                               bg-[var(--color-danger-soft)] px-2.5 py-1.5
+                                               text-[0.75rem] text-[var(--color-danger)]"
+                                  >
+                                    <span
+                                      className="shrink-0 rounded-full px-1.5 py-px
+                                                 text-[0.68rem] font-semibold text-white"
+                                      style={{ background: failInfoOf(r).color }}
+                                    >
+                                      {failInfoOf(r).label}
+                                    </span>
+                                    <span className="min-w-0 flex-1 truncate">{r.reason}</span>
+                                    <span className="shrink-0 opacity-75">详情 ›</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </Td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {filtered.length === 0 && <Blank>无匹配记录</Blank>}
+          </Card>
         </div>
       </div>
       {/* 2026-09-08：私信发送失败原因弹窗（区分调度堵塞/凭证失效/风控等） */}

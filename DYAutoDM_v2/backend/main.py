@@ -637,6 +637,16 @@ try:
 except Exception as _e:  # noqa: BLE001
     logger.warning("NTY-005", f"[notify] 模块挂载失败（不影响主流程）: {_e}")
 
+# 平台内容面（推荐流/用户作品/点赞/收藏/关注/站内通知/评论，2026-09-14）
+#   把基座 dy_apis 已有的平台能力接成路由（对标 better-douyin 内容面）。
+#   风控：复用账号凭证被动签名；不做后台轮询；响应自带昵称直接用（不补查）。
+try:
+    from api import platform as platform_api
+
+    app.include_router(platform_api.router, prefix="/api/platform", tags=["platform"])
+except Exception as _e_plat:  # noqa: BLE001
+    logger.warning("PLT-013", f"[platform] 模块挂载失败（不影响主流程）: {_e_plat}")
+
 # MCP 服务（本机 HTTP + stdio 双入口，对标 better-douyin mcp.rs，2026-09-14）
 #   把既有业务能力（会话/消息读取、发送确认）按 READ/WRITE 分级暴露给 AI 客户端；
 #   只监听 127.0.0.1，Bearer 令牌 + 写操作确认闸。挂载失败降级而非崩溃。

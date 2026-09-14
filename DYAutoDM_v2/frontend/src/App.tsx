@@ -14,6 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, PageProps, ReviewPayload, ReusePayload } from "./api/client";
 import OverviewPage from "./pages/overview";
 import CrawlPage from "./pages/crawl";
+import PlatformPage from "./pages/platform";
 import LivePage from "./pages/live";
 import MessagesPage from "./pages/messages";
 import AiPage from "./pages/ai";
@@ -39,7 +40,7 @@ import { memberApi, getMemberToken } from "./api/client";
 const TITLE_OF = (t: TabId): string => {
   const all = [
     ["overview", "总览"], ["msg", "私信"], ["live", "直播"],
-    ["crawl", "采集"], ["ai", "AI 获客"], ["kb", "知识库"],
+    ["crawl", "采集"], ["platform", "内容"], ["ai", "AI 获客"], ["kb", "知识库"],
     ["accounts", "账号"], ["tasks", "任务"], ["notify", "通知"],
     ["logs", "日志"], ["settings", "设置"],
   ] as const;
@@ -458,6 +459,7 @@ export default function App() {
       >
         {tab === "overview" && <OverviewPage {...pageProps} />}
         {tab === "crawl" && <CrawlPage {...pageProps} />}
+        {tab === "platform" && <PlatformPage {...pageProps} />}
         {tab === "live" && <LivePage {...pageProps} />}
         {tab === "msg" && <MessagesPage {...pageProps} />}
         {tab === "ai" && <AiPage {...pageProps} />}

@@ -8,12 +8,12 @@ import { useState } from "react";
 import {
   LayoutDashboard, MessageSquare, Radio, Search, Bot, BookOpen,
   Users, ListChecks, Bell, ScrollText, Settings, PanelLeftClose,
-  PanelLeftOpen, ChevronDown,
+  PanelLeftOpen, ChevronDown, Compass,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type TabId =
-  | "overview" | "msg" | "live" | "crawl" | "ai" | "kb"
+  | "overview" | "msg" | "live" | "crawl" | "platform" | "ai" | "kb"
   | "accounts" | "tasks" | "notify" | "logs" | "settings";
 
 type NavItem = { id: TabId; label: string; icon: React.ElementType };
@@ -34,6 +34,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "内容",
     items: [
       { id: "crawl", label: "采集", icon: Search },
+      { id: "platform", label: "内容", icon: Compass },
       { id: "ai", label: "AI 获客", icon: Bot },
       { id: "kb", label: "知识库", icon: BookOpen },
     ],

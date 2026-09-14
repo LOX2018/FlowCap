@@ -1,21 +1,42 @@
 /**
- * AI 获客自动回复页（嵌入自 xyc667/douyin-auto-reply-assistant，2026-09-06）
+ * AI 获客自动回复页（重设计版 · 对标 better-douyin 设计体系）
  *
- * 结构（可收缩区块，同 settings.tsx 的 Collapsible 范式）：
- *   1. 运行控制：总开关 + 运行状态（已处理/已回复/线索/最近回复）
+ * 结构（可折叠区块）：
+ *   1. 运行控制：总开关 + 运行状态
  *   2. Agent 设定：商家名 / 回复档位 / 获客 prompt / 留资确认话术 / 索要上限
- *   3. 模型配置：主 LLM（Anthropic 兼容）+ 视觉模型（独立，OpenAI 兼容）
- *   4. 知识库：问答对增删改查（专业性来源 / RAG 资料）
- *   5. 留资线索：列表 + 状态 + CSV 导出
- *   6. 护栏：违禁词 / 兜底话术池
- *   7. 黑名单
+ *   3. 知识库：卡片入口 → 专用管理页（kb）
+ *   4. 留资线索：列表 + 状态 + CSV 导出
+ *   5. 护栏：违禁词 / 兜底话术池
+ *   6. 黑名单
  *
- * 铁律对齐：本页只读写 /api/ai，不触发任何捕获/昵称查询。
+ * ## 铁律对齐
+ * 本页只读写 /api/ai，**不触发任何捕获/昵称查询**。
+ *
+ * ## 本次改动（重设计）
+ * - 旧的内联 `style={{...}}`（约 40 处）+ `miniBtn`/`inputStyle` 常量
+ *   → 统一走 `<Input>/<Textarea>/<Select>/<Button>` + `Collapse`/`FormField`（kit）
+ * - `Section` 本地实现 → 复用 `kit.Collapse`（与通知页同一实现）
+ * - Pill → `Tone`，`.btn sm accent|ghost` → `<Button variant>` + `SegmentedTabs`
+ * - **业务逻辑零改动**（Agent 草稿隔离、脏标记保存条、黑名单/线索操作全保持）
  */
 import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Play, Square, FlaskConical, Download, Plus, Trash2, BookOpen, MessageSquare,
+  ShieldCheck, Ban, Target,
+} from "lucide-react";
 import { PageProps } from "../api/client";
-import { Pill } from "../components/ui";
+import { PageContainer, PageHeader } from "@/components/layout/app-shell";
+import { Button } from "@/components/ui/button";
+import { Input, Textarea } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
+import {
+  Collapse, FormField, Tone, Row, Blank, SegmentedTabs, Toolbar,
+} from "@/components/page/kit";
 
 interface AiConfig {
   enabled: boolean;
@@ -56,71 +77,18 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** 可收缩区块（与 settings.tsx 同范式） */
-function Section(props: {
-  title: string; subtitle?: string; defaultOpen?: boolean;
-  right?: React.ReactNode; children: React.ReactNode;
-}) {
-  const [open, setState] = useState(!!props.defaultOpen);
-  return (
-    <div style={{ background: "var(--panel)", borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
-      <button
-        onClick={() => setState(!open)}
-        style={{
-          width: "100%", display: "flex", alignItems: "center", gap: 10,
-          padding: "12px 16px", background: "none", border: "none",
-          cursor: "pointer", color: "var(--foreground)", textAlign: "left",
-        }}
-      >
-        <span style={{ fontSize: 13.5, fontWeight: 600 }}>{props.title}</span>
-        {props.subtitle && (
-          <span style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{props.subtitle}</span>
-        )}
-        <span style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-          {props.right}
-          <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>{open ? "▲" : "▼"}</span>
-        </span>
-      </button>
-      {open && <div style={{ padding: "0 16px 14px" }}>{props.children}</div>}
-    </div>
-  );
-}
-
-const inputStyle: React.CSSProperties = {
-  width: "100%", boxSizing: "border-box", padding: "7px 10px",
-  borderRadius: 8, border: "1px solid var(--border)",
-  background: "var(--surface-2)", color: "var(--foreground)", fontSize: 13,
-};
-
-function Field(props: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 4 }}>
-        {props.label}
-      </div>
-      {props.children}
-      {props.hint && (
-        <div style={{ fontSize: 11, color: "var(--muted-foreground)", marginTop: 3, opacity: 0.8 }}>
-          {props.hint}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const miniBtn: React.CSSProperties = {
-  padding: "5px 12px", borderRadius: 7, cursor: "pointer",
-  border: "1px solid var(--border)", background: "var(--surface-2)",
-  color: "var(--foreground)", fontSize: 12.5,
-};
-
+/** 回复档位选项（值与后端约定一致）。 */
+const STRICT_OPTS = [
+  { v: "kb_only", label: "🔒 仅知识库（AI 不参与）" },
+  { v: "rag", label: "⚖️ RAG 限定（AI 只准依据知识库）" },
+  { v: "free", label: "🕊️ 自由风格" },
+];
 
 export default function AiPage(props: PageProps) {
   const { push, api } = props;
   const qc = useQueryClient();
 
-  // v0.38.3：AI 页变成 Agent 编辑器 —— 顶部选哪个 Agent 就编辑哪个。
-  // 不选择（" "）时编辑全局默认；Agent 的新建/删除/绑定在设置页。
+  // v0.38.3：AI 页 = Agent 编辑器。选谁编辑谁；不选（""）编辑全局默认。
   const [agentId, setAgentId] = useState<string>("");
 
   const agentsQ = useQuery({
@@ -133,14 +101,16 @@ export default function AiPage(props: PageProps) {
   const { data: cfg } = useQuery({
     queryKey: ["ai-config", agentId],
     queryFn: async () =>
-      (await api.aiGetConfig(agentId || undefined))
-        .config as unknown as AiConfig,
+      (await api.aiGetConfig(agentId || undefined)).config as unknown as AiConfig,
   });
+
+  const [draft, setDraft] = useState<Partial<AiConfig>>({});
   // 切 Agent 时丢弃未保存草稿（否则会把 A 的草稿写到 B）
   const switchAgent = useCallback((id: string) => {
     setDraft({});
     setAgentId(id);
   }, []);
+
   const { data: status } = useQuery({
     queryKey: ["ai-status"],
     queryFn: () => api.aiStatus() as unknown as Promise<AiStatus>,
@@ -159,7 +129,6 @@ export default function AiPage(props: PageProps) {
     queryFn: () => api.aiBlacklist(),
   });
 
-  const [draft, setDraft] = useState<Partial<AiConfig>>({});
   const c = { ...(cfg || ({} as Partial<AiConfig>)), ...draft } as AiConfig;
   const dirty = Object.keys(draft).length > 0;
 
@@ -169,18 +138,13 @@ export default function AiPage(props: PageProps) {
 
   const save = useCallback(async () => {
     try {
-      await api.aiSaveConfig(
-        draft as Record<string, unknown>,
-        agentId || undefined,
-      );
+      await api.aiSaveConfig(draft as Record<string, unknown>, agentId || undefined);
       setDraft({});
       await qc.invalidateQueries({ queryKey: ["ai-config", agentId] });
       await qc.invalidateQueries({ queryKey: ["ai-status"] });
       push(
         agentId
-          ? `已保存到 Agent「${
-              agentList.find((a) => a.id === agentId)?.name || agentId
-            }」`
+          ? `已保存到 Agent「${agentList.find((a) => a.id === agentId)?.name || agentId}」`
           : "AI 全局配置已保存",
         4000,
       );
@@ -206,9 +170,10 @@ export default function AiPage(props: PageProps) {
     try {
       const r = await api.aiTest();
       push(r.ok ? `✅ ${r.msg}` : `❌ ${r.msg}`, 8000);
-    } catch (e) { push(`测试失败: ${errMsg(e)}`, 8000); }
+    } catch (e) {
+      push(`测试失败: ${errMsg(e)}`, 8000);
+    }
   }, [api, push]);
-
 
   // ---- 黑名单 ----
   const [blInput, setBlInput] = useState("");
@@ -219,14 +184,18 @@ export default function AiPage(props: PageProps) {
       setBlInput("");
       await qc.invalidateQueries({ queryKey: ["ai-blacklist"] });
       push("已加入黑名单");
-    } catch (e) { push(`失败: ${errMsg(e)}`, 6000); }
+    } catch (e) {
+      push(`失败: ${errMsg(e)}`, 6000);
+    }
   }, [blInput, api, push, qc]);
   const blDel = useCallback(async (uid: string) => {
     try {
       await api.aiBlacklistRemove(uid);
       await qc.invalidateQueries({ queryKey: ["ai-blacklist"] });
       push("已移出黑名单");
-    } catch (e) { push(`失败: ${errMsg(e)}`, 6000); }
+    } catch (e) {
+      push(`失败: ${errMsg(e)}`, 6000);
+    }
   }, [api, push, qc]);
 
   // ---- 线索 ----
@@ -234,310 +203,358 @@ export default function AiPage(props: PageProps) {
     try {
       await api.aiLeadStatus(id, status);
       await qc.invalidateQueries({ queryKey: ["ai-leads"] });
-    } catch (e) { push(`失败: ${errMsg(e)}`, 6000); }
+    } catch (e) {
+      push(`失败: ${errMsg(e)}`, 6000);
+    }
   }, [api, push, qc]);
 
   const running = !!status?.running;
   const st: Partial<AiStatus> = status || {};
 
   return (
-    <div>
-      {/* ===== v0.38.3：Agent 选择器 ===== */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          flexWrap: "wrap",
-          padding: "8px 10px",
-          marginBottom: 12,
-          background: "var(--panel)",
-          border: "1px solid var(--line)",
-          borderRadius: 10,
-        }}
-      >
-        <span style={{ fontSize: 11.5, color: "var(--muted)", marginRight: 2 }}>
-          编辑目标
-        </span>
-        <button
-          className={"btn sm" + (agentId === "" ? " accent" : " ghost")}
-          onClick={() => switchAgent("")}
-        >
-          全局默认
-        </button>
-        {agentList.map((a) => (
-          <button
-            key={a.id}
-            className={"btn sm" + (agentId === a.id ? " accent" : " ghost")}
-            onClick={() => switchAgent(a.id)}
-            title={`编辑 Agent「${a.name}」`}
-          >
-            {a.name}
-          </button>
-        ))}
-        <div style={{ flex: 1 }} />
-        <span
-          style={{
-            fontSize: 11.5,
-            padding: "2px 8px",
-            borderRadius: 999,
-            background: agentId ? "var(--accent-bg)" : "var(--surface-2)",
-            color: agentId ? "var(--accent)" : "var(--muted)",
-            border: "1px solid var(--border)",
-          }}
-        >
-          当前：
-          {agentId
-            ? agentList.find((a) => a.id === agentId)?.name || agentId
-            : "全局默认"}
-        </span>
-      </div>
-      <div
-        style={{
-          fontSize: 11.5,
-          color: "var(--muted)",
-          marginBottom: 12,
-          lineHeight: 1.6,
-        }}
-      >
+    <PageContainer>
+      <PageHeader
+        title="AI 获客"
+        description="编辑 Agent 的回复内容与行为参数 · 只读写 /api/ai，不触发任何捕获或昵称查询"
+        actions={
+          <Tone tone={running ? "ok" : c.enabled ? "warn" : "mute"}>
+            {running ? "运行中" : c.enabled ? "启动中" : "已停止"}
+          </Tone>
+        }
+      />
+
+      {/* ===== Agent 选择器 ===== */}
+      <Card className="mb-3">
+        <CardContent className="flex flex-wrap items-center gap-2 p-2.5">
+          <span className="mr-0.5 text-[0.72rem] text-[var(--color-text-muted)]">编辑目标</span>
+          <SegmentedTabs
+            value={agentId}
+            onChange={switchAgent}
+            items={[
+              { value: "", label: "全局默认" },
+              ...agentList.map((a) => ({ value: a.id, label: a.name })),
+            ]}
+          />
+          <div className="flex-1" />
+          <Badge variant={agentId ? "accent" : "outline"}>
+            当前：{agentId ? agentList.find((a) => a.id === agentId)?.name || agentId : "全局默认"}
+          </Badge>
+        </CardContent>
+      </Card>
+
+      <div className="mb-3 text-[0.72rem] leading-relaxed text-[var(--color-text-muted)]">
         {agentId ? (
           <>
-            正在编辑 Agent「
-            {agentList.find((a) => a.id === agentId)?.name}」的回复内容 ——
-            影响<b>在设置页绑定了该 Agent 的账号</b>。 Agent
-            的新建、删除与账号绑定请到「设置 → AI 与 Agent」。
+            正在编辑 Agent「{agentList.find((a) => a.id === agentId)?.name}」的回复内容 —— 影响
+            <b className="text-[var(--color-text-secondary)]">在设置页绑定了该 Agent 的账号</b>。
+            Agent 的新建、删除与账号绑定请到「设置 → AI 与 Agent」。
           </>
         ) : (
           <>
-            正在编辑<b>全局默认</b> ——
-            对未绑定 Agent 的账号生效。多账号请用 Agent 区分，避免配置串号。
+            正在编辑<b className="text-[var(--color-text-secondary)]">全局默认</b> —— 对未绑定
+            Agent 的账号生效。多账号请用 Agent 区分，避免配置串号。
           </>
         )}
       </div>
 
-      {/* ===== 标题 + 运行控制 ===== */}
-      <Section
-        title="🤖 AI 获客自动回复"
+      {/* ===== 运行控制 ===== */}
+      <Collapse
+        title="AI 获客自动回复"
         defaultOpen
         right={
-          <Pill c={running ? "ok" : c.enabled ? "warn" : "mute"}>
+          <Tone tone={running ? "ok" : c.enabled ? "warn" : "mute"}>
             {running ? "运行中" : c.enabled ? "启动中" : "已停止"}
-          </Pill>
+          </Tone>
         }
       >
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-          <button
+        <Toolbar className="mb-2.5">
+          <Button
+            variant={running ? "danger" : "default"}
             onClick={toggleRun}
-            style={{
-              padding: "8px 18px", borderRadius: 8, border: "none", cursor: "pointer",
-              fontWeight: 600, fontSize: 13,
-              background: running ? "var(--danger)" : "var(--accent)", color: "#fff",
-            }}
           >
-            {running ? "⏹ 停止监听" : "▶ 启动监听"}
-          </button>
-          <span style={{ fontSize: 12.5, color: "var(--muted-foreground)" }}>
-            已处理 <b>{st.processed ?? 0}</b> · 已回复 <b>{st.replied ?? 0}</b> · 线索{" "}
-            <b>{st.leads_total ?? 0}</b> · 错误 <b>{st.errors ?? 0}</b>
+            {running
+              ? <><Square className="h-4 w-4" />停止监听</>
+              : <><Play className="h-4 w-4" />启动监听</>}
+          </Button>
+          <span className="text-[0.74rem] text-[var(--color-text-secondary)]">
+            已处理 <b className="text-[var(--color-text)]">{st.processed ?? 0}</b> · 已回复{" "}
+            <b className="text-[var(--color-text)]">{st.replied ?? 0}</b> · 线索{" "}
+            <b className="text-[var(--color-text)]">{st.leads_total ?? 0}</b> · 错误{" "}
+            <b className="text-[var(--color-text)]">{st.errors ?? 0}</b>
           </span>
-        </div>
+        </Toolbar>
         {st.last_reply && (
-          <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+          <div className="text-[0.72rem] text-[var(--color-text-muted)]">
             最近回复：{st.last_reply}
           </div>
         )}
-      </Section>
+      </Collapse>
 
       {/* ===== Agent 设定 ===== */}
-      <Section title="🎯 Agent 设定" subtitle="获客留资目标 + 专业性档位">
-        <Field label="商家名（注入 Agent 人设）">
-          <input style={inputStyle} value={c.merchant_name || ""}
-                 onChange={(e) => set("merchant_name", e.target.value)}
-                 placeholder="例：张老师工伤咨询" />
-        </Field>
-        <Field label="回复档位" hint="🔒 仅知识库：AI 不参与，最安全；⚖️ RAG限定（推荐）：AI 只准依据知识库回答，出界被护栏拦下；🕊️ 自由：仅靠人设约束">
-          <select style={inputStyle} value={c.strict_level || "rag"}
-                  onChange={(e) => set("strict_level", e.target.value)}>
-            <option value="kb_only">🔒 仅知识库（AI 不参与）</option>
-            <option value="rag">⚖️ RAG限定（AI 只准依据知识库）</option>
-            <option value="free">🕊️ 自由风格</option>
-          </select>
-        </Field>
-        <Field label="Agent prompt（留空用内置获客模板；可用 {merchant} / {max_ask} 占位）">
-          <textarea style={{ ...inputStyle, minHeight: 120, fontFamily: "inherit", resize: "vertical" }}
-                    value={c.system_prompt || ""}
-                    onChange={(e) => set("system_prompt", e.target.value)}
-                    placeholder="留空 = 内置获客模板（解答→意向→留资三阶段，只索要手机号，被拒即止）" />
-        </Field>
-        <div style={{ display: "flex", gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <Field label="留资成功确认话术">
-              <input style={inputStyle} value={c.lead_confirm || ""}
-                     onChange={(e) => set("lead_confirm", e.target.value)} />
-            </Field>
-          </div>
-          <div style={{ width: 130 }}>
-            <Field label="最多主动索要次数">
-              <input type="number" style={inputStyle} min={0} max={5}
-                     value={c.max_lead_ask ?? 2}
-                     onChange={(e) => set("max_lead_ask", Number(e.target.value))} />
-            </Field>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 12 }}>
-          <div style={{ width: 130 }}>
-            <Field label="最小延迟(秒)">
-              <input type="number" style={inputStyle} value={c.min_delay ?? 8}
-                     onChange={(e) => set("min_delay", Number(e.target.value))} />
-            </Field>
-          </div>
-          <div style={{ width: 130 }}>
-            <Field label="最大延迟(秒)">
-              <input type="number" style={inputStyle} value={c.max_delay ?? 20}
-                     onChange={(e) => set("max_delay", Number(e.target.value))} />
-            </Field>
-          </div>
-          <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 10 }}>
-            <button onClick={testAi} style={miniBtn}>测试 AI 连接</button>
-          </div>
-        </div>
-        <div style={{ fontSize: 11.5, color: "var(--muted-foreground)", lineHeight: 1.6 }}>
-          模型 / 提供商连接已统一到「设置 → AI 与 Agent →
-          模型链路中心」，本页只保留回复内容与行为参数。
-        </div>
-      </Section>
+      <Collapse title="Agent 设定" subtitle="获客留资目标 + 专业性档位">
+        <FormField label="商家名（注入 Agent 人设）">
+          <Input
+            value={c.merchant_name || ""}
+            onChange={(e) => set("merchant_name", e.target.value)}
+            placeholder="例：张老师工伤咨询"
+          />
+        </FormField>
 
-      {/* v0.38.4：模型配置已迁至「设置 → AI 与 Agent → 模型链路中心」(model_hub)，本页不再重复配置。 */}
+        <FormField
+          label="回复档位"
+          hint="🔒 仅知识库：AI 不参与，最安全；⚖️ RAG 限定（推荐）：AI 只准依据知识库回答，出界被护栏拦下；🕊️ 自由：仅靠人设约束"
+        >
+          <Select
+            value={c.strict_level || "rag"}
+            onValueChange={(v) => set("strict_level", v)}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {STRICT_OPTS.map((o) => (
+                <SelectItem key={o.v} value={o.v}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
 
-      {/* v0.39.0：知识库改为卡片入口 → 专用管理页（kb） */}
-      <Section title="📚 知识库" subtitle="点击进入管理">
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <FormField label="Agent prompt（留空用内置获客模板；可用 {merchant} / {max_ask} 占位）">
+          <Textarea
+            className="min-h-[120px]"
+            value={c.system_prompt || ""}
+            onChange={(e) => set("system_prompt", e.target.value)}
+            placeholder="留空 = 内置获客模板（解答→意向→留资三阶段，只索要手机号，被拒即止）"
+          />
+        </FormField>
+
+        <div className="flex gap-3">
+          <FormField label="留资成功确认话术" className="flex-1">
+            <Input
+              value={c.lead_confirm || ""}
+              onChange={(e) => set("lead_confirm", e.target.value)}
+            />
+          </FormField>
+          <FormField label="最多主动索要次数" className="w-[130px]">
+            <Input
+              type="number" min={0} max={5}
+              value={c.max_lead_ask ?? 2}
+              onChange={(e) => set("max_lead_ask", Number(e.target.value))}
+            />
+          </FormField>
+        </div>
+
+        <div className="flex items-end gap-3">
+          <FormField label="最小延迟(秒)" className="w-[130px]">
+            <Input
+              type="number" value={c.min_delay ?? 8}
+              onChange={(e) => set("min_delay", Number(e.target.value))}
+            />
+          </FormField>
+          <FormField label="最大延迟(秒)" className="w-[130px]">
+            <Input
+              type="number" value={c.max_delay ?? 20}
+              onChange={(e) => set("max_delay", Number(e.target.value))}
+            />
+          </FormField>
+          <div className="pb-2.5">
+            <Button variant="secondary" size="sm" onClick={testAi}>
+              <FlaskConical className="h-3.5 w-3.5" />测试 AI 连接
+            </Button>
+          </div>
+        </div>
+
+        <div className="text-[0.7rem] leading-relaxed text-[var(--color-text-muted)]">
+          模型 / 提供商连接已统一到「设置 → AI 与 Agent → 模型链路中心」，本页只保留回复内容与行为参数。
+        </div>
+      </Collapse>
+
+      {/* ===== 知识库入口 ===== */}
+      <Collapse title="知识库" subtitle="点击进入管理">
+        <div className="flex flex-wrap gap-3">
           {([
             ["pro", "🧠 专业知识库",
              "思维导图结构（主题→子分类→正文→总结）：向量模型的前置参考，AI 分析问题时检索条目全文，不直接回复。",
-             `${kb?.items?.length ?? 0} 条`],
+             `${kb?.items?.length ?? 0} 条`, <BookOpen key="1" className="h-4 w-4" />],
             ["reply", "💬 对话回复库",
              "命中库：对方消息符合库内案例 → 零 token 直接自动回复。支持从聊天记录自动学习话术。",
-             "点击管理"],
-          ] as const).map(([id, title, desc, badge]) => (
-            <button key={id}
-                    onClick={() => props.setTab?.("kb")}
-                    style={{
-                      flex: "1 1 240px", textAlign: "left", cursor: "pointer",
-                      background: "var(--card)", border: "1px solid var(--border)",
-                      borderRadius: 12, padding: "14px 16px",
-                      display: "flex", flexDirection: "column", gap: 6,
-                    }}>
-              <span style={{ fontSize: 14, fontWeight: 700, display: "flex", justifyContent: "space-between", width: "100%" }}>
-                {title}
-                <span style={{ fontSize: 11.5, fontWeight: 400, color: "var(--muted-foreground)" }}>{badge}</span>
+             "点击管理", <MessageSquare key="2" className="h-4 w-4" />],
+          ] as const).map(([id, title, desc, badge, icon]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => props.setTab?.("kb")}
+              className="flex min-w-[240px] flex-1 cursor-pointer flex-col gap-1.5 rounded-[var(--radius-md)]
+                         border border-[var(--color-border)] bg-[var(--color-surface-solid)]
+                         p-3.5 text-left transition-colors duration-[var(--duration-fast)]
+                         hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-raised)]"
+            >
+              <span className="flex w-full items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-[0.86rem] font-bold
+                                 text-[var(--color-text)]">
+                  {icon}{title}
+                </span>
+                <span className="text-[0.7rem] font-normal text-[var(--color-text-muted)]">
+                  {badge}
+                </span>
               </span>
-              <span style={{ fontSize: 12, color: "var(--muted-foreground)", lineHeight: 1.6 }}>{desc}</span>
-              <span style={{ fontSize: 12, color: "var(--accent)", marginTop: 2 }}>进入管理 →</span>
+              <span className="text-[0.72rem] leading-relaxed text-[var(--color-text-muted)]">
+                {desc}
+              </span>
+              <span className="mt-0.5 text-[0.72rem] text-[var(--color-accent)]">进入管理 →</span>
             </button>
           ))}
         </div>
-      </Section>
+      </Collapse>
 
       {/* ===== 留资线索 ===== */}
-      <Section title="🎯 留资线索" subtitle={`${leads?.items?.length ?? 0} 条`}>
-        <div style={{ marginBottom: 10 }}>
-          <a href="http://127.0.0.1:8000/api/ai/leads/export" target="_blank" rel="noreferrer"
-             style={{ textDecoration: "none" }}>
-            <button style={miniBtn}>⬇ 导出 CSV</button>
+      <Collapse title="留资线索" subtitle={`${leads?.items?.length ?? 0} 条`}>
+        <div className="mb-2.5">
+          <a
+            href="http://127.0.0.1:8000/api/ai/leads/export"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Button variant="secondary" size="sm">
+              <Download className="h-3.5 w-3.5" />导出 CSV
+            </Button>
           </a>
         </div>
         {(leads?.items || []).length === 0 && (
-          <div style={{ fontSize: 12.5, color: "var(--muted-foreground)" }}>
-            暂无线索。客户在对话中发出手机号/微信号后自动捕获。
-          </div>
+          <Blank>暂无线索。客户在对话中发出手机号/微信号后自动捕获。</Blank>
         )}
-        {(leads?.items || []).map((raw) => {
-          const ld = raw as unknown as Lead;
-          return (
-            <div key={ld.id}
-                 style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 0",
-                          borderBottom: "1px solid var(--border)", fontSize: 12.5 }}>
-              <Pill c={ld.status === "new" ? "accent" : ld.status === "followed" ? "ok" : "mute"}>
-                {ld.status === "new" ? "新线索" : ld.status === "followed" ? "已跟进" : "无效"}
-              </Pill>
-              <span style={{ fontWeight: 600 }}>{ld.contact_value}</span>
-              <span style={{ color: "var(--muted-foreground)", overflow: "hidden",
-                             textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {ld.contact_type === "phone" ? "手机号" : "微信号"} · {ld.peer_name || ld.conv_id.slice(0, 12)} · {ld.account}
-              </span>
-              <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexShrink: 0 }}>
-                {ld.status !== "followed" && (
-                  <button onClick={() => leadStatus(ld.id, "followed")} style={miniBtn}>已跟进</button>
-                )}
-                {ld.status !== "invalid" && (
-                  <button onClick={() => leadStatus(ld.id, "invalid")}
-                          style={{ ...miniBtn, color: "var(--muted-foreground)" }}>无效</button>
-                )}
-              </span>
-            </div>
-          );
-        })}
-      </Section>
+        <div className="divide-y divide-[var(--color-border)]">
+          {(leads?.items || []).map((raw) => {
+            const ld = raw as unknown as Lead;
+            return (
+              <Row key={ld.id} className="!px-0 py-2">
+                <Tone
+                  tone={
+                    ld.status === "new" ? "accent" : ld.status === "followed" ? "ok" : "mute"
+                  }
+                >
+                  {ld.status === "new" ? "新线索" : ld.status === "followed" ? "已跟进" : "无效"}
+                </Tone>
+                <span className="font-mono text-[0.78rem] font-semibold text-[var(--color-text)]">
+                  {ld.contact_value}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[0.72rem]
+                                 text-[var(--color-text-muted)]">
+                  {ld.contact_type === "phone" ? "手机号" : "微信号"} ·{" "}
+                  {ld.peer_name || ld.conv_id.slice(0, 12)} · {ld.account}
+                </span>
+                <Toolbar className="shrink-0 gap-1">
+                  {ld.status !== "followed" && (
+                    <Button variant="secondary" size="sm" onClick={() => leadStatus(ld.id, "followed")}>
+                      已跟进
+                    </Button>
+                  )}
+                  {ld.status !== "invalid" && (
+                    <Button variant="ghost" size="sm" onClick={() => leadStatus(ld.id, "invalid")}>
+                      无效
+                    </Button>
+                  )}
+                </Toolbar>
+              </Row>
+            );
+          })}
+        </div>
+      </Collapse>
 
       {/* ===== 护栏 ===== */}
-      <Section title="🛡️ 护栏配置" subtitle="违禁词拦截 / 兜底话术池">
-        <Field label="违禁词（AI 回复命中即丢弃改发兜底；逗号分隔）">
-          <input style={inputStyle}
-                 value={(c.forbidden_words || []).join("，")}
-                 onChange={(e) => set("forbidden_words",
-                   e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean))} />
-        </Field>
-        <Field label="兜底话术池（未命中/被拦截时随机发一条；每行一条）">
-          <textarea style={{ ...inputStyle, minHeight: 70 }}
-                    value={(c.fallback_pool || []).join("\n")}
-                    onChange={(e) => set("fallback_pool",
-                      e.target.value.split("\n").map((s) => s.trim()).filter(Boolean))} />
-        </Field>
-        <Field label="图片兜底话术（视觉模型未启用/失败时）">
-          <input style={inputStyle} value={c.fallback_image || ""}
-                 onChange={(e) => set("fallback_image", e.target.value)} />
-        </Field>
-        <Field label="回复最大长度（超长自动截到第一句）">
-          <input type="number" style={inputStyle} value={c.max_reply_len ?? 60}
-                 onChange={(e) => set("max_reply_len", Number(e.target.value))} />
-        </Field>
-      </Section>
+      <Collapse
+        title="护栏配置"
+        subtitle="违禁词拦截 / 兜底话术池"
+      >
+        <div className="mb-2 flex items-center gap-1.5 text-[0.72rem]
+                        text-[var(--color-text-secondary)]">
+          <ShieldCheck className="h-3.5 w-3.5" />
+          回复命中违禁词即丢弃改发兜底
+        </div>
+        <FormField label="违禁词（逗号分隔）">
+          <Input
+            value={(c.forbidden_words || []).join("，")}
+            onChange={(e) =>
+              set("forbidden_words",
+                e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean))
+            }
+          />
+        </FormField>
+        <FormField label="兜底话术池（未命中/被拦截时随机发一条；每行一条）">
+          <Textarea
+            className="min-h-[70px]"
+            value={(c.fallback_pool || []).join("\n")}
+            onChange={(e) =>
+              set("fallback_pool",
+                e.target.value.split("\n").map((s) => s.trim()).filter(Boolean))
+            }
+          />
+        </FormField>
+        <FormField label="图片兜底话术（视觉模型未启用/失败时）">
+          <Input
+            value={c.fallback_image || ""}
+            onChange={(e) => set("fallback_image", e.target.value)}
+          />
+        </FormField>
+        <FormField label="回复最大长度（超长自动截到第一句）">
+          <Input
+            type="number" value={c.max_reply_len ?? 60}
+            onChange={(e) => set("max_reply_len", Number(e.target.value))}
+          />
+        </FormField>
+      </Collapse>
 
       {/* ===== 黑名单 ===== */}
-      <Section title="🚫 黑名单" subtitle={`${blData?.items?.length ?? 0} 人`}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <input style={{ ...inputStyle, flex: 1 }} value={blInput}
-                 onChange={(e) => setBlInput(e.target.value)}
-                 placeholder="uid 或昵称，回车添加"
-                 onKeyDown={(e) => { if (e.key === "Enter") blAdd(); }} />
-          <button onClick={blAdd} style={miniBtn}>添加</button>
+      <Collapse
+        title="黑名单"
+        subtitle={`${blData?.items?.length ?? 0} 人`}
+        right={<Ban className="h-3.5 w-3.5 text-[var(--color-text-muted)]" />}
+      >
+        <Toolbar className="mb-2">
+          <Input
+            className="flex-1"
+            value={blInput}
+            onChange={(e) => setBlInput(e.target.value)}
+            placeholder="uid 或昵称，回车添加"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") blAdd();
+            }}
+          />
+          <Button variant="secondary" size="sm" onClick={blAdd}>
+            <Plus className="h-3.5 w-3.5" />添加
+          </Button>
+        </Toolbar>
+        {!(blData?.items || []).length && <Blank>黑名单为空</Blank>}
+        <div className="divide-y divide-[var(--color-border)]">
+          {(blData?.items || []).map((uid) => (
+            <Row key={uid} className="!px-0 py-1.5">
+              <span className="min-w-0 flex-1 truncate font-mono text-[0.76rem]
+                               text-[var(--color-text)]">
+                {uid}
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => blDel(uid)}>
+                <Trash2 className="h-3 w-3" />移除
+              </Button>
+            </Row>
+          ))}
         </div>
-        {(blData?.items || []).map((uid) => (
-          <div key={uid} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12.5 }}>
-            <span style={{ flex: 1 }}>{uid}</span>
-            <button onClick={() => blDel(uid)}
-                    style={{ ...miniBtn, color: "var(--danger)" }}>移除</button>
-          </div>
-        ))}
-      </Section>
+      </Collapse>
 
-      {/* ===== 保存条 ===== */}
+      {/* ===== 保存条（有未保存修改时吸底） ===== */}
       {dirty && (
-        <div style={{
-          position: "sticky", bottom: 12, display: "flex", gap: 10, alignItems: "center",
-          background: "var(--panel)", border: "1px solid var(--accent)", borderRadius: 12,
-          padding: "10px 16px", boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-        }}>
-          <span style={{ fontSize: 13 }}>有未保存的修改</span>
-          <button onClick={save}
-                  style={{ padding: "7px 18px", borderRadius: 8, border: "none", cursor: "pointer",
-                           background: "var(--accent)", color: "#fff", fontWeight: 600, marginLeft: "auto" }}>
-            保存全部配置
-          </button>
-          <button onClick={() => setDraft({})} style={miniBtn}>放弃</button>
+        <div
+          className="sticky bottom-3 mt-3 flex items-center gap-3 rounded-[var(--radius-md)]
+                     border border-[var(--color-accent)] bg-[var(--color-surface-solid)]
+                     px-4 py-2.5 shadow-[var(--shadow-md)]"
+        >
+          <span className="flex items-center gap-1.5 text-[0.8rem] text-[var(--color-text)]">
+            <Target className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+            有未保存的修改
+          </span>
+          <div className="flex-1" />
+          <Button onClick={save}>保存全部配置</Button>
+          <Button variant="ghost" onClick={() => setDraft({})}>放弃</Button>
         </div>
       )}
-    </div>
+
+    </PageContainer>
   );
 }

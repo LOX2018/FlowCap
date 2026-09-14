@@ -1,122 +1,113 @@
 /**
- * 设置页（v0.38.2 重构）
+ * 设置页（重设计版 · 对标 better-douyin 设计体系）
  *
- * 变更（用户 2026-09-09 要求）：
- *   - 删除「默认配置 / 启动策略 / 独立账号」三个 tab：
- *     前两者与「通用配置」重复，后者与账号管理页权限冲突
- *   - 改为按**功能**拆 tab：通用配置（非业务）/ 私信发送 / 直播监听 /
- *     捕获与存储 / AI 与 Agent / 配置标签
- *   - 每个业务 tab 内的参数都可由「配置标签」按账号差异化覆盖
- *
- * 职责边界：
+ * ## 职责边界（设计契约，不得混淆）
  *   - Agent 管「回什么」：回复内容（prompt / 知识库 / 话术 / 档位）
  *   - 标签 管「怎么发」：发送风控频率 / 直播监听 / 历史捕获策略
- *   - 账号的状态（UID/角色/守护）归「账号管理」页，不在这里
+ *   - 账号状态（UID/角色/守护）归「账号」页，不在这里
+ *
+ * ## 本次改动（重设计）
+ * - 页头/子导航/内容容器全部改走设计令牌与新组件
+ * - 旧 `.set-nav` + 内联 `color-mix(in oklch, var(--bg)…)` → 新令牌变量
+ * - **7 个业务分区与承载组件零改动**（UnifiedConfigSection / ModelHubSection /
+ *   AgentSection / TagSection / NotifySection 原样复用）
  */
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import {
+  Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell,
+} from "lucide-react";
 import { PageProps } from "../api/client";
 import UnifiedConfigSection from "../components/UnifiedConfigSection";
 import AgentSection from "../components/AgentSection";
 import TagSection from "../components/TagSection";
 import ModelHubSection from "../components/ModelHubSection";
 import NotifySection from "../components/NotifySection";
+import { PageContainer, PageHeader } from "@/components/layout/app-shell";
+import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 type SectionKey =
-  | "general"
-  | "send"
-  | "live"
-  | "capture"
-  | "agent"
-  | "tag"
-  | "notify";
+  | "general" | "send" | "live" | "capture" | "agent" | "tag" | "notify";
 
-const TABS: { key: SectionKey; label: string; hint: string }[] = [
-  { key: "general", label: "通用配置", hint: "前端与系统行为（非业务）" },
-  { key: "send", label: "私信发送", hint: "风控频率、闸门、额度" },
-  { key: "live", label: "直播监听", hint: "监听节奏与轮询" },
-  { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片" },
-  { key: "agent", label: "AI 与 Agent", hint: "回复内容：回什么" },
-  { key: "tag", label: "配置标签", hint: "发送策略：怎么发" },
-  { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型" },
+const TABS: {
+  key: SectionKey;
+  label: string;
+  hint: string;
+  icon: React.ReactNode;
+}[] = [
+  { key: "general", label: "通用配置", hint: "前端与系统行为（非业务）", icon: <SettingsIcon className="h-3.5 w-3.5" /> },
+  { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", icon: <Send className="h-3.5 w-3.5" /> },
+  { key: "live", label: "直播监听", hint: "监听节奏与轮询", icon: <Radio className="h-3.5 w-3.5" /> },
+  { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", icon: <Database className="h-3.5 w-3.5" /> },
+  { key: "agent", label: "AI 与 Agent", hint: "回复内容：回什么", icon: <Bot className="h-3.5 w-3.5" /> },
+  { key: "tag", label: "配置标签", hint: "发送策略：怎么发", icon: <Tags className="h-3.5 w-3.5" /> },
+  { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", icon: <Bell className="h-3.5 w-3.5" /> },
 ];
 
 export default function SettingsPage(props: PageProps) {
-  const { ready } = props;
   const [section, setSection] = useState<SectionKey>("general");
 
-  // 仅用于页头展示连接状态
-  useQuery({
-    queryKey: ["settings-ping"],
-    queryFn: () => Promise.resolve(true),
-    enabled: !!ready,
-  });
-
   return (
-    <div>
-      <div className="section-head">
-        <div>
-          <h2>设置</h2>
-          <div className="desc">
-            按功能分区管理。业务参数（发送/监听/捕获）可用「配置标签」按账号差异化；
-            回复内容用 Agent 管理
-          </div>
-        </div>
-        {/* 2026-09-10：页头连接状态删除，统一在顶栏会员徽章右侧显示 */}
-      </div>
+    <PageContainer>
+      <PageHeader
+        title="设置"
+        description="按功能分区管理。业务参数（发送/监听/捕获）可用「配置标签」按账号差异化；回复内容用 Agent 管理"
+      />
 
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+      <div className="flex items-start gap-4">
         {/* 左侧子导航 */}
-        <div className="set-nav">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              className={
-                "set-nav-item" + (section === t.key ? " is-active" : "")
-              }
-              onClick={() => setSection(t.key)}
-              title={t.hint}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <nav className="w-[168px] shrink-0 space-y-0.5">
+          {TABS.map((t) => {
+            const on = section === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                title={t.hint}
+                onClick={() => setSection(t.key)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2",
+                  "text-left text-[0.8rem] font-medium",
+                  "transition-colors duration-[var(--duration-fast)] ease-[var(--ease-spring)]",
+                  on
+                    ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                    : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
+                )}
+              >
+                {t.icon}
+                {t.label}
+              </button>
+            );
+          })}
+        </nav>
 
         {/* 右侧内容区 */}
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            background: "color-mix(in oklch, var(--bg) 55%, transparent)",
-            border: "1px solid var(--border)",
-            borderRadius: 12,
-            padding: 14,
-          }}
-        >
-          {/* 非业务：只用 schema 里的 general 分区 */}
-          {section === "general" && (
-            <UnifiedConfigSection {...props} onlySections={["general"]} />
-          )}
-          {section === "send" && (
-            <UnifiedConfigSection {...props} onlySections={["send"]} />
-          )}
-          {section === "live" && (
-            <UnifiedConfigSection {...props} onlySections={["live"]} />
-          )}
-          {section === "capture" && (
-            <UnifiedConfigSection {...props} onlySections={["capture"]} />
-          )}
-          {section === "agent" && (
-            <>
-              {/* 模型链路中心（v0.38.4）：AI 与 IM 通知共用的模型唯一真源 */}
-              <ModelHubSection {...props} />
-              <AgentSection {...props} />
-            </>
-          )}
-          {section === "tag" && <TagSection {...props} />}
-          {section === "notify" && <NotifySection {...props} />}
-        </div>
+        <Card className="min-w-0 flex-1">
+          <CardContent className="p-3.5">
+            {section === "general" && (
+              <UnifiedConfigSection {...props} onlySections={["general"]} />
+            )}
+            {section === "send" && (
+              <UnifiedConfigSection {...props} onlySections={["send"]} />
+            )}
+            {section === "live" && (
+              <UnifiedConfigSection {...props} onlySections={["live"]} />
+            )}
+            {section === "capture" && (
+              <UnifiedConfigSection {...props} onlySections={["capture"]} />
+            )}
+            {section === "agent" && (
+              <>
+                {/* 模型链路中心：AI 与 IM 通知共用的模型唯一真源 */}
+                <ModelHubSection {...props} />
+                <AgentSection {...props} />
+              </>
+            )}
+            {section === "tag" && <TagSection {...props} />}
+            {section === "notify" && <NotifySection {...props} />}
+          </CardContent>
+        </Card>
       </div>
-    </div>
+    </PageContainer>
   );
 }

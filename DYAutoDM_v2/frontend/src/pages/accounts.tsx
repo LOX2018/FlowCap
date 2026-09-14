@@ -1,5 +1,5 @@
 /**
- * 账号管理页
+ * 账号管理页（重设计版 · 对标 better-douyin 设计体系）
  *
  * 迁移自: DY_Spider_base/web/pages/accounts.js（原版 389 处 createElement，最大文件）
  * 原版职责: 增删、扫码、角色（监测/发送）、引擎校验、守护启停
@@ -11,14 +11,50 @@
  *   - "全部校验"黑屏 bug → 数据始终经 mapAcct 映射，类型守卫消除空字段访问
  *   - 守护进程启动 → sidecar.ts 的 startBrowserDaemonReady/startRecvDaemon（不使用 props.api）
  *     startBrowserDaemonReady 会等待 BCC /status 就绪（alive=true）后再置真，避免 alive=false 期间调用方撞“容器未启动”
+ *
+ * ## 本次改动（重设计 · 只改呈现层，业务逻辑零改动）
+ * - 旧 global.css 类（`.card`/`.stat`/`.acct-card`/`.acct-row`/`.acct-section`/`.acct-log-grid`/
+ *   `.fp-card`/`.fp-env`/`.batch-bar`/`.fpill`/`.count-line`/`.field`/`.drawer*`/`.overlay*`/
+ *   `.nav`/`.demo-tag`/`.comment-table`…）与内联 `style={{…}}`
+ *   → `components/page/kit`（Section/Stat/StatRow/KeyValue/Tone/Blank/SegmentedTabs/Toolbar/
+ *     FormField）+ `components/ui/*`（Button/Badge/Card/Input/Textarea/Select/Skeleton/StatusDot）
+ *   + Tailwind 任意值类引用 `tokens.css` 令牌（深浅主题自动生效）
+ * - 查阅模式表格：旧 `.comment-table` 裸 `<th>/<td>` → 具名 `Th`/`Td`（与 tasks.tsx 同规格）
+ * - 抽屉：旧 `.drawer-backdrop`/`.drawer` → 固定定位 + `bg-black/55 backdrop-blur-sm`（crawl.tsx 范式）
+ * - 图标补 lucide-react（替代 💡/✅/❌/📭/▸/▾/‹/× 等纯装饰字形）
+ * - 保留的原始约束：mapAcct 字段映射、enginePill 等级→颜色映射、扫码状态机与文案、
+ *   UID/凭证判据、代理字段语义与保存调用、所有 queryKey 与轮询间隔、乐观更新与 refetch 时机
  */
-import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  Fragment, useEffect, useMemo, useState,
+  type Dispatch, type ReactNode, type SetStateAction,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
+import {
+  Plus, Layers, RefreshCw, Trash2, ExternalLink, Pencil, Eye, X,
+  SlidersHorizontal, AlertTriangle, Gauge, Lightbulb, CheckCircle2,
+  XCircle, Inbox, ChevronRight, ChevronDown, ArrowLeft, Download,
+} from "lucide-react";
 import { PageProps } from "../api/client";
 import { openExternal } from "../utils/openExternal";
-import { Avatar, Dot, Pill, TABS, hue, tick } from "../components/ui";
+import { Avatar, TABS, hue, tick } from "../components/ui";
 import { stopBrowserDaemon, stopRecvDaemon } from "../api/sidecar";
+import { PageContainer, PageHeader } from "@/components/layout/app-shell";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
+import { Input, Textarea } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { StatusDot } from "@/components/ui/status-dot";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
+import {
+  Section, Stat, StatRow, KeyValue, Tone, Blank, SegmentedTabs,
+  Toolbar, FormField,
+} from "@/components/page/kit";
+import { cn } from "@/lib/utils";
 
 // ===== 类型定义 =====
 
@@ -204,6 +240,90 @@ function mapAcct(a: RawAccount, i: number): FmtAccount {
       timezone: "Asia/Shanghai",
     },
   };
+}
+
+/* ── 呈现层具名单元（避免每处重复 className；表格单元与 tasks.tsx 同规格） ── */
+
+/** 表头单元（查阅模式表格用）。 */
+function Th({ children, className }: { children?: ReactNode; className?: string }) {
+  return (
+    <th
+      className={cn(
+        "whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2 text-left",
+        "text-[0.7rem] font-semibold tracking-[0.03em] text-[var(--color-text-secondary)]",
+        className
+      )}
+    >
+      {children}
+    </th>
+  );
+}
+
+/** 表格单元（查阅模式表格用）。 */
+function Td({
+  children,
+  mono,
+  muted,
+  className,
+  colSpan,
+}: {
+  children?: ReactNode;
+  mono?: boolean;
+  muted?: boolean;
+  className?: string;
+  colSpan?: number;
+}) {
+  return (
+    <td
+      colSpan={colSpan}
+      className={cn(
+        "border-b border-[var(--color-border)] px-3 py-2 align-middle",
+        "text-[0.78rem] text-[var(--color-text)]",
+        mono && "font-mono tabular-nums",
+        muted && "text-[var(--color-text-muted)]",
+        className
+      )}
+    >
+      {children}
+    </td>
+  );
+}
+
+/** 顶部统计卡（旧 `.card.stat`；保留 data-od-id 锚点）。 */
+function StatCard({
+  anchor,
+  label,
+  value,
+  unit,
+}: {
+  anchor: string;
+  label: ReactNode;
+  value: ReactNode;
+  unit?: ReactNode;
+}) {
+  return (
+    <Card className="p-4" data-od-id={anchor}>
+      <Stat label={label} value={value} unit={unit} />
+    </Card>
+  );
+}
+
+/** 区块小标题（旧 `.acct-section h4` / `.card h3`）。 */
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <h4 className="mb-2.5 text-[0.72rem] uppercase tracking-[0.06em] text-[var(--color-text-muted)]">
+      {children}
+    </h4>
+  );
+}
+
+/** 抽屉/弹层小标题（旧 `<h3>` 在 card 内）。 */
+function PanelTitle({ children }: { children: ReactNode }) {
+  return (
+    <h3 className="mb-2.5 text-[0.86rem] font-semibold tracking-tight text-[var(--color-text)]">
+      {children}
+    </h3>
+  );
 }
 // ===== 主页面 =====
 
@@ -637,166 +757,166 @@ export default function AccountsPage(props: PageProps) {
     refetch();
   };
   return (
-    <div>
-      <div className="section-head">
-        <div>
-          <h2>账号管理</h2>
-          <div className="desc">授权账号凭证监控 · 运行日志 · 指纹浏览器环境</div>
-        </div>
-        <div className="head-row">
-          <button className="btn ghost" data-od-id="acct-add" onClick={() => setAddOpen(true)}>
-            新增账号
-          </button>
-          <button
-            className="btn ghost"
-            data-od-id="acct-batch"
-            onClick={() => {
-              setBatchMode((b) => !b);
-              setBatchSel(new Set());
-            }}
-          >
-            {batchMode ? "退出批量" : "批量管理"}
-          </button>
-          <button className="btn ghost" onClick={checkAll}>
-            全部校验
-          </button>
-        </div>
-        {!props.ready && <span className="demo-tag">未连接</span>}
-      </div>
+    <PageContainer>
+      <PageHeader
+        title="账号管理"
+        description="授权账号凭证监控 · 运行日志 · 指纹浏览器环境"
+        actions={
+          <>
+            <Button variant="ghost" data-od-id="acct-add" onClick={() => setAddOpen(true)}>
+              <Plus className="h-3.5 w-3.5" />新增账号
+            </Button>
+            <Button
+              variant="ghost"
+              data-od-id="acct-batch"
+              onClick={() => {
+                setBatchMode((b) => !b);
+                setBatchSel(new Set());
+              }}
+            >
+              <Layers className="h-3.5 w-3.5" />{batchMode ? "退出批量" : "批量管理"}
+            </Button>
+            <Button variant="ghost" onClick={checkAll}>
+              <RefreshCw className="h-3.5 w-3.5" />全部校验
+            </Button>
+            {!props.ready && <Badge variant="outline">未连接</Badge>}
+          </>
+        }
+      />
 
-      <div className="acct-summary">
-        <div className="card stat" data-od-id="acct-total">
-          <span className="label">已授权账号</span>
-          <span className="num">
-            {shownAccounts.length}
-            <span className="unit">个</span>
-          </span>
-        </div>
-        <div className="card stat" data-od-id="acct-valid">
-          <span className="label">有效凭证</span>
-          <span className="num" style={{ color: "var(--ok)" }}>
-            {validCnt}
-            <span className="unit">个</span>
-          </span>
-        </div>
-        <div className="card stat" data-od-id="acct-expired">
-          <span className="label">过期 / 异常</span>
-          <span className="num" style={{ color: "var(--danger)" }}>
-            {shownAccounts.length - validCnt}
-            <span className="unit">个</span>
-          </span>
-        </div>
-        <div className="card stat" data-od-id="acct-fp">
-          <span className="label">指纹浏览器在线</span>
-          <span className="num" style={{ color: "var(--accent)" }}>
-            {fpRunning}
-            <span className="unit">/ {fpSet.length}</span>
-          </span>
-        </div>
-      </div>
+      <StatRow cols={4} className="mb-3.5">
+        <StatCard anchor="acct-total" label="已授权账号" value={shownAccounts.length} unit="个" />
+        <StatCard
+          anchor="acct-valid"
+          label="有效凭证"
+          value={<span className="text-[var(--color-success)]">{validCnt}</span>}
+          unit="个"
+        />
+        <StatCard
+          anchor="acct-expired"
+          label="过期 / 异常"
+          value={
+            <span className="text-[var(--color-danger)]">{shownAccounts.length - validCnt}</span>
+          }
+          unit="个"
+        />
+        <StatCard
+          anchor="acct-fp"
+          label="指纹浏览器在线"
+          value={<span className="text-[var(--color-accent)]">{fpRunning}</span>}
+          unit={"/ " + fpSet.length}
+        />
+      </StatRow>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }} data-od-id="account-list">
+      <div className="flex flex-col gap-3.5" data-od-id="account-list">
         {batchMode && (
-          <div className="batch-bar" data-od-id="acct-batch-bar">
-            <button className="btn sm ghost" onClick={batchAll}>
+          <Card
+            data-od-id="acct-batch-bar"
+            className={cn(
+              "flex flex-wrap items-center gap-3 px-3.5 py-2.5",
+              "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+            )}
+          >
+            <Button variant="secondary" size="sm" onClick={batchAll}>
               {batchSel.size === shownAccounts.length ? "取消全选" : "全选"}
-            </button>
-            <span className="batch-count">
+            </Button>
+            <span className="text-[0.8rem] text-[var(--color-text-secondary)]">
               已选{" "}
-              <b style={{ color: "var(--accent)", fontFamily: "var(--font-mono)" }}>
-                {batchSel.size}
-              </b>{" "}
+              <b className="font-mono text-[var(--color-accent)]">{batchSel.size}</b>{" "}
               / {shownAccounts.length} 个账号
             </span>
-            <div style={{ flex: 1 }} />
-            <button className="btn sm ghost" onClick={batchCheck}>
+            <div className="flex-1" />
+            <Button variant="secondary" size="sm" onClick={batchCheck}>
               批量校验
-            </button>
-            <button className="btn sm ghost" onClick={batchExport}>
+            </Button>
+            <Button variant="secondary" size="sm" onClick={batchExport}>
               批量导出
-            </button>
-            <button
-              className="btn sm ghost"
-              style={{ color: "var(--danger)", borderColor: "var(--danger)" }}
-              onClick={batchDelete}
-            >
-              删除所选
-            </button>
-          </div>
+            </Button>
+            <Button variant="danger-outline" size="sm" onClick={batchDelete}>
+              <Trash2 className="h-3 w-3" />删除所选
+            </Button>
+          </Card>
         )}
 
         {showSkeleton
           ? Array.from({ length: 3 }).map((_, i) => (
-              <div className="card acct-card sk" key={"sk" + i} style={{ height: 220 }} />
+              <Skeleton key={"sk" + i} className="h-[220px] w-full rounded-[var(--radius-md)]" />
             ))
           : shownAccounts.map((a) => (
-              <div
-                className="card acct-card"
+              <Card
                 key={a.id}
                 data-od-id={"acct-" + a.id}
                 onClick={() => selectAsMonitor(a)}
-                style={{
-                  // 边框颜色反映账号有效/失效：有效(wp ok)绿色、失效红色；未被选择时仅细边框提示状态
-                  border: "2px solid " + (a.isValid ? "#3ecf8e" : "#e5484d"),
-                  boxShadow: a.isMonitor
-                    ? "0 0 0 3px rgba(54,194,207,0.35)"
-                    : "0 0 0 2px rgba(" + (a.isValid ? "62,207,142" : "229,72,77") + ",0.18)",
-                  cursor: "pointer",
-                }}
+                className={cn(
+                  // 边框颜色反映账号有效/失效：有效(wp ok)绿色、失效红色；监测账号额外描一圈光环
+                  "flex cursor-pointer flex-col overflow-hidden border-2",
+                  a.isValid
+                    ? "border-[var(--color-success)]"
+                    : "border-[var(--color-danger)]",
+                  a.isMonitor
+                    ? "shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-info)_35%,transparent)]"
+                    : a.isValid
+                      ? "shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-success)_18%,transparent)]"
+                      : "shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-danger)_18%,transparent)]"
+                )}
               >
-                <div className="acct-header">
+                <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-border)] p-4">
                   {batchMode && (
                     <input
                       type="checkbox"
-                      className="batch-chk"
+                      className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--color-accent)]"
                       checked={batchSel.has(a.id)}
                       onChange={() => toggleBatch(a.id)}
                       aria-label={"选择 " + a.name}
                     />
                   )}
                   <Avatar name={a.name} h={a.hue} lg />
-                  <div className="info">
-                    <div className="nm">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 text-[0.95rem] font-semibold text-[var(--color-text)]">
                       {a.name}
-                      <Pill c={a.tokenValid ? "ok" : a.lvl === "nosign" ? "warn" : "danger"}>
+                      <Tone tone={a.tokenValid ? "ok" : a.lvl === "nosign" ? "warn" : "danger"}>
                         {a.lvlLabel || (a.tokenValid ? "凭证有效" : "凭证过期")}
-                      </Pill>
+                      </Tone>
                     </div>
-                    <div className="uid">
+                    <div className="mt-0.5 font-mono text-[0.75rem] text-[var(--color-text-muted)]">
                       UID {a.uid} · 上次校验 {a.lastCheck}
                     </div>
                   </div>
-                  <div className="ops">
-                    <button
-                      className={"btn sm" + (manageOpen === a.id ? " accent" : " ghost")}
+                  <Toolbar className="shrink-0">
+                    <Button
+                      size="sm"
+                      variant={manageOpen === a.id ? "default" : "ghost"}
                       onClick={(e) => {
                         e.stopPropagation();
                         setManageOpen(manageOpen === a.id ? null : a.id);
                       }}
                       title="展开账号管理面板（指纹浏览器 / 守护 / 代理 / 凭证）"
                     >
+                      <SlidersHorizontal className="h-3.5 w-3.5" />
                       {manageOpen === a.id ? "收起管理" : "管理"}
-                    </button>
-                    <button
-                      className="btn sm ghost"
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={(e) => {
                         e.stopPropagation();
                         openEdit(a);
                       }}
                       title="编辑账号信息并刷新登录凭证"
                     >
-                      刷新凭证
-                    </button>
-                    <button
-                      className="btn sm ghost"
+                      <Pencil className="h-3.5 w-3.5" />刷新凭证
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={(e) => {
                         e.stopPropagation();
                         setReviewAccount(a);
                       }}
                     >
-                      查阅模式
-                    </button>
-                  </div>
+                      <Eye className="h-3.5 w-3.5" />查阅模式
+                    </Button>
+                  </Toolbar>
                 </div>
 
                 {/* 管理面板：原卡片四板块（守护服务 / 上次运行日志 / 引擎校验 / 关联指纹浏览器） */}
@@ -805,114 +925,149 @@ export default function AccountsPage(props: PageProps) {
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: "auto" }}
                       transition={{ duration: 0.2 }}
-                      style={{ overflow: "hidden" }}
+                      className="overflow-hidden"
                     >
-                      <div className="acct-body" onClick={(e) => e.stopPropagation()}>
+                      <div
+                        className="grid min-w-0 grid-cols-1 border-[var(--color-border)] lg:grid-cols-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                   {/* 守护服务 */}
-                  <div className="acct-section" style={{ gridColumn: "1", gridRow: "1" }}>
-                    <h4>守护服务</h4>
-                    <div className="acct-row" style={{ justifyContent: "flex-start" }}>
-                      <span className="k">凭证守护</span>
-                      <span className="v" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <Pill c={a.browserDaemonAlive ? "ok" : "mute"}>
-                          {a.browserDaemonAlive ? "运行中" : "未运行"}
-                        </Pill>
-                        <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); toggleBrowserDaemon(a); }}>
-                          {a.browserDaemonAlive ? "停止" : "启动"}
-                        </button>
-                        <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                          :{a.browserDaemonPort}
-                        </span>
-                      </span>
-                    </div>
-                    <div className="acct-row" style={{ justifyContent: "flex-start", marginTop: 10 }}>
-                      <span className="k">私信守护</span>
-                      <span className="v" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <Pill c={a.recvDaemonAlive ? "ok" : "mute"}>
-                          {a.recvDaemonAlive ? "运行中" : "未运行"}
-                        </Pill>
-                        <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); toggleRecvDaemon(a); }}>
-                          {a.recvDaemonAlive ? "停止" : "启动"}
-                        </button>
-                        <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                          :{a.recvDaemonPort}
-                        </span>
-                      </span>
-                    </div>
+                  <div className="border-b border-[var(--color-border)] p-4 lg:col-start-1 lg:row-start-1 lg:border-r">
+                    <SectionLabel>守护服务</SectionLabel>
+                    <KeyValue
+                      cols={1}
+                      items={[
+                        {
+                          k: "凭证守护",
+                          v: (
+                            <span className="flex flex-wrap items-center gap-2">
+                              <Tone tone={a.browserDaemonAlive ? "ok" : "mute"}>
+                                {a.browserDaemonAlive ? "运行中" : "未运行"}
+                              </Tone>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => { e.stopPropagation(); toggleBrowserDaemon(a); }}
+                              >
+                                {a.browserDaemonAlive ? "停止" : "启动"}
+                              </Button>
+                              <span className="text-[0.68rem] text-[var(--color-text-muted)]">
+                                :{a.browserDaemonPort}
+                              </span>
+                            </span>
+                          ),
+                        },
+                        {
+                          k: "私信守护",
+                          v: (
+                            <span className="flex flex-wrap items-center gap-2">
+                              <Tone tone={a.recvDaemonAlive ? "ok" : "mute"}>
+                                {a.recvDaemonAlive ? "运行中" : "未运行"}
+                              </Tone>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => { e.stopPropagation(); toggleRecvDaemon(a); }}
+                              >
+                                {a.recvDaemonAlive ? "停止" : "启动"}
+                              </Button>
+                              <span className="text-[0.68rem] text-[var(--color-text-muted)]">
+                                :{a.recvDaemonPort}
+                              </span>
+                            </span>
+                          ),
+                        },
+                      ]}
+                    />
                   </div>
 
                   {/* 上次运行记录 */}
-                  <div className="acct-section" style={{ gridColumn: "1", gridRow: "2" }}>
-                    <h4>上次运行记录</h4>
-                    <div className="acct-row">
-                      <span className="k">直播间</span>
-                      <span
-                        className="v"
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                          color: a.lastRun.room === "—" ? "var(--muted)" : "var(--fg)",
-                        }}
-                      >
-                        {a.lastRun.room}
-                        {a.lastRun.roomUrl && (
-                          <a
-                            href={a.lastRun.roomUrl}
-                            rel="noopener noreferrer"
-                            className="btn sm ghost"
-                            style={{ height: 24, padding: "0 8px", fontSize: 11, lineHeight: 1 }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              // 2026-09-01：WebView 里 <a target="_blank"> 静默失败，
-                              // 必须走 shell.open()（见 utils/openExternal.ts）
-                              void openExternal(a.lastRun.roomUrl || "");
-                              push("已打开直播间：" + a.lastRun.room);
-                            }}
-                          >
-                            前往直播间
-                          </a>
-                        )}
-                      </span>
-                    </div>
-                    <div className="acct-row">
-                      <span className="k">运行时间</span>
-                      <span className="v">{a.lastRun.time}</span>
-                    </div>
-                    <div className="acct-row">
-                      <span className="k">运行时长</span>
-                      <span className="v">{a.lastRun.duration}</span>
-                    </div>
-                    <div className="acct-row">
-                      <span className="k">累计运行</span>
-                      <span className="v">{a.lastRun.totalRuns} 次</span>
-                    </div>
-                    <div className="acct-log-grid" style={{ marginTop: 8 }}>
-                      <div className="acct-log-cell">
-                        <div className="lc-label">捕获评论</div>
-                        <div className="lc-val">{a.lastRun.comments.toLocaleString()}</div>
+                  <div className="p-4 lg:col-start-1 lg:row-start-2 lg:border-r">
+                    <SectionLabel>上次运行记录</SectionLabel>
+                    <KeyValue
+                      cols={1}
+                      items={[
+                        {
+                          k: "直播间",
+                          v: (
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={
+                                  a.lastRun.room === "—"
+                                    ? "text-[var(--color-text-muted)]"
+                                    : "text-[var(--color-text)]"
+                                }
+                              >
+                                {a.lastRun.room}
+                              </span>
+                              {a.lastRun.roomUrl && (
+                                <a
+                                  href={a.lastRun.roomUrl}
+                                  rel="noopener noreferrer"
+                                  className="inline-flex h-6 shrink-0 items-center gap-1
+                                             rounded-[8px] border border-[var(--color-border)]
+                                             px-2 text-[0.68rem] leading-none
+                                             text-[var(--color-text-secondary)]
+                                             transition-colors duration-[var(--duration-fast)]
+                                             hover:bg-[var(--color-surface-raised)]
+                                             hover:text-[var(--color-text)]"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    // 2026-09-01：WebView 里 <a target="_blank"> 静默失败，
+                                    // 必须走 shell.open()（见 utils/openExternal.ts）
+                                    void openExternal(a.lastRun.roomUrl || "");
+                                    push("已打开直播间：" + a.lastRun.room);
+                                  }}
+                                >
+                                  <ExternalLink className="h-3 w-3" />前往直播间
+                                </a>
+                              )}
+                            </span>
+                          ),
+                        },
+                        { k: "运行时间", v: a.lastRun.time },
+                        { k: "运行时长", v: a.lastRun.duration },
+                        { k: "累计运行", v: a.lastRun.totalRuns + " 次" },
+                      ]}
+                    />
+                    <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-5">
+                      <div className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-2.5 py-2">
+                        <div className="mb-0.5 text-[0.68rem] text-[var(--color-text-muted)]">
+                          捕获评论
+                        </div>
+                        <div className="font-mono text-[0.94rem] font-semibold text-[var(--color-text)]">
+                          {a.lastRun.comments.toLocaleString()}
+                        </div>
                       </div>
-                      <div className="acct-log-cell">
-                        <div className="lc-label">发送私信</div>
-                        <div className="lc-val" style={{ color: "var(--accent)" }}>
+                      <div className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-2.5 py-2">
+                        <div className="mb-0.5 text-[0.68rem] text-[var(--color-text-muted)]">
+                          发送私信
+                        </div>
+                        <div className="font-mono text-[0.94rem] font-semibold text-[var(--color-accent)]">
                           {a.lastRun.dmSent}
                         </div>
                       </div>
-                      <div className="acct-log-cell">
-                        <div className="lc-label">下播私信</div>
-                        <div className="lc-val" style={{ color: "var(--warn)" }}>
+                      <div className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-2.5 py-2">
+                        <div className="mb-0.5 text-[0.68rem] text-[var(--color-text-muted)]">
+                          下播私信
+                        </div>
+                        <div className="font-mono text-[0.94rem] font-semibold text-[var(--color-warning)]">
                           {a.lastRun.dmAfterLive}
                         </div>
                       </div>
-                      <div className="acct-log-cell">
-                        <div className="lc-label">成功</div>
-                        <div className="lc-val" style={{ color: "var(--ok)" }}>
+                      <div className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-2.5 py-2">
+                        <div className="mb-0.5 text-[0.68rem] text-[var(--color-text-muted)]">
+                          成功
+                        </div>
+                        <div className="font-mono text-[0.94rem] font-semibold text-[var(--color-success)]">
                           {a.lastRun.dmSuccess}
                         </div>
                       </div>
-                      <div className="acct-log-cell">
-                        <div className="lc-label">失败</div>
-                        <div className="lc-val" style={{ color: "var(--danger)" }}>
+                      <div className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-2.5 py-2">
+                        <div className="mb-0.5 text-[0.68rem] text-[var(--color-text-muted)]">
+                          失败
+                        </div>
+                        <div className="font-mono text-[0.94rem] font-semibold text-[var(--color-danger)]">
                           {a.lastRun.dmFail}
                         </div>
                       </div>
@@ -920,71 +1075,79 @@ export default function AccountsPage(props: PageProps) {
                   </div>
 
                   {/* 引擎校验 */}
-                  <div className="acct-section" style={{ gridColumn: "2", gridRow: "1" }}>
-                    <h4>引擎校验</h4>
-                    <div style={{ display: "flex", alignItems: "stretch", gap: 10 }}>
-                      <div style={{ flex: 1, display: "grid", gap: 10 }}>
-                        <div style={{ padding: "10px 12px", background: "var(--bg)", borderRadius: 8 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                            <span style={{ fontWeight: 600, fontSize: 13 }}>wp 引擎</span>
-                            <Pill c={enginePill(a.wpEngine.level)}>
+                  <div className="border-b border-[var(--color-border)] p-4 lg:col-start-2 lg:row-start-1">
+                    <SectionLabel>引擎校验</SectionLabel>
+                    <div className="flex items-stretch gap-2.5">
+                      <div className="flex flex-1 flex-col gap-2.5">
+                        <div className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-3 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[0.8rem] font-semibold text-[var(--color-text)]">
+                              wp 引擎
+                            </span>
+                            <Tone tone={enginePill(a.wpEngine.level)}>
                               {a.wpEngine.level === "stopped" ? "未运行" : a.wpEngine.label}
-                            </Pill>
+                            </Tone>
                           </div>
                         </div>
                         {(a.wpEngine.level === "fail" || a.dmEngine.level === "fail") && (
-                          <button
-                            className="btn sm danger"
-                            style={{ marginTop: 8 }}
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            className="mt-2"
                             onClick={(e) => { e.stopPropagation(); handleScanVerify(a); }}
                           >
-                            立即处理验证
-                          </button>
+                            <AlertTriangle className="h-3.5 w-3.5" />立即处理验证
+                          </Button>
                         )}
-                        <div style={{ padding: "10px 12px", background: "var(--bg)", borderRadius: 8 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                            <span style={{ fontWeight: 600, fontSize: 13 }}>私信引擎</span>
-                            <Pill c={enginePill(a.dmEngine.level)}>{a.dmEngine.label}</Pill>
+                        <div className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-3 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[0.8rem] font-semibold text-[var(--color-text)]">
+                              私信引擎
+                            </span>
+                            <Tone tone={enginePill(a.dmEngine.level)}>{a.dmEngine.label}</Tone>
                           </div>
                         </div>
                       </div>
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          justifyContent: "center",
-                          alignItems: "stretch",
-                          minWidth: 96,
-                        }}
-                      >
-                        <button className="btn sm" onClick={(e) => { e.stopPropagation(); runCheck(a); }}>
-                          引擎校验
-                        </button>
+                      <div className="flex flex-col items-stretch justify-center">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="min-w-24"
+                          onClick={(e) => { e.stopPropagation(); runCheck(a); }}
+                        >
+                          <Gauge className="h-3.5 w-3.5" />引擎校验
+                        </Button>
                       </div>
                     </div>
                   </div>
 
                   {/* 关联指纹浏览器 */}
-                  <div className="acct-section" style={{ gridColumn: "2", gridRow: "2" }}>
-                    <h4>关联指纹浏览器</h4>
+                  <div className="p-4 lg:col-start-2 lg:row-start-2">
+                    <SectionLabel>关联指纹浏览器</SectionLabel>
                     <div
-                      className="fp-card"
+                      className="cursor-pointer rounded-[var(--radius-sm)] border
+                                 border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4"
                       onDoubleClick={(e) => {
                         e.stopPropagation();
                         onOpenFingerprint(a.name);
                       }}
                       title="双击打开指纹浏览器"
-                      style={{ cursor: "pointer" }}
                     >
-                      <div className="fp-header">
-                        <Dot c={a.fp.status === "running" ? "ok" : "warn"} pulse={a.fp.status === "running"} />
-                        <span className="nm">{a.fp.name}</span>
-                        <Pill c={a.fp.status === "running" ? "ok" : "warn"}>
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <StatusDot
+                          tone={a.fp.status === "running" ? "ok" : "warn"}
+                          pulse={a.fp.status === "running"}
+                        />
+                        <span className="text-[0.82rem] font-medium text-[var(--color-text)]">
+                          {a.fp.name}
+                        </span>
+                        <Tone tone={a.fp.status === "running" ? "ok" : "warn"}>
                           {a.fp.status === "running" ? "运行中" : "已停止"}
-                        </Pill>
-                        <div style={{ flex: 1 }} />
-                        <button
-                          className="btn sm ghost"
+                        </Tone>
+                        <div className="flex-1" />
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={(e) => {
                             e.stopPropagation();
                             setProxyAcct(a);
@@ -1009,40 +1172,33 @@ export default function AccountsPage(props: PageProps) {
                           }}
                         >
                           代理配置
-                        </button>
+                        </Button>
                       </div>
-                      <dl className="fp-env">
-                        <dt>系统</dt>
-                        <dd>{a.fp.os}</dd>
-                        <dt>代理</dt>
-                        <dd style={{ fontFamily: "var(--font-mono)", fontSize: 11.5 }}>
-                          {a.fp.proxy}
-                        </dd>
-                        <dt>分辨率</dt>
-                        <dd>{a.fp.resolution}</dd>
-                        <dt>UA</dt>
-                        <dd
-                          style={{
-                            fontSize: 11,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            maxWidth: 180,
-                          }}
-                        >
-                          {a.fp.ua}
-                        </dd>
-                        <dt>WebRTC</dt>
-                        <dd>{a.fp.webrtc}</dd>
-                        <dt>时区</dt>
-                        <dd>{a.fp.timezone}</dd>
-                      </dl>
-                      </div>
+                      <KeyValue
+                        cols={2}
+                        className="mt-2.5"
+                        items={[
+                          { k: "系统", v: a.fp.os },
+                          {
+                            k: "代理",
+                            mono: true,
+                            v: <span className="text-[0.72rem]">{a.fp.proxy}</span>,
+                          },
+                          { k: "分辨率", v: a.fp.resolution },
+                          {
+                            k: "UA",
+                            v: <span className="block max-w-[180px] truncate">{a.fp.ua}</span>,
+                          },
+                          { k: "WebRTC", v: a.fp.webrtc },
+                          { k: "时区", v: a.fp.timezone },
+                        ]}
+                      />
+                    </div>
                   </div>
-                </div>
+                    </div>
                     </motion.div>
                 )}
-              </div>
+              </Card>
             ))}
       </div>
 
@@ -1160,7 +1316,7 @@ export default function AccountsPage(props: PageProps) {
           />
         )}
       </AnimatePresence>
-    </div>
+    </PageContainer>
   );
 }
 // ===== 查阅模式（只读详情） =====
@@ -1237,25 +1393,43 @@ function AccountReview({
 
   return (
     <motion.div
-      className="overlay"
+      className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-[var(--color-background)]"
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
       data-od-id="acct-review"
     >
-      <header className="nav">
-        <div className="brand">
-          <span className="mark" aria-hidden="true" />
-          <h1>抖音数据控制台</h1>
-          <span className="sub">Douyin Console</span>
+      <header
+        className="flex flex-wrap items-center gap-5 border-b border-[var(--color-border)]
+                   px-5 py-2.5"
+      >
+        <div className="flex items-baseline gap-2.5 whitespace-nowrap">
+          <span
+            aria-hidden="true"
+            className="h-[22px] w-[22px] shrink-0 self-center rounded-[6px]
+                       bg-[var(--color-accent)]"
+          />
+          <h1 className="text-[0.94rem] font-semibold tracking-tight text-[var(--color-text)]">
+            抖音数据控制台
+          </h1>
+          <span className="font-mono text-[0.68rem] uppercase tracking-[0.06em]
+                           text-[var(--color-text-muted)]">
+            Douyin Console
+          </span>
         </div>
-        <nav className="tabs" aria-label="主导航">
+        <nav className="flex flex-1 flex-wrap gap-0.5" aria-label="主导航">
           {TABS.map(([id, label]) => (
             <button
               key={id}
               data-od-id={"review-tab-" + id}
-              className={"tab" + (id === "accounts" ? " active" : "")}
+              className={cn(
+                "whitespace-nowrap rounded-[9px] px-3 py-1.5 text-[0.82rem]",
+                "transition-colors duration-[var(--duration-fast)]",
+                id === "accounts"
+                  ? "bg-[var(--color-accent-soft)] font-medium text-[var(--color-accent)]"
+                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
+              )}
               onClick={() => {
                 if (id !== "accounts") {
                   onClose();
@@ -1271,131 +1445,138 @@ function AccountReview({
             </button>
           ))}
         </nav>
-        <div className="nav-status">
-          <span className="badge-conn">
-            <Dot c="ok" pulse /> Cookie <b>有效</b>
-          </span>
-          <span className="badge-conn">
-            <Dot c="ok" pulse /> 直播 <b>已连接</b>
-          </span>
-          <span className="demo-tag">查阅模式</span>
+        <div className="flex items-center gap-2 whitespace-nowrap">
+          <Badge variant="outline" className="font-mono">
+            <StatusDot tone="ok" pulse />Cookie <b className="font-semibold">有效</b>
+          </Badge>
+          <Badge variant="outline" className="font-mono">
+            <StatusDot tone="ok" pulse />直播 <b className="font-semibold">已连接</b>
+          </Badge>
+          <Badge variant="accent">查阅模式</Badge>
         </div>
       </header>
 
-      <div className="overlay-head" style={{ background: "var(--surface)" }}>
-        <button className="btn ghost" onClick={onClose}>
-          ‹ 返回账号管理
-        </button>
+      <div
+        className="flex flex-wrap items-center gap-3 border-b border-[var(--color-border)]
+                   bg-[var(--color-surface)] px-5 py-3.5"
+      >
+        <Button variant="ghost" onClick={onClose}>
+          <ArrowLeft className="h-4 w-4" />返回账号管理
+        </Button>
         <Avatar name={a.name} h={a.hue} sm />
-        <h2>{a.name} · 查阅模式</h2>
-        <Pill c={a.tokenValid ? "ok" : a.lvl === "nosign" ? "warn" : "danger"}>
+        <h2 className="text-[0.94rem] font-semibold text-[var(--color-text)]">
+          {a.name} · 查阅模式
+        </h2>
+        <Tone tone={a.tokenValid ? "ok" : a.lvl === "nosign" ? "warn" : "danger"}>
           {a.lvlLabel || (a.tokenValid ? "凭证有效" : "凭证过期")}
-        </Pill>
-        <div style={{ flex: 1 }} />
-        <span className="demo-tag">只读 · {a.uid}</span>
+        </Tone>
+        <div className="flex-1" />
+        <Badge variant="outline">只读 · {a.uid}</Badge>
       </div>
 
-      <div className="overlay-body">
-        <div className="review-stats-row" data-od-id="review-stats">
-          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
-            <span className="label">捕获评论</span>
-            <span className="num">
-              {r.comments.toLocaleString()}
-              <span className="unit">条</span>
-            </span>
-          </div>
-          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
-            <span className="label">发送私信</span>
-            <span className="num" style={{ color: "var(--accent)" }}>
-              {r.dmSent}
-              <span className="unit">条</span>
-            </span>
-          </div>
-          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
-            <span className="label">下播私信</span>
-            <span className="num" style={{ color: "var(--warn)" }}>
-              {r.dmAfterLive}
-              <span className="unit">条</span>
-            </span>
-          </div>
-          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
-            <span className="label">成功</span>
-            <span className="num" style={{ color: "var(--ok)" }}>
-              {r.dmSuccess}
-            </span>
-          </div>
-          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
-            <span className="label">失败</span>
-            <span className="num" style={{ color: "var(--danger)" }}>
-              {r.dmFail}
-            </span>
-          </div>
-          <div className="card stat" style={{ flex: 1, minWidth: 140 }}>
-            <span className="label">成功率</span>
-            <span
-              className="num"
-              style={{
-                color: r.dmSent > 0 && r.dmSuccess / r.dmSent > 0.9 ? "var(--ok)" : "var(--warn)",
-              }}
-            >
-              {r.dmSent > 0 ? Math.round((r.dmSuccess / r.dmSent) * 100) : 0}
-              <span className="unit">%</span>
-            </span>
-          </div>
-        </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-10 pt-4.5">
+        <StatRow cols={5} className="mb-3.5" data-od-id="review-stats">
+          <Card className="p-4">
+            <Stat label="捕获评论" value={r.comments.toLocaleString()} unit="条" />
+          </Card>
+          <Card className="p-4">
+            <Stat
+              label="发送私信"
+              value={<span className="text-[var(--color-accent)]">{r.dmSent}</span>}
+              unit="条"
+            />
+          </Card>
+          <Card className="p-4">
+            <Stat
+              label="下播私信"
+              value={<span className="text-[var(--color-warning)]">{r.dmAfterLive}</span>}
+              unit="条"
+            />
+          </Card>
+          <Card className="p-4">
+            <Stat
+              label="成功"
+              value={<span className="text-[var(--color-success)]">{r.dmSuccess}</span>}
+            />
+          </Card>
+          <Card className="p-4">
+            <Stat
+              label="失败"
+              value={<span className="text-[var(--color-danger)]">{r.dmFail}</span>}
+            />
+          </Card>
+          <Card className="p-4">
+            <Stat
+              label="成功率"
+              value={
+                <span
+                  className={
+                    r.dmSent > 0 && r.dmSuccess / r.dmSent > 0.9
+                      ? "text-[var(--color-success)]"
+                      : "text-[var(--color-warning)]"
+                  }
+                >
+                  {r.dmSent > 0 ? Math.round((r.dmSuccess / r.dmSent) * 100) : 0}
+                </span>
+              }
+              unit="%"
+            />
+          </Card>
+        </StatRow>
 
         <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 320px",
-            gap: 14,
-            alignItems: "start",
-          }}
+          className="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-[1fr_320px]"
           data-od-id="review-content"
         >
           <div>
-            <div className="table-tools">
-              <input
-                className="input"
+            <Toolbar className="mb-3">
+              <Input
+                className="h-8 min-w-[180px] flex-1 text-[0.78rem]"
                 placeholder="搜索昵称 / 评论内容 / 私信文案…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
               />
-              <select
-                className="select"
-                value={st}
-                onChange={(e) => setSt(e.target.value)}
-                aria-label="私信状态筛选"
-              >
-                <option value="all">全部状态</option>
-                <option value="un">未私信</option>
-                <option value="wait">待发送</option>
-                <option value="sent">已发送</option>
-                <option value="fail">发送失败</option>
-              </select>
-              <button className="btn ghost" onClick={() => setAsc((s) => !s)}>
+              <Select value={st} onValueChange={setSt}>
+                <SelectTrigger className="h-8 w-[130px] text-[0.78rem]" aria-label="私信状态筛选">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部状态</SelectItem>
+                  <SelectItem value="un">未私信</SelectItem>
+                  <SelectItem value="wait">待发送</SelectItem>
+                  <SelectItem value="sent">已发送</SelectItem>
+                  <SelectItem value="fail">发送失败</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="ghost" size="sm" onClick={() => setAsc((s) => !s)}>
                 {asc ? "时间 ↑" : "时间 ↓"}
-              </button>
-              <button
-                className="btn ghost"
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   setSt("all");
                   setQ("");
                 }}
               >
                 重置
-              </button>
-              <button className="btn primary" onClick={exportCSV}>
-                导出 CSV
-              </button>
-            </div>
-            <div className="count-line">
-              共 <b>{filtered.length}</b> 条 ·{" "}
-              <span
-                className="filter-pills"
-                style={{ display: "inline-flex", marginLeft: 10, verticalAlign: "middle" }}
-              >
-                {(
+              </Button>
+              <Button onClick={exportCSV}>
+                <Download className="h-3.5 w-3.5" />导出 CSV
+              </Button>
+            </Toolbar>
+            <div className="mb-2.5 flex flex-wrap items-center gap-2.5 text-[0.75rem] text-[var(--color-text-muted)]">
+              <span>
+                共{" "}
+                <b className="font-mono font-semibold text-[var(--color-text)]">
+                  {filtered.length}
+                </b>{" "}
+                条
+              </span>
+              <SegmentedTabs
+                value={st}
+                onChange={setSt}
+                items={(
                   [
                     ["all", "全部", rows.length],
                     ["un", "未私信", cnt("un")],
@@ -1403,140 +1584,171 @@ function AccountReview({
                     ["sent", "已发送", cnt("sent")],
                     ["fail", "发送失败", cnt("fail")],
                   ] as [string, string, number][]
-                ).map(([id, l, c]) => (
-                  <button
-                    key={id}
-                    className={"fpill" + (st === id ? " active" : "")}
-                    onClick={() => setSt(id)}
-                  >
-                    {l}
-                    <span className="c">{c}</span>
-                  </button>
-                ))}
-              </span>
+                ).map(([id, l, c]) => ({
+                  value: id,
+                  label: (
+                    <>
+                      {l}
+                      <span className="font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+                        {c}
+                      </span>
+                    </>
+                  ),
+                }))}
+              />
             </div>
-            <div className="card" style={{ padding: 0 }}>
-              <div className="table-scroll">
-                <table className="comment-table">
+            <Card className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
                   <thead>
                     <tr>
-                      <th style={{ width: 30 }} />
-                      <th>发送时间</th>
-                      <th>发言人</th>
-                      <th>评论内容</th>
-                      <th>私信状态</th>
-                      <th>私信文案</th>
-                      <th>私信时间</th>
-                      <th style={{ width: 120 }}>操作</th>
+                      <Th className="w-[30px]" />
+                      <Th>发送时间</Th>
+                      <Th>发言人</Th>
+                      <Th>评论内容</Th>
+                      <Th>私信状态</Th>
+                      <Th>私信文案</Th>
+                      <Th>私信时间</Th>
+                      <Th className="w-[120px] text-right">操作</Th>
                     </tr>
                   </thead>
                   <tbody>
                     {filtered.length === 0 && (
                       <tr>
-                        <td
-                          colSpan={8}
-                          style={{
-                            padding: "36px 20px",
-                            textAlign: "center",
-                            color: "var(--muted)",
-                            fontSize: 13,
-                          }}
-                        >
-                          <div style={{ fontSize: 26, marginBottom: 8 }}>📭</div>
-                          暂无评论记录 · 等待直播间捕获后自动入库
-                        </td>
+                        <Td colSpan={8} className="py-9 text-center">
+                          <Blank>
+                            <Inbox className="mb-1.5 h-6 w-6" />
+                            暂无评论记录 · 等待直播间捕获后自动入库
+                          </Blank>
+                        </Td>
                       </tr>
                     )}
                     {filtered.map((row) => (
                       <Fragment key={row.id}>
-                        <tr>
-                          <td>
-                            <span className="mono" style={{ color: "var(--muted)" }}>
-                              {exp === row.id ? "▾" : "▸"}
-                            </span>
-                          </td>
-                          <td className="mono">{row.time}</td>
-                          <td>
-                            <span className="speaker">
-                              <Avatar name={row.name} h={hue(row.name.length)} sm />
-                              <span className="nm">{row.name}</span>
-                              {row.lv < 99 && <span className="lv">Lv.{row.lv}</span>}
-                            </span>
-                          </td>
-                          <td className="content-cell">
-                            <span className="cmt-text">{row.content}</span>
-                          </td>
-                          <td>
-                            {row.dmStatus === "un" ? (
-                              <span className="blank">—</span>
+                        <tr
+                          className="transition-colors duration-[var(--duration-fast)]
+                                     hover:bg-[var(--color-surface-raised)]"
+                        >
+                          <Td>
+                            {exp === row.id ? (
+                              <ChevronDown className="h-3.5 w-3.5 text-[var(--color-text-muted)]" />
                             ) : (
-                              <Pill c={DM_META[row.dmStatus]?.[1] || "mute"}>
-                                {DM_META[row.dmStatus]?.[0] || ""}
-                              </Pill>
+                              <ChevronRight className="h-3.5 w-3.5 text-[var(--color-text-muted)]" />
                             )}
-                          </td>
-                          <td className="dm-cell">
-                            <span className={"dm-text" + (row.dmText ? " has" : "")}>
-                              {row.dmText || <span className="blank">未发送</span>}
+                          </Td>
+                          <Td mono className="whitespace-nowrap">{row.time}</Td>
+                          <Td>
+                            <span className="inline-flex items-center gap-2">
+                              <Avatar name={row.name} h={hue(row.name.length)} sm />
+                              <span className="whitespace-nowrap font-medium text-[var(--color-text)]">
+                                {row.name}
+                              </span>
+                              {row.lv < 99 && (
+                                <span
+                                  className="rounded-[4px] border border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]
+                                             px-1 font-mono text-[0.66rem] text-[var(--color-warning)]"
+                                >
+                                  Lv.{row.lv}
+                                </span>
+                              )}
                             </span>
-                          </td>
-                          <td className="mono">{row.dmTime || <span className="blank">—</span>}</td>
-                          <td>
-                            <div className="head-row" style={{ gap: 4 }}>
-                              <button
-                                className="btn text sm"
+                          </Td>
+                          <Td className="max-w-[260px]">
+                            <span className="block truncate">{row.content}</span>
+                          </Td>
+                          <Td>
+                            {row.dmStatus === "un" ? (
+                              <span className="font-mono text-[var(--color-text-muted)]">—</span>
+                            ) : (
+                              <Tone tone={DM_META[row.dmStatus]?.[1] || "mute"}>
+                                {DM_META[row.dmStatus]?.[0] || ""}
+                              </Tone>
+                            )}
+                          </Td>
+                          <Td className="max-w-[180px]">
+                            <span
+                              className={cn(
+                                "block truncate",
+                                row.dmText
+                                  ? "text-[var(--color-text)]"
+                                  : "text-[var(--color-text-muted)]"
+                              )}
+                            >
+                              {row.dmText || (
+                                <span className="font-mono text-[var(--color-text-muted)]">
+                                  未发送
+                                </span>
+                              )}
+                            </span>
+                          </Td>
+                          <Td mono className="whitespace-nowrap">
+                            {row.dmTime || (
+                              <span className="font-mono text-[var(--color-text-muted)]">—</span>
+                            )}
+                          </Td>
+                          <Td>
+                            <Toolbar className="justify-end gap-1">
+                              <Button
+                                variant="link"
+                                size="sm"
                                 onClick={() => setExp(exp === row.id ? null : row.id)}
                               >
                                 详情
-                              </button>
-                              <button
-                                className="btn text sm"
+                              </Button>
+                              <Button
+                                variant="link"
+                                size="sm"
                                 onClick={() => {
                                   goMsg?.(row.name, row.content);
                                   push("已跳转私信中心 · " + row.name);
                                 }}
                               >
                                 发私信
-                              </button>
-                            </div>
-                          </td>
+                              </Button>
+                            </Toolbar>
+                          </Td>
                         </tr>
                         {exp === row.id && (
                           <tr key={row.id + "-d"}>
-                            <td
-                              colSpan={8}
-                              style={{ padding: "6px 10px 14px", background: "var(--surface-2)" }}
-                            >
-                              <div className="detail-panel">
-                                <h4>评论历史 · {row.name}</h4>
-                                <div className="history-list">
+                            <Td colSpan={8} className="bg-[var(--color-surface-raised)] px-2.5 pb-3.5 pt-1.5">
+                              <Card className="mb-2.5 rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-3.5">
+                                <h4 className="mb-2 text-[0.75rem] tracking-[0.06em] text-[var(--color-text-muted)]">
+                                  评论历史 · {row.name}
+                                </h4>
+                                <div className="mb-3 flex flex-col gap-1.5">
                                   {rows
                                     .filter((x) => x.name === row.name)
                                     .slice(0, 5)
                                     .map((x, i) => (
-                                      <div className="history-item" key={i}>
-                                        <span className="tm">{x.time}</span>
+                                      <div key={i} className="flex items-baseline gap-2.5 text-[0.78rem]">
+                                        <span className="shrink-0 font-mono text-[0.7rem] text-[var(--color-text-muted)]">
+                                          {x.time}
+                                        </span>
                                         <span>{x.content}</span>
                                       </div>
                                     ))}
                                 </div>
-                                <h4>私信内容</h4>
-                                <div style={{ fontSize: 13 }}>
+                                <h4 className="mb-2 text-[0.75rem] tracking-[0.06em] text-[var(--color-text-muted)]">
+                                  私信内容
+                                </h4>
+                                <div className="text-[0.8rem]">
                                   {row.dmStatus === "un" ? (
-                                    <span className="blank">尚未对该发言人发送私信</span>
+                                    <span className="font-mono text-[var(--color-text-muted)]">
+                                      尚未对该发言人发送私信
+                                    </span>
                                   ) : (
                                     <span>
-                                      <Pill c={DM_META[row.dmStatus]?.[1] || "mute"}>
+                                      <Tone tone={DM_META[row.dmStatus]?.[1] || "mute"}>
                                         {DM_META[row.dmStatus]?.[0] || ""}
-                                      </Pill>
+                                      </Tone>
                                       {"　"}
                                       {row.dmText || "（文案未填写）"}
                                       {row.dmTime ? "　·　" + row.dmTime : ""}
                                     </span>
                                   )}
                                 </div>
-                              </div>
-                            </td>
+                              </Card>
+                            </Td>
                           </tr>
                         )}
                       </Fragment>
@@ -1544,90 +1756,74 @@ function AccountReview({
                   </tbody>
                 </table>
               </div>
-            </div>
+            </Card>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div className="card">
-              <h3>运行信息</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
-                <div className="acct-row">
-                  <span className="k">直播间</span>
-                  <span className="v" style={{ color: "var(--accent)" }}>
-                    {r.room}
-                  </span>
-                </div>
-                <div className="acct-row">
-                  <span className="k">运行时间</span>
-                  <span className="v">{r.time}</span>
-                </div>
-                <div className="acct-row">
-                  <span className="k">运行时长</span>
-                  <span className="v">{r.duration}</span>
-                </div>
-                <div className="acct-row">
-                  <span className="k">累计运行</span>
-                  <span className="v">{r.totalRuns} 次</span>
-                </div>
+          <div className="flex flex-col gap-3.5">
+            <Section className="mb-0">
+              <PanelTitle>运行信息</PanelTitle>
+              <KeyValue
+                cols={1}
+                items={[
+                  {
+                    k: "直播间",
+                    v: (
+                      <span className="text-[var(--color-accent)]">{r.room}</span>
+                    ),
+                  },
+                  { k: "运行时间", v: r.time },
+                  { k: "运行时长", v: r.duration },
+                  { k: "累计运行", v: r.totalRuns + " 次" },
+                ]}
+              />
+            </Section>
+            <Section className="mb-0">
+              <PanelTitle>指纹浏览器</PanelTitle>
+              <div className="mb-1 flex flex-wrap items-center gap-2.5">
+                <StatusDot
+                  tone={a.fp.status === "running" ? "ok" : "warn"}
+                  pulse={a.fp.status === "running"}
+                />
+                <span className="text-[0.82rem] font-medium text-[var(--color-text)]">
+                  {a.fp.name}
+                </span>
+                <Tone tone={a.fp.status === "running" ? "ok" : "warn"}>
+                  {a.fp.status === "running" ? "运行中" : "已停止"}
+                </Tone>
               </div>
-            </div>
-            <div className="card">
-              <h3>指纹浏览器</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
-                <div className="fp-header" style={{ marginBottom: 4 }}>
-                  <Dot c={a.fp.status === "running" ? "ok" : "warn"} pulse={a.fp.status === "running"} />
-                  <span className="nm">{a.fp.name}</span>
-                  <Pill c={a.fp.status === "running" ? "ok" : "warn"}>
-                    {a.fp.status === "running" ? "运行中" : "已停止"}
-                  </Pill>
-                </div>
-                <dl className="fp-env">
-                  <dt>系统</dt>
-                  <dd>{a.fp.os}</dd>
-                  <dt>代理</dt>
-                  <dd style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{a.fp.proxy}</dd>
-                  <dt>分辨率</dt>
-                  <dd>{a.fp.resolution}</dd>
-                  <dt>UA</dt>
-                  <dd
-                    style={{
-                      fontSize: 10.5,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {a.fp.ua}
-                  </dd>
-                  <dt>WebRTC</dt>
-                  <dd>{a.fp.webrtc}</dd>
-                  <dt>时区</dt>
-                  <dd>{a.fp.timezone}</dd>
-                </dl>
-              </div>
-            </div>
-            <div className="card">
-              <h3>操作</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <button
-                  className="btn primary"
-                  style={{ width: "100%" }}
+              <KeyValue
+                cols={1}
+                items={[
+                  { k: "系统", v: a.fp.os },
+                  { k: "代理", mono: true, v: <span className="text-[0.7rem]">{a.fp.proxy}</span> },
+                  { k: "分辨率", v: a.fp.resolution },
+                  { k: "UA", v: <span className="block truncate text-[0.66rem]">{a.fp.ua}</span> },
+                  { k: "WebRTC", v: a.fp.webrtc },
+                  { k: "时区", v: a.fp.timezone },
+                ]}
+              />
+            </Section>
+            <Section className="mb-0">
+              <PanelTitle>操作</PanelTitle>
+              <div className="flex flex-col gap-2">
+                <Button
+                  className="w-full"
                   onClick={() => push("已对全部未私信用户批量发送私信")}
                 >
                   批量发送私信
-                </button>
-                <button className="btn ghost" style={{ width: "100%" }} onClick={exportCSV}>
-                  导出全部数据
-                </button>
-                <button
-                  className="btn ghost"
-                  style={{ width: "100%" }}
+                </Button>
+                <Button variant="ghost" className="w-full" onClick={exportCSV}>
+                  <Download className="h-3.5 w-3.5" />导出全部数据
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="w-full"
                   onClick={() => push("已跳转私信中心 · " + a.name)}
                 >
                   进入私信中心
-                </button>
+                </Button>
               </div>
-            </div>
+            </Section>
           </div>
         </div>
       </div>
@@ -1669,7 +1865,7 @@ function ProxyDrawer({
     <>
       <motion.div
         key="proxy-backdrop"
-        className="drawer-backdrop"
+        className="fixed inset-0 z-[60] bg-black/55 backdrop-blur-sm"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -1678,189 +1874,164 @@ function ProxyDrawer({
       />
       <motion.div
         key="proxy-drawer"
-        className="drawer"
+        className="fixed bottom-0 right-0 top-0 z-[61] flex w-[480px] max-w-[92vw]
+                   flex-col border-l border-[var(--color-border)]
+                   bg-[var(--color-background)] shadow-[var(--shadow-lg)]"
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
         exit={{ x: "100%" }}
         transition={{ type: "spring", damping: 28, stiffness: 320 }}
         data-od-id="proxy-drawer"
       >
-        <div className="drawer-head">
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--color-border)]
+                        bg-[var(--color-surface)] px-4.5 py-3.5">
           <Avatar name={a.name} h={a.hue} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>代理配置 · {a.name}</div>
-            <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>
+          <div className="flex-1">
+            <div className="text-[0.88rem] font-semibold text-[var(--color-text)]">
+              代理配置 · {a.name}
+            </div>
+            <div className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
               UID: {a.uid} · {a.fp.name}
             </div>
           </div>
-          <Pill c={a.fp.status === "running" ? "ok" : "warn"}>
+          <Tone tone={a.fp.status === "running" ? "ok" : "warn"}>
             {a.fp.status === "running" ? "运行中" : "已停止"}
-          </Pill>
-          <button
-            className="btn ghost"
-            onClick={onClose}
-            style={{ fontSize: 18, padding: "4px 8px", lineHeight: 1 }}
-          >
-            ×
-          </button>
+          </Tone>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
 
-        <div className="drawer-body">
-          <div className="card" style={{ marginBottom: 14 }}>
-            <h3>代理类型</h3>
-            <div className="grid cols-4" style={{ gap: 8 }}>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4.5 pb-6 pt-4">
+          <Section className="mb-3.5">
+            <PanelTitle>代理类型</PanelTitle>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
               {proxyTypes.map((pt) => (
                 <button
                   key={pt.id}
-                  style={{
-                    padding: "10px 12px",
-                    cursor: "pointer",
-                    border: form.type === pt.id ? "2px solid var(--accent)" : "1px solid var(--border)",
-                    borderRadius: 8,
-                    background: form.type === pt.id ? "var(--accent-bg)" : "var(--surface)",
-                    textAlign: "left",
-                  }}
+                  className={cn(
+                    "cursor-pointer rounded-[var(--radius-sm)] px-3 py-2.5 text-left",
+                    "transition-colors duration-[var(--duration-fast)]",
+                    form.type === pt.id
+                      ? "border-2 border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                      : "border border-[var(--color-border)] bg-[var(--color-surface)] hover:bg-[var(--color-surface-raised)]"
+                  )}
                   onClick={() => setForm((f) => ({ ...f, type: pt.id }))}
                 >
                   <div
-                    style={{
-                      fontWeight: 600,
-                      fontSize: 13,
-                      color: form.type === pt.id ? "var(--accent)" : "var(--fg)",
-                    }}
+                    className={cn(
+                      "text-[0.8rem] font-semibold",
+                      form.type === pt.id
+                        ? "text-[var(--color-accent)]"
+                        : "text-[var(--color-text)]"
+                    )}
                   >
                     {pt.label}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{pt.desc}</div>
+                  <div className="mt-0.5 text-[0.68rem] text-[var(--color-text-muted)]">
+                    {pt.desc}
+                  </div>
                 </button>
               ))}
             </div>
-          </div>
+          </Section>
 
           {form.type !== "direct" && form.type !== "system" && (
-            <div className="card" style={{ marginBottom: 14 }}>
-              <h3>连接设置</h3>
-              <div className="grid cols-2" style={{ gap: 12 }}>
-                <div className="field">
-                  <label>主机地址</label>
-                  <input
-                    className="input mono"
+            <Section className="mb-3.5">
+              <PanelTitle>连接设置</PanelTitle>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <FormField label="主机地址">
+                  <Input
+                    className="font-mono"
                     placeholder="127.0.0.1"
                     value={form.host}
                     onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))}
                   />
-                </div>
-                <div className="field">
-                  <label>端口</label>
-                  <input
-                    className="input mono"
+                </FormField>
+                <FormField label="端口">
+                  <Input
+                    className="font-mono"
                     placeholder="1080"
                     value={form.port}
                     onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))}
                   />
-                </div>
-                <div className="field">
-                  <label>
-                    用户名{" "}
-                    <span style={{ color: "var(--muted)", fontWeight: 400 }}>(可选)</span>
-                  </label>
-                  <input
-                    className="input"
+                </FormField>
+                <FormField label={<>用户名 <span className="font-normal text-[var(--color-text-muted)]">(可选)</span></>}>
+                  <Input
                     placeholder="留空则无认证"
                     value={form.user}
                     onChange={(e) => setForm((f) => ({ ...f, user: e.target.value }))}
                   />
-                </div>
-                <div className="field">
-                  <label>
-                    密码 <span style={{ color: "var(--muted)", fontWeight: 400 }}>(可选)</span>
-                  </label>
-                  <input
-                    className="input"
+                </FormField>
+                <FormField label={<>密码 <span className="font-normal text-[var(--color-text-muted)]">(可选)</span></>}>
+                  <Input
                     type="password"
                     placeholder="留空则无认证"
                     value={form.pass}
                     onChange={(e) => setForm((f) => ({ ...f, pass: e.target.value }))}
                   />
-                </div>
+                </FormField>
               </div>
               <div
-                style={{
-                  marginTop: 12,
-                  padding: "10px 14px",
-                  background: "var(--surface-2)",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  color: "var(--muted)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                }}
+                className="mt-3 flex items-center gap-2 rounded-[var(--radius-sm)]
+                           bg-[var(--color-surface-raised)] px-3.5 py-2.5 text-[0.75rem]
+                           text-[var(--color-text-muted)]"
               >
-                <span style={{ fontSize: 16 }}>💡</span>
+                <Lightbulb className="h-4 w-4 shrink-0 text-[var(--color-warning)]" />
                 <span>
                   完整地址：
-                  <b className="mono" style={{ color: "var(--fg)" }}>
+                  <b className="font-mono font-semibold text-[var(--color-text)]">
                     {form.type}://{form.host}
                     {form.port ? ":" + form.port : ""}
                   </b>
                 </span>
               </div>
-            </div>
+            </Section>
           )}
 
-          <div className="card" style={{ marginBottom: 14 }}>
-            <h3>连接测试</h3>
-            <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+          <Section className="mb-3.5">
+            <PanelTitle>连接测试</PanelTitle>
+            <div className="mb-2 text-[0.72rem] text-[var(--color-text-muted)]">
               三种模式均可测试，返回真实出口 IP 与归属地（直连=走本机 IP）
             </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <input
-                className="input"
-                style={{ flex: 1 }}
+            <Toolbar className="mb-3">
+              <Input
+                className="flex-1"
                 placeholder="测试目标 URL（默认 https://www.douyin.com）"
                 value={form.testUrl}
                 onChange={(e) => setForm((f) => ({ ...f, testUrl: e.target.value }))}
               />
-              <button
-                className="btn primary"
-                disabled={testing}
-                onClick={onTest}
-              >
+              <Button disabled={testing} onClick={onTest}>
                 {testing ? "测试中…" : "测试连接"}
-              </button>
-            </div>
+              </Button>
+            </Toolbar>
             {testResult && (
               <div
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 8,
-                  background: testResult.ok ? "var(--ok-bg)" : "var(--danger-bg)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontSize: 13,
-                }}
+                className={cn(
+                  "flex items-center gap-2 rounded-[var(--radius-sm)] px-3.5 py-2.5 text-[0.8rem]",
+                  testResult.ok
+                    ? "bg-[var(--color-success-soft)]"
+                    : "bg-[var(--color-danger-soft)]"
+                )}
               >
-                <span style={{ fontSize: 16 }}>{testResult.ok ? "✅" : "❌"}</span>
+                {testResult.ok ? (
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--color-success)]" />
+                ) : (
+                  <XCircle className="h-4 w-4 shrink-0 text-[var(--color-danger)]" />
+                )}
                 <div>
                   <div
-                    style={{
-                      fontWeight: 600,
-                      color: testResult.ok ? "var(--ok)" : "var(--danger)",
-                    }}
+                    className={cn(
+                      "font-semibold",
+                      testResult.ok
+                        ? "text-[var(--color-success)]"
+                        : "text-[var(--color-danger)]"
+                    )}
                   >
                     {testResult.ok ? "连接成功" : "连接失败"}
                   </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "var(--muted)",
-                      marginTop: 2,
-                      whiteSpace: "pre-line",
-                      lineHeight: 1.6,
-                    }}
-                  >
+                  <div className="mt-0.5 whitespace-pre-line text-[0.75rem] leading-relaxed
+                                  text-[var(--color-text-muted)]">
                     {testResult.msg}
                   </div>
                 </div>
@@ -1868,56 +2039,45 @@ function ProxyDrawer({
             )}
             {(form.type === "direct" || form.type === "system") && (
               <div
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 8,
-                  background: "var(--surface-2)",
-                  fontSize: 12,
-                  color: "var(--muted)",
-                }}
+                className="rounded-[var(--radius-sm)] bg-[var(--color-surface-raised)]
+                           px-3.5 py-2.5 text-[0.75rem] text-[var(--color-text-muted)]"
               >
                 {form.type === "direct"
                   ? "不走代理：流量直接以本机 IP 发出（豁免代理软件端口），无需测试"
                   : "系统代理：跟随本机系统代理设置，无需填写节点信息"}
               </div>
             )}
-          </div>
+          </Section>
 
-          <div className="card">
-            <h3>当前配置预览</h3>
+          <Section>
+            <PanelTitle>当前配置预览</PanelTitle>
             <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "80px 1fr",
-                gap: "6px 10px",
-                fontSize: 12.5,
-              }}
+              className="grid grid-cols-[80px_1fr] gap-x-2.5 gap-y-1.5 text-[0.78rem]"
             >
-              <span style={{ color: "var(--muted)" }}>代理类型</span>
-              <span className="mono" style={{ fontWeight: 600 }}>
-                {form.type.toUpperCase()}
-              </span>
-              <span style={{ color: "var(--muted)" }}>地址</span>
-              <span className="mono">
+              <span className="text-[var(--color-text-muted)]">代理类型</span>
+              <span className="font-mono font-semibold">{form.type.toUpperCase()}</span>
+              <span className="text-[var(--color-text-muted)]">地址</span>
+              <span className="font-mono">
                 {form.type === "direct" ? "直连" : form.host + (form.port ? ":" + form.port : "")}
               </span>
-              <span style={{ color: "var(--muted)" }}>认证</span>
-              <span className="mono">{form.user ? form.user + " / ••••" : "无"}</span>
-              <span style={{ color: "var(--muted)" }}>影响账号</span>
+              <span className="text-[var(--color-text-muted)]">认证</span>
+              <span className="font-mono">{form.user ? form.user + " / ••••" : "无"}</span>
+              <span className="text-[var(--color-text-muted)]">影响账号</span>
               <span>
                 {a.name} ({a.uid})
               </span>
             </div>
-          </div>
+          </Section>
         </div>
 
-        <div className="drawer-foot">
-          <button className="btn ghost" onClick={onClose}>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--color-border)]
+                        bg-[var(--color-surface)] px-4.5 py-3">
+          <Button variant="ghost" onClick={onClose}>
             取消
-          </button>
-          <button className="btn primary" onClick={onSave}>
+          </Button>
+          <Button onClick={onSave}>
             保存配置
-          </button>
+          </Button>
         </div>
       </motion.div>
     </>
@@ -1946,7 +2106,7 @@ function AccountDrawer({
     <>
       <motion.div
         key={"acct-backdrop-" + mode}
-        className="drawer-backdrop"
+        className="fixed inset-0 z-[60] bg-black/55 backdrop-blur-sm"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -1955,89 +2115,87 @@ function AccountDrawer({
       />
       <motion.div
         key={"acct-drawer-" + mode}
-        className="drawer"
+        className="fixed bottom-0 right-0 top-0 z-[61] flex w-[480px] max-w-[92vw]
+                   flex-col border-l border-[var(--color-border)]
+                   bg-[var(--color-background)] shadow-[var(--shadow-lg)]"
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
         exit={{ x: "100%" }}
         transition={{ type: "spring", damping: 28, stiffness: 320 }}
         data-od-id={isEdit ? "acct-edit-drawer" : "acct-add-drawer"}
       >
-        <div className="drawer-head">
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--color-border)]
+                        bg-[var(--color-surface)] px-4.5 py-3.5">
           <Avatar name={isEdit ? account?.name || "+" : "+"} h={isEdit ? account?.hue || "200" : "200"} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>
+          <div className="flex-1">
+            <div className="text-[0.88rem] font-semibold text-[var(--color-text)]">
               {isEdit ? "编辑账号信息" : "新增授权账号"}
             </div>
-            <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>
+            <div className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
               {isEdit ? "修改账号信息并刷新登录凭证" : "授权新抖音账号并创建指纹环境"}
             </div>
           </div>
-          <button
-            className="btn ghost"
-            onClick={onClose}
-            style={{ fontSize: 18, padding: "4px 8px", lineHeight: 1 }}
-          >
-            ×
-          </button>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
 
-        <div className="drawer-body">
-          <div className="card" style={{ marginBottom: 14 }}>
-            <h3>账号信息</h3>
-            <div className="grid cols-2" style={{ gap: 12 }}>
-              <div className="field">
-                <label>昵称</label>
-                <input
-                  className="input"
+        <div className="min-h-0 flex-1 overflow-y-auto px-4.5 pb-6 pt-4">
+          <Section className="mb-3.5">
+            <PanelTitle>账号信息</PanelTitle>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <FormField label="昵称">
+                <Input
                   placeholder="如：阿强探店"
                   value={form.name}
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                   autoFocus
                 />
-              </div>
-              <div className="field">
-                <label>
-                  UID{" "}
-                  <span style={{ color: "var(--muted)", fontWeight: 400 }}>
-                    (可选 · 扫码后自动获取)
-                  </span>
-                </label>
-                <input
-                  className="input mono"
+              </FormField>
+              <FormField
+                label={
+                  <>
+                    UID{" "}
+                    <span className="font-normal text-[var(--color-text-muted)]">
+                      (可选 · 扫码后自动获取)
+                    </span>
+                  </>
+                }
+              >
+                <Input
+                  className="font-mono"
                   placeholder="留空即可，扫码后自动读入"
                   value={form.uid}
                   onChange={(e) => setForm((f) => ({ ...f, uid: e.target.value }))}
                 />
-              </div>
+              </FormField>
             </div>
             {!isEdit && (
-              <div className="field" style={{ marginTop: 12 }}>
-                <label>
-                  Cookie{" "}
-                  <span style={{ color: "var(--muted)", fontWeight: 400 }}>
-                    (可选 · 留空则扫码授权)
-                  </span>
-                </label>
-                <textarea
-                  className="input mono"
+              <FormField
+                className="mt-3"
+                label={
+                  <>
+                    Cookie{" "}
+                    <span className="font-normal text-[var(--color-text-muted)]">
+                      (可选 · 留空则扫码授权)
+                    </span>
+                  </>
+                }
+              >
+                <Textarea
+                  className="font-mono"
                   rows={3}
                   placeholder="粘贴 Cookie 字符串，用于免扫码登录"
                   value={form.cookie}
                   onChange={(e) => setForm((f) => ({ ...f, cookie: e.target.value }))}
-                  style={{ resize: "vertical" }}
                 />
-              </div>
+              </FormField>
             )}
-          </div>
+          </Section>
           <div
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              background: "var(--surface-2)",
-              fontSize: 12,
-              color: "var(--muted)",
-              lineHeight: 1.6,
-            }}
+            className="rounded-[var(--radius-sm)] bg-[var(--color-surface-raised)]
+                       px-3.5 py-2.5 text-[0.75rem] leading-relaxed
+                       text-[var(--color-text-muted)]"
           >
             {isEdit
               ? "点击「重新获取凭证」后，将重新拉起内置指纹浏览器并展示抖音扫码二维码，扫码完成后最新凭证（Cookie / 签名）自动写回该账号。"
@@ -2045,13 +2203,14 @@ function AccountDrawer({
           </div>
         </div>
 
-        <div className="drawer-foot">
-          <button className="btn ghost" onClick={onClose}>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--color-border)]
+                        bg-[var(--color-surface)] px-4.5 py-3">
+          <Button variant="ghost" onClick={onClose}>
             取消
-          </button>
-          <button className="btn primary" onClick={onSave} disabled={!form.name.trim()}>
+          </Button>
+          <Button onClick={onSave} disabled={!form.name.trim()}>
             {isEdit ? "重新获取凭证" : "确认新增"}
-          </button>
+          </Button>
         </div>
       </motion.div>
     </>

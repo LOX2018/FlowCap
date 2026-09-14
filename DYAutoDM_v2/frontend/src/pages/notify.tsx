@@ -1,19 +1,23 @@
 /**
- * IM 通知配置页
+ * IM 通知配置页（重设计版 · 对标 better-douyin 设计体系）
  *
- * 2026-09-09 新增（v0.37.0）。把「后端已有的 5 个 /api/notify/* 接口」暴露到 UI，
- * 让用户不用 curl 也能配置渠道、测试推送。
+ * 把后端 5 个 /api/notify/* 接口暴露到 UI：配置渠道、测试推送。
  *
- * 设计要点（与 settings.tsx 保持一致的视觉范式）：
- *   - 每个渠道一个可收缩卡片（Collapsible），标题栏带就绪状态点
- *   - 敏感字段后端返回时已脱敏为 •••• ，**前端原样回传即保留原值**（不覆写）
- *     故输入框 placeholder 提示「留空/保持 •••• = 不修改」
- *   - 「保存」「测试推送」按钮均有 loading 态，结果用 props.push 弹 toast
+ * ## 设计要点
+ * - 每个渠道一个可收缩卡片，标题栏带就绪状态点
+ * - 敏感字段后端返回时已脱敏为 ••••，**前端原样回传即保留原值**（不覆写）
+ *   故 placeholder 提示「留空/保持 •••• = 不修改」
+ * - 颜色/圆角/缓动取自 tokens.css（深浅主题自动生效）
  *
- * ⚠️ API 实例是 props.api（不是 import 的裸 api）—— 项目约定，写错编译不过。
+ * ## 本次改动（重设计）
+ * - 旧 `<div style={{background:"var(--panel)"}}>` 硬编码 + `.btn`/`.inp` 类 →
+ *   新组件（Card / Button / Input / Switch / Badge）+ 设计令牌
+ * - 折叠卡片改为受控展开（原生 <button> 头部 + aria-expanded）
+ * - **业务逻辑零改动**（脱敏回传语义、字段清单、测试推送调用全部保持）
  */
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Plus, Trash2, Send, AlertTriangle } from "lucide-react";
 import {
   PageProps,
   NotifyConfig,
@@ -22,53 +26,27 @@ import {
   CHANNEL_META,
   NotifyKind,
 } from "../api/client";
-import { Dot, Pill } from "../components/ui";
+import { PageContainer, PageHeader } from "@/components/layout/app-shell";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
+import { StatusDot } from "@/components/ui/status-dot";
+import { Blank, Toolbar, Collapse } from "@/components/page/kit";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** 可收缩卡片（与 settings.tsx 同款结构，视觉统一） */
-function Card(props: {
-  title: React.ReactNode;
-  subtitle?: string;
-  defaultOpen?: boolean;
-  footer?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(!!props.defaultOpen);
-  return (
-    <div style={{ background: "var(--panel)", borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
-      <div
-        onClick={() => setOpen(!open)}
-        style={{
-          padding: "12px 14px",
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
-          {props.title}
-        </div>
-        <span style={{ color: "var(--muted)", fontSize: 12 }}>{open ? "收起" : "展开"}</span>
-      </div>
-      {open && (
-        <div style={{ padding: "0 14px 12px" }}>
-          {props.subtitle && (
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>{props.subtitle}</div>
-          )}
-          {props.children}
-          {props.footer && <div style={{ marginTop: 12 }}>{props.footer}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Field(props: {
+function Field({
+  label,
+  value,
+  onChange,
+  secret,
+  hint,
+  placeholder,
+}: {
   label: string;
   value: string;
   onChange: (v: string) => void;
@@ -77,20 +55,23 @@ function Field(props: {
   placeholder?: string;
 }) {
   return (
-    <label style={{ display: "block", marginBottom: 10 }}>
-      <div style={{ fontSize: 12, marginBottom: 4, color: "var(--fg)" }}>
-        {props.label}
-        {props.secret && <span style={{ color: "var(--muted)", marginLeft: 6 }}>（敏感）</span>}
+    <label className="mb-2.5 block">
+      <div className="mb-1 text-[0.72rem] text-[var(--color-text)]">
+        {label}
+        {secret && (
+          <span className="ml-1.5 text-[var(--color-text-muted)]">（敏感）</span>
+        )}
       </div>
-      <input
-        className="inp"
-        type={props.secret ? "password" : "text"}
-        value={props.value}
-        placeholder={props.placeholder || ""}
-        onChange={(e) => props.onChange(e.target.value)}
-        style={{ width: "100%" }}
+      <Input
+        type={secret ? "password" : "text"}
+        value={value}
+        placeholder={placeholder || ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full"
       />
-      {props.hint && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{props.hint}</div>}
+      {hint && (
+        <div className="mt-1 text-[0.68rem] text-[var(--color-text-muted)]">{hint}</div>
+      )}
     </label>
   );
 }
@@ -98,7 +79,7 @@ function Field(props: {
 export default function NotifyPage({ api, push }: PageProps) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState<NotifyConfig | null>(null);
-  const [testing, setTesting] = useState<string>("");
+  const [testing, setTesting] = useState("");
 
   const cfgQ = useQuery({
     queryKey: ["notify-config"],
@@ -142,7 +123,12 @@ export default function NotifyPage({ api, push }: PageProps) {
   const addChannel = (kind: NotifyKind) => {
     patch((c) => {
       const list = c.channels || (c.channels = []);
-      list.push({ id: `${kind}_${Date.now().toString(36)}`, kind, enabled: true, default_target: "" });
+      list.push({
+        id: `${kind}_${Date.now().toString(36)}`,
+        kind,
+        enabled: true,
+        default_target: "",
+      });
     });
   };
 
@@ -174,118 +160,148 @@ export default function NotifyPage({ api, push }: PageProps) {
     }
   };
 
-  if (cfgQ.isLoading) return <div className="pane">加载中…</div>;
-  if (cfgQ.isError) return <div className="pane">配置加载失败：{errMsg(cfgQ.error)}</div>;
+  if (cfgQ.isLoading) {
+    return (
+      <PageContainer>
+        <PageHeader title="IM 通知" />
+        <Blank>加载中…</Blank>
+      </PageContainer>
+    );
+  }
+  if (cfgQ.isError) {
+    return (
+      <PageContainer>
+        <PageHeader title="IM 通知" />
+        <Blank>配置加载失败：{errMsg(cfgQ.error)}</Blank>
+      </PageContainer>
+    );
+  }
 
   return (
-    <div className="pane" style={{ maxWidth: 860 }}>
-      <h2 style={{ marginTop: 0 }}>IM 通知</h2>
-      <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-        任务新建 / 任务监控 / 私信汇报 / 凭证失效提醒，推送到微信、企微、钉钉、飞书或 QQ。
-      </div>
+    <PageContainer maxWidth="860px">
+      <PageHeader
+        title="IM 通知"
+        description="任务新建 / 任务监控 / 私信汇报 / 凭证失效提醒，推送到微信、企微、钉钉、飞书或 QQ"
+      />
 
       {/* 总开关 */}
-      <Card
+      <Collapse
+        defaultOpen
         title={
           <>
-            <strong>启用通知</strong>
-            <Dot c={cfg.enabled ? "ok" : "mute"} />
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+            <strong className="text-[0.86rem] text-[var(--color-text)]">启用通知</strong>
+            <StatusDot tone={cfg.enabled ? "ok" : "muted"} />
+            <span className="text-[0.72rem] text-[var(--color-text-muted)]">
               {cfg.enabled ? "已启用" : "已关闭"}
             </span>
           </>
         }
-        defaultOpen
         footer={
-          <button className="btn primary" disabled={saveMut.isPending}
-                  onClick={() => saveMut.mutate(cfg)}>
+          <Button disabled={saveMut.isPending} onClick={() => saveMut.mutate(cfg)}>
             {saveMut.isPending ? "保存中…" : "保存配置"}
-          </button>
+          </Button>
         }
       >
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-          <input type="checkbox" checked={!!cfg.enabled}
-                 onChange={(e) => patch((c) => { c.enabled = e.target.checked; })} />
-          <span>开启 IM 通知推送</span>
-        </label>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={!!cfg.enabled}
+            onCheckedChange={(v) => patch((c) => { c.enabled = v; })}
+          />
+          <span className="text-[0.8rem] text-[var(--color-text-secondary)]">
+            开启 IM 通知推送
+          </span>
+        </div>
+        <div className="mt-1.5 text-[0.72rem] text-[var(--color-text-muted)]">
           关闭后所有事件（含凭证失效告警）都不会推送。
         </div>
 
-        <hr style={{ margin: "14px 0", opacity: 0.2 }} />
+        <div className="my-3.5 h-px bg-[var(--color-border)]" />
 
-        <div style={{ fontSize: 12, marginBottom: 8, color: "var(--fg)" }}>
+        <div className="mb-2 text-[0.72rem] text-[var(--color-text)]">
           LLM 指令解析（可选）—— 未配置时自动使用规则解析
         </div>
-        <div
-          style={{
-            fontSize: 11.5,
-            color: "var(--muted)",
-            padding: "8px 10px",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            lineHeight: 1.6,
-          }}
-        >
-          模型配置已统一到
-          <b>「设置 → 通知与指令」</b>
-          页管理，此处不再重复配置。 留空的字段会自动回落到 AI 全局配置。
+        <div className="rounded-[var(--radius-sm)] border border-[var(--color-border)]
+                        bg-[var(--color-surface)] px-2.5 py-2 text-[0.7rem] leading-relaxed
+                        text-[var(--color-text-muted)]">
+          模型配置已统一到 <b className="text-[var(--color-text-secondary)]">「设置 → 通知与指令」</b> 页管理，
+          此处不再重复配置。留空的字段会自动回落到 AI 全局配置。
         </div>
-      </Card>
+      </Collapse>
 
       {/* 渠道列表 */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "18px 0 8px" }}>
-        <strong>推送渠道（{channels.length}）</strong>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      <div className="mb-2 mt-4 flex flex-wrap items-center justify-between gap-2">
+        <strong className="text-[0.84rem] text-[var(--color-text)]">
+          推送渠道（{channels.length}）
+        </strong>
+        <Toolbar>
           {(Object.keys(CHANNEL_META) as NotifyKind[]).map((k) => (
-            <button key={k} className="btn sm" onClick={() => addChannel(k)}>
-              + {CHANNEL_META[k].label}
-            </button>
+            <Button key={k} variant="secondary" size="sm" onClick={() => addChannel(k)}>
+              <Plus className="h-3.5 w-3.5" />{CHANNEL_META[k].label}
+            </Button>
           ))}
-        </div>
+        </Toolbar>
       </div>
 
       {channels.length === 0 && (
-        <div style={{ padding: 20, textAlign: "center", color: "var(--muted)", background: "var(--panel)", borderRadius: 10 }}>
-          还没有渠道，点上方按钮添加一个
-        </div>
+        <Card>
+          <CardContent>
+            <Blank>还没有渠道，点上方按钮添加一个</Blank>
+          </CardContent>
+        </Card>
       )}
 
       {channels.map((ch, i) => {
         const meta = CHANNEL_META[ch.kind as NotifyKind];
         const st = statusOf(String(ch.id || ch.kind));
         const title = meta?.label || ch.kind;
+        const tid = String(ch.id || ch.kind);
         return (
-          <Card
+          <Collapse
             key={String(ch.id || i)}
             title={
               <>
-                <strong>{title}</strong>
-                <Dot c={!ch.enabled ? "mute" : st?.ready ? "ok" : "danger"} />
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                <strong className="text-[0.84rem] text-[var(--color-text)]">{title}</strong>
+                <StatusDot
+                  tone={!ch.enabled ? "muted" : st?.ready ? "ok" : "danger"}
+                />
+                <span className="text-[0.72rem] text-[var(--color-text-muted)]">
                   {!ch.enabled ? "已停用" : st?.ready ? "就绪" : "未就绪"}
                 </span>
                 {st?.missing?.length ? (
-                  <Pill c="warn">缺 {st.missing.join("、")}</Pill>
+                  <Badge variant="warning">缺 {st.missing.join("、")}</Badge>
                 ) : null}
               </>
             }
             footer={
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn" disabled={testing === String(ch.id || ch.kind)}
-                        onClick={() => testChannel(ch)}>
-                  {testing === String(ch.id || ch.kind) ? "发送中…" : "测试推送"}
-                </button>
-                <button className="btn danger" onClick={() => removeChannel(i)}>删除渠道</button>
-              </div>
+              <Toolbar>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={testing === tid}
+                  onClick={() => testChannel(ch)}
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  {testing === tid ? "发送中…" : "测试推送"}
+                </Button>
+                <Button
+                  variant="danger-outline"
+                  size="sm"
+                  onClick={() => removeChannel(i)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />删除渠道
+                </Button>
+              </Toolbar>
             }
           >
-            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
-              <input type="checkbox" checked={!!ch.enabled}
-                     onChange={(e) => updateChannel(i, "enabled", e.target.checked)} />
-              <span>启用该渠道</span>
-            </label>
+            <div className="mb-2.5 flex items-center gap-2">
+              <Switch
+                checked={!!ch.enabled}
+                onCheckedChange={(v) => updateChannel(i, "enabled", v)}
+              />
+              <span className="text-[0.78rem] text-[var(--color-text-secondary)]">
+                启用该渠道
+              </span>
+            </div>
 
             <Field
               label="默认接收目标"
@@ -308,23 +324,26 @@ export default function NotifyPage({ api, push }: PageProps) {
             ))}
 
             {ch.kind === "weixin_oc" && (
-              <div style={{ fontSize: 11, color: "var(--warn, #d89614)", marginTop: 4 }}>
-                ⚠️ 个人微信（iLink）只能被动回推：对方需先给机器人发一条消息，
-                机器人获得 context_token 后才能回复。
+              <div className="mt-1 flex items-start gap-1.5 text-[0.68rem]
+                              text-[var(--color-warning)]">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                <span>
+                  个人微信（iLink）只能被动回推：对方需先给机器人发一条消息，
+                  机器人获得 context_token 后才能回复。
+                </span>
               </div>
             )}
-          </Card>
+          </Collapse>
         );
       })}
 
       {channels.length > 0 && (
-        <div style={{ marginTop: 6 }}>
-          <button className="btn primary" disabled={saveMut.isPending}
-                  onClick={() => saveMut.mutate(cfg)}>
+        <div className="mt-1.5">
+          <Button disabled={saveMut.isPending} onClick={() => saveMut.mutate(cfg)}>
             {saveMut.isPending ? "保存中…" : "保存配置"}
-          </button>
+          </Button>
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }
