@@ -58,6 +58,25 @@ WS:       wss://frontier-im.douyin.com/ws/v2
 > **读列表 vs 读详情走不同域名**（实测字符串相邻关系）：
 > `comment/list` → **www-hj**；`comment/publish` → **www**（主）
 > `aweme/post`（用户作品）→ **www**；`listcollection`（收藏）→ **www-hj**
+>
+> ⚠️ **2026-09-14 修正**：此前本文件曾写「写操作用 www」，**该判断有误**。
+> 原始字符串证据（`all_strings.txt`）显示源项目二进制中**互动写操作同样走 www-hj**：
+> ```
+> https://www-hj.douyin.com/aweme/v1/web/commit/item/digg/     ← 点赞
+> https://www-hj.douyin.com/aweme/v1/web/commit/follow/user/   ← 关注
+> https://www-hj.douyin.com/aweme/v1/web/comment/digg          ← 评论点赞
+> https://www-hj.douyin.com/aweme/v1/web/aweme/collect/        ← 收藏
+> https://www-hj.douyin.com/aweme/v1/web/comment/list/         ← 评论列表
+> https://www-hj.douyin.com/aweme/v1/web/comment/list/reply/   ← 评论回复
+> https://www-hj.douyin.com/aweme/v1/web/im/user/active/status/ ← 在线状态
+> https://www-hj.douyin.com/aweme/v1/web/im/spotlight/relation/ ← 关系
+> https://www-hj.douyin.com/aweme/v1/web/series/aweme/          ← 合集作品
+> https://www-hj.douyin.com/aweme/v1/web/mix/listcollection/    ← 收藏合集
+> https://www-hj.douyin.com/aweme/v1/web/aweme/favorite/        ← 我的收藏
+> https://www-hj.douyin.com/aweme/v1/web/aweme/listcollection/  ← 收藏夹作品
+> ```
+> 即 **www-hj 承载"互动与列表"类接口（读+写皆有）**，`www` 承载
+> 搜索/详情/主页/发布等（`search/item`、`aweme/detail`、`comment/publish`）。
 
 ### 1.3 IM 侧接口
 ```
