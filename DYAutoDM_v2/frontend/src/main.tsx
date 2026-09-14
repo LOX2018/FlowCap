@@ -10,8 +10,15 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { ThemeProvider } from "./theme/ThemeContext";
+// 样式导入顺序（自底向上）：
+//   1. tokens.css  —— Tailwind 4 + 设计令牌（对标 better-douyin）
+//   2. global.css  —— 项目既有样式（22 个页面仍依赖，迁移期保留）
+//   3. theme-glass.css —— 既有玻璃层，保留至页面全部迁移完毕
+import "./styles/tokens.css";
 import "./styles/global.css";
 import "./styles/theme-glass.css";
+//   4. bridge.css  —— 把旧变量名映射到新令牌（**必须最后**，否则被 global.css 覆盖）
+import "./styles/bridge.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {

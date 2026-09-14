@@ -1,0 +1,219 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════
+   DESIGN TOKENS —— 对标 better-douyin
+   ═══════════════════════════════════════════════════════════════
+   蓝本令牌已提取（见 docs/frontend_redesign_spec.md §二）。
+   差异：主色改用本项目既有的绿色体系（原 oklch(76% 0.16 145) ≈ #68cb6e），
+   而非蓝本的抖音红 —— 保持本项目视觉识别，同时吸收蓝本的令牌结构与材质手法。
+   ═══════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* ── 背景层 ── */
+  --color-background: #0e0e14;
+  --color-background-soft: #0a0a0f;
+  --color-surface: rgba(255, 255, 255, 0.04);
+  --color-surface-solid: #16161e;
+  --color-surface-raised: rgba(255, 255, 255, 0.07);
+
+  /* ── 描边 ── */
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --image-outline: rgba(255, 255, 255, 0.1);
+
+  /* ── 文字 ── */
+  --color-text: #e8e8ed;
+  --color-text-secondary: #9b9baa;
+  --color-text-muted: #8b8b9e;   /* 比蓝本 #7a7a8e 略亮：深色底上可读性实测不足 */
+
+  /* ── 控件底色 ── */
+  --color-setting-card: rgba(255, 255, 255, 0.04);
+  --color-subtle-bg: rgba(255, 255, 255, 0.06);
+  --color-toggle-track: rgba(255, 255, 255, 0.12);
+
+  /* ── 主色（本项目绿）── */
+  --color-accent: #68cb6e;
+  --color-accent-hover: #7dd983;
+  --color-accent-soft: rgba(104, 203, 110, 0.1);
+  --color-accent-ring: rgba(104, 203, 110, 0.22);
+
+  /* ── 语义色 ── */
+  --color-success: #00d68f;
+  --color-success-soft: rgba(0, 214, 143, 0.1);
+  --color-info: #7c5cfc;
+  --color-info-soft: rgba(124, 92, 252, 0.1);
+  --color-warning: #ffaa00;
+  --color-warning-soft: rgba(255, 170, 0, 0.1);
+  --color-danger: #ff4757;
+  --color-danger-soft: rgba(255, 71, 87, 0.1);
+
+  /* ── 圆角 ── */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-2xl: 32px;
+
+  /* ── 阴影 ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 10px 30px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 18px 55px rgba(0, 0, 0, 0.12), 0 4px 14px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 30px 90px rgba(0, 0, 0, 0.18), 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-glow: 0 0 0 1px rgba(104, 203, 110, 0.22),
+                 0 10px 30px rgba(104, 203, 110, 0.15);
+
+  /* ── 缓动与时长 ── */
+  --ease-spring: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0, 0, 0, 1);
+  --duration-fast: 150ms;
+  --duration-base: 250ms;
+  --duration-slow: 400ms;
+
+  /* ── 布局尺寸 ── */
+  --sidebar-width: 240px;
+  --sidebar-collapsed: 68px;
+  --bottombar-height: 42px;
+  --bottombar-expanded: 320px;
+  --topbar-height: 36px;
+
+  /* ── 字体 ── */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   浅色主题
+   ═══════════════════════════════════════════════════════════════ */
+[data-theme="light"] {
+  --color-background: #f5f5f7;
+  --color-background-soft: #efeff1;
+  --color-surface: rgba(255, 255, 255, 0.88);
+  --color-surface-solid: #ffffff;
+  --color-surface-raised: rgba(255, 255, 255, 0.94);
+  --color-border: rgba(0, 0, 0, 0.1);
+  --color-border-strong: rgba(0, 0, 0, 0.18);
+  --image-outline: rgba(0, 0, 0, 0.1);
+  --color-text: #1d1d1f;
+  --color-text-secondary: #6e6e73;
+  --color-text-muted: #6f6f74;
+  --color-setting-card: rgba(0, 0, 0, 0.03);
+  --color-subtle-bg: rgba(0, 0, 0, 0.04);
+  --color-toggle-track: rgba(0, 0, 0, 0.12);
+  --shadow-sm: 0 1px 2px rgba(18, 18, 24, 0.06), 0 10px 30px rgba(18, 18, 24, 0.06);
+  --shadow-md: 0 18px 55px rgba(18, 18, 24, 0.12), 0 4px 14px rgba(18, 18, 24, 0.06);
+  --shadow-lg: 0 30px 90px rgba(18, 18, 24, 0.14), 0 8px 24px rgba(18, 18, 24, 0.06);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   设计工具类
+   ═══════════════════════════════════════════════════════════════ */
+@layer utilities {
+  /* 玻璃拟态 —— 蓝本核心手法 */
+  .glass-premium {
+    background: color-mix(in srgb, var(--color-surface-solid) 70%, transparent);
+    backdrop-filter: blur(48px);
+    border: 1px solid var(--color-border);
+    box-shadow: 0 32px 64px -16px rgba(0, 0, 0, 0.4);
+  }
+  .glass-panel {
+    background: var(--color-surface);
+    backdrop-filter: blur(24px);
+    border: 1px solid var(--color-border);
+  }
+  .glass-glow-accent {
+    box-shadow: 0 0 40px -12px color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+
+  .animate-shimmer {
+    background: linear-gradient(90deg, transparent 0%,
+      rgba(255, 255, 255, 0.05) 50%, transparent 100%);
+    background-size: 200% 100%;
+    animation: shimmer 2.5s infinite;
+  }
+
+  .no-scrollbar { scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+  .select-text, input, textarea, [contenteditable="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   关键帧
+   ═══════════════════════════════════════════════════════════════ */
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes orb-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(40px, -30px) scale(1.1); }
+  50% { transform: translate(-20px, 40px) scale(0.9); }
+  75% { transform: translate(30px, 15px) scale(1.05); }
+}
+@keyframes nebula-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.4; filter: blur(40px); }
+  50% { transform: scale(1.2); opacity: 0.6; filter: blur(60px); }
+}
+@keyframes spin-custom {
+  0% { transform: rotate(0deg); border-top-color: var(--color-accent); }
+  33% { border-top-color: var(--color-info); }
+  66% { border-top-color: var(--color-success); }
+  100% { transform: rotate(360deg); border-top-color: var(--color-accent); }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   全局基础
+   ═══════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  background: var(--color-background);
+  color: var(--color-text);
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+#root { height: 100vh; }
+
+::selection { background: color-mix(in srgb, var(--color-accent) 25%, transparent); }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.12);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.25); }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.08); }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.15); }
+
+* { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.12) transparent; }
+
+aside, button, [role="button"], .select-none {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-border-strong);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }

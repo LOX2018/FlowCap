@@ -10,9 +10,8 @@
  */
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { motion, AnimatePresence } from "framer-motion";
+// framer-motion 的页面切换动画已移入 AppShell，App 层不再直接使用
 import { api, PageProps, ReviewPayload, ReusePayload } from "./api/client";
-import { TABS } from "./components/ui";
 import OverviewPage from "./pages/overview";
 import CrawlPage from "./pages/crawl";
 import LivePage from "./pages/live";
@@ -26,13 +25,27 @@ import NotifyPage from "./pages/notify";
 import LogsPage from "./pages/logs";
 import SelfCheckModal, { SelfCheckItem } from "./components/SelfCheckModal";
 import MemberGate from "./components/MemberGate";
-import TopNav from "./components/TopNav";
+import { AppShell } from "./components/layout/app-shell";
+import { type TabId } from "./components/layout/sidebar";
+import { StatusDot } from "./components/ui/status-dot";
 import { memberApi, getMemberToken } from "./api/client";
 
-type TabId = (typeof TABS)[number][0];
+// TabId 唯一真源在 components/layout/sidebar（含导航分组）
+// 旧 `type TabId = (typeof TABS)[number][0]` 已废弃 —— TABS 缺 kb/notify 两项。
 
 /** 启动闪屏：双击 exe 后窗口立即出现品牌页，后端引擎就绪（overview 首帧数据到达）
  *  才滑入主界面，把 PyInstaller 后端冷启动的 ~3s 变成有进度的等待，而不是白屏/未连接。 */
+/** 各 tab 的页面标题（TopBar 左侧显示）。 */
+const TITLE_OF = (t: TabId): string => {
+  const all = [
+    ["overview", "总览"], ["msg", "私信"], ["live", "直播"],
+    ["crawl", "采集"], ["ai", "AI 获客"], ["kb", "知识库"],
+    ["accounts", "账号"], ["tasks", "任务"], ["notify", "通知"],
+    ["logs", "日志"], ["settings", "设置"],
+  ] as const;
+  return all.find(([id]) => id === t)?.[1] ?? "控制台";
+};
+
 function _verDiag(msg: string) {
   try { console.warn("[VERSION] " + msg); } catch { /* ignore */ }
 }
@@ -384,53 +397,79 @@ export default function App() {
     );
   }
 
+  // ===================================================================
+  // 渲染 —— 新版外壳（对标 better-douyin）
+  //   旧：顶部横向 Tab（TopNav）+ <main className="main">
+  //   新：侧栏 Sidebar（三组业务编排）+ TopBar（拖拽/状态/窗口控制）+ AppShell
+  //   注意：全部业务页面、props、轮询、toast、会员门禁逻辑**保持不变**，
+  //         本次只替换 chrome（外壳）。
+  // ===================================================================
   return (
-    <div className="app">
+    <>
       {/* 版本不一致告警条（2026-09-13）：前端/后端 sidecar 版本必须一致。
           用户明确要求 —— 不许"前端新版本、后端旧版本"静默存在。 */}
       {verMismatch && (
-        <div style={{
-          background: "#7f1d1d", color: "#fff", padding: "6px 12px",
-          fontSize: 12, fontFamily: "monospace", zIndex: 9999,
-          position: "sticky", top: 0,
-        }}>
+        <div className="sticky top-0 z-[9999] bg-[#7f1d1d] px-3 py-1.5
+                        font-mono text-[11px] text-white">
           ⚠️ {verMismatch}（请重新打包部署 sidecar）
         </div>
       )}
-      {/* 2026-09-08：登录后不再用全屏闪屏盖住主界面。
-          原逻辑 `!ready && <BootSplash />` 在 overview 首帧未到（最多 3s）或查询
-          偶发失败时会把主界面整个盖住，用户体感「登录后一直转圈不消失」。
-          改为：仅当 overview 从未成功过（首次）才盖；之后主界面直接呈现，
-          连接状态由 Header 徽章表达（不阻塞操作）。 */}
-      {/* 登录后不再用全屏闪屏阻塞：ready 依赖 overview（需登录态），
-          未登录时必然 401 → 闪屏盖住 → 无法登录的死循环。
-          连接状态改由 Header 徽章实时表达。 */}
-      <TopNav tab={tab} setTab={setTab} ready={ready}
-        memberName={memberName} gwPending={gwPendingCount}
-        onLogout={async () => { await memberApi.logout(); setMemberName(null); }} />
-      <main className="main">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={tab}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.16 }}
-          >
-            {tab === "overview" && <OverviewPage {...pageProps} />}
-            {tab === "crawl" && <CrawlPage {...pageProps} />}
-            {tab === "live" && <LivePage {...pageProps} />}
-            {tab === "msg" && <MessagesPage {...pageProps} />}
-            {tab === "ai" && <AiPage {...pageProps} />}
-            {tab === "kb" && <KbPage {...pageProps} />}
-            {tab === "accounts" && <AccountsPage {...pageProps} />}
-            {tab === "tasks" && <TasksPage {...pageProps} />}
-            {tab === "settings" && <SettingsPage {...pageProps} />}
-            {tab === "notify" && <NotifyPage {...pageProps} />}
-            {tab === "logs" && <LogsPage {...pageProps} />}
-          </motion.div>
-        </AnimatePresence>
-      </main>
+
+      <AppShell
+        tab={tab}
+        setTab={setTab}
+        title={TITLE_OF(tab)}
+        connected={ready}
+        memberName={memberName}
+        topRight={
+          <>
+            {gwPendingCount > 0 && (
+              <button
+                onClick={() => setTab("notify")}
+                title={`${gwPendingCount} 条待授权消息`}
+                className="rounded-full bg-[var(--color-warning-soft)] px-2.5 py-[3px]
+                           text-[0.72rem] font-semibold text-[var(--color-warning)]"
+              >
+                待授权 {gwPendingCount}
+              </button>
+            )}
+            <button
+              onClick={async () => {
+                await memberApi.logout();
+                setMemberName(null);
+              }}
+              title="退出登录"
+              className="rounded-full border border-[var(--color-border)] px-2.5 py-[3px]
+                         text-[0.72rem] text-[var(--color-text-secondary)]
+                         transition-colors hover:border-[var(--color-danger)]
+                         hover:text-[var(--color-danger)]"
+            >
+              退出
+            </button>
+          </>
+        }
+        sidebarFooter={
+          <div className="flex items-center gap-1.5 px-2.5 text-[0.72rem]
+                          text-[var(--color-text-muted)]">
+            <StatusDot tone={ready ? "ok" : "muted"} pulse={!ready} />
+            <span>{ready ? "引擎就绪" : "等待连接"}</span>
+          </div>
+        }
+      >
+        {tab === "overview" && <OverviewPage {...pageProps} />}
+        {tab === "crawl" && <CrawlPage {...pageProps} />}
+        {tab === "live" && <LivePage {...pageProps} />}
+        {tab === "msg" && <MessagesPage {...pageProps} />}
+        {tab === "ai" && <AiPage {...pageProps} />}
+        {tab === "kb" && <KbPage {...pageProps} />}
+        {tab === "accounts" && <AccountsPage {...pageProps} />}
+        {tab === "tasks" && <TasksPage {...pageProps} />}
+        {tab === "settings" && <SettingsPage {...pageProps} />}
+        {tab === "notify" && <NotifyPage {...pageProps} />}
+        {tab === "logs" && <LogsPage {...pageProps} />}
+      </AppShell>
+
+      {/* 全局 toast（保留旧样式类，与新外壳共存） */}
       <div className="toasts">
         {toasts.map((t) => (
           <div className="toast" key={t.id}>
@@ -438,6 +477,7 @@ export default function App() {
           </div>
         ))}
       </div>
+
       <SelfCheckModal
         open={selfCheckOpen}
         items={selfCheckItems}
@@ -445,6 +485,7 @@ export default function App() {
         onClose={() => { /* 启动自检已移除，弹窗恒不开启 */ }}
         push={push}
       />
-    </div>
+    </>
   );
 }
+

@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // 2026-08-31：把 package.json 的 version 注入前端，用于在界面上显示版本号。
 // 排查「改了代码但界面没变」时，第一件事就是确认跑的是哪个版本。
@@ -10,7 +11,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   // Tauri 用相对路径加载资源
   base: "./",
   server: {
