@@ -55,7 +55,6 @@ export const TABS: [string, string][] = [
   ["crawl", "采集"],
   ["live", "直播监听"],
   ["msg", "私信"],
-  ["ai", "AI"],
   ["accounts", "账号管理"],
   ["tasks", "任务中心"],
   ["settings", "设置"],

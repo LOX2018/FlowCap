@@ -210,7 +210,21 @@ export default function TasksPage(props: PageProps) {
       {/* 运行中任务 */}
       <Card className="mb-4 overflow-hidden" data-od-id="task-list">
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            {/* 列宽契约：与「历史任务」表共用网格，保证同名列（账号/状态/结果条数/操作）
+                落在同一横向位置。两表列数不同（9 vs 7），故用百分比同源对齐
+                —— 改列宽只改这里与下表同名的数值。 */}
+            <colgroup>
+              <col style={{ width: "19%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "18%" }} />
+            </colgroup>
             <thead>
               <tr>
                 <Th>创建时间</Th>
@@ -357,7 +371,17 @@ export default function TasksPage(props: PageProps) {
         }
       >
         <div className="-mx-4 -mb-4 overflow-x-auto">
-          <table className="w-full border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            {/* 列宽契约：见上表注释 —— 账号/状态/结果条数/操作 四列与运行中任务表同源对齐 */}
+            <colgroup>
+              <col style={{ width: "19%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "19%" }} />
+              <col style={{ width: "18%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "18%" }} />
+            </colgroup>
             <thead>
               <tr>
                 <Th>开始时间</Th>

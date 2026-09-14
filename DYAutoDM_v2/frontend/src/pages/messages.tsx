@@ -45,6 +45,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input, Textarea } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Section, Row, Tone, SegmentedTabs, Blank, Toolbar } from "@/components/page/kit";
+import LeadsSection from "@/components/LeadsSection";
 import { cn } from "@/lib/utils";
 
 interface Msg {
@@ -739,6 +740,9 @@ export default function MessagesPage(props: PageProps) {
   const [draft, setDraft] = useState("");
   // 2026-09-05：发送通道选择。默认 ws（私信守护，稳定）；wp 为网页版通道。
   const [sendChannel, setSendChannel] = useState<"ws" | "wp">("ws");
+  // 2026-09-14：留资线索子页 —— 原「AI 获客」页按作用域打散归类而来
+  // （线索表含 account 列，是按账号产出的资产，且产生于私信对话）。
+  const [subPage, setSubPage] = useState<"conv" | "leads">("conv");
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   // 2026-09-06：会话搜索 —— 按昵称过滤定位会话（用户要求）
@@ -991,7 +995,24 @@ export default function MessagesPage(props: PageProps) {
       <PageHeader
         title="私信中心"
         description="会话列表 · 聊天记录 · 手动回复（WS 守护 / 网页版双通道发送）"
+        actions={
+          <SegmentedTabs
+            value={subPage}
+            onChange={(v) => setSubPage(v as "conv" | "leads")}
+            items={[
+              { value: "conv", label: "会话" },
+              { value: "leads", label: "留资线索" },
+            ]}
+          />
+        }
       />
+
+      {subPage === "leads" ? (
+        <Section title="留资线索" data-od-id="msg-leads">
+          <LeadsSection {...props} />
+        </Section>
+      ) : (
+      <>
 
       <Section className="mb-3" data-od-id="msg-acct-select">
         <div className="flex flex-wrap items-center gap-3">
@@ -1405,6 +1426,8 @@ export default function MessagesPage(props: PageProps) {
         </Card>
       </div>
       <ImageViewer media={viewer} onClose={() => setViewer(null)} />
+      </>
+      )}
     </PageContainer>
   );
 }

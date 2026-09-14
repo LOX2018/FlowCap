@@ -4,12 +4,12 @@
  * 设计（用户 2026-09-09 拍板）：
  *   - Agent 是**模版**：含模型/档位/商家名/prompt/知识库/黑名单/兜底话术
  *   - 账号绑定 Agent；改 Agent 一次 → 所有绑定它的账号同步生效
- *   - 绑定关系**在设置页维护**，不在 AI 页（避免两处配置分裂）
+ *   - 绑定关系在配置中心维护（避免两处配置分裂）
  *
  * UI 结构：
  *   ① Agent 列表卡片：新建 / 重命名 / 删除 / 选中编辑
  *   ② Agent 参数编辑：核心字段（商家名、档位、模型、总开关、延迟）
- *      —— 只放「最常改」的，全量参数仍在 AI 页（避免重复建设）
+ *      —— 只放「模版与绑定」；引擎参数（prompt/护栏/黑名单）在同页「AI 回复引擎」
  *   ③ 账号绑定矩阵：每个账号一个下拉，选它用哪个 Agent
  */
 import { useState, useEffect, useCallback } from "react";
@@ -159,7 +159,7 @@ export default function AgentSection(props: PageProps) {
         账号同步生效。知识库 / 黑名单 / 兜底话术都跟随 Agent，账号不单独持有。
       </div>
 
-      {/* ⓪ 全局模型配置（v0.38.3：模型配置在设置中体现，与 AI 页同源） */}
+      {/* ⓪ 全局模型配置（v0.38.3：模型配置在配置中心体现，与「AI 回复引擎」同源） */}
       <GlobalModelCard api={api} ready={ready} push={push} />
 
       {/* ① Agent 列表 */}
@@ -311,8 +311,8 @@ export default function AgentSection(props: PageProps) {
             </button>
           </div>
           <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
-            更完整的参数（语义检索、视觉模型、知识库条目、护栏、延迟）仍在
-            <b> AI 页</b> 调整；此处只放按账号差异化的核心项。
+            更完整的参数（prompt / 护栏 / 兜底话术 / 黑名单）在同页
+            <b>「AI 回复引擎」</b> 调整；此处只放模版与绑定。
           </div>
         </Section>
       )}
@@ -449,10 +449,9 @@ function Field(props: { label: string; children: React.ReactNode }) {
 /**
  * 全局模型配置卡片（v0.38.3）。
  *
- * 用户要求「模型的配置应该在设置中体现」——这里与 AI 页**同源**读写
- * `/api/ai/config`（全局那份），不是第二份存储。AI 页改了这里刷新即见，
- * 这里改了 AI 页刷新即见。
- * 语义与 AI 页完全一致：api_key 明文存储、password 框显示；
+ * 用户要求「模型的配置应该在设置中体现」——这里与「AI 回复引擎」**同源**读写
+ * `/api/ai/config`（全局那份），不是第二份存储。两边任一处改，刷新即见。
+ * 语义完全一致：api_key 明文存储、password 框显示；
  * 保存只传**变更字段**（patch），未动过的键绝不发送（避免误清 api_key）。
  */
 function GlobalModelCard(props: PageProps) {
@@ -473,18 +472,18 @@ function GlobalModelCard(props: PageProps) {
   const set = (k: string, v: string) => setDraft({ ...draft, [k]: v });
 
   const saveMut = useMutation({
-    // patch 语义：只传用户改过的字段（与 AI 页一致）
+    // patch 语义：只传用户改过的字段（与「AI 回复引擎」一致）
     mutationFn: () => api.aiSaveConfig(draft),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["ai-config"] });
       setDraft({});
-      push("全局模型配置已保存（AI 页同步生效）");
+      push("全局模型配置已保存（AI 回复引擎同步生效）");
     },
     onError: (e) => push(`保存失败：${errMsg(e)}`),
   });
 
   return (
-    <Section title="全局模型配置" subtitle="AI 页同源 · 未绑定 Agent 的账号用这份">
+    <Section title="全局模型配置" subtitle="与「AI 回复引擎」同源 · 未绑定 Agent 的账号用这份">
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         <Field label="API 地址（base_url）">
           <input
@@ -522,8 +521,8 @@ function GlobalModelCard(props: PageProps) {
         </button>
       </div>
       <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
-        与「AI 获客」页共享同一份全局配置；各 Agent 可在 AI 页覆盖主模型。
-        IM 通知的指令解析模型在「设置 → 通知与指令」。
+        与「AI 回复引擎」共享同一份全局配置；各 Agent 可单独覆盖主模型。
+        IM 通知的指令解析模型在「通知与指令」。
       </div>
     </Section>
   );

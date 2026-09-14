@@ -17,7 +17,6 @@ import CrawlPage from "./pages/crawl";
 import PlatformPage from "./pages/platform";
 import LivePage from "./pages/live";
 import MessagesPage from "./pages/messages";
-import AiPage from "./pages/ai";
 import KbPage from "./pages/kb";
 import AccountsPage from "./pages/accounts";
 import TasksPage from "./pages/tasks";
@@ -40,7 +39,7 @@ import { memberApi, getMemberToken } from "./api/client";
 const TITLE_OF = (t: TabId): string => {
   const all = [
     ["overview", "总览"], ["msg", "私信"], ["live", "直播"],
-    ["crawl", "采集"], ["platform", "内容"], ["ai", "AI 获客"], ["kb", "知识库"],
+    ["crawl", "采集"], ["platform", "内容"], ["kb", "知识库"],
     ["accounts", "账号"], ["tasks", "任务"], ["notify", "通知"],
     ["logs", "日志"], ["settings", "设置"],
   ] as const;
@@ -369,7 +368,7 @@ export default function App() {
     for (const p of list) {
       if (!gwSeen.current.has(p.key)) {
         gwSeen.current.add(p.key);
-        push(`🔔 收到来自「${p.channel_id}」的新消息，待授权甄别（设置 → 通知与指令）`, 8000);
+        push(`🔔 收到来自「${p.channel_id}」的新消息，待授权甄别（配置中心 → 通知与指令）`, 8000);
       }
     }
   }, [gwQ.data, push]);
@@ -468,7 +467,6 @@ export default function App() {
         {tab === "platform" && <PlatformPage {...pageProps} />}
         {tab === "live" && <LivePage {...pageProps} />}
         {tab === "msg" && <MessagesPage {...pageProps} />}
-        {tab === "ai" && <AiPage {...pageProps} />}
         {tab === "kb" && <KbPage {...pageProps} />}
         {tab === "accounts" && <AccountsPage {...pageProps} />}
         {tab === "tasks" && <TasksPage {...pageProps} />}

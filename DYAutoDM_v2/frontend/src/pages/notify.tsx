@@ -223,7 +223,7 @@ export default function NotifyPage({ api, push }: PageProps) {
         <div className="rounded-[var(--radius-sm)] border border-[var(--color-border)]
                         bg-[var(--color-surface)] px-2.5 py-2 text-[0.7rem] leading-relaxed
                         text-[var(--color-text-muted)]">
-          模型配置已统一到 <b className="text-[var(--color-text-secondary)]">「设置 → 通知与指令」</b> 页管理，
+          模型配置已统一到 <b className="text-[var(--color-text-secondary)]">配置中心 → 「通知与指令」</b> 管理，
           此处不再重复配置。留空的字段会自动回落到 AI 全局配置。
         </div>
       </Collapse>

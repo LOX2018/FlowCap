@@ -21,6 +21,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Activity, Send, MessageSquare, Cpu, Users } from "lucide-react";
 import { PageProps, Overview } from "../api/client";
 import { Avatar, KIND_NAME } from "../components/ui";
+import AiRuntimeSection from "@/components/AiRuntimeSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -360,6 +361,10 @@ export default function OverviewPage(props: PageProps) {
                 <SkeletonRows rows={2} />
               )}
             </Section>
+
+            {/* AI 运行状态 —— 原「AI 获客」页的运行控制，按作用域（全局运行状态）
+                归类到总览页（2026-09-14 打散归类）。 */}
+            <AiRuntimeSection {...props} />
           </div>
         </div>
       )}

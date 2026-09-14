@@ -467,7 +467,7 @@ export default function UnifiedConfigSection(
             <>
               正在编辑标签「{scopeName}」的参数 —— 只影响
               <b>在「配置标签」页绑定了该标签的账号</b>。
-              标签的新建与删除请到「配置标签」页。
+              标签的新建与删除在配置中心「配置标签」区。
             </>
           ) : (
             <>

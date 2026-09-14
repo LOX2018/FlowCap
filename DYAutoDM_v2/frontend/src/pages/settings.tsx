@@ -1,33 +1,41 @@
 /**
- * 设置页（重设计版 · 对标 better-douyin 设计体系）
+ * 配置中心（原「设置」页升格）
+ *
+ * ## 定位（2026-09-14 用户拍板）
+ *
+ * 侧栏底部独立入口，**全局唯一可写配置入口**。其他页面只保留"选择/引用"（调用口）。
  *
  * ## 职责边界（设计契约，不得混淆）
- *   - Agent 管「回什么」：回复内容（prompt / 知识库 / 话术 / 档位）
+ *   - 引擎管「回什么」：回复内容（prompt / 知识库 / 话术 / 档位 / 护栏）
  *   - 标签 管「怎么发」：发送风控频率 / 直播监听 / 历史捕获策略
- *   - 账号状态（UID/角色/守护）归「账号」页，不在这里
+ *   - 账号状态（UID/角色/守护）归「账号」页；Agent 的**选择**也在「账号」页
  *
- * ## 本次改动（重设计）
- * - 页头/子导航/内容容器全部改走设计令牌与新组件
- * - 旧 `.set-nav` + 内联 `color-mix(in oklch, var(--bg)…)` → 新令牌变量
- * - **7 个业务分区与承载组件零改动**（UnifiedConfigSection / ModelHubSection /
- *   AgentSection / TagSection / NotifySection 原样复用）
+ * ## 本次改动（AI 页打散归类）
+ * 原「AI 获客」页 6 块内容按**数据作用域**实测分派，其中三块落到本页：
+ *   · Agent 设定 + 护栏配置 + 黑名单 → 新组件 `AiEngineSection`
+ * （运行控制 → 总览页；留资线索 → 私信页；知识库入口卡 → 删除）
+ *
+ * `AiEngineSection` 与 `AgentSection` 的字段分工（避免两处可写）：
+ *   · `AiEngineSection` 管**引擎参数**：商家名 / 档位 / prompt / 留资 / 延迟 / 护栏 / 黑名单
+ *   · `AgentSection`    管**模版与绑定**：Agent 列表 / 名称 / 主模型 / 启用 / 作用域 / 账号绑定
  */
 import { useState } from "react";
 import {
-  Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell,
+  Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users,
 } from "lucide-react";
 import { PageProps } from "../api/client";
 import UnifiedConfigSection from "../components/UnifiedConfigSection";
 import AgentSection from "../components/AgentSection";
-import TagSection from "../components/TagSection";
 import ModelHubSection from "../components/ModelHubSection";
 import NotifySection from "../components/NotifySection";
+import TagSection from "../components/TagSection";
+import AiEngineSection from "../components/AiEngineSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type SectionKey =
-  | "general" | "send" | "live" | "capture" | "agent" | "tag" | "notify";
+  | "general" | "send" | "live" | "capture" | "ai" | "agent" | "tag" | "notify";
 
 const TABS: {
   key: SectionKey;
@@ -39,7 +47,8 @@ const TABS: {
   { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", icon: <Send className="h-3.5 w-3.5" /> },
   { key: "live", label: "直播监听", hint: "监听节奏与轮询", icon: <Radio className="h-3.5 w-3.5" /> },
   { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", icon: <Database className="h-3.5 w-3.5" /> },
-  { key: "agent", label: "AI 与 Agent", hint: "回复内容：回什么", icon: <Bot className="h-3.5 w-3.5" /> },
+  { key: "ai", label: "AI 回复引擎", hint: "模型链路 + 回复内容 / 护栏 / 黑名单", icon: <Bot className="h-3.5 w-3.5" /> },
+  { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", icon: <Users className="h-3.5 w-3.5" /> },
   { key: "tag", label: "配置标签", hint: "发送策略：怎么发", icon: <Tags className="h-3.5 w-3.5" /> },
   { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", icon: <Bell className="h-3.5 w-3.5" /> },
 ];
@@ -50,8 +59,8 @@ export default function SettingsPage(props: PageProps) {
   return (
     <PageContainer>
       <PageHeader
-        title="设置"
-        description="按功能分区管理。业务参数（发送/监听/捕获）可用「配置标签」按账号差异化；回复内容用 Agent 管理"
+        title="配置中心"
+        description="全局唯一可写配置入口。业务页只做「选择/引用」；业务参数（发送/监听/捕获）可用「配置标签」按账号差异化"
       />
 
       <div className="flex items-start gap-4">
@@ -96,13 +105,15 @@ export default function SettingsPage(props: PageProps) {
             {section === "capture" && (
               <UnifiedConfigSection {...props} onlySections={["capture"]} />
             )}
-            {section === "agent" && (
+            {section === "ai" && (
               <>
-                {/* 模型链路中心：AI 与 IM 通知共用的模型唯一真源 */}
+                {/* 模型链路中心：提供商 / 模型 / 避障链路 / 消费方绑定（唯一真源） */}
                 <ModelHubSection {...props} />
-                <AgentSection {...props} />
+                {/* 引擎参数：Agent 设定 + 护栏 + 黑名单（原 AI 页打散归类而来） */}
+                <AiEngineSection {...props} />
               </>
             )}
+            {section === "agent" && <AgentSection {...props} />}
             {section === "tag" && <TagSection {...props} />}
             {section === "notify" && <NotifySection {...props} />}
           </CardContent>

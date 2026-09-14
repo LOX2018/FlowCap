@@ -1,19 +1,29 @@
 /**
  * Sidebar —— 对标 better-douyin `components/layout/sidebar.tsx`
  *
- * 差异：导航项按**本项目业务**编排为三组（核心 / 内容 / 系统），
+ * 差异：导航项按**用户使用逻辑**编排为三组（任务 / 资产 / 记录），
  * 而非照抄蓝本的 11 项（本项目无下载/点赞/收藏业务）。
+ *
+ * ## 分组命名依据（2026-09-14 信息架构改版）
+ *
+ * 旧分组名（核心/内容/系统）是**系统名词**，用户要自己翻译成"我要做什么"；
+ * 且「内容」既是组名又是项名，自相撞车。改为**动词性心智**：
+ *   · 任务 —— 我在跑的活（总览/私信/直播/采集）
+ *   · 资产 —— 我积累的（账号/内容/知识库）
+ *   · 记录 —— 发生过什么（任务/通知/日志）
+ *
+ * 「配置中心」不再是组内一项，而是**底部独立入口**（全局唯一可写配置入口）。
  */
 import { useState } from "react";
 import {
-  LayoutDashboard, MessageSquare, Radio, Search, Bot, BookOpen,
+  LayoutDashboard, MessageSquare, Radio, Search, BookOpen,
   Users, ListChecks, Bell, ScrollText, Settings, PanelLeftClose,
   PanelLeftOpen, ChevronDown, Compass,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type TabId =
-  | "overview" | "msg" | "live" | "crawl" | "platform" | "ai" | "kb"
+  | "overview" | "msg" | "live" | "crawl" | "platform" | "kb"
   | "accounts" | "tasks" | "notify" | "logs" | "settings";
 
 type NavItem = { id: TabId; label: string; icon: React.ElementType };
@@ -21,32 +31,31 @@ type NavItem = { id: TabId; label: string; icon: React.ElementType };
 type NavGroup = { title: string; items: NavItem[] };
 
 /** 三组编排：核心（日常高频）/ 内容（获客链路）/ 系统（配置与运维）。 */
+/** 三组编排：任务（我在跑的活）/ 资产（我积累的）/ 记录（发生过什么）。 */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    title: "核心",
+    title: "任务",
     items: [
       { id: "overview", label: "总览", icon: LayoutDashboard },
       { id: "msg", label: "私信", icon: MessageSquare },
       { id: "live", label: "直播", icon: Radio },
+      { id: "crawl", label: "采集", icon: Search },
     ],
   },
   {
-    title: "内容",
+    title: "资产",
     items: [
-      { id: "crawl", label: "采集", icon: Search },
+      { id: "accounts", label: "账号", icon: Users },
       { id: "platform", label: "内容", icon: Compass },
-      { id: "ai", label: "AI 获客", icon: Bot },
       { id: "kb", label: "知识库", icon: BookOpen },
     ],
   },
   {
-    title: "系统",
+    title: "记录",
     items: [
-      { id: "accounts", label: "账号", icon: Users },
       { id: "tasks", label: "任务", icon: ListChecks },
       { id: "notify", label: "通知", icon: Bell },
       { id: "logs", label: "日志", icon: ScrollText },
-      { id: "settings", label: "设置", icon: Settings },
     ],
   },
 ];
@@ -159,8 +168,29 @@ export function Sidebar({
         ))}
       </nav>
 
-      {/* 底部：状态 + 收起按钮 */}
+      {/* 底部：配置中心（唯一可写配置入口）+ 状态 + 收起按钮 */}
       <div className="shrink-0 border-t border-[var(--color-border)] p-2">
+        {/* 配置中心：独立入口，视觉区别于业务导航项（用户 2026-09-14 拍板 D1） */}
+        <button
+          onClick={() => setTab("settings")}
+          title="配置中心 · 全局唯一可写配置入口"
+          aria-label="配置中心"
+          aria-current={tab === "settings" ? "page" : undefined}
+          className={cn(
+            "mb-1.5 flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2",
+            "text-[0.82rem] font-medium transition-colors duration-200",
+            "ease-[var(--ease-spring)]",
+            tab === "settings"
+              ? "bg-[var(--color-accent-soft)] font-semibold text-[var(--color-accent)]"
+              : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]",
+            "shadow-[inset_0_0_0_1px_var(--color-border)]",
+            collapsed && "justify-center px-0"
+          )}
+        >
+          <Settings className="h-[17px] w-[17px] shrink-0" />
+          {!collapsed && <span className="truncate">配置中心</span>}
+        </button>
+
         {!collapsed && footer ? <div className="mb-1.5">{footer}</div> : null}
         <button
           onClick={toggle}

@@ -50,7 +50,7 @@ export type ProItem = {
   enabled?: boolean;
 };
 
-export default function KbPage({ push, api, setTab }: PageProps) {
+export default function KbPage({ push, api }: PageProps) {
   const [sub, setSub] = useState<SubTab>("pro");
   const qc = useQueryClient();
 
@@ -59,11 +59,6 @@ export default function KbPage({ push, api, setTab }: PageProps) {
       <PageHeader
         title="知识库管理"
         description="专业知识库（向量参考，不直接回复） · 对话回复库（案例命中，零 token 直回）"
-        actions={
-          <Button variant="ghost" size="sm" onClick={() => setTab?.("ai")}>
-            <ArrowLeft className="h-3.5 w-3.5" />返回 AI
-          </Button>
-        }
       />
 
       <SegmentedTabs

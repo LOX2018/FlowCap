@@ -26,7 +26,6 @@ import LogsPage from "@/pages/logs";
 import MessagesPage from "@/pages/messages";
 import LivePage from "@/pages/live";
 import AccountsPage from "@/pages/accounts";
-import AiPage from "@/pages/ai";
 import KbPage from "@/pages/kb";
 import type { PageProps } from "@/api/client";
 
@@ -181,6 +180,19 @@ function mockApi() {
     saveProxy: async () => ({ ok: true }),
     pause: async () => ({ ok: true }),
     resume: async () => ({ ok: true }),
+    // 配置中心（预览 harness 补齐；真实实现见 api/client.ts）
+    getSettings: async () => ({
+      general: { theme: "dark", accent: "#68cb6e", density: "comfortable" },
+      send: { daily_limit: 50, min_interval: 30, gate_enabled: true },
+      live: { poll_interval: 10, listen_enabled: false },
+      capture: { history_fill: true, cache_ttl: 7, image_cache: true },
+    }),
+    getSettingsSchema: async () => ({ sections: [] }),
+    saveSettings: async () => ({ ok: true }),
+    getTags: async () => ({ tags: [], bindings: {} }),
+    getScoped: async () => ({ scoped: {} }),
+    getModelHub: async () => ({ providers: [], models: [], routes: {}, consumers: {} }),
+    modelhubOverview: async () => ({ providers: [], models: [], routes: {}, consumers: {} }),
     getStats: async () => ({
       ok: true, total: 862, sent: 795,
       list: [
@@ -212,7 +224,6 @@ const PAGES: Record<string, { title: string; tab: TabId; el: (p: PageProps) => R
   messages: { title: "私信", tab: "msg", el: (p) => <MessagesPage {...p} /> },
   live: { title: "直播", tab: "live", el: (p) => <LivePage {...p} /> },
   accounts: { title: "账号", tab: "accounts", el: (p) => <AccountsPage {...p} /> },
-  ai: { title: "AI 获客", tab: "ai", el: (p) => <AiPage {...p} /> },
   kb: { title: "知识库", tab: "kb", el: (p) => <KbPage {...p} /> },
 };
 
