@@ -251,24 +251,26 @@ async def get_feed(req: FeedReq) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         logger.warning("PLT-001", f"推荐流获取失败: {type(e).__name__}")
         raise HTTPException(502, f"推荐流获取失败: {type(e).__name__}")
-    # ★ 2026-09-14 实测修正：推荐流**不走 aweme_list**，而是 `cards[].aweme`
-    #   ——且 `card["aweme"]` 是 **JSON 字符串**，需再次 json.loads 才能取到作品对象。
-    #   原实现只读 `aweme_list` ⇒ 实测恒 0 条（用户看到"暂无内容"，实为解包错误）。
+    # ★ 2026-09-15：`get_feed` 已改用源项目接口 `/aweme/v1/web/tab/feed/`
+    #   （源项目方案），返回**标准 `aweme_list`** —— 优先直接读它。
+    #   （保留 cards 兼容：万一基座回退到老接口 `/module/feed/` 仍可工作，
+    #    该路径下 `card["aweme"]` 是 JSON 字符串，需二次解析。）
     items: list[dict] = []
     if isinstance(raw, dict):
-        for card in (raw.get("cards") or []):
-            if not isinstance(card, dict):
-                continue
-            aw = card.get("aweme")
-            if isinstance(aw, str):
-                try:
-                    aw = json.loads(aw)
-                except Exception:  # noqa: BLE001
-                    aw = None
-            if isinstance(aw, dict):
-                items.append(aw)
-        if not items and isinstance(raw.get("aweme_list"), list):
+        if isinstance(raw.get("aweme_list"), list):
             items = raw["aweme_list"]
+        if not items:
+            for card in (raw.get("cards") or []):
+                if not isinstance(card, dict):
+                    continue
+                aw = card.get("aweme")
+                if isinstance(aw, str):
+                    try:
+                        aw = json.loads(aw)
+                    except Exception:  # noqa: BLE001
+                        aw = None
+                if isinstance(aw, dict):
+                    items.append(aw)
     return {"ok": True, "items": [_pick_aweme(w) for w in items],
             "has_more": bool(raw.get("has_more")) if isinstance(raw, dict) else False}
 

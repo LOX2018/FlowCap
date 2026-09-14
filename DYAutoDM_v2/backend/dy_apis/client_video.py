@@ -218,62 +218,54 @@ class VideoMixin:
         json_data = resp.json()
         return search_id, json_data["guide_search_words"], json_data
 
-    @staticmethod
     def get_feed(auth, count='20', refresh_index='2', **kwargs):
-        """
-        获取首页推荐视频
+        """获取首页推荐视频。
+
+        ## ★ 2026-09-15 改用源项目接口（业务接口一律换成源项目方案）
+
+        原用 `/aweme/v1/web/module/feed/`（**老接口**）：返回非标准的
+        `cards[].aweme`，且 `aweme` 是 **JSON 字符串**（需二次 json.loads），
+        解包脆弱（此前实测恒 0 条，靠补丁才取出 10 条）。
+
+        **源项目实测方案**（`all_strings.txt` 逆向 + 直连验证）：
+        ```
+        /aweme/v1/web/tab/feed/   → HTTP 200 / 659465 字节
+        返回标准结构：{aweme_list:[…], has_more, log_pb, status_code}
+        实测 6 条；字段标准（desc / author.nickname / aweme_id 直接可读）
+        ```
+        ⇒ 改用该路径；下游**不再需要** cards + JSON 字符串的特殊解包。
+
         :param auth: DouyinAuth object.
         :param count: 数量.
         :param refresh_index: 刷新索引.
-        :return: JSON.
+        :return: JSON（含 `aweme_list`）
         """
-        api = "/aweme/v1/web/module/feed/"
+        api = "/aweme/v1/web/tab/feed/"
         headers = HeaderBuilder().build(HeaderType.GET)
-        refer = "https://www.douyin.com/"
-        headers.set_referer(refer)
+        headers.set_referer("https://www.douyin.com/")
         params = Params()
-        params.add_param("device_platform", 'webapp')
-        params.add_param("aid", '6383')
-        params.add_param("channel", 'channel_pc_web')
-        params.add_param("module_id", '3003101')
-        params.add_param("count", count)
-        params.add_param("filterGids", '')
-        params.add_param("presented_ids", '')
-        params.add_param("refresh_index", refresh_index)
-        params.add_param("refer_id", '')
-        params.add_param("refer_type", '10')
-        params.add_param("awemePcRecRawData", '{"is_client":false}')
-        params.add_param("Seo-Flag", '0')
-        params.add_param("install_time", '1715480185')
-        params.add_param("pc_client_type", '1')
-        params.add_param("update_version_code", '170400')
-        params.add_param("version_code", '170400')
-        params.add_param("version_name", '17.4.0')
-        params.add_param("cookie_enabled", 'true')
-        params.add_param("screen_width", get_profile()["screen_width"])
-        params.add_param("screen_height", get_profile()["screen_height"])
-        params.add_param("browser_language", 'zh-CN')
-        params.add_param("browser_platform", 'Win32')
-        params.add_param("browser_name", get_profile()["browser_name"])
-        params.add_param("browser_version", get_profile()["browser_version"])
-        params.add_param("browser_online", 'true')
-        params.add_param("engine_name", 'Blink')
-        params.add_param("engine_version", get_profile()["engine_version"])
-        params.add_param("os_name", 'Windows')
-        params.add_param("os_version", '10')
-        params.add_param("cpu_core_num", get_profile()["cpu_core_num"])
-        params.add_param("device_memory", get_profile()["device_memory"])
-        params.add_param("platform", 'PC')
-        params.add_param("downlink", '10')
-        params.add_param("effective_type", '4g')
-        params.add_param("round_trip_time", '100')
-        params.with_web_id(auth, refer)
-        params.add_param("msToken", auth.msToken)
+        (params.add_param("device_platform", 'webapp')
+         .add_param("aid", '6383')
+         .add_param("channel", 'channel_pc_web')
+         .add_param("pc_client_type", '1')
+         .add_param("version_code", '170400')
+         .add_param("version_name", '17.4.0')
+         .add_param("cookie_enabled", 'true')
+         .add_param("browser_language", 'zh-CN')
+         .add_param("browser_platform", 'Win32')
+         .add_param("browser_name", get_profile()["browser_name"])
+         .add_param("browser_version", get_profile()["browser_version"])
+         .add_param("browser_online", 'true')
+         .add_param("engine_name", 'Blink')
+         .add_param("os_name", 'Windows')
+         .add_param("os_version", '10')
+         .add_param("platform", 'PC')
+         .add_param("count", str(count))
+         .add_param("refresh_index", str(refresh_index)))
+        params.with_web_id(auth, "https://www.douyin.com/")
         params.with_a_bogus()
-        params.add_param("verifyFp", auth.cookie['s_v_web_id'])
-        params.add_param("fp", auth.cookie['s_v_web_id'])
-
-        res = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
-                           cookies=auth.cookie, verify=False)
-        return res.json()
+        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+                            headers=headers.get(), cookies=auth.cookie,
+                            params=params.get(), verify=False, timeout=15)
+        return resp.json()
 

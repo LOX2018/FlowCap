@@ -11,17 +11,13 @@
  * 而不是去改 client.ts 导出一个通用方法（那会影响 22 个页面的既有调用）。
  */
 import { getMemberToken } from "./client";
+// ★ 2026-09-15 修复：必须复用 `sidecar.ts` 的 BACKEND_BASE
+//   （`http://127.0.0.1:8000`）。原实现 fallback 为**空串** ⇒ fetch 走相对路径，
+//   Tauri 下解析成 `tauri://localhost/api/...` → 命中 SPA fallback 返回 index.html
+//   → JSON 解析报 `Unexpected token '<', "<!doctype "...`（内容页完全不可用）。
+import { BACKEND_BASE } from "./sidecar";
 
-const BASE = (() => {
-  // 与 client.ts 保持一致：Tauri 侧走 sidecar 注入的地址，否则同源
-  try {
-    const w = window as unknown as { __BACKEND_BASE__?: string };
-    if (w.__BACKEND_BASE__) return w.__BACKEND_BASE__;
-  } catch {
-    /* ignore */
-  }
-  return "";
-})();
+const BASE = BACKEND_BASE;
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
