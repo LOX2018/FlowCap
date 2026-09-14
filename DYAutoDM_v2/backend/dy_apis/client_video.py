@@ -90,7 +90,7 @@ class VideoMixin:
         params.add_param("screen_width", get_profile()["screen_width"])
         params.add_param("screen_height", get_profile()["screen_height"])
         params.add_param("browser_language", "zh-CN")
-        params.add_param("browser_platform", get_profile()["platform"])
+        params.add_param("browser_platform", "Win32")
         params.add_param("browser_name", get_profile()["browser_name"])
         params.add_param("browser_version", get_profile()["browser_version"])
         params.add_param("browser_online", "true")

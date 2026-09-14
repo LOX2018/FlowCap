@@ -22,11 +22,16 @@ import { EmptyState, LoadingState, ErrorState } from "@/components/ui/empty-stat
 import { platformApi, type AwemeItem, type UserItem, type NoticeItem } from "@/api/platform";
 import { fmtNum, fmtAgo } from "@/lib/utils";
 import type { PageProps } from "@/api/client";
+import { FullscreenPlayer } from "@/components/player";
+import type { PlayerMedia } from "@/components/player";
 
-/** 作品卡片（封面上最简信息；不做播放器，点击只展示描述）。 */
-function AwemeCard({ item }: { item: AwemeItem }) {
+/** 作品卡片（封面 + 统计；点击打开播放器）。 */
+function AwemeCard({ item, onOpen }: { item: AwemeItem; onOpen?: (it: AwemeItem) => void }) {
   return (
-    <Card className="overflow-hidden">
+    <Card
+      className={`overflow-hidden transition-transform hover:-translate-y-0.5 ${onOpen ? "cursor-pointer" : ""}`}
+      onClick={() => onOpen?.(item)}
+    >
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-[var(--color-surface)]">
         {item.cover ? (
           <img
@@ -89,14 +94,18 @@ function UserCard({ item }: { item: UserItem }) {
   );
 }
 
-function Grid({ items, kind }: { items: (AwemeItem | UserItem)[]; kind: "video" | "user" }) {
+function Grid({ items, kind, onOpenAweme }: {
+  items: (AwemeItem | UserItem)[]; kind: "video" | "user";
+  onOpenAweme?: (it: AwemeItem) => void;
+}) {
   if (!items.length) return <EmptyState title="暂无内容" description="换个条件试试，或稍后重试。" />;
   return (
     <div className="grid grid-cols-5 gap-3">
       {items.map((it, i) =>
         kind === "user"
           ? <UserCard key={(it as UserItem).uid || i} item={it as UserItem} />
-          : <AwemeCard key={(it as AwemeItem).aweme_id || i} item={it as AwemeItem} />
+          : <AwemeCard key={(it as AwemeItem).aweme_id || i} item={it as AwemeItem}
+                       onOpen={onOpenAweme} />
       )}
     </div>
   );
@@ -118,6 +127,28 @@ export default function PlatformPage(props: PageProps) {
   const [userUrl, setUserUrl] = useState("");
   const [submitted, setSubmitted] = useState<{ q: string; kind: "video" | "user" } | null>(null);
   const [worksUrl, setWorksUrl] = useState<string | null>(null);
+  // ── 播放器（★ 本分支新增：卡片点击 → 取址 → 播放）──
+  const [playerMedia, setPlayerMedia] = useState<PlayerMedia | null>(null);
+  const [playerOpen, setPlayerOpen] = useState(false);
+  const [playerErr, setPlayerErr] = useState<string>("");
+  const openAweme = async (it: AwemeItem) => {
+    setPlayerErr("");
+    setPlayerOpen(true);
+    setPlayerMedia({ type: "video", aweme_id: it.aweme_id, cover: it.cover, desc: it.desc });
+    try {
+      // ★ 回传列表返回的作品对象（实测自带播放地址；详情接口平台侧返空）
+      const r = await platformApi.mediaResolve(account, it.aweme_id, "origin",
+                                               (it as AwemeItem & { media?: Record<string, unknown> }).media);
+      if (!r?.ok) throw new Error("取址失败");
+      setPlayerMedia({
+        type: r.type, aweme_id: r.aweme_id, url: r.url,
+        images: r.images, live_photos: r.live_photos,
+        cover: r.cover || it.cover, duration: r.duration, desc: r.desc || it.desc,
+      });
+    } catch (e) {
+      setPlayerErr(String((e as Error)?.message || "取址失败"));
+    }
+  };
 
   const setAcctPersist = (v: string) => {
     setAcct(v);
@@ -188,7 +219,8 @@ export default function PlatformPage(props: PageProps) {
     if (q.isError) {
       return <ErrorState message={String((q.error as Error)?.message || "请求失败")} onRetry={q.refetch} />;
     }
-    return <Grid items={(q.data?.items || []) as (AwemeItem | UserItem)[]} kind={kind} />;
+    return <Grid items={(q.data?.items || []) as (AwemeItem | UserItem)[]} kind={kind}
+                 onOpenAweme={kind === "video" ? openAweme : undefined} />;
   };
 
   return (
@@ -319,6 +351,27 @@ export default function PlatformPage(props: PageProps) {
             ) : <EmptyState title="暂无通知" />)}
         </TabsContent>
       </Tabs>
+
+      {/* 播放器浮层（照源项目 components/player 的独立业务域形态） */}
+      {playerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+             onClick={() => setPlayerOpen(false)}>
+          <div className="flex h-[70vh] w-full max-w-3xl flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--color-surface)]"
+               onClick={(e) => e.stopPropagation()}>
+            {playerErr ? (
+              <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-text-muted)]">
+                取址失败：{playerErr}
+              </div>
+            ) : (
+              <FullscreenPlayer
+                media={playerMedia}
+                onClose={() => setPlayerOpen(false)}
+                onDownload={() => { /* 交由后端 downloader（后续接线） */ }}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </PageContainer>
   );
 }

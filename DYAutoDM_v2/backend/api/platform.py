@@ -108,6 +108,18 @@ def _pick_aweme(w: dict) -> dict:
         "share_count": stats.get("share_count") or 0,
         "play_count": stats.get("play_count") or 0,
         "duration": video.get("duration") or 0,
+        # ★ 播放所需最小字段（2026-09-14 实测：列表对象自带播放地址，
+        #   但整对象 125 键过臃肿；此处只带 downloader/media_request 提取所需的
+        #   `video` 子树 + 封面/时长，供前端点击播放时原样回传给 /media/resolve）
+        "media": {
+            "aweme_id": str(w.get("aweme_id") or ""),
+            "desc": (w.get("desc") or "")[:200],
+            "duration": video.get("duration") or 0,
+            "video": video,
+            "images": w.get("images") or None,
+            "author": {"nickname": author.get("nickname") or "",
+                       "sec_uid": author.get("sec_uid") or ""},
+        },
     }
 
 
@@ -711,3 +723,108 @@ async def collection_series(req: SeriesAwemeReq) -> dict[str, Any]:
                 break
     return {"ok": True, "items": [_pick_aweme(w) for w in items],
             "has_more": bool((raw or {}).get("has_more"))}
+
+
+# ===========================================================================
+# 媒体取址（★ 本分支新增，供播放器 / 下载使用）
+# ===========================================================================
+# 设计来源：源项目 `src/downloader/media_request.rs` + `media_group.rs`
+# （方案 B 逆向情报）与 `src/media_proxy_cache.rs`。
+# 本项目对应实现：`backend/downloader/media_request.py`（提取媒体）
+#                + `backend/services/media_proxy.py`（唯一解密 + 缓存）。
+#
+# 为什么需要本端点：
+#   列表接口（/feed、/user/works、/collection/items …）只返回**封面**与统计，
+#   不含播放地址（实测 `AwemeItem` 无 url 字段）。播放器要播、下载器要下，
+#   都必须先按 aweme_id **取详情 → 提取媒体地址**。
+
+
+class MediaResolveReq(BaseModel):
+    account: str
+    """下列三种入参任选其一（**优先 aweme，其次 raw**，最后 url）：
+      · `raw`      —— ★**推荐**：列表接口已返回的完整作品对象（实测 125 键，自带 play_addr）
+      · `aweme_id` —— 仅 id 时后端自行取详情（**实测平台侧返回空**，见下）
+      · `url`      —— 作品链接
+    """
+    aweme_id: str = ""
+    url: str = ""
+    ## 列表接口返回的完整作品对象（★ 实测：自带 play_addr，无需再请求）
+    raw: dict[str, Any] | None = None
+    quality: str = "origin"
+
+
+@router.post("/media/resolve")
+async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
+    """解析可播放的媒体地址（供播放器 / 下载）。
+
+    返回与前端 `PlayerMedia` 契约对齐：
+      `{ok, type, url, images[], live_photos[], cover, duration, desc, aweme_id, qualities[]}`
+
+    ## 实测结论（2026-09-14，决定本端点的入参设计）
+
+    · **列表类接口**（`/feed`、`/user/works`、`/search`、`/collection/items`、`/liked`）
+      返回的作品对象**自带播放地址**：实测 125 键、含 `video.play_addr`、45 个 URL。
+    · **作品详情接口**（`get_work_info`，即 `/aweme/v1/web/aweme/detail/`）
+      实测 **HTTP 200 但响应体 0 字节**（平台侧行为，与写操作族同源）。
+    ⇒ 因此**推荐前端直接把列表返回的作品对象原样回传**（`raw`），
+      避免再发一次必然失败的详情请求（少一次请求也更安全）。
+      `aweme_id` / `url` 路径保留作 fallback，若平台侧恢复则可用。
+    """
+    from downloader import media_request as MR
+
+    raw: dict[str, Any] | None = req.raw if isinstance(req.raw, dict) else None
+
+    # ① 优先用前端回传的作品对象（实测自带地址，零额外请求）
+    if raw is None and req.aweme_id:
+        auth = _auth_for(req.account)
+        api = _api()
+        try:
+            raw = await asyncio.to_thread(
+                api.get_work_info, auth, f"https://www.douyin.com/video/{req.aweme_id}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PLT-040", f"详情取址失败（平台侧常返空）: {type(e).__name__}")
+            raw = None
+    elif raw is None and req.url:
+        auth = _auth_for(req.account)
+        api = _api()
+        try:
+            raw = await asyncio.to_thread(api.get_work_info, auth, req.url)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PLT-040", f"详情取址失败（平台侧常返空）: {type(e).__name__}")
+            raw = None
+
+    if not isinstance(raw, dict) or not raw:
+        raise HTTPException(502, "取址失败：未获得作品数据（建议由前端回传列表返回的作品对象 raw）")
+
+    m = MR.extract_media(raw)
+    url = MR.pick_quality(m, req.quality) or ""
+    summary = MR.summarize(m)
+    return {
+        "ok": True,
+        "aweme_id": str(raw.get("aweme_id") or req.aweme_id or ""),
+        "type": m.get("type"),
+        "url": url,
+        "images": m.get("images") or [],
+        "live_photos": m.get("live_photos") or [],
+        "cover": m.get("cover") or "",
+        "duration": m.get("duration") or 0,
+        "desc": (raw.get("desc") or "")[:200],
+        "author": {
+            "nickname": ((raw.get("author") or {}).get("nickname") or ""),
+            "avatar": (((raw.get("author") or {}).get("avatar_thumb") or {})
+                       .get("url_list") or [""])[0],
+            "sec_uid": ((raw.get("author") or {}).get("sec_uid") or ""),
+        },
+        "qualities": summary.get("video_qualities") or [],
+    }
+
+
+@router.post("/media/stats")
+async def media_stats() -> dict[str, Any]:
+    """媒体代理缓存统计（照源项目 `media_proxy_cache.rs` 的语义）。"""
+    from services import media_proxy as MP
+    try:
+        return {"ok": True, **MP.stats()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PLT-041", f"媒体统计失败: {type(e).__name__}")
+        raise HTTPException(502, f"媒体统计失败: {type(e).__name__}")

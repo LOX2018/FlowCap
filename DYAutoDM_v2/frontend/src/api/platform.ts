@@ -52,6 +52,23 @@ export interface AwemeItem {
   share_count: number;
   play_count: number;
   duration: number;
+  /** ★ 播放所需最小字段（后端 _pick_aweme 附带；点击播放时原样回传 media/resolve） */
+  media?: Record<string, unknown>;
+}
+
+/** 播放器媒体（对齐后端 `POST /api/platform/media/resolve` 的返回） */
+export interface PlayerMediaDTO {
+  ok: boolean;
+  aweme_id: string;
+  type: "video" | "images" | "live_photo";
+  url: string;
+  images: string[];
+  live_photos: { image: string; video: string }[];
+  cover: string;
+  duration: number;
+  desc: string;
+  author: { nickname: string; avatar: string; sec_uid: string };
+  qualities: string[];
 }
 
 export interface UserItem {
@@ -128,6 +145,17 @@ export const platformApi = {
   comments: (account: string, url: string, limit = 20) =>
     post<{ ok: boolean; items: CommentItem[]; has_more: boolean }>(
       "/api/platform/comments", { account, url, limit }),
+
+  /** 媒体取址（播放器用）。★ 优先传 `raw`（列表返回的作品对象）——
+   *  实测列表对象自带播放地址，而详情接口平台侧返回空。 */
+  mediaResolve: (account: string, aweme_id: string, quality = "origin",
+                 raw?: Record<string, unknown>) =>
+    post<PlayerMediaDTO>("/api/platform/media/resolve",
+                         raw ? { account, raw, quality } : { account, aweme_id, quality }),
+
+  /** 媒体代理缓存统计（照源项目 media_proxy_cache.rs 语义） */
+  mediaStats: () => post<{ ok: boolean } & Record<string, unknown>>(
+    "/api/platform/media/stats", {}),
 
   // ---- 写操作（须由用户显式点击触发，不做自动批量） ----
   digg: (account: string, aweme_id: string, action: "1" | "0" = "1") =>
