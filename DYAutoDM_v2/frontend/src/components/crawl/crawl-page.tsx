@@ -1,24 +1,6 @@
-/**
- * 采集页（重设计版 · 对标 better-douyin 设计体系）
- *
- * 链路：关键词搜视频 → 采集评论区 → 评论用户一键私信截流
- * 基座：DouyinAPI.search_some_general_work / get_work_out_comment
- *       + core.sender.send_by_uid（统一发送闸门）
- *
- * ## 风控约束（铁律，不得违反）
- * - 采集复用账号 .env 凭证被动签名（与手动网页浏览同源）
- * - 昵称/uid **全部取自结果自带字段**，绝不批量查询用户信息
- * - 2026-09-07 起移除「按关键词搜用户」：基座该端点已被抖音 verify_check 全面风控
- *
- * ## 本次改动（重设计）
- * - 呈现层全部改走 `components/page/kit` + `components/ui/*`
- * - 评论抽屉：旧 `theme-glass.css` 的 `.overlay` → Radix Dialog（可访问性 + 焦点管理）
- * - 颜色/圆角/缓动一律取自 `tokens.css`（深浅主题自动生效）
- * - **业务逻辑零改动**（搜索参数、发送闸门、批量筛选语义全部保持）
- */
 import { useState, useEffect } from "react";
 import {
-  Search as SearchIcon, MessageSquare, Send, Filter, X, Loader2,
+  SearchIcon, MessageSquare, Send, Filter, X, Loader2,
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { Avatar, hue } from "../../components/ui";
@@ -33,39 +15,7 @@ import {
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
-
-const fmtNum = (n: unknown) => {
-  const v = Number(n) || 0;
-  return v >= 10000 ? (v / 10000).toFixed(1) + "w" : String(v);
-};
-const fmtTs = (ts: unknown) => {
-  const v = Number(ts);
-  if (!v) return "";
-  try {
-    return new Date(v * 1000).toLocaleString("zh-CN", { hour12: false });
-  } catch {
-    return "";
-  }
-};
-
-/** 排序/发布时间/时长 三个筛选器的选项（业务值保持不变）。 */
-const ORDER_OPTS = [
-  { v: "0", label: "综合排序" },
-  { v: "1", label: "最多点赞" },
-  { v: "2", label: "最新发布" },
-];
-const PT_OPTS = [
-  { v: "0", label: "不限" },
-  { v: "1", label: "一天内" },
-  { v: "7", label: "一周内" },
-  { v: "180", label: "半年内" },
-];
-const DUR_OPTS = [
-  { v: "", label: "不限" },
-  { v: "0-1", label: "1分钟内" },
-  { v: "1-5", label: "1-5分钟" },
-  { v: "5-10000", label: "5分钟以上" },
-];
+import { fmtNum, fmtTs, ORDER_OPTS, DUR_OPTS, PT_OPTS } from "./crawl-shared";
 
 export default function CrawlPage(props: PageProps) {
   const { push, ready, api } = props;
