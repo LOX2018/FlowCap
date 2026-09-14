@@ -13,10 +13,10 @@
  */
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PageProps } from "../api/client";
-import type { ConfigTagSummary } from "../api/client";
+import { PageProps } from "../../api/client";
+import type { ConfigTagSummary } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
-import { SetCard, SetCardHead, SetCardBody } from "./page/set-card";
+import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

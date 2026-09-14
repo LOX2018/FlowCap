@@ -12,7 +12,7 @@
  *   （fail/error/unknown）、`handleFix` 的 autoRecapture 调用与文案全部原样保留
  */
 import { X } from "lucide-react";
-import { api } from "../api/client";
+import { api } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Tone } from "@/components/page/kit";
 

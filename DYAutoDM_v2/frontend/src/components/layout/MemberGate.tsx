@@ -13,7 +13,7 @@
  *   （`\{"detail":"([^"]+)"\}`）全部原样保留
  */
 import { useState, useEffect, useCallback } from "react";
-import { memberApi, getMemberToken } from "../api/client";
+import { memberApi, getMemberToken } from "../../api/client";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";

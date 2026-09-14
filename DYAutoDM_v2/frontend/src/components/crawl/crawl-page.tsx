@@ -20,8 +20,8 @@ import { useState, useEffect } from "react";
 import {
   Search as SearchIcon, MessageSquare, Send, Filter, X, Loader2,
 } from "lucide-react";
-import { PageProps } from "../api/client";
-import { Avatar, hue } from "../components/ui";
+import { PageProps } from "../../api/client";
+import { Avatar, hue } from "../../components/ui";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

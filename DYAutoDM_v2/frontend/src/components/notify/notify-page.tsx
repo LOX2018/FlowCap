@@ -25,7 +25,7 @@ import {
   NotifyStatus,
   CHANNEL_META,
   NotifyKind,
-} from "../api/client";
+} from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

@@ -14,12 +14,12 @@
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PageProps } from "../api/client";
+import { PageProps } from "../../api/client";
 import type {
   SettingsSchema,
   SettingsFieldSchema,
-} from "../api/client";
-import { SetCard, SetCardHead, SetCardBody, SetCardFoot } from "./page/set-card";
+} from "../../api/client";
+import { SetCard, SetCardHead, SetCardBody, SetCardFoot } from "@/components/page/set-card";
 
 type Val = string | number | boolean;
 

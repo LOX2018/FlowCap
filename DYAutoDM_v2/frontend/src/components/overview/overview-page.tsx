@@ -19,9 +19,9 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Send, MessageSquare, Cpu, Users } from "lucide-react";
-import { PageProps, Overview } from "../api/client";
-import { Avatar, KIND_NAME } from "../components/ui";
-import AiRuntimeSection from "@/components/AiRuntimeSection";
+import { PageProps, Overview } from "../../api/client";
+import { Avatar, KIND_NAME } from "../../components/ui";
+import AiRuntimeSection from "@/components/overview/AiRuntimeSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

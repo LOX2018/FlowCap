@@ -14,9 +14,9 @@
  */
 import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PageProps } from "../api/client";
-import type { AiAgentSummary } from "../api/client";
-import { SetCard, SetCardHead, SetCardBody, SetField } from "./page/set-card";
+import { PageProps } from "../../api/client";
+import type { AiAgentSummary } from "../../api/client";
+import { SetCard, SetCardHead, SetCardBody, SetField } from "@/components/page/set-card";
 
 const LEVELS = [
   { value: "kb_only", label: "kb_only（仅知识库，AI 不参与）" },

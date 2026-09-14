@@ -23,13 +23,13 @@ import { useState } from "react";
 import {
   Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users,
 } from "lucide-react";
-import { PageProps } from "../api/client";
-import UnifiedConfigSection from "../components/UnifiedConfigSection";
-import AgentSection from "../components/AgentSection";
-import ModelHubSection from "../components/ModelHubSection";
-import NotifySection from "../components/NotifySection";
-import TagSection from "../components/TagSection";
-import AiEngineSection from "../components/AiEngineSection";
+import { PageProps } from "../../api/client";
+import UnifiedConfigSection from "./UnifiedConfigSection";
+import AgentSection from "./AgentSection";
+import ModelHubSection from "./ModelHubSection";
+import NotifySection from "./NotifySection";
+import TagSection from "./TagSection";
+import AiEngineSection from "./AiEngineSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";

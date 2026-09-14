@@ -13,8 +13,8 @@
  */
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PageProps, HubProvider, HubModel, HubRouteKind } from "../api/client";
-import { SetCard, SetCardHead, SetCardBody } from "./page/set-card";
+import { PageProps, HubProvider, HubModel, HubRouteKind } from "../../api/client";
+import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

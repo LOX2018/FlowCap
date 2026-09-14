@@ -22,8 +22,8 @@ import {
   ArrowLeft, Wrench, FileUp, Search as SearchIcon, RefreshCw, Trash2, RotateCcw,
   BookOpen, MessageSquare, Sparkles, Plus, Pencil,
 } from "lucide-react";
-import { PageProps } from "../api/client";
-import type { ProKbItem, ProKbScanReport, ProKbDupPair } from "../api/client";
+import { PageProps } from "../../api/client";
+import type { ProKbItem, ProKbScanReport, ProKbDupPair } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";

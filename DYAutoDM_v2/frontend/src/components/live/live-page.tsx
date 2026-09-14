@@ -21,9 +21,9 @@ import {
   Search as SearchIcon, Download, ArrowUpDown, Eye,
   LogIn, Users, X,
 } from "lucide-react";
-import { PageProps, ReusePayload } from "../api/client";
-import RoomConfigManager from "../components/RoomConfigManager";
-import { Avatar, hue, KIND_NAME, tick } from "../components/ui";
+import { PageProps, ReusePayload } from "../../api/client";
+import RoomConfigManager from "./RoomConfigManager";
+import { Avatar, hue, KIND_NAME, tick } from "../../components/ui";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -96,7 +96,7 @@ function AiReplyCard(props: { push: (msg: string, holdMs?: number) => void }) {
 
 // 独立于组件外的 api 调用（避免循环依赖；client.ts 的 api 由调用处传入更佳，
 // 但此处为最小改动直接引 request 语义 —— 见下方 useAiStatus/apiCall* 实现）
-import { api as _api } from "../api/client";
+import { api as _api } from "../../api/client";
 const useAiStatus = () => _api.aiStatus() as Promise<Record<string, unknown>>;
 const apiCallStart = () => _api.aiStart();
 const apiCallStop = () => _api.aiStop();

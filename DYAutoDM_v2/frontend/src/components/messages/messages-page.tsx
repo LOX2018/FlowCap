@@ -36,16 +36,16 @@ import {
   Download,
   Play,
 } from "lucide-react";
-import { PageProps } from "../api/client";
-import { Avatar, hue, nowHM } from "../components/ui";
-import { openExternal } from "../utils/openExternal";
+import { PageProps } from "../../api/client";
+import { Avatar, hue, nowHM } from "../../components/ui";
+import { openExternal } from "../../utils/openExternal";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Textarea } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Section, Row, Tone, SegmentedTabs, Blank, Toolbar } from "@/components/page/kit";
-import LeadsSection from "@/components/LeadsSection";
+import LeadsSection from "@/components/messages/LeadsSection";
 import { cn } from "@/lib/utils";
 
 interface Msg {

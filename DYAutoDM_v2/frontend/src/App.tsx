@@ -12,21 +12,23 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 // framer-motion 的页面切换动画已移入 AppShell，App 层不再直接使用
 import { api, PageProps, ReviewPayload, ReusePayload } from "./api/client";
-import OverviewPage from "./pages/overview";
-import CrawlPage from "./pages/crawl";
-import PlatformPage from "./pages/platform";
-import LivePage from "./pages/live";
-import MessagesPage from "./pages/messages";
-import KbPage from "./pages/kb";
-import AccountsPage from "./pages/accounts";
-import TasksPage from "./pages/tasks";
-import SettingsPage from "./pages/settings";
-import NotifyPage from "./pages/notify";
-import LogsPage from "./pages/logs";
-import SelfCheckModal, { SelfCheckItem } from "./components/SelfCheckModal";
-import MemberGate from "./components/MemberGate";
+import OverviewPage from "./components/overview/overview-page";
+import CrawlPage from "./components/crawl/crawl-page";
+import PlatformPage from "./components/platform/platform-page";
+import LivePage from "./components/live/live-page";
+import MessagesPage from "./components/messages/messages-page";
+import KbPage from "./components/kb/kb-page";
+import AccountsPage from "./components/accounts/accounts-page";
+import TasksPage from "./components/tasks/tasks-page";
+import SettingsPage from "./components/settings/settings-page";
+import NotifyPage from "./components/notify/notify-page";
+import LogsPage from "./components/logs/logs-page";
+import SelfCheckModal, { SelfCheckItem } from "./components/layout/SelfCheckModal";
+import MemberGate from "./components/layout/MemberGate";
 import { AppShell } from "./components/layout/app-shell";
 import { type TabId } from "./components/layout/sidebar";
+// 视图状态：照源项目 stores/app-store 的 currentView/setView 机制（阶段2）
+import { useAppViewStore, VIEW_TITLE, type ViewType } from "./stores/app-store";
 import { StatusDot } from "./components/ui/status-dot";
 import { memberApi, getMemberToken } from "./api/client";
 
@@ -36,15 +38,8 @@ import { memberApi, getMemberToken } from "./api/client";
 /** 启动闪屏：双击 exe 后窗口立即出现品牌页，后端引擎就绪（overview 首帧数据到达）
  *  才滑入主界面，把 PyInstaller 后端冷启动的 ~3s 变成有进度的等待，而不是白屏/未连接。 */
 /** 各 tab 的页面标题（TopBar 左侧显示）。 */
-const TITLE_OF = (t: TabId): string => {
-  const all = [
-    ["overview", "总览"], ["msg", "私信"], ["live", "直播"],
-    ["crawl", "采集"], ["platform", "内容"], ["kb", "知识库"],
-    ["accounts", "账号"], ["tasks", "任务"], ["notify", "通知"],
-    ["logs", "日志"], ["settings", "设置"],
-  ] as const;
-  return all.find(([id]) => id === t)?.[1] ?? "控制台";
-};
+const TITLE_OF = (t: TabId): string =>
+  VIEW_TITLE[t as ViewType] ?? "控制台";
 
 function _verDiag(msg: string) {
   try { console.warn("[VERSION] " + msg); } catch { /* ignore */ }
@@ -195,13 +190,9 @@ export default function App() {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  const [tab, setTabState] = useState<TabId>(() => {
-    try {
-      return (localStorage.getItem("dy:tab") as TabId) || "overview";
-    } catch {
-      return "overview";
-    }
-  });
+  // 视图状态（照源项目 components-first + store 机制；持久化键与原实现一致）
+  const tab = useAppViewStore((s) => s.currentView) as TabId;
+  const setTabState = useAppViewStore((s) => s.setView);
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const [goDm, setGoDm] = useState<{ name: string; text: string } | null>(null);
   const [goReview, setGoReview] = useState<ReviewPayload | null>(null);
@@ -314,14 +305,10 @@ export default function App() {
     // no-op：启动自检已删除
   }, [ready]);
 
+  // 切换视图（签名与行为不变：含 localStorage 持久化，已由 store 承担）
   const setTab = useCallback((t: string) => {
-    setTabState(t as TabId);
-    try {
-      localStorage.setItem("dy:tab", t);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+    setTabState(t);
+  }, [setTabState]);
 
   // 2026-08-31 修复：长任务（更新会话耗时 3~6 分钟）的结果提示原本只显示 2.6s，
   // 用户根本看不到运行结果。改为支持自定义停留时长，重要结果默认停留 12s。

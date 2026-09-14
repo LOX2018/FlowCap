@@ -6,7 +6,7 @@
  */
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { api, RoomConfig } from "../api/client";
+import { api, RoomConfig } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";

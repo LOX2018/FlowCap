@@ -16,7 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Copy, Trash2, Eye, ArrowLeft, Eraser, RotateCcw, FileText,
 } from "lucide-react";
-import { PageProps } from "../api/client";
+import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

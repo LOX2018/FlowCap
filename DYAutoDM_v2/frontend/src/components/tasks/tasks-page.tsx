@@ -14,8 +14,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Download, Trash2, Play, Pause, Square, RotateCw, ExternalLink, History, Inbox,
 } from "lucide-react";
-import { PageProps, Overview, TaskHistoryItem, ReusePayload } from "../api/client";
-import { Avatar } from "../components/ui";
+import { PageProps, Overview, TaskHistoryItem, ReusePayload } from "../../api/client";
+import { Avatar } from "../../components/ui";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

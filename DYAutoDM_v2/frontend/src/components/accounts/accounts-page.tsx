@@ -36,10 +36,10 @@ import {
   SlidersHorizontal, AlertTriangle, Gauge, Lightbulb, CheckCircle2,
   XCircle, Inbox, ChevronRight, ChevronDown, ArrowLeft, Download,
 } from "lucide-react";
-import { PageProps } from "../api/client";
-import { openExternal } from "../utils/openExternal";
-import { Avatar, TABS, hue, tick } from "../components/ui";
-import { stopBrowserDaemon, stopRecvDaemon } from "../api/sidecar";
+import { PageProps } from "../../api/client";
+import { openExternal } from "../../utils/openExternal";
+import { Avatar, TABS, hue, tick } from "../../components/ui";
+import { stopBrowserDaemon, stopRecvDaemon } from "../../api/sidecar";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

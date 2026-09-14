@@ -23,9 +23,9 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play, Square } from "lucide-react";
-import { PageProps } from "../api/client";
+import { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
-import { Tone, Section, Toolbar } from "./page/kit";
+import { Tone, Section, Toolbar } from "@/components/page/kit";
 
 interface AiStatus {
   ok: boolean; running: boolean; enabled: boolean; processed: number;

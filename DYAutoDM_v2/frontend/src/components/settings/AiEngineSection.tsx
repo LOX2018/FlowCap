@@ -33,15 +33,15 @@
 import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FlaskConical, Plus, Trash2, ShieldCheck, Ban, Target } from "lucide-react";
-import { PageProps } from "../api/client";
+import { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
-import { FormField, Row, Blank, SegmentedTabs, Toolbar } from "./page/kit";
-import { SetCard, SetCardHead, SetCardBody } from "./page/set-card";
+import { FormField, Row, Blank, SegmentedTabs, Toolbar } from "@/components/page/kit";
+import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
 
 /** Agent config 字段（与后端 `ai_reply._DEFAULT_CONFIG` 对齐）。 */
 interface AiConfig {

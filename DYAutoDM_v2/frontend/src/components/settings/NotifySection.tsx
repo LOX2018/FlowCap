@@ -22,8 +22,8 @@ import {
   NotifyKind,
   GatewayGrant,
   GatewayPending,
-} from "../api/client";
-import { Dot, Pill } from "../components/ui";
+} from "../../api/client";
+import { Dot, Pill } from "../ui";
 
 const ROLE_LABELS: Record<string, string> = {
   admin: "管理员（全授权）",

@@ -23,9 +23,9 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download } from "lucide-react";
-import { PageProps } from "../api/client";
+import { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
-import { Tone, Row, Blank, Toolbar } from "./page/kit";
+import { Tone, Row, Blank, Toolbar } from "@/components/page/kit";
 
 interface Lead {
   id: number; account: string; conv_id: string; peer_name: string;

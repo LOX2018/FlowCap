@@ -16,17 +16,17 @@ import type { TabId } from "@/components/layout/sidebar";
 import { Badge } from "@/components/ui/badge";
 import { SegmentedTabs } from "@/components/page/kit";
 
-import OverviewPage from "@/pages/overview";
-import PlatformPage from "@/pages/platform";
-import CrawlPage from "@/pages/crawl";
-import SettingsPage from "@/pages/settings";
-import NotifyPage from "@/pages/notify";
-import TasksPage from "@/pages/tasks";
-import LogsPage from "@/pages/logs";
-import MessagesPage from "@/pages/messages";
-import LivePage from "@/pages/live";
-import AccountsPage from "@/pages/accounts";
-import KbPage from "@/pages/kb";
+import OverviewPage from "@/components/overview/overview-page";
+import PlatformPage from "@/components/platform/platform-page";
+import CrawlPage from "@/components/crawl/crawl-page";
+import SettingsPage from "@/components/settings/settings-page";
+import NotifyPage from "@/components/notify/notify-page";
+import TasksPage from "@/components/tasks/tasks-page";
+import LogsPage from "@/components/logs/logs-page";
+import MessagesPage from "@/components/messages/messages-page";
+import LivePage from "@/components/live/live-page";
+import AccountsPage from "@/components/accounts/accounts-page";
+import KbPage from "@/components/kb/kb-page";
 import type { PageProps } from "@/api/client";
 
 /* ── mock props：模拟后端已就绪的返回值（仅用于视觉验证） ── */
