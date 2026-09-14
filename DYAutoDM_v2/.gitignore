@@ -78,7 +78,11 @@ _unittest_out.txt
 _fe_deps.txt
 *.txt.tmp
 # 临时调试脚本/日志（不入库）
+# ⚠️ 2026-09-14 修正：原规则 `_*.py` 会**误伤 `__init__.py`**
+#（Python 包入口，必须以双下划线开头）→ 导致新建包目录时入口文件被静默排除。
+# 改用 `!_` 例外：仍忽略单下划线开头的临时脚本，但**不忽略 `__init__.py`**。
 _*.py
+!__init__.py
 _force_rebuild.ps1
 _kill_clean.ps1
 _verify_exe.py
