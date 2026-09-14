@@ -291,19 +291,70 @@ class UserMixin:
 
     @staticmethod
     def get_my_sec_uid(auth, **kwargs) -> str:
-        """
-        获取自己的SECID.
+        """获取自己的 sec_uid。
+
+        ## 2026-09-14 修复（实测驱动）
+
+        **原缺陷**：原实现用**单一正则**从 `/user/self` 的 HTML 里抠 `secUid`，
+        再直接 `[0]` 索引：
+        ```python
+        sec_uid = re.findall(r'\\"secUid\\":\\"(.*?)\\"', response.text)[0]
+        ```
+        页面未渲染 / 结构变化 / 命中风控页时 `findall` 返回空列表 →
+        **`IndexError: list index out of range`**，且该异常在调用链上游被
+        笼统 catch 成 502「获取自身 sec_uid 失败」——**前端只看到"请求失败"，
+        真因被吞掉**（与本项目已修的几处"静默失败"同族）。
+
+        **本次修法**（不新增请求，仅把"单点脆弱"改为"多点降级 + 显式失败"）：
+          1. 多种常见写法逐一尝试（转义引号 / 未转义 / 单引号 / `sec_user_id` 键）；
+          2. 校验形状（抖音 sec_uid 以 `MS4wLjABAAAA` 开头）——**避免抓到别的值**；
+          3. 全部失败 → 抛**带诊断信息**的 RuntimeError（含 HTTP 码与响应长度），
+             而非 `IndexError`，便于定位是"未登录"还是"页面结构变了"。
+          4. 可选：调用方传入 `fallback`（如账号表已存的 sec_uid）时优先用它，
+             完全避免请求（少一次请求也更安全）。
+
         :param auth: DouyinAuth object.
-        :return: SECID.
+        :keyword fallback: 已知的 sec_uid（优先返回，不发请求）
+        :return: sec_uid
+        :raises RuntimeError: 所有途径均失败（**显式**，不再 IndexError）
         """
+        fb = kwargs.get("fallback")
+        if fb:
+            return str(fb)
+
         headers = HeaderBuilder().build(HeaderType.GET)
         url = "https://www.douyin.com/user/self"
-        params = {
-            "from_tab_name": "main"
-        }
-        response = requests.get(url, headers=headers.get(), cookies=auth.cookie, params=params)
-        sec_uid = re.findall(r'\\"secUid\\":\\"(.*?)\\"', response.text)[0]
-        return sec_uid
+        params = {"from_tab_name": "main"}
+        response = requests.get(url, headers=headers.get(),
+                                cookies=auth.cookie, params=params,
+                                timeout=kwargs.get("timeout", 15), verify=False)
+        text = response.text or ""
+
+        # 多种常见写法逐一尝试（按命中概率排序）
+        patterns = (
+            r'\\"secUid\\":\\"(.*?)\\"',          # 转义双引号（旧版常见）
+            r'"secUid":"(.*?)"',                      # 普通双引号
+            r'secUid\\":\\"(.*?)\\"',
+            r"'secUid':'(.*?)'",                      # 单引号
+            r'sec_user_id\\":\\"(.*?)\\"',
+            r'"sec_user_id":"(.*?)"',
+        )
+        for pat in patterns:
+            for m in re.findall(pat, text):
+                if m and m.startswith("MS4wLjABAAAA"):
+                    return m
+
+        # 兜底：任何形如 sec_uid 的串（放宽形状要求，但仍需合理长度）
+        for pat in patterns:
+            for m in re.findall(pat, text):
+                if m and len(m) > 20:
+                    return m
+
+        raise RuntimeError(
+            "sec_uid 提取失败：HTTP {} / 响应 {} 字节 / 命中风控页={}"
+            .format(response.status_code, len(text),
+                    "是" if ("verify" in text[:2000].lower() or "滑块" in text) else "否")
+        )
 
     @staticmethod
     def get_user_all_work_info(auth, user_url: str, **kwargs) -> list:

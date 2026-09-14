@@ -112,7 +112,17 @@ function Grid({ items, kind, onOpenAweme }: {
 }
 
 export default function PlatformPage(props: PageProps) {
-  const accounts = (props.overview?.accounts || []).map((a) => a.name);
+  // ★ 账号来源（2026-09-14 修复）：原用 `props.overview.accounts`，
+  //   但 `/api/overview` **不返回 accounts 字段** → 内容页恒显示「还没有账号」，
+  //   而私信页（走 `/api/accounts`）却正常。现统一为本项目的账号真源。
+  const accountsQ = useQuery({
+    queryKey: ["platform-accounts"],
+    queryFn: async (): Promise<{ name: string }[]> =>
+      (await props.api.getAccounts()) as unknown as { name: string }[],
+    enabled: !!props.ready,
+    staleTime: 300_000,
+  });
+  const accounts = (accountsQ.data || []).map((a) => a.name).filter(Boolean);
   const [acct, setAcct] = useState<string>(() => {
     try {
       return localStorage.getItem("platform.acct") || "";

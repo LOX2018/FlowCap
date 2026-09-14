@@ -251,8 +251,25 @@ async def get_feed(req: FeedReq) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         logger.warning("PLT-001", f"推荐流获取失败: {type(e).__name__}")
         raise HTTPException(502, f"推荐流获取失败: {type(e).__name__}")
-    items = raw.get("aweme_list") if isinstance(raw, dict) else []
-    return {"ok": True, "items": [_pick_aweme(w) for w in (items or [])],
+    # ★ 2026-09-14 实测修正：推荐流**不走 aweme_list**，而是 `cards[].aweme`
+    #   ——且 `card["aweme"]` 是 **JSON 字符串**，需再次 json.loads 才能取到作品对象。
+    #   原实现只读 `aweme_list` ⇒ 实测恒 0 条（用户看到"暂无内容"，实为解包错误）。
+    items: list[dict] = []
+    if isinstance(raw, dict):
+        for card in (raw.get("cards") or []):
+            if not isinstance(card, dict):
+                continue
+            aw = card.get("aweme")
+            if isinstance(aw, str):
+                try:
+                    aw = json.loads(aw)
+                except Exception:  # noqa: BLE001
+                    aw = None
+            if isinstance(aw, dict):
+                items.append(aw)
+        if not items and isinstance(raw.get("aweme_list"), list):
+            items = raw["aweme_list"]
+    return {"ok": True, "items": [_pick_aweme(w) for w in items],
             "has_more": bool(raw.get("has_more")) if isinstance(raw, dict) else False}
 
 
@@ -518,15 +535,36 @@ async def notice_list(req: NoticeReq) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         logger.warning("PLT-008", f"站内通知获取失败: {type(e).__name__}")
         raise HTTPException(502, f"站内通知获取失败: {type(e).__name__}")
-    items = raw.get("notice_list") if isinstance(raw, dict) else []
+    # ★ 2026-09-14 实测修正：新版接口把数据放在 **`notice_list_v2`**，
+    #   `notice_list` 恒为空数组。原实现只读 `notice_list` ⇒ 实测恒 0 条。
+    #   取法：优先 v2，为空再回落到旧键（兼容两端）。
+    items = None
+    if isinstance(raw, dict):
+        items = raw.get("notice_list_v2")
+        if not items:
+            items = raw.get("notice_list")
     out = []
     for n in (items or []):
         if not isinstance(n, dict):
             continue
         out.append({
-            "notice_id": str(n.get("notice_id") or n.get("nid_str") or ""),
+            "notice_id": str(n.get("notice_id") or n.get("nid_str")
+                             or n.get("nid") or ""),
             "type": n.get("type") or n.get("type_label") or "",
-            "content": (n.get("content") or n.get("text") or "")[:300],
+            # ★ 2026-09-14 实测修正：`notice_list_v2` 没有 `content` 字段，
+            #   文案在 `digg.aweme.desc`；作者昵称在 `digg.aweme.author.nickname`。
+            #   原实现只读 `content` ⇒ v2 下**全部通知显示为空**。
+            "content": (
+                n.get("content") or n.get("text")
+                or ((n.get("digg") or {}).get("aweme") or {}).get("desc")
+                or ""
+            )[:300],
+            "nickname": (
+                n.get("nickname")
+                or ((((n.get("digg") or {}).get("aweme") or {}).get("author") or {})
+                    .get("nickname"))
+                or ""
+            ),
             "create_time": n.get("create_time") or 0,
             "is_read": bool(n.get("is_read") or n.get("has_read")),
         })
