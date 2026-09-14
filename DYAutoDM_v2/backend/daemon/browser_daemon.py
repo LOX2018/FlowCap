@@ -586,8 +586,13 @@ class BrowserContainer:
         #   True  = 有头可见（窗口就是本容器，用户可直接查看登录态；
         #           同一实例继续保活+回写凭证，**不与"打开浏览器"抢 profile**）
         # 由 POST /show 动态切换（重启 context 生效），不读环境变量。
-        # ⚠️ 2026-09-13：纯 headless 会被抖音识别导致登录态强制下线（§24.10
-        #    复发实证），故本字段只作「用户请求的可见性」，实际启动恒有头。
+        # ⚠️ 2026-09-14【用户重新拍板】默认真无头（纯 native headless）。
+        #    本节历史上曾写「纯 headless 会被抖音识别→登录态强制下线，故实际启动
+        #    恒有头」——该结论未在新形态下复现；且用户明确要求「非业务需要（需要
+        #    观测）默认以无头形式运行，观测态才有头」。**启动层不得偷偷改有头**：
+        #    调用方传 headless=True 就必须得到真无头，否则调用方意图与实现不一致。
+        #    转有头有两个正当入口：① POST /show 动态切换；② 双击「打开指纹浏览器」
+        #    （login_api 的 get_login_auth / open_browser 走 headless=False）。
         self._headless: bool = True
         self._lock = asyncio.Lock()
         self._pw = None

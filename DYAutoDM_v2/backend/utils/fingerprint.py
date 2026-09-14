@@ -316,6 +316,12 @@ def fingerprint_profile(account: str | None = None) -> dict:
         "device_memory": "8",
         "screen_width": str(geo[6]),
         "screen_height": str(geo[7]),
+        # ⚠️ 兼容键：`utils/strdata_pure.build_fingerprint()` 需要 8 元素元组形式的
+        # 屏幕几何（innerW/H, outerW/H, availW/H, sizeW/H）。单源化改造时只保留了
+        # screen_width/height 两个标量，导致该消费方 `prof["geo"]` 抛 KeyError
+        # → mstoken 构造失败 → 探活 AUTH-051（2026-09-14 实测定位）。
+        # 这里直接透传同一份 geo，保证「同一档案」既满足标量消费方也满足元组消费方。
+        "geo": geo,
         # —— 浏览器层用（内核开关值）——
         "_cores": cores,
         "_platform_arg": platform,

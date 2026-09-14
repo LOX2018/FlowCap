@@ -11,20 +11,33 @@
 本项目**基座早已具备**这些能力（`dy_apis/douyin_api.py` 40+ 方法），
 此前只是没有被接成路由与页面 —— 本次补上「最后一公里」。
 
-## 风控约束（**铁律，不得违反**）
+## 风控约束（**本分支 `design/better-douyin` 已全解除**）
 
-1. **复用账号既有凭证被动签名**（`load_env` 读 .env → DouyinAPI 自带
-   msToken / a_bogus / bd-ticket-guard），与「手动网页浏览」同源同指纹；
-2. **绝不批量补查用户信息**（昵称风控红线）——响应里自带的 nickname/uid 直接用；
-   `get_im_user_info` / `bulk_user_info` 类方法**绝不调用**；
-3. **主动请求须可节流**：本路由是「用户显式动作触发」（打开页面/点赞），
-   不做后台轮询；前端须避免高频自动刷新。
+> ⚠️ **本分支规则见 `docs/BRANCH_RULES_design_better_douyin.md`**。
+> 用户 2026-09-14 明确授权「**全解除**」主分支铁律，采用照源项目（better-douyin）的接口方式。
+> 下文原约束（保留作历史留痕）**在本分支不再生效**。
+
+**本分支现行做法**（对齐源项目实测情报 `docs/reverse_interface_spec.md`）：
+1. 凭证复用 + 主动签名请求（`msToken` / `a_bogus` / `bd-ticket-guard`）——照源项目；
+2. **允许主动批量查询用户信息**（源项目直接请求 `/aweme/v1/web/im/user/info/`）：
+   二通道 —— ① BCC 容器内 fetch（`/user_info`、`/user_info_by_uids`）；
+   ② 纯 HTTP 直连（`dy_apis.get_im_user_info`）。
+3. 频率控制照源项目模型：`auto_max_actions_per_run` + 扫描间隔 + 互动门槛，
+   **不用**主分支的全局发送闸门；
 4. DouyinAPI 是**同步 requests** 实现 → 一律 `asyncio.to_thread` 包裹，
    避免阻塞事件循环（与 `api/crawl.py` 一致）。
+
+---
+
+### 历史留痕：主分支铁律原文（本分支不生效）
+1. ~~复用账号既有凭证被动签名~~；
+2. ~~绝不批量补查用户信息；`get_im_user_info` / `bulk_user_info` 类方法绝不调用~~；
+3. ~~主动请求须可节流、不做后台轮询~~；
 """
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -127,6 +140,18 @@ class UserInfoReq(BaseModel):
     user_url: str
 
 
+class UsersInfoReq(BaseModel):
+    """★ 本分支新增（全解除）：主动批量查询用户资料（昵称/头像）。
+
+    照源项目 better-douyin 的做法：直接请求 `/aweme/v1/web/im/user/info/`。
+    主分支铁律原为「绝不调用」（昵称风控红线），本分支已按用户授权解除。
+    """
+    account: str
+    uids: list[str] = []            # 数字 UID（会话 peer_uid，首包解析 100% 可靠）
+    sec_uids: list[str] = []        # sec_uid（用户主页 URL 尾段）
+    use_bcc: bool = True            # True=BCC 容器内 fetch；False=纯 HTTP 直连
+
+
 class SearchReq(BaseModel):
     account: str
     query: str
@@ -203,7 +228,8 @@ async def user_works(req: UserWorksReq) -> dict[str, Any]:
 async def user_info(req: UserInfoReq) -> dict[str, Any]:
     """用户资料。对应基座 `get_user_info`。
 
-    ⚠️ 响应自带 nickname/uid —— **不补查、不批量**（昵称风控红线）。
+    本分支（全解除）：响应自带的 nickname/uid 直接用；如需补查可走
+    `/user/info/batch`（主动批量查询，见该端点）。
     """
     auth = _auth_for(req.account)
     api = _api()
@@ -214,6 +240,75 @@ async def user_info(req: UserInfoReq) -> dict[str, Any]:
         raise HTTPException(502, f"用户资料获取失败: {type(e).__name__}")
     u = (raw or {}).get("user") if isinstance(raw, dict) else None
     return {"ok": True, "user": _pick_user(u or {})}
+
+
+@router.post("/user/info/batch")
+async def users_info_batch(req: UsersInfoReq) -> dict[str, Any]:
+    """★ 本分支新增（全解除）：**主动批量查询**用户昵称/头像。
+
+    照源项目 better-douyin 的做法 —— 它直接请求 `/aweme/v1/web/im/user/info/`。
+    主分支铁律原为「`get_im_user_info`/`bulk_user_info` 绝不调用」（昵称风控红线），
+    本分支按用户 2026-09-14 授权「全解除」已解禁。
+
+    双通道：
+      ① `use_bcc=True`（默认）→ 经 BCC 容器内 fetch（沿用账号常驻浏览器环境，
+         与源项目的"浏览器内 fetch"同思路，且天然带 origin/credentials）；
+      ② `use_bcc=False` → 纯 HTTP 直连（`dy_apis.get_im_user_info`，照源项目
+         `reqwest` 直连的方式，需自带 msToken/a_bogus 签名）。
+
+    返回 `{ok, data: {uid|sec_uid: {nickname, avatar, sec_uid, uid}}}`。
+    """
+    if not req.uids and not req.sec_uids:
+        raise HTTPException(400, "uids 与 sec_uids 至少提供一个")
+    _auth_for(req.account)  # 校验账号已登记（BCC 通道也需凭证）
+
+    # ── 通道 ①：BCC 容器内 fetch ──
+    if req.use_bcc:
+        try:
+            from api.messages import _bcc_url  # 复用既有 BCC 寻址（含 ensure_bcc 拉起）
+            import urllib.request as _ur
+
+            async def _post(path: str, payload: dict) -> dict:
+                """POST 到该账号 BCC 的 path（_bcc_url 返回完整 URL）。"""
+                url = await asyncio.to_thread(_bcc_url, req.account, path)
+                body = json.dumps(payload).encode()
+                r = await asyncio.to_thread(
+                    _ur.urlopen,
+                    _ur.Request(url, data=body,
+                                headers={"Content-Type": "application/json"}),
+                    60)
+                return json.loads(r.read().decode("utf-8", "replace"))
+
+            out: dict[str, Any] = {}
+            # 数字 uid 优先（首包 peer_uid 100% 可靠）
+            if req.uids:
+                j = await _post("/user_info_by_uids", {"uids": req.uids})
+                out.update(j.get("data") or {})
+            if req.sec_uids:
+                j = await _post("/user_info", {"sec_uids": req.sec_uids})
+                out.update(j.get("data") or {})
+            return {"ok": True, "channel": "bcc", "data": out,
+                    "count": len(out)}
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PLT-020", f"BCC 批量查用户失败: {type(e).__name__}")
+            # 不静默降级：明确告知哪条通道失败（本分支允许第二条通道重试）
+            raise HTTPException(502, f"BCC 批量查用户失败: {type(e).__name__}")
+
+    # ── 通道 ②：纯 HTTP 直连（照源项目 reqwest 直连）──
+    auth = _auth_for(req.account)
+    api = _api()
+    out = {}
+    try:
+        for uid in (req.uids or []):
+            info = await asyncio.to_thread(api.get_im_user_info, auth, str(uid))
+            if info:
+                out[str(uid)] = info
+        return {"ok": True, "channel": "http", "data": out, "count": len(out)}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PLT-021", f"HTTP 批量查用户失败: {type(e).__name__}")
+        raise HTTPException(502, f"HTTP 批量查用户失败: {type(e).__name__}")
 
 
 @router.post("/search")

@@ -1107,50 +1107,44 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         else:
             logger.info(f"[vbrowser] 复用固定 profile: {user_data_dir}")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-13 风控根治（§24.10 复发实证）：无头请求一律转为「真有头+窗口最小化」。
-        #   - 有头特征与扫码/查看模式完全一致（同 profile 同环境，杜绝环境跳变触发
-        #     step-up 降级 → 登录态被强制下线）；
-        #   - 最小化而非移屏外（-32000 屏外坐标会写进 profile 污染后续可见启动，
-        #     09-09 已废弃）；
-        #   - 最小化不改变 JS 可检测特征（screen/window 尺寸正常），风控视角=有头。
-        # 2026-09-13 【最终定案】常驻容器一律「真有头 + 窗口最小化」。
+        # ================================================================
+        # 2026-09-14【用户重新拍板 · 最终定案】默认真无头，仅观测态有头
+        # ================================================================
+        # 用户原话：「BCC 守护进程没有按照要求采用真无头模式（除了双击打开
+        #   指纹浏览器-观测态-有头）」。
         #
-        # 证据（昵称/头像全空的真因，实测日志对比）：
-        #   09-01 22:25 「真有头+窗口移屏外」→ 昵称捕获 277 个 ✅
-        #   09-03 23:13 「真有头+窗口移屏外」→ 昵称捕获 280 个 ✅
-        #   09-06 22:02 「真有头+窗口移屏外」→ 昵称捕获  81 个 ✅
-        #   09-13 20:22 「无头模式=native（纯 headless）」→ 累计昵称 0 个 🔴
-        #     （日志：滚动轮次 1 新点击=12 累计昵称=0 → 3 轮无新增终止 →
-        #      昵称缓存预热完成：0 个 → 头像/昵称全部降级为裸 UID）
-        # 结论：**抖音前端在纯 headless 下不发 im/user/info**（hook 截不到），
-        #   于是昵称/头像捕获全灭。这是「更新会话只剩首包内容」的直接原因。
+        # 设计契约：**headless 是调用方的意图，不得被内部改写。**
+        #   - `headless=True`（BCC 守护/捕获/保活等无观测需求）→ **纯 native headless**
+        #   - `headless=False`（双击打开指纹浏览器 / 扫码 / 查看）→ 有头可见
+        #   - 扫码另有独立入口 `get_login_auth(headless=False)`，不受此处影响。
         #
-        # 关于「有头窗口会被误关 → 闪退」的顾虑（此前据此回滚）：
-
-        #   窗口可被误关是真问题，但解法不是退回纯无头（会废掉昵称捕获），
-        #   而是【最小化到任务栏】：用户不会误关一个最小化的窗口，
-        #   而有头特征完整保留（CDP setWindowBounds 不改变 JS 可检测特征）。
-        #   配合 set_visible 的「只改窗口状态、不重建 context」（见 browser_daemon），
-        #   彻底消除切换 churn。
+        # 历史沿革（避免后人再翻案）：
+        #   - 09-06：曾有「真有头+窗口移屏外」伪装（已废，屏外坐标污染 profile）。
+        #   - 09-13：曾因「native 无头累计昵称 0 个」改为「真有头+窗口最小化」。
+        #     ⚠️ 该证据的前提已失效：当时昵称靠 hook 截前端自发 `im/user/info`，
+        #        而抖音改版后前端**不再发该请求**（hook 恒 0）；现行昵称链路已改
+        #        **DOM 抓取**（日志 `DOM累计昵称=N hook=0`），与 headless 与否无关。
+        #   - 09-13 另有「纯 headless 会被识别→登录态强制下线」的结论；如再现，
+        #        按 AUTH-050 走重新捕获，**不得**在启动层把无头偷偷改成有头
+        #        ——那会让调用方的意图与实现不一致（本次问题的形态）。
         #
-        # 回退开关：DY_BCC_HEADLESS_MODE=native 可恢复纯无头（仅调试用）。
+        # 逃生口：DY_BCC_HEADLESS_MODE=disguise 可临时回到「真有头+最小化」排查。
         import os as _os
-        _legacy_native = (str(_os.environ.get("DY_BCC_HEADLESS_MODE", "")).strip().lower()
-                          == "native")
-        _disguise = bool(headless) and not _legacy_native
+        _force_disguise = (str(_os.environ.get("DY_BCC_HEADLESS_MODE", "")).strip().lower()
+                           == "disguise")
+        _disguise = bool(headless) and _force_disguise
         _minimize = _disguise
         if headless:
-            if _legacy_native:
-                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）"
-                            "〔DY_BCC_HEADLESS_MODE=native 显式指定〕")
-            else:
+            if _force_disguise:
                 logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化"
-                            "（风控对齐：与扫码/查看同环境，且保留前端 im/user/info 触发）")
+                            "〔DY_BCC_HEADLESS_MODE=disguise 显式指定〕")
+            else:
+                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）")
         p = await async_playwright().start()
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=(False if _disguise else headless),  # 伪装模式恒有头
+            headless=(False if _disguise else headless),  # 仅显式 disguise 时有头
             args=launch_args,
             proxy=pw_proxy,
             viewport=_viewport_for_account(account),
@@ -1159,8 +1153,7 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             ignore_default_args=["--no-sandbox"],
         )
         # 2026-09-06：真可见启动（扫码/登录等）必须把窗口归位屏幕内
-        # ——持久化 profile 可能残留伪装模式的 -32000 屏外位置，二维码会落在桌面外。
-        # 伪装启动（_disguise=True）恰恰要留在屏外，绝不能归位。
+        # ——持久化 profile 可能残留旧伪装模式的屏外位置，二维码会落在桌面外。
         if not headless and not _disguise:
             await _ensure_window_visible(context)
         if _minimize:
@@ -1215,26 +1208,24 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
                 "单 profile 铁律：禁止临时目录，必须由调用方传入 accounts.profile_dir_of(env_path)")
         launch_args, _proxy_url, pw_proxy = _launch_args_with_proxy(cfg, account=account)
-        # 2026-09-13【最终定案】常驻「真有头+窗口最小化」（同 launch_async，理由见该处）。
-        # 纯 headless 会让抖音前端不发 im/user/info → 昵称/头像捕获全灭
-        # （实测：native 累计昵称 0 个；有头模式历史值 277~282 个）。
+        # 2026-09-14【用户重新拍板】默认真无头 —— 同 launch_async，理由见该处注释。
+        # 设计契约：headless 是调用方意图，不得被内部改写（除显式 disguise 逃生口）。
         import os as _os
-        _legacy_native = (str(_os.environ.get("DY_BCC_HEADLESS_MODE", "")).strip().lower()
-                          == "native")
-        _disguise = bool(headless) and not _legacy_native
+        _force_disguise = (str(_os.environ.get("DY_BCC_HEADLESS_MODE", "")).strip().lower()
+                           == "disguise")
+        _disguise = bool(headless) and _force_disguise
         _minimize = _disguise
         if headless:
-            if _legacy_native:
-                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）"
-                            "〔DY_BCC_HEADLESS_MODE=native 显式指定〕")
-            else:
+            if _force_disguise:
                 logger.info("[vbrowser] 无头请求已转为 真有头+窗口最小化"
-                            "（风控对齐：与扫码/查看同环境，且保留前端 im/user/info 触发）")
+                            "〔DY_BCC_HEADLESS_MODE=disguise 显式指定〕")
+            else:
+                logger.info("[vbrowser] 无头模式=native（纯 Playwright headless，零窗口）")
         p = sync_playwright().start()
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=exe,
-            headless=(False if _disguise else headless),  # 伪装模式恒有头
+            headless=(False if _disguise else headless),  # 仅显式 disguise 时有头
             args=launch_args,
             proxy=pw_proxy,
             viewport=_viewport_for_account(account),
