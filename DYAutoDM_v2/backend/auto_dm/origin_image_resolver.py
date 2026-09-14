@@ -204,25 +204,18 @@ def _http_get(url: str, timeout: int = 20) -> bytes:
 
 
 def _decrypt(cipher: bytes, skey_hex: str) -> bytes:
-    """AES-256-GCM 解密(MEMORY + 08 §三十五 一致):
+    """AES-256-GCM 解密（**已收敛到 `services/media_proxy.py` 的唯一实现**）。
+
+    2026-09-14（本分支）：原实现与 `conversation_capture` 各持一份，
+    现统一委托给 `media_proxy.decrypt_media`（对标源项目 `media_proxy_cache.rs`
+    的"单一 proxy"设计）。本函数保留为**兼容别名**，行为与原实现逐字一致：
+
         key = bytes.fromhex(skey)        # 64 hex = 32 字节
         iv  = cipher[:12]
         plain = AESGCM(key).decrypt(iv, cipher[12:], None)
     """
-    if not skey_hex:
-        raise RuntimeError("skey 为空")
-    try:
-        key = bytes.fromhex(skey_hex)
-    except Exception as e:
-        raise RuntimeError(f"skey 解析失败: {e}")
-    if len(key) != 32:
-        raise RuntimeError(f"skey 长度 {len(key)} 字节,期望 32")
-    if len(cipher) < 28:
-        raise RuntimeError(f"密文过短: {len(cipher)} 字节")
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    iv = cipher[:12]
-    body = cipher[12:]
-    return AESGCM(key).decrypt(iv, body, None)
+    from services.media_proxy import decrypt_media
+    return decrypt_media(cipher, skey_hex)
 
 
 def _detect_format(head: bytes) -> Tuple[str, str]:

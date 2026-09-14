@@ -28,6 +28,46 @@ class DouyinAPI:
     douyin_url = 'https://www.douyin.com'
     live_url = 'https://live.douyin.com'
     creator = "https://creator.douyin.com"
+
+    # ===== 双域名策略（★ 本分支 design/better-douyin 新增，照源项目）=====
+    # 源项目 better-douyin 实测同时使用两个域名（见 docs/reverse_interface_spec.md §1.1）：
+    #   · `https://www.douyin.com`      主域名（写操作 / 部分读）
+    #   · `https://www-hj.douyin.com`   备用域名（**读列表** 类走它）
+    # 实测相邻字符串关系（逆向）：comment/list → www-hj；comment/publish → www；
+    #   aweme/post → www；listcollection / aweme/favorite → www-hj。
+    # 本分支照此实现，可通过 `domain_for(path)` 按路径选域名。
+    douyin_url_hj = 'https://www-hj.douyin.com'
+
+    #: 走备用域名（www-hj）的路径前缀（照源项目实测归纳）
+    _HJ_PREFIXES = (
+        '/aweme/v1/web/comment/list',        # 评论列表（含 reply）
+        '/aweme/v1/web/aweme/listcollection',
+        '/aweme/v1/web/aweme/favorite/',
+        '/aweme/v1/web/mix/listcollection',
+        '/aweme/v1/web/series/aweme/',
+        '/aweme/v1/web/im/user/info/',
+        '/aweme/v1/web/im/spotlight/relation/',
+        '/aweme/v1/web/im/user/active/status/',
+        '/aweme/v1/web/commit/item/digg/',
+        '/aweme/v1/web/commit/follow/user/',
+        '/aweme/v1/web/aweme/collect/',
+    )
+
+    @classmethod
+    def domain_for(cls, path: str) -> str:
+        """按路径返回应使用的域名（照源项目双域名策略）。
+
+        Args:
+            path: 接口路径，如 `/aweme/v1/web/comment/list/`
+
+        Returns:
+            完整域名（不含尾斜杠）
+        """
+        for pre in cls._HJ_PREFIXES:
+            if path.startswith(pre):
+                return cls.douyin_url_hj
+        return cls.douyin_url
+
     # 2026-09-06 全局治理：get_my_uid 缓存新鲜度 TTL（秒）。
     # auth.uid 缓存超过该时长后必须重探活，uid 轮换后自动自愈；
     # 300s = 5 分钟，风控安全频次（每账号每 5 分钟至多 1 次 query/user）。
@@ -1221,6 +1261,127 @@ class DouyinAPI:
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, verify=False)
         return res.json()
+
+    # ===== 合集 / 收藏夹（★ 本分支新增，照源项目）=====
+    # 源项目实测接口（docs/reverse_interface_spec.md §1.2）：
+    #   /aweme/v1/web/aweme/listcollection/            收藏夹内的作品
+    #   /aweme/v1/web/mix/listcollection/              收藏的合集列表
+    #   /aweme/v1/web/mix/listcollection/mix_infos     合集详情
+    #   /aweme/v1/web/series/aweme/                    合集内作品（剧集）
+    #   /aweme/v1/web/aweme/favorite/                  我的收藏（作品维度）
+
+    @staticmethod
+    def get_aweme_list_collection(auth, max_cursor: str = '0', num: str = '18', **kwargs):
+        """收藏夹内的作品列表（源项目 `/aweme/v1/web/aweme/listcollection/`）。"""
+        api = "/aweme/v1/web/aweme/listcollection/"
+        headers = HeaderBuilder().build(HeaderType.POST)
+        headers.set_referer("https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection")
+        params = Params()
+        (params.add_param("device_platform", "webapp")
+         .add_param("aid", "6383").add_param("channel", "channel_pc_web")
+         .add_param("pc_client_type", "1").add_param("version_code", "170400")
+         .add_param("version_name", "17.4.0").add_param("cookie_enabled", "true")
+         .add_param("screen_width", get_profile()["screen_width"])
+         .add_param("screen_height", get_profile()["screen_height"])
+         .add_param("browser_language", "zh-CN").add_param("browser_platform", "Win32")
+         .add_param("browser_name", get_profile()["browser_name"])
+         .add_param("browser_version", get_profile()["browser_version"])
+         .add_param("browser_online", "true").add_param("engine_name", "Blink")
+         .add_param("os_name", "Windows").add_param("os_version", "10")
+         .add_param("cpu_core_num", get_profile()["cpu_core_num"])
+         .add_param("device_memory", get_profile()["device_memory"])
+         .add_param("platform", "PC").add_param("downlink", "10")
+         .add_param("effective_type", "4g").add_param("round_trip_time", "100")
+         .add_param("max_cursor", str(max_cursor)).add_param("count", str(num)))
+        params.with_web_id(auth, "https://www.douyin.com/")
+        params.with_a_bogus()
+        resp = requests.post(f'{DouyinAPI.domain_for(api)}{api}',
+                             headers=headers.get(), cookies=auth.cookie,
+                             params=params.get(), verify=False, timeout=15)
+        return resp.json()
+
+    @staticmethod
+    def get_mix_list_collection(auth, count: str = '20', cursor: str = '0', **kwargs):
+        """收藏的**合集**列表（源项目 `/aweme/v1/web/mix/listcollection/`）。"""
+        api = "/aweme/v1/web/mix/listcollection/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        headers.set_referer("https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection")
+        params = Params()
+        (params.add_param("device_platform", "webapp").add_param("aid", "6383")
+         .add_param("channel", "channel_pc_web").add_param("pc_client_type", "1")
+         .add_param("version_code", "170400").add_param("version_name", "17.4.0")
+         .add_param("cookie_enabled", "true").add_param("browser_language", "zh-CN")
+         .add_param("browser_platform", "Win32")
+         .add_param("browser_name", get_profile()["browser_name"])
+         .add_param("browser_version", get_profile()["browser_version"])
+         .add_param("browser_online", "true").add_param("engine_name", "Blink")
+         .add_param("os_name", "Windows").add_param("os_version", "10")
+         .add_param("platform", "PC").add_param("count", str(count))
+         .add_param("cursor", str(cursor)))
+        params.with_web_id(auth, "https://www.douyin.com/")
+        params.with_a_bogus()
+        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+                            headers=headers.get(), cookies=auth.cookie,
+                            params=params.get(), verify=False, timeout=15)
+        return resp.json()
+
+    @staticmethod
+    def get_series_aweme(auth, series_id: str, cursor: str = '0', count: str = '20', **kwargs):
+        """合集内的作品（源项目 `/aweme/v1/web/series/aweme/`）。"""
+        api = "/aweme/v1/web/series/aweme/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        headers.set_referer("https://www.douyin.com/")
+        params = Params()
+        (params.add_param("device_platform", "webapp").add_param("aid", "6383")
+         .add_param("channel", "channel_pc_web").add_param("pc_client_type", "1")
+         .add_param("version_code", "170400").add_param("version_name", "17.4.0")
+         .add_param("cookie_enabled", "true").add_param("browser_language", "zh-CN")
+         .add_param("browser_platform", "Win32")
+         .add_param("browser_name", get_profile()["browser_name"])
+         .add_param("browser_version", get_profile()["browser_version"])
+         .add_param("browser_online", "true").add_param("engine_name", "Blink")
+         .add_param("os_name", "Windows").add_param("os_version", "10")
+         .add_param("platform", "PC").add_param("series_id", str(series_id))
+         .add_param("cursor", str(cursor)).add_param("count", str(count)))
+        params.with_web_id(auth, "https://www.douyin.com/")
+        params.with_a_bogus()
+        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+                            headers=headers.get(), cookies=auth.cookie,
+                            params=params.get(), verify=False, timeout=15)
+        return resp.json()
+
+    @staticmethod
+    def get_aweme_favorite(auth, count: str = '18', cursor: str = '0', **kwargs):
+        """我的收藏（作品维度，源项目 `/aweme/v1/web/aweme/favorite/`）。
+
+        ⚠️ **实测状态（2026-09-14）**：真实账号下四种组合（GET/POST × 主域名/备用域名）
+        均返回 **HTTP 200 + 空响应体**（len=0）⇒ 该路径对当前账号无数据或平台已下线。
+
+        **替代**：`get_user_favorite(auth, sec_id, ...)`（基座既有，走
+        `/aweme/v1/web/aweme/favorite/` 的 user 维度变体）实测可用。
+        本方法保留以对齐源项目接口面，但调用方**应优先用 `get_user_favorite`**。
+        """
+        api = "/aweme/v1/web/aweme/favorite/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        headers.set_referer("https://www.douyin.com/")
+        params = Params()
+        (params.add_param("device_platform", "webapp").add_param("aid", "6383")
+         .add_param("channel", "channel_pc_web").add_param("pc_client_type", "1")
+         .add_param("version_code", "170400").add_param("version_name", "17.4.0")
+         .add_param("cookie_enabled", "true").add_param("browser_language", "zh-CN")
+         .add_param("browser_platform", "Win32")
+         .add_param("browser_name", get_profile()["browser_name"])
+         .add_param("browser_version", get_profile()["browser_version"])
+         .add_param("browser_online", "true").add_param("engine_name", "Blink")
+         .add_param("os_name", "Windows").add_param("os_version", "10")
+         .add_param("platform", "PC").add_param("count", str(count))
+         .add_param("cursor", str(cursor)))
+        params.with_web_id(auth, "https://www.douyin.com/")
+        params.with_a_bogus()
+        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+                            headers=headers.get(), cookies=auth.cookie,
+                            params=params.get(), verify=False, timeout=15)
+        return resp.json()
 
     @staticmethod
     def get_collect_list(auth, **kwargs):

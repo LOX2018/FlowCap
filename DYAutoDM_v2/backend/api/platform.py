@@ -171,6 +171,30 @@ class SearchReq(BaseModel):
 
 class CollectListReq(BaseModel):
     account: str
+    cursor: str = "0"
+    count: int = 20
+
+
+class CollectionItemsReq(BaseModel):
+    """★ 本分支新增（照源项目）：收藏夹内的作品。"""
+    account: str
+    max_cursor: str = "0"
+    count: int = 18
+
+
+class MixListReq(BaseModel):
+    """★ 本分支新增（照源项目）：收藏的合集列表。"""
+    account: str
+    cursor: str = "0"
+    count: int = 20
+
+
+class SeriesAwemeReq(BaseModel):
+    """★ 本分支新增（照源项目）：合集内作品。"""
+    account: str
+    series_id: str
+    cursor: str = "0"
+    count: int = 20
 
 
 class LikedReq(BaseModel):
@@ -601,3 +625,89 @@ async def action_follow(req: FollowReq) -> dict[str, Any]:
         logger.warning("PLT-012", f"关注失败: {type(e).__name__}")
         raise HTTPException(502, f"关注失败: {type(e).__name__}")
     return {"ok": True, "raw_status": (raw or {}).get("status_code") if isinstance(raw, dict) else None}
+
+
+# ===========================================================================
+# 合集群（★ 本分支新增，照源项目 better-douyin）
+# ===========================================================================
+# 源项目实测接口（docs/reverse_interface_spec.md §1.2）：
+#   /aweme/v1/web/aweme/listcollection/     收藏夹内的作品（实测 sc=0 ✅）
+#   /aweme/v1/web/mix/listcollection/       收藏的合集列表（实测 sc=0 ✅）
+#   /aweme/v1/web/series/aweme/             合集内作品
+# 基座原本无这三个方法，本分支补齐（逻辑层复现源项目功能）。
+
+
+@router.post("/collection/items")
+async def collection_items(req: CollectionItemsReq) -> dict[str, Any]:
+    """收藏夹内的作品列表。对应基座 `get_aweme_list_collection`。
+
+    实测（2026-09-14 真实账号）：`status_code=0`，返回 `aweme_list`。
+    """
+    auth = _auth_for(req.account)
+    api = _api()
+    try:
+        raw = await asyncio.to_thread(
+            api.get_aweme_list_collection, auth, req.max_cursor, str(req.count))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PLT-030", f"收藏夹作品获取失败: {type(e).__name__}")
+        raise HTTPException(502, f"收藏夹作品获取失败: {type(e).__name__}")
+    items = (raw or {}).get("aweme_list") if isinstance(raw, dict) else []
+    return {"ok": True, "items": [_pick_aweme(w) for w in (items or [])],
+            "has_more": bool((raw or {}).get("has_more")),
+            "cursor": (raw or {}).get("cursor")}
+
+
+@router.post("/collection/mixes")
+async def collection_mixes(req: MixListReq) -> dict[str, Any]:
+    """收藏的**合集**列表。对应基座 `get_mix_list_collection`。
+
+    实测（2026-09-14 真实账号）：`status_code=0`，返回 `mix_infos`。
+    """
+    auth = _auth_for(req.account)
+    api = _api()
+    try:
+        raw = await asyncio.to_thread(
+            api.get_mix_list_collection, auth, str(req.count), req.cursor)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PLT-031", f"收藏合集获取失败: {type(e).__name__}")
+        raise HTTPException(502, f"收藏合集获取失败: {type(e).__name__}")
+    items = (raw or {}).get("mix_infos") if isinstance(raw, dict) else []
+    out = []
+    for m in (items or []):
+        m = m or {}
+        stat = m.get("statistics") or {}
+        out.append({
+            "mix_id": m.get("mix_id"),
+            "mix_name": m.get("mix_name") or m.get("name"),
+            "desc": m.get("desc"),
+            "cover": ((m.get("cover_url") or {}).get("url_list") or [None])[0],
+            "item_total": stat.get("total") or m.get("item_total"),
+            "play_vv": stat.get("play_vv") or m.get("play_vv"),
+            "update_time": m.get("update_time") or m.get("create_time"),
+        })
+    return {"ok": True, "items": out,
+            "has_more": bool((raw or {}).get("has_more")),
+            "cursor": (raw or {}).get("cursor")}
+
+
+@router.post("/collection/series")
+async def collection_series(req: SeriesAwemeReq) -> dict[str, Any]:
+    """合集内的作品列表。对应基座 `get_series_aweme`。"""
+    if not req.series_id:
+        raise HTTPException(400, "缺少 series_id")
+    auth = _auth_for(req.account)
+    api = _api()
+    try:
+        raw = await asyncio.to_thread(
+            api.get_series_aweme, auth, req.series_id, req.cursor, str(req.count))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PLT-032", f"合集内作品获取失败: {type(e).__name__}")
+        raise HTTPException(502, f"合集内作品获取失败: {type(e).__name__}")
+    items = []
+    if isinstance(raw, dict):
+        for k in ("aweme_list", "series_aweme_list", "aweme_list_collection"):
+            if isinstance(raw.get(k), list):
+                items = raw[k]
+                break
+    return {"ok": True, "items": [_pick_aweme(w) for w in items],
+            "has_more": bool((raw or {}).get("has_more"))}
