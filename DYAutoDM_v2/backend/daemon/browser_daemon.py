@@ -131,7 +131,10 @@ def _is_busy() -> bool:
 #   浏览器操作大多不可中断（DOM 流程、context 重建），抢占会导致状态不一致。
 #   用「P2 限时 + 快速失败 + retry_after」解决"低优先级霸占"。
 # ════════════════════════════════════════════════════════════════════════════
-LEASE_PRIO_TTL_LIMIT = {0: 300.0, 1: 180.0, 2: 30.0}
+# 2026-09-14 v0.43.11：P0 300 -> 600s。实机实测「更新会话」整轮可达 302s+
+# （滚动 10+ 轮 × 每轮 30~40s），300s 上限导致租约中途被 BCC-046 强制回收，
+# 释放时 lease_id 已不匹配（ok=False）。放宽到 600s 覆盖真实耗时。
+LEASE_PRIO_TTL_LIMIT = {0: 600.0, 1: 180.0, 2: 30.0}
 LEASE_PRIO_NAME = {0: "用户显式", 1: "业务自动", 2: "后台保活"}
 
 _lease: dict = {
@@ -329,10 +332,18 @@ CAP_DOM_SWEEP_JS = """
     try {
       const t = it.querySelector('[class*=ConversationItemtitle]');
       if (!t) continue;
+      // 2026-09-14 v0.43.11：昵称取**完整**首行（原用 innerText 会把时间戳
+      // 混进来，如「四川工伤-张老师昨天 03:00」）。title 元素 innerText 的
+      // 第一行是纯昵称，这里保持 split 但只取首行且 trim。
       const nick = (t.innerText || '').split(String.fromCharCode(10))[0].trim();
       if (!nick) continue;
       const img = it.querySelector('img');
-      out.push({nickname: nick, avatar: img ? (img.src || '') : ''});
+      // 2026-09-14 v0.43.11 A+B：新增 desc（会话最后一条消息预览）。
+      // 这是 DOM 侧唯一能与「首包消息」做**精确文本匹配**的字段 ——
+      // 用于把 DOM 的昵称/头像精确桥接到 peer_uid（见 conversation_capture）。
+      const d = it.querySelector('[class*=ConversationItemDescleft]');
+      const desc = d ? (d.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120) : '';
+      out.push({nickname: nick, avatar: img ? (img.src || '') : '', desc: desc});
     } catch (e) {}
   }
   return out;
@@ -982,20 +993,31 @@ class BrowserContainer:
         （scan_login 的 _do 内部会调 _launch）。
 
         ## internal（2026-09-14 v0.43.11 新增）
-        **容器自身的内部线程**（_prewarm 昵称预热、保活心跳）不是外部业务
-        调用方，**不参与租约仲裁**，只走 _lock 串行。
+        **容器自身的内部线程**（_prewarm 昵称预热、保活回写）不是外部业务
+        调用方，**不参与租约仲裁**。
 
         为什么必须区分（实测：prewarm 被业务租约永久饿死）：
-          租约是按账号单槽位的，外部业务一持租（如「更新会话」gate:auto
-          ttl=180s），prewarm（prio=2 后台保活）每次申请都被拒 → BCC-047
-          刷屏，预热永远跑不完 → 业务拿不到预热成果，只能自己重跑 160s。
-          日志实证：10:25:04~10:25:17 prewarm 连续 4 次被 gate:auto 拒绝。
-          prewarm 本就该**让位于**业务（这是优先级设计本意），但"让位"的正确
-          形态是「排队等 _lock」而不是「被拒后彻底放弃」——它不占租约，就不会
-          与业务争抢；业务进来后等 _lock 自然就等到了预热结果（缓存命中）。
+          租约是按账号单槽位的，外部业务一持租（如「更新会话」capture_all
+          ttl=300s），prewarm（prio=2 后台保活）每次申请都被拒 → BCC-047
+          刷屏，预热永远跑不完 → 业务拿不到预热成果，只能自己重跑。
+
+        ## ⚠️ 但「让位」= 放弃，不是排队（本会话实测修正）
+        初版实现让 internal 线程「排队等 _lock」——实机证明**更糟**：
+        预热与业务在同一把 _lock 上交替抢占，业务每轮从 6~8s 恶化到 30~45s，
+        整轮捕获冲破 300s 客户端超时（同一账号、同一页面，仅此一处差异）。
+        正解：**业务持租期间，内部线程直接放弃本次**（不排队、不抢占）。
+        预热本来就是「锦上添花」——业务自己的捕获同样会写 `_userinfo_cache`，
+        跳过预热没有任何损失。
         """
         if _is_busy():
             raise ContainerBusy(_scan_exclusive["holder"])
+        if internal:
+            # 内部线程让位：已有业务租约在持 → 放弃本次（不再抢 _lock）
+            _cur = _lease_current()
+            if _cur and _cur.get("holder") and str(_cur.get("holder")) != "bcc-internal":
+                logger.debug(
+                    f"[lease] 内部线程({holder}) 让位：{_cur['holder']} 正持租约")
+                raise ContainerBusy(f"yield_to:{_cur['holder']}")
         # 租约门（_lease_acquire 内部处理重入复用）
         _lid = lease_id
         _need_release = False
@@ -1319,7 +1341,11 @@ class BrowserContainer:
         # ── 缓存命中检查（在 _lock 外，避免不必要的串行等待）──
         # 2026-09-14 v0.43.11：这一层是「等预热」的关键 —— 它先于租约，
         # 所以只要预热已完成，业务即使在租约拉锯中也能零成本命中缓存。
-        _deadline = time.time() + 40.0   # 最多等预热 40s，避免无限阻塞
+        #
+        # ⚠️ 等待上限**只对 internal 放宽**，业务请求（lease_id 非空）绝不等待：
+        #   实机教训 —— 让业务在这里等预热 40s，会把它推到客户端 300s 超时边缘
+        #   （等待期间 BCC 的滚动捕获仍在跑，实际总耗时 = 等待 + 捕获）。
+        _deadline = time.time() + (40.0 if internal else 0.0)
         while True:
             try:
                 _ttl = int(os.environ.get("DY_USERINFO_CACHE_SEC", "600"))
@@ -2276,6 +2302,9 @@ async def _startup() -> None:
         except Exception as e:
             logger.warning("BCC-029", f"[bcc] 昵称缓存预热失败（不影响功能）: {e}")
         finally:
+            # ⚠️ 必须 finally：函数体内有 `return`（loop 缺失早退）与异常路径，
+            # 用 try/except 而不带 finally 会让 _prewarm_running 永久卡 True，
+            # 后续所有业务请求都会白等 40s（本会话实测踩到）。
             container._prewarm_running = False
 
     threading.Thread(target=_prewarm, daemon=True).start()

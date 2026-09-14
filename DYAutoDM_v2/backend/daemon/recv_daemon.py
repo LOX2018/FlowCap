@@ -624,15 +624,37 @@ class RecvChannel(threading.Thread):
             # 这类消息 msg_type=7 且 msg_id=None(非真实聊天),不应展示在聊天记录中
             if int(msg_type) == 7 and not getattr(msg, "msg_id", None):
                 return
-            peer_name = content_json.get("sender_nickname") or sender or conv_id
+            # 2026-09-14 v0.43.11 方案B 修正（三处）：
+            #  ① **peer_uid 只认 conv_id**（0:1:uid_a:uid_b，排除本号即对端，100% 可靠）。
+            #     原实现把 peer_id=sender 直接写入 —— 而 role=me 时 sender 就是**本号**，
+            #     于是把 peer_id 写成了自己（这正是 capture_all 要花大力气「存量订正」
+            #     的污染源）。sender 仅在 role=them 时才等于对端。
+            #  ② **昵称绝不取裸 sender**：`sender_nickname` 实测恒为 None
+            #     （15 天日志 27947 条全 None），故 peer_name 落在 `or sender` 上
+            #     → 把数字 UID 当昵称写库。现在昵称取不到就留空，让展示层回落。
+            #  ③ 日志降噪：该行原为每条消息 INFO，实测单日 564 行、15 天累计
+            #     数万行刷屏。改为 debug，仅在昵称真的拿到时才 INFO。
+            _real_peer = None
+            _cp = str(conv_id).split(":")
+            if len(_cp) == 4:
+                _ua, _ub = _cp[2], _cp[3]
+                _mu = str(self.inbox.my_uid or "")
+                _real_peer = (_ub if _ua == _mu else (_ua if _ub == _mu else None))
+            if not _real_peer:
+                _real_peer = str(sender) if (sender and str(sender) != str(self.inbox.my_uid)) else None
             # 08 §13.5 铁律：方向只能用 sender UID 判断，不可用消息类型推断。
             # sender == 自己 UID → 我发(me)；否则对方发(them)。
             # 自动欢迎语等自己发送的消息 sender 就是 my_uid，硬编码 them 会错配。
             role = "me" if sender and str(sender) == str(self.inbox.my_uid) else "them"
-            logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] 新消息: peer_name={peer_name}, sender={sender}, role={role}, content_json.sender_nickname={content_json.get('sender_nickname')}")
+            _nick = content_json.get("sender_nickname") or ""
+            if _nick and str(_nick) == str(self.inbox.my_uid):
+                _nick = ""
+            logger.debug(
+                f"[recv][{self.name}][会话 {conv_id[:8]}…] 新消息: "
+                f"peer={_real_peer}, sender={sender}, role={role}, nick={_nick!r}")
             self.inbox.add_message(
-                conv_id, role, text, peer_id=sender,
-                peer_name=peer_name, msg_type=str(msg_type), extra=extra,
+                conv_id, role, text, peer_id=_real_peer,
+                peer_name=_nick or None, msg_type=str(msg_type), extra=extra,
                 # 2026-09-06 双通道去重：写入抖音消息唯一 ID，让 WS / WP
                 # 两条通道写入同一条消息时命中 uniq_dmmsg 唯一索引去重。
                 msg_id=str(mid) if (mid := getattr(msg, "msg_id", None)) else None,

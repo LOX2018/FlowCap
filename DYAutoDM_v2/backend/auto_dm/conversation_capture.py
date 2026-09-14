@@ -1075,7 +1075,7 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None, lease_id=""):
         # 2026-09-14 v0.43.11：BCC 侧若发现预热仍在进行，会先等预热（最多
         # 40s）再走缓存命中，故此处给足客户端超时。
         r = requests.post(url, json={"wait": 15, "lease_id": lease_id or ""},
-                          timeout=300)
+                          timeout=600)
         if r.status_code == 200:
             _j = r.json() or {}
             data = _j.get("data") or {}
@@ -1373,6 +1373,61 @@ def capture_all(name, with_browser=True):
                 # 键本身即昵称（DOM 路径）
                 _userinfo_by_nick[str(_k).strip()] = _v
         _nick_order = list(_userinfo_by_nick.keys())
+
+        # ══════════════════════════════════════════════════════════════════
+        # 2026-09-14 v0.43.11 方案 A：**文本桥**（DOM 昵称 → peer_uid 精确关联）
+        #
+        # 为什么需要：抖音改版后昵称只在**会话列表 DOM**（无 uid 属性），
+        # 而 peer_uid 只在**首包 protobuf**。两端没有共同 id（实机确证：
+        # DOM 项仅 data-e2e="conversation-item" + title + img，点击会话
+        # 也不改 URL —— 位置/顺序对齐会在懒加载+置顶错位，绝不可用）。
+        #
+        # 但两端有一个**共同的自然键：最后一条消息的正文**。
+        #   · 首包每个会话自带 messages（权威、带 uid 归属）
+        #   · DOM 每项的 desc 就是「该会话最后一条消息」的预览文本
+        # 于是：用首包消息文本建索引 → 与 DOM desc 精确匹配 → 命中即得 uid。
+        #
+        # ⚠️ 只在能唯一命中时建立映射；命中多义（同文本属于多个会话，如群发
+        #    欢迎语）一律**放弃**（宁可不显示昵称，绝不张冠李戴）。
+        # ══════════════════════════════════════════════════════════════════
+        _text_to_uids: dict[str, set] = {}
+        for _cc_conv in convs:
+            _pu = _cc_conv.get("peer_uid")
+            if not _pu:
+                continue
+            for _m in (_cc_conv.get("messages") or []):
+                _tx = (_m.get("text") or "").replace("\n", " ").strip()
+                if len(_tx) < 4:
+                    continue
+                _text_to_uids.setdefault(_tx[:80], set()).add(str(_pu))
+        _bridged = 0
+        _ambig = 0
+        for _nk, _vv in list(_userinfo_by_nick.items()):
+            _desc = (_vv.get("desc") or "").replace("\n", " ").strip()
+            if not _desc or len(_desc) < 4:
+                continue
+            # 双向包含匹配：DOM desc 可能被截断/加省略号，首包文本是全文
+            _cands = _text_to_uids.get(_desc[:80]) or set()
+            if not _cands:
+                for _tk, _tus in _text_to_uids.items():
+                    if _tk[:24] and (_tk[:24] in _desc or _desc[:24] in _tk):
+                        _cands = set(_cands) | _tus
+            if len(_cands) == 1:
+                _uid_hit = next(iter(_cands))
+                if _uid_hit not in _userinfo_by_uid:
+                    _userinfo_by_uid[_uid_hit] = {
+                        "nickname": _nk,
+                        "avatar": _vv.get("avatar") or "",
+                        "uid": _uid_hit,
+                    }
+                    _bridged += 1
+            elif len(_cands) > 1:
+                _ambig += 1
+        if _bridged or _ambig:
+            logger.info(
+                f"[capture][{name}] 文本桥（方案A）：唯一关联昵称 {_bridged} 个，"
+                f"歧义放弃 {_ambig} 个，未匹配 "
+                f"{len(_userinfo_by_nick) - _bridged - _ambig} 个")
         if _userinfo_by_nick and not _userinfo_by_uid:
             logger.info(
                 f"[capture][{name}] 昵称索引已建立（{len(_userinfo_by_nick)} 个，"
@@ -1550,14 +1605,13 @@ def capture_all(name, with_browser=True):
                 if not _real:
                     continue
                 _ui = _userinfo_by_uid.get(_real) or {}
-                if not _ui.get("nickname") and _userinfo_by_nick:
-                    # DOM 路径兜底：uid 无匹配时，用昵称索引（按下标对齐会话顺序）
-                    try:
-                        _idx = convs.index(_c) if _c in convs else -1
-                    except Exception:
-                        _idx = -1
-                    if 0 <= _idx < len(_nick_order):
-                        _ui = _userinfo_by_nick.get(_nick_order[_idx]) or {}
+                # 🔴 2026-09-14 v0.43.11 修复「张冠李戴」：此处原用 `convs.index(_c)`。
+                #   `_c` 是**上面 `for _c in convs:` 循环结束后泄漏的变量**，恒等于
+                #   convs 的**最后一个元素** → `_idx` 恒为 len-1 → 所有 _dirty 行都取
+                #   `_nick_order[43]` 同一个昵称。实机后果：80 条会话的 peer_name
+                #   全被写成同一个「傲雪」（比原来的裸 UID 更糟，属数据污染）。
+                #   修法：**不再用位置猜测**（DOM 无 uid，顺序软对齐不可靠）——
+                #   uid 无匹配时保留真实 UID 占位，绝不写入可能错误的昵称。
                 _newname = _ui.get("nickname") or _real
                 conn.execute(
                     "UPDATE dm_conversations SET peer_id=?, peer_name=? "
