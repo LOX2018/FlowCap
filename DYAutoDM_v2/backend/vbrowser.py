@@ -658,6 +658,23 @@ def fingerprint_seed_of(account):
     return _zlib.crc32(account.encode("utf-8")) % 100000000
 
 
+def _viewport_for_account(account=None):
+    """该账号应设的 Playwright viewport（决定 page 里的 screen 值）。
+
+    2026-09-14 实测：Playwright 未设 viewport 时用默认 1280x720，且**优先于**
+    Chromium 的 --window-size；只有显式传 viewport 才能让 screen 等于档案值。
+    实测发现未设时 screen/avail/inner 三者全等 1280x720 —— 真实屏幕不可能
+    avail==screen 且 inner==screen，属明显自动化特征，故必须显式设置。
+
+    取不到档案时返回 None（= Playwright 默认），不影响启动。
+    """
+    try:
+        from utils.fingerprint import viewport_for as _vf
+        return _vf(account)
+    except Exception:
+        return None
+
+
 def _launch_args_with_proxy(cfg, account=None):
     """合并 _CHROME_ARGS + 账号级 WebRTC 防泄漏参数，并按【代理配置】决定环境。
 
@@ -690,6 +707,23 @@ def _launch_args_with_proxy(cfg, account=None):
     if _seed is not None:
         args.append(f"--fingerprint={_seed}")
         logger.info(f"[vbrowser] 指纹种子(固定)={_seed} account={account}")
+    # 账号级指纹开关（单源化，2026-09-14）：
+    #   把「HTTP 层出站声明的那份档案」显式钉进内核，使浏览器层与 HTTP 层
+    #   **同源**。此前两层各自随机 → 实测 HTTP 声称 cores=12 而内核实际 24/32/8，
+    #   同一账号对抖音呈现矛盾指纹。现由 utils.fingerprint.fingerprint_profile()
+    #   作为唯一真源，本处用它的 browser_args() 落成内核开关。
+    #   开关均经实机验证生效（工作记忆 02 §指纹实测）：
+    #     --fingerprint-platform / -brand / -hardware-concurrency / --timezone /
+    #     --lang / --accept-lang；屏幕尺寸用 --window-size（内核无 screen 开关）。
+    #   失败不影响启动（降级为仅种子指纹），但会告警以便发现。
+    try:
+        from utils.fingerprint import browser_args as _fp_args
+        _extra = _fp_args(account)
+        args += _extra
+        logger.info(f"[vbrowser] 指纹开关已钉入内核({len(_extra)}项) account={account}")
+    except Exception as _e_fp:
+        logger.warning("BCC-039", f"[vbrowser] 指纹开关接入失败，退回仅种子指纹: "
+                                  f"{type(_e_fp).__name__}")
     env_path = _env_path_of_account(account) if account else None
 
     # ---- 解析配置：mode + node_url ----
@@ -1119,6 +1153,7 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
             headless=(False if _disguise else headless),  # 伪装模式恒有头
             args=launch_args,
             proxy=pw_proxy,
+            viewport=_viewport_for_account(account),
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
@@ -1202,6 +1237,7 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
             headless=(False if _disguise else headless),  # 伪装模式恒有头
             args=launch_args,
             proxy=pw_proxy,
+            viewport=_viewport_for_account(account),
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
@@ -1258,6 +1294,7 @@ async def open_douyin_home(profile_dir, headless=False, url="https://www.douyin.
             headless=headless,
             args=launch_args,
             proxy=pw_proxy,
+            viewport=_viewport_for_account(account),
             # Playwright 在 Windows headed 模式下会强制注入 --no-sandbox，
             # 触发指纹内核“不受支持的命令行标记”警告。显式剔除该默认参数。
             ignore_default_args=["--no-sandbox"],
