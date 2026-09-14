@@ -1,12 +1,22 @@
 /**
- * 会员门禁（v0.37.0）
+ * 会员门禁（重设计版 · 对标 better-douyin 设计体系）
  *
  * 全应用入口守卫：启动时查询 /api/member/state，
  * 未登录显示登录/注册卡片，登录成功后渲染子应用。
  * 会话过期（401 清 token）后由 App 的 3s 轮询自动回到此门禁。
+ *
+ * ## 本次改动（重设计）
+ * - 旧 `.member-gate` / `.member-card` / `.member-tabs` / `.tab` / `.member-input` /
+ *   `.member-btn` 等类（依赖 global.css）→ 设计令牌 + 玻璃拟态
+ * - 旧的 `input` → `<Input>`，`button` → `<Button>`
+ * - **业务逻辑零改动**：登录态检查、submit 校验顺序、错误文案提取正则
+ *   （`\{"detail":"([^"]+)"\}`）全部原样保留
  */
 import { useState, useEffect, useCallback } from "react";
 import { memberApi, getMemberToken } from "../api/client";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export default function MemberGate({ onLogin }: { onLogin: (username: string) => void }) {
   const [checking, setChecking] = useState(true);
@@ -66,74 +76,93 @@ export default function MemberGate({ onLogin }: { onLogin: (username: string) =>
 
   if (checking) {
     return (
-      <div className="member-gate">
-        <div className="member-card">
-          <div className="member-title">正在检查登录态…</div>
+      <div className="flex min-h-screen items-center justify-center bg-[var(--color-background)]">
+        <div className="glass-premium rounded-[var(--radius-xl)] px-8 py-6
+                        text-[0.86rem] text-[var(--color-text-secondary)]">
+          正在检查登录态…
         </div>
       </div>
     );
   }
 
   return (
-    <div className="member-gate">
-      <div className="member-card">
-        <div className="member-brand">
-          <span className="mark" aria-hidden="true" />
-          <span className="member-title">抖音数据控制台</span>
+    <div className="flex min-h-screen items-center justify-center bg-[var(--color-background)] p-6">
+      <div className="glass-premium w-full max-w-[400px] rounded-[var(--radius-xl)] p-7">
+        {/* 品牌 */}
+        <div className="mb-6 flex items-center justify-center gap-2.5">
+          <span
+            aria-hidden="true"
+            className="h-7 w-7 rounded-[var(--radius-sm)] bg-[var(--color-accent)]
+                       shadow-[var(--shadow-glow)]"
+          />
+          <span className="text-[1.05rem] font-semibold tracking-tight text-[var(--color-text)]">
+            抖音数据控制台
+          </span>
         </div>
         {/* 2026-09-10：功能说明文案移至开放说明文档（项目说明.md），前端不展示 */}
 
-        <div className="member-tabs">
-          <button
-            className={"tab" + (mode === "login" ? " active" : "")}
-            onClick={() => { setMode("login"); setMsg(""); }}
-          >
-            登录
-          </button>
-          <button
-            className={"tab" + (mode === "register" ? " active" : "")}
-            onClick={() => { setMode("register"); setMsg(""); }}
-          >
-            注册
-          </button>
+        {/* 登录/注册切换 */}
+        <div className="mb-5 inline-flex w-full items-center gap-1 rounded-[var(--radius-md)]
+                        border border-[var(--color-border)] bg-[var(--color-surface)] p-1">
+          {(["login", "register"] as const).map((mk) => (
+            <button
+              key={mk}
+              type="button"
+              onClick={() => {
+                setMode(mk);
+                setMsg("");
+              }}
+              className={cn(
+                "flex-1 cursor-pointer rounded-[var(--radius-sm)] py-1.5 text-[0.8rem] font-medium",
+                "transition-colors duration-[var(--duration-fast)] ease-[var(--ease-spring)]",
+                mode === mk
+                  ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)]"
+              )}
+            >
+              {mk === "login" ? "登录" : "注册"}
+            </button>
+          ))}
         </div>
 
-        <input
-          className="member-input"
-          placeholder="用户名"
-          value={username}
-          maxLength={32}
-          onChange={(e) => setUsername(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
-        />
-        <input
-          className="member-input"
-          type="password"
-          placeholder="口令（至少 6 位）"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
-        />
-        {mode === "register" && (
-          <input
-            className="member-input"
-            type="password"
-            placeholder="确认口令"
-            value={password2}
-            onChange={(e) => setPassword2(e.target.value)}
+        <div className="space-y-3">
+          <Input
+            placeholder="用户名"
+            value={username}
+            maxLength={32}
+            onChange={(e) => setUsername(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
           />
+          <Input
+            type="password"
+            placeholder="口令（至少 6 位）"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submit()}
+          />
+          {mode === "register" && (
+            <Input
+              type="password"
+              placeholder="确认口令"
+              value={password2}
+              onChange={(e) => setPassword2(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+            />
+          )}
+        </div>
+
+        {msg && (
+          <div className="mt-3 rounded-[var(--radius-sm)] bg-[var(--color-danger-soft)] px-3 py-2
+                          text-[0.76rem] text-[var(--color-danger)]">
+            {msg}
+          </div>
         )}
 
-        {msg && <div className="member-msg">{msg}</div>}
-
-        <button className="btn primary member-btn" disabled={busy} onClick={submit}>
+        <Button className="mt-5 w-full" disabled={busy} onClick={submit}>
           {busy ? "请稍候…" : mode === "login" ? "登录" : "注册并登录"}
-        </button>
+        </Button>
 
-        <div className="member-foot">
-          {/* 2026-09-10：底部功能说明文案移至开放说明文档（项目说明.md），前端不展示 */}
-        </div>
+        {/* 2026-09-10：底部功能说明文案移至开放说明文档（项目说明.md），前端不展示 */}
       </div>
     </div>
   );

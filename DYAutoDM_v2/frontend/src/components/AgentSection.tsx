@@ -16,6 +16,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import type { AiAgentSummary } from "../api/client";
+import { SetCard, SetCardHead, SetCardBody, SetField } from "./page/set-card";
 
 const LEVELS = [
   { value: "kb_only", label: "kb_only（仅知识库，AI 不参与）" },
@@ -134,7 +135,7 @@ export default function AgentSection(props: PageProps) {
   }, [draft, selId, saveMut]);
 
   if (q.isLoading) {
-    return <div style={{ padding: 20, color: "var(--muted)" }}>加载 Agent…</div>;
+    return <div style={{ padding: 20, color: "var(--color-text-muted)" }}>加载 Agent…</div>;
   }
   if (q.isError) {
     return (
@@ -149,7 +150,7 @@ export default function AgentSection(props: PageProps) {
       <div
         style={{
           fontSize: 12,
-          color: "var(--muted)",
+          color: "var(--color-text-muted)",
           marginBottom: 10,
           lineHeight: 1.6,
         }}
@@ -165,7 +166,7 @@ export default function AgentSection(props: PageProps) {
       <Section title="Agent 列表" subtitle={`${agents.length} 个`}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
           {agents.length === 0 && (
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+            <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
               暂无 Agent，点「新建」创建
             </span>
           )}
@@ -182,7 +183,7 @@ export default function AgentSection(props: PageProps) {
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button
-            className="btn sm"
+            className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
             onClick={() => {
               setSelId("");
               setDraft({
@@ -198,7 +199,7 @@ export default function AgentSection(props: PageProps) {
           </button>
           {selId && (
             <button
-              className="btn sm"
+              className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
               onClick={() => {
                 if (confirm(`确认删除 Agent「${sel?.name}」？绑定它的账号会自动解绑。`)) {
                   delMut.mutate(selId);
@@ -302,14 +303,14 @@ export default function AgentSection(props: PageProps) {
           </Field>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
             <button
-              className="btn accent sm"
+              className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
               onClick={doSave}
               disabled={saveMut.isPending}
             >
               {saveMut.isPending ? "保存中…" : "保存 Agent"}
             </button>
           </div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
             更完整的参数（语义检索、视觉模型、知识库条目、护栏、延迟）仍在
             <b> AI 页</b> 调整；此处只放按账号差异化的核心项。
           </div>
@@ -319,7 +320,7 @@ export default function AgentSection(props: PageProps) {
       {/* ③ 账号绑定 */}
       <Section title="账号绑定" subtitle={`${acctList.length} 个账号`}>
         {acctList.length === 0 && (
-          <div style={{ fontSize: 12, color: "var(--muted)" }}>暂无账号</div>
+          <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>暂无账号</div>
         )}
         {acctList.map((name) => {
           const bound = bindings[name] || "";
@@ -332,9 +333,9 @@ export default function AgentSection(props: PageProps) {
                 alignItems: "center",
                 gap: 10,
                 padding: "8px 10px",
-                background: "var(--surface)",
+                background: "var(--color-surface-solid)",
                 borderRadius: 8,
-                border: "1px solid var(--border)",
+                border: "1px solid var(--color-border)",
                 marginBottom: 8,
               }}
             >
@@ -372,13 +373,13 @@ export default function AgentSection(props: PageProps) {
                         style={{
                           fontSize: 11,
                           fontWeight: 600,
-                          color: effOn ? "var(--accent)" : "var(--muted)",
+                          color: effOn ? "var(--color-accent)" : "var(--color-text-muted)",
                         }}
                       >
                         {boundName || "全局"}
                         {effOn ? " · AI回复开启" : " · AI回复关闭"}
                       </span>
-                      <span style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                      <span style={{ fontSize: 10.5, color: "var(--color-text-muted)" }}>
                         {ag?.strict_level || "rag"} · {ag?.model || "auto"} ·
                         知识库{ag?.kb_count ?? 0}条
                       </span>
@@ -390,7 +391,7 @@ export default function AgentSection(props: PageProps) {
                   style={{
                     flex: "0 0 auto",
                     fontSize: 11,
-                    color: "var(--muted)",
+                    color: "var(--color-text-muted)",
                   }}
                 >
                   不在 AI 作用域
@@ -404,41 +405,44 @@ export default function AgentSection(props: PageProps) {
   );
 }
 
+/** 输入框样式 —— 用设计令牌（旧 `var(--color-surface-raised)`/`var(--color-border)` 已随旧 CSS 下线）。 */
 const inputStyle: React.CSSProperties = {
   width: "100%",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border)",
-  borderRadius: 4,
-  padding: "4px 6px",
+  background: "var(--color-surface)",
+  border: "1px solid var(--color-border)",
+  borderRadius: 6,
+  padding: "5px 7px",
   fontSize: 12,
-  color: "var(--text)",
+  color: "var(--color-text)",
   outline: "none",
 };
 
+/** 设置区块（对标旧 `.set-card`，已收敛到 `page/set-card` 组件族）。 */
 function Section(props: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="set-card">
-      <div className="set-card-head is-open">
-        <span style={{ fontWeight: 700, fontSize: 13.5 }}>{props.title}</span>
-        {props.subtitle && (
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{props.subtitle}</span>
-        )}
-      </div>
-      <div className="set-card-body">{props.children}</div>
-    </div>
+    <SetCard>
+      <SetCardHead title={props.title} description={props.subtitle} />
+      <SetCardBody>{props.children}</SetCardBody>
+    </SetCard>
   );
 }
 
+/** 字段（对标旧 `.set-field`）。 */
 function Field(props: { label: string; children: React.ReactNode }) {
   return (
-    <div className="set-field">
-      <div style={{ color: "var(--muted)", fontSize: 11.5 }}>{props.label}</div>
+    <SetField
+      label={
+        <span className="text-[0.72rem] font-normal text-[var(--color-text-muted)]">
+          {props.label}
+        </span>
+      }
+    >
       {props.children}
-    </div>
+    </SetField>
   );
 }
 
@@ -510,14 +514,14 @@ function GlobalModelCard(props: PageProps) {
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
         <button
-          className="btn accent sm"
+          className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
           onClick={() => saveMut.mutate()}
           disabled={saveMut.isPending || Object.keys(draft).length === 0}
         >
           {saveMut.isPending ? "保存中…" : "保存模型配置"}
         </button>
       </div>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+      <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
         与「AI 获客」页共享同一份全局配置；各 Agent 可在 AI 页覆盖主模型。
         IM 通知的指令解析模型在「设置 → 通知与指令」。
       </div>

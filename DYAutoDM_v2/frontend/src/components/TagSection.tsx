@@ -16,6 +16,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../api/client";
 import type { ConfigTagSummary } from "../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
+import { SetCard, SetCardHead, SetCardBody } from "./page/set-card";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -83,7 +84,7 @@ export default function TagSection(props: PageProps) {
   });
 
   if (q.isLoading) {
-    return <div style={{ padding: 20, color: "var(--muted)" }}>加载标签…</div>;
+    return <div style={{ padding: 20, color: "var(--color-text-muted)" }}>加载标签…</div>;
   }
   if (q.isError) {
     return (
@@ -98,7 +99,7 @@ export default function TagSection(props: PageProps) {
       <div
         style={{
           fontSize: 12,
-          color: "var(--muted)",
+          color: "var(--color-text-muted)",
           marginBottom: 12,
           lineHeight: 1.6,
         }}
@@ -110,17 +111,12 @@ export default function TagSection(props: PageProps) {
       </div>
 
       {/* ① 标签列表 */}
-      <div className="set-card">
-        <div className="set-card-head is-open">
-          <span style={{ fontWeight: 700, fontSize: 13.5 }}>标签列表</span>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>
-            {tags.length} 个
-          </span>
-        </div>
-        <div className="set-card-body">
+      <SetCard>
+        <SetCardHead title="标签列表" description={`${tags.length} 个`} />
+        <SetCardBody>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             {tags.length === 0 && (
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>
+              <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
                 暂无标签，在下方输入名称后点「新建」创建
               </span>
             )}
@@ -142,17 +138,17 @@ export default function TagSection(props: PageProps) {
               placeholder="新标签名称，如：高频账号 / 保守账号"
               style={{
                 flex: 1,
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
+                background: "var(--color-surface-raised)",
+                border: "1px solid var(--color-border)",
                 borderRadius: 6,
                 padding: "6px 10px",
                 fontSize: 12.5,
-                color: "var(--text)",
+                color: "var(--color-text)",
                 outline: "none",
               }}
             />
             <button
-              className="btn sm"
+              className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
               onClick={() => newName.trim() && createMut.mutate(newName.trim())}
               disabled={!newName.trim() || createMut.isPending}
             >
@@ -160,7 +156,7 @@ export default function TagSection(props: PageProps) {
             </button>
             {selId && (
               <button
-                className="btn sm"
+                className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                 onClick={() => {
                   if (
                     confirm(
@@ -175,8 +171,8 @@ export default function TagSection(props: PageProps) {
               </button>
             )}
           </div>
-        </div>
-      </div>
+        </SetCardBody>
+      </SetCard>
 
       {/* ② 选中标签的参数（复用统一配置组件，仅切换 scope） */}
       {selId && (
@@ -184,7 +180,7 @@ export default function TagSection(props: PageProps) {
           <div
             style={{
               fontSize: 12,
-              color: "var(--muted)",
+              color: "var(--color-text-muted)",
               margin: "6px 0",
             }}
           >
@@ -200,16 +196,11 @@ export default function TagSection(props: PageProps) {
       )}
 
       {/* ③ 账号绑定 */}
-      <div className="set-card">
-        <div className="set-card-head is-open">
-          <span style={{ fontWeight: 700, fontSize: 13.5 }}>账号绑定</span>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>
-            {acctList.length} 个账号
-          </span>
-        </div>
-        <div className="set-card-body">
+      <SetCard>
+        <SetCardHead title="账号绑定" description={`${acctList.length} 个账号`} />
+        <SetCardBody>
           {acctList.length === 0 && (
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>暂无账号</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>暂无账号</div>
           )}
           {acctList.map((name) => {
             const bound = bindings[name] || "";
@@ -224,9 +215,9 @@ export default function TagSection(props: PageProps) {
                   alignItems: "center",
                   gap: 10,
                   padding: "8px 10px",
-                  background: "var(--surface)",
+                  background: "var(--color-surface-solid)",
                   borderRadius: 8,
-                  border: "1px solid var(--border)",
+                  border: "1px solid var(--color-border)",
                   marginBottom: 8,
                 }}
               >
@@ -238,12 +229,12 @@ export default function TagSection(props: PageProps) {
                   }
                   style={{
                     flex: 1,
-                    background: "var(--surface-2)",
-                    border: "1px solid var(--border)",
+                    background: "var(--color-surface-raised)",
+                    border: "1px solid var(--color-border)",
                     borderRadius: 4,
                     padding: "4px 6px",
                     fontSize: 12,
-                    color: "var(--text)",
+                    color: "var(--color-text)",
                     outline: "none",
                   }}
                 >
@@ -258,7 +249,7 @@ export default function TagSection(props: PageProps) {
                   style={{
                     flex: "0 0 auto",
                     fontSize: 11,
-                    color: boundName ? "var(--accent)" : "var(--muted)",
+                    color: boundName ? "var(--color-accent)" : "var(--color-text-muted)",
                   }}
                 >
                   {boundName || "全局"}
@@ -266,8 +257,8 @@ export default function TagSection(props: PageProps) {
               </div>
             );
           })}
-        </div>
-      </div>
+        </SetCardBody>
+      </SetCard>
     </div>
   );
 }

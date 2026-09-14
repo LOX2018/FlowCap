@@ -57,11 +57,11 @@ function Card(props: {
   return (
     <div
       style={{
-        background: "var(--panel)",
+        background: "var(--color-surface-solid)",
         borderRadius: 10,
         marginBottom: 10,
         overflow: "hidden",
-        border: "1px solid var(--border)",
+        border: "1px solid var(--color-border)",
       }}
     >
       <div
@@ -86,7 +86,7 @@ function Card(props: {
         >
           {props.title}
         </div>
-        <span style={{ color: "var(--muted)", fontSize: 12 }}>
+        <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>
           {open ? "收起" : "展开"}
         </span>
       </div>
@@ -94,7 +94,7 @@ function Card(props: {
         <div style={{ padding: "0 14px 12px" }}>
           {props.subtitle && (
             <div
-              style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}
+              style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 10 }}
             >
               {props.subtitle}
             </div>
@@ -117,10 +117,10 @@ function Field(props: {
 }) {
   return (
     <label style={{ display: "block", marginBottom: 10 }}>
-      <div style={{ fontSize: 12, marginBottom: 4, color: "var(--fg)" }}>
+      <div style={{ fontSize: 12, marginBottom: 4, color: "var(--color-text)" }}>
         {props.label}
         {props.secret && (
-          <span style={{ color: "var(--muted)", marginLeft: 6 }}>（敏感）</span>
+          <span style={{ color: "var(--color-text-muted)", marginLeft: 6 }}>（敏感）</span>
         )}
       </div>
       <input
@@ -132,7 +132,7 @@ function Field(props: {
         style={{ width: "100%" }}
       />
       {props.hint && (
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 3 }}>
           {props.hint}
         </div>
       )}
@@ -280,7 +280,7 @@ export default function NotifySection({ api, push }: PageProps) {
   };
 
   if (cfgQ.isLoading)
-    return <div style={{ padding: 20, color: "var(--muted)" }}>加载通知配置…</div>;
+    return <div style={{ padding: 20, color: "var(--color-text-muted)" }}>加载通知配置…</div>;
   if (cfgQ.isError)
     return (
       <div style={{ padding: 20, color: "var(--danger, #c0392b)" }}>
@@ -293,7 +293,7 @@ export default function NotifySection({ api, push }: PageProps) {
       <div
         style={{
           fontSize: 12,
-          color: "var(--muted)",
+          color: "var(--color-text-muted)",
           marginBottom: 10,
           lineHeight: 1.6,
         }}
@@ -310,7 +310,7 @@ export default function NotifySection({ api, push }: PageProps) {
           <>
             <strong>远程操作授权</strong>
             <Dot c={pendingList.length ? "warn" : gwMode === "open" ? "warn" : "ok"} />
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+            <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
               {gwMode === "open"
                 ? "开放模式（未拦截）"
                 : pendingList.length
@@ -322,13 +322,13 @@ export default function NotifySection({ api, push }: PageProps) {
         }
         defaultOpen={pendingList.length > 0}
       >
-        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 10 }}>
           配对模式（推荐）：所有来源可给 bot 发消息，但未授权者的指令一律拦截并回引导语，
           其首条消息会显示在下方待审区，由你甄别后授予权限组。开放模式不拦截（仅测试用）。
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>网关模式</span>
+          <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>网关模式</span>
           <button
             className={"btn sm" + (gwMode === "pairing" ? " accent" : "")}
             disabled={gwMut.isPending}
@@ -367,21 +367,21 @@ export default function NotifySection({ api, push }: PageProps) {
               >
                 <div style={{ fontSize: 12.5, marginBottom: 4 }}>
                   <b>{CHANNEL_SHORT[p.channel_id] || p.channel_id}</b>
-                  <span style={{ color: "var(--muted)", marginLeft: 8, fontFamily: "monospace", fontSize: 11.5 }}>
+                  <span style={{ color: "var(--color-text-muted)", marginLeft: 8, fontFamily: "monospace", fontSize: 11.5 }}>
                     {p.sender_id}
                   </span>
-                  <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 11 }}>
+                  <span style={{ color: "var(--color-text-muted)", marginLeft: 8, fontSize: 11 }}>
                     共 {p.msg_count} 条 · 最近 {new Date(p.last_at * 1000).toLocaleTimeString()}
                   </span>
                 </div>
                 {p.last_text && (
-                  <div style={{ fontSize: 12, color: "var(--fg)", marginBottom: 8, opacity: 0.85 }}>
+                  <div style={{ fontSize: 12, color: "var(--color-text)", marginBottom: 8, opacity: 0.85 }}>
                     「{p.last_text}」
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button
-                    className="btn sm accent"
+                    className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                     disabled={gwMut.isPending}
                     onClick={() => gwMut.mutate({ op: "approve", key: p.key, role: "admin" })}
                     title="全授权（可执行一切指令）"
@@ -389,21 +389,21 @@ export default function NotifySection({ api, push }: PageProps) {
                     设为管理员
                   </button>
                   <button
-                    className="btn sm"
+                    className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                     disabled={gwMut.isPending}
                     onClick={() => gwMut.mutate({ op: "approve", key: p.key, role: "operator" })}
                   >
                     操作员
                   </button>
                   <button
-                    className="btn sm"
+                    className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                     disabled={gwMut.isPending}
                     onClick={() => gwMut.mutate({ op: "approve", key: p.key, role: "viewer" })}
                   >
                     仅查看
                   </button>
                   <button
-                    className="btn sm danger"
+                    className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[var(--color-danger-soft)] text-[var(--color-danger)] hover:bg-[var(--color-danger)] hover:text-white h-9 px-4 text-[0.78rem] rounded-[10px]"
                     disabled={gwMut.isPending}
                     onClick={() => gwMut.mutate({ op: "approve", key: p.key, role: "blocked" })}
                   >
@@ -421,7 +421,7 @@ export default function NotifySection({ api, push }: PageProps) {
             已授权（{Object.keys(grants).length}）
           </div>
           {Object.keys(grants).length === 0 && (
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
               还没有授权任何来源。配对模式下，对方给 bot 发一条消息即可出现在待审区。
             </div>
           )}
@@ -433,8 +433,8 @@ export default function NotifySection({ api, push }: PageProps) {
                 alignItems: "center",
                 gap: 10,
                 padding: "8px 10px",
-                background: "var(--surface)",
-                border: "1px solid var(--border)",
+                background: "var(--color-surface-solid)",
+                border: "1px solid var(--color-border)",
                 borderRadius: 8,
                 marginBottom: 6,
                 fontSize: 12,
@@ -450,7 +450,7 @@ export default function NotifySection({ api, push }: PageProps) {
                   minWidth: 140,
                   fontFamily: "monospace",
                   fontSize: 11.5,
-                  color: "var(--muted)",
+                  color: "var(--color-text-muted)",
                   wordBreak: "break-all",
                 }}
               >
@@ -459,14 +459,14 @@ export default function NotifySection({ api, push }: PageProps) {
               <span
                 style={{
                   flex: "0 0 auto",
-                  color: g.role === "admin" ? "var(--accent)" : g.role === "blocked" ? "var(--danger)" : "var(--muted)",
+                  color: g.role === "admin" ? "var(--color-accent)" : g.role === "blocked" ? "var(--color-danger)" : "var(--color-text-muted)",
                 }}
               >
                 {ROLE_LABELS[g.role] || g.role}
               </span>
               {g.role !== "admin" && g.role !== "blocked" && (
                 <button
-                  className="btn sm"
+                  className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                   disabled={gwMut.isPending}
                   onClick={() => gwMut.mutate({ op: "approve", key, role: "admin" })}
                   title="提升为管理员"
@@ -475,7 +475,7 @@ export default function NotifySection({ api, push }: PageProps) {
                 </button>
               )}
               <button
-                className="btn sm"
+                className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                 disabled={gwMut.isPending}
                 onClick={() => gwMut.mutate({ op: "revoke", key })}
               >
@@ -492,7 +492,7 @@ export default function NotifySection({ api, push }: PageProps) {
           <>
             <strong>启用通知</strong>
             <Dot c={cfg.enabled ? "ok" : "mute"} />
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+            <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
               {cfg.enabled ? "已启用" : "已关闭"}
             </span>
           </>
@@ -500,7 +500,7 @@ export default function NotifySection({ api, push }: PageProps) {
         defaultOpen
         footer={
           <button
-            className="btn primary"
+            className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-10 px-5 rounded-[12px]"
             disabled={saveMut.isPending}
             onClick={() => saveMut.mutate(cfg)}
           >
@@ -522,7 +522,7 @@ export default function NotifySection({ api, push }: PageProps) {
           />
           <span>开启 IM 通知推送</span>
         </label>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+        <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginTop: 6 }}>
           关闭后所有事件（含凭证失效告警）都不会推送。
         </div>
       </Card>
@@ -541,7 +541,7 @@ export default function NotifySection({ api, push }: PageProps) {
         </strong>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {(Object.keys(CHANNEL_META) as NotifyKind[]).map((k) => (
-            <button key={k} className="btn sm" onClick={() => addChannel(k)}>
+            <button key={k} className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]" onClick={() => addChannel(k)}>
               + {CHANNEL_META[k].label}
             </button>
           ))}
@@ -553,10 +553,10 @@ export default function NotifySection({ api, push }: PageProps) {
           style={{
             padding: 20,
             textAlign: "center",
-            color: "var(--muted)",
-            background: "var(--panel)",
+            color: "var(--color-text-muted)",
+            background: "var(--color-surface-solid)",
             borderRadius: 10,
-            border: "1px solid var(--border)",
+            border: "1px solid var(--color-border)",
           }}
         >
           还没有渠道，点上方按钮添加一个
@@ -574,7 +574,7 @@ export default function NotifySection({ api, push }: PageProps) {
               <>
                 <strong>{title}</strong>
                 <Dot c={!ch.enabled ? "mute" : st?.ready ? "ok" : "danger"} />
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
                   {!ch.enabled ? "已停用" : st?.ready ? "就绪" : "未就绪"}
                 </span>
                 {st?.missing?.length ? (
@@ -585,14 +585,14 @@ export default function NotifySection({ api, push }: PageProps) {
             footer={
               <div style={{ display: "flex", gap: 8 }}>
                 <button
-                  className="btn"
+                  className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-10 px-5 rounded-[12px]"
                   disabled={testing === String(ch.id || ch.kind)}
                   onClick={() => testChannel(ch)}
                 >
                   {testing === String(ch.id || ch.kind) ? "发送中…" : "测试推送"}
                 </button>
                 <button
-                  className="btn danger"
+                  className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[var(--color-danger-soft)] text-[var(--color-danger)] hover:bg-[var(--color-danger)] hover:text-white h-10 px-5 rounded-[12px]"
                   onClick={() => removeChannel(i)}
                 >
                   删除渠道
@@ -656,7 +656,7 @@ export default function NotifySection({ api, push }: PageProps) {
       {channels.length > 0 && (
         <div style={{ marginTop: 6 }}>
           <button
-            className="btn primary"
+            className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-10 px-5 rounded-[12px]"
             disabled={saveMut.isPending}
             onClick={() => saveMut.mutate(cfg)}
           >

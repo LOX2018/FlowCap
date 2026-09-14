@@ -24,9 +24,6 @@ import {
   Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import "./styles/tokens.css";
-import "./styles/global.css";
-import "./styles/theme-glass.css";
-import "./styles/bridge.css";
 
 function Demo() {
   const [tab, setTab] = useState<TabId>("overview");

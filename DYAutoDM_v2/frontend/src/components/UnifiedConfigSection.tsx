@@ -19,6 +19,7 @@ import type {
   SettingsSchema,
   SettingsFieldSchema,
 } from "../api/client";
+import { SetCard, SetCardHead, SetCardBody, SetCardFoot } from "./page/set-card";
 
 type Val = string | number | boolean;
 
@@ -45,60 +46,44 @@ function SectionCard(props: {
 }) {
   const [open, setOpen] = useState(!!props.defaultOpen);
   return (
-    <div className="set-card">
-      <div
-        className={"set-card-head" + (open ? " is-open" : "")}
-        onClick={() => setOpen(!open)}
-      >
-        <span
-          style={{
-            fontSize: 12,
-            color: "var(--muted)",
-            transition: "transform .15s",
-            transform: open ? "rotate(90deg)" : "",
-          }}
-        >
-          ▶
-        </span>
-        <span style={{ fontWeight: 700, fontSize: 13.5 }}>{props.title}</span>
-        {props.dirty && (
-          <span
-            title="有未保存的改动"
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: "var(--accent)",
-              display: "inline-block",
-            }}
-          />
-        )}
-        {props.subtitle && (
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{props.subtitle}</span>
-        )}
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>{open ? "收起" : "展开"}</span>
-      </div>
+    <SetCard>
+      <SetCardHead
+        open={open}
+        onToggle={() => setOpen(!open)}
+        title={
+          <>
+            {props.title}
+            {props.dirty && (
+              <span
+                title="有未保存的改动"
+                className="ml-2 inline-block h-[7px] w-[7px] rounded-full
+                           bg-[var(--color-accent)] align-middle"
+              />
+            )}
+          </>
+        }
+        description={props.subtitle}
+      />
       {open && (
-        <div className="set-card-body">
+        <SetCardBody>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             {props.children}
           </div>
-          <div className="set-card-foot">
-            <button className="btn sm" onClick={props.onReset} disabled={props.saving}>
+          <SetCardFoot>
+            <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]" onClick={props.onReset} disabled={props.saving}>
               恢复默认
             </button>
             <button
-              className="btn accent sm"
+              className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
               onClick={props.onSave}
               disabled={props.saving || !props.dirty}
             >
               {props.saving ? "保存中…" : "保存此分组"}
             </button>
-          </div>
-        </div>
+          </SetCardFoot>
+        </SetCardBody>
       )}
-    </div>
+    </SetCard>
   );
 }
 
@@ -152,10 +137,10 @@ function SchemaField(props: {
         (props.dirty ? " is-dirty" : "")
       }
     >
-      <span style={{ color: "var(--muted)", fontSize: 11.5, display: "flex", gap: 6 }}>
+      <span style={{ color: "var(--color-text-muted)", fontSize: 11.5, display: "flex", gap: 6 }}>
         <span>{s.label}</span>
         {props.dirty && (
-          <span style={{ color: "var(--accent)" }} title="已修改未保存">●</span>
+          <span style={{ color: "var(--color-accent)" }} title="已修改未保存">●</span>
         )}
         {s.risk && (
           <span style={{ color: "var(--warn, #d8962c)" }} title="风控敏感项">⚠</span>
@@ -177,12 +162,12 @@ function SchemaField(props: {
           onChange={(e) => props.onChange(e.target.value)}
           style={{
             width: "100%",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
+            background: "var(--color-surface-raised)",
+            border: "1px solid var(--color-border)",
             borderRadius: 4,
             padding: "4px 6px",
             fontSize: 12,
-            color: "var(--text)",
+            color: "var(--color-text)",
             outline: "none",
           }}
         >
@@ -217,12 +202,12 @@ function SchemaField(props: {
           onBlur={(e) => commit(e.target.value)}
           style={{
             width: "100%",
-            background: "var(--surface-2)",
-            border: `1px solid ${err ? "var(--danger, #c0392b)" : "var(--border)"}`,
+            background: "var(--color-surface-raised)",
+            border: `1px solid ${err ? "var(--danger, #c0392b)" : "var(--color-border)"}`,
             borderRadius: 4,
             padding: "4px 6px",
             fontSize: 12,
-            color: "var(--text)",
+            color: "var(--color-text)",
             outline: "none",
           }}
         />
@@ -235,12 +220,12 @@ function SchemaField(props: {
       ) : (
         <>
           {s.hint && (
-            <span style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+            <span style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 2 }}>
               {s.hint}
             </span>
           )}
           {(rangeText || s.apply) && (
-            <span style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2, opacity: 0.85 }}>
+            <span style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 2, opacity: 0.85 }}>
               {[rangeText, s.apply ? APPLY_LABEL[s.apply] || s.apply : ""]
                 .filter(Boolean)
                 .join(" · ")}
@@ -403,7 +388,7 @@ export default function UnifiedConfigSection(
   );
 
   if (q.isLoading) {
-    return <div style={{ padding: 20, color: "var(--muted)" }}>加载配置…</div>;
+    return <div style={{ padding: 20, color: "var(--color-text-muted)" }}>加载配置…</div>;
   }
   if (q.isError) {
     return (
@@ -429,12 +414,12 @@ export default function UnifiedConfigSection(
             flexWrap: "wrap",
             padding: "8px 10px",
             marginBottom: 12,
-            background: "var(--panel)",
-            border: "1px solid var(--line)",
+            background: "var(--color-surface-solid)",
+            border: "1px solid var(--color-border-strong)",
             borderRadius: 10,
           }}
         >
-          <span style={{ fontSize: 11.5, color: "var(--muted)", marginRight: 2 }}>
+          <span style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginRight: 2 }}>
             保存到
           </span>
           <button
@@ -459,9 +444,9 @@ export default function UnifiedConfigSection(
               fontSize: 11.5,
               padding: "2px 8px",
               borderRadius: 999,
-              background: scope ? "var(--accent-bg)" : "var(--surface-2)",
-              color: scope ? "var(--accent)" : "var(--muted)",
-              border: "1px solid var(--border)",
+              background: scope ? "var(--color-accent-soft)" : "var(--color-surface-raised)",
+              color: scope ? "var(--color-accent)" : "var(--color-text-muted)",
+              border: "1px solid var(--color-border)",
             }}
           >
             当前：{scopeName}
@@ -473,7 +458,7 @@ export default function UnifiedConfigSection(
         <div
           style={{
             fontSize: 11.5,
-            color: "var(--muted)",
+            color: "var(--color-text-muted)",
             marginBottom: 10,
             lineHeight: 1.6,
           }}

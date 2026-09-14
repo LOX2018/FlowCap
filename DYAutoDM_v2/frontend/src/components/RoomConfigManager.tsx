@@ -5,7 +5,15 @@
  * 配置项 = 现有直播任务全部配置 + auto_link_mic（自动申请连麦）+ link_mic_mode。
  */
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { api, RoomConfig } from "../api/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
+import { Blank } from "@/components/page/kit";
 
 interface Props {
   open: boolean;
@@ -109,195 +117,180 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
   if (!open) return null;
 
   return (
-    <div className="modal-mask" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5 backdrop-blur-sm"
+      onClick={onClose}
+    >
       <div
-        className="modal-card"
+        className="glass-premium w-[720px] max-w-[92vw] max-h-[86vh] overflow-auto
+                   rounded-[var(--radius-xl)]"
         onClick={(e) => e.stopPropagation()}
-        style={{ width: 720, maxWidth: "92vw", maxHeight: "86vh", overflow: "auto" }}
         data-od-id="room-config-modal"
       >
-        <div className="modal-head">
-          <h3>直播间配置管理</h3>
-          <span className="x" style={{ cursor: "pointer" }} onClick={onClose}>×</span>
+        <div className="flex items-center justify-between border-b border-[var(--color-border)]
+                        px-4 py-3">
+          <h3 className="text-[0.95rem] font-semibold text-[var(--color-text)]">
+            直播间配置管理
+          </h3>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
-        <div className="modal-body">
+        <div className="p-4">
           {/* 配置列表 */}
           <div style={{ marginBottom: 14 }}>
-            {loading && <div style={{ color: "var(--muted)", fontSize: 12 }}>加载中…</div>}
+            {loading && (
+              <div className="text-[0.74rem] text-[var(--color-text-muted)]">加载中…</div>
+            )}
             {!loading && items.length === 0 && (
-              <div style={{ color: "var(--muted)", fontSize: 12, padding: "12px 0" }}>
-                暂无配置。填写下方表单保存第一个直播间配置。
-              </div>
+              <Blank>暂无配置。填写下方表单保存第一个直播间配置。</Blank>
             )}
             {items.map((cfg) => (
               <div
                 key={cfg.room_id}
-                className="head-row"
-                style={{
-                  padding: "8px 10px",
-                  borderBottom: "1px solid var(--border)",
-                  gap: 8,
-                  flexWrap: "wrap",
-                }}
+                className="flex flex-wrap items-center gap-2 border-b
+                           border-[var(--color-border)] px-2.5 py-2"
               >
-                <div style={{ flex: 1, minWidth: 200 }}>
+                <div className="min-w-[200px] flex-1">
                   <div style={{ fontSize: 13, fontWeight: 600 }}>
                     {cfg.name || cfg.room_id}
                     {cfg.auto_link_mic && (
                       <span
                         className="mono"
-                        style={{ marginLeft: 8, fontSize: 11, color: "var(--accent)" }}
+                        style={{ marginLeft: 8, fontSize: 11, color: "var(--color-accent)" }}
                       >
                         自动连麦({cfg.link_mic_mode === "video" ? "视频" : "语音"})
                       </span>
                     )}
                   </div>
-                  <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+                  <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
                     {cfg.room_id} · 上限{cfg.max_target ?? "—"} · 间隔{cfg.interval ?? "—"}s · 抖动
                     {cfg.delay || "—"}
                     {cfg.acct ? ` · 账号:${cfg.acct}` : ""}
                   </div>
                 </div>
-                <button className="btn sm ghost" onClick={() => applyToTask(cfg.room_id)}>
+                <Button variant="ghost" size="sm" onClick={() => applyToTask(cfg.room_id)}>
                   应用
-                </button>
-                <button className="btn sm ghost" onClick={() => edit(cfg)}>
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => edit(cfg)}>
                   编辑
-                </button>
-                <button className="btn sm ghost danger" onClick={() => remove(cfg.room_id)}>
+                </Button>
+                <Button variant="danger-outline" size="sm" onClick={() => remove(cfg.room_id)}>
                   删除
-                </button>
+                </Button>
               </div>
             ))}
           </div>
 
           {/* 编辑/新建表单 */}
-          <div
-            style={{
-              borderTop: "1px solid var(--border)",
-              paddingTop: 12,
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 10,
-            }}
-          >
-            <div className="field" style={{ gridColumn: "1 / -1" }}>
+          <div className="grid grid-cols-2 gap-2.5 border-t border-[var(--color-border)] pt-3">
+            <div className="col-span-2 flex flex-col gap-1">
               <label>直播间号或 URL {editing && `(编辑中: ${editing})`}</label>
-              <input
-                className="input"
+              <Input
+                
                 value={draft.room_id || ""}
                 onChange={(e) => setDraft({ ...draft, room_id: e.target.value })}
                 placeholder="如 840377749201 或 https://live.douyin.com/..."
                 disabled={!!editing}
               />
             </div>
-            <div className="field">
+            <div className="flex flex-col gap-1">
               <label>备注名</label>
-              <input
-                className="input"
+              <Input
+                
                 value={draft.name || ""}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder="如 张老师工伤直播间"
               />
             </div>
-            <div className="field">
+            <div className="flex flex-col gap-1">
               <label>监听账号</label>
-              <input
-                className="input"
+              <Input
+                
                 value={draft.acct || ""}
                 onChange={(e) => setDraft({ ...draft, acct: e.target.value })}
                 placeholder="留空 = 使用页面当前选择"
               />
             </div>
-            <div className="field">
+            <div className="flex flex-col gap-1">
               <label>发送上限</label>
-              <input
-                className="input"
+              <Input
+                
                 type="number"
                 value={draft.max_target ?? 100}
                 onChange={(e) => setDraft({ ...draft, max_target: parseInt(e.target.value, 10) || 0 })}
               />
             </div>
-            <div className="field">
+            <div className="flex flex-col gap-1">
               <label>间隔（秒）</label>
-              <input
-                className="input"
+              <Input
+                
                 type="number"
                 value={draft.interval ?? 60}
                 onChange={(e) => setDraft({ ...draft, interval: parseFloat(e.target.value) || 0 })}
               />
             </div>
-            <div className="field">
+            <div className="flex flex-col gap-1">
               <label>延迟抖动（秒）</label>
-              <input
-                className="input"
+              <Input
+                
                 value={draft.delay || ""}
                 onChange={(e) => setDraft({ ...draft, delay: e.target.value })}
                 placeholder="50,120"
               />
             </div>
-            <div className="field">
+            <div className="flex flex-col gap-1">
               <label>连麦方式</label>
-              <select
-                className="select"
+              <Select
                 value={draft.link_mic_mode || "audio"}
-                onChange={(e) =>
-                  setDraft({ ...draft, link_mic_mode: e.target.value as "audio" | "video" })
+                onValueChange={(v) =>
+                  setDraft({ ...draft, link_mic_mode: v as "audio" | "video" })
                 }
                 disabled={!draft.auto_link_mic}
               >
-                <option value="audio">语音连线</option>
-                <option value="video">视频连线</option>
-              </select>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="audio">语音连线</SelectItem>
+                  <SelectItem value="video">视频连线</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <label
-              className="head-row"
-              style={{ gap: 8, fontSize: 12, alignItems: "center", gridColumn: "1 / -1" }}
-            >
-              <span className="switch" style={{ flex: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={!!draft.auto_link_mic}
-                  onChange={(e) => setDraft({ ...draft, auto_link_mic: e.target.checked })}
-                />
-                <i />
-              </span>
-              <span style={{ color: "var(--muted)" }}>
+            <label className="col-span-2 flex items-center gap-2 text-[0.74rem]">
+              <Switch
+                checked={!!draft.auto_link_mic}
+                onCheckedChange={(v) => setDraft({ ...draft, auto_link_mic: v })}
+              />
+              <span style={{ color: "var(--color-text-muted)" }}>
                 自动申请连麦（引擎开播监听后自动对本期直播间发起连麦申请）
               </span>
             </label>
-            <label
-              className="head-row"
-              style={{ gap: 8, fontSize: 12, alignItems: "center", gridColumn: "1 / -1" }}
-            >
-              <span className="switch" style={{ flex: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={!!draft.force_rescan}
-                  onChange={(e) => setDraft({ ...draft, force_rescan: e.target.checked })}
-                />
-                <i />
-              </span>
-              <span style={{ color: "var(--muted)" }}>强制重扫</span>
+            <label className="col-span-2 flex items-center gap-2 text-[0.74rem]">
+              <Switch
+                checked={!!draft.force_rescan}
+                onCheckedChange={(v) => setDraft({ ...draft, force_rescan: v })}
+              />
+              <span style={{ color: "var(--color-text-muted)" }}>强制重扫</span>
             </label>
           </div>
         </div>
-        <div className="modal-foot">
-          <button className="btn ghost" onClick={onClose}>
+        <div className="flex justify-end gap-2 border-t border-[var(--color-border)] px-4 py-3">
+          <Button variant="secondary" onClick={onClose}>
             关闭
-          </button>
-          <button
-            className="btn ghost"
+          </Button>
+          <Button
+            variant="secondary"
             onClick={() => {
               setEditing(null);
               setDraft({ ...EMPTY_DRAFT, room_id: extractRoomId(currentRoom) || "" });
             }}
           >
             清空表单
-          </button>
-          <button className="btn primary" onClick={save}>
+          </Button>
+          <Button onClick={save}>
             {editing ? "更新配置" : "保存配置"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

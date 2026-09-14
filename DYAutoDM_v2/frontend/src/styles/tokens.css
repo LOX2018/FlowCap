@@ -84,8 +84,14 @@
 
 /* ═══════════════════════════════════════════════════════════════
    浅色主题
+   ═══════════════════════════════════════════════════════════════
+   ThemeContext 通过 `<html data-theme>` 写入，实际取值是：
+     · "aerospace"（默认，深色）
+     · "day"（浅色）
+   故这里必须同时匹配 "day"（旧代码写作 "light" 是历史遗留，保留以便兼容）。
    ═══════════════════════════════════════════════════════════════ */
-[data-theme="light"] {
+[data-theme="light"],
+[data-theme="day"] {
   --color-background: #f5f5f7;
   --color-background-soft: #efeff1;
   --color-surface: rgba(255, 255, 255, 0.88);
@@ -110,6 +116,13 @@
    ═══════════════════════════════════════════════════════════════ */
 @layer utilities {
   /* 玻璃拟态 —— 蓝本核心手法 */
+  /* 磨砂开关：ThemeContext 写 `<html data-glass-frost="true">`。
+     缺省（无该属性）= 轻磨砂；开启 = 强磨砂。 */
+  html:not([data-glass-frost]) .glass-premium,
+  html:not([data-glass-frost]) .glass-panel {
+    backdrop-filter: blur(14px);
+  }
+
   .glass-premium {
     background: color-mix(in srgb, var(--color-surface-solid) 70%, transparent);
     backdrop-filter: blur(48px);
@@ -200,8 +213,10 @@ body {
   border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.25); }
-[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.08); }
-[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.15); }
+[data-theme="light"] ::-webkit-scrollbar-thumb,
+[data-theme="day"] ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.08); }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover,
+[data-theme="day"] ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.15); }
 
 * { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.12) transparent; }
 

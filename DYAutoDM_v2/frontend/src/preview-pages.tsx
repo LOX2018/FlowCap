@@ -10,9 +10,6 @@ import { Component, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@/styles/tokens.css";
-import "@/styles/global.css";
-import "@/styles/theme-glass.css";
-import "@/styles/bridge.css";
 
 import { AppShell } from "@/components/layout/app-shell";
 import type { TabId } from "@/components/layout/sidebar";
@@ -29,6 +26,8 @@ import LogsPage from "@/pages/logs";
 import MessagesPage from "@/pages/messages";
 import LivePage from "@/pages/live";
 import AccountsPage from "@/pages/accounts";
+import AiPage from "@/pages/ai";
+import KbPage from "@/pages/kb";
 import type { PageProps } from "@/api/client";
 
 /* ── mock props：模拟后端已就绪的返回值（仅用于视觉验证） ── */
@@ -164,6 +163,19 @@ function mockApi() {
     sendDanmaku: async () => ({ ok: true }),
     // accounts
     checkAccount: async () => ({ ok: true }),
+    listAgents: async () => ({ agents: [{ id: "a1", name: "默认 Agent" }, { id: "a2", name: "保守号" }] }),
+    aiGetConfig: async () => ({ config: {} }),
+    aiSaveConfig: async () => ({ ok: true }),
+    aiTest: async () => ({ ok: true, msg: "连接正常" }),
+    aiKbList: async () => ({ items: [] }),
+    aiLeads: async () => ({ items: [] }),
+    aiBlacklist: async () => ({ items: [] }),
+    aiBlacklistAdd: async () => ({ ok: true }),
+    aiBlacklistRemove: async () => ({ ok: true }),
+    aiLeadStatus: async () => ({ ok: true }),
+    aiProKbList: async () => ({ ok: true, items: [], tree: [] }),
+    aiProKbMaintainStatus: async () => ({ state: null }),
+    aiReplyKbList: async () => ({ items: [] }),
     deleteAccount: async () => ({ ok: true }),
     addAccount: async () => ({ ok: true }),
     saveProxy: async () => ({ ok: true }),
@@ -200,6 +212,8 @@ const PAGES: Record<string, { title: string; tab: TabId; el: (p: PageProps) => R
   messages: { title: "私信", tab: "msg", el: (p) => <MessagesPage {...p} /> },
   live: { title: "直播", tab: "live", el: (p) => <LivePage {...p} /> },
   accounts: { title: "账号", tab: "accounts", el: (p) => <AccountsPage {...p} /> },
+  ai: { title: "AI 获客", tab: "ai", el: (p) => <AiPage {...p} /> },
+  kb: { title: "知识库", tab: "kb", el: (p) => <KbPage {...p} /> },
 };
 
 function Demo() {

@@ -14,6 +14,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps, HubProvider, HubModel, HubRouteKind } from "../api/client";
+import { SetCard, SetCardHead, SetCardBody } from "./page/set-card";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -22,12 +23,12 @@ function errMsg(e: unknown): string {
 const inputStyle: React.CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border)",
+  background: "var(--color-surface)",
+  border: "1px solid var(--color-border)",
   borderRadius: 4,
   padding: "4px 6px",
   fontSize: 12,
-  color: "var(--text)",
+  color: "var(--color-text)",
   outline: "none",
 };
 
@@ -49,17 +50,10 @@ function Block(props: {
   children: React.ReactNode;
 }) {
   return (
-    <div className="set-card">
-      <div className="set-card-head is-open">
-        <span style={{ fontWeight: 700, fontSize: 13.5 }}>{props.title}</span>
-        {props.subtitle && (
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>
-            {props.subtitle}
-          </span>
-        )}
-      </div>
-      <div className="set-card-body">{props.children}</div>
-    </div>
+    <SetCard>
+      <SetCardHead title={props.title} description={props.subtitle} />
+      <SetCardBody>{props.children}</SetCardBody>
+    </SetCard>
   );
 }
 
@@ -289,7 +283,7 @@ export default function ModelHubSection(props: PageProps) {
   });
 
   if (q.isLoading) {
-    return <div style={{ padding: 20, color: "var(--muted)" }}>加载模型中心…</div>;
+    return <div style={{ padding: 20, color: "var(--color-text-muted)" }}>加载模型中心…</div>;
   }
   if (q.isError) {
     return (
@@ -301,7 +295,7 @@ export default function ModelHubSection(props: PageProps) {
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.6 }}>
+      <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
         模型配置的<b>唯一入口</b>：先添加提供商并配好密钥（可拉取模型、测试密钥），
         再把模型按 <b>LLM / 视觉 / 语义</b> 分类编成避障链路（每链最多 {maxChain} 个，失败自动切下一个），
         可设一个「LLM+视觉」双能力模型作兜底；消费方选一条链路（享避障）或固定某个模型。
@@ -314,38 +308,38 @@ export default function ModelHubSection(props: PageProps) {
           return (
             <div key={p.id} style={{
               display: "flex", alignItems: "center", gap: 10,
-              padding: "8px 10px", background: "var(--surface)",
-              borderRadius: 8, border: "1px solid var(--border)",
+              padding: "8px 10px", background: "var(--color-surface-solid)",
+              borderRadius: 8, border: "1px solid var(--color-border)",
               marginBottom: 8, fontSize: 12, flexWrap: "wrap",
             }}>
               <div style={{ flex: "0 0 160px", fontWeight: 600 }}>
                 {p.name}
-                <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                <div style={{ fontSize: 10.5, color: "var(--color-text-muted)" }}>
                   {p.api_protocol}{p.api_key ? " · 🔑" : " · 无密钥"}
                 </div>
               </div>
-              <div style={{ flex: 1, color: "var(--muted)", wordBreak: "break-all", minWidth: 140 }}>
+              <div style={{ flex: 1, color: "var(--color-text-muted)", wordBreak: "break-all", minWidth: 140 }}>
                 {p.base_url || "（未填地址）"}
                 <div style={{ fontSize: 10.5, marginTop: 2 }}>
                   {models.filter((m) => m.provider_id === p.id).length} 个模型
                   {st?.checked_at ? (
-                    <span style={{ color: st.ok ? "var(--accent)" : "var(--danger, #c0392b)" }}>
+                    <span style={{ color: st.ok ? "var(--color-accent)" : "var(--danger, #c0392b)" }}>
                       {" "}· {st.ok ? "密钥有效" : (st.detail || "密钥无效")}
                     </span>
                   ) : null}
                 </div>
               </div>
-              <button className="btn sm" disabled={testPvMut.isPending}
+              <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={testPvMut.isPending}
                 onClick={() => testPvMut.mutate(p.id)}>测密钥</button>
-              <button className="btn sm" disabled={fetchMut.isPending}
+              <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={fetchMut.isPending}
                 onClick={() => fetchMut.mutate(p.id)}>
                 {fetchMut.isPending ? "拉取中…" : "拉取模型"}
               </button>
-              <button className="btn sm"
+              <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                 onClick={() => setPvDraft({ ...p, api_key: p.api_key ? "••••••••" : "" })}>
                 编辑
               </button>
-              <button className="btn sm danger"
+              <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[var(--color-danger-soft)] text-[var(--color-danger)] hover:bg-[var(--color-danger)] hover:text-white h-9 px-4 text-[0.78rem] rounded-[10px]"
                 onClick={() => {
                   if (confirm(`删除提供商「${p.name}」？其模型与链路绑定会一并清理。`))
                     delPvMut.mutate(p.id);
@@ -356,7 +350,7 @@ export default function ModelHubSection(props: PageProps) {
           );
         })}
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button className="btn sm accent"
+          <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
             onClick={() => setPvDraft({ name: "", base_url: "", api_protocol: "openai", api_key: "" })}>
             + 新建提供商
           </button>
@@ -364,12 +358,12 @@ export default function ModelHubSection(props: PageProps) {
 
         {pvDraft && (
           <div style={{
-            border: "1px solid var(--accent)", borderRadius: 10,
+            border: "1px solid var(--color-accent)", borderRadius: 10,
             padding: "10px 12px", marginTop: 8, display: "flex",
             flexWrap: "wrap", gap: 12,
           }}>
             <div style={{ width: "100%" }}>
-              <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 4 }}>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 4 }}>
                 从预设填充（也可直接手填 = 自定义）
               </div>
               <select style={inputStyle} value=""
@@ -381,13 +375,13 @@ export default function ModelHubSection(props: PageProps) {
               </select>
             </div>
             <div style={{ flex: 1, minWidth: 160 }}>
-              <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 4 }}>名称</div>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 4 }}>名称</div>
               <input style={inputStyle} value={pvDraft.name || ""}
                 placeholder="例：本机 FreeLLM / DeepSeek 官方"
                 onChange={(e) => setPvDraft({ ...pvDraft, name: e.target.value })} />
             </div>
             <div style={{ width: 120 }}>
-              <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 4 }}>协议</div>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 4 }}>协议</div>
               <select style={inputStyle} value={pvDraft.api_protocol || "openai"}
                 onChange={(e) => setPvDraft({ ...pvDraft, api_protocol: e.target.value })}>
                 <option value="openai">OpenAI 兼容</option>
@@ -395,7 +389,7 @@ export default function ModelHubSection(props: PageProps) {
               </select>
             </div>
             <div style={{ flex: 2, minWidth: 220 }}>
-              <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 4 }}>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 4 }}>
                 Base URL（填到 /v1 这一级）
               </div>
               <input style={inputStyle} value={pvDraft.base_url || ""}
@@ -403,7 +397,7 @@ export default function ModelHubSection(props: PageProps) {
                 onChange={(e) => setPvDraft({ ...pvDraft, base_url: e.target.value })} />
             </div>
             <div style={{ flex: 1, minWidth: 160 }}>
-              <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 4 }}>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 4 }}>
                 API Key（•••• = 保留原值）
               </div>
               <input style={inputStyle} value={pvDraft.api_key || ""}
@@ -411,8 +405,8 @@ export default function ModelHubSection(props: PageProps) {
                 onChange={(e) => setPvDraft({ ...pvDraft, api_key: e.target.value })} />
             </div>
             <div style={{ width: "100%", display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button className="btn sm" onClick={() => setPvDraft(null)}>取消</button>
-              <button className="btn sm accent"
+              <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]" onClick={() => setPvDraft(null)}>取消</button>
+              <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
                 disabled={savePvMut.isPending || !pvDraft.base_url}
                 onClick={() => savePvMut.mutate(pvDraft)}>
                 {savePvMut.isPending ? "保存中…" : "保存提供商"}
@@ -425,7 +419,7 @@ export default function ModelHubSection(props: PageProps) {
       {/* ===== ② 模型 ===== */}
       <Block title="② 模型" subtitle={`${models.length} 个 · 能力标签决定可进哪条链`}>
         {models.length === 0 && (
-          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 8 }}>
             还没有模型：先在提供商上点「拉取模型」，或在下方手动添加。
           </div>
         )}
@@ -441,13 +435,13 @@ export default function ModelHubSection(props: PageProps) {
           return (
             <div key={m.id} style={{
               display: "flex", alignItems: "center", gap: 10,
-              padding: "6px 10px", background: "var(--surface)",
-              borderRadius: 8, border: "1px solid var(--border)",
+              padding: "6px 10px", background: "var(--color-surface-solid)",
+              borderRadius: 8, border: "1px solid var(--color-border)",
               marginBottom: 6, fontSize: 12,
             }}>
               <div style={{ flex: 1, minWidth: 140 }}>
                 <span style={{ fontWeight: 600 }}>{m.model}</span>
-                <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
+                <span style={{ color: "var(--color-text-muted)", marginLeft: 6, fontSize: 11 }}>
                   {p?.name || "?"}{m.source === "fetch" ? " · 已拉取" : ""}
                 </span>
               </div>
@@ -457,9 +451,9 @@ export default function ModelHubSection(props: PageProps) {
                     onClick={() => toggleCap(cap)}
                     style={{
                       fontSize: 10.5, padding: "2px 8px", borderRadius: 10,
-                      border: "1px solid " + (m.caps.includes(cap) ? "var(--accent)" : "var(--border)"),
-                      background: m.caps.includes(cap) ? "var(--accent)" : "transparent",
-                      color: m.caps.includes(cap) ? "#fff" : "var(--muted)",
+                      border: "1px solid " + (m.caps.includes(cap) ? "var(--color-accent)" : "var(--color-border)"),
+                      background: m.caps.includes(cap) ? "var(--color-accent)" : "transparent",
+                      color: m.caps.includes(cap) ? "#fff" : "var(--color-text-muted)",
                       cursor: "pointer",
                     }}
                     title="点击切换该能力标签">
@@ -468,9 +462,9 @@ export default function ModelHubSection(props: PageProps) {
                 ))}
               </div>
               {fallbackId === m.id && (
-                <span style={{ fontSize: 10.5, color: "var(--accent)" }}>兜底</span>
+                <span style={{ fontSize: 10.5, color: "var(--color-accent)" }}>兜底</span>
               )}
-              <button className="btn sm danger"
+              <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[var(--color-danger-soft)] text-[var(--color-danger)] hover:bg-[var(--color-danger)] hover:text-white h-9 px-4 text-[0.78rem] rounded-[10px]"
                 onClick={() => {
                   if (confirm(`删除模型「${m.model}」？链路与绑定会自动清理。`))
                     delModelMut.mutate(m.id);
@@ -489,7 +483,7 @@ export default function ModelHubSection(props: PageProps) {
           <input style={{ ...inputStyle, flex: 2 }} value={newModel.name}
             placeholder="模型名（手动添加；一般用「拉取模型」）"
             onChange={(e) => setNewModel({ ...newModel, name: e.target.value })} />
-          <button className="btn sm accent" disabled={addModelMut.isPending || !newModel.providerId || !newModel.name.trim()}
+          <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={addModelMut.isPending || !newModel.providerId || !newModel.name.trim()}
             onClick={() => addModelMut.mutate()}>添加模型</button>
         </div>
       </Block>
@@ -500,14 +494,14 @@ export default function ModelHubSection(props: PageProps) {
           const ids: string[] = routeDraft ? (routeDraft[kind] || []) : (routes[kind]?.models || []);
           return (
             <div key={kind} style={{
-              padding: "8px 10px", background: "var(--surface)",
-              borderRadius: 8, border: "1px solid var(--border)",
+              padding: "8px 10px", background: "var(--color-surface-solid)",
+              borderRadius: 8, border: "1px solid var(--color-border)",
               marginBottom: 8, fontSize: 12,
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <b>{label}</b>
-                <span style={{ color: "var(--muted)", fontSize: 11 }}>{hint}</span>
-                <span style={{ color: "var(--muted)", fontSize: 11, marginLeft: "auto" }}>
+                <span style={{ color: "var(--color-text-muted)", fontSize: 11 }}>{hint}</span>
+                <span style={{ color: "var(--color-text-muted)", fontSize: 11, marginLeft: "auto" }}>
                   {ids.length}/{maxChain}
                   {kind !== "sem" && fallbackId && !ids.includes(fallbackId) && modelById(fallbackId)
                     ? " + 兜底模型" : ""}
@@ -517,25 +511,25 @@ export default function ModelHubSection(props: PageProps) {
                 {ids.map((mid, idx) => (
                   <span key={mid} style={{
                     display: "inline-flex", alignItems: "center", gap: 6,
-                    background: "var(--surface-2)", border: "1px solid var(--border)",
+                    background: "var(--color-surface)", border: "1px solid var(--color-border)",
                     borderRadius: 14, padding: "2px 8px", fontSize: 11.5,
                   }}>
-                    <b style={{ color: "var(--accent)" }}>{idx + 1}</b>
+                    <b style={{ color: "var(--color-accent)" }}>{idx + 1}</b>
                     {modelLabel(mid)}
                     <span style={{ display: "inline-flex", gap: 2 }}>
                       <button onClick={() => routeMove(kind, idx, -1)}
                         disabled={idx === 0}
-                        style={{ cursor: idx === 0 ? "default" : "pointer", border: "none", background: "none", color: "var(--muted)" }}>↑</button>
+                        style={{ cursor: idx === 0 ? "default" : "pointer", border: "none", background: "none", color: "var(--color-text-muted)" }}>↑</button>
                       <button onClick={() => routeMove(kind, idx, 1)}
                         disabled={idx === ids.length - 1}
-                        style={{ cursor: idx === ids.length - 1 ? "default" : "pointer", border: "none", background: "none", color: "var(--muted)" }}>↓</button>
+                        style={{ cursor: idx === ids.length - 1 ? "default" : "pointer", border: "none", background: "none", color: "var(--color-text-muted)" }}>↓</button>
                       <button onClick={() => routeRemove(kind, idx)}
                         style={{ cursor: "pointer", border: "none", background: "none", color: "var(--danger, #c0392b)" }}>×</button>
                     </span>
                   </span>
                 ))}
                 {ids.length === 0 && (
-                  <span style={{ color: "var(--muted)", fontSize: 11 }}>空链路 = 该能力走旧配置兜底</span>
+                  <span style={{ color: "var(--color-text-muted)", fontSize: 11 }}>空链路 = 该能力走旧配置兜底</span>
                 )}
               </div>
               <select style={{ ...inputStyle, maxWidth: 320 }} value={routePick[kind] || ""}
@@ -552,13 +546,13 @@ export default function ModelHubSection(props: PageProps) {
         })}
 
         <div style={{
-          padding: "8px 10px", background: "var(--surface)",
-          borderRadius: 8, border: "1px dashed var(--accent)",
+          padding: "8px 10px", background: "var(--color-surface-solid)",
+          borderRadius: 8, border: "1px dashed var(--color-accent)",
           marginBottom: 8, fontSize: 12,
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <b>🛟 兜底模型</b>
-            <span style={{ color: "var(--muted)", fontSize: 11 }}>
+            <span style={{ color: "var(--color-text-muted)", fontSize: 11 }}>
               须同时支持 LLM+视觉；自动附在 LLM 链与视觉链末尾（语义链不用）
             </span>
           </div>
@@ -572,18 +566,18 @@ export default function ModelHubSection(props: PageProps) {
                 </option>
               ))}
             </select>
-            <button className="btn sm accent" disabled={fbMut.isPending || fbDraft === fallbackId}
+            <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={fbMut.isPending || fbDraft === fallbackId}
               onClick={() => fbMut.mutate(fbDraft)}>保存兜底</button>
           </div>
           {fbEligible.length === 0 && (
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+            <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 4 }}>
               还没有「LLM+视觉」双能力模型：在模型列表把某模型同时点亮这两个标签（如 nemotron-omni / qwen-vl / glm-4v 系）。
             </div>
           )}
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button className="btn accent sm" disabled={saveRouteMut.isPending || routeDraft === null}
+          <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={saveRouteMut.isPending || routeDraft === null}
             onClick={() => saveRouteMut.mutate()}>
             {saveRouteMut.isPending ? "保存中…" : "保存链路"}
           </button>
@@ -599,8 +593,8 @@ export default function ModelHubSection(props: PageProps) {
           return (
             <div key={c.id} style={{
               display: "flex", alignItems: "center", gap: 10,
-              padding: "8px 10px", background: "var(--surface)",
-              borderRadius: 8, border: "1px solid var(--border)",
+              padding: "8px 10px", background: "var(--color-surface-solid)",
+              borderRadius: 8, border: "1px solid var(--color-border)",
               marginBottom: 8, fontSize: 12, flexWrap: "wrap",
             }}>
               <span style={{ flex: "0 0 200px", fontSize: 12.5 }}>{c.label}</span>
@@ -635,7 +629,7 @@ export default function ModelHubSection(props: PageProps) {
                   ))}
                 </select>
               )}
-              <span style={{ flex: "0 0 auto", fontSize: 11, color: "var(--muted)" }}>
+              <span style={{ flex: "0 0 auto", fontSize: 11, color: "var(--color-text-muted)" }}>
                 {b.mode === "route"
                   ? `避障+${b.route !== "sem" ? "兜底" : "无兜底"}`
                   : fixedModel ? "不避障" : "未选模型"}
@@ -644,12 +638,12 @@ export default function ModelHubSection(props: PageProps) {
           );
         })}
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-          <button className="btn accent sm" disabled={bindMut.isPending || bindDraft === null}
+          <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={bindMut.isPending || bindDraft === null}
             onClick={() => bindMut.mutate()}>
             {bindMut.isPending ? "保存中…" : "保存绑定"}
           </button>
         </div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6, lineHeight: 1.6 }}>
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 6, lineHeight: 1.6 }}>
           规则：走链路的消费方按链序避障（LLM/视觉链末尾自动附加兜底模型）；
           固定模型不避障、失效即解绑回落默认 LLM 链；链路为空时该能力回落旧配置。
         </div>

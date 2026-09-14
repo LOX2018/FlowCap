@@ -529,7 +529,7 @@ function MsgBubble({
     sys
       ? "border-dashed border-[var(--color-border)] bg-[var(--color-surface-raised)] text-center text-[0.72rem] text-[var(--color-text-muted)]"
       : out
-        ? "border-transparent bg-[var(--color-accent)] text-[var(--accent-ink)]"
+        ? "border-transparent bg-[var(--color-accent)] text-[#08130a]"
         : "border-[var(--color-border)] bg-[var(--color-surface-raised)] text-[var(--color-text)]",
   );
   // 缩略图气泡：无论方向都用弱底色（旧 `.msg.out .bubble.mediathumb` 去掉了主色底与描边）

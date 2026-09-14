@@ -68,7 +68,7 @@ function BootSplash({ onSkip }: { onSkip?: () => void }) {
         alignItems: "center",
         justifyContent: "center",
         gap: 16,
-        background: "var(--bg)",
+        background: "var(--color-background)",
         // 等后端就绪前，主界面藏在闪屏之下
       }}
     >
@@ -77,7 +77,7 @@ function BootSplash({ onSkip }: { onSkip?: () => void }) {
           width: 64,
           height: 64,
           borderRadius: 16,
-          background: "var(--accent)",
+          background: "var(--color-accent)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -89,10 +89,16 @@ function BootSplash({ onSkip }: { onSkip?: () => void }) {
         DY
       </div>
       <div style={{ fontSize: 16, fontWeight: 600 }}>抖音数据控制台</div>
-      <div className="spinner" style={{ marginTop: 4 }} />
-      <div style={{ color: "var(--muted)", fontSize: 12.5 }}>正在唤醒后端引擎并准备数据…</div>
+      <div
+        className="mt-1 h-5 w-5 animate-spin rounded-full border-2
+                   border-[var(--color-border)] border-t-[var(--color-accent)]"
+      />
+      <div style={{ color: "var(--color-text-muted)", fontSize: 12.5 }}>正在唤醒后端引擎并准备数据…</div>
       {showSkip && onSkip && (
-        <button className="btn" onClick={onSkip} style={{ marginTop: 8, fontSize: 12.5 }}>
+        <button
+          className="mt-2 text-[0.78rem] text-[var(--color-accent)] underline-offset-4 hover:underline"
+          onClick={onSkip}
+        >
           等待过久？点此直接进入
         </button>
       )}
@@ -472,9 +478,14 @@ export default function App() {
       </AppShell>
 
       {/* 全局 toast（保留旧样式类，与新外壳共存） */}
-      <div className="toasts">
+      <div className="pointer-events-none fixed bottom-5 left-1/2 z-[100] flex -translate-x-1/2
+                      flex-col items-center gap-2">
         {toasts.map((t) => (
-          <div className="toast" key={t.id}>
+          <div
+            key={t.id}
+            className="glass-premium pointer-events-auto rounded-[var(--radius-md)] px-4 py-2
+                       text-[0.8rem] text-[var(--color-text)] shadow-[var(--shadow-md)]"
+          >
             {t.msg}
           </div>
         ))}

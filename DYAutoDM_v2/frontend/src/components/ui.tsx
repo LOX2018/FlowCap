@@ -1,6 +1,14 @@
 /**
- * 通用 UI 组件 + 工具函数 —— 1:1 迁移自 DY_Spider_base/web/framework.js。
- * class 命名与旧版完全一致，样式来自 global.css。
+ * 通用 UI 组件 + 工具函数（重设计版 · 无旧 CSS 依赖）
+ *
+ * ## 迁移背景
+ * 原版本 class 命名依赖 `global.css`（`.avatar` / `.pill` / `.bullet` / `.dot` / `.mono`）。
+ * 本次重设计后旧 CSS 体系下线，故样式**内联为设计令牌**，导出签名保持不变
+ * （6 个页面以 `Avatar` / `hue` / `KIND_NAME` / `tick` 等形式引用，签名不动即零回归）。
+ *
+ * ## 与 `components/page/kit` 的关系
+ * - `Tone`（kit）= 旧 `Pill` 的新形态（同为状态胶囊）；新代码请用 `Tone`
+ * - 本文件的 `Pill` 仅保留给尚未迁移的调用点（NotifySection 等），保持兼容
  */
 import React from "react";
 
@@ -41,6 +49,7 @@ export const KIND_NAME: Record<string, string> = {
   like: "点赞",
 };
 
+/** @deprecated 导航已由 `components/layout/sidebar.tsx` 接管（含 kb/notify）。仅少数旧调用点仍引用。 */
 export const TABS: [string, string][] = [
   ["overview", "总览"],
   ["crawl", "采集"],
@@ -55,8 +64,8 @@ export const TABS: [string, string][] = [
 
 // ===== 通用组件 =====
 
-/** 迷你折线图（SVG） */
-export function Spark({ pts, color = "var(--accent)" }: { pts: number[]; color?: string }) {
+/** 迷你折线图（SVG）。颜色走设计令牌，深浅主题自动适配。 */
+export function Spark({ pts, color = "var(--color-accent)" }: { pts: number[]; color?: string }) {
   const w = 104,
     h = 30;
   const max = Math.max(...pts),
@@ -75,52 +84,97 @@ export function Spark({ pts, color = "var(--accent)" }: { pts: number[]; color?:
   );
 }
 
-/** 彩色标签 */
-export function Pill({ c, children }: { c: "ok" | "warn" | "danger" | "accent" | "mute"; children: React.ReactNode }) {
+/** 彩色标签（旧 `Pill` 形态）。新代码请优先用 `kit` 的 `Tone`。 */
+export function Pill({
+  c,
+  children,
+}: {
+  c: "ok" | "warn" | "danger" | "accent" | "mute";
+  children: React.ReactNode;
+}) {
   const map: Record<string, [string, string]> = {
-    ok: ["var(--ok)", "var(--ok-bg)"],
-    warn: ["var(--warn)", "var(--warn-bg)"],
-    danger: ["var(--danger)", "var(--danger-bg)"],
-    accent: ["var(--accent)", "var(--accent-bg)"],
-    mute: ["var(--muted)", "var(--surface-2)"],
+    ok: ["var(--color-success)", "var(--color-success-soft)"],
+    warn: ["var(--color-warning)", "var(--color-warning-soft)"],
+    danger: ["var(--color-danger)", "var(--color-danger-soft)"],
+    accent: ["var(--color-accent)", "var(--color-accent-soft)"],
+    mute: ["var(--color-text-secondary)", "var(--color-surface-raised)"],
   };
   const [color, bg] = map[c] || map.mute;
   return (
-    <span className="pill" style={{ color, background: bg }}>
-      <span className="bullet" style={{ background: color }} />
+    <span
+      className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5
+                 text-[0.72rem] font-semibold"
+      style={{ color, background: bg }}
+    >
+      <span
+        className="inline-block h-[6px] w-[6px] shrink-0 rounded-full"
+        style={{ background: color }}
+      />
       {children}
     </span>
   );
 }
 
-/** 头像（首字母 + 色相背景） */
-export function Avatar({ name, h, sm, lg, src }: { name: string; h: string; sm?: boolean; lg?: boolean; src?: string }) {
-  if (src) {
-    return (
-      <span
-        className={"avatar" + (sm ? " sm" : "") + (lg ? " lg" : "")}
-        style={{ background: `oklch(55% 0.14 ${h})` }}
-      >
-        <img src={src} alt={name} style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
-      </span>
-    );
-  }
+/** 头像（首字母 + 色相背景）。色相值由 `hue()` 提供。 */
+export function Avatar({
+  name,
+  h,
+  sm,
+  lg,
+  src,
+}: {
+  name: string;
+  h: string;
+  sm?: boolean;
+  lg?: boolean;
+  src?: string;
+}) {
+  const size = sm ? "h-6 w-6 text-[0.68rem]" : lg ? "h-10 w-10 text-[0.95rem]" : "h-8 w-8 text-[0.8rem]";
   return (
     <span
-      className={"avatar" + (sm ? " sm" : "") + (lg ? " lg" : "")}
+      className={
+        "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full " +
+        "font-semibold text-white " + size
+      }
       style={{ background: `oklch(55% 0.14 ${h})` }}
     >
-      {name.charAt(0)}
+      {src ? (
+        <img
+          src={src}
+          alt={name}
+          className="h-full w-full rounded-full object-cover"
+        />
+      ) : (
+        name.charAt(0)
+      )}
     </span>
   );
 }
 
-/** 状态点（带 pulse 动画） */
+/** 状态点。旧 `Dot c="ok|warn|danger|mute|pulse"` → 语义映射到令牌色。 */
 export function Dot({ c, pulse }: { c: string; pulse?: boolean }) {
-  return <span className={"dot " + c + (pulse ? " pulse" : "")} />;
+  const tone = c.includes("ok")
+    ? "var(--color-success)"
+    : c.includes("warn")
+      ? "var(--color-warning)"
+      : c.includes("danger")
+        ? "var(--color-danger)"
+        : c.includes("accent")
+          ? "var(--color-accent)"
+          : "var(--color-text-muted)";
+  return (
+    <span
+      aria-hidden="true"
+      className={
+        "inline-block h-[7px] w-[7px] shrink-0 rounded-full " +
+        (pulse ? "animate-[pulse-dot_1.6s_ease-out_infinite]" : "")
+      }
+      style={{ background: tone }}
+    />
+  );
 }
 
 /** 等宽数字 */
 export function Num({ v }: { v: React.ReactNode }) {
-  return <span className="mono">{v}</span>;
+  return <span className="font-mono tabular-nums">{v}</span>;
 }

@@ -202,6 +202,17 @@ export function applyAccentToDom(
   root.setProperty("--accent-border", rgb(0.35));
   root.setProperty("--accent-border-strong", rgb(theme === "day" ? 0.5 : 0.55));
   root.setProperty("--accent-ink", onColorFor(r, g, b));
+
+  // ── 同步写入设计令牌名（tokens.css 体系）──
+  // 重设计后页面/组件一律用 `--color-accent*`，故主色切换必须两个体系都写，
+  // 否则「设置 → 主题」改了主色而界面不变（旧名无人读、新名没被写）。
+  const hex = rgbToHex(r, g, b);
+  const onInk = onColorFor(r, g, b);
+  root.setProperty("--color-accent", hex);
+  root.setProperty("--color-accent-hover", `rgb(${hv.r}, ${hv.g}, ${hv.b})`);
+  root.setProperty("--color-accent-soft", rgb(0.14));
+  root.setProperty("--color-accent-ring", rgb(0.35));
+  root.setProperty("--color-accent-ink", onInk);
 }
 
 /** 合法氛围光取值："accent"（跟随 UI 主色）或任一 accent id。 */
