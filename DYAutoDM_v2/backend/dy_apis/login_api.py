@@ -58,12 +58,21 @@ def _bcc_alive(account_name: str, timeout: float = 0.5) -> bool:
         return False
 
 
-def _bcc_post(account_name: str, path: str, json_body: dict = None, timeout: float = 30) -> dict:
-    """调 BCC 的 POST 接口，返回 {ok, ...}。BCC 不在运行时返回 {ok:false, msg:...}。"""
+def _bcc_post(account_name: str, path: str, json_body: dict = None,
+              timeout: float = 30, lease_id: str = "") -> dict:
+    """调 BCC 的 POST 接口，返回 {ok, ...}。BCC 不在运行时返回 {ok:false, msg:...}。
+
+    lease_id（2026-09-14 v0.43.11）：跨调用窗口租约透传。调用方已持 gate 租约时
+    必须把同一 lease_id 带下来，否则 BCC 侧 _exec 会把它判为「并发冲突」而拒绝
+    （实测 AUTH-036「容器正被 gate:auto 独占」）。
+    """
     port = _bcc_port(account_name)
     try:
+        _body = dict(json_body or {})
+        if lease_id:
+            _body["lease_id"] = lease_id
         r = requests.post(f"http://127.0.0.1:{port}{path}",
-                          json=json_body or {}, timeout=timeout)
+                          json=_body, timeout=timeout)
         return r.json() or {}
     except Exception as e:
         return {"ok": False, "msg": f"BCC 不可达: {e}"}
@@ -563,7 +572,8 @@ class DYLoginApi:
         return auth
 
     @staticmethod
-    def refresh_cookie_from_profile(auth, env_path=None, allow_launch=False):
+    def refresh_cookie_from_profile(auth, env_path=None, allow_launch=False,
+                                    lease_id=""):
         """刷新 auth 的 cookie 为浏览器 profile 里的实时值（写回 .env）。
 
         优先通过 BCC HTTP /cookie 接口（常驻浏览器容器，不抢锁）；
@@ -587,7 +597,7 @@ class DYLoginApi:
                 account_name = base
         # 优先走 BCC
         if account_name and _bcc_alive(account_name):
-            r = _bcc_post(account_name, "/cookie", timeout=15)
+            r = _bcc_post(account_name, "/cookie", timeout=15, lease_id=lease_id)
             if r.get("ok"):
                 cks_str = r.get("cookies") or ""
                 if not cks_str:

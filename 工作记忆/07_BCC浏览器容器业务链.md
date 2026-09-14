@@ -389,3 +389,470 @@ recv_daemon）的 `logger.remove()` 之前安装。**未改 345 处调用点**�
    都必须先探活再复用，否则无法自愈。
 3. **状态标志要配看门狗**：`_switching` 这类"进行中"标志一旦因异常未复位，
    会让功能永久失效（窗口再也唤不醒）；必须带超时强制复位。
+
+
+## 【2026-09-13 v0.43.4】BCC 单例硬守卫 + 致命态熔断（调度器不再可绕过）
+
+### 用户铁律（本次的出发点）
+> 「任何操作前先核对 BCC 状态；**只能有一个 BCC**，统一交给调度器切换。
+>  如果每次都能越过调度器，那就说明这个机制就是一个废物。」
+
+### 事故：手工起第二个 BCC → 快闪风暴
+日志铁证（2026-09-13 20:46:57—20:48:07）：
+```
+20:46:57 BCC-028 | [bcc] 浏览器容器启动失败：账号 尚进工伤小助理 无 .env（索引未登记？）
+20:47:01 BCC-033 | [bcc] /wp_messages 失败: [bcc] 账号 尚进工伤小助理 无 .env（索引未登记？）
+… 每 3.7 秒一条，连续 20 轮 …
+20:48:07 BCC-033 | （最后一条）
+```
+**`无 .env（索引未登记？）` 只在缺会员环境变量时出现** → 即「手工启动」的特征
+（应用自己拉起时 backend 会传 `DY_MEMBER`/`DY_MEMBER_KEY`）。
+
+机制：缺会员态 → 读不到 `.env.enc` → `_launch` 抛错 → `_ensure_alive` 判
+「context 失活」→ **每 3.7 秒重启一次** = 用户所见「窗口一闪一闪」。
+同期 `20:43:07` 应用自己那个 BCC 的 `BCC-006 context 已关闭`，
+时间点与手工实例拉起重合 —— 抢 profile 导致常驻容器 context 被挤掉。
+
+**风控后果**：同一账号 profile 被两个 BCC 抢锁 + 每 3.7 秒重启 = 极强风控信号。
+
+### 根因（链路溯源）：单例只靠调用方自觉
+`browser_daemon.main()` 此前**只有**「端口哈希校验」（`--port` 必须等于
+`browser_daemon_port(account)`），**没有**「该账号已有实例在跑」的守卫。
+⇒ 任何路径（含人工调试/脚本）都能再起一个指向同一账号 profile 的 BCC，
+⇒ **调度器可被绕过，形同虚设**（这正是用户说「是废物」的技术根因）。
+
+### 修法：把单例判断做进**二进制自身**（自证，不靠调用方）
+`main()` 端口校验之后新增硬守卫，两层判据（任一命中即拒绝启动）：
+| 层 | 判据 | 说明 |
+|---|---|---|
+| ① 端口层 | 该账号哈希端口被监听 **且** `/status.account` 与之相符 | 只判端口被占不够（可能是别的进程），必须核对账号 |
+| ② profile 层（根本） | profile 目录存在 `SingletonLock` / `lockfile` | 浏览器所有权最终体现在该目录，与端口无关，更根本 |
+
+拒绝启动返回 **`SystemExit(3)`**，并打印可操作提示：
+「请把操作交给调度器 `services.browser_gate.ensure_browser(account, purpose)`」
+逃生口：`--force-duplicate`（显式调试，仅极端场景）。
+
+### 配套：致命态熔断 `BCC-043`
+凭证不可用（`env_path` 为空）属**不可自愈**条件 —— 重启一万次也一样。
+原逻辑会每 3~4 秒重启（快闪风暴）。现改为：
+- 首次遇致命态 → `logger.error("BCC-043", ...)` + 设 `_fatal_until = now + 1800`（30 分钟）
+- 熔断期内 `_ensure_alive` **只告警不重启**，并给出可操作提示
+- 把「读不到凭证」的常见原因写进提示：① 应用未以会员身份运行（子进程缺
+  `DY_MEMBER`/`DY_MEMBER_KEY`）② 账号未登记进索引 ③ 账号已被删除
+
+### 验证（零风险：monkeypatch `uvicorn.run`，绝不真起第二个 BCC）
+| 检查 | 结果 |
+|---|---|
+| A. 判据命中正在运行的账号 | ✅ `port=11231, account=尚进工伤小助理` |
+| B. 对不存在账号不误报 | ✅ 返回 `None` |
+| C. `main()` 第二次启动同账号 | ✅ **`SystemExit(3)` 拒绝启动** |
+| D. `--force-duplicate` 逃生口 | ✅ 可放行到 uvicorn |
+
+### 铁律（新增）
+1. **单例门禁必须做在二进制/资源层自证**，不能只靠调用方自觉 ——
+   调用方一多，任何一个漏传都能破坏单例（`allow_launch` 后门、手工脚本同理）。
+2. **不可自愈的错误必须熔断**，绝不能进重启循环（重启风暴 = 风控信号）。
+3. **浏览器所有权判据选「profile 锁文件」**（唯一物理资源，与端口/进程名无关），
+   比端口/进程判断更根本。
+4. 调试用它人的账号 profile 前，先核对 BCC 状态并**交给调度器**；
+   绝不再手工起第二个实例。
+
+## 【2026-09-13 v0.43.4】浏览器租约（Lease）——调度器变实，消除「吉祥物」
+
+### 用户定位（本次出发点）
+> 「我不希望调度器只是个吉祥物，调度器在本项目中是非常非常重要的模块」
+
+### 根因三层证据（为什么 gate 一直是空壳）
+```python
+# services/browser_gate.py L112-120 —— PURPOSE_EXCLUSIVE 分支全文
+    if purpose == PURPOSE_AUTO:
+        logger.info(f"[gate] 复用 BCC 容器 (... exclusive={st['exclusive']})")
+    else:
+        if not st["exclusive"]:                       # ① 读 st['exclusive']
+            logger.info("...需先令 BCC 让出 profile")   # ② 只打日志
+    return {"ok": True, ...}                          # ③ 直接返回成功
+```
+| 证据 | 事实 |
+|---|---|
+| ① 字段来源 | `st['exclusive']` ← `bcc_state()` ← `/status` 的 `exclusive` |
+| ② **实测 /status** | 只返回 `alive/account/profile/uid/last_refresh/logged_in/version`——**无 exclusive** ⇒ `j.get("exclusive")` **恒为 None** |
+| ③ 写入方 | 全仓**无任何代码**写 `/status.exclusive`；BCC 内部真标志是私有 `_scan_exclusive`，未对外暴露 |
+
+⇒ `if not st["exclusive"]` **恒为真** → 永远走「只打日志」分支 → 永远 `ok=True`。
+**完整空壳，且静默**（比报错更糟：调用方以为拿到独占，实际什么都没发生）。
+
+### 为什么设计成「租约」而不是「让出 profile」
+`gate` 想做「让 BCC 让出 profile」——但 BCC 是**独立进程**、profile 由它持有，
+**跨进程「交出 profile」不可能实现**（所以只能打日志假装成功）。
+
+正确抽象：**BCC 始终是唯一所有者**，业务操作向它**申请租约**，
+BCC 仲裁授予；结束 release，或 TTL 到期自动回收。
+
+### 实现（browser_daemon.py）
+| 件 | 说明 |
+|---|---|
+| `_lease` 结构 | `holder/purpose/prio/lease_id/acquired_at/ttl/expires_at/renew_count` |
+| `_lease_current()` | **惰性 TTL**：读时判 `now > expires_at` 即回收（BCC-046）。无需后台定时器，**持有者崩溃不会永久独占** |
+| `_lease_acquire()` | 重入判据**只有显式 lease_id 匹配**；被他人持有 → 拒绝（不抢占）+ `retry_after` |
+| `_lease_renew()` | 累计时长超 prio 上限 → 拒绝（BCC-048，防续租绕过上限） |
+| `_lease_release()` | 必须 lease_id 匹配（BCC-049，防误释放他人租约） |
+| 端点 | `GET /lease_status`、`POST /lease`、`/lease/renew`、`/lease/release` |
+| `/status` | 新增 `lease` 子对象 + `exclusive` 真值（补齐 gate 缺失的真值源） |
+
+### 优先级与 TTL 硬上限
+| prio | 名称 | 用途 | TTL 上限 | 拿不到时 |
+|---|---|---|---|---|
+| 0 | 用户显式 | 更新会话/打开浏览器/扫码 | 300s | 短等重试 |
+| 1 | 业务自动 | AI 回复/私信发送/凭证刷新 | 180s | 短等 → 降级 |
+| 2 | 后台保活 | keepalive/昵称预热/uid 轮询 | **30s** | 直接跳过本轮 |
+
+**超限按上限授予**（不是拒绝请求），**renew 累计超限则拒绝**——防「P2 持 10 分钟」把调度器架空。
+
+### 关键设计取舍：**不做真抢占**
+浏览器操作大多**不可中断**（DOM 流程、context 重建）——真抢占会打断执行中操作，
+导致状态不一致。用「P2 限时 30s + 快速失败 + retry_after」解决「低优先级霸占」，
+语义最干净，且与既有 `_scan_exclusive`（scan_login 独占期内其他**立即失败**，不抢占）一致。
+
+### 最小侵入接入：租约做进 `_exec`
+`_exec` 是 11 个端点共用的执行入口 → 在它里面加租约门，**11 个端点自动纳入调度**，
+无需逐个改造。跨调用窗口（scan_login：关 context → 扫码 → 重启）才显式取租约。
+
+⚠️ **重入判据只有「显式 lease_id 匹配」**：`_lock` 非重入 ⇒ `_exec` 不可能嵌套，
+所以任何「同 holder」都**不是**重入，而是**并发冲突**（必须拒绝）。
+（若按 holder 判重入，两个并发请求都叫 `bcc-internal` 时，第二个会错误复用第一个的租约。）
+
+### gate 变实（S2.5）
+`ensure_browser()` 改为**真取租约**；拿不到返回 `ok=False` + `retry_after`（不再假 `ok=True`）。
+新增 `acquire_lease()` / `release_lease()` / `lease_status()` 供业务侧调用。
+
+### 绕过口收紧（S2.7）
+`core/dispatch.py` 的 `dm_dispatch 接入失败 → 回退直发` **已移除**，改为放弃发送 +
+`SEND-037`。理由：直发绕过统一风控闸门（2次/分钟、30次/天 + 频控降权冷静），
+**发送是最高频风控面**——宁可「这次不发」，也不破坏闸门。
+
+### 错误码（BCC 域 046+，避开 web_probe 占用的 043-045）
+| 码 | 含义 |
+|---|---|
+| `BCC-046` | 租约超时强制释放（持有者未 release） |
+| `BCC-047` | 租约冲突被拒（busy） |
+| `BCC-048` | renew/TTL 超上限被拒 |
+| `BCC-049` | 持有者不匹配 / 未持租约 |
+| `BCC-050` | 单例守卫命中（已有 BCC 在跑，拒绝启动） |
+| `BCC-051` | 致命态熔断（凭证不可用，不再自动重启） |
+| `SEND-037` | dm_dispatch 接入失败，放弃发送（不再回退直发） |
+
+### 验证（33 项，源码级 + monkeypatch，不碰运行中 BCC）
+```
+初态空闲 OK / P1成功 OK / 冲突被拒不抢占 OK / 重入复用 OK /
+P2 600s→30s 截断 OK / 惰性TTL回收 OK / release 需 id 匹配 OK /
+renew 超限被拒 OK / 端点注册 OK / 错误码注册 OK
+==> 全部通过
+```
+另：单例硬守卫 monkeypatch 验证——判据命中运行中账号 OK、不误报 OK、
+第二次启动 `SystemExit(3)` OK、`--force-duplicate` 逃生口 OK。
+
+### 铁律（新增）
+1. **调度器不能是壳**：调度逻辑必须真的在调度器里，且**读到的状态必须是真值源**。
+   「读一个从不存在的字段」会静默退化成假成功——比报错更危险。
+2. **跨进程资源不能承诺「让出」**：所有者始终是那个进程，正确抽象是**租约**。
+3. **不可中断的资源不做抢占**：用「优先级 + TTL 上限 + 快速失败 + retry_after」。
+4. **TTL 必须惰性回收**：持有者崩溃/忘 release 不能造成永久独占。
+5. **绕过必须响**：静默降级（假成功 / 悄悄直发）是机制腐化的根因。
+
+## 【2026-09-13 v0.43.5】窗口快闪根治 + 交互行为人类化（去脚本特征）
+
+### 用户反馈
+> 「BCC 依旧快闪，更新会话应该采用无头 BCC，且点击的时候要符合不规律感，
+>   固定点击位置和频率容易被判定为脚本导致封控」
+
+### 问题1：快闪真因（证据链 22:08-22:10）
+```
+22:08:35 BCC 启动（无头请求 → 真有头+窗口最小化）
+22:08:40 /show(visible=True) → self._headless = False   ← 用户点「打开浏览器」
+22:09:02 BCC-006 context 死亡 → _launch(headless=False) → 重建可见窗口 ⇒ 闪
+22:10:20 BCC-006 再次死亡 → 再次重建 ⇒ 又闪
+```
+**根因**：`set_visible(True)` 会把 `self._headless = False` **持久保留**，
+而 `_launch` 里传的是 `headless=self._headless` → 之后任何 `BCC-006` 失活触发的
+**重建都会再创建一个可见窗口**。而 `launch_persistent_context(headless=False)`
+是「**先创建可见窗口、再 minimize**」→ 中间的时间差就是用户看到的**快闪**。
+（同期 `BCC-029 昵称缓存预热失败: context has been closed` 印证重建时旧 context 已关。）
+
+**修法（browser_daemon._launch）**：
+1. **重建一律按「最小化」启动**（不继承上次可见态）——重建是**异常自愈路径**，
+   不该顺带弹窗；用户要可见态时走 `/show`（只改窗口状态，不重建 context）。
+2. 重建后**同步 `self._headless = True`** —— 否则残留 `False` 会让下一次
+   `set_visible(True)` 误判「已是目标模式」而**跳过窗口恢复**（用户点了却看不到窗口）。
+3. 新增观测码 `BCC-052`（context 失活自愈：已重建容器、按最小化启动）。
+4. 回退开关 `DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH=1`（仅调试）。
+
+### 问题2：固定点击位置/频率 = 脚本指纹
+**原理**：脚本特征 = **确定性**。固定坐标（元素正中心）+ 固定间隔（400ms）
++ 固定滚动步长（整屏）三者叠加即成指纹。真人则是「有抖动、有停顿、有回退」。
+
+**实现（`browser_daemon`，模块级 `_human_*` 系列）**：
+| 函数 | 作用 | 关键设计 |
+|---|---|---|
+| `_human_gap(base, spread)` | 点击/滚动间停顿 | **对数正态**分布。真人停顿是**长尾**的（多数短、偶尔长），均匀随机仍可被统计识别。实测 base=0.4 时：中位 0.40s、p90 0.84s、长尾 2.62s |
+| `_human_click(page, el)` | 人类化点击 | 元素内随机取点（避开正中心 20% 与 15% 边缘）+ **分步鼠标轨迹**（3~5 步、步间微停、坐标抖动）——Playwright 默认 click 是**瞬移+居中**，是典型脚本特征 |
+| `_human_scroll_ratio()` | 滚动步长 | 0.65~0.95 屏随机，而非恒整屏 |
+| 会话顺序 | 每轮 `random.shuffle` | 脚本总从第一个开始，**顺序确定性**也是特征 |
+
+**回退开关**：`DY_HUMAN_PATTERN=off` → 恢复确定性行为（调试复现用）。
+
+**实测分布（3000 次取样）**：
+```
+_human_gap      : min=0.12 中位=0.40 均值=0.48 p90=0.84 max=2.62  unique=2922
+_human_scroll   : 0.650~0.950  unique=1993
+DY_HUMAN_PATTERN=off 时：_human_gap 恒 0.4、ratio 恒 1.0（回退有效）
+```
+
+### 铁律（新增）
+1. **异常自愈路径不得产生用户可见副作用**（重建不该弹窗/闪窗）。
+2. **界面可见性是「用户请求态」而非「持久态」** —— 重建后应回到默认不可见；
+   否则用户态会被异常路径继承并放大（本例：一次 /show 导致每次重建都弹窗）。
+3. **与外部平台交互的行为必须非确定性**：坐标、间隔、步长、顺序四者都要抖动；
+   间隔用**长尾分布**（对数正态）而非均匀分布。
+4. 人类化改造必须**保留功能降级路径**（`_human_click` 失败回退元素点击），
+   去脚本化不得让功能可用性变差。
+
+## 【2026-09-13 v0.43.6】BCC 改为「随启动拉起」—— 懒加载架构的服役终止
+
+### 用户决策
+> 「之前规范 BCC 不随启动拉起，是为了优化性能，避免启动过慢，现有架构是否还会
+>   存在这种问题」→ 量化后确认**不会了** → 「启动就拉 BCC（4 秒，消掉 6 个结构性问题）」
+
+### 决定性证据（前提已消失）
+| | 当初立规范时（09-06） | 现在 |
+|---|---|---|
+| 打包形态 | onefile（每次解包 114MB 到 %TEMP%） | **onedir 免解压**（09-08 已改造） |
+| sidecar 启动 | **13.24s** | **1.10s** |
+| 内存常驻 | ~90MB | ~9.5MB |
+| **BCC 冷启动** | 15s+（当初的理由） | **实测 4 秒**（22:08:35 → 22:08:39） |
+
+git `d0b9163`(09-06) 原文：「BCC 只服务 WP 通道/会话更新预热，启动不该为可能不用的
+功能预付 **15s+** 成本与风控暴露」——那个 15s 是 onefile 时代的数字。
+
+### 全流程捕获实证（7335 帧 @8Hz，15 分钟）
+```
+BCC /status 成功帧数        : 0 / 7335   （全程 URLError）
+browser-daemon 进程         : 从未出现
+chrome（指纹浏览器）        : 从未出现（776 帧的 chrome 是用户自己的浏览器）
+前端显示                    : 「更新完成：会话 44（消息 25），耗时 5.8s」← 假成功
+```
+捕获器：`scripts/diag/capv2.py`（纯 Win32 API，8Hz；调 PowerShell 会拖到 0.4Hz）
+
+### 根因链
+```
+启动路径分叉：
+  · 未登录 → _prealign_on_startup(skip_cooldown=True) → 拉全部守护
+  · 已登录 → _auto_start_daemons() → BCC 被 DY_BCC_ON_START=0 **跳过**
+应用正常运行期就是「已登录」⇒ 每次启动 BCC 都不被拉起。
+
+用户点「更新会话」→ _bcc_url → ensure_bcc（未豁免冷静期）
+  → 撞 DY_BCC_LAZY_DELAY=30s → SYS-002「冷静期内不自动拉 BCC」
+  → gate 委托调度器又撞同一冷静期 → BCC-041「未能就绪」
+  → **CAP-016 未就绪但代码不 return** → CAP-007 连不上 11231
+```
+
+### 修法
+1. **BCC 随启动拉起**：`DY_BCC_ON_START` 默认 0 → **1**（=0 可显式关闭）；
+   与 recv_daemon 并行 spawn（两者无依赖）。
+2. **冷静期默认 0**：BCC 启动即拉后，冷静期无存在必要（保留环境变量供回退）。
+3. **用户显式操作永远豁免**：新增 `PURPOSE_USER` + `_SKIP_COOLDOWN_BY_PURPOSE`
+   表（USER/EXCLUSIVE→True，AUTO→False），`ensure_browser(skip_cooldown=…)` 透传。
+4. **用户操作路径全走 PURPOSE_USER**：`_bcc_url`、`refresh_conversations`、
+   账号页守护启动按钮（实测原漏 3 处）。
+
+### 消掉的 6 个结构性问题
+| # | 问题 | 现状 |
+|---|---|---|
+| ① | 三处路径对「该不该拉 BCC」结论相反 | 统一为「启动就拉」 |
+| ② | 30s 冷静期拦住用户显式操作 | 默认 0 + USER 永远豁免 |
+| ③ | 拿不到 BCC 不 return（假成功） | BCC 启动即就绪，不再发生 |
+| ④ | 5 个入口语义重叠 | 拉起时机统一，入口不再需要各自判断 |
+| ⑤ | skip_cooldown 隐式契约（漏传即 bug） | 改为按 purpose 自动推断 |
+| ⑥ | 「BCC 是否可用」是运行期不确定状态 | 启动时确定 |
+
+### 铁律（新增）
+1. **「性能取舍」必须标注其前提条件，并随前提失效而重新评估**。
+   本次的 4 秒 vs 6 个结构性问题——前提（onefile 13s）一消失，规范就该退役。
+2. **节流机制（冷静期/限速/退避）永远不得拦用户显式操作**。
+   自动路径可以被节流，用户点了按钮就是要用。
+3. **拿不到依赖时必须显式失败，不得继续跑出「假成功」**。
+   前端显示「更新完成」而昵称 0 个，比直接报错更糟（用户无从察觉）。
+
+## 【2026-09-13 v0.43.6】错误码体系升级为「设计契约驱动」
+
+### 用户要求（原话）
+> 「报错除了代号指引方向还需要强调回归设计理念该模块是规划设想是如何的，
+>   不能老是围绕现有代码打转而忘了目标。所有debug都需要先回归设计理念在分析链路，
+>   依照链路从源头还是分析问题，不能聚焦终端现状，所有的核查和修复都需以实机为主。」
+
+### 缺口
+旧 `ERRCODES[code] = {meaning, file, line}` 的 meaning 取自**原日志文本**
+（如「[bcc] context/page 失活，重启: …」）——**只有现状，没有契约**；
+域级 cause/action 又太粗（同域几十码共用一句）⇒ 指不到具体设计意图。
+
+### 升级（六段，与六步闭环一一对应）
+| 字段 | 六步闭环 | 内容 |
+|---|---|---|
+| `design`   | Step1 回归设计理念 | 该模块应该做什么 |
+| `contract` | Step1 补充 | 必须成立的不变式 |
+| `deviation`| Step2 定义当前状态 | 实际与预期的**具体差异** |
+| `chain`    | Step3 链路溯源 | **源头 → 传播 → 终端** |
+| `root`     | Step4 根因分析 | 为什么在**这一点**断裂 |
+| `verify`   | Step5 实机验证 | **实机**核查命令/判据 |
+
+域级 `DOMAIN_DESIGN[域] = {intent, invariant, chain, verify}`（6 个关键域：
+BCC/CAP/AUTH/SEND/SYS/RECV）；码级缺契约时自动回落域级（design 永不为空）。
+实现：`backend/errcode.py`；`GET /api/errcodes/{code}` 已透出全部新字段。
+审计：`contract_gaps()` 列出缺契约的码。
+
+### 铁律
+1. 新增错误码**必须填 `design`**——没有设计契约的报错不允许提交。
+2. 排查任何报错**先读 design/contract，再沿 chain 从源头查**，禁止只看终端现象。
+3. 所有结论**必须过 `verify`（实机判据）**，纯代码分析不得作为定论。
+---
+
+## 三十六、🔴 跨调用窗口租约未接线 →「更新会话」自我死锁（2026-09-14 v0.43.11 根治）
+
+### 症状（用户报告）
+
+「更新会话」hook 失败、捕获入库失败、**前端只显示数字 UID**（78 个会话全裸数字）。
+
+### 实测证据（同一轮运行，两份日志对照）
+
+`logs/run_20260914_100993.log`（backend 侧）：
+
+```
+10:25:04 [gate][尚进工伤小助理] 取得租约 (port=11231, purpose=auto, prio=1, lease_id=83a780e866e2)
+10:25:04 AUTH-036 | BCC /cookie 返回失败: 容器正被 gate:auto 独占 → 退回直开浏览器
+10:25:05 [capture] 首包解析出 44 个会话，含消息的 11 个
+10:25:05 [capture] 经 BCC 截到昵称数: 0          ← ★ 矛盾点
+10:25:06 [capture] 写库完成：会话 44，昵称命中 uid关联=0 sec_uid关联=0 未命中=44/44
+10:25:06 [refresh] 更新会话完成：会话 44（消息 25），耗时 1.6s   ← 1.6s = 假成功
+```
+
+`logs/browser_daemon_20260914.log`（BCC 侧，同一时刻）：
+
+```
+10:25:04.422 [lease] gate:auto 获得租约（prio=1 业务自动, ttl=180s, id=83a780e866e2）
+10:25:05.998 BCC-047 | [lease] bcc-internal(prio=2) 被拒：当前 gate:auto(prio=1) 持有，剩余 178.4s
+10:25:05.998 BCC-030 | [bcc] /capture_userinfo 失败: 容器被独占操作占用: gate:auto
+10:25:12.957 [bcc] DOM 末屏补充：累计昵称=37
+10:25:12.961 [bcc] 昵称捕获完成：37 个，总耗时 161.5s（已缓存）   ← ★ BCC 明明抓到了 37 个
+```
+
+DB 硬证据（会员分库）：
+
+```sql
+select count(*) from dm_conversations;                                     -- 78
+select count(*) from dm_conversations where peer_name is null
+   or peer_name='' or peer_name=peer_id;                                   -- 78 / 78 全裸 UID
+select count(*) from dm_conversations where peer_name not glob '[0-9]*';   -- 0
+```
+
+### 设计契约（被违反的那一条）
+
+`docs/调度器租约设计细节.md` §3.6 把租约分成两类用法：
+
+| 类型 | 场景 | 做法 |
+|---|---|---|
+| 单次调用 | capture_userinfo / exec_js / cookie | 走 `_exec` 自动租约（零改造） |
+| **跨调用窗口** | **更新会话全程** | **显式 `POST /lease` + `release`，`_exec` 检测到「已持有」则复用（同 lease_id）** |
+
+**实机核查：第二类从来只是一句规划，接线从未实现。**
+
+```bash
+$ grep -rn "release_lease" backend --include=*.py
+backend/services/browser_gate.py:129  # docstring
+backend/services/browser_gate.py:141  # def release_lease
+backend/services/browser_gate.py:165  # docstring「用完必须 release_lease()」
+# ← 全仓零调用点
+```
+
+### 根因：自我死锁（三层断裂，缺一不可）
+
+```
+capture_all 第 1135 行：ensure_browser(purpose=AUTO) → 拿到 lease_id=83a780e866e2（gate:auto, prio=1）
+        ↓
+   lease_id 只存进局部变量 _g，**从未向下传**
+        ↓
+capture_all 第 1296 行：capture_userinfo_via_browser(name)   ← 签名 (name, wait, max_age)，无 account/lease
+        ↓
+capture_userinfo_via_browser 第 1080 行：POST {"wait": 15}   ← 请求体无 lease_id（WaitBody 只有 wait 字段）
+        ↓
+BCC _exec 第 988 行：_is_reentry = bool(lease_id and ...)  ← lease_id="" → 判为「并发冲突」
+        ↓
+_lease_acquire(bcc-internal, prio=2) 被拒 → ContainerBusy → BCC-030
+        ↓
+昵称 0 个 → peer_name 回填 peer_id → messages.py:163 name = peer_name or ... → 前端只显示数字
+```
+
+**即：同一个进程先给自己拿了租约，5 秒后自己的下游请求被这把租约挡在门外。**
+`_exec` 的重入判据「只认显式 lease_id」本身是对的（`_lock` 非重入，同 holder 确实是并发冲突），
+**但前提是调用方必须把 lease_id 传下来** —— 而它没传。
+
+### 并发发现的结构性缺陷（同轮一并对齐）
+
+| # | 缺陷 | 证据 | 修法 |
+|---|---|---|---|
+| B | **两套缓存互不共享 + 时序错配**：BCC `_prewarm` 花 161.5s 写入 BCC 进程内缓存，backend 侧的 `_userinfo_cache` 是另一份；backend 请求在 10:25:05、预热完成在 10:25:12（差 7s） | 上述两份日志 | BCC 侧缓存命中检查先于租约；业务请求若见 `_prewarm_running` 先等（≤40s）；客户端超时 240→300s |
+| C | **早退判据读已废弃的 hook 计数器**：`_cur` 取自 `window.__CAP_USERINFO__.map`（v0.43.9 已实证恒 0）→ `_cur <= _prev` 恒真 → 第 3 轮必 break | 同日志：`滚动轮次3: 累计昵称=0` 但 `DOM 抓取: 累计=29` | 判据改用 `_dom_total`（唯一有效来源）；hook 计数降级为仅打印 |
+| D | **DOM 无 uid → 关联退化为「顺序软对齐」** | `browser_daemon.py:1400` 写死 `"uid": ""` | 保留现状（v0.43.9 已记录风险）；后续点会话补 sec_uid |
+| E | **用途分类用错**：`PURPOSE_AUTO`（prio=1/ttl≤180s）而滚动实测 161.5s | 日志 `BCC-046 租约超时强制回收` 10:23:11/10:23:51/10:24:31/10:25:04 连爆 4 次 | 改 `PURPOSE_USER`（prio=0/ttl≤300s）—— 这是用户点按钮的路径 |
+| F | **拿不到资源仍继续跑**（假成功结构） | `messages.py:749` 只 `warning` 不 return；`errcode.CAP-016.root` 自己写着「注意此处不 return 会继续跑出假成功」 | 改为 raise 显式失败 + 向上报 |
+
+### 修复（v0.43.11，六处接线）
+
+1. **租约 lift 到「更新会话全程」**：`capture_all` 用 `PURPOSE_USER` + `holder="capture_all"` + `ttl=300` 取租约，
+   登记进模块级 `_ACTIVE_LEASE[account]`，`lease_id` 经 `refresh_cookie_via_owner(lease_id=…)` 与
+   `capture_userinfo_via_browser(lease_id=…)` 两路下传。
+2. **BCC 端点接受 lease_id**：`WaitBody` / 新增 `CookieBody` 加 `lease_id` 字段；
+   `capture_userinfo_map` / `get_cookies` / `refresh_cookie_to_env` 透传给 `_exec(lease_id=…)`，
+   `_exec` 据此判定重入复用。
+3. **释放接线**：新增 `conversation_capture.release_active_lease(account)`（幂等、绝不抛），
+   由 `api/messages.refresh_conversations` 的 `finally` 调用 —— 设计文档 §3.6 的最终落地。
+4. **内部线程豁免租约**：`_exec` 新增 `internal` 参数。`_prewarm` 与保活回写走 `internal=True`，
+   只走 `_lock` 串行、不参与租约仲裁 —— 「让位」的正确形态是排队而不是被拒后彻底放弃。
+5. **早退判据改 `_dom_total`**：DOM 抓取块移到判据之前；hook 计数仅打印。
+6. **显式失败**：BCC 未就绪时 `raise RuntimeError`（不再静默跑出「1.6s 假成功」）。
+
+### 铁律（新增）
+
+1. **跨调用窗口租约必须「取—传—释」三件套齐全**：只 acquire 不传 lease_id = 自我死锁；
+   只传不 release = 该账号浏览器被自己占满 TTL，其它业务（发送/WP/保活）全部拿不到。
+2. **容器自身后台线程不参与业务租约仲裁**：否则业务一持租（180s），预热永远跑不完，
+   而业务又拿不到预热成果 → 只能每次重跑 160s（互为死锁）。
+3. **早退/终止判据绝不能读已废弃的数据源**：抖音改版会让某个计数器恒 0，
+   判据必须用**当前有效**的统计量（本项目 = DOM 累计数）。
+4. **用户点按钮的路径一律 `PURPOSE_USER`**（prio=0/ttl≤300s），不得沿用 `PURPOSE_AUTO`。
+
+### 实机验证判据
+
+```bash
+# 1) 源头：BCC 侧应出现重入复用，而不是被拒
+grep -E "lease|昵称捕获完成" logs/browser_daemon_$(date +%Y%m%d).log | tail
+#   期望：无 BCC-047「被拒」；有「昵称捕获完成：N 个」且 N 接近会话数（本项目 44）
+
+# 2) backend 侧应收到非 0
+grep "经 BCC 截到昵称数" logs/run_*.log | tail -3        # 期望 > 0
+
+# 3) 落库硬证据
+sqlite3 members/m7963938bc99a25a9/data/dyautodm.db  "select count(*) from dm_conversations where peer_name not glob '[0-9]*';"   # 期望 > 0
+
+# 4) 租约已释放（不是等 TTL）
+curl -s http://127.0.0.1:11231/lease_status      # 期望 holder=None
+grep "已释放跨调用窗口租约" logs/run_*.log
+
+# 5) 源码级回归（不启第二个 BCC）
+python scripts/verify_lease_wiring.py            # 期望 PASS=31 FAIL=0
+```
+
+### 方法论记录
+
+- **「BCC 抓到 37 个、backend 收到 0 个」是定位一切的关键矛盾点** —— 它把排查范围从
+  「捕获逻辑（DOM/hook）」直接锁定到「**两个进程之间的租约协商**」。只看 backend 日志会误判为捕获失效。
+- **两份日志必须同刻对照**：单看任何一份都能自洽（BCC 说成功、backend 说失败），
+  只有并排才能看到「同一把租约 83a780e866e2」。

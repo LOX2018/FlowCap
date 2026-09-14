@@ -746,11 +746,27 @@ async def refresh_conversations(account: str, body: RefreshConvsRequest | None =
             # 用户点「更新会话」→ 豁免启动冷静期
             launched = ensure_daemons_for(account, skip_cooldown=True)
             if use_browser and not launched.get("browser"):
-                logger.warning("CAP-001", f"[refresh][{account}] browser_daemon 未拉起，昵称关联可能失效")
+                # 2026-09-14 v0.43.11：拿不到浏览器必须**显式失败并向上报**，
+                # 不再静默继续跑出「假成功」（契约见 errcode.CAP-016.root：
+                # 「注意此处不 return 会继续跑出假成功」）。
+                raise RuntimeError(
+                    "浏览器守护(BCC)未能就绪，昵称/头像无法捕获；"
+                    "请稍后重试或在账号管理页启动该账号的浏览器守护"
+                    f"（{launched.get('msg') or '端口未开'}）")
             return capture_all(account, with_browser=use_browser)
 
         loop = asyncio.get_running_loop()
-        n_conv, n_msg = await loop.run_in_executor(None, _do_refresh)
+        try:
+            n_conv, n_msg = await loop.run_in_executor(None, _do_refresh)
+        finally:
+            # 跨调用窗口租约必须在「更新会话全程」结束时释放（含异常路径），
+            # 否则该账号浏览器只能等 BCC 侧 TTL（≤300s）回收
+            # ——期间其它业务（发送/WP/保活）全部拿不到租约。
+            try:
+                from auto_dm.conversation_capture import release_active_lease
+                release_active_lease(account)
+            except Exception:
+                pass
         elapsed = round(_time.time() - t0, 1)
         logger.info(f"[refresh][{account}] 更新会话完成：会话 {n_conv}（消息 {n_msg}），耗时 {elapsed}s")
         return {

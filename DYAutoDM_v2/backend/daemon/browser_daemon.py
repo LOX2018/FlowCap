@@ -593,6 +593,9 @@ class BrowserContainer:
         # 昵称缓存：(采集时间戳, {sec_uid: {...}})。配 _prewarm 使用，
         # 避免每次「更新会话」都重跑 176s 的滚动捕获（08 §三十七）。
         self._userinfo_cache: tuple | None = None
+        # 2026-09-14 v0.43.11：预热进行中标记。capture_userinfo_map 据此决定
+        # 是否「稍等一下预热」（预热不占租约，只占 _lock，见 _exec internal）。
+        self._prewarm_running: bool = False
         # _loop 由 FastAPI startup 持有，submit 用它把协程投递到主事件循环
         self._loop: asyncio.AbstractEventLoop | None = None
         # 2026-09-12 切换冷却期：set_visible 无头↔有头重启 context 后，给新
@@ -961,7 +964,8 @@ class BrowserContainer:
 
     async def _exec(self, coro_factory, holder: str = "",
                    purpose: str = "auto", prio: int = 2,
-                   ttl: float = 0.0, lease_id: str = ""):
+                   ttl: float = 0.0, lease_id: str = "",
+                   internal: bool = False):
         """在 _lock 内执行浏览器操作（租约 + 自愈 + 串行）。
 
         coro_factory 是无参 callable 返回 coroutine。
@@ -976,16 +980,34 @@ class BrowserContainer:
         P2-B：scan_login 独占窗口内（context 已关、扫码中）快速失败，
         避免调用方排队干等到 HTTP 超时。注意 _launch 自身不走本检查
         （scan_login 的 _do 内部会调 _launch）。
+
+        ## internal（2026-09-14 v0.43.11 新增）
+        **容器自身的内部线程**（_prewarm 昵称预热、保活心跳）不是外部业务
+        调用方，**不参与租约仲裁**，只走 _lock 串行。
+
+        为什么必须区分（实测：prewarm 被业务租约永久饿死）：
+          租约是按账号单槽位的，外部业务一持租（如「更新会话」gate:auto
+          ttl=180s），prewarm（prio=2 后台保活）每次申请都被拒 → BCC-047
+          刷屏，预热永远跑不完 → 业务拿不到预热成果，只能自己重跑 160s。
+          日志实证：10:25:04~10:25:17 prewarm 连续 4 次被 gate:auto 拒绝。
+          prewarm 本就该**让位于**业务（这是优先级设计本意），但"让位"的正确
+          形态是「排队等 _lock」而不是「被拒后彻底放弃」——它不占租约，就不会
+          与业务争抢；业务进来后等 _lock 自然就等到了预热结果（缓存命中）。
         """
         if _is_busy():
             raise ContainerBusy(_scan_exclusive["holder"])
         # 租约门（_lease_acquire 内部处理重入复用）
         _lid = lease_id
         _need_release = False
-        _cur_l = _lease_current()
-        # 重入判据**只有**显式 lease_id 匹配 —— _lock 非重入，_exec 不可能嵌套，
-        # 因此任何"同 holder"都不是重入，而是并发冲突（必须拒绝）。
-        _is_reentry = bool(lease_id and _cur_l and _cur_l["lease_id"] == lease_id)
+        if internal:
+            # 内部线程：不碰租约，仅 _lock 串行（见 docstring「internal」）
+            _is_reentry = True
+        else:
+            _cur_l = _lease_current()
+            # 重入判据**只有**显式 lease_id 匹配 —— _lock 非重入，_exec 不可能嵌套，
+            # 因此任何"同 holder"都不是重入，而是并发冲突（必须拒绝）。
+            _is_reentry = bool(lease_id and _cur_l
+                               and _cur_l["lease_id"] == lease_id)
         if not _is_reentry:
             _r = _lease_acquire(holder or "bcc-internal", purpose, prio,
                                 ttl, lease_id)
@@ -1009,12 +1031,21 @@ class BrowserContainer:
 
     # -------------------- 业务方法（在 _lock 内执行）--------------------
 
-    async def get_cookies(self) -> dict:
-        """读取实时 cookie。返回 {name: value}。"""
+    async def get_cookies(self, lease_id: str = "",
+                          internal: bool = False) -> dict:
+        """读取实时 cookie。返回 {name: value}。
+
+        lease_id：跨调用窗口租约透传（调用方已持租约时必须带上，否则被拒）。
+        internal：容器自身后台线程（保活回写）→ 不参与租约仲裁，只走 _lock。
+        """
         async def _do():
             cks = await self._context.cookies()
             return {c["name"]: c["value"] for c in cks}
-        return await self._exec(_do)
+        if internal:
+            return await self._exec(_do, holder="keepalive", internal=True)
+        return await self._exec(_do, holder="get_cookies",
+                                purpose="auto", prio=1, ttl=300.0,
+                                lease_id=lease_id)
 
     async def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 25000) -> str:
         async def _do():
@@ -1263,12 +1294,19 @@ class BrowserContainer:
             return {"ok": False, "error": str(e)}
 
 
-    async def capture_userinfo_map(self, wait: int = 15) -> dict:
+    async def capture_userinfo_map(self, wait: int = 15,
+                                   lease_id: str = "",
+                                   internal: bool = False) -> dict:
         """被动 hook 截前端自己发的 im/user/info 响应（零主动请求、零风控）。
 
         复用本容器已持有的常驻浏览器 context/page（不另开浏览器、不抢 profile）。
         在 _lock 内执行，与 bulk_user_info/resolve_url 串行无冲突。
         返回 {sec_uid: {"nickname": str, "avatar": str, "uid": str}}。
+
+        lease_id（2026-09-14 v0.43.11）：跨调用窗口租约。调用方（capture_all）
+        已从 gate 取到租约，把 id 带进来让 _exec 识别为重入复用。这是
+        `调度器租约设计细节.md` §3.6「更新会话全程」规划的那一环 ——
+        此前从未接线，导致「自己请求自己」被自己持有的租约拒绝（BCC-047）。
 
         2026-09-01 新增**进程内缓存**（08 §三十七，修复「更新会话 220s」）：
           本容器启动后 _prewarm 线程会后台跑一次完整捕获（176s，日志
@@ -1279,17 +1317,26 @@ class BrowserContainer:
           设为 0 可关闭（每次都真跑，用于调试）。
         """
         # ── 缓存命中检查（在 _lock 外，避免不必要的串行等待）──
-        try:
-            _ttl = int(os.environ.get("DY_USERINFO_CACHE_SEC", "600"))
-        except Exception:
-            _ttl = 600
-        if _ttl > 0 and self._userinfo_cache:
-            _ts, _data = self._userinfo_cache
-            if _data and (time.time() - _ts) < _ttl:
-                logger.info(
-                    f"[bcc] 复用昵称缓存（{len(_data)} 个，"
-                    f"{time.time() - _ts:.0f}s 前采集），跳过滚动")
-                return _data
+        # 2026-09-14 v0.43.11：这一层是「等预热」的关键 —— 它先于租约，
+        # 所以只要预热已完成，业务即使在租约拉锯中也能零成本命中缓存。
+        _deadline = time.time() + 40.0   # 最多等预热 40s，避免无限阻塞
+        while True:
+            try:
+                _ttl = int(os.environ.get("DY_USERINFO_CACHE_SEC", "600"))
+            except Exception:
+                _ttl = 600
+            if _ttl > 0 and self._userinfo_cache:
+                _ts, _data = self._userinfo_cache
+                if _data and (time.time() - _ts) < _ttl:
+                    logger.info(
+                        f"[bcc] 复用昵称缓存（{len(_data)} 个，"
+                        f"{time.time() - _ts:.0f}s 前采集），跳过滚动")
+                    return _data
+            # 预热还在跑 → 等它（预热不占租约，只占 _lock，见 _exec internal）
+            if self._prewarm_running and time.time() < _deadline:
+                await asyncio.sleep(1.0)
+                continue
+            break
 
         async def _do():
             # hook 已在 _launch 中 add_init_script 注入，直接等前端发 im/user/info
@@ -1350,12 +1397,22 @@ class BrowserContainer:
             # 平滑逐屏滚动 + 每屏点进每个可见会话（覆盖懒加载的全部会话）
             # 抖音私信列表是增量懒加载：大跨度 scrollTop=scrollHeight 跳跃会让
             # 中间大量会话不进入可视区 → 前端不为它们发 im/user/info → 缺口。
-            # 故必须一屏一屏平滑往下滚，让每个会话都真正渲染、触发其 im/user/info。
+            # 故必须一屏一屏平滑往下滚，让每个会话都真正渲染。
             #
             # 2026-08-31 优化：加**提前退出**。
             # 实测冷启动跑满 40 轮要 152~162s，是「更新会话」179s 的 90%。
-            # 但昵称往往在前几屏就已截全（222 会话实测截到 278 个），
-            # 后面 30 多轮全是空转。这里连续 3 轮无新增就停，省下大量时间。
+            # 后面几十轮往往全是空转。这里连续 3 轮无新增就停。
+            #
+            # 🔴 2026-09-14 v0.43.11 修复（早退判据读错了计数器）：
+            #   原判据读 `window.__CAP_USERINFO__.map`（hook 计数器）—— 而
+            #   v0.43.9 已实机确认**抖音前端不再发 im/user/info，该 map 恒为 0**。
+            #   于是 `_cur <= _prev` 恒真 → 第 3 轮必然 break → DOM 只覆盖到
+            #   前 3~4 屏（实测 44 个会话只抓到 37 个，且白白浪费一轮滚动）。
+            #   同一份日志里两个计数器明显分裂：
+            #     滚动轮次 3: 累计昵称=0      ← hook（已废）
+            #     DOM 抓取: 本屏新增=9 累计=29 ← DOM（真实）
+            #   正解：**早退只看 DOM 累计数**（它才是当前唯一有效来源），
+            #   hook 计数降级为仅打印（保留可观测性，若抖音恢复发请求再启用）。
             _stall = 0
             _prev = -1
             import time as _time
@@ -1363,36 +1420,14 @@ class BrowserContainer:
             _t0 = _time.time()
             for _round in range(40):  # 上限 40 屏防死循环
                 _n_new = await _click_all()
-                # 先看当前已截获数量，判断是否还在增长
-                try:
-                    _cur = await self._page.evaluate(
-                        "() => window.__CAP_USERINFO__ "
-                        "? Object.keys(window.__CAP_USERINFO__.map || {}).length : 0")
-                except Exception:
-                    _cur = -1
-                # 可观测性（08 §三十七）：每轮打印耗时/累计/新增，
-                # 让 176s 的黑盒变成能定位的明细，避免下次又靠猜。
-                logger.info(
-                    f"[bcc] 滚动轮次 {_round + 1}: 新点击={_n_new} "
-                    f"累计昵称={_cur} 用时={_time.time() - _t0:.1f}s")
-                if _cur >= 0 and _prev >= 0 and _cur <= _prev:
-                    _stall += 1
-                    if _stall >= 3:
-                        logger.info(
-                            f"[bcc] 昵称无新增（连续 {_stall} 轮，当前 {_cur} 个），"
-                            f"提前结束滚动（第 {_round} 轮，用时 "
-                            f"{_time.time() - _t0:.1f}s）")
-                        break
-                else:
-                    _stall = 0
-                _prev = _cur
 
                 # 2026-09-14 v0.43.10：**每轮抓一次 DOM**（虚拟列表滚动会换内容，
                 # 必须逐屏累积才能覆盖全部会话；原实现误放在循环外，
                 # 只抓到最后一屏 → 实测仅 14 个）。
+                # ⚠️ v0.43.11：本块**移到早退判据之前** —— 判据现在依赖它。
+                _dnew = 0
                 try:
                     _ditems = await self._page.evaluate(CAP_DOM_SWEEP_JS)
-                    _dnew = 0
                     for _dit in (_ditems or []):
                         _dn = (_dit or {}).get("nickname") or ""
                         if _dn and _dn not in _dom_seen:
@@ -1403,12 +1438,34 @@ class BrowserContainer:
                                 "sec_uid": "",
                             }
                             _dnew += 1
-                    if _dnew:
-                        logger.info(
-                            f"[bcc] DOM 抓取: 本屏新增昵称={_dnew} "
-                            f"累计={len(_dom_seen)}")
                 except Exception as _de:
                     logger.warning("BCC-055", f"[bcc] DOM 抓取失败: {_de}")
+                _dom_total = len(_dom_seen)
+
+                # hook 计数（仅可观测性，**不参与判据**）：抖音当前恒为 0
+                try:
+                    _cur = await self._page.evaluate(
+                        "() => window.__CAP_USERINFO__ "
+                        "? Object.keys(window.__CAP_USERINFO__.map || {}).length : 0")
+                except Exception:
+                    _cur = -1
+                # 可观测性（08 §三十七）：每轮打印耗时/累计/新增，
+                # 让黑盒变成能定位的明细，避免下次又靠猜。
+                logger.info(
+                    f"[bcc] 滚动轮次 {_round + 1}: 新点击={_n_new} "
+                    f"DOM累计昵称={_dom_total}(本屏+{_dnew}) "
+                    f"hook={_cur} 用时={_time.time() - _t0:.1f}s")
+                if _prev >= 0 and _dom_total <= _prev:
+                    _stall += 1
+                    if _stall >= 3:
+                        logger.info(
+                            f"[bcc] 昵称无新增（连续 {_stall} 轮，当前 "
+                            f"DOM {_dom_total} 个），提前结束滚动"
+                            f"（第 {_round} 轮，用时 {_time.time() - _t0:.1f}s）")
+                        break
+                else:
+                    _stall = 0
+                _prev = _dom_total
 
                 # 平滑滚下一屏（一次一个 clientHeight，不跳到底）
                 moved = await self._page.evaluate(
@@ -1421,7 +1478,7 @@ class BrowserContainer:
                     f"el.scrollTop = before + el.clientHeight * "
                     f"{_human_scroll_ratio():.3f}; "
                     "return el.scrollTop > before; }")
-                await self._page.wait_for_timeout(1200)  # 等该屏渲染 + 触发 im/user/info
+                await self._page.wait_for_timeout(1200)  # 等该屏渲染
                 # 到底判定：已滚到接近底部 或 高度不再增长
                 at_bottom = await self._page.evaluate(
                     "() => { const el = document.querySelector("
@@ -1474,7 +1531,16 @@ class BrowserContainer:
                     f"[bcc] 昵称捕获完成：{len(cap)} 个，"
                     f"总耗时 {_time.time() - _t0 + wait:.1f}s（已缓存）")
             return cap
-        return await self._exec(_do)
+        # 2026-09-14 v0.43.11：把调用方的跨调用窗口租约传进 _exec，
+        # 使「更新会话」全程（capture_all → 本端点）复用同一把租约，
+        # 而不是被自己刚拿的租约拒绝（BCC-047）。
+        # internal=True（预热线程）：不参与租约仲裁，只走 _lock 串行 ——
+        # 它本就该让位于业务，但"让位"的正确形态是排队而不是被拒后放弃。
+        if internal:
+            return await self._exec(_do, holder="prewarm", internal=True)
+        return await self._exec(_do, holder="capture_userinfo",
+                                purpose="auto", prio=1, ttl=300.0,
+                                lease_id=lease_id)
 
     async def capture_wp_messages(self) -> list[dict]:
         """读取 BCC hook 截到的 WP 通道私信事件（读后清空）。
@@ -1795,8 +1861,12 @@ class BrowserContainer:
 
         return await self._exec(_do)
 
-    async def refresh_cookie_to_env(self) -> dict:
+    async def refresh_cookie_to_env(self, lease_id: str = "",
+                                    internal: bool = False) -> dict:
         """读实时 cookie，写回 .env。返回 {ok, cookie_count, sessionid?}。
+
+        lease_id（2026-09-14 v0.43.11）：跨调用窗口租约 —— 调用方已持 gate
+        租约时透传，避免 get_cookies 的 _exec 自判并发冲突（AUTH-036）。
 
         2026-09-06 P0 修复（知识库 08 §24.9 uid 轮换事故）：写回前先校验
         新 cookie 的身份一致性 —— 用新 cookie 做 uid 探活，与 .env 既有 uid
@@ -1813,7 +1883,7 @@ class BrowserContainer:
             return {"ok": False, "msg": "账号 .env 未登记"}
         # 先加载 auth（拿签名四件套），再用实时 cookie 覆盖 cookie 字段
         auth = DYLoginApi._load_auth_from_env(env_path)
-        cks = await self.get_cookies()
+        cks = await self.get_cookies(lease_id=lease_id, internal=internal)
         if not (cks.get("sessionid") or cks.get("sid_tt")):
             return {"ok": False, "msg": "profile 内无登录态"}
 
@@ -2076,7 +2146,8 @@ class BrowserContainer:
                             try:
                                 if self._loop:
                                     fut = asyncio.run_coroutine_threadsafe(
-                                        self.refresh_cookie_to_env(), self._loop)
+                                        self.refresh_cookie_to_env(internal=True),
+                                        self._loop)
                                     r = fut.result(timeout=60)
                                     if r and r.get("ok"):
                                         logger.info(
@@ -2149,6 +2220,11 @@ class ScanBody(BaseModel):
 
 class WaitBody(BaseModel):
     wait: int = 15
+    # 2026-09-14 v0.43.11：跨调用窗口租约透传（调度器租约 §3.6「更新会话全程」）。
+    # 调用方（conversation_capture）先从 gate 取得租约，把 lease_id 带进来，
+    # _exec 识别为重入并复用 —— 否则同一个自己会被自己刚拿的租约挡在门外
+    # （实测 BCC-047 → BCC-030 → 昵称 0 个）。
+    lease_id: str = ""
 
 
 class UidsBody(BaseModel):
@@ -2183,17 +2259,24 @@ async def _startup() -> None:
 
         # 等浏览器与登录态稳定（保活线程已启动）
         threading.Event().wait(20)
+        container._prewarm_running = True
         try:
             # BrowserContainer 在 start() 里存了自己的 loop（self._loop）
             loop = getattr(container, "_loop", None)
             if not loop:
                 return
+            # 2026-09-14 v0.43.11：internal=True —— 预热是容器**自身**的后台
+            # 线程，不参与租约仲裁（只走 _lock 串行）。原实现走 _exec 默认
+            # 租约（prio=2），被业务租约（gate:auto ttl=180s）连续拒绝 →
+            # BCC-047 刷屏、预热永远跑不完（实测 10:25:04~10:25:17 连续 4 次）。
             fut = _aio.run_coroutine_threadsafe(
-                container.capture_userinfo_map(wait=15), loop)
+                container.capture_userinfo_map(wait=15, internal=True), loop)
             data = fut.result(timeout=300)
             logger.info(f"[bcc] 昵称缓存预热完成：{len(data)} 个")
         except Exception as e:
             logger.warning("BCC-029", f"[bcc] 昵称缓存预热失败（不影响功能）: {e}")
+        finally:
+            container._prewarm_running = False
 
     threading.Thread(target=_prewarm, daemon=True).start()
 
@@ -2284,13 +2367,19 @@ async def lease_release(body: LeaseBody) -> dict:
     return r
 
 
+class CookieBody(BaseModel):
+    """2026-09-14 v0.43.11：跨调用窗口租约透传（与 WaitBody 同源）。"""
+    lease_id: str = ""
+
+
 @app.post("/cookie")
-async def refresh_cookie() -> dict:
+async def refresh_cookie(body: CookieBody | None = None) -> dict:
     """读实时 cookie 返回 + 写回 .env。"""
     c = _state.get("container")
     if not c:
         return {"ok": False, "msg": "容器未启动"}
-    return await c.refresh_cookie_to_env()
+    return await c.refresh_cookie_to_env(
+        lease_id=(body.lease_id if body else ""))
 
 
 @app.post("/user_info")
@@ -2312,7 +2401,8 @@ async def capture_userinfo(body: WaitBody) -> dict:
     if not c:
         return {"ok": False, "msg": "容器未启动", "data": {}}
     try:
-        out = await c.capture_userinfo_map(wait=body.wait or 15)
+        out = await c.capture_userinfo_map(wait=body.wait or 15,
+                                           lease_id=body.lease_id or "")
     except Exception as e:
         logger.warning("BCC-030", f"[bcc] /capture_userinfo 失败: {e}")
         return {"ok": False, "msg": str(e), "data": {}}

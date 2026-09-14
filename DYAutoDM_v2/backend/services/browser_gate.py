@@ -228,11 +228,16 @@ def ensure_browser(account: str, purpose: str = PURPOSE_AUTO,
             "expires_at": _lr.get("expires_at"), "msg": "ok"}
 
 
-def refresh_cookie_via_owner(account: str, auth: Any, env_path: Optional[str]) -> bool:
+def refresh_cookie_via_owner(account: str, auth: Any, env_path: Optional[str],
+                             lease_id: str = "") -> bool:
     """自动路径刷新凭证：**只走 BCC /cookie**，绝不直开浏览器。
 
     返回是否成功拿到实时 cookie。失败时调用方应沿用 .env 凭证（不阻断主流程），
     但**不得**转而开浏览器。
+
+    lease_id（2026-09-14 v0.43.11）：跨调用窗口租约透传。调用方（capture_all）
+    已持有 gate 租约，BCC /cookie 内部的 get_cookies 走 _exec，若不带上同一
+    lease_id 会被判为并发冲突 → AUTH-036「容器正被 gate:auto 独占」。
     """
     st = bcc_state(account)
     if not st["online"]:
@@ -242,7 +247,8 @@ def refresh_cookie_via_owner(account: str, auth: Any, env_path: Optional[str]) -
     try:
         from dy_apis.login_api import DYLoginApi
         return bool(DYLoginApi.refresh_cookie_from_profile(
-            auth, env_path, allow_launch=False))  # 关键：永远 False
+            auth, env_path, allow_launch=False,  # 关键：永远 False
+            lease_id=lease_id))
     except Exception as e:
         logger.debug(f"[gate][{account}] BCC /cookie 刷新异常（沿用 .env）: {e}")
         return False

@@ -1028,27 +1028,23 @@ HOOK_JS = r"""
 }
 """
 
-def capture_userinfo_via_browser(name, wait=15, max_age=None):
-    """经 BCC 被动 hook 截前端自发 im/user/info 响应（08 文档验证 44/44）。
+def capture_userinfo_via_browser(name, wait=15, max_age=None, lease_id=""):
+    """经 BCC 截昵称/头像（DOM 直读为主，hook 兜底）。
 
-    BCC 启动后自动导航到 chat 页 + 平滑滚动触发全部 im/user/info。
+    BCC 启动后自动导航到 chat 页 + 平滑滚动 + 逐屏 DOM 抓取。
 
-    2026-08-31 实测（scripts/probe_bcc_speed.py，222 个会话的真机账号）：
-      wait=15 -> 耗时 23.4s，截获 **278** 个昵称
-      wait=30 -> 耗时 38.4s，截获 278 个（与 15 相同，多等无收益）
-      wait=90 -> 90s 等待 + 滚动点击，必然超过调用方 180s 超时
-    **此前 wait=90 是超时根因**：昵称全部降级为 UID（222/222 全是
-    peer_name=peer_id）。改为 15 后单次调用约 23s。
+    lease_id（2026-09-14 v0.43.11）：**跨调用窗口租约**。调用方
+    （capture_all）已从 gate 取得租约，此处透传给 BCC `/capture_userinfo`，
+    BCC 的 _exec 据此判定「重入」并复用该租约。不传则 BCC 按新请求处理，
+    会被调用方自己持有的租约拒绝（实测 BCC-047 → BCC-030 → 昵称 0 个）。
 
     timeout 提到 240s：BCC 浏览器**冷启动**首次调用实测 152.7s
     （含页面导航与首屏渲染），180s 会在冷启动场景超时。
 
     2026-09-01 新增**结果缓存**（08 §三十七，修复 220s 慢）：
       BCC 启动后 _prewarm 线程已在后台跑过一次完整捕获（日志
-      「昵称缓存预热完成：277 个」）。但 capture_all 每次都重新调 BCC
-      再跑一遍 176s 的滚动 —— 预热白做了。
-      这里按账号缓存最近一次成功结果，默认 10 分钟内直接复用，
-      让「更新会话」在预热已完成的常见情况下几乎零等待。
+      「昵称缓存预热完成：N 个」）。这里按账号缓存最近一次成功结果，
+      默认 10 分钟内直接复用，让「更新会话」几乎零等待。
       可用 DY_USERINFO_CACHE_SEC 调整（0 = 关闭缓存）。
     """
     import time as _t
@@ -1075,12 +1071,20 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None):
         return {}
     url = f"http://127.0.0.1:{bport}/capture_userinfo"
     try:
-        # wait: BCC 在 chat 页平滑滚动触发 im/user/info 的秒数。
-        # 实测 15s 与 30s 截获量相同（278 个），取 15s。
-        r = requests.post(url, json={"wait": 15}, timeout=240)
+        # wait: BCC 在 chat 页平滑滚动 + DOM 抓取的秒数。
+        # 2026-09-14 v0.43.11：BCC 侧若发现预热仍在进行，会先等预热（最多
+        # 40s）再走缓存命中，故此处给足客户端超时。
+        r = requests.post(url, json={"wait": 15, "lease_id": lease_id or ""},
+                          timeout=300)
         if r.status_code == 200:
-            data = r.json().get("data") or {}
-            logger.info(f"[capture] 经 BCC 截到昵称数: {len(data)}")
+            _j = r.json() or {}
+            data = _j.get("data") or {}
+            if not _j.get("ok"):
+                logger.warning(
+                    "CAP-007",
+                    f"[capture] BCC /capture_userinfo 返回失败: {_j.get('msg')}")
+            else:
+                logger.info(f"[capture] 经 BCC 截到昵称数: {len(data)}")
             if data:
                 _userinfo_cache[name] = (_t.time(), data)
             return data
@@ -1093,6 +1097,30 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None):
 # 配合 BCC 的 _prewarm，避免每次「更新会话」都重跑 176s 的滚动捕获。
 _userinfo_cache: dict[str, tuple] = {}
 
+# 2026-09-14 v0.43.11：跨调用窗口租约登记表 {账号: lease_id}。
+# 「更新会话全程」由 api/messages.refresh_conversations 在 finally 里
+# `release_active_lease(account)` 释放（设计文档 §3.6 的最终落地）。
+_ACTIVE_LEASE: dict[str, str] = {}
+
+
+def release_active_lease(account: str) -> None:
+    """释放该账号由 capture_all 取得的跨调用窗口租约（幂等，绝不再抛）。
+
+    必须放在调用方 finally 里 —— 否则只能等 BCC 侧 TTL（P0 上限 300s）回收，
+    期间该账号的浏览器对所有其他业务不可用。
+    """
+    _lid = _ACTIVE_LEASE.pop(account, "")
+    if not _lid:
+        return
+    try:
+        from services.browser_gate import release_lease
+        r = release_lease(account, _lid, holder="capture_all")
+        logger.info(f"[capture][{account}] 已释放跨调用窗口租约 "
+                    f"({_lid[:8]}…) ok={r.get('ok')}")
+    except Exception as _e:
+        logger.warning("CAP-017",
+                       f"[capture][{account}] 释放租约失败（等 TTL 回收）: {_e}")
+
 
 # 模块级缓存：首包解析结果（供 capture_userinfo_via_browser 取 peer_uid）
 _last_parsed_convs: dict[str, list] = {}
@@ -1104,12 +1132,17 @@ _last_parsed_convs: dict[str, list] = {}
 def capture_all(name, with_browser=True):
     """前移捕获：首包解析会话+消息，浏览器截昵称头像，写 dm_conversations + dm_messages。
     返回 (n_conv, n_msg) 写库数量。
+
+    2026-09-14 v0.43.11：本函数是「更新会话全程」＝**跨调用窗口租约**的持有者
+    （`调度器租约设计细节.md` §3.6）。租约从 ensure_browser 取得、lease_id 透传到
+    BCC `/cookie` 与 `/capture_userinfo`，函数返回前一定 release。
     """
     from auto_dm import accounts as acc
     from dy_apis.login_api import DYLoginApi
     from dy_apis.douyin_api import DouyinAPI
     from database import get_db
 
+    _lease_id = ""
     env_path = acc.env_path_of(name)
     try:
         auth = DYLoginApi._load_auth_from_env(env_path)
@@ -1129,16 +1162,33 @@ def capture_all(name, with_browser=True):
             # 即 BCC 离线时另起的实例，同时 19:46:41 又见 profile 锁 10s 未释放）。
             # 现：交给统一门禁 ensure_browser —— 复用 BCC；离线则先拉起 BCC 再复用；
             # 拿不到就显式失败（调用方提示用户），【绝不静默开第二个浏览器】。
+            #
+            # 🔴 2026-09-14 v0.43.11 跨调用窗口租约接线（本函数 = 「更新会话全程」）：
+            #   `调度器租约设计细节.md` §3.6 早已规划「更新会话全程」属跨调用窗口，
+            #   须「显式 POST /lease + release，_exec 检测到已持有则复用（同 lease_id）」。
+            #   但此前只 acquire、**lease_id 从未向下透传，也从未 release** ——
+            #   于是本函数第 1135 行自己拿到 gate 租约后，5 秒后自己发起的
+            #   /capture_userinfo 请求被判为「并发冲突」而被同一把租约拒绝：
+            #     BCC-047 → BCC-030 → 昵称 0 个 → peer_name 回填裸 UID → 前端只显示数字。
+            #   修法：租约 lift 到整个 capture_all 生命周期，lease_id 透传到捕获调用，
+            #   finally 里 release。用途改 PURPOSE_USER —— 这是**用户点按钮**触发的
+            #   路径（prio=0 / ttl≤300s），按既有铁律「用户显式动作豁免后台守卫」。
             try:
                 from services.browser_gate import (
-                    ensure_browser, refresh_cookie_via_owner, PURPOSE_AUTO)
-                _g = ensure_browser(name, purpose=PURPOSE_AUTO)
+                    ensure_browser, refresh_cookie_via_owner, release_lease,
+                    PURPOSE_USER)
+                _g = ensure_browser(name, purpose=PURPOSE_USER,
+                                    holder="capture_all", ttl=300.0)
                 if not _g.get("ok"):
                     logger.warning("CAP-016",
                         f"[capture][{name}] 浏览器统一入口未就绪：{_g.get('msg')}"
                         f"（不新开独立浏览器，将只用 .env 凭证跑 HTTP 首包）")
                 else:
-                    refresh_cookie_via_owner(name, auth, env_path)
+                    # 跨调用窗口租约：贯穿整个「更新会话」，由调用方 finally 释放
+                    _lease_id = _g.get("lease_id") or ""
+                    _ACTIVE_LEASE[name] = _lease_id
+                    refresh_cookie_via_owner(name, auth, env_path,
+                                             lease_id=_lease_id)
             except Exception as _e:
                 logger.warning("CAP-016",
                     f"[capture][{name}] 统一入口调用异常（沿用 .env 凭证）: {_e}")
@@ -1293,7 +1343,7 @@ def capture_all(name, with_browser=True):
     userinfo = {}
     if with_browser:
         try:
-            userinfo = capture_userinfo_via_browser(name)
+            userinfo = capture_userinfo_via_browser(name, lease_id=_lease_id)
         except Exception as e:
             logger.warning("CAP-012", f"[capture][{name}] 浏览器昵称捕获失败（降级仅首包）: {e}")
 

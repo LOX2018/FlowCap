@@ -290,6 +290,7 @@ ERRCODES = {
     "CAP-013": {"meaning": "capture][] 存量污染订正失败:", "file": "auto_dm/conversation_capture.py", "line": 1389},
     "CAP-014": {"meaning": "capture][] 兜底补全失败:", "file": "auto_dm/conversation_capture.py", "line": 1427},
     "CAP-015": {"meaning": "capture][] 写库失败:", "file": "auto_dm/conversation_capture.py", "line": 1429},
+    "CAP-017": {"meaning": "capture][] 释放跨调用窗口租约失败（等 TTL 回收）:", "file": "auto_dm/conversation_capture.py", "line": 0},
     "CRAWL-001": {"meaning": "crawl] 采集历史落库失败（不影响本次结果）:", "file": "api/crawl.py", "line": 170},
     "CRAWL-002": {"meaning": "crawl] 搜索失败 account= q=:", "file": "api/crawl.py", "line": 206},
     "CRAWL-003": {"meaning": "crawl] 评论采集失败 account= aweme=:", "file": "api/crawl.py", "line": 249},
@@ -548,6 +549,19 @@ CODE_DESIGN = {
         "chain": "capture_all → gate.ensure_browser → BCC 状态",
         "root": "与 BCC-041 同源；注意此处不 return 会继续跑出假成功",
         "verify": "日志紧跟的 CAP-007（连接失败）即证据链下一环。",
+    },
+    "CAP-017": {
+        "design": "「更新会话全程」是跨调用窗口租约（设计文档 §3.6）："
+                  "capture_all 取得租约 → lease_id 透传到 BCC /cookie 与 "
+                  "/capture_userinfo → 结束时 release。",
+        "contract": "租约必须在调用方 finally 释放；持租期间不得被自己的下游请求判为冲突。",
+        "deviation": "租约释放失败（BCC 不在线 / lease_id 不匹配 / 已被 TTL 回收）",
+        "chain": "messages.refresh_conversations(finally) → release_active_lease → "
+                 "gate.release_lease → BCC /lease/release",
+        "root": "BCC 进程已退出（端口不通）或租约已被 BCC-046 惰性 TTL 回收；"
+                "不阻断主流程，但该账号浏览器要等 TTL 结束才可被其它业务取用。",
+        "verify": "curl -s :<bcc_port>/lease_status 应为空闲（holder=None）；"
+                  "日志 grep '已释放跨调用窗口租约'。",
     },
     "SYS-002": {
         "design": "守护拉起应幂等，且可被用户显式操作随时触发。",
