@@ -129,6 +129,102 @@ class SearchMixin:
                             params=params.get(), verify=False)
         return json.loads(resp.text)
 
+
+    @staticmethod
+    def search_stream(auth, query: str, offset: str = '0', count: str = '10',
+                      search_channel: str = 'aweme_general', **kwargs) -> dict:
+        """源项目方案的搜索（2026-09-15 实测落地）
+
+        源项目用 /aweme/v1/web/general/search/stream/ （逆向实证），
+        不是我方原用的 /general/search/single/ 。
+
+        ## 实测响应特征（关键，勿按普通 JSON 解析）
+        HTTP 200 / 792794 字节
+        格式是 chunked 分块，每块为：十六进制长度前缀 + CRLF + JSON + CRLF
+        实际样例首部： 1289d 后面跟 JSON 的 status_code/data 数组
+        直接 resp.json() 会失败，因为首字节不是左花括号。
+
+        JSON 结构： status_code 加 data 数组，data 每项含 type 与 aweme_info ，
+        aweme_info 内含 aweme_id / desc / author 等标准字段。
+
+        :return: 归一化 dict，含 status_code / aweme_list / raw
+                 aweme_list 已把 data 项里的 aweme_info 提取出来，便于下游复用
+        """
+        api = "/aweme/v1/web/general/search/stream/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        headers.set_referer("https://www.douyin.com/")
+        prof = get_profile()
+        params = Params()
+        (params.add_param("device_platform", "webapp")
+         .add_param("aid", "6383")
+         .add_param("channel", "channel_pc_web")
+         .add_param("pc_client_type", "1")
+         .add_param("version_code", "170400")
+         .add_param("version_name", "17.4.0")
+         .add_param("cookie_enabled", "true")
+         .add_param("browser_language", "zh-CN")
+         .add_param("browser_platform", "Win32")
+         .add_param("browser_name", prof["browser_name"])
+         .add_param("browser_version", prof["browser_version"])
+         .add_param("browser_online", "true")
+         .add_param("engine_name", "Blink")
+         .add_param("os_name", "Windows")
+         .add_param("os_version", "10")
+         .add_param("platform", "PC")
+         .add_param("keyword", query)
+         .add_param("offset", str(offset))
+         .add_param("count", str(count))
+         .add_param("search_channel", search_channel))
+        params.with_web_id(auth, "https://www.douyin.com/")
+        params.with_a_bogus()
+        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+                            headers=headers.get(), cookies=auth.cookie,
+                            params=params.get(), verify=False,
+                            timeout=kwargs.get("timeout", 30))
+        # 关键：用 **bytes** 解析。chunked 的长度前缀是**字节数**，
+        # 而 len(str) 是字符数 —— 响应含中文时两者不等，用 str 会整体错位。
+        buf = resp.content or b""
+
+        # chunked 分块解析：十六进制长度前缀 + CRLF + JSON + CRLF
+        aweme_list = []
+        raw_objs = []
+        status_code = 0
+        idx = 0
+        total = len(buf)
+        while idx < total:
+            crlf = buf.find(b"\r\n", idx)
+            if crlf < 0:
+                break
+            hexlen = buf[idx:crlf].strip()
+            start = crlf + 2
+            try:
+                size = int(hexlen, 16)
+            except ValueError:
+                # 不是长度前缀，可能是纯 JSON，尝试整体解析
+                try:
+                    raw_objs.append(json.loads(buf[idx:].decode("utf-8", "replace")))
+                except Exception:
+                    pass
+                break
+            blob = buf[start:start + size]
+            try:
+                raw_objs.append(json.loads(blob.decode("utf-8", "replace")))
+            except Exception:
+                pass
+            idx = start + size + 2
+
+        for obj in raw_objs:
+            if not isinstance(obj, dict):
+                continue
+            status_code = obj.get("status_code", status_code)
+            for item in (obj.get("data") or []):
+                if not isinstance(item, dict):
+                    continue
+                ai = item.get("aweme_info")
+                aweme_list.append(ai if isinstance(ai, dict) else item)
+
+        return {"status_code": status_code, "aweme_list": aweme_list, "raw": raw_objs}
+
     @staticmethod
     def search_some_general_work(auth, query: str, num: int, sort_type: str, publish_time: str, filter_duration="", search_range="", content_type="", **kwargs) -> list:
         """

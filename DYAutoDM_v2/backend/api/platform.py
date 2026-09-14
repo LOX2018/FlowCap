@@ -452,7 +452,17 @@ async def search(req: SearchReq) -> dict[str, Any]:
             users = await asyncio.to_thread(api.search_some_user, auth, req.query, num)
             return {"ok": True, "kind": "user",
                     "items": [_pick_user(u) for u in (users or [])]}
-        works = await asyncio.to_thread(api.search_some_general_work, auth, req.query, num, "0", "0")
+        # ★ 2026-09-15：视频搜索改用**源项目方案** `/general/search/stream/`（实测 10 条、
+        #   真实作者可读）；失败则回落到原 `search_some_general_work`（老接口），保证可用。
+        works = None
+        try:
+            stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
+            works = (stream or {}).get("aweme_list") or []
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PLT-009", f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
+            works = None
+        if not works:
+            works = await asyncio.to_thread(api.search_some_general_work, auth, req.query, num, "0", "0")
         return {"ok": True, "kind": "video",
                 "items": [_pick_aweme(w) for w in (works or [])]}
     except Exception as e:  # noqa: BLE001
