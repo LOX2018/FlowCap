@@ -19,7 +19,7 @@
 | # | 源项目路径 | 用途 | 我方现状 | 实测状态 |
 |---|---|---|---|---|
 | 1 | `/aweme/v1/web/tab/feed/` | **推荐流** | ✅ 已改用（2026-09-15） | **200 / 659KB / 6 条** ✅ |
-| 2 | `/aweme/v1/web/general/search/stream/` | 搜索（流式） | ❌ 我方用 `search/single/` | 200 / 911KB（**流式 SSE**，需流式解析） |
+| 2 | `/aweme/v1/web/general/search/stream/` | 搜索（**chunked 流式**） | ✅ 已改用（`search_stream`） | **实测 10 条**（苏州毛律师/朱峰律师…）；格式=hex长度+CRLF+JSON+CRLF，**须按 bytes 解析** |
 | 3 | `/aweme/v1/web/discover/search/` | 发现搜索 | — | 待测 |
 | 4 | `/aweme/v1/web/user/profile/self/` | **自己资料（含 sec_uid）** | ✅ 已改用（2026-09-15） | **200 / 17954B / 含 sec_uid** ✅ |
 | 5 | `/aweme/v1/web/user/profile/other/` | 他人资料 | 我方 `get_user_info` | 待测 |
@@ -48,6 +48,18 @@
 | 28 | `/aweme/v1/web/collects/list/` | ~~老收藏夹列表~~ | ❌ **我方原用** | 待测（建议换 #9） |
 
 ---
+
+## 一之二、chunked 流式响应解析（关键坑，已实测）
+
+`/general/search/stream/` 返回**不是**普通 JSON，而是 chunked 分块：
+```
+128a8\r\n{"status_code":0,"data":[{"type":1,"aweme_info":{...}}]}\r\n<下一块>
+```
+要点：
+1. **必须用 `resp.content`（bytes）解析** —— 长度前缀是**字节数**，
+   而 `len(text)` 是**字符数**；响应含中文时两者不等 ⇒ 用 str 会**整段错位**
+   （首版就踩了这个坑，表现为 raw=0）。
+2. JSON 结构是 `data[].aweme_info` 需展开，不是顶层 `aweme_list`。
 
 ## 二、已确认的"源项目方案 > 我方原方案"（实测证据）
 
@@ -104,6 +116,25 @@ https://www-hj.douyin.com/aweme/v1/web/aweme/listcollection/
 ⚠️ 早期我误记"写操作用 www" —— **已被原始字符串推翻**。
 
 ---
+
+## 三之二、播放器架构（用户指定参考 YCVideoPlayer）
+
+用户 2026-09-15 指定 https://github.com/yangchong211/YCVideoPlayer 。
+**该库是 Android 原生**（Java + ExoPlayer/IjkPlayer，gradle 依赖 `cn.yc:VideoPlayer`），
+本项目是 **React + Tauri Webview**，**无法直接引用**。
+⇒ 已确认口径：**借用其架构设计，用 React 重写**。
+
+照搬的三层（对应其"播放器内核 + 视频播放器 + 边播边缓存 + UI 视图层"）：
+
+| YCVideoPlayer | 本项目实现 | 说明 |
+|---|---|---|
+| VideoKernel（内核可切换） | `player-kernel.ts` | `VideoKernel` 接口 + `Html5Kernel`；预留 HLS/DASH 扩展位，新增内核**不动 UI** |
+| VideoCache（边播边缓存） | `player-cache.ts` | Web 无法像 Android 那样代理字节流 ⇒ 实现**可达等价能力**：播放位置记忆（照其 VideoSqlLite）、元数据缓存、preconnect 预取 |
+| UI 视图层（与业务解耦） | `player-*.tsx` | 舞台/播放条/主体，只依赖接口 |
+| 播放器 | `fullscreen-player.tsx` | 组装 |
+
+**诚实边界**：真正的字节级缓存由后端 `services/media_proxy.py` 承担
+（唯一解密实现 + 磁盘缓存，与源项目 `media_proxy_cache.rs` 同职责）。
 
 ## 四、工作纪律（本次教训固化）
 

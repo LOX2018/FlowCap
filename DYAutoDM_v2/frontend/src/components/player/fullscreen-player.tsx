@@ -26,6 +26,8 @@ import { PlayerMediaStage } from "./player-media-stage";
 import { PlayerPlaybackBar } from "./player-playback-bar";
 import type { PlayerAuthor, PlayerMedia, PlayerStatus } from "./player-types";
 import { PLAYBACK_RATES, QUALITY_LABEL, QUALITY_OPTIONS, fmtMs, mediaKindLabel } from "./player-utils";
+// 边播边缓存层（照 YCVideoPlayer 的 VideoCache 模块）：续播位置记忆
+import { setPosition } from "./player-cache";
 
 interface Props {
   media: PlayerMedia | null;
@@ -51,6 +53,7 @@ export function FullscreenPlayer({
   const [muted, setMuted] = useState(false);
   const [quality, setQuality] = useState<string>("origin");
   const [panel, setPanel] = useState<string | null>(null);
+  const lastPosRef = useRef<number>(0);
 
   const getMediaEl = useCallback(
     () => stageRef.current?.querySelector("video") as HTMLVideoElement | null,
@@ -109,6 +112,14 @@ export function FullscreenPlayer({
           className="h-full w-full"
           onStatusChange={setStatus}
           onEnded={() => { setPlaying(false); onEnded?.(); }}
+          onProgress={(sec) => {
+            // 续播记忆（节流：每 ~5s 写一次）
+            const now = Date.now();
+            if (now - lastPosRef.current > 5000) {
+              lastPosRef.current = now;
+              setPosition(media?.aweme_id || "", sec);
+            }
+          }}
         />
       </div>
 

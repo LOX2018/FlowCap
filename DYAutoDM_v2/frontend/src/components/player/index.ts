@@ -17,6 +17,9 @@
 export { FullscreenPlayer } from "./fullscreen-player";
 export { PlayerMediaStage } from "./player-media-stage";
 export { PlayerPlaybackBar } from "./player-playback-bar";
+export { Html5Kernel, pickKernel, registerKernel, isHls, isDash } from "./player-kernel";
+export type { VideoKernel, KernelCaps, KernelFactory } from "./player-kernel";
+export { getPosition, setPosition, clearPosition, getMeta, setMeta, prefetchUrl } from "./player-cache";
 export type {
   CommentRepliesState,
   CommentReplyTarget,

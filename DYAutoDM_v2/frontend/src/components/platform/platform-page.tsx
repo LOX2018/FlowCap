@@ -10,7 +10,9 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User } from "lucide-react";
+import {
+  LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User, MessageSquare,
+} from "lucide-react";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +22,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { EmptyState, LoadingState, ErrorState } from "@/components/ui/empty-state";
 import { platformApi, type AwemeItem, type UserItem, type NoticeItem } from "@/api/platform";
+// 采集 = 内容浏览的「高级模式」（用户 2026-09-15 决策：采集页合并进内容浏览）
+import { CrawlPanel } from "./crawl-panel";
 import { fmtNum, fmtAgo } from "@/lib/utils";
 import type { PageProps } from "@/api/client";
 import { FullscreenPlayer } from "@/components/player";
@@ -140,10 +144,13 @@ export default function PlatformPage(props: PageProps) {
   // ── 播放器（★ 本分支新增：卡片点击 → 取址 → 播放）──
   const [playerMedia, setPlayerMedia] = useState<PlayerMedia | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
+  // 选中作品（采集模式复用：点开卡片即设为当前采集目标）
+  const [selectedAweme, setSelectedAweme] = useState<string>("");
   const [playerErr, setPlayerErr] = useState<string>("");
   const openAweme = async (it: AwemeItem) => {
     setPlayerErr("");
     setPlayerOpen(true);
+    setSelectedAweme(it.aweme_id || "");
     setPlayerMedia({ type: "video", aweme_id: it.aweme_id, cover: it.cover, desc: it.desc });
     try {
       // ★ 回传列表返回的作品对象（实测自带播放地址；详情接口平台侧返空）
@@ -258,6 +265,7 @@ export default function PlatformPage(props: PageProps) {
           <TabsTrigger value="liked"><Heart className="h-3.5 w-3.5" />点赞</TabsTrigger>
           <TabsTrigger value="collected"><Star className="h-3.5 w-3.5" />收藏夹</TabsTrigger>
           <TabsTrigger value="notices"><Bell className="h-3.5 w-3.5" />站内通知</TabsTrigger>
+          <TabsTrigger value="crawl"><MessageSquare className="h-3.5 w-3.5" />采集</TabsTrigger>
         </TabsList>
 
         <TabsContent value="feed">
@@ -360,6 +368,28 @@ export default function PlatformPage(props: PageProps) {
               </div>
             ) : <EmptyState title="暂无通知" />)}
         </TabsContent>
+        <TabsContent value="crawl">
+          {/* 采集 = 内容浏览的高级模式：先搜作品 → 选中 → 采评论 → 私信截流 */}
+          <div className="space-y-3">
+            <div className="text-[0.78rem] text-[var(--color-text-secondary)]">
+              在「搜索」或「推荐流」里点开一个作品，即可在此采集它的评论区并批量私信。
+            </div>
+            {selectedAweme ? (
+              <CrawlPanel
+                account={account}
+                api={props.api as never}
+                awemeId={selectedAweme}
+                push={props.push}
+              />
+            ) : (
+              <EmptyState
+                title="还没有选中作品"
+                description="切到「搜索」或「推荐流」，点开任意作品卡片后回到这里。"
+              />
+            )}
+          </div>
+        </TabsContent>
+
       </Tabs>
 
       {/* 播放器浮层（照源项目 components/player 的独立业务域形态） */}
