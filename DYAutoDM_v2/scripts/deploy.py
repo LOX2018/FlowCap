@@ -91,8 +91,23 @@ def build_version_const() -> str:
 
 
 def norm(v: str) -> str:
-    """归一化版本：tauri 写 0.43.1，Windows 资源可能是 0.43.1.0。"""
-    return (v or "").strip().rstrip(".0").rstrip(".") or (v or "").strip()
+    """归一化版本：tauri 写 0.43.1，Windows 资源可能是 0.43.1.0。
+
+    ⚠️ 2026-09-14 修复（v0.43.10 部署文件名被截成 0.43.1）：
+    原实现用 `rstrip(".0")` —— **按字符集**删除尾部字符，会把 legit 的
+    尾零一起吃掉：`"0.43.10".rstrip(".0")` → `"0.43.1"`（末尾 0 被当填充删了），
+    于是部署文件名/比对都错成 0.43.1，与真实版本 0.43.10 不符。
+    正确做法：只剥掉**完整的 `.0` 四段后缀**（0.43.1.0 → 0.43.1），
+    绝不按字符集裁剪。
+    """
+    _s = (v or "").strip()
+    if not _s:
+        return _s
+    # 仅在形如 X.Y.Z.0（四段且末段为 0）时剥掉最后一段
+    _parts = _s.split(".")
+    if len(_parts) == 4 and _parts[3] == "0":
+        _s = ".".join(_parts[:3])
+    return _s
 
 
 def main() -> int:
