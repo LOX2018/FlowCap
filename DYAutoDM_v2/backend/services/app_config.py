@@ -445,6 +445,173 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "apply": "hot", "risk": True,
                 "hint": "源项目无闸门；本分支默认保留（双保险）。关闭即完全照源项目",
             },
+            # ══ 以下照源项目 frontend/src/lib/ai-automation.ts 的权威契约 ══
+            # （字段名/默认值/clamp 范围逐项对齐源项目）
+            "monitor_notices": {
+                "label": "监控·通知", "type": "bool", "default": False,
+                "env": "DY_AUTO_MONITOR_NOTICES", "apply": "hot",
+                "hint": "源项目 auto_monitor_notices：新粉丝/评论/赞通知",
+            },
+            "monitor_friends": {
+                "label": "监控·好友动态", "type": "bool", "default": False,
+                "env": "DY_AUTO_MONITOR_FRIENDS", "apply": "hot",
+                "hint": "源项目 auto_monitor_friends",
+            },
+            "monitor_comments": {
+                "label": "监控·评论", "type": "bool", "default": False,
+                "env": "DY_AUTO_MONITOR_COMMENTS", "apply": "hot",
+                "hint": "源项目 auto_monitor_comments：自己作品下的新评论",
+            },
+            "monitor_feed": {
+                "label": "监控·推荐流", "type": "bool", "default": False,
+                "env": "DY_AUTO_MONITOR_FEED", "apply": "hot",
+                "hint": "源项目 auto_monitor_feed",
+            },
+            "follow_back_on_new_follower": {
+                "label": "新粉丝自动回关", "type": "bool", "default": False,
+                "env": "DY_AUTO_FOLLOW_BACK_ON_NEW_FOLLOWER", "apply": "hot", "risk": True,
+                "hint": "源项目 auto_follow_back_on_new_follower",
+            },
+            "match_keywords": {
+                "label": "通用·包含词", "type": "str", "default": "",
+                "env": "DY_AUTO_MATCH_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_match_keywords（逗号/空格分隔；空=不过滤）",
+            },
+            "exclude_keywords": {
+                "label": "通用·排除词", "type": "str", "default": "",
+                "env": "DY_AUTO_EXCLUDE_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_exclude_keywords",
+            },
+            "private_match_keywords": {
+                "label": "私信·包含词", "type": "str", "default": "",
+                "env": "DY_AUTO_PRIVATE_MATCH_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_private_match_keywords（空则回落通用词）",
+            },
+            "private_exclude_keywords": {
+                "label": "私信·排除词", "type": "str", "default": "",
+                "env": "DY_AUTO_PRIVATE_EXCLUDE_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_private_exclude_keywords（空则回落通用词）",
+            },
+            "comment_match_keywords": {
+                "label": "评论·包含词", "type": "str", "default": "",
+                "env": "DY_AUTO_COMMENT_MATCH_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_comment_match_keywords（空则回落通用词）",
+            },
+            "comment_exclude_keywords": {
+                "label": "评论·排除词", "type": "str", "default": "",
+                "env": "DY_AUTO_COMMENT_EXCLUDE_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_comment_exclude_keywords（空则回落通用词）",
+            },
+            "like_match_keywords": {
+                "label": "点赞·包含词", "type": "str", "default": "",
+                "env": "DY_AUTO_LIKE_MATCH_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_like_match_keywords（空则回落通用词）",
+            },
+            "like_exclude_keywords": {
+                "label": "点赞·排除词", "type": "str", "default": "",
+                "env": "DY_AUTO_LIKE_EXCLUDE_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_like_exclude_keywords（空则回落通用词）",
+            },
+            "collect_match_keywords": {
+                "label": "收藏·包含词", "type": "str", "default": "",
+                "env": "DY_AUTO_COLLECT_MATCH_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_collect_match_keywords（空则回落通用词）",
+            },
+            "collect_exclude_keywords": {
+                "label": "收藏·排除词", "type": "str", "default": "",
+                "env": "DY_AUTO_COLLECT_EXCLUDE_KEYWORDS", "apply": "hot",
+                "hint": "源项目 auto_collect_exclude_keywords（空则回落通用词）",
+            },
+            "min_digg_count": {
+                "label": "门槛·最少点赞", "type": "int", "default": 0, "min": 0, "max": 100000000,
+                "env": "DY_AUTO_MIN_DIGG_COUNT", "apply": "hot",
+                "hint": "源项目 auto_min_digg_count",
+            },
+            "min_comment_count": {
+                "label": "门槛·最少评论", "type": "int", "default": 0, "min": 0, "max": 100000000,
+                "env": "DY_AUTO_MIN_COMMENT_COUNT", "apply": "hot",
+                "hint": "源项目 auto_min_comment_count",
+            },
+            "min_play_count": {
+                "label": "门槛·最少播放", "type": "int", "default": 0, "min": 0, "max": 1000000000,
+                "env": "DY_AUTO_MIN_PLAY_COUNT", "apply": "hot",
+                "hint": "源项目 auto_min_play_count",
+            },
+            "scan_interval_seconds": {
+                "label": "扫描间隔（秒）", "type": "int", "default": 30, "min": 10, "max": 300,
+                "env": "DY_AUTO_SCAN_INTERVAL_SECONDS", "apply": "hot", "risk": True,
+                "hint": "源项目 auto_scan_interval_seconds（clamp 10~300）",
+            },
+            "max_actions_per_run": {
+                "label": "单轮最大动作数", "type": "int", "default": 5, "min": 1, "max": 50,
+                "env": "DY_AUTO_MAX_ACTIONS_PER_RUN", "apply": "hot", "risk": True,
+                "hint": "源项目 auto_max_actions_per_run（clamp 1~50）",
+            },
+            "send_delay_ms": {
+                "label": "动作间隔（毫秒）", "type": "int", "default": 0, "min": 0, "max": 10000,
+                "env": "DY_AUTO_SEND_DELAY_MS", "apply": "hot", "risk": True,
+                "hint": "源项目 getAiAutoSendDelayMs（clamp 0~10000）",
+            },
+            "return_shared_media": {
+                "label": "回流·共享媒体", "type": "bool", "default": False,
+                "env": "DY_AUTO_RETURN_SHARED_MEDIA", "apply": "hot",
+                "hint": "源项目 auto_return_shared_media",
+            },
+            "return_shared_allow_images": {
+                "label": "回流·允许图片", "type": "bool", "default": True,
+                "env": "DY_AUTO_RETURN_SHARED_ALLOW_IMAGES", "apply": "hot",
+                "hint": "源项目 auto_return_shared_allow_images",
+            },
+            "return_shared_allow_videos": {
+                "label": "回流·允许视频", "type": "bool", "default": True,
+                "env": "DY_AUTO_RETURN_SHARED_ALLOW_VIDEOS", "apply": "hot",
+                "hint": "源项目 auto_return_shared_allow_videos",
+            },
+            "return_shared_max_size_mb": {
+                "label": "回流·单文件上限(MB)", "type": "int", "default": 20, "min": 1, "max": 200,
+                "env": "DY_AUTO_RETURN_SHARED_MAX_SIZE_MB", "apply": "hot",
+                "hint": "源项目 auto_return_shared_max_size_mb（clamp 1~200）",
+            },
+            "return_shared_max_media_count": {
+                "label": "回流·最大媒体数", "type": "int", "default": 9, "min": 1, "max": 20,
+                "env": "DY_AUTO_RETURN_SHARED_MAX_MEDIA_COUNT", "apply": "hot",
+                "hint": "源项目 auto_return_shared_max_media_count（clamp 1~20）",
+            },
+            "auto_like": {
+                "label": "动作·点赞", "type": "bool", "default": False,
+                "env": "DY_AUTO_LIKE", "apply": "hot", "risk": True,
+                "hint": "源项目 auto_like",
+            },
+            "auto_collect": {
+                "label": "动作·收藏", "type": "bool", "default": False,
+                "env": "DY_AUTO_COLLECT", "apply": "hot", "risk": True,
+                "hint": "源项目 auto_collect",
+            },
+            "auto_comment": {
+                "label": "动作·评论", "type": "bool", "default": False,
+                "env": "DY_AUTO_COMMENT", "apply": "hot", "risk": True,
+                "hint": "本项目扩展（源项目仅评论建议，无自动评论位）",
+            },
+            "auto_private": {
+                "label": "动作·私信", "type": "bool", "default": False,
+                "env": "DY_AUTO_PRIVATE", "apply": "hot", "risk": True,
+                "hint": "本项目扩展",
+            },
+            "auto_follow": {
+                "label": "动作·关注", "type": "bool", "default": False,
+                "env": "DY_AUTO_FOLLOW", "apply": "hot", "risk": True,
+                "hint": "本项目扩展（源项目仅有回关布尔位）",
+            },
+            "require_context": {
+                "label": "需要上下文才动作", "type": "bool", "default": True,
+                "env": "DY_AUTO_REQUIRE_CONTEXT", "apply": "hot",
+                "hint": "本项目保留（源项目无此项）",
+            },
+            "use_global_gate": {
+                "label": "同时使用全局发送闸门", "type": "bool", "default": True,
+                "env": "DY_AUTO_USE_GLOBAL_GATE", "apply": "hot",
+                "hint": "本项目保留（源项目无闸门）",
+            },
         },
     },
 }
