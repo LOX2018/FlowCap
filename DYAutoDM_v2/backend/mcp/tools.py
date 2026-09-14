@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 """MCP 工具集 —— 把既有业务能力暴露给 AI 客户端。
 
-## 铁律：只包装既有能力，不新增主动查询路径
+## 本分支规则（design/better-douyin，用户 2026-09-14 授权「全解除」）
 
-本项目昵称唯一来源 = BCC 被动 hook（用户风控红线，见 `工作目录/00_铁律_最高优先级.md`）。
-因此本模块**不注册任何主动拉取昵称/资料的工具**——读取一律走本地 SQLite
-（`dm_conversations` / `dm_messages`），零平台请求、零风控面。
+见 `docs/BRANCH_RULES_design_better_douyin.md`。**主分支铁律在本分支不生效**：
+
+- 允许注册**主动查询平台**的工具（含用户资料/昵称）—— 照源项目的做法；
+- 允许读取**远端内容**（推荐流/搜索/作品/合集等），不限于本地 SQLite。
+
+保留的底线（与风控无关）：**凭证/密钥绝不出现在工具输出或审计里**。
 
 ## 分级
 
-- **READ**：纯本地读库 / 读状态。默认可用。
-- **WRITE**：会向平台发起写操作（发送）。需 `allow_write_actions=true`
+- **READ**：读库或读平台（无副作用）。默认可用。
+- **WRITE**：向平台发起写操作（发送/点赞/收藏/关注）。需 `allow_write_actions=true`
   **且**一次性确认票据（`require_confirmation`）。
 """
 from __future__ import annotations
@@ -147,6 +150,110 @@ def _refresh_write_confirm(account: str = "") -> dict[str, Any]:
     return issue_ticket("send_dm", {"account": account})
 
 
+# ---------------- 只读工具（★ 本分支新增：平台读） ----------------
+
+def _platform_call(account: str, method: str, **kwargs) -> Any:
+    """通用平台读调用（本分支全解除后可注册主动查询工具）。"""
+    from auto_dm import accounts as acct_core
+    from dy_apis.login_api import DYLoginApi
+    from dy_apis.douyin_api import DouyinAPI
+    env_path = acct_core.env_path_of(account)
+    if not env_path:
+        raise RuntimeError(f"账号 {account} 未登记")
+    auth = DYLoginApi._load_auth_from_env(env_path)
+    if not auth or not getattr(auth, "cookie", None):
+        raise RuntimeError(f"账号 {account} 凭证为空")
+    fn = getattr(DouyinAPI, method)
+    return fn(auth, **kwargs)
+
+
+def _search_user(account: str, keyword: str, count: int = 20) -> Any:
+    """搜索用户（照源项目 A2：按昵称/抖音号/UID 搜索）。"""
+    return _platform_call(account, "search_some_user", keyword=keyword, count=str(count))
+
+
+def _user_works(account: str, user_url: str) -> Any:
+    """用户作品列表（照源项目 A4）。"""
+    return _platform_call(account, "get_user_all_work_info", user_url=user_url)
+
+
+def _user_info(account: str, user_url: str) -> Any:
+    """用户资料（照源项目 A2）。"""
+    return _platform_call(account, "get_user_info", user_url=user_url)
+
+
+def _user_info_batch(account: str, sec_uids: list[str]) -> Any:
+    """★ 主动批量查用户资料（照源项目；本分支全解除后允许）。
+
+    走实测有效的 `POST im/user/info` + `sec_user_ids` JSON数组串。
+    """
+    from api.platform import _im_user_info_by_sec, _auth_for
+    return _im_user_info_by_sec(_auth_for(account), sec_uids)
+
+
+def _recommend_feed(account: str, count: int = 20, refresh_index: str = "2") -> Any:
+    """推荐流（照源项目 A5；refresh_index 切精选/推荐）。"""
+    return _platform_call(account, "get_feed", count=str(count), refresh_index=refresh_index)
+
+
+def _search_work(account: str, keyword: str, count: int = 20) -> Any:
+    """搜索作品（照源项目 A2）。"""
+    return _platform_call(account, "search_some_general_work", keyword=keyword, count=str(count))
+
+
+def _collected_list(account: str) -> Any:
+    """收藏夹列表（照源项目 A4）。"""
+    return _platform_call(account, "get_collect_list")
+
+
+def _collection_items(account: str, count: int = 18) -> Any:
+    """收藏夹内的作品（★ 本分支新增，实测 sc=0）。"""
+    return _platform_call(account, "get_aweme_list_collection", num=str(count))
+
+
+def _collection_mixes(account: str, count: int = 20) -> Any:
+    """收藏的合集列表（★ 本分支新增，实测 sc=0）。"""
+    return _platform_call(account, "get_mix_list_collection", count=str(count))
+
+
+def _user_favorite(account: str, sec_id: str, count: int = 18) -> Any:
+    """某用户的收藏（基座既有方法）。"""
+    return _platform_call(account, "get_user_favorite", sec_id=sec_id, num=str(count))
+
+
+def _work_comments(account: str, aweme_id: str, count: int = 30) -> Any:
+    """作品评论列表（照源项目 A/评论面）。"""
+    return _platform_call(account, "get_work_all_comment", aweme_id=aweme_id, num=str(count))
+
+
+def _notice_list(account: str, count: int = 20) -> Any:
+    """站内通知列表（照源项目 C3）。"""
+    return _platform_call(account, "get_notice_list", count=str(count))
+
+
+def _follower_list(account: str, sec_id: str, count: int = 20) -> Any:
+    """粉丝列表（照源项目 A2）。"""
+    return _platform_call(account, "get_user_follower_list", sec_id=sec_id, count=str(count))
+
+
+def _following_list(account: str, sec_id: str, count: int = 20) -> Any:
+    """关注列表（照源项目 A2）。"""
+    return _platform_call(account, "get_user_following_list", sec_id=sec_id, count=str(count))
+
+
+def _media_stats() -> dict:
+    """媒体代理缓存统计（★ 本分支新增，对应源项目 media_proxy_cache）。"""
+    from services import media_proxy
+    return media_proxy.stats()
+
+
+def _automation_config() -> dict:
+    """读自动化频率配置（★ 本分支新增，照源项目 auto_* 模型）。"""
+    from services import app_config
+    sec = app_config.SECTIONS.get("automation") or {}
+    return {k: app_config.get("automation", k) for k in (sec.get("fields") or {})}
+
+
 # ---------------- 注册 ----------------
 
 def register_all() -> int:
@@ -184,6 +291,80 @@ def register_all() -> int:
              handler=_send_dm,
              params={"account": "账号名", "conv_id": "会话 id", "text": "消息正文"},
              audit_fields=("account", "conv_id", "text")),
+
+        # ===== ★ 本分支新增（照源项目功能面，见 docs/logic_replication_plan.md）=====
+        Tool(name="search_user", level=READ,
+             summary="搜索用户（昵称/抖音号/UID）",
+             handler=_search_user,
+             params={"account": "账号名", "keyword": "关键词", "count": "条数"},
+             audit_fields=("account", "keyword")),
+        Tool(name="search_work", level=READ,
+             summary="搜索作品",
+             handler=_search_work,
+             params={"account": "账号名", "keyword": "关键词", "count": "条数"},
+             audit_fields=("account", "keyword")),
+        Tool(name="user_info", level=READ,
+             summary="用户资料（按主页 URL）",
+             handler=_user_info,
+             params={"account": "账号名", "user_url": "用户主页 URL"},
+             audit_fields=("account",)),
+        Tool(name="user_info_batch", level=READ,
+             summary="批量查用户资料（按 sec_uid；照源项目做法）",
+             handler=_user_info_batch,
+             params={"account": "账号名", "sec_uids": "sec_uid 数组"},
+             audit_fields=("account",)),
+        Tool(name="user_works", level=READ,
+             summary="用户作品列表",
+             handler=_user_works,
+             params={"account": "账号名", "user_url": "用户主页 URL"},
+             audit_fields=("account",)),
+        Tool(name="recommend_feed", level=READ,
+             summary="推荐流（refresh_index 切精选/推荐）",
+             handler=_recommend_feed,
+             params={"account": "账号名", "count": "条数", "refresh_index": "2=推荐 1=精选"},
+             audit_fields=("account",)),
+        Tool(name="collected_list", level=READ,
+             summary="收藏夹列表",
+             handler=_collected_list,
+             params={"account": "账号名"}, audit_fields=("account",)),
+        Tool(name="collection_items", level=READ,
+             summary="收藏夹内的作品",
+             handler=_collection_items,
+             params={"account": "账号名", "count": "条数"}, audit_fields=("account",)),
+        Tool(name="collection_mixes", level=READ,
+             summary="收藏的合集列表",
+             handler=_collection_mixes,
+             params={"account": "账号名", "count": "条数"}, audit_fields=("account",)),
+        Tool(name="user_favorite", level=READ,
+             summary="某用户的收藏（作品维度）",
+             handler=_user_favorite,
+             params={"account": "账号名", "sec_id": "用户 sec_uid", "count": "条数"},
+             audit_fields=("account",)),
+        Tool(name="work_comments", level=READ,
+             summary="作品评论列表",
+             handler=_work_comments,
+             params={"account": "账号名", "aweme_id": "作品 id", "count": "条数"},
+             audit_fields=("account", "aweme_id")),
+        Tool(name="notice_list", level=READ,
+             summary="站内通知列表（点赞/评论/关注）",
+             handler=_notice_list,
+             params={"account": "账号名", "count": "条数"}, audit_fields=("account",)),
+        Tool(name="follower_list", level=READ,
+             summary="粉丝列表",
+             handler=_follower_list,
+             params={"account": "账号名", "sec_id": "用户 sec_uid", "count": "条数"},
+             audit_fields=("account",)),
+        Tool(name="following_list", level=READ,
+             summary="关注列表",
+             handler=_following_list,
+             params={"account": "账号名", "sec_id": "用户 sec_uid", "count": "条数"},
+             audit_fields=("account",)),
+        Tool(name="media_stats", level=READ,
+             summary="媒体代理缓存统计（命中率/磁盘占用）",
+             handler=_media_stats),
+        Tool(name="automation_config", level=READ,
+             summary="读自动化频率配置（单轮上限/间隔/门槛/关键词）",
+             handler=_automation_config),
     ]
     for t in tools:
         register(t)
