@@ -352,6 +352,101 @@ SECTIONS: dict[str, dict[str, Any]] = {
             },
         },
     },
+
+    # ===== 自动化频率控制（★ 本分支 design/better-douyin 新增）=====
+    # 照源项目 better-douyin 的 `auto_*` 模型（实测提取自 douyin-dl 二进制，
+    # 见 docs/reverse_interface_spec.md §三）：源项目**没有全局发送闸门**，
+    # 风控靠「按动作限速 + 关键词准入 + 互动门槛 + 单轮上限」四件套。
+    # 本分支按用户「全解除」授权，补上这套模型（与既有 send 闸门并存，可各自关闭）。
+    "automation": {
+        "label": "自动化频率控制（照源项目）",
+        "fields": {
+            "max_actions_per_run": {
+                "label": "单轮最大动作数",
+                "type": "int", "default": 20, "min": 1, "max": 500,
+                "env": "DY_AUTO_MAX_ACTIONS_PER_RUN",
+                "apply": "hot", "risk": True,
+                "hint": "源项目核心限速参数：一轮扫描最多执行多少动作（回复/点赞/关注）",
+            },
+            "send_delay_ms": {
+                "label": "动作间隔（毫秒）",
+                "type": "int", "default": 1500, "min": 0, "max": 600000,
+                "env": "DY_AUTO_SEND_DELAY_MS",
+                "apply": "hot", "risk": True,
+                "hint": "源项目 `auto_send_delay_ms`：每个动作之间静默等待",
+            },
+            "scan_interval_seconds": {
+                "label": "扫描间隔（秒）",
+                "type": "int", "default": 60, "min": 5, "max": 86400,
+                "env": "DY_AUTO_SCAN_INTERVAL_SECONDS",
+                "apply": "hot", "risk": True,
+                "hint": "源项目 `auto_scan_interval_seconds`：两轮扫描之间的间隔",
+            },
+            "require_context": {
+                "label": "需要上下文才动作",
+                "type": "bool", "default": True,
+                "env": "DY_AUTO_REQUIRE_CONTEXT",
+                "apply": "hot",
+                "hint": "源项目 `auto_require_context`：无上下文/历史不足时不自动动作",
+            },
+            "monitor_interval_minutes": {
+                "label": "监控目标检查间隔（分钟）",
+                "type": "int", "default": 60, "min": 10, "max": 1440,
+                "env": "DY_CREATOR_MONITOR_INTERVAL_MIN",
+                "apply": "hot",
+                "hint": "源项目 `user_interval_seconds`（前端约束 10~1440，默认 60）",
+            },
+            "max_new_per_check": {
+                "label": "单次检查最多处理新条目",
+                "type": "int", "default": 10, "min": 1, "max": 200,
+                "env": "DY_MONITOR_MAX_NEW_PER_CHECK",
+                "apply": "hot",
+                "hint": "源项目 `max_new_downloads_per_check`（本体用于下载，此处用于处理）",
+            },
+            "min_digg_count": {
+                "label": "互动门槛 · 最少点赞数",
+                "type": "int", "default": 0, "min": 0, "max": 1000000,
+                "env": "DY_AUTO_MIN_DIGG_COUNT",
+                "apply": "hot",
+                "hint": "源项目 `auto_min_digg_count`：低于此值的目标不动作",
+            },
+            "min_comment_count": {
+                "label": "互动门槛 · 最少评论数",
+                "type": "int", "default": 0, "min": 0, "max": 1000000,
+                "env": "DY_AUTO_MIN_COMMENT_COUNT",
+                "apply": "hot",
+                "hint": "源项目 `auto_min_comment_count`",
+            },
+            "min_play_count": {
+                "label": "互动门槛 · 最少播放数",
+                "type": "int", "default": 0, "min": 0, "max": 100000000,
+                "env": "DY_AUTO_MIN_PLAY_COUNT",
+                "apply": "hot",
+                "hint": "源项目 `auto_min_play_count`",
+            },
+            "match_keywords": {
+                "label": "关键词准入（逗号分隔，空=不限制）",
+                "type": "str", "default": "",
+                "env": "DY_AUTO_MATCH_KEYWORDS",
+                "apply": "hot",
+                "hint": "源项目 `auto_match_keywords`：命中任一才动作",
+            },
+            "exclude_keywords": {
+                "label": "关键词排除（逗号分隔）",
+                "type": "str", "default": "",
+                "env": "DY_AUTO_EXCLUDE_KEYWORDS",
+                "apply": "hot",
+                "hint": "源项目 `auto_exclude_keywords`：命中任一则跳过",
+            },
+            "use_global_gate": {
+                "label": "同时使用全局发送闸门",
+                "type": "bool", "default": True,
+                "env": "DY_AUTO_USE_GLOBAL_GATE",
+                "apply": "hot", "risk": True,
+                "hint": "源项目无闸门；本分支默认保留（双保险）。关闭即完全照源项目",
+            },
+        },
+    },
 }
 
 

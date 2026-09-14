@@ -54,7 +54,14 @@ router = APIRouter()
 def _auth_for(account: str):
     """加载指定账号凭证 → auth（与直播/采集链路同源）。
 
-    只读 .env 里的凭证字段，不做任何网络请求。
+    ## 2026-09-14 修复（本分支实测定位）
+
+    原实现用 `common_util.load_env(env_path)`，实测其返回的 `.cookie` 恒为**空 dict**
+    （真实账号下：`len(auth.cookie) == 0`），而 `DYLoginApi._load_auth_from_env`
+    同一账号返回 **68 个 cookie**。后果：**所有 platform 端点发出的请求都不带凭证**
+    → 服务端返回 `"url doesn't match"` / `sc=5`，表现为"接口调用失败"。
+
+    ⇒ 改用与探活/直播链路**同一加载器** `DYLoginApi._load_auth_from_env`（实测有效）。
     """
     if not account:
         raise HTTPException(400, "缺少 account")
@@ -63,8 +70,11 @@ def _auth_for(account: str):
         env_path = acct_core.env_path_of(account)
         if not env_path:
             raise HTTPException(404, f"账号 {account} 未登记")
-        import utils.common_util as common_util
-        return common_util.load_env(env_path)
+        from dy_apis.login_api import DYLoginApi
+        auth = DYLoginApi._load_auth_from_env(env_path)
+        if not auth or not getattr(auth, "cookie", None):
+            raise HTTPException(503, f"账号 {account} 凭证为空（未登录或 .env 缺字段）")
+        return auth
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -298,17 +308,82 @@ async def users_info_batch(req: UsersInfoReq) -> dict[str, Any]:
 
     # ── 通道 ②：纯 HTTP 直连（照源项目 reqwest 直连）──
     auth = _auth_for(req.account)
-    api = _api()
-    out = {}
+    out: dict[str, Any] = {}
     try:
-        for uid in (req.uids or []):
-            info = await asyncio.to_thread(api.get_im_user_info, auth, str(uid))
-            if info:
-                out[str(uid)] = info
+        if req.sec_uids:
+            # ★ 实测结论（docs/reverse_interface_spec.md §三）：该接口
+            #   ① 只认 **POST**；② 参数名是 **sec_user_ids**；③ 值必须是
+            #   **JSON 数组字符串**（裸串会得 sc=5「参数不合法」）。
+            #   实测：POST sec_user_ids=["MS4wLjABAAAA..."] → sc=0 且返回
+            #   {nickname, uid, avatar_small, sec_uid}（uid 可与 peer_uid 关联）。
+            got = await asyncio.to_thread(_im_user_info_by_sec, auth, req.sec_uids)
+            out.update(got)
+        if req.uids:
+            # 数字 uid 走基座既有方法（GET + to_user_id，作兜底）
+            api = _api()
+            for uid in req.uids:
+                info = await asyncio.to_thread(api.get_im_user_info, auth, str(uid))
+                if info:
+                    out[str(uid)] = info
         return {"ok": True, "channel": "http", "data": out, "count": len(out)}
     except Exception as e:  # noqa: BLE001
         logger.warning("PLT-021", f"HTTP 批量查用户失败: {type(e).__name__}")
         raise HTTPException(502, f"HTTP 批量查用户失败: {type(e).__name__}")
+
+
+def _im_user_info_by_sec(auth, sec_uids: list[str]) -> dict[str, Any]:
+    """★ 本分支新增：用 sec_uid 主动查用户资料（**实测有效的正确姿势**）。
+
+    实测（2026-09-14，真实账号 + 真实 sec_uid）：
+      · `POST /aweme/v1/web/im/user/info/`，body `sec_user_ids=<JSON数组串>`
+        → `status_code=0`，返回 `data: [{nickname, uid, sec_uid, avatar_small, ...}]`
+      · 同接口 GET + `to_user_id` → `"url doesn't match"`（无效）
+      · `sec_user_ids` 传裸串（非 JSON 数组）→ `sc=5「参数不合法」`（无效）
+
+    照源项目 better-douyin 的做法（它直接请求该接口，见 `reverse_interface_spec.md`）。
+    返回 `{sec_uid: {nickname, avatar, uid, sec_uid}}`。
+    """
+    import requests
+    from builder.header import HeaderBuilder, HeaderType
+
+    api = "/aweme/v1/web/im/user/info/"
+    h = HeaderBuilder().build(HeaderType.POST)
+    headers = h.get()
+    headers["content-type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+    headers["referer"] = "https://www.douyin.com/"
+
+    out: dict[str, Any] = {}
+    batch = 20
+    for i in range(0, len(sec_uids), batch):
+        chunk = [s for s in sec_uids[i:i + batch] if s]
+        if not chunk:
+            continue
+        r = requests.post(
+            f"{getattr(_api(), 'douyin_url', 'https://www.douyin.com')}{api}",
+            headers=headers, cookies=auth.cookie,
+            data={"sec_user_ids": json.dumps(chunk)},
+            verify=False, timeout=12,
+        )
+        j = r.json()
+        if j.get("status_code") != 0:
+            logger.warning("PLT-022",
+                           f"im/user/info sc={j.get('status_code')} msg={j.get('status_msg')}")
+            continue
+        for u in (j.get("data") or []):
+            sec = u.get("sec_uid") or ""
+            avt = (u.get("avatar_small") or {}).get("url_list") or []
+            if not avt:
+                avt = (u.get("avatar_thumb") or {}).get("url_list") or []
+            key = sec or str(u.get("uid") or "")
+            if not key:
+                continue
+            out[key] = {
+                "nickname": u.get("nickname") or "",
+                "avatar": avt[0] if avt else "",
+                "uid": str(u.get("uid") or ""),
+                "sec_uid": sec,
+            }
+    return out
 
 
 @router.post("/search")

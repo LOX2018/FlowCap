@@ -1495,12 +1495,26 @@ def capture_all(name, with_browser=True):
                 # 无法判定对端：绝不写"自己"，昵称降级为对端 UID 占位
                 nickname = ""
             # upsert 会话骨架
+            # 2026-09-14（本分支 design/better-douyin）：`short_id` 列改为**写入 sec_uid**。
+            #   原实现硬编码 None → 该列恒为 NULL，导致「主动批量查用户」没有关联键
+            #   （`/aweme/v1/web/im/user/info/` 实测只认 `sec_user_ids`，见
+            #    docs/reverse_interface_spec.md §三）。而 `parse_init_protobuf`
+            #   其实**早已解析出 sec_uid**，只是从未落库 —— 本次补上最后一公里。
             conn.execute(
                 "INSERT OR IGNORE INTO dm_conversations("
                 "account,conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar) "
                 "VALUES(?,?,?,?,?,?,?,?)",
-                (name, cid, peer_uid, nickname or peer_uid, None, 0, 0, avatar or None),
+                (name, cid, peer_uid, nickname or peer_uid,
+                 c.get("sec_uid") or None, 0, 0, avatar or None),
             )
+            # 存量记录补写 sec_uid（原为 NULL 的行，本次起可回填）
+            if c.get("sec_uid"):
+                conn.execute(
+                    "UPDATE dm_conversations SET short_id=? "
+                    "WHERE account=? AND conv_id=? "
+                    "AND (short_id IS NULL OR short_id='')",
+                    (c["sec_uid"], name, cid),
+                )
             # 存量污染订正：已存在但 peer_id 是自己的记录 → 改回真实对端 UID
             if peer_uid:
                 conn.execute(
