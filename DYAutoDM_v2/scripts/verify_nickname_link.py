@@ -57,6 +57,11 @@ check("①1 不再出现 convs.index(...) 位置猜测（排除注释）",
 bd = src("daemon/browser_daemon.py")
 check("①2 DOM 抓取新增 desc 字段（文本桥的唯一来源）",
       "desc: desc" in bd and "ConversationItemDescleft" in bd)
+# 🔴 本轮漏网 bug：JS 抓了 desc，但组装 _dom_seen 时没带上 → 后端拿不到匹配键。
+# 断言「两端都收 desc」：JS push 处 + _dom_seen 组装处（2 处）。
+_n_desc = bd.count('"desc": (_dit or {}).get("desc")') + bd.count('"desc": (_it or {}).get("desc")')
+check("①2b desc 确实被组装进 _dom_seen（不止 JS 抓、还要传回来）",
+      _n_desc == 2, f"命中 {_n_desc} 处（期望 2：主循环 + 末屏补充）")
 _js = bd.split("CAP_DOM_SWEEP_JS", 1)[1].split('"""')[1]
 _js_code = "\n".join(ln for ln in _js.splitlines() if "//" not in ln)
 check("①3 DOM 抓取不读 uid（保持零主动请求）",

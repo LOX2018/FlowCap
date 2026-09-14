@@ -1012,12 +1012,15 @@ class BrowserContainer:
         if _is_busy():
             raise ContainerBusy(_scan_exclusive["holder"])
         if internal:
-            # 内部线程让位：已有业务租约在持 → 放弃本次（不再抢 _lock）
+            # 内部线程让位（两重）：
+            #  ① 已有业务租约在持 → 直接放弃（不排队，见上文实测）
+            #  ② 连 `bcc-internal` 自己也只算「保活级」——预热绝不与业务争
             _cur = _lease_current()
-            if _cur and _cur.get("holder") and str(_cur.get("holder")) != "bcc-internal":
+            _cur_holder = str((_cur or {}).get("holder") or "")
+            if _cur_holder and _cur_holder not in ("bcc-internal", "prewarm", "keepalive"):
                 logger.debug(
-                    f"[lease] 内部线程({holder}) 让位：{_cur['holder']} 正持租约")
-                raise ContainerBusy(f"yield_to:{_cur['holder']}")
+                    f"[lease] 内部线程({holder}) 让位：{_cur_holder} 正持租约")
+                raise ContainerBusy(f"yield_to:{_cur_holder}")
         # 租约门（_lease_acquire 内部处理重入复用）
         _lid = lease_id
         _need_release = False
@@ -1038,7 +1041,27 @@ class BrowserContainer:
             _lid = _r["lease_id"]
             _need_release = not _r.get("renew")
         try:
-            async with self._lock:
+            # 2026-09-14 v0.43.11：`_lock` 获取策略按用途区分 —— 这是「让位」的
+            # 真正落点（比租约判据更根本，因为 `_lock` 才是物理串行化资源）。
+            #
+            #  · 业务请求（internal=False）：**无限等 `_lock`**。它在等的是
+            #    「上一个浏览器操作做完」，这正是串行化的本意。若这里直接
+            #    `ContainerBusy` 快速失败，业务会被一次预热/保活瞬间挡回
+            #    （曾实测：业务刚发起就撞上预热持锁 → CAP-007
+            #     「容器被独占操作占用: bcc-internal」→ 昵称 0 个、耗时 2.1s）。
+            #  · 内部线程（internal=True）：**限时 3s 抢锁，抢不到就放弃**。
+            #    预热/保活是锦上添花，绝不占用业务的等待时间，也绝不排队
+            #    （排队会让两者交替抢占，实测把业务每轮从 6~8s 拖到 30~45s）。
+            if internal:
+                try:
+                    await asyncio.wait_for(self._lock.acquire(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        f"[lease] 内部线程({holder}) 放弃本次：_lock 被业务占用")
+                    raise ContainerBusy("lock_busy_yield")
+            else:
+                await self._lock.acquire()
+            try:
                 # 切换期（_launch 后台重建 context）快速失败：此时 _context 为
                 # None，继续执行只会拿到 None 崩溃或误判失活触发重启死循环
                 # （2026-09-13 BCC-006 刷屏事故）。调用方按「容器忙」重试即可。
@@ -1046,6 +1069,8 @@ class BrowserContainer:
                     raise ContainerBusy("切换可见性中（context 重建），请稍后重试")
                 await self._ensure_alive()
                 return await coro_factory()
+            finally:
+                self._lock.release()
         finally:
             # 单次调用型端点：用完即释放（跨调用窗口由调用方显式 lease_id）
             if _need_release and _lid:
@@ -1460,6 +1485,11 @@ class BrowserContainer:
                             _dom_seen[_dn] = {
                                 "nickname": _dn,
                                 "avatar": (_dit or {}).get("avatar") or "",
+                                # 🔴 2026-09-14 v0.43.11 修复：原实现漏传 desc，
+                                # 导致 DOM 抓到 desc 却在组装时被丢弃 → 后端文本桥
+                                # 拿不到匹配键 → 「文本桥」日志从未出现、
+                                # 昵称命中恒 0（实机实测确认）。
+                                "desc": (_dit or {}).get("desc") or "",
                                 "uid": "",
                                 "sec_uid": "",
                             }
@@ -1524,6 +1554,8 @@ class BrowserContainer:
                         _dom_seen[_n2] = {
                             "nickname": _n2,
                             "avatar": (_it or {}).get("avatar") or "",
+                            # 同上：desc 必须一起收（文本桥的匹配键）
+                            "desc": (_it or {}).get("desc") or "",
                             "uid": "",
                             "sec_uid": "",
                         }
