@@ -25,7 +25,7 @@ DOMAIN_INFO = {
     "MSG": ["私信读取", "纯读库接口异常 / 守护未运行", "私信页纯读 SQLite，绝不触发网络捕获（铁律）"],
     "NTY": ["IM通知指令", "通知通道 / 指令解析", "启动失败不影响主流程属预期"],
     "HUB": ["模型中心", "提供商密钥 / 模型拉取 / 链路解析", "测密钥/拉模型走提供商上的按钮；链路空=回落旧配置"],
-    "RECV": ["接收守护", "WS 断连(无 ping 30s 被掐) / msg 解析 / 方向判定", "每 30s Connection lost=ping_interval 缺失；KICK 时 protobuf 解析失败实为 JSON 风控响应"],
+    "RECV": ["接收守护", "WS 长连接稳态(L0-L3) / msg 解析 / 方向判定 / 重连追赶", "30s 定时断连=曾用 ping_interval+ping_timeout（已在 v0.43.36 移除，属客户端自杀非服务端掐断）；KICK 时 protobuf 解析失败实为 JSON 风控响应"],
     "SEND": ["发送链路", "统一闸门限速 / 通道回退 / KICK 风控", "rate_limited=8s 闸门属预期；KICK=账号信誉；必须 DB 落库 role=me 才算成功"],
     "SYS": ["系统与启动", "daemon 拉起 / 路由挂载 / 配置", "BCC frozen exe 必须带 DY_APP_ROOT；并行拉起 ~15s"],
     "TSK": ["任务历史", "历史任务读写 / 导出", "读失败多为文件占用，重试即可"],
@@ -109,11 +109,18 @@ DOMAIN_DESIGN = {
         "intent": "私信接收守护：WS 长连接把新消息实时落库，是「新消息/AI 回复/未读」"
                   "的数据源。",
         "invariant": "① 方向只能用 sender UID 判定；② msg_type=7 且 msg_id 为空的系统"
-                     "占位不入库；③ WS 必须带 ping 保活（否则 30s 被服务端掐断）。",
-        "chain": "recv_daemon 建 WS → 服务端推 → _handle → 落 dm_messages → （B机制）"
-                 "回填会话昵称 → 前端轮询读库。",
+                     "占位不入库；③ 【v0.43.36 更正】WS 保活在**应用层**（PushFrame "
+                     "payloadType=hb），**绝不用** websocket-client 的 ping_interval/"
+                     "ping_timeout —— frontier-im 不回 Pong，那两个参数会造成 30s "
+                     "定时自杀；④ 生命周期由 daemon/ws_link.py 单循环掌管，回调只置"
+                     "状态、绝不自行重连；⑤ 重连后必须按节流补拉（WS 不重推历史）。",
+        "chain": "WSLink 建 WS（每次重连重载凭证）→ 应用层 hb 保活 → 服务端推 → "
+                 "_handle → 落 dm_messages → （B机制）回填会话昵称 → 前端轮询读库；"
+                 "断连 → 退避重连 → 建连成功回调触发追赶补拉。",
         "verify": "日志 WS 断连计数（稳态 2 分钟应 0）；DB 新消息 ts 增量；"
-                  "/status 的 connected/conv_count。",
+                  "/status 的 connected/conv_count **与 link{connects,hb_sent,"
+                  "last_rx_age,backoff_stage}**；"
+                  "回归脚本 backend/daemon/verify_ws_link.py 与 verify_ws_ab.py。",
     },
 }
 
@@ -374,6 +381,12 @@ ERRCODES = {
     "RECV-023": {"meaning": "recv][] 图片发送异常:", "file": "daemon/recv_daemon.py", "line": 1231},
     "RECV-024": {"meaning": "wp_recv][] 数据库连接失败:", "file": "daemon/wp_recv.py", "line": 259},
     "RECV-025": {"meaning": "wp_recv][] 轮询异常:", "file": "daemon/wp_recv.py", "line": 360},
+    "RECV-030": {"meaning": "recv][] WS 建连异常:", "file": "daemon/ws_link.py", "line": 160},
+    "RECV-031": {"meaning": "recv][] 建连后回调失败:", "file": "daemon/ws_link.py", "line": 257},
+    "RECV-032": {"meaning": "recv][] 秒未收到任何下行帧，判定半开连接，主动重连", "file": "daemon/ws_link.py", "line": 308},
+    "RECV-033": {"meaning": "recv][] 心跳发送失败（第  次）:", "file": "daemon/ws_link.py", "line": 333},
+    "RECV-034": {"meaning": "recv][] 重连后追赶补拉失败（不影响收消息）:", "file": "daemon/recv_daemon.py", "line": 854},
+    "RECV-037": {"meaning": "recv][] 用户回调异常:", "file": "daemon/ws_link.py", "line": 224},
     "SEND-001": {"meaning": "send][]  通道失败（），自动回退  通道", "file": "api/messages.py", "line": 629},
     "SEND-002": {"meaning": "调度] 硬停止：已清空待发队列，不再发送任何私信", "file": "core/dispatch.py", "line": 106},
     "SEND-003": {"meaning": "调度] on_idle 异常:", "file": "core/dispatch.py", "line": 273},
