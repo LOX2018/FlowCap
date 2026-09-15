@@ -26,15 +26,12 @@ import { Play, Square } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Tone, Section, Toolbar } from "@/components/page/kit";
+import { errMsg } from "@/lib/utils";
 
 interface AiStatus {
   ok: boolean; running: boolean; enabled: boolean; processed: number;
   replied: number; leads: number; leads_total: number; errors: number;
   last_reply: string;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 export default function AiRuntimeSection(props: PageProps) {

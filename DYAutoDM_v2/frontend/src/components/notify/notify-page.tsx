@@ -34,10 +34,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { StatusDot } from "@/components/ui/status-dot";
 import { Blank, Toolbar, Collapse } from "@/components/page/kit";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errMsg } from "@/lib/utils";
 
 function Field({
   label,

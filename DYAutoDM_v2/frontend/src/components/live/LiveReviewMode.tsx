@@ -17,9 +17,7 @@ import {
   Row, DmStatus, DM_META, Th, Td, failInfoOf, FailReasonModal,
 } from "./live-shared";
 
-export function errMsg(e: unknown): string {
-  return (e as { message?: string })?.message || String(e);
-}
+export { errMsg } from "@/lib/utils";
 
 interface ReviewModeProps {
   rows: Row[];

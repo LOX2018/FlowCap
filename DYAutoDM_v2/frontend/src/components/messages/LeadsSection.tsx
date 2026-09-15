@@ -26,15 +26,12 @@ import { Download } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Tone, Row, Blank, Toolbar } from "@/components/page/kit";
+import { errMsg } from "@/lib/utils";
 
 interface Lead {
   id: number; account: string; conv_id: string; peer_name: string;
   contact_type: string; contact_value: string; status: string;
   created_at: number; source_text: string;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 export default function LeadsSection(props: PageProps) {

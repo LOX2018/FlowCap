@@ -134,9 +134,7 @@ export interface ProxyForm {
 export type PillColor = "ok" | "warn" | "danger" | "accent" | "mute";
 
 /** 统一提取错误信息（修复原版 .catch(() => {}) 静默吞错） */
-export function errMsg(e: unknown): string {
-  return (e as { message?: string })?.message || String(e);
-}
+export { errMsg } from "@/lib/utils";
 
 /** wp/dm 引擎 level → Pill 颜色（旧版 'info'/unknown 落到 mute） */
 export function enginePill(level: string): PillColor {

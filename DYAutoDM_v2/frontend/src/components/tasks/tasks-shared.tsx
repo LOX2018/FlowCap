@@ -17,7 +17,7 @@ export type Api = PageProps["api"] & {
   exportStats: () => Promise<ExportStatsResp>;
 };
 
-export const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+export { errMsg } from "@/lib/utils";
 
 /* ── 表格具名单元（避免每处重复 className） ── */
 

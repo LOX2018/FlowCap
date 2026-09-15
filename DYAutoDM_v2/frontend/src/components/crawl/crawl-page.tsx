@@ -15,7 +15,7 @@ import {
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
-import { fmtNum, fmtTs, ORDER_OPTS, DUR_OPTS, PT_OPTS } from "./crawl-shared";
+import { fmtNumShort, fmtTs, ORDER_OPTS, DUR_OPTS, PT_OPTS } from "./crawl-shared";
 
 export default function CrawlPage(props: PageProps) {
   const { push, ready, api } = props;
@@ -305,7 +305,7 @@ export default function CrawlPage(props: PageProps) {
                     </span>
                     <span className="absolute bottom-2 right-2 rounded-full bg-black/55 px-2 py-0.5
                                      text-[0.68rem] text-white/90 backdrop-blur">
-                      💬 {fmtNum(v.cmts)}
+                      💬 {fmtNumShort(v.cmts)}
                     </span>
                   </button>
 
@@ -315,8 +315,8 @@ export default function CrawlPage(props: PageProps) {
                     </div>
                     <div className="mt-1.5 flex items-center gap-2 text-[0.68rem]
                                     text-[var(--color-text-muted)]">
-                      <span className="font-mono">▶ {fmtNum(v.plays)}</span>
-                      <span className="font-mono">♥ {fmtNum(v.likes)}</span>
+                      <span className="font-mono">▶ {fmtNumShort(v.plays)}</span>
+                      <span className="font-mono">♥ {fmtNumShort(v.likes)}</span>
                       <span className="truncate">{v.nickname || "未知作者"}</span>
                     </div>
                     <div className="mt-2 flex items-center gap-1.5">
@@ -442,7 +442,7 @@ export default function CrawlPage(props: PageProps) {
                           </div>
                           <div className="mt-0.5 font-mono text-[0.68rem]
                                           text-[var(--color-text-muted)]">
-                            ♥ {fmtNum(c.digg)} · {fmtTs(c.ts)}
+                            ♥ {fmtNumShort(c.digg)} · {fmtTs(c.ts)}
                           </div>
                         </div>
                         {c.uid && (

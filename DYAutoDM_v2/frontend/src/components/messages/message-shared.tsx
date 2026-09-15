@@ -99,9 +99,7 @@ export interface MessagesApi {
   addLog(level: string, text: string): Promise<unknown>;
 }
 
-export function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+export { errMsg } from "@/lib/utils";
 
 // 抖音下发的系统提示文案（非对话内容），需居中展示为提示气泡而非对话气泡
 const SYS_TIPS = [

@@ -9,6 +9,16 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * 从任意异常取可展示的错误信息。
+ *
+ * 2026-09-15：此前该实现在 8 个组件文件里各写一份（逐字节相同），
+ * 统一到本处，各页面 import 复用（减少重复、便于统一错误呈现）。
+ */
+export function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 /** 数字/时间格式化（页面共用）。 */
 export function fmtNum(n: number | null | undefined): string {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";

@@ -8,21 +8,25 @@
  * 设计风格移植（2026-09-11）：顶栏由通栏 sticky 改为浮动玻璃胶囊 + 滑动指示器，
  * 原内联 Header 已抽成 ./components/TopNav.tsx（移植自 zn0wii/satelite-proxy）。
  */
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 // framer-motion 的页面切换动画已移入 AppShell，App 层不再直接使用
 import { api, PageProps, ReviewPayload, ReusePayload } from "./api/client";
-import OverviewPage from "./components/overview/overview-page";
-import CrawlPage from "./components/crawl/crawl-page";
-import PlatformPage from "./components/platform/platform-page";
-import LivePage from "./components/live/live-page";
-import MessagesPage from "./components/messages/messages-page";
-import KbPage from "./components/kb/kb-page";
-import AccountsPage from "./components/accounts/accounts-page";
-import TasksPage from "./components/tasks/tasks-page";
-import SettingsPage from "./components/settings/settings-page";
-import NotifyPage from "./components/notify/notify-page";
-import LogsPage from "./components/logs/logs-page";
+// 页面按视图懒加载（2026-09-15 性能优化）：
+// 原实现 11 个页面全静态 import → 全部打进主 chunk（782KB），首屏要解析所有页面代码。
+// 改为 React.lazy：每个页面独立 chunk，首屏只加载当前视图（overview），
+// 其余按需拉取。行为不变（仍由 `tab === x && <Page/>` 条件渲染）。
+const OverviewPage = lazy(() => import("./components/overview/overview-page"));
+const CrawlPage = lazy(() => import("./components/crawl/crawl-page"));
+const PlatformPage = lazy(() => import("./components/platform/platform-page"));
+const LivePage = lazy(() => import("./components/live/live-page"));
+const MessagesPage = lazy(() => import("./components/messages/messages-page"));
+const KbPage = lazy(() => import("./components/kb/kb-page"));
+const AccountsPage = lazy(() => import("./components/accounts/accounts-page"));
+const TasksPage = lazy(() => import("./components/tasks/tasks-page"));
+const SettingsPage = lazy(() => import("./components/settings/settings-page"));
+const NotifyPage = lazy(() => import("./components/notify/notify-page"));
+const LogsPage = lazy(() => import("./components/logs/logs-page"));
 import SelfCheckModal, { SelfCheckItem } from "./components/layout/SelfCheckModal";
 import MemberGate from "./components/layout/MemberGate";
 import { AppShell } from "./components/layout/app-shell";
@@ -449,17 +453,27 @@ export default function App() {
           </div>
         }
       >
-        {tab === "overview" && <OverviewPage {...pageProps} />}
-        {tab === "crawl" && <CrawlPage {...pageProps} />}
-        {tab === "platform" && <PlatformPage {...pageProps} />}
-        {tab === "live" && <LivePage {...pageProps} />}
-        {tab === "msg" && <MessagesPage {...pageProps} />}
-        {tab === "kb" && <KbPage {...pageProps} />}
-        {tab === "accounts" && <AccountsPage {...pageProps} />}
-        {tab === "tasks" && <TasksPage {...pageProps} />}
-        {tab === "settings" && <SettingsPage {...pageProps} />}
-        {tab === "notify" && <NotifyPage {...pageProps} />}
-        {tab === "logs" && <LogsPage {...pageProps} />}
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center text-[0.8rem] text-[var(--color-text-muted)]">
+              <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2
+                               border-[var(--color-border)] border-t-[var(--color-accent)]" />
+              正在加载页面…
+            </div>
+          }
+        >
+          {tab === "overview" && <OverviewPage {...pageProps} />}
+          {tab === "crawl" && <CrawlPage {...pageProps} />}
+          {tab === "platform" && <PlatformPage {...pageProps} />}
+          {tab === "live" && <LivePage {...pageProps} />}
+          {tab === "msg" && <MessagesPage {...pageProps} />}
+          {tab === "kb" && <KbPage {...pageProps} />}
+          {tab === "accounts" && <AccountsPage {...pageProps} />}
+          {tab === "tasks" && <TasksPage {...pageProps} />}
+          {tab === "settings" && <SettingsPage {...pageProps} />}
+          {tab === "notify" && <NotifyPage {...pageProps} />}
+          {tab === "logs" && <LogsPage {...pageProps} />}
+        </Suspense>
       </AppShell>
 
       {/* 全局 toast（保留旧样式类，与新外壳共存） */}

@@ -14,7 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import {
   Row, RowText, Blank, Toolbar, Section,
 } from "@/components/page/kit";
-import { cn } from "@/lib/utils";
+import { cn, errMsg } from "@/lib/utils";
 
 export type ProItem = {
   id?: number;
@@ -24,10 +24,6 @@ export type ProItem = {
   summary: string;
   enabled?: boolean;
 };
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 export function ProKb({
   push,

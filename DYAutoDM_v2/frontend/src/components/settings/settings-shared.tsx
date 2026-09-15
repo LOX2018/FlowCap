@@ -18,9 +18,7 @@ import { type ReactNode } from "react";
 import { SetCard, SetCardHead, SetCardBody, SetField } from "@/components/page/set-card";
 
 /** 统一错误信息提取（原在 6 个 Section 文件重复定义，实现一致）。 */
-export function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+export { errMsg } from "@/lib/utils";
 
 /**
  * 通用「标题 + 可选副标题 + 内容」卡片区块。

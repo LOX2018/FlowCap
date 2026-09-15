@@ -9,10 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   Collapse, Row, Blank,
 } from "@/components/page/kit";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errMsg } from "@/lib/utils";
 
 export function ReplyKb({
   push,

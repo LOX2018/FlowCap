@@ -1,5 +1,6 @@
 
-export const fmtNum = (n: unknown) => {
+/** 数字缩写（爬取页专用：1.2w）。注意与 @/lib/utils 的 fmtNum（万/亿）语义不同，勿混用。 */
+export const fmtNumShort = (n: unknown) => {
   const v = Number(n) || 0;
   return v >= 10000 ? (v / 10000).toFixed(1) + "w" : String(v);
 };
