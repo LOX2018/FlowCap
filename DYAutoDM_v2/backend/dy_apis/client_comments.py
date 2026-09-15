@@ -28,29 +28,9 @@
 from __future__ import annotations
 
 # 本域所需的导入（与原 `douyin_api.py` 头部一致，避免循环依赖）
-import json
-import random
-import re
-import time
-import urllib
-import uuid
-
-import requests
-requests.packages.urllib3.disable_warnings()
-from bs4 import BeautifulSoup
-from loguru import logger
-from google.protobuf.json_format import MessageToDict as _message_to_dict
-
-
-def protobuf_to_dict(message):
-    return _message_to_dict(message, preserving_proto_field_name=True)
-
-import static.Response_pb2 as ResponseProto
-from builder.header import HeaderBuilder, HeaderType
-from builder.params import Params
-from builder.proto import ProtoBuilder
-from utils.fingerprint import get_profile
-from utils.dy_util import splice_url, generate_a_bogus, generate_msToken, trans_cookies, generate_a_bogus_pure
+# 公共导入头（json/re/uuid/requests/BeautifulSoup/logger/protobuf/builder/utils）
+# 见 dy_apis/_common.py —— 2026-09-15 共享提取，替代各域文件重复的 17 行导入头。
+from dy_apis._common import *  # noqa: F401,F403
 
 
 
