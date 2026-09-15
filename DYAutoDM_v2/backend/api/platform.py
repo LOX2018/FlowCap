@@ -286,6 +286,10 @@ async def user_works(req: UserWorksReq) -> dict[str, Any]:
         logger.warning("PLT-002", f"作品列表获取失败: {type(e).__name__}")
         raise HTTPException(502, f"作品列表获取失败: {type(e).__name__}")
     out = [_pick_aweme(w) for w in (items or [])]
+    if not out:
+        # 2026-09-15：实测 `aweme/post` 偶发「只返 sc=0 无 aweme_list」——
+        # 平台对同一 sec_uid 短时多次请求会限流（非凭证失效，推荐流/收藏仍正常）。
+        logger.info("PLT-002", f"用户作品返回空（平台限流或该用户无公开作品）: sec={req.user_url[-16:]}")
     return {"ok": True, "items": out[: max(1, req.limit)], "total": len(out)}
 
 
