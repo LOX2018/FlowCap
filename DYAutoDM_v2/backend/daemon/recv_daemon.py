@@ -689,6 +689,10 @@ class RecvChannel(threading.Thread):
         self._stop = threading.Event()
         self._ws: Any = None
         self._auth: Any = None
+        # 2026-09-16 v0.43.36：连接生命周期移交 daemon/ws_link.py（L0~L3）。
+        # 本类只剩「构建 WebSocketApp」+「协议解析」两个职责。
+        # 重连后追赶的节流时间戳（频繁重连时不打爆 HTTP 接口）
+        self._last_catchup = 0.0
 
     def _build_auth(self) -> Any:
         from dy_apis.login_api import DYLoginApi
@@ -702,6 +706,9 @@ class RecvChannel(threading.Thread):
         from dy_apis.douyin_api import DouyinAPI
         from builder.header import HeaderBuilder
         from builder.params import Params
+
+        # 注：凭证在此加载 —— WSLink 每次重连都会调用本方法，从而自动拿到
+        # 最新 cookie（原实现只在首连取一次，重连用陈旧凭证易被 KICK）。
 
         auth = self._build_auth()
         self._auth = auth
@@ -720,10 +727,13 @@ class RecvChannel(threading.Thread):
          .add_param("access_key", access_key))
         url = f"wss://frontier-im.douyin.com/ws/v2?{params.toString()}"
 
+        # 2026-09-16 v0.43.36（L0/L2）：回调不再自行 sleep/重连。
+        # 生命周期统一由 daemon/ws_link.py 的 WSLink 单循环掌管：
+        #   ① 回调内递归重连 → 每层栈 +1，实测同秒 3 次 CLOSE
+        #   ② 回调内 time.sleep 会卡住 websocket-client 的 dispatcher 线程
+        # 此处只做「业务侧建连反应」；状态与重连由 WSLink.cb_* 处理。
+
         def on_open(ws):
-            self.inbox.connected = True
-            self.inbox.last_error = ""
-            logger.info(f"[recv][{self.name}] 私信长连接已建立")
             # 2026-09-06（2.1b uid 轮换自愈）：每次建连/重连都刷新一次
             # my_uid —— 放在 on_open 而非定时器，零额外开销且覆盖重连场景。
             # uid 轮换后方向判定（sender == my_uid）自动恢复正确。
@@ -732,41 +742,23 @@ class RecvChannel(threading.Thread):
             except Exception:
                 pass
 
-        def on_message(ws, message):
-            try:
-                self._handle(message)
-            except Exception as e:
-                logger.warning("RECV-005", f"[recv][{self.name}] 消息解析异常: {e}")
-                # 2026-09-13 抓真因：loguru 的 warning(code, detail) 会把 detail
-                # 当 format 参数吞掉，只显示错误码。这里把完整堆栈落到独立文件，
-                # 便于定位「WS 收到消息但不落库」的真实异常（抓完即移除）。
+        def _mk_msg_cb():
+            """消息回调（业务侧）。WSLink 会在其外层包裹生命周期钩子。"""
+            def _m(ws, message):
                 try:
-                    import traceback
-                    _tp = r"C:\temp\dyautodm_test\logs\recv005_trace.log"
-                    with open(_tp, "a", encoding="utf-8") as _f:
-                        _f.write(
-                            "\n===== " + time.strftime('%Y-%m-%d %H:%M:%S')
-                            + f" account={self.name} =====\n"
-                            + f"ERR: {type(e).__name__}: {e}\n"
-                            + traceback.format_exc() + "\n")
-                except Exception:
-                    pass
+                    self._handle(message)
+                except Exception as e:
+                    logger.warning(
+                        "RECV-005",
+                        f"[recv][{self.name}] 消息解析异常: {e}")
+            return _m
 
         def on_error(ws, error):
             self.inbox.connected = False
             self.inbox.last_error = str(error)
-            logger.warning("RECV-006", f"[recv][{self.name}] WS 错误: {error}")
-            if self.auto_reconnect and not self._stop.is_set():
-                logger.info(f"[recv][{self.name}] 5s 后重连…")
-                time.sleep(5)
-                self._restart_ws()
 
         def on_close(ws, *args):
             self.inbox.connected = False
-            logger.info(f"[recv][{self.name}] WS 关闭")
-            if self.auto_reconnect and not self._stop.is_set():
-                time.sleep(3)
-                self._restart_ws()
 
         ws = WebSocketApp(
             url=url,
@@ -779,29 +771,94 @@ class RecvChannel(threading.Thread):
                 "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
             },
             cookie=auth.cookie_str,
-            on_message=on_message,
+            # 2026-09-16 v0.43.36：回调绑定权归 WSLink（_bind_callbacks 会包裹
+            # 此处传入的回调）。这里只保留**业务侧**逻辑，生命周期不在此处理。
+            on_message=_mk_msg_cb(),
             on_error=on_error,
             on_close=on_close,
             on_open=on_open,
         )
         return ws
 
-    def _restart_ws(self) -> None:
+    # ---- 2026-09-16 v0.43.36：生命周期移交 WSLink，本类不再自行 run_forever ----
+    def _make_link(self) -> Any:
+        from daemon.ws_link import WSLink
+
+        def _on_connected():
+            self.inbox.connected = True
+            self.inbox.last_error = ""
+            self._catchup_after_reconnect()
+
+        def _on_disconnected(reason: str):
+            self.inbox.connected = False
+            if reason:
+                self.inbox.last_error = reason
+
+        def _wrap_app():
+            ws = self._make_ws()
+            self._ws = ws
+            return ws
+
+        link = WSLink(
+            name=self.name,
+            make_ws=_wrap_app,
+            on_message=self._handle,
+            on_connected=_on_connected,
+            on_disconnected=_on_disconnected,
+        )
+        return link
+
+    def _catchup_after_reconnect(self) -> None:
+        """L3 追赶：重连后按节流用 HTTP 2043 首包补齐掉线期的会话/消息。
+
+        为什么需要：WS **不重推历史**（知识库 08 §12.2-5 已证），掉线期间的
+        消息不会随重连回来。原实现重连后完全不补拉 ⇒ 断得越勤丢得越多。
+
+        去重保证：`_pull_conversations_api` 走 `INSERT OR IGNORE`（命中
+        uniq_dmmsg / uniq_dmmsg_fallback），重复补拉无副作用。
+
+        节流：距上次补拉不足 CATCHUP_MIN_INTERVAL 秒则跳过，避免网络抖动期
+        高频重连打爆 HTTP 接口、放大风控暴露。
+        """
         try:
-            self._ws = self._make_ws()
-            # 2026-09-07：加 ping 保活。实测不加时抖音 imapi 每 ~30s 掐一次
-            # 空闲连接（recv_daemon_20260907.log：4 建连/2 断连），频繁重连
-            # 既浪费又增加风控暴露。ping_interval=20s < 30s 空闲阈值，
-            # ping_timeout=10s：10s 内无 pong 判死重连。
-            self._ws.run_forever(
-                origin="https://www.douyin.com",
-                ping_interval=20,
-                ping_timeout=10,
-            )
+            from daemon.ws_link import CATCHUP_MIN_INTERVAL
+        except Exception:
+            CATCHUP_MIN_INTERVAL = 120.0
+        now = time.time()
+        if now - self._last_catchup < CATCHUP_MIN_INTERVAL:
+            logger.debug(
+                f"[recv][{self.name}] 追赶补拉节流跳过"
+                f"（距上次 {now - self._last_catchup:.0f}s）")
+            return
+        self._last_catchup = now
+        try:
+            n = _pull_conversations_api(self.inbox)
+            logger.info(
+                f"[recv][{self.name}] 重连后追赶补拉完成（会话 {n} 个）")
         except Exception as e:
-            if not self._stop.is_set() and self.auto_reconnect:
-                time.sleep(5)
-                self._restart_ws()
+            logger.warning(
+                "RECV-034",
+                f"[recv][{self.name}] 重连后追赶补拉失败（不影响收消息）: {e}")
+
+    def run(self) -> None:
+        """线程主体：交由 WSLink 单循环驱动（不再递归、不再回调内 sleep）。"""
+        self._link = self._make_link()
+        self._link.start()
+        # 阻塞到 stop()，保持 Thread 语义（join 可用）
+        while not self._stop.is_set():
+            if self._stop.wait(1.0):
+                break
+
+    def stop(self) -> None:
+        self._stop.set()
+        link = getattr(self, "_link", None)
+        if link is not None:
+            link.stop()
+        try:
+            if self._ws:
+                self._ws.close()
+        except Exception:
+            pass
 
     def _handle(self, message: bytes) -> None:
         """解析 PushFrame -> Response。
@@ -1095,11 +1152,25 @@ async def _shutdown() -> None:
 async def status() -> dict:
     out = {}
     for name, ib in _state["inboxes"].items():
+        # 2026-09-16 v0.43.36：连接健康可观测。稳态不能只报 connected 布尔值，
+        # 必须能回答「连了几次 / 心跳发出去没 / 多久没收下行」——
+        # 否则「30s 定时自杀」这类问题只能翻日志才能发现。
+        ch = _state["channels"].get(name)
+        link = getattr(ch, "_link", None)
+        ls = dict(getattr(link, "stats", {}) or {}) if link else {}
         out[name] = {
             "connected": ib.connected,
             "error": ib.last_error,
             "conv_count": len(ib.convs),
             "total_unread": sum(c.unread for c in ib.convs.values()),
+            "link": {
+                "connects": ls.get("connects", 0),
+                "disconnects": ls.get("disconnects", 0),
+                "hb_sent": ls.get("hb_sent", 0),
+                "hb_failed": ls.get("hb_failed", 0),
+                "last_rx_age": round(ls.get("last_rx_age", 0.0), 1),
+                "backoff_stage": ls.get("backoff_stage", 0),
+            },
         }
     return {"ok": True, "accounts": out, "version": _rt_version()}
 
