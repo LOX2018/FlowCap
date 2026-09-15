@@ -117,6 +117,12 @@
 | **取自己 sec_uid** | `/user/self` 的 HTML **已不含 secUid**（实测 72KB 响应中 `secUid`/`sec_uid`/`MS4wLjABAAAA` 均 **0 次**，`_ROUTER_DATA` 等均不存在 = 纯异步渲染）→ **HTML 正则已失效**<br>**正解**：`/aweme/v1/web/user/profile/self/`（照源项目）→ 返回 `user.sec_uid`（实测 17954 字节，uid 与 `query/user` 一致） | ✅ 已改用接口（原 `[0]` 索引致 IndexError） |
 | **取自己 uid** | `/aweme/v1/web/query/user` 返回 `id` | ✅ 可用 |
 | **账号真源** | `/api/accounts` —— **`/api/overview` 不含 accounts 字段** | 前端统一用 `/api/accounts` |
+| **搜索（流式）** `search_stream` | chunked 分块（非标准 SSE）：`<hex长度>\r\n<JSON>\r\n`，**按字节解析**（str 会因中文多字节错位） | ✅ 实测 10 条真实作者 |
+| **用户作品** `get_user_work_info` | 传**他人** sec_uid → `aweme_list` 16 条、`has_more=1`、翻页正常（第1页18→第2页16）<br>传**自己** sec_uid → `sc=0` 但**无 `aweme_list` 键**（平台限制）<br>**短时多次请求同一 sec_uid** → 同样只返 `{log_pb, status_code}`（**限流**，非凭证失效；推荐流/收藏仍正常可佐证） | ✅ 代码正确；前端加空态提示 |
+| **点赞列表** `aweme/favorite` | **空响应（非 JSON）** | 平台侧限制，前端加提示 |
+| **播放取址** `media_request.extract_media` | 列表对象自带 `video.play_addr`/`bit_rate`(25档×3url)；**`download_addr` 可能是音频(.mp3)**（图集作品） | ✅ 已修：download_addr 移出 origin 档；QUALITY_ORDER 改 hd 优先 |
+| **取址入参** | 前端回传的是 `_pick_aweme` **裁剪对象**（媒体在 `media` 子树） | ✅ 已修：extract_media 自动下钻 media |
+| **media 体积** | 完整 video 子树 ≈ **90KB/作品**（25档bit_rate×3url）→ 一页10个≈900KB | ✅ 已修：只留前2档 → **24KB/作品**（含 hd+h264 两档，清晰度不降） |
 
 ## 四之二、已知平台侧现象（**非本项目缺陷**，勿当 bug 修）
 
