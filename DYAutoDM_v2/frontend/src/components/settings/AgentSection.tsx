@@ -16,7 +16,8 @@ import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type { AiAgentSummary } from "../../api/client";
-import { SetCard, SetCardHead, SetCardBody, SetField } from "@/components/page/set-card";
+import { SetField } from "@/components/page/set-card";
+import { errMsg, SectionBlock } from "./settings-shared";
 
 const LEVELS = [
   { value: "kb_only", label: "kb_only（仅知识库，AI 不参与）" },
@@ -31,10 +32,6 @@ const SCOPE_LABELS: Record<string, string> = {
   live: "直播监听",
   crawl: "视频采集",
 };
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 export default function AgentSection(props: PageProps) {
   const { api, ready, push } = props;
@@ -163,7 +160,7 @@ export default function AgentSection(props: PageProps) {
       <GlobalModelCard api={api} ready={ready} push={push} />
 
       {/* ① Agent 列表 */}
-      <Section title="Agent 列表" subtitle={`${agents.length} 个`}>
+      <SectionBlock title="Agent 列表" subtitle={`${agents.length} 个`}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
           {agents.length === 0 && (
             <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
@@ -210,11 +207,11 @@ export default function AgentSection(props: PageProps) {
             </button>
           )}
         </div>
-      </Section>
+      </SectionBlock>
 
       {/* ② Agent 参数 */}
       {(selId || draft.name) && (
-        <Section title="Agent 参数" subtitle={sel ? sel.name : "新建"}>
+        <SectionBlock title="Agent 参数" subtitle={sel ? sel.name : "新建"}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             <Field label="Agent 名称">
               <input
@@ -314,11 +311,11 @@ export default function AgentSection(props: PageProps) {
             更完整的参数（prompt / 护栏 / 兜底话术 / 黑名单）在同页
             <b>「AI 回复引擎」</b> 调整；此处只放模版与绑定。
           </div>
-        </Section>
+        </SectionBlock>
       )}
 
       {/* ③ 账号绑定 */}
-      <Section title="账号绑定" subtitle={`${acctList.length} 个账号`}>
+      <SectionBlock title="账号绑定" subtitle={`${acctList.length} 个账号`}>
         {acctList.length === 0 && (
           <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>暂无账号</div>
         )}
@@ -400,7 +397,7 @@ export default function AgentSection(props: PageProps) {
             </div>
           );
         })}
-      </Section>
+      </SectionBlock>
     </div>
   );
 }
@@ -418,18 +415,6 @@ const inputStyle: React.CSSProperties = {
 };
 
 /** 设置区块（对标旧 `.set-card`，已收敛到 `page/set-card` 组件族）。 */
-function Section(props: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <SetCard>
-      <SetCardHead title={props.title} description={props.subtitle} />
-      <SetCardBody>{props.children}</SetCardBody>
-    </SetCard>
-  );
-}
 
 /** 字段（对标旧 `.set-field`）。 */
 function Field(props: { label: string; children: React.ReactNode }) {
@@ -483,7 +468,7 @@ function GlobalModelCard(props: PageProps) {
   });
 
   return (
-    <Section title="全局模型配置" subtitle="与「AI 回复引擎」同源 · 未绑定 Agent 的账号用这份">
+    <SectionBlock title="全局模型配置" subtitle="与「AI 回复引擎」同源 · 未绑定 Agent 的账号用这份">
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         <Field label="API 地址（base_url）">
           <input
@@ -524,6 +509,6 @@ function GlobalModelCard(props: PageProps) {
         与「AI 回复引擎」共享同一份全局配置；各 Agent 可单独覆盖主模型。
         IM 通知的指令解析模型在「通知与指令」。
       </div>
-    </Section>
+    </SectionBlock>
   );
 }

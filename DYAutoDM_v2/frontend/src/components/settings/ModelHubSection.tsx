@@ -14,11 +14,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps, HubProvider, HubModel, HubRouteKind } from "../../api/client";
-import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errMsg, SectionBlock } from "./settings-shared";
 
 const inputStyle: React.CSSProperties = {
   width: "100%",
@@ -44,18 +40,6 @@ const ROUTE_META: { kind: HubRouteKind; label: string; hint: string }[] = [
   { kind: "sem", label: "语义链路", hint: "知识库向量化" },
 ];
 
-function Block(props: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <SetCard>
-      <SetCardHead title={props.title} description={props.subtitle} />
-      <SetCardBody>{props.children}</SetCardBody>
-    </SetCard>
-  );
-}
 
 export default function ModelHubSection(props: PageProps) {
   const { api, ready, push } = props;
@@ -302,7 +286,7 @@ export default function ModelHubSection(props: PageProps) {
       </div>
 
       {/* ===== ① 提供商 ===== */}
-      <Block title="① 提供商" subtitle={`${providers.length} 个 · 管密钥 / 拉模型 / 测密钥`}>
+      <SectionBlock title="① 提供商" subtitle={`${providers.length} 个 · 管密钥 / 拉模型 / 测密钥`}>
         {providers.map((p) => {
           const st = p.key_status;
           return (
@@ -414,10 +398,10 @@ export default function ModelHubSection(props: PageProps) {
             </div>
           </div>
         )}
-      </Block>
+      </SectionBlock>
 
       {/* ===== ② 模型 ===== */}
-      <Block title="② 模型" subtitle={`${models.length} 个 · 能力标签决定可进哪条链`}>
+      <SectionBlock title="② 模型" subtitle={`${models.length} 个 · 能力标签决定可进哪条链`}>
         {models.length === 0 && (
           <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 8 }}>
             还没有模型：先在提供商上点「拉取模型」，或在下方手动添加。
@@ -486,10 +470,10 @@ export default function ModelHubSection(props: PageProps) {
           <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={addModelMut.isPending || !newModel.providerId || !newModel.name.trim()}
             onClick={() => addModelMut.mutate()}>添加模型</button>
         </div>
-      </Block>
+      </SectionBlock>
 
       {/* ===== ②·乙 避障链路 ===== */}
-      <Block title="②·乙 避障链路" subtitle={`每链最多 ${maxChain} 个模型 · 按序尝试失败自动切换`}>
+      <SectionBlock title="②·乙 避障链路" subtitle={`每链最多 ${maxChain} 个模型 · 按序尝试失败自动切换`}>
         {ROUTE_META.map(({ kind, label, hint }) => {
           const ids: string[] = routeDraft ? (routeDraft[kind] || []) : (routes[kind]?.models || []);
           return (
@@ -582,10 +566,10 @@ export default function ModelHubSection(props: PageProps) {
             {saveRouteMut.isPending ? "保存中…" : "保存链路"}
           </button>
         </div>
-      </Block>
+      </SectionBlock>
 
       {/* ===== ③ 消费方绑定 ===== */}
-      <Block title="③ 消费方绑定" subtitle="选避障链路（推荐）或固定某提供商的模型">
+      <SectionBlock title="③ 消费方绑定" subtitle="选避障链路（推荐）或固定某提供商的模型">
         {consumersMeta.map((c) => {
           const b = (bindDraft || {})[c.id] ||
             { mode: "route" as const, route: c.suggest_route || "llm", model_id: "" };
@@ -647,7 +631,7 @@ export default function ModelHubSection(props: PageProps) {
           规则：走链路的消费方按链序避障（LLM/视觉链末尾自动附加兜底模型）；
           固定模型不避障、失效即解绑回落默认 LLM 链；链路为空时该能力回落旧配置。
         </div>
-      </Block>
+      </SectionBlock>
     </div>
   );
 }

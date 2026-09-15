@@ -20,12 +20,9 @@ import type {
   SettingsFieldSchema,
 } from "../../api/client";
 import { SetCard, SetCardHead, SetCardBody, SetCardFoot } from "@/components/page/set-card";
+import { errMsg } from "./settings-shared";
 
 type Val = string | number | boolean;
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 const APPLY_LABEL: Record<string, string> = {
   hot: "立即生效",

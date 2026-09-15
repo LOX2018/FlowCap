@@ -17,10 +17,7 @@ import { PageProps } from "../../api/client";
 import type { ConfigTagSummary } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
 import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errMsg } from "./settings-shared";
 
 export default function TagSection(props: PageProps) {
   const { api, ready, push } = props;

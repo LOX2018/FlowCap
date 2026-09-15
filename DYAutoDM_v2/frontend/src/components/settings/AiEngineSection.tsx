@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/select";
 import { FormField, Row, Blank, SegmentedTabs, Toolbar } from "@/components/page/kit";
 import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
+import { errMsg } from "./settings-shared";
 
 /** Agent config 字段（与后端 `ai_reply._DEFAULT_CONFIG` 对齐）。 */
 interface AiConfig {
@@ -56,10 +57,6 @@ interface AiConfig {
   fallback_image: string;
   forbidden_words: string[];
   max_reply_len: number;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /** 回复档位选项（值与后端约定一致，逐字搬迁自 AI 页）。 */
