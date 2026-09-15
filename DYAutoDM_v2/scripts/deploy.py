@@ -45,6 +45,27 @@ SIDECARS = [
     "dyautodm-recv-daemon",
 ]
 
+# ── 2026-09-15 分支环境隔离（铁律：隔离须固化为代码，不靠记忆）────────────
+# 本分支 design/better-douyin 的独立部署环境；主分支环境 C:\temp\dyautodm_test
+# 由主分支使用，本分支**绝不写入**（历史上曾误用主分支环境致污染）。
+DEFAULT_APP_ROOT = r"C:\temp\dyautodm_design"
+FORBIDDEN_ROOTS = (r"C:\temp\dyautodm_test",)
+
+
+def branch_guard(app_root: Path, allow_foreign: bool = False) -> bool:
+    """拒绝把本分支产物部署进主分支环境（除非显式放行）。"""
+    norm = str(app_root).replace("/", "\\").rstrip("\\").lower()
+    for bad in FORBIDDEN_ROOTS:
+        if norm == bad.replace("/", "\\").rstrip("\\").lower():
+            if allow_foreign:
+                log("  ⚠️ --allow-foreign-root 已显式放行主分支环境：%s" % app_root)
+                return True
+            log("\n[隔离门禁] ❌ 拒绝部署：目标指向主分支环境 %s" % app_root)
+            log("  本分支（design/better-douyin）环境 = %s" % DEFAULT_APP_ROOT)
+            log("  如确要部署到该目录，请显式加 --allow-foreign-root。")
+            return False
+    return True
+
 
 def log(msg: str) -> None:
     print(msg, flush=True)
@@ -122,11 +143,19 @@ def _dir_size_mb(p) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    # 2026-09-15 隔离门禁（用户铁律：分支环境隔离须固化为代码，不靠记忆）。
+    # 默认值按**当前分支**给出，并**拒绝写入非本分支环境**（见下 branch_guard）。
+    # 显式配置原则：仍可用 --app-root / DY_APP_ROOT 覆盖，不自动探测本机状态。
     ap.add_argument("--app-root", default=os.environ.get("DY_APP_ROOT")
-                    or r"C:\temp\dyautodm_test")
+                    or DEFAULT_APP_ROOT)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--allow-foreign-root", action="store_true",
+                    help="显式放行非本分支默认环境（一般不要用；防止误部署到主分支环境）")
     args = ap.parse_args()
     app_root = Path(args.app_root)
+
+    if not branch_guard(app_root, allow_foreign=args.allow_foreign_root):
+        return 9
 
     exp = expected_version()
     log("=" * 74)
@@ -173,6 +202,17 @@ def main() -> int:
         if f is None:
             log("  ❌ 缺失：%s（尝试 %s）" % (full, " / ".join(str(c) for c in cands)))
             return 5
+        # 2026-09-15 平铺/子目录 双份并存且不一致 → 拒绝（防部署到旧产物）。
+        # 背景：`build_one(onedir)` 单独调用时只产出 <full>/ 子目录，平铺 <full>.exe
+        #       仍是**上一次**的旧物；deploy 又优先取平铺 → 会部署旧二进制，
+        #       且 md5 校验因「源==源」而照样通过（实测连验 3 次都跑旧 exe）。
+        flat, sub = bins / f"{full}.exe", bins / full / f"{full}.exe"
+        if flat.is_file() and sub.is_file() and _md5(flat) != _md5(sub):
+            log("  ❌ 产物自相矛盾：平铺与子目录 exe 不一致")
+            log("     平铺  %s %s" % (_md5(flat)[:12], flat))
+            log("     子目录 %s %s" % (_md5(sub)[:12], sub))
+            log("     → 请执行完整 `python scripts/build_sidecar.py --onedir`（含 dedupe）重建")
+            return 8
         log("  ✅ %-46s %s" % (full[:46], _md5(f)[:12]))
 
     if args.dry_run:
