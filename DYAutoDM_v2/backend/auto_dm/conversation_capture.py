@@ -774,15 +774,32 @@ def _system_notice_text(m):
             if k:
                 kv[str(k)] = str(v) if v is not None else ""
         biz = kv.get("a:biz") or ""
-        if "consecutive_chat_notice" in biz:
-            # 说明：抖音会为同一事件写**多条** content={} 的系统条目（实测同一会话
-            # 有 2 条，msg_id 不同、文本相同）。占位文本须带上 msg_id 尾号以便区分，
-            # 否则前端/统计会误当成重复条目。
-            tail = str(m.get("3") or "")[-6:]
-            return f"[系统提示] 对方已久未回复，此为连续聊天提醒（#{tail}）"
+        tail = str(m.get("3") or "")[-6:]
+        # ── 系统条目文案映射 ────────────────────────────────────────────
+        # 原则（2026-09-15 用户反馈「[系统消息] aweme_im_api_gateway_confirm_stranger_message」
+        # 这种内部串不该出现在 UI 里）：
+        #   这些条目的 content={}，**接口侧没有面向用户的可读文案**
+        #   （field9 只有 a:biz / s:mode / s:visible / a:plv / s:client_message_id 等内部元数据），
+        #   抖音前端是按 `a:biz` 渲染自定义组件或直接隐藏的。
+        #   故这里**按 biz 映射成中文说明**，绝不把内部 biz 串原样透出。
+        _notices = {
+            "aweme_im_consecutive_chat_notice":
+                "[系统提示] 对方已久未回复，此为连续聊天提醒",
+            "aweme_im_api_gateway_confirm_stranger_message":
+                "[系统提示] 陌生人消息确认（该会话由抖音网关自动确认）",
+            "aweme_im_user_follow_action_hello_msg":
+                "[系统提示] 互相关注后可开始聊天",
+        }
+        for key, label in _notices.items():
+            if key in biz:
+                # 同一事件可能写多条（msg_id 不同、文本相同），带尾号以便区分，
+                # 否则前端/统计会误当成重复条目。
+                return f"{label}（#{tail}）"
         if biz:
-            tail = str(m.get("3") or "")[-6:]
-            return f"[系统消息] {biz}（#{tail}）"
+            # 未知类型：不透出内部串（避免 UI 出现英文 biz 码）。
+            # 仅记录日志供排查，UI 给中性说明。
+            logger.info(f"[capture][301] 未知系统条目 biz={biz} msg_id={m.get('3')}")
+            return f"[系统消息] 该会话的抖音系统提示（#{tail}）"
         return None
     except Exception:
         return None
