@@ -250,7 +250,7 @@ export default function PlatformPage(props: PageProps) {
                 // 这不是失败而是限制 —— 给出明确提示而非空白，避免用户误判功能坏了。
                 <EmptyState
                   title="未取到作品"
-                  description="可能原因：① 填的是自己账号（抖音限制：查自己主页不返回作品，请填他人主页）；② 该用户无公开作品；③ sec_uid 有误。"
+                  description="可能原因：① 填的是自己账号（抖音限制：查自己主页不返回作品，请填他人主页）；② 平台限流（同一账号短时多次查询会临时返回空，稍后重试即可）；③ 该用户无公开作品；④ sec_uid 有误。"
                 />
               ) : renderQ(worksQ, "video"))
             : <EmptyState title="填入用户主页链接" description="支持主页 URL 或 sec_uid。作品列表会一次拉全（含翻页）。" />}
