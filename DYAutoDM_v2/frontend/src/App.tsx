@@ -128,18 +128,27 @@ export default function App() {
 
   // 版本一致性校验（2026-09-13 用户要求）：
   // 前后端分别构建部署，必须显式比对，杜绝「前端新/后端旧」静默不一致。
-  const [verMismatch, setVerMismatch] = useState<string | null>(null);
+  // 2026-09-16 铁律升级：版本不一致 → **阻断启动**（非 null 即全屏遮罩，
+  // 不渲染 AppShell）。旧实现只塞一条提示字符串，用户仍可继续操作，
+  // 导致「前端新 / 后端旧」组合跑出 ModuleNotFoundError 等诡异故障。
+  const [verBlock, setVerBlock] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     const run = async () => {
       try {
         const v = await api.checkVersionConsistency();
         if (!alive) return;
-        if (!v.match && v.backend !== "unknown") {
-          setVerMismatch(`版本不一致：前端 ${v.frontend} / 后端 ${v.backend} — ${v.detail}`);
-          _verDiag("mismatch " + v.detail);
-        } else if (v.backend === "unknown") {
-          _verDiag("backend version unknown: " + v.detail);
+        // 2026-09-16 铁律：不一致即阻断启动。
+        // backend === "unknown" 表示后端探针不可用（sidecar 极旧或未部署），
+        // 同样视为不一致 —— 此时跑业务等于盲跑，不如直接拦下。
+        if (!v.match) {
+          const why = v.backend === "unknown"
+            ? `后端版本无法读取（${v.detail}）— 可能 sidecar 未部署或版本探针缺失`
+            : `前端 ${v.frontend} ≠ 后端 ${v.backend} — ${v.detail}`;
+          setVerBlock(why);
+          _verDiag("BLOCKED " + why);
+        } else {
+          _verDiag("ok " + v.backend);
         }
       } catch { /* ignore */ }
     };
@@ -403,16 +412,60 @@ export default function App() {
   // ===================================================================
   return (
     <>
-      {/* 版本不一致告警条（2026-09-13）：前端/后端 sidecar 版本必须一致。
-          用户明确要求 —— 不许"前端新版本、后端旧版本"静默存在。 */}
-      {verMismatch && (
-        <div className="sticky top-0 z-[9999] bg-[#7f1d1d] px-3 py-1.5
-                        font-mono text-[11px] text-white">
-          ⚠️ {verMismatch}（请重新打包部署 sidecar）
+      {/* 版本不一致 —— 阻断式门禁（2026-09-16 用户铁律：禁止启动）。
+          旧实现只挂一条告警条，用户仍可继续操作 ⇒ 「前端新/后端旧」的
+          组合照样跑出各种诡异行为（如旧 sidecar 缺新模块直接
+          ModuleNotFoundError）。改为：不一致时**全屏遮罩、不渲染
+          AppShell**，用户只能看到错误 + 处理办法。 */}
+      {verBlock ? (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center
+                        bg-[#0a0a0a] px-6">
+          <div className="w-full max-w-lg rounded-lg border border-[#7f1d1d]
+                          bg-[#1a0d0d] p-6 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-2xl">⛔</span>
+              <h1 className="text-lg font-semibold text-[#fca5a5]">
+                版本不一致，已阻止启动
+              </h1>
+            </div>
+            <p className="mb-4 font-mono text-[13px] leading-relaxed
+                          text-[#e5e5e5]">
+              {verBlock}
+            </p>
+            <div className="rounded border border-[#4b2525] bg-[#140a0a] p-3">
+              <div className="mb-1 text-[11px] font-medium text-[#fca5a5]">
+                处理办法
+              </div>
+              <ol className="list-decimal space-y-1 pl-4 font-mono
+                             text-[11px] leading-relaxed text-[#a3a3a3]">
+                <li>重新打包 sidecar：
+                  <code className="mx-1 text-[#e5e5e5]">
+                    python scripts/build_sidecar.py --onedir
+                  </code>
+                </li>
+                <li>把三个 exe 与 _internal 重新部署到应用根目录</li>
+                <li>完全退出本程序后重新启动</li>
+              </ol>
+            </div>
+            <button
+              onClick={() => void api.checkVersionConsistency().then((v) => {
+                if (v.match) {
+                  setVerBlock(null);
+                } else {
+                  setVerBlock(
+                    `版本仍不一致：前端 ${v.frontend} / 后端 ${v.backend}`);
+                }
+              })}
+              className="mt-4 w-full rounded border border-[#7f1d1d]
+                         bg-[#7f1d1d]/30 px-3 py-2 text-[12px]
+                         text-[#fca5a5] hover:bg-[#7f1d1d]/50"
+            >
+              重新检测
+            </button>
+          </div>
         </div>
-      )}
-
-      <AppShell
+      ) : (
+        <AppShell
         tab={tab}
         setTab={setTab}
         title={TITLE_OF(tab)}
@@ -475,6 +528,7 @@ export default function App() {
           {tab === "logs" && <LogsPage {...pageProps} />}
         </Suspense>
       </AppShell>
+      )}
 
       {/* 全局 toast（保留旧样式类，与新外壳共存） */}
       <div className="pointer-events-none fixed bottom-5 left-1/2 z-[100] flex -translate-x-1/2

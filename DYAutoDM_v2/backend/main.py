@@ -720,14 +720,46 @@ APP_VERSION = _build_version()
 
 @app.middleware("http")
 async def _version_guard(request, call_next):
-    """版本一致性守卫（2026-09-13）：前端经 X-App-Version 声明自身版本。
+    """版本一致性守卫（2026-09-13 建立 / 2026-09-16 升级为阻断）。
 
-    不一致时不阻断（避免误伤），但回两个响应头，前端/日志可据此显式告警：
-      X-App-Version-Backend / X-Version-Mismatch: 1
+    2026-09-13 原实现：不一致**不阻断**（避免误伤），只回响应头告警。
+    该决策已被实际故障证伪 —— 「前端新 / 后端旧」组合跑出
+    ModuleNotFoundError（旧 sidecar 没有新模块）等诡异行为，
+    用户明确要求：**版本不一致禁止启动**。
+
+    现行为：业务 API（/api/ 开头，除版本探针与静态资源）在版本不一致时
+    直接 409 + 结构化错误体，前端据此阻断；免鉴权探针 /api/version
+    始终放行，否则前端连「为什么被拦」都拿不到。
     """
+    fe = (request.headers.get("x-app-version") or "").strip()
+    path = request.url.path
+    # 版本探针自身必须放行（否则前端无法展示阻断原因）
+    allow = (path == "/api/version" or path.startswith("/docs")
+             or path.startswith("/openapi") or path == "/")
+
+    if not allow and path.startswith("/api/") and fe:
+        if APP_VERSION not in ("unknown", "", None) and fe != APP_VERSION:
+            logger.error(
+                f"[版本] 拒绝请求 {path}：前后端版本不一致 "
+                f"前端 {fe} ≠ 后端 {APP_VERSION}")
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error": "version_mismatch",
+                    "frontend": fe,
+                    "backend": APP_VERSION,
+                    "msg": (f"前后端版本不一致（前端 {fe} / 后端 "
+                            f"{APP_VERSION}），已阻止启动。请重新打包并"
+                            f"部署 sidecar 后重启程序。"),
+                },
+                headers={"X-Version-Mismatch": "1",
+                         "X-App-Version-Backend": APP_VERSION},
+            )
+
     resp = await call_next(request)
     try:
-        fe = (request.headers.get("x-app-version") or "").strip()
         resp.headers["X-App-Version-Backend"] = APP_VERSION
         if fe and APP_VERSION not in ("unknown", "") and fe != APP_VERSION:
             resp.headers["X-Version-Mismatch"] = "1"
