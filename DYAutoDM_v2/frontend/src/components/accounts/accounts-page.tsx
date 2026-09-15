@@ -289,7 +289,7 @@ export default function AccountsPage(props: PageProps) {
       return;
     }
     // 启动（等待 BCC /status 就绪后再置真，避免 alive=false 期间调用方撞“容器未启动”）
-    push("正在启动凭证守护（BCC），等待浏览器就绪…");
+    push("正在启动凭证守护，等待浏览器就绪…");
     api.addLog("INFO", `正在启动凭证守护 · ${a.name}（等待 BCC 就绪）`).catch(() => {});
     // 会员体系（v0.37.0）：改走 backend /ensure-bcc（backend 进程内 spawn 自带
     // DY_MEMBER/DY_MEMBER_KEY 环境变量；Rust 直 spawn 不带会员环境，BCC 无法解密凭证）

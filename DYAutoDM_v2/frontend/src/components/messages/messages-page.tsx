@@ -364,15 +364,17 @@ export default function MessagesPage(props: PageProps) {
                 disabled={refreshing || !activeAcct}
                 title={
                   activeAcct
-                    ? `经 BCC 重新拉取 ${activeAcct} 的会话列表与聊天记录`
+                    ? `重新拉取 ${activeAcct} 的会话列表与聊天记录`
                     : "请先选择账号"
                 }
                 onClick={() => {
                   if (!activeAcct || refreshing) return;
                   setRefreshing(true);
-                  // 长任务（3~6 分钟）：提示停留 12s，否则用户错过结果
+                  // 更新为长任务：提示停留 12s，否则用户错过结果。
+                  // 2026-09-15：去掉内部黑话「BCC」与过时 ETA（旧文案写 3~6 分钟，
+                  // 实测已降到 ~1 分钟级）；按钮上已有实时耗时计数，无需再写死预估。
                   push(
-                    `正在更新会话 · ${activeAcct} · 经 BCC 拉取会话列表与聊天记录…（约需 3~6 分钟）`,
+                    `正在更新会话 · ${activeAcct} · 拉取会话列表与聊天记录…`,
                     12000,
                   );
                   a.addLog("INFO", `更新会话开始 · ${activeAcct}`).catch(() => {});
@@ -655,7 +657,7 @@ export default function MessagesPage(props: PageProps) {
               />
               {sendChannel === "wp" && (
                 <span className="text-[0.68rem] opacity-80">
-                  经浏览器容器发送，需 BCC 已就绪
+                  经网页版通道发送
                 </span>
               )}
             </div>

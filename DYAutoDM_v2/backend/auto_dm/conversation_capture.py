@@ -51,6 +51,30 @@ def _cfg(section: str, key: str):
     except Exception:
         return None
 
+
+def _cfg_bool(section: str, key: str, env: str = "",
+              default: bool = False) -> bool:
+    """读布尔配置（2026-09-15 修复「类型契约破裂」）。
+
+    契约：schema 里 `"type": "bool"` 的字段，`app_config.get()` 返回
+    **Python bool**（见 app_config_schema.py / app_config._coerce）。
+
+    旧写法 `str(_cfg(...)) == "1"` 对 bool 恒为 False
+    （`str(True) == 'True' != '1'`）→ 「长会话历史补全(cmd301)」整块被静默跳过，
+    库里永远只有首包自带的每会话 ~20 条。本函数统一处理 bool / int / str 三类
+    来源；配置中心不可用时回落环境变量；都没有则用 default。
+    """
+    v = _cfg(section, key)
+    if v is not None:
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in ("1", "true", "yes", "on")
+    ev = os.environ.get(env) if env else None
+    if ev not in (None, ""):
+        return ev.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
 def _inline_max_kb() -> int:
     """内联 base64 的体积上限（KB）。超过才走图床。
 
@@ -1058,8 +1082,8 @@ def capture_all(name, with_browser=True):
     try:
         import os as _os
         import time as _time
-        if str(_cfg("capture", "history_full") if _cfg("capture", "history_full") is not None
-       else _os.environ.get("DY_HISTORY_FULL", "1")) == "1":
+        if _cfg_bool("capture", "history_full",
+                     env="DY_HISTORY_FULL", default=True):
             # 2026-09-01 优化：跳过已掌握会话。
             #
             # 之前用首包 total_msgs 字段，实测**不可靠**（首包 field 4.2
@@ -1082,8 +1106,8 @@ def capture_all(name, with_browser=True):
             except Exception:
                 _db_counts = {}
 
-            _FORCE = str(_cfg("capture", "history_force") if _cfg("capture", "history_force") is not None
-             else _os.environ.get("DY_HISTORY_FORCE", "0")) == "1"
+            _FORCE = _cfg_bool("capture", "history_force",
+                               env="DY_HISTORY_FORCE", default=False)
 
             def _have(_c):
                 """该会话已掌握消息条数：取 max(库内, 首包解析)"""
@@ -1099,8 +1123,8 @@ def capture_all(name, with_browser=True):
                 # 启用条件：
                 #   - 长会话（>50 条）：库内 0 补；库内 50（已 1 页）跳
                 #   - 短会话（<=20）：库内 0 补；库内 =首包 跳
-                if str(_cfg("capture", "history_skip_paged") if _cfg("capture", "history_skip_paged") is not None
-       else _os.environ.get("DY_HISTORY_SKIP_PAGED", "0")) == "1":
+                if _cfg_bool("capture", "history_skip_paged",
+                             env="DY_HISTORY_SKIP_PAGED", default=False):
                     need = [c for c in convs
                             if c.get("short_id")
                             and _db_counts.get(str(c.get("conversation_id")), 0)
