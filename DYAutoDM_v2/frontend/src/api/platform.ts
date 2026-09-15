@@ -123,6 +123,12 @@ export const platformApi = {
   collected: (account: string) =>
     post<{ ok: boolean; items: CollectItem[] }>("/api/platform/collected", { account }),
 
+  // 收藏夹内的作品列表（2026-09-15 补：后端 /collection/items 早已实现，
+  // 前端此前未接线 → 用户点收藏夹卡片进不去，只看到「N 个作品」）
+  collectionItems: (account: string, max_cursor = "0", count = 20) =>
+    post<{ ok: boolean; items: AwemeItem[]; has_more: boolean; cursor: number | null }>(
+      "/api/platform/collection/items", { account, max_cursor, count }),
+
   liked: (account: string, sec_id = "", num = 18) =>
     post<{ ok: boolean; items: AwemeItem[]; has_more: boolean }>(
       "/api/platform/liked", { account, sec_id, num }),

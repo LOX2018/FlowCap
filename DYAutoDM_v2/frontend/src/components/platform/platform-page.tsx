@@ -63,6 +63,8 @@ export default function PlatformPage(props: PageProps) {
   const [playerOpen, setPlayerOpen] = useState(false);
   // 选中作品（采集模式复用：点开卡片即设为当前采集目标）
   const [selectedAweme, setSelectedAweme] = useState<string>("");
+  // 选中的收藏夹（2026-09-15：点卡片 → 加载该收藏夹内作品）
+  const [pickedCollect, setPickedCollect] = useState<{ id: string; name: string } | null>(null);
   const [playerErr, setPlayerErr] = useState<string>("");
   const openAweme = async (it: AwemeItem) => {
     setPlayerErr("");
@@ -126,6 +128,14 @@ export default function PlatformPage(props: PageProps) {
     queryKey: ["platform-collected", account],
     queryFn: () => platformApi.collected(account),
     enabled: !!account && tab === "collected",
+    staleTime: 300_000,
+  });
+
+  // 收藏夹内的作品（2026-09-15 补：点收藏夹卡片才请求，避免无用主动请求）
+  const collectItemsQ = useQuery({
+    queryKey: ["platform-collect-items", account, pickedCollect?.id],
+    queryFn: () => platformApi.collectionItems(account, "0", 20),
+    enabled: !!account && !!pickedCollect,
     staleTime: 300_000,
   });
 
@@ -235,31 +245,73 @@ export default function PlatformPage(props: PageProps) {
             </Button>
           </div>
           {worksUrl
-            ? renderQ(worksQ, "video")
+            ? (worksQ.isSuccess && !worksQ.data?.items?.length ? (
+                // 2026-09-15：实测「查自己主页」平台返回 sc=0 但 aweme_list 为空，
+                // 这不是失败而是限制 —— 给出明确提示而非空白，避免用户误判功能坏了。
+                <EmptyState
+                  title="未取到作品"
+                  description="可能原因：① 填的是自己账号（抖音限制：查自己主页不返回作品，请填他人主页）；② 该用户无公开作品；③ sec_uid 有误。"
+                />
+              ) : renderQ(worksQ, "video"))
             : <EmptyState title="填入用户主页链接" description="支持主页 URL 或 sec_uid。作品列表会一次拉全（含翻页）。" />}
         </TabsContent>
 
         <TabsContent value="liked">
-          {renderQ(likedQ, "video")}
+          {likedQ.isSuccess && !likedQ.data?.items?.length ? (
+            // 2026-09-15：实测 /aweme/favorite 平台侧返回空响应（0 字节，非 JSON）。
+            // 属平台侧限制，明确告知而非只显示空白。
+            <EmptyState
+              title="未取到点赞列表"
+              description="点赞/喜欢列表接口在平台侧常返回空响应（非本项目缺陷）。可改用「推荐流」「搜索」或他人主页查看内容。"
+            />
+          ) : renderQ(likedQ, "video")}
         </TabsContent>
 
         <TabsContent value="collected">
-          {collectedQ.isPending ? <LoadingState /> :
+          {pickedCollect ? (
+            // ── 收藏夹内作品（2026-09-15：原卡片不可点，用户进不去）──
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setPickedCollect(null)}>
+                  ← 返回收藏夹
+                </Button>
+                <span className="text-[0.8rem] text-[var(--color-text-secondary)]">
+                  {pickedCollect.name}
+                </span>
+              </div>
+              {collectItemsQ.isPending ? <LoadingState /> :
+                collectItemsQ.isError ? (
+                  <ErrorState
+                    message={String((collectItemsQ.error as Error)?.message)}
+                    onRetry={collectItemsQ.refetch}
+                  />
+                ) :
+                (collectItemsQ.data?.items?.length
+                  ? <Grid items={collectItemsQ.data.items} kind="video" onOpenAweme={openAweme} />
+                  : <EmptyState title="该收藏夹暂无作品" />)}
+            </div>
+          ) : (
+            collectedQ.isPending ? <LoadingState /> :
             collectedQ.isError ? <ErrorState message={String((collectedQ.error as Error)?.message)} onRetry={collectedQ.refetch} /> :
             (collectedQ.data?.items?.length ? (
               <div className="grid grid-cols-3 gap-3">
                 {collectedQ.data.items.map((c) => (
-                  <Card key={c.collects_id}>
+                  <Card
+                    key={c.collects_id}
+                    className="cursor-pointer transition-colors hover:border-[var(--color-accent)]"
+                    onClick={() => setPickedCollect({ id: c.collects_id, name: c.name || "未命名" })}
+                  >
                     <CardContent className="p-3">
                       <div className="text-[0.84rem] font-medium text-[var(--color-text)]">{c.name || "未命名"}</div>
                       <div className="mt-1 text-[0.72rem] text-[var(--color-text-secondary)]">
-                        {fmtNum(c.count)} 个作品
+                        {fmtNum(c.count)} 个作品 · 点击查看
                       </div>
                     </CardContent>
                   </Card>
                 ))}
               </div>
-            ) : <EmptyState title="暂无收藏夹" />)}
+            ) : <EmptyState title="暂无收藏夹" description="该账号没有收藏夹，或收藏夹为空。" />)
+          )}
         </TabsContent>
 
         <TabsContent value="notices">

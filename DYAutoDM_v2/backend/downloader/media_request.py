@@ -25,7 +25,10 @@ from __future__ import annotations
 from typing import Any, Optional
 
 # 质量档位（照源项目 `quality.rs` 的语义；数值越高越好）
-QUALITY_ORDER = ("lowbr", "h264", "h265", "dash", "origin")
+# 降级链：由高到低（2026-09-15 修正 —— 原为 lowbr 在首位，会永远选最低画质）。
+# 语义：hd/origin 优先，其次 h265/h264，再次 lowbr，最后 download 兜底。
+# 注：download_addr 可能是音频（图集作品），必须排在真正的视频档之后。
+QUALITY_ORDER = ("hd", "origin", "h265", "h264", "lowbr", "download")
 
 
 def _urls_of(addr: Any) -> list[str]:
@@ -76,8 +79,12 @@ def extract_media(aweme: dict[str, Any]) -> dict[str, Any]:
     video = aweme.get("video") or {}
 
     # ---- 视频：多档位 ----
+    # 2026-09-15 修复：原把 `download_addr` 也标为 "origin"，导致
+    #   ① 图集作品的 download_addr 是**音频(.mp3)** 时会被当作视频返回；
+    #   ② pick_quality 首选 origin → 直接给出该 mp3，播放器必然失败。
+    # 现改为：download_addr 归入 "download" 档（降级链末位），仅作最后兜底。
     for key, tag in (("play_addr", "h264"), ("play_addr_h264", "h264"),
-                     ("play_addr_lowbr", "lowbr"), ("download_addr", "origin")):
+                     ("play_addr_lowbr", "lowbr"), ("download_addr", "download")):
         us = _urls_of(video.get(key))
         if us:
             out["videos"].setdefault(tag, [])
@@ -86,6 +93,8 @@ def extract_media(aweme: dict[str, Any]) -> dict[str, Any]:
                     out["videos"][tag].append(u)
 
     # bit_rate_list（更精细的档位，含 gear_name / 码率）
+    # 2026-09-15：原实现把所有档都归并成 h264/h265，丢失了「高清/标清」层次，
+    # 导致 hd 档永远选不到。现按 gear_name 里的画质标识细分（normal/hd/super/lossless）。
     brl = video.get("bit_rate") or video.get("bit_rate_list") or []
     if isinstance(brl, list):
         for br in brl:
@@ -95,7 +104,16 @@ def extract_media(aweme: dict[str, Any]) -> dict[str, Any]:
             us = _urls_of(br.get("play_addr"))
             if not us:
                 continue
-            tag = "h265" if ("h265" in gear or "hevc" in gear) else "h264"
+            if "h265" in gear or "hevc" in gear:
+                tag = "h265"
+            elif "lossless" in gear:
+                tag = "hd"
+            elif "super" in gear or "1080" in gear:
+                tag = "hd"
+            elif "normal" in gear or "720" in gear:
+                tag = "h264"
+            else:
+                tag = "h264"
             out["videos"].setdefault(tag, [])
             for u in us:
                 if u not in out["videos"][tag]:

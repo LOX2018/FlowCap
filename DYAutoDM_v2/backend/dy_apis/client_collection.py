@@ -159,11 +159,17 @@ class CollectionMixin:
         return resp.json()
 
     @staticmethod
-    def get_collect_list(auth, **kwargs):
+    def get_collect_list(auth, max_cursor: str = "0", num: str = "20", **kwargs):
         """
         获取我的收藏夹列表
         :param auth: DouyinAuth object.
+        :param max_cursor: 翻页游标（首次 '0'，后续取上次响应的 cursor）。
+        :param num: 每页数量。
         :return: JSON.
+
+        ## 2026-09-15 修复（原硬编码 cursor='0' / count='20' 无法翻页）
+        实测响应为 {collects_list, cursor, has_more, total_number, status_code}；
+        原实现把 cursor/count 写死，翻页参数无法传入 —— 现按签名开放。
         """
         api = "/aweme/v1/web/collects/list/"
         headers = HeaderBuilder().build(HeaderType.GET)
@@ -173,8 +179,8 @@ class CollectionMixin:
         params.add_param("device_platform", "webapp")
         params.add_param("aid", "6383")
         params.add_param("channel", "channel_pc_web")
-        params.add_param("cursor", "0")
-        params.add_param("count", "20")
+        params.add_param("cursor", str(max_cursor))
+        params.add_param("count", str(num))
         params.add_param("update_version_code", "170400")
         params.add_param("pc_client_type", "1")
         params.add_param("version_code", "170400")
