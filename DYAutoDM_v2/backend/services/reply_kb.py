@@ -27,35 +27,11 @@ import re
 from typing import Optional
 
 import database
+from services.kv_store import kv_get as _kv_get, kv_set as _kv_set
 
 _KV_REPLY_KB = "ai_reply_chat_replies"   # [{id, question, answer, source, enabled, hits, created_at}]
 
 _lock = threading.RLock()
-
-
-def _kv_get(key: str, default=None):
-    try:
-        conn = database.get_db()
-        cur = conn.execute("SELECT value FROM kv_store WHERE key=?", (key,))
-        row = cur.fetchone()
-        if row is None:
-            return default
-        return json.loads(row[0])
-    except Exception:
-        return default
-
-
-def _kv_set(key: str, value) -> None:
-    try:
-        conn = database.get_db()
-        conn.execute(
-            "INSERT INTO kv_store(key, value) VALUES(?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, json.dumps(value, ensure_ascii=False)),
-        )
-        conn.commit()
-    except Exception:
-        pass
 
 
 def list_items() -> list:

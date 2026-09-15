@@ -35,6 +35,7 @@ import time
 from typing import Optional
 
 import database
+from services.kv_store import kv_get as _kv_get, kv_set as _kv_set
 
 _KV_TAGS = "config_tags"        # {tag_id: {name, created_at, updated_at}}
 _KV_BIND = "config_tag_bind"    # {account: tag_id}
@@ -48,33 +49,6 @@ _lock = threading.RLock()
 # ---------------------------------------------------------------------------
 # kv
 # ---------------------------------------------------------------------------
-
-def _kv_get(key: str, default=None):
-    import json
-    try:
-        conn = database.get_db()
-        cur = conn.execute("SELECT value FROM kv_store WHERE key=?", (key,))
-        row = cur.fetchone()
-        if row is None:
-            return default
-        return json.loads(row[0])
-    except Exception:
-        return default
-
-
-def _kv_set(key: str, value) -> None:
-    import json
-    try:
-        conn = database.get_db()
-        conn.execute(
-            "INSERT INTO kv_store(key, value) VALUES(?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, json.dumps(value, ensure_ascii=False)),
-        )
-        conn.commit()
-    except Exception:
-        pass
-
 
 # ---------------------------------------------------------------------------
 # 标签 CRUD（只管元数据）
