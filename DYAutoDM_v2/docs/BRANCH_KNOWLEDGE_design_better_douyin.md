@@ -103,13 +103,30 @@
 
 ---
 
-## 四、已知平台侧现象（**非本项目缺陷**，勿当 bug 修）
+## 四、接口适配实测台账（**照响应结构适配，勿照字段名猜**）
+
+> 2026-09-14/15 实机逐条验证。每条都附**真实响应证据**，修改前先对照。
+
+| 能力 | 真实响应结构 | 结论 |
+|---|---|---|
+| **推荐流** `get_feed` | 返回 **不是** `aweme_list`，而是 **`cards[]`**；且 `card["aweme"]` 是 **JSON 字符串**，需 `json.loads` | ✅ 已修（原读 `aweme_list` 恒 0）→ 实测 10 条 |
+| **站内通知** `get_notice_list` | 数据在 **`notice_list_v2`**（`notice_list` 恒空）；且 v2 条目**无 `content`**，文案在 `digg.aweme.desc`、作者在 `digg.aweme.author.nickname` | ✅ 已修（原 0 条）→ 实测 10 条 |
+| **收藏夹列表** `get_collect_list` | `collects_list: null` = 该账号**确实没有收藏夹**（`collection/items` 能取到作品可佐证） | 非缺陷 |
+| **收藏作品** `get_aweme_list_collection` | `aweme_list`（正常） | ✅ 可用 |
+| **收藏合集** `get_mix_list_collection` | `mix_infos`（正常） | ✅ 可用 |
+| **取自己 sec_uid** | `/user/self` 的 HTML **已不含 secUid**（实测 72KB 响应中 `secUid`/`sec_uid`/`MS4wLjABAAAA` 均 **0 次**，`_ROUTER_DATA` 等均不存在 = 纯异步渲染）→ **HTML 正则已失效**<br>**正解**：`/aweme/v1/web/user/profile/self/`（照源项目）→ 返回 `user.sec_uid`（实测 17954 字节，uid 与 `query/user` 一致） | ✅ 已改用接口（原 `[0]` 索引致 IndexError） |
+| **取自己 uid** | `/aweme/v1/web/query/user` 返回 `id` | ✅ 可用 |
+| **账号真源** | `/api/accounts` —— **`/api/overview` 不含 accounts 字段** | 前端统一用 `/api/accounts` |
+
+## 四之二、已知平台侧现象（**非本项目缺陷**，勿当 bug 修）
 
 实测（2026-09-14，真实账号）：
 - **写操作族**（点赞 `commit/item/digg` / 关注 `commit/follow/user` / 收藏）
   统一 **HTTP 200 但响应体 0 字节**。
 - **作品详情**（`/aweme/v1/web/aweme/detail/`）同样 **0 字节**。
-- `get_user_favorite`（`/aweme/v1/web/aweme/favorite/`）同样 **0 字节**。
+- **点赞列表**（`/aweme/v1/web/aweme/favorite/`）同样 **0 字节**
+  —— 逆向情报显示**源项目的"点赞列表"也用该接口**，故属平台侧行为；
+  本分支已改为**优雅降级**（空列表 + `unavailable` 标记，不抛 502）。
 
 对照：搜索（585KB）、评论列表（108B）、收藏夹列表（正常）等**读列表类**均正常。
 ⇒ 判读：**平台侧对详情/写操作的处理**；源项目二进制中亦有
