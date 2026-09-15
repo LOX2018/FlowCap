@@ -857,6 +857,10 @@ async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
     m = MR.extract_media(raw)
     url = MR.pick_quality(m, req.quality) or ""
     summary = MR.summarize(m)
+    # 2026-09-15：前端回传的是 _pick_aweme 的裁剪对象（媒体在 media 子树、
+    # author 亦在 media.author），故作者信息需兼容两种形态读取。
+    inner = raw.get("media") if isinstance(raw.get("media"), dict) else {}
+    author = raw.get("author") or inner.get("author") or {}
     return {
         "ok": True,
         "aweme_id": str(raw.get("aweme_id") or req.aweme_id or ""),
@@ -866,12 +870,11 @@ async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
         "live_photos": m.get("live_photos") or [],
         "cover": m.get("cover") or "",
         "duration": m.get("duration") or 0,
-        "desc": (raw.get("desc") or "")[:200],
+        "desc": (raw.get("desc") or inner.get("desc") or "")[:200],
         "author": {
-            "nickname": ((raw.get("author") or {}).get("nickname") or ""),
-            "avatar": (((raw.get("author") or {}).get("avatar_thumb") or {})
-                       .get("url_list") or [""])[0],
-            "sec_uid": ((raw.get("author") or {}).get("sec_uid") or ""),
+            "nickname": (author.get("nickname") or ""),
+            "avatar": (((author.get("avatar_thumb") or {}).get("url_list") or [""])[0]),
+            "sec_uid": (author.get("sec_uid") or ""),
         },
         "qualities": summary.get("video_qualities") or [],
     }

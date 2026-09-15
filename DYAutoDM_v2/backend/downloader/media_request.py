@@ -51,6 +51,12 @@ def _urls_of(addr: Any) -> list[str]:
 def extract_media(aweme: dict[str, Any]) -> dict[str, Any]:
     """从一个 aweme 对象提取**全部可用媒体地址**（照源项目 media_group）。
 
+    ## 入参兼容（2026-09-15 补）
+    既接受**完整作品对象**（`video`/`images`/`music` 在顶层），也接受前端
+    从 `/feed` 等接口拿到的**裁剪对象**（媒体在 `media` 子树下，见
+    `api/platform.py:_pick_aweme`）——后者若不下钻会得到空媒体，
+    表现为「取址失败」。
+
     返回::
 
         {
@@ -65,6 +71,15 @@ def extract_media(aweme: dict[str, Any]) -> dict[str, Any]:
           "desc": str,
         }
     """
+    # 下钻：若本层无 media 字段，但存在 media 子树，则用子树（保留外层 desc/aweme_id）
+    if not aweme.get("video") and not aweme.get("images"):
+        inner = aweme.get("media")
+        if isinstance(inner, dict) and (inner.get("video") or inner.get("images")):
+            merged = dict(inner)
+            for k in ("aweme_id", "desc", "create_time"):
+                if not merged.get(k) and aweme.get(k) is not None:
+                    merged[k] = aweme[k]
+            aweme = merged
     out: dict[str, Any] = {
         "aweme_id": str(aweme.get("aweme_id") or ""),
         "type": "video",
