@@ -251,16 +251,34 @@ def inject_test_whitelist() -> None:
 
 
 def restore_whitelist() -> None:
-    """打包后把注入还原（避免污染工作区源码 → 正式版不含白名单）。"""
-    import subprocess
+    """打包后把注入区还原为**空壳**（避免污染工作区源码 / 混入提交）。
+
+    2026-09-15 修复：原实现用 `git checkout -- backend/services/dm_dispatch.py`。
+    一旦注入态**被提交进版本库**（实测已发生），该命令还原到的就是**污染版 HEAD**
+    —— 自我循环，永远还原不掉，最终正式构建也带白名单（SEND-028 硬拒非白名单发送）。
+    现改为**内容级确定性还原**：把标记行之间的内容改回空壳，不依赖 git 状态。
+    """
+    import re as _re
+    start = "# ---DM_TEST_WHITELIST_INJECT_START---"
+    end = "# ---DM_TEST_WHITELIST_INJECT_END---"
+    target = Path(__file__).resolve().parent.parent / "backend" / "services" / "dm_dispatch.py"
     try:
-        subprocess.run(["git", "checkout", "--",
-                        "backend/services/dm_dispatch.py"],
-                       cwd=str(Path(__file__).resolve().parent.parent),
-                       capture_output=True)
-        print("[debug] 已还原 dm_dispatch.py（工作区恢复为正式版空壳）")
+        src = target.read_text(encoding="utf-8")
+        if start not in src or end not in src:
+            print("[warn] 未找到注入标记，跳过还原")
+            return
+        empty = start + "\n_TEST_WHITELIST = {}\nTEST_WHITELIST_ON = False\n" + end
+        new = _re.sub(_re.escape(start) + r".*?" + _re.escape(end),
+                      lambda _m: empty, src, flags=_re.S)
+        target.write_text(new, encoding="utf-8")
+        # 自证：**只看注入区内**必须为空壳（注释里出现的同名文字不算）
+        check = target.read_text(encoding="utf-8")
+        m = _re.search(_re.escape(start) + r"(.*?)" + _re.escape(end), check, _re.S)
+        region = (m.group(1) if m else "")
+        ok = ("TEST_WHITELIST_ON = False" in region) and ("On = True" not in region)
+        print(f"[debug] 已还原 dm_dispatch.py 注入区为空壳（自证 {'通过' if ok else '失败'})")
     except Exception as e:
-        print(f"[warn] 还原失败（请手动 git checkout）: {e}")
+        print(f"[warn] 还原失败（请手动检查注入区）: {e}")
 
 
 def _dedupe_internal() -> dict:

@@ -1121,12 +1121,17 @@ def stop_dispatcher() -> None:
 #   TEST_WHITELIST_ON = True
 #
 # 正式构建**不注入** → 保持空壳，白名单逻辑永不执行。
+#
+# 🔴 2026-09-15 事故与加固：
+#   此前该注入区**被连同注入态一起提交进版本库**，而 restore_whitelist() 用
+#   `git checkout --` 还原 → 还原到的正是**污染版 HEAD**（自我循环，永远还原不掉），
+#   且尾部 True 会**覆盖**上面第 188 行的 False（Python 后赋值生效）
+#   → 正式构建实际带白名单，非白名单账号发送被 SEND-028 硬拒。
+#   加固：① 本注入区**默认必须是空壳**（下方即为空壳态，勿手动填值）；
+#         ② restore_whitelist() 已改为**从干净模板重写本区**，不再依赖 git checkout。
 # 标记行（打包脚本据此定位替换点，勿删勿改）：
 # ---DM_TEST_WHITELIST_INJECT_START---
-_TEST_WHITELIST = {
-    "尚进工伤小助理": {"3887506227210423"},
-    "四川工伤张老师": {"316276709526638"},
-}
-TEST_WHITELIST_ON = True
+_TEST_WHITELIST = {}
+TEST_WHITELIST_ON = False
 # ---DM_TEST_WHITELIST_INJECT_END---
 # ===========================================================================
