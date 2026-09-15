@@ -353,7 +353,11 @@ async def get_conversation(account: str, conv_id: str):
             "AND text NOT LIKE '%请礼貌发言%' "
             "AND text NOT LIKE '%自觉遵守%' "
             "AND text NOT LIKE '[未知媒体]%' "
-            "AND text NOT LIKE '[分享视频]%' "
+            # 2026-09-16：只滤「空分享」（裸 [分享视频]，WS 解析噪音无 ID）；
+            # 带 ID 的 "[分享视频] 视频ID x" 是真实视频分享（08 §16.4 实测），
+            # 应正常展示。此前 NOT LIKE '[分享视频]%' 把真实分享也滤掉了
+            # （设计漂移）。空分享的准确特征是「整条文本就是 [分享视频]」。
+            "AND text <> '[分享视频]' "
             "AND text NOT LIKE 'https://www.iesdouyin.com/share/%' "  # 群聊分享链接脏数据
             "ORDER BY ts ASC",
             (account, str(conv_id)),

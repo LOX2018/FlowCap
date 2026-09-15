@@ -1092,15 +1092,27 @@ _NOISE_PATTERNS = (
     "请礼貌发言",
     "自觉遵守",
     "[未知媒体]",                          # 解析噪音
-    "[分享视频]",                          # WS 错误解析脏数据
     "https://www.iesdouyin.com/share/",    # 群聊分享链接脏数据
 )
+
+# 2026-09-16 实机修正：不再拦截「[分享视频] 视频ID x」——
+# 知识库 08 §16.4 实测判定：msg_type=8 是**真实视频分享**（对端真分享），
+# 应正常展示，不是脏数据。此前 `_NOISE_PATTERNS` 里的裸 `"[分享视频]"` 子串
+# 会把带 ID 的真实分享也一并拦掉（设计漂移：过滤了不该滤的）。
+# 现在只拦「空分享」——`_extract` 在 itemId 缺失时返回裸 "[分享视频]"，
+# 那才是 WS 错误解析噪音；带 ID 的放行。空分享由下方 _is_noise_text 特判。
+_NOISE_EMPTY_SHARE = "[分享视频]"
+
 
 
 def _is_noise_text(text: str | None) -> bool:
     """是否为应丢弃的脏数据/系统占位提示（不入库、不计未读）。"""
     if not text:
         return False
+    # 2026-09-16：空分享特判 —— 裸 "[分享视频]"（无 ID）是解析噪音，
+    # 带 ID 的 "[分享视频] 视频ID x" 是真实分享，放行。
+    if text.strip() == _NOISE_EMPTY_SHARE:
+        return True
     return any(p in text for p in _NOISE_PATTERNS)
 
 
@@ -1258,13 +1270,20 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                             (peer_uid, ib.name, conv_id),
                         )
                 # 补全消息（增量）
+                # 2026-09-16 实机修正：原 INSERT 缺 msg_id 列 ⇒ 补拉写入
+                # 的消息 msg_id 恒 None ⇒ uniq_dmmsg 唯一索引管不到，
+                # 与 WS 通道写入的同一消息重复入库（实测「WS链路修复测试」
+                # id=1638 有 msg_id / id=1655 None 两条并存）。
+                # 现补上 msg_id 列，让补拉与 WS 命中去重。
                 if conn and c.get("messages"):
                     for m in c["messages"]:
                         try:
                             conn.execute(
                                 "INSERT OR IGNORE INTO dm_messages("
-                                "account,conv_id,role,text,msg_type,extra,ts) VALUES(?,?,?,?,?,?,?)",
-                                (ib.name, conv_id, m["role"], m["text"], "text", "{}", m["ts"]),
+                                "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                                " VALUES(?,?,?,?,?,?,?,?)",
+                                (ib.name, conv_id, m["role"], m["text"], "text", "{}",
+                                 m["ts"], str(m.get("msg_id")) if m.get("msg_id") else None),
                             )
                             n_msg += 1
                         except Exception:
@@ -1282,13 +1301,15 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                 )
                 # 2026-09-15：peer_name 是裸 uid 占位 → 登记富化（IDB 有真昵称则替换）
                 ib._mark_nick_pending(conv_id)
-                # 写消息
+                # 写消息（2026-09-16 修正：补 msg_id 列，见上方同款说明）
                 for m in c.get("messages", []):
                     try:
                         conn.execute(
                             "INSERT OR IGNORE INTO dm_messages("
-                            "account,conv_id,role,text,msg_type,extra,ts) VALUES(?,?,?,?,?,?,?)",
-                            (ib.name, conv_id, m["role"], m["text"], "text", "{}", m["ts"]),
+                            "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                            " VALUES(?,?,?,?,?,?,?,?)",
+                            (ib.name, conv_id, m["role"], m["text"], "text", "{}",
+                             m["ts"], str(m.get("msg_id")) if m.get("msg_id") else None),
                         )
                         n_msg += 1
                     except Exception:
