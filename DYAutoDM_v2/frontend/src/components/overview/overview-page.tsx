@@ -19,7 +19,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Send, MessageSquare, Cpu, Users } from "lucide-react";
-import { PageProps, Overview } from "../../api/client";
+import { PageProps } from "../../api/client";
 import { Avatar, KIND_NAME } from "../../components/ui";
 import AiRuntimeSection from "@/components/overview/AiRuntimeSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
@@ -30,56 +30,7 @@ import {
   Section, Stat, StatRow, Row, RowText, KeyValue, Tone,
   SkeletonRows, Blank, SegmentedTabs,
 } from "@/components/page/kit";
-
-/** 后端 overview 实际带 liveUrl/status 字段（client.ts 精简类型未覆盖），本地扩展 */
-type OverviewExt = Overview & { liveUrl?: string; status?: string };
-
-interface StatsItem {
-  captureTs?: string;
-  status?: string;
-  nickname?: string;
-  comment?: string;
-  content?: string;
-}
-interface StatsResp {
-  ok?: boolean;
-  total: number;
-  sent: number;
-  list?: StatsItem[];
-}
-interface Account {
-  name: string;
-  uid?: string;
-  isCurrent?: boolean;
-  loggedIn?: boolean;
-  signReady?: boolean;
-  isMonitor?: boolean;
-  isSender?: boolean;
-}
-
-interface FeedItem {
-  id: number;
-  t: string;
-  k: string;
-  n: string;
-  l: number;
-  x: string;
-}
-
-/** 运行进度条（旧 `.track`/`.bar`）—— 直接读设计令牌，随主题变化。 */
-function ProgressBar({ percent, active }: { percent: number; active: boolean }) {
-  return (
-    <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-subtle-bg)]">
-      <div
-        className="h-full rounded-full transition-[width] duration-[var(--duration-slow)] ease-[var(--ease-spring)]"
-        style={{
-          width: `${Math.max(0, Math.min(100, percent))}%`,
-          background: active ? "var(--color-accent)" : "var(--color-text-muted)",
-        }}
-      />
-    </div>
-  );
-}
+import { type OverviewExt, type StatsResp, type Account, type FeedItem, ProgressBar } from "./overview-shared";
 
 export default function OverviewPage(props: PageProps) {
   const { push, api, overview, ready } = props;

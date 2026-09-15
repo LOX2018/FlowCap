@@ -14,77 +14,14 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Download, Trash2, Play, Pause, Square, RotateCw, ExternalLink, History, Inbox,
 } from "lucide-react";
-import { PageProps, Overview, TaskHistoryItem, ReusePayload } from "../../api/client";
+import { PageProps, TaskHistoryItem, ReusePayload } from "../../api/client";
 import { Avatar } from "../../components/ui";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone, Blank, Toolbar } from "@/components/page/kit";
-import { cn } from "@/lib/utils";
-
-type OverviewExt = Overview & {
-  liveUrl?: string;
-  status?: string;
-  engineState?: string;
-  statusMsg?: string;
-};
-
-interface ExportStatsResp {
-  ok: boolean;
-  path?: string;
-  error?: string;
-}
-type Api = PageProps["api"] & {
-  exportStats: () => Promise<ExportStatsResp>;
-};
-
-const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
-/* ── 表格具名单元（避免每处重复 className） ── */
-
-function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
-  return (
-    <th
-      className={cn(
-        "whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2 text-left",
-        "text-[0.7rem] font-semibold tracking-[0.03em] text-[var(--color-text-secondary)]",
-        className
-      )}
-    >
-      {children}
-    </th>
-  );
-}
-
-function Td({
-  children,
-  mono,
-  muted,
-  className,
-  colSpan,
-}: {
-  children?: React.ReactNode;
-  mono?: boolean;
-  muted?: boolean;
-  className?: string;
-  colSpan?: number;
-}) {
-  return (
-    <td
-      colSpan={colSpan}
-      className={cn(
-        "border-b border-[var(--color-border)] px-3 py-2 align-middle",
-        "text-[0.76rem] text-[var(--color-text)]",
-        mono && "font-mono tabular-nums",
-        muted && "text-[var(--color-text-muted)]",
-        className
-      )}
-    >
-      {children}
-    </td>
-  );
-}
+import { type OverviewExt, type ExportStatsResp, type Api, Th, Td, errMsg } from "./tasks-shared";
 
 export default function TasksPage(props: PageProps) {
   const { push, overview, ready, goReuse } = props;
@@ -189,7 +126,7 @@ export default function TasksPage(props: PageProps) {
               onClick={() =>
                 api
                   .exportStats()
-                  .then((r) =>
+                  .then((r: ExportStatsResp) =>
                     push(
                       r && r.ok
                         ? "统计已导出 · " + (r.path || "")
