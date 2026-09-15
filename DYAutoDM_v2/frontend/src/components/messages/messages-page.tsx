@@ -218,6 +218,15 @@ export default function MessagesPage(props: PageProps) {
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,
     staleTime: 3000,
+    // 2026-09-16 实机修复：WS 收消息入库后，聊天记录不刷新。
+    // 原因：本 query 只设了 staleTime，**没有 refetchInterval** ——
+    //   react-query 的 staleTime 只是「下次机会是否重取」的标记，
+    //   不产生定时轮询；没有 refetch 触发源 ⇒ 只有挂载/切会话时拉一次，
+    //   之后 WS 新消息落库了，聊天记录也永远停在旧快照。
+    // 列表 query 有 refetchInterval:5000 能刷新，唯独详情不会 ⇒
+    //   表现为「左侧列表动了、右侧聊天不动」。
+    // 修：补 refetchInterval 与列表同频（5s），保证 WS 落库 5s 内可见。
+    refetchInterval: 5000,
   });
 
   // 聊天框渲染优先用详情 query 的结果
