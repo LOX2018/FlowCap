@@ -231,6 +231,23 @@ def _extract_media_text(obj: dict):
         return None
 
 
+# 2026-09-15 修复（对照主分支 v2-refactor 确证）：
+#   协议工具层 im_protobuf 被单独抽出后，_parse_message_text 里仍引用
+#   **本模块**的 _extract_media_text —— 跨模块引用未接线 → 富媒体消息恒被丢弃。
+#   正解：工具层不反向依赖业务层，由业务层**注入**提取器（依赖倒置）。
+#   这一步必须发生在任何解析调用之前（模块导入即完成）。
+try:
+    from .im_protobuf import set_media_text_extractor as _set_media_ex
+    _set_media_ex(_extract_media_text)
+except Exception:  # noqa: BLE001  —— 注入失败不得阻断导入；报错见 PB-001
+    try:
+        from loguru import logger as _lg
+        import traceback as _tb
+        _lg.warning("PB-002", f"[capture] 注入富媒体提取器失败: {_tb.format_exc()[:300]}")
+    except Exception:
+        pass
+
+
 def parse_init_protobuf(raw, my_uid):
     """解析 get_message_by_init 首包，返回会话列表（含消息）。
 
@@ -312,6 +329,38 @@ def parse_init_protobuf(raw, my_uid):
         conv_objs = [sb for sf, sb in all_subs if CONV_RE.search(sb)]
     if not conv_objs:
         return _fallback_regex(raw, my_uid)
+
+    # 2026-09-15 修复（实测定位）：
+    # 同一 conv_id 可能同时命中两个不同层级的对象 ——
+    #   ① 「容器包装对象」：repeated 消息集合（field1 有 N 个），**无 field4**；
+    #   ② 「会话元数据对象」：带 field4（short_id=field4.5 / total_msgs=field4.2）。
+    # 原实现按出现顺序用 seen_cid 去重 → 容器对象排在前面时先占位，
+    # 该会话落库 short_id=None → 被长会话补全 `if c.get("short_id")` 永久跳过。
+    # 实测（2026-09-15）：承载**全部图片消息**的那个会话正是因此补不出历史。
+    # 修复：按 cid 归并，**优先保留带 field4 的元数据对象**。
+    def _has_short_id(buf):
+        for _f, _wt, _v in _parse(buf):
+            if _f == 4 and _wt == WT_LEN and isinstance(_v, bytes):
+                for _f2, _wt2, _v2 in _parse(_v):
+                    if _f2 == 5 and _wt2 in (WT_VARINT, WT_64BIT):
+                        return True
+        return False
+
+    _best_conv: dict[str, bytes] = {}
+    for _cb in conv_objs:
+        _cid0 = None
+        for _s in _extract_str(_cb):
+            _m = CONV_RE.search(_s.encode("utf-8", "replace"))
+            if _m:
+                _cid0 = _m.group().decode()
+                break
+        if not _cid0:
+            continue
+        _cur = _best_conv.get(_cid0)
+        if _cur is None or (not _has_short_id(_cur) and _has_short_id(_cb)):
+            _best_conv[_cid0] = _cb
+    if _best_conv:
+        conv_objs = list(_best_conv.values())
 
     # 全局统计 sec_uid 频率：自己的 sec_uid 在每个会话都出现（收发双方），
     # 频率远高于对端；部分会话还会粘连后续字节形成“超长污染串”（全局高频），

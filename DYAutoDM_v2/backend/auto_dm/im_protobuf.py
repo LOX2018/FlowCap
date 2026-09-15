@@ -14,6 +14,7 @@ sender/时间/消息 ID/text 字段解析）。抽出后：
 """
 from __future__ import annotations
 
+import json
 import re
 import struct
 
@@ -23,6 +24,31 @@ WT_LEN = 2
 WT_32BIT = 5
 
 CONV_RE = re.compile(rb"0:1:\d{5,20}:\d{5,20}")
+
+# 富媒体文本提取器：由业务层（conversation_capture）在导入后注入 ——
+# 见 set_media_text_extractor()。这样工具层**不反向依赖业务层**。
+#
+# 2026-09-15 修复（对照主分支 v2-refactor @af07378 确证）：
+#   158b47d 把 _parse_message_text 从 conversation_capture.py 搬到本模块时，
+#   漏搬了两个依赖 → 该函数对**所有**消息恒返回 None（首包「含消息的 0 个」根因）：
+#     ① `json` 未导入 → json.loads 抛 NameError，被函数内 `except: continue`
+#        **静默吞掉**（无任何日志），表现为「解析不出消息」而非报错；
+#     ② `_extract_media_text` 留在 conversation_capture.py → 富媒体路径同样 NameError。
+#   主分支两文件本在同一模块（json 在 26 行、_extract_media_text 在 402 行），
+#   从不报错 —— 故此为纯搬移引入的回归。
+_MEDIA_TEXT_EXTRACTOR = None
+
+
+def set_media_text_extractor(fn) -> None:
+    """注入富媒体文本提取器（业务层实现，工具层调用）。"""
+    global _MEDIA_TEXT_EXTRACTOR
+    _MEDIA_TEXT_EXTRACTOR = fn
+
+
+def get_media_text_extractor():
+    """取当前注入的富媒体文本提取器；未注入时按 None 处理（调用方降级）。"""
+    return _MEDIA_TEXT_EXTRACTOR
+
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +279,11 @@ def _parse_message_text(b):
       2. `_extract_str` 有 `len <= 800` 硬上限，而图片消息 content JSON
          实测 8KB+（含 inline_pic base64），被整条过滤掉。
     现改为：先用短串路径，失败后用长串路径 `_extract_long_str` 重试。
+
+    2026-09-15 修复（本模块被单独抽出后的回归，见文件头注释）：
+      · 富媒体提取器改为经 `set_media_text_extractor()` 注入后取用；
+      · `strs` 路径内的 `except: continue` **保留**（单个串解析失败属正常），
+        但记录首次异常，避免「静默恒返 None」再次无迹可查（下次 5 秒定位）。
     """
     # 先走原有短串路径（保持文本消息行为完全不变）
     strs = _extract_str(b)
@@ -285,11 +316,36 @@ def _parse_message_text(b):
             continue
         if not isinstance(obj, dict):
             continue
-        text = _extract_media_text(obj)
+        # 富媒体提取器由业务层注入（工具层不反向依赖业务层）。
+        _ex = _MEDIA_TEXT_EXTRACTOR
+        if _ex is None:
+            # 未注入：不静默丢数据 —— 记录一次，便于快速定位装配遗漏。
+            _warn_once("media_text_extractor 未注入，富媒体消息被跳过")
+            continue
+        try:
+            text = _ex(obj)
+        except Exception as _e:  # noqa: BLE001
+            _warn_once(f"富媒体提取失败: {type(_e).__name__}: {_e}")
+            continue
         if not text:
             continue
         return (text, obj.get("aweType"), obj.get("createdAt") or 0)
     return None
+
+
+_WARNED: set[str] = set()
+
+
+def _warn_once(msg: str) -> None:
+    """同一类问题只记一次（避免逐消息刷屏，但**绝不静默**）。"""
+    if msg in _WARNED:
+        return
+    _WARNED.add(msg)
+    try:
+        from loguru import logger
+        logger.warning("PB-001", f"[im_protobuf] {msg}")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
