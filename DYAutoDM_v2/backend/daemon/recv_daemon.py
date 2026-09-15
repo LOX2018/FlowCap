@@ -552,6 +552,12 @@ class AccountInbox:
                     peer_id = row["peer_id"]
                     peer_name = row["peer_name"]
                     short_id = row["short_id"]
+                    avatar = row["avatar"] or ""
+                else:
+                    # 2026-09-16 实机修复：内存会话命中时 row 从未赋值，
+                    # 原来 L580 直接 row["avatar"] 抛 UnboundLocalError
+                    # （RECV-003 → 404 会话不存在）。改用内存对象属性。
+                    avatar = c.avatar or ""
                 # 从 SQLite 加载消息（分页最近 200 条）
                 mrows = conn.execute(
                     "SELECT role,text,msg_type,extra,ts FROM dm_messages "
@@ -577,7 +583,7 @@ class AccountInbox:
                     "unread": 0,
                     "last_ts": last_ts,
                     "messages": messages,
-                    "avatar": row["avatar"] or "",
+                    "avatar": avatar,
                 }
             except Exception as e:
                 logger.warning("RECV-003", f"[recv][{self.name}] 数据库加载会话详情失败: {e}")
