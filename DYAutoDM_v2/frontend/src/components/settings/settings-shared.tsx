@@ -54,3 +54,15 @@ export const CHANNEL_SHORT: Record<string, string> = {
   lark: "飞书",
   qqofficial: "QQ",
 };
+
+export const inputStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  background: "var(--color-surface)",
+  border: "1px solid var(--color-border)",
+  borderRadius: 4,
+  padding: "4px 6px",
+  fontSize: 12,
+  color: "var(--color-text)",
+  outline: "none",
+};
