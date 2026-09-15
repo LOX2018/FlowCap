@@ -91,8 +91,11 @@ def handle(conn, kill_after):
         conn.settimeout(0.3)
         t0 = time.time()
         while not srv_stop.is_set():
-            # 第 2 条连接：8s 后服务端主动断开 → 检验客户端退避重连
-            if kill_after and n == 2 and time.time() - t0 > 8:
+            # 每条连接 8s 后服务端主动断开 → 检验客户端退避重连
+            # （2026-09-16 修正：原判据 `n == 2` 依赖「第 1 条先被看门狗杀掉」
+            #   的旧行为；看门狗修正后第 1 条会长期存活，n==2 永远等不到，
+            #   导致这条断言假失败。改为「每条连接都限时」才是真实语义。）
+            if kill_after and time.time() - t0 > 8:
                 conn.close(); return
             try:
                 b = conn.recv(4096)
@@ -152,7 +155,7 @@ link = WSLink(name="probe", make_ws=make_ws, on_message=on_msg,
               on_connected=on_conn, on_disconnected=on_disc)
 link.start()
 
-DUR = 45
+DUR = 70
 print(f"运行 {DUR}s（服务端：收 Ping 不回 Pong；第 2 条连接 8s 后被踢）…\n")
 for i in range(DUR):
     time.sleep(1)

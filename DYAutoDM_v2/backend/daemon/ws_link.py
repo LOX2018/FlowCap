@@ -57,9 +57,51 @@ CATCHUP_MIN_INTERVAL = float(
     __import__("os").environ.get("DY_WS_CATCHUP_MIN_INTERVAL", "120") or 120)
 
 
+def _peer_closed(sock) -> bool:
+    """探测对端是否已关闭（半开连接检测）。
+
+    为什么需要：`ws.send()` 只把数据写进内核发送缓冲，即使**对端已经发过
+    FIN** 也会「成功」返回，因此「心跳发送无异常」并不能证明连接还活着。
+    这是 recv_daemon 历史上反复看不出的坑。
+
+    原理：对端关闭后在内核缓冲留下可读 EOF，`recv(MSG_PEEK)` 返回 b""
+    即代表对端已关（非阻塞，不影响正常数据 —— 有真实数据时返回非空，
+    我们不消费它，留给 dispatcher 线程读取）。
+
+    2026-09-16 实机引入：替代「仅按 rx_age 超时判死」的旧判据 ——
+    私信业务低峰本就长期零下行，旧判据把健康连接误杀（实测 240s 误杀 2 次）。
+    """
+    try:
+        import errno
+        import socket as _so
+        raw = getattr(sock, "sock", sock)      # WebSocket 包装 → 裸 socket
+        if raw is None:
+            return False
+        prev = raw.gettimeout()
+        raw.settimeout(0)                      # 非阻塞 peek
+        try:
+            data = raw.recv(1, _so.MSG_PEEK)   # 只看不取
+            return data == b""                 # EOF = 对端已关
+        except BlockingIOError:
+            return False                       # 无数据可读 = 还活着
+        except OSError as e:
+            # EAGAIN/EWOULDBLOCK 同上；其它错误交给上层
+            if getattr(e, "errno", None) in (
+                    getattr(errno, "EAGAIN", 11),
+                    getattr(errno, "EWOULDBLOCK", 11)):
+                return False
+            return True
+        finally:
+            try:
+                raw.settimeout(prev)
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
 class Backoff:
     """指数退避 + jitter。成功在线超时重置计数。"""
-
     def __init__(self, base: float = BACKOFF_BASE,
                  cap: float = BACKOFF_MAX,
                  reset_after: float = BACKOFF_RESET_AFTER) -> None:
@@ -299,6 +341,13 @@ class WSLink:
         心跳：仿 `dy_live/server.py:34-47` 已验证做法，发
         `PushFrame(payloadType="hb")` 二进制帧（opcode=0x02）。
         看门狗：久无下行 → 判半开，主动 close 让主循环重连。
+
+        ⚠️ 2026-09-16 实机修正（真实抖音环境）：看门狗**不能只看下行**。
+        私信业务低峰本就长时间零下行（实测 rx_age 达 128s 而连接完全健康），
+        只看下行会把健康连接当成半开误杀 —— 实测 240s 内被误杀 2 次
+        （RECV-032 128s / 133s），反而制造了新的不稳定。
+        正确判据：**心跳发送成功即证明 socket 仍可写**，此时不判死。
+        只有「心跳连续失败」或「连接对象已断开」才该重连。
         """
         from static import Live_pb2
         while not ev.is_set():
@@ -311,11 +360,41 @@ class WSLink:
                 return
             age = time.time() - self._last_rx
             self.stats["last_rx_age"] = age
-            if age > DEAD_TIMEOUT:
+            sock = getattr(ws, "sock", None)
+            if sock is None or not getattr(sock, "connected", False):
                 logger.warning(
                     "RECV-032",
-                    f"[recv][{self.name}] {age:.0f}s 未收到任何下行帧，"
-                    f"判定半开连接，主动重连")
+                    f"[recv][{self.name}] socket 已断开，触发重连")
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+                return
+            # 半开检测（真正的死连接判据）：对端关闭时 TCP 会发 FIN，
+            # 内核缓冲留下 0 字节可读；用非阻塞 peek 探测即可发现。
+            # 这是唯一能识别「socket 可写但对端已走」的手段 —— 因为
+            # ws.send() 只写内核缓冲，对端已关也照样「成功」。
+            try:
+                if _peer_closed(sock):
+                    logger.warning(
+                        "RECV-032",
+                        f"[recv][{self.name}] 探测到对端已关闭（半开连接），"
+                        f"触发重连（rx_age={age:.0f}s）")
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
+            # 兜底：心跳连续失败且长时间无下行 → 判死（叠加条件防误杀）
+            if (self.stats["hb_failed"] > 0
+                    and self.stats["hb_failed"] % 3 == 0
+                    and age > DEAD_TIMEOUT):
+                logger.warning(
+                    "RECV-032",
+                    f"[recv][{self.name}] {age:.0f}s 未收到下行帧且心跳连续"
+                    f"失败 {self.stats['hb_failed']} 次，判定半开连接，主动重连")
                 try:
                     ws.close()
                 except Exception:
@@ -325,9 +404,6 @@ class WSLink:
             if HB_MODE != "hb":
                 continue
             try:
-                sock = getattr(ws, "sock", None)
-                if sock is None or not getattr(sock, "connected", False):
-                    continue
                 frame = Live_pb2.PushFrame()
                 frame.payloadType = "hb"
                 ws.send(frame.SerializeToString(), opcode=0x02)
