@@ -203,6 +203,14 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
     if entry in ("daemon/browser_daemon.py", "daemon/recv_daemon.py"):
         for _m in ("browser_daemon_js", "daemon.browser_daemon_js"):
             cmd += ["--hidden-import", _m]
+    # 2026-09-16 v0.43.36：WS 稳态治理模块（daemon/ws_link.py）。
+    # RecvChannel._make_link / _catchup_after_reconnect 在**函数体内**
+    # `from daemon.ws_link import WSLink` —— 与上面两条完全同类的坑
+    # （函数体动态 import 静态分析扫不到）。缺失时 recv_daemon 打包后启动即
+    # ModuleNotFoundError，WS 通道整体不可用。必须显式声明。
+    if entry == "daemon/recv_daemon.py":
+        for _m in ("daemon.ws_link", "ws_link"):
+            cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))

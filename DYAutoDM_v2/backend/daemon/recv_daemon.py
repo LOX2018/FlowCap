@@ -1063,17 +1063,6 @@ class RecvChannel(threading.Thread):
             return f"[对方已读 标号 {content_json.get('read_index', '')}]", {}
         return f"[未知类型{t}] {json.dumps(content_json, ensure_ascii=False)[:200]}", {}
 
-    def run(self) -> None:
-        self._restart_ws()
-
-    def stop(self) -> None:
-        self._stop.set()
-        try:
-            if self._ws:
-                self._ws.close()
-        except Exception:
-            pass
-
 
 # ----------------------------------------------------------------------------
 # FastAPI 路由
