@@ -252,6 +252,44 @@ class AccountInbox:
             f"[recv][{self.name}] {reason}，{len(batch)} 个骨架昵称"
             f"待后续富化（{IDB_ENRICH_RETRY}s 后第 {tries} 次重试）")
 
+    def _infer_peer_by_common_uid(self, conv_id: str,
+                                  batch: list[str] | None = None) -> str | None:
+        """my_uid 未就绪时，从 conv_id 集合推断本号 uid，再取对端。
+
+        原理（与 capture_all 的 `_auth_uid` 同源，见 conversation_capture.py）：
+        本账号所有 conv_id 形如 `0:1:uid_a:uid_b`，其中**本号 uid 出现在几乎
+        每一条里** → 取出现频次 ≥90% 的那个即本号，另一个即对端。
+
+        为什么需要：`_refresh_my_uid()` 依赖凭证加载，recv_daemon 刚启动或
+        凭证异常时会返回 None（实测本次 10 个骨架全都因此解析不出 peer，
+        富化静默全跳过）。退化推断保证**不依赖凭证也能工作**。
+        """
+        pool = list(batch or []) + [conv_id]
+        from collections import Counter
+        cnt: Counter = Counter()
+        n = 0
+        for cid in pool:
+            p = str(cid or "").split(":")
+            if len(p) != 4:
+                continue
+            cnt[p[2]] += 1
+            cnt[p[3]] += 1
+            n += 1
+        if not n:
+            return None
+        cands = [(u, k) for u, k in cnt.items() if k >= n * 0.9]
+        my = max(cands, key=lambda x: x[1])[0] if cands else None
+        if not my:
+            return None
+        p = str(conv_id or "").split(":")
+        if len(p) != 4:
+            return None
+        if p[2] == my:
+            return p[3]
+        if p[3] == my:
+            return p[2]
+        return None
+
     def _enrich_nicknames_once(self) -> None:
         """批量把待富化骨架的昵称从 IndexedDB 回填（一次浏览器读取搞定一批）。"""
         with self._nick_lock:
@@ -259,6 +297,13 @@ class AccountInbox:
             self._nick_pending.clear()
         if not batch:
             return
+        # my_uid 未就绪会让 _extract_peer_uid 全部返回 None（实测 10 个骨架
+        # 因此静默全跳过）→ 富化前先自愈一次（幂等、仅本地读凭证）。
+        if not self.my_uid:
+            try:
+                self._refresh_my_uid()
+            except Exception:
+                pass
         try:
             # BCC 在线才做；不在线**把待办还回去**（否则本次清空=永久丢失，
             # 与「下次再补」的契约矛盾），由后续 WS 建骨架或定时重试兜底。
@@ -287,9 +332,14 @@ class AccountInbox:
             done = 0
             for cid in batch:
                 try:
+                    # 优先用 my_uid 排除自己
                     peer = self._extract_peer_uid(cid)
                     if not peer:
-                        continue
+                        # my_uid 可能尚未就绪（_refresh_my_uid 依赖凭证，
+                        # WS 刚起时常为 None）→ 退化：本账号所有 conv_id 的
+                        # 共同项即本号 uid（与 capture_all 的 _auth_uid 同法）。
+                        # 取待办集合里出现频次最高且达 90% 的那个 uid。
+                        peer = self._infer_peer_by_common_uid(cid, batch)
                     info = by_uid.get(str(peer))
                     if not info or not info.get("nickname"):
                         continue
@@ -319,6 +369,9 @@ class AccountInbox:
                     f"[recv][{self.name}] 骨架昵称富化：{done}/{len(batch)} 个"
                     f"（IndexedDB，零网络请求）")
         except Exception as e:
+            # 异常（超时/连接重置/容器忙）同样归还待办 —— 否则一次网络抖动
+            # 就永久丢掉这批骨架的富化机会，与「下次再补」的契约矛盾。
+            self._reschedule_enrich(batch, f"异常：{type(e).__name__}")
             logger.warning(
                 "RECV-020",
                 f"[recv][{self.name}] 骨架昵称富化失败（不影响收消息）: {e}")
@@ -396,6 +449,11 @@ class AccountInbox:
                     self._nick_pending.add(r["conv_id"])
             if self.convs:
                 logger.info(f"[recv][{self.name}] 已从数据库加载 {len(self.convs)} 个会话")
+            # 有存量待富化 → 起一次节流任务（BCC 在线则自动补昵称）
+            if self._nick_pending:
+                logger.info(
+                    f"[recv][{self.name}] 启动存量：{len(self._nick_pending)} 个会话"
+                    f"昵称待富化，{IDB_ENRICH_DELAY}s 后自动回填")
             # 有存量待富化 → 起一次节流任务（BCC 在线则自动补昵称）
             if self._nick_pending:
                 try:
