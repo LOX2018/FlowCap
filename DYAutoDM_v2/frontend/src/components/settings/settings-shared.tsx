@@ -15,7 +15,7 @@
  * 提取后行为完全一致（纯去重，不改逻辑）。
  */
 import { type ReactNode } from "react";
-import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
+import { SetCard, SetCardHead, SetCardBody, SetField } from "@/components/page/set-card";
 
 /** 统一错误信息提取（原在 6 个 Section 文件重复定义，实现一致）。 */
 export function errMsg(e: unknown): string {
@@ -66,3 +66,17 @@ export const inputStyle: React.CSSProperties = {
   color: "var(--color-text)",
   outline: "none",
 };
+
+export function Field(props: { label: string; children: React.ReactNode }) {
+  return (
+    <SetField
+      label={
+        <span className="text-[0.72rem] font-normal text-[var(--color-text-muted)]">
+          {props.label}
+        </span>
+      }
+    >
+      {props.children}
+    </SetField>
+  );
+}
