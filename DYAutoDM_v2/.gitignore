@@ -56,6 +56,10 @@ Thumbs.db
 # Logs
 *.log
 logs/
+# 说明：上面的 logs/ 本意是忽略运行期日志目录，但它会连带忽略同名**源码**目录
+# （frontend/src/components/logs/ 是页面组件，必须入库）。加否定规则修正。
+!src/components/logs/
+!frontend/src/components/logs/
 
 # PyInstaller
 *.manifest
