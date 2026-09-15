@@ -52,6 +52,16 @@ if sys.stderr is not None:
 
 from vbrowser import app_root
 
+# 2026-09-15 骨架昵称即时富化：WS 建立会话骨架后，延迟多少秒再批量拉 IndexedDB
+# 回填昵称。节流目的：WS 同步帧高频，若每个新会话都触发一次浏览器 IDB 读取
+# （数十秒级 evaluate）会拖垮收消息链路；攒一批一起做，一次读取搞定全部。
+# 用户开销感知：骨架出现后至多 IDB_ENRICH_DELAY 秒自动变成真昵称。
+IDB_ENRICH_DELAY = float(os.environ.get("DY_IDB_ENRICH_DELAY", "8") or 8)
+# BCC 离线时的退避重试间隔（BCC 常晚于 recv_daemon 启动，实测数十秒）
+IDB_ENRICH_RETRY = float(os.environ.get("DY_IDB_ENRICH_RETRY", "30") or 30)
+# 单次富化的重试上限：超过则交还 capture_all 兜底，避免无限退避刷日志
+IDB_ENRICH_MAX_TRIES = int(os.environ.get("DY_IDB_ENRICH_MAX_TRIES", "10") or 10)
+
 _ROOT = app_root()
 
 # 日志同步输出到 stderr（enqueue=True 避免 Windows GBK 控制台中文编码失败中断主线程），
@@ -171,8 +181,147 @@ class AccountInbox:
         self._api_pulled = False  # 标记是否已调 get_message_by_init 拉全量会话
         # my_uid：用于从 conv_id 0:1:uid_a:uid_b 提取对端 UID（WS 消息 sender 常为空/自己）
         self.my_uid = None
+        # 2026-09-15 骨架昵称即时富化：WS 建立的会话骨架 peer_name 为空（WS 帧
+        # 不带昵称，见 Response.proto GetConversationInfoV2Response），前端只能
+        # 回退显示裸 uid。这里登记待富化的 conv_id，由后台线程节流批量拉
+        # IndexedDB 回填，用户无需「再点一次更新会话」。
+        self._nick_pending: set[str] = set()
+        self._nick_lock = threading.Lock()
+        self._nick_worker: threading.Thread | None = None
         self._refresh_my_uid()
         self._load_from_db()
+
+    # ---- 骨架昵称即时富化（2026-09-15）------------------------------------
+    #
+    # 设计契约：
+    #   ① WS 是**高频路径**（同步帧每次建连/新消息都来），**绝不可内联调 BCC**
+    #      （一次 IDB 读取要起浏览器 evaluate，数十秒级）→ 只登记 conv_id，
+    #      由独立后台线程节流批量处理。
+    #   ② 昵称唯一来源仍是 **BCC 被动持有的 IndexedDB**（零网络请求，不碰风控）。
+    #      BCC 不在线 → 静默跳过，留待下次（capture_all 会兜底），不报错不阻塞。
+    #   ③ **绝不覆盖已有昵称**：SQL 限定 peer_name 为空/缺失才写，
+    #      capture_all 作为权威写入方的结果优先。
+    #
+    def _mark_nick_pending(self, conv_id: str) -> None:
+        """登记一个待富化昵称的会话骨架（幂等，O(1)）。"""
+        if not conv_id:
+            return
+        with self._nick_lock:
+            self._nick_pending.add(conv_id)
+            need_start = self._nick_worker is None or not self._nick_worker.is_alive()
+            if need_start:
+                # 节流：等待 IDB_ENRICH_DELAY 秒再跑，让同一批骨架一起处理，
+                # 避免每个新会话都触发一次浏览器读取。
+                try:
+                    self._nick_worker = threading.Timer(
+                        IDB_ENRICH_DELAY, self._enrich_nicknames_once)
+                    self._nick_worker.daemon = True
+                    self._nick_worker.start()
+                except Exception:
+                    pass
+
+    def _reschedule_enrich(self, batch: list[str], reason: str) -> None:
+        """把待办还回去并安排退避重试（BCC 常晚于 recv_daemon 启动）。
+
+        设计要点：
+          - **归还待办**：任何拿不到数据的情形都不能静默清空，否则这些骨架
+            永远失去富化机会（与「下次再补」的契约矛盾）。
+          - **有上限**：连续失败 IDB_ENRICH_MAX_TRIES 次后停止退避，交由
+            capture_all（用户点「更新会话」）兜底，避免无限 Timer 刷日志。
+        """
+        with self._nick_lock:
+            self._nick_pending.update(batch)
+            self._nick_tries = getattr(self, "_nick_tries", 0) + 1
+            tries = self._nick_tries
+        if tries >= IDB_ENRICH_MAX_TRIES:
+            logger.info(
+                f"[recv][{self.name}] 骨架昵称富化重试 {tries} 次仍{reason}，"
+                f"停止自动重试（{len(batch)} 个交给「更新会话」兜底）")
+            return
+        try:
+            with self._nick_lock:
+                if (self._nick_worker is None
+                        or not self._nick_worker.is_alive()):
+                    self._nick_worker = threading.Timer(
+                        IDB_ENRICH_RETRY, self._enrich_nicknames_once)
+                    self._nick_worker.daemon = True
+                    self._nick_worker.start()
+        except Exception:
+            pass
+        logger.debug(
+            f"[recv][{self.name}] {reason}，{len(batch)} 个骨架昵称"
+            f"待后续富化（{IDB_ENRICH_RETRY}s 后第 {tries} 次重试）")
+
+    def _enrich_nicknames_once(self) -> None:
+        """批量把待富化骨架的昵称从 IndexedDB 回填（一次浏览器读取搞定一批）。"""
+        with self._nick_lock:
+            batch = list(self._nick_pending)
+            self._nick_pending.clear()
+        if not batch:
+            return
+        try:
+            # BCC 在线才做；不在线**把待办还回去**（否则本次清空=永久丢失，
+            # 与「下次再补」的契约矛盾），由后续 WS 建骨架或定时重试兜底。
+            from auto_dm import accounts as _acc
+            port = _acc.browser_daemon_port(self.name)
+            if not _acc._port_open(port, timeout=0.5):
+                self._reschedule_enrich(batch, "BCC 离线")
+                return
+            import requests as _rq
+            r = _rq.post(f"http://127.0.0.1:{port}/userinfo_idb",
+                         json={}, timeout=60)
+            j = (r.json() or {}) if r.status_code == 200 else {}
+            users = j.get("users") or {}
+            # 任何「拿不到数据」的情形都归还待办并退避重试，绝不静默丢弃：
+            # HTTP 非 200 / ok=False / users 为空（容器刚起、页面未就绪都属此类）
+            if not users:
+                self._reschedule_enrich(batch, "IDB 暂无数据")
+                return
+            # 以 uid 为键（value.uid 是数字，与 conv_id 推出的 peer_uid 同体系）
+            by_uid: dict[str, dict] = {}
+            for _u, _v in users.items():
+                _uid = (_v or {}).get("uid") or _u
+                if _uid:
+                    by_uid[str(_uid)] = _v or {}
+            conn = self._db()
+            done = 0
+            for cid in batch:
+                try:
+                    peer = self._extract_peer_uid(cid)
+                    if not peer:
+                        continue
+                    info = by_uid.get(str(peer))
+                    if not info or not info.get("nickname"):
+                        continue
+                    # 只在昵称仍为空/缺失时写：不覆盖已关联的正确值
+                    cur = conn.execute(
+                        "UPDATE dm_conversations SET peer_name=?, avatar=? "
+                        "WHERE account=? AND conv_id=? "
+                        "AND (peer_name IS NULL OR peer_name='' "
+                        "     OR peer_name=peer_id)",
+                        (info["nickname"], info.get("avatar") or None,
+                         self.name, cid),
+                    )
+                    done += (cur.rowcount or 0)
+                    # 同步内存缓存，前端下次轮询即可见（不必等库）
+                    c = self.convs.get(cid)
+                    if c:
+                        c.peer_name = info["nickname"]
+                        if info.get("avatar"):
+                            c.avatar = info["avatar"]
+                except Exception:
+                    continue
+            if done:
+                conn.commit()
+                with self._nick_lock:
+                    self._nick_tries = 0   # 成功即清零，避免累积误触上限
+                logger.info(
+                    f"[recv][{self.name}] 骨架昵称富化：{done}/{len(batch)} 个"
+                    f"（IndexedDB，零网络请求）")
+        except Exception as e:
+            logger.warning(
+                "RECV-020",
+                f"[recv][{self.name}] 骨架昵称富化失败（不影响收消息）: {e}")
 
     def _refresh_my_uid(self) -> bool:
         """（重新）读取本机 uid。
@@ -240,8 +389,22 @@ class AccountInbox:
                 c.unread = r["unread"] or 0
                 c.avatar = r["avatar"] or None
                 self.convs[r["conv_id"]] = c
+                # 2026-09-15：启动时把「昵称为空/裸 uid」的存量会话也登记富化，
+                # 让历史上遗留的空名会话自愈（无需用户再点一次「更新会话」）。
+                _pn = r["peer_name"]
+                if not _pn or _pn == r["peer_id"]:
+                    self._nick_pending.add(r["conv_id"])
             if self.convs:
                 logger.info(f"[recv][{self.name}] 已从数据库加载 {len(self.convs)} 个会话")
+            # 有存量待富化 → 起一次节流任务（BCC 在线则自动补昵称）
+            if self._nick_pending:
+                try:
+                    self._nick_worker = threading.Timer(
+                        IDB_ENRICH_DELAY, self._enrich_nicknames_once)
+                    self._nick_worker.daemon = True
+                    self._nick_worker.start()
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning("RECV-002", f"[recv][{self.name}] 数据库加载会话失败: {e}")
 
@@ -694,6 +857,8 @@ class RecvChannel(threading.Thread):
                         "peer_id,peer_name,short_id,last_ts,unread) VALUES(?,?,?,?,?,?,?)",
                         (self.inbox.name, conv_id, None, None, c.short_id, 0, 0),
                     )
+                # 2026-09-15：登记待富化昵称（后台线程节流批量从 IndexedDB 回填）
+                self.inbox._mark_nick_pending(conv_id)
             if conn:
                 conn.commit()
         if n_new:
@@ -981,6 +1146,8 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                     "peer_id,peer_name,short_id,last_ts,unread,avatar) VALUES(?,?,?,?,?,?,?,?)",
                     (ib.name, conv_id, peer_uid, peer_uid, None, 0, 0, None),
                 )
+                # 2026-09-15：peer_name 是裸 uid 占位 → 登记富化（IDB 有真昵称则替换）
+                ib._mark_nick_pending(conv_id)
                 # 写消息
                 for m in c.get("messages", []):
                     try:

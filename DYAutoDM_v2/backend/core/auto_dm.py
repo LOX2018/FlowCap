@@ -261,6 +261,37 @@ class AutoDM:
     # ------------------------------------------------------------------
     # 引擎控制（async）
     # ------------------------------------------------------------------
+    def _normalize_dm_pool(self, pool: Any) -> list[dict]:
+        """把词库输入归一到 [{text, enabled}]（两种形态都要吃得下）。
+
+        - `list[str]`（TaskConfig 形态）：用 `self.dm_template` 的既有启用位合并，
+          避免前端只回传「已启用文案」时把其余文案的启用状态丢掉。
+        - `list[dict]`（RoomConfig 形态）：自带 enabled，原样采用。
+
+        合并后仍为空时退回 settings 词库（怕调用方传空导致无文案可发）。
+        """
+        existing: dict[str, bool] = {}
+        for t in (self.dm_template or []):
+            text = t.get("text", "") if isinstance(t, dict) else str(t)
+            en = t.get("enabled", True) if isinstance(t, dict) else True
+            existing[str(text)] = en
+        merged: list[dict] = []
+        for t in pool or []:
+            if isinstance(t, dict):
+                text = str(t.get("text", "") or "").strip()
+                en = bool(t.get("enabled", True))
+            else:
+                text = str(t or "").strip()
+                en = existing.get(text, True)
+            if text:
+                merged.append({"text": text, "enabled": en})
+        if not merged:
+            for item in getattr(settings, "dm_pool", []) or []:
+                text = item.get("text", "") if isinstance(item, dict) else str(item)
+                if text:
+                    merged.append({"text": str(text), "enabled": True})
+        return merged
+
     def _apply_config(self, config: TaskConfig) -> None:
         """把 TaskConfig 落到运行时字段（任务容器回读 / 监控展示用）。
 
@@ -272,24 +303,7 @@ class AutoDM:
         self.delay_range = tuple(config.delay_range or [40, 65])
         self.force_rescan = bool(config.force_rescan)
         self._acct = getattr(config, "acct", None)
-        existing = {}
-        for t in (self.dm_template or []):
-            text = t.get("text", "") if isinstance(t, dict) else str(t)
-            en = t.get("enabled", True) if isinstance(t, dict) else True
-            existing[text] = en
-        merged = []
-        for t in config.dm_pool or []:
-            text = str(t or "").strip()
-            if not text:
-                continue
-            merged.append({"text": text, "enabled": existing.get(text, True)})
-        # 合并后仍为空时退回 settings 词库（怕 config.dm_pool 为空导致无文案可发）
-        if not merged:
-            for item in getattr(settings, "dm_pool", []) or []:
-                text = item.get("text", "") if isinstance(item, dict) else str(item)
-                if text:
-                    merged.append({"text": str(text), "enabled": True})
-        self.dm_template = merged
+        self.dm_template = self._normalize_dm_pool(config.dm_pool)
         self.pick_dm_message = self._make_pick_dm_message()
 
     def _make_pick_dm_message(self):
@@ -790,6 +804,91 @@ class AutoDM:
         self.limit = int(n)
         if self.dispatch:
             self.dispatch.set_max_target(n)
+
+    def apply_runtime_config(self, cfg: Any) -> dict:
+        """把「变更后的配置内容」补进**正在运行**的监听任务，不中断监听。
+
+        设计契约（用户 2026-09-15 定调）：
+          > 点「重启」= 保存后立即把新配置套到正在运行的监听任务，
+          > **只修改配置的内容，不中断监听**。
+
+        与 `start()` 的区别（这是本方法存在的唯一理由）：
+          - **不重建** LiveChatHook / WS 连接（监听不断）；
+          - **不重扫** 凭证（`force_rescan` 不在此生效，避免把运行中任务踢回扫码）；
+          - **不清空** 延迟发送队列、不重置去重集合与已发计数；
+          - 只热更「调度参数」：发送上限 / 间隔 / 延迟抖动 / 私信词库。
+
+        `live_url`（换直播间）与 `acct`（换监听账号）**不属于热更范围**：
+        它们要求重建 auth 与 WS，语义上是「换任务」——显式拒绝并在 `not_applied`
+        里说明，由调用方（前端）提示用户走「停止 + 开始」流程。绝不静默忽略。
+
+        返回 `{ok, applied, not_applied, reason, engine_state}`；`ok=False` 表示
+        本次一个字段都没生效（引擎未运行 / 参数非法），调用方必须如实呈现。
+        """
+        state = self.state.value if isinstance(self.state, EngineState) else str(self.state)
+        if self.state not in (EngineState.RUNNING, EngineState.PAUSED):
+            logger.warning("ENG-013", f"[引擎] 热更被拒：引擎未运行（state={state}）")
+            return {
+                "ok": False, "applied": [], "not_applied": [],
+                "reason": f"引擎未运行（当前 {state}），请先「开始自动私信」",
+                "engine_state": state,
+            }
+
+        not_applied: list[str] = []
+        # ① live_url：换直播间 = 换任务，不在热更语义内
+        new_url = str(getattr(cfg, "live_url", "") or "").strip()
+        cur_url = str(self.live_url or "").strip()
+        if new_url and cur_url and new_url != cur_url:
+            not_applied.append("live_url")
+        # ② acct：换监听账号需要重建 auth + WS
+        new_acct = getattr(cfg, "acct", None)
+        cur_acct = getattr(self, "_acct", None)
+        if new_acct and cur_acct and new_acct != cur_acct:
+            not_applied.append("acct")
+
+        # ③ force_rescan：运行期无从生效（凭证早已构造）
+        if getattr(cfg, "force_rescan", None) is not None:
+            not_applied.append("force_rescan")
+
+        # ④ 调度参数热更
+        want_limit = max(1, int(getattr(cfg, "max_target", self.limit) or self.limit))
+        want_interval = float(getattr(cfg, "interval", self.interval) or self.interval)
+        want_delay = tuple(getattr(cfg, "delay_range", None) or self.delay_range or [40, 65])
+        want_pool = self._normalize_dm_pool(getattr(cfg, "dm_pool", None) or [])
+        want_limit = min(want_limit, 9999)
+
+        self.limit = want_limit
+        self.interval = want_interval
+        self.delay_range = want_delay
+        self.dm_template = want_pool
+        self.pick_dm_message = self._make_pick_dm_message()
+
+        if self.dispatch:
+            # 调度器是这些运行时字段的唯一持有者 → 以它回报的字段为准
+            applied = self.dispatch.apply_runtime(
+                max_target=want_limit,
+                interval=want_interval,
+                delay_range=(int(want_delay[0]), int(want_delay[1])),
+                pick_dm_message=self.pick_dm_message,
+            )
+        else:
+            # 引擎 RUNNING 却无 dispatch：属异常态，显式失败而不是假装热更成功
+            logger.warning("ENG-014", "[引擎] 热更失败：dispatch 未初始化")
+            return {
+                "ok": False, "applied": [], "not_applied": not_applied,
+                "reason": "发送调度器未初始化（引擎可能刚启动或启动失败）",
+                "engine_state": state,
+            }
+
+        logger.info(
+            f"[引擎] 运行时配置热更（监听未中断）：applied={applied} "
+            f"not_applied={not_applied} limit={self.limit} interval={self.interval} "
+            f"delay={self.delay_range} 词库={len(self.dm_template)} 条"
+        )
+        return {
+            "ok": True, "applied": applied, "not_applied": not_applied,
+            "reason": "", "engine_state": state,
+        }
 
     @property
     def captured_count(self) -> int:

@@ -703,6 +703,35 @@ export const api = {
     });
   },
 
+  /**
+   * 「重启标签」：保存该直播间配置 + **热更到正在运行的监听任务**。
+   *
+   * 后端设计契约（2026-09-15 用户定调）：只把变更的配置内容补进正在运行的
+   * 任务，**不中断监听**（不重建 WS、不重扫凭证、不清队列）。
+   * 三种结果都会如实下发，前端必须逐条呈现，禁止把 not_applied 当成功：
+   *   - restart.ok=true            引擎运行中，applied 列出实际生效的字段
+   *   - restart.ok=false           引擎未运行 → 已保存，点「开始自动私信」后生效
+   *   - restart.not_applied_fields 换直播间/换账号/强制重扫属「换任务」语义，未生效
+   */
+  async restartRoomConfig(roomId: string): Promise<{
+    ok: boolean;
+    config?: RoomConfig;
+    applied_fields?: string[];
+    error?: string;
+    restart?: {
+      ok: boolean;
+      applied: string[];
+      not_applied: string[];
+      not_applied_fields?: string[];
+      reason?: string;
+      engine_state?: string;
+    };
+  }> {
+    return request(`/api/live/room-configs/${encodeURIComponent(roomId)}/restart`, {
+      method: "POST",
+    });
+  },
+
   /** 申请连麦（接口直调：账号凭证 + msToken/a_bogus 签名，与直播监听同链路）。
    *  roomId 传真实 room_id（解析房间号可得）；成功响应 data.waiting_list_offset = 排队位次 */
   async requestLinkMic(account: string, roomId: string, linkType: "audio" | "video" = "audio"): Promise<{

@@ -302,6 +302,8 @@ ERRCODES = {
     "ENG-007": {"meaning": "引擎] 启动未成功:", "file": "core/auto_dm.py", "line": 541},
     "ENG-008": {"meaning": "history] 退出收尾历史任务失败（不影响关闭）:", "file": "core/auto_dm.py", "line": 650},
     "ENG-009": {"meaning": "history] 更新历史任务失败:", "file": "core/auto_dm.py", "line": 672},
+    "ENG-013": {"meaning": "引擎] 热更被拒：引擎未运行（state=）", "file": "core/auto_dm.py", "line": 0},
+    "ENG-014": {"meaning": "引擎] 热更失败：dispatch 未初始化", "file": "core/auto_dm.py", "line": 0},
     "IMG-001": {"meaning": "图床][] 上传失败（降级内联）:", "file": "auto_dm/image_host.py", "line": 184},
     "IMG-002": {"meaning": "origin_image] 写本地失败 :", "file": "auto_dm/origin_image_resolver.py", "line": 326},
     "IMG-003": {"meaning": "origin_image] 图床上传模块导入/调用失败:", "file": "auto_dm/origin_image_resolver.py", "line": 339},
@@ -325,6 +327,7 @@ ERRCODES = {
     "LIVE-018": {"meaning": "resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：", "file": "link_resolve.py", "line": 276},
     "LIVE-019": {"meaning": "resolve] 用户  当前未在直播或无法解析房间", "file": "link_resolve.py", "line": 307},
     "LIVE-020": {"meaning": "resolve] 浏览器解析失败:", "file": "link_resolve.py", "line": 309},
+    "LIVE-021": {"meaning": "room-config] 热更失败:", "file": "api/live_config.py", "line": 0},
     "MEM-001": {"meaning": "member] 会员 DB 初始化失败:", "file": "api/member.py", "line": 72},
     "MEM-002": {"meaning": "member] .env 迁移异常（不阻塞登录）:", "file": "api/member.py", "line": 79},
     "MEM-003": {"meaning": "member] 登录后守护拉起失败（不影响登录）:", "file": "api/member.py", "line": 90},
@@ -452,6 +455,43 @@ ERRCODES = {
 # ⚠️ 铁律：新增错误码必须至少填 design + verify（无设计契约的报错不许提交）。
 # ════════════════════════════════════════════════════════════════════════════
 CODE_DESIGN = {
+    "ENG-013": {
+        "design": "「重启标签」的设计语义（用户 2026-09-15 定调）：把变更后的配置内容"
+                  "补进**正在运行**的监听任务，只改配置、不中断监听（不重建 WS、"
+                  "不重扫凭证、不清队列）。",
+        "contract": "热更只在 RUNNING/PAUSED 态有意义；非运行态必须显式拒绝并提示"
+                    "「先开始自动私信」，绝不假装生效。",
+        "deviation": "热更被拒：引擎不在 RUNNING/PAUSED",
+        "chain": "前端「重启」→ POST /api/live/room-configs/{id}/restart → "
+                 "_apply_to_task_kv（写 kv 供下次启动）→ adm.apply_runtime_config",
+        "root": "任务未启动 / 已停止 / 启动失败回退 IDLE —— 属调用时序问题，不是配置错",
+        "verify": "curl :8000/api/tasks/current 看 engine_state；日志 grep '热更被拒'。",
+    },
+    "ENG-014": {
+        "design": "引擎 RUNNING 时 dispatch（DispatchCenter）必须已构造完成，"
+                  "热更经它生效。",
+        "contract": "热更有且只有一个真源 = dispatch；拿不到 dispatch 就是失败，"
+                    "不得只改 adm 字段假装成功。",
+        "deviation": "热更失败：dispatch 未初始化",
+        "chain": "apply_runtime_config → self.dispatch 为 None → 返回 ok=False",
+        "root": "引擎刚进 RUNNING 但 _run 尚未建 dispatch，或启动中途失败（状态未回退）",
+        "verify": "curl :8000/api/tasks/current 看 has_task/engine_state；"
+                  "日志 grep ENG-014 与紧邻的引擎启动日志。",
+    },
+    "LIVE-021": {
+        "design": "「直播间配置管理」是房间级配置的**唯一可写入口**；点「重启」应把"
+                  "配置内容热更进正在运行的任务，且四种结果都要如实下发（已生效 / "
+                  "引擎未运行 / 属换任务语义 / 热更异常）。",
+        "contract": "热更失败必须透出到前端，禁止『保存了但没生效』的静默假成功"
+                    "（用户会以为配置已按新值运行）。",
+        "deviation": "热更抛出异常（配置载荷异常 / 引擎状态非法 / 内部错误）",
+        "chain": "restart_room_config → _RuntimeCfg(cfg) → adm.apply_runtime_config → "
+                 "dispatch.apply_runtime",
+        "root": "配置项类型/范围非法（如 delay 字符串不可解析、词库结构异常）或"
+                "引擎方法内部异常；属数据面问题，非前端展示问题",
+        "verify": "POST /api/live/room-configs/{id}/restart 的响应里 "
+                  "restart.ok=false 且 reason 非空；日志 grep LIVE-021 看原始异常。",
+    },
     "BCC-005": {
         "design": "打开 chat 页是 BCC 一切能力（昵称 hook/发送/页面探活）的前置；"
                   "失败应降级为后续接口自愈，不阻塞容器启动。",

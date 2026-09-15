@@ -127,6 +127,39 @@ class DispatchCenter:
             self.reached_limit = False
         logger.info(f"[调度] 发送上限调整为 {self.max_target}（已发 {self.count}）")
 
+    def apply_runtime(
+        self,
+        max_target: int | None = None,
+        interval: float | None = None,
+        delay_range: tuple[int, int] | None = None,
+        pick_dm_message: Any | None = None,
+    ) -> list[str]:
+        """运行期热更调度参数（**不打断消费循环、不清队列、不重置去重/计数**）。
+
+        设计契约（用户 2026-09-15 定调）：「重启」= 只把变更的配置内容补进正在运行的
+        监听任务，**不中断监听**。调度器是唯一持有这些运行时字段的地方，所以热更必须
+        经由本方法（调用方不直接改字段，避免漏掉 `reached_limit` 之类派生状态）。
+
+        返回实际生效的字段名列表（供上层如实回报，不做「假成功」）。
+        """
+        applied: list[str] = []
+        if max_target is not None:
+            self.set_max_target(int(max_target))
+            applied.append("max_target")
+        if interval is not None:
+            self.interval = float(interval)
+            applied.append("interval")
+        if delay_range is not None:
+            lo, hi = int(delay_range[0]), int(delay_range[1])
+            self.delay_range = (lo, hi) if lo <= hi else (hi, lo)
+            applied.append("delay_range")
+        if pick_dm_message is not None:
+            self.pick_dm_message = pick_dm_message
+            applied.append("dm_pool")
+        if applied:
+            logger.info(f"[调度] 运行时参数热更：{applied}")
+        return applied
+
     def queue_size(self) -> int:
         return self._queue.qsize()
 

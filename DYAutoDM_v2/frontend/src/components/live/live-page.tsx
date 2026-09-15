@@ -1,18 +1,22 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
 import { useQuery } from "@tanstack/react-query";
 
 import { AnimatePresence } from "framer-motion";
 
 import {
-  Play, Pause, Square, Heart, Send, Settings2, Mic, SearchIcon, Eye, LogIn, Users, X,
+  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X,
 } from "lucide-react";
 
-import { PageProps, ReusePayload } from "../../api/client";
+import { PageProps, ReusePayload, RoomConfig } from "../../api/client";
 
 import RoomConfigManager from "./RoomConfigManager";
 
 import { Avatar, hue, KIND_NAME } from "../../components/ui";
+
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
 
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 
@@ -24,20 +28,18 @@ import { Badge } from "@/components/ui/badge";
 
 import { Card, CardContent } from "@/components/ui/card";
 
-import { Switch } from "@/components/ui/switch";
-
 import { StatusDot } from "@/components/ui/status-dot";
 
 import { EmptyState } from "@/components/ui/empty-state";
 
 import {
-  Section, Tone, Blank, SegmentedTabs, Toolbar, FormField,
+  Section, Tone, Blank, SegmentedTabs, Toolbar, KeyValue,
 } from "@/components/page/kit";
 
 import { cn } from "@/lib/utils";
 
 import {
-  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, DM_META, parseDelayRange, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, AiReplyCard,
+  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, DM_META, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, AiReplyCard,
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
@@ -55,18 +57,11 @@ export default function LivePage(props: PageProps) {
   const [myLikes] = useState(0);
   const [burst] = useState(0);
   const [batchN, setBatchN] = useState("10");
-  const [dmLimit, setDmLimit] = useState("3");
-  const [dmInterval, setDmInterval] = useState("60.0");
-  const [dmJitter, setDmJitter] = useState("50,120");
-  const [dmTemplates, setDmTemplates] = useState<{ text: string; enabled: boolean }[]>([
-    { text: "你好，欢迎留言咨询唐律师工伤，留个方式，唐律下播后帮你分析", enabled: true },
-    {
-      text: "老乡 看到你在唐律师直播间咨询工伤问题，我是他的助理，你可以留个📞方式，我们帮你看下等级和赔偿 [握手]",
-      enabled: true,
-    },
-    { text: "唐律还在直播，我是助理，可以留个联系方式，唐律下播后帮你分析", enabled: true },
-  ]);
-  const [forceRescan, setForceRescan] = useState(false);
+  // ── 配置来源（2026-09-15 用户定调：直播页不再手填任何配置）───────────────
+  // 页面只做「选择对应配置的标签」；配置内容的编辑与「重启」都在
+  // 「直播间配置管理」里（唯一可写入口）。这里只读展示生效配置。
+  const [roomCfgs, setRoomCfgs] = useState<RoomConfig[]>([]);
+  const [selCfgId, setSelCfgId] = useState<string>("");
   // 直播间配置管理弹窗（按直播间号管理配置 + 自动申请连麦）
   const [cfgMgr, setCfgMgr] = useState(false);
   // 申请连麦进行中（防重复点击）
@@ -137,7 +132,35 @@ export default function LivePage(props: PageProps) {
     push(`已进入历史任务「${reviewPayload.acct || ""}」的查阅模式，共 ${src.length} 条结果`);
   }, [reviewPayload, push]);
 
-  // 任务容器回读：切换页面后回到直播监听页，用 /api/tasks/current 还原上次任务配置
+  // ── 直播间配置（「标签」）：列表来自唯一可写入口「直播间配置管理」 ──────────
+  const loadRoomCfgs = useCallback(() => {
+    if (!ready) return;
+    api
+      .listRoomConfigs()
+      .then((r) => setRoomCfgs(Array.isArray(r.items) ? r.items : []))
+      .catch(() => {});
+  }, [ready, api]);
+
+  useEffect(() => {
+    loadRoomCfgs();
+  }, [loadRoomCfgs]);
+
+  // 选择某条配置：只读到页面（不写库、不起任务）——「选择配置的调用口」
+  const pickRoomCfg = (roomId: string) => {
+    setSelCfgId(roomId);
+    const c = roomCfgs.find((x) => x.room_id === roomId);
+    if (!c) return;
+    setRoom(c.live_url || `https://live.douyin.com/${c.room_id}`);
+    if (c.acct && realAccts.some((a) => a.name === c.acct)) setActiveAcct(c.acct);
+    push(`已选择配置「${c.name || c.room_id}」· 配置内容在「直播间配置管理」中编辑`);
+  };
+
+  const selCfg = useMemo(
+    () => roomCfgs.find((c) => c.room_id === selCfgId) || null,
+    [roomCfgs, selCfgId],
+  );
+
+  // 任务容器回读：切换页面后回到直播监听页，用 /api/tasks/current 还原当前任务
   useEffect(() => {
     if (!ready) return;
     let alive = true;
@@ -146,19 +169,9 @@ export default function LivePage(props: PageProps) {
       .then((t) => {
         if (!alive || !t || !t.ok || !t.has_task) return;
         const cfg = t.config || {};
+        // 只回读「直播间」与「监听账号」两个页面级输入；其余配置项已不在页面上
+        // （改由「直播间配置管理」唯一维护），不再回填到本地草稿。
         if (cfg.live_url && !reuseRef.current) setRoom(String(cfg.live_url));
-        if (cfg.max_target != null) setDmLimit(String(cfg.max_target));
-        if (cfg.interval != null) setDmInterval(String(cfg.interval));
-        if (cfg.delay) setDmJitter(String(cfg.delay));
-        if (cfg.force_rescan != null) setForceRescan(Boolean(cfg.force_rescan));
-        if (Array.isArray(cfg.dm_pool) && cfg.dm_pool.length) {
-          setDmTemplates(
-            cfg.dm_pool.map((d) => ({
-              text: String((d as { text?: string }).text ?? ""),
-              enabled: (d as { enabled?: boolean }).enabled !== false,
-            })),
-          );
-        }
         if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) {
           setActiveAcct(cfg.acct as string);
         }
@@ -170,22 +183,20 @@ export default function LivePage(props: PageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // 任务中心「复用」：预填直播监听页（配置取自历史任务快照）
+  // 任务中心「复用」：预填直播监听页（只回填直播间与账号；配置以「配置管理」里的为准）
   useEffect(() => {
     reuseRef.current = reusePayload || null;
     if (!reusePayload) return;
     const c = reusePayload;
     if (c.room) setRoom(c.room);
-    if (c.maxTarget != null) setDmLimit(String(c.maxTarget));
-    if (c.interval != null) setDmInterval(String(c.interval));
-    if (c.delay) setDmJitter(c.delay);
-    if (c.forceRescan != null) setForceRescan(c.forceRescan);
-    if (Array.isArray(c.dmPool) && c.dmPool.length) {
-      setDmTemplates(c.dmPool.map((d) => ({ text: String(d.text ?? ""), enabled: d.enabled !== false })));
-    }
-    push(
-      "已复用历史任务配置到直播监听页，核对后点「开始自动私信」即可重新运行",
+    const matched = roomCfgs.find(
+      (x) => x.live_url === c.room || x.room_id === c.room,
     );
+    if (matched) setSelCfgId(matched.room_id);
+    push(
+      "已复用历史任务的直播间到直播监听页；发送参数请在「直播间配置管理」中核对该房间的配置",
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reusePayload, push]);
 
   const feed = useMemo<FeedItem[]>(
@@ -349,8 +360,6 @@ export default function LivePage(props: PageProps) {
       .catch(() => setReview(true));
   };
 
-  const cfgLiveUrl = tasksCfg?.config?.live_url || "";
-
   return (
     <PageContainer>
       {alert && (
@@ -399,16 +408,7 @@ export default function LivePage(props: PageProps) {
         onApply={(cfg) => {
           if (cfg.live_url) setRoom(cfg.live_url);
           else if (cfg.room_id) setRoom(cfg.room_id);
-          if (cfg.max_target != null) setDmLimit(String(cfg.max_target));
-          if (cfg.interval != null) setDmInterval(String(cfg.interval));
-          if (cfg.delay) setDmJitter(cfg.delay);
-          if (cfg.force_rescan != null) setForceRescan(cfg.force_rescan);
-          if (Array.isArray(cfg.dm_pool) && cfg.dm_pool.length) {
-            setDmTemplates(cfg.dm_pool.map((d) => ({
-              text: String((d as { text?: string }).text ?? ""),
-              enabled: (d as { enabled?: boolean }).enabled !== false,
-            })));
-          }
+          if (cfg.room_id) setSelCfgId(cfg.room_id);
           if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
         }}
       />
@@ -624,41 +624,69 @@ export default function LivePage(props: PageProps) {
             </div>
           </Section>
 
-          <Section className="mb-3.5" data-od-id="live-input">
+          <Section
+            className="mb-3.5"
+            data-od-id="live-input"
+            title="直播间"
+            description="选择已保存的配置（标签）即可；配置内容与「重启」在「直播间配置管理」中统一维护"
+            actions={
+              <>
+                <Select value={selCfgId} onValueChange={pickRoomCfg}>
+                  <SelectTrigger
+                    className="h-8 min-w-[220px]"
+                    aria-label="选择直播间配置"
+                    data-od-id="live-cfg-select"
+                  >
+                    <SelectValue placeholder="选择已保存的直播间配置…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {roomCfgs.length === 0 && (
+                      <SelectItem value="__none__" disabled>
+                        暂无配置 · 请到「直播间配置管理」新建
+                      </SelectItem>
+                    )}
+                    {roomCfgs.map((c) => (
+                      <SelectItem key={c.room_id} value={c.room_id}>
+                        {(c.name || c.room_id) + ` · ${c.room_id}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="live-room-configs"
+                  title="直播间配置管理（唯一可写入口：内容编辑 + 重启）"
+                  onClick={() => setCfgMgr(true)}
+                >
+                  <Settings2 className="h-3.5 w-3.5" />配置管理
+                </Button>
+              </>
+            }
+          >
             <Toolbar>
               <Input
                 className="min-w-[200px] flex-1 font-mono"
                 value={room}
                 onChange={(e) => setRoom(e.target.value)}
-                placeholder="直播间 URL 或 room_id"
-                aria-label="直播间地址"
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="live-parse"
-                onClick={() => {
+                onBlur={() => {
+                  // 自动解析（无需手动按钮）：填的是 URL/短号时补全为真实房间号
                   const u = room.trim();
-                  if (!u) {
-                    setAlert({ title: "请输入直播地址", msg: "请先在上方输入框填写直播间 URL 或 room_id，再点击「解析房间号」。" });
-                    return;
-                  }
+                  if (!u || /^\d+$/.test(u)) return;
                   api
                     .resolveLive(u)
                     .then((r) => {
-                      if (r.ok) {
+                      if (r.ok && (r.liveId || r.liveUrl)) {
                         const resolved = r.liveId || r.liveUrl || u;
                         setRoom(resolved);
-                        push("解析成功 · 直播间号 " + resolved);
-                      } else {
-                        push("解析失败: " + (r.error || "未知错误"));
+                        push("已自动解析 · 直播间号 " + resolved);
                       }
                     })
-                    .catch((e: unknown) => push("解析异常: " + errMsg(e)));
+                    .catch(() => {});
                 }}
-              >
-                <SearchIcon className="h-3.5 w-3.5" />解析房间号
-              </Button>
+                placeholder="直播间 URL 或 room_id（失焦自动解析）"
+                aria-label="直播间地址"
+              />
               <Button
                 variant="ghost"
                 size="sm"
@@ -668,7 +696,7 @@ export default function LivePage(props: PageProps) {
                 onClick={() => {
                   const rid = extractRoomId(room) || (ls?.room_id ? String(ls.room_id) : "");
                   if (!rid) {
-                    setAlert({ title: "请先解析直播间", msg: "请先填写并解析直播间地址，再申请连麦。" });
+                    setAlert({ title: "请先填写直播间", msg: "请先在上方填写直播间 URL 或 room_id，再申请连麦。" });
                     return;
                   }
                   if (!activeAcct) {
@@ -696,20 +724,6 @@ export default function LivePage(props: PageProps) {
                 <Mic className="h-3.5 w-3.5" />
                 {linkMicBusy ? "申请中…" : "申请连麦"}
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="live-room-configs"
-                title="按直播间号管理配置（含自动申请连麦）"
-                onClick={() => setCfgMgr(true)}
-              >
-                <Settings2 className="h-3.5 w-3.5" />直播间配置管理
-              </Button>
-              {ready && !!cfgLiveUrl && room !== cfgLiveUrl && (
-                <Button variant="ghost" size="sm" onClick={() => setRoom(cfgLiveUrl)}>
-                  填入已配置
-                </Button>
-              )}
               {!ready && (
                 <span className="font-mono text-[0.75rem] text-[var(--color-warning)]">
                   backend not connected - cannot listen
@@ -743,16 +757,37 @@ export default function LivePage(props: PageProps) {
                         });
                         return;
                       }
+                      // 启动配置全部取自所选「直播间配置」（标签）—— 页面无手填项
+                      if (!selCfg) {
+                        setAlert({
+                          title: "请先选择直播间配置",
+                          msg: "直播页不再手填配置。请在上方「选择已保存的直播间配置」里选一条（或用「配置管理」新建一条）后再开始。",
+                        });
+                        return;
+                      }
+                      if (!room.trim()) {
+                        setAlert({
+                          title: "请先填写直播间",
+                          msg: "请填写直播间 URL 或 room_id（失焦会自动解析），或直接选择一条已保存的直播间配置。",
+                        });
+                        return;
+                      }
+                      if (selCfg.acct && activeAcct && selCfg.acct !== activeAcct) {
+                        setAlert({
+                          title: "账号不一致",
+                          msg: `所选配置「${selCfg.name || selCfg.room_id}」绑定的是账号「${selCfg.acct}」，`
+                            + `而当前监听账号是「${activeAcct}」。请到「配置管理」改该配置，或改选账号。`,
+                        });
+                        return;
+                      }
                       const cfg = {
                         live_url: room,
-                        max_target: parseInt(dmLimit, 10) || 9999,
-                        interval: parseFloat(dmInterval) || 60,
-                        delay_range: parseDelayRange(dmJitter),
-                        dm_pool: dmTemplates
-                          .filter((t) => t.enabled && t.text && t.text.trim())
-                          .map((t) => t.text.trim()),
-                        force_rescan: forceRescan,
-                        acct: activeAcct || undefined, // 当前选中的监听账号
+                        max_target: selCfg.max_target ?? 3,
+                        interval: selCfg.interval ?? 60,
+                        delay: selCfg.delay || "50,120",
+                        dm_pool: selCfg.dm_pool || [],
+                        force_rescan: !!selCfg.force_rescan,
+                        acct: activeAcct || selCfg.acct || undefined,
                       };
                       api
                         .start(cfg)
@@ -820,160 +855,104 @@ export default function LivePage(props: PageProps) {
 
           <AiReplyCard push={push} />
 
-          <Section className="mb-3.5" data-od-id="live-auto-dm" title="自动私信配置">
-            <div className="mb-3.5 grid grid-cols-1 gap-3.5 md:grid-cols-3">
-              <FormField label="发送上限" hint="每场直播最多发送私信条数">
-                <Input
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={dmLimit}
-                  onChange={(e) => setDmLimit(e.target.value)}
-                  className="font-mono"
-                  aria-label="每场最多发送私信条数"
-                />
-              </FormField>
-              <FormField label="间隔（秒）" hint="两条私信之间的等待时间">
-                <Input
-                  type="number"
-                  min="1"
-                  step="0.1"
-                  value={dmInterval}
-                  onChange={(e) => setDmInterval(e.target.value)}
-                  className="font-mono"
-                  aria-label="两条私信之间的间隔秒数"
-                />
-              </FormField>
-              <FormField label="延迟抖动（秒）" hint="格式：50,120 = 随机区间；60 = 固定延迟">
-                <Input
-                  value={dmJitter}
-                  onChange={(e) => setDmJitter(e.target.value)}
-                  className="font-mono"
-                  aria-label="延迟抖动区间"
-                />
-              </FormField>
-            </div>
-
-            <div className="mb-3 flex items-center gap-2 text-[0.76rem]">
-              <Switch
-                checked={forceRescan}
-                onCheckedChange={setForceRescan}
-                aria-label="强制重扫"
-              />
-              <span className="text-[var(--color-text-muted)]">
-                强制重扫（忽略已处理记录，重新匹配私信目标）
-              </span>
-            </div>
-
-            <div>
-              <Toolbar className="mb-2.5">
-                <span className="text-[0.88rem] font-semibold text-[var(--color-text)]">
-                  私信词库
-                </span>
-                <span className="text-[0.75rem] text-[var(--color-text-muted)]">
-                  每行一条，勾选 = 启用，发送时随机抽已启用的一条
-                </span>
-              </Toolbar>
-              <div className="flex flex-col gap-2" data-od-id="dm-templates">
-                {dmTemplates.map((t, i) => (
-                  <div key={i} className="flex items-center gap-2.5">
-                    <Switch
-                      checked={t.enabled}
-                      onCheckedChange={(v) => {
-                        const next = [...dmTemplates];
-                        next[i] = { ...next[i], enabled: v };
-                        setDmTemplates(next);
-                      }}
-                      aria-label={"启用模板 " + (i + 1)}
-                    />
-                    <Input
-                      className="flex-1"
-                      value={t.text}
-                      onChange={(e) => {
-                        const next = [...dmTemplates];
-                        next[i] = { ...next[i], text: e.target.value };
-                        setDmTemplates(next);
-                      }}
-                      placeholder="输入私信文案…"
-                    />
+          <Section
+            className="mb-3.5"
+            data-od-id="live-auto-dm"
+            title="生效的自动私信配置"
+            description={
+              selCfg
+                ? `来自「${selCfg.name || selCfg.room_id}」· 任务进行中修改请到「配置管理」改后点「重启」`
+                : "尚未选择主播间配置（上方下拉选择）"
+            }
+            actions={
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="live-cfg-goto"
+                onClick={() => setCfgMgr(true)}
+              >
+                <Settings2 className="h-3.5 w-3.5" />去配置
+              </Button>
+            }
+          >
+            {selCfg ? (
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <KeyValue
+                    cols={1}
+                    items={[
+                      { k: "发送上限", v: String(selCfg.max_target ?? "—"), mono: true },
+                    ]}
+                  />
+                  <KeyValue
+                    cols={1}
+                    items={[{ k: "间隔", v: `${selCfg.interval ?? "—"} s`, mono: true }]}
+                  />
+                  <KeyValue
+                    cols={1}
+                    items={[{ k: "延迟抖动", v: String(selCfg.delay || "—"), mono: true }]}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.76rem]
+                                text-[var(--color-text-secondary)]">
+                  <span>
+                    强制重扫：
+                    <b className="font-mono text-[var(--color-text)]">
+                      {selCfg.force_rescan ? "开" : "关"}
+                    </b>
+                  </span>
+                  <span>
+                    自动申请连麦：
+                    <b className="font-mono text-[var(--color-text)]">
+                      {selCfg.auto_link_mic
+                        ? `开（${selCfg.link_mic_mode === "video" ? "视频" : "语音"}）`
+                        : "关"}
+                    </b>
+                  </span>
+                  <span>
+                    监听账号：
+                    <b className="font-mono text-[var(--color-text)]">
+                      {selCfg.acct || "页面当前选择"}
+                    </b>
+                  </span>
+                </div>
+                <div>
+                  <div className="mb-1.5 text-[0.78rem] font-semibold text-[var(--color-text)]">
+                    私信词库
+                    <span className="ml-2 font-normal text-[var(--color-text-muted)]">
+                      发送时随机抽已启用的一条
+                    </span>
                   </div>
-                ))}
+                  <div className="flex flex-col gap-1">
+                    {(selCfg.dm_pool || []).length === 0 && (
+                      <span className="text-[0.75rem] text-[var(--color-text-muted)]">
+                        该配置尚未设置词库 · 请到「配置管理」补充
+                      </span>
+                    )}
+                    {(selCfg.dm_pool || []).map((t, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start gap-2 rounded-[var(--radius-sm)]
+                                   border border-[var(--color-border)] bg-[var(--color-surface)]
+                                   px-2.5 py-1.5 text-[0.78rem]"
+                      >
+                        <Tone tone={t.enabled ? "ok" : "mute"}>
+                          {t.enabled ? "启用" : "停用"}
+                        </Tone>
+                        <span className="min-w-0 flex-1 break-all text-[var(--color-text-secondary)]">
+                          {t.text || "（空）"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <Toolbar className="mt-2.5">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setDmTemplates(dmTemplates.map((t) => ({ ...t, enabled: true })))}
-                >
-                  全选
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() =>
-                    setDmTemplates(dmTemplates.map((t) => ({ ...t, enabled: false })))
-                  }
-                >
-                  全不选
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setDmTemplates([...dmTemplates, { text: "", enabled: true }])}
-                >
-                  添加一条
-                </Button>
-                <Button
-                  variant="danger-outline"
-                  size="sm"
-                  onClick={() => setDmTemplates(dmTemplates.filter((t) => t.enabled))}
-                >
-                  删除选中
-                </Button>
-                <span className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
-                  已启用 {dmTemplates.filter((t) => t.enabled).length} / {dmTemplates.length} 条
-                </span>
-                {ready && (
-                  <>
-                    <Button
-                      size="sm"
-                      onClick={() =>
-                        api
-                          .saveDmPool(
-                            dmTemplates
-                              .filter((t) => t.text && t.text.trim())
-                              .map((t) => ({ text: t.text.trim(), enabled: t.enabled })),
-                          )
-                          .then((r) =>
-                            push(r.ok ? "词库已保存 · " + r.count + " 条" : "保存失败"),
-                          )
-                          .catch((e: unknown) => push("保存异常: " + errMsg(e)))
-                      }
-                    >
-                      保存词库
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() =>
-                        api
-                          .saveConfig({
-                            liveUrl: room,
-                            maxTarget: parseInt(dmLimit, 10),
-                            interval: parseFloat(dmInterval),
-                            delay: dmJitter,
-                            dmPool: dmTemplates,
-                          })
-                          .then((r) => push(r.ok ? "配置已写回" : "写回失败"))
-                          .catch((e: unknown) => push("写回异常: " + errMsg(e)))
-                      }
-                    >
-                      保存配置
-                    </Button>
-                  </>
-                )}
-              </Toolbar>
-            </div>
+            ) : (
+              <Blank>
+                请在上方「直播间」区选择一条已保存的配置（标签）——
+                或在「配置管理」中新建一条。
+              </Blank>
+            )}
           </Section>
 
           <div className="mb-3.5 grid grid-cols-1 gap-3.5 lg:grid-cols-2">

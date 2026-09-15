@@ -37,11 +37,27 @@ const EMPTY_DRAFT: Partial<RoomConfig> = {
   link_mic_mode: "audio",
 };
 
+/** 后端 applied/not_applied 的英文键 → 中文名（汇报口径统一） */
+const FIELD_CN: Record<string, string> = {
+  max_target: "发送上限",
+  interval: "间隔",
+  delay_range: "延迟抖动",
+  dm_pool: "私信词库",
+  live_url: "直播间链接",
+  acct: "监听账号",
+  force_rescan: "强制重扫",
+};
+
+const cnFields = (keys?: string[]): string =>
+  (keys || []).map((k) => FIELD_CN[k] || k).join("、");
+
 export default function RoomConfigManager({ open, onClose, currentRoom, push, onApply }: Props) {
   const [items, setItems] = useState<RoomConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState<Partial<RoomConfig>>({ ...EMPTY_DRAFT });
   const [editing, setEditing] = useState<string | null>(null); // 正在编辑的 room_id
+  /** 正在「重启」的 room_id（防重复点击） */
+  const [restarting, setRestarting] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -114,6 +130,48 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
     setDraft({ ...cfg });
   };
 
+  /**
+   * 「重启标签」：保存配置 + 热更到正在运行的监听任务。
+   *
+   * 后端契约见 `api.restartRoomConfig` —— 三种结果都必须如实告诉用户：
+   *   ① 引擎运行中：仅列出**实际生效**的字段（applied）；
+   *   ② 引擎未运行：明说「已保存，点开始自动私信后生效」，不谎称已重启；
+   *   ③ 换直播间/换账号/强制重扫：明说这类改动热更不覆盖（需停止后重新开始）。
+   */
+  const restart = (roomId: string) => {
+    if (restarting) return;
+    setRestarting(roomId);
+    api
+      .restartRoomConfig(roomId)
+      .then((r) => {
+        if (!r.ok) {
+          push("重启失败: " + (r.error || "未知错误"));
+          return;
+        }
+        const rs = r.restart || { ok: false, applied: [], not_applied: [] };
+        const applied = cnFields(r.applied_fields);
+        const skipped = cnFields(rs.not_applied_fields);
+        if (rs.ok) {
+          push(
+            `已重启「${roomId}」· 监听未中断` +
+              (applied ? `｜已生效：${applied}` : "") +
+              (skipped ? `｜未生效：${skipped}` : ""),
+            6000,
+          );
+        } else {
+          push(
+            `配置已保存到「${roomId}」，但未能热更到运行中的任务：` +
+              (rs.reason || "引擎未运行") +
+              (skipped ? `（${skipped} 需停止后重新开始）` : ""),
+            8000,
+          );
+        }
+        load();
+      })
+      .catch((e: unknown) => push("重启异常: " + errMsg(e)))
+      .finally(() => setRestarting(null));
+  };
+
   if (!open) return null;
 
   return (
@@ -169,6 +227,15 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
                     {cfg.acct ? ` · 账号:${cfg.acct}` : ""}
                   </div>
                 </div>
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={restarting === cfg.room_id}
+                  title="保存该配置并立即热更到正在运行的监听任务（不中断监听）"
+                  onClick={() => restart(cfg.room_id)}
+                >
+                  {restarting === cfg.room_id ? "重启中…" : "重启"}
+                </Button>
                 <Button variant="ghost" size="sm" onClick={() => applyToTask(cfg.room_id)}>
                   应用
                 </Button>
