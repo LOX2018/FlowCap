@@ -577,5 +577,5 @@ class UserMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=False)
-        return resp.json()
+        return safe_json(resp)
 

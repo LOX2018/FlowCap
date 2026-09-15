@@ -247,5 +247,5 @@ class VideoMixin:
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=False, timeout=15)
-        return resp.json()
+        return safe_json(resp)
 

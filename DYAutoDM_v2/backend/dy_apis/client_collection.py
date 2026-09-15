@@ -73,7 +73,7 @@ class CollectionMixin:
         resp = requests.post(f'{DouyinAPI.domain_for(api)}{api}',
                              headers=headers.get(), cookies=auth.cookie,
                              params=params.get(), verify=False, timeout=15)
-        return resp.json()
+        return safe_json(resp)
 
     @staticmethod
     def get_mix_list_collection(auth, count: str = '20', cursor: str = '0', **kwargs):
@@ -98,7 +98,7 @@ class CollectionMixin:
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=False, timeout=15)
-        return resp.json()
+        return safe_json(resp)
 
     @staticmethod
     def get_series_aweme(auth, series_id: str, cursor: str = '0', count: str = '20', **kwargs):
@@ -123,7 +123,7 @@ class CollectionMixin:
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=False, timeout=15)
-        return resp.json()
+        return safe_json(resp)
 
     @staticmethod
     def get_aweme_favorite(auth, count: str = '18', cursor: str = '0', **kwargs):
@@ -156,7 +156,7 @@ class CollectionMixin:
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=False, timeout=15)
-        return resp.json()
+        return safe_json(resp)
 
     @staticmethod
     def get_collect_list(auth, max_cursor: str = "0", num: str = "20", **kwargs):
@@ -210,7 +210,7 @@ class CollectionMixin:
         params.add_param("fp", auth.cookie['s_v_web_id'])
         res = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                            cookies=auth.cookie, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def collect_aweme(auth, aweme_id: str, action: str = '1', **kwargs):
@@ -266,7 +266,7 @@ class CollectionMixin:
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, data=data, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def move_collect_aweme(auth, aweme_id: str, collect_name: str, collect_id: str, **kwargs):
@@ -324,7 +324,7 @@ class CollectionMixin:
         params.with_a_bogus()
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def remove_collect_aweme(auth, aweme_id: str, collect_name: str, collect_id: str, **kwargs):
@@ -380,5 +380,5 @@ class CollectionMixin:
         params.with_a_bogus()
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, verify=False)
-        return res.json()
+        return safe_json(res)
 

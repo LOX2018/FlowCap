@@ -49,9 +49,35 @@ __all__ = [
     "BeautifulSoup", "logger", "_message_to_dict", "ResponseProto",
     "HeaderBuilder", "HeaderType", "Params", "ProtoBuilder", "get_profile",
     "splice_url", "generate_a_bogus", "generate_msToken", "trans_cookies",
-    "generate_a_bogus_pure", "protobuf_to_dict",
+    "generate_a_bogus_pure", "protobuf_to_dict", "safe_json",
 ]
 
 
 def protobuf_to_dict(message):
     return _message_to_dict(message, preserving_proto_field_name=True)
+
+def safe_json(resp, default=None):
+    """安全解析响应 JSON —— 平台限流/风控时返回**空响应体**（非 JSON），
+    直接 `resp.json()` 会抛 JSONDecodeError 并被上层当作「接口不可用」（502）。
+
+    2026-09-15 加：统一把空响应/坏 JSON 降级为 `default`（默认空 dict），
+    与「平台侧限制应优雅降级、不假装成功也不报故障」的项目约定一致。
+
+    用法：`return safe_json(resp)` 代替 `return resp.json()`。
+    """
+    try:
+        return resp.json()
+    except Exception:
+        # 空响应（content-length: 0）或 HTML 错误页 —— 记录状态码便于排查
+        try:
+            logger.warning(
+                "IM-001",
+                f"[im] 响应非 JSON（HTTP {resp.status_code}, {len(resp.content)} 字节）"
+                f"→ 降级为 {type(default).__name__ if default is not None else 'None'}",
+            )
+        except Exception:
+            pass
+        if default is not None:
+            return default
+        return {}
+

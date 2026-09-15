@@ -158,7 +158,7 @@ class LiveMixin:
         params.with_a_bogus()
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(), cookies=auth.cookie,
                            params=params.get(), verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def get_all_live_production(auth, url: str, **kwargs):
@@ -243,7 +243,7 @@ class LiveMixin:
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, data=data, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def get_rank_list(auth, room_id: str, anchor_id: str, sec_anchor_id: str):
@@ -394,7 +394,7 @@ class LiveMixin:
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
                             params=params.get(), cookies=auth.cookie, data=data, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def linkmicWaitingList(auth, room_id: str):
@@ -426,7 +426,7 @@ class LiveMixin:
         params.with_a_bogus()
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
                            params=params.get(), cookies=auth.cookie, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def linkmicList(auth, room_id: str):
@@ -458,7 +458,7 @@ class LiveMixin:
         params.with_a_bogus()
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
                            params=params.get(), cookies=auth.cookie, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def linkmicCheck(auth, room_id: str):
@@ -491,7 +491,7 @@ class LiveMixin:
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
                             params=params.get(), cookies=auth.cookie, data=data, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def linkmicLeave(auth, room_id: str):
@@ -523,7 +523,7 @@ class LiveMixin:
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
                             params=params.get(), cookies=auth.cookie, data=data, verify=False)
-        return res.json()
+        return safe_json(res)
 
     def diggLiveRoom(auth, room_id: str, count: str = '1'):
         api = "/webcast/room/like/"
@@ -554,7 +554,7 @@ class LiveMixin:
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, data=data, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def sendMsgInRoom(auth, room_id: str, content: str = ''):
@@ -586,5 +586,5 @@ class LiveMixin:
         params.with_a_bogus()
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
                            cookies=auth.cookie, verify=False)
-        return res.json()
+        return safe_json(res)
 

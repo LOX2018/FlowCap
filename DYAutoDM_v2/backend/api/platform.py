@@ -302,6 +302,12 @@ async def user_works(req: UserWorksReq) -> dict[str, Any]:
     api = _api()
     try:
         items = await asyncio.to_thread(api.get_user_all_work_info, auth, req.user_url)
+    except json.JSONDecodeError:
+        # 2026-09-15：平台限流时返回**空响应体**（非 JSON）→ resp.json() 抛此错。
+        # 属平台侧限制（推荐流/收藏仍正常可佐证），优雅降级为空列表并由前端提示，
+        # 不再报 502（否则用户看到「接口不可用」，误判为功能故障）。
+        logger.info("PLT-002", "作品列表返回空响应（平台限流），降级为空列表")
+        items = []
     except Exception as e:  # noqa: BLE001
         logger.warning("PLT-002", f"作品列表获取失败: {type(e).__name__}")
         raise HTTPException(502, f"作品列表获取失败: {type(e).__name__}")
@@ -501,6 +507,10 @@ async def collected(req: CollectListReq) -> dict[str, Any]:
     api = _api()
     try:
         raw = await asyncio.to_thread(api.get_collect_list, auth)
+    except json.JSONDecodeError:
+        # 2026-09-15：同「用户作品」——平台限流返回空响应体，优雅降级为空。
+        logger.info("PLT-005", "收藏夹返回空响应（平台限流），降级为空列表")
+        raw = {}
     except Exception as e:  # noqa: BLE001
         logger.warning("PLT-005", f"收藏夹获取失败: {type(e).__name__}")
         raise HTTPException(502, f"收藏夹获取失败: {type(e).__name__}")

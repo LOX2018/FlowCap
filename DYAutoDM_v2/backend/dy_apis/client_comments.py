@@ -281,5 +281,5 @@ class CommentsMixin:
         params.add_param("fp", auth.cookie['s_v_web_id'])
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, data=data, verify=False)
-        return res.json()
+        return safe_json(res)
 

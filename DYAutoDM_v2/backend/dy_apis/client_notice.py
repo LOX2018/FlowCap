@@ -93,7 +93,7 @@ class NoticeMixin:
         params.add_param("fp", auth.cookie['s_v_web_id'])
         res = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                            cookies=auth.cookie, verify=False)
-        return res.json()
+        return safe_json(res)
 
     @staticmethod
     def get_some_notice_list(auth, num: int = 20, notice_group='700', **kwargs) -> list:

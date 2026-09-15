@@ -288,7 +288,7 @@ class SearchMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=False)
-        return resp.json()
+        return safe_json(resp)
 
     @staticmethod
     def search_some_live(auth, query: str, num: int, **kwargs) -> list:
