@@ -94,17 +94,23 @@ NEW 存活 100.1s（alive=True）hb_sent=6
 ### 4.3 追赶节流
 5 次触发、间隔 1s、`CATCHUP_MIN_INTERVAL=2` → 实际执行 3 次（t=0/2/4），符合预期。
 
-## 5. 待实测项（阻塞，如实记录）
+## 5. 待实测项（阻塞，如实记录） → **已实测通过（2026-09-16 当晚）**
 
-L1 的 `hb` 帧**是否被私信 frontier-im 接受**尚未在真实抖音环境验证。
-当前 design 环境不具备条件（`accounts/` 为空、`dm_*` 表 0 行、
-backend/recv_daemon 均未运行）。
+L1 的 `hb` 帧**是否被私信 frontier-im 接受** —— 已通过真实环境确认：
 
-**退路**：若 `hb` 不被接受，改发 cmd 610 上行请求帧（既保活又顺带同步会话）。
-验证命令（环境就绪后）：
+- **结果**：真实抖音账号（尚进工伤小助理）连接 600s 零断连
+  （`connects 1→1`），`hb_sent 2→41` 持续递增、`hb_failed=0`。
+  对比修复前同环境日志：26 次建连 / 9 次关闭、恒定 `OPEN+30s`。
+- **顺带验证**：`rx_age` 最高达 **481s**（业务低峰长期零下行）而连接完全
+  健康 —— 证实「低峰零下行」是正常业务特征，看门狗若只看下行必误杀
+  （这正是 hotfix2 引入 TCP peek 判据的原因，见 commit `4bd2c37`）。
+
+**退路未启用**：`hb` 直接被服务端接受，无需退化为 cmd 610 上行帧。
+
+验证命令（已固化）：
 ```bash
-DY_WS_HB_MODE=hb ./dyautodm-recv-daemon --accounts <acc> --port <p>
-curl http://127.0.0.1:<p>/status   # 观察 hb_sent 递增、connects 稳定
+python <design>/_probe_ws_live.py 12726 600
+# 断言: connected=True / connects 不增长 / hb_sent 递增 / hb_failed=0
 ```
 
 ## 6. 可调参数（环境变量，不写死）
