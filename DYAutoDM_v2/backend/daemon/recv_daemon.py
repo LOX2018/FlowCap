@@ -899,8 +899,17 @@ class RecvChannel(threading.Thread):
             if text is None:
                 return
             # 过滤系统引导消息(如"微信"/"在哪个地区受伤的"快捷回复建议):
-            # 这类消息 msg_type=7 且 msg_id=None(非真实聊天),不应展示在聊天记录中
-            if int(msg_type) == 7 and not getattr(msg, "msg_id", None):
+            # 这类消息 msg_type=7 且无服务端消息 ID(非真实聊天),不应展示在聊天记录中
+            #
+            # ⚠️ 2026-09-16 实机抓真因（严重）：原写 getattr(msg, "msg_id", None)，
+            #    但 Response.proto 的 MessageBody **根本没有 msg_id 字段**
+            #    （字段名是 server_message_id）。getattr 恒返回 None
+            #    ⇒ `not None` 恒为真 ⇒ **所有 msg_type=7 的真实文本消息被一律丢弃**。
+            #    实测后果：9/13~9/16 三天 WS 推送里 role=them 一条都没有
+            #    （1800 条全是本号自己的回声），对方消息只能靠 HTTP 补拉捞回。
+            #    改为按真实字段名取 server_message_id。
+            _sid = int(getattr(msg, "server_message_id", 0) or 0)
+            if int(msg_type) == 7 and not _sid:
                 return
             # 2026-09-14 v0.43.11 方案B 修正（三处）：
             #  ① **peer_uid 只认 conv_id**（0:1:uid_a:uid_b，排除本号即对端，100% 可靠）。
@@ -935,9 +944,16 @@ class RecvChannel(threading.Thread):
                 peer_name=_nick or None, msg_type=str(msg_type), extra=extra,
                 # 2026-09-06 双通道去重：写入抖音消息唯一 ID，让 WS / WP
                 # 两条通道写入同一条消息时命中 uniq_dmmsg 唯一索引去重。
-                msg_id=str(mid) if (mid := getattr(msg, "msg_id", None)) else None,
+                # 2026-09-16 实机修正：同 904 行的坑 —— 这里原来也取
+                # `msg.msg_id`，而 MessageBody 只有 `server_message_id`。
+                # 结果 msg_id 恒为 None ⇒ uniq_dmmsg 唯一索引拿不到真实 ID
+                # ⇒ WS 回声与 WP 轮询**永远无法去重**（实测 812 条回声刷屏）。
+                # 修正后同一条消息两通道写入可正常命中去重。
+                msg_id=str(_sid) if _sid else None,
             )
-            logger.info(f"[recv][{self.name}][会话 {conv_id[:8]}…] {peer_name}: {text}")
+            logger.info(
+                f"[recv][{self.name}][会话 {conv_id[:8]}…] "
+                f"{_nick or _real_peer or sender}: {text}")
         elif frame.payloadType == "text/json":
             try:
                 logger.debug(f"[recv][{self.name}] json 控制帧: {json.loads(frame.payload)}")
