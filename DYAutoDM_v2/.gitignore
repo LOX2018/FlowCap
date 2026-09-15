@@ -93,6 +93,7 @@ _*.py
 !__main__.py
 !**/__main__.py
 !**/_bindings.py
+!**/_common.py
 _force_rebuild.ps1
 _kill_clean.ps1
 _verify_exe.py
