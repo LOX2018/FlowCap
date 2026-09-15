@@ -1238,6 +1238,17 @@ def capture_all(name, with_browser=True):
                     need = [c for c in convs if c.get("short_id")]
             max_n = int(_cfg("capture", "history_max") or 45)
             sleep_s = float(_cfg("capture", "history_sleep") or 1.5)
+            # 2026-09-15：自动分批（解决「会话数 > history_max 时静默漏补」）。
+            #
+            # 设计契约：`history_max` 是**每轮**请求上限（风控节流口径不变）；
+            # 单次「更新会话」允许跑多轮，轮间用**更长的间隔**错峰
+            # （`history_batch_gap`，默认 60s，远大于批间 sleep_s），
+            # 因此**总请求数上限变大、但瞬时频次不升**——不突破风控语义。
+            # 总上限 = history_max × history_max_rounds（默认 45×3=135）；
+            # 超出总上限时**告警并如实报告剩余**（绝不静默丢弃）。
+            rounds_max = max(1, min(10, int(_cfg("capture", "history_max_rounds") or 3)))
+            batch_gap = float(_cfg("capture", "history_batch_gap") or 60.0)
+            hard_cap = max_n * rounds_max
             # 2026-08-31：串行补全实测太慢（20 个会话 × (请求~10s + 间隔1.5s)
             # ≈ 230s，加上首包和浏览器启动总计 365s，用户明确抱怨）。
             # 改为**可配置并发**：DY_HISTORY_WORKERS（默认 4）。
@@ -1245,7 +1256,6 @@ def capture_all(name, with_browser=True):
             # （首包返回 50 字节空响应、cookie 失效），故不做激进并发。
             # 想更快可调到 6~8，但需承担风控风险。
             workers = max(1, min(8, int(_cfg("capture", "history_workers") or 4)))
-            need = need[:max_n]
             if not need:
                 # 全部会话的历史都已掌握（库内条数 >= total_msgs），
                 # 无需发任何 301 请求 —— 这是重复点「更新会话」的常态。
@@ -1253,8 +1263,18 @@ def capture_all(name, with_browser=True):
                     f"[capture][{name}] 长会话补全：{len(convs)} 个会话历史均完整"
                     f"（库内已有 >= total_msgs），跳过 301 请求")
             if need:
-                logger.info(f"[capture][{name}] 长会话补全：{len(need)} 个会话"
-                            f"（并发 {workers}，间隔 {sleep_s}s）")
+                _total_need = len(need)
+                if _total_need > hard_cap:
+                    logger.warning(
+                        "CAP-014",
+                        f"[capture][{name}] 待补全 {_total_need} 个会话，超过单次上限 "
+                        f"{hard_cap}（= history_max {max_n} × rounds {rounds_max}）；"
+                        f"本轮先补 {hard_cap} 个，剩余 {_total_need - hard_cap} 个"
+                        f"请再次点「更新会话」（或调大 capture.history_max_rounds）")
+                logger.info(
+                    f"[capture][{name}] 长会话补全：{min(_total_need, hard_cap)} 个会话"
+                    f"（共待补 {_total_need}，每轮 ≤{max_n} × ≤{rounds_max} 轮，"
+                    f"并发 {workers}，批间隔 {sleep_s}s，轮间隔 {batch_gap}s）")
                 from concurrent.futures import ThreadPoolExecutor
 
                 def _fill(_c):
@@ -1272,21 +1292,39 @@ def capture_all(name, with_browser=True):
                     except Exception as _e:  # noqa: BLE001
                         return (_c.get("peer_uid"), 0, str(_e)[:60])
 
-                # 按批次错峰：每批 workers 个并发，批间等 sleep_s。
-                # 这样并发真正生效（不像逐个 sleep 那样退化成串行）。
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    for b in range(0, len(need), workers):
-                        if b:
-                            _time.sleep(sleep_s)
-                        batch = need[b:b + workers]
-                        for peer_uid, n, err in ex.map(_fill, batch):
-                            if err:
-                                logger.warning("CAP-010", 
-                                    f"[capture][{name}] 301 补全失败 {peer_uid}:"
-                                    f" {err}")
-                            else:
-                                logger.info(
-                                    f"[capture][{name}] 301 补全 {peer_uid}: {n} 条")
+                # 分轮 × 分批执行：
+                #   · 外层（轮）：每轮 ≤ max_n 个会话，轮间 sleep batch_gap（长间隔错峰）
+                #   · 内层（批）：每批 ≤ workers 个并发，批间 sleep sleep_s
+                # 这样总请求数可覆盖到 hard_cap，但**瞬时并发/频次与单轮一致**。
+                _filled = 0
+                for _r in range(rounds_max):
+                    _chunk = need[_r * max_n:(_r + 1) * max_n]
+                    if not _chunk:
+                        break
+                    if _r:
+                        logger.info(
+                            f"[capture][{name}] 分批补全：第 {_r + 1}/{rounds_max} 轮"
+                            f"（前 {_filled} 个已完成），错峰等待 {batch_gap}s…")
+                        _time.sleep(batch_gap)
+                    with ThreadPoolExecutor(max_workers=workers) as ex:
+                        for b in range(0, len(_chunk), workers):
+                            if b:
+                                _time.sleep(sleep_s)
+                            batch = _chunk[b:b + workers]
+                            for peer_uid, n, err in ex.map(_fill, batch):
+                                _filled += 1
+                                if err:
+                                    logger.warning("CAP-010",
+                                        f"[capture][{name}] 301 补全失败 {peer_uid}:"
+                                        f" {err}")
+                                else:
+                                    logger.info(
+                                        f"[capture][{name}] 301 补全 {peer_uid}: {n} 条")
+                if _total_need > hard_cap:
+                    logger.warning(
+                        "CAP-014",
+                        f"[capture][{name}] 本轮补全 {_filled} 个，"
+                        f"仍有 {_total_need - _filled} 个待补（再点一次「更新会话」即可续补）")
     except Exception as e:
         logger.warning("CAP-011", f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")
 

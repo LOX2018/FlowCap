@@ -165,6 +165,19 @@ else:
           inspect.getsource(cc._system_notice_text),
           "识别 aweme_im_consecutive_chat_notice")
 
+    # ── 缺陷④（2026-09-15）：need[:max_n] 截断 → 会话数 > history_max 时静默漏补 ──
+    # 静态断言：补全改为**分轮 × 分批**，且超总上限时告警（不得静默丢弃）。
+    _ca = inspect.getsource(cc.capture_all)
+    check("C12 补全为分轮×分批（不再 need[:max_n] 截断）",
+          ("rounds_max" in _ca and "history_max_rounds" in _ca
+           and "need[:max_n]" not in _ca),
+          "分轮执行，保留总覆盖能力")
+    check("C13 超总上限时告警 CAP-014（不静默丢弃）",
+          "CAP-014" in _ca, "如实报告剩余待补")
+    check("C14 轮间有更长错峰间隔（不突破风控语义）",
+          "history_batch_gap" in _ca and "batch_gap" in _ca,
+          "轮间隔 > 批间隔")
+
 # ---------------- 汇总 ----------------
 print("\n" + "=" * 68)
 print(f"结果: {len(PASS)}/{len(PASS) + len(FAIL)} 通过")

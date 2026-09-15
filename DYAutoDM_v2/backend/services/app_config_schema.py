@@ -238,10 +238,22 @@ SECTIONS: dict[str, dict[str, Any]] = {
         "label": "捕获与存储",
         "fields": {
             "history_max": {
-                "label": "历史补全会话数",
+                "label": "历史补全会话数（每轮）",
                 "type": "int", "default": 45, "min": 0, "max": 500,
                 "env": "DY_HISTORY_MAX", "apply": "hot",
-                "hint": "实测有消息会话稳定 44~47 个",
+                "hint": "**每轮**补全的会话数上限；单次更新会话可跑多轮（见下）",
+            },
+            "history_max_rounds": {
+                "label": "单次最多轮数（分批）",
+                "type": "int", "default": 3, "min": 1, "max": 10,
+                "env": "DY_HISTORY_MAX_ROUNDS", "apply": "hot",
+                "hint": "单次「更新会话」最多跑几轮；总上限 = 每轮数 × 本值（默认 45×3=135）",
+            },
+            "history_batch_gap": {
+                "label": "轮间隔（秒）",
+                "type": "float", "default": 60.0, "min": 0, "max": 3600,
+                "env": "DY_HISTORY_BATCH_GAP", "apply": "hot",
+                "hint": "分批轮与轮之间的错峰等待，比批间隔更长以规避风控",
             },
             "history_sleep": {
                 "label": "补全间隔（秒）",
