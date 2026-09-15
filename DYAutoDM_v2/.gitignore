@@ -87,6 +87,12 @@ _fe_deps.txt
 # 改用 `!_` 例外：仍忽略单下划线开头的临时脚本，但**不忽略 `__init__.py`**。
 _*.py
 !__init__.py
+# ⚠️ 2026-09-15 修正：`_*.py` 还会误伤 `__main__.py`（包/工具入口）与
+# `dy_apis/_bindings.py`（接口层门面接线，被 douyin_api.py 引用）。
+# 二者是**真源码**，必须入库；仅忽略单下划线开头的临时脚本。
+!__main__.py
+!**/__main__.py
+!**/_bindings.py
 _force_rebuild.ps1
 _kill_clean.ps1
 _verify_exe.py
