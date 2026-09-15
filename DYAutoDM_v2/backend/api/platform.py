@@ -86,6 +86,22 @@ def _api():
     return DouyinAPI
 
 
+
+def _trim_video(video: dict) -> dict:
+    """裁剪 video 子树：只保留前 2 档 bit_rate（播放所需的 play_addr），
+    去掉 25 档全量，避免列表接口单作品 90KB 的传输开销。
+
+    2026-09-15 性能优化（实测 video 全量 92779 字符 → 前 2 档 20270 字符）。
+    """
+    if not isinstance(video, dict):
+        return video
+    out = dict(video)
+    brl = out.get("bit_rate")
+    if isinstance(brl, list) and len(brl) > 2:
+        out["bit_rate"] = brl[:2]
+    return out
+
+
 def _pick_aweme(w: dict) -> dict:
     """裁剪作品字段（只保留前端需要的，避免把巨量原始 JSON 透传）。"""
     if not isinstance(w, dict):
@@ -115,7 +131,11 @@ def _pick_aweme(w: dict) -> dict:
             "aweme_id": str(w.get("aweme_id") or ""),
             "desc": (w.get("desc") or "")[:200],
             "duration": video.get("duration") or 0,
-            "video": video,
+            # 2026-09-15 性能优化：只保留前 2 档 bit_rate（高清+标清，播放足够）。
+            # 全量 video 子树含 25 档×3 url ≈ 90KB/作品，一页 10 个 ≈ 900KB，
+            # 裁剪后仅 ≈20KB/作品（减到 1/5）。media_request 只需 play_addr，
+            # 前 2 档已覆盖 hd/h264 两档清晰度。
+            "video": _trim_video(video),
             "images": w.get("images") or None,
             "author": {"nickname": author.get("nickname") or "",
                        "sec_uid": author.get("sec_uid") or ""},
