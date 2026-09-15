@@ -229,29 +229,39 @@ export function MsgBubble({
         图片消息
       </div>
     );
-  return (
-    <div className={bubble}>
-      <div className="flex min-w-[220px] items-center gap-2.5">
-        <div
-          className="relative grid aspect-video w-[84px] shrink-0 place-items-center
-                     rounded-[var(--radius-sm)]
-                     bg-[linear-gradient(135deg,var(--color-accent-soft),var(--color-info-soft))]"
-        >
-          <span
-            className="grid h-[34px] w-[34px] place-items-center rounded-full
-                       border border-[color-mix(in_srgb,white_25%,transparent)] bg-black/55"
+  // 2026-09-16 实机修复：未知类型的兜底分支。
+  // 原实现：任何 type 非 text/voice/sticker/image 的消息都落进这里，渲染成
+  // 「分享的视频」卡片 —— 但 WS 实时路径的数字 msg_type（如 "7"=文本）曾
+  // 经流到这里，title 空白 → 界面显示"分享视频（该信息非真实存在）"。
+  // 后端已把数字类型归一化（api/messages.py _front_type），前端再兜底一层：
+  // 有 title 才当视频卡片，否则按普通文本渲染，绝不把未知类型变成"分享的视频"。
+  if (m.title && !/^\[(未知媒体|分享视频|系统提示)\]/.test(t)) {
+    return (
+      <div className={bubble}>
+        <div className="flex min-w-[220px] items-center gap-2.5">
+          <div
+            className="relative grid aspect-video w-[84px] shrink-0 place-items-center
+                      rounded-[var(--radius-sm)]
+                      bg-[linear-gradient(135deg,var(--color-accent-soft),var(--color-info-soft))]"
           >
-            <Play className="ml-0.5 h-3 w-3 text-white" aria-hidden="true" />
-          </span>
-        </div>
-        <div>
-          <div className="text-[0.78rem] font-medium leading-relaxed">{m.title}</div>
-          <div className="font-mono text-[0.68rem] text-[var(--color-text-muted)]">
-            分享的视频
+            <span
+              className="grid h-[34px] w-[34px] place-items-center rounded-full
+                        border border-[color-mix(in_srgb,white_25%,transparent)] bg-black/55"
+            >
+              <Play className="ml-0.5 h-3 w-3 text-white" aria-hidden="true" />
+            </span>
+          </div>
+          <div>
+            <div className="text-[0.78rem] font-medium leading-relaxed">{m.title}</div>
+            <div className="font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+              分享的视频
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  }
+  // 未知类型且无 title：按普通文本渲染（不冒充视频卡片）
+  return <div className={bubble}>{renderTextWithEmoji(m.text || "")}</div>;
 }
 

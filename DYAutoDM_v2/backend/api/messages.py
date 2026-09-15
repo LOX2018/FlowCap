@@ -118,6 +118,28 @@ def _fmt_ts(ts: float | None) -> str:
     return ""
 
 
+def _front_type(msg_type: str) -> str:
+    """把抖音消息类型归一化成前端 MsgBubble 已知类型（2026-09-16 实机修复）。
+
+    背景：WS 实时路径落库 msg_type 是**数字字符串**（"7"=文本、"5"=表情包、
+    "17"=语音、"27"=图片、"8"=分享视频、"50001"=已读回执）；补拉/历史路径
+    落库的是语义串（"text"/"image"/...）。前端 MsgBubble 只认后者，
+    收到数字串会落入**兜底分支**渲染成「分享的视频」卡片（title 空白）。
+    这里统一归一：数字映射到语义串，其它原样透传。
+    """
+    mapping = {
+        "7": "text",
+        "5": "sticker",
+        "17": "voice",
+        "27": "image",
+        "8": "video",
+        "50001": "read_receipt",
+    }
+    if msg_type is None:
+        return "text"
+    return mapping.get(str(msg_type), str(msg_type) or "text")
+
+
 def _map_message(m: dict) -> dict:
     """把 recv_daemon 的 message 字段映射成前端期望结构。
 
@@ -128,7 +150,14 @@ def _map_message(m: dict) -> dict:
     direction = "in" if role == "them" else "out"
     return {
         "dir": direction,
-        "type": m.get("msg_type") or m.get("type") or "text",
+        # 2026-09-16 实机修复：WS 实时路径落库的是**数字** msg_type（如 "7"=文本），
+        # 补拉/历史路径落库的是字符串 "text"。前端 MsgBubble 只认
+        # text/voice/sticker/image，收到 "7" 会落入**兜底分支**渲染成
+        # 「分享的视频」卡片（m.title 空白 → 界面显示"分享视频（该信息非真实存在）"）。
+        # 这里把抖音消息类型归一化成前端已知类型：
+        #   7=文本, 5=表情包, 17=语音, 27=图片, 8=分享视频, 50001=已读回执
+        # （与 auto_dm/conversation_capture.py 的映射保持一致）
+        "type": _front_type(m.get("msg_type") or m.get("type") or "text"),
         "text": m.get("text") or "",
         "time": _fmt_ts(m.get("ts")),
     }
