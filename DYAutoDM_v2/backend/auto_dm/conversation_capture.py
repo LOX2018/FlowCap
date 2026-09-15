@@ -845,6 +845,50 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None, lease_id=""):
         bport = acc.browser_daemon_port(name)
     except Exception:
         return {}
+
+    # ── ① 首选：IndexedDB 用户信息（2026-09-15 实机落地，替代失败的「文本桥」）──
+    # 抖音把前端取到的用户信息落在 IndexedDB `<uid>_user`.user，
+    # 记录 value.uid 是**数字**，与首包 peer_uid 同体系 → 直接相等比对。
+    # 实测：首包 peer_uid ∩ IDB uid = **44/44 = 100%**（对比：文本桥 1/11、
+    # 位置对齐错配 80 条）。纯读页面自有存储，**零网络请求**。
+    # 转换：{uid: {...}} → {sec_uid|uid: {...}}，下游 uid 索引同时识别两者。
+    try:
+        _r0 = requests.post(f"http://127.0.0.1:{bport}/userinfo_idb",
+                            json={"wait": 5, "lease_id": lease_id or ""},
+                            timeout=180)
+        if _r0.status_code == 200:
+            _j0 = _r0.json() or {}
+            _users = _j0.get("users") or {}
+            if _j0.get("ok") and _users:
+                # 以 **uid 为键**（下游 _userinfo_by_uid 直接命中），
+                # 同时把 sec_uid 塞进 value 供按 sec_uid 的旧路径兜底。
+                _out = {}
+                for _uid, _v in _users.items():
+                    if not _uid:
+                        continue
+                    _out[str(_uid)] = {
+                        "uid": str(_uid),
+                        "nickname": _v.get("nickname") or "",
+                        "avatar": _v.get("avatar") or "",
+                        "sec_uid": _v.get("sec_uid") or "",
+                        "avatar_uri": _v.get("avatar_uri") or "",
+                        "unique_id": _v.get("unique_id") or "",
+                    }
+                logger.info(
+                    f"[capture] 经 IndexedDB 取到用户信息: {len(_out)} 条"
+                    f"（库 {_j0.get('db')}；零网络请求）")
+                _userinfo_cache[name] = (_t.time(), _out)
+                return _out
+            logger.warning(
+                "CAP-014",
+                f"[capture] /userinfo_idb 无数据（total={_j0.get('total')}），"
+                f"降级 DOM 抓取")
+        else:
+            logger.warning("CAP-014", f"[capture] /userinfo_idb HTTP {_r0.status_code}，降级 DOM")
+    except Exception as _e0:  # noqa: BLE001
+        logger.warning("CAP-014", f"[capture] /userinfo_idb 调用失败（降级 DOM）: {_e0}")
+
+    # ── ② 兜底：DOM 直读（原路径，覆盖 IDB 尚未写入的会话）──
     url = f"http://127.0.0.1:{bport}/capture_userinfo"
     try:
         # wait: BCC 在 chat 页平滑滚动 + DOM 抓取的秒数。

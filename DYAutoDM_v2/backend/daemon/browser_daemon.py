@@ -324,9 +324,35 @@ _SWITCH_COOLDOWN_SEC = 180
 #      实测滚动 10 轮 → 累计抓到 **45 个昵称 + 头像**（DOM 直读，零网络请求）。
 #   3. DOM 的 title 文本形如 "昵称<换行>时间"，需按首行取纯昵称。
 # ---------------------------------------------------------------------------
-from .browser_daemon_js import (
-    CAP_DOM_SWEEP_JS, CAP_DOM_SCROLL_JS, CAP_USERINFO_HOOK_JS, CAP_WP_MESSAGE_HOOK_JS,
-)
+# 2026-09-15 修复（**入口 crash**）：本文件同时被当作三种身份加载 ——
+#   ① PyInstaller **入口脚本**（`__package__` 为空）→ 相对导入必崩；
+#   ② `daemon.browser_daemon` 包内模块（有父包）；
+#   ③ 打包后 JS 常量以 `daemon.browser_daemon_js` 形式在 PYZ 内。
+# 原写成 `from .browser_daemon_js import ...`（相对导入）→ 在①下必抛
+#   `ImportError: attempted relative import with no known parent package`
+#   → **BCC sidecar 启动即崩，二进制完全不可用**（实测部署 exe 报此错）。
+# 正解：多级兼容导入，逐级回退（任一级成功即可）。
+#   注意：`browser_daemon_js.py` 位于 `backend/daemon/` 下，PyInstaller 以
+#   `daemon.browser_daemon_js` 收录（顶层名 `browser_daemon_js` 收集不到）。
+try:  # ② 包内模块模式
+    from .browser_daemon_js import (
+        CAP_DOM_SWEEP_JS, CAP_DOM_SCROLL_JS, CAP_USERINFO_HOOK_JS, CAP_WP_MESSAGE_HOOK_JS,
+        CAP_IDB_USERINFO_JS,
+    )
+except ImportError:  # ① 入口脚本模式（PyInstaller / python xxx.py）
+    try:
+        from daemon.browser_daemon_js import (
+            CAP_DOM_SWEEP_JS, CAP_DOM_SCROLL_JS, CAP_USERINFO_HOOK_JS, CAP_WP_MESSAGE_HOOK_JS,
+            CAP_IDB_USERINFO_JS,
+        )
+    except ImportError:
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from browser_daemon_js import (
+            CAP_DOM_SWEEP_JS, CAP_DOM_SCROLL_JS, CAP_USERINFO_HOOK_JS, CAP_WP_MESSAGE_HOOK_JS,
+            CAP_IDB_USERINFO_JS,
+        )
 
 def _app_version() -> str:
     """本守护进程的构建版本（读 exe 同级 version.json；失败=unknown）。
@@ -1032,7 +1058,8 @@ class BrowserContainer:
 
         return await self._exec(_do)
 
-    async def exec_js(self, js: str, arg=None, timeout: int = 30):
+    async def exec_js(self, js: str, arg=None, timeout: int = 30,
+                      lease_id: str = "", holder: str = "exec_js"):
         """在抖音页面上下文里执行 JS（**只读取数**用途）。
 
         2026-08-31 新增，用于取私信原图：远程链是抖音私有加密格式，
@@ -1046,8 +1073,12 @@ class BrowserContainer:
 
         **风控边界**：本方法只执行传入的 JS，自身不发起请求。
         不得用于遍历/批量查询用户信息（昵称红线）。
-        """
 
+        lease_id（2026-09-15）：**必须由调用方透传**，否则会被调用方自己
+        刚拿到的租约挡在门外 —— 实测 `/userinfo_idb` 报
+        `BCC-056 容器被独占操作占用: capture_all`（capture_all 持有租约，
+        本方法未透传 → 自我死锁，与知识库 §〇·戊 同族）。
+        """
         async def _do():
             if "/chat" not in (self._page.url or ""):
                 # 取图需要抖音域上下文（同域 fetch + 登录态 + 前端解密）
@@ -1058,7 +1089,7 @@ class BrowserContainer:
             self._page.set_default_timeout(timeout * 1000)
             return await self._page.evaluate(js, arg)
 
-        return await self._exec(_do)
+        return await self._exec(_do, holder=holder, lease_id=lease_id or "")
 
     async def wp_send_text(self, conv_id: str, text: str, timeout: int = 60) -> dict:
         """在 chat 页上下文里发文本私信（WP 通道发送）。
@@ -2283,6 +2314,61 @@ async def capture_userinfo(body: WaitBody) -> dict:
         logger.warning("BCC-030", f"[bcc] /capture_userinfo 失败: {e}")
         return {"ok": False, "msg": str(e), "data": {}}
     return {"ok": True, "data": out}
+
+
+@app.post("/userinfo_idb")
+async def userinfo_idb(body: WaitBody | None = None) -> dict:
+    """★ 读 IndexedDB `<uid>_user` 库拿全量用户昵称/头像（2026-09-15 实机落地）。
+
+    为什么需要（桥接的正解，取代失败的「文本桥 / 位置对齐」）：
+      DOM 会话项**无 uid**，而本库记录 `value.uid` 是**数字**，
+      与首包 conv_id 推出的 `peer_uid` **同一体系** → 直接相等比对。
+      实测：首包 peer_uid ∩ IDB uid = **44/44 = 100%**。
+
+    风控：纯读页面自有 IndexedDB，**零网络请求**。
+
+    用法：调用方先确保 chat 页已加载并**滚动点击完全部会话**
+    （前端才会把用户信息写入 IDB），再调本端点。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "total": 0, "users": {}}
+    # 租约取—传—释（2026-09-15）：本端点是**用户显式动作**触发的读取，
+    # 用 PURPOSE_USER 取租约并把 lease_id 透传给 exec_js —— 否则会被
+    # 调用方（capture_all）已持有的租约挡在门外（实测 BCC-056 自我死锁）。
+    _lid = (getattr(body, "lease_id", "") or "") if body else ""
+    _got = ""
+    if not _lid:
+        try:
+            from services.browser_gate import ensure_browser, PURPOSE_USER
+            g = ensure_browser(_state.get("account") or "", purpose=PURPOSE_USER,
+                               holder="userinfo_idb", ttl=300.0)
+            if g.get("ok"):
+                _got = g.get("lease_id") or ""
+                _lid = _got
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        try:
+            r = await c.exec_js(CAP_IDB_USERINFO_JS, timeout=60,
+                                lease_id=_lid, holder="userinfo_idb")
+        except TypeError:
+            # 兼容：exec_js 未升级为支持 lease_id 时退回原调用
+            r = await c.exec_js(CAP_IDB_USERINFO_JS, timeout=60)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("BCC-056", f"[bcc] /userinfo_idb 失败: {e}")
+        return {"ok": False, "msg": str(e), "total": 0, "users": {}}
+    finally:
+        if _got:
+            try:
+                from services.browser_gate import release_lease
+                release_lease(_state.get("account") or "", _got, holder="userinfo_idb")
+            except Exception:  # noqa: BLE001
+                pass
+    r = r or {}
+    n = int(r.get("total") or 0)
+    logger.info(f"[bcc] IndexedDB 用户信息：{n} 条（库 {r.get('db')}）")
+    return {"ok": True, "total": n, "db": r.get("db"), "users": r.get("users") or {}}
 
 
 @app.post("/user_info_by_uids")

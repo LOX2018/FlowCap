@@ -194,6 +194,15 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "sockshandler",
         ):
             cmd += ["--hidden-import", _m]
+    # 2026-09-15：browser_daemon.py 的 JS 常量模块（daemon/browser_daemon_js.py）。
+    # 它是**入口脚本的同级模块**，入口模式下用
+    #   `from browser_daemon_js import ...`（绝对导入 fallback）加载，
+    # PyInstaller 对入口脚本的**同级模块**不做包内分析 → 扫不到 → 打包后
+    #   `ModuleNotFoundError: No module named 'browser_daemon_js'`（实测崩）。
+    # 必须显式声明；同时把 `daemon.browser_daemon_js` 一并声明以覆盖包内模式。
+    if entry in ("daemon/browser_daemon.py", "daemon/recv_daemon.py"):
+        for _m in ("browser_daemon_js", "daemon.browser_daemon_js"):
+            cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))

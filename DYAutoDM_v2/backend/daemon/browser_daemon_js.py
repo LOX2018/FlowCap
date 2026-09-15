@@ -203,4 +203,65 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
 """
 
 
+# ---------------------------------------------------------------------------
+# IndexedDB 用户信息读取（2026-09-15 实机落地 —— 桥接的正解）
+#
+# 背景：DOM 会话列表项**没有任何 uid 属性**，历史尝试两条都失败：
+#   · 文本桥（desc 匹配首包消息文本）→ 未互关会话被系统提示覆盖，实测 1/11；
+#   · 位置/顺序对齐 → 懒加载+置顶错位 → 「傲雪」80 条错配事故。
+#
+# 实机发现（2026-09-15，真实账号 44/44 验证）：
+#   抖音把前端取到的用户信息落在 **IndexedDB**：
+#       库 = `<自身uid>_user`（如 316276709526638_user），store = `user`
+#       记录 = {key: sec_uid, value: {uid(数字), nickname, sec_uid, avatar_small{uri,url_list}, avatar_thumb, ...}}
+#   其中 **`value.uid` 是数字**，与首包 `conv_id` 推出的 `peer_uid` **同一体系**，
+#   直接相等比对即可关联 —— 实测 `首包 peer_uid ∩ IDB uid = 44/44 = 100%`。
+#   ⇒ **根本不需要「桥接」**；DOM 昵称只是同一份数据的另一处渲染。
+#
+# 风控：纯读页面自有存储，**零网络请求**、零主动查询。
+# ---------------------------------------------------------------------------
+CAP_IDB_USERINFO_JS = r"""async () => {
+  const open = (n) => new Promise((res, rej) => {
+    const r = indexedDB.open(n);
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  const out = { db: null, total: 0, users: {} };
+  let names = [];
+  try {
+    names = indexedDB.databases ? (await indexedDB.databases()).map(d => d.name || '') : [];
+  } catch (e) { names = []; }
+  // 兜底：按 <uid>_user 命名约定直接尝试
+  if (!names.length) names = ['316276709526638_user'];
+  const userDbs = names.filter(n => /_user$/.test(n));
+  for (const dn of userDbs) {
+    let db;
+    try { db = await open(dn); } catch (e) { continue; }
+    if (!db.objectStoreNames.contains('user')) { db.close(); continue; }
+    const recs = await new Promise(res => {
+      const tx = db.transaction('user', 'readonly');
+      const q = tx.objectStore('user').getAll();
+      q.onsuccess = () => res(q.result); q.onerror = () => res([]);
+    });
+    db.close();
+    for (const r of (recs || [])) {
+      const v = (r && r.value) || {};
+      const uid = v.uid != null ? String(v.uid) : '';
+      if (!uid) continue;
+      const av = (v.avatar_small && v.avatar_small.uri) || '';
+      const avlst = (v.avatar_small && v.avatar_small.url_list) || [];
+      const th = (v.avatar_thumb && v.avatar_thumb.url_list) || [];
+      out.users[uid] = {
+        uid, nickname: v.nickname || '', sec_uid: v.sec_uid || '',
+        avatar_uri: av, avatar: avlst[0] || th[0] || '',
+        avatar_urls: avlst.concat(th).slice(0, 4),
+        unique_id: v.unique_id || '', short_id: v.short_id != null ? String(v.short_id) : '',
+        signature: v.signature || '', account_cert: v.account_cert_info || ''
+      };
+      out.total++;
+    }
+    out.db = dn;
+  }
+  return out;
+}
+"""
 
