@@ -10,7 +10,11 @@
  * 改为「内容区 + 可选底栏插槽」，保持结构同源但不引入空壳。
  */
 import { Suspense, type ReactNode } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+// 2026-09-15 性能优化：改用 framer-motion 的 LazyMotion 轻量模式。
+// 本处动画仅用 opacity/y 的进出场（fade+slide），无需完整 motion 运行时；
+// `m` + `domAnimation` 特性集可显著减小首屏 JS（官方推荐的减包用法），
+// 且 `m` 与 `motion` 的 props 兼容（initial/animate/exit/transition 不变）。
+import { AnimatePresence, LazyMotion, domAnimation, m } from "framer-motion";
 import { Sidebar, type TabId } from "./sidebar";
 import { TopBar } from "./topbar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -62,8 +66,9 @@ export function AppShell({
           right={topRight}
         />
         <main className="min-h-0 flex-1 overflow-y-auto">
+          <LazyMotion features={domAnimation}>
           <AnimatePresence mode="wait">
-            <motion.div
+            <m.div
               key={tab}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -72,8 +77,9 @@ export function AppShell({
               className="min-h-full"
             >
               <Suspense fallback={<ViewFallback />}>{children}</Suspense>
-            </motion.div>
+            </m.div>
           </AnimatePresence>
+          </LazyMotion>
         </main>
       </div>
     </div>
