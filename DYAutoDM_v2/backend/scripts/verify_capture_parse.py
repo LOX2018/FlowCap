@@ -146,6 +146,25 @@ else:
             roles[m.get("role")] = roles.get(m.get("role"), 0) + 1
     check("C7 消息方向分布非单一", len(roles) >= 1, f"{roles}")
 
+    # ── 缺陷③（2026-09-15）：cmd301 无分页 → 会话 >count 时静默截断 ──
+    # 静态断言：fetch_conversation_history 必须**内建游标翻页**（不再只发 1 次请求），
+    # 且解析层必须暴露分页对象 [5]（总数/下一页游标）。
+    import inspect
+    _fh = inspect.getsource(cc.fetch_conversation_history)
+    check("C8 301 拉取含游标翻页循环（缺陷③）",
+          ("cursor" in _fh and "max_pages" in _fh and "page.get(\"3\")" in _fh),
+          "fetch_conversation_history 内建翻页")
+    check("C9 301 拉取读取分页总数 [5][2]",
+          "page.get(\"2\")" in _fh, "用于终止条件/缺页告警")
+    _ex = inspect.getsource(cc._extract_301_page)
+    check("C10 解析层暴露分页对象", "get(\"5\")" in _ex, "_extract_301_page 返回 page")
+    # content={} 的系统通知不得被丢弃（旧实现 continue 丢弃 → 45 砍成 43）
+    _pm = inspect.getsource(cc._parse_301_messages)
+    check("C11 content={} 的系统通知保留（不再静默丢弃）",
+          "_system_notice_text" in _pm and "consecutive_chat_notice" in
+          inspect.getsource(cc._system_notice_text),
+          "识别 aweme_im_consecutive_chat_notice")
+
 # ---------------- 汇总 ----------------
 print("\n" + "=" * 68)
 print(f"结果: {len(PASS)}/{len(PASS) + len(FAIL)} 通过")

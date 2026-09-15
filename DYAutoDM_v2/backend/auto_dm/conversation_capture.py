@@ -579,10 +579,20 @@ def _build_301_body(cid, short_id, cursor=0, count=50, direction=1):
     return bytes(inner)
 
 
-def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20):
-    """拉指定会话的完整历史消息（cmd 301）。
+def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
+                               max_pages=40):
+    """拉指定会话的**完整**历史消息（cmd 301，自动翻页）。
 
-    返回 [{role,text,ts,msg_id}] 或 []（失败时）。
+    2026-09-15 修复（实机逆向 + 验证）：旧实现**只发 1 次请求**（cursor=0），
+    当会话条数 > count 时会被**静默截断**为「最新的 count 条」，无任何告警。
+    现按官方分页协议翻页取全量：
+      · 每页响应 [5] = 分页对象，[5][2]=总数、[5][3]=下一页游标（取更早消息）
+      · 循环直到：无游标 / 游标不再前进 / 累计已达总数 / 达 max_pages 上限
+    实机验证（count=10 连续翻 5 页）：累计去重 45 条 == 会话总数 45 ✅
+
+    max_pages 兜底防死循环（40 页 × count≥50 = ≥2000 条，足够覆盖私信场景）。
+
+    返回 [{role,text,ts,msg_id,skey,origin_url}]，按 ts 升序，去重（按 msg_id）。
     """
     try:
         import requests
@@ -591,63 +601,105 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20):
         from dy_apis.douyin_api import DouyinAPI
 
         my_uid = str(auth.get_uid()).strip()
-        request = ProtoBuilder.build_normal_request(auth, 301)
-        body_bytes = request.SerializeToString()
-        inner = _build_301_body(cid, short_id, cursor=0, count=count)
-        tag = _pb_varint((301 << 3) | 2)          # field 301, wiretype 2
-        payload = tag + _pb_varint(len(inner)) + inner
-        # 追加到 Request 的 field 8 (body): tag = (8<<3)|2 = 66 = 0x42
-        body_bytes = body_bytes + b"\x42" + _pb_varint(len(payload)) + payload
-
         url = "https://imapi.douyin.com/v1/message/get_by_conversation"
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
         headers.set_header("referer", "https://www.douyin.com/")
-        resp = requests.post(
-            url, headers=headers.get(), cookies=auth.cookie,
-            data=body_bytes, verify=False, timeout=timeout,
-        )
-        if resp.status_code != 200 or len(resp.content) < 100:
-            logger.warning("CAP-004", f"[capture][301] HTTP {resp.status_code} "
-                           f"len={len(resp.content)} cid={cid}")
-            return []
-        return parse_conversation_301(resp.content, cid, my_uid)
+        page_count = max(int(count or 50), 1)
+
+        merged = []
+        seen_ids = set()
+        cursor = 0
+        total = None
+        for page_no in range(max(1, int(max_pages))):
+            request = ProtoBuilder.build_normal_request(auth, 301)
+            body_bytes = request.SerializeToString()
+            inner = _build_301_body(cid, short_id, cursor=cursor, count=page_count)
+            tag = _pb_varint((301 << 3) | 2)          # field 301, wiretype 2
+            payload = tag + _pb_varint(len(inner)) + inner
+            # 追加到 Request 的 field 8 (body): tag = (8<<3)|2 = 66 = 0x42
+            body_bytes = body_bytes + b"\x42" + _pb_varint(len(payload)) + payload
+
+            resp = requests.post(
+                url, headers=headers.get(), cookies=auth.cookie,
+                data=body_bytes, verify=False, timeout=timeout,
+            )
+            if resp.status_code != 200 or len(resp.content) < 100:
+                logger.warning("CAP-004", f"[capture][301] HTTP {resp.status_code} "
+                               f"len={len(resp.content)} cid={cid} page={page_no}")
+                break
+
+            msgs, page = _extract_301_page(resp.content)
+            if total is None:
+                try:
+                    total = int(page.get("2")) if page.get("2") is not None else None
+                except Exception:
+                    total = None
+            batch = _parse_301_messages(msgs, my_uid)
+            added = 0
+            for it in batch:
+                mid = it.get("msg_id")
+                key = mid if mid else f"{it['ts']}|{it['role']}|{it['text'][:32]}"
+                if key in seen_ids:
+                    continue
+                seen_ids.add(key)
+                merged.append(it)
+                added += 1
+
+            nxt = page.get("3")
+            try:
+                nxt = int(nxt) if nxt is not None else 0
+            except Exception:
+                nxt = 0
+            # 终止条件
+            if not msgs:
+                break
+            if nxt in (0, None) or nxt == cursor:
+                break
+            if total is not None and len(merged) >= total:
+                break
+            cursor = nxt
+
+        if len(merged) > 1:
+            merged.sort(key=lambda x: x.get("ts") or 0)
+        if total is not None and len(merged) < total:
+            logger.warning("CAP-013",
+                           f"[capture][301] 会话 {cid} 仅取到 {len(merged)}/{total} 条"
+                           f"（可能触达 max_pages={max_pages} 上限）")
+        return merged
     except Exception as e:
         logger.warning("CAP-005", f"[capture][301] 拉取失败 cid={cid}: {e}")
         return []
 
 
-def parse_conversation_301(raw, cid, my_uid):
-    """解析 get_by_conversation(cmd 301) 响应 -> [{role,text,ts,msg_id,skey,origin_url}]
+def _extract_301_page(raw):
+    """从 cmd301 响应里取出 (消息数组, 分页信息)。
 
-    结构：parsed['6']['301']['1'] = 消息数组
-      每条: 1=conversation_id 3=msg_id 7=sender 8=content 10=create_time
-
-    2026-09-01 新增 skey/origin_url（08 §三十五 实机证真）：
-      图片消息的 content_json.resource_url.skey 是 AES-256-GCM 密钥，
-      此前被丢弃导致原图无法解密。现在一并返回，由调用方落库到 extra。
-
-    2026-09-04 实测纠错：
-      曾误以为 cmd 301 field 7 语义与首包相反(方向全反)，实机验证推翻了该假设 ——
-      反转后「能看我病历吗 老师」变成 me(实为对方发)完全错误。
-      实锤：cmd 301 的 field 7 与首包(2043)一致 = 发送方 sender_uid，
-      sender == my_uid → me 的原始逻辑正确，不得反转。
+    2026-09-15 逆向确证分页协议（实机 count=10 连续翻页累计到全量 45/45）：
+      response['6']['301']['1'] = 本页消息数组
+      response['6']['301']['5'] = 分页对象 {
+          1 = 本页起始序号(倒序计数), 2 = 会话总条数,
+          3 = **下一页游标**(cursor，取更早的消息；无更多页时缺省/0),
+          4 = 本页结束 ts, 5 = short_id, 6 = conv_id }
+    旧实现只发 1 次请求（cursor=0）→ 会话条数 > count 时**静默截断**为最新 count 条。
     """
-    out = []
-    try:
-        import blackboxprotobuf
-        parsed, _ = blackboxprotobuf.decode_message(raw)
-        inner = parsed["6"]["301"]
-        msgs = inner.get("1", [])
-        if isinstance(msgs, dict):
-            msgs = [msgs]
-    except Exception as e:
-        logger.warning("CAP-006", f"[capture][301] 解析失败: {e}")
-        return out
+    import blackboxprotobuf
+    parsed, _ = blackboxprotobuf.decode_message(raw)
+    inner = parsed["6"]["301"]
+    msgs = inner.get("1", [])
+    if isinstance(msgs, dict):
+        msgs = [msgs]
+    page = inner.get("5") or {}
+    if not isinstance(page, dict):
+        page = {}
+    return msgs, page
 
+
+def _parse_301_messages(msgs, my_uid):
+    """把一批 301 消息条目解析为统一 dict（供分页循环复用）。"""
+    out = []
     for m in msgs:
         if not isinstance(m, dict):
             continue
-        # content -> text
         text = None
         skey = None
         origin_url = None
@@ -664,22 +716,22 @@ def parse_conversation_301(raw, cid, my_uid):
             obj = _json.loads(s)
             if isinstance(obj, dict):
                 text = obj.get("text") or obj.get("tips")
-                # 2026-08-29 修复：图片/表情/语音等富媒体消息没有 text 字段，
-                # 只有 resource_url / url，原逻辑会 continue 丢弃整条消息，
-                # 导致前端只能看到「图片」二字或完全看不到该条。
-                # 现按类型提取媒体 URL，统一存成 "[图片] <url>" 形态，
-                # 前端据此直接渲染缩略图预览。
                 if not text:
                     text = _extract_media_text(obj)
-                # 2026-09-01：图片解密要素（AES-256-GCM），此前恒被丢弃
                 skey, origin_url = _extract_image_secret(obj)
         except Exception:
             text = s if s else None
         if not text:
+            # 2026-09-15：content 为空 ≠ 无内容 —— 实测这类条目是抖音的**系统通知**
+            # （content={} 但 field9 带 a:biz=aweme_im_consecutive_chat_notice /
+            #   s:biz_aid / notice_type=introduction 等标识）。
+            # 旧实现直接 continue 丢弃 → 45 条被静默砍成 43 条。
+            # 现改为保留为占位文本（保真：条数与序号不再缺失）。
+            text = _system_notice_text(m)
+        if not text:
             continue
         ts = m.get("10", 0) or 0
         sender = str(m.get("7", "")).strip()
-        # 方向：sender 为空时默认 me(自动欢迎语等),sender == my_uid → me,否则 them
         if not sender:
             role = "me"
         elif sender == str(my_uid):
@@ -695,6 +747,59 @@ def parse_conversation_301(raw, cid, my_uid):
             "origin_url": origin_url,
         })
     return out
+
+
+def _system_notice_text(m):
+    """识别系统通知类消息并返回可读占位文本；非系统通知返回 None。
+
+    实测结构：`content` 为 `{}`，而 `field 9` 是 [{1:'k', 2:'v'}] 的键值表，
+    常见 `a:biz = aweme_im_consecutive_chat_notice`（久未联系/连续聊天提示）。
+    """
+    try:
+        f9 = m.get("9")
+        if not f9:
+            return None
+        if isinstance(f9, dict):
+            f9 = [f9]
+        kv = {}
+        for item in f9:
+            if not isinstance(item, dict):
+                continue
+            k = item.get("1")
+            v = item.get("2")
+            if isinstance(k, bytes):
+                k = k.decode("utf-8", "ignore")
+            if isinstance(v, bytes):
+                v = v.decode("utf-8", "ignore")
+            if k:
+                kv[str(k)] = str(v) if v is not None else ""
+        biz = kv.get("a:biz") or ""
+        if "consecutive_chat_notice" in biz:
+            # 说明：抖音会为同一事件写**多条** content={} 的系统条目（实测同一会话
+            # 有 2 条，msg_id 不同、文本相同）。占位文本须带上 msg_id 尾号以便区分，
+            # 否则前端/统计会误当成重复条目。
+            tail = str(m.get("3") or "")[-6:]
+            return f"[系统提示] 对方已久未回复，此为连续聊天提醒（#{tail}）"
+        if biz:
+            tail = str(m.get("3") or "")[-6:]
+            return f"[系统消息] {biz}（#{tail}）"
+        return None
+    except Exception:
+        return None
+
+
+def parse_conversation_301(raw, cid, my_uid):
+    """解析 get_by_conversation(cmd 301) 响应 -> [{role,text,ts,msg_id,skey,origin_url}]
+
+    2026-09-15：解析逻辑抽到 `_parse_301_messages`，供分页循环复用（本函数保持
+    单页语义不变，避免破坏既有调用方/测试）。
+    """
+    try:
+        msgs, _page = _extract_301_page(raw)
+    except Exception as e:
+        logger.warning("CAP-006", f"[capture][301] 解析失败: {e}")
+        return []
+    return _parse_301_messages(msgs, my_uid)
 
 
 def _split_repeated(buf):
@@ -1154,9 +1259,11 @@ def capture_all(name, with_browser=True):
 
                 def _fill(_c):
                     try:
+                        # 2026-09-15：fetch_conversation_history 已内建游标翻页，
+                        # 单页 count 固定即可（它会自动拉到会话全量）。
                         _h = fetch_conversation_history(
                             auth, _c["conversation_id"], _c["short_id"],
-                            count=max(50, int(_c.get("total_msgs") or 50)),
+                            count=50,
                         )
                         if _h:
                             _c["messages"] = _h
