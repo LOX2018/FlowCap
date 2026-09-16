@@ -200,7 +200,7 @@ def put_cached(cipher: bytes, skey_hex: str, data: bytes) -> str:
         with open(path, "wb") as f:
             f.write(data)
     except OSError as e:
-        logger.warning("MEDIA-001", f"磁盘缓存写入失败: {e}")
+        logger.warning(f"[MEDIA-001] " + f"磁盘缓存写入失败: {e}")
     _evict_if_needed()
     return path
 

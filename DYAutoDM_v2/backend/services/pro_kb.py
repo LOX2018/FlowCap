@@ -461,19 +461,33 @@ def sem_cache_invalidate(item_id=None) -> None:
     导致检索结果与正文不符（改了内容却仍按旧语义排序）。
     """
     try:
+        conn = database.get_db()
         if item_id is None:
-            conn = database.get_db()
-            conn.execute("DELETE FROM kv_store WHERE key LIKE ?",
-                         (_PRO_SEM_PREFIX + "%",))
-            conn.execute("DELETE FROM kv_store WHERE key LIKE ?", ("__q__%",))
+            # 2026-09-17 修补（审查 P2-10）：原为两条 `DELETE ... LIKE ?`
+            # 前缀模糊删。虽前缀是模块常量、非用户输入，且只作用于 kv_store
+            # 向量缓存，但项目铁律为「删除必须逐条确认、禁 LIKE 模糊删」
+            # （历史事故：LIKE 误删 25 条真实聊天记录）。
+            # 现改为**先精确选出待删 key、再逐条按主键删**，行为等价但
+            # 彻底消除 LIKE 模式，且可记录实际删除条数。
+            prefixes = (_PRO_SEM_PREFIX, "__q__")
+            keys: list[str] = []
+            for pfx in prefixes:
+                rows = conn.execute(
+                    "SELECT key FROM kv_store WHERE substr(key,1,?)=?",
+                    (len(pfx), pfx)).fetchall()
+                keys.extend(str(r["key"]) for r in rows)
+            for k in keys:
+                conn.execute("DELETE FROM kv_store WHERE key=?", (k,))
             conn.commit()
+            if keys:
+                logger.debug(f"[pro_kb] 向量缓存已清（逐条删 {len(keys)} 键）")
         else:
-            conn = database.get_db()
             conn.execute("DELETE FROM kv_store WHERE key=?",
                          (_PRO_SEM_PREFIX + str(item_id),))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("PKB-001", f"[pro_kb] 清向量缓存失败: "
+                                  f"{type(e).__name__}: {e}")
 
 
 def current_sem_model() -> str:

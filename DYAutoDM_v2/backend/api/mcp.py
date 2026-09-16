@@ -19,9 +19,11 @@
 """
 from __future__ import annotations
 
+import os
+import secrets
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
 
@@ -62,8 +64,14 @@ async def get_mcp_config() -> dict[str, Any]:
 
 
 @router.post("/config")
-async def save_mcp_config(body: McpConfigBody) -> dict[str, Any]:
-    """保存配置。端口/开关变更需 `/restart` 才生效（对齐蓝本「重启 MCP 服务」）。"""
+async def save_mcp_config(body: McpConfigBody, request: Request) -> dict[str, Any]:
+    """保存配置。端口/开关变更需 `/restart` 才生效（对齐蓝本「重启 MCP 服务」）。
+
+    2026-09-17 修补（审查 P1-7）：本端点可把 allow_write_actions 改成 true，
+    属敏感操作，加入管理员令牌校验（可选启用）。
+    """
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     cfg = mcp_config.instance()
     cfg.update(
         enabled=body.enabled,
@@ -72,26 +80,71 @@ async def save_mcp_config(body: McpConfigBody) -> dict[str, Any]:
         require_confirmation=body.require_confirmation,
         log_retention=body.log_retention,
     )
-    logger.info("MCP-001", "MCP 配置已保存")
+    logger.info(f"[MCP-001] " + "MCP 配置已保存")
     return {"ok": True, "data": _status()}
 
 
 @router.post("/token/rotate")
-async def rotate_token() -> dict[str, Any]:
-    """轮换令牌。**世代号 +1 → 旧令牌立即失效**（无需黑名单）。"""
+async def rotate_token(request: Request) -> dict[str, Any]:
+    """轮换令牌。**世代号 +1 → 旧令牌立即失效**（无需黑名单）。
+
+    2026-09-17 修补（审查 P1-7）：轮换会使所有已配置的 AI 客户端失效，
+    属敏感操作，加入管理员令牌校验（可选启用）。
+    """
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     cfg = mcp_config.instance()
     cfg.ensure_token(rotate=True)
-    logger.info("MCP-002", f"令牌已轮换 epoch={cfg.token_epoch}")
+    logger.info(f"[MCP-002] " + f"令牌已轮换 epoch={cfg.token_epoch}")
     return {"ok": True, "data": _status(), "message": "令牌已更新，旧令牌已立即失效"}
 
 
+# ============================================================================
+# MCP 管理面鉴权（2026-09-17 审查 P1-7 修补）
+# ----------------------------------------------------------------------------
+# 背景：会员中间件（main.py）只校验「会话是否存在」，**不区分是否管理员**；
+# 而 api/mcp.py 全部端点都不再读 request.state.member。于是任意已登录会话都能：
+#   ① 把 allow_write_actions 改成 true；
+#   ② 用 POST /api/mcp/confirm 给自己签一次性票据（写操作的第二道闸门被自签自销）；
+#   ③ 删除 /api/mcp/audit 抹掉审计痕迹。
+#
+# 修补策略（最小可行、可渐进启用）：
+#   - 设 DY_MCP_ADMIN_TOKEN 后，标注为「敏感」的管理端点必须带
+#     X-MCP-Admin-Token 头（恒定时间比对）；
+#   - 未设置时维持现状（向后兼容），但每次敏感操作都会留 warning 提示。
+# 敏感端点：改配置 / 取明文令牌 / 轮换令牌 / 自签票据 / 清审计 / 启停服务。
+_SENSITIVE_MCP_PATHS = (
+    "/api/mcp/config", "/api/mcp/token/reveal", "/api/mcp/token/rotate",
+    "/api/mcp/confirm", "/api/mcp/audit", "/api/mcp/restart",
+)
+
+
+def _require_mcp_admin(request) -> bool:
+    """敏感 MCP 管理端点是否需要管理员令牌；返回 True 表示放行。"""
+    admin = os.environ.get("DY_MCP_ADMIN_TOKEN", "") or ""
+    if not admin:
+        logger.warning(
+            "MCP-006",
+            "[mcp] 未设 DY_MCP_ADMIN_TOKEN：MCP 管理面未启用管理员校验"
+            "（任意已登录会话可改配置/取令牌/清审计）")
+        return True
+    got = request.headers.get("x-mcp-admin-token", "")
+    return secrets.compare_digest(got, admin)
+
+
 @router.post("/token/reveal")
-async def reveal_token() -> dict[str, Any]:
+async def reveal_token(request: Request) -> dict[str, Any]:
     """【本机 UI 显式动作】返回全量令牌供复制。
 
     这是唯一返回明文令牌的端点：由用户在本机界面主动点击触发，
     不经过任何 AI 客户端路径。
+
+    2026-09-17 修补（审查 P1-7）：加入管理员令牌校验（可选启用）。
+    拿到令牌即可直连 127.0.0.1 调用全部 READ 工具、绕开会员会话，
+    且令牌不过期（只在 rotate 时失效）—— 不应允许任意登录会话取走。
     """
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     cfg = mcp_config.instance()
     token = cfg.reveal_token()
     return {"ok": True, "token": token, "token_epoch": cfg.token_epoch}
@@ -112,11 +165,11 @@ async def restart_mcp() -> dict[str, Any]:
         # 2026-09-17 修补（审查 P2-13）：保留真实 httpd 句柄，供 _stop_runtime
         # 真正 shutdown，避免多次重启遗留多个监听实例。
         _RUNTIME["httpd"] = info.get("httpd")
-        logger.info("MCP-003", f"本机 HTTP MCP 已启动 :{info['port']}（仅监听本机）")
+        logger.info(f"[MCP-003] " + f"本机 HTTP MCP 已启动 :{info['port']}（仅监听本机）")
         return {"ok": True, "data": _status(),
                 "message": f"已启动，端口 {info['port']}"}
     except Exception as e:
-        logger.warning("MCP-004", f"MCP 服务启动失败: {e}")
+        logger.warning(f"[MCP-004] " + f"MCP 服务启动失败: {e}")
         return {"ok": False, "message": f"启动失败: {type(e).__name__}"}
 
 
@@ -149,8 +202,15 @@ async def list_tools() -> dict[str, Any]:
 
 
 @router.post("/confirm")
-async def issue_confirm(body: dict[str, Any]) -> dict[str, Any]:
-    """为一次写操作签发一次性确认票据（对应蓝本 require_confirmation）。"""
+async def issue_confirm(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    """为一次写操作签发一次性确认票据（对应蓝本 require_confirmation）。
+
+    2026-09-17 修补（审查 P1-7）：本端点是写操作「双重闸门」的第二道。
+    原实现允许任意已登录会话**给自己签票再自己用**，等于闸门自签自销。
+    现加入管理员令牌校验（可选启用）。
+    """
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     tool = str((body or {}).get("tool") or "")
     if mcp_registry.get(tool) is None:
         return {"ok": False, "message": f"工具不存在: {tool}"}
@@ -174,6 +234,13 @@ async def trim_audit() -> dict[str, Any]:
 
 
 @router.delete("/audit")
-async def clear_audit() -> dict[str, Any]:
+async def clear_audit(request: Request) -> dict[str, Any]:
+    """清空审计日志。
+
+    2026-09-17 修补（审查 P1-7）：清空审计会抹掉操作痕迹，属敏感操作，
+    加入管理员令牌校验（可选启用）。
+    """
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     mcp_audit.clear()
     return {"ok": True, "message": "审计日志已清空"}

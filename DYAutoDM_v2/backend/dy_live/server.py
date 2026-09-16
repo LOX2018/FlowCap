@@ -43,7 +43,7 @@ class DouyinLive:
                 break
 
     def on_open(self, ws):
-        logger.info("LIVE-022", "[live-ws] 连接已建立")
+        logger.info(f"[LIVE-022] " + "[live-ws] 连接已建立")
         threading.Thread(target=self.ping, args=(ws,)).start()
 
     def on_message(self, ws, message):
@@ -94,19 +94,19 @@ class DouyinLive:
 
             # s = zlib.decompress(decode_str).decode()
         except Exception as e:
-            logger.error("LIVE-020", f"[live-ws] 消息回调异常: {e}")
+            logger.error(f"[LIVE-020] " + f"[live-ws] 消息回调异常: {e}")
 
     def on_error(self, ws, error):
-        logger.error("LIVE-024", f"[live-ws] WebSocket on_error: {error}")
+        logger.error(f"[LIVE-024] " + f"[live-ws] WebSocket on_error: {error}")
 
     def on_close(self, ws, close_status_code, close_msg):
         # 若主动停止（stop() 已置 _should_stop），不再自动重连，确保 WS 真正断开
         if getattr(self, "_should_stop", False):
-            logger.info("LIVE-025", "[live-ws] closed（主动停止，不重连）")
+            logger.info(f"[LIVE-025] " + "[live-ws] closed（主动停止，不重连）")
             return
         # 此处判断是否需要重连 判断直播间是否关闭
         self.start_ws()
-        logger.warning("LIVE-026", f"[live-ws] closed status_code={close_status_code} msg={close_msg}")
+        logger.warning(f"[LIVE-026] " + f"[live-ws] closed status_code={close_status_code} msg={close_msg}")
 
     def start_ws(self, room_info=None):
         # room_info：可选，由调用方预查并传入（避免重复查询同一直播间，加速启动）。
@@ -116,7 +116,7 @@ class DouyinLive:
         else:
             room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
             if not room_info or not isinstance(room_info, dict):
-                logger.error("LIVE-023", "### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###")
+                logger.error(f"[LIVE-023] " + "### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###")
                 return
             logger_info = room_info
         room_id = logger_info['room_id']

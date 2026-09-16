@@ -224,6 +224,6 @@ def analyze_login_capture(auth, old_snap, env_path):
                 f.write(report + "\n")
             logger.info(f"[捕获分析] 报告已保存: {log_path}")
         except Exception as e:
-            logger.warning("ACC-017", f"[捕获分析] 报告落盘失败: {e}")
+            logger.warning(f"[ACC-017] " + f"[捕获分析] 报告落盘失败: {e}")
 
     return report, log_path

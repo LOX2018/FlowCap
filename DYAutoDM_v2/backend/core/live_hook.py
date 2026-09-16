@@ -213,7 +213,7 @@ class LiveChatHook(DouyinLive):
                     from dy_apis.douyin_api import DouyinAPI
                     uid = DouyinAPI.get_my_uid(self.auth_)
             except Exception as e:
-                logger.error("LIVE-002", f"[心跳] 登录态探活异常（将自动重新扫码）: {e}")
+                logger.error(f"[LIVE-002] " + f"[心跳] 登录态探活异常（将自动重新扫码）: {e}")
                 uid = None
             if not uid:
                 logger.error("LIVE-003", 
@@ -241,9 +241,9 @@ class LiveChatHook(DouyinLive):
             try:
                 self.controller.rescan_and_rebuild()
             except Exception as e:
-                logger.error("LIVE-004", f"[心跳] 自动重新扫码失败（请手动点【重新扫码】）: {e}")
+                logger.error(f"[LIVE-004] " + f"[心跳] 自动重新扫码失败（请手动点【重新扫码】）: {e}")
         else:
-            logger.warning("LIVE-005", "[心跳] 未绑定控制器，无法自动重扫，请手动重新扫码。")
+            logger.warning(f"[LIVE-005] " + "[心跳] 未绑定控制器，无法自动重扫，请手动重新扫码。")
 
     @staticmethod
     def _is_encrypted_nickname(nickname: str) -> bool:
@@ -342,9 +342,9 @@ class LiveChatHook(DouyinLive):
                         except Exception:
                             pass
                 except Exception as e:
-                    logger.warning("LIVE-007", f"live_hook item error: {e}")
+                    logger.warning(f"[LIVE-007] " + f"live_hook item error: {e}")
         except Exception as e:
-            logger.warning("LIVE-008", f"live_hook on_message error: {e}")
+            logger.warning(f"[LIVE-008] " + f"live_hook on_message error: {e}")
 
     # ------------------------------------------------------------------
     # async wrapper（供 AutoDM 在 asyncio 上下文调用）

@@ -145,7 +145,7 @@ def ensure_daemons_for(account: str, wait: bool = True,
         bport = acct_core.browser_daemon_port(account)
         bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
         if bcc_binary is None:
-            logger.warning("SYS-001", "[daemon-launcher] 未找到 browser_daemon 二进制，跳过 BCC 拉起")
+            logger.warning(f"[SYS-001] " + "[daemon-launcher] 未找到 browser_daemon 二进制，跳过 BCC 拉起")
         elif acct_core._port_open(bport, timeout=0.2):
             result["browser"] = True
         else:
@@ -165,13 +165,13 @@ def ensure_daemons_for(account: str, wait: bool = True,
                         f"[daemon-launcher] BCC 未拉起（{st.get('msg')}）——"
                         f"冷静期内或二进制缺失，属预期，不强制拉起")
             except Exception as e:
-                logger.warning("SYS-003", f"[daemon-launcher] 拉起 browser_daemon 失败: {e}")
+                logger.warning(f"[SYS-003] " + f"[daemon-launcher] 拉起 browser_daemon 失败: {e}")
 
         # 2. recv_daemon
         rport = acct_core.recv_daemon_port(account)
         recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")
         if recv_binary is None:
-            logger.warning("SYS-004", "[daemon-launcher] 未找到 recv_daemon 二进制，跳过")
+            logger.warning(f"[SYS-004] " + "[daemon-launcher] 未找到 recv_daemon 二进制，跳过")
         elif acct_core._port_open(rport, timeout=0.2):
             result["recv"] = True
         else:
@@ -183,7 +183,7 @@ def ensure_daemons_for(account: str, wait: bool = True,
                     _wait_for_port(rport, timeout=30)
                 result["recv"] = True
             except Exception as e:
-                logger.warning("SYS-005", f"[daemon-launcher] 拉起 recv_daemon 失败: {e}")
+                logger.warning(f"[SYS-005] " + f"[daemon-launcher] 拉起 recv_daemon 失败: {e}")
     except Exception as e:
-        logger.warning("SYS-006", f"[daemon-launcher] ensure_daemons_for 异常（不影响使用）: {e}")
+        logger.warning(f"[SYS-006] " + f"[daemon-launcher] ensure_daemons_for 异常（不影响使用）: {e}")
     return result

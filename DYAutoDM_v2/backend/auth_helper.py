@@ -35,8 +35,8 @@ def enrich_auth(auth, cookies_dy="", headless=False,
     try:
         from dy_apis.login_api import DYLoginApi
     except Exception as e:
-        logger.warning("AUTH-001", f"[auth] 无法导入基座 DYLoginApi，跳过签名补全: {e}")
-        logger.warning("AUTH-002", "[auth] 请先安装依赖：pip install aiohttp（基座 login_api 需要）")
+        logger.warning(f"[AUTH-001] " + f"[auth] 无法导入基座 DYLoginApi，跳过签名补全: {e}")
+        logger.warning(f"[AUTH-002] " + "[auth] 请先安装依赖：pip install aiohttp（基座 login_api 需要）")
         return auth, cookies_dy
 
     try:
@@ -48,7 +48,7 @@ def enrich_auth(auth, cookies_dy="", headless=False,
             env_path = os.path.join(app_root(), env_path)
         load_dotenv(env_path, override=True)
     except Exception as e:
-        logger.warning("AUTH-003", f"[auth] 加载 {env_path} 失败: {e}")
+        logger.warning(f"[AUTH-003] " + f"[auth] 加载 {env_path} 失败: {e}")
 
     # 解析账号名（env_path -> account name），用于调 BCC
     account_name = None
@@ -85,11 +85,11 @@ def enrich_auth(auth, cookies_dy="", headless=False,
                         ensure_uid(_auth)
                         logger.info("[auth] BCC /scan_login 完成，已从 .env 重载凭证")
                         return _auth, _cks
-                    logger.warning("AUTH-004", "[auth] BCC /scan_login 返回 ok 但 .env 无 cookie，退回直开浏览器")
+                    logger.warning(f"[AUTH-004] " + "[auth] BCC /scan_login 返回 ok 但 .env 无 cookie，退回直开浏览器")
                 else:
-                    logger.warning("AUTH-005", f"[auth] BCC /scan_login 返回失败: {r.get('msg', '')}，退回直开浏览器")
+                    logger.warning(f"[AUTH-005] " + f"[auth] BCC /scan_login 返回失败: {r.get('msg', '')}，退回直开浏览器")
         except Exception as e:
-            logger.warning("AUTH-006", f"[auth] BCC /scan_login 异常，退回直开浏览器: {e}")
+            logger.warning(f"[AUTH-006] " + f"[auth] BCC /scan_login 异常，退回直开浏览器: {e}")
 
     # 后备：直开 Playwright（DYLoginApi.get_login_auth，BCC 未运行/失败时）
     try:
@@ -120,7 +120,7 @@ def enrich_auth(auth, cookies_dy="", headless=False,
         if isinstance(e, RiskControlError) or (getattr(e, "__cause__", None)
                                                and isinstance(e.__cause__, RiskControlError)):
             raise
-        logger.warning("AUTH-007", f"[auth] 获取登录凭证失败: {e}")
+        logger.warning(f"[AUTH-007] " + f"[auth] 获取登录凭证失败: {e}")
         return auth, cookies_dy
 
     cookie_str = "; ".join(f"{k}={v}" for k, v in (auth.cookie or {}).items())
@@ -215,7 +215,7 @@ def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
         from builder.auth import DouyinAuth
         from auto_dm import accounts
     except Exception as e:
-        logger.warning("AUTH-009", f"[auth] 导入依赖失败: {e}")
+        logger.warning(f"[AUTH-009] " + f"[auth] 导入依赖失败: {e}")
         return None, None
 
     env_path = accounts.current_env_path()
@@ -240,6 +240,6 @@ def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
         user_data_dir=user_data_dir, env_path=env_path or ".env", force=bool(not cookies))
     ensure_uid(auth)
     if not getattr(auth, "cookie", None):
-        logger.warning("AUTH-010", "[auth] 当前账号无可用的登录态，请在「账号管理」完成登录。")
+        logger.warning(f"[AUTH-010] " + "[auth] 当前账号无可用的登录态，请在「账号管理」完成登录。")
         return None, None
     return auth, cookie_str

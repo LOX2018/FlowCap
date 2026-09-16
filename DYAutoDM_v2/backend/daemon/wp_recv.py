@@ -255,7 +255,7 @@ def process_events(account: str, events: list[dict]) -> int:
     try:
         conn = _db()
     except Exception as e:
-        logger.warning("RECV-024", f"[wp_recv][{account}] 数据库连接失败: {e}")
+        logger.warning(f"[RECV-024] " + f"[wp_recv][{account}] 数据库连接失败: {e}")
         return 0
 
     for ev in events:
@@ -356,5 +356,5 @@ async def run_wp_recv_loop(account: str, interval: float = POLL_INTERVAL) -> Non
             logger.info(f"[wp_recv][{account}] 轮询已停止")
             raise
         except Exception as e:
-            logger.warning("RECV-025", f"[wp_recv][{account}] 轮询异常: {e}")
+            logger.warning(f"[RECV-025] " + f"[wp_recv][{account}] 轮询异常: {e}")
         await asyncio.sleep(interval)

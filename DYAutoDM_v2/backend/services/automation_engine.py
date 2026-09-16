@@ -381,7 +381,7 @@ class AutomationEngine:
             try:
                 cands.extend(fn(s, per_source_limit) or [])
             except Exception as e:  # noqa: BLE001
-                logger.warning("AUTO-001", f"监控源 {s.value} 取候选失败: {type(e).__name__}")
+                logger.warning(f"[AUTO-001] " + f"监控源 {s.value} 取候选失败: {type(e).__name__}")
                 st["errors"] += 1
         st["scanned"] = len(cands)
 

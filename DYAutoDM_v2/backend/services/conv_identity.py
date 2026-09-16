@@ -51,7 +51,9 @@ from services.ttl_cache import TTLCache
 # TTL 取 60s（而非 uid_probe 的 300s）：本推断**零网络**，快照更新无成本，
 # 更短 TTL 意味着换号/迁移后更快自愈。
 MY_UID_TTL = float(__import__("os").environ.get("DY_MY_UID_TTL", "60") or 60)
-_my_uid_cache = TTLCache(default_ttl=MY_UID_TTL)
+# 2026-09-17 修补（审查 P2-5）：设置容量上限兜底。key 是账号名（数量有限），
+# 但本类是通用原语，加 maxsize 可防止后续被高频 key 实例化时内存无界增长。
+_my_uid_cache = TTLCache(default_ttl=MY_UID_TTL, maxsize=512)
 
 # 统计推断的置信阈值：本账号 uid 出现在 ≥90% 的 conv_id 中
 _MY_UID_COVERAGE = 0.9

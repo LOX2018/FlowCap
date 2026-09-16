@@ -302,7 +302,7 @@ async def list_conversations(account: str):
             # 库里还没有会话：若守护未启动则提示前端拉起，否则返回空
             port = acct_core.recv_daemon_port(account)
             if not acct_core._port_open(port, timeout=0.3):
-                logger.warning("MSG-001", f"[私信拉取] 账号「{account}」库空且守护未运行(port={port})")
+                logger.warning(f"[MSG-001] " + f"[私信拉取] 账号「{account}」库空且守护未运行(port={port})")
                 return {"ok": True, "conversations": [], "recvDaemonDown": True}
             return {"ok": True, "conversations": []}
         convs = []
@@ -340,7 +340,7 @@ async def list_conversations(account: str):
             )
         return {"ok": True, "conversations": convs}
     except Exception as e:
-        logger.warning("MSG-002", f"[私信拉取] 账号「{account}」读库异常: {e}")
+        logger.warning(f"[MSG-002] " + f"[私信拉取] 账号「{account}」读库异常: {e}")
         return {"ok": False, "conversations": [], "error": str(e)}
 
 
@@ -453,7 +453,7 @@ async def get_conversation(account: str, conv_id: str):
         logger.info(f"[私信拉取] 账号「{account}」会话 {conv_id} 详情: name={conv['name']}, messages={len(conv['messages'])} 条")
         return {"ok": True, "conversation": conv}
     except Exception as e:
-        logger.warning("MSG-003", f"[私信拉取] 账号「{account}」会话详情异常: {e}")
+        logger.warning(f"[MSG-003] " + f"[私信拉取] 账号「{account}」会话详情异常: {e}")
         return {"ok": False, "conversation": {}}
 
 
@@ -809,7 +809,7 @@ async def refresh_conversations(account: str, body: RefreshConvsRequest | None =
             "elapsed": elapsed,
         }
     except Exception as e:
-        logger.warning("CAP-002", f"[refresh][{account}] 更新会话失败: {e}")
+        logger.warning(f"[CAP-002] " + f"[refresh][{account}] 更新会话失败: {e}")
         return {
             "ok": False,
             "error": str(e),

@@ -191,14 +191,13 @@ def ensure_browser(account: str, purpose: str = PURPOSE_AUTO,
             r = ensure_daemons_for(account, wait=wait, skip_cooldown=_sk)
             ok = bool(r.get("browser"))
         except Exception as e:
-            logger.warning("BCC-040",
-                           f"[gate][{account}] 调度器拉起 BCC 失败: {e}")
+            logger.warning(f"[BCC-040] " + f"[gate][{account}] 调度器拉起 BCC 失败: {e}")
             ok = False
         st = bcc_state(account)
         if not ok or not st["online"]:
             msg = (f"BCC 浏览器守护未能就绪（{st.get('msg') or '端口未开'}）。"
                    f"请先在账号管理页启动该账号的浏览器守护，或检查守护二进制是否存在。")
-            logger.warning("BCC-041", f"[gate][{account}] {msg}")
+            logger.warning(f"[BCC-041] " + f"[gate][{account}] {msg}")
             return {"ok": False, "owner": None, "port": st.get("port"),
                     "state": st, "msg": msg}
 

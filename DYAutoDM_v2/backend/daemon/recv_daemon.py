@@ -25,6 +25,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -67,7 +68,7 @@ _ROOT = app_root()
 # 日志同步输出到 stderr（enqueue=True 避免 Windows GBK 控制台中文编码失败中断主线程），
 # 这样 Tauri Rust 侧能捕获到守护进程的日志，也会经由 backend 的日志桥接展示到前端「运行日志」。
 # 错误码日志补丁：loguru 会把第一个位置参数当格式模板，导致
-# logger.warning("BCC-006", "描述") 的描述被丢弃（运行日志只剩代码）。
+# logger.warning(f"[BCC-006] " + "描述") 的描述被丢弃（运行日志只剩代码）。
 # 此处安装兼容层，让「码 + 描述」正常输出（一处生效，覆盖全项目 345 处调用）。
 try:
     from utils.code_logger import install_code_logger_patch as _inst_code_log
@@ -372,9 +373,7 @@ class AccountInbox:
             # 异常（超时/连接重置/容器忙）同样归还待办 —— 否则一次网络抖动
             # 就永久丢掉这批骨架的富化机会，与「下次再补」的契约矛盾。
             self._reschedule_enrich(batch, f"异常：{type(e).__name__}")
-            logger.warning(
-                "RECV-020",
-                f"[recv][{self.name}] 骨架昵称富化失败（不影响收消息）: {e}")
+            logger.warning(f"[RECV-020] " + f"[recv][{self.name}] 骨架昵称富化失败（不影响收消息）: {e}")
 
     def _refresh_my_uid(self) -> bool:
         """（重新）读取本机 uid。
@@ -410,7 +409,7 @@ class AccountInbox:
                 self._warn_my_uid_missing()
             return bool(self.my_uid)
         except Exception as e:
-            logger.warning("RECV-002", f"[recv][{self.name}] my_uid 刷新异常: {e}")
+            logger.warning(f"[RECV-002] " + f"[recv][{self.name}] my_uid 刷新异常: {e}")
             return False
 
     _my_uid_warn_ts = 0.0
@@ -488,7 +487,7 @@ class AccountInbox:
                 except Exception:
                     pass
         except Exception as e:
-            logger.warning("RECV-002", f"[recv][{self.name}] 数据库加载会话失败: {e}")
+            logger.warning(f"[RECV-002] " + f"[recv][{self.name}] 数据库加载会话失败: {e}")
 
     def get_or_create(self, conv_id: str, peer_id: Any = None,
                       peer_name: str | None = None) -> Conversation:
@@ -610,7 +609,7 @@ class AccountInbox:
                     "avatar": avatar,
                 }
             except Exception as e:
-                logger.warning("RECV-003", f"[recv][{self.name}] 数据库加载会话详情失败: {e}")
+                logger.warning(f"[RECV-003] " + f"[recv][{self.name}] 数据库加载会话详情失败: {e}")
                 return None
 
     def mark_read(self, conv_id: str) -> None:
@@ -667,6 +666,33 @@ class AccountInbox:
             # 持久化到 SQLite（单条消息 + 会话 last_ts 更新）
             try:
                 conn = self._db()
+                # 2026-09-17 修补（审查 P2-12）：**本地发送与 WS 回声双写**。
+                # 原流程：/send 落库不传 msg_id（NULL，ts=本地时刻）→ 随后 WS
+                # 回声到达带真实 server_message_id（ts=WS 到达时刻）→ 两者毫秒
+                # 时间戳不同，uniq_dmmsg_fallback 不命中，uniq_dmmsg 又因
+                # 本地行 msg_id IS NULL 管不到 → 同一条自己发的消息存两行。
+                #
+                # 现改为「占位回填」：本地发送写入带 `local:` 前缀的占位
+                # msg_id；WS 回声到达时若发现同会话同角色同文本的占位行，
+                # 则 **UPDATE 该行补上真实 msg_id**，不再 INSERT 新行。
+                if msg_id and role == "me":
+                    cur = conn.execute(
+                        "UPDATE dm_messages SET msg_id=? "
+                        "WHERE account=? AND conv_id=? AND role='me' "
+                        "AND msg_id LIKE 'local:%' AND text=? AND ?-ts BETWEEN 0 AND 300",
+                        (str(msg_id), self.name, conv_id, text, ts),
+                    )
+                    if cur.rowcount > 0:
+                        # 已回填占位行 —— 同步 last_ts 后直接返回，不再插入
+                        conn.execute(
+                            "UPDATE dm_conversations SET last_ts=? "
+                            "WHERE account=? AND conv_id=?",
+                            (ts, self.name, conv_id))
+                        conn.commit()
+                        logger.debug(
+                            f"[recv][{self.name}] WS 回声已回填本地占位消息 "
+                            f"（conv {conv_id[:8]}…, msg_id={str(msg_id)[:20]}）")
+                        return c
                 # 2026-09-06 全局并发治理（双通道重复落库）：
                 # 裸 INSERT 会绕过 uniq_dmmsg / uniq_dmmsg_fallback 两个唯一
                 # 索引而直接抛 IntegrityError（不是去重）。改 OR IGNORE 后
@@ -699,7 +725,7 @@ class AccountInbox:
                     )
                 conn.commit()
             except Exception as e:
-                logger.warning("RECV-004", f"[recv][{self.name}] 消息持久化失败: {e}")
+                logger.warning(f"[RECV-004] " + f"[recv][{self.name}] 消息持久化失败: {e}")
         return c
 
 
@@ -778,9 +804,7 @@ class RecvChannel(threading.Thread):
                 try:
                     self._handle(message)
                 except Exception as e:
-                    logger.warning(
-                        "RECV-005",
-                        f"[recv][{self.name}] 消息解析异常: {e}")
+                    logger.warning(f"[RECV-005] " + f"[recv][{self.name}] 消息解析异常: {e}")
             return _m
 
         def on_error(ws, error):
@@ -866,9 +890,7 @@ class RecvChannel(threading.Thread):
             logger.info(
                 f"[recv][{self.name}] 重连后追赶补拉完成（会话 {n} 个）")
         except Exception as e:
-            logger.warning(
-                "RECV-034",
-                f"[recv][{self.name}] 重连后追赶补拉失败（不影响收消息）: {e}")
+            logger.warning(f"[RECV-034] " + f"[recv][{self.name}] 重连后追赶补拉失败（不影响收消息）: {e}")
 
     def run(self) -> None:
         """线程主体：交由 WSLink 单循环驱动（不再递归、不再回调内 sleep）。"""
@@ -1163,7 +1185,7 @@ def _safe_capture(name):
         from auto_dm.conversation_capture import capture_all
         capture_all(name, with_browser=False)
     except Exception as e:
-        logger.warning("RECV-007", f"[recv][{name}] 启动前移捕获失败（忽略）: {e}")
+        logger.warning(f"[RECV-007] " + f"[recv][{name}] 启动前移捕获失败（忽略）: {e}")
 
 
 @app.on_event("startup")
@@ -1178,7 +1200,7 @@ async def _startup() -> None:
         import database
         database.get_db()
     except Exception as e:
-        logger.error("RECV-008", f"[recv] 数据库初始化失败: {e}")
+        logger.error(f"[RECV-008] " + f"[recv] 数据库初始化失败: {e}")
     for name in _state["accounts"]:
         try:
             env_path = acc.env_path_of(name)
@@ -1195,9 +1217,9 @@ async def _startup() -> None:
                     target=lambda: _safe_capture(name), daemon=True
                 ).start()
             except Exception as e:
-                logger.warning("RECV-009", f"[recv] 启动捕获注册失败: {e}")
+                logger.warning(f"[RECV-009] " + f"[recv] 启动捕获注册失败: {e}")
         except Exception as e:
-            logger.error("RECV-010", f"[recv] 账号 {name} 启动失败: {e}")
+            logger.error(f"[RECV-010] " + f"[recv] 账号 {name} 启动失败: {e}")
 
 
 @app.on_event("shutdown")
@@ -1270,7 +1292,7 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         DYLoginApi.refresh_cookie_from_profile(auth, env_path)
         my_uid = str(auth.get_uid())
     except Exception as e:
-        logger.warning("RECV-011", f"[recv][{ib.name}] 加载凭证失败: {e}")
+        logger.warning(f"[RECV-011] " + f"[recv][{ib.name}] 加载凭证失败: {e}")
         return 0
 
     # 1) get_message_by_init 拉全量会话（250KB，含全部会话 ID + 消息 + peer uid）
@@ -1283,7 +1305,7 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
         from auto_dm.conversation_capture import parse_init_protobuf
         convs = parse_init_protobuf(raw, my_uid)
     except Exception as e:
-        logger.warning("RECV-013", f"[recv][{ib.name}] get_message_by_init 失败: {e}")
+        logger.warning(f"[RECV-013] " + f"[recv][{ib.name}] get_message_by_init 失败: {e}")
         return 0
     if not convs:
         logger.info(f"[recv][{ib.name}] get_message_by_init 返回 0 个会话")
@@ -1489,7 +1511,7 @@ def _load_send_auth(account: str, env_path: str):
     try:
         DYLoginApi.refresh_cookie_from_profile(auth, env_path)
     except Exception as _e:
-        logger.warning("RECV-014", f"[recv][{account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
+        logger.warning(f"[RECV-014] " + f"[recv][{account}] 刷新实时 cookie 失败（沿用 .env）: {_e}")
     return auth
 
 
@@ -1545,13 +1567,16 @@ async def send(body: SendBody) -> dict:
             auth, conversation_id, conversation_short_id, ticket, body.text
         )
         if ok:
-            ib.add_message(body.conv_id, "me", body.text, peer_id=peer_id)
+            # 2026-09-17 修补（审查 P2-12 配套）：写入 `local:` 占位 msg_id，
+            # 供 WS 回声到达时回填真实 server_message_id（避免同一条消息双写）。
+            ib.add_message(body.conv_id, "me", body.text, peer_id=peer_id,
+                           msg_id=f"local:{uuid.uuid4().hex[:16]}")
             logger.info(f"[recv][{body.account}] 已回复会话 {body.conv_id[:8]}…: {body.text}")
             return {"ok": True}
-        logger.warning("RECV-017", f"[recv][{body.account}] 回复失败原因: {detail}")
+        logger.warning(f"[RECV-017] " + f"[recv][{body.account}] 回复失败原因: {detail}")
         return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
     except Exception as e:
-        logger.error("RECV-018", f"[recv][{body.account}] 回复失败: {e}")
+        logger.error(f"[RECV-018] " + f"[recv][{body.account}] 回复失败: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -1582,8 +1607,7 @@ async def send_by_uid(body: SendByUidBody) -> dict:
     # 统一发送闸门：三源一配额（与 /send 同一把锁）
     ok_gate, waited = _send_gate_acquire(body.account)
     if not ok_gate:
-        logger.warning("RECV-019", 
-            f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行")
+        logger.warning(f"[RECV-019] " + f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行")
         return {"ok": False, "error": "rate_limited",
                 "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
     try:
@@ -1597,13 +1621,15 @@ async def send_by_uid(body: SendByUidBody) -> dict:
         if ok:
             # conv_id 骨架：0:1:my_uid:peer_uid（方向判定 / 落库与 WS 侧同构）
             conv_id = f"0:1:{ib.my_uid}:{peer_id}" if ib.my_uid else f"0:1::{peer_id}"
-            ib.add_message(conv_id, "me", body.text, peer_id=str(peer_id))
+            ib.add_message(conv_id, "me", body.text, peer_id=str(peer_id),
+                           # 2026-09-17 修补（审查 P2-12 配套）：local: 占位
+                           msg_id=f"local:{uuid.uuid4().hex[:16]}")
             logger.info(f"[recv][{body.account}] 已直发 uid={peer_id}: {body.text[:40]}")
             return {"ok": True, "conv_id": conv_id}
-        logger.warning("RECV-020", f"[recv][{body.account}] 直发 uid={peer_id} 失败: {detail}")
+        logger.warning(f"[RECV-020] " + f"[recv][{body.account}] 直发 uid={peer_id} 失败: {detail}")
         return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
     except Exception as e:
-        logger.error("RECV-021", f"[recv][{body.account}] 直发 uid={peer_id} 异常: {e}")
+        logger.error(f"[RECV-021] " + f"[recv][{body.account}] 直发 uid={peer_id} 异常: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -1672,16 +1698,21 @@ async def send_image(body: SendImageBody) -> dict:
             }
             if info.get("origin_url"):
                 extra["origin_url"] = info["origin_url"]
+            # 2026-09-17 修补（审查 P2-12 配套）：图片同样写入 `local:` 占位。
+            # 注意：图片 text 恒为「[图片]」，回填条件里带了 text 比对，
+            # 同会话短时间内连发多张图时可能误回填到第一条占位行 —— 因此
+            # 图片改用 **oid 参与占位**，保证一图一坑（oid 由抖音返回，唯一）。
             ib.add_message(body.conv_id, "me", "[图片]", peer_id=peer_id,
-                           msg_type="image", extra=extra)
+                           msg_type="image", extra=extra,
+                           msg_id=f"local:img:{info.get('oid') or uuid.uuid4().hex[:16]}")
             logger.info(f"[recv][{body.account}] 图片已发送会话 {body.conv_id[:8]}… "
                         f"oid={info.get('oid', '')[:40]}")
             return {"ok": True, "info": {k: info.get(k) for k in
                                          ("oid", "origin_url", "conversation_id")}}
-        logger.warning("RECV-022", f"[recv][{body.account}] 图片发送失败: {detail}")
+        logger.warning(f"[RECV-022] " + f"[recv][{body.account}] 图片发送失败: {detail}")
         return {"ok": False, "error": detail or "send_image 返回 False"}
     except Exception as e:
-        logger.error("RECV-023", f"[recv][{body.account}] 图片发送异常: {e}")
+        logger.error(f"[RECV-023] " + f"[recv][{body.account}] 图片发送异常: {e}")
         return {"ok": False, "error": str(e)}
 
 

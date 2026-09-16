@@ -106,7 +106,7 @@ def drop_scope(scope: str) -> bool:
     except Exception as e:
         try:
             from loguru import logger
-            logger.warning("CFG-010", f"[config] drop_scope 失败: {e}")
+            logger.warning(f"[CFG-010] " + f"[config] drop_scope 失败: {e}")
         except Exception:
             pass
         return False

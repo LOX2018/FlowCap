@@ -198,9 +198,7 @@ class WSLink:
                 self._connect_once()
             except Exception as e:
                 self.stats["last_error"] = f"{type(e).__name__}: {e}"
-                logger.warning(
-                    "RECV-030",
-                    f"[recv][{self.name}] WS 建连异常: {type(e).__name__}: {e}")
+                logger.warning(f"[RECV-030] " + f"[recv][{self.name}] WS 建连异常: {type(e).__name__}: {e}")
             if self._stop.is_set():
                 break
             delay = self._backoff.next()
@@ -258,9 +256,7 @@ class WSLink:
                 try:
                     fn(*a)
                 except Exception as e:
-                    logger.warning(
-                        "RECV-037",
-                        f"[recv][{self.name}] 用户回调异常: {e}")
+                    logger.warning(f"[RECV-037] " + f"[recv][{self.name}] 用户回调异常: {e}")
 
         def _open(ws_):
             _run(prev["open"], ws_)
@@ -297,20 +293,18 @@ class WSLink:
             try:
                 self._on_connected()
             except Exception as e:
-                logger.warning("RECV-031",
-                               f"[recv][{self.name}] 建连后回调失败: {e}")
+                logger.warning(f"[RECV-031] " + f"[recv][{self.name}] 建连后回调失败: {e}")
 
     def cb_message(self, ws, message) -> None:
         self._last_rx = time.time()
         try:
             self._on_message(message)
         except Exception as e:
-            logger.warning("RECV-005",
-                           f"[recv][{self.name}] 消息解析异常: {e}")
+            logger.warning(f"[RECV-005] " + f"[recv][{self.name}] 消息解析异常: {e}")
 
     def cb_error(self, ws, error) -> None:
         self.stats["last_error"] = str(error)
-        logger.warning("RECV-006", f"[recv][{self.name}] WS 错误: {error}")
+        logger.warning(f"[RECV-006] " + f"[recv][{self.name}] WS 错误: {error}")
 
     def cb_close(self, ws, *args) -> None:
         self.stats["connected"] = False
@@ -362,9 +356,7 @@ class WSLink:
             self.stats["last_rx_age"] = age
             sock = getattr(ws, "sock", None)
             if sock is None or not getattr(sock, "connected", False):
-                logger.warning(
-                    "RECV-032",
-                    f"[recv][{self.name}] socket 已断开，触发重连")
+                logger.warning(f"[RECV-032] " + f"[recv][{self.name}] socket 已断开，触发重连")
                 try:
                     ws.close()
                 except Exception:

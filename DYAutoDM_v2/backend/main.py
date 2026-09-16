@@ -200,7 +200,7 @@ def _prealign_on_startup() -> None:
                 ok += 1
         logger.info(f"[prealign] 启动预对齐完成: {ok}/{len(names)} 个账号守护就绪")
     except Exception as e:  # noqa: BLE001
-        logger.warning("SYS-022", f"[prealign] 启动预对齐失败（登录后会重试）: {e}")
+        logger.warning(f"[SYS-022] " + f"[prealign] 启动预对齐失败（登录后会重试）: {e}")
 
 
 def _kill_spawned_daemons() -> None:
@@ -276,7 +276,7 @@ def _auto_start_daemons() -> None:
         # ═══════════════════════════════════════════════════════════════
         bcc_binary = _resolve_sidecar_binary("dyautodm-browser-daemon")
         if bcc_binary is None:
-            logger.warning("SYS-008", "[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
+            logger.warning(f"[SYS-008] " + "[startup] 未找到 dyautodm-browser-daemon 二进制，跳过 BCC 拉起")
         else:
             import os as _os
             if _os.environ.get("DY_BCC_ON_START", "1") == "0":
@@ -298,12 +298,12 @@ def _auto_start_daemons() -> None:
                             f"[startup] 已随启动拉起 browser_daemon (port={bport}, "
                             f"pid={proc.pid})—— 保证用户点任何按钮时浏览器已就绪")
                 except Exception as e:
-                    logger.warning("SYS-009", f"[startup] 拉起 browser_daemon 失败: {e}")
+                    logger.warning(f"[SYS-009] " + f"[startup] 拉起 browser_daemon 失败: {e}")
 
         # 2. 每个账号的 recv_daemon（并行 spawn，不等待）
         recv_binary = _resolve_sidecar_binary("dyautodm-recv-daemon")
         if recv_binary is None:
-            logger.warning("SYS-010", "[startup] 未找到 dyautodm-recv-daemon 二进制，跳过 recv_daemon 拉起")
+            logger.warning(f"[SYS-010] " + "[startup] 未找到 dyautodm-recv-daemon 二进制，跳过 recv_daemon 拉起")
             return
         for name in names:
             try:
@@ -314,7 +314,7 @@ def _auto_start_daemons() -> None:
                 proc = _spawn_sidecar(recv_binary, ["--accounts", name, "--port", str(port)])
                 spawned.append((port, proc.pid, f"recv_daemon({name})"))
             except Exception as e:
-                logger.warning("SYS-011", f"[startup] 拉起 {name} 的 recv_daemon 失败: {e}")
+                logger.warning(f"[SYS-011] " + f"[startup] 拉起 {name} 的 recv_daemon 失败: {e}")
 
         # 3. 统一等端口就绪（并行后总耗时 ≈ 最慢一个）
         for port, pid, label in spawned:
@@ -340,7 +340,7 @@ def _auto_start_daemons() -> None:
             )
 
     except Exception as e:
-        logger.warning("SYS-012", f"[startup] 自动拉起 daemon 失败（不影响使用）: {e}")
+        logger.warning(f"[SYS-012] " + f"[startup] 自动拉起 daemon 失败（不影响使用）: {e}")
 
 
 def _nickname_sync_background(names: list[str]) -> None:
@@ -361,9 +361,9 @@ def _nickname_sync_background(names: list[str]) -> None:
                 n_conv, n_msg = capture_all(name, with_browser=True)
                 logger.info(f"[nickname] {name} 昵称关联完成：{n_conv} 会话，{n_msg} 消息")
             except Exception as e:
-                logger.warning("SYS-013", f"[nickname] {name} 昵称关联失败（WS B 机制兜底）: {e}")
+                logger.warning(f"[SYS-013] " + f"[nickname] {name} 昵称关联失败（WS B 机制兜底）: {e}")
     except Exception as e:
-        logger.warning("SYS-014", f"[nickname] 昵称关联流程失败: {e}")
+        logger.warning(f"[SYS-014] " + f"[nickname] 昵称关联流程失败: {e}")
 
 
 def _warm_verify_cache() -> None:
@@ -384,7 +384,7 @@ def _warm_verify_cache() -> None:
             list(pool.map(lambda n: _cached_verify(n, timeout=3), names))
         logger.info("[warmup] 账号校验缓存预热完成（账户页首屏将秒出）")
     except Exception as e:
-        logger.warning("SYS-015", f"[warmup] 账号校验缓存预热失败（不影响使用）: {e}")
+        logger.warning(f"[SYS-015] " + f"[warmup] 账号校验缓存预热失败（不影响使用）: {e}")
 
 
 @asynccontextmanager
@@ -396,14 +396,14 @@ async def lifespan(app: FastAPI):
         database.get_db()
         logger.info("[db] SQLite 数据库已就绪")
     except Exception as e:
-        logger.error("DB-005", f"[db] 数据库初始化失败: {e}")
+        logger.error(f"[DB-005] " + f"[db] 数据库初始化失败: {e}")
     # 启动收尾上次进程遗留的悬空「运行中」历史任务（按 pid 比对兜底，
     # 不会误伤本进程将要运行的任务；正常退出已由 AutoDM.shutdown 真实收尾）
     try:
         from tasks_history import fix_stuck_tasks
         fix_stuck_tasks()
     except Exception as e:
-        logger.warning("SYS-016", f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
+        logger.warning(f"[SYS-016] " + f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
     # 引擎主控单例（替代原版 WebBridge.adm）
     app.state.adm = AutoDM()
     # 2026-09-08：把引擎实例显式注入通知模块 —— 指令执行（启动/停止/查询）
@@ -417,7 +417,7 @@ async def lifespan(app: FastAPI):
         # 模块级调用曾因 no running event loop 静默失败（NTY-005 处注释）。
         _notify_api.init_notifier()
     except Exception as _e:  # noqa: BLE001
-        logger.warning("NTY-004", f"[notify] adm 注入/通知启动失败: {_e}")
+        logger.warning(f"[NTY-004] " + f"[notify] adm 注入/通知启动失败: {_e}")
     # 2026-09-07：UID 探活统一调度器预热（架构重构）。
     # 启动即由 services.uid_probe 按账号错峰探活一次并缓存，后续
     # verify_account（30s 轮询）/ live_hook 心跳 / bcc keepalive 全部
@@ -435,7 +435,7 @@ async def lifespan(app: FastAPI):
             ).start()
             logger.info(f"[uid-probe] 已启动统一探活预热（{len(_names)} 个账号）")
     except Exception as e:
-        logger.warning("SYS-017", f"[uid-probe] 预热启动失败（不影响使用）: {e}")
+        logger.warning(f"[SYS-017] " + f"[uid-probe] 预热启动失败（不影响使用）: {e}")
     # 后台预热账号校验缓存（并发，不阻塞启动）
     threading.Thread(target=_warm_verify_cache, daemon=True).start()
     # 原图缓存 TTL 清理(后台延迟 60s,删除过期/超容的本地解密图)
@@ -443,7 +443,7 @@ async def lifespan(app: FastAPI):
         from auto_dm.origin_image_resolver import sweep_background
         sweep_background()
     except Exception as e:
-        logger.warning("SYS-018", f"[origin_image] 启动 TTL 清理失败（不影响使用）: {e}")
+        logger.warning(f"[SYS-018] " + f"[origin_image] 启动 TTL 清理失败（不影响使用）: {e}")
     # 2026-09-08：恢复上次登录会话（token 持久化，避免每次重启都要重新登录）。
     # 必须在下面的「未登录预对齐」判断【之前】执行，否则会被当成未登录。
     try:
@@ -451,7 +451,7 @@ async def lifespan(app: FastAPI):
         if member_ctx.current() is None:
             member_ctx.restore_persisted_session()
     except Exception as _e:
-        logger.warning("SYS-023", f"[startup] 会话恢复失败（忽略）: {_e}")
+        logger.warning(f"[SYS-023] " + f"[startup] 会话恢复失败（忽略）: {_e}")
     # 启动后为所有账号拉起 daemon（browser + recv）并触发昵称关联
     # 同步执行，确保 backend 启动完成时 daemon 已就绪
     # 会员体系：未登录时按【启动预对齐】处理（2026-09-08 用户明确要求）——
@@ -465,7 +465,7 @@ async def lifespan(app: FastAPI):
         else:
             _auto_start_daemons()
     except Exception as _e:
-        logger.warning("SYS-019", f"[startup] 会员态判断失败，按未登录处理: {_e}")
+        logger.warning(f"[SYS-019] " + f"[startup] 会员态判断失败，按未登录处理: {_e}")
     # WP 通道私信接收循环（抖音网页版 chat 页 hook）
     # 2026-09-05 新增。BCC 是单例（所有账号共享一个浏览器，用 names[0] 的端口），
     # 故 wp_recv 也只对第一个账号轮询。与 WS 通道（recv_daemon）并存、应用层去重。
@@ -483,7 +483,7 @@ async def lifespan(app: FastAPI):
             app.state.wp_recv_task = _wp_task
             logger.info(f"[startup] WP 通道接收循环已启动 (account={_wp_names[0]})")
     except Exception as e:
-        logger.warning("SYS-020", f"[startup] WP 接收循环启动失败（不影响 WS 通道）: {e}")
+        logger.warning(f"[SYS-020] " + f"[startup] WP 接收循环启动失败（不影响 WS 通道）: {e}")
     # AI 获客自动回复：建表 + 若配置启用则自启监听（2026-09-06 嵌入）
     try:
         from services import ai_reply as _ai
@@ -492,7 +492,7 @@ async def lifespan(app: FastAPI):
             _ai.WORKER.start()
             logger.info("[startup] AI 获客自动回复已按配置自启")
     except Exception as e:
-        logger.warning("SYS-021", f"[startup] AI 自动回复初始化失败（不影响主流程）: {e}")
+        logger.warning(f"[SYS-021] " + f"[startup] AI 自动回复初始化失败（不影响主流程）: {e}")
     # 知识维护常驻定时器（v0.40）：每 84h 一轮 = 自动学习 + 陈旧扫描 + 回收站清理
     # 首次延迟 30 分钟（避开启动初始化高峰）；扫描只出报告，删除需人工确认。
     try:
@@ -500,7 +500,7 @@ async def lifespan(app: FastAPI):
         kb_maintain.start_scheduler(interval_hours=kb_maintain.LEARN_INTERVAL_HOURS)
         logger.info("[startup] 知识维护定时器已启动（每 84h 一轮，首次延迟 30 分钟）")
     except Exception as e:
-        logger.warning("SYS-024", f"[startup] 知识维护定时器启动失败（不影响主流程）: {e}")
+        logger.warning(f"[SYS-024] " + f"[startup] 知识维护定时器启动失败（不影响主流程）: {e}")
     yield
     logger.info("DYAutoDM 后端关闭")
     # 先清扫本进程拉起的 sidecar（前端窗口关闭不保证会走到这里，
@@ -544,7 +544,7 @@ app = FastAPI(
     # （tauri.conf / package.json / frontend/package.json / Cargo.toml）脱节，
     # 会误导排障（OpenAPI 文档显示的版本号是错的）。
     # 现与产品版本同源（手动同步；如需自动校验见版本一致性门禁）。
-    version="0.43.41",
+    version="0.43.42",
     description="抖音直播间自动私信控制台 - 后端 API",
     lifespan=lifespan,
 )
@@ -660,7 +660,7 @@ try:
     # 实测 RuntimeError("no running event loop")（str 为空，日志只见 NTY-003），
     # QQ/iLink 入站通道从未启动。改为 lifespan 内调用（见 bind_adm 处）。
 except Exception as _e:  # noqa: BLE001
-    logger.warning("NTY-005", f"[notify] 模块挂载失败（不影响主流程）: {_e}")
+    logger.warning(f"[NTY-005] " + f"[notify] 模块挂载失败（不影响主流程）: {_e}")
 
 # 平台内容面（推荐流/用户作品/点赞/收藏/关注/站内通知/评论，2026-09-14）
 #   把基座 dy_apis 已有的平台能力接成路由（对标 better-douyin 内容面）。
@@ -670,7 +670,7 @@ try:
 
     app.include_router(platform_api.router, prefix="/api/platform", tags=["platform"])
 except Exception as _e_plat:  # noqa: BLE001
-    logger.warning("PLT-013", f"[platform] 模块挂载失败（不影响主流程）: {_e_plat}")
+    logger.warning(f"[PLT-013] " + f"[platform] 模块挂载失败（不影响主流程）: {_e_plat}")
 
 # MCP 服务（本机 HTTP + stdio 双入口，对标 better-douyin mcp.rs，2026-09-14）
 #   把既有业务能力（会话/消息读取、发送确认）按 READ/WRITE 分级暴露给 AI 客户端；
@@ -680,11 +680,11 @@ try:
 
     app.include_router(mcp_api.router, prefix="/api/mcp", tags=["mcp"])
 except Exception as _e_mcp:  # noqa: BLE001
-    logger.warning("MCP-005", f"[mcp] 模块挂载失败（不影响主流程）: {_e_mcp}")
+    logger.warning(f"[MCP-005] " + f"[mcp] 模块挂载失败（不影响主流程）: {_e_mcp}")
 
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
 # 错误码日志补丁：loguru 会把第一个位置参数当格式模板，导致
-# logger.warning("BCC-006", "描述") 的描述被丢弃（运行日志只剩代码）。
+# logger.warning(f"[BCC-006] " + "描述") 的描述被丢弃（运行日志只剩代码）。
 # 此处安装兼容层，让「码 + 描述」正常输出（一处生效，覆盖全项目 345 处调用）。
 try:
     from utils.code_logger import install_code_logger_patch as _inst_code_log
@@ -854,7 +854,7 @@ async def ready_gate():
             # 未登录阶段的对齐标准：全局索引可读（backend 已接管账号目录）
             daemons_ready = True
     except Exception as e:  # noqa: BLE001
-        logger.warning("SYS-021", f"[ready] 就绪探测异常: {e}")
+        logger.warning(f"[SYS-021] " + f"[ready] 就绪探测异常: {e}")
     return {"ok": True, "daemons_ready": daemons_ready, "accounts": accounts_n}
 
 

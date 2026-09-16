@@ -93,7 +93,7 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
     should_stop: 可选 callable，返回 True 时立即停止扫描并退出（配合“停止”按钮）。
     """
     if not room_url:
-        logger.warning("BCC-043", "[web_probe] 未配置 WEB_PROBE_ROOM_URL，跳过中控台采集")
+        logger.warning(f"[BCC-043] " + "[web_probe] 未配置 WEB_PROBE_ROOM_URL，跳过中控台采集")
         return
     from auto_dm import config as _cfg
     from auto_dm.vbrowser import should_use_vb, launch_async
@@ -107,7 +107,7 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
         _pw, _browser, context, _backend = await launch_async(
             _vb_mode, _cfg, headless=headless, account=getattr(_cfg, "WEB_PROBE_ACCOUNT", None) or None)
     except RuntimeError as e:
-        logger.error("BCC-044", f"[web_probe] 中控台采集无法启动（已禁用原生 Playwright，不采集）：{e}")
+        logger.error(f"[BCC-044] " + f"[web_probe] 中控台采集无法启动（已禁用原生 Playwright，不采集）：{e}")
         return
     page = context.pages[0] if context.pages else await context.new_page()
     try:
@@ -125,7 +125,7 @@ async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headle
                     if r.get("nickname"):
                         dispatch.submit(r)
             except Exception as e:
-                logger.warning("BCC-045", f"[web_probe] 扫描异常: {e}")
+                logger.warning(f"[BCC-045] " + f"[web_probe] 扫描异常: {e}")
             await asyncio.sleep(interval)
     finally:
         # exe 模式浏览器由我们 launch，需关闭；cdp 模式由外部客户端管理，不关。

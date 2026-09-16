@@ -28,6 +28,39 @@ from typing import Any, Callable, Optional
 
 from loguru import logger
 
+# ---------------------------------------------------------------------------
+# 日志脱敏（2026-09-17 审查 P2-15 修补）
+# ---------------------------------------------------------------------------
+# iLink / QQ 的响应体与异常文本常回显请求参数（appid / secret / bot_token /
+# qrcode / baseurl），原实现直接 `{data}` / `repr(e)` 整包入日志，等同泄露通道。
+# 统一走这里：敏感键值掩码 + 整体截断。
+_SENSITIVE_KEYS = (
+    "token", "secret", "appid", "app_id", "password", "cookie",
+    "authorization", "qrcode", "session", "key", "ticket",
+)
+
+
+def _safe(obj, maxlen: int = 300) -> str:
+    """任意对象脱敏 repr：敏感键掩码 + 截断。"""
+    def _walk(o, depth=0):
+        if depth > 4:
+            return "..."
+        if isinstance(o, dict):
+            return {
+                k: (f"<masked len={len(str(v))}>"
+                    if any(s in str(k).lower() for s in _SENSITIVE_KEYS)
+                    else _walk(v, depth + 1))
+                for k, v in list(o.items())[:40]
+            }
+        if isinstance(o, (list, tuple)):
+            return [_walk(x, depth + 1) for x in list(o)[:20]]
+        s = str(o)
+        return s if len(s) <= 120 else s[:120] + f"...(+{len(s) - 120})"
+    try:
+        return str(_walk(obj))[:maxlen]
+    except Exception:
+        return "<unparsable>"
+
 from . import channels
 from .gateway import gateway
 
@@ -107,7 +140,7 @@ class InboundManager:
         try:
             return await self._on_command(channel_id, sender_id, text, meta)
         except Exception as e:  # noqa: BLE001
-            logger.exception("IB-002", f"[inbound] 处理异常: {e}")
+            logger.exception(f"[IB-002] " + f"[inbound] 处理异常: {e}")
             return "指令处理出错，请稍后再试。"
 
     # ==================================================================
@@ -163,7 +196,10 @@ class InboundManager:
                 )
                 if str(data.get("ret", "0")) not in ("0", "None") and data.get("ret") != 0:
                     # 会话过期等错误 → 提示重新扫码
-                    logger.warning(f"[IB-004] [inbound] {cid} getupdates 错误: {data}")
+                    # 2026-09-17 修补（审查 P2-15）：响应体整包入日志会泄露
+                    # appid/secret/token，改用脱敏 repr。
+                    logger.warning(f"[IB-004] [inbound] {cid} getupdates 错误: "
+                                   f"{_safe(data)}")
                     await asyncio.sleep(5)
                     continue
                 new_buf = data.get("get_updates_buf")
@@ -266,8 +302,10 @@ class InboundManager:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                reason = repr(e) or "(空异常)"
-                logger.warning(f"[IB-010] [inbound] {cid} QQ 连接失败(第{attempt}次): {type(e).__name__}: {reason}；"
+                # 2026-09-17 修补（审查 P2-15）：repr(e) 可能含连接参数/
+                # 凭据回显，改为脱敏（异常类名保留，便于定位）。
+                reason = f"{type(e).__name__}: {_safe(str(e), 200)}" or "(空异常)"
+                logger.warning(f"[IB-010] [inbound] {cid} QQ 连接失败(第{attempt}次): {reason}；"
                     f"请核对：①appid/secret ②QQ开放平台该机器人是否已发布(沙箱需在沙箱列表) "
                     f"③C2C/群消息 intents 是否开通。30s 后重试",
                 )
@@ -318,7 +356,9 @@ async def _ilink_qr_login(cid: str, req, cfg: dict[str, Any]) -> str:
     qrcode = str(data.get("qrcode", "")).strip()
     qr_img = str(data.get("qrcode_img_content", "")).strip()
     if not qrcode:
-        raise RuntimeError(f"qrcode 响应异常: {data}")
+        # 2026-09-17 修补（审查 P2-15）：qrcode 响应体含 bot_token / qrcode
+        # 等敏感字段，整包进异常消息（随后被上层入日志）会泄露。
+        raise RuntimeError(f"qrcode 响应异常: {_safe(data)}")
     logger.info(f"[inbound] {cid} iLink 登录二维码已就绪（5 分钟内扫码）")
     # 二维码内容交由设置页展示（img 内容为 URL，前端可直接生成二维码图）
     _notify_qr(cid, qrcode, qr_img)

@@ -196,7 +196,7 @@ async def handle_inbound_command(channel_id: str, sender_id: str,
     try:
         result = await _execute(intent, parsed.get("params") or {})
     except Exception as e:  # noqa: BLE001
-        logger.exception("NTY-020", f"[notify] 入站指令执行失败: {e}")
+        logger.exception(f"[NTY-020] " + f"[notify] 入站指令执行失败: {e}")
         return "指令执行失败，请稍后再试。"
     return _format_result(intent, result)
 
@@ -343,7 +343,7 @@ async def command(body: CommandIn) -> dict:
     try:
         result = await _execute(intent, parsed["params"])
     except Exception as e:  # noqa: BLE001
-        logger.exception("NTY-002", f"[notify] 指令执行失败: {e}")
+        logger.exception(f"[NTY-002] " + f"[notify] 指令执行失败: {e}")
         return {"ok": False, "intent": intent, "error": str(e)}
     return {"ok": True, "pending": False, "intent": intent, "result": result}
 

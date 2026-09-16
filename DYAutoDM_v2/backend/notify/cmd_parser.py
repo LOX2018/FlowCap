@@ -169,7 +169,7 @@ async def _llm_parse(text: str, cfg: dict[str, Any]) -> dict[str, Any] | None:
         data.setdefault("params", {})
         return data
     except Exception as e:  # noqa: BLE001
-        logger.warning("NTY-009", f"[cmd-parse] LLM 解析失败，回落规则: {e}")
+        logger.warning(f"[NTY-009] " + f"[cmd-parse] LLM 解析失败，回落规则: {e}")
         return None
 
 

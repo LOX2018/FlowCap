@@ -99,7 +99,7 @@ def _kv_get(key: str, default):
         if row and row[0]:
             return json.loads(row[0])
     except Exception as e:
-        logger.warning("AI-004", f"[ai] kv 读失败 {key}: {e}")
+        logger.warning(f"[AI-004] " + f"[ai] kv 读失败 {key}: {e}")
     return default
 
 
@@ -213,7 +213,7 @@ def apply_model_hub(cfg: dict) -> dict:
                 out[k_proto] = r["api_protocol"]
         return out
     except Exception as e:  # noqa: BLE001
-        logger.warning("AI-030", f"[ai] model_hub 叠加失败（用原配置）: {e}")
+        logger.warning(f"[AI-030] " + f"[ai] model_hub 叠加失败（用原配置）: {e}")
         return cfg
 
 
@@ -228,7 +228,7 @@ def resolve_chain_hub(consumer_id: str) -> Optional[dict]:
 
         return hub.resolve_chain(consumer_id)
     except Exception as e:  # noqa: BLE001
-        logger.warning("AI-030", f"[ai] model_hub 链路解析失败: {e}")
+        logger.warning(f"[AI-030] " + f"[ai] model_hub 链路解析失败: {e}")
         return None
 
 
@@ -466,18 +466,18 @@ def _embedRemote(base_url: str, api_key: str, model: str,
             timeout=timeout,
         )
         if resp.status_code != 200:
-            logger.warning("AI-005", f"[ai] embeddings {resp.status_code}: {resp.text[:120]}")
+            logger.warning(f"[AI-005] " + f"[ai] embeddings {resp.status_code}: {resp.text[:120]}")
             return None
         d = resp.json()
         data = d.get("data") or []
         if len(data) != len(texts):
-            logger.warning("AI-006", f"[ai] embeddings 返回数不符: {len(data)}/{len(texts)}")
+            logger.warning(f"[AI-006] " + f"[ai] embeddings 返回数不符: {len(data)}/{len(texts)}")
             return None
         # 按 index 排序保证顺序
         data.sort(key=lambda x: x.get("index", 0))
         return [item["embedding"] for item in data]
     except Exception as e:
-        logger.warning("AI-007", f"[ai] embeddings 调用失败: {e}")
+        logger.warning(f"[AI-007] " + f"[ai] embeddings 调用失败: {e}")
         return None
 
 
@@ -501,7 +501,7 @@ def _embed_failover(texts: list[str], consumer_id: str = "ai_sem",
                          texts, timeout)
         if v is not None:
             return v, c["model"]
-        logger.warning("AI-033", f"[ai] 语义候选失败，切下一个: {c['model']}")
+        logger.warning(f"[AI-033] " + f"[ai] 语义候选失败，切下一个: {c['model']}")
     return None, None
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -688,7 +688,7 @@ class AIClient:
             else:
                 reply = self._chat_openai(cfg, messages)
         except Exception as e:
-            logger.warning("AI-008", f"[ai] AI 请求失败: {e}")
+            logger.warning(f"[AI-008] " + f"[ai] AI 请求失败: {e}")
             return None
         if reply:
             with self.session_lock:
@@ -715,7 +715,7 @@ class AIClient:
             timeout=60,
         )
         if resp.status_code != 200:
-            logger.warning("AI-009", f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
+            logger.warning(f"[AI-009] " + f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
             return None
         result = resp.json()
         msg = (result.get("choices") or [{}])[0].get("message") or {}
@@ -756,7 +756,7 @@ class AIClient:
             timeout=30,
         )
         if resp.status_code != 200:
-            logger.warning("AI-012", f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
+            logger.warning(f"[AI-012] " + f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
             return None
         result = resp.json()
         reply = ""
@@ -767,7 +767,7 @@ class AIClient:
                     reply = (item.get("text") or "").strip()
                     break
         if not reply:
-            logger.warning("AI-013", f"[ai] AI 返回为空: {str(result)[:200]}")
+            logger.warning(f"[AI-013] " + f"[ai] AI 返回为空: {str(result)[:200]}")
             return None
         return reply
 
@@ -799,7 +799,7 @@ class AIClient:
                     logger.info(f"[ai] 避障命中模型 {c['model']}（候选"
                                 f"{attempts.index(c) + 1}/{len(attempts)}）")
                 return reply
-            logger.warning("AI-031", f"[ai] 链路候选失败，切下一个: {c['model']}")
+            logger.warning(f"[AI-031] " + f"[ai] 链路候选失败，切下一个: {c['model']}")
         return None
 
 
@@ -836,7 +836,7 @@ class AIClient:
                 timeout=60 if is_reasoner else 45,
             )
             if resp.status_code != 200:
-                logger.warning("AI-014", f"[ai] 视觉 API {resp.status_code}: {resp.text[:200]}")
+                logger.warning(f"[AI-014] " + f"[ai] 视觉 API {resp.status_code}: {resp.text[:200]}")
                 return None
             r = resp.json()
             msg = (r.get("choices") or [{}])[0].get("message") or {}
@@ -847,7 +847,7 @@ class AIClient:
                 text = rc[-120:] if rc else ""
             return text or None
         except Exception as e:
-            logger.warning("AI-015", f"[ai] 视觉请求失败: {e}")
+            logger.warning(f"[AI-015] " + f"[ai] 视觉请求失败: {e}")
             return None
 
     def describe_image_failover(self, image_b64: str, mime: str = "jpeg",
@@ -870,7 +870,7 @@ class AIClient:
                 if len(attempts) > 1:
                     logger.info(f"[ai] 视觉避障命中 {c['model']}")
                 return text
-            logger.warning("AI-032", f"[ai] 视觉候选失败，切下一个: {c['model']}")
+            logger.warning(f"[AI-032] " + f"[ai] 视觉候选失败，切下一个: {c['model']}")
         return None
 
     def test_connection(self) -> tuple[bool, str]:
@@ -933,7 +933,7 @@ def save_lead(account: str, conv_id: str, peer_name: str,
         conn.commit()
         return cur.rowcount > 0
     except Exception as e:
-        logger.warning("AI-016", f"[ai] 线索写入失败: {e}")
+        logger.warning(f"[AI-016] " + f"[ai] 线索写入失败: {e}")
         return False
 
 
@@ -1046,7 +1046,7 @@ class AutoReplyWorker:
                 self._tick()
             except Exception as e:
                 self.status["errors"] += 1
-                logger.warning("AI-017", f"[ai] 监听 tick 异常: {e}")
+                logger.warning(f"[AI-017] " + f"[ai] 监听 tick 异常: {e}")
             self._stop.wait(self.POLL_INTERVAL)
 
     def _tick(self):
@@ -1093,7 +1093,7 @@ class AutoReplyWorker:
                     _probe(r["id"], "TICK", "error", err=str(e)[:160])
                 except Exception:
                     pass
-                logger.warning("AI-018", f"[ai] 单条处理异常: {e}")
+                logger.warning(f"[AI-018] " + f"[ai] 单条处理异常: {e}")
         self.status["last_tick"] = time.time()
 
     # -- 单条处理 ----------------------------------------------------------
@@ -1244,7 +1244,7 @@ class AutoReplyWorker:
             # 这里兜住 reasoning 兜底提取出的残留思考文本）
             if _looks_like_reasoning(raw) and len(raw) > 40:
                 _probe(before_id, "GUARD", "reasoning_leak", raw=raw[:80])
-                logger.warning("AI-019", f"[ai] 回复疑似思考过程残留，丢弃改兜底: {raw[:40]}")
+                logger.warning(f"[AI-019] " + f"[ai] 回复疑似思考过程残留，丢弃改兜底: {raw[:40]}")
                 raw = None
         if raw:
             cleaned = validate_reply(raw, cfg)
@@ -1284,10 +1284,10 @@ class AutoReplyWorker:
                 account=account, msg_id=str(row["id"]), skey=skey,
                 origin_url=origin_url)
         except Exception as e:
-            logger.warning("AI-020", f"[ai] 图片解密失败: {e}")
+            logger.warning(f"[AI-020] " + f"[ai] 图片解密失败: {e}")
             return None
         if not res.get("ok"):
-            logger.warning("AI-021", f"[ai] 图片解密未成功: {res.get('error')}")
+            logger.warning(f"[AI-021] " + f"[ai] 图片解密未成功: {res.get('error')}")
             return None
         # 本地文件 → base64（kind=local / inline_base64 都可能）
         img_bytes: Optional[bytes] = None
@@ -1307,7 +1307,7 @@ class AutoReplyWorker:
                 img_bytes = base64.b64decode(b64)
                 mime = "jpeg" if "png" not in head else "png"
             except Exception as e:
-                logger.warning("AI-022", f"[ai] inline base64 解码失败: {e}")
+                logger.warning(f"[AI-022] " + f"[ai] inline base64 解码失败: {e}")
         if not img_bytes:
             return None
         client = AIClient(cfg)
@@ -1368,13 +1368,13 @@ class AutoReplyWorker:
                 return True
             _probe("send", "DISPATCH_POOL", "rejected", account=account,
                    conv_id=conv_id, error=str(getattr(r, "error", ""))[:120])
-            logger.warning("AI-023", f"[ai] 入池被拒: {r.error}")
+            logger.warning(f"[AI-023] " + f"[ai] 入池被拒: {r.error}")
             if r.error == "duplicate":
                 return True      # 重复消息视为已处理，不重试
         except Exception as e:
             _probe("send", "DISPATCH_POOL", "error", account=account,
                    conv_id=conv_id, error=str(e)[:120])
-            logger.warning("AI-024", f"[ai] 调度入池异常: {e}")
+            logger.warning(f"[AI-024] " + f"[ai] 调度入池异常: {e}")
         try:
             from api.messages import _recv_url, _bcc_url, _http_post_json
             d = _http_post_json(_recv_url(account, "/send"), {
@@ -1390,7 +1390,7 @@ class AutoReplyWorker:
         except Exception as e:
             _probe("send", "WS", "error", account=account, conv_id=conv_id,
                    error=str(e)[:150])
-            logger.warning("AI-025", f"[ai] WS 通道失败: {e}")
+            logger.warning(f"[AI-025] " + f"[ai] WS 通道失败: {e}")
         try:
             d = _http_post_json(_bcc_url(account, "/wp_send"), {
                 "account": account, "conv_id": conv_id, "text": text,
@@ -1402,11 +1402,11 @@ class AutoReplyWorker:
                 return True
             _probe("send", "WP", "fail", account=account, conv_id=conv_id,
                    resp=str(d)[:150])
-            logger.warning("AI-026", f"[ai] WP 通道失败: {(d or {}).get('error')}")
+            logger.warning(f"[AI-026] " + f"[ai] WP 通道失败: {(d or {}).get('error')}")
         except Exception as e:
             _probe("send", "WP", "error", account=account, conv_id=conv_id,
                    error=str(e)[:150])
-            logger.warning("AI-027", f"[ai] WP 通道异常: {e}")
+            logger.warning(f"[AI-027] " + f"[ai] WP 通道异常: {e}")
         _probe("send", "ALL_CHANNELS", "failed", account=account,
                conv_id=conv_id, text=text[:60])
         return False

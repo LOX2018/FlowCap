@@ -230,8 +230,7 @@ def get_uid(name: str, force: bool = False,
         if uid:
             logger.info(f"[uid-probe] 账号「{name}」uid={uid}（已缓存 {cfg('UID_TTL_OK'):.0f}s）")
         else:
-            logger.warning("AUTH-051", 
-                f"[uid-probe] 账号「{name}」探活失败（{cfg('UID_TTL_FAIL'):.0f}s 内不再重试）")
+            logger.warning(f"[AUTH-051] " + f"[uid-probe] 账号「{name}」探活失败（{cfg('UID_TTL_FAIL'):.0f}s 内不再重试）")
         return uid
     finally:
         lk.release()

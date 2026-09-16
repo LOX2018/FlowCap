@@ -61,7 +61,7 @@ def check_room_live(auth: Any, live_id: str):
         from dy_apis.douyin_api import DouyinAPI
         info = DouyinAPI.get_live_info(auth, live_id)
         if not info or not isinstance(info, dict):
-            logger.warning("ENG-001", "[直播间状态] get_live_info 返回空，保守视为已开播以免误阻断监听")
+            logger.warning(f"[ENG-001] " + "[直播间状态] get_live_info 返回空，保守视为已开播以免误阻断监听")
             return True, None, "", None
         status = info.get("room_status")
         title = info.get("room_title", "")
@@ -72,7 +72,7 @@ def check_room_live(auth: Any, live_id: str):
         )
         return is_live, status, title, info
     except Exception as e:
-        logger.warning("ENG-002", f"[直播间状态] 查询异常（保守视为已开播）: {e}")
+        logger.warning(f"[ENG-002] " + f"[直播间状态] 查询异常（保守视为已开播）: {e}")
         return True, None, "", None
 
 
@@ -206,7 +206,7 @@ class AutoDM:
         if cookies:
             auth.perepare_auth(cookies, "", "")
         else:
-            logger.warning("AUTH-012", "[auth] 未检测到 DY_COOKIES，将自动打开浏览器扫码登录获取。")
+            logger.warning(f"[AUTH-012] " + "[auth] 未检测到 DY_COOKIES，将自动打开浏览器扫码登录获取。")
         if not (auth.ticket and auth.private_key):
             logger.info(
                 "[auth] 未检测到有效私信签名，将弹出浏览器扫码登录窗口，"
@@ -236,9 +236,7 @@ class AutoDM:
             from dy_apis.douyin_api import DouyinAPI
             uid = DouyinAPI.get_my_uid(auth)
             if not uid:
-                logger.error("AUTH-014", 
-                    "[auth] 无法获取自身 uid（cookie 可能已失效），请对该账号执行【重新扫码】后再启动。"
-                )
+                logger.error(f"[AUTH-014] " + "[auth] 无法获取自身 uid（cookie 可能已失效），请对该账号执行【重新扫码】后再启动。")
                 return False
             DouyinAPI.create_conversation(auth, int(uid))
             logger.info(f"[auth] 私信签名预检通过（uid={uid}，create_conversation 可被服务端接受）")
@@ -251,11 +249,9 @@ class AutoDM:
                     "       建议点【重新扫码】重新抓取最新凭证。"
                 )
             elif "login" in msg.lower() or "unauthorized" in msg.lower() or "401" in msg:
-                logger.error("AUTH-016", 
-                    "[auth] 登录态校验失败（create_conversation 报未登录），cookie 可能已失效。"
-                )
+                logger.error(f"[AUTH-016] " + "[auth] 登录态校验失败（create_conversation 报未登录），cookie 可能已失效。")
             else:
-                logger.error("AUTH-017", f"[auth] 私信签名预检异常: {msg}")
+                logger.error(f"[AUTH-017] " + f"[auth] 私信签名预检异常: {msg}")
             return False
 
     # ------------------------------------------------------------------
@@ -417,7 +413,7 @@ class AutoDM:
             )
             logger.info(f"[history] 记录历史任务: 账号={acct} live={self.live_id} id={self._task_history_id}")
         except Exception as e:
-            logger.warning("ENG-003", f"[history] 记录历史任务失败: {e}")
+            logger.warning(f"[ENG-003] " + f"[history] 记录历史任务失败: {e}")
             self._task_history_id = None
 
         logger.info(f"引擎启动: live_url={config.live_url}, max_target={config.max_target}")
@@ -428,7 +424,7 @@ class AutoDM:
             if self.state != EngineState.STARTING:
                 return
             await asyncio.sleep(0.5)
-        logger.warning("ENG-004", "[引擎] 启动超时（60s 仍在 STARTING），可能等待开播中")
+        logger.warning(f"[ENG-004] " + "[引擎] 启动超时（60s 仍在 STARTING），可能等待开播中")
 
     async def _run(self, config: TaskConfig) -> None:
         """主运行任务（asyncio.to_thread 包装同步逻辑）"""
@@ -453,7 +449,7 @@ class AutoDM:
             except Exception:
                 pass
             if not getattr(self.monitor_auth, "cookie", None):
-                logger.error("AUTH-018", "[auth] 监测账号未获取到登录 cookie，无法监听。")
+                logger.error(f"[AUTH-018] " + "[auth] 监测账号未获取到登录 cookie，无法监听。")
                 self.status_msg = "监测登录失败"
                 self.state = EngineState.IDLE
                 return
@@ -474,7 +470,7 @@ class AutoDM:
                 except Exception:
                     pass
             if not getattr(self.auth, "cookie", None):
-                logger.error("AUTH-019", "[auth] 发送账号未获取到登录 cookie，无法发私信。")
+                logger.error(f"[AUTH-019] " + "[auth] 发送账号未获取到登录 cookie，无法发私信。")
                 self.status_msg = "发送登录失败"
                 self.state = EngineState.IDLE
                 return
@@ -509,7 +505,7 @@ class AutoDM:
                 check_room_live, self.monitor_auth, self.live_id
             )
             if not is_live:
-                logger.warning("ENG-005", f"[直播间状态] 未开播，进入轮询等待（每 30s 复查）")
+                logger.warning(f"[ENG-005] " + f"[直播间状态] 未开播，进入轮询等待（每 30s 复查）")
                 while not self._stop_event.is_set():
                     try:
                         await asyncio.wait_for(self._stop_event.wait(), timeout=30.0)
@@ -557,7 +553,7 @@ class AutoDM:
             if self.live:
                 self.live.stop_heartbeat()
         except Exception as e:
-            logger.error("ENG-006", f"[引擎] 运行异常: {e}")
+            logger.error(f"[ENG-006] " + f"[引擎] 运行异常: {e}")
             self.status_msg = f"运行异常: {e}"
             # 2026-09-08：运行异常 IM 告警
             try:
@@ -569,7 +565,7 @@ class AutoDM:
         finally:
             # 启动失败（登录/凭证等）已在 _run 内把状态置回 IDLE：保留失败信息，任务标为停止
             if self.state == EngineState.IDLE:
-                logger.warning("ENG-007", f"[引擎] 启动未成功: {self.status_msg}")
+                logger.warning(f"[ENG-007] " + f"[引擎] 启动未成功: {self.status_msg}")
                 self._finish_history_task("stopped")
             elif not self.dispatch or self.dispatch.queue_size() == 0:
                 # 监听线路结束，队列已空：正常收尾
@@ -678,7 +674,7 @@ class AutoDM:
                 # 非运行态（idle/stopped）也可能有未收尾的历史任务遗留在内存
                 self._finish_history_task("stopped")
         except Exception as e:
-            logger.warning("ENG-008", f"[history] 退出收尾历史任务失败（不影响关闭）: {e}")
+            logger.warning(f"[ENG-008] " + f"[history] 退出收尾历史任务失败（不影响关闭）: {e}")
 
     def _finish_history_task(self, status: str) -> None:
         """更新当前历史任务为结束状态，记录结果条数与 records 快照。"""
@@ -700,7 +696,7 @@ class AutoDM:
             finish_task(tid, status=status, result_count=count,
                         records=[r if isinstance(r, dict) else _rec_to_dict(r) for r in records])
         except Exception as e:
-            logger.warning("ENG-009", f"[history] 更新历史任务失败: {e}")
+            logger.warning(f"[ENG-009] " + f"[history] 更新历史任务失败: {e}")
         # 日志打印真实计数，避免「日志说发完但实际漏发」的误导
         logger.info(
             f"[引擎] 私信收尾：共捕获 {count} 条，实际成功发送 {sent} 条，"
@@ -827,7 +823,7 @@ class AutoDM:
         """
         state = self.state.value if isinstance(self.state, EngineState) else str(self.state)
         if self.state not in (EngineState.RUNNING, EngineState.PAUSED):
-            logger.warning("ENG-013", f"[引擎] 热更被拒：引擎未运行（state={state}）")
+            logger.warning(f"[ENG-013] " + f"[引擎] 热更被拒：引擎未运行（state={state}）")
             return {
                 "ok": False, "applied": [], "not_applied": [],
                 "reason": f"引擎未运行（当前 {state}），请先「开始自动私信」",
@@ -873,7 +869,7 @@ class AutoDM:
             )
         else:
             # 引擎 RUNNING 却无 dispatch：属异常态，显式失败而不是假装热更成功
-            logger.warning("ENG-014", "[引擎] 热更失败：dispatch 未初始化")
+            logger.warning(f"[ENG-014] " + "[引擎] 热更失败：dispatch 未初始化")
             return {
                 "ok": False, "applied": [], "not_applied": not_applied,
                 "reason": "发送调度器未初始化（引擎可能刚启动或启动失败）",

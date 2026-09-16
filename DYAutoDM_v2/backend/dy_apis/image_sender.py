@@ -420,7 +420,7 @@ def build_signed_url(auth, oid: str):
             params=params, headers=headers, cookies=auth.cookie,
             data=json.dumps(body_obj, separators=(",", ":")), verify=False, timeout=30)
         if resp.status_code != 200:
-            logger.warning("SEND-019", f"[img-send] ⑤ batch_build_image HTTP {resp.status_code}")
+            logger.warning(f"[SEND-019] " + f"[img-send] ⑤ batch_build_image HTTP {resp.status_code}")
             return None
         packs = ((resp.json().get("data") or {}).get("pack_results") or [])
         urls = (packs[0].get("UrlList") or []) if packs else []
@@ -429,7 +429,7 @@ def build_signed_url(auth, oid: str):
             logger.info(f"[img-send] ⑤ 拿到签名 URL: {url[:80]}…")
         return url
     except Exception as e:
-        logger.warning("SEND-020", f"[img-send] ⑤ batch_build_image 失败（忽略）: {e}")
+        logger.warning(f"[SEND-020] " + f"[img-send] ⑤ batch_build_image 失败（忽略）: {e}")
         return None
 
 
@@ -548,7 +548,7 @@ def _image_size(data: bytes, filename: str = "") -> tuple:
         with PILImage.open(io.BytesIO(data)) as im:
             return im.width, im.height
     except Exception as e:
-        logger.warning("SEND-022", f"[img-send] 读取图片尺寸失败（退化 800x600）: {e}")
+        logger.warning(f"[SEND-022] " + f"[img-send] 读取图片尺寸失败（退化 800x600）: {e}")
         return 800, 600
 
 

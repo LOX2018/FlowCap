@@ -94,7 +94,7 @@ def _load_registry() -> dict:
             return {"version": 1, "members": {}}
         return reg
     except Exception as e:  # noqa: BLE001
-        logger.error("MEM-005", f"[member] 注册表读取失败（返回空表，避免误删）: {e}")
+        logger.error(f"[MEM-005] " + f"[member] 注册表读取失败（返回空表，避免误删）: {e}")
         return {"version": 1, "members": {}}
 
 
@@ -333,5 +333,5 @@ def delete_member(member_id: str, password: str) -> dict:
         shutil.rmtree(d, ignore_errors=True)
         del reg["members"][member_id]
         _save_registry(reg)
-    logger.warning("MEM-006", f"[member] 会员已删除（含数据空间）: {rec.get('username')} ({member_id})")
+    logger.warning(f"[MEM-006] " + f"[member] 会员已删除（含数据空间）: {rec.get('username')} ({member_id})")
     return {"ok": True}

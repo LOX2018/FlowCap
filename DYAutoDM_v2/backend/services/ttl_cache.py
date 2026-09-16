@@ -50,12 +50,28 @@ class TTLCache:
     「缓存了 None」——需要区分时用 `peek()`，返回 (found, value)。
     """
 
-    __slots__ = ("_d", "_lock", "_default_ttl")
+    __slots__ = ("_d", "_lock", "_default_ttl", "_maxsize")
 
-    def __init__(self, default_ttl: float = 60.0) -> None:
+    def __init__(self, default_ttl: float = 60.0, maxsize: int = 0) -> None:
+        """`maxsize=0`（默认）表示不限；>0 时在 set 后按 LRU 淘汰最久未用项。
+
+        2026-09-17 修补（审查 P2-5）：`prune()` 虽已实现（「防长期运行内存
+        增长」），但生产路径**从未调用**（仅测试脚本用），过期项只增不减。
+        本类作为通用原语对外提供，若被用 uid/会话 ID 等高频 key 实例化即
+        内存泄漏。现加 `maxsize` 主动淘汰兜底，`prune()` 仍可手动调用。
+        """
         self._d: dict[Hashable, tuple[float, float, Any]] = {}
         self._lock = threading.Lock()
         self._default_ttl = float(default_ttl)
+        self._maxsize = int(maxsize or 0)
+
+    def _enforce_maxsize(self) -> None:
+        """超出容量时按写入时间（元组首元素）淘汰最旧的项。须持锁调用。"""
+        if self._maxsize <= 0 or len(self._d) <= self._maxsize:
+            return
+        for k in sorted(self._d, key=lambda k: self._d[k][0])[
+                : len(self._d) - self._maxsize]:
+            self._d.pop(k, None)
 
     # ---------------------------------------------------------------- 基本读写
     def peek(self, key: Hashable) -> tuple[bool, Any]:
@@ -77,6 +93,9 @@ class TTLCache:
         t = self._default_ttl if ttl is None else float(ttl)
         with self._lock:
             self._d[key] = (time.time(), t, value)
+            # 2026-09-17 修补（审查 P2-5）：写入后主动执行容量上限淘汰，
+            # 不依赖外部调用 prune()。
+            self._enforce_maxsize()
 
     def get_or_set(self, key: Hashable, factory: Callable[[], Any],
                    ttl: Optional[float] = None) -> Any:

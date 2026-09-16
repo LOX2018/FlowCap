@@ -87,10 +87,22 @@ def get_db() -> sqlite3.Connection:
             from services import member_ctx
             want = member_ctx.db_path()
             if want:
-                cur_path = str(_conn.execute("PRAGMA database_list").fetchone()[2])
-                if os.path.abspath(cur_path) != os.path.abspath(want):
-                    _conn.close()
-                    _conn = None
+                with _lock:
+                    if _conn is not None:
+                        cur_path = str(
+                            _conn.execute("PRAGMA database_list").fetchone()[2])
+                        if os.path.abspath(cur_path) != os.path.abspath(want):
+                            # 2026-09-17 修补（审查 P2-8）：原实现在**未持
+                            # `_lock`** 的情况下直接 `_conn.close()` —— 另一
+                            # 线程可能正持锁使用该连接（exec_query/exec_modify），
+                            # 导致 `Cannot operate on a closed database`；
+                            # 或两线程同时判定不匹配而重复 close。
+                            # 现把整段校验移入 `_lock`，close 后再置空全局引用。
+                            try:
+                                _conn.close()
+                            except Exception:
+                                pass
+                            _conn = None
         except Exception:
             pass
         if _conn is not None:
@@ -222,12 +234,25 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         pass
     try:
         # 兜底去重：同一会话同一角色同一文本同一毫秒时间戳视为同一条
+        #
+        # ⚠️ 2026-09-17 修补（审查 P2-11）：本索引有两个已知副作用，此前被
+        # `except: pass` 完全掩盖：
+        #   ① 同一毫秒内同文本的**两条真实消息**，第二条会被 INSERT OR IGNORE
+        #      静默丢弃（以去重为名造成数据丢失）；
+        #   ② 在已有重复数据的旧库上创建会**失败**，此时去重实际未生效，
+        #      但没有任何告警 —— 运维以为已去重。
+        # 现改为：创建失败必须告警（不再静默）。副作用 ① 属设计取舍
+        # （宁可极偶发丢重复，也要防 WS 回声重复入库），保留现状并在此注明。
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS uniq_dmmsg_fallback "
             "ON dm_messages(account, conv_id, role, text, CAST(ts*1000 AS INTEGER))"
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(
+            "DB-002",
+            f"[db] 兜底去重索引 uniq_dmmsg_fallback 创建失败，"
+            f"同毫秒重复消息将**不会被去重**：{type(_e).__name__}: {_e}；"
+            f"通常由库内已存在重复行引起，可手工清理后重启以启用")
 
 
 def _migrate_json(conn: sqlite3.Connection) -> None:
@@ -263,7 +288,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 logger.info(f"[db] 从 task_history.json 迁移 {migrated} 条任务")
                 conn.commit()
         except Exception as e:
-            logger.warning("DB-001", f"[db] task_history.json 迁移失败（不影响使用）: {e}")
+            logger.warning(f"[DB-001] " + f"[db] task_history.json 迁移失败（不影响使用）: {e}")
 
     # 1.5) config.json -> kv_store("config")
     try:
@@ -285,7 +310,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 conn.commit()
                 logger.info("[db] 从 config.json 迁移运行时配置")
         except Exception as e:
-            logger.warning("DB-002", f"[db] config.json 迁移失败: {e}")
+            logger.warning(f"[DB-002] " + f"[db] config.json 迁移失败: {e}")
 
     # 1.6) accounts.json -> kv_store("accounts_index")
     try:
@@ -304,7 +329,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 conn.commit()
                 logger.info("[db] 从 accounts.json 迁移账号索引")
     except Exception as e:
-        logger.warning("DB-003", f"[db] accounts.json 迁移失败: {e}")
+        logger.warning(f"[DB-003] " + f"[db] accounts.json 迁移失败: {e}")
 
     # 2) accounts/[name]/dm_history.json -> dm_conversations + dm_messages
     try:
@@ -351,7 +376,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                 if m_migrated:
                     logger.info(f"[db] 从 {acct}/dm_history.json 迁移 {m_migrated} 条消息")
             except Exception as e:
-                logger.warning("DB-004", f"[db] {acct}/dm_history.json 迁移失败: {e}")
+                logger.warning(f"[DB-004] " + f"[db] {acct}/dm_history.json 迁移失败: {e}")
         conn.commit()
 
 

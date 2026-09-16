@@ -50,7 +50,7 @@ class Notifier:
                 ch = channels.build_channel(kind, item)
                 new[cid] = ch
             except Exception as e:  # noqa: BLE001
-                logger.error("NTY-010", f"[notify] 渠道 {cid}({kind}) 初始化失败: {e}")
+                logger.error(f"[NTY-010] " + f"[notify] 渠道 {cid}({kind}) 初始化失败: {e}")
         self.channels = new
         # 关闭被移除的旧渠道
         for cid, ch in old.items():
@@ -97,7 +97,7 @@ class Notifier:
                     pass
                 raise
             except Exception as e:  # noqa: BLE001
-                logger.exception("NTY-011", f"[notify] 派发异常: {e}")
+                logger.exception(f"[NTY-011] " + f"[notify] 派发异常: {e}")
             finally:
                 self._queue.task_done()
 
@@ -203,9 +203,7 @@ class Notifier:
                     continue
                 r: ChannelResult = await ch.send(target, text)
                 if not r.ok:
-                    logger.warning(
-                        "NTY-012", f"[notify] {cid} 推送失败 -> {target[:12]}…: {r.error}"
-                    )
+                    logger.warning(f"[NTY-012] " + f"[notify] {cid} 推送失败 -> {target[:12]}…: {r.error}")
 
     def _cfg_of(self, cid: str) -> dict[str, Any]:
         for item in self.cfg.get("channels", []) or []:

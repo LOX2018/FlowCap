@@ -96,7 +96,7 @@ def download_file(url: str, dest: str, *, task: Optional[TK.DownloadTask] = None
             last_err = e
             if task:
                 task.retry_count = attempt
-                logger.warning("DL-001", f"下载重试 {attempt}/{MAX_RETRY}: {type(e).__name__}")
+                logger.warning(f"[DL-001] " + f"下载重试 {attempt}/{MAX_RETRY}: {type(e).__name__}")
             if "已取消" in str(e):
                 raise
             time.sleep(min(2 ** attempt, 8))
@@ -181,7 +181,7 @@ def run_task(task: TK.DownloadTask, aweme: dict[str, Any], *, base_dir: str,
 
         mgr.mark(task.task_id, status=TK.COMPLETED, save_path=out_dir,
                  done_files=len(saved))
-        logger.info("DL-002", f"下载完成 {task.aweme_id} → {out_dir}（{len(saved)} 个文件）")
+        logger.info(f"[DL-002] " + f"下载完成 {task.aweme_id} → {out_dir}（{len(saved)} 个文件）")
         return task
 
     except Exception as e:  # noqa: BLE001
@@ -189,7 +189,7 @@ def run_task(task: TK.DownloadTask, aweme: dict[str, Any], *, base_dir: str,
         mgr.mark(task.task_id,
                  status=TK.CANCELED if is_cancel else TK.FAILED,
                  error="" if is_cancel else f"{type(e).__name__}: {e}")
-        logger.warning("DL-003", f"下载{'取消' if is_cancel else '失败'} {task.aweme_id}: {e}")
+        logger.warning(f"[DL-003] " + f"下载{'取消' if is_cancel else '失败'} {task.aweme_id}: {e}")
         return task
 
 
@@ -208,7 +208,7 @@ def _write_meta(out_dir: str, task: TK.DownloadTask, aweme: dict[str, Any]) -> N
                 "statistics": aweme.get("statistics") or {},
             }, f, ensure_ascii=False, indent=1)
     except OSError as e:
-        logger.warning("DL-004", f"元数据写入失败: {e}")
+        logger.warning(f"[DL-004] " + f"元数据写入失败: {e}")
 
 
 # ─────────────────────────────────────────────────────────────

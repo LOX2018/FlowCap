@@ -4,7 +4,7 @@
 背景（2026-09-13 用户反馈「运行日志只有报错代码，没有描述说明」）：
 项目里有 345 处按「统一报错代码体系」写成：
 
-    logger.warning("BCC-006", f"[bcc] context/page 失活，重启: {e}")
+    logger.warning(f"[BCC-006] " + f"[bcc] context/page 失活，重启: {e}")
 
 但 loguru 会把**第一个位置参数当作格式模板**（等价于 str.format 的模板），
 第二个参数只作为 `{}` 占位符的填充值。由于 "BCC-006" 里没有 `{}`，

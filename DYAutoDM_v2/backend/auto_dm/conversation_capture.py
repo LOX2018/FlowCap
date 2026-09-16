@@ -667,7 +667,7 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
                            f"（可能触达 max_pages={max_pages} 上限）")
         return merged
     except Exception as e:
-        logger.warning("CAP-005", f"[capture][301] 拉取失败 cid={cid}: {e}")
+        logger.warning(f"[CAP-005] " + f"[capture][301] 拉取失败 cid={cid}: {e}")
         return []
 
 
@@ -814,7 +814,7 @@ def parse_conversation_301(raw, cid, my_uid):
     try:
         msgs, _page = _extract_301_page(raw)
     except Exception as e:
-        logger.warning("CAP-006", f"[capture][301] 解析失败: {e}")
+        logger.warning(f"[CAP-006] " + f"[capture][301] 解析失败: {e}")
         return []
     return _parse_301_messages(msgs, my_uid)
 
@@ -1030,9 +1030,9 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None, lease_id=""):
                 f"[capture] /userinfo_idb 无数据（total={_j0.get('total')}），"
                 f"降级 DOM 抓取")
         else:
-            logger.warning("CAP-014", f"[capture] /userinfo_idb HTTP {_r0.status_code}，降级 DOM")
+            logger.warning(f"[CAP-014] " + f"[capture] /userinfo_idb HTTP {_r0.status_code}，降级 DOM")
     except Exception as _e0:  # noqa: BLE001
-        logger.warning("CAP-014", f"[capture] /userinfo_idb 调用失败（降级 DOM）: {_e0}")
+        logger.warning(f"[CAP-014] " + f"[capture] /userinfo_idb 调用失败（降级 DOM）: {_e0}")
 
     # ── ② 兜底：DOM 直读（原路径，覆盖 IDB 尚未写入的会话）──
     url = f"http://127.0.0.1:{bport}/capture_userinfo"
@@ -1046,16 +1046,14 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None, lease_id=""):
             _j = r.json() or {}
             data = _j.get("data") or {}
             if not _j.get("ok"):
-                logger.warning(
-                    "CAP-007",
-                    f"[capture] BCC /capture_userinfo 返回失败: {_j.get('msg')}")
+                logger.warning(f"[CAP-007] " + f"[capture] BCC /capture_userinfo 返回失败: {_j.get('msg')}")
             else:
                 logger.info(f"[capture] 经 BCC 截到昵称数: {len(data)}")
             if data:
                 _userinfo_cache[name] = (_t.time(), data)
             return data
     except Exception as e:
-        logger.warning("CAP-007", f"[capture] 调 BCC /capture_userinfo 失败: {e}")
+        logger.warning(f"[CAP-007] " + f"[capture] 调 BCC /capture_userinfo 失败: {e}")
     return {}
 
 
@@ -1084,8 +1082,7 @@ def release_active_lease(account: str) -> None:
         logger.info(f"[capture][{account}] 已释放跨调用窗口租约 "
                     f"({_lid[:8]}…) ok={r.get('ok')}")
     except Exception as _e:
-        logger.warning("CAP-017",
-                       f"[capture][{account}] 释放租约失败（等 TTL 回收）: {_e}")
+        logger.warning(f"[CAP-017] " + f"[capture][{account}] 释放租约失败（等 TTL 回收）: {_e}")
 
 
 # 模块级缓存：首包解析结果（供 capture_userinfo_via_browser 取 peer_uid）
@@ -1156,8 +1153,7 @@ def capture_all(name, with_browser=True):
                     refresh_cookie_via_owner(name, auth, env_path,
                                              lease_id=_lease_id)
             except Exception as _e:
-                logger.warning("CAP-016",
-                    f"[capture][{name}] 统一入口调用异常（沿用 .env 凭证）: {_e}")
+                logger.warning(f"[CAP-016] " + f"[capture][{name}] 统一入口调用异常（沿用 .env 凭证）: {_e}")
         else:
             # BCC 在线时仍走 /cookie 刷新（不抢锁、不开新浏览器）；
             # BCC 不在线就绝不为启动补捕获开浏览器。
@@ -1169,7 +1165,7 @@ def capture_all(name, with_browser=True):
                 pass
         my_uid = str(auth.get_uid())
     except Exception as e:
-        logger.warning("CAP-008", f"[capture][{name}] 加载凭证失败: {e}")
+        logger.warning(f"[CAP-008] " + f"[capture][{name}] 加载凭证失败: {e}")
         return (0, 0)
 
     # 1) 首包
@@ -1186,7 +1182,7 @@ def capture_all(name, with_browser=True):
             f"解析={_t_parse - _t_raw:.1f}s "
             f"（{len(raw):,}B -> {len(convs)} 会话）")
     except Exception as e:
-        logger.warning("CAP-009", f"[capture][{name}] 首包解析失败: {e}")
+        logger.warning(f"[CAP-009] " + f"[capture][{name}] 首包解析失败: {e}")
         return (0, 0)
     if not convs:
         return (0, 0)
@@ -1343,7 +1339,7 @@ def capture_all(name, with_browser=True):
                         f"[capture][{name}] 本轮补全 {_filled} 个，"
                         f"仍有 {_total_need - _filled} 个待补（再点一次「更新会话」即可续补）")
     except Exception as e:
-        logger.warning("CAP-011", f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")
+        logger.warning(f"[CAP-011] " + f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")
 
     # 2) 浏览器昵称（可选，单 profile 独占）
     userinfo = {}
@@ -1351,7 +1347,7 @@ def capture_all(name, with_browser=True):
         try:
             userinfo = capture_userinfo_via_browser(name, lease_id=_lease_id)
         except Exception as e:
-            logger.warning("CAP-012", f"[capture][{name}] 浏览器昵称捕获失败（降级仅首包）: {e}")
+            logger.warning(f"[CAP-012] " + f"[capture][{name}] 浏览器昵称捕获失败（降级仅首包）: {e}")
 
     # 3) 写库
     n_conv = 0
@@ -1638,7 +1634,7 @@ def capture_all(name, with_browser=True):
                     f"[capture][{name}] 存量订正 {_fixed} 条 "
                     f"peer_id=自己的污染会话（peer_id 已改回真实对端）")
         except Exception as e:
-            logger.warning("CAP-013", f"[capture][{name}] 存量污染订正失败: {e}")
+            logger.warning(f"[CAP-013] " + f"[capture][{name}] 存量污染订正失败: {e}")
         # 兜底：recv_daemon 可能已写入 capture_all 首包未解析到的会话（WS 增量等，
         # 其 peer_id 是对端 UID 但 peer_name 仍是占位/自己）。用已截获的 BCC 昵称补全库内
         # 所有「peer_name 为空/等于 peer_id（数字 UID）/等于自己 UID」的会话，
@@ -1676,9 +1672,9 @@ def capture_all(name, with_browser=True):
                 conn.commit()
                 logger.info(f"[capture][{name}] 兜底补全 {_bf} 个库内会话昵称/降级")
         except Exception as e:
-            logger.warning("CAP-014", f"[capture][{name}] 兜底补全失败: {e}")
+            logger.warning(f"[CAP-014] " + f"[capture][{name}] 兜底补全失败: {e}")
     except Exception as e:
-        logger.warning("CAP-015", f"[capture][{name}] 写库失败: {e}")
+        logger.warning(f"[CAP-015] " + f"[capture][{name}] 写库失败: {e}")
         traceback.print_exc()
     logger.info(f"[capture][{name}] 写库完成：会话 {n_conv}（含消息 {n_msg}），"
                 f"昵称命中 uid关联={_by_uid} sec_uid关联={_by_sec} "

@@ -97,8 +97,9 @@ def _load_index():
                 try:
                     bad_dir = os.path.dirname(bad_path)
                     if bad_dir.startswith(_accounts_dir()) and os.path.isdir(bad_dir):
-                        import shutil
-                        shutil.rmtree(bad_dir, ignore_errors=True)
+                        # 2026-09-17 修补（审查 P2-2）：改用带越界校验的
+                        # 安全删除（原为裸 shutil.rmtree）。
+                        _rmtree_account_dir(bad_dir)
                 except Exception:
                     pass
             idx["accounts"][name] = clean_rel
@@ -117,7 +118,7 @@ def _save_index(idx):
         from database import set_kv_json
         set_kv_json("accounts_index", idx)
     except Exception as e:
-        logger.warning("ACC-006", f"[accounts] 保存账号索引失败: {e}")
+        logger.warning(f"[ACC-006] " + f"[accounts] 保存账号索引失败: {e}")
 
 
 def list_accounts():
@@ -591,7 +592,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                 " 捕获成功后凭证将写回 .env 并交守护进程保活。原始判定：" + _old_label
             )
         except Exception as e:
-            logger.warning("ACC-008", f"[verify] 账号 {name} 自动重捕触发失败: {e}")
+            logger.warning(f"[ACC-008] " + f"[verify] 账号 {name} 自动重捕触发失败: {e}")
 
     # ---- 私信引擎校验（只校验「私信守护」有效性，不做列表捕获）----
     # 2026-08-29 收敛（用户要求）：引擎校验 = 校验守护凭证(wp) + 私信守护有效性(dm)。
@@ -798,7 +799,7 @@ def clear_credentials_of(env_path):
             os.environ.pop(k, None)
         return _strip_credential_lines(env_path)
     except Exception as e:
-        logger.warning("ACC-009", f"[账号] 清空凭证失败 {env_path}: {e}")
+        logger.warning(f"[ACC-009] " + f"[账号] 清空凭证失败 {env_path}: {e}")
         return False
 
 
@@ -856,6 +857,26 @@ def clear_credentials(force=False):
     return cleared
 
 
+def _rmtree_account_dir(target_dir: str) -> bool:
+    """安全删除账号目录（2026-09-17 审查 P2-2 修补）。
+
+    原实现直接 `shutil.rmtree(path)`，而 path 由索引里的 `rel` 拼接而来 ——
+    若索引被污染（异常 rel 值），可能删到预期外路径。
+    现加入三重校验：① 必须是绝对路径；② 必须真实存在且是目录；
+    ③ 必须位于 `_accounts_dir()` **之内**（防 `..` 穿越）。
+    """
+    import shutil
+    base = os.path.abspath(_accounts_dir())
+    tgt = os.path.abspath(target_dir)
+    if not os.path.isdir(tgt):
+        return False
+    if os.path.commonpath([base, tgt]) != base or tgt == base:
+        logger.warning("ACC-006", f"[accounts] 拒绝删除越界目录: {tgt}（base={base}）")
+        return False
+    shutil.rmtree(tgt, ignore_errors=True)
+    return True
+
+
 def remove_account(name):
     """删除账号（同时删除其 .env 目录）。所有账号都需通过新增创建，故均可删除。"""
     idx = _load_index()
@@ -865,8 +886,7 @@ def remove_account(name):
     env_path = os.path.join(_accounts_dir(), rel)
     try:
         if os.path.isdir(os.path.dirname(env_path)):
-            import shutil
-            shutil.rmtree(os.path.dirname(env_path))
+            _rmtree_account_dir(os.path.dirname(env_path))
     except Exception:
         pass
     # current/monitor/sender 若指向被删账号则清空
@@ -1110,7 +1130,7 @@ def auto_recapture(name: str = None, landing_url: str = "https://www.douyin.com/
         t = threading.Thread(target=_do_auto_recapture, args=(name, landing_url), daemon=True)
         t.start()
     except Exception as e:
-        logger.warning("ACC-010", f"[recap] 账号 {name} 发起自动重捕获失败: {e}")
+        logger.warning(f"[ACC-010] " + f"[recap] 账号 {name} 发起自动重捕获失败: {e}")
 
 
 def _do_auto_recapture(name: str, landing_url: str):
@@ -1124,7 +1144,7 @@ def _do_auto_recapture(name: str, landing_url: str):
             from api.accounts import _quit_browser_daemon
             _quit_browser_daemon(name)
         except Exception as e:
-            logger.warning("ACC-011", f"[recap] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
+            logger.warning(f"[ACC-011] " + f"[recap] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
         from auth_helper import enrich_auth
         env_path = env_path_of(name)
         logger.info(f"[recap] 账号 {name} 私信凭证失效，自动拉起指纹浏览器重新捕获（{landing_url}）")
@@ -1133,7 +1153,7 @@ def _do_auto_recapture(name: str, landing_url: str):
         logger.success(f"[recap] 账号 {name} 自动重新捕获完成")
     except Exception as e:
         st["error"] = str(e)
-        logger.error("ACC-012", f"[recap] 账号 {name} 自动重新捕获异常: {e}")
+        logger.error(f"[ACC-012] " + f"[recap] 账号 {name} 自动重新捕获异常: {e}")
     finally:
         st["running"] = False
 
@@ -1192,7 +1212,7 @@ def _do_recapture_from_profile(name: str, landing_url: str):
             from api.accounts import _quit_browser_daemon
             _quit_browser_daemon(name)
         except Exception as e:
-            logger.warning("ACC-013", f"[recap-profile] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
+            logger.warning(f"[ACC-013] " + f"[recap-profile] 账号 {name} 停止凭证守护失败（可能未运行）: {e}")
         from dy_apis.login_api import DYLoginApi
         from dy_apis.login_api import RiskControlError as _RC
         env_path = env_path_of(name)
@@ -1211,7 +1231,7 @@ def _do_recapture_from_profile(name: str, landing_url: str):
             return
         except Exception as e:
             st["error"] = str(e)
-            logger.error("ACC-015", f"[recap-profile] 账号 {name} 从 profile 读取凭证失败: {e}")
+            logger.error(f"[ACC-015] " + f"[recap-profile] 账号 {name} 从 profile 读取凭证失败: {e}")
             return
         # 确认 clean 后才写盘
         DYLoginApi().save_credential(auth, env_path=env_path)
@@ -1219,6 +1239,6 @@ def _do_recapture_from_profile(name: str, landing_url: str):
         logger.success(f"[recap-profile] 账号 {name} 已从持久化 profile 读取并写回有效凭证")
     except Exception as e:
         st["error"] = str(e)
-        logger.error("ACC-016", f"[recap-profile] 账号 {name} 重读异常: {e}")
+        logger.error(f"[ACC-016] " + f"[recap-profile] 账号 {name} 重读异常: {e}")
     finally:
         st["running"] = False

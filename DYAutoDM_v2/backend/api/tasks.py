@@ -45,7 +45,7 @@ async def get_history(request: Request, limit: int = 0, offset: int = 0) -> dict
         total = count_history() if limit else len(items)
         return {"ok": True, "list": items, "total": total}
     except Exception as e:
-        logger.warning("TSK-001", f"[tasks] 读取历史任务失败: {e}")
+        logger.warning(f"[TSK-001] " + f"[tasks] 读取历史任务失败: {e}")
         return {"ok": False, "list": [], "total": 0, "error": str(e)}
 
 
@@ -62,7 +62,7 @@ async def get_current_task(request: Request) -> dict:
     try:
         return adm.snapshot()
     except Exception as e:
-        logger.warning("TSK-002", f"[tasks] 读取任务容器失败: {e}")
+        logger.warning(f"[TSK-002] " + f"[tasks] 读取任务容器失败: {e}")
         return {"ok": False, "has_task": False, "error": str(e)}
 
 
@@ -199,7 +199,7 @@ async def save_config(body: TaskConfig, request: Request):
                 "enable_send": bool(cfg.enable_send),
             })
         except Exception as e:  # 配置中心失败不影响原保存路径
-            logger.warning("TSK-004", f"[tasks] 开关写入配置中心失败: {e}")
+            logger.warning(f"[TSK-004] " + f"[tasks] 开关写入配置中心失败: {e}")
         # 落盘到 SQLite kv_store（替代 config.json）
         from database import get_kv_json, set_kv_json
         data = get_kv_json("config", {}) or {}
@@ -215,7 +215,7 @@ async def save_config(body: TaskConfig, request: Request):
         })
         set_kv_json("config", data)
     except Exception as e:
-        logger.warning("TSK-003", f"[tasks] 配置落盘失败（不影响本次保存）: {e}")
+        logger.warning(f"[TSK-003] " + f"[tasks] 配置落盘失败（不影响本次保存）: {e}")
     return {"ok": True}
 
 
@@ -298,5 +298,5 @@ async def export_stats(request: Request):
                                     getattr(r, "capture_ts", ""), getattr(r, "send_ts", "")])
             return {"ok": True, "path": str(csv_path), "count": len(records)}
     except Exception as e:
-        logger.warning("TSK-004", f"[tasks] 导出失败: {e}")
+        logger.warning(f"[TSK-004] " + f"[tasks] 导出失败: {e}")
         return {"ok": False, "error": str(e)}

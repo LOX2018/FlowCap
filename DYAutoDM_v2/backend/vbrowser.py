@@ -164,7 +164,7 @@ def pw_async_api():
         from patchright.async_api import async_playwright as _f
         return _f
     except Exception as e:  # 未安装时自动回退，绝不因缺库中断
-        logger.warning("BCC-040", f"[vbrowser] patchright 不可用（{e}），回退原生 Playwright")
+        logger.warning(f"[BCC-040] " + f"[vbrowser] patchright 不可用（{e}），回退原生 Playwright")
         from playwright.async_api import async_playwright as _f
         return _f
 
@@ -178,7 +178,7 @@ def pw_sync_api():
         from patchright.sync_api import sync_playwright as _f
         return _f
     except Exception as e:
-        logger.warning("BCC-040", f"[vbrowser] patchright 不可用（{e}），回退原生 Playwright")
+        logger.warning(f"[BCC-040] " + f"[vbrowser] patchright 不可用（{e}），回退原生 Playwright")
         from playwright.sync_api import sync_playwright as _f
         return _f
 
@@ -465,7 +465,7 @@ def _launch_args_with_proxy(cfg, account=None):
     if env_path:
         mode, node_url, err = parse_proxy_config(env_path)
         if err:
-            logger.warning("BCC-037", f"[vbrowser] 账号 {account} {err}")
+            logger.warning(f"[BCC-037] " + f"[vbrowser] 账号 {account} {err}")
     if not mode:
         # 未传 account 或账号未配模式 → 看全局兜底
         mode = (getattr(cfg, "DY_PROXY_MODE", "") or "").strip().lower() or None
@@ -688,7 +688,7 @@ def app_root():
         try:
             if os.path.isdir(_ov):
                 return os.path.abspath(_ov)
-            logger.warning("BCC-039", f"[vbrowser] DY_APP_ROOT 指向的目录不存在，忽略: {_ov}")
+            logger.warning(f"[BCC-039] " + f"[vbrowser] DY_APP_ROOT 指向的目录不存在，忽略: {_ov}")
         except Exception:
             pass
     if getattr(sys, "frozen", False):
@@ -765,14 +765,14 @@ def launch_vb_env(env_id, api_base="http://localhost:9000", timeout=30):
         )
         data = resp.json()
     except Exception as e:
-        logger.warning("BCC-040", f"[vbrowser] 调用启动 API 失败（服务未启动？）: {e}")
+        logger.warning(f"[BCC-040] " + f"[vbrowser] 调用启动 API 失败（服务未启动？）: {e}")
         return None
     if not data.get("success"):
-        logger.warning("BCC-041", f"[vbrowser] 启动环境失败: {data}")
+        logger.warning(f"[BCC-041] " + f"[vbrowser] 启动环境失败: {data}")
         return None
     port = (data.get("data") or {}).get("debuggingPort")
     if not port:
-        logger.warning("BCC-042", f"[vbrowser] 响应缺少 debuggingPort: {data}")
+        logger.warning(f"[BCC-042] " + f"[vbrowser] 响应缺少 debuggingPort: {data}")
         return None
     logger.info(f"[vbrowser] 环境 {env_id} 已启动，CDP 端口={port}")
     return int(port)

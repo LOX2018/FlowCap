@@ -106,10 +106,10 @@ class BaseChannel(ABC):
                 last = r.error
             except Exception as e:  # noqa: BLE001
                 last = f"{type(e).__name__}: {e}"
-                logger.warning("NTY-006", f"[notify:{self.name}] 发送异常({i}/{retries}): {last}")
+                logger.warning(f"[NTY-006] " + f"[notify:{self.name}] 发送异常({i}/{retries}): {last}")
             if i < retries:
                 await asyncio.sleep(1.5 * (i + 1))
-        logger.error("NTY-007", f"[notify:{self.name}] 发送最终失败: {last}")
+        logger.error(f"[NTY-007] " + f"[notify:{self.name}] 发送最终失败: {last}")
         return ChannelResult(False, self.name, last)
 
     async def close(self) -> None:
@@ -286,7 +286,7 @@ class WecomChannel(BaseChannel):
         invalid = body.get("invaliduser") or body.get("unlicenseduser")
         err_msg = "" if ok else f"errcode={err} {body.get('errmsg')}"
         if ok and invalid:
-            logger.warning("NTY-008", f"[notify:wecom] 部分接收人无效: {invalid}")
+            logger.warning(f"[NTY-008] " + f"[notify:wecom] 部分接收人无效: {invalid}")
         return ChannelResult(ok, self.name, err_msg, {"body": body, "invalid": invalid})
 
 

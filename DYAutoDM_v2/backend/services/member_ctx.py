@@ -471,5 +471,5 @@ def migrate_plain_envs(member_id: str, master_key_val: str) -> dict:
             logger.info(f"[member] 已加密迁移账号凭证: {name}")
         except Exception as e:  # noqa: BLE001
             skipped += 1
-            logger.error("MEM-004", f"[member] 加密迁移失败（保留明文）: {name}: {e}")
+            logger.error(f"[MEM-004] " + f"[member] 加密迁移失败（保留明文）: {name}: {e}")
     return {"migrated": migrated, "skipped": skipped}

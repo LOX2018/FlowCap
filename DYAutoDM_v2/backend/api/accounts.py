@@ -192,7 +192,7 @@ def _do_scan(name: str):
         st["loggedIn"] = bool(getattr(auth, "cookie", None))
         st["done"] = True
     except Exception as e:
-        logger.error("ACC-001", f"[scan] 账号 {name} 扫码异常: {e}")
+        logger.error(f"[ACC-001] " + f"[scan] 账号 {name} 扫码异常: {e}")
         st["error"] = str(e)
         st["done"] = True
     finally:
@@ -219,7 +219,7 @@ def _do_open_browser(name: str):
                                      url="https://www.douyin.com/", account=name))
         st["done"] = True
     except Exception as e:
-        logger.error("BCC-001", f"[open-browser] 账号 {name} 打开指纹浏览器异常: {e}")
+        logger.error(f"[BCC-001] " + f"[open-browser] 账号 {name} 打开指纹浏览器异常: {e}")
         st["error"] = str(e)
         st["done"] = True
     finally:
@@ -390,7 +390,7 @@ async def self_check(request: Request):
             entry["ok"] = bool(verify.get("ok"))
             entry["autoFixTriggered"] = bool(verify.get("auto_fix_triggered"))
         except Exception as e:  # 单账号校验异常不阻断其他账号
-            logger.error("ACC-002", f"[self-check] 账号 {name} 校验异常: {e}")
+            logger.error(f"[ACC-002] " + f"[self-check] 账号 {name} 校验异常: {e}")
             entry["wp"] = {"level": "error", "label": "校验异常"}
             entry["dm"] = {"level": "error", "label": "校验异常"}
         return entry
@@ -436,7 +436,7 @@ async def check_account(name: str) -> dict:
         )
         return {"ok": True, "verify": verify}
     except Exception as e:
-        logger.error("ACC-003", f"[check] 账号 {name} 校验异常: {e}")
+        logger.error(f"[ACC-003] " + f"[check] 账号 {name} 校验异常: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -470,7 +470,7 @@ def _quit_browser_daemon(name: str) -> bool:
             )
             urllib.request.urlopen(req, timeout=3)
         except Exception as e:
-            logger.warning("BCC-002", f"[open-browser] 停止守护 {name} 失败（可能已退出）: {e}")
+            logger.warning(f"[BCC-002] " + f"[open-browser] 停止守护 {name} 失败（可能已退出）: {e}")
         # 等待 profile 锁释放（Chromium 退出需要一点时间）
         time.sleep(1.5)
         return True
@@ -539,7 +539,7 @@ def _kill_profile_holders(profile: str) -> int:
                 except Exception:
                     continue
     except Exception as e:
-        logger.warning("BCC-004", f"[open-browser] 清理孤儿 profile 持有进程失败: {e}")
+        logger.warning(f"[BCC-004] " + f"[open-browser] 清理孤儿 profile 持有进程失败: {e}")
     return killed
 
 
@@ -618,7 +618,7 @@ async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
                     ok=False,
                     msg=f"拉起浏览器容器失败（{st.get('msg')}），请稍后重试")
         except Exception as e:  # noqa: BLE001
-            logger.error("BCC-030", f"[open-browser] 账号 {name} 拉起容器失败: {e}")
+            logger.error(f"[BCC-030] " + f"[open-browser] 账号 {name} 拉起容器失败: {e}")
             return ScanLoginResponse(ok=False, msg=f"拉起浏览器容器失败: {e}")
 
     # 2) 就地切为有头可见（不另起实例、不停守护）
@@ -632,7 +632,7 @@ async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
         if not out.get("ok"):
             return ScanLoginResponse(ok=False, msg=f"切换可见模式失败: {out.get('msg')}")
     except Exception as e:  # noqa: BLE001
-        logger.error("BCC-031", f"[open-browser] 账号 {name} 切换可见模式失败: {e}")
+        logger.error(f"[BCC-031] " + f"[open-browser] 账号 {name} 切换可见模式失败: {e}")
         return ScanLoginResponse(ok=False, msg=f"切换可见模式失败: {e}")
     changed = out.get("changed")
     hint = "（容器已切为可见，登录态即当前真实态）" if changed else "（容器已是可见模式）"
@@ -686,7 +686,7 @@ async def add_account(body: AddAccountRequest):
         acct_core.add_account(body.name)
         return {"ok": True, "name": body.name}
     except ValueError as e:
-        logger.warning("ACC-004", f"[accounts] add_account 失败: {e}")
+        logger.warning(f"[ACC-004] " + f"[accounts] add_account 失败: {e}")
         return {"ok": False, "error": str(e), "name": body.name}
 
 
@@ -696,7 +696,7 @@ async def remove_account(name: str):
         acct_core.remove_account(name)
         return {"ok": True, "name": name}
     except ValueError as e:
-        logger.warning("ACC-005", f"[accounts] remove_account 失败: {e}")
+        logger.warning(f"[ACC-005] " + f"[accounts] remove_account 失败: {e}")
         return {"ok": False, "error": str(e), "name": name}
 
 
@@ -738,7 +738,7 @@ async def hide_fingerprint_browser(name: str) -> ScanLoginResponse:
             out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
         return ScanLoginResponse(ok=bool(out.get("ok")), msg=f"已恢复无头模式 · {name}")
     except Exception as e:  # noqa: BLE001
-        logger.error("BCC-032", f"[hide-browser] 账号 {name} 恢复无头失败: {e}")
+        logger.error(f"[BCC-032] " + f"[hide-browser] 账号 {name} 恢复无头失败: {e}")
         return ScanLoginResponse(ok=False, msg=f"恢复无头失败: {e}")
 
 

@@ -160,7 +160,7 @@ class ImMixin:
             try:
                 page = DouyinAPI.get_conversation_list(auth, conversation_short_id=cursor)
             except Exception as e:
-                logger.warning("AUTH-022", f"[im] 分页拉取会话列表第 {_+1} 页失败: {e}")
+                logger.warning(f"[AUTH-022] " + f"[im] 分页拉取会话列表第 {_+1} 页失败: {e}")
                 break
             if not page:
                 break
@@ -286,11 +286,11 @@ class ImMixin:
         """
         # 文案为空防护：抖音对空消息会返回 OK 但实际未发送（被截断的根因之一）
         if not content or not str(content).strip():
-            logger.error("AUTH-024", "[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
+            logger.error(f"[AUTH-024] " + "[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
             return False, "文案为空，拒绝发送"
         # 私信文案长度受限：超长会被平台截断/静默丢弃，先本地拦截
         if len(str(content)) > 500:
-            logger.warning("AUTH-025", f"[私信] 文案长度 {len(str(content))} 超过 500 字，可能被平台截断，仅前 500 字发送")
+            logger.warning(f"[AUTH-025] " + f"[私信] 文案长度 {len(str(content))} 超过 500 字，可能被平台截断，仅前 500 字发送")
         url = 'https://imapi.douyin.com/v1/message/send'
         # IM 私有网关靠 protobuf body 内签名鉴权，不叠加 bd-ticket-guard-* HTTP 头
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
@@ -419,7 +419,7 @@ class ImMixin:
         )
         data = json.loads(resp.text)
         if data.get("status_code") != 0:
-            logger.warning("AUTH-023", f"[im] get_im_user_info uid={uid} status={data.get('status_code')}")
+            logger.warning(f"[AUTH-023] " + f"[im] get_im_user_info uid={uid} status={data.get('status_code')}")
             return {}
         items = data.get("data") or []
         if not items:

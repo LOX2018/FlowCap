@@ -108,7 +108,7 @@ def _bootstrap_accounts_index() -> int:
         src = os.path.join(global_acc_dir, name)
         dst = os.path.join(member_acc_dir, name)
         if not os.path.isdir(src):
-            logger.warning("MEM-008", f"[member] 全局账号目录缺失，跳过: {name}")
+            logger.warning(f"[MEM-008] " + f"[member] 全局账号目录缺失，跳过: {name}")
             continue
         if os.path.exists(dst):
             linked += 1
@@ -123,7 +123,7 @@ def _bootstrap_accounts_index() -> int:
                     "[member] junction 创建失败: "
                     f"{r.stderr.decode('gbk', errors='replace').strip()}"))
         except Exception as e:  # noqa: BLE001
-            logger.error("MEM-009", f"[member] junction 异常 {name}: {e}")
+            logger.error(f"[MEM-009] " + f"[member] junction 异常 {name}: {e}")
 
     # 3) 索引复制（仅会员侧为空时）
     idx = get_kv_json("accounts_index", None)
@@ -150,7 +150,7 @@ async def _post_login_init(member_id: str, master_key: str) -> None:
         if mig.get("migrated"):
             logger.info(f"[member] 凭证加密迁移完成: {mig}")
     except Exception as e:  # noqa: BLE001
-        logger.warning("MEM-002", f"[member] .env 迁移异常（不阻塞登录）: {e}")
+        logger.warning(f"[MEM-002] " + f"[member] .env 迁移异常（不阻塞登录）: {e}")
     # ②b 账号索引 bootstrap（2026-09-08 实测缺口）：账号索引存在全局 DB 的
     #  kv_store.accounts_index，会员登录后 database 切到会员空间 DB（空索引）
     #  → list_accounts()=0 → 守护永不拉起 → 前端「拉后端对齐」无限转。
@@ -160,7 +160,7 @@ async def _post_login_init(member_id: str, master_key: str) -> None:
         if n_copied:
             logger.info(f"[member] 账号空间引导完成: {n_copied} 个账号(junction+索引)")
     except Exception as e:  # noqa: BLE001
-        logger.warning("MEM-007", f"[member] 账号索引引导失败（不阻塞登录）: {e}")
+        logger.warning(f"[MEM-007] " + f"[member] 账号索引引导失败（不阻塞登录）: {e}")
     # ③ 拉起该会员账号的守护（等效原 lifespan 的 _auto_start_daemons）
     try:
         from auto_dm.daemon_launcher import ensure_daemons_for
@@ -171,7 +171,7 @@ async def _post_login_init(member_id: str, master_key: str) -> None:
             await asyncio.to_thread(ensure_daemons_for, n, False)
         logger.info(f"[member] 登录初始化完成（{len(names)} 个账号守护拉起）")
     except Exception as e:  # noqa: BLE001
-        logger.warning("MEM-003", f"[member] 登录后守护拉起失败（不影响登录）: {e}")
+        logger.warning(f"[MEM-003] " + f"[member] 登录后守护拉起失败（不影响登录）: {e}")
 
 
 @router.post("/login")
@@ -192,7 +192,7 @@ async def login(body: AuthIn) -> dict:
         database.reset_connection()
         database.get_db()
     except Exception as e:  # noqa: BLE001
-        logger.warning("MEM-001", f"[member] 会员 DB 初始化失败: {e}")
+        logger.warning(f"[MEM-001] " + f"[member] 会员 DB 初始化失败: {e}")
 
     # ②③ .env 加密迁移 + 守护拉起：整体移入后台任务，绝不在请求路径里做
     # （原实现在登录请求内同步跑 ensure_daemons_for：每账号 4 次 0.2~0.3s 的

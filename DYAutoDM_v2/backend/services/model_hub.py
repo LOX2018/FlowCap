@@ -49,7 +49,7 @@ def _kv_get() -> dict:
         data = get_kv_json(_KV_KEY, {})
         return data if isinstance(data, dict) else {}
     except Exception as e:  # noqa: BLE001
-        logger.warning("HUB-001", f"[model_hub] kv 读取失败: {e}")
+        logger.warning(f"[HUB-001] " + f"[model_hub] kv 读取失败: {e}")
         return {}
 
 
@@ -59,7 +59,7 @@ def _kv_set(data: dict) -> None:
 
         set_kv_json(_KV_KEY, data)
     except Exception as e:  # noqa: BLE001
-        logger.warning("HUB-002", f"[model_hub] kv 写入失败: {e}")
+        logger.warning(f"[HUB-002] " + f"[model_hub] kv 写入失败: {e}")
 
 
 def _normalize(data: dict) -> dict:
@@ -242,7 +242,7 @@ def _migrate_v1(data: dict) -> dict:
                     f"{len(models)} 模型）")
         return out
     except Exception as e:  # noqa: BLE001
-        logger.warning("HUB-003", f"[model_hub] 迁移失败（不影响运行）: {e}")
+        logger.warning(f"[HUB-003] " + f"[model_hub] 迁移失败（不影响运行）: {e}")
         return data
 
 

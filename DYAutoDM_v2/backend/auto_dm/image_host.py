@@ -181,7 +181,7 @@ def upload(data: bytes, name: str = "") -> Optional[str]:
         with _lock:
             _cache[sha] = None  # 失败也缓存，避免反复重试拖慢捕获
             _stats["fail"] += 1
-        logger.warning("IMG-001", f"[图床][{backend}] 上传失败（降级内联）: {str(e)[:100]}")
+        logger.warning(f"[IMG-001] " + f"[图床][{backend}] 上传失败（降级内联）: {str(e)[:100]}")
         return None
 
 

@@ -353,7 +353,7 @@ def resolve(account: str, msg_id: str, skey: str, origin_url: str,
             try:
                 fpath.write_bytes(plain)
             except Exception as e:
-                logger.warning("IMG-002", f"[origin_image] 写本地失败 {fpath}: {e}")
+                logger.warning(f"[IMG-002] " + f"[origin_image] 写本地失败 {fpath}: {e}")
                 return {"ok": False, "error": f"写本地失败: {e}"}
         # URL 由 messages.py 端点提供,这里只返回 path 供端点拼装
         kind = "local"
@@ -366,7 +366,7 @@ def resolve(account: str, msg_id: str, skey: str, origin_url: str,
             from auto_dm import image_host
             hosted = image_host.upload(plain, name=f"origin_{msg_id or sha[:8]}.{ext}")
         except Exception as e:
-            logger.warning("IMG-003", f"[origin_image] 图床上传模块导入/调用失败: {e}")
+            logger.warning(f"[IMG-003] " + f"[origin_image] 图床上传模块导入/调用失败: {e}")
             hosted = None
         if hosted:
             kind, url = "hosted", hosted

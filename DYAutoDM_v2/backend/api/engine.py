@@ -31,7 +31,7 @@ async def start_engine(request: Request, config: TaskConfig):
     cfg = config.resolved()
     # 空直播间链接属于不合法的启动参数，应返回结构化 400 而非 500 崩溃
     if not cfg.live_url or not cfg.live_url.strip():
-        logger.warning("ENG-010", "[engine] 启动被拒：live_url 为空")
+        logger.warning(f"[ENG-010] " + "[engine] 启动被拒：live_url 为空")
         raise HTTPException(400, "live_url 不能为空（需提供直播间链接或房间号）")
     # 已在运行/启动中则直接返回当前状态（不重复拉起）
     if adm.state in (EngineState.RUNNING, EngineState.STARTING):
@@ -42,7 +42,7 @@ async def start_engine(request: Request, config: TaskConfig):
         asyncio.create_task(adm.start(cfg))
         return {"ok": True, "state": "starting"}
     except Exception as e:
-        logger.exception("ENG-011", f"[engine] 启动失败: {e}")
+        logger.exception(f"[ENG-011] " + f"[engine] 启动失败: {e}")
         raise HTTPException(500, f"启动失败: {e}")
 
 
@@ -66,7 +66,7 @@ async def resume_engine(request: Request):
 async def stop_engine(request: Request):
     """硬停止：立即清队列"""
     adm: AutoDM = request.app.state.adm
-    logger.warning("ENG-012", "[engine] 引擎硬停止（清空队列）")
+    logger.warning(f"[ENG-012] " + "[engine] 引擎硬停止（清空队列）")
     await adm.stop(hard=True)
     return {"ok": True, "state": adm.state.value}
 

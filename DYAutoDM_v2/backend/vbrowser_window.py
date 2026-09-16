@@ -86,7 +86,7 @@ async def _ensure_window_visible(context):
             except Exception:
                 pass
     except Exception as e:
-        logger.warning("BCC-035", f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
+        logger.warning(f"[BCC-035] " + f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
 
 
 def _ensure_window_visible_sync(context):
@@ -120,7 +120,7 @@ def _ensure_window_visible_sync(context):
             except Exception:
                 pass
     except Exception as e:
-        logger.warning("BCC-036", f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
+        logger.warning(f"[BCC-036] " + f"[vbrowser] 窗口归位检查失败（不阻塞启动）: {e}")
 
 # ---------- 代理支持（2026-09-06 借鉴 OpenBrowser per-env proxy 设计）----------
 #
@@ -209,7 +209,7 @@ async def _minimize_window(context):
             try: await session.detach()
             except Exception: pass
     except Exception as e:
-        logger.warning("BCC-035", f"[vbrowser] 窗口最小化失败（不阻塞启动）: {e}")
+        logger.warning(f"[BCC-035] " + f"[vbrowser] 窗口最小化失败（不阻塞启动）: {e}")
 
 
 def _minimize_window_sync(context):
@@ -229,6 +229,6 @@ def _minimize_window_sync(context):
             try: session.detach()
             except Exception: pass
     except Exception as e:
-        logger.warning("BCC-035", f"[vbrowser] 窗口最小化失败（不阻塞启动）: {e}")
+        logger.warning(f"[BCC-035] " + f"[vbrowser] 窗口最小化失败（不阻塞启动）: {e}")
 
 

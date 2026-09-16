@@ -343,7 +343,7 @@ def _warn_once(msg: str) -> None:
     _WARNED.add(msg)
     try:
         from loguru import logger
-        logger.warning("PB-001", f"[im_protobuf] {msg}")
+        logger.warning(f"[PB-001] " + f"[im_protobuf] {msg}")
     except Exception:
         pass
 

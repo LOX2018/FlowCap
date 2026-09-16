@@ -269,7 +269,7 @@ async def get_feed(req: FeedReq) -> dict[str, Any]:
         raw = await asyncio.to_thread(api.get_feed, auth,
                                       str(max(1, min(req.count, 50))), "2")
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-001", f"推荐流获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-001] " + f"推荐流获取失败: {type(e).__name__}")
         raise HTTPException(502, f"推荐流获取失败: {type(e).__name__}")
     # ★ 2026-09-15：`get_feed` 已改用源项目接口 `/aweme/v1/web/tab/feed/`
     #   （源项目方案），返回**标准 `aweme_list`** —— 优先直接读它。
@@ -306,16 +306,16 @@ async def user_works(req: UserWorksReq) -> dict[str, Any]:
         # 2026-09-15：平台限流时返回**空响应体**（非 JSON）→ resp.json() 抛此错。
         # 属平台侧限制（推荐流/收藏仍正常可佐证），优雅降级为空列表并由前端提示，
         # 不再报 502（否则用户看到「接口不可用」，误判为功能故障）。
-        logger.info("PLT-002", "作品列表返回空响应（平台限流），降级为空列表")
+        logger.info(f"[PLT-002] " + "作品列表返回空响应（平台限流），降级为空列表")
         items = []
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-002", f"作品列表获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-002] " + f"作品列表获取失败: {type(e).__name__}")
         raise HTTPException(502, f"作品列表获取失败: {type(e).__name__}")
     out = [_pick_aweme(w) for w in (items or [])]
     if not out:
         # 2026-09-15：实测 `aweme/post` 偶发「只返 sc=0 无 aweme_list」——
         # 平台对同一 sec_uid 短时多次请求会限流（非凭证失效，推荐流/收藏仍正常）。
-        logger.info("PLT-002", f"用户作品返回空（平台限流或该用户无公开作品）: sec={req.user_url[-16:]}")
+        logger.info(f"[PLT-002] " + f"用户作品返回空（平台限流或该用户无公开作品）: sec={req.user_url[-16:]}")
     return {"ok": True, "items": out[: max(1, req.limit)], "total": len(out)}
 
 
@@ -331,7 +331,7 @@ async def user_info(req: UserInfoReq) -> dict[str, Any]:
     try:
         raw = await asyncio.to_thread(api.get_user_info, auth, req.user_url)
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-003", f"用户资料获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-003] " + f"用户资料获取失败: {type(e).__name__}")
         raise HTTPException(502, f"用户资料获取失败: {type(e).__name__}")
     u = (raw or {}).get("user") if isinstance(raw, dict) else None
     return {"ok": True, "user": _pick_user(u or {})}
@@ -387,7 +387,7 @@ async def users_info_batch(req: UsersInfoReq) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001
-            logger.warning("PLT-020", f"BCC 批量查用户失败: {type(e).__name__}")
+            logger.warning(f"[PLT-020] " + f"BCC 批量查用户失败: {type(e).__name__}")
             # 不静默降级：明确告知哪条通道失败（本分支允许第二条通道重试）
             raise HTTPException(502, f"BCC 批量查用户失败: {type(e).__name__}")
 
@@ -412,7 +412,7 @@ async def users_info_batch(req: UsersInfoReq) -> dict[str, Any]:
                     out[str(uid)] = info
         return {"ok": True, "channel": "http", "data": out, "count": len(out)}
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-021", f"HTTP 批量查用户失败: {type(e).__name__}")
+        logger.warning(f"[PLT-021] " + f"HTTP 批量查用户失败: {type(e).__name__}")
         raise HTTPException(502, f"HTTP 批量查用户失败: {type(e).__name__}")
 
 
@@ -451,8 +451,7 @@ def _im_user_info_by_sec(auth, sec_uids: list[str]) -> dict[str, Any]:
         )
         j = r.json()
         if j.get("status_code") != 0:
-            logger.warning("PLT-022",
-                           f"im/user/info sc={j.get('status_code')} msg={j.get('status_msg')}")
+            logger.warning(f"[PLT-022] " + f"im/user/info sc={j.get('status_code')} msg={j.get('status_msg')}")
             continue
         for u in (j.get("data") or []):
             sec = u.get("sec_uid") or ""
@@ -489,14 +488,14 @@ async def search(req: SearchReq) -> dict[str, Any]:
             stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
             works = (stream or {}).get("aweme_list") or []
         except Exception as e:  # noqa: BLE001
-            logger.warning("PLT-009", f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
+            logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
             works = None
         if not works:
             works = await asyncio.to_thread(api.search_some_general_work, auth, req.query, num, "0", "0")
         return {"ok": True, "kind": "video",
                 "items": [_pick_aweme(w) for w in (works or [])]}
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-004", f"搜索失败: {type(e).__name__}")
+        logger.warning(f"[PLT-004] " + f"搜索失败: {type(e).__name__}")
         raise HTTPException(502, f"搜索失败: {type(e).__name__}")
 
 
@@ -509,10 +508,10 @@ async def collected(req: CollectListReq) -> dict[str, Any]:
         raw = await asyncio.to_thread(api.get_collect_list, auth)
     except json.JSONDecodeError:
         # 2026-09-15：同「用户作品」——平台限流返回空响应体，优雅降级为空。
-        logger.info("PLT-005", "收藏夹返回空响应（平台限流），降级为空列表")
+        logger.info(f"[PLT-005] " + "收藏夹返回空响应（平台限流），降级为空列表")
         raw = {}
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-005", f"收藏夹获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-005] " + f"收藏夹获取失败: {type(e).__name__}")
         raise HTTPException(502, f"收藏夹获取失败: {type(e).__name__}")
     # 基座返回结构可能是 {collects_list:[…]} 或 list，两种都兼容
     items = raw.get("collects_list") if isinstance(raw, dict) else raw
@@ -548,7 +547,7 @@ async def liked(req: LikedReq) -> dict[str, Any]:
         #   ⇒ 属**平台侧行为**，非本项目适配错误。
         #   故此处**不抛 502**（避免前端弹"请求失败"误导用户），
         #   而是返回空列表 + `unavailable` 标记，让 UI 能给出准确说明。
-        logger.warning("PLT-006", f"点赞列表获取失败（平台侧常返空）: {type(e).__name__}")
+        logger.warning(f"[PLT-006] " + f"点赞列表获取失败（平台侧常返空）: {type(e).__name__}")
         return {"ok": True, "items": [], "has_more": False,
                 "unavailable": True,
                 "reason": f"平台侧暂不可用（{type(e).__name__}）"}
@@ -571,7 +570,7 @@ async def relation_list(req: RelationReq) -> dict[str, Any]:
             raw = await asyncio.to_thread(api.get_user_follower_list, auth,
                                           req.user_id, req.sec_id, "0", count)
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-007", f"关系列表获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-007] " + f"关系列表获取失败: {type(e).__name__}")
         raise HTTPException(502, f"关系列表获取失败: {type(e).__name__}")
     items = raw.get("followers") or raw.get("followings") or []
     return {"ok": True, "items": [_pick_user(u) for u in (items or [])],
@@ -587,7 +586,7 @@ async def notice_list(req: NoticeReq) -> dict[str, Any]:
         raw = await asyncio.to_thread(api.get_notice_list, auth, "0", "0",
                                       str(max(1, min(req.count, 50))), req.group)
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-008", f"站内通知获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-008] " + f"站内通知获取失败: {type(e).__name__}")
         raise HTTPException(502, f"站内通知获取失败: {type(e).__name__}")
     # ★ 2026-09-14 实测修正：新版接口把数据放在 **`notice_list_v2`**，
     #   `notice_list` 恒为空数组。原实现只读 `notice_list` ⇒ 实测恒 0 条。
@@ -634,7 +633,7 @@ async def comments(req: CommentsReq) -> dict[str, Any]:
     try:
         raw = await asyncio.to_thread(api.get_work_out_comment, auth, req.url, "0")
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-009", f"评论获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-009] " + f"评论获取失败: {type(e).__name__}")
         raise HTTPException(502, f"评论获取失败: {type(e).__name__}")
     items = raw.get("comments") if isinstance(raw, dict) else []
     out = []
@@ -692,7 +691,7 @@ async def action_digg(req: DiggReq) -> dict[str, Any]:
         #   digg_type: '1'=点赞 '0'=取消
         ok = await asyncio.to_thread(api.digg, auth, req.aweme_id, req.action)
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-010", f"点赞失败: {type(e).__name__}")
+        logger.warning(f"[PLT-010] " + f"点赞失败: {type(e).__name__}")
         raise HTTPException(502, f"点赞失败: {type(e).__name__}")
     return {"ok": bool(ok), "action": req.action}
 
@@ -705,7 +704,7 @@ async def action_collect(req: CollectReq) -> dict[str, Any]:
     try:
         raw = await asyncio.to_thread(api.collect_aweme, auth, req.aweme_id, req.action)
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-011", f"收藏失败: {type(e).__name__}")
+        logger.warning(f"[PLT-011] " + f"收藏失败: {type(e).__name__}")
         raise HTTPException(502, f"收藏失败: {type(e).__name__}")
     return {"ok": True, "raw_status": (raw or {}).get("status_code") if isinstance(raw, dict) else None}
 
@@ -720,13 +719,13 @@ async def action_follow(req: FollowReq) -> dict[str, Any]:
     #   故此处**显式返回 501**，绝不假装成功（"流程走完 != 结果正确"）。
     fn = getattr(api, "commit_follow", None) or getattr(api, "follow_user", None)
     if fn is None:
-        logger.info("PLT-012", "关注写操作未实现：基座无 follow 方法")
+        logger.info(f"[PLT-012] " + "关注写操作未实现：基座无 follow 方法")
         raise HTTPException(501, "关注写操作尚未实现：基座未提供 follow 方法"
                                  "（如需启用，需先在 dy_apis 补 commit/follow/user 链路）")
     try:
         raw = await asyncio.to_thread(fn, auth, req.user_id, req.sec_id, req.action)
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-012", f"关注失败: {type(e).__name__}")
+        logger.warning(f"[PLT-012] " + f"关注失败: {type(e).__name__}")
         raise HTTPException(502, f"关注失败: {type(e).__name__}")
     return {"ok": True, "raw_status": (raw or {}).get("status_code") if isinstance(raw, dict) else None}
 
@@ -753,7 +752,7 @@ async def collection_items(req: CollectionItemsReq) -> dict[str, Any]:
         raw = await asyncio.to_thread(
             api.get_aweme_list_collection, auth, req.max_cursor, str(req.count))
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-030", f"收藏夹作品获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-030] " + f"收藏夹作品获取失败: {type(e).__name__}")
         raise HTTPException(502, f"收藏夹作品获取失败: {type(e).__name__}")
     items = (raw or {}).get("aweme_list") if isinstance(raw, dict) else []
     return {"ok": True, "items": [_pick_aweme(w) for w in (items or [])],
@@ -773,7 +772,7 @@ async def collection_mixes(req: MixListReq) -> dict[str, Any]:
         raw = await asyncio.to_thread(
             api.get_mix_list_collection, auth, str(req.count), req.cursor)
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-031", f"收藏合集获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-031] " + f"收藏合集获取失败: {type(e).__name__}")
         raise HTTPException(502, f"收藏合集获取失败: {type(e).__name__}")
     items = (raw or {}).get("mix_infos") if isinstance(raw, dict) else []
     out = []
@@ -805,7 +804,7 @@ async def collection_series(req: SeriesAwemeReq) -> dict[str, Any]:
         raw = await asyncio.to_thread(
             api.get_series_aweme, auth, req.series_id, req.cursor, str(req.count))
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-032", f"合集内作品获取失败: {type(e).__name__}")
+        logger.warning(f"[PLT-032] " + f"合集内作品获取失败: {type(e).__name__}")
         raise HTTPException(502, f"合集内作品获取失败: {type(e).__name__}")
     items = []
     if isinstance(raw, dict):
@@ -874,7 +873,7 @@ async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
             raw = await asyncio.to_thread(
                 api.get_work_info, auth, f"https://www.douyin.com/video/{req.aweme_id}")
         except Exception as e:  # noqa: BLE001
-            logger.warning("PLT-040", f"详情取址失败（平台侧常返空）: {type(e).__name__}")
+            logger.warning(f"[PLT-040] " + f"详情取址失败（平台侧常返空）: {type(e).__name__}")
             raw = None
     elif raw is None and req.url:
         auth = _auth_for(req.account)
@@ -882,7 +881,7 @@ async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
         try:
             raw = await asyncio.to_thread(api.get_work_info, auth, req.url)
         except Exception as e:  # noqa: BLE001
-            logger.warning("PLT-040", f"详情取址失败（平台侧常返空）: {type(e).__name__}")
+            logger.warning(f"[PLT-040] " + f"详情取址失败（平台侧常返空）: {type(e).__name__}")
             raw = None
 
     if not isinstance(raw, dict) or not raw:
@@ -921,5 +920,5 @@ async def media_stats() -> dict[str, Any]:
     try:
         return {"ok": True, **MP.stats()}
     except Exception as e:  # noqa: BLE001
-        logger.warning("PLT-041", f"媒体统计失败: {type(e).__name__}")
+        logger.warning(f"[PLT-041] " + f"媒体统计失败: {type(e).__name__}")
         raise HTTPException(502, f"媒体统计失败: {type(e).__name__}")

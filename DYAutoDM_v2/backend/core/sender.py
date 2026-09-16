@@ -168,7 +168,7 @@ def _maybe_auto_recapture(auth: Any, reason: str) -> None:
 
         auto_recapture(name)
     except Exception as e:
-        logger.warning("SEND-009", f"[recap] 触发自动重捕获失败: {e}")
+        logger.warning(f"[SEND-009] " + f"[recap] 触发自动重捕获失败: {e}")
 
 
 def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tuple[bool, str]:
@@ -180,7 +180,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
     if user_id is None:
         return False, "user_id 为空"
     if not content or not str(content).strip():
-        logger.error("SEND-010", "[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
+        logger.error(f"[SEND-010] " + "[私信] 文案为空，拒绝发送（避免日志显示成功但实际未发送）")
         return False, "文案为空，拒绝发送"
     try:
         user_id = int(user_id)
@@ -216,9 +216,9 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
             logger.info(f"[私信] 发送结果: 目标「{user_id}」=成功 文案前20字={content[:20]!r}")
             return True, "ok"
         if "rate_limited" in str(_reason):
-            logger.warning("SEND-011", f"[私信] 发送被闸门限流 uid={user_id}: {_reason}")
+            logger.warning(f"[SEND-011] " + f"[私信] 发送被闸门限流 uid={user_id}: {_reason}")
             return False, _reason
-        logger.warning("SEND-012", f"[私信] 经 recv_daemon 直发失败 uid={user_id}: {_reason}")
+        logger.warning(f"[SEND-012] " + f"[私信] 经 recv_daemon 直发失败 uid={user_id}: {_reason}")
         return False, _reason
     # 守护不可达：兜底本进程直发（此时无统一闸门，仅本条自身的重试间隔）
     logger.warning("SEND-013", f"[私信] recv_daemon 不可达（{_reason}），兜底本进程直发——"
@@ -241,7 +241,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
                 )
                 _maybe_auto_recapture(auth, f"INVALID_REQUEST: {msg}")
                 return False, f"私信被风控(INVALID_REQUEST/KICK): {msg}"
-            logger.warning("SEND-015", f"create_conversation 失败(第{attempt}次) uid={user_id}: {e}")
+            logger.warning(f"[SEND-015] " + f"create_conversation 失败(第{attempt}次) uid={user_id}: {e}")
             if attempt == max_retry:
                 return False, f"create_conversation 失败: {e}"
             time.sleep(1)
@@ -249,7 +249,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
         try:
             ok, detail = DouyinAPI.send_msg(auth, conversation_id, short_id, ticket, content)
         except Exception as e:
-            logger.warning("SEND-016", f"send_msg 失败(第{attempt}次) uid={user_id}: {e}")
+            logger.warning(f"[SEND-016] " + f"send_msg 失败(第{attempt}次) uid={user_id}: {e}")
             if attempt == max_retry:
                 return False, f"send_msg 失败: {e}"
             time.sleep(1)
@@ -257,7 +257,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
         if ok:
             logger.info(f"[私信] 发送结果: 目标「{user_id}」=成功 文案前20字={content[:20]!r}")
             return True, "ok"
-        logger.warning("SEND-017", f"send_msg 返回 {detail!r}(第{attempt}次) uid={user_id}")
+        logger.warning(f"[SEND-017] " + f"send_msg 返回 {detail!r}(第{attempt}次) uid={user_id}")
         if attempt == max_retry:
             return False, detail if detail else "send_msg 返回 False"
         time.sleep(1)
@@ -294,7 +294,7 @@ def send_target(auth: Any, target: dict, content: str) -> Tuple[bool, str]:
     if ok:
         logger.info(f"[私信] 已发送给「{nickname}」(uid={user_id or sec_uid})")
     else:
-        logger.warning("SEND-018", f"[私信] 发送失败「{nickname}」: {reason}")
+        logger.warning(f"[SEND-018] " + f"[私信] 发送失败「{nickname}」: {reason}")
     return ok, reason
 
 

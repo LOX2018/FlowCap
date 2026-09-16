@@ -229,7 +229,7 @@ async def restart_room_config(room_id: str, request: Request) -> dict:
         shell = _RuntimeCfg(cfg)
         result = adm.apply_runtime_config(shell)
     except Exception as e:  # 热更异常必须显式失败，绝不静默
-        logger.warning("LIVE-021", f"[room-config] 热更失败 {room_id}: {e}")
+        logger.warning(f"[LIVE-021] " + f"[room-config] 热更失败 {room_id}: {e}")
         result = {"ok": False, "applied": [], "not_applied": [],
                   "reason": f"热更异常: {e}", "engine_state": "unknown"}
 
