@@ -40,14 +40,18 @@ def kv_get(key: str, default: Any = None) -> Any:
 
 
 def kv_set(key: str, value: Any) -> None:
-    """写 KV（UPSERT，json 序列化）。任何异常静默忽略（与原实现一致）。"""
+    """写 KV（UPSERT，json 序列化）。任何异常静默忽略（与原实现一致）。
+
+    2026-09-17 修补（审查 P2-7）：原实现直接 `database.get_db()` 后
+    execute/commit，**完全绕过 `database._lock`**，使 database.py:109-110
+    注释承诺的「进程内写串行化」在 KV 路径上不成立。
+    现改为走 `database.exec_modify`（内部持 `_lock`），与其余写路径一致。
+    """
     try:
-        conn = database.get_db()
-        conn.execute(
+        database.exec_modify(
             "INSERT INTO kv_store(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, json.dumps(value, ensure_ascii=False)),
         )
-        conn.commit()
     except Exception:
         pass

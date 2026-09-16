@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 _LOCK = threading.RLock()
 
 DEFAULTS: dict[str, Any] = {
@@ -94,8 +96,13 @@ class McpConfig:
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                            encoding="utf-8")
             os.replace(tmp, self._p)
-        except Exception:
-            pass
+        except Exception as e:
+            # 2026-09-17 修补（审查 P2-14）：原为 `except Exception: pass`。
+            # ensure_token(rotate=True) 声称「旧令牌立即失效」，若落盘失败则
+            # 内存失效而磁盘仍是旧令牌 → 重启后旧令牌复活，违反核心不变式。
+            # 落盘失败必须留下 error 级日志，不再静默吞掉。
+            logger.error(f"[mcp] 配置落盘失败，磁盘仍为旧值: "
+                         f"{type(e).__name__}: {e}")
 
     # ---------- 公开接口 ----------
 

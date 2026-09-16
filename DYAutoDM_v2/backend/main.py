@@ -540,16 +540,41 @@ def _read_version_file() -> str:
 
 app = FastAPI(
     title="DYAutoDM API",
-    version="0.1.0",
+    # 2026-09-17 修补（审查 P2-1）：原写死 "0.1.0"，与产品实际版本
+    # （tauri.conf / package.json / frontend/package.json / Cargo.toml）脱节，
+    # 会误导排障（OpenAPI 文档显示的版本号是错的）。
+    # 现与产品版本同源（手动同步；如需自动校验见版本一致性门禁）。
+    version="0.43.41",
     description="抖音直播间自动私信控制台 - 后端 API",
     lifespan=lifespan,
 )
 
 # 允许前端跨域（开发模式 Vite 跑在 1420，preview 跑在 4173，Tauri 用 tauri://localhost）
+# 2026-09-17 安全修补（审查 P1-1）：原为 allow_origins=["*"] + allow_credentials=True。
+# 虽然后端 --host 默认 127.0.0.1（main.py:847）且会员中间件已做 Token 校验，
+# 但一旦以 --host 0.0.0.0 启动或被反向代理暴露，任意站点即可携带凭据调用业务 API。
+# 现改为显式白名单；如需临时放开，设 DY_CORS_ANY=1（会留下 warning）。
+_CORS_ALLOW_ANY = os.environ.get("DY_CORS_ANY", "") == "1"
+_CORS_ORIGINS = (
+    ["*"] if _CORS_ALLOW_ANY else [
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "http://127.0.0.1:1420",   # Vite dev
+        "http://localhost:1420",
+        "http://127.0.0.1:4173",   # Vite preview
+        "http://localhost:4173",
+    ]
+)
+if _CORS_ALLOW_ANY:
+    logger.warning(
+        "BOOT-001",
+        "[boot] ⚠️ DY_CORS_ANY=1：CORS 已放开为 *，任意来源可调用业务 API"
+        "（仅应急排障使用）")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=not _CORS_ALLOW_ANY,  # 放开 * 时禁止带凭据（浏览器不允许 *+credentials）
     allow_methods=["*"],
     allow_headers=["*"],
 )

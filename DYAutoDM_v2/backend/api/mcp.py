@@ -109,7 +109,9 @@ async def restart_mcp() -> dict[str, Any]:
     try:
         info = start_background(int(cfg.get("preferred_port")))
         _RUNTIME["port"] = info["port"]
-        _RUNTIME["httpd"] = True  # 标记运行中（线程生命周期随进程）
+        # 2026-09-17 修补（审查 P2-13）：保留真实 httpd 句柄，供 _stop_runtime
+        # 真正 shutdown，避免多次重启遗留多个监听实例。
+        _RUNTIME["httpd"] = info.get("httpd")
         logger.info("MCP-003", f"本机 HTTP MCP 已启动 :{info['port']}（仅监听本机）")
         return {"ok": True, "data": _status(),
                 "message": f"已启动，端口 {info['port']}"}
@@ -119,6 +121,21 @@ async def restart_mcp() -> dict[str, Any]:
 
 
 def _stop_runtime() -> None:
+    """停止 MCP 服务。
+
+    2026-09-17 修补（审查 P2-13）：原实现只把标记置 None，**从不调用
+    httpd.shutdown()** —— 每点一次「重启」就遗留一个 ThreadingHTTPServer
+    并占住回环端口；多次重启后多实例并存，而 _status() 只显示最后一次的
+    bound_port，管理员以为旧实例已停、实际仍在服务。
+    """
+    httpd = _RUNTIME.get("httpd")
+    if httpd is not None and httpd is not True:
+        try:
+            from mcp.server import shutdown_httpd
+            shutdown_httpd(httpd)
+        except Exception as e:
+            logger.warning("MCP-005", f"[mcp] 关闭旧 MCP 实例失败: "
+                                      f"{type(e).__name__}: {e}")
     _RUNTIME["httpd"] = None
     _RUNTIME["port"] = None
 

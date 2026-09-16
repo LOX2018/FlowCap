@@ -39,6 +39,21 @@ INTENT_UNKNOWN = "unknown"
 # 需要二次确认的意图
 DESTRUCTIVE = {INTENT_CREATE, INTENT_RECAPTURE}
 
+# 2026-09-17 安全修补（审查 P1-8）：intent 白名单。
+# LLM 输出不可信（可被提示词注入劫持），任何要执行的 intent 必须命中本集合，
+# 否则一律降级为 INTENT_UNKNOWN 并不执行。新增意图必须同时登记到
+# _ALLOWED_INTENTS、执行分支（api/notify.py 的 _execute）与 gateway 的
+# ROLE_INTENTS，三处缺一即不可用（fail-closed）。
+_ALLOWED_INTENTS = frozenset({
+    INTENT_CREATE,
+    INTENT_START,
+    INTENT_STOP,
+    INTENT_STATUS,
+    INTENT_RECAPTURE,
+    INTENT_HELP,
+    INTENT_UNKNOWN,
+})
+
 SYSTEM_PROMPT = """你是 DYAutoDM 抖音自动化运营助手的指令解析器。
 把用户的自然语言指令解析为 JSON，不要输出任何解释文字。
 
@@ -184,8 +199,29 @@ async def parse_command(text: str, llm_cfg: dict[str, Any] | None = None) -> dic
         data = _rule_parse(text)
 
     intent = str(data.get("intent", INTENT_UNKNOWN)).strip() or INTENT_UNKNOWN
+    # 2026-09-17 安全修补（审查 P1-8）：intent 此前**完全信任 LLM 输出**，
+    # 未做白名单校验。攻击者只需发一句提示词注入文本，诱导 LLM 返回
+    # {"intent":"start_task"}，即可在自己的 admin/operator 权限下直接启停引擎
+    # —— start_task / stop_task 不在 DESTRUCTIVE 确认集里，无二次确认即执行。
+    # 现改为：非白名单 intent 一律降级为 UNKNOWN（不执行任何动作）并告警。
+    if intent not in _ALLOWED_INTENTS:
+        logger.warning(
+            "NTY-010",
+            f"[cmd-parse] 非白名单 intent 已拒绝: {intent!r} "
+            f"（允许={sorted(_ALLOWED_INTENTS)}）")
+        intent = INTENT_UNKNOWN
+        need_confirm = False
+        params = {}
+        return {
+            "intent": intent,
+            "params": params,
+            "confirm_text": "",
+            "source": source,
+            "need_confirm": need_confirm,
+        }
     params = data.get("params") or {}
-    need_confirm = intent in DESTRUCTIVE
+    # 引擎启停同样要求二次确认（原 DESTRUCTIVE 只含 create/recapture）
+    need_confirm = intent in DESTRUCTIVE or intent in (INTENT_START, INTENT_STOP)
     confirm_text = str(data.get("confirm_text") or "").strip()
     if not confirm_text:
         confirm_text = _default_confirm(intent, params)

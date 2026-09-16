@@ -11,6 +11,13 @@
 
 _FAKE_MEDIA_ARGS = [
     "--use-fake-device-for-media-stream",
+    # 2026-09-17 修补（审查 P1-3）：设备红线要求本组参数「缺一不可」，
+    # 此前只有 vbrowser.py:53 的注释提到本参数，实际从未加入启动参数。
+    # 缺失时页面请求麦克风权限会弹系统授权框，配合 --deny-permission-prompts
+    # 会被直接拒绝 —— 连麦等需音频授权的链路可能拿不到流。
+    # 注意：本参数只控制系统授权弹框（免交互），虚拟采集源由上面的
+    # --use-fake-device-for-media-stream 保证，两者职责不同、必须同时存在。
+    "--use-fake-ui-for-media-stream",
     "--allow-file-access-from-files",
     "--mute-audio",
     "--deny-permission-prompts",

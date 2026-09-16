@@ -146,20 +146,48 @@ def new_master_key() -> str:
 
 
 def wrap_master_key(master_key: str, password: str) -> str:
-    """用口令派生 key 包裹主密钥（Fernet 加密），返回 token 字符串。"""
+    """用口令派生 key 包裹主密钥（Fernet 加密），返回 token 字符串。
+
+    2026-09-17 安全修补（审查 P1-5）：原实现用**单轮无盐 SHA-256**
+    派生包裹密钥 —— 与同文件 `_derive_key` 的 600k 轮 PBKDF2 + 16B 盐
+    严重不对称：registry.json 一旦被拖走，攻击者可用廉价单轮 SHA-256
+    离线爆破 wrapped_key，**直接绕过 600k 轮设计**，且无盐可跨会员预计算。
+
+    现改为与 `_derive_key` 同规格的 PBKDF2，并把 salt/iterations 一并
+    存进 token（`v2$<salt_hex>$<iters>$<fernet_token>`）。
+
+    **兼容性**：`unwrap_master_key` 仍识别旧格式（无 `v2$` 前缀）并回落
+    到 SHA-256，已存在的会员无需重置即可正常登录；下次改密会自动升级。
+    """
     from cryptography.fernet import Fernet
-    wrap_key = base64.urlsafe_b64encode(
-        hashlib.sha256(password.encode("utf-8")).digest())
-    return Fernet(wrap_key).encrypt(master_key.encode("ascii")).decode("ascii")
+    salt = secrets.token_bytes(16)
+    dk = _derive_key(password, salt)
+    wrap_key = base64.urlsafe_b64encode(dk)
+    tok = Fernet(wrap_key).encrypt(master_key.encode("ascii")).decode("ascii")
+    return f"v2${salt.hex()}${_PBKDF2_ITERS}${tok}"
 
 
 def unwrap_master_key(wrapped: str, password: str) -> str | None:
-    """口令解包主密钥；口令错误/密文损坏返回 None。"""
+    """口令解包主密钥；口令错误/密文损坏返回 None。
+
+    兼容两种格式：
+      - 新：`v2$<salt_hex>$<iters>$<fernet_token>`（PBKDF2，见 wrap_master_key）
+      - 旧：裸 Fernet token（单轮 SHA-256 派生，仅用于读取历史数据）
+    """
     from cryptography.fernet import Fernet, InvalidToken
-    wrap_key = base64.urlsafe_b64encode(
-        hashlib.sha256(password.encode("utf-8")).digest())
     try:
-        return Fernet(wrap_key).decrypt(wrapped.encode("ascii")).decode("ascii")
+        s = str(wrapped or "")
+        if s.startswith("v2$"):
+            _, salt_hex, iters_s, tok = s.split("$", 3)
+            dk = _derive_key(password, bytes.fromhex(salt_hex), int(iters_s))
+            wrap_key = base64.urlsafe_b64encode(dk)
+            payload = tok
+        else:
+            # 旧格式：单轮 SHA-256（保留读取能力，不再写入）
+            wrap_key = base64.urlsafe_b64encode(
+                hashlib.sha256(password.encode("utf-8")).digest())
+            payload = s
+        return Fernet(wrap_key).decrypt(payload.encode("ascii")).decode("ascii")
     except (InvalidToken, Exception):  # noqa: BLE001
         return None
 

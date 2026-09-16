@@ -68,11 +68,29 @@ async def get_current_task(request: Request) -> dict:
 
 @router.post("/history/clear")
 async def clear_history(request: Request) -> dict:
-    """清空历史任务"""
+    """清空历史任务。
+
+    2026-09-17 修补（审查 P2-9）：调用方必须显式传 confirmed=true。
+    （tasks_history.clear_history 已加 confirm 门禁，默认拒绝。）
+    """
     try:
+        # 兼容前端可能以 query 或 body 传递确认标记
+        confirmed = False
+        try:
+            q = request.query_params.get("confirmed")
+            if q is not None:
+                confirmed = str(q).lower() in ("1", "true", "yes")
+        except Exception:
+            pass
+        if not confirmed:
+            try:
+                body = await request.json()
+                confirmed = bool((body or {}).get("confirmed"))
+            except Exception:
+                pass
         from tasks_history import clear_history
-        clear_history()
-        return {"ok": True}
+        n = clear_history(confirm=confirmed)
+        return {"ok": True, "deleted": n}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

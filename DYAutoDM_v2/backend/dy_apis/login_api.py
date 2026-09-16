@@ -22,6 +22,85 @@ import qrcode
 # context。调用方通过 HTTP 调 BCC 接口，不再各自 launch_persistent_context 抢锁。
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 日志脱敏辅助（2026-09-17 审查 P0-1 修补）
+# ---------------------------------------------------------------------------
+# 背景：登录链路多处把含登录态的响应 / Set-Cookie / 完整 cookie 串直接 print
+# 到 stdout；stdout 常被重定向进日志文件或被终端录制，等同凭证明文落盘。
+# 统一改走 logger.debug，且输出前必须过这里的脱敏函数。
+
+_SENSITIVE_KEYS = (
+    "cookie", "set-cookie", "setcookie", "authorization", "token",
+    "ticket", "sessionid", "sid_tt", "passport_csrf_token", "sessdata",
+    "private_key", "password", "secret", "web_protect", "msToken",
+)
+
+
+def _mask_headers(headers) -> dict:
+    """响应头脱敏：敏感键只保留长度，避免 Set-Cookie 明文入日志。"""
+    out = {}
+    try:
+        for k, v in headers.items():
+            if any(s in str(k).lower() for s in _SENSITIVE_KEYS):
+                out[str(k)] = f"<masked len={len(str(v))}>"
+            else:
+                out[str(k)] = str(v)[:120]
+    except Exception:
+        return {"<unparsable>": ""}
+    return out
+
+
+def _safe_repr(obj, maxlen: int = 300) -> str:
+    """任意对象脱敏 repr：命中敏感键的值整体掩码，并截断长度。"""
+
+    def _walk(o, depth=0):
+        if depth > 4:
+            return "..."
+        if isinstance(o, dict):
+            return {
+                k: (f"<masked len={len(str(v))}>"
+                    if any(s in str(k).lower() for s in _SENSITIVE_KEYS)
+                    else _walk(v, depth + 1))
+                for k, v in list(o.items())[:40]
+            }
+        if isinstance(o, (list, tuple)):
+            return [_walk(x, depth + 1) for x in list(o)[:20]]
+        s = str(o)
+        return s if len(s) <= 120 else s[:120] + f"...(+{len(s) - 120})"
+
+    try:
+        return str(_walk(obj))[:maxlen]
+    except Exception:
+        return "<unparsable>"
+
+
+def _mask_url_query(url: str) -> str:
+    """URL 脱敏：保留 scheme/host/path，query 整体掩码（常含 token/ticket）。"""
+    try:
+        p = urllib.parse.urlsplit(str(url))
+        q = f"?<masked len={len(p.query)}>" if p.query else ""
+        return f"{p.scheme}://{p.netloc}{p.path}{q}"
+    except Exception:
+        return "<unparsable url>"
+
+
+# ---------------------------------------------------------------------------
+# TLS 校验开关（2026-09-17 审查 P1-6 修补）
+# ---------------------------------------------------------------------------
+# 背景：登录链路 9 处 requests 调用全部带 `cookies=auth.cookie` 且
+# `verify=False` —— SSO 登录 / 验证码 / quick_login 关闭了证书校验，
+# 局域网 MITM 可直接拿到 Set-Cookie（sessionid / sid_tt / passport_csrf_token）。
+#
+# 现统一由此常量控制，**默认开启校验**。仅当确因证书环境（企业代理 / 自签
+# 根证书未安装）需要例外时，设 DY_LOGIN_TLS_INSECURE=1，并会留下 warning。
+_TLS_VERIFY = os.environ.get("DY_LOGIN_TLS_INSECURE", "") != "1"
+if not _TLS_VERIFY:
+    logger.warning(
+        "AUTH-042",
+        "[auth] ⚠️ DY_LOGIN_TLS_INSECURE=1：登录链路已关闭 TLS 证书校验，"
+        "存在 MITM 窃取登录 cookie 的风险（仅应急排障使用）")
+
+
 def _bcc_port(account_name: str) -> int:
     """该账号的 BCC（browser_daemon）专属端口。"""
     from auto_dm import accounts as _acc
@@ -500,8 +579,31 @@ class DYLoginApi:
                 return os.path.abspath(env_file + ".enc")
         except RuntimeError:
             raise
-        except Exception:
-            pass
+        except Exception as _enc_err:
+            # 2026-09-17 安全修补（审查 P1-4）：原为 `except Exception: pass`
+            # —— 加密路径一旦出现非 RuntimeError 故障（导入失败、is_member_env
+            # 误判、磁盘只读…），会**静默**降级为明文写 .env，而 set_values 含
+            # DY_COOKIES / DY_TICKET / DY_PRIVATE_KEY / DY_WEB_PROTECT / DY_KEYS。
+            # 明文落盘等同凭证失守，且没有任何告警，运维无从察觉。
+            #
+            # 现改为：默认**拒绝**明文降级（宁可失败也不泄凭证）。
+            # 仅在显式设置 DY_ALLOW_PLAINTEXT_ENV=1 时允许降级（应急排障用），
+            # 且必须留下 error 级日志。
+            import os as _os
+            if _os.environ.get("DY_ALLOW_PLAINTEXT_ENV", "") == "1":
+                logger.error(
+                    "AUTH-040",
+                    f"[auth] ⚠️ 加密写盘失败，已按 DY_ALLOW_PLAINTEXT_ENV=1 "
+                    f"降级为**明文**写 {env_file}（含私钥与完整 cookie）: "
+                    f"{type(_enc_err).__name__}: {_enc_err}")
+            else:
+                logger.error(
+                    "AUTH-041",
+                    f"[auth] 加密写盘失败，已拒绝明文降级（凭证未写入）: "
+                    f"{type(_enc_err).__name__}: {_enc_err}；"
+                    f"如需应急明文落盘请设 DY_ALLOW_PLAINTEXT_ENV=1")
+                raise RuntimeError(
+                    f"会员加密写盘失败，拒绝明文降级: {_enc_err}") from _enc_err
         from dotenv import set_key
         for key, value in set_values.items():
             set_key(env_file, key, value, quote_mode="never")
@@ -1041,7 +1143,7 @@ class DYLoginApi:
         params.add_param("device_platform", 'web_app')
         params.add_param("msToken", auth.cookie['msToken'])
         params.with_a_bogus()
-        resp = requests.get(self.base_url + api, headers=headers.get(), cookies=auth.cookie, params=params.get(), verify=False)
+        resp = requests.get(self.base_url + api, headers=headers.get(), cookies=auth.cookie, params=params.get(), verify=_TLS_VERIFY)
         return json.loads(resp.text)
 
 
@@ -1067,7 +1169,7 @@ class DYLoginApi:
         params.add_param("device_platform", 'web_app')
         params.add_param("msToken", auth.cookie['msToken'])
         params.with_a_bogus()
-        resp = requests.get(self.base_url + api, headers=headers.get(), cookies=auth.cookie, params=params.get(), verify=False)
+        resp = requests.get(self.base_url + api, headers=headers.get(), cookies=auth.cookie, params=params.get(), verify=_TLS_VERIFY)
         return json.loads(resp.text)
 
     # 手机验证码登录
@@ -1106,7 +1208,7 @@ class DYLoginApi:
         params.add_param("msToken", auth.cookie['msToken'])
         data = generateSecretPhoneNum(phone_num)
         params.with_a_bogus(data)
-        response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=False)
+        response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=_TLS_VERIFY)
         res_json = json.loads(response.text)
         if res_json['error_code'] == 0:
             print("无需过滑块, 验证码发送成功")
@@ -1114,12 +1216,14 @@ class DYLoginApi:
 
         firstLoginRes = json.loads(response.text)
         iframeTemplate = self.generateIframe(auth.cookie, firstLoginRes)
-        print(iframeTemplate)
+        # 2026-09-17 安全修补（审查 P0-1）：iframeTemplate 含 s_v_web_id
+        # 设备指纹与 verify_data，原 print 会明文吐出。
+        logger.debug("[auth] 滑块模板: %s", _safe_repr(iframeTemplate))
         input('过滑块')
         # 过验证码后
         params.add_param("fp", auth.cookie['s_v_web_id'])
         params.add_param("verifyFp", auth.cookie['s_v_web_id'])
-        response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=False)
+        response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=_TLS_VERIFY)
         return json.loads(response.text)
 
     def dyPhoneVerificationCodeLogin(self, auth, phone_num, code):
@@ -1161,7 +1265,7 @@ class DYLoginApi:
         params.add_param("msToken", auth.cookie['msToken'])
         params.with_a_bogus()
         data = generateSecretCode(phone_num, code)
-        response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=False)
+        response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=_TLS_VERIFY)
         responseCookies = response.cookies.get_dict()
         # 结合到cookies中
         auth.cookie.update(responseCookies)
@@ -1226,7 +1330,7 @@ class DYLoginApi:
         params.add_param("device_platform", "web_app")
         params.add_param("msToken", auth.cookie['msToken'])
         params.with_a_bogus()
-        response = requests.get(url, headers=headers, cookies=auth.cookie, params=params.get(), verify=False)
+        response = requests.get(url, headers=headers, cookies=auth.cookie, params=params.get(), verify=_TLS_VERIFY)
         auth.cookie.update(response.cookies.get_dict())
         return json.loads(response.text)
 
@@ -1253,7 +1357,10 @@ class DYLoginApi:
         qrcode_thread.start()
         while True:
             checkLoginInfo = self.dyCheckQrCodeLogin(auth, token)
-            print(checkLoginInfo)
+            # 2026-09-17 安全修补（审查 P0-1）：原为 print(checkLoginInfo)，
+            # 会把含登录态的响应整体打到 stdout（stdout 常落日志/终端录制）。
+            logger.debug("[auth] 扫码登录轮询状态: %s",
+                         _safe_repr(checkLoginInfo))
             await asyncio.sleep(10)
 
 
@@ -1261,12 +1368,14 @@ class DYLoginApi:
         auth = await self.dyGenerateInitData()
         phone_num = "15251991681"
         sendCodeRes = self.dyGeneratePhoneVerificationCode(phone_num, auth)
-        print(sendCodeRes)
+        # 2026-09-17 安全修补（审查 P0-1）：以下原为 print(...)，会把验证码响应、
+        # 登录响应、跳转 URL 打到 stdout。
+        logger.debug("[auth] 验证码发送结果: %s", _safe_repr(sendCodeRes))
         code = input("请输入验证码：")
         loginRes, auth = self.dyPhoneVerificationCodeLogin(auth, phone_num, code)
-        print(loginRes)
+        logger.debug("[auth] 登录结果: %s", _safe_repr(loginRes))
         redirect_url = loginRes['redirect_url']
-        print(redirect_url)
+        logger.debug("[auth] 跳转 URL: %s", _mask_url_query(redirect_url))
         headers = {
             "accept": "application/json, text/plain, */*",
             "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
@@ -1282,27 +1391,33 @@ class DYLoginApi:
             "sec-fetch-site": "same-origin",
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0",
         }
-        response = requests.get(redirect_url, headers=headers, cookies=auth.cookie, verify=False)
-        print(response.status_code)
+        response = requests.get(redirect_url, headers=headers, cookies=auth.cookie, verify=_TLS_VERIFY)
+        logger.debug("[auth] 跳转响应: %s", response.status_code)
         if response.status_code == 302:
-            print(response.headers)
+            # 2026-09-17 安全修补（审查 P0-1）：原 print(response.headers) 会
+            # 打出 Set-Cookie 响应头（sessionid / sid_tt / passport_csrf_token）。
+            logger.debug("[auth] 302 响应头: %s", _mask_headers(response.headers))
             location = response.headers['Location']
-            response = requests.get(location, headers=headers, cookies=auth.cookie, verify=False)
+            response = requests.get(location, headers=headers, cookies=auth.cookie, verify=_TLS_VERIFY)
             auth.cookie.update(response.cookies.get_dict())
             if response.status_code == 302:
-                print(response.headers)
+                logger.debug("[auth] 302 响应头(2): %s", _mask_headers(response.headers))
                 location = response.headers['Location']
-                response = requests.get(location, headers=headers, cookies=auth.cookie, verify=False)
+                response = requests.get(location, headers=headers, cookies=auth.cookie, verify=_TLS_VERIFY)
                 auth.cookie.update(response.cookies.get_dict())
 
         res = self.persistenceLoginInfo(auth)
-        print(res)
+        logger.debug("[auth] 持久化登录结果: %s", _safe_repr(res))
         # 将cookie转为字符串
         cookie_str = ''
         for k, v in auth.cookie.items():
             cookie_str += k + '=' + v + '; '
         cookie_str = cookie_str[:-2]
-        print(cookie_str)
+        # 2026-09-17 安全修补（审查 P0-1）：原 print(cookie_str) 直接吐完整
+        # cookie 明文。改为只打脱敏指纹（长度 + 键名），用于确认登录是否成功。
+        logger.info("[auth] cookie 已组装（%d 项，共 %d 字符；键: %s）",
+                    len(auth.cookie), len(cookie_str),
+                    ",".join(sorted(auth.cookie.keys()))[:200])
 
 if __name__ == '__main__':
     login_util = DYLoginApi()

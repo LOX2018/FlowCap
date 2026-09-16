@@ -35,6 +35,14 @@ def start_task(acct: str, live_id: str, config: dict | None = None, records: lis
     return tid
 
 
+# 2026-09-17 安全修补（审查 P1-2）：finish_task 允许动态拼接的列名白名单。
+# 任何新增可更新字段都必须在此登记，否则 finish_task 会拒绝执行。
+_TASK_UPDATABLE_COLUMNS = frozenset({
+    "status", "end_ts", "result_count", "records",
+})
+# 注意：本模块 logger 为文件头部导入的 loguru logger（第 12 行），勿再覆盖。
+
+
 def finish_task(tid: int, status: str = "finished", result_count: int = 0,
                  records: list | None = None) -> None:
     """结束历史任务：更新状态、结果条数、记录快照。"""
@@ -47,7 +55,19 @@ def finish_task(tid: int, status: str = "finished", result_count: int = 0,
         vals.append(json.dumps(
             [r if isinstance(r, dict) else _rec_to_dict(r) for r in records],
             ensure_ascii=False))
-    vals.append(tid)
+    # 2026-09-17 安全修补（审查 P1-2）：原为
+    #   conn.execute(f"UPDATE tasks SET {','.join(sets)} WHERE id=?", vals)
+    # 列名由字符串拼接进入 SQL。当前 sets 仅由下方硬编码构造（外部不可达、
+    # 不可利用），但属注入模式反模式 —— 一旦后续有人把外部字段拼进 sets 即刻成真漏洞。
+    # 现改为白名单校验：列名必须命中 _TASK_UPDATABLE_COLUMNS，否则拒绝执行。
+    _allowed = _TASK_UPDATABLE_COLUMNS
+    for _col in sets:
+        _name = _col.split("=", 1)[0].strip()
+        if _name not in _allowed:
+            logger.error("[history] 拒绝执行：非法列名 %r（白名单=%s）",
+                         _name, sorted(_allowed))
+            raise ValueError(f"illegal column name: {_name}")
+    vals.append(tid)          # WHERE id=? 的占位参数
     conn.execute(f"UPDATE tasks SET {','.join(sets)} WHERE id=?", vals)
     conn.commit()
 
@@ -134,13 +154,26 @@ def count_history() -> int:
     return r["c"] if r else 0
 
 
-def clear_history() -> None:
-    """清空历史任务（仅用户主动触发）。"""
+def clear_history(confirm: bool = False) -> int:
+    """清空历史任务（仅用户主动触发）。
+
+    2026-09-17 安全修补（审查 P2-9）：原为无条件 `DELETE FROM tasks`
+    （无 WHERE、无备份、无二次确认），一次误触即清空全部历史，违反
+    「删除必须逐条确认」铁律。现改为：
+      - 必须显式传 confirm=True，否则拒绝；
+      - 清空前记录条数并写入日志（留痕，便于事后核对）；
+      - 返回被删除条数，调用方可据此提示用户。
+    """
     from database import get_db
     conn = get_db()
+    if not confirm:
+        logger.warning("[history] 清空请求缺少 confirm=True，已拒绝")
+        raise ValueError("清空历史任务需要显式确认（confirm=True）")
+    n = conn.execute("SELECT COUNT(*) AS c FROM tasks").fetchone()["c"]
     conn.execute("DELETE FROM tasks")
     conn.commit()
-    logger.info("[history] 历史任务已清空（用户主动操作）")
+    logger.info(f"[history] 历史任务已清空（用户主动操作）：共删除 {n} 条")
+    return int(n or 0)
 
 
 def _rec_to_dict(rec) -> dict:

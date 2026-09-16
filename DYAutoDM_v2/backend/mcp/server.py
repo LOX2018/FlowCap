@@ -26,6 +26,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from loguru import logger
+
 from . import audit as _audit
 from . import config as _cfg
 
@@ -171,9 +173,33 @@ def serve_forever(port: int | None = None) -> None:
 
 
 def start_background(port: int | None = None) -> dict[str, Any]:
-    """在后台线程启动（供 backend 进程内挂载用）。"""
+    """在后台线程启动（供 backend 进程内挂载用）。
+
+    2026-09-17 修补（审查 P2-13）：返回值新增 `httpd` 句柄（非序列化字段，
+    仅进程内使用）。原实现丢弃该句柄，导致 api/mcp.py 的 restart 只能置空
+    标记而无法真正 shutdown —— 每次重启都遗留一个 ThreadingHTTPServer 并
+    占住回环端口，多次重启后多实例并存却无人知晓。
+    """
     httpd = serve(port)
     t = threading.Thread(target=httpd.serve_forever, daemon=True,
                          name="mcp-http")
     t.start()
-    return {"host": httpd.server_address[0], "port": httpd.server_address[1]}
+    return {"host": httpd.server_address[0],
+            "port": httpd.server_address[1],
+            "httpd": httpd}
+
+
+def shutdown_httpd(httpd) -> bool:
+    """优雅关闭由 start_background 启动的服务。返回是否成功。
+
+    2026-09-17 修补（审查 P2-13）配套。
+    """
+    if httpd is None:
+        return False
+    try:
+        httpd.shutdown()      # 停止 serve_forever 循环
+        httpd.server_close()  # 释放监听套接字
+        return True
+    except Exception as e:
+        logger.warning(f"[mcp] 关闭 MCP 服务失败: {type(e).__name__}: {e}")
+        return False

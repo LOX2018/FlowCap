@@ -403,9 +403,33 @@ class AccountInbox:
                         f"[recv][{self.name}] my_uid 发生轮换：{self.my_uid} → {new_uid}"
                         f"（已自动更新方向判定基准）")
                 self.my_uid = new_uid
+            # 2026-09-17 修补（审查 P0-2 配套）：my_uid 是方向判定的唯一基准，
+            # 取不到时 recv_daemon:941 会把所有消息兜底判成 me。原实现静默返回
+            # False，运维无从察觉 → 改为显式告警（每条限频，避免刷屏）。
+            if not self.my_uid:
+                self._warn_my_uid_missing()
             return bool(self.my_uid)
-        except Exception:
+        except Exception as e:
+            logger.warning("RECV-002", f"[recv][{self.name}] my_uid 刷新异常: {e}")
             return False
+
+    _my_uid_warn_ts = 0.0
+
+    def _warn_my_uid_missing(self) -> None:
+        """my_uid 缺失告警（每条 60s 限频）。
+
+        2026-09-17 修补（审查 P0-2 配套）：原 `_refresh_my_uid` 失败静默返回
+        False，而 my_uid 是 role 判定的基准 —— 缺失时所有 WS 消息会被兜底判
+        成 me，未读数不增长且方向全错，却没有任何日志线索。
+        """
+        now = time.time()
+        if now - getattr(self, "_my_uid_warn_ts", 0.0) < 60.0:
+            return
+        self._my_uid_warn_ts = now
+        logger.warning(
+            "RECV-003",
+            f"[recv][{self.name}] my_uid 未就绪：方向判定将兜底为 me"
+            f"（凭证未就绪或探活失败？），请检查账号登录状态")
 
     def _extract_peer_uid(self, conv_id: str) -> str | None:
         """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除自己）。"""
@@ -937,8 +961,19 @@ class RecvChannel(threading.Thread):
                 _real_peer = str(sender) if (sender and str(sender) != str(self.inbox.my_uid)) else None
             # 08 §13.5 铁律：方向只能用 sender UID 判断，不可用消息类型推断。
             # sender == 自己 UID → 我发(me)；否则对方发(them)。
-            # 自动欢迎语等自己发送的消息 sender 就是 my_uid，硬编码 them 会错配。
-            role = "me" if sender and str(sender) == str(self.inbox.my_uid) else "them"
+            #
+            # 2026-09-17 修补（审查 P0-2）：原写法
+            #   role = "me" if sender and str(sender) == str(my_uid) else "them"
+            # 在 sender 为空时落 them，与 wp_recv.py:161-165、
+            # conversation_capture.py:469-473 的「空 sender → me」判定相反
+            # —— 同一条消息走 WS 与走 WP 会得到不同 role，前端方向错乱，
+            # 且本号自己的回声被判成对方消息导致未读数虚高。
+            # 统一为：sender 为空 → me；有 sender → 按 UID 比对。
+            role = "them" if (
+                sender
+                and self.inbox.my_uid
+                and str(sender) != str(self.inbox.my_uid)
+            ) else "me"
             _nick = content_json.get("sender_nickname") or ""
             if _nick and str(_nick) == str(self.inbox.my_uid):
                 _nick = ""
