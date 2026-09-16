@@ -143,6 +143,9 @@ PRIO_AI = 1
 PRIO_BATCH = 2
 _PRIO_BY_SOURCE = {"manual": PRIO_MANUAL, "ai": PRIO_AI,
                    "batch": PRIO_BATCH, "dispatch": PRIO_BATCH}
+# 2026-09-16 v0.43.40：调度器仲裁限流时，允许原地等待的上限（秒）。
+# 超过该值则不等待、直接快速失败（避免 worker 长时间阻塞）。
+SEND_WAIT_MAX = float(os.environ.get("DY_SEND_WAIT_MAX", "10") or 10)
 # 同名会话去重窗口：同 (account, conv_id, text) 在该秒数内重复入池视为重复
 _FALLBACK_DEDUP_WINDOW = float(os.environ.get("DY_DM_DEDUP_WINDOW", "5"))
 
@@ -295,6 +298,9 @@ class AccountQuota:
         # 冷静期
         self.cooldown_until = 0.0
         self.cooldown_level = 0               # 连续触发次数（用于递增）
+        # 2026-09-16 v0.43.40：最小间隔仲裁的时间戳（调度器直接裁决用）。
+        # 改前该时间戳只在 recv_daemon 进程内维护，调度器感知不到。
+        self._last_sent_at = 0.0
 
     # ---------- 日切 ----------
     def _roll_day(self) -> None:
@@ -376,6 +382,50 @@ class AccountQuota:
                 return False, (f"陌生人首发已达当日上限 "
                                f"{limit_day} 次（权重 {self._weight_unlocked():.2f}）")
             return True, ""
+
+    # ---------- 全局限流（2026-09-16 v0.43.40：调度器直接仲裁） ----------
+    def can_send(self, min_interval: float = 0.0) -> tuple:
+        """**唯一仲裁点**：该账号此刻是否允许再发一条（不限首发/熟客）。
+
+        2026-09-16 v0.43.40 新增：改前发送频率有**两个互不感知的仲裁点** ——
+        DmDispatcher.AccountQuota（陌生人首发）与 recv_daemon._send_gate_acquire
+        （per-account 最小间隔）。两者各记各的，理论上可叠加出水。
+        现把「最小间隔」也纳入本类裁决：发送前调用本方法拿令牌，
+        由**调度器**统一裁决，recv_daemon 的闸门降级为物理兜底。
+
+        返回 (ok, reason, 还需等待秒数)。
+        调用方拿到 ok=True 后**必须**调 note_sent()（预占 `_last_sent_at`），
+        否则并发下多个请求会同时拿到令牌。
+        """
+        with self.lock:
+            now = time.time()
+            self._roll_day()
+            if now < self.cooldown_until:
+                left = self.cooldown_until - now
+                return False, (f"冷静期内（剩余 {int(left)}s）"), left
+            if min_interval > 0:
+                gap = now - self._last_sent_at
+                if gap < min_interval:
+                    return False, (f"距上次发送仅 {gap:.1f}s，"
+                                   f"小于最小间隔 {min_interval:.0f}s"), \
+                           (min_interval - gap)
+            return True, "", 0.0
+
+    def note_sent(self) -> None:
+        """记一次**实际发送**（预占最小间隔的时间戳）。"""
+        with self.lock:
+            self._last_sent_at = time.time()
+
+    def stranger_snapshot(self) -> dict:
+        """陌生人首发记账的只读快照（供 /status 观测）。"""
+        with self.lock:
+            now = time.time()
+            self._roll_day()
+            return {
+                "stranger_last_min": len([t for t in self._stranger_minute
+                                          if now - t < 60]),
+                "stranger_today": len(self._stranger_day),
+            }
 
     def note_stranger_sent(self) -> None:
         """记一次陌生人首发（入池时**预占**）。"""
@@ -961,6 +1011,34 @@ class DmDispatcher:
             return
         task.status = "sending"
         quota = self.quota_of(task.account)
+        # 2026-09-16 v0.43.40：**调度器直接仲裁**最小间隔。
+        # 改前 recv_daemon 的 _send_gate_acquire 是唯一裁决点，调度器
+        # 只记陌生人首发；两者互不感知。现在调度器在出队时先过
+        # can_send()（含冷静期 + 最小间隔），recv_daemon 闸门降为物理兜底。
+        try:
+            _mi = 0.0
+            try:
+                from services.app_config import get as _cfgget
+                _mi = float(_cfgget("send", "min_interval") or 0)
+            except Exception:
+                _mi = float(os.environ.get("DY_SEND_MIN_INTERVAL", "8") or 8)
+            ok_send, why, wait_s = quota.can_send(_mi)
+            if not ok_send:
+                # 等待不超过阈值则原地等待后重试一次（避免无谓失败）
+                if 0 < wait_s <= SEND_WAIT_MAX:
+                    time.sleep(wait_s)
+                    ok_send, why, wait_s = quota.can_send(_mi)
+                if not ok_send:
+                    task.status = "failed"
+                    task.error = f"调度器限流: {why}"
+                    if task.is_stranger_first:
+                        quota.refund_stranger()
+                    logger.warning("SEND-037",
+                                   f"[dm-dispatch] 调度器限流 task={task.task_id}: {why}")
+                    return
+            quota.note_sent()      # 预占最小间隔时间戳
+        except Exception as _e:
+            logger.debug(f"[dm-dispatch] can_send 裁决异常（放行由兜底闸门管）: {_e}")
         try:
             import requests
             from auto_dm import accounts as acct_core

@@ -95,9 +95,9 @@ def __getattr__(name: str):
 # 状态
 # ---------------------------------------------------------------------------
 # {账号名: (ts, uid_or_None)}  —— 探活体系（web query/user）
+# 2026-09-16 v0.43.40：会话体系 uid（session_uid）的缓存已统一到
+# services.conv_identity（TTL 60s），本模块不再自持 _valid_session。
 _cache: Dict[str, Tuple[float, Optional[int]]] = {}
-# {账号名: (ts, uid)}  —— 会话体系（imapi conv_id 推断），两套 uid 分开存
-_valid_session: Dict[str, Tuple[float, str]] = {}
 # 每账号一把锁：同账号并发只让一个线程打网，其余等结果（防惊群）
 _locks: Dict[str, threading.Lock] = {}
 _registry_lock = threading.Lock()
@@ -266,24 +266,37 @@ def _session_uid_of(account: str) -> str:
 
 
 def session_uid(account: str) -> str:
-    """会话体系 uid（带缓存，TTL 同 _cache）。供外部判定"对端是谁"用。"""
-    hit = _valid_session.get(account)
-    if hit and (time.time() - hit[0]) < 300:
-        return hit[1]
-    u = _session_uid_of(account)
-    _valid_session[account] = (time.time(), u)
-    return u
+    """会话体系 uid（供外部判定"对端是谁"用）。
+
+    2026-09-16 v0.43.40：**缓存已统一**——改前本函数自维护一份 300s TTL
+    的 `_valid_session` 缓存，与 `conv_identity.my_uid` 的 60s 缓存**功能
+    重叠、TTL 不同**（同一事实两个新鲜度）。现直接委托 conv_identity，
+    由它统一保证 60s TTL（本推断零网络，更短 TTL 无成本且换号自愈更快）。
+    """
+    try:
+        from services.conv_identity import my_uid
+        return my_uid(account) or ""
+    except Exception:
+        return ""
 
 
 def invalidate(name: str = "") -> None:
-    """作废缓存（凭证刷新/重扫后调用，让下次 get_uid 取鲜值）。"""
+    """作废缓存（凭证刷新/重扫后调用，让下次 get_uid 取鲜值）。
+
+    2026-09-16 v0.43.40：**联动清理** conv_identity 的 my_uid 缓存 ——
+    session_uid 已委托给它，若只清本模块的 _cache，会出现
+    「uid 已刷新但 session_uid 仍返回旧值」的不一致窗口。
+    """
     with _registry_lock:
         if name:
             _cache.pop(name, None)
-            _valid_session.pop(name, None)
         else:
             _cache.clear()
-            _valid_session.clear()
+    try:
+        from services.conv_identity import clear_cache as _ci_clear
+        _ci_clear(name or "")
+    except Exception:
+        pass
 
 
 def refresh_now(name: str) -> None:

@@ -219,7 +219,8 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
     if entry in ("daemon/recv_daemon.py", "daemon/browser_daemon.py",
                  "daemon/wp_recv.py", "main.py"):
         for _m in ("services.conv_identity", "conv_identity",
-                   "services.uid_probe", "uid_probe"):
+                   "services.uid_probe", "uid_probe",
+                   "services.ttl_cache", "ttl_cache"):
             cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))

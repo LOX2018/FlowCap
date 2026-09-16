@@ -1368,43 +1368,45 @@ class SendImageBody(BaseModel):
 
 
 # ============================================================================
-# 统一发送闸门（2026-09-06 第五轮治理 P1-A）
+# 发送闸门（2026-09-16 v0.43.40：**降级为物理兜底**）
 # ----------------------------------------------------------------------------
-# 背景（09 台账 5.2B1）：同账号三个发送源——① dispatch 直播弹幕私信（backend 进程
-# imapi 直发）② AI 智能回复（经本 daemon /send）③ 手动发送（/send）——各自为政，
-# 同时活跃时频率叠加，是最现实的频率风控面。
+# 背景变更：改前本闸门是发送频率的**唯一裁决点**；架构调整后，
+# 配额裁决已上移到调度器（services/dm_dispatch.DmDispatcher.AccountQuota
+# 的 can_send()，含冷静期 + 最小间隔 + 陌生人首发，单一仲裁）。
 #
-# 收敛方式：本 daemon 是所有发送的唯一点（后端 /send、AI 回复都转发到这里），
-# 在此加 per-account 令牌闸门，dispatch 也改走 /send_by_uid（见 core/sender.py），
-# 三源一配额。
+# 本闸门保留的**唯一理由**：`/send`、`/send_by_uid`、`/send_image` 是 HTTP
+# 端点，可能被**绕过调度器直接调用**（如 core/sender.py 的直发路径、
+# 手工 curl、其它进程）。若无本闸门，这类路径将完全不受限流保护。
 #
-# 闸门参数（可调）：
-#   DY_SEND_MIN_INTERVAL —— 同账号两次发送的最小间隔（秒），默认 8s。
-#   超过等待上限（DY_SEND_MAX_WAIT，默认 30s）仍拿不到令牌则快速失败
-#   {ok:false, error:"rate_limited"}，调用方自行决定重试/放弃——绝不静默堆积。
+# 因此本闸门阈值**显著放宽**（兜底值 = 配置值的一半，且下限 2s）：
+#   - 正常路径由调度器把关，本闸门几乎不会触发（不会双重限流）；
+#   - 绕过路径仍有一道物理保险，防失控。
+#
+# ⚠️ 历史：改前默认 8s 且与调度器各记各的，理论上可叠加出水 —— 已修正。
 # ============================================================================
-# ⚠️ 以下两个常量仅作**兜底**（配置中心不可用时保持接线前行为）。
-# 运行时实际值走 `services.app_config`（统一配置中心），每次调用读取
-# → 改为热生效：设置页保存后无需重启本 daemon。
-_SEND_GATE_MIN_INTERVAL = float(os.environ.get("DY_SEND_MIN_INTERVAL", "8") or 8)
-_SEND_GATE_MAX_WAIT = float(os.environ.get("DY_SEND_MAX_WAIT", "30") or 30)
+_FALLBACK_MIN_INTERVAL = float(os.environ.get("DY_SEND_MIN_INTERVAL", "8") or 8)
+_FALLBACK_MAX_WAIT = float(os.environ.get("DY_SEND_MAX_WAIT", "30") or 30)
 
 
 def _cfg_min_interval() -> float:
-    """发送闸门最小间隔（配置中心优先，失败回落模块级兜底）。"""
+    """闸门最小间隔（配置中心优先，失败回落模块级兜底）。
+
+    作为**兜底闸门**，此处再打 5 折并设 2s 下限 —— 正常路径由调度器
+    裁决，本闸门只拦「绕过调度器的直发」。
+    """
+    v = _FALLBACK_MIN_INTERVAL
     try:
         from services.app_config import get
-
-        v = get("send", "min_interval")
-        if v:
-            return float(v)
+        _v = get("send", "min_interval")
+        if _v:
+            v = float(_v)
     except Exception:
         pass
-    return _SEND_GATE_MIN_INTERVAL
+    return max(2.0, v * 0.5)
 
 
 def _cfg_max_wait() -> float:
-    """闸门排队等待上限（配置中心优先，失败回落模块级兜底）。"""
+    """闸门排队等待上限（秒）。兜底闸门不需要长等，固定取配置值。"""
     try:
         from services.app_config import get
 
@@ -1413,7 +1415,7 @@ def _cfg_max_wait() -> float:
             return float(v)
     except Exception:
         pass
-    return _SEND_GATE_MAX_WAIT
+    return _FALLBACK_MAX_WAIT
 _send_gate_lock = threading.Lock()
 _send_gate_last: dict[str, float] = {}   # account -> 上次放行时间戳
 
