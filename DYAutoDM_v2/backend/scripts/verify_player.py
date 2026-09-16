@@ -79,7 +79,7 @@ def main() -> int:
     import api.platform as P
     from api.platform import MediaResolveReq, media_resolve
 
-    auth = P._auth_for("尚进工伤小助理")
+    auth = P._auth_for(os.environ.get("DY_TEST_ACCOUNT", ""))
     check("凭证加载", len(auth.cookie) > 0, f"{len(auth.cookie)} cookie")
 
     # 先取一个真实作品对象（收藏夹）
@@ -96,7 +96,7 @@ def main() -> int:
         check("_pick_aweme 附带 media 子树（含播放地址）",
               bool((media_sub or {}).get("video", {}).get("play_addr")),
               f"media 键数={len(media_sub or {})}")
-        res = asyncio.run(media_resolve(MediaResolveReq(account="尚进工伤小助理",
+        res = asyncio.run(media_resolve(MediaResolveReq(account=os.environ.get("DY_TEST_ACCOUNT", ""),
                                                         raw=media_sub, quality="h264")))
         check("端点返回 ok", res.get("ok") is True, "")
         check("type 正确", res.get("type") == "video", f"type={res.get('type')}")

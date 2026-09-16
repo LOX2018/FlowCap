@@ -100,7 +100,7 @@ def _cookie_is_polluted(cookies):
         登录态】，不是污染。此前『verify_ 前缀』『非 19 位纯数字』『1.0.0- 前缀』
         的判定都会被抖音新版格式误伤，导致拒绝写盘。
       - 基座实测：即便 s_v_web_id=verify_ 开头，query/user 网络接口仍返回真实十进制
-        uid（3887506227210423），create_conversation 仍成功——凭证完全有效。
+        uid（陈旧值），create_conversation 仍成功——凭证完全有效。
     真实的风控验证页已由上层『_risk_hit 页面实时监测』精确捕捉（URL/内容含
     verifycenter/captcha/滑块/安全验证 等即判定并保持浏览器打开提示用户处理）。
     因此本函数不再做任何基于 cookie 格式的污染判定，一律放行；污染由页面监测兜底。

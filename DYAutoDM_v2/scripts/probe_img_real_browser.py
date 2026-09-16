@@ -25,10 +25,10 @@ import sqlite3
 import sys
 from pathlib import Path as _P
 
-ROOT = _P(r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2")
+ROOT = _P(os.environ.get("DY_REPO_ROOT", r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"))
 BACKEND = ROOT / "backend"
-DB = _P(r"C:\temp\dyautodm_test\data\dyautodm.db")
-ACCOUNT = "四川工伤张老师"
+DB = _P(os.environ.get("DY_APP_ROOT", r"C:\temp\dyautodm_test")) / "data" / "dyautodm.db"
+ACCOUNT = os.environ.get("DY_TEST_ACCOUNT", "").strip()
 
 sys.path.insert(0, str(BACKEND))
 

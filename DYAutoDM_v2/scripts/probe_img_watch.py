@@ -18,10 +18,11 @@ import asyncio
 import sys
 from pathlib import Path as _P
 
-ROOT = _P(r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2")
+ROOT = _P(os.environ.get("DY_REPO_ROOT", r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"))
 sys.path.insert(0, str(ROOT / "backend"))
 
-PROFILE = r"C:\temp\dyautodm_test\auto_dm\accounts\四川工伤张老师\profile"
+PROFILE = str(_P(os.environ.get("DY_APP_ROOT", r"C:\temp\dyautodm_test"))
+               / "auto_dm" / "accounts" / (os.environ.get("DY_TEST_ACCOUNT", "") or "") / "profile")
 
 # 在页面里记录所有图片加载情况（用 PerformanceObserver + 遍历 img）
 JS_COLLECT = r"""

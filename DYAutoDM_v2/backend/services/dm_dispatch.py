@@ -39,7 +39,7 @@
 ----
     from services.dm_dispatch import submit, SubmitResult
 
-    r = submit(account="四川工伤张老师", conv_id="0:1:...", text="你好",
+    r = submit(account="<账号名>", conv_id="0:1:...", text="你好",
                source="manual", priority=0)
     if r.accepted:
         ...  # 已入池，异步发送；用 r.task_id 查状态
@@ -149,8 +149,8 @@ _FALLBACK_DEDUP_WINDOW = float(os.environ.get("DY_DM_DEDUP_WINDOW", "5"))
 # ===========================================================================
 # 【调试版专用】测试账号白名单 —— 正式版不生效、不打包
 # ===========================================================================
-# 需求（用户 2026-09-07）：测试私信发送时，只能「尚进工伤小助理」与
-# 「四川工伤张老师」两个账号互发，绝不得发给任何其他真实会话对象。
+# 需求（2026-09-07）：测试私信发送时，只允许**指定的测试账号对**互发，
+# 绝不得发给任何其他真实会话对象 —— 白名单由配置/调用方指定，不写死账号名。
 #
 # ---------------------------------------------------------------------------
 # ★ 隔离机制说明（为什么这样设计，改动前务必读）
@@ -609,59 +609,20 @@ class ConvPool:
     # ---------- 核心：解析真实对端 uid ----------
     @staticmethod
     def _my_uid_of(account: str) -> str:
-        """取本账号 uid（走统一探活调度器，零额外网络）。
+        """取本账号 uid（2026-09-16 v0.43.39：收敛到 conv_identity 单一真相源）。
 
-        2026-09-07 真机修正：**探活 uid 与私信会话 uid 可能不是同一个**
-        （实测「四川工伤张老师」探活=4175297014664416，但 278 条会话里
-        本账号 uid 恒为 3887506227210423 —— 两套 uid 体系，也是日志里
-        持续报「uid 漂移」的根因）。因此：
-          1. 先用会话池统计推断（**权威**：本账号 uid 必然出现在该账号
-             的每一个 conv_id 中，出现次数 ≈ 会话数）；
-          2. 统计不可用时才回退探活 uid。
-        这样"排除自身"才不会误判——否则会把真实对端当成本账号排除掉。
+        改前此处自有一份「会话池统计推断」实现，与 recv_daemon 的探活 uid
+        版本**判定强度不一致**。现统一调 services.conv_identity.my_uid——
+        它同样以会话池统计为权威、探活为回退，且带 60s 进程内缓存。
         """
-        try:
-            from database import get_db
-            conn = get_db()
-            rows = conn.execute(
-                "SELECT conv_id FROM dm_conversations WHERE account=?",
-                (account,)).fetchall()
-            if rows:
-                cnt: Dict[str, int] = {}
-                for (cid,) in rows:
-                    p = (cid or "").split(":")
-                    if len(p) >= 4:
-                        cnt[p[2]] = cnt.get(p[2], 0) + 1
-                        cnt[p[3]] = cnt.get(p[3], 0) + 1
-                n = len(rows)
-                # 本账号 uid 出现在【每一个】conv_id 中
-                for uid, c in cnt.items():
-                    if c >= n * 0.9:
-                        return uid
-        except Exception:
-            pass
-        try:
-            from services.uid_probe import get_uid
-            return str(get_uid(account) or "")
-        except Exception:
-            return ""
+        from services import conv_identity as _cid
+        return _cid.my_uid(account)
 
     @staticmethod
     def _peer_from_conv(conv_id: str, my_uid: str) -> Optional[str]:
-        """从 conv_id 0:1:uidA:uidB 解析对端 uid（排除自身）。"""
-        parts = (conv_id or "").split(":")
-        if len(parts) < 4:
-            return None
-        a, b = parts[2], parts[3]
-        if not a or not b or a == b:
-            return None          # 自发自收的系统会话，不是真实对端
-        if my_uid:
-            if a == my_uid:
-                return b
-            if b == my_uid:
-                return a
-            return None          # 两边都不是自己 -> 数据异常，不猜
-        return b                 # 无 my_uid 兜底（弱保证）
+        """从 conv_id 0:1:uidA:uidB 解析对端 uid（v0.43.39：收敛到 conv_identity）。"""
+        from services import conv_identity as _cid
+        return _cid.peer_uid(conv_id, my_uid)
 
     def resolve(self, account: str, conv_id: str) -> Optional[str]:
         """归一化：返回该会话的真实对端 uid；无法确定返回 None。"""
@@ -1116,8 +1077,8 @@ def stop_dispatcher() -> None:
 # ---------------------------------------------------------------------------
 # scripts/build_sidecar.py 在 **调试构建** 时会把下面两行替换为真实内容：
 #
-#   _TEST_WHITELIST = {"尚进工伤小助理": {"<四川工伤张老师 uid>"},
-#                      "四川工伤张老师": {"<尚进工伤小助理 uid>"}}
+#   _TEST_WHITELIST = {"<测试账号A>": {"<测试账号B 的 uid>"},
+#                      "<测试账号B>": {"<测试账号A 的 uid>"}}
 #   TEST_WHITELIST_ON = True
 #
 # 正式构建**不注入** → 保持空壳，白名单逻辑永不执行。

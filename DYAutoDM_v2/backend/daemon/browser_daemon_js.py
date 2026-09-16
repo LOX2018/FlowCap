@@ -212,7 +212,7 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
 #
 # 实机发现（2026-09-15，真实账号 44/44 验证）：
 #   抖音把前端取到的用户信息落在 **IndexedDB**：
-#       库 = `<自身uid>_user`（如 316276709526638_user），store = `user`
+#       库 = `<自身uid>_user`，store = `user`
 #       记录 = {key: sec_uid, value: {uid(数字), nickname, sec_uid, avatar_small{uri,url_list}, avatar_thumb, ...}}
 #   其中 **`value.uid` 是数字**，与首包 `conv_id` 推出的 `peer_uid` **同一体系**，
 #   直接相等比对即可关联 —— 实测 `首包 peer_uid ∩ IDB uid = 44/44 = 100%`。
@@ -220,7 +220,7 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
 #
 # 风控：纯读页面自有存储，**零网络请求**、零主动查询。
 # ---------------------------------------------------------------------------
-CAP_IDB_USERINFO_JS = r"""async () => {
+CAP_IDB_USERINFO_JS = r"""async (myUid) => {
   const open = (n) => new Promise((res, rej) => {
     const r = indexedDB.open(n);
     r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
@@ -230,8 +230,10 @@ CAP_IDB_USERINFO_JS = r"""async () => {
   try {
     names = indexedDB.databases ? (await indexedDB.databases()).map(d => d.name || '') : [];
   } catch (e) { names = []; }
-  // 兜底：按 <uid>_user 命名约定直接尝试
-  if (!names.length) names = ['316276709526638_user'];
+  // 兜底：仅在支持 databases() 但结果为空时，按 <uid>_user 约定用**运行时传入的
+  // 本账号 uid**尝试。绝不硬编码某个 uid —— 本软件为通用产品，硬编码会导致
+  // 其他用户的账号永远读不到昵称（库名不匹配）。
+  if (!names.length && myUid) names = [String(myUid) + '_user'];
   const userDbs = names.filter(n => /_user$/.test(n));
   for (const dn of userDbs) {
     let db;

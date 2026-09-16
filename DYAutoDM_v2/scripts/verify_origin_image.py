@@ -7,8 +7,8 @@ import os
 import urllib.parse
 import urllib.request
 
-ACCT = "四川工伤张老师"
-CID = "0:1:103242153689:3887506227210423"
+ACCT = os.environ.get("DY_TEST_ACCOUNT", "").strip()
+CID = os.environ.get("DY_TEST_CONV_ID", "").strip()
 
 BASE = "http://127.0.0.1:8000"
 url = (f"{BASE}/api/messages/conversation?account="

@@ -20,11 +20,12 @@ import sys
 from collections import Counter
 from pathlib import Path as _P
 
-ROOT = _P(r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2")
+ROOT = _P(os.environ.get("DY_REPO_ROOT", r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"))
 sys.path.insert(0, str(ROOT / "backend"))
 
-DB = _P(r"C:\temp\dyautodm_test\data\dyautodm.db")
-PROFILE = r"C:\temp\dyautodm_test\auto_dm\accounts\四川工伤张老师\profile"
+DB = _P(os.environ.get("DY_APP_ROOT", r"C:\temp\dyautodm_test")) / "data" / "dyautodm.db"
+PROFILE = str(_P(os.environ.get("DY_APP_ROOT", r"C:\temp\dyautodm_test"))
+               / "auto_dm" / "accounts" / (os.environ.get("DY_TEST_ACCOUNT", "") or "") / "profile")
 
 # 会话列表项选择器（与 BCC capture_userinfo_map 里用的一致）
 SEL_ITEM = ".conversationConversationItemwrapper"

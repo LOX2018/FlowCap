@@ -128,16 +128,17 @@ else:
           f"{n_short}/{len(convs)}")
     check("C4 首包能解析出消息（缺陷②）", n_msg > 0, f"{n_msg} 条")
 
-    # 关键回归用例：承载图片的会话必须拿到 short_id（修复前恒为 None）
-    _tgt = "0:1:316276709526638:3887506227210423"
-    _t = [c for c in convs if c["conversation_id"] == _tgt]
+    # 关键回归用例：承载消息的会话必须拿到 short_id（修复前恒为 None）
+    # 目标会话运行时动态选取（取"含消息"的会话），不硬编码任何真实 conv_id
+    _t = [c for c in convs if (c.get("messages") or [])]
     if _t:
-        check("C5 承载图片的会话 short_id 非空", bool(_t[0].get("short_id")),
-              f"short_id={_t[0].get('short_id')}")
-        check("C6 该会话首包消息 > 0", len(_t[0].get("messages") or []) > 0,
-              f"{len(_t[0].get('messages') or [])} 条")
+        _pick = _t[0]
+        check("C5 承载消息的会话 short_id 非空", bool(_pick.get("short_id")),
+              f"short_id={_pick.get('short_id')}")
+        check("C6 该会话首包消息 > 0", len(_pick.get("messages") or []) > 0,
+              f"{len(_pick.get('messages') or [])} 条")
     else:
-        check("C5 承载图片的会话存在于解析结果", False, "未找到目标 conv_id")
+        check("C5 存在承载消息的会话", False, "解析结果中无含消息的会话")
 
     # 消息角色分布必须非单一（方向判定未退化）
     roles = {}

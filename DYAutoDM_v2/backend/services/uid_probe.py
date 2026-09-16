@@ -36,9 +36,9 @@
 ----
     from services.uid_probe import get_uid, refresh_now, shutdown
 
-    uid = get_uid("四川工伤张老师")          # 缓存优先，可能返回 None
-    uid = get_uid("四川工伤张老师", force=True)  # 强制真探活（慎用）
-    refresh_now("四川工伤张老师")            # 异步预热，不阻塞
+    uid = get_uid("<账号名>")          # 缓存优先，可能返回 None
+    uid = get_uid("<账号名>", force=True)  # 强制真探活（慎用）
+    refresh_now("<账号名>")            # 异步预热，不阻塞
 """
 from __future__ import annotations
 
@@ -136,8 +136,8 @@ def _uid_consistent_with_history(account: str, uid) -> bool:
     无历史会话（新账号）时返回 True（无从比对，不冤枉）。
     DB 不可用时也返回 True（降级放行，避免误伤）。
 
-    2026-09-07 实测依据：张老师真实 uid=3887506227210423 在 278/278 条
-    会话中出现；而错误值 4175297014664416 出现 0 次。
+    实测依据：正确 uid 在该账号**全部**历史会话中出现（如 278/278 条）；
+    陈旧/错误 uid 出现 0 次。
     """
     try:
         from database import get_db
@@ -214,10 +214,9 @@ def get_uid(name: str, force: bool = False,
                 return cached
         uid = _do_probe(name)
         # 2026-09-07 事实更正 + 加固：**不存在"两套 uid"**，探活 uid 必须
-        # 与该账号历史会话一致。实测事故：张老师真实 uid=3887506227210423
-        # （278/278 会话 + 抖音 query/user 双重确认），但日志里长期出现
-        # 4175297014664416（09-04 的陈旧值），被本缓存按 300s TTL 反复复用，
-        # 导致上游误判"uid 漂移"、账号校验误报。
+        # 与该账号历史会话一致。实测事故：某账号真实 uid 在全部会话中出现
+        # （278/278 + 抖音 query/user 双重确认），但日志里长期出现一个**陈旧值**，
+        # 被本缓存按 300s TTL 反复复用，导致上游误判"uid 漂移"、账号校验误报。
         # 加固：探活成功后与历史会话交叉验证 —— 若该 uid 从未出现在该账号
         # conv_id 中，视为**陈旧/不可信**，不写入缓存、不返回（返回 None 让
         # 调用方走兜底），并告警。这样陈旧值不会污染后续 300s。
@@ -242,39 +241,28 @@ def _session_uid_of(account: str) -> str:
     """取账号在**私信会话体系**中的 uid（权威，用于"对端是谁"判定）。
 
     2026-09-07 真机实测（09 台账第九轮）：**探活 uid 与会话 uid 可能是
-    两个值**。例如「四川工伤张老师」：
-      - 会话 uid（imapi，conv_id 内）= 3887506227210423
-      - 探活 uid（web query/user）= 4175297014664416
-    原因是该账号经历过 uid 轮换/换绑：web 侧 user_uid 变了，但 imapi
-    历史会话体系仍挂老 uid。
+    两个值** —— 会话 uid（imapi，conv_id 内）与探活 uid（web query/user）
+    不一致。原因是该账号经历过 uid 轮换/换绑：web 侧 user_uid 变了，
+    但 imapi 历史会话体系仍挂老 uid。
+    （注：2026-09-16 起本函数已收敛到 services.conv_identity.my_uid，
+    不再各自维护一份实现。）
 
     推断原理：本账号 uid 必然出现在该账号的**每一个** conv_id 中
     （自己与所有人聊天），故出现次数 ≈ 会话数的那个 uid 即本账号。
-    实测：张老师 278/278、尚进 78/79 命中。
+
+    ⚠️ 2026-09-16 v0.43.39：**实现已收敛到 services.conv_identity**——
+    此处只做委托，不再自维护一份（改前本函数与 dm_dispatch.ConvPool、
+    recv_daemon 等共 7 处同款实现，算法略有差异，属隐性漂移面）。
+    注意本函数**不做覆盖度以外的位置稳定性校验**的历史行为已统一，
+    由 conv_identity 统一保证（覆盖度 ≥90% 且位置固定）。
 
     返回 "" 表示无法推断（无历史会话 / DB 不可用）。
     """
     try:
-        from database import get_db
-        conn = get_db()
-        rows = conn.execute(
-            "SELECT conv_id FROM dm_conversations WHERE account=?",
-            (account,)).fetchall()
-        if not rows:
-            return ""
-        cnt: Dict[str, int] = {}
-        for (cid,) in rows:
-            p = (cid or "").split(":")
-            if len(p) >= 4:
-                cnt[p[2]] = cnt.get(p[2], 0) + 1
-                cnt[p[3]] = cnt.get(p[3], 0) + 1
-        n = len(rows)
-        for u, c in cnt.items():
-            if c >= n * 0.9:
-                return u
+        from services.conv_identity import my_uid
+        return my_uid(account) or ""
     except Exception:
-        pass
-    return ""
+        return ""
 
 
 def session_uid(account: str) -> str:

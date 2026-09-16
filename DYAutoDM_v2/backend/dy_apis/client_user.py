@@ -167,7 +167,7 @@ class UserMixin:
           - uid_tt 是 32 位 hex 字符串，转十进制超 19 位（非旧版假设的 int64 十进制）。
         旧代码因「s_v_web_id=verify_ 开头 → 判占位」而【提前 return None，拦截网络
         请求】，导致探活失败。基座实测证明：即便 s_v_web_id=verify_ 开头、uid_tt 是
-        hex，网络接口 query/user 仍返回真实十进制 uid（如 3887506227210423）。
+        hex，网络接口 query/user 仍返回真实十进制 uid。
         故本函数【不再基于 cookie 格式提前拦截】，uid_tt 解析失败一律走网络
         query/user 拿真实 uid。
 

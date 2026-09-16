@@ -46,15 +46,15 @@ check("白名单内容", bool(dd._TEST_WHITELIST), f"{dd._TEST_WHITELIST}")
 # 3. 入池校验：白名单内放行 / 白名单外拒绝
 print("\n--- 入池校验 ---")
 d = dd.DmDispatcher()
-my = "316276709526638"
+my = "100000000000001"   # 合成本账号 uid（通用产品，不硬编码真实账号）
 d.pool._my_uid_of = lambda a: my
 
-# 尚进 -> 四川张老师（白名单内，应放行）
-r1 = d.submit("尚进工伤小助理", f"0:1:{my}:4175297014664416", "测试", "manual")
+# A -> B（白名单内，应放行）
+r1 = d.submit("测试账号A", f"0:1:{my}:200000000000002", "测试", "manual")
 check("白名单内放行", r1.accepted, f"error={r1.error[:40]}")
 
-# 尚进 -> 其他真人（应拒绝）
-r2 = d.submit("尚进工伤小助理", f"0:1:{my}:8888888888", "测试", "manual")
+# A -> 其他真人（应拒绝）
+r2 = d.submit("测试账号A", f"0:1:{my}:8888888888", "测试", "manual")
 check("白名单外拒绝", (not r2.accepted) and "白名单" in r2.error,
       f"error={r2.error[:40]}")
 

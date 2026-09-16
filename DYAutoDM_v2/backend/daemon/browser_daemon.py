@@ -2349,12 +2349,20 @@ async def userinfo_idb(body: WaitBody | None = None) -> dict:
         except Exception:  # noqa: BLE001
             pass
     try:
+        # 2026-09-16 v0.43.39：传入本账号 uid（运行时取，绝不硬编码）——
+        # JS 的 IndexedDB 兜底按 `<uid>_user` 约定定位库，必须用真实值。
+        _myuid = ""
         try:
-            r = await c.exec_js(CAP_IDB_USERINFO_JS, timeout=60,
+            from services import conv_identity as _cid
+            _myuid = _cid.my_uid(_state.get("account") or "")
+        except Exception:
+            _myuid = ""
+        try:
+            r = await c.exec_js(CAP_IDB_USERINFO_JS, _myuid, timeout=60,
                                 lease_id=_lid, holder="userinfo_idb")
         except TypeError:
             # 兼容：exec_js 未升级为支持 lease_id 时退回原调用
-            r = await c.exec_js(CAP_IDB_USERINFO_JS, timeout=60)
+            r = await c.exec_js(CAP_IDB_USERINFO_JS, _myuid, timeout=60)
     except Exception as e:  # noqa: BLE001
         logger.warning("BCC-056", f"[bcc] /userinfo_idb 失败: {e}")
         return {"ok": False, "msg": str(e), "total": 0, "users": {}}

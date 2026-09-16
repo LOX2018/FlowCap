@@ -13,7 +13,7 @@
       "delay": "50,120",           # 延迟抖动
       "force_rescan": false,       # 强制重扫
       "dm_pool": [{"text": "...", "enabled": true}],  # 私信词库
-      "acct": "尚进工伤小助理",     # 监听账号
+      "acct": "账号名",             # 监听账号
       "auto_link_mic": false,      # ★ 自动申请连麦开关
       "link_mic_mode": "audio",    # 连麦方式: audio=语音 / video=视频
       "updated_at": 1690000000

@@ -211,6 +211,16 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
     if entry == "daemon/recv_daemon.py":
         for _m in ("daemon.ws_link", "ws_link"):
             cmd += ["--hidden-import", _m]
+    # 2026-09-16 v0.43.39：会话身份解析单一真相源（services/conv_identity.py）。
+    # recv_daemon / wp_recv / browser_daemon 均在**函数体内**延迟导入
+    # （`from services import conv_identity`），PyInstaller 静态分析扫不到 —
+    # 与 ws_link 完全同类的坑，缺失则打包后 ModuleNotFoundError。
+    # 一并声明它内部引用的 services.uid_probe。
+    if entry in ("daemon/recv_daemon.py", "daemon/browser_daemon.py",
+                 "daemon/wp_recv.py", "main.py"):
+        for _m in ("services.conv_identity", "conv_identity",
+                   "services.uid_probe", "uid_probe"):
+            cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))
@@ -230,16 +240,26 @@ def inject_test_whitelist() -> None:
     from pathlib import Path
 
     # 两个测试账号的**私信会话 uid**（不是探活 uid！）。
-    # 实测：四川工伤张老师「探活 uid=4175297014664416」与「会话 uid=
-    # 3887506227210423」**不一致**（两套 uid 体系，日志持续报 uid 漂移）。
-    # 白名单比对的是**发送目标的 peer_uid**（来自 conv_id，属会话体系），
-    # 故此处必须用会话 uid，用探活 uid 会误拒（2026-09-07 真机踩坑）。
+    # 实测：同账号「探活 uid」与「会话 uid」**可能不一致**（历史事故：
+    # 日志持续报 uid 漂移）。白名单比对的是**发送目标的 peer_uid**
+    # （来自 conv_id，属会话体系），故此处必须用会话 uid，用探活 uid
+    # 会误拒（2026-09-07 真机踩坑）。
     #
-    # 语义：WL[账号] = 该账号**允许发送的目标 peer_uid**（对方会话 uid）
-    WL = {
-        "尚进工伤小助理": "3887506227210423",   # 尚进 -> 张老师(会话uid)
-        "四川工伤张老师": "316276709526638",   # 张老师 -> 尚进(会话uid)
-    }
+    # 语义：WL[账号] = 该账号**允许发送的目标 peer_uid**（对方会话 uid）。
+    #
+    # 2026-09-16 v0.43.39：账号名与 uid 一律从环境变量读，**绝不硬编码** ——
+    # 本软件是通用产品，写死某台机器的账号/uid 会让其他用户无法构建调试版。
+    # 格式：DY_DM_TEST_WHITELIST="账号A=对方uidA;账号B=对方uidB"
+    # 未设置时注入空白名单（调试版也不限制），并打印提示。
+    _raw = os.environ.get("DY_DM_TEST_WHITELIST", "").strip()
+    WL: dict = {}
+    for _pair in _raw.split(";"):
+        if "=" in _pair:
+            _k, _v = _pair.split("=", 1)
+            if _k.strip() and _v.strip():
+                WL[_k.strip()] = _v.strip()
+    if not WL:
+        print("[warn] 未设 DY_DM_TEST_WHITELIST，注入空白名单（调试版不限制目标）")
     target = Path(__file__).resolve().parent.parent / "backend" / "services" / "dm_dispatch.py"
     src = target.read_text(encoding="utf-8")
     start = "# ---DM_TEST_WHITELIST_INJECT_START---"

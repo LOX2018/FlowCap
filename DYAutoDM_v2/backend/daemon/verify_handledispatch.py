@@ -26,8 +26,9 @@ import json
 
 from static import Live_pb2, Response_pb2
 
-MY_UID = "316276709526638"
-PEER_UID = "898741896749897"
+# 合成 uid（仅用于构造协议帧做解析验证，与任何真实账号无关）
+MY_UID = "100000000000001"
+PEER_UID = "200000000000002"
 CONV_ID = f"0:1:{MY_UID}:{PEER_UID}"
 
 

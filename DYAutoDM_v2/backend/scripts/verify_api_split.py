@@ -32,7 +32,10 @@ os.environ["DY_MEMBER"] = _s["member_id"]
 os.environ["DY_MEMBER_KEY"] = _s["master_key"]
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ACCOUNT = "尚进工伤小助理"
+# 账号名从环境变量读（本软件为通用产品，不硬编码任何真实账号）
+ACCOUNT = os.environ.get("DY_TEST_ACCOUNT", "").strip()
+if not ACCOUNT:
+    raise SystemExit("请先设置 DY_TEST_ACCOUNT=<账号名> 再运行本验证脚本")
 R: list[tuple[str, bool, str]] = []
 
 

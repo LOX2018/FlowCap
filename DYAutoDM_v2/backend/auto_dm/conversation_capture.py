@@ -286,7 +286,7 @@ def parse_init_protobuf(raw, my_uid):
     # 实测：auth.get_uid() 偶发返回空/None（凭证刷新时序），my_uid 变成 ""
     # 或 "None"，使下方 564 行 `uid_b if uid_a == my_uid else uid_a` 恒走
     # else 分支取 uid_a —— 而抖音 conv_id 里 uid_a 常是本账号，结果 32/77
-    # 个会话的 peer_uid 被写成自己，peer_name 全填成"尚进工伤小助理"。
+    # 个会话的 peer_uid 被写成自己，peer_name 全填成本账号昵称。
     # 自愈：conv_id 形如 0:1:uidA:uidB，本账号 UID 必然出现在【每一个】
     # conv_id 中（自己与所有人聊天），故出现次数 == 会话数 的 UID 即本账号。
     # 仅当传入 my_uid 无效时才覆盖，不干扰正常路径。
@@ -1444,21 +1444,14 @@ def capture_all(name, with_browser=True):
         # 原实现在 L1283 直接用 _myuid，而该名字在部分路径并未定义（dir() 检查
         # 出现在更靠后的 L1377），一旦取值失败 _real 恒为 None → 订正失效、
         # peer_id 保持错误值。此处独立算一遍，不依赖任何外部变量。
+        # 2026-09-16 v0.43.39：本号 UID 推断收敛到 services.conv_identity
+        # （改前此处内联一份 Counter 统计，是全项目第 7 处独立实现；
+        #  现调共享纯函数，算法与 DB 版完全一致）
         _auth_uid = None
         try:
-            from collections import Counter as _C2
-            _cc = _C2()
-            _nn = 0
-            for _c in convs:
-                _pp = str(_c.get("conversation_id") or "").split(":")
-                if len(_pp) == 4:
-                    _cc[_pp[2]] += 1
-                    _cc[_pp[3]] += 1
-                    _nn += 1
-            if _nn:
-                _top = [(u, k) for u, k in _cc.items() if k >= _nn * 0.9]
-                if _top:
-                    _auth_uid = max(_top, key=lambda x: x[1])[0]
+            from services.conv_identity import infer_my_uid_from_conv_ids as _infer
+            _auth_uid = _infer(
+                [str(_c.get("conversation_id") or "") for _c in convs]) or None
         except Exception:
             _auth_uid = None
         if not _auth_uid:
@@ -1594,7 +1587,7 @@ def capture_all(name, with_browser=True):
         conn.commit()
         # 2026-09-07 存量污染一次性订正（D 方案）：
         # 历史库里 peer_id 被写成 my_uid、peer_name 被写成"本账号昵称"的会话
-        # （实测尚进工伤小助理 32/77 条）。上面循环只订正本次首包命中的会话，
+        # （实测某账号 32/77 条）。上面循环只订正本次首包命中的会话，
         # 这里扫全表把漏网的也修好：用 conv_id 解析真实对端 → 改写 peer_id，
         # 并把错误的本账号昵称降级为裸 UID（下次 BCC 截到真实昵称会回填）。
         try:

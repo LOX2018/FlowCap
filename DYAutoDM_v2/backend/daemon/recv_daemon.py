@@ -1470,29 +1470,20 @@ async def send(body: SendBody) -> dict:
         c = ib.convs.get(body.conv_id)
         if c:
             peer_id = c.peer_id
-    # 2026-09-07：会话整理防线——peer_id 绝不能是本账号 uid。
-    # 实测（09 台账第六轮）capture 写入时 peer_id 曾被污染成 my_uid，
-    # 若直接拿去 create_conversation 会「发给自己」。此处用 conv_id
-    # 重解析真实对端，与 services/dm_dispatch 的整理池保持一致。
+    # 2026-09-16 v0.43.39：peer_id 订正收敛到 services.conv_identity
+    # （改前此处独立重写一遍，用较弱的探活 uid；现与 ConvPool 同源，
+    #  用「会话池统计推断」的权威 uid，消除两处判定强度不一致）
     try:
-        _my = ""
-        try:
-            from services.uid_probe import get_uid as _gu
-            _my = str(_gu(body.account) or "")
-        except Exception:
-            pass
-        _parts = (body.conv_id or "").split(":")
-        if len(_parts) >= 4 and _parts[2] != _parts[3] and _my:
-            _real = _parts[3] if _parts[2] == _my else (
-                _parts[2] if _parts[3] == _my else None)
-            if _real and str(peer_id) != _real:
-                logger.warning("RECV-015", 
-                    f"[recv][{body.account}] 会话 peer_id 已订正: "
-                    f"{peer_id} -> {_real}（conv_id 重解析）")
-                peer_id = _real
-        if _my and str(peer_id) == _my:
-            return {"ok": False,
-                    "error": f"拒绝发送：对端 uid 等于本账号 uid（{_my}）"}
+        from services import conv_identity as _cid
+        _real, _changed = _cid.correct_peer_id(body.account, body.conv_id, peer_id)
+        if _changed:
+            logger.warning("RECV-015",
+                f"[recv][{body.account}] 会话 peer_id 已订正: "
+                f"{peer_id} -> {_real}（conv_id 重解析）")
+        peer_id = _real
+        _err = _cid.self_send_error(body.account, peer_id)
+        if _err:
+            return {"ok": False, "error": _err}
     except Exception:
         pass
     if not peer_id:
@@ -1598,23 +1589,15 @@ async def send_image(body: SendImageBody) -> dict:
             peer_id = c.peer_id
     if not peer_id:
         return {"ok": False, "error": "无法定位会话对方 uid"}
-    # 2026-09-07：会话整理防线（同 /send）：peer_id 绝不能是本账号 uid
+    # 2026-09-16 v0.43.39：会话整理防线收敛到 conv_identity（同 /send）
     try:
-        _my = ""
-        try:
-            from services.uid_probe import get_uid as _gu
-            _my = str(_gu(body.account) or "")
-        except Exception:
-            pass
-        _parts = (body.conv_id or "").split(":")
-        if len(_parts) >= 4 and _parts[2] != _parts[3] and _my:
-            _real = _parts[3] if _parts[2] == _my else (
-                _parts[2] if _parts[3] == _my else None)
-            if _real and str(peer_id) != _real:
-                peer_id = _real
-        if _my and str(peer_id) == _my:
-            return {"ok": False,
-                    "error": f"拒绝发送：对端 uid 等于本账号 uid（{_my}）"}
+        from services import conv_identity as _cid
+        _real, _changed = _cid.correct_peer_id(body.account, body.conv_id, peer_id)
+        if _changed:
+            peer_id = _real
+        _err = _cid.self_send_error(body.account, peer_id)
+        if _err:
+            return {"ok": False, "error": _err}
     except Exception:
         pass
     if not body.image_b64:

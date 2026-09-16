@@ -232,16 +232,15 @@ def parse_ws_frame(body: str, my_uid: str) -> list[dict]:
 
 
 def _my_uid_of(account: str) -> str:
-    """读账号自己的 UID（用于方向判定）。失败返回空串。"""
-    try:
-        from auto_dm import accounts as acc
-        from dy_apis.login_api import DYLoginApi
+    """读账号自己的 UID（用于方向判定）。失败返回空串。
 
-        env_path = acc.env_path_of(account)
-        if not env_path:
-            return ""
-        auth = DYLoginApi._load_auth_from_env(env_path)
-        return str(auth.get_uid() or "")
+    2026-09-16 v0.43.39：收敛到 services.conv_identity 单一真相源。
+    改前此处直接读 auth.get_uid()（凭证里的 uid，与 conv_id 里的账号段
+    可能不一致），是全项目第 6 处独立实现。现统一以会话池统计为权威。
+    """
+    try:
+        from services import conv_identity as _cid
+        return _cid.my_uid(account)
     except Exception as e:
         logger.debug(f"[wp_recv] 读 my_uid 失败: {e}")
         return ""
