@@ -32,6 +32,7 @@
 """
 from __future__ import annotations
 
+import json
 import struct
 from typing import Any
 
@@ -252,6 +253,113 @@ def _decrypt_sample(key: bytes, sample: bytes, info: dict) -> bytes:
     return bytes(out)
 
 
+# ---------------------------------------------------------------------------
+# tkey → 签名播放地址（经**已登录页面上下文**换取；2026-09-17）
+# ---------------------------------------------------------------------------
+#
+# 抖音 IM 视频消息里**只有 `tkey` + `skey`，没有播放地址**（上游实证：
+# `_msg_video()` 判据为 `v.get("tkey") and v.get("skey")`）。要拿到地址必须
+# 再发一次请求把 `tkey` 换成签名 CDN URL。
+#
+# 设计取舍（对照铁律 §一·2）：**经 BCC 页面上下文**发出
+# （`fetch(..., {credentials:'include'})`），复用账号自己的登录态；
+# **绝不**在后端用 cookie 拼 requests 直发。每批 ≤10 条（上游同值）。
+
+BATCH_PLAY_INFO_PATH = ("/aweme/v1/web/maya/story/batch_play_info/v1/"
+                        "?device_platform=webapp&aid=6383&channel=channel_pc_web"
+                        "&app_name=douyin_web&pc_client_type=1")
+BATCH_SIZE = 10
+
+# 在页面上下文换取签名地址（body 已在 Python 侧序列化，避免 64 位 ID 经 JS Number）
+RESOLVE_URLS_JS = """async ({path, tkeys}) => {
+    try {
+        if (location.origin !== 'https://www.douyin.com')
+            throw new Error('需要抖音网页登录上下文');
+        const body = JSON.stringify({
+            req_infos: tkeys.map(k => ({ item_id: 0, tos_key: k, type: 2 })),
+            with_caption: true,
+        });
+        const r = await fetch(path, {
+            method: 'POST', credentials: 'include',
+            headers: {'Content-Type': 'application/json'},
+            body, signal: AbortSignal.timeout(20000),
+        });
+        return {status: r.status, body: await r.text()};
+    } catch (e) { return {err: String(e)}; }
+}"""
+
+
+def parse_play_infos(payload: Any, tkeys: list[str]) -> dict[str, str]:
+    """解析 `batch_play_info` 响应 → `{tkey: main_url}`（纯函数，便于单测）。
+
+    响应形如 `{err_no: 0, data: {play_infos: [{encrypted_url: {main_url, backup_url}}, ...]}}`，
+    `play_infos` 与请求的 `tkeys` **按位置一一对应**（上游同假设）。
+    """
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return {}
+    if not isinstance(payload, dict) or payload.get("err_no") != 0:
+        return {}
+    infos = ((payload.get("data") or {}).get("play_infos")) or []
+    out: dict[str, str] = {}
+    for tkey, info in zip(tkeys, infos):
+        if not isinstance(info, dict):
+            continue
+        eu = info.get("encrypted_url") or {}
+        url = ""
+        if isinstance(eu, dict):
+            url = eu.get("main_url") or eu.get("backup_url") or ""
+        if not url:
+            url = info.get("main_url") or ""
+        if isinstance(url, str) and url.startswith("http"):
+            out[str(tkey)] = url
+    return out
+
+
+def resolve_play_urls(tkeys: list[str], exec_js) -> dict[str, str]:
+    """把一批 tkey 换成签名播放地址（`exec_js` 由调用方注入 BCC 页面执行器）。
+
+    后置条件：返回 `{tkey: url}`；**只含成功项**，失败项缺席（调用方按缺席判定失败）。
+    """
+    keys = [str(k).strip() for k in (tkeys or []) if str(k or "").strip()]
+    if not keys:
+        return {}
+    keys = keys[:BATCH_SIZE]
+    try:
+        res = exec_js(RESOLVE_URLS_JS, [BATCH_PLAY_INFO_PATH, keys])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[VID-010] " + f"取址 exec_js 失败: {type(e).__name__}")
+        return {}
+    if not isinstance(res, dict) or res.get("err") or res.get("status") != 200:
+        logger.warning(f"[VID-011] " + f"取址响应异常: "
+                       f"status={(res or {}).get('status')} err={(res or {}).get('err')}")
+        return {}
+    out = parse_play_infos(res.get("body"), keys)
+    logger.info(f"[VID-012] " + f"取址完成: {len(out)}/{len(keys)} 个 tkey 拿到签名地址")
+    return out
+
+
+def resolve_play_urls_batch(tkeys: list[str], exec_js,
+                            batch_size: int = BATCH_SIZE) -> dict[str, str]:
+    """把**任意数量**的 tkey 分批换成签名地址（每批 ≤`batch_size`，上游同值 10）。
+
+    后置条件：返回 `{tkey: url}`，只含成功项；**单批失败不影响其余批次**
+    （每批独立 try，失败批次整体缺席）。
+    """
+    keys = [str(k).strip() for k in (tkeys or []) if str(k or "").strip()]
+    out: dict[str, str] = {}
+    size = max(1, min(int(batch_size or BATCH_SIZE), BATCH_SIZE))
+    for i in range(0, len(keys), size):
+        chunk = keys[i:i + size]
+        try:
+            out.update(resolve_play_urls(chunk, exec_js))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[VID-013] " + f"取址批失败（{len(chunk)} 个）: {type(e).__name__}")
+    return out
+
+
 def _iv_size_for(senc_content: bytes, saiz_content: bytes | None) -> int:
     """IV 尺寸：优先 saiz，回退 8（上游硬编码值），最后 16。"""
     if saiz_content:
@@ -367,14 +475,29 @@ def probe_mp4(data: bytes) -> dict[str, Any]:
 
 
 def extract_video_fields(obj: Any) -> dict[str, Any]:
-    """从消息对象里挖视频解密要素 → {skey, url, duration, vid}（挖不到给空值）。
+    """从视频消息的 content JSON 里挖**解密与取址要素**（纯解析，零请求）。
 
-    与图片共用同一套 `resource_url` 结构（对方实测：图片是 64hex skey +
-    `origin_url_list`）。视频按同样形态取值，**不做任何主动请求**。
+    ## 2026-09-17 修正（原实现是死代码）
+
+    原实现找的是 `play_url` / `url_list` / `origin_url` 等**现成 URL 字段** ——
+    与真实消息结构**不符**：抖音 IM 视频消息的 `content_json.video` 里
+    **只有 `tkey`（tos_key）与 `skey`，没有任何现成播放地址**
+    （上游 `video_downloader._msg_video()` 判据也是 `v.get("tkey") and v.get("skey")`）。
+    故原实现**永远挖不到东西**，属死代码。
+
+    拿到真正的播放地址需要**另一跳**：在已登录页面上下文请求
+    `/aweme/v1/web/maya/story/batch_play_info/v1/` 把 `tkey` 换成签名 CDN 地址
+    （见 `services/im_video.py` 的取址函数；每批 ≤10 条）。
+
+    返回 `{tkey, skey, url, duration, vid, poster}`；
+    `url` 仅在消息里**确实自带**地址时才有值（少数分享卡形态），否则为 None。
     """
-    out: dict[str, Any] = {"skey": None, "url": None, "duration": None, "vid": None}
+    out: dict[str, Any] = {"tkey": None, "skey": None, "url": None,
+                           "duration": None, "vid": None, "poster": None}
     if not isinstance(obj, dict):
         return out
+
+    # 候选：视频要素可能直接挂顶层，或在 video / video_info / resource_url.video 下
     cands: list[dict] = []
     for key in ("video", "video_info", "videoInfo"):
         v = obj.get(key)
@@ -383,18 +506,26 @@ def extract_video_fields(obj: Any) -> dict[str, Any]:
     res = obj.get("resource_url")
     if isinstance(res, dict):
         cands.append(res)
-        v = res.get("video")
-        if isinstance(v, dict):
-            cands.append(v)
+        if isinstance(res.get("video"), dict):
+            cands.append(res["video"])
+    cands.append(obj)                       # 兜底：可能就在顶层
+
     for c in cands:
+        # ★ 核心：tkey（上游判据字段名）
+        for k in ("tkey", "tos_key", "tosKey", "item_id_str"):
+            v = c.get(k)
+            if isinstance(v, str) and v.strip() and not out["tkey"]:
+                if k == "tkey" or v.strip().lstrip("-").isdigit():
+                    out["tkey"] = v.strip()
         sk = c.get("skey") or c.get("secret_key")
-        if isinstance(sk, str) and sk:
-            out["skey"] = out["skey"] or sk.strip()
-        for k in ("play_url", "url", "origin_url", "url_list", "play_url_list",
-                  "origin_url_list", "video_url"):
+        if isinstance(sk, str) and sk.strip() and not out["skey"]:
+            out["skey"] = sk.strip()
+        # 现成 URL（若有则直接用，省一跳取址）
+        for k in ("play_url", "url", "origin_url", "play_url_list",
+                  "origin_url_list", "video_url", "main_url"):
             val = c.get(k)
-            if isinstance(val, str) and val.startswith("http"):
-                out["url"] = out["url"] or val
+            if isinstance(val, str) and val.startswith("http") and not out["url"]:
+                out["url"] = val
             elif isinstance(val, list):
                 for it in val:
                     if isinstance(it, str) and it.startswith("http"):
@@ -403,7 +534,19 @@ def extract_video_fields(obj: Any) -> dict[str, Any]:
         for k in ("duration", "video_duration", "duration_ms"):
             if out["duration"] is None and isinstance(c.get(k), (int, float)):
                 out["duration"] = c[k]
-        for k in ("vid", "video_id", "item_id"):
+        for k in ("vid", "video_id", "aweme_id", "item_id"):
             if out["vid"] is None and c.get(k):
                 out["vid"] = str(c[k])
+        for k in ("poster", "cover", "cover_url", "origin_cover"):
+            v = c.get(k)
+            if out["poster"] is None and isinstance(v, str) and v.startswith("http"):
+                out["poster"] = v
     return out
+
+
+def has_video_payload(obj: Any) -> bool:
+    """该 content JSON 是否为「可播放的 IM 视频」（有 tkey 或现成 url）。"""
+    if not isinstance(obj, dict):
+        return False
+    f = extract_video_fields(obj)
+    return bool(f.get("tkey") or f.get("url"))

@@ -607,6 +607,8 @@ def parse_init_protobuf(raw, my_uid):
             # （_parse_message_text 返回 skey/origin_url），首包路径漏了，此处补齐。
             _skey, _origin = None, None
             _voice_uri, _voice_skey = None, None
+            _v_tkey = _v_skey = _v_url = _v_poster = _v_vid = None
+            _v_dur = None
             try:
                 for _f3, _wt3, _v3 in _parse(sb2):
                     if _f3 == 8 and _wt3 == WT_LEN and isinstance(_v3, bytes):
@@ -630,6 +632,23 @@ def parse_init_protobuf(raw, my_uid):
                                     _voice_skey = _vf.get("skey") or None
                             except Exception:
                                 _voice_uri, _voice_skey = None, None
+                            # 2026-09-17：IM 视频要素（tkey/skey/poster/时长）。
+                            # 纯解析、零请求；真正的播放地址要等「点播」时换取。
+                            try:
+                                from services.cenc_video import (
+                                    extract_video_fields as _evf2,
+                                    has_video_payload as _hvp,
+                                )
+                                if _hvp(_obj3):
+                                    _vf2 = _evf2(_obj3)
+                                    _v_tkey = _vf2.get("tkey") or None
+                                    _v_skey = _vf2.get("skey") or None
+                                    _v_url = _vf2.get("url") or None
+                                    _v_poster = _vf2.get("poster") or None
+                                    _v_vid = _vf2.get("vid") or None
+                                    _v_dur = _vf2.get("duration")
+                            except Exception:
+                                pass
                         break
             except Exception:
                 _skey, _origin = None, None
@@ -654,6 +673,12 @@ def parse_init_protobuf(raw, my_uid):
                 "reply": _reply18,
                 "voice_uri": _voice_uri,
                 "voice_skey": _voice_skey,
+                "video_tkey": _v_tkey,
+                "video_skey": _v_skey,
+                "video_url": _v_url,
+                "video_poster": _v_poster,
+                "video_vid": _v_vid,
+                "video_duration": _v_dur,
                 "is_recalled": _recall11,
                 "visible": _visible12,
             })
@@ -1810,6 +1835,19 @@ def capture_all(name, with_browser=True):
                         _ex["voice_uri"] = m["voice_uri"]
                     if m.get("voice_skey"):
                         _ex["voice_skey"] = m["voice_skey"]
+                    # 2026-09-17：IM 视频要素（对照上游 video_downloader）。
+                    # 视频消息**不自带播放地址**，只有 tkey + skey；此处**只落库**，
+                    # 由「点播」时再经 BCC 换签名地址（batch_play_info，每批 ≤10），
+                    # 避免捕获阶段为不可播的视频浪费外呼。
+                    if m.get("video_tkey"):
+                        _ex["video"] = {
+                            "tkey": m["video_tkey"],
+                            "skey": m.get("video_skey") or "",
+                            "duration": m.get("video_duration"),
+                            "poster": m.get("video_poster"),
+                            "vid": m.get("video_vid"),
+                            "url": m.get("video_url"),      # 少数卡片自带地址才有值
+                        }
                     # 2026-09-17：撤回/可见性标志（字段级判据，供前端渲染「已撤回」）
                     if m.get("is_recalled"):
                         _ex["is_recalled"] = int(m["is_recalled"])
@@ -1823,6 +1861,7 @@ def capture_all(name, with_browser=True):
                         m.get("sender_sec_uid") or m.get("created_at_us")
                         or (isinstance(m.get("reply"), dict) and m["reply"])
                         or m.get("voice_uri") or m.get("is_recalled")
+                        or m.get("video_tkey")
                     )
                     if _extra != "{}" and _need_patch:
                         # 与 skey 路径同因同解：旧行已存在时 INSERT OR IGNORE 会被
