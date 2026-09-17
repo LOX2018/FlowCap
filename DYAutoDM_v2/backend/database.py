@@ -108,8 +108,9 @@ def get_db() -> sqlite3.Connection:
             # 原为裸 `except Exception: pass`。会员一致性守卫一旦自身抛错
             # （db_path()/PRAGMA 失败），就会**静默**继续并可能返回属于
             # 另一个会员的连接 —— 正是该守卫要防的跨会员数据泄漏。
+            # 2026-09-17：loguru 用 `{}` 占位（printf 风格 %s 会让参数被丢弃）
             logger.warning("[db] 会员一致性校验失败（守卫可能失效，"
-                           "存在跨会员读取风险）: %s", e)
+                           "存在跨会员读取风险）: {}", e)
         if _conn is not None:
             return _conn
     with _lock:

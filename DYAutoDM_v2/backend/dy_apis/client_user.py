@@ -353,11 +353,14 @@ class UserMixin:
                     except Exception:  # noqa: BLE001
                         pass
                     return str(sec)
-                logger.warning("SEC-UID-001", f"profile/self 返回异常：status_code={js.get('status_code')}")
+                # 2026-09-17 修补（loguru 双参吞详情）：错误码与详情合成单串
+                logger.warning(f"[SEC-UID-001] profile/self 返回异常："
+                               f"status_code={js.get('status_code')}")
             else:
-                logger.warning("SEC-UID-002", f"profile/self HTTP {rr.status_code}")
+                logger.warning(f"[SEC-UID-002] profile/self HTTP {rr.status_code}")
         except Exception as e:  # noqa: BLE001
-            logger.warning("SEC-UID-003", f"profile/self 取 sec_uid 失败，回落到 HTML：{type(e).__name__}")
+            logger.warning(f"[SEC-UID-003] profile/self 取 sec_uid 失败，"
+                           f"回落到 HTML：{type(e).__name__}")
 
         # ══ 回落：旧 HTML 正则路径（保留兼容，但不再直接 [0] 索引）══
         headers = HeaderBuilder().build(HeaderType.GET)

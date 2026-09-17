@@ -1242,7 +1242,7 @@ class DYLoginApi:
         iframeTemplate = self.generateIframe(auth.cookie, firstLoginRes)
         # 2026-09-17 安全修补（审查 P0-1）：iframeTemplate 含 s_v_web_id
         # 设备指纹与 verify_data，原 print 会明文吐出。
-        logger.debug("[auth] 滑块模板: %s", _safe_repr(iframeTemplate))
+        logger.debug("[auth] 滑块模板: {}", _safe_repr(iframeTemplate))
         input('过滑块')
         # 过验证码后
         params.add_param("fp", auth.cookie['s_v_web_id'])
@@ -1400,7 +1400,7 @@ class DYLoginApi:
             checkLoginInfo = self.dyCheckQrCodeLogin(auth, token)
             # 2026-09-17 安全修补（审查 P0-1）：原为 print(checkLoginInfo)，
             # 会把含登录态的响应整体打到 stdout（stdout 常落日志/终端录制）。
-            logger.debug("[auth] 扫码登录轮询状态: %s",
+            logger.debug("[auth] 扫码登录轮询状态: {}",
                          _safe_repr(checkLoginInfo))
             await asyncio.sleep(10)
 
@@ -1411,12 +1411,12 @@ class DYLoginApi:
         sendCodeRes = self.dyGeneratePhoneVerificationCode(phone_num, auth)
         # 2026-09-17 安全修补（审查 P0-1）：以下原为 print(...)，会把验证码响应、
         # 登录响应、跳转 URL 打到 stdout。
-        logger.debug("[auth] 验证码发送结果: %s", _safe_repr(sendCodeRes))
+        logger.debug("[auth] 验证码发送结果: {}", _safe_repr(sendCodeRes))
         code = input("请输入验证码：")
         loginRes, auth = self.dyPhoneVerificationCodeLogin(auth, phone_num, code)
-        logger.debug("[auth] 登录结果: %s", _safe_repr(loginRes))
+        logger.debug("[auth] 登录结果: {}", _safe_repr(loginRes))
         redirect_url = loginRes['redirect_url']
-        logger.debug("[auth] 跳转 URL: %s", _mask_url_query(redirect_url))
+        logger.debug("[auth] 跳转 URL: {}", _mask_url_query(redirect_url))
         headers = {
             "accept": "application/json, text/plain, */*",
             "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
@@ -1433,22 +1433,22 @@ class DYLoginApi:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0",
         }
         response = requests.get(redirect_url, headers=headers, cookies=auth.cookie, verify=_TLS_VERIFY)
-        logger.debug("[auth] 跳转响应: %s", response.status_code)
+        logger.debug("[auth] 跳转响应: {}", response.status_code)
         if response.status_code == 302:
             # 2026-09-17 安全修补（审查 P0-1）：原 print(response.headers) 会
             # 打出 Set-Cookie 响应头（sessionid / sid_tt / passport_csrf_token）。
-            logger.debug("[auth] 302 响应头: %s", _mask_headers(response.headers))
+            logger.debug("[auth] 302 响应头: {}", _mask_headers(response.headers))
             location = response.headers['Location']
             response = requests.get(location, headers=headers, cookies=auth.cookie, verify=_TLS_VERIFY)
             auth.cookie.update(response.cookies.get_dict())
             if response.status_code == 302:
-                logger.debug("[auth] 302 响应头(2): %s", _mask_headers(response.headers))
+                logger.debug("[auth] 302 响应头(2): {}", _mask_headers(response.headers))
                 location = response.headers['Location']
                 response = requests.get(location, headers=headers, cookies=auth.cookie, verify=_TLS_VERIFY)
                 auth.cookie.update(response.cookies.get_dict())
 
         res = self.persistenceLoginInfo(auth)
-        logger.debug("[auth] 持久化登录结果: %s", _safe_repr(res))
+        logger.debug("[auth] 持久化登录结果: {}", _safe_repr(res))
         # 将cookie转为字符串
         cookie_str = ''
         for k, v in auth.cookie.items():
@@ -1456,7 +1456,7 @@ class DYLoginApi:
         cookie_str = cookie_str[:-2]
         # 2026-09-17 安全修补（审查 P0-1）：原 print(cookie_str) 直接吐完整
         # cookie 明文。改为只打脱敏指纹（长度 + 键名），用于确认登录是否成功。
-        logger.info("[auth] cookie 已组装（%d 项，共 %d 字符；键: %s）",
+        logger.info("[auth] cookie 已组装（{} 项，共 {} 字符；键: {}）",
                     len(auth.cookie), len(cookie_str),
                     ",".join(sorted(auth.cookie.keys()))[:200])
 

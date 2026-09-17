@@ -64,7 +64,7 @@ def finish_task(tid: int, status: str = "finished", result_count: int = 0,
     for _col in sets:
         _name = _col.split("=", 1)[0].strip()
         if _name not in _allowed:
-            logger.error("[history] 拒绝执行：非法列名 %r（白名单=%s）",
+            logger.error("[history] 拒绝执行：非法列名 {!r}（白名单={}）",
                          _name, sorted(_allowed))
             raise ValueError(f"illegal column name: {_name}")
     vals.append(tid)          # WHERE id=? 的占位参数
