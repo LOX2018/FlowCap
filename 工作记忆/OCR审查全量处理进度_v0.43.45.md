@@ -98,6 +98,54 @@
 | 误报 | 13 | `browser_daemon.py` **11 条**（9 条同行 OWASP 模板刷屏 + 2 条把浏览器 fetch 误判 SQL 注入）、`frontend/package.json`（实测官方 npm 有 1.x 线且镜像 integrity 与官方**完全一致**）|
 | 待 agent | 2 | `api/notify.py`、`crawl-page.tsx` |
 
+### 3.6 v0.43.54~0.43.56 已处置（loguru 收敛 + 前端/数据层）
+
+**① loguru「错误码当格式模板」（24 文件）**
+
+loguru 签名是 `logger.<level>(message, *args)`：**仅当 message 含 `{}` 时才用
+`*args`，否则 `*args` 被静默丢弃**。项目大量写成
+`logger.warning("BCC-003", f"[open-browser] ...")` → 错误码作为 message（无占位符）
+→ 后面的 f-string **整段丢弃**，日志只剩裸错误码，排障信息全丢。
+
+修复：新增幂等脚本 `scripts/_fix_loguru_code_prefix.py` 收敛为单串
+`logger.<level>(f"[CODE] 正文")`。**24 文件修复，二次运行 0 处**。
+
+> 实测输出：`[BCC-003] [open-browser] 账号 acctA 发现并清理 3 个持有 profile 的孤儿浏览器进程（端口 12345 已死但锁未释放）`
+> —— 错误码与正文同时保留。
+
+**② 5 个文件缺 `import os`**
+
+`scripts/probe_img_*.py` ×4 + 脚本扫出的 `_live_send_test.py` 在模块级用
+`os.environ` 但从未 `import os` → 直接运行即 `NameError`。
+新增 `scripts/_fix_missing_import_os.py` 批量补齐。
+
+**③ 前端 4 处逻辑错**
+
+| 位置 | 缺陷 |
+|---|---|
+| `reply-kb.tsx` | `disabled={!q && !a}` 用 `&&` → **两个都空才禁用**，填一半就能提交 |
+| `message-shared.tsx` | `EMOJI_MAP[m[1]]` 未校验自有键 → `[constructor]` 命中原型链函数并渲染 |
+| `live-shared.tsx` | 取 `r.start_ts` —— 后端 `_records_from_adm` **无该字段** → 时间列恒空 |
+| `dy_apis/client_search.py` | 裸 `json.loads` + `res_json["data"]` 无守卫 → 限流空响应即抛（同族已用 `safe_json`） |
+
+**④ `delay_range` 用默认值当哨兵**
+
+`if (not delay_range or delay_range == [40, 65]) and self.delay:` ——
+`[40,65]` **恰是字段类默认值** → 显式传 `[40,65]` 与"未提供"无法区分。
+修复：字段默认改 `None` 作哨兵。
+
+> **真实 `TaskConfig` 解析 4/4 正确**；旧实现在"显式 [40,65] + delay=10,20"时会**覆盖成 [10,20]**（缺陷复现）。
+> 回归保护：只传 `delay` 时仍解析（`test_delay_alias_still_works`）。
+
+**⑤ MCP 非对象 JSON 崩溃**
+
+`json.loads("[1,2]")` 返回 list → `req.get("id")` 抛 AttributeError，
+且异常在 try 之外 → **服务端崩溃/断连**。修复：按 JSON-RPC 2.0 规范回 `-32600`。
+
+**误报登记（勿改）**：`message-viewer.tsx`「effect 早退前挂载」→ 注释明写
+「必须放在 early return 之前，否则 hooks 数量不一致导致 React 崩溃」；
+`LeadsSection.tsx`「PageProps 无 push」→ `PageProps` 确实有 push（client.ts:1661）。
+
 ### 3.5 v0.43.51~0.43.53 已处置（服务层/API/前端 agent 批次）
 
 **① `app_config._coerce` 的 select 校验恒判非法（长期基线失败的真根因）**
