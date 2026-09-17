@@ -118,6 +118,15 @@ def serve_stdio() -> int:
         except Exception:
             print(json.dumps(_error(None, -32700, "JSON 解析失败")), flush=True)
             continue
+        # 2026-09-17 修补（OCR 审查 HIGH）：`json.loads` 接受**任意 JSON 值**，
+        # 不限于对象。客户端发 `[1,2]` / `null` / `42` / `"x"` 时解析成功，
+        # 但随后 `req.get("id")` 会抛 AttributeError —— 异常发生在下面的
+        # try 之外（`_error(req.get(...))` 自身即崩）→ 服务端静默断开连接。
+        # JSON-RPC 2.0 规定请求必须是对象，非对象按 -32600 拒绝。
+        if not isinstance(req, dict):
+            print(json.dumps(_error(None, -32600,
+                                    "无效请求：必须是 JSON 对象")), flush=True)
+            continue
         try:
             resp = _handle(req)
         except Exception as e:  # noqa: BLE001

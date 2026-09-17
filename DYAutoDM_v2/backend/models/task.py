@@ -33,7 +33,7 @@ class TaskConfig(BaseModel):
     max_target: int = 3
     keywords: list[str] = []
     dm_pool: list[str] = []
-    delay_range: list[int] = [40, 65]
+    delay_range: list[int] | None = None
     interval: float = 60.0
     force_rescan: bool = False
     enable_danmaku: bool = True
@@ -74,8 +74,17 @@ class TaskConfig(BaseModel):
         enable_send = self.enable_send if self.enableSend is None else self.enableSend
 
         delay_range = self.delay_range
-        if (not delay_range or delay_range == [40, 65]) and self.delay:
+        # 2026-09-17 修补（OCR 审查 HIGH —— 用默认值当"未设置"哨兵）：
+        # 原为 `if (not delay_range or delay_range == [40, 65]) and self.delay:`。
+        # `[40, 65]` 恰是字段的**类默认值**，于是「用户显式传 [40,65]」与
+        # 「用户没传」无法区分（一旦默认值调整即成真 bug）。
+        # 现将字段默认值改为 **None** 作显式哨兵：只有"未提供"才回落 `delay` 别名。
+        # 语义保持：`delay_range` 优先，其次 `delay`，最后由消费方兜底 [40,65]
+        # （core/auto_dm.py 多处 `or [40, 65]`）。
+        if (not delay_range) and self.delay:
             delay_range = _parse_delay(self.delay)
+        if not delay_range:
+            delay_range = [40, 65]      # 两者都未提供时的既定默认（与旧行为一致）
 
         return TaskConfig(
             live_url=live_url,
