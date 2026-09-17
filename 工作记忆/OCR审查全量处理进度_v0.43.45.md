@@ -461,4 +461,65 @@ AST 精确断言        AutoDM.shutdown 定义数 == 1（含 _finish_history_tas
   `dy_live/server` 无退避重连、`mcp/server` 401 未 drain body 等）
 - MEDIUM 590 / LOW 487 **完全未动**
 
+### 5.7 部署校验（v0.43.64 → 0.43.65）—— **测试抓出我自己的不完整修复**
+
+#### A. 打包链（design/better-douyin）
+
+要点：**`build_sidecar.py` 用 `sys.executable`**，必须用 **Python 3.14**
+（`C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe`，装 PyInstaller 6.22）
+显式调用；直接用 shell 的 `python`（Hermes venv 3.11）会 `No module named PyInstaller`。
+
+```bash
+PY314="/c/Users/LOX/AppData/Local/Programs/Python/Python314/python.exe"
+"$PY314" scripts/build_sidecar.py --onedir      # 三份 sidecar + dedupe（共享 _internal）
+export PATH="/c/.../stable-x86_64-pc-windows-msvc/bin:$PATH"
+npx tauri build --no-bundle                      # 前端 dist（注入 __APP_VERSION__）+ 桌面端
+python scripts/deploy.py                         # 校验 + 部署到 C:\temp\dyautodm_design
+```
+
+**`deploy.py` 的三道门禁实测有效**（本轮被它拦下过一次）：
+① 主程序 exe **资源版本** == tauri.conf 版本（改版本号不重建 → 直接拒绝）；
+② sidecar `_build_version.py` == 期望版本；③ 平铺 exe 与子目录 exe md5 一致
+（`--onedir` 只写子目录，残留平铺旧 exe 会被判"产物自相矛盾"）。
+
+> 坑：`bash -c "cmd 2>&1 | tail -n"` 之后 `$?` 是 **tail** 的退出码 → 会误报成功。
+> 必须 `cmd > log 2>&1; s=$?` 逐步取码（本轮据此才发现 PyInstaller 那次是**真失败**）。
+
+#### B. 部署实例实测（v0.43.64 产物，`frozen:true`）
+
+| 项 | 结果 |
+|---|---|
+| `/api/version` | `{"backend":"0.43.64","pid":4812,"frozen":true}` ✅ |
+| `/api/ready` | `{"ok":true,"daemons_ready":true,"accounts":1}` ✅ |
+| 版本门禁（同版本 0.43.64） | 非 409 ✅ |
+| 版本门禁（旧版本 0.43.1） | **409** + `version_mismatch` 结构体 ✅ |
+| 路径穿越守卫（进程内直调，6 用例） | **6/6 PASS**（`../../`、反斜杠、绝对路径、含目录段全部拒绝，无内容泄露；正常名可读） |
+| `build_fingerprint(account)` | 不同账号指纹**不同** ✅（原实现恒相同） |
+| `kb_maintain._log` | 正文完整保留 ✅（原只剩裸码） |
+| `vbrowser` IPAPI 端点 | 由 `DY_IPAPI_KEY` 决定、源码密钥已移除 ✅ |
+| `client_notice` 键守卫 | `{}`/`None` → `[]` 不抛；对照旧写法同输入抛 KeyError ✅ |
+| `douyin_recv_msg` 重连条件 | `auto_reconnect and isinstance(...)`；无 `type(x)==Y` ✅ |
+
+#### C. 🔴 关键教训：我又一次"修了但没修透"
+
+`api/engine.py` 的 `/start` 并发竞态，我第一版只加了 `asyncio.Lock`。
+**用真实函数 + 复刻真实时序的 stub 引擎做并发测试，当场测出 `starts=2`（未修复）**：
+
+```
+请求A 进锁 → 见 IDLE → create_task(start) → 释放锁（状态仍是 IDLE，因为
+                                                   STARTING 在协程内才赋值）
+请求B 进锁 → 仍是 IDLE → 又 create_task  ← 重复拉起
+```
+
+即**锁只串行化了"检查"，没有把"状态已翻转"纳入临界区**。修正：在锁内
+`create_task` 后**让出控制权**（`await asyncio.sleep(0)` 轮询）直到状态翻离
+IDLE/STOPPED 或任务结束，再释放锁 → 第二个请求命中 `already`。
+
+复测：并发 2 次 `starts=1 already=1`；并发 3 次 `starts=1 already=2`。
+
+> **方法论**：并发类修复必须用**贴近真实时序**的桩做对照实验
+> （状态在被调度的协程内变更、有 `await` 让出点）。仅"看起来加了锁"不算修好。
+> 这条同时推翻了我 v0.43.64 提交里"已修复"的结论 —— 已在本轮订正并重打包。
+
+
 
