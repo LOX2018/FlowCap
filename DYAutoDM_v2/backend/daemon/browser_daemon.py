@@ -99,9 +99,39 @@ class ContainerBusy(Exception):
 
 _scan_exclusive = {"holder": None}  # None=空闲；否则是独占操作名
 
+# 2026-09-17 修补（OCR 审查 HIGH）：租约与 _scan_exclusive 的互斥锁。
+#
+# 背景：`_lease` / `_scan_exclusive` 是**模块级可变 dict**，其读写出现在两条
+# **不同线程**上：HTTP 端点（FastAPI 主事件循环）与 `run_keepalive`
+# （`threading.Thread`，见文件末尾 start_keepalive）。原先所有读写**完全无锁**，
+# 而 `_lease_acquire` 是「读 _lease_current() → 判 cur is None → _lease.update()」
+# 三步非原子：两个线程可同时通过 `cur is None` 检查 → 双写覆盖，
+# 后写者的 lease_id 生效，先写者从此无法 release（_lease_release 返回 not_holder），
+# 该租约要等 TTL（最高 600s）才被惰性回收，期间全部业务被 403/busy 挡回。
+#
+# 用 **threading.RLock**（不是 asyncio.Lock）：因为 keepalive 跑在子线程、
+# 且 `_lease_acquire` 内部会再调 `_lease_current`（可重入），RLock 最合适。
+# 定义必须早于 _is_busy / _lease_* 的使用点。
+_lease_lock = threading.RLock()
+
 
 def _is_busy() -> bool:
-    return _scan_exclusive["holder"] is not None
+    # 2026-09-17 修补（OCR 审查 HIGH）：_scan_exclusive 与 _lease 同属
+    # 独占状态，读写同样跨线程（HTTP 端点 + keepalive 线程），统一走 _lease_lock。
+    with _lease_lock:
+        return _scan_exclusive["holder"] is not None
+
+
+def _scan_exclusive_set(holder) -> None:
+    """写入独占标志（None=空闲）。与 _lease 共用同一把锁，保证状态一致。"""
+    with _lease_lock:
+        _scan_exclusive["holder"] = holder
+
+
+def _scan_exclusive_get():
+    """原子读取独占标志（None=空闲）。避免「判空 + 取值」两次读的 TOCTOU。"""
+    with _lease_lock:
+        return _scan_exclusive["holder"]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -144,10 +174,10 @@ _lease: dict = {
     "acquired_at": 0.0, "ttl": 0.0, "expires_at": 0.0, "renew_count": 0,
 }
 
-
 def _lease_reset() -> None:
-    _lease.update(holder=None, purpose=None, prio=None, lease_id=None,
-                  acquired_at=0.0, ttl=0.0, expires_at=0.0, renew_count=0)
+    with _lease_lock:
+        _lease.update(holder=None, purpose=None, prio=None, lease_id=None,
+                      acquired_at=0.0, ttl=0.0, expires_at=0.0, renew_count=0)
 
 
 def _lease_current():
@@ -212,80 +242,90 @@ def _lease_acquire(holder: str, purpose: str = "auto", prio: int = 2,
             f"（{LEASE_PRIO_NAME[prio]}）上限 {limit:.0f}s，已按上限授予")
         ttl = limit
 
-    cur = _lease_current()
-    if cur is not None:
-        # 重入：同一 lease_id，或同一 holder（调用链内层再取）
-        if (lease_id and cur["lease_id"] == lease_id) or                 (not lease_id and cur["holder"] == holder):
-            return {"ok": True, "lease_id": cur["lease_id"],
-                    "expires_at": cur["expires_at"], "waited": 0.0,
-                    "renew": True}
-        retry = max(0.5, round(cur["expires_at"] - time.time(), 1))
-        logger.debug(
-            "BCC-047",
-            f"[lease] {holder}(prio={prio}) 被拒：当前 {cur['holder']}"
-            f"(prio={cur['prio']}) 持有，剩余 {retry}s")
-        return {"ok": False, "busy": cur["holder"], "busy_prio": cur["prio"],
-                "retry_after": retry, "reason": "busy"}
+    # 2026-09-17 修补（OCR 审查 HIGH）：整个「读-判-写」必须是原子的，
+    # 否则并发申请会双写覆盖（详见 _lease_lock 定义处说明）。
+    with _lease_lock:
+        cur = _lease_current()
+        if cur is not None:
+            # 重入：同一 lease_id，或同一 holder（调用链内层再取）
+            if (lease_id and cur["lease_id"] == lease_id) or                 (not lease_id and cur["holder"] == holder):
+                return {"ok": True, "lease_id": cur["lease_id"],
+                        "expires_at": cur["expires_at"], "waited": 0.0,
+                        "renew": True}
+            retry = max(0.5, round(cur["expires_at"] - time.time(), 1))
+            logger.debug(
+                "BCC-047",
+                f"[lease] {holder}(prio={prio}) 被拒：当前 {cur['holder']}"
+                f"(prio={cur['prio']}) 持有，剩余 {retry}s")
+            return {"ok": False, "busy": cur["holder"], "busy_prio": cur["prio"],
+                    "retry_after": retry, "reason": "busy"}
 
-    import uuid as _uuid
-    _lease.update(
-        holder=holder, purpose=purpose, prio=prio,
-        lease_id=lease_id or _uuid.uuid4().hex[:12],
-        acquired_at=time.time(), ttl=ttl,
-        expires_at=time.time() + ttl, renew_count=0)
-    logger.debug(
-        f"[lease] {holder} 获得租约（prio={prio} {LEASE_PRIO_NAME[prio]}, "
-        f"ttl={ttl:.0f}s, id={_lease['lease_id']}）")
-    return {"ok": True, "lease_id": _lease["lease_id"],
-            "expires_at": _lease["expires_at"], "waited": 0.0, "renew": False}
+        import uuid as _uuid
+        _lease.update(
+            holder=holder, purpose=purpose, prio=prio,
+            lease_id=lease_id or _uuid.uuid4().hex[:12],
+            acquired_at=time.time(), ttl=ttl,
+            expires_at=time.time() + ttl, renew_count=0)
+        logger.debug(
+            f"[lease] {holder} 获得租约（prio={prio} {LEASE_PRIO_NAME[prio]}, "
+            f"ttl={ttl:.0f}s, id={_lease['lease_id']}）")
+        return {"ok": True, "lease_id": _lease["lease_id"],
+                "expires_at": _lease["expires_at"], "waited": 0.0, "renew": False}
 
 
 def _lease_renew(lease_id: str, ttl: float = 0.0) -> dict:
     """续租。累计时长不得超过该 prio 上限（防绕过 TTL 上限）。"""
-    cur = _lease_current()
-    if not cur or (lease_id and cur["lease_id"] != lease_id):
-        return {"ok": False, "reason": "not_holder"}
-    prio = cur["prio"]
-    limit = LEASE_PRIO_TTL_LIMIT.get(prio, 30.0)
-    new_ttl = ttl if (ttl and ttl > 0) else limit
-    total = new_ttl * (cur["renew_count"] + 1)
-    if total > limit:
-        logger.warning(
-            "BCC-048",
-            f"[lease] {cur['holder']} renew 被拒：累计 {total:.0f}s 超 "
-            f"prio={prio} 上限 {limit:.0f}s（防续租绕过 TTL 上限）")
-        return {"ok": False, "reason": "ttl_exceeds_limit",
-                "limit": limit, "total": total}
-    cur["renew_count"] += 1
-    cur["ttl"] = new_ttl
-    cur["expires_at"] = time.time() + new_ttl
-    logger.debug(f"[lease] {cur['holder']} 续租 {new_ttl:.0f}s"
-                 f"（第 {cur['renew_count']} 次）")
-    return {"ok": True, "expires_at": cur["expires_at"],
-            "renew_count": cur["renew_count"]}
+    # 2026-09-17 修补（OCR 审查 HIGH）：renew 也是对 _lease 的读-改-写，
+    # 与 acquire/release 同为跨线程临界区，必须加锁。
+    with _lease_lock:
+        cur = _lease_current()
+        if not cur or (lease_id and cur["lease_id"] != lease_id):
+            return {"ok": False, "reason": "not_holder"}
+        prio = cur["prio"]
+        limit = LEASE_PRIO_TTL_LIMIT.get(prio, 30.0)
+        new_ttl = ttl if (ttl and ttl > 0) else limit
+        total = new_ttl * (cur["renew_count"] + 1)
+        if total > limit:
+            logger.warning(
+                "BCC-048",
+                f"[lease] {cur['holder']} renew 被拒：累计 {total:.0f}s 超 "
+                f"prio={prio} 上限 {limit:.0f}s（防续租绕过 TTL 上限）")
+            return {"ok": False, "reason": "ttl_exceeds_limit",
+                    "limit": limit, "total": total}
+        cur["renew_count"] += 1
+        cur["ttl"] = new_ttl
+        cur["expires_at"] = time.time() + new_ttl
+        logger.debug(f"[lease] {cur['holder']} 续租 {new_ttl:.0f}s"
+                     f"（第 {cur['renew_count']} 次）")
+        return {"ok": True, "expires_at": cur["expires_at"],
+                "renew_count": cur["renew_count"]}
 
 
 def _lease_release(lease_id: str, holder: str = "") -> dict:
     """释放租约（必须 id 匹配，防误释放他人租约）。"""
-    cur = _lease_current()
-    if not cur:
-        return {"ok": True, "msg": "本就空闲"}
-    if lease_id and cur["lease_id"] != lease_id:
-        logger.debug("BCC-049",
-                     f"[lease] release 被拒：id 不匹配"
-                     f"（当前 {cur['lease_id']}，请求 {lease_id}）")
-        return {"ok": False, "reason": "not_holder"}
-    if not lease_id and holder and cur["holder"] != holder:
-        return {"ok": False, "reason": "not_holder"}
-    _h = cur["holder"]
-    _lease_reset()
-    logger.debug(f"[lease] {_h} 释放租约")
-    return {"ok": True}
+    # 2026-09-17 修补（OCR 审查 HIGH）：release 的「读-判-重置」必须原子，
+    # 否则可能与并发的 acquire 交错，释放掉别人刚拿到的租约。
+    with _lease_lock:
+        cur = _lease_current()
+        if not cur:
+            return {"ok": True, "msg": "本就空闲"}
+        if lease_id and cur["lease_id"] != lease_id:
+            logger.debug("BCC-049",
+                         f"[lease] release 被拒：id 不匹配"
+                         f"（当前 {cur['lease_id']}，请求 {lease_id}）")
+            return {"ok": False, "reason": "not_holder"}
+        if not lease_id and holder and cur["holder"] != holder:
+            return {"ok": False, "reason": "not_holder"}
+        _h = cur["holder"]
+        _lease_reset()
+        logger.debug(f"[lease] {_h} 释放租约")
+        return {"ok": True}
 
 
 def _lease_owned_by(holder: str) -> bool:
-    cur = _lease_current()
-    return bool(cur and cur["holder"] == holder)
+    with _lease_lock:
+        cur = _lease_current()
+        return bool(cur and cur["holder"] == holder)
 
 
 
@@ -851,8 +891,14 @@ class BrowserContainer:
         预热本来就是「锦上添花」——业务自己的捕获同样会写 `_userinfo_cache`，
         跳过预热没有任何损失。
         """
-        if _is_busy():
-            raise ContainerBusy(_scan_exclusive["holder"])
+        # 2026-09-17 修补（OCR 审查 HIGH）：原为 `if _is_busy(): raise
+        # ContainerBusy(_scan_exclusive["holder"])` —— 两次**非原子**读之间有
+        # TOCTOU 窗口：_is_busy() 为真后、第二个下标读取前，若独占方已释放，
+        # _scan_exclusive["holder"] 变成 None，异常信息就成了 ContainerBusy(None)。
+        # 现改为一次加锁读，取到的值即判据。
+        _ex = _scan_exclusive_get()
+        if _ex is not None:
+            raise ContainerBusy(_ex)
         if internal:
             # 内部线程让位（两重）：
             #  ① 已有业务租约在持 → 直接放弃（不排队，见上文实测）
@@ -1541,11 +1587,23 @@ class BrowserContainer:
                         "source": "browser_container" if live_id else "browser_failed"}
             finally:
                 # 导航 tab 用完即复位，不残留直播间页面（省资源、避免后台自动刷新弹幕 WS）
+                #
+                # 2026-09-17 修补（OCR 审查 HIGH）：原实现只 `goto("about:blank")`
+                # **不 close()**，每次 resolve_url 都留一个空 tab —— 空页虽已断开
+                # 弹幕 WS，但仍占一个 renderer 进程位/句柄，长时间运行会累积。
+                # 现改为真正关闭并把引用置空，下次按需懒创建。
                 if page is not self._page:
                     try:
-                        await page.goto("about:blank", wait_until="commit", timeout=5000)
+                        await page.close()
                     except Exception:
-                        pass
+                        # close 失败（如页面已在关闭中）时退回复位，至少不留直播页
+                        try:
+                            await page.goto("about:blank", wait_until="commit",
+                                            timeout=5000)
+                        except Exception:
+                            pass
+                    if getattr(self, "_nav_page", None) is page:
+                        self._nav_page = None
         return await self._exec(_do)
 
     async def scan_login(self, force: bool = False, timeout: int = 300) -> dict:
@@ -1566,7 +1624,9 @@ class BrowserContainer:
         async def _do():
             # P2-B：标记独占窗口。从 context 关闭到 _launch 完成期间，
             # 其他浏览器操作走 _exec 时会快速失败而非排队干等
-            _scan_exclusive["holder"] = "scan_login"
+            # 2026-09-17 修补（OCR 审查 HIGH）：改走加锁的写入助手，
+            # 与 _lease 的读写在同一把锁下，避免与并发操作交错。
+            _scan_exclusive_set("scan_login")
             # 2026-09-13 S2：scan_login 同时走租约（统一仲裁入口）。
             # _scan_exclusive 保留以兼容既有 _is_busy() 检查。
             _sl_lease = _lease_acquire("scan_login", "exclusive", 0,
@@ -1617,7 +1677,7 @@ class BrowserContainer:
                 await self._launch()
                 return {"ok": ok, "uid": _uid}
             finally:
-                _scan_exclusive["holder"] = None
+                _scan_exclusive_set(None)
                 try:
                     _lease_release(_sl_lid)
                 except Exception:
@@ -1883,10 +1943,23 @@ class BrowserContainer:
 
         auth.cookie = cks
         auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
+        # 2026-09-17 修补（OCR 审查 HIGH）：原实现在写盘失败时**仅记 warning**，
+        # 却继续推进 `_uid_at_last_env_write` 基线并 `return {"ok": True}` ——
+        # ①调用方（含 run_keepalive）按成功记账，实际 .env 仍是旧凭证（静默数据不一致）；
+        # ②基线被推进后，下次写盘的「uid 漂移门禁」失去参照物。
+        # 现改为：写盘失败即返回 ok=False，且**不**推进基线、不更新 _last_refresh。
+        _write_ok = True
+        _write_err = ""
         try:
             DYLoginApi().save_credential(auth, env_path)
-        except Exception as e:
-            logger.warning(f"[BCC-018] " + f"[bcc] 写回 .env 失败: {e}")
+        except Exception as e:  # noqa: BLE001
+            _write_ok = False
+            _write_err = f"{type(e).__name__}: {e}"
+            logger.warning(f"[BCC-018] [bcc] 写回 .env 失败: {e}")
+        if not _write_ok:
+            return {"ok": False, "cookie_count": len(cks), "uid": str(new_uid),
+                    "msg": f"凭证写盘失败，.env 未更新（基线未推进）: {_write_err}",
+                    "write_failed": True}
         self._last_refresh = time.time()
         self._last_uid = new_uid
         # 2026-09-06 全局治理：独立基线，只在成功写入 .env 时更新（见上方门禁 2 注释）
@@ -2518,22 +2591,34 @@ async def linkmic_run(body: LinkmicRunBody) -> dict:
             await page.wait_for_timeout(15000)
         if body.action in ("apply", "mute", "leave"):
             if not body.js:
-                return {"ok": False, "error": f"action={body.action} 缺 js"}
+                # 以异常形式抛出，由外层统一包成 {ok:False}（保持原 API 契约）
+                raise ValueError(f"action={body.action} 缺 js")
             page.set_default_timeout(body.timeout * 1000)
             return await page.evaluate(body.js)
         if body.action == "status":
             page.set_default_timeout(30_000)
             return await page.evaluate(body.js)
-        return {"ok": False, "error": f"未知 action: {body.action}"}
+        raise ValueError(f"未知 action: {body.action}")
 
     try:
-        async with c._lock:
-            await c._ensure_alive()
-            res = await _do()
+        # 2026-09-17 修补（OCR 审查 HIGH）：原实现直接 `async with c._lock:` +
+        # `c._ensure_alive()`，**完全绕过租约仲裁与 _is_busy() 快速失败** ——
+        # 后果：①scan_login 独占窗口内（context 已关）本端点仍会拿锁并调
+        # _ensure_alive，正是本文件注释所述「误判死活→与后台 _launch 抢
+        # profile→死循环」的配方；②不写 _scan_exclusive，与 BCC 自家调度
+        # 体系不一致，其它端点看不到它的独占。
+        # 现改走统一入口 _exec（自动纳入租约 + 串行 + 自愈）。
+        # 注意保持返回结构不变：_exec 返回的是 _do() 的裸结果，故此处再包装。
+        res = await c._exec(_do, holder="linkmic", prio=1, ttl=180.0)
         return {"ok": True, "msg": "", "result": res}
-    except Exception as e:
-        logger.warning(f"[BCC-040] " + f"[bcc] /linkmic_run action={body.action} 失败: {e}")
-        return {"ok": False, "msg": str(e), "result": None}
+    except ContainerBusy as e:
+        return {"ok": False, "msg": f"浏览器忙（{e}），请稍后重试",
+                "error": f"browser_busy: {e}", "result": None}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[BCC-040] [bcc] /linkmic_run action={body.action} 失败: {e}")
+        # 2026-09-17：同时给 msg 与 error 两个字段，兼容既有外部调用方
+        # （原实现在「缺 js」「未知 action」时只返回 error 字段）。
+        return {"ok": False, "msg": str(e), "error": str(e), "result": None}
 
 
 @app.post("/wp_messages")
@@ -2632,8 +2717,13 @@ async def show(req: Request, visible: bool = True, url: str = "") -> dict:
                     visible = bool(_b["visible"])
                 if _b.get("url"):
                     url = str(_b["url"])
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        # 2026-09-17 修补（OCR 审查 HIGH）：原为 `except Exception: pass` ——
+        # 与上方注释描述的 bug **完全同类**：body 畸形/被中间件消费时，
+        # visible=false 被静默忽略，set_visible(True) 照跑，「切回无头」失效
+        # 且**无任何日志**（排查时完全看不到线索）。现至少记录告警。
+        logger.warning(f"[BCC-061] [show] 解析 body 失败，将按 query 参数"
+                       f"（visible={visible}）处理: {type(e).__name__}: {e}")
     return await c.set_visible(bool(visible), url or "")
 
 
