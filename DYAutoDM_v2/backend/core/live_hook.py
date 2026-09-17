@@ -270,6 +270,8 @@ class LiveChatHook(DouyinLive):
                 s.payload = response.internalExt.encode("utf-8")
                 s.logId = frame.logId
                 ws.send(s.SerializeToString(), opcode=0x02)
+            # 成功解出一帧 → 归零连续失败计数
+            self._frame_fail_streak = 0
             for item in response.messagesList:
                 try:
                     if item.method == "WebcastGiftMessage":
@@ -342,7 +344,31 @@ class LiveChatHook(DouyinLive):
                 except Exception as e:
                     logger.warning(f"[LIVE-007] " + f"live_hook item error: {e}")
         except Exception as e:
-            logger.warning(f"[LIVE-008] " + f"live_hook on_message error: {e}")
+            # 2026-09-17 修补（OCR 审查 HIGH —— 弹幕静默丢弃）：
+            # 整帧解码（ParseFromString / gzip.decompress / ack 回帧）共用这一个
+            # except，任一步异常都会让**该帧全部弹幕消息**丢失，而原先只留一行
+            # warning——既无计数也无重试，且 `_heartbeat_loop` 只在 get_my_uid
+            # 无返回时才重扫，对「WS 活着但消息全丢」完全无感知。
+            # 现增加：连续失败计数；连续 N 次（默认 5）后触发重扫，并升级为 error。
+            self._frame_fail_streak = getattr(self, "_frame_fail_streak", 0) + 1
+            self._frame_fail_total = getattr(self, "_frame_fail_total", 0) + 1
+            _streak = self._frame_fail_streak
+            logger.warning(
+                f"[LIVE-008] live_hook on_message error"
+                f"（连续第 {_streak} 次，累计 {self._frame_fail_total} 次）: {e}")
+            if _streak >= 5:
+                self._frame_fail_streak = 0
+                logger.error(
+                    f"[LIVE-009] 弹幕帧连续 {_streak} 次解析失败，"
+                    f"疑似凭证/协议异常 → 触发重新扫码以恢复捕获")
+                try:
+                    if self.controller is not None:
+                        self.controller.rescan_and_rebuild()
+                    else:
+                        logger.warning(
+                            "[LIVE-009] 未绑定控制器，无法自动重扫，请手动点【重新扫码】")
+                except Exception as e2:  # noqa: BLE001
+                    logger.error(f"[LIVE-009] 自动重扫失败（请手动点【重新扫码】）: {e2}")
 
     # ------------------------------------------------------------------
     # async wrapper（供 AutoDM 在 asyncio 上下文调用）

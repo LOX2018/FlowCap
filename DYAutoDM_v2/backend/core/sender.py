@@ -219,7 +219,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
         logger.warning(f"[SEND-012] " + f"[私信] 经 recv_daemon 直发失败 uid={user_id}: {_reason}")
         return False, _reason
     # 守护不可达：兜底本进程直发（此时无统一闸门，仅本条自身的重试间隔）
-    logger.warning("SEND-013", f"[私信] recv_daemon 不可达（{_reason}），兜底本进程直发——"
+    logger.warning(f"[SEND-013] [私信] recv_daemon 不可达（{_reason}），兜底本进程直发——"
                    f"发送闸门失效，注意频率风控")
 
     for attempt in range(1, max_retry + 1):
@@ -231,8 +231,7 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
                 # create_conversation 走 imapi 私有网关（带 web_protect 四件套签名），
                 # 预检（对自身 uid）通过即证明签名有效。此处被 KICK 几乎不是"没打开私信对话框/
                 # 签名缺失"，而是账号级私信风控（陌生目标反 spam）或私信频控/被限制。
-                logger.error("SEND-014", 
-                    f"[私信被风控] create_conversation 被抖音拒绝(uid={user_id}): {msg}\n"
+                logger.error(f"[SEND-014] [私信被风控] create_conversation 被抖音拒绝(uid={user_id}): {msg}\n"
                     f"       说明：签名四件套有效（预检已通过），此处 KICK 多为账号级私信风控\n"
                     f"       （向陌生观众批量私信触发反 spam）或私信频控/被限制。\n"
                     f"       建议：降低发送频率、换号/养号，或确认该账号能否手动给该用户发私信。"

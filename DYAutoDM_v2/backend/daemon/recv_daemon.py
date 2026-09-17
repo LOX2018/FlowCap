@@ -30,7 +30,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # 2026-09-06 全局治理（D：系统死代理隔离，同 main.py）：
 # 独立 exe 进程同样被 Windows 注册表系统代理毒害（requests 继承
@@ -1420,7 +1420,14 @@ class SendImageBody(BaseModel):
     account: str
     conv_id: str
     # 图片二进制 base64（≤20MB 原始大小）
-    image_b64: str
+    #
+    # 2026-09-17 修补（OCR 审查 HIGH）：原字段**无长度上限**，注释写的
+    # "≤20MB" 只是注释，没有任何强制。本机任意调用方可投递任意大 base64
+    # → 全部解码入内存（上游 messages.py 还会再 json.dumps 一份全量拷贝）
+    # → 可致 OOM / 事件循环卡顿。
+    # 20MB 原始 → base64 约 4/3 ≈ 27MB；留余量取 28_000_000 字符。
+    # 解码后再复核真实字节数（防止 padding/空白绕过）。
+    image_b64: str = Field(..., max_length=28_000_000)
     filename: str = "image.jpg"
 
 
@@ -1677,6 +1684,14 @@ async def send_image(body: SendImageBody) -> dict:
         import base64 as _b64
 
         image_data = _b64.b64decode(body.image_b64)
+        # 2026-09-17 修补（OCR 审查 HIGH）：解码后复核**真实字节数**。
+        # 字段级 max_length 只约束 base64 字符串长度，仍可能被 padding/空白
+        # 绕过；这里对解码结果做硬上限，超限直接拒绝（不进入后续发送链路）。
+        _MAX_IMG_BYTES = 20 * 1024 * 1024
+        if len(image_data) > _MAX_IMG_BYTES:
+            return {"ok": False,
+                    "error": f"图片过大：{len(image_data)} 字节，"
+                             f"上限 {_MAX_IMG_BYTES} 字节（20MB）"}
     except Exception as e:
         return {"ok": False, "error": f"image_b64 解码失败: {e}"}
     try:

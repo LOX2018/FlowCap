@@ -441,7 +441,7 @@ async def get_conversation(account: str, conv_id: str):
                 "text": m["text"],
                 "msg_type": m["msg_type"],
                 "dir": "out" if m["role"] == "me" else "in",
-                "type": m["msg_type"] or "text",
+                "type": _front_type(m["msg_type"] or "text"),
                 "time": _fmt_ts(m["ts"]),  # 2026-09-05:改为完整时间,前端做日期分割线
                 "msg_id": msg_id,
                 "image_url": image_url,  # 前端 <img src> 直接用,None 则降级到缩略图

@@ -840,20 +840,33 @@ class DmDispatcher:
         # 消息 => 从未往来 => 陌生人首发。直播监听的待发送绝大多数属此类，
         # 抖音对其限制最严（每分钟 ≤2、每天 ≤30，且按账号权重缩放）。
         is_stranger = self._is_stranger_first(account, conv_id)
-        if is_stranger:
-            q = self.quota_of(account)
-            ok_q, reason = q.can_stranger_first()
-            if not ok_q:
-                logger.warning(f"[SEND-030] " + f"[dm-dispatch][{account}] 陌生人首发被限流: {reason}")
-                return SubmitResult(False, error=f"陌生人首发达限: {reason}")
-            q.note_stranger_sent()      # 预占额度（失败由 _send_one 归还）
 
-        # ④ 入队
+        # ④ 入队（**先**做容量检查）
+        #
+        # 2026-09-17 修补（OCR 审查 HIGH —— 配额泄漏）：
+        # 原实现把 `q.note_stranger_sent()`（预占额度）放在**队列容量检查之前**，
+        # 而队列满时直接 `return SubmitResult(False, ...)` **不归还**额度。
+        # 后果：每次入池被"队列已满"拒绝就白吃一个「陌生人首发」额度
+        # （2/分钟 或 30/天）；批量直播任务很容易打满 200 队列 → 额度被
+        # **拒绝路径**快速耗尽 → 之后真实可发的目标被 can_stranger_first 误拒。
+        # 这等于「发送闸门被自身的拒绝路径绕空」。
+        # 现改为：容量检查通过后才预占；且预占与建任务在同一临界区，无中途返回。
         prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
             source, PRIO_BATCH)
         q = self._queue_of(account)
         if q.qsize() >= cfg("QUEUE_MAX"):
             return SubmitResult(False, error=f"队列已满（{cfg('QUEUE_MAX')}），请稍后重试")
+
+        if is_stranger:
+            # 注意：配额与队列是**两个不同对象**（quota_of 返回 AccountQuota，
+            # _queue_of 返回 PriorityQueue）。容量检查通过后才预占额度。
+            _q = self.quota_of(account)
+            ok_q, reason = _q.can_stranger_first()
+            if not ok_q:
+                logger.warning(f"[SEND-030] " + f"[dm-dispatch][{account}] 陌生人首发被限流: {reason}")
+                return SubmitResult(False, error=f"陌生人首发达限: {reason}")
+            _q.note_stranger_sent()     # 预占额度（发送失败由 _send_one 归还）
+
         task = SendTask(task_id=uuid.uuid4().hex[:12], account=account,
                         conv_id=conv_id, peer_uid=peer_uid, text=text,
                         source=source, priority=prio,
@@ -915,7 +928,20 @@ class DmDispatcher:
                 f"{peer_uid} - {sink_reason}")
             return SubmitResult(False, error=f"UID 沉淀池: {sink_reason}")
 
-        # ③ 陌生人首发限流（采集/监听目标默认按陌生人首发计）
+        # ③ 入队容量检查（**先**做，再做额度预占）
+        #
+        # 2026-09-17 修补（OCR 审查 HIGH —— 配额泄漏）：原实现先用
+        # `q.note_stranger_sent()` 预占额度、**再**检查队列容量，
+        # 队列满时直接 return **不归还**额度 → 每次被拒都白吃一个陌生人首发
+        # 额度（2/分钟、30/天），批量场景会把它快速耗空，之后真实可发的
+        # 目标被 can_stranger_first 误拒。故把容量检查提到预占之前。
+        prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
+            source, PRIO_BATCH)
+        q_ = self._queue_of(account)
+        if q_.qsize() >= cfg("QUEUE_MAX"):
+            return SubmitResult(False, error=f"队列已满（{cfg('QUEUE_MAX')}）")
+
+        # ③-b 陌生人首发限流（采集/监听目标默认按陌生人首发计）
         # **预占额度**：入池即记账，不等发送成功才记。否则"入池→发送"之间
         # 的窗口期可以无限入池（检查通过但都还没发送，额度始终为 0），
         # 限流形同虚设。发送失败时由 _send_one 调 quota.refund_stranger() 归还。
@@ -926,12 +952,7 @@ class DmDispatcher:
             return SubmitResult(False, error=f"陌生人首发达限: {reason}")
         q.note_stranger_sent()          # 预占
 
-        # ④ 入队（conv_id 留空，发送时按 peer_uid 走 /send_by_uid）
-        prio = priority if priority is not None else _PRIO_BY_SOURCE.get(
-            source, PRIO_BATCH)
-        q_ = self._queue_of(account)
-        if q_.qsize() >= cfg("QUEUE_MAX"):
-            return SubmitResult(False, error=f"队列已满（{cfg('QUEUE_MAX')}）")
+        # ④ 建任务并入队（conv_id 留空，发送时按 peer_uid 走 /send_by_uid）
         task = SendTask(task_id=uuid.uuid4().hex[:12], account=account,
                         conv_id="", peer_uid=peer_uid, text=text,
                         source=source, priority=prio,

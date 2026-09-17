@@ -122,6 +122,19 @@ def _is_busy() -> bool:
         return _scan_exclusive["holder"] is not None
 
 
+def _cache_unpack(cache):
+    """兼容解包 (ts, data) 旧格式与 (ts, data, gen) 新格式。
+
+    2026-09-17：_userinfo_cache 由二元组升级为三元组（增加 context 代次），
+    但进程内可能有旧格式残留（热重载/未重建对象），故做兼容解包。
+    """
+    if cache is None:
+        return 0.0, None, -1
+    if len(cache) == 3:
+        return cache[0], cache[1], cache[2]
+    return cache[0], cache[1], -1   # 旧二元组 → 代次 -1，必然 != 当前代次
+
+
 def _scan_exclusive_set(holder) -> None:
     """写入独占标志（None=空闲）。与 _lease 共用同一把锁，保证状态一致。"""
     with _lease_lock:
@@ -487,6 +500,10 @@ class BrowserContainer:
         # 昵称缓存：(采集时间戳, {sec_uid: {...}})。配 _prewarm 使用，
         # 避免每次「更新会话」都重跑 176s 的滚动捕获（08 §三十七）。
         self._userinfo_cache: tuple | None = None
+        # 2026-09-17 修补（OCR 审查 HIGH）：context 代次。每次 _launch 成功
+        # （context 重建）后 +1，用于让「上下文相关缓存」在重建后立即失效
+        # （昵称缓存历史上是永不失效的僵尸值，见 capture_userinfo_via_browser）。
+        self._context_generation: int = 0
         # 2026-09-14 v0.43.11：预热进行中标记。capture_userinfo_map 据此决定
         # 是否「稍等一下预热」（预热不占租约，只占 _lock，见 _exec internal）。
         self._prewarm_running: bool = False
@@ -582,7 +599,26 @@ class BrowserContainer:
             _vb_mode, _cfg, headless=_launch_headless, user_data_dir=self._profile_dir,
             force=False, account=self.account)
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+        # 2026-09-17 修补（OCR 审查 HIGH）：context 已重建 → **bump 代次**，
+        # 并作废与上下文绑定的昵称缓存（原缓存永不失效，跨重建仍被复用 →
+        # 归属失效的旧昵称被持续回填，见 capture_userinfo_via_browser 处说明）。
+        self._context_generation = getattr(self, "_context_generation", 0) + 1
+        self._userinfo_cache = None
+        logger.debug(f"[bcc] context 代次 → {self._context_generation}"
+                     f"（昵称缓存已作废）")
         # V16 踩坑：add_init_script 必须在 goto 前注入，否则前端已发完 im/user/info 再注入就截不到
+        #
+        # 2026-09-17 修补（OCR 审查 HIGH —— 重复注入）：
+        # 原实现每次 `_launch` 都无条件 add_init_script 两个脚本，而 `_launch`
+        # 会被 `_do_switch_background` / `scan_login` / `_ensure_alive` 反复调用。
+        # 若 context 未真正重建（同一 context 复用），脚本会在同一页面上**累计
+        # 重复注入** → 两个脚本各自包裹 window.fetch/XMLHttpRequest，内层包装
+        # 被外层覆盖，先注入者再也观察不到请求（WP 私信通道静默失效）。
+        # 现先清空再注入，保证「每个 context 恰好一套」。
+        try:
+            await self._context.clear_init_scripts()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[bcc] clear_init_scripts 不可用（不影响本次注入）: {e}")
         await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
         await self._context.add_init_script(CAP_WP_MESSAGE_HOOK_JS)  # 2026-09-05 WP
         # 直接打开 chat 页（前端才会自发调 im/user/info）
@@ -1270,12 +1306,28 @@ class BrowserContainer:
             except Exception:
                 _ttl = 600
             if _ttl > 0 and self._userinfo_cache:
-                _ts, _data = self._userinfo_cache
-                if _data and (time.time() - _ts) < _ttl:
+                _ts, _data, _gen = _cache_unpack(self._userinfo_cache)
+                # 2026-09-17 修补（OCR 审查 HIGH —— 缓存僵尸值）：
+                # 原判据只有 `(time.time()-_ts) < _ttl`，而**每次调用都会走到
+                # 这里**（缓存被反复复用、时间窗不断向后滚），于是只要 10 分钟
+                # 内有任何调用，缓存就**永不失效**。BCC 重启、切可见性、切账号
+                # （context 重建、profile 换了）之后仍返回归属已失效的旧昵称。
+                # 后果链：capture_userinfo_via_browser 报"成功" → 后续捕获全部
+                # 按旧昵称回填 → 前端只显示旧名/裸 UID，且唯一信号是一行
+                # logger.info（无告警、无重试）。
+                # 现增加 **context 代次** 校验：_launch 成功后 bump 代次，
+                # 代次不符即视为失效，强制重新采集。
+                if (_data and (time.time() - _ts) < _ttl
+                        and _gen == self._context_generation):
                     logger.info(
                         f"[bcc] 复用昵称缓存（{len(_data)} 个，"
-                        f"{time.time() - _ts:.0f}s 前采集），跳过滚动")
+                        f"{time.time() - _ts:.0f}s 前采集，代次={_gen}），跳过滚动")
                     return _data
+                if _gen != self._context_generation:
+                    logger.warning(
+                        f"[BCC-062] [bcc] 昵称缓存代次不符（缓存={_gen} "
+                        f"当前={self._context_generation}，context 已重建），"
+                        f"丢弃旧缓存并重新采集")
             # 预热还在跑 → 等它（预热不占租约，只占 _lock，见 _exec internal）
             if self._prewarm_running and time.time() < _deadline:
                 await asyncio.sleep(1.0)
@@ -1477,7 +1529,8 @@ class BrowserContainer:
             # 写入进程内缓存（供后续 /capture_userinfo 直接命中，
             # 避免预热完成后又重复跑一遍 176s 的滚动）
             if cap:
-                self._userinfo_cache = (time.time(), cap)
+                self._userinfo_cache = (time.time(), cap,
+                                        getattr(self, "_context_generation", 0))
                 logger.info(
                     f"[bcc] 昵称捕获完成：{len(cap)} 个，"
                     f"总耗时 {_time.time() - _t0 + wait:.1f}s（已缓存）")
