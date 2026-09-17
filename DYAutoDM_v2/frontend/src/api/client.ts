@@ -112,6 +112,52 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ===== 受保护媒体的「带令牌取二进制」（2026-09-17，B 方案）=====
+//
+// 背景：`<img src>` / `<video src>` **无法携带自定义请求头**，而后端媒体端点
+// （`/api/messages/origin_image/...`、`/api/messages/video/...`）受会员门禁保护
+// —— 实测无令牌访问一律 401。若直接把后端 URL 塞进 src，浏览器不带令牌，
+// 必然取不到图/视频（既有原图显示因此有 `onError` 降级，长期静默破损）。
+//
+// 方案 B（用户 2026-09-17 拍板）：**后端零改动**，前端先带 `X-Member-Token`
+// fetch 回 Blob，再用 `URL.createObjectURL` 交给 `<img>/<video>`。
+// 这样会员鉴权保持完整，不引入「媒体端点无鉴权」的安全面变化。
+// 调用点统一走 `@/lib/authed-media`，不要在组件里手写。
+
+/** 该地址是否为「需要带令牌获取」的本机后端 API 资源。 */
+export function isLocalApiUrl(src?: string): boolean {
+  if (!src) return false;
+  if (src.startsWith("/api/")) return true;
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/api\//i.test(src);
+}
+
+/** 相对路径 → 后端绝对地址；已是绝对地址（含图床外链）则原样返回。 */
+export function toBackendUrl(src: string): string {
+  if (!src) return src;
+  if (src.startsWith("/")) return `${BASE}${src}`;
+  return src;
+}
+
+/** 带会员令牌取受保护媒体 → Blob（失败抛错，调用方负责降级）。 */
+export async function fetchAuthedBlob(pathOrUrl: string): Promise<Blob> {
+  try {
+    await ensureBackendReady();
+  } catch {
+    // 就绪等待失败不阻断，由 fetch 结果说话（与 request() 同一约定）
+  }
+  const headers: Record<string, string> = {};
+  const tk = getMemberToken();
+  if (tk) headers["X-Member-Token"] = tk;
+  const res = await fetch(toBackendUrl(pathOrUrl), { headers });
+  if (!res.ok) {
+    if (res.status === 401 && !pathOrUrl.startsWith("/api/member/")) {
+      setMemberToken("");   // 会话过期：清本地令牌，UI 轮询会回登录页
+    }
+    throw new Error(`取媒体失败 (${res.status})`);
+  }
+  return res.blob();
+}
+
 // ===== 会员 API（v0.37.0）=====
 
 export interface MemberState {

@@ -3,6 +3,7 @@ import { useRef } from "react";
 import { useEffect } from "react";
 import { MediaInfo } from "./message-shared";
 import { Button } from "@/components/ui/button";
+import { AuthedImg } from "@/components/ui/authed-img";
 
 export function ImageViewer({
   media,
@@ -132,7 +133,7 @@ export function ImageViewer({
               resource_url 的远程链是私有加密，真机实测浏览器加载失败
               （3/3 error，0×0）。因此弹层只能放大显示已有的缩略图。 */}
           {media.inline ? (
-            <img
+            <AuthedImg
               src={media.thumb}
               alt="预览"
               className="h-auto w-auto rounded-[var(--radius-sm)]"

@@ -2,6 +2,7 @@ import { Play } from "lucide-react";
 import { openExternal } from "../../utils/openExternal";
 import { cn } from "@/lib/utils";
 import { Msg, MediaInfo, renderTextWithEmoji, parseMedia } from "./message-shared";
+import { AuthedImg } from "@/components/ui/authed-img";
 
 export function MsgBubble({
   m,
@@ -102,8 +103,9 @@ export function MsgBubble({
       };
       return (
         <div className={mediaBubble}>
-          <img
+          <AuthedImg
             src={m.image_url}
+            fallbackSrc={media.thumb}
             alt={label}
             className={cn(
               "block h-auto w-auto cursor-zoom-in rounded-[var(--radius-sm)]",
@@ -111,13 +113,6 @@ export function MsgBubble({
               isSticker ? "max-h-[130px] max-w-[100px]" : "max-h-[260px] max-w-[200px]",
             )}
             onClick={() => onOpenImage && onOpenImage(fullMedia)}
-            onError={(e) => {
-              // 解密文件缺失或图床 404:降级显示缩略图
-              const img = e.currentTarget;
-              if (media.thumb && img.src !== media.thumb) {
-                img.src = media.thumb;
-              }
-            }}
           />
         </div>
       );
@@ -135,7 +130,7 @@ export function MsgBubble({
     if (media.inline) {
       return (
         <div className={mediaBubble}>
-          <img
+          <AuthedImg
             src={media.thumb}
             alt={label}
             className={cn(
