@@ -123,7 +123,11 @@ export function ReplyKb({
             onChange={(e) => setA(e.target.value)}
             placeholder="命中的自动回复话术…"
           />
-          <Button onClick={() => saveMut.mutate()} disabled={!q && !a}>
+          {/* 2026-09-17 修补（OCR 审查 HIGH）：原为 `disabled={!q && !a}`
+              —— 只有**两个字段都为空**时才禁用，于是只填了关键词（或只填了
+              话术）按钮就可点，会用半空数据提交。意图是「任一必填项为空即禁用」。
+              （`&&` → `||`） */}
+          <Button onClick={() => saveMut.mutate()} disabled={!q || !a}>
             {editId ? <><Pencil className="h-3.5 w-3.5" />更新</> : <><Plus className="h-3.5 w-3.5" />添加</>}
           </Button>
           {editId !== null && (

@@ -108,7 +108,11 @@ class SearchMixin:
         params.add_param('a_bogus', generate_a_bogus_pure(api, splice_url(params.get())))
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=tls_verify())
-        return json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：原为裸 `json.loads(resp.text)`。
+        # 抖音限流/风控时返回**空响应体**（非 JSON）→ 直接解析抛 JSONDecodeError，
+        # 被上层当作「接口不可用」。同族的 client_relations/client_comments
+        # 均已用 safe_json 优雅降级，此处漏改（降级策略不一致）。
+        return safe_json(resp)
 
 
     @staticmethod
@@ -225,9 +229,16 @@ class SearchMixin:
         while True:
             res_json = DouyinAPI.search_general_work(auth, query, sort_type, publish_time, offset,
                                                      filter_duration, search_range, content_type)
+            # 2026-09-17 修补（OCR 审查 HIGH）：平台限流/风控时 `search_general_work`
+            # 返回 {} 或缺少 "data"/"has_more"（safe_json 的降级结果）→ 直接下标
+            # 会抛 KeyError。先做键守卫，缺失即停止翻页（而非崩溃）。
+            if not isinstance(res_json, dict) or "data" not in res_json:
+                logger.warning(f"[SEARCH-001] 搜索结果缺 data 字段（疑限流/风控），"
+                               f"停止翻页: keys={list(res_json)[:6] if isinstance(res_json, dict) else type(res_json).__name__}")
+                break
             works = [w for w in res_json["data"] if w.get("aweme_info")]
             work_list.extend(works)
-            if res_json["has_more"] != 1 or len(work_list) >= num:
+            if res_json.get("has_more") != 1 or len(work_list) >= num:
                 break
             offset = str(int(offset) + len(res_json["data"]))
         if len(work_list) > num:

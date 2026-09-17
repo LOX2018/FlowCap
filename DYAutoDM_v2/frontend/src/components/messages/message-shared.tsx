@@ -153,7 +153,13 @@ export function renderTextWithEmoji(s: string): React.ReactNode[] {
   const parts = String(s || "").split(/(\[[^\[\]]{1,10}\])/g);
   return parts.map((p, i) => {
     const m = p.match(/^\[([^\[\]]{1,10})\]$/);
-    if (m && EMOJI_MAP[m[1]]) {
+    // 2026-09-17 修补（OCR 审查 HIGH —— 原型链 key 误命中）：
+    // 原为 `EMOJI_MAP[m[1]]` —— EMOJI_MAP 是普通对象字面量，继承 Object.prototype。
+    // 文本里出现 `[constructor]` / `[toString]` / `[hasOwnProperty]` 等方括号串时，
+    // 取值会命中原型链上的函数（真值）→ 走进 emoji 分支渲染出一个**函数**，
+    // React 渲染函数会抛错/告警。
+    // 改用 hasOwnProperty 判定「自有键」再取值。
+    if (m && Object.prototype.hasOwnProperty.call(EMOJI_MAP, m[1])) {
       return (
         <span
           key={i}

@@ -407,7 +407,24 @@ export function fmtTime(ts: number | null | undefined): string {
 export function recordsToRows(src: Record<string, unknown>[]): Row[] {
   return src.map((r, i) => ({
     id: 900000 + i,
-    time: r.start_ts ? String(r.start_ts).slice(11, 19) : "",
+    // 2026-09-17 修补（OCR 审查 HIGH —— 字段名不存在致时间列恒空）：
+    // 原为 `r.start_ts`，但后端 `_records_from_adm`（api/tasks.py:99-130）的
+    // 字段映射里**没有 start_ts**（只有 captured_at / send_at / send_ts）
+    // → `time` 恒为 ""，"时间" 列永远空白。
+    // 现按后端实际字段兜底取值：captured_at（采集时间，与 ts 同源）优先，
+    // 退化到 send_at / send_ts。
+    // 注意三种值的形态不同：captured_at 是**秒级时间戳**，send_at / send_ts
+    // 是**已格式化字符串**，故分开处理。
+    time: (() => {
+      const ca = Number(r.captured_at) || 0;
+      if (ca > 0) {
+        const d = new Date(ca * 1000);
+        const p = (n: number) => String(n).padStart(2, "0");
+        return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+      }
+      const s = String(r.send_at || r.send_ts || "");
+      return s ? s.slice(11, 19) || s : "";
+    })(),
     name: String(r.nickname || r.uid || "未知"),
     lv: 0,
     content: String(r.comment || r.content || ""),
