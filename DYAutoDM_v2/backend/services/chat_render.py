@@ -113,6 +113,10 @@ def fetch_range(account: str, conv_id: str, start_seq: int | None = None,
         })
     lo = int(start_seq) if start_seq else 1
     hi = int(end_seq) if end_seq else (len(msgs) or 1)
+    # DbC 前置条件：区间必须有序。若不校验，start>end 会**静默返回空区间**
+    # （画出一张只有标题的空图），调用方无从分辨「区间为空」与「参数写反」。
+    if lo > hi:
+        raise ValueError(f"start_seq({lo}) 不能大于 end_seq({hi})")
     picked = [m for m in msgs if lo <= m["seq"] <= hi][:limit]
     return {"conv": {"conv_id": row["conv_id"], "name":
                      row["peer_name"] or row["peer_id"] or row["conv_id"]},

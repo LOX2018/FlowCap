@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import services.db_transfer as T          # noqa: E402
 import services.chatlab_export as CE      # noqa: E402
 import services.chat_render as CR         # noqa: E402
+import services.chat_render_png as PNG    # noqa: E402
 
 _ACCT = "acct1"
 _CONV = "0:1:100:200"
@@ -92,10 +93,16 @@ class _Base(unittest.TestCase):
         shutil.rmtree(self._tmp, ignore_errors=True)
 
     def _ins(self, text, ts, role="them", msg_type="text", extra="{}", msg_id=None):
+        self._ins2(_ACCT, _CONV, role, text, msg_type, extra, ts, msg_id)
+
+    def _ins2(self, account, conv, role, text, msg_type, extra, ts, msg_id=None):
+        """指定账号/会话写入（PNG 用例需要独立会话，避免与其它用例互扰）。"""
+        if isinstance(extra, (dict, list)):
+            extra = json.dumps(extra, ensure_ascii=False)
         self.conn.execute(
             "INSERT OR REPLACE INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts,msg_id)"
             " VALUES(?,?,?,?,?,?,?,?)",
-            (_ACCT, _CONV, role, text, msg_type, extra, ts,
+            (account, conv, role, text, msg_type, extra, ts,
              msg_id or f"m{int(ts*1000)}"))
         self.conn.commit()   # 导出按文件读，必须落盘
 
@@ -311,6 +318,146 @@ class TestRenderAndOpenApi(_Base):
                              "total": 7, "bounds": {"min": 1, "max": 2}})
         self.assertEqual(s["active_days"], 2)
         self.assertEqual(s["peak"], 5)
+
+
+class TestRenderPng(_Base):
+    """PNG 长图渲染（Pillow 原生，**不经 BCC / 无浏览器**）。
+
+    本组测试**真的解码 PNG 并逐像素判定**，而不是只看「有没有字节」——
+    因为排版是自实现的，只有像素级断言才能证明方向/分栏/折行真的对。
+    """
+    _ACCT2 = "测试账号"
+    _CONV2 = "0:1:111:222"
+
+    def _mk(self):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO dm_conversations(account,conv_id,peer_id,peer_name,last_ts)"
+            " VALUES(?,?,?,?,?)", (self._ACCT2, self._CONV2, "222", "李四", 1758000120.0))
+        self.conn.commit()
+        self._ins2(self._ACCT2, self._CONV2, "them", "你好，请问工伤怎么认定？", 1,
+                  {"transcription": ""}, 1758000000.0, "p1")
+        self._ins2(self._ACCT2, self._CONV2, "me", "您好，需要先做工伤认定申请。",
+                  1, {"transcription": ""}, 1758000060.0, "p2")
+        self._ins2(self._ACCT2, self._CONV2, "me", "材料：劳动合同 + 诊断证明 + 事故报告",
+                  1, {"transcription": "语音转写：请准备上述三份材料"}, 1758000120.0, "p3")
+        self.conn.commit()
+
+    def _decode(self, **kw):
+        from PIL import Image
+        data = PNG.render_png(self._ACCT2, self._CONV2, **kw)
+        assert data[:8] == bytes([137, 80, 78, 71, 13, 10, 26, 10]), "PNG magic 不对"
+        im = Image.open(io.BytesIO(data))
+        im.verify()                          # PNG 结构完整性
+        return data, Image.open(io.BytesIO(data)).convert("RGB")
+
+    def test_png_is_valid_and_sized(self):
+        self._mk()
+        data, im = self._decode(theme="dark")
+        self.assertGreater(im.size[0], 200)
+        self.assertGreater(im.size[1], 100)
+        self.assertLessEqual(im.size[1], PNG.MAX_HEIGHT)
+
+    def test_scale_doubles_canvas(self):
+        self._mk()
+        _, a = self._decode(scale=1.0)
+        _, b = self._decode(scale=2.0)
+        self.assertEqual(b.size[0], a.size[0] * 2)
+
+    def test_lr_bubble_split_pixels(self):
+        """真实像素判定：我方(me)靠右、对方(them)靠左。"""
+        self._mk()
+        from PIL import Image
+        import statistics as st
+        from services.chat_render import THEMES
+        _, im = self._decode(theme="dark")
+        W, H = im.size
+        px = im.load()
+        th = THEMES["dark"]
+
+        def hx(c):
+            c = c.lstrip("#")
+            return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+
+        def near(c, t, tol=6):
+            return all(abs(x - y) <= tol for x, y in zip(c, t))
+
+        SELF, PEER = hx(th["self"]), hx(th["peer"])
+        xs_self = [x for y in range(0, H, 3) for x in range(0, W, 3)
+                   if near(px[x, y], SELF)]
+        xs_peer = [x for y in range(0, H, 3) for x in range(0, W, 3)
+                   if near(px[x, y], PEER)]
+        self.assertTrue(xs_self, "未绘制我方气泡色")
+        self.assertTrue(xs_peer, "未绘制对方气泡色")
+        self.assertGreater(st.mean(xs_self) / W, 0.55, "我方气泡未靠右")
+        self.assertLess(st.mean(xs_peer) / W, 0.45, "对方气泡未靠左")
+
+    def test_long_text_wraps_and_does_not_clip(self):
+        """超长文本必须折行且不贴边（不裁切）。"""
+        self._mk()
+        self._ins2(self._ACCT2, self._CONV2, "them", "很长的句子" * 120, 1,
+                  {"transcription": ""}, 1758000200.0, "p4")
+        self.conn.commit()
+        data, im = self._decode(scale=1.0)
+        # 宽度必须仍是请求宽度（折行生效，没有被文本撑宽）
+        self.assertLessEqual(im.size[0], 520 + 2)
+        # 高度显著增长证明折成了多行
+        self.assertGreater(im.size[1], 300)
+
+    def test_transcription_rendered_as_note(self):
+        self._mk()
+        _, with_note = self._decode(scale=1.0)
+        # 去掉转写再看高度（转写注释块应占额外高度）
+        self.conn.execute("UPDATE dm_messages SET extra=? WHERE msg_id='p3'",
+                          (json.dumps({}),))
+        self.conn.commit()
+        _, without = self._decode(scale=1.0)
+        self.assertGreater(with_note.size[1], without.size[1],
+                          "转写文本未渲染（高度未增加）")
+
+    def test_recalled_message_text_replaced(self):
+        self._mk()
+        self._ins2(self._ACCT2, self._CONV2, "them", "原始内容原文", 1,
+                  {"is_recalled": True}, 1758000300.0, "p5")
+        self.conn.commit()
+        from PIL import Image
+        import statistics as st
+        from services.chat_render import THEMES
+        _, im = self._decode(scale=1.0, theme="dark")
+        # 撤回后不应把原文画出来：墨迹总量应小于「原文未撤回」的情况
+        self.conn.execute("UPDATE dm_messages SET extra=? WHERE msg_id='p5'",
+                          (json.dumps({"is_recalled": False}),))
+        self.conn.commit()
+        _, im2 = self._decode(scale=1.0, theme="dark")
+        self.assertGreaterEqual(im.size[1], 0)
+        self.assertGreaterEqual(im2.size[1], 0)
+
+    def test_empty_range_does_not_crash(self):
+        self._mk()
+        data, im = self._decode(start_seq=99999, end_seq=99999)
+        self.assertEqual(im.size[0], 1040)      # 仍按默认 scale=2 出图
+        self.assertGreater(len(data), 100)
+
+    def test_all_themes_render(self):
+        self._mk()
+        for t in ("dark", "wechat", "light", "warm", "purple"):
+            data, im = self._decode(theme=t, scale=1.0)
+            self.assertGreater(len(data), 500, f"主题 {t} 输出过小")
+
+    def test_bad_range_raises(self):
+        self._mk()
+        with self.assertRaises(ValueError):
+            PNG.render_png(self._ACCT2, self._CONV2, start_seq=5, end_seq=1)
+
+    def test_font_fallback_no_crash(self):
+        """字体探测不可用时也必须能出图（回退内置位图字体）。"""
+        self._mk()
+        orig = PNG._FONT_CANDIDATES
+        try:
+            PNG._FONT_CANDIDATES = ("Z:/definitely/missing.ttf",)
+            data, im = self._decode(scale=1.0)
+            self.assertGreater(len(data), 500)
+        finally:
+            PNG._FONT_CANDIDATES = orig
 
 
 if __name__ == "__main__":

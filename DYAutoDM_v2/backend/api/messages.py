@@ -734,6 +734,49 @@ async def render_chat_html(body: dict) -> dict:
             "theme": str(body.get("theme") or "dark")}
 
 
+@router.post("/render/png")
+async def render_chat_png(body: dict) -> Response:
+    """把消息区间渲染成 **PNG 长图**（Pillow 原生绘制，**不经 BCC / 无浏览器**）。
+
+    请求体：`{account, conv_id, start_seq?, end_seq?, theme?, title?, subtitle?,
+              width?, scale?, as_base64?}`
+    返回：默认 `image/png` 二进制；`as_base64=true` 时返回 JSON
+    `{ok, data_uri, bytes, width, height}`。
+
+    设计取舍（用户 2026-09-17 明确要求）：**不走 BCC**。
+    可选路径对比见 `services/chat_render_png.py` 模块头 ——
+    Pillow 原生绘制零新依赖、零浏览器、纯离线，代价是排版由我们自测（已单测覆盖）。
+    """
+    from fastapi import Response as _Resp
+    account = str(body.get("account") or "").strip()
+    conv_id = str(body.get("conv_id") or "").strip()
+    if not account or not conv_id:
+        raise HTTPException(422, "account 与 conv_id 必填")
+    kw = dict(
+        start_seq=body.get("start_seq"), end_seq=body.get("end_seq"),
+        theme=str(body.get("theme") or "dark"),
+        title=str(body.get("title") or ""),
+        subtitle=str(body.get("subtitle") or ""),
+        width=int(body.get("width") or 520),
+        scale=float(body.get("scale") or 2.0),
+    )
+    try:
+        from services import chat_render_png as _png
+        data = await asyncio.to_thread(_png.render_png, account, conv_id, **kw)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-043] " + f"PNG 渲染失败: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"PNG 渲染失败: {type(e).__name__}")
+    name = f"chat_{conv_id.replace(':','_')[:40]}.png"
+    if body.get("as_base64"):
+        import base64 as _b64
+        return {"ok": True, "bytes": len(data),
+                "data_uri": "data:image/png;base64," + _b64.b64encode(data).decode("ascii")}
+    return _Resp(content=data, media_type="image/png",
+                 headers={"Content-Disposition": f'inline; filename="{name}"'})
+
+
 @router.get("/open/conversations")
 async def open_conversations(account: str, search: str = "", page: int = 1,
                              page_size: int = 50) -> dict:
