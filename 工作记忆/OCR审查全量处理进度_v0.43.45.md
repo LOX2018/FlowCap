@@ -588,6 +588,85 @@ IDLE/STOPPED 或任务结束，再释放锁 → 第二个请求命中 `already`�
   （已在 5.x 逐条定性为 OWASP 模板刷屏 + SQL 误判 → **全部误报**）。
 - MEDIUM 590 / LOW 487 未动（报告本身误报率高，建议按"同类收敛"而非逐条）。
 
+---
+
+## 7. MEDIUM 聚类处置（v0.43.70 ~ v0.43.71）
+
+### 7.0 方法：**先按模式聚类，再对当前代码实测**
+
+590 条 MEDIUM / 241 文件 → 用正则把 `content` 归入 14 个"缺陷模式"桶，
+再**直接对当前代码做 AST 扫描**看该模式还剩多少（不信报告直接数）：
+
+| 模式 | 报告条数 | 当前代码实测 |
+|---|---:|---|
+| 静默吞异常 | 55 | 283 处（**多数是有意的 best-effort 清理**，逐条改风险大收益低） |
+| loguru 双参数 | 58 | **15 处真实**（→ 本轮修完） |
+| 并发/竞态 | 74 | 多为"未加锁"提示，需逐个判断 |
+| 安全/校验 | 43 | **6 处真实** + 6 类已缓解/架构性 |
+| 可变默认参数 | 2 | **0 处**（早已清零） |
+
+### 7.1 loguru 误用 printf 风格（v0.43.70）—— **含我自己引入的 1 处**
+
+**实测三态**（这是关键证据，不靠印象）：
+
+```
+logger.warning("[db] ...: %s", "真实错误内容")   → 输出 '[db] ...: %s'      参数丢失 ❌
+logger.warning("SEC-UID-002", "详情")            → 输出 'SEC-UID-002'        详情丢失 ❌
+logger.warning("[db] ...: {}", "真实错误内容")   → 输出 '[db] ...: 真实错误内容' ✅
+```
+
+**15 处**（4 文件）：`database.py`（**我 v0.43.66 写的**）、`tasks_history.py`、
+`dy_apis/client_user.py`×3（`SEC-UID-00X` 错误码+详情）、
+`dy_apis/login_api.py`×10（`%s`/`%d` 与 cookie 统计）。
+
+修后抽验输出：`[history] 拒绝执行：非法列名 'x; DROP'（白名单=['a','b']）` ✅
+
+**新增防回归测试** `backend/test_no_loguru_printf_style.py`：
+- `test_no_printf_style_loguru`：AST 全库扫描（首参为不含 `{}` 的常量且有第 2 位置参）
+- `test_printf_style_args_are_dropped`：**实证 loguru 语义**（锁定认知，如果
+  哪天 loguru 改了行为这条会失败，提醒重新评估）
+- **反向验证**：在受控副本注入 `logger.error("CODE-1","detail")` → 退出码 1 且
+  **准确点出该文件**；正向 2 tests OK。
+
+> 注意：扫描器必须**跳过自己**（文件内含故意写错的反例演示行）。
+
+### 7.2 安全加固 6 项（v0.43.71）
+
+| 文件 | 缺陷 | 实测 |
+|---|---|---|
+| `api/logs.py` `/write` | `body.text` 原样写日志：无上限 + 含 `\n` 可**伪造日志行**（日志注入） | 加 4000 字上限 + 换行/制表收敛为空格 |
+| `utils/bd_ticket.py` | `ticket`/`api` 直接插进 `k=v&k=v` 待签串 → 含 `&`/`=` 可**注入额外键值对** | `"a&b"`/`"a=b"` → **ValueError**；正常路径不变 |
+| `auto_dm/origin_image_resolver.py` | 缓存文件名用未净化的 `msg_id` → 含 `/`、`..` 可写出目录 | `'../../evil'→'evil'`、`'a/b'→'ab'`、`'..'→''`（回落 sha） |
+| `api/ai.py` | 临时名 `pro_kb_import_{int(time.time())}`：1 秒内同名碰撞 + 可预测 | 改 `tempfile.mkstemp`（原子+随机名） |
+| `dy_apis/login_api.py` `_safe_repr` | 只按 dict **键名**遮蔽；裸 cookie 串**原样打印** | 裸串 → `<masked len=55>`；普通文本不受影响 |
+| `mcp/config.py` `check_token` | 从不检查 `enabled` → 关闭 MCP 后带 token 仍可调用 | 按其 docstring 补 `enabled` 判定 |
+
+### 7.3 MEDIUM security 里判为**已缓解/架构性**的
+
+- **`verify=False` 系列（~6 条，`client_video`/`image_sender`/`dy_util`/
+  `client_live`/`conversation_capture`/`mstoken`）→ 误报**：v0.43.45 已全库
+  收敛为 `tls_verify()`，**实测默认返回 `True`**（仅 `DY_TLS_INSECURE=1` 时 False），
+  非注释的 `verify=False` 残留为 **0**。报告是基于收敛前的代码。
+- `api/member.py:254` **跨会员删除**（号称可删他人）→ **高估**：需
+  `body.password` 且 `delete_member` 内部走 `verify_password`，无口令拿不到；
+  删除**他人**需知道他人口令，非"越权"。但 `/delete` 未校验 `memberId` 归属，
+  属**纵深防御**可补（未改：需先与用户确认多会员运维语义）。
+- `mcp/config.py` 的 token 用 `secrets.token_urlsafe(32)`、`compare_digest` 恒定时间比较
+  → 令牌本体安全；本轮只补 enabled 门禁。
+- `login_capture.py:80` 存密钥**末 8 字符**"指纹"→ 约 6×10⁻¹⁵ 命中明文，
+  且注释明写意图 → 可接受。
+- `_safe_repr` 的**普通文本不遮蔽**属设计（只遮蔽敏感），本轮只补"裸敏感串"分支。
+
+### 7.4 剩余（MEDIUM）
+
+- `静默吞异常` 283 处：**不宜机械全改**（大量是有意的 best-effort 清理，
+  如关闭 context、删临时文件失败）；应只在"吞掉的是关键失败"处补日志 ——
+  已在 v0.43.47/49/66 按此原则逐个处理过若干处。
+- `并发/竞态` 74 条：需逐个判断是否真有共享可变状态。
+- `frontend` 174 条 MEDIUM：多为可维护性/样式，低优先。
+- LOW 487：未动。
+
+
 
 
 

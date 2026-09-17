@@ -1,0 +1,512 @@
+[
+ {
+  "path": "DYAutoDM_v2/backend/api/mcp.py",
+  "content": "`_stop_runtime` sets `_RUNTIME[\"httpd\"] = None` unconditionally at the end, even when `shutdown_httpd` failed (it returns False and swallows the exception). On failure the old server is still listening on the port but the runtime state forgets it, so the next `/restart` will spawn a second instance while `_status()` reports the new `bound_port` — the exact orphan-instance problem this fix (P2-13) was meant to eliminate. Consider only clearing the state when shutdown actually succeeded, and surface the failure to the caller.",
+  "existing_code": "        except Exception as e:\n            logger.warning(\"MCP-005\", f\"[mcp] 关闭旧 MCP 实例失败: \"\n                                      f\"{type(e).__name__}: {e}\")\n    _RUNTIME[\"httpd\"] = None\n    _RUNTIME[\"port\"] = None",
+  "start_line": 189,
+  "end_line": 193,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/notify.py",
+  "content": "`_migrate_legacy_llm` writes the \"已迁移\" marker (`set_kv(_MIGRATED_KEY, True)`) *before* performing the migration, and the marker is never rolled back if any of the subsequent steps (`ac.section_stored`, `load_config`, `ac.save_section`) raises. On such a failure the exception is swallowed, the guard is already set, and the legacy `llm` config in `notify_config.json` will never be migrated again → the user's model settings are silently lost. Set the marker only after a successful migration (or clear it in the except path).",
+  "existing_code": "        if get_kv(_MIGRATED_KEY):\n            return\n        set_kv(_MIGRATED_KEY, True)  # 先占位防并发双迁",
+  "start_line": 310,
+  "end_line": 312,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auth_helper.py",
+  "content": "`get_login_auth` also raises plain `RuntimeError`/`TimeoutError` when credentials are incomplete or capture times out (login_api.py:507/513), and it leaves the fingerprint browser open on purpose in those cases. Because the re-raise here is limited to `RiskControlError`, those cases are downgraded to a warning and swallowed, so callers (e.g. `api/accounts.py` scan_login, `auto_dm/accounts.py`) can never surface the \"凭证不完整/拒绝写入\" message to the user. Consider re-raising the credential-capture exceptions (at least `TimeoutError` and the incomplete-credential `RuntimeError`) as well.",
+  "existing_code": "        if isinstance(e, RiskControlError) or (getattr(e, \"__cause__\", None)\n                                               and isinstance(e.__cause__, RiskControlError)):\n            raise",
+  "start_line": 120,
+  "end_line": 122,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+  "content": "Partial results are discarded on mid-pagination failure: the entire `for page_no in range(...)` loop lives inside one `try`, and `except` returns `[]`. If page 1 succeeds and page 3 raises (e.g. `_extract_301_page` raises KeyError, or `requests.post` raises a transient connection error), the already-merged pages are thrown away and the caller sees \"0 messages\" — silently truncating history instead of preserving what was fetched. Wrap the per-page work in its own try/except and `break` to return the accumulated `merged`, or return `merged` from the except path.",
+  "existing_code": "        logger.warning(f\"[CAP-005] \" + f\"[capture][301] 拉取失败 cid={cid}: {e}\")\n        return []",
+  "start_line": 670,
+  "end_line": 671,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/auto_dm.py",
+  "content": "Hard stop marks the history task finished but never re-creates/closes the dispatch thread or waits for in-flight sends; more importantly, on the `hard=False` path the background `_wait_dispatch_done()` task created here is never referenced, so an exception inside it (e.g. from `_finish_history_task`) is silently swallowed by asyncio and the engine can be left in STOPPING forever. Keep a reference and add a done-callback that logs failures.",
+  "existing_code": "                asyncio.create_task(self._wait_dispatch_done())",
+  "start_line": 644,
+  "end_line": 644,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/recv_daemon.py",
+  "content": "The `try/except Exception: pass` around `conv_identity.correct_peer_id`/`self_send_error` silently swallows any failure (including import errors), meaning the self-send guard — a real safety check — is skipped without any log when `conv_identity` raises. At minimum log the exception so a broken guard is visible rather than silently disabled.",
+  "existing_code": "        _err = _cid.self_send_error(body.account, peer_id)\n        if _err:\n            return {\"ok\": False, \"error\": _err}\n    except Exception:\n        pass\n    if not peer_id:\n        return {\"ok\": False, \"error\": \"无法定位会话对方 uid\"}",
+  "start_line": 1543,
+  "end_line": 1549,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/recv_daemon.py",
+  "content": "`log_dir` and `datetime` are referenced here but are only defined inside the earlier `try` block; if that block raised (e.g. `os.makedirs` fails), `log_dir`/`datetime` are unbound and this block's own `try/except` swallows the resulting `NameError`, silently losing stderr redirection. Move the `log_dir`/`datetime` computation above and outside the first try, or recompute defensively here.",
+  "existing_code": "        _stderr_log = os.path.join(\n            log_dir, f\"recv_stderr_{datetime.now().strftime('%Y%m%d')}.log\")",
+  "start_line": 1767,
+  "end_line": 1768,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/verify_ws_ab.py",
+  "content": "`parse()` assumes each received chunk contains whole, complete frames. TCP reads can split a frame across `recv()` boundaries (or deliver multiple frames). For a length-126/127 frame whose payload has not fully arrived, `struct.unpack(\">H\"/\">Q\", ...)` can raise, and for a masked incomplete frame `b[i+off:i+off+ln]` silently yields a short slice — both cause the Ping/heartbeat to be miscounted, and the raised exception is swallowed by `handle()`'s `except Exception: pass`, silently dropping the connection. Since this harness's whole point is counting Ping vs hb frames precisely, buffer the bytes and only parse complete frames (retain the trailing partial frame for the next `recv`), or at minimum skip frames where `i + off + ln > len(b)`.",
+  "existing_code": "def parse(b):\n    out, i = [], 0\n    while i + 2 <= len(b):",
+  "start_line": 38,
+  "end_line": 40,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/verify_ws_link.py",
+  "content": "`parse_ws_frames` reads `buf[i+1]` and the extended-length bytes without first confirming those bytes exist in the buffer (only `i + 2 <= len(buf)` is checked). A TCP read can deliver a partial frame, so `struct.unpack(\">H\", buf[i+2:i+4])[0]` / the `>Q` slice can raise `struct.error` on a short read, and the masked key slice can silently truncate. On the server this exception is swallowed by the broad `except Exception` in `handle`, silently dropping frames and skewing the counters. Guard the length before slicing, or accumulate across recv calls.",
+  "existing_code": "        if ln == 126:\n            ln = struct.unpack(\">H\", buf[i + 2:i + 4])[0]; off = 4\n        elif ln == 127:\n            ln = struct.unpack(\">Q\", buf[i + 2:i + 10])[0]; off = 10",
+  "start_line": 47,
+  "end_line": 50,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/wp_recv.py",
+  "content": "A failed commit is swallowed with `pass`. Since inserts rely on `commit()` to persist (and `n_new` is still reported as non-zero), a failure here means the caller/UI believes messages were stored while nothing was persisted — silent data loss with no diagnostics. At minimum log the exception at warning level.",
+  "suggestion_code": "    try:\n        conn.commit()\n    except Exception as e:\n        logger.warning(f\"[RECV-026] [wp_recv][{account}] 提交失败: {e}\")",
+  "existing_code": "    try:\n        conn.commit()\n    except Exception:\n        pass\n    if n_new:",
+  "start_line": 312,
+  "end_line": 316,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/database.py",
+  "content": "`except Exception: pass` silently swallows all failures, including the `uniq_dmmsg` unique-index creation documented as essential for `INSERT OR IGNORE` dedup. The adjacent fallback index already warns on failure (DB-002) but this one stays silent, so a duplicate-data legacy DB will lose dedup with no log at all. At minimum log the failure (as done for uniq_dmmsg_fallback); distinguish 'duplicate column' (expected, ignorable) from other errors.",
+  "existing_code": "    try:\n        # 仅对 msg_id 非空的行生效（旧数据 msg_id IS NULL 不受唯一约束影响）\n        conn.execute(\n            \"CREATE UNIQUE INDEX IF NOT EXISTS uniq_dmmsg \"\n            \"ON dm_messages(account, conv_id, msg_id) WHERE msg_id IS NOT NULL\"\n        )\n    except Exception:\n        pass",
+  "start_line": 227,
+  "end_line": 234,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/downloader/downloader.py",
+  "content": "This broad `except Exception` wraps the whole retry loop body (request, HTTP check, file writes, `os.replace`), so programming errors (e.g. a bad `filename_tpl`, ValueError, OSError on disk full) are silently converted into \"download failure after N retries\". Narrow it to the expected network/IO exceptions (`requests.RequestException`, `OSError`, `RuntimeError`), so genuine bugs surface instead of being retried and swallowed.",
+  "existing_code": "        except Exception as e:  # noqa: BLE001\n            last_err = e",
+  "start_line": 95,
+  "end_line": 96,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/downloader/tasks.py",
+  "content": "`cleanup_finished` drops entries from `_tasks` and `_order` but leaves the id in `_cancel_flags`/`_pause_flags` only for the tasks it actually drops. The problem is the interaction with `wait_if_paused`: a thread blocked in that loop for a dropped task_id will never see the flag cleared in the pause case. Since `drop` is only the *terminal* tasks, a task stuck in `PAUSED` is never cleaned, so its id stays in `_pause_flags` indefinitely — those flags are effectively leaked for the lifetime of the process (`_pause_flags`/`_cancel_flags` grow without bound as new task ids are added). Recommend pruning stale flag entries whose task id is no longer in `_tasks` (or making both flag sets keyed by task id and removed together with the task).",
+  "existing_code": "            drop = done[:-keep] if len(done) > keep else []\n            for tid in drop:\n                self._tasks.pop(tid, None)\n                self._cancel_flags.discard(tid)\n                self._pause_flags.discard(tid)",
+  "start_line": 273,
+  "end_line": 277,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/downloader/tasks.py",
+  "content": "`_load` and `add` swallow all `OSError`s with `pass`, and `_load` also silently ignores decode/parse problems — a corrupt or unreadable cache file produces a cache that looks empty, causing every previously downloaded item to be re-downloaded with no diagnostic. At minimum log a warning (e.g. `logger.warning(f\"[DL-xxx] 去重缓存读写失败: {e}\")`) so the failure is observable rather than silent.",
+  "existing_code": "        except OSError:\n            pass",
+  "start_line": 148,
+  "end_line": 149,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_live.py",
+  "content": "`except Exception as e: pass` swallows all parse failures silently (`e` is also unused). This makes a broken regex/HTML-layout change indistinguishable from \"room not found\". Log the exception (e.g. `logger.warning(...)`) rather than discarding it.",
+  "existing_code": "                    print(res)\n                    return res\n                except Exception as e:\n                    pass",
+  "start_line": 106,
+  "end_line": 109,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_live/server.py",
+  "content": "`except Exception as e: logger.debug(str(e))` swallows every failure from `run_forever` and only logs it at debug level. Since this is the top-level entry point of the listener, a failure here (e.g. bad signature/params, TLS error) will look like a silent disconnect and the stack trace is lost. Re-raise or at least log at `error` level with `logger.exception` so the cause is preserved.",
+  "existing_code": "        try:\n            self.ws.run_forever(origin='https://live.douyin.com')\n        except Exception as e:\n            logger.debug(str(e))\n            self.ws.close()",
+  "start_line": 182,
+  "end_line": 186,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/errcode_data.py",
+  "content": "Orphan design record. `CODE_DESIGN` defines `\"CAP-016\"`, but `ERRCODES` (the code registry) has no `CAP-016` key — the registry jumps from `CAP-015` straight to `CAP-017`. Because `lookup()` in errcode.py returns `None` unless `ERRCODES.get(code)` is truthy, this whole design block is unreachable dead data: no log line can ever emit `[CAP-016]`, so its design/contract/chain/verify will never be surfaced. Meanwhile `contract_gaps()` will list `CAP-016` under `code_ok` and give a false impression that the code is covered. Either register the matching `CAP-016` entry in `ERRCODES` (design says it should be \"capture_all → gate.ensure_browser 统一入口未就绪\", currently only present as prose under BCC-041), or delete this orphan block.",
+  "suggestion_code": "# Remove this block, or add a matching \"CAP-016\" entry to ERRCODES above so lookup() can resolve it.",
+  "existing_code": "    \"CAP-016\": {\n        \"design\": \"所有浏览器启动路径收敛到 browser_gate 统一入口（杜绝环境分叉）。\",",
+  "start_line": 591,
+  "end_line": 592,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/errcode.py",
+  "content": "`ec_err`/`ec_warn`/`ec_exc` declare `*args, **kwargs` but never forward them to the underlying loguru call. Any caller that follows the `logging`-style convention (e.g. `ec_err(\"AUTH-003\", \"加载 %s 失败\", path)`) will have its extra arguments silently discarded, leaving `%s` unsubstituted in the log output. Either forward them (map kwargs such as `exc_info`/`stacklevel`) or drop the parameters entirely so the signature reflects reality.",
+  "existing_code": "def ec_err(code: str, message, *args, **kwargs):\n    \"\"\"logger.error 的带码包装：ec_err(\"AUTH-003\", f\"[auth] 加载 {p} 失败: {e}\")\"\"\"\n    logger.error(_fmt(code, message))\n\ndef ec_warn(code: str, message, *args, **kwargs):\n    logger.warning(_fmt(code, message))\n\ndef ec_exc(code: str, message, *args, **kwargs):\n    \"\"\"在 except 块内使用，保留完整 traceback\"\"\"\n    logger.exception(_fmt(code, message))",
+  "start_line": 24,
+  "end_line": 33,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/login_capture.py",
+  "content": "`except ImportError` assumes the only failure is the optional `services` import, but it also swallows ImportError raised from within `member_ctx.parse_env_dict` (e.g. a missing dependency of that module). That would silently fall back to the plaintext dotenv path for a member-encrypted env and report empty/missing credentials. Narrow the guard to the import statement itself.",
+  "suggestion_code": "        try:\n            from services import member_ctx\n        except ImportError:\n            member_ctx = None\n        try:\n            if member_ctx is not None and member_ctx.is_member_env(env_path):",
+  "existing_code": "        try:\n            from services import member_ctx\n            if member_ctx.is_member_env(env_path):",
+  "start_line": 65,
+  "end_line": 67,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/mcp/audit.py",
+  "content": "Both write paths swallow every failure with a bare `except Exception: pass`, so a persistent disk/permission problem silently drops all audit records with no signal to the operator. Since this module is an audit trail, at least emit a warning (e.g. `logging.getLogger(__name__).warning(...)`) so the failure is observable while still not breaking the main flow.",
+  "existing_code": "    try:\n        with open(_audit_path(), \"a\", encoding=\"utf-8\") as f:\n            f.write(json.dumps(entry, ensure_ascii=False) + \"\\n\")\n    except Exception:\n        pass",
+  "start_line": 56,
+  "end_line": 60,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/cmd_parser.py",
+  "content": "The `dm_text` capture `(.+)` is greedy and unbounded, so trailing parameters are swallowed into the message body. For example \"私信内容:新品上架 间隔 5 秒 最多 100\" yields `dm_text = \"新品上架 间隔 5 秒 最多 100\"` (while `interval`/`max_target` are also extracted from the same text), producing an unintended message body. Bound the capture (e.g. stop at the next keyword/number) or strip trailing parameter fragments.",
+  "existing_code": "    m = re.search(r\"(?:内容|文案|发送|私信)[是为说]?[:：\\s]*(.+)\", t)\n    if m:\n        params[\"dm_text\"] = m.group(1).strip()",
+  "start_line": 105,
+  "end_line": 107,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/events.py",
+  "content": "`_notifier()` swallows every exception with a bare `except Exception: return None`, and `emit()` then silently no-ops when None is returned. A genuine import/initialization failure (typo, missing dependency, circular import) will make all notifications disappear silently — exactly the kind of failure this module is supposed to protect against. At minimum log the failure once so it is diagnosable:\n\n```python\nexcept Exception as e:  # noqa: BLE001\n    logger.opt(exception=True).warning(f\"[notify-bridge] notifier 不可用: {e}\")\n    return None\n```",
+  "existing_code": "        return notifier\n    except Exception:  # noqa: BLE001\n        return None",
+  "start_line": 41,
+  "end_line": 43,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/gateway.py",
+  "content": "`approve()` unconditionally sets `allow_intents` to `[]`, silently discarding any existing fine-grained whitelist. Re-approving a sender (e.g. to change the role, or the UI re-confirming an admin) wipes a previously configured `allow_intents` set via `set_allow_intents`, quietly widening its permissions beyond what was intended. Preserve the existing value instead.",
+  "suggestion_code": "        prev = grants.get(key) or {}\n        grants[key] = {\n            \"role\": role,\n            \"allow_intents\": prev.get(\"allow_intents\", []),",
+  "existing_code": "        grants[key] = {\n            \"role\": role,\n            \"allow_intents\": [],",
+  "start_line": 150,
+  "end_line": 152,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/inbound.py",
+  "content": "`_save_login` dereferences `entry[param] = value` when the parameter name is `value`; if `build_channel` is passed an unknown `kind` it raises `ChannelError`, and this coroutine catching only `Exception` would mask it, but the real defect is the missing `kind`/`id` match: if no channel item matches `cid` (e.g. the item was removed during the 5-minute scan window), the freshly obtained `bot_token` is silently discarded and the next loop iteration returns without a token — the scan is lost. Log a warning (or raise) when no matching item is found.",
+  "existing_code": "        for item in cfg_full.get(\"channels\", []) or []:\n            if str(item.get(\"id\") or item.get(\"kind\")) == cid:\n                if token:\n                    item[\"token\"] = token",
+  "start_line": 409,
+  "end_line": 412,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/notifier.py",
+  "content": "Fire-and-forget `asyncio.create_task(_safe_close(ch))` keeps no reference to the returned task. Per asyncio docs, the event loop only holds a weak reference, so the task can be garbage-collected before it runs and `close()` may silently never execute (leaking the underlying HTTP session). Additionally, any exception other than the one swallowed inside `_safe_close` is lost. Keep a strong reference (e.g. store into a set and discard on done, or gather them).",
+  "existing_code": "        for cid, ch in old.items():\n            if cid not in new:\n                asyncio.create_task(_safe_close(ch))",
+  "start_line": 56,
+  "end_line": 58,
+  "category": "other",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/notifier.py",
+  "content": "`emit()` is documented as a synchronous, non-blocking entry point and is invoked through `notify.events.emit()`, which may be called from non-async contexts (threadpool / sync call sites). When `self._queue is None` this path calls `start_worker()`, which calls `asyncio.create_task(...)` and requires a running event loop; outside of one it raises `RuntimeError`, and the caller (`events.emit`) swallows it, so the notification is silently dropped. Consider requiring `start_worker` to be called from an async context at startup, or capturing the loop at startup and using `loop.call_soon_threadsafe` here.",
+  "existing_code": "        if self._queue is None:\n            self.start_worker()\n        assert self._queue is not None\n        self._queue.put_nowait(",
+  "start_line": 135,
+  "end_line": 138,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/scripts/migrate_global_to_member.py",
+  "content": "`member_id` comes straight from `sys.argv` and is joined into a filesystem path without validation. A value like `../../evil` (or an absolute path, which `os.path.join` honors and discards `members_dir` for) escapes the `members/` tree, making `member_db_path` return an arbitrary location and turning this script into an arbitrary-file-write primitive. Normalize and verify the resolved path stays under `members_dir` before returning it.",
+  "suggestion_code": "    members_dir = os.path.join(root, \"members\")\n    if member_id:\n        p = os.path.join(members_dir, member_id, \"data\", \"dyautodm.db\")\n        if not os.path.isdir(os.path.dirname(p)):\n            return None\n        # 防路径穿越：解析后必须仍在 members/ 下\n        if os.path.commonpath([os.path.realpath(p), os.path.realpath(members_dir)]) \\\n                != os.path.realpath(members_dir):\n            return None\n        return p",
+  "existing_code": "    members_dir = os.path.join(root, \"members\")\n    if member_id:\n        p = os.path.join(members_dir, member_id, \"data\", \"dyautodm.db\")\n        return p if os.path.isdir(os.path.dirname(p)) else None",
+  "start_line": 44,
+  "end_line": 47,
+  "category": "security",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/scripts/verify_api_split.py",
+  "content": "`subprocess.run(...).stdout` is used without checking `returncode`/`stderr`. If the `git show` command fails (e.g. the path is wrong or git is unavailable), `stdout` is empty and `ast.parse(\"\")` yields a module with no `DouyinAPI` class, so `next(...)` raises a bare `StopIteration` — a confusing failure mode for a verification script. Also `subprocess.run` without `check=`/`returncode` handling silently swallows the error. Consider asserting the return code and giving a clear message.",
+  "existing_code": "    old = subprocess.run(\n        [\"git\", \"show\", \"HEAD:DYAutoDM_v2/backend/dy_apis/douyin_api.py\"],\n        capture_output=True, text=True, encoding=\"utf-8\", cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))).stdout",
+  "start_line": 52,
+  "end_line": 54,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/ai_reply.py",
+  "content": "`logger.warning(\"AI-034\", f\"...\")` passes the real message as a *format argument* to loguru. Since the message string `\"AI-034\"` contains no `{}` placeholder, the formatted text is discarded and the log line degenerates to just `AI-034` — the model-mismatch warning (cache model vs current model) is never actually logged, hiding a real diagnostic. Also the pre-formatted f-string defeats lazy formatting. Use a single interpolated message string.",
+  "suggestion_code": "            logger.warning(f\"[AI-034] [ai] 语义缓存模型不一致（缓存={cached_mdl} \"\n                           f\"现用={used_model}），本次跳过语义级\")",
+  "existing_code": "            logger.warning(\"AI-034\", f\"[ai] 语义缓存模型不一致（缓存={cached_mdl} \"\n                           f\"现用={used_model}），本次跳过语义级\")",
+  "start_line": 567,
+  "end_line": 568,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/ai_reply.py",
+  "content": "`r` here is a `sqlite3.Row` (database.get_db() sets `row_factory = sqlite3.Row`). `sqlite3.Row` does NOT implement `.get()` — calling `r.get(...)` raises `AttributeError`. The surrounding `except Exception: pass` swallows it, so the [PROBE-1] diagnostic is silently never written, masking the failure. Use bracket access on a known column (or convert the row to a dict).",
+  "suggestion_code": "                       peer=r[\"peer_name\"] or r[\"peer_id\"],",
+  "existing_code": "                       peer=r.get(\"peer_name\") or r.get(\"peer_id\"),",
+  "start_line": 1082,
+  "end_line": 1082,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/kv_store.py",
+  "content": "The broad `except Exception` here silently swallows all write failures (DB locked, disk full, schema mismatch) with no logging, so a `kv_set` that never persisted is indistinguishable from success — callers proceed as if the config was saved. The docstring justifies this as \"与原实现一致\" and KV reads being best-effort, but for writes, silent loss of user configuration is a real correctness hazard. Consider at least logging the exception (e.g. `logger.warning(...)`) so failures are diagnosable, keeping the non-raising behavior.",
+  "existing_code": "    except Exception:\n        pass",
+  "start_line": 56,
+  "end_line": 57,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/media_proxy.py",
+  "content": "`put_cached` returns the intended disk path even when the disk write actually failed (exception swallowed above), so callers may treat a non-existent file as cached. Return an empty string / raise, or at least signal failure, so the caller does not build a URL for a missing file.",
+  "existing_code": "    except OSError as e:\n        logger.warning(f\"[MEDIA-001] \" + f\"磁盘缓存写入失败: {e}\")\n    _evict_if_needed()\n    return path",
+  "start_line": 202,
+  "end_line": 205,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/pro_kb.py",
+  "content": "`_kv_get` catches every exception and returns the default, so a transient DB error is indistinguishable from an empty library; `_kv_set` likewise swallows all write failures with a bare `except Exception: pass`. In particular `add_item`/`update_item` report success to the caller even when the write silently failed, since `_kv_set` returns `None` regardless. At minimum log the swallowed exception so data-loss is diagnosable.",
+  "existing_code": "        conn.commit()\n    except Exception:\n        pass",
+  "start_line": 92,
+  "end_line": 94,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/reply_kb.py",
+  "content": "`json.loads(m.group(0))` can raise on malformed/truncated LLM output. It is inside the `try` block so the exception is caught, but the bare `except Exception: learned = []` silently discards ALL extracted pairs and falls back to raw insertion — including when only the JSON parse failed while the LLM output was otherwise usable. More importantly, nothing is logged, so a chronically failing learner is invisible. Catch the JSON error separately and log the failure.",
+  "existing_code": "        m = re.search(r\"\\[.*\\]\", raw or \"\", re.S)\n        if m:\n            learned = json.loads(m.group(0))\n    except Exception:\n        learned = []",
+  "start_line": 247,
+  "end_line": 251,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/code_logger.py",
+  "content": "When merging fails, the fallback `return orig_(message, *args, **kwargs)` re-raises into the caller — but the guard above already showed that loguru silently discards the description in exactly this shape, so the user-visible symptom (log only shows the bare code) persists while the patch reports success. More concretely: the outer `except Exception: pass` here swallows all merge failures with no diagnostic, making it impossible to tell whether `installed=True` actually produced working output. Consider logging the merge failure at least once (e.g. via a plain `print`/`sys.stderr` or loguru's `logger.opt(depth=...)`) so a silently broken patch can be detected.",
+  "existing_code": "                except Exception:\n                    pass                            # 补丁绝不影响主日志链路",
+  "start_line": 61,
+  "end_line": 62,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/data_util.py",
+  "content": "Bare `except:` swallows everything, including `KeyboardInterrupt`/`SystemExit`, and silently hides any real parsing error. Narrow it to `KeyError`/`TypeError` (or at least `except Exception`).",
+  "suggestion_code": "    try:\n        ip_location = data['user']['ip_location']\n    except (KeyError, TypeError):\n        ip_location = '未知'",
+  "existing_code": "    try:\n        ip_location = data['user']['ip_location']\n    except:\n        ip_location = '未知'",
+  "start_line": 45,
+  "end_line": 48,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/dy_util.py",
+  "content": "Bare `except:` swallows all exceptions, including `KeyboardInterrupt` and `SystemExit`. Use `except Exception:` (or `except (IndexError, ValueError):`) to avoid trapping interpreter-level signals.",
+  "suggestion_code": "        try:\n            cookies[i.split('=')[0]] = '='.join(i.split('=')[1:])\n        except Exception:\n            continue",
+  "existing_code": "        try:\n            cookies[i.split('=')[0]] = '='.join(i.split('=')[1:])\n        except:\n            continue",
+  "start_line": 21,
+  "end_line": 24,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/mstoken.py",
+  "content": "The bare (message-less) `except Exception: return \"\"` swallows every failure — network timeout, DNS error, JSON/serialization bug in `build_report_body()`, attribute errors, etc. — with no logging, so a systematically broken token path is invisible in production. Catch the request-specific exceptions and log the cause.",
+  "suggestion_code": "    except requests.RequestException as e:\n        logger.warning(\"[mstoken] request failed: %s\", e)\n        return \"\"",
+  "existing_code": "    except Exception:\n        return \"\"",
+  "start_line": 50,
+  "end_line": 51,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/vbrowser_window.py",
+  "content": "The catch-all `except Exception: pass` here silently swallows failures (including the NameError described above), making the workarea enumeration failure indistinguishable from a legitimate fallback. At minimum log the exception at debug/warning level so this kind of regression is observable.",
+  "suggestion_code": "    except Exception as e:\n        logger.debug(f\"[vbrowser] 枚举显示器工作区失败，回退主屏假设: {e}\")\n    return [{\"left\": 0, \"top\": 0, \"right\": 1536, \"bottom\": 864}]",
+  "existing_code": "    except Exception:\n        pass\n    return [{\"left\": 0, \"top\": 0, \"right\": 1536, \"bottom\": 864}]",
+  "start_line": 33,
+  "end_line": 35,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/api/client.ts",
+  "content": "`aiProKbImport` calls `await ensureBackendReady()` outside of any try/catch. Unlike `request()`, which deliberately swallows readiness failures, a rejection here (sidecar timeout / probe failure) propagates instead of being converted into a proper import error, and `onProgress` is never invoked so any caller-side progress UI can hang. Wrap it in try/catch, as `request()` does.",
+  "existing_code": "    await ensureBackendReady();\n    const form = new FormData();\n    form.append(\"file\", file);\n    const tk = getMemberToken();\n    return new Promise((resolve, reject) => {\n      const xhr = new XMLHttpRequest();\n      xhr.open(\"POST\", `${BASE}/api/ai/prokb/import`);",
+  "start_line": 1392,
+  "end_line": 1398,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/api/platform.ts",
+  "content": "Missing `ensureBackendReady()` gating on the first request, which `client.ts` performs before every fetch. In Tauri mode the sidecar is not running until the first request triggers its launch, so platform calls that happen before/independently of the main app's initial request may fail with a generic `TypeError: Failed to fetch` on cold start. Consider awaiting `ensureBackendReady()` (swallowing failures, as `client.ts` does) to keep behavior consistent.",
+  "existing_code": "async function post<T>(path: string, body: unknown): Promise<T> {\n  const headers: Record<string, string> = { \"Content-Type\": \"application/json\" };",
+  "start_line": 22,
+  "end_line": 23,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/api/sidecar.ts",
+  "content": "`stopBrowserDaemon` and `stopRecvDaemon` swallow all errors (`catch {}`) and never signal failure to the caller. A caller invoking `stopBrowserDaemon(...).then(...)` will believe the process stopped even when both the HTTP stop and the Rust kill failed. Consider surfacing an error (or at least warn-logging) when the Rust fallback also fails.",
+  "existing_code": "  } catch {\n    // ignore\n  }\n}",
+  "start_line": 97,
+  "end_line": 100,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/App.tsx",
+  "content": "Duplicate query definition: `[\"accounts\"]` is declared via `useQuery` twice (once earlier in this block, discarded, and again here as `accountsCache`). Both share the same key so React Query dedupes them, but declaring the same query twice is redundant/dead code and is easy to drift out of sync. Remove the first unused declaration and keep a single source.",
+  "existing_code": "  const { data: accountsCache } = useQuery({\n    queryKey: [\"accounts\"],\n    queryFn: async () => (await api.getAccounts()) as never[],\n    refetchInterval: 30000,\n    enabled: ready,\n  });",
+  "start_line": 310,
+  "end_line": 315,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/accounts/accounts-page.tsx",
+  "content": "Per-account errors are silently discarded (`.catch(() => null)`), then a blanket success message is pushed for all selected accounts. A failed verification is indistinguishable from a successful one, which is exactly the \"silent error swallowing\" this file was meant to fix. Collect and surface failures.",
+  "suggestion_code": "    Promise.all(\n      selected.map((a) =>\n        api\n          .checkAccount(a.name)\n          .then(() => ({ name: a.name, ok: true }))\n          .catch(() => ({ name: a.name, ok: false })),\n      ),\n    )\n      .then((results) => {\n        const failed = results.filter((r) => !r.ok).map((r) => r.name);\n        push(\n          failed.length\n            ? `校验完成，${failed.length} 个失败：${failed.join(\"、\")}`\n            : `已对 ${selected.length} 个所选账号执行凭证校验`,\n        );\n        refetch();\n      })",
+  "existing_code": "    Promise.all(selected.map((a) => api.checkAccount(a.name).catch(() => null)))\n      .then(() => {\n        push(\"已对 \" + selected.length + \" 个所选账号执行凭证校验\");\n        refetch();\n      })",
+  "start_line": 193,
+  "end_line": 197,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/accounts/accounts-page.tsx",
+  "content": "`batchDelete` also swallows per-account failures (`.catch(() => null)`), then unconditionally pushes \"已删除 N 个账号\" and clears the selection — on partial failure the UI reports success. Report which accounts failed instead of a blanket success message.",
+  "suggestion_code": "        const a = shownAccounts.find((x) => x.id === id);\n        return a ? api.removeAccount(a.name) : Promise.resolve(null);\n      }),\n    )\n      .then((results) => {\n        const failed = results.filter((r) => r && !r.ok).length;\n        push(\n          failed\n            ? `删除完成，${failed} 个失败`\n            : \"已删除 \" + ids.length + \" 个账号\",\n        );",
+  "existing_code": "        const a = shownAccounts.find((x) => x.id === id);\n        return a ? api.removeAccount(a.name).catch(() => null) : Promise.resolve(null);\n      }),\n    )\n      .then(() => {\n        push(\"已删除 \" + ids.length + \" 个账号\");",
+  "start_line": 225,
+  "end_line": 230,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/kb/pro-kb.tsx",
+  "content": "`v.patch as never` and `impPrev as never` bypass the API's declared parameter types (`Partial<ProKbItem>` / the import-confirm payload). Casting to `never` discards all type checking at these call sites and hides real mismatches (e.g. `Record<string, unknown>` vs `Partial<ProKbItem>`). Prefer typing the mutation variables as the exact expected type so the compiler validates the payload.",
+  "existing_code": "    mutationFn: (v: { id: number; patch: Record<string, unknown> }) =>\n      api.aiProKbPatch(v.id, v.patch as never),",
+  "start_line": 44,
+  "end_line": 45,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/messages/message-shared.tsx",
+  "content": "The bare-URL fallback only runs `if (!thumb)`, meaning if a `[图片] data:...` inline thumbnail was already parsed, a *better*/standalone URL on a later line is discarded. More importantly, this branch also matches `data:image/...;base64,\\S+` where `\\S+` stops at whitespace — a base64 payload that was glued (no newline) with the `[原图]` reminder is not split here the way the `[图片]` branch does, so a bare data URI with trailing `[原图]` text will retain the illegal characters and fail to render. Route this case through the same glue-splitting/sanitization logic used above.",
+  "existing_code": "    if (!thumb) {\n      const u = line.match(/(data:image\\/[\\w+-]+;base64,\\S+|https?:\\/\\/\\S+)/);\n      if (u) thumb = u[1];\n    }",
+  "start_line": 247,
+  "end_line": 250,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/player/player-utils.ts",
+  "content": "`QUALITY_LABEL` is typed as `Record<string, string>`, which discards the `QualityOption` key type. Consumers such as `QUALITY_LABEL[q] || q` therefore get a non-nullable `string` from TypeScript even when the key is misspelled, so typos compile silently and missing labels are never caught at compile time. Use the derived union as the key type and make lookups explicit.",
+  "suggestion_code": "export const QUALITY_LABEL: Record<QualityOption, string> = {",
+  "existing_code": "export const QUALITY_LABEL: Record<string, string> = {",
+  "start_line": 46,
+  "end_line": 46,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/settings/NotifySection.tsx",
+  "content": "This fire-and-forget cleanup uses promise chaining instead of `async/await` and swallows every failure. If `gatewayOverview()` fails, the stale pending entries stay forever (the exact “明明删了还在” confusion the comment claims to fix) with no user feedback. Note the overview payload already contains `pending`, so refetching here is unnecessary if the caller passes it in.",
+  "suggestion_code": "    if (removed?.id) {\n      void (async () => {\n        try {\n          const g = await api.gatewayOverview();\n          const stale = (g.pending || []).filter((x) => x.channel_id === removed.id);\n          await Promise.all(stale.map((x) => api.gatewayRevoke(x.key)));\n          qc.invalidateQueries({ queryKey: [\"notify-gateway\"] });\n        } catch (e) {\n          push(`清理待审条目失败: ${errMsg(e)}`);\n        }\n      })();\n    }",
+  "existing_code": "    if (removed?.id) {\n      api\n        .gatewayOverview()\n        .then((g) => {\n          const stale = (g.pending || []).filter(\n            (x) => x.channel_id === removed.id,\n          );\n          for (const x of stale) void api.gatewayRevoke(x.key);\n        })\n        .catch(() => {});\n    }",
+  "start_line": 140,
+  "end_line": 150,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/tasks/tasks-page.tsx",
+  "content": "`clearTaskHistory()` swallows every failure via `.catch(() => {})`: the user clicks \"清空\" and, if the request fails (network error, permission denial, server error), nothing at all happens on screen — no error message and no state change. Silent swallowing of errors contradicts the async error-handling requirement; surface the error with `push(\"清空失败: \" + errMsg(e))` at minimum.",
+  "existing_code": "              onClick={() => api.clearTaskHistory().then(() => refreshHistory()).catch(() => {})}",
+  "start_line": 303,
+  "end_line": 303,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/utils/openExternal.ts",
+  "content": "The doc comment states `shell:allow-open` permission is required (see src-tauri/capabilities/default.json), but the catch block only logs to console and silently falls back. When `open` exists but throws (typically a missing/denied permission in Tauri), the fallback `window.open` inside a WebView silently fails — exactly the bug this utility was written to fix. Consider surfacing this failure to the caller (and/or user) rather than swallowing it, e.g. check `window.__TAURI__` / `isTauri()` to distinguish \"not running in Tauri\" from \"permission denied\".",
+  "existing_code": "    console.warn(\"[openExternal] shell.open 失败，回退 window.open:\", e);",
+  "start_line": 36,
+  "end_line": 36,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/build_sidecar.py",
+  "content": "`_write_version_file()` swallows any exception and returns the version anyway, after which `main()` proceeds to build. If the write fails (permissions, read-only checkout, disk full), the sidecar is packaged with a stale or missing `backend/_build_version.py`, silently defeating the front/back version-mismatch check that this script exists to guarantee. A failed version injection should abort the build (raise / sys.exit) rather than continuing.",
+  "existing_code": "    except Exception as e:\n        print(f\"[版本] 写入失败: {e}\")\n    return v",
+  "start_line": 60,
+  "end_line": 62,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/probe_img_real_browser.py",
+  "content": "This loop body does nothing but build a match object and discard it (`pass`). It is dead code and also silently drops the `thumb` URLs that were apparently intended to be collected. Either remove the loop, or actually append the thumbnail matches to `out` (guarding the `out[:3]` slice accordingly).",
+  "existing_code": "        for m in re.finditer(r\"~tplv-x-get:thumb\\.image[^\\s\\\"']*\", t):\n            pass",
+  "start_line": 87,
+  "end_line": 88,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_sanitize.py",
+  "content": "`base64.b64decode` defaults to `validate=False`, which silently discards every character outside the base64 alphabet instead of failing. This means the \"清洗前 / 旧前端行为\" baseline is not actually reproducing the browser behaviour (which rejects the malformed data URI), so `ok_before` can be inflated and the `ok_after > ok_before` conclusion becomes unreliable. Use `base64.b64decode(raw_payload, validate=True)` (wrapped in the existing try/except, which will correctly count it as a failure) so the baseline truly reflects an invalid data URI.",
+  "existing_code": "            b0 = base64.b64decode(raw_payload)",
+  "start_line": 96,
+  "end_line": 96,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_uid_sink.py",
+  "content": "This \"persistence across restart\" check depends on the fallback in-memory path: `UidSink()` always starts with an empty `_cache`, so if the DB/table is unavailable, `_ensure_loaded` swallows the error and `should_send` returns ok=True, failing this check whose message misleadingly blames persistence. Consider verifying that the DB layer actually loaded (e.g. skip/flag when the table is missing) so the test distinguishes a real persistence bug from a degraded environment.",
+  "existing_code": "sink2 = dd.UidSink()\nok5, reason5 = sink2.should_send(ACC, \"111111\")",
+  "start_line": 48,
+  "end_line": 49,
+  "category": "test",
+  "severity": "medium"
+ }
+]

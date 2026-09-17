@@ -1,0 +1,551 @@
+[
+ {
+  "path": "DYAutoDM_v2/backend/api/ai.py",
+  "content": "This synchronous `requests.get` with a timeout of up to 8s runs directly inside an `async def` handler, blocking the event loop for every concurrent request while it waits. Run it via `await asyncio.to_thread(...)` or use an async HTTP client.",
+  "existing_code": "        import requests as _rq\n        headers = {}\n        if key:\n            headers[\"Authorization\"] = f\"Bearer {key}\"\n        resp = _rq.get(f\"{base.rstrip('/')}/models\", headers=headers, timeout=8)",
+  "start_line": 790,
+  "end_line": 794,
+  "category": "performance",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/crawl.py",
+  "content": "`_load_auth` 只从 `auth.cookie` 中取 `s_v_web_id` 来判定凭证完整性，但搜索链路（`search_general_work`）依赖 `auth.msToken` 与 `auth.cookie`，而私信链路（`send_by_uid`）强制要求 `auth.ticket`/`client_cert`/`private_key` 三件套。仅校验 `s_v_web_id` 会让「cookie 存在但签名三件套缺失」的账号通过预检，随后在 `/dm`、`/batch` 中逐条失败并抛出 502，浪费用户时间且掩盖真实原因。建议在需要私信能力时（dm/batch）复用 sender.py 里同样的三件套校验，提前返回可读的 400 提示。",
+  "existing_code": "    cookie = getattr(auth, \"cookie\", None) or {}\n    if not auth.cookie_str and not cookie.get(\"s_v_web_id\"):",
+  "start_line": 85,
+  "end_line": 86,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/live.py",
+  "content": "The `/resolve` handler mutates the shared `settings` singleton (`settings.live_url`) and rewrites `live_id` from a non-async, unsynchronized handler. Two concurrent resolve requests can interleave so that `settings.live_url` and the persisted `{live_url, live_id}` pair belong to different requests. More importantly, the whole read-modify-write of the `config` kv entry (get → mutate → set) is a lost-update race with every other config writer that uses the same pattern (`api/live_config.py`, `api/tasks.py`, `api/linkmic.py`). Consider serializing config writes behind a lock and returning the persisted values.",
+  "existing_code": "    settings.live_url = raw\n    # 落盘到 SQLite kv_store（替代 config.json）\n    try:\n        from database import get_kv_json, set_kv_json\n        data = get_kv_json(\"config\", {}) or {}\n        data[\"live_url\"] = raw\n        data[\"live_id\"] = live_id\n        set_kv_json(\"config\", data)",
+  "start_line": 145,
+  "end_line": 152,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/logs.py",
+  "content": "The comment documents the daemon prefix as `mod:fn:123 - text` (name:function:line), but the regex `^[\\w\\.]+:\\d+\\s*-\\s*` only matches `token:digits - `, which **cannot** match the real daemon format produced by `{name}:{function}:{line} - {message}` (e.g. `session:send:1234 - ...`). The result is that daemon lines keep the whole `module:function:line - ` prefix, so the \"去掉前缀\" behavior described in the comment does not work for daemon logs while it does work for backend logs — inconsistent rendering in the merged timeline. Suggested: `r\"^[\\w\\.]+:[\\w\\.<>]+:\\d+\\s*-\\s*\"` (also keep the backend `mod:123` case as a fallback).",
+  "existing_code": "            key = m.group(\"date\") + \" \" + ts\n            rest = m.group(\"rest\").strip()\n            # 去掉 loguru 的 \"module:func:line - \" 前缀，只留正文\n            rest = re.sub(r\"^[\\w\\.]+:\\d+\\s*-\\s*\", \"\", rest)",
+  "start_line": 81,
+  "end_line": 84,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/mcp.py",
+  "content": "loguru's `logger.warning(msg, *args)` treats the first positional arg as the format string and the rest as formatting arguments. Calling `logger.warning(\"MCP-005\", f\"[mcp] ...\")` makes \"MCP-005\" the message template; since it contains no `{}` placeholders, the actual error detail is dropped from the emitted record (loguru raises a formatting error / silently loses the second argument). This exact anti-pattern is flagged in the project's own logging spec (工作记忆/14_统一报错代码体系.md: \"误写成 `logger.warning(\"CODE\", f\"msg\")` 会让 loguru …\"). Pass a single string.",
+  "suggestion_code": "            logger.warning(f\"[MCP-005] [mcp] 关闭旧 MCP 实例失败: \"\n                           f\"{type(e).__name__}: {e}\")",
+  "existing_code": "            logger.warning(\"MCP-005\", f\"[mcp] 关闭旧 MCP 实例失败: \"\n                                      f\"{type(e).__name__}: {e}\")",
+  "start_line": 190,
+  "end_line": 191,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/member.py",
+  "content": "This `logger.error` call passes the message as a positional format arg. loguru joins extra positional args only when the format string has placeholders — here `\"MEM-009\"` has none, so the text is dropped from the message and instead shown as a `{_extra}`-style key/value dump attached to the record. Use f-string interpolation (as done everywhere else in this file) or fix the prefix inside the message.",
+  "suggestion_code": "                logger.error(f\"[MEM-009] \" + (",
+  "existing_code": "                logger.error(\"MEM-009\", (",
+  "start_line": 122,
+  "end_line": 122,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/member.py",
+  "content": "The parsed JSON from the global DB is trusted without validation: `accounts = (json.loads(row[0]).get(\"accounts\")) or {}` assumes `.get()` exists on the parsed value and that `accounts` is a dict. If the stored value is a JSON list/str/None (corrupt or externally written), `.get(...)` raises AttributeError, or a non-dict `accounts` makes `accounts` truthy while `next(iter(accounts), None)` / `for name in accounts` later behave unexpectedly. Guard the type, e.g. `payload = json.loads(row[0]); if isinstance(payload, dict) and isinstance(payload.get(\"accounts\"), dict): accounts = payload[\"accounts\"]`.",
+  "existing_code": "                accounts = (json.loads(row[0]).get(\"accounts\")) or {}",
+  "start_line": 99,
+  "end_line": 99,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/messages.py",
+  "content": "Module-level mutable dict mutated on every polled request. Two issues: (1) unbounded growth — one entry per distinct `account` string, and `account` comes straight from the query string with no validation, so an unauthenticated caller can grow this dict without limit (memory leak); (2) it is read-modify-written across `async` requests without a lock, so concurrent polls can race on the check-then-set. Bound the key space (validate `account` against known accounts) and/or cap/evict entries; use a lock if exact-once logging matters.",
+  "existing_code": "_last_summary: dict[str, tuple] = {}",
+  "start_line": 35,
+  "end_line": 35,
+  "category": "performance",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/overview.py",
+  "content": "Iterating `adm.dispatch.records.values()` directly bypasses the documented ordering contract: `DispatchCenter` keeps `_records_order` (see `dispatch.py`) precisely so records display in insertion order, and exposes `records_list()` for that purpose (used by `api/tasks.py` and `core/auto_dm.py`). Using `.values()` here yields a different (and potentially inconsistent) ordering vs. the other endpoints that consume the same data. Prefer `adm.dispatch.records_list()` (or iterate `_records_order`).",
+  "existing_code": "    records = (adm.dispatch.records if adm.dispatch else {}) or {}",
+  "start_line": 50,
+  "end_line": 50,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/tasks.py",
+  "content": "The `clear_history` handler resolves the `confirmed` flag from the request query/body and passes it to `clear_history(confirm=...)`, but the module-level `from tasks_history import clear_history` shadows nothing here — the local name is fine. However, note the import is placed *after* the value checks; if `tasks_history` import fails the `except Exception` returns `{\"ok\": False, ...}` which is acceptable. More meaningful: the confirmation flag is read case-insensitively from query but the body branch uses a plain truthiness check, so a client sending `{\"confirmed\": \"false\"}` (string) is treated as confirmed. Normalize the body value the same way as the query value.",
+  "existing_code": "                body = await request.json()\n                confirmed = bool((body or {}).get(\"confirmed\"))",
+  "start_line": 87,
+  "end_line": 88,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auth_helper.py",
+  "content": "`enrich_auth` is also invoked with `auth=None` (api/accounts.py:191 and auto_dm/accounts.py:1151 pass `None`, with `force=True`). The BCC shortcut reads cookie values from `_auth.cookie`, but the pre-existing callers' pattern plus a cookie dict containing an empty value would raise `TypeError: '<' not supported between instances of 'NoneType' and 'int'` inside the dict comprehension, which the outer `except Exception` only converts into a silent fallback. Use `.items()` filtered on truthy values for robustness.",
+  "suggestion_code": "                        _cks = \"; \".join(f\"{k}={v}\" for k, v in (_auth.cookie or {}).items() if v)",
+  "existing_code": "                        _cks = \"; \".join(f\"{k}={v}\" for k, v in (_auth.cookie or {}).items())",
+  "start_line": 84,
+  "end_line": 84,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auth_helper.py",
+  "content": "This warning call is malformed relative to the rest of the file (and to the error-code registry, where AUTH-008 has no separate message argument): it passes two arguments, so `loguru` formats it as `'{}' AUTH-008` and the message is only emitted because of the second positional arg. The emitted text also duplicates the `[auth] ` prefix already present in the string. Use the single-string form used by all other AUTH-00x sites.",
+  "suggestion_code": "    logger.warning(\"[AUTH-008] \" + \"[auth] 未能解析自身 uid（create_conversation 将失败，\"\n                   \"请确认登录 cookie 含 uid_tt/sid_tt）\")",
+  "existing_code": "    logger.warning(\"AUTH-008\", \"[auth] 未能解析自身 uid（create_conversation 将失败，\"\n                   \"请确认登录 cookie 含 uid_tt/sid_tt）\")",
+  "start_line": 179,
+  "end_line": 180,
+  "category": "style",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auto_dm/accounts.py",
+  "content": "`logger.error(\"ACC-007\", f\"...\")` passes two positional args to loguru, so the message is treated as a `{}`-style format string and the second arg is an unused positional parameter — the actual error text will NOT be concatenated into the log line as intended (loguru only interpolates `{}` placeholders). Use a single string (f-string or `%`-less concatenation) for the message.",
+  "suggestion_code": "                            logger.error(f\"[ACC-007] [verify] 账号 {name} uid 漂移：探活 uid={uid} \"",
+  "existing_code": "                            logger.error(\"ACC-007\", \n                                f\"[verify] 账号 {name} uid 漂移：探活 uid={uid} \"",
+  "start_line": 506,
+  "end_line": 507,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+  "content": "`_extract_301_page` unconditionally indexes `parsed[\"6\"][\"301\"]`; when the response shape differs (non-200 body that still passes the `len >= 100` check, error payload, gateway HTML/JSON error, or a protocol change) this raises KeyError/TypeError. Because of the enclosing broad `try` above, the whole multi-page fetch then silently returns `[]`. Guard with `.get(\"6\", {})` / `.get(\"301\", {})` and return an empty tuple instead of raising, so callers can degrade gracefully.",
+  "existing_code": "    parsed, _ = blackboxprotobuf.decode_message(raw)\n    inner = parsed[\"6\"][\"301\"]",
+  "start_line": 686,
+  "end_line": 687,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+  "content": "Module-level mutable caches `_userinfo_cache`, `_ACTIVE_LEASE` (and `_last_parsed_convs`) are mutated from `capture_all`, which may run concurrently for the same account (daemon startup backfill + the API \"refresh conversations\" button, plus `_fill` worker threads). The read-modify-write of `_ACTIVE_LEASE` and the check-then-set on `_userinfo_cache` are not atomic, so a lease id can be lost/overwritten (leading to a leaked browser lease until TTL) and a stale cache entry can be served. Guard with a `threading.Lock` (module already imports `threading`) or move the state to a lock-protected store.",
+  "existing_code": "_userinfo_cache: dict[str, tuple] = {}",
+  "start_line": 1062,
+  "end_line": 1062,
+  "category": "other",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auto_dm/image_host.py",
+  "content": "Check-then-act race on the shared `_cache`. The lock is released at line 166 and only re-acquired at line 175, so two threads that process the same image concurrently will both miss the cache and both perform the (slow) network upload — the docstring's \"同图（SHA1）只传一次\" guarantee does not hold under the concurrent invocation used by callers (e.g. `conversation_capture` runs uploads in a ThreadPoolExecutor). Consider a per-sha in-flight placeholder (e.g. store a sentinel Future/Event under the lock so only one thread uploads while others wait) or hold an upload-scoped lock keyed by sha.",
+  "existing_code": "    sha = hashlib.sha1(data).hexdigest()\n    with _lock:\n        if sha in _cache:\n            return _cache[sha]",
+  "start_line": 163,
+  "end_line": 166,
+  "category": "other",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/auto_dm.py",
+  "content": "`logger.warning(\"AUTH-011\", f\"...\")` passes two positional arguments, so loguru renders `AUTH-011[ {message}` (concatenated, no separator/placeholder) rather than logging the code as metadata. This pattern repeats at AUTH-011/013/015/020 and is inconsistent with the rest of the file, which uses `f\"{code} \" + \"...\"`. Use a single formatted string (or `logger.bind(code=...)`).",
+  "suggestion_code": "                    logger.warning(\n                        \"[AUTH-011] \"\n                        f\"[auth] 凭证年龄={age}s(> {max_age}s)，视为非实时会话，\"\n                        f\"强制重扫以避免弹幕昵称被加密。\"\n                    )",
+  "existing_code": "                    logger.warning(\"AUTH-011\", \n                        f\"[auth] 凭证年龄={age}s(> {max_age}s)，视为非实时会话，\"\n                        f\"强制重扫以避免弹幕昵称被加密。\"\n                    )",
+  "start_line": 179,
+  "end_line": 182,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/live_hook.py",
+  "content": "`logger.error(\"LIVE-003\", ...)` is incorrect loguru usage: unlike the patterns used elsewhere in this file (e.g. `logger.warning(f\"[LIVE-007] \" + ...)`), the code string is passed as the *format* argument and the real message as a formatting arg, so the record will render as `LIVE-003` and the diagnostic text is lost. Same problem in the LIVE-006 branch below (and in uid_probe AUTH-050/051). Use the concatenation style consistently.",
+  "suggestion_code": "                logger.error(\"[LIVE-003] \" + ",
+  "existing_code": "                logger.error(\"LIVE-003\", ",
+  "start_line": 219,
+  "end_line": 219,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/live_hook.py",
+  "content": "Same loguru mis-call: the message is passed as a format argument rather than being interpolated, so LIVE-006 is emitted without the f-string content.",
+  "suggestion_code": "                                    logger.error(\"[LIVE-006] \" + ",
+  "existing_code": "                                    logger.error(\"LIVE-006\", ",
+  "start_line": 308,
+  "end_line": 308,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/sender.py",
+  "content": "Bug: `logger.warning(\"SEND-013\", f\"...\")` passes the code string as the log message and the actual message as a positional format arg. Loguru will raise a formatting error (or emit a mangled record) because the event has placeholders only in the f-string, not in position 0. Merge into a single f-string argument, consistent with the surrounding SEND-0xx calls.",
+  "suggestion_code": "    logger.warning(\"SEND-013 \" + f\"[私信] recv_daemon 不可达（{_reason}），兜底本进程直发——\"\n                   f\"发送闸门失效，注意频率风控\")",
+  "existing_code": "    logger.warning(\"SEND-013\", f\"[私信] recv_daemon 不可达（{_reason}），兜底本进程直发——\"\n                   f\"发送闸门失效，注意频率风控\")",
+  "start_line": 224,
+  "end_line": 225,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/sender.py",
+  "content": "Bug: `logger.error(\"AUTH-021\", \"[auth] ...\")` passes \"AUTH-021\" as the log message and the diagnostic text as a positional format arg. The error text will not be rendered as intended (loguru treats position 0 as the template and the rest as args). Combine the code into the message string.",
+  "suggestion_code": "        logger.error(\"AUTH-021 \"\n            \"[auth] 私信签名三件套缺失(ticket/client_cert/private_key)。\"",
+  "existing_code": "        logger.error(\"AUTH-021\", \n            \"[auth] 私信签名三件套缺失(ticket/client_cert/private_key)。\"",
+  "start_line": 204,
+  "end_line": 205,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/sender.py",
+  "content": "Bug: `logger.error(\"SEND-014\", f\"...\")` likewise passes the code as the message and the f-string as a positional arg, so the KICK/风控 diagnostic won't be logged correctly. Merge into one string.",
+  "suggestion_code": "                logger.error(\"SEND-014 \"\n                    f\"[私信被风控] create_conversation 被抖音拒绝(uid={user_id}): {msg}\\n\"",
+  "existing_code": "                logger.error(\"SEND-014\", \n                    f\"[私信被风控] create_conversation 被抖音拒绝(uid={user_id}): {msg}\\n\"",
+  "start_line": 236,
+  "end_line": 237,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/downloader/tasks.py",
+  "content": "In `render_template`, `safe_name(str(v))` is applied to every placeholder value *before* substitution, with `max_len=80` truncation. `safe_name` strips trailing dots and replaces whitespace, but applying it to the `{index}`/`{date}`/`{ext}` values is unnecessary and, combined with the final `safe_name(s, fallback=aweme_id or \"untitled\")`, means the resulting template output is truncated to 80 chars — a `filename_tpl` longer than 80 chars silently loses `{ext}` and can drop the file extension, producing an extension-less file that `os.path.join(out_dir, f\"{name}.mp4\")` then double-extensions. Note the `if k != \"{ext}\" else str(v)` branch also *doesn’t* sanitize `{ext}`, so a user-supplied `ext` containing path separators would flow into the filename — validate/whitelist `ext` here.",
+  "existing_code": "    for k, v in ((\"{desc}\", desc), (\"{aweme_id}\", aweme_id),\n                 (\"{nickname}\", nickname), (\"{index}\", str(index)),\n                 (\"{date}\", d), (\"{ext}\", ext)):\n        s = s.replace(k, safe_name(str(v)) if k != \"{ext}\" else str(v))",
+  "start_line": 109,
+  "end_line": 112,
+  "category": "security",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_im.py",
+  "content": "`get_im_user_info` calls `json.loads(resp.text)` without checking the HTTP status or guarding against non-JSON responses. When the platform returns an empty body or an HTML error/风控 page, this raises `JSONDecodeError`, which propagates to the caller instead of degrading to `{}` like the status_code branch does. The module already provides `safe_json` for exactly this; use it or wrap in try/except.",
+  "suggestion_code": "        data = safe_json(resp, default={}) or {}\n        if data.get(\"status_code\") != 0:",
+  "existing_code": "        data = json.loads(resp.text)\n        if data.get(\"status_code\") != 0:",
+  "start_line": 420,
+  "end_line": 421,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_live.py",
+  "content": "The pagination `while True` loop assumes every response contains `promotions` and `next_offset`. `get_live_production` now returns `safe_json(res)` which degrades to `{}` on an empty/blocked response, so `res_json[\"promotions\"]` raises `KeyError` mid-iteration and the partially-collected list is lost. Also, an offset that never reaches `\"-1\"` (e.g. a server bug or repeated cursor) will loop forever with no retry/termination cap. Add key presence checks and a max-page/iteration bound.",
+  "existing_code": "            productions = res_json[\"promotions\"]\n            production_list.extend(productions)\n            offset = str(res_json[\"next_offset\"])",
+  "start_line": 178,
+  "end_line": 180,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_notice.py",
+  "content": "`requests.get` has no `timeout`, so a stalled connection blocks the calling worker forever (the callers invoke this from a thread pool / MCP tool). Other endpoints in this package pass `timeout=8..15`; add one here. (A `try/except requests.RequestException` returning `{}` would also avoid leaking transport errors as raw exceptions.)",
+  "suggestion_code": "                           cookies=auth.cookie, verify=..., timeout=15)",
+  "existing_code": "                           cookies=auth.cookie, verify=False)",
+  "start_line": 95,
+  "end_line": 95,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_search.py",
+  "content": "`res_json[\"has_more\"]` assumes the key is always present. On a degraded/empty response (safe_json fallback returns `{}`) this raises `KeyError`, contradicting the project convention that platform rate limits should degrade gracefully. Use `res_json.get(\"has_more\")`.",
+  "suggestion_code": "            if res_json.get(\"has_more\") != 1 or len(work_list) >= num:",
+  "existing_code": "            if res_json[\"has_more\"] != 1 or len(work_list) >= num:",
+  "start_line": 229,
+  "end_line": 229,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_search.py",
+  "content": "`search_some_live` dereferences `res_json[\"data\"]` and `res_json[\"has_more\"]` without guards. `search_live` uses `safe_json(resp)`, which deliberately returns `{}` when the platform returns a non-JSON/empty body, so a single rate-limited response makes this loop raise `KeyError: 'data'` instead of terminating gracefully.",
+  "suggestion_code": "            res_json = DouyinAPI.search_live(auth, query, offset, count)\n            lives = res_json.get(\"data\") or []",
+  "existing_code": "            res_json = DouyinAPI.search_live(auth, query, offset, count)\n            lives = res_json[\"data\"]",
+  "start_line": 306,
+  "end_line": 307,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_user.py",
+  "content": "`search_user` is wrapped by `safe_json`, which returns an empty dict `{}` on non-JSON / empty responses (platform rate-limiting). `res_json[\"user_list\"]` then raises `KeyError` instead of degrading gracefully. Use `.get(\"user_list\")` (and guard `has_more` similarly) so a rate-limited response ends the loop rather than crashing.",
+  "suggestion_code": "            users = res_json.get(\"user_list\") or []\n            user_list.extend(users)\n            if res_json.get(\"has_more\") != 1 or len(user_list) >= num:",
+  "existing_code": "            users = res_json[\"user_list\"]\n            user_list.extend(users)\n            if res_json[\"has_more\"] != 1 or len(user_list) >= num:",
+  "start_line": 512,
+  "end_line": 514,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_video.py",
+  "content": "`safe_json(resp)` 在非 JSON（限流/风控空响应体）时降级为空 `{}`，调用方若直接按 `resp[\"aweme_list\"]` 解包仍会 `KeyError`；且该降级路径把「平台限流」与「本次确实没有推荐」混为一谈。至少需要在返回前区分这两种情况（例如透出 `status_code`/标记），保证调用方能识别失败。",
+  "existing_code": "        return safe_json(resp)",
+  "start_line": 250,
+  "end_line": 250,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/douyin_api.py",
+  "content": "`_uid_probe_cache` is a class-level mutable dict used as a process-wide cache keyed by sessionid, and it is read/written from many places, e.g. `client_user.py:186, 233, 267`. It is never bounded nor evicted: every distinct sessionid adds a permanent entry, and stale timestamps are only checked on lookup, never removed. Under concurrent request handling (this is a web-backend API layer invoked from FastAPI/threads) the read-modify-write pairs are unsynchronised check-then-act operations. At minimum bound the cache size / evict expired keys; ideally guard it with a `threading.Lock` or use a lock-protected dict (or `cachetools.TTLCache`).",
+  "existing_code": "    _uid_probe_cache: dict = {}   # class attr: {sessionid_key: (ts, uid_or_None)}",
+  "start_line": 69,
+  "end_line": 69,
+  "category": "other",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/mcp/__main__.py",
+  "content": "`params` is normalised with `req.get(\"params\") or {}`, so a client passing `\"params\": 5` or `\"params\": []` yields a non-dict here; the subsequent `params.get(...)` in `tools/call` would then raise `AttributeError`. Consider coercing `params` to a dict (`params = req.get(\"params\") if isinstance(req.get(\"params\"), dict) else {}`).",
+  "existing_code": "    if method in (\"tools/list\", \"list_tools\"):",
+  "start_line": 70,
+  "end_line": 70,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/mcp/registry.py",
+  "content": "`_TICKETS` has no upper bound. `_prune_tickets` only removes expired entries; an authenticated client can repeatedly call the `/confirm` endpoint to mint tickets faster than the 120s TTL expires, growing this dict without limit (memory exhaustion). Consider capping the number of live tickets (evicting the oldest or rejecting issuance beyond a max) in addition to TTL-based pruning.",
+  "existing_code": "def issue_ticket(tool: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:\n    \"\"\"为一次写操作签发一次性确认票据。\"\"\"\n    with _LOCK:\n        _prune_tickets()\n        tid = uuid.uuid4().hex[:16]\n        _TICKETS[tid] = _Ticket(tool=tool, expires_at=time.time() + CONFIRM_TTL_SEC,\n                                payload=dict(payload or {}))\n        return {\"ticket\": tid, \"tool\": tool, \"expires_in\": CONFIRM_TTL_SEC}",
+  "start_line": 93,
+  "end_line": 100,
+  "category": "security",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/mcp/server.py",
+  "content": "`_read_body` blindly trusts the client-supplied `Content-Length`: `self.rfile.read(n)` will block until `n` bytes are read. A local client can send an enormous `Content-Length` (or a smaller one and never send the body) and pin one of the `ThreadingHTTPServer` worker threads indefinitely — a cheap local DoS. Clamp `n` to a sane maximum before reading (and reject anything over it), and consider draining the remaining body on the error path so the socket stays in sync for keep-alive connections.",
+  "suggestion_code": "            if n > MAX_BODY_BYTES:\n                return {}\n            raw = self.rfile.read(n)\n            return json.loads(raw.decode(\"utf-8\")) or {}",
+  "existing_code": "            raw = self.rfile.read(n)\n            return json.loads(raw.decode(\"utf-8\")) or {}",
+  "start_line": 72,
+  "end_line": 73,
+  "category": "security",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/cmd_parser.py",
+  "content": "The help branch is evaluated before every other intent rule and matches on the bare substring `\"?\"` (and `\"help\"`), so any question-style command such as \"启动任务?\" or \"给用户发私信，间隔 5 秒?\" is misrouted to `INTENT_HELP` instead of `start_task`/`create_task`. Move the help check after the concrete intent rules, or make it match only explicit help phrasings.",
+  "existing_code": "    if any(k in t for k in (\"帮助\", \"怎么用\", \"help\", \"?\")):\n        return {\"intent\": INTENT_HELP, \"params\": {}}",
+  "start_line": 81,
+  "end_line": 82,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/scripts/verify_api_split.py",
+  "content": "The whole end-to-end section assumes real network/credential access but sections [5]'s calls (`D.get_aweme_list_collection`, `D.get_conversation_list`, etc.) are not wrapped in try/except, so any network error aborts the entire script (via the unhandled exception) instead of being recorded as a failed check. Since other parts of this same section explicitly tolerate platform-side failures (see the `get_user_favorite` comment), the inconsistent handling means a transient network error gives a traceback rather than a clean \"✗\" report. Wrap these calls consistently.",
+  "existing_code": "    raw = D.get_aweme_list_collection(auth, \"0\", \"3\")\n    items = (raw or {}).get(\"aweme_list\") or []",
+  "start_line": 99,
+  "end_line": 100,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/account_service.py",
+  "content": "`_dm_verify_cache` is initialized but never read or written anywhere else in the module — the only method that could populate it (`verify`) is an unimplemented stub. This is dead state that will silently hold memory for the lifetime of the singleton once `verify` is implemented; either remove it or implement the caching with an eviction/TTL strategy.",
+  "existing_code": "        self._dm_verify_cache: dict[str, tuple[float, bool, Optional[str]]] = {}",
+  "start_line": 38,
+  "end_line": 38,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/ai_agent.py",
+  "content": "`ensure_default_dispatch_agent` is annotated `-> dict` but actually returns a 2-tuple `(key, agent_dict)`; the early-return path returns `(_KV_AGENTS, data[_DISPATCH_ID])` too. This violates the declared type contract and will surprise any caller that consumes the result as a dict. Return only the agent dict (the callers here already ignore the value).",
+  "suggestion_code": "def ensure_default_dispatch_agent() -> dict:\n    \"\"\"预置默认调度 Agent（IM Bot 指令解析用）。幂等：存在即返回。\n\n    调度 Agent 只有一个（固定 id），管理 IM Bot 能对项目做什么：\n    permissions 控制各能力的开/关（高危项默认关）。\n    \"\"\"\n    with _lock:\n        data = _kv_get(_KV_AGENTS, {}) or {}\n        if _DISPATCH_ID in data:\n            return data[_DISPATCH_ID]  # 已存在",
+  "existing_code": "def ensure_default_dispatch_agent() -> dict:\n    \"\"\"预置默认调度 Agent（IM Bot 指令解析用）。幂等：存在即返回。\n\n    调度 Agent 只有一个（固定 id），管理 IM Bot 能对项目做什么：\n    permissions 控制各能力的开/关（高危项默认关）。\n    \"\"\"\n    with _lock:\n        data = _kv_get(_KV_AGENTS, {}) or {}\n        if _DISPATCH_ID in data:\n            return _KV_AGENTS, data[_DISPATCH_ID]  # 已存在",
+  "start_line": 96,
+  "end_line": 105,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/browser_gate.py",
+  "content": "`bcc_state()` never returns a `\"state\"` key, so the `\"state\" in st` branch is dead code — it can never execute. The fallback `st.get(\"lease\")` works only because `\"lease\"` is read directly from `/status`. Worse, the dead branch would raise `AttributeError` if `st[\"state\"]` were ever a non-dict. Also, when BCC is offline or the request fails, this returns `None` (and leaks no diagnostic), which can be mistaken for \"no lease held\". Simplify and surface the failure explicitly.",
+  "suggestion_code": "def lease_status(account: str) -> dict:\n    \"\"\"只读查询该账号 BCC 的租约状态（谁在用、还剩多久）。\"\"\"\n    st = bcc_state(account)\n    if not st.get(\"online\"):\n        return {\"ok\": False, \"msg\": st.get(\"msg\") or \"BCC 未在线\"}\n    return st.get(\"lease\") or {}",
+  "existing_code": "def lease_status(account: str) -> dict:\n    \"\"\"只读查询该账号 BCC 的租约状态（谁在用、还剩多久）。\"\"\"\n    st = bcc_state(account)\n    return st.get(\"state\", {}).get(\"lease\") if \"state\" in st else st.get(\"lease\")",
+  "start_line": 152,
+  "end_line": 155,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/member_ctx.py",
+  "content": "`_SESSION_KEY_CACHE` is a module-level mutable global read and *rebound* inside `_session_file_key()` with no `_LOCK` (unlike `_sessions`/`_current`). Under concurrent requests this is a check-then-act on shared state: two threads can race between the mtime check and the cache write, and a reader may observe a partially initialized cache. Since a stale/空白 cache value can be returned as the master key (which then fails decryption), protect this cache with the existing `_LOCK` or use a thread-safe accessor.",
+  "existing_code": "_SESSION_KEY_CACHE: dict = {}\n\n\ndef _session_file_key() -> str | None:\n    \"\"\"从 <app_root>/members/.session.json 读主密钥（最后回退，带 mtime 缓存）。\"\"\"\n    global _SESSION_KEY_CACHE",
+  "start_line": 210,
+  "end_line": 215,
+  "category": "other",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/member_store.py",
+  "content": "Duplicate `verify_password` check — the exact same call and error branch appears twice in a row. The second occurrence is dead code (it can never produce a different result than the first) and wastes a ~600k-round PBKDF2 computation per `change_password` call. Remove the duplicated block.",
+  "suggestion_code": "        if not verify_password(old_password, rec.get(\"pwd\", {})):\n            return {\"ok\": False, \"msg\": \"旧口令错误\"}",
+  "existing_code": "        if not verify_password(old_password, rec.get(\"pwd\", {})):\n            return {\"ok\": False, \"msg\": \"旧口令错误\"}\n        if not verify_password(old_password, rec.get(\"pwd\", {})):\n            return {\"ok\": False, \"msg\": \"旧口令错误\"}",
+  "start_line": 292,
+  "end_line": 295,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/member_store.py",
+  "content": "The `members` field is assumed to be a dict here and in `register_member`/`authenticate`/`list_members`, but `_load_registry` only validates that the top-level object is a dict containing `\"members\"` — it does not check that `reg[\"members\"]` is a dict. A registry.json with `\"members\": []` (or any non-mapping) will make `.values()` raise `AttributeError` outside the try/except, crashing registration/login rather than degrading gracefully. Validate the type in `_load_registry`.",
+  "suggestion_code": "        if not isinstance(reg, dict) or not isinstance(reg.get(\"members\"), dict):\n            return {\"version\": 1, \"members\": {}}\n        return reg",
+  "existing_code": "        if not isinstance(reg, dict) or \"members\" not in reg:\n            return {\"version\": 1, \"members\": {}}\n        return reg",
+  "start_line": 93,
+  "end_line": 95,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/tasks_history.py",
+  "content": "`json.loads` on `config`/`records` is unguarded. A single row with malformed/truncated JSON (partial write, manual edit, or legacy migration) raises `JSONDecodeError` here and aborts the *entire* `list_history`, so one bad row hides all valid history from the caller. Wrap each decode in try/except and fall back to an empty value (and optionally log the offending id).",
+  "suggestion_code": "    out = []\n    for r in rows:\n        d = dict(r)\n        d[\"config\"] = _safe_json(d.get(\"config\"), {})\n        d[\"records\"] = _safe_json(d.get(\"records\"), [])\n        out.append(d)\n    return out",
+  "existing_code": "    out = []\n    for r in rows:\n        d = dict(r)\n        d[\"config\"] = json.loads(d.get(\"config\") or \"{}\")\n        d[\"records\"] = json.loads(d.get(\"records\") or \"[]\")\n        out.append(d)\n    return out",
+  "start_line": 127,
+  "end_line": 133,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/test_member_smoke.py",
+  "content": "`member_store.__dict__` is a module namespace dict and is always truthy, so this operand has no effect and only obscures intent. It looks like leftover/placeholder logic. Just call `mctx.parse_env_dict(env_a)` directly.",
+  "suggestion_code": "vals = mctx.parse_env_dict(env_a)",
+  "existing_code": "vals = member_store.__dict__ and mctx.parse_env_dict(env_a)",
+  "start_line": 66,
+  "end_line": 66,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/ab_pure.py",
+  "content": "`ABogusPureSigner` is used as a process-wide singleton (`_pure_signer` in utils/dy_util.py) while this backend runs request handling in multiple threads (`ThreadPoolExecutor`, `threading.Thread`). `sign_query` mutates shared per-instance state: `self.counter += 1` is a non-atomic read-modify-write, so concurrent calls can read the same pre-increment value and emit duplicate counters, and interleaved `self._rand()` draws (global `random`) can mix sequences. Guard the counter (e.g. `itertools.count` or a `threading.Lock`) and/or use a per-call RNG so calls do not share mutable state.",
+  "existing_code": "        L = {}\n        self.counter += 1",
+  "start_line": 204,
+  "end_line": 205,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/code_logger.py",
+  "content": "`logger` is a process-wide loguru singleton, so this check-then-`setattr` sequence is a non-atomic read-modify-write. If two threads (e.g. a FastAPI worker thread and a daemon thread) call `install_code_logger_patch()` concurrently, both can observe an unpatched `orig` and each installs a wrapper around the other, producing a doubly-wrapped logger rather than the intended single wrap. Guard the install with a module-level `threading.Lock` (or `logger.remove`-style serialization) to make the idempotency claim actually hold under concurrency.",
+  "existing_code": "        try:\n            setattr(logger, lvl, _make(orig))\n            installed = True",
+  "start_line": 68,
+  "end_line": 70,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/web_probe.py",
+  "content": "`import time` is never referenced anywhere in this module — dead import, remove it.",
+  "suggestion_code": "import asyncio\nfrom loguru import logger",
+  "existing_code": "import asyncio\nimport time\nfrom loguru import logger",
+  "start_line": 15,
+  "end_line": 17,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/accounts/accounts-shared.tsx",
+  "content": "The `fp` (FingerprintInfo) block is entirely hardcoded placeholder data presented to the user as if it were the real fingerprint (os/ip/resolution/ua/proxy/timezone). This silently misrepresents account state instead of surfacing \"unknown\". Either source these values from the backend payload or render an explicit \"—/未获取\" state.",
+  "existing_code": "    fp: {\n      name: \"浏览器守护 · \" + a.name,\n      status: \"running\",\n      os: \"Windows 11\",\n      ip: \"—\",\n      resolution: \"1920×1080\",\n      ua: \"Chrome\",\n      proxy: \"直连\",",
+  "start_line": 193,
+  "end_line": 200,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/live/live-page.tsx",
+  "content": "`rows` is always built with `lv: 0` (both here and in `recordsToRows`), so this condition `r.lv < 99` is always true and every row renders a `Lv.0` badge. When `lv` is a placeholder for unavailable data, the badge should be suppressed (e.g. `r.lv > 0 && r.lv < 99`) to avoid showing misleading level info.",
+  "existing_code": "                          {r.lv < 99 && (",
+  "start_line": 1126,
+  "end_line": 1126,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/platform/crawl-panel.tsx",
+  "content": "`dmState` is keyed only by `uid`. When a comment has no valid uid, `String(c.uid || \"\")` yields `\"\"`, so every such row shares `dmState[\"\"]` and clicking 「私信」 on one row would visually update the state of all uid-less rows. Worse, because `sendOne` early-returns on empty uid the row stays disabled but the shared empty-string key remains a foot-gun. Key the state by the stable row identity instead (e.g. `c.cid || i`) or use a composite `${uid}:${cid}` key. Also note that the same `uid` appearing in multiple comments will share a single state entry, so a per-row key is more accurate.",
+  "suggestion_code": "  const [dmState, setDmState] = useState<Record<string, string>>({});\n  // NOTE: dmState must be keyed per rendered row, not per uid (see below).",
+  "existing_code": "  const [dmState, setDmState] = useState<Record<string, string>>({});",
+  "start_line": 49,
+  "end_line": 49,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/player/fullscreen-player.tsx",
+  "content": "The quality `<select>` is a placeholder that has no effect: the `quality` state is never passed to `PlayerMediaStage` and never triggers re-fetch/callback, so switching quality silently does nothing (resets to the same stream). This gives users a false \"it works\" impression — either wire `quality` through to the media stage / a `onQualityChange` callback, or remove the control.",
+  "existing_code": "        <select\n          value={quality}\n          onChange={(e) => setQuality(e.target.value)}\n          className=\"rounded bg-white/10 px-1.5 py-1 text-xs text-white outline-none\"\n          aria-label=\"清晰度\"\n        >",
+  "start_line": 162,
+  "end_line": 167,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/tasks/tasks-page.tsx",
+  "content": "`ov.liveUrl` is never produced by the `Overview` API response (see `Overview` in api/client.ts, which has no `liveUrl` field), so the \"目标\" column prints the `—` placeholder for every running task rather than the live room URL. Either the field is genuinely missing from the backend payload (in which case the column is dead UI) or the display should read from the current-task/config source — it should not rely on a field the API contract does not define.",
+  "existing_code": "                  <Td mono muted>{ov.liveUrl || \"—\"}</Td>",
+  "start_line": 189,
+  "end_line": 189,
+  "category": "maintainability",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/lib/utils.ts",
+  "content": "`fmtNum` does not guard against non-finite values: `Infinity` passes every `>=` branch and produces `Infinity亿`, and `Number.NaN` is only caught because `Number.isNaN` is checked. Consider using `Number.isFinite(n)` instead of the null/undefined/NaN combination so `Infinity`/`-Infinity` also fall back to the placeholder.",
+  "suggestion_code": "  if (n === null || n === undefined || !Number.isFinite(n)) return \"—\";",
+  "existing_code": "  if (n === null || n === undefined || Number.isNaN(n)) return \"—\";",
+  "start_line": 24,
+  "end_line": 24,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/probe_bcc_speed.py",
+  "content": "`data` may not be a dict as assumed here. The endpoint's JSON could legitimately return a non-dict `data` (e.g. a list, or a JSON string) or `j` might be a list; in that case `len(data)` still succeeds but `data.get('err')` / `data.items()` lower down would raise `AttributeError`/`TypeError` outside any try block, crashing the probe. Since this is a diagnostic script whose whole purpose is to report failures, a malformed/error response is a plausible input. Guard the type (or wrap the consumption in try/except) before assuming a mapping.",
+  "existing_code": "        data = j.get(\"data\") or {}\n        return el, len(data), data",
+  "start_line": 31,
+  "end_line": 32,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_live_restart_live.py",
+  "content": "The `HTTPError` handler parses the error body with `json.loads(...)` unconditionally. If the backend returns a non-JSON error body (empty body, plain-text, or an HTML 500 page), `json.loads` raises `json.JSONDecodeError`, which is not caught here and aborts the whole verification run mid-way — exactly when you most need the check output. Guard the parse and fall back to a raw-text/placeholder dict.",
+  "suggestion_code": "    except urllib.error.HTTPError as e:\n        raw = e.read().decode(\"utf-8\", \"replace\")\n        try:\n            return e.code, json.loads(raw or \"{}\")\n        except json.JSONDecodeError:\n            return e.code, {\"raw\": raw}",
+  "existing_code": "    except urllib.error.HTTPError as e:\n        return e.code, json.loads(e.read().decode(\"utf-8\") or \"{}\")",
+  "start_line": 33,
+  "end_line": 34,
+  "category": "bug",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/src-tauri/src/lib.rs",
+  "content": "`stop_recv_daemon`/`stop_browser_daemon` validate the process by matching a label string only, while the actual kill is by OS pid; conversely the port is taken from the caller verbatim. There is no validation that the pid still belongs to the process originally registered (pid reuse after the daemon exits could cause `kill_tree()` to terminate an unrelated process tree). Prefer verifying the child is still the live one registered (e.g. check `is_alive()`/the stored `CommandChild` before issuing `taskkill /F /T`), and reject/verify `port` ranges before using them in labels or process arguments.",
+  "existing_code": "    let label = format!(\"recv_daemon({}:{port})\", accounts.join(\",\"));",
+  "start_line": 116,
+  "end_line": 116,
+  "category": "security",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/src-tauri/src/lib.rs",
+  "content": "The log-write command takes arbitrary frontend-controlled `text` and writes it unbounded into `logs/frontend_boot.log` with no size cap or rotation. A misbehaving or compromised webview can spam this call and grow the log without limit (and the file is never truncated). Bound the write (size/rate limit) and/or rely on the already-configured logger instead of a bespoke file path derived from the executable directory.",
+  "existing_code": "    writeln!(f, \"{}\", text).map_err(|e| e.to_string())?;",
+  "start_line": 158,
+  "end_line": 158,
+  "category": "other",
+  "severity": "medium"
+ },
+ {
+  "path": "DYAutoDM_v2/start_dev.ps1",
+  "content": "The source-mode backend relies on the `py` launcher being on PATH; when `-DevBackend` is used on a machine without the launcher (or with only a Store placeholder) the process exits immediately and the user only sees the generic \"[FAIL] 后端启动超时\". Consider validating the interpreter/`py` availability up front and emitting a clear error (the sibling `build_sidecar.ps1` already codifies the \"Store placeholder\" pitfall).",
+  "existing_code": "    Start-Process -WindowStyle Minimized -FilePath \"py\" `\n        -ArgumentList \"-X\",\"utf8\",\"backend/main.py\" `\n        -WorkingDirectory $ROOT",
+  "start_line": 76,
+  "end_line": 78,
+  "category": "maintainability",
+  "severity": "medium"
+ }
+]
