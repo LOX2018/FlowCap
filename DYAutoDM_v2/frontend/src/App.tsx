@@ -406,10 +406,13 @@ export default function App() {
     setRefreshState,
   }; 
 
-  // ===== 会员门禁 + 启动预对齐门（2026-09-08）：对齐完成才显示登录框 =====
+  // ===== 会员门禁 + 启动预对齐门（2026-09-08）：后端就绪后才显示登录框 =====
+  // 2026-09-17 修复：旧实现 prealigned 完成即弹出登录框，但后端尚未 ready
+  //   （overview 首帧未到），用户填完凭证点登录 → API 失败 → 体验断层。
+  //   铁律：登录框与所有业务 UI 必须在后端引擎就绪（ready=true）后才允许渲染。
   if (!memberName) {
-    // 预对齐未完成才盖闪屏；已完成则必须放行登录框（不再受 ready 影响）
-    if (!prealigned) return <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />;
+    // prealigned 未完成 / 后端尚未 ready → 持续闪屏
+    if (!prealigned || !ready) return <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />;
     return memberChecked ? (
       <MemberGate onLogin={(u) => { setMemberName(u); setPrealigned(true); }} />
     ) : (
