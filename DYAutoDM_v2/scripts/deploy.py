@@ -257,6 +257,31 @@ def main() -> int:
             src_exe = bins / full / f"{full}.exe"
         if shared_internal:
             dst_exe = app_root / f"{full}.exe"
+            # 2026-09-17 修补（真实故障 —— 旧子目录遮蔽新产物，桌面端跑旧版）：
+            # `sidecar.rs::resolve_sidecar` 的候选顺序是
+            #   ① `<root>/<full>/<full>.exe`（目录形态，**优先**）
+            #   ② `<root>/<full>.exe`（平铺）
+            # 而共享形态下这里**只覆盖平铺 exe**，从不清理可能存在的
+            # `<root>/<full>/` 子目录 —— 历史"传统形态"部署留下的旧目录
+            # （每份约 280MB，含自己的 `_internal`）会**接管解析**，
+            # 于是应用启动的仍是旧版本（实测：部署 0.43.71 平铺新产物，
+            # 桌面端 `/api/version` 报 0.43.42 —— 启动的是 02:43 的旧子目录）。
+            # 这正是本脚本"根治假版本"契约要防的情形，故在此显式清除。
+            _stale = app_root / full
+            if _stale.is_dir():
+                # ⚠️ 不能 ignore_errors=True —— 实测曾出现"内容删净但目录残留"
+                # 时被**静默吞掉**，导致遮蔽依旧存在却毫无提示。删完必须复核。
+                _err = None
+                try:
+                    shutil.rmtree(_stale)
+                except Exception as e:  # noqa: BLE001
+                    _err = e
+                if _stale.exists():
+                    log("     ❌ 未能移除遮蔽目录 %s（%s）—— 该子目录优先于平铺 exe，"
+                        "会导致启动旧版本！请手动删除后重跑。" % (full, _err))
+                    ok_all = False
+                else:
+                    log("     🗑 移除遮蔽新版本的旧 sidecar 目录 %s" % full)
             shutil.copy2(src_exe, dst_exe)
         else:
             dst_dir = app_root / full
