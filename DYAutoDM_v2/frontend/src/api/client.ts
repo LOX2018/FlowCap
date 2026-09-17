@@ -577,6 +577,62 @@ export const api = {
   },
 
   // ===== accounts =====
+  /** 2026-09-17：ChatLab 导出到默认目录并返回下载直链（乙方案）。 */
+  async exportChatlab(
+    account: string,
+    convId: string,
+    fmt: "json" | "jsonl" = "jsonl",
+  ): Promise<{ ok: boolean; url?: string; filename?: string; messages?: number;
+               members?: number; error?: string }> {
+    return request("/api/messages/export/chatlab/download", {
+      method: "POST",
+      body: JSON.stringify({ account, conv_id: convId, fmt }),
+    });
+  },
+
+  /** 2026-09-17：长图直出 PNG（Pillow 原生绘制，不经 BCC）。 */
+  async renderChatPng(
+    account: string,
+    convId: string,
+    opts: {
+      startSeq?: number; endSeq?: number; theme?: string; title?: string;
+      subtitle?: string; width?: number; scale?: number; asBase64?: boolean;
+    } = {},
+  ): Promise<{ ok: boolean; data_uri?: string; bytes?: number; error?: string }> {
+    return request("/api/messages/render/png", {
+      method: "POST",
+      body: JSON.stringify({
+        account, conv_id: convId,
+        start_seq: opts.startSeq ?? null, end_seq: opts.endSeq ?? null,
+        theme: opts.theme ?? "dark", title: opts.title ?? "",
+        subtitle: opts.subtitle ?? "", width: opts.width ?? 520,
+        scale: opts.scale ?? 2.0, as_base64: opts.asBase64 ?? false,
+      }),
+    });
+  },
+
+  /** 2026-09-17：长图 HTML（自包含，可打印/另存）。 */
+  async renderChatHtml(
+    account: string,
+    convId: string,
+    opts: {
+      startSeq?: number; endSeq?: number; theme?: string; title?: string;
+      subtitle?: string; width?: number; scale?: number;
+    } = {},
+  ): Promise<{ ok: boolean; html?: string; chars?: number; theme?: string;
+               error?: string }> {
+    return request("/api/messages/render/html", {
+      method: "POST",
+      body: JSON.stringify({
+        account, conv_id: convId,
+        start_seq: opts.startSeq ?? null, end_seq: opts.endSeq ?? null,
+        theme: opts.theme ?? "dark", title: opts.title ?? "",
+        subtitle: opts.subtitle ?? "", width: opts.width ?? 520,
+        scale: opts.scale ?? 2.0,
+      }),
+    });
+  },
+
   async getAccounts(): Promise<unknown[]> {
     const r = await request<{ ok: boolean; accounts: unknown[] }>("/api/accounts");
     return r.accounts || [];

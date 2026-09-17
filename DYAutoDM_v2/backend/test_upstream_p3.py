@@ -461,5 +461,57 @@ class TestRenderPng(_Base):
             PNG._FONT_CANDIDATES = orig
 
 
+
+
+class TestExportDownload(_Base):
+    """ChatLab 导出 → 默认目录 → 下载链路（2026-09-17 乙方案）。"""
+
+    def test_default_export_dir_is_under_app_root(self):
+        d = CE.default_export_dir()
+        self.assertTrue(d.is_dir(), "默认导出目录应可创建")
+        self.assertEqual(d.name, "chatlab")
+        self.assertEqual(d.parent.name, "exports")
+
+    def test_export_without_dest_dir_lands_in_default(self):
+        self._ins("你好", 1700000000.0)
+        self.conn.commit()
+        import database
+        database._db_path = lambda: self._dbfile
+        r = CE.export_chatlab(_ACCT, _CONV, "", fmt="jsonl")
+        self.assertTrue(r["ok"], r)
+        self.assertIn("filename", r)
+        self.assertEqual(os.path.dirname(r["path"]),
+                         str(CE.default_export_dir()))
+        data = _read_open(r["path"]).strip().split("\n")
+        head = json.loads(data[0])
+        self.assertEqual(head["_type"], "header")
+        self.assertEqual(len(data) - 1, r["messages"])
+
+    def test_safe_export_file_accepts_chinese_name(self):
+        """★ 中文昵称文件名必须可下载（曾因 ASCII 白名单恒 404）。"""
+        p = CE.default_export_dir() / "四川工伤-张老师_20260917_export.jsonl"
+        p.write_text("{}", encoding="utf-8")
+        self.assertIsNotNone(CE._safe_export_file(p.name),
+                             "含中文的文件名应被接受")
+
+    def test_safe_export_file_blocks_traversal(self):
+        p = CE.default_export_dir() / "ok.jsonl"
+        p.write_text("{}", encoding="utf-8")
+        for bad in ("../" + p.name, ".." + chr(92) + p.name, "a/" + p.name,
+                    "", ".", "..", "not-exist.jsonl", p.name[:-6] + ".../../x"):
+            self.assertIsNone(CE._safe_export_file(bad), f"{bad!r} 应被拒")
+
+    def test_render_png_service_is_real_png(self):
+        self._ins("测试长图", 1700000000.0)
+        self.conn.commit()
+        import database
+        database._db_path = lambda: self._dbfile
+        data = PNG.render_png(_ACCT, _CONV, theme="dark", scale=1.0)
+        self.assertEqual(data[:4], b"\x89PNG")
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        im.verify()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

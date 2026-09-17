@@ -814,6 +814,50 @@ async def render_chat_html(body: dict) -> dict:
             "theme": str(body.get("theme") or "dark")}
 
 
+class ChatlabDownloadReq(BaseModel):
+    """ChatLab 导出并下载（2026-09-17 乙方案）。
+
+    桌面应用没有「服务端路径」语义：调用方**不必**给 `dest_dir`，
+    后端落到默认导出目录（`<app_root>/exports/chatlab`）并返回下载直链，
+    前端带令牌 fetch 成 Blob 触发浏览器保存。
+    """
+    account: str
+    conv_id: str
+    fmt: str = "jsonl"          # json | jsonl
+
+
+@router.post("/export/chatlab/download")
+async def export_chatlab_download(body: ChatlabDownloadReq) -> dict:
+    """导出到**默认导出目录**并返回下载直链（不要求调用方传路径）。"""
+    if not body.account or not body.conv_id:
+        raise HTTPException(422, "account 与 conv_id 必填")
+    try:
+        from services import chatlab_export as _ce
+        res = await asyncio.to_thread(
+            _ce.export_chatlab, body.account, body.conv_id, "", fmt=body.fmt)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-050] " + f"ChatLab 导出失败: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"ChatLab 导出失败: {type(e).__name__}")
+    fn = res.get("filename") or Path(res.get("path") or "").name
+    res.pop("path", None)                      # 不外泄本机绝对路径
+    res["url"] = f"http://127.0.0.1:{_app_settings.backend_port}" \
+                 f"/api/messages/export/chatlab/file/{fn}"
+    return res
+
+
+@router.get("/export/chatlab/file/{filename}")
+async def download_chatlab_file(filename: str):
+    """下载已导出的 ChatLab 文件（文件名白名单 + 导出目录内校验）。"""
+    from services import chatlab_export as _ce
+    p = _ce._safe_export_file(filename)
+    if p is None:
+        raise HTTPException(404, "导出文件不存在")
+    mime = "application/json; charset=utf-8"
+    return FileResponse(str(p), media_type=mime, filename=filename)
+
+
 @router.post("/render/png")
 async def render_chat_png(body: dict) -> Response:
     """把消息区间渲染成 **PNG 长图**（Pillow 原生绘制，**不经 BCC / 无浏览器**）。

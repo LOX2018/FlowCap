@@ -7,6 +7,7 @@ import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Avatar, hue, nowHM } from "../../components/ui";
 import { Loader2, Download, Paperclip, ImageIcon, VideoIcon, FileText, Mic } from "lucide-react";
+import { ImageDown, FileDown } from "lucide-react";
 import LeadsSection from "./LeadsSection";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -109,6 +110,9 @@ export default function MessagesPage(props: PageProps) {
   const [refreshElapsed, setRefreshElapsed] = useState(0);
   // 2026-09-17：语音转写进行中标记（对照上游「语音转文字」能力）。
   const [transcribing, setTranscribing] = useState(false);
+  /** 2026-09-17：长图 / ChatLab 导出进行中（各自按钮的 loading 态） */
+  const [exportingImg, setExportingImg] = useState(false);
+  const [exportingLab, setExportingLab] = useState(false);
   // 2026-09-17：会话内检索面板（对照上游 SearchBar：文本 / 日期 / 媒体三模式）。
   const [showDmSearch, setShowDmSearch] = useState(false);
   const [dmQuery, setDmQuery] = useState("");
@@ -582,6 +586,79 @@ export default function MessagesPage(props: PageProps) {
                     <Mic className="h-3.5 w-3.5" />
                     语音转写
                   </>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="dm-export-img"
+                title="把当前会话渲染成聊天长图（PNG，本地渲染，不经浏览器）"
+                disabled={!conv.conv_id || exportingImg}
+                onClick={async () => {
+                  if (!conv.conv_id) return;
+                  setExportingImg(true);
+                  try {
+                    const r = await a.renderChatPng(activeAcct, conv.conv_id, {
+                      theme: "dark", scale: 2.0, asBase64: true,
+                    });
+                    if (r?.ok && r.data_uri) {
+                      const el = document.createElement("a");
+                      el.href = r.data_uri;
+                      el.download = `chat_${conv.conv_id.replace(/[^0-9A-Za-z]/g, "_").slice(0, 40)}.png`;
+                      el.click();
+                      push(`长图已导出（${Math.round((r.bytes || 0) / 1024)} KB）`);
+                    } else {
+                      push(`长图导出失败 · ${r?.error || "未知原因"}`);
+                    }
+                  } catch (e: unknown) {
+                    push("长图导出失败: " + (e instanceof Error ? e.message : String(e)));
+                  } finally {
+                    setExportingImg(false);
+                  }
+                }}
+              >
+                {exportingImg ? (
+                  <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
+                ) : (
+                  <><ImageDown className="h-3.5 w-3.5" />导出长图</>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="dm-export-chatlab"
+                title="导出为 ChatLab 标准格式（JSONL，可导入 AI 分析工具/知识库）"
+                disabled={!conv.conv_id || exportingLab}
+                onClick={async () => {
+                  if (!conv.conv_id) return;
+                  setExportingLab(true);
+                  try {
+                    const r = await a.exportChatlab(activeAcct, conv.conv_id, "jsonl");
+                    if (r?.ok && r.url) {
+                      // 乙方案：导出落在后端默认目录，前端带令牌取回后触发保存
+                      // （媒体端点受会员门禁，<a download> 无法带 X-Member-Token）
+                      const { fetchAuthedBlob } = await import("@/api/client");
+                      const blob = await fetchAuthedBlob(r.url);
+                      const href = URL.createObjectURL(blob);
+                      const el = document.createElement("a");
+                      el.href = href; el.download = r.filename || "chatlab.jsonl";
+                      el.click();
+                      setTimeout(() => URL.revokeObjectURL(href), 8000);
+                      push(`ChatLab 已导出 · ${r.messages} 条消息`);
+                    } else {
+                      push(`ChatLab 导出失败 · ${r?.error || "未知原因"}`);
+                    }
+                  } catch (e: unknown) {
+                    push("ChatLab 导出失败: " + (e instanceof Error ? e.message : String(e)));
+                  } finally {
+                    setExportingLab(false);
+                  }
+                }}
+              >
+                {exportingLab ? (
+                  <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
+                ) : (
+                  <><FileDown className="h-3.5 w-3.5" />导出 ChatLab</>
                 )}
               </Button>
               <Button

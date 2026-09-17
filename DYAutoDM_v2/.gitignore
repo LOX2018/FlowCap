@@ -68,6 +68,8 @@ logs/
 accounts_data/
 stats_export/
 data/*.db
+# 2026-09-17：导出目录（ChatLab / 长图等运行时产物，不入库）
+exports/
 # 注：仓库根是 ../DYchajian，本文件里的 ../ 规则**无效**
 # （git 的 .gitignore 不允许跳出仓库根）。外层 data/*.db 与
 # 工作记忆/_kb*.py 的忽略规则已写在**仓库根** .gitignore（2026-08-31）。

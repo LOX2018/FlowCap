@@ -171,6 +171,26 @@ export interface MessagesApi {
     tz?: number,
   ): Promise<{ ok: boolean; days?: DailyCount[]; total?: number;
                bounds?: { min: number; max: number } }>;
+  /** 2026-09-17：长图直出 PNG（Pillow 原生绘制，不经 BCC）。`asBase64` 返回 data URI */
+  renderChatPng(
+    account: string,
+    convId: string,
+    opts?: ChatRenderOpts & { asBase64?: boolean },
+  ): Promise<{ ok: boolean; data_uri?: string; bytes?: number; error?: string }>;
+  /** 2026-09-17：长图 HTML（自包含，可打印/另存） */
+  renderChatHtml(
+    account: string,
+    convId: string,
+    opts?: ChatRenderOpts,
+  ): Promise<{ ok: boolean; html?: string; chars?: number; theme?: string;
+               error?: string }>;
+  /** 2026-09-17：ChatLab 导出到默认目录并返回下载直链（乙方案） */
+  exportChatlab(
+    account: string,
+    convId: string,
+    fmt?: "json" | "jsonl",
+  ): Promise<{ ok: boolean; url?: string; filename?: string; messages?: number;
+               members?: number; error?: string }>;
   getAccounts(): Promise<unknown>;
   addLog(level: string, text: string): Promise<unknown>;
 }
@@ -194,6 +214,18 @@ export interface DailyCount {
   count: number;
   first_msg_id: string | null;
   first_ts: number;
+}
+
+/** 长图渲染参数（`POST /render/png` 与 `/render/html` 共用；seq 闭区间） */
+export interface ChatRenderOpts {
+  startSeq?: number;
+  endSeq?: number;
+  /** dark | wechat | light | warm | purple */
+  theme?: string;
+  title?: string;
+  subtitle?: string;
+  width?: number;
+  scale?: number;
 }
 
 export { errMsg } from "@/lib/utils";

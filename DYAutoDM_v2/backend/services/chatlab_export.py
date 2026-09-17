@@ -129,11 +129,51 @@ def _load_msgs(conn, account: str, conv_id: str) -> tuple[dict, list]:
             "peer_name": row["peer_name"]}, list(msgs)
 
 
+def default_export_dir(sub: str = "chatlab") -> Path:
+    """默认导出目录：`<app_root>/exports/<sub>`（2026-09-17 乙方案）。
+
+    桌面应用没有「服务端路径」语义 —— 用户点导出应直接拿到文件，
+    故 `dest_dir` 留空时落到此默认目录，再由下载端点交给前端。
+    """
+    try:
+        import vbrowser
+        root = Path(vbrowser.app_root())
+    except Exception:
+        root = Path(os.environ.get("DY_APP_ROOT") or os.getcwd())
+    d = root / "exports" / sub
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _safe_export_file(filename: str, sub: str = "chatlab") -> Path | None:
+    """把文件名解析为导出目录内的安全路径；不存在/越界返回 None。
+
+    ⚠️ **不能**用 ASCII 白名单：导出文件名含**中文昵称**
+    （`build_filename` 用会话名命名，如 `四川工伤-张老师_..._export.jsonl`），
+    白名单会把它一律拒绝 → 下载恒 404（实测踩中）。
+    故改为「拒绝路径分隔与上跳 + **以 resolve 后的目录包含性为准**（权威判据）」。
+    """
+    name = (filename or "").strip()
+    if not name or name in (".", ".."):
+        return None
+    # 显式拒绝路径分隔符与 NUL（跨平台：/ 与 \ 都拦）
+    if any(c in name for c in ("/", "\\", "\x00")):
+        return None
+    base = default_export_dir(sub).resolve()
+    p = (base / name).resolve()
+    try:
+        p.relative_to(base)          # ★ 权威判据：必须仍在导出目录内
+    except ValueError:
+        return None
+    return p if p.is_file() else None
+
+
 def export_chatlab(account: str, conv_id: str, dest_dir: str, *,
                    fmt: str = "jsonl", db_path: str | None = None) -> dict:
     """导出单个会话为 ChatLab 格式（JSON 或 JSONL）。**只读**。
 
-    返回 `{ok, path, format, messages, members}`。
+    `dest_dir` 留空 → 落到 `default_export_dir()`（桌面默认导出目录）。
+    返回 `{ok, path, filename, format, messages, members}`。
     """
     from database import get_db
     if fmt not in ("json", "jsonl"):
@@ -199,7 +239,7 @@ def export_chatlab(account: str, conv_id: str, dest_dir: str, *,
     if is_group:
         # 上游同款：群聊额外标注群 ID
         header["meta"]["groupId"] = str(conv_id)
-    d = Path(dest_dir)
+    d = Path(dest_dir) if (dest_dir or "").strip() else default_export_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = d / build_filename(str(name), fmt)
     if fmt == "json":
@@ -213,7 +253,7 @@ def export_chatlab(account: str, conv_id: str, dest_dir: str, *,
             for item in out_msgs:
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
     logger.info(f"[CLE-001] " + f"ChatLab 导出: {path.name} 消息 {len(out_msgs)} 条")
-    return {"ok": True, "path": str(path), "format": fmt,
+    return {"ok": True, "path": str(path), "filename": path.name, "format": fmt,
             "messages": len(out_msgs), "members": len(members)}
 
 
