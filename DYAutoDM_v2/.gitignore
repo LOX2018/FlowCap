@@ -94,6 +94,16 @@ _*.py
 !**/__main__.py
 !**/_bindings.py
 !**/_common.py
+# ⚠️ 2026-09-17 修补（OCR 审查 HIGH 核实后确认，非报告原例）：
+# `_*.py` 本意只忽略「单下划线开头的临时脚本」，但它**静默吞掉了持久验证资产**——
+# 下列门禁/验证脚本被 ADR 与审计档案明文引用（docs/adr_conv_identity_single_source.md:72/147、
+# 工作记忆/审计修复总档案），却在 git 历史中**从未入库**（0 次提交），
+# 只存在于开发机工作区 → 换机/克隆即永久丢失验证能力，且 ADR 引用断链。
+# 现为这些**持久资产**加例外（临时脚本仍照旧忽略）。
+!**/_build_version.py
+!**/_verify_send_gate_cache.py
+!**/_verify_conv_identity.py
+!**/_verify_lease_lock.py
 _force_rebuild.ps1
 _kill_clean.ps1
 _verify_exe.py

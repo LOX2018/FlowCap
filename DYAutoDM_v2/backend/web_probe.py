@@ -87,10 +87,16 @@ def scan(page):
     return records
 
 
-async def run_probe(dispatch, room_url, user_data_dir="pw_profile_probe", headless=False, interval=3.0, should_stop=None):
+async def run_probe(dispatch, room_url, headless=False, interval=3.0, should_stop=None):
     """启动一个浏览器，定时扫描中控台评论区，把昵称推给 dispatch。
 
     should_stop: 可选 callable，返回 True 时立即停止扫描并退出（配合“停止”按钮）。
+
+    2026-09-17 修补（OCR 审查 HIGH —— 声明却未使用的参数）：
+    原签名有一个 `user_data_dir="pw_profile_probe"` 形参，但函数体**从未使用**
+    它（launch_async 用的是账号级 profile）。该形参既是死代码，默认值还会
+    误导读者以为"中控台采集用独立 profile"。现移除；若有调用方按位置传入，
+    需改为关键字或删除（已确认仓库内无调用方依赖该形参）。
     """
     if not room_url:
         logger.warning(f"[BCC-043] " + "[web_probe] 未配置 WEB_PROBE_ROOM_URL，跳过中控台采集")

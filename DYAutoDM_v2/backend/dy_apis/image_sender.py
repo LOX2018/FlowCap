@@ -352,7 +352,17 @@ def commit_upload(auth, cfg: dict, session_key: str) -> dict:
         f"{_uri_encode(k)}={_uri_encode(v)}" for k, v in sorted(q.items()))
     authorization, content_sha = _aws4_post_authorization(
         cfg["sk"], canonical_query, amz_date, cfg["st"], date_stamp, cfg["ak"], body_bytes)
-    url = _VOD_HOST + "/?" + "&".join(f"{k}={v}" for k, v in q.items())
+    # 2026-09-17 修补（OCR 审查 HIGH —— 签名与 URL 的 query 不一致）。
+    # 实测结论（避免过度声称）：
+    #   · **顺序**差异本身不致失败 —— AWS SigV4 服务端会按规范对 query 重新
+    #     排序，故 `sorted()` 与否不影响签名。
+    #   · 真正的风险在**编码**：canonical 串用 `_uri_encode`（`~` 之外全部
+    #     percent-encode，如 `/`→`%2F`、`*`→`%2A`、`+`→`%2B`），而 requests
+    #     对 URL 里的 `a/b`、`x*y`、`a+b` **原样透传**（实测），两侧不一致 →
+    #     SignatureDoesNotMatch。默认 space_name="zhenzhen" 是纯字母数字，
+    #     恰好两种写法相同，故此前未被发现（潜在缺陷，非"一直失败"）。
+    #   · 现 URL 直接复用 canonical_query，两侧编码完全一致，彻底消除差异。
+    url = _VOD_HOST + "/?" + canonical_query
     headers = {
         "accept": "*/*",
         "authorization": authorization,
