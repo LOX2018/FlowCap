@@ -41,9 +41,19 @@ SRC = os.path.join(DOCS, "upstream_sources.json")
 BASE = os.path.join(DOCS, "upstream_baseline.json")
 
 API = "https://api.github.com"
+# 2026-09-17 修补（OCR 审查 HIGH）：原实现**全局关闭** TLS 证书校验
+#   CTX.check_hostname = False
+#   CTX.verify_mode = ssl.CERT_NONE
+# 而本脚本在配置 GITHUB_TOKEN/GH_TOKEN 时会发送 `Authorization: Bearer <token>`，
+# 关闭校验等于给中间人留了窃取 GitHub 凭据的通道。
+# 现改为**默认开启校验**；仅在显式设置 DY_UPSTREAM_INSECURE=1（自签证书/调试代理）
+# 时才降级，并打印告警。
 CTX = ssl.create_default_context()
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
+if (os.environ.get("DY_UPSTREAM_INSECURE") or "").strip() == "1":
+    CTX.check_hostname = False
+    CTX.verify_mode = ssl.CERT_NONE
+    print("[!] DY_UPSTREAM_INSECURE=1：已关闭 TLS 校验（仅限调试/自签证书场景）",
+          file=sys.stderr)
 
 # 可选：本地代理（GFW 下 GitHub API 可能不通）。优先级：
 #   环境变量 DY_UPSTREAM_PROXY > 常见端口探测
