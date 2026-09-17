@@ -7,11 +7,14 @@ export function MsgBubble({
   m,
   sys,
   onOpenImage,
+  onJumpRef,
 }: {
   m: Msg;
   /** 是否为系统提示消息（判定在父层用 isSystemTip，语义不变；仅用于样式） */
   sys?: boolean;
   onOpenImage?: (media: MediaInfo) => void;
+  /** 2026-09-17：点击引用块 → 跳转被引用消息（同会话内定位） */
+  onJumpRef?: (refMsgId?: string, refText?: string) => void;
 }) {
   const t = (m.text || "").trim();
 
@@ -269,7 +272,10 @@ export function MsgBubble({
             仅渲染消息自带的引用信息，不做任何补查；无则完全不出现。 */}
         {m.reply && (m.reply.text || m.reply.nickname) ? (
           <div
-            className="mb-1.5 border-l-2 border-current/40 pl-2 text-[0.72rem] opacity-80"
+            className="mb-1.5 cursor-pointer border-l-2 border-current/40 pl-2 text-[0.72rem] opacity-80
+                       transition-opacity hover:opacity-100"
+            title="点击跳到被引用的消息"
+            onClick={() => onJumpRef?.(m.reply?.ref_msg_id, m.reply?.text)}
           >
             <div className="font-medium opacity-90">
               {m.reply.nickname || "引用"}

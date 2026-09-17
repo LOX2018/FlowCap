@@ -859,6 +859,46 @@ export const api = {
     });
   },
 
+  /** 2026-09-17：会话内/全库消息检索（只读，对照上游开放 API /api/search）。 */
+  async searchMessages(
+    account: string,
+    opts: {
+      q?: string;
+      convId?: string;
+      startTime?: number;
+      endTime?: number;
+      mediaType?: "image" | "video" | "media";
+      page?: number;
+      pageSize?: number;
+    } = {},
+  ): Promise<{ ok: boolean; items?: unknown[]; total?: number; error?: string }> {
+    return request("/api/messages/search", {
+      method: "POST",
+      body: JSON.stringify({
+        account,
+        q: opts.q ?? "",
+        conv_id: opts.convId ?? null,
+        start_time: opts.startTime ?? null,
+        end_time: opts.endTime ?? null,
+        media_type: opts.mediaType ?? null,
+        page: opts.page ?? 1,
+        page_size: opts.pageSize ?? 50,
+      }),
+    });
+  },
+
+  /** 2026-09-17：会话逐日消息量（日历跳转用，只读）。 */
+  async conversationDaily(
+    account: string,
+    convId: string,
+    tz = 8,
+  ): Promise<unknown> {
+    return request(
+      `/api/messages/conversation/daily?account=${encodeURIComponent(account)}` +
+        `&conv_id=${encodeURIComponent(convId)}&tz=${tz}`,
+    );
+  },
+
   // ===== tasks =====
   async getTasks(): Promise<unknown> {
     return request("/api/tasks");

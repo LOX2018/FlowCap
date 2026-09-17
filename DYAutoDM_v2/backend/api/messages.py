@@ -466,6 +466,8 @@ async def get_conversation(account: str, conv_id: str):
                 "reply": _reply,
                 "transcription": str(_trans) if _trans else None,
                 "recalled": _recalled,
+                # 2026-09-17：原始秒级时间戳（供前端跳转定位；time 是格式化串）
+                "ts": float(m["ts"] or 0),
             })
         # 字段同时给两套命名,兼容前端不同消费点:
         #   role/msg_type —— 后端原生命名
@@ -604,6 +606,68 @@ async def sweep_origin_images():
         return {"ok": True, "sweep": _oir.sweep(force=True)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+class DmSearchReq(BaseModel):
+    """全库/会话内消息检索（2026-09-17 新增，纯读库）。
+
+    对应上游开放 API 的 `GET /api/search`；我方作为 POST 端点复用既有鉴权体系。
+    条件至少要给一个（关键词 / conv_id / 时间区间 / 媒体类型），否则 422。
+    """
+    account: str
+    q: str = ""
+    conv_id: str | None = None
+    start_time: float | None = None
+    end_time: float | None = None
+    media_type: str | None = None      # image | video | media
+    page: int = 1
+    page_size: int = 50
+
+
+@router.post("/search")
+async def dm_search(body: DmSearchReq) -> dict:
+    """在全库或指定会话内检索消息（文本 / 时间区间 / 媒体类型）。
+
+    设计契约：
+      · **只读**：纯 SELECT，无任何写操作；
+      · 时间区间为半开 `[start_time, end_time)`（相邻日期不重叠）；
+      · 过滤口径与聊天页一致（回执/脏数据不返回，避免「搜到却点不开」）；
+      · 不触网、不查用户信息（不涉昵称红线）。
+    """
+    if body.media_type and body.media_type not in ("image", "video", "media"):
+        raise HTTPException(422, "media_type 只能是 image/video/media")
+    try:
+        from services import dm_search as _s
+        res = await asyncio.to_thread(
+            _s.search_messages, body.account,
+            query=body.q, conv_id=body.conv_id,
+            start_time=body.start_time, end_time=body.end_time,
+            media_type=body.media_type, page=body.page,
+            page_size=body.page_size,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-031] " + f"消息检索失败: {type(e).__name__}")
+        raise HTTPException(502, f"消息检索失败: {type(e).__name__}")
+    return {"ok": True, **res}
+
+
+@router.get("/conversation/daily")
+async def conversation_daily(account: str, conv_id: str, tz: int = 8) -> dict:
+    """会话逐日消息量（供日历/月份跳转定位某天首条消息）。
+
+    对应上游开放 API 的 `.../stats/daily`。**只读**。
+    """
+    try:
+        from services import dm_search as _s
+        res = await asyncio.to_thread(_s.daily_stats, account, conv_id, tz)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-032] " + f"逐日统计失败: {type(e).__name__}")
+        raise HTTPException(502, f"逐日统计失败: {type(e).__name__}")
+    return {"ok": True, **res}
 
 
 @router.post("/voice/transcribe")

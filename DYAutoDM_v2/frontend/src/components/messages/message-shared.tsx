@@ -21,6 +21,22 @@ export interface Msg {
   reply?: MsgReply | null;
   /** 2026-09-17：撤回（protobuf f11 is_recalled 字段级判据；优于正文占位串） */
   recalled?: boolean;
+  /** 2026-09-17：原始秒级时间戳（跳转定位锚点用） */
+  ts?: number;
+}
+/** 2026-09-17：跳转高亮（命中/引用/日历定位后闪烁 2.4s） */
+const __dmJumpCss = `
+@keyframes dmJumpFlash {
+  0%   { background-color: color-mix(in srgb, var(--color-accent) 32%, transparent); }
+  100% { background-color: transparent; }
+}
+.dm-jump-flash { animation: dmJumpFlash 2.4s ease-out 1; border-radius: var(--radius-md); }
+`;
+if (typeof document !== "undefined" && !document.getElementById("dm-jump-css")) {
+  const el = document.createElement("style");
+  el.id = "dm-jump-css";
+  el.textContent = __dmJumpCss;
+  document.head.appendChild(el);
 }
 /** 被引用的那条消息（f18 内嵌 JSON），用于在气泡上方渲染引用区块 */
 export interface MsgReply {
@@ -66,6 +82,8 @@ export interface RawMessage {
   reply?: MsgReply | null;
   /** 2026-09-17：撤回标志（后端由 f11 判定） */
   recalled?: boolean;
+  /** 2026-09-17：原始秒级时间戳（后端新增，供跳转定位） */
+  ts?: number;
 }
 export interface RawConversation {
   conv_id?: string;
@@ -128,8 +146,54 @@ export interface MessagesApi {
     reason?: string;
     error?: string;
   }>;
+  /** 2026-09-17：会话内/全库消息检索（只读） */
+  searchMessages(
+    account: string,
+    opts?: {
+      q?: string;
+      convId?: string;
+      startTime?: number;
+      endTime?: number;
+      mediaType?: "image" | "video" | "media";
+      page?: number;
+      pageSize?: number;
+    },
+  ): Promise<{
+    ok: boolean;
+    items?: SearchHit[];
+    total?: number;
+    error?: string;
+  }>;
+  /** 2026-09-17：会话逐日消息量（日历跳转用，只读） */
+  conversationDaily(
+    account: string,
+    convId: string,
+    tz?: number,
+  ): Promise<{ ok: boolean; days?: DailyCount[]; total?: number;
+               bounds?: { min: number; max: number } }>;
   getAccounts(): Promise<unknown>;
   addLog(level: string, text: string): Promise<unknown>;
+}
+
+/** 检索命中项（后端 services/dm_search 的 item 契约） */
+export interface SearchHit {
+  conv_id: string;
+  conv_name: string;
+  msg_id: string | null;
+  role: string;
+  text: string;
+  msg_type: string;
+  ts: number;
+  media_type: string;
+  snippet: string;
+}
+
+/** 逐日消息量项 */
+export interface DailyCount {
+  date: string;
+  count: number;
+  first_msg_id: string | null;
+  first_ts: number;
 }
 
 export { errMsg } from "@/lib/utils";

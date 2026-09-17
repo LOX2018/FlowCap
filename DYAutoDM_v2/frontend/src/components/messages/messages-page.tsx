@@ -17,7 +17,9 @@ import {
 } from "@/components/page/kit";
 import { cn } from "@/lib/utils";
 import {
-  MediaInfo, Msg, Conv, Account, RawConversation, ConversationsResp, MessagesApi, errMsg, isSystemTip,
+  MediaInfo, Msg, Conv, Account, RawConversation, ConversationsResp, MessagesApi,
+  errMsg, isSystemTip,
+  SearchHit, DailyCount,
 } from "./message-shared";
 import { ImageViewer } from "./message-viewer";
 import { MsgBubble } from "./message-bubble";
@@ -107,6 +109,17 @@ export default function MessagesPage(props: PageProps) {
   const [refreshElapsed, setRefreshElapsed] = useState(0);
   // 2026-09-17：语音转写进行中标记（对照上游「语音转文字」能力）。
   const [transcribing, setTranscribing] = useState(false);
+  // 2026-09-17：会话内检索面板（对照上游 SearchBar：文本 / 日期 / 媒体三模式）。
+  const [showDmSearch, setShowDmSearch] = useState(false);
+  const [dmQuery, setDmQuery] = useState("");
+  const [dmHits, setDmHits] = useState<SearchHit[]>([]);
+  const [dmTotal, setDmTotal] = useState(0);
+  const [dmBusy, setDmBusy] = useState(false);
+  const [dmMedia, setDmMedia] = useState<"" | "image" | "video" | "media">("");
+  const [dmDays, setDmDays] = useState<DailyCount[]>([]);
+  const [dmShowCal, setDmShowCal] = useState(false);
+  /** 跳转请求：{msgId, ts} —— 命中/引用/日历都会设置它 */
+  const [jumpTo, setJumpTo] = useState<{ msgId?: string | null; ts?: number } | null>(null);
 
   // 2026-08-31：更新会话期间每秒累加耗时，让用户看到任务仍在推进
   useEffect(() => {
@@ -229,6 +242,7 @@ export default function MessagesPage(props: PageProps) {
         voiceText: m.transcription ? String(m.transcription) : undefined,
         reply: m.reply || null,
         recalled: m.recalled === true,
+        ts: typeof m.ts === "number" ? m.ts : undefined,
       }));
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,
@@ -247,6 +261,76 @@ export default function MessagesPage(props: PageProps) {
   // 聊天框渲染优先用详情 query 的结果
   const convMsgs: Msg[] = detailQ.data || conv.msgs || [];
   const curAcct = realAccts.find((x) => x.name === activeAcct) || realAccts[0] || null;
+
+  // 2026-09-17：跳转定位（命中 / 引用 / 日历共用）。
+  // 先按 msg_id 精确定位（data-msg-id），退化按 ts 找最近一条；命中后高亮 2.4s。
+  useEffect(() => {
+    if (!jumpTo) return;
+    const root = document.querySelector<HTMLElement>("[data-dm-scroll]");
+    if (!root) return;
+    let el: HTMLElement | null = null;
+    if (jumpTo.msgId) {
+      el = root.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(jumpTo.msgId)}"]`);
+    }
+    if (!el && jumpTo.ts) {
+      // 按时间戳就近定位（日历「跳到那天第一条」用）
+      const nodes = Array.from(root.querySelectorAll<HTMLElement>("[data-msg-ts]"));
+      let best: HTMLElement | null = null;
+      for (const n of nodes) {
+        const v = Number(n.dataset.msgTs || 0);
+        if (v >= jumpTo.ts && (!best || v < Number(best.dataset.msgTs || 0))) best = n;
+      }
+      el = best || nodes[0] || null;
+    }
+    if (el) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.classList.add("dm-jump-flash");
+      const t = window.setTimeout(() => el?.classList.remove("dm-jump-flash"), 2400);
+      setJumpTo(null);
+      return () => window.clearTimeout(t);
+    }
+    setJumpTo(null);
+  }, [jumpTo, convMsgs.length]);
+
+  // 2026-09-17：执行检索（会话内 / 全库）
+  const runDmSearch = (opts: { withinConv: boolean }) => {
+    if (!activeAcct) return;
+    const hasCond = !!dmQuery.trim() || !!dmMedia || !!opts.withinConv;
+    if (!hasCond) {
+      push("请输入关键词，或选择媒体类型 / 限定当前会话");
+      return;
+    }
+    setDmBusy(true);
+    a.searchMessages(activeAcct, {
+      q: dmQuery.trim(),
+      convId: opts.withinConv ? conv.conv_id : undefined,
+      mediaType: dmMedia || undefined,
+      pageSize: 50,
+    })
+      .then((r) => {
+        const items = (r?.items || []) as SearchHit[];
+        setDmHits(items);
+        setDmTotal(Number(r?.total || 0));
+        if (!items.length) push("没有匹配的消息");
+      })
+      .catch((e: unknown) => push("检索失败: " + (e instanceof Error ? e.message : String(e))))
+      .finally(() => setDmBusy(false));
+  };
+
+  // 2026-09-17：加载逐日消息量（日历）
+  const loadCalendar = () => {
+    if (!activeAcct || !conv.conv_id) return;
+    setDmShowCal(true);
+    setDmBusy(true);
+    a.conversationDaily(activeAcct, conv.conv_id)
+      .then((r) => {
+        const d = (r as { days?: DailyCount[] })?.days || [];
+        setDmDays(d);
+        if (!d.length) push("当前会话暂无聊天记录");
+      })
+      .catch((e: unknown) => push("日历加载失败: " + (e instanceof Error ? e.message : String(e))))
+      .finally(() => setDmBusy(false));
+  };
 
   useEffect(() => {
     if (!goDm) return;
@@ -503,6 +587,23 @@ export default function MessagesPage(props: PageProps) {
               <Button
                 variant="ghost"
                 size="sm"
+                data-od-id="dm-search"
+                title="在当前会话或全库中检索消息（文本 / 日期 / 媒体）"
+                onClick={() => {
+                  setShowDmSearch((s) => !s);
+                  if (showDmSearch) {
+                    setDmHits([]);
+                    setDmTotal(0);
+                    setDmShowCal(false);
+                  }
+                }}
+              >
+                <SearchIcon className="h-3.5 w-3.5" />
+                {showDmSearch ? "关闭检索" : "检索消息"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 data-od-id="search-conv"
                 title="按昵称搜索会话"
                 onClick={() => {
@@ -537,6 +638,99 @@ export default function MessagesPage(props: PageProps) {
             </Toolbar>
           }
         >
+          {/* 2026-09-17：会话内检索面板（对照上游 SearchBar：文本 / 日期 / 媒体） */}
+          {showDmSearch && (
+            <div className="mt-2 rounded-[var(--radius-md)] border border-[var(--color-border)]
+                            bg-[var(--color-surface)] p-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  className="h-[32px] min-w-[180px] flex-1 text-[0.78rem]"
+                  placeholder="关键词（正文 / 引用 / 语音转写）…"
+                  value={dmQuery}
+                  onChange={(e) => setDmQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") runDmSearch({ withinConv: true }); }}
+                />
+                <Button size="sm" disabled={dmBusy}
+                        onClick={() => runDmSearch({ withinConv: true })}>
+                  本会话
+                </Button>
+                <Button size="sm" variant="ghost" disabled={dmBusy}
+                        onClick={() => runDmSearch({ withinConv: false })}>
+                  全库
+                </Button>
+                <div className="flex items-center gap-1">
+                  {([["", "全部"], ["image", "图片"], ["video", "视频"], ["media", "媒体"]] as const)
+                    .map(([v, label]) => (
+                      <button
+                        key={v || "all"}
+                        onClick={() => setDmMedia(v)}
+                        className={cn(
+                          "rounded border px-2 py-0.5 text-[0.7rem]",
+                          dmMedia === v
+                            ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                            : "border-[var(--color-border)] bg-transparent text-[var(--color-text-muted)]",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                </div>
+                <Button size="sm" variant="ghost" disabled={dmBusy || !conv.conv_id}
+                        onClick={loadCalendar}>
+                  日历
+                </Button>
+                {dmBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              </div>
+
+              {/* 日历：逐日条数，点某天 → 跳到那天第一条 */}
+              {dmShowCal && dmDays.length > 0 && (
+                <div className="mt-2 max-h-[132px] overflow-y-auto border-t border-[var(--color-border)] pt-2">
+                  <div className="flex flex-wrap gap-1">
+                    {dmDays.map((d) => (
+                      <button
+                        key={d.date}
+                        title={`${d.date}：${d.count} 条`}
+                        onClick={() => setJumpTo({ msgId: d.first_msg_id, ts: d.first_ts })}
+                        className="rounded border border-[var(--color-border)] px-1.5 py-0.5
+                                   font-mono text-[0.68rem] hover:border-[var(--color-accent)]"
+                      >
+                        {d.date.slice(5)}
+                        <span className="ml-1 text-[var(--color-text-muted)]">{d.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 检索命中：点一条 → 定位到该消息 */}
+              {dmHits.length > 0 && (
+                <div className="mt-2 max-h-[190px] overflow-y-auto border-t border-[var(--color-border)] pt-2">
+                  <div className="mb-1 text-[0.7rem] text-[var(--color-text-muted)]">
+                    命中 {dmTotal} 条（显示前 {dmHits.length} 条）
+                  </div>
+                  {dmHits.map((h, i) => (
+                    <button
+                      key={`${h.conv_id}-${h.msg_id ?? i}`}
+                      className="block w-full rounded px-1.5 py-1 text-left hover:bg-[var(--color-surface-raised)]"
+                      onClick={() => {
+                        // 命中可能在别的会话：先切会话再定位（切会话后由 convMsgs 长度变化触发 effect）
+                        const target = allConvs.find((c) => c.conv_id === h.conv_id)
+                          || shownConvs.find((c) => c.conv_id === h.conv_id);
+                        if (target && target.id !== active) setActive(target.id);
+                        setJumpTo({ msgId: h.msg_id, ts: h.ts });
+                      }}
+                    >
+                      <div className="truncate text-[0.76rem]">{h.snippet || h.text}</div>
+                      <div className="text-[0.66rem] text-[var(--color-text-muted)]">
+                        {h.conv_name} · {h.role === "me" ? "我" : "对方"}
+                        {h.media_type ? ` · ${h.media_type}` : ""}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {/* 2026-09-06：会话搜索框（按昵称过滤定位） */}
           {showSearch && (
             <div className="flex items-center gap-2 pb-2">
@@ -645,7 +839,8 @@ export default function MessagesPage(props: PageProps) {
                 导出会话
               </Button>
             </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3.5">
+            <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3.5"
+                 data-dm-scroll="1">
               {(() => {
                 let lastDate = "";
                 const nodes: React.ReactNode[] = [];
@@ -681,8 +876,20 @@ export default function MessagesPage(props: PageProps) {
                           : "self-start",
                       )}
                       key={m.id}
+                      /* 2026-09-17：跳转锚点 —— 命中/引用/日历定位靠这两个属性 */
+                      data-msg-id={m.id.startsWith("mid_") ? m.id.slice(4) : undefined}
+                      data-msg-ts={m.ts}
                     >
-                      <MsgBubble m={m} sys={sys} onOpenImage={setViewer} />
+                      <MsgBubble
+                        m={m}
+                        sys={sys}
+                        onOpenImage={setViewer}
+                        onJumpRef={(refId, refText) => {
+                          // 2026-09-17：引用块点击 → 定位被引用消息（同会话内）。
+                          // 有 ref_msg_id 走精确匹配；缺失时退化为「同文本最近一条」。
+                          if (refId || refText) setJumpTo({ msgId: refId || undefined });
+                        }}
+                      />
                       <span className="shrink-0 self-center font-mono text-[0.66rem] text-[var(--color-text-muted)]">
                         {(m.mt || "").slice(11, 16)}
                       </span>
