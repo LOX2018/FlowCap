@@ -28,6 +28,7 @@ AstrBot 各平台适配器（weixin_oc / wecom / dingtalk / lark / qqofficial）
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -363,7 +364,14 @@ class DingtalkChannel(BaseChannel):
             "robotCode": self.robot_code,
             "userIds": [target],
             "msgKey": "sampleMarkdown",
-            "msgParam": '{"title":"DYAutoDM","text":"%s"}' % text.replace('"', "'"),
+            # 2026-09-17 修补（OCR 审查 HIGH）：原为手工 `%` 拼接手搓 JSON
+            #   '{"title":"DYAutoDM","text":"%s"}' % text.replace('"', "'")
+            # 缺陷：① 未做 JSON 转义（反斜杠/控制字符破坏 JSON）；
+            #      ② 文本含 `%` 时 `%` 格式化直接抛 ValueError（如"完成率 80%"）；
+            #      ③ 把 `"` 换成 `'` 是改写原文而非转义。
+            # 现用 json.dumps 正确构造（外层 json=payload 会再序列化一次）。
+            "msgParam": json.dumps({"title": "DYAutoDM", "text": text},
+                                   ensure_ascii=False),
         }
         async with s.post(
             "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
@@ -431,7 +439,11 @@ class LarkChannel(BaseChannel):
             json={
                 "receive_id": receive_id,
                 "msg_type": "text",
-                "content": '{"text":"%s"}' % text.replace('"', "'").replace("\n", "\\n"),
+                # 2026-09-17 修补（OCR 审查 HIGH）：同钉钉分支 —— 原为
+                #   '{"text":"%s"}' % text.replace('"', "'").replace("\n", "\\n")
+                # 仅转义 `"` 与 `\n`；反斜杠、`\r`/`\t`/其它控制字符未转义 →
+                # 产生非法 JSON；文本含 `%` 时 `%` 格式化抛错。
+                "content": json.dumps({"text": text}, ensure_ascii=False),
             },
         ) as resp:
             body = await resp.json(content_type=None)

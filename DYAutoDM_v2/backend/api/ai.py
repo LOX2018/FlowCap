@@ -127,6 +127,16 @@ class ProImportConfirmBody(BaseModel):
     replace: bool = False
 
 
+class SchedulerBody(BaseModel):
+    """pro-KB 常驻定时器的启停参数（2026-09-17 新增，修参数绑定方向）。
+
+    原端点用裸标量参数，FastAPI 绑定为 query，导致 JSON body 被静默忽略、
+    `enable=false` 无法传达。此模型让 body 提交可用。
+    """
+    enable: bool = True
+    interval_hours: float = 84
+
+
 @router.post("/prokb/import")
 async def prokb_import_upload(file: UploadFile):
     """上传文件 → 解析 + AI 提纯为思维导图条目（主题/子分类/正文/总结）。
@@ -166,9 +176,32 @@ async def prokb_import_confirm(body: ProImportConfirmBody):
 
     if not body.items:
         raise HTTPException(400, "没有可写入的条目")
-    if body.replace:
-        pro_kb.clear_items()
-    n = pro_kb.bulk_add(body.items)
+
+    # 2026-09-17 修补（OCR 审查 HIGH —— 数据丢失）：
+    # 原实现先 `clear_items()` 清空全库、再 `bulk_add()` 写入，**两步非原子**。
+    # 若 bulk_add 中途抛错（单条去重/向量化失败等），旧库已被清空、新数据只写了
+    # 一半 → 用户同时丢失旧库和新库，最坏全库归零，且无回滚。
+    # 现改为「先备份 → 写入 → 失败回滚」：
+    #   1. replace 时先取旧库快照（不出来就不清）；
+    #   2. 写入新条目；
+    #   3. 任一步失败即用快照恢复，并把异常转成明确错误返回。
+    _backup = pro_kb.list_items() if body.replace else None
+    try:
+        if body.replace:
+            pro_kb.clear_items()
+        n = pro_kb.bulk_add(body.items)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[AI-021] pro-KB 导入失败，正在回滚: {type(e).__name__}: {e}")
+        if _backup is not None:
+            try:
+                pro_kb.clear_items()
+                pro_kb.bulk_add(_backup)
+                logger.info(f"[AI-021] 已从快照回滚 {len(_backup)} 条旧条目")
+            except Exception as e2:  # noqa: BLE001
+                logger.error(
+                    f"[AI-021] 回滚失败！旧知识库可能已丢失"
+                    f"（快照 {len(_backup)} 条已在内存，建议立即重试导入）: {e2}")
+        raise HTTPException(500, f"导入失败（已尝试回滚）: {e}") from e
     return {"ok": True, "added": n, "items": pro_kb.list_items(), "tree": pro_kb.tree()}
 
 
@@ -331,11 +364,24 @@ async def prokb_maintain_run():
 
 
 @router.post("/prokb/maintain/scheduler")
-async def prokb_maintain_scheduler(enable: bool = True,
-                                   interval_hours: float = 84):
-    """启停常驻定时器（默认 84 小时一轮）。"""
+async def prokb_maintain_scheduler(
+        enable: bool = True,
+        interval_hours: float = 84,
+        body: Optional[SchedulerBody] = None):
+    """启停常驻定时器（默认 84 小时一轮）。
+
+    2026-09-17 修补（OCR 审查 HIGH —— 参数绑定方向错误）：
+    `enable` / `interval_hours` 原为**纯标量参数**，FastAPI 会把它们绑定为
+    **query 参数**；客户端以 JSON body 提交 `{"enable": false}` 时 body 被
+    静默忽略 → `enable` 恒为默认 `True` → `stop_scheduler()` 分支**永不可达**，
+    用户停不掉定时器。
+    现新增可选 Pydantic body（body 优先，query 仍兼容旧调用方）。
+    """
     from services import kb_maintain
 
+    if body is not None:
+        enable = body.enable
+        interval_hours = body.interval_hours
     if enable:
         return kb_maintain.start_scheduler(interval_hours=interval_hours)
     return kb_maintain.stop_scheduler()
