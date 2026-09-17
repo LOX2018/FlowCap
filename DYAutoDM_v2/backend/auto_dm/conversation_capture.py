@@ -154,6 +154,18 @@ def _extract_image_secret(obj: dict):
     return skey, origin
 
 
+def _is_profile_card(obj: dict) -> bool:
+    """用户名片判定（与上游 `getProfileCard()` 同款判据，不再用 aweType）。
+
+    上游：`cj.name && (cj.secUID || cj.sec_uid || (cj.uid && cj.source ===
+    'others_homepage'))`。
+    """
+    if not isinstance(obj, dict) or not obj.get("name"):
+        return False
+    return bool(obj.get("secUID") or obj.get("sec_uid")
+                or (obj.get("uid") and obj.get("source") == "others_homepage"))
+
+
 def _share_card_text(obj: dict):
     """分享卡 → 可读文本（2026-09-17 对照上游 `sharePreview.js`）。
 
@@ -208,12 +220,26 @@ def _share_card_text(obj: dict):
     if not _ty and awe in ("800", "801", "803", "11054", "11055",
                            "11063", "11066", "11067", "11069", "11070"):
         _ty = "视频" if title else "链接"
-    # 名片（用户主页卡）：上游 getProfileCard 用 aweType=13600
+    # 合并转发（聊天记录卡）：aweType=13600。
+    #
+    # ⚠️ 2026-09-17 契约订正（Iron Law 5）：此处**原先把 13600 当「名片」**，
+    #    注释称「上游 getProfileCard 用 aweType=13600」。经上游源码实测核对该说法
+    #    **不成立**：
+    #      · 上游 `getForwardInfo()`：`if (String(cj?.aweType) !== '13600') return null`
+    #        → 13600 是**合并转发**；
+    #      · 上游 `getProfileCard()` 判据是 `cj.name && (cj.secUID || cj.sec_uid ||
+    #        (cj.uid && cj.source==='others_homepage'))`，**与 13600 无关**。
+    #    故 13600 归为「聊天记录」，名片改用上游同款判据（见下方分支）。
     if not _ty and awe == "13600":
+        _ty = "聊天记录"
+    # 名片（用户主页卡）：与上游 getProfileCard 同款判据
+    if not _ty and _is_profile_card(obj):
         _ty = "名片"
     if not _ty:
         return None
-    _body = title or comment
+    # 名片正文取 name（上游 getProfileCard 显示的是 name / 抖音号）
+    _body = title or comment or (str(obj.get("name") or "").strip()
+                                 if _ty == "名片" else "")
     return f"[分享{_ty}] {_body}".rstrip()
 
 

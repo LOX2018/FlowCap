@@ -20,6 +20,7 @@ from pathlib import Path
 from auto_dm import origin_image_resolver as _origin_image_resolver
 # 2026-09-17：IM 视频（CENC 解密 + 下载）——同样顶层 import，保证 PyInstaller 能追踪
 from services import im_video as _im_video
+from services import merged_forward as _mf
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -1057,6 +1058,206 @@ async def voice_transcribe(body: dict):
     logger.info(f"[MSG-020] " + f"语音转写 account={account} conv={conv_id or '-'} "
                 f"→ {res}")
     return res
+
+
+class MergeForwardReq(BaseModel):
+    """合并转发正文解析 / 补抓（2026-09-17 新增）。
+
+    · `account` + `msg_id`：从 dm_messages.extra.merge 读卡片内容（本地优先）；
+    · `content`：也可直接传卡片 content 对象（调试/前端回传）；
+    · `fetch=True` 且本地无完整正文、卡片带 upload_key_list 时，
+      **经 BCC 页面上下文**取资源链接（同域、复用登录态，不转发 cookie），
+      再按白名单域**不带 cookie** 下载并用 AES-GCM 解密。
+    """
+    account: str = ""
+    msg_id: str = ""
+    content: dict | None = None
+    fetch: bool = False
+
+
+class NicknameFallbackReq(BaseModel):
+    """昵称兜底（2026-09-17 新增，**默认关闭**，见 services/nickname_fallback.py）。
+
+    `dry_run=True` 只列出候选，不发任何请求（用于先看会查到谁）。
+    """
+    account: str
+    limit: int | None = None
+    dry_run: bool = False
+
+
+@router.get("/nickname_fallback/status")
+async def nickname_fallback_status():
+    """兜底开关与限速状态（用于确认它是否处于关闭态）。"""
+    from services import nickname_fallback as NF
+    return NF.status()
+
+
+@router.post("/nickname_fallback/run")
+async def nickname_fallback_run(body: NicknameFallbackReq):
+    """执行一次昵称兜底（受配置/间隔/单次/每日上限约束；**默认关闭**）。
+
+    风控边界：请求在账号自己的 BCC 页面上下文发出（复用登录态），
+    后端不直发 cookie；只补「库里没有昵称」的会话，已有昵称绝不覆盖。
+    """
+    account = (body.account or "").strip()
+    if not account:
+        raise HTTPException(400, "account 必填")
+    from services import nickname_fallback as NF
+
+    allow, why = NF.rate_limit_check()
+    if not allow and why != "ok":
+        # dry_run 也要先过开关（关闭态一律拒绝，避免「用 dry run 试探」）
+        return {"ok": False, "reason": why, "candidates": 0, "queried": 0,
+                "updated": 0, "skipped": 0, "limit_info": NF._limit_info()}
+
+    def _exec_js(js: str, arg=None):
+        url = _bcc_url(account, "/exec_js")
+        r = _http_post_json(url, {"js": js, "arg": arg, "timeout": 45}, timeout=60.0)
+        if not r.get("ok"):
+            raise RuntimeError(r.get("msg") or "exec_js 失败")
+        return r.get("result")
+
+    def _run():
+        return NF.run_fallback(account, _exec_js, limit=body.limit,
+                               dry_run=body.dry_run)
+
+    try:
+        res = await asyncio.to_thread(_run)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-048] " + f"昵称兜底异常: {type(e).__name__}")
+        return {"ok": False, "reason": f"exception:{type(e).__name__}",
+                "candidates": 0, "queried": 0, "updated": 0, "skipped": 0}
+    logger.info(f"[MSG-049] " + f"昵称兜底 account={account} dry={body.dry_run} → {res}")
+    return res
+
+
+@router.post("/merge_forward/resolve")
+async def resolve_merge_forward(body: MergeForwardReq):
+    """解析合并转发卡片；必要时补抓远端正文（**单条触发**，默认不抓）。"""
+    MF = _mf
+    content: dict | None = body.content if isinstance(body.content, dict) else None
+    stored_bodies = None
+    if content is None and body.account and body.msg_id:
+        try:
+            row = get_db().execute(
+                "SELECT extra FROM dm_messages WHERE account=? AND msg_id=?",
+                (body.account, body.msg_id)).fetchone()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"读库失败: {type(e).__name__}")
+        if row is None:
+            raise HTTPException(404, "消息不存在")
+        try:
+            ex = json.loads(row["extra"] or "{}")
+        except Exception:
+            ex = {}
+        content = (ex or {}).get("merge") if isinstance(ex, dict) else None
+        stored_bodies = (ex or {}).get("merge_bodies") if isinstance(ex, dict) else None
+        if not isinstance(content, dict) or not content:
+            raise HTTPException(422, "该消息不是合并转发卡片（extra.merge 为空）")
+
+    if not isinstance(content, dict) or not content:
+        raise HTTPException(422, "缺少 content（或 account+msg_id）")
+    if not MF.is_merge_forward(content):
+        raise HTTPException(422, "content 不是合并转发卡片（aweType != 13600）")
+
+    # ① 本地正文优先（inline_content 已含在 content 内；stored_bodies 为上次抓取结果）
+    bodies = stored_bodies if MF.complete(content, stored_bodies) else None
+    if bodies is None and MF.complete(content, content.get("inline_content")):
+        bodies = content["inline_content"]
+
+    local_map: dict[str, dict] = {}
+    if bodies is None and body.account:
+        ids = [i for i in MF.expected_ids(content)][:MF.MAX_MESSAGES]
+        if ids:
+            try:
+                q = ",".join("?" * len(ids))
+                rows = get_db().execute(
+                    f"SELECT msg_id, text, extra, msg_type, ts FROM dm_messages "
+                    f"WHERE account=? AND msg_id IN ({q})",
+                    (body.account, *ids)).fetchall()
+                for r in rows:
+                    try:
+                        _ex = json.loads(r["extra"] or "{}")
+                    except Exception:
+                        _ex = {}
+                    local_map[str(r["msg_id"])] = {
+                        "text": r["text"], "aweType": str((_ex or {}).get("aweType") or ""),
+                        "msg_type": r["msg_type"]}
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[MSG-045] " + f"合并转发本地正文查询失败: {e}")
+
+    fetched = False
+    fetch_err = ""
+    # ② 远端补抓（仅当本地/inline 都没有，且用户显式要求 fetch）
+    if bodies is None and local_map and len(local_map) == len(MF.expected_ids(content)):
+        pass      # 本地已能凑齐，无需网络
+    elif bodies is None and body.fetch:
+        if not MF.upload_keys(content):
+            fetch_err = "no-upload-keys"
+        else:
+            try:
+                url = _bcc_url(body.account, "/exec_js")
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(502, f"BCC 不可用: {type(e).__name__}")
+            chain = [{"msg_id": int(str(body.msg_id).removeprefix("srv_") or 0),
+                      "conv_id": int(str(content.get("__short_id") or 0) or 0)}] \
+                if body.msg_id else None
+
+            def _exec_js(js: str, arg=None):
+                r = _http_post_json(url, {"js": js, "arg": arg, "timeout": 45},
+                                    timeout=60.0)
+                if not r.get("ok"):
+                    raise RuntimeError(r.get("msg") or "exec_js 失败")
+                return r.get("result")
+
+            async def _request(path: str, b: dict) -> dict:
+                res = await asyncio.to_thread(
+                    _exec_js, _mf.WEB_FETCH_JS,
+                    [MF.WEB_OBJECT_URL_PATH, json.dumps(b, ensure_ascii=False)])
+                if not isinstance(res, dict) or res.get("status") != 200:
+                    return {}
+                try:
+                    payload = json.loads(res.get("body") or "{}")
+                except Exception:
+                    return {}
+                return payload
+
+            async def _download(u: str, max_bytes: int) -> bytes:
+                return await asyncio.to_thread(_im_video._http_get, u, 60)
+
+            try:
+                bodies = await MF.fetch_uploaded_bodies(
+                    content, _request, _download, access_chain=chain)
+                fetched = True
+            except Exception as e:  # noqa: BLE001
+                fetch_err = type(e).__name__
+                logger.warning(f"[MSG-046] " + f"合并转发补抓失败: {fetch_err}")
+            # 抓到的正文落库（下次零请求）；仅在与索引完全一致时写入
+            if fetched and body.account and body.msg_id:
+                try:
+                    conn = get_db()
+                    row = conn.execute(
+                        "SELECT extra FROM dm_messages WHERE account=? AND msg_id=?",
+                        (body.account, body.msg_id)).fetchone()
+                    if row is not None:
+                        _ex = json.loads(row["extra"] or "{}")
+                        _ex["merge_bodies"] = bodies
+                        conn.execute(
+                            "UPDATE dm_messages SET extra=? WHERE account=? AND msg_id=?",
+                            (json.dumps(_ex, ensure_ascii=False), body.account,
+                             body.msg_id))
+                        conn.commit()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[MSG-047] " + f"合并转发正文落库失败: {e}")
+
+    st = MF.status(content, bodies)
+    return {"ok": True, "fetched": fetched, "fetch_error": fetch_err,
+            "source": ("inline" if MF.complete(content, content.get("inline_content"))
+                       else ("stored" if MF.complete(content, stored_bodies)
+                             else ("fetched" if fetched
+                                   else ("local" if local_map else "missing")))),
+            "text": MF.render_text(content, bodies, local_map),
+            **st}
 
 
 @router.post("/request")

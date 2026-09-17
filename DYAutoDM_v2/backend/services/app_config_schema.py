@@ -60,6 +60,38 @@ SECTIONS: dict[str, dict[str, Any]] = {
         },
     },
 
+    # ===== 私信 / 昵称兜底 =====
+    "dm": {
+        "label": "私信 / 昵称兜底",
+        "fields": {
+            "nickname_fallback_enabled": {
+                "label": "启用昵称兜底查询（默认关闭）",
+                "type": "bool", "default": False, "env": None,
+                "apply": "hot",
+                "hint": ("**默认关闭**。开启后，仅对「库里没有昵称」的会话做低频兜底："
+                         "走账号自己的浏览器页面上下文请求 im/user/info（复用登录态，"
+                         "后端不直发 cookie），并受下面的间隔/单次/每日上限三重约束。"
+                         "常规昵称来源仍是 BCC 被动截获，本项只是兜底。"),
+            },
+            "nickname_fallback_min_interval_sec": {
+                "label": "兜底最小间隔（秒）",
+                "type": "int", "default": 600, "env": None,
+                "apply": "hot",
+                "hint": "两次兜底调用之间的最小间隔，下限 60 秒；默认 600 秒（10 分钟）",
+            },
+            "nickname_fallback_max_per_run": {
+                "label": "单次最多查询用户数",
+                "type": "int", "default": 10, "env": None,
+                "apply": "hot", "hint": "单次调用最多查询的用户数（上限 20，与接口批次一致）",
+            },
+            "nickname_fallback_daily_cap": {
+                "label": "每日最多查询用户数",
+                "type": "int", "default": 50, "env": None,
+                "apply": "hot", "hint": "当日累计查询上限，达到后当日不再查询",
+            },
+        },
+    },
+
     # ===== 直播监听 =====
     "live": {
         "label": "直播监听",

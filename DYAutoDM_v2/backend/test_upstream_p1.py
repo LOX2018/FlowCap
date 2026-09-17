@@ -107,8 +107,18 @@ class TestShareCard(unittest.TestCase):
         self.assertEqual(_share_card_text({"aweType": 800}), "[分享链接]")
 
     def test_profile_card(self):
+        """2026-09-17 契约订正：13600 **不是**名片，是**合并转发**。
+
+        订正依据（上游源码实测）：`getForwardInfo()` 以 `aweType==='13600'` 判定合并转发；
+        `getProfileCard()` 判据是 `name && (secUID || sec_uid || source==='others_homepage')`，
+        与 13600 无关。原断言把 13600 当名片，固化了错误契约。
+        """
         self.assertEqual(
             _share_card_text({"aweType": 13600, "content_title": "张三"}),
+            "[分享聊天记录] 张三")
+        # 名片改用上游同款判据（不再依赖 aweType）
+        self.assertEqual(
+            _share_card_text({"name": "张三", "sec_uid": "MS4wLjABxyz"}),
             "[分享名片] 张三")
 
     def test_unknown_returns_none(self):
