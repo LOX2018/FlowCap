@@ -119,9 +119,8 @@ def _bootstrap_accounts_index() -> int:
             if r.returncode == 0 and os.path.isdir(dst):
                 linked += 1
             else:
-                logger.error("MEM-009", (
-                    "[member] junction 创建失败: "
-                    f"{r.stderr.decode('gbk', errors='replace').strip()}"))
+                logger.error(f"[MEM-009] " + "[member] junction 创建失败: "
+                    f"{r.stderr.decode('gbk', errors='replace').strip()}")
         except Exception as e:  # noqa: BLE001
             logger.error(f"[MEM-009] " + f"[member] junction 异常 {name}: {e}")
 

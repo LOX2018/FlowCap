@@ -1,5 +1,7 @@
 from enum import Enum
 
+from loguru import logger
+
 from utils.dy_util import generate_ree_key, generate_bd_ticket_client_data, generate_csrf_token
 
 
@@ -28,7 +30,27 @@ class Header:
         return self
 
     def with_csrf(self, cookie_str):
-        self.set_header('x-secsdk-csrf-token', generate_csrf_token(cookie_str)[0])
+        """设置 CSRF 头。
+
+        2026-09-17 修补（OCR 审查 HIGH）：
+         1) `generate_csrf_token` 失败时返回 `(None, None)`，原实现无条件
+            `[0]` 写入 → 请求头被设为字面量 `"None"`，下游得到难以定位的
+            401/签名拒绝，而非快速失败。现取后判空，为空则不设该头。
+         2) 补齐 `return self`（与 set_header/set_referer 一致），消除
+            "链式调用会 TypeError" 的潜在隐患。
+        """
+        tok = None
+        try:
+            tok = generate_csrf_token(cookie_str)[0]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[header] generate_csrf_token 异常: "
+                           f"{type(e).__name__}: {e}")
+        if tok:
+            self.set_header('x-secsdk-csrf-token', tok)
+        else:
+            logger.warning("[header] CSRF token 获取失败（为空），"
+                           "本次不设置 x-secsdk-csrf-token 头")
+        return self
 
     def set_referer(self, url):
         self.set_header('referer', url)

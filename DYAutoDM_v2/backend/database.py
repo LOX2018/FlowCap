@@ -389,12 +389,25 @@ def exec_query(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def exec_modify(sql: str, params: tuple = ()) -> int:
-    """便捷写入（INSERT/UPDATE/DELETE），返回 lastrowid 或 rowcount。"""
+    """便捷写入（INSERT/UPDATE/DELETE），返回 lastrowid 或影响行数。
+
+    2026-09-17 修补（OCR 审查 HIGH）：原为 `return cur.lastrowid or cur.rowcount`。
+    SQLite 的 `lastrowid` **只对 INSERT 有意义**；UPDATE/DELETE 后它仍返回
+    该连接上**上一次 INSERT** 的 rowid（陈旧值）→ 调用方拿到非零值，
+    误以为「改了 N 行」，实际可能是 0 行的 no-op。
+    现按 SQL 首关键字分流：INSERT 返回 lastrowid，其余返回 rowcount。
+    """
     conn = get_db()
     with _lock:
         cur = conn.execute(sql, params)
         conn.commit()
-        return cur.lastrowid or cur.rowcount
+        try:
+            head = (sql or "").lstrip().split(None, 1)[0].upper()
+        except Exception:
+            head = ""
+        if head == "INSERT":
+            return cur.lastrowid or cur.rowcount
+        return cur.rowcount
 
 
 # ------------------------------------------------------------------

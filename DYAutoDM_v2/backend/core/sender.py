@@ -201,11 +201,9 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
         and getattr(auth, "client_cert", None)
         and getattr(auth, "private_key", None)
     ):
-        logger.error("AUTH-021", 
-            "[auth] 私信签名三件套缺失(ticket/client_cert/private_key)。"
+        logger.error(f"[AUTH-021] " + "[auth] 私信签名三件套缺失(ticket/client_cert/private_key)。"
             "请删除 .env 中的 DY_TICKET/DY_TS_SIGN/DY_CLIENT_CERT/DY_PRIVATE_KEY "
-            "后重启完成一次扫码登录。"
-        )
+            "后重启完成一次扫码登录。")
         _maybe_auto_recapture(auth, "签名三件套缺失(ticket/client_cert/private_key)")
         return False, "签名三件套缺失(ticket/client_cert/private_key)，需重新扫码"
 

@@ -79,11 +79,23 @@ export const VIEW_TITLE: Record<ViewType, string> = {
   settings: "设置",
 };
 
-/** 从 localStorage 读取初始视图（与原实现逐字一致）。 */
+/**
+ * 从 localStorage 读取初始视图（与原实现行为兼容，但增加白名单校验）。
+ *
+ * 2026-09-17 修补（OCR 审查 MEDIUM）：原实现 `return v || DEFAULT_VIEW`
+ * 直接信任持久值。若 localStorage 被写成 ViewType 之外的脏值
+ * （如旧版本残留的 "automation"，或手工改过），App.tsx 会 `as TabId`
+ * 断言后进入渲染，`VIEW_TITLE[tab]` 得到 undefined ⇒ **标题空白、
+ * 侧栏无选中项，且没有任何入口能切回去（界面卡死）**。
+ * 现加运行时白名单：不在 VIEW_TITLE 里的值一律回落默认视图。
+ */
 export function readStoredView(): ViewType {
   try {
-    const v = localStorage.getItem(VIEW_STORAGE_KEY) as ViewType | null;
-    return v || DEFAULT_VIEW;
+    const v = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (v && Object.prototype.hasOwnProperty.call(VIEW_TITLE, v)) {
+      return v as ViewType;
+    }
+    return DEFAULT_VIEW;
   } catch {
     return DEFAULT_VIEW;
   }
@@ -106,7 +118,12 @@ interface AppViewState {
 export const useAppViewStore = create<AppViewState>((set) => ({
   currentView: readStoredView(),
   setView: (v: string) => {
-    const view = v as ViewType;
+    // 2026-09-17 修补（OCR 审查 MEDIUM）：写入端同样做白名单校验，
+    // 避免脏值落盘后在下次启动时触发上面的卡死场景。
+    const view: ViewType =
+      v && Object.prototype.hasOwnProperty.call(VIEW_TITLE, v)
+        ? (v as ViewType)
+        : DEFAULT_VIEW;
     set({ currentView: view });
     try {
       localStorage.setItem(VIEW_STORAGE_KEY, view);

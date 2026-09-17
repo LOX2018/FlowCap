@@ -123,9 +123,7 @@ def _require_mcp_admin(request) -> bool:
     """敏感 MCP 管理端点是否需要管理员令牌；返回 True 表示放行。"""
     admin = os.environ.get("DY_MCP_ADMIN_TOKEN", "") or ""
     if not admin:
-        logger.warning(
-            "MCP-006",
-            "[mcp] 未设 DY_MCP_ADMIN_TOKEN：MCP 管理面未启用管理员校验"
+        logger.warning(f"[MCP-006] " + "[mcp] 未设 DY_MCP_ADMIN_TOKEN：MCP 管理面未启用管理员校验"
             "（任意已登录会话可改配置/取令牌/清审计）")
         return True
     got = request.headers.get("x-mcp-admin-token", "")

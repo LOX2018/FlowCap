@@ -191,7 +191,7 @@ _EGRESS_IP_ENDPOINTS = [
 ]
 
 
-def probe_egress_ip_direct(timeout=12, retries=2):
+def probe_egress_ip_direct(timeout=12, retries=2, mode=None, node=None):
     """按【代理配置模式】探测出口 IP 与归属地（直连/system/node 三态通用）。
 
     主用 ipapi.is（用户指定，带 key），失败自动回退备用端点。
@@ -200,6 +200,13 @@ def probe_egress_ip_direct(timeout=12, retries=2):
        "is_proxy", "is_datacenter", "mode", "via", "error"}
     mode: direct=本机直连（显式禁代理）｜system=系统代理｜node=独立节点
     铁律：与浏览器启动同一套环境决策 → "测试结果 = 浏览器实际出口"。
+
+    2026-09-17 修补（OCR 审查 HIGH）：新增 `mode`/`node` 显式形参。
+    原实现只从**进程级** `DY_PROXY_TEST_MODE/NODE` 环境变量读取，而调用方
+    （api/accounts.py 的 proxy-test 端点）是先写环境变量、再调用、finally 清理；
+    在 async 路由里这段跨 await 窗口可被并发请求**互相覆盖** →
+    可能把 A 账号的代理节点泄漏进 B 账号的探测（跨账号配置串味）。
+    显式形参优先，环境变量保留作兼容（旧调用方不受影响）。
     """
     import json as _json
     from urllib.request import (Request as _Req, build_opener as _bo,
@@ -213,8 +220,12 @@ def probe_egress_ip_direct(timeout=12, retries=2):
     _HDR = {"User-Agent": _UA, "Accept": "application/json,text/plain,*/*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
     try:
-        mode = (os.environ.get("DY_PROXY_TEST_MODE") or "").strip().lower() or "direct"
-        node = (os.environ.get("DY_PROXY_TEST_NODE") or "").strip()
+        # 2026-09-17 修补（OCR 审查 HIGH）：显式形参优先，环境变量兜底。
+        # 显式传参可消除「并发请求互相覆盖进程级环境变量」的跨账号串味。
+        _m = mode if mode is not None else os.environ.get("DY_PROXY_TEST_MODE")
+        _n = node if node is not None else os.environ.get("DY_PROXY_TEST_NODE")
+        mode = (_m or "").strip().lower() or "direct"
+        node = (_n or "").strip()
         out["mode"] = mode
         if mode == "node" and node:
             # SOCKS 需 PySocks 注册（urllib 原生不支持 socks5://）
@@ -434,7 +445,7 @@ def _launch_args_with_proxy(cfg, account=None):
     # 软件渲染特征，仅在 GPU 环境异常导致浏览器不稳定时使用）
     if (os.environ.get("DY_DISABLE_GPU") or "").strip() in ("1", "true", "yes"):
         args.append("--disable-gpu")
-        logger.warning("BCC-038", "[vbrowser] 已按 DY_DISABLE_GPU 恢复 --disable-gpu"
+        logger.warning(f"[BCC-038] " + "[vbrowser] 已按 DY_DISABLE_GPU 恢复 --disable-gpu"
                                   "（注意：会使 WebGL 暴露软件渲染特征）")
     # 账号级固定指纹种子（跨启动恒定 + 账号间隔离）
     _seed = fingerprint_seed_of(account)
@@ -494,17 +505,13 @@ def _launch_args_with_proxy(cfg, account=None):
                         "（与手动打开浏览器同环境）")
             return args, sys_url, None
         # 选了系统代理但本机没开：如实告警仍走直连，不静默改变语义
-        logger.warning(
-            "BCC-038",
-            "[vbrowser] 环境门阀：配置选了「系统代理」但本机未设置系统代理 → 本次走直连"
+        logger.warning(f"[BCC-038] " + "[vbrowser] 环境门阀：配置选了「系统代理」但本机未设置系统代理 → 本次走直连"
             "（请在代理配置中改选「独立节点」或确认系统代理已开启）")
         args.append("--no-proxy-server")
         return args, None, None
 
     if mode == "node" and not node_url:
-        logger.warning(
-            "BCC-038",
-            "[vbrowser] 环境门阀：配置选了「独立节点」但未填写节点信息 → 本次走直连"
+        logger.warning(f"[BCC-038] " + "[vbrowser] 环境门阀：配置选了「独立节点」但未填写节点信息 → 本次走直连"
             "（请在代理配置中补全节点 host:port）")
         args.append("--no-proxy-server")
         return args, None, None

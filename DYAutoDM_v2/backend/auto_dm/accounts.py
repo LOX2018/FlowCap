@@ -284,7 +284,13 @@ def bcc_mark_user_stopped(stopped: bool = True) -> None:
     _fp = os.path.join(_root, ".bcc_user_stopped")
     try:
         if stopped:
-            io.open(_fp, "w", encoding="utf-8").write("1")
+            # 2026-09-17 修补（OCR 审查 HIGH）：原为 `io.open(...)` 但本文件
+            # **未导入 io** → 每次都抛 NameError，被下面的 except 静默吞掉
+            # ⇒ `.bcc_user_stopped` 标记**永不写入**，进程重启后
+            # `bcc_user_stopped()` 读不到标记，会无视用户「已停止 BCC」的
+            # 显式意图而自动拉起。改用内置 open（与 io.open 等价）。
+            with open(_fp, "w", encoding="utf-8") as _fh:
+                _fh.write("1")
         else:
             if os.path.exists(_fp):
                 os.remove(_fp)
@@ -1072,11 +1078,23 @@ def _probe(env_path, timeout):
                 if not uid:
                     return None
                 # 探活成功 -> 同步给统一调度器，后续消费方直接读缓存（零打网）
+                #
+                # 2026-09-17 修补（OCR 审查 HIGH）：原为 `_up._cache[name] = ...`
+                # 但 `_probe(env_path, timeout)` **没有 name 形参**，也无局部绑定
+                # → 每次都抛 `NameError`，被下面的 except 静默吞掉 ⇒ **uid 缓存
+                # 同步从未生效**，消费方全部回退到打网络探活（违背设计目标）。
+                # 现由 env_path 推导账号名（唯一权威函数 name_of_env_path）。
                 try:
                     from services import uid_probe as _up
-                    _up._cache[name] = (time.time(), int(uid))
-                except Exception:
-                    pass
+                    _acc_name = name_of_env_path(env_path)
+                    if _acc_name:
+                        _up._cache[_acc_name] = (time.time(), int(uid))
+                    else:
+                        logger.debug(
+                            f"[accounts] 探活成功但无法由 env_path 推导账号名，"
+                            f"跳过 uid 缓存同步: {env_path}")
+                except Exception as _ce:
+                    logger.warning("ACC-007", f"[accounts] uid 缓存同步失败: {_ce}")
                 # 严格校验：对自身 uid 建会话，验证服务端是否真的接受私信签名(web_protect/keys)。
                 # 与启动 _verify_credential 一致，避免“四件套在但服务端拒绝签名”被误判为有效。
                 try:

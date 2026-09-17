@@ -863,14 +863,16 @@ async def proxy_test(name: str, req: Request) -> dict:
         return {"ok": False, "error": f"不支持的类型: {ptype}"}
 
     from auto_dm.vbrowser import probe_egress_ip_direct
-    import os as _os
-    _os.environ["DY_PROXY_TEST_MODE"] = mode
-    _os.environ["DY_PROXY_TEST_NODE"] = node
-    try:
-        r = probe_egress_ip_direct()
-    finally:
-        _os.environ.pop("DY_PROXY_TEST_MODE", None)
-        _os.environ.pop("DY_PROXY_TEST_NODE", None)
+    # 2026-09-17 修补（OCR 审查 HIGH）：原实现写进程级环境变量
+    # DY_PROXY_TEST_MODE/NODE 再调用，在 async 路由里这段跨 await 窗口
+    # 会被并发请求互相覆盖 → 可能把 A 账号的代理节点泄漏进 B 账号的探测
+    # （跨账号配置串味）。现改为**显式传参**，不再触碰 os.environ。
+    # 同时：探测是同步阻塞调用（timeout=12/retries=2），放线程池执行，
+    # 避免阻塞事件循环（原实现直接调用，最长可卡 ~30s）。
+    import asyncio as _aio
+
+    r = await _aio.get_running_loop().run_in_executor(
+        None, lambda: probe_egress_ip_direct(mode=mode, node=node))
     r["type"] = ptype
     return r
 

@@ -314,7 +314,7 @@ class ImMixin:
         resp = requests.post(url, params=params, headers=headers.get(), verify=tls_verify(), cookies=auth.cookie,
                              data=requestProto.SerializeToString())
         if resp.status_code != 200:
-            logger.error("AUTH-026", f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}')
+            logger.error(f"[AUTH-026] " + f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}')
             return False, f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}'
         responseProto = ResponseProto.Response()
         try:
@@ -327,13 +327,12 @@ class ImMixin:
                 import json as _json
                 _j = _json.loads(resp.content.decode("utf-8", "replace"))
                 _dec = _j.get("decision") or _j.get("message") or str(_j)[:80]
-                logger.error("AUTH-027", 
-                    f"私信发送被抖音拒绝（JSON 响应）：decision={_dec} | "
+                logger.error(f"[AUTH-027] " + f"私信发送被抖音拒绝（JSON 响应）：decision={_dec} | "
                     f"full={str(_j)[:200]}")
                 return False, f"抖音拒绝发送：{_dec}（风控/限流，建议冷却后重试）"
             except Exception:
                 pass
-            logger.error("AUTH-028", f'私信发送响应 protobuf 解析失败: {e} | raw[:120]={resp.content[:120]!r}')
+            logger.error(f"[AUTH-028] " + f'私信发送响应 protobuf 解析失败: {e} | raw[:120]={resp.content[:120]!r}')
             return False, f'响应用户解析失败: {e}'
         resp_json = protobuf_to_dict(responseProto)
         success = resp_json.get('message') == 'OK'
@@ -341,7 +340,7 @@ class ImMixin:
             logger.info(f'私信发送成功 conversation_id={conversation_id}')
             return True, 'ok'
         detail = DouyinAPI._classify_send_fail(resp_json)
-        logger.error("AUTH-029", f'私信发送失败 conversation_id={conversation_id} resp_json={resp_json}')
+        logger.error(f"[AUTH-029] " + f'私信发送失败 conversation_id={conversation_id} resp_json={resp_json}')
         return False, detail
 
     @staticmethod

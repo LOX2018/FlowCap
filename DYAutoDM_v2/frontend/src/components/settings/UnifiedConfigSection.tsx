@@ -12,7 +12,7 @@
  *   - apply != hot 的字段保存后提示「需重启 X 生效」
  *   - 改动未保存时字段左侧显示圆点标记，避免用户忘记保存
  */
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type {
@@ -86,10 +86,17 @@ export default function UnifiedConfigSection(
 
   // 本地编辑态：{ section: { key: value } }
   const [draft, setDraft] = useState<Record<string, Record<string, Val>>>({});
-  const [initDone, setInitDone] = useState(false);
-
+  // 2026-09-17 修补（OCR 审查 HIGH —— init 死锁）：原实现用一个布尔 state
+  // `initDone` 作"只初始化一次"的锁，一旦置 true 便在本挂载实例内永不再初始化。
+  // 而 TagSection.tsx 是「常驻挂载 + 只换 scope prop」，于是：
+  //   选标签 A → draft 初始化为 A → 再选标签 B → q.data 已换但 initDone 仍 true
+  //   → draft 保持 A 的值 → 点保存会把 **A 的配置写进 B**。
+  // 现改为「数据来源 key」（scope + 数据代次）判定，见下方 effect。
+  const initKeyRef = useRef<string>("");
+  const initKey = `${scope}|${q.dataUpdatedAt}`;
   useEffect(() => {
-    if (!q.data || initDone) return;
+    if (!q.data) return;
+    if (initKeyRef.current === initKey) return;
     const d: Record<string, Record<string, Val>> = {};
     for (const [sec, secSchema] of Object.entries(schema)) {
       d[sec] = {};
@@ -98,9 +105,9 @@ export default function UnifiedConfigSection(
         d[sec][k] = cur !== undefined && cur !== null ? cur : (f.default as Val);
       }
     }
+    initKeyRef.current = initKey;
     setDraft(d);
-    setInitDone(true);
-  }, [q.data, schema, serverCfg, initDone]);
+  }, [q.data, q.dataUpdatedAt, schema, serverCfg, initKey, scope]);
 
   const setVal = useCallback((sec: string, key: string, v: Val) => {
     setDraft((prev) => ({ ...prev, [sec]: { ...prev[sec], [key]: v } }));
@@ -123,22 +130,29 @@ export default function UnifiedConfigSection(
   );
 
   const saveMut = useMutation({
-    mutationFn: async (sec: string) => {
+    // 2026-09-17 修补（OCR 审查 HIGH）：scope 改为**随参数传递**。
+    // 原实现 onSuccess 里读渲染闭包中的 `scope`；在「保存 → 立刻切换
+    // 标签/全局」的连点场景下，闭包可能是切换后的新值（或旧值），
+    // 导致 setQueryData 把结果写进**错的缓存键**，造成配置串位。
+    // 现在把提交那一刻的 scope 随 mutation 一起传下去，onSuccess 用 args。
+    mutationFn: async (args: { sec: string; scope: string }) => {
+      const { sec, scope: sc } = args;
       const body = { [sec]: draft[sec] || {} };
-      if (scope) {
+      if (sc) {
         // 标签模式：saveScoped 不返回 restart_required（标签参数多为 hot）
-        const r = await api.saveScoped(scope, body);
+        const r = await api.saveScoped(sc, body);
         return { ...r, restart_required: [] as string[] };
       }
       return api.saveSettings(body);
     },
-    onSuccess: (data, sec) => {
-      qc.setQueryData(["unified-settings", scope], (old: unknown) => {
+    onSuccess: (data, args) => {
+      const { sec, scope: sc } = args;
+      qc.setQueryData(["unified-settings", sc], (old: unknown) => {
         const o = old as { ok: boolean; schema: SettingsSchema; config: unknown } | undefined;
         return o ? { ...o, config: data.config } : o;
       });
       const need = data.restart_required || [];
-      const who = scope ? `标签「${scopeName}」` : "全局";
+      const who = sc ? `标签「${scopeName}」` : "全局";
       if (need.length > 0) {
         push(
           `已保存到${who}：「${schema[sec]?.label || sec}」。` +
@@ -158,7 +172,9 @@ export default function UnifiedConfigSection(
         const o = old as { ok: boolean; schema: SettingsSchema; config: unknown } | undefined;
         return o ? { ...o, config: data.config } : o;
       });
-      setInitDone(false); // 触发重新从服务端拉默认值
+      // 2026-09-17：原为 setInitDone(false)。改用 initKey 机制后，
+      // 重置 initKeyRef 即等价于"下次 effect 重新初始化"。
+      initKeyRef.current = "";
       push(`已恢复「${schema[sec]?.label || sec}」为默认值`);
     },
     onError: (e) => push(`恢复失败：${errMsg(e)}`),
@@ -276,7 +292,7 @@ export default function UnifiedConfigSection(
           defaultOpen={i === 0}
           dirty={dirtyOf(sec.key)}
           saving={saveMut.isPending}
-          onSave={() => saveMut.mutate(sec.key)}
+          onSave={() => saveMut.mutate({ sec: sec.key, scope: scope || "" })}
           onReset={() => resetMut.mutate(sec.key)}
         >
           {sec.fields.map(([fk, fs]) => (

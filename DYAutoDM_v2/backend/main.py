@@ -544,7 +544,7 @@ app = FastAPI(
     # （tauri.conf / package.json / frontend/package.json / Cargo.toml）脱节，
     # 会误导排障（OpenAPI 文档显示的版本号是错的）。
     # 现与产品版本同源（手动同步；如需自动校验见版本一致性门禁）。
-    version="0.43.45",
+    version="0.43.46",
     description="抖音直播间自动私信控制台 - 后端 API",
     lifespan=lifespan,
 )
@@ -567,9 +567,7 @@ _CORS_ORIGINS = (
     ]
 )
 if _CORS_ALLOW_ANY:
-    logger.warning(
-        "BOOT-001",
-        "[boot] ⚠️ DY_CORS_ANY=1：CORS 已放开为 *，任意来源可调用业务 API"
+    logger.warning(f"[BOOT-001] " + "[boot] ⚠️ DY_CORS_ANY=1：CORS 已放开为 *，任意来源可调用业务 API"
         "（仅应急排障使用）")
 app.add_middleware(
     CORSMiddleware,

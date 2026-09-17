@@ -631,7 +631,7 @@ class BrowserContainer:
             if str(os.environ.get(
                     "DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH", "")).strip() != "1":
                 self._headless = True
-            logger.info("BCC-052", "[bcc] context 失活自愈：已重建容器"
+            logger.info(f"[BCC-052] " + "[bcc] context 失活自愈：已重建容器"
                         "（按最小化启动，窗口不再快闪）")
             await self._launch()
 

@@ -176,7 +176,7 @@ def ensure_uid(auth):
             return auth.uid
     except Exception as e:
         logger.debug(f"[auth] get_my_uid 失败: {e}")
-    logger.warning("AUTH-008", "[auth] 未能解析自身 uid（create_conversation 将失败，"
+    logger.warning(f"[AUTH-008] " + "[auth] 未能解析自身 uid（create_conversation 将失败，"
                    "请确认登录 cookie 含 uid_tt/sid_tt）")
     return None
 

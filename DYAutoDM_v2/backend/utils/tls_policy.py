@@ -47,9 +47,7 @@ def tls_verify() -> bool:
             _WARNED = True
             try:
                 from loguru import logger
-                logger.warning(
-                    "TLS-001",
-                    "[tls] ⚠️ DY_TLS_INSECURE=1：全库已关闭 TLS 证书校验，"
+                logger.warning(f"[TLS-001] " + "[tls] ⚠️ DY_TLS_INSECURE=1：全库已关闭 TLS 证书校验，"
                     "存在中间人窃取账号 cookie 的风险（仅内网/自签证书环境使用）")
             except Exception:
                 pass

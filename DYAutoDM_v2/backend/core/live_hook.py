@@ -216,10 +216,8 @@ class LiveChatHook(DouyinLive):
                 logger.error(f"[LIVE-002] " + f"[心跳] 登录态探活异常（将自动重新扫码）: {e}")
                 uid = None
             if not uid:
-                logger.error("LIVE-003", 
-                    "[心跳] 登录态失效（get_my_uid 无返回，cookie 可能过期/账号被挤下线）。\n"
-                    "       自动触发重新扫码以恢复监测账号有效会话，避免弹幕昵称被加密。"
-                )
+                logger.error(f"[LIVE-003] " + "[心跳] 登录态失效（get_my_uid 无返回，cookie 可能过期/账号被挤下线）。\n"
+                    "       自动触发重新扫码以恢复监测账号有效会话，避免弹幕昵称被加密。")
                 self._trigger_rescan()
                 break
             else:

@@ -226,11 +226,9 @@ class AutoDM:
             and getattr(auth, "private_key", None)
         )
         if not _has_sign:
-            logger.error("AUTH-013", 
-                "[auth] 私信签名三件套缺失(ticket/client_cert/private_key)。\n"
+            logger.error(f"[AUTH-013] " + "[auth] 私信签名三件套缺失(ticket/client_cert/private_key)。\n"
                 "       请删除 .env 中 DY_TICKET/DY_TS_SIGN/DY_CLIENT_CERT/DY_PRIVATE_KEY 四行，\n"
-                "       再点该账号【重新扫码】抓取签名后启动。"
-            )
+                "       再点该账号【重新扫码】抓取签名后启动。")
             return False
         try:
             from dy_apis.douyin_api import DouyinAPI
@@ -244,10 +242,8 @@ class AutoDM:
         except Exception as e:
             msg = str(e)
             if "INVALID_REQUEST" in msg or "KICK" in msg:
-                logger.error("AUTH-015", 
-                    "[auth] 私信签名预检被拒（create_conversation 返回 INVALID_REQUEST/KICK）。\n"
-                    "       建议点【重新扫码】重新抓取最新凭证。"
-                )
+                logger.error(f"[AUTH-015] " + "[auth] 私信签名预检被拒（create_conversation 返回 INVALID_REQUEST/KICK）。\n"
+                    "       建议点【重新扫码】重新抓取最新凭证。")
             elif "login" in msg.lower() or "unauthorized" in msg.lower() or "401" in msg:
                 logger.error(f"[AUTH-016] " + "[auth] 登录态校验失败（create_conversation 报未登录），cookie 可能已失效。")
             else:
@@ -475,10 +471,8 @@ class AutoDM:
                 self.state = EngineState.IDLE
                 return
             if not (getattr(self.auth, "ticket", None) and getattr(self.auth, "private_key", None)):
-                logger.error("AUTH-020", 
-                    "[auth] 发送账号私信签名缺失（DY_TICKET/DY_PRIVATE_KEY 为空）。"
-                    "请在该账号下点重新扫码完成一次登录。"
-                )
+                logger.error(f"[AUTH-020] " + "[auth] 发送账号私信签名缺失（DY_TICKET/DY_PRIVATE_KEY 为空）。"
+                    "请在该账号下点重新扫码完成一次登录。")
                 self.status_msg = "发送账号需重新扫码"
                 self.state = EngineState.IDLE
                 return

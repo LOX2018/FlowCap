@@ -96,9 +96,7 @@ def _mask_url_query(url: str) -> str:
 # 根证书未安装）需要例外时，设 DY_LOGIN_TLS_INSECURE=1，并会留下 warning。
 _TLS_VERIFY = os.environ.get("DY_LOGIN_TLS_INSECURE", "") != "1"
 if not _TLS_VERIFY:
-    logger.warning(
-        "AUTH-042",
-        "[auth] ⚠️ DY_LOGIN_TLS_INSECURE=1：登录链路已关闭 TLS 证书校验，"
+    logger.warning(f"[AUTH-042] " + "[auth] ⚠️ DY_LOGIN_TLS_INSECURE=1：登录链路已关闭 TLS 证书校验，"
         "存在 MITM 窃取登录 cookie 的风险（仅应急排障使用）")
 
 
@@ -203,8 +201,14 @@ class DYLoginApi:
 
         _vb, _vb_mode = should_use_vb(_cfg)
         # 2026-09-13 环境门阀：传 account 让账号级 DY_PROXY 生效（无则按三级优先级）
-        import os as _os
-        _acc_name = _os.path.basename(_os.path.dirname(_os.path.abspath(env_path))) if env_path else None
+        #
+        # 2026-09-17 修补（OCR 审查 CRITICAL）：原为
+        #   _acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path))) if env_path else None
+        # 但本函数**根本没有 env_path**（签名只有 headless/cookie_str/landing_url），
+        # 也无局部绑定 → 每次都抛 NameError，dyGenerateInitData 100% 失败。
+        # 该函数走 launch_async(force=True) 临时 profile，本就不绑定账号 env，
+        # 故 account 直接置 None（不启用账号级 DY_PROXY，退回三级优先级）。
+        _acc_name = None
         _pw, _browser, context, _backend = await launch_async(
             _vb_mode, _cfg, headless=headless, force=True, account=_acc_name)
         try:
@@ -795,9 +799,7 @@ class DYLoginApi:
         优先通过 BCC HTTP /user_info 接口（常驻浏览器容器，不抢锁）；
         BCC 未运行时退回直开 Playwright（旧路径，可能抢锁但保证功能可用）。
         """
-        logger.warning(
-            "AUTH-043",
-            "[auth] ⚠️ 调用了已废弃的 bulk_user_info_via_browser："
+        logger.warning(f"[AUTH-043] " + "[auth] ⚠️ 调用了已废弃的 bulk_user_info_via_browser："
             "这是**主动批量查询昵称**的旧路径（风控红线）。请改用被动路径 "
             "capture_userinfo_map / /userinfo_idb。如为误接请立即撤销。")
         import os
@@ -1223,7 +1225,14 @@ class DYLoginApi:
         params.add_param("biz_trace_id", auth.cookie['biz_trace_id'])
         params.add_param("device_platform", "web_app")
         params.add_param("msToken", auth.cookie['msToken'])
-        data = generateSecretPhoneNum(phone_num)
+        # 2026-09-17 修补（OCR 审查 CRITICAL）：`generateSecretPhoneNum` 在全仓
+        # **不存在**（`grep def generateSecret` 零命中，L1-16 也未导入）→ 此处
+        # 必抛 NameError。该函数属未完成的手机号登录实验路径（无仓库内调用方）。
+        # 现改为显式 fail-closed，给出可读错误而非裸 NameError。
+        raise NotImplementedError(
+            "手机号验证码登录链路未完成：generateSecretPhoneNum 未实现"
+            "（该入口无调用方，属历史实验代码；如需启用请先补齐实现）")
+        data = generateSecretPhoneNum(phone_num)  # noqa: F821  (保留原调用备查)
         params.with_a_bogus(data)
         response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=_TLS_VERIFY)
         res_json = json.loads(response.text)
@@ -1281,7 +1290,12 @@ class DYLoginApi:
         params.add_param("device_platform", "web_app")
         params.add_param("msToken", auth.cookie['msToken'])
         params.with_a_bogus()
-        data = generateSecretCode(phone_num, code)
+        # 2026-09-17 修补（OCR 审查 CRITICAL）：同 generateSecretPhoneNum，
+        # `generateSecretCode` 全仓不存在 → 必抛 NameError。改为 fail-closed。
+        raise NotImplementedError(
+            "手机号验证码登录链路未完成：generateSecretCode 未实现"
+            "（该入口无调用方，属历史实验代码；如需启用请先补齐实现）")
+        data = generateSecretCode(phone_num, code)  # noqa: F821  (保留原调用备查)
         response = requests.post(self.base_url + api, headers=headers, cookies=auth.cookie, params=params.get(), data=data, verify=_TLS_VERIFY)
         responseCookies = response.cookies.get_dict()
         # 结合到cookies中
@@ -1330,8 +1344,14 @@ class DYLoginApi:
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0",
-            "x-tt-passport-csrf-token": "07e71018d12ee15b8a50b086cd82d021",
-            "x-tt-passport-trace-id": "5714b00b"
+            # 2026-09-17 修补（OCR 审查 MEDIUM）：原为硬编码
+            #   "x-tt-passport-csrf-token": "07e71018...021"
+            #   "x-tt-passport-trace-id": "5714b00b"
+            # 绑死某次真实会话（跨账号必携带错误 csrf → 服务端拒绝/串号），
+            # 且凭据进源码。同文件 L1221-1222 / L1277-1278 的同类接口都用
+            # auth.cookie 取。现统一改为从 auth.cookie 动态取（带兜底）。
+            "x-tt-passport-csrf-token": auth.cookie.get("passport_csrf_token", ""),
+            "x-tt-passport-trace-id": auth.cookie.get("biz_trace_id", "")
         }
         params = Params()
         params.add_param("user_web_record_status", "1")
