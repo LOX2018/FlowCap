@@ -25,6 +25,8 @@ import os
 import threading
 from typing import Any
 
+from loguru import logger
+
 import database
 
 _KV_KEY = "app_config"
@@ -70,13 +72,28 @@ def _load(scope_key: str | None = None) -> dict:
         return {}
 
 
-def _save(data: dict, scope_key: str | None = None) -> None:
+def _save(data: dict, scope_key: str | None = None) -> bool:
+    """落盘配置。**返回是否成功**（2026-09-17 修补）。
+
+    OCR 审查 HIGH：原实现裸 `except: pass`，注释写「落盘失败不影响内存语义，
+    消费方仍能读到本次值」—— 但**这句是错的**：本模块的 `get()` 每次都从 DB
+    重新 `_load()`，模块内**不存在内存副本**。于是落盘失败时：
+      · 接口仍返回 200 + 回读到的 schema 默认值（`get()` 回落默认）；
+      · 用户以为保存成功，**重启后配置丢失**，且无任何日志线索。
+    这与同文件 `drop_scope` 注释记载的事故同型（曾因 NameError 被静默吞掉，
+    表现为「删了标签但参数还在」），故此处按同样标准处理：**不吞异常**。
+
+    改法：记录 error 日志并返回 False，由 `save_section`/`reset_section`
+    转成明确错误，避免"假成功"。
+    """
     try:
         from database import set_kv_json
         set_kv_json(scope_key or _KV_KEY, data)
-    except Exception:
-        # 落盘失败不影响内存语义，消费方仍能读到本次值
-        pass
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[CFG-011] app_config 落盘失败（本次修改不会持久化，"
+                     f"重启后将丢失）: {type(e).__name__}: {e}")
+        return False
 
 
 def section_stored(section: str) -> dict:
@@ -104,11 +121,7 @@ def drop_scope(scope: str) -> bool:
         conn.commit()
         return cur.rowcount > 0
     except Exception as e:
-        try:
-            from loguru import logger
-            logger.warning(f"[CFG-010] " + f"[config] drop_scope 失败: {e}")
-        except Exception:
-            pass
+        logger.warning(f"[CFG-010] [config] drop_scope 失败: {e}")
         return False
 
 
@@ -161,8 +174,22 @@ def _coerce(value: Any, ftype: str, meta: dict):
             return None
     if ftype == "select":
         opts = meta.get("options") or []
-        if opts and v not in opts:
-            return None
+        # 2026-09-17 修补（OCR 审查 HIGH —— select 校验恒判非法）：
+        # `options` 是 **dict 列表**（[{"value": "observe", "label": "..."}]），
+        # 而 `v` 是裸值字符串。原实现 `v not in opts` 拿字符串去和 dict 比对，
+        # **恒为 False**（永远不相等）→ 所有 select 字段的值（含 schema 默认值）
+        # 一律被判非法并丢弃。实证：cred_refresh_mode 默认 'observe' 校验失败
+        # （test_app_config.test_defaults_pass_their_own_range 长期失败的真实根因）。
+        # 现同时兼容两种声明形式：dict 列表（取 value）与裸值列表。
+        if opts:
+            _allowed = []
+            for o in opts:
+                if isinstance(o, dict):
+                    _allowed.append(o.get("value"))
+                else:
+                    _allowed.append(o)
+            if v not in _allowed:
+                return None
     return v
 
 
@@ -234,7 +261,13 @@ def save_section(section: str, values: dict, scope: str | None = None) -> dict:
                 continue
             cur[k] = cv
         data[section] = cur
-        _save(data, scope_key(scope))
+        # 2026-09-17 修补（OCR 审查 HIGH）：把落盘失败**显式暴露**出去。
+        # 原实现忽略 _save 异常并回读（回落到 schema 默认值）→ 接口 200 +
+        # 看似合理的值，用户以为保存成功，重启后配置丢失。
+        if not _save(data, scope_key(scope)):
+            raise RuntimeError(
+                f"配置落盘失败（section={section}）：本次修改不会持久化。"
+                f"请检查磁盘空间/数据库可用性后重试。")
     return get_section(section, scope=scope)
 
 
@@ -243,7 +276,10 @@ def reset_section(section: str, scope: str | None = None) -> dict:
     with _lock:
         data = _load(scope_key(scope))
         data.pop(section, None)
-        _save(data, scope_key(scope))
+        # 2026-09-17 修补：同 save_section，落盘失败必须显式报错。
+        if not _save(data, scope_key(scope)):
+            raise RuntimeError(
+                f"配置重置落盘失败（section={section}）：本次重置不会持久化。")
     return get_section(section, scope=scope)
 
 

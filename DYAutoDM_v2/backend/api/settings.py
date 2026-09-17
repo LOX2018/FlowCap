@@ -51,15 +51,21 @@ async def save_config(body: SaveBody) -> dict:
     """
     saved: list[str] = []
     restart: set[str] = set()
-    for sec, values in (body.sections or {}).items():
-        if sec not in ac.SECTIONS:
-            continue
-        before = ac.get_section(sec)
-        ac.save_section(sec, values or {})
-        after = ac.get_section(sec)
-        saved.append(sec)
-        changed = [k for k in after if before.get(k) != after.get(k)]
-        restart.update(ac.apply_modes_of(sec, changed))
+    try:
+        for sec, values in (body.sections or {}).items():
+            if sec not in ac.SECTIONS:
+                continue
+            before = ac.get_section(sec)
+            ac.save_section(sec, values or {})
+            after = ac.get_section(sec)
+            saved.append(sec)
+            changed = [k for k in after if before.get(k) != after.get(k)]
+            restart.update(ac.apply_modes_of(sec, changed))
+    except RuntimeError as e:
+        # 2026-09-17：save_section 落盘失败会抛 RuntimeError（见 app_config._save）。
+        # 转成明确的 HTTP 错误，避免"接口看似成功但配置未持久化"。
+        logger.error(f"[settings] 保存失败: {e}")
+        raise HTTPException(500, f"配置保存失败：{e}") from e
     logger.info(
         f"[settings] 已保存 sections={saved} restart_required={sorted(restart)}")
     return {
@@ -138,11 +144,16 @@ async def save_scoped(body: SaveScopedBody):
     if scope and not config_tag.get_tag(scope):
         raise HTTPException(404, "标签不存在")
     saved = []
-    for sec, values in (body.sections or {}).items():
-        if sec not in ac.SECTIONS:
-            continue
-        ac.save_section(sec, values or {}, scope=scope)
-        saved.append(sec)
+    try:
+        for sec, values in (body.sections or {}).items():
+            if sec not in ac.SECTIONS:
+                continue
+            ac.save_section(sec, values or {}, scope=scope)
+            saved.append(sec)
+    except RuntimeError as e:
+        # 2026-09-17：同 save_config，落盘失败显式报错。
+        logger.error(f"[settings] 标签保存失败: {e}")
+        raise HTTPException(500, f"标签配置保存失败：{e}") from e
     return {"ok": True, "saved_sections": saved,
             "config": {s: ac.get_section(s, scope=scope) for s in saved},
             "tags": config_tag.list_tags()}
@@ -161,8 +172,13 @@ class ResetBody(BaseModel):
 @router.post("/reset")
 async def reset_config(body: ResetBody) -> dict:
     done = []
-    for sec in body.sections or []:
-        if sec in ac.SECTIONS:
-            ac.reset_section(sec)
-            done.append(sec)
+    try:
+        for sec in body.sections or []:
+            if sec in ac.SECTIONS:
+                ac.reset_section(sec)
+                done.append(sec)
+    except RuntimeError as e:
+        # 2026-09-17：同 save_config，落盘失败显式报错。
+        logger.error(f"[settings] 重置失败: {e}")
+        raise HTTPException(500, f"配置重置失败：{e}") from e
     return {"ok": True, "reset_sections": done, "config": ac.get_all()}
