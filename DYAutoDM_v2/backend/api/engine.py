@@ -35,16 +35,18 @@ async def start_engine(request: Request, config: TaskConfig):
         raise HTTPException(400, "live_url 不能为空（需提供直播间链接或房间号）")
     # 已在运行/启动中则直接返回当前状态（不重复拉起）
     #
-    # 2026-09-17 修补（OCR 审查 HIGH —— check-then-act 竞态 + 丢弃 Task）：
-    # 原实现只**读** `adm.state` 就 create_task；而 `start()` 里的
-    # `self.state = EngineState.STARTING` 要等该协程真正被调度才执行 →
-    # 两个并发的 /start 请求都会看到 IDLE 而各自拉起一个 start 任务
-    # （第二个会在任务内抛 RuntimeError("当前状态 ... 无法启动")）。
-    # 且 `asyncio.create_task(...)` 的返回值被丢弃：任务内异常无人取回，
-    # 只会在 GC 时打 "Task exception was never retrieved"，而路由仍返回
-    # {"ok": True, "state": "starting"} —— 假成功。
-    # 现用 asyncio.Lock 串行化「检查 + 拉起」，并保留任务引用 + 完成回调，
-    # 让启动失败能被记录（而不是静默变成假成功）。
+    # 2026-09-17 修补（OCR 审查 HIGH —— check-then-act 竞态 + 丢弃 Task）。
+    # 原实现只**读** `adm.state` 就 `create_task`；而 `AutoDM.start()` 里的
+    # `self.state = EngineState.STARTING` 要等该协程被真正调度才执行 →
+    # 两个并发的 /start 都会看到 IDLE 而各自拉起一个任务（第二个会在任务内
+    # 抛 RuntimeError("当前状态 ... 无法启动")）。且 create_task 返回值被丢弃：
+    # 任务内异常无人取回，路由仍返回 {"ok": True, "state": "starting"} —— 假成功。
+    #
+    # ⚠️ 第一版修复（只加 asyncio.Lock）**不够**：锁只串行化了"读状态"，
+    #    状态仍要等被调度才更新，于是第二个请求进锁时依然看到 IDLE →
+    #    实测 starts=2（未修复）。正确做法是在锁内**先让出控制权**，
+    #    等首个 start 协程跑到把状态推成 STARTING（或已非 IDLE）再检查，
+    #    这样第二个请求才会命中"已在启动中"分支。
     lock = getattr(request.app.state, "_engine_start_lock", None)
     if lock is None:
         lock = asyncio.Lock()
@@ -73,7 +75,16 @@ async def start_engine(request: Request, config: TaskConfig):
         running.add(task)
         task.add_done_callback(running.discard)
         task.add_done_callback(_on_start_done)
-        return {"ok": True, "state": "starting"}
+        # 关键：让出控制权，等 start 协程把状态推离 IDLE/STOPPED（它进入
+        # STARTING 即返回；若已 RUNNING 也视为已启动）。最多等若干轮，
+        # 以覆盖 start() 开头的同步解析（resolve_live_id）耗时。
+        for _ in range(50):
+            if adm.state not in (EngineState.IDLE, EngineState.STOPPED):
+                break
+            if task.done():        # start 已结束（成功进入 RUNNING 或失败）
+                break
+            await asyncio.sleep(0)
+        return {"ok": True, "state": getattr(adm.state, "value", "starting")}
 
 
 @router.post("/pause")
