@@ -1707,16 +1707,29 @@ export async function checkVersionConsistency(): Promise<VersionCheck> {
   const fe = String(__APP_VERSION__);
   let be = "unknown";
   let detail = "";
+  // 2026-09-17 修复（v0.43.43）：探针必须先等 sidecar 就绪再发。
+  // 旧实现裸 fetch：sidecar 冷启动（PyInstaller 解包 + uvicorn 监听）通常 >1.2s，
+  // App 挂载后 1.2s 的探针必然 ECONNREFUSED → TypeError: Failed to fetch →
+  // backend 误判 "unknown" → 版本门禁阻断启动（全屏遮罩永不消失）。
+  // 复用餐的就绪等待（ensureBackendReady：拉 sidecar + 30s 轮询 /api/status）。
   try {
-    const r = await fetch(`${BASE}/api/version`, { method: "GET" });
-    if (r.ok) {
-      const j = (await r.json()) as { backend?: string };
-      be = String(j.backend || "unknown");
-    } else {
-      detail = `/api/version 返回 ${r.status}`;
-    }
+    await ensureBackendReady();
   } catch (e) {
-    detail = `无法连接后端: ${String(e)}`;
+    detail = `后端引擎未就绪（${String(e)}）`;
+  }
+  if (!detail) {
+    try {
+      const r = await fetch(`${BASE}/api/version`, { method: "GET" });
+      if (r.ok) {
+        const j = (await r.json()) as { backend?: string };
+        be = String(j.backend || "unknown");
+        if (be === "unknown") detail = "/api/version 缺少 backend 字段（sidecar 过旧，版本探针缺失）";
+      } else {
+        detail = `/api/version 返回 ${r.status}`;
+      }
+    } catch (e) {
+      detail = `无法连接后端: ${String(e)}`;
+    }
   }
   const match = be !== "unknown" && be === fe;
   if (!match && !detail) {

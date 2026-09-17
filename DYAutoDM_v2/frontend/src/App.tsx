@@ -134,26 +134,40 @@ export default function App() {
   const [verBlock, setVerBlock] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    // 2026-09-17 修复（v0.43.43）：探针失败后重试，而不是单次失败永久阻断。
+    // 失败分两类：
+    //   「不可恢复」→ 版本真不一致 / 后端缺 backend 字段（探针缺失）→ 立即阻断，不重试。
+    //   「可重试」→ 后端引擎尚未就绪 / 网络瞬断 → 5s 后重探，共 3 轮，
+    //     3 轮仍读不到才阻断（此时真值得拦下）。
+    const isRetryable = (d: string) =>
+      d.includes("未就绪") || d.includes("无法连接后端") || d.includes("返回 5") || d.includes("返回 0");
     const run = async () => {
       try {
         const v = await api.checkVersionConsistency();
         if (!alive) return;
-        // 2026-09-16 铁律：不一致即阻断启动。
-        // backend === "unknown" 表示后端探针不可用（sidecar 极旧或未部署），
-        // 同样视为不一致 —— 此时跑业务等于盲跑，不如直接拦下。
-        if (!v.match) {
-          const why = v.backend === "unknown"
-            ? `后端版本无法读取（${v.detail}）— 可能 sidecar 未部署或版本探针缺失`
-            : `前端 ${v.frontend} ≠ 后端 ${v.backend} — ${v.detail}`;
-          setVerBlock(why);
-          _verDiag("BLOCKED " + why);
-        } else {
-          _verDiag("ok " + v.backend);
+        if (v.match) { _verDiag("ok " + v.backend); return; }
+        const why = v.backend === "unknown"
+          ? `后端版本无法读取（${v.detail}）`
+          : `前端 ${v.frontend} ≠ 后端 ${v.backend} — ${v.detail}`;
+        if (isRetryable(v.detail)) {
+          _verDiag("RETRYABLE " + why);
+          if (timers.length < 3) {
+            const t = setTimeout(() => { if (alive) run(); }, 5000);
+            timers.push(t);
+            return;
+          }
         }
-      } catch { /* ignore */ }
+        _verDiag("BLOCKED " + why);
+        setVerBlock(why);
+      } catch (e) {
+        _verDiag("PROBE_ERROR " + String(e));
+      }
     };
-    const t = setTimeout(run, 1200);
-    return () => { alive = false; clearTimeout(t); };
+    // 首次延迟 1.2s（让 BootSplash 先渲染），后续重试由上方调度。
+    const t0 = setTimeout(run, 1200);
+    timers.push(t0);
+    return () => { alive = false; timers.forEach(clearTimeout); };
   }, []);
 
   // 启动预对齐轮询（1.5s）：等 /api/ready 的 daemons_ready=true
