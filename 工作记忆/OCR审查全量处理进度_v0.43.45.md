@@ -87,6 +87,44 @@
 - `dy_apis/douyin_recv_msg.py:on_message` 无异常保护 → try/except + 安全 URL 取值（**实测 6 类畸形输入全安全降级**）
 - **loguru 跨行双参数又修 20 处 / 12 文件**（上轮脚本只处理单行，漏掉的）
 
+### 3.2 v0.43.47 已处置（commit `7d3f2ff`）—— 租约竞态 + schema 重复键
+
+**① 租约跨线程竞态（本轮最有价值，实测硬证据）**
+
+`_lease` / `_scan_exclusive` 是模块级 dict，读写分布在 **FastAPI 主 loop** 与
+**`run_keepalive` 子线程**两条线程上，**全程无锁**；`_lease_acquire` 是
+「读 → 判空 → 写」三步非原子 → 并发可同时通过判空 → **双写覆盖**，
+后写者 lease_id 生效，先写者无法 release，租约要等 TTL（最高 600s）才被回收，
+**期间全部业务被 403/busy 挡回**。
+
+修复：引入 `threading.RLock`（非 asyncio.Lock —— keepalive 在子线程且
+`_lease_acquire` 内部可重入），acquire/renew/release/`_scan_exclusive` 全部进临界区；
+另修 `_is_busy()` + 下标读的 TOCTOU。
+
+> **验证（`daemon/_verify_lease_lock.py`，30 轮 × 32 线程对照实验）**：
+> 旧实现 **30/30 轮复现**「多人同时持有租约」（单轮最多 **7 个线程**）；
+> 新实现 **30/30 轮零竞争**。
+
+**② `app_config_schema.py` 字典重复键静默覆盖（实测 10 个）**
+
+`SECTIONS["automation"]["fields"]` 内 10 个键被重复定义，Python 字面量
+**last-wins 且无告警** → 前一份（`scan_interval` 5~86400、`max_actions` 1~500）被静默丢弃。
+
+修复：删除被覆盖的前一份，保留与 `automation_engine.py` clamp 一致的权威组；
+新增防回归测试 `test_no_dup_dict_keys.py`（AST 扫描，重复键即失败 + 校验权威值未变）。
+
+> 实测：重复键清零；`scan_interval_seconds=30/10/300`、`max_actions_per_run=5/1/50`
+> 与 engine 逐项一致 —— **删重复键未改变生效值**。
+
+**③ 其他 3 条静默失真**
+
+| 位置 | 缺陷 | 后果 |
+|---|---|---|
+| `/show` 端点 | `except Exception: pass` 丢弃整个 body | `visible=false` 被忽略，「切回无头」失效且**无日志** |
+| `refresh_cookie_to_env` | 写 .env 失败仅 warning 却返回 `ok=True` | 调用方按成功记账，实际 .env 仍是旧凭证；漂移门禁基线被误推进 |
+| `/linkmic_run` | 裸 `c._lock` + `_ensure_alive()` | **绕过租约仲裁与 `_is_busy()` 快速失败**，scan_login 独占期可抢 profile |
+| `_nav_page` | 用完只 `goto("about:blank")` 不 `close()` | 每次 resolve_url 留一个空 tab，占 renderer 句柄，长期累积 |
+
 ### 3.1 已派 agent 甄别（HIGH）
 
 - `browser_daemon.py`（11）、`app_config_schema.py`（10）、`api/logs.py`（3）
