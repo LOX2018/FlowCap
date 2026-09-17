@@ -17,6 +17,7 @@
 
 ⚠️ 风控约束：仅供单条/低频发送（复用现有 send_msg 的节奏），严禁循环群发。
 """
+from utils.tls_policy import tls_verify  # noqa: E402
 import base64  # noqa: F401 (保留给调试用)
 import hashlib
 import hmac
@@ -210,7 +211,7 @@ def get_upload_config(auth) -> dict:
         "user-agent": _UA,
     }
     resp = requests.get(url, params=params, headers=headers, cookies=auth.cookie,
-                        verify=False, timeout=30)
+                        verify=tls_verify(), timeout=30)
     if resp.status_code != 200:
         raise RuntimeError(f"upload/config HTTP {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
@@ -261,7 +262,7 @@ def apply_upload(auth, cfg: dict, file_size: int) -> dict:
         "referer": "https://www.douyin.com/",
     }
     resp = requests.get(url, headers=headers, cookies=auth.cookie,
-                        verify=False, timeout=30)
+                        verify=tls_verify(), timeout=30)
     if resp.status_code != 200:
         raise RuntimeError(f"ApplyUploadInner HTTP {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
@@ -315,7 +316,7 @@ def upload_to_tos(addr: dict, data: bytes) -> None:
     }
     if addr.get("user_id"):
         headers["x-storage-u"] = addr["user_id"]
-    resp = requests.post(url, headers=headers, data=data, verify=False, timeout=60)
+    resp = requests.post(url, headers=headers, data=data, verify=tls_verify(), timeout=60)
     if resp.status_code != 200:
         raise RuntimeError(f"TOS 直传 HTTP {resp.status_code}: {resp.text[:200]}")
     try:
@@ -364,7 +365,7 @@ def commit_upload(auth, cfg: dict, session_key: str) -> dict:
         "x-amz-security-token": cfg["st"],
     }
     resp = requests.post(url, headers=headers, data=body_bytes, cookies=auth.cookie,
-                         verify=False, timeout=30)
+                         verify=tls_verify(), timeout=30)
     if resp.status_code != 200:
         raise RuntimeError(f"CommitUploadInner HTTP {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
@@ -418,7 +419,7 @@ def build_signed_url(auth, oid: str):
         resp = requests.post(
             "https://www.douyin.com/aweme/v1/web/privacy/batch_build_image/",
             params=params, headers=headers, cookies=auth.cookie,
-            data=json.dumps(body_obj, separators=(",", ":")), verify=False, timeout=30)
+            data=json.dumps(body_obj, separators=(",", ":")), verify=tls_verify(), timeout=30)
         if resp.status_code != 200:
             logger.warning(f"[SEND-019] " + f"[img-send] ⑤ batch_build_image HTTP {resp.status_code}")
             return None
@@ -512,7 +513,7 @@ def send_image_message(auth, conversation_id: str, conversation_short_id: int,
     }
     query = splice_url(params)
     params["a_bogus"] = generate_a_bogus(query)
-    resp = requests.post(url, params=params, headers=headers.get(), verify=False,
+    resp = requests.post(url, params=params, headers=headers.get(), verify=tls_verify(),
                          cookies=auth.cookie,
                          data=request_proto.SerializeToString(), timeout=30)
     if resp.status_code != 200:

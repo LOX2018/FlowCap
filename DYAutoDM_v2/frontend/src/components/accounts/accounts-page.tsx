@@ -472,13 +472,17 @@ export default function AccountsPage(props: PageProps) {
 
   // 点击卡片 = 选中该账号为监听账号（设为监测/发送角色）
   // 注意：后端 AccountRole 枚举值为 watch/send/both（见 backend/models/enums.py）
+  //
+  // 2026-09-17 修补（OCR 审查 CRITICAL）：原实现**同时**发了两个 setRole
+  // （先 "watch" 再 "send"），两者并发且后端「后到者生效」，最终角色
+  // 不确定；窗口文案说「选中监听账号」但结果可能是 send，语义也自相矛盾。
+  // 现改为单次请求，按业务语义设置 "watch"（监听/监测）。
   const selectAsMonitor = (a: FmtAccount) => {
     api.setRole(a.name, "watch").then(() => {
       api.addLog("INFO", `选中监听账号 · ${a.name}`).catch(() => {});
+      push("已选中监听账号 · " + a.name);
+      refetch();
     }).catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
-    api.setRole(a.name, "send").catch((e: unknown) => push("设置角色失败: " + errMsg(e)));
-    push("已选中监听账号 · " + a.name);
-    refetch();
   };
   return (
     <PageContainer>

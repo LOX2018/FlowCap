@@ -25,6 +25,7 @@
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 # 本域所需的导入（与原 `douyin_api.py` 头部一致，避免循环依赖）
 # 公共导入头（json/re/uuid/requests/BeautifulSoup/logger/protobuf/builder/utils）
 # 见 dy_apis/_common.py —— 2026-09-15 共享提取，替代各域文件重复的 17 行导入头。
@@ -90,7 +91,7 @@ class VideoMixin:
         params.add_param("verifyFp", auth.cookie['s_v_web_id'])
         params.add_param("fp", auth.cookie['s_v_web_id'])
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False)
+                            params=params.get(), verify=tls_verify())
         resp_json = json.loads(resp.text)
         return resp_json
 
@@ -193,7 +194,7 @@ class VideoMixin:
         params.add_param("verifyFp", auth.cookie['s_v_web_id'])
         params.add_param("fp", auth.cookie['s_v_web_id'])
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False)
+                            params=params.get(), verify=tls_verify())
         search_id = resp.headers["X-Tt-Logid"]
         json_data = resp.json()
         return search_id, json_data["guide_search_words"], json_data
@@ -255,6 +256,6 @@ class VideoMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False, timeout=15)
+                            params=params.get(), verify=tls_verify(), timeout=15)
         return safe_json(resp)
 

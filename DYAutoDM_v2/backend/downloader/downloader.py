@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 import os
 import time
 import uuid
@@ -69,7 +70,7 @@ def download_file(url: str, dest: str, *, task: Optional[TK.DownloadTask] = None
         try:
             headers = {"Range": f"bytes={existing}-"} if existing else {}
             with _session.get(url, headers=headers, stream=True, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                              verify=False) as r:
+                              verify=tls_verify()) as r:
                 if r.status_code not in (200, 206):
                     raise RuntimeError(f"HTTP {r.status_code}")
                 total = int(r.headers.get("Content-Length") or 0) + existing

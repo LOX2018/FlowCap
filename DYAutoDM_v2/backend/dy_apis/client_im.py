@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 # 本域所需的导入（与原 `douyin_api.py` 头部一致，避免循环依赖）
 # 公共导入头（json/re/uuid/requests/BeautifulSoup/logger/protobuf/builder/utils）
 # 见 dy_apis/_common.py —— 2026-09-15 共享提取，替代各域文件重复的 17 行导入头。
@@ -68,7 +69,7 @@ class ImMixin:
             headers=headers.get(),
             cookies=auth.cookie,
             data=requestProto.SerializeToString(),
-            verify=False
+            verify=tls_verify()
         )
         # 解析前先判定 HTTP 状态与非 protobuf 响应（抖音常返回 HTML/JSON 错误页）
         if resp.status_code != 200:
@@ -123,7 +124,7 @@ class ImMixin:
             headers=headers.get(),
             cookies=auth.cookie,
             data=requestProto.SerializeToString(),
-            verify=False
+            verify=tls_verify()
         )
         if resp.status_code != 200:
             raise RuntimeError(
@@ -221,7 +222,7 @@ class ImMixin:
         headers.set_header('referer', 'https://www.douyin.com/')
         resp = requests.post(
             url, headers=headers.get(), cookies=auth.cookie,
-            data=body_bytes, verify=False, timeout=15,
+            data=body_bytes, verify=tls_verify(), timeout=15,
         )
         if resp.status_code != 200:
             raise RuntimeError(f"get_message_by_init HTTP {resp.status_code}: {resp.text[:200]}")
@@ -310,7 +311,7 @@ class ImMixin:
         query = splice_url(params)
         abogus = generate_a_bogus(query)
         params['a_bogus'] = abogus
-        resp = requests.post(url, params=params, headers=headers.get(), verify=False, cookies=auth.cookie,
+        resp = requests.post(url, params=params, headers=headers.get(), verify=tls_verify(), cookies=auth.cookie,
                              data=requestProto.SerializeToString())
         if resp.status_code != 200:
             logger.error("AUTH-026", f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}')
@@ -415,7 +416,7 @@ class ImMixin:
         resp = requests.get(
             f'{DouyinAPI.douyin_url}{api}',
             headers=headers.get(), cookies=auth.cookie,
-            params=params.get(), verify=False, timeout=8,
+            params=params.get(), verify=tls_verify(), timeout=8,
         )
         data = json.loads(resp.text)
         if data.get("status_code") != 0:

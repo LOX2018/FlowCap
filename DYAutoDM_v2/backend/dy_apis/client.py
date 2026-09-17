@@ -40,6 +40,7 @@ media_proxy_cache.rs         媒体代理
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 import time
 from typing import Any, Optional
 
@@ -145,7 +146,7 @@ class BaseClient:
                 headers.add(k, v)
         url = f"{cls.domain_for(path)}{path}"
         return requests.get(url, headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False,
+                            params=params.get(), verify=tls_verify(),
                             timeout=timeout or cls.timeout)
 
     @classmethod
@@ -160,5 +161,5 @@ class BaseClient:
                 headers.add(k, v)
         url = f"{cls.domain_for(path)}{path}"
         return requests.post(url, headers=headers.get(), cookies=auth.cookie,
-                             params=params.get(), data=data, verify=False,
+                             params=params.get(), data=data, verify=tls_verify(),
                              timeout=timeout or cls.timeout)

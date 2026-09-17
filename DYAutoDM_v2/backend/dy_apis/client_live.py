@@ -34,6 +34,7 @@
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 # 本域所需的导入（与原 `douyin_api.py` 头部一致，避免循环依赖）
 # 公共导入头（json/re/uuid/requests/BeautifulSoup/logger/protobuf/builder/utils）
 # 见 dy_apis/_common.py —— 2026-09-15 共享提取，替代各域文件重复的 17 行导入头。
@@ -74,7 +75,7 @@ class LiveMixin:
             "upgrade-insecure-requests": "1",
             "user-agent": get_profile()["ua"]
         }
-        res = requests.get(url, headers=headers, cookies=auth_.cookie, verify=False)
+        res = requests.get(url, headers=headers, cookies=auth_.cookie, verify=tls_verify())
         ttwid = res.cookies.get_dict()['ttwid']
         soup = BeautifulSoup(res.text, 'html.parser')
         scripts = soup.select('script[nonce]')
@@ -157,7 +158,7 @@ class LiveMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                           params=params.get(), verify=False)
+                           params=params.get(), verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -242,7 +243,7 @@ class LiveMixin:
         }
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
-                            cookies=auth.cookie, data=data, verify=False)
+                            cookies=auth.cookie, data=data, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -300,7 +301,7 @@ class LiveMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         response = requests.get(url, headers=headers.get(), params=params.get(),
-                           cookies=auth.cookie, verify=False)
+                           cookies=auth.cookie, verify=tls_verify())
 
         print(response.text)
         print(response)
@@ -347,7 +348,7 @@ class LiveMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
-                           cookies=auth.cookie, verify=False)
+                           cookies=auth.cookie, verify=tls_verify())
         return res.content
 
     @staticmethod
@@ -393,7 +394,7 @@ class LiveMixin:
         }
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
-                            params=params.get(), cookies=auth.cookie, data=data, verify=False)
+                            params=params.get(), cookies=auth.cookie, data=data, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -425,7 +426,7 @@ class LiveMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
-                           params=params.get(), cookies=auth.cookie, verify=False)
+                           params=params.get(), cookies=auth.cookie, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -457,7 +458,7 @@ class LiveMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
-                           params=params.get(), cookies=auth.cookie, verify=False)
+                           params=params.get(), cookies=auth.cookie, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -490,7 +491,7 @@ class LiveMixin:
         data = {"room_id": str(room_id)}
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
-                            params=params.get(), cookies=auth.cookie, data=data, verify=False)
+                            params=params.get(), cookies=auth.cookie, data=data, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -522,7 +523,7 @@ class LiveMixin:
         data = {"room_id": str(room_id)}
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(),
-                            params=params.get(), cookies=auth.cookie, data=data, verify=False)
+                            params=params.get(), cookies=auth.cookie, data=data, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -559,7 +560,7 @@ class LiveMixin:
         }
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
-                            cookies=auth.cookie, data=data, verify=False)
+                            cookies=auth.cookie, data=data, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -591,6 +592,6 @@ class LiveMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
-                           cookies=auth.cookie, verify=False)
+                           cookies=auth.cookie, verify=tls_verify())
         return safe_json(res)
 

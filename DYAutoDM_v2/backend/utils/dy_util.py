@@ -1,3 +1,4 @@
+from utils.tls_policy import tls_verify  # noqa: E402
 import hashlib
 import re
 import time
@@ -128,7 +129,7 @@ def generate_webid(auth=None, url=""):
         headers = HeaderBuilder().build(HeaderType.DOC)
         headers.set_header('cookie', auth.cookie_str if auth else "")
         headers.set_header("upgrade-insecure-requests", "1")
-        response = requests.get(url, headers=headers.get(), verify=False)
+        response = requests.get(url, headers=headers.get(), verify=tls_verify())
         res_text = response.text
         user_unique_id = re.findall(r'\\"user_unique_id\\":\\"(.*?)\\"', res_text)[0]
         webid = user_unique_id
@@ -163,7 +164,7 @@ def generate_csrf_token(cookies_str):
             'x-secsdk-csrf-request': '1',
             'x-secsdk-csrf-version': '1.2.22',
         }
-        response = requests.head('https://www.douyin.com/service/2/abtest_config/', headers=headers, verify=False)
+        response = requests.head('https://www.douyin.com/service/2/abtest_config/', headers=headers, verify=tls_verify())
         return response.headers['X-Ware-Csrf-Token'].split(',')[1], response.headers['X-Ware-Csrf-Token'].split(',')[4]
     except Exception as e:
         return csrf_token_1, csrf_token_2

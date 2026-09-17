@@ -1,3 +1,4 @@
+from utils.tls_policy import tls_verify  # noqa: E402
 import time
 import urllib.parse
 
@@ -88,7 +89,7 @@ def _mask_url_query(url: str) -> str:
 # TLS 校验开关（2026-09-17 审查 P1-6 修补）
 # ---------------------------------------------------------------------------
 # 背景：登录链路 9 处 requests 调用全部带 `cookies=auth.cookie` 且
-# `verify=False` —— SSO 登录 / 验证码 / quick_login 关闭了证书校验，
+# `verify=tls_verify()` —— SSO 登录 / 验证码 / quick_login 关闭了证书校验，
 # 局域网 MITM 可直接拿到 Set-Cookie（sessionid / sid_tt / passport_csrf_token）。
 #
 # 现统一由此常量控制，**默认开启校验**。仅当确因证书环境（企业代理 / 自签

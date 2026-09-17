@@ -25,6 +25,7 @@
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 # 本域所需的导入（与原 `douyin_api.py` 头部一致，避免循环依赖）
 # 公共导入头（json/re/uuid/requests/BeautifulSoup/logger/protobuf/builder/utils）
 # 见 dy_apis/_common.py —— 2026-09-15 共享提取，替代各域文件重复的 17 行导入头。
@@ -106,7 +107,7 @@ class SearchMixin:
         # 综合搜索风控(antispam_check)只认新算法签名：纯算 a_bogus（Python 原生执行 bdms VMP）
         params.add_param('a_bogus', generate_a_bogus_pure(api, splice_url(params.get())))
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False)
+                            params=params.get(), verify=tls_verify())
         return json.loads(resp.text)
 
 
@@ -159,7 +160,7 @@ class SearchMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False,
+                            params=params.get(), verify=tls_verify(),
                             timeout=kwargs.get("timeout", 30))
         # 关键：用 **bytes** 解析。chunked 的长度前缀是**字节数**，
         # 而 len(str) 是字符数 —— 响应含中文时两者不等，用 str 会整体错位。
@@ -287,7 +288,7 @@ class SearchMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False)
+                            params=params.get(), verify=tls_verify())
         return safe_json(resp)
 
     @staticmethod

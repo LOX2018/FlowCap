@@ -151,8 +151,14 @@ async def reveal_token(request: Request) -> dict[str, Any]:
 
 
 @router.post("/restart")
-async def restart_mcp() -> dict[str, Any]:
-    """按当前配置启动/重启本机 HTTP 服务。"""
+async def restart_mcp(request: Request) -> dict[str, Any]:
+    """按当前配置启动/重启本机 HTTP 服务。
+
+    2026-09-17 修补（OCR 审查 HIGH）：本端点可启停整个 MCP 服务，属敏感操作
+    （`_SENSITIVE_MCP_PATHS` 已声明），但上轮遗漏了鉴权调用。现补齐。
+    """
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     from mcp.server import start_background
     cfg = mcp_config.instance()
     _stop_runtime()
@@ -219,15 +225,24 @@ async def issue_confirm(body: dict[str, Any], request: Request) -> dict[str, Any
 
 
 @router.get("/audit")
-async def get_audit(limit: int = 50) -> dict[str, Any]:
-    """审计日志（**脱敏**：只有工具名/字段摘要/耗时/错误码）。"""
+async def get_audit(request: Request, limit: int = 50) -> dict[str, Any]:
+    """审计日志（**脱敏**：只有工具名/字段摘要/耗时/错误码）。
+
+    2026-09-17 修补（OCR 审查 HIGH）：审计轨迹含工具名/参数摘要/耗时，
+    属敏感信息（`_SENSITIVE_MCP_PATHS` 已声明）。上轮只给 DELETE /audit
+    加了校验，GET 与 trim 漏了 —— 现补齐，避免任意登录会话任意读取。
+    """
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     return {"ok": True, "entries": mcp_audit.tail(limit),
             "stats": mcp_audit.stats()}
 
 
 @router.post("/audit/trim")
-async def trim_audit() -> dict[str, Any]:
-    """按 log_retention 裁剪审计文件。"""
+async def trim_audit(request: Request) -> dict[str, Any]:
+    """按 log_retention 裁剪审计文件（2026-09-17 补齐鉴权，同 get_audit）。"""
+    if not _require_mcp_admin(request):
+        return {"ok": False, "message": "需要管理员令牌"}
     cfg = mcp_config.instance()
     n = mcp_audit.trim(int(cfg.get("log_retention")))
     return {"ok": True, "kept": n}

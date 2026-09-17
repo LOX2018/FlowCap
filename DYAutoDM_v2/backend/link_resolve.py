@@ -17,6 +17,7 @@
   4) 用户主页    https://www.douyin.com/user/MS4wLjAB...（需该用户正在直播）
 """
 
+from utils.tls_policy import tls_verify  # noqa: E402
 import re
 import os
 import json
@@ -93,7 +94,7 @@ def _follow_redirects(url, cookies=None, timeout=15):
         return url
     try:
         resp = requests.get(url, allow_redirects=True, timeout=timeout,
-                            headers=headers, cookies=cookies, verify=False)
+                            headers=headers, cookies=cookies, verify=tls_verify())
         return resp.url
     except Exception as e:
         logger.warning(f"[LIVE-009] " + f"[resolve] 跟随重定向失败: {e}")
@@ -146,7 +147,7 @@ def _reflow_resolve(room_id, sec_user_id, auth=None, ua="Mozilla/5.0"):
     }
     cookies = getattr(auth, "cookie", None) if auth else None
     try:
-        resp = requests.get(url, headers=headers, cookies=cookies, timeout=15, verify=False)
+        resp = requests.get(url, headers=headers, cookies=cookies, timeout=15, verify=tls_verify())
         data = resp.json()
     except Exception as e:
         logger.warning(f"[LIVE-012] " + f"[resolve] reflow 请求失败: {e}")
@@ -211,7 +212,7 @@ def resolve_via_reflow(raw, auth=None):
                                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                                         "Chrome/120.0.0.0 Safari/537.36"),
                          "Referer": "https://www.douyin.com/"},
-                cookies=cookies, timeout=15, verify=False)
+                cookies=cookies, timeout=15, verify=tls_verify())
             room_id = _extract_room_id_from_html(resp.text)
             if room_id:
                 logger.info(f"[resolve] reflow 主引擎：从主页 HTML 补全 room_id={room_id}")

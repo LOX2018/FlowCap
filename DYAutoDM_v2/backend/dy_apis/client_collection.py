@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 # 本域所需的导入（与原 `douyin_api.py` 头部一致，避免循环依赖）
 # 公共导入头（json/re/uuid/requests/BeautifulSoup/logger/protobuf/builder/utils）
 # 见 dy_apis/_common.py —— 2026-09-15 共享提取，替代各域文件重复的 17 行导入头。
@@ -72,7 +73,7 @@ class CollectionMixin:
         params.with_a_bogus()
         resp = requests.post(f'{DouyinAPI.domain_for(api)}{api}',
                              headers=headers.get(), cookies=auth.cookie,
-                             params=params.get(), verify=False, timeout=15)
+                             params=params.get(), verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
     @staticmethod
@@ -97,7 +98,7 @@ class CollectionMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False, timeout=15)
+                            params=params.get(), verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
     @staticmethod
@@ -122,7 +123,7 @@ class CollectionMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False, timeout=15)
+                            params=params.get(), verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
     @staticmethod
@@ -155,7 +156,7 @@ class CollectionMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=False, timeout=15)
+                            params=params.get(), verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
     @staticmethod
@@ -209,7 +210,7 @@ class CollectionMixin:
         params.add_param("verifyFp", auth.cookie['s_v_web_id'])
         params.add_param("fp", auth.cookie['s_v_web_id'])
         res = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
-                           cookies=auth.cookie, verify=False)
+                           cookies=auth.cookie, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -265,7 +266,7 @@ class CollectionMixin:
         }
         params.with_a_bogus(data)
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
-                            cookies=auth.cookie, data=data, verify=False)
+                            cookies=auth.cookie, data=data, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -323,7 +324,7 @@ class CollectionMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
-                            cookies=auth.cookie, verify=False)
+                            cookies=auth.cookie, verify=tls_verify())
         return safe_json(res)
 
     @staticmethod
@@ -379,6 +380,6 @@ class CollectionMixin:
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
-                            cookies=auth.cookie, verify=False)
+                            cookies=auth.cookie, verify=tls_verify())
         return safe_json(res)
 

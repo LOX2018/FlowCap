@@ -38,7 +38,7 @@ def get_mstoken(ttwid: str = None, proxies: dict = None, use_cache: bool = True)
     }
     try:
         resp = requests.post(_REPORT_URL, data=envelope.encode("utf-8"), headers=headers,
-                             verify=False, timeout=25, proxies=proxies)
+                             verify=tls_verify(), timeout=25, proxies=proxies)
         token = resp.headers.get("x-ms-token", "")
         if not token:
             m = re.search(r"msToken=([^;]+)", resp.headers.get("set-cookie", ""))
@@ -49,3 +49,4 @@ def get_mstoken(ttwid: str = None, proxies: dict = None, use_cache: bool = True)
         return token
     except Exception:
         return ""
+from utils.tls_policy import tls_verify  # noqa: E402

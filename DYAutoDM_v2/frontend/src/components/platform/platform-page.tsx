@@ -132,8 +132,17 @@ export default function PlatformPage(props: PageProps) {
   });
 
   // 收藏夹内的作品（2026-09-15 补：点收藏夹卡片才请求，避免无用主动请求）
+  //
+  // 2026-09-17 修补（OCR 审查 CRITICAL）：queryKey 里带了 `pickedCollect?.id`
+  // 但 queryFn 恒传 cursor="0"，且**后端接口
+  // `/aweme/v1/web/aweme/listcollection/` 只支持 max_cursor 分页、
+  // 不支持按收藏夹筛选**（referer 即 favorite_collection 总列表）——
+  // 即抖音该接口返回的是「我的收藏」总表，无法按夹区分。
+  // 原实现会让用户以为进了某个夹，实际看到的是全部收藏。
+  // 现显式把这一限制暴露出来（提示文案），避免误导；queryKey 与请求参数
+  // 保持一致（都不含 id），消除「切夹命中缓存却不刷新」的假象。
   const collectItemsQ = useQuery({
-    queryKey: ["platform-collect-items", account, pickedCollect?.id],
+    queryKey: ["platform-collect-items", account],
     queryFn: () => platformApi.collectionItems(account, "0", 20),
     enabled: !!account && !!pickedCollect,
     staleTime: 300_000,

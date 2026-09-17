@@ -36,6 +36,7 @@
 """
 from __future__ import annotations
 
+from utils.tls_policy import tls_verify  # noqa: E402
 import asyncio
 import json
 from typing import Any
@@ -447,7 +448,7 @@ def _im_user_info_by_sec(auth, sec_uids: list[str]) -> dict[str, Any]:
             f"{getattr(_api(), 'douyin_url', 'https://www.douyin.com')}{api}",
             headers=headers, cookies=auth.cookie,
             data={"sec_user_ids": json.dumps(chunk)},
-            verify=False, timeout=12,
+            verify=tls_verify(), timeout=12,
         )
         j = r.json()
         if j.get("status_code") != 0:

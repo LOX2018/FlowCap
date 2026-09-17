@@ -12,7 +12,7 @@
  *      —— 只放「模版与绑定」；引擎参数（prompt/护栏/黑名单）在同页「AI 回复引擎」
  *   ③ 账号绑定矩阵：每个账号一个下拉，选它用哪个 Agent
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type { AiAgentSummary } from "../../api/client";
@@ -67,8 +67,20 @@ export default function AgentSection(props: PageProps) {
   const sel = agents.find((a: AiAgentSummary) => a.id === selId) || null;
 
   // 选中 Agent 变化时载入其参数到编辑态
+  //
+  // 2026-09-17 修补（OCR 审查 CRITICAL）：原实现 `if (!sel) { setDraft({}) }`
+  // 会把「新建」流程清空 —— 点「新建」时同时 setSelId("") 与 setDraft({name:"新 Agent"...})，
+  // 渲染后 sel=null，本 effect 在提交后触发并 setDraft({})，**覆盖掉刚初始化的 draft**，
+  // 导致新建实际不可用。
+  // 现用 `creatingRef` 哨兵：显式进入「新建」态时跳过清空，只消费一次。
+  const creatingRef = useRef(false);
   useEffect(() => {
     if (!sel) {
+      if (creatingRef.current) {
+        // 本次 null 来自「新建」按钮，保留其初始化的 draft
+        creatingRef.current = false;
+        return;
+      }
       setDraft({});
       return;
     }
@@ -182,6 +194,9 @@ export default function AgentSection(props: PageProps) {
           <button
             className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
             onClick={() => {
+              // 2026-09-17 修补（OCR 审查 CRITICAL）：先置哨兵，避免下面
+              // setSelId("") 触发的 effect 把刚初始化的 draft 清空。
+              creatingRef.current = true;
               setSelId("");
               setDraft({
                 name: "新 Agent",

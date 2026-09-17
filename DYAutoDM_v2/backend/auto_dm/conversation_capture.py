@@ -21,6 +21,7 @@
 - auto_dm/accounts.py verify_account(dm_loopback=True) 凭证有效后调用 capture_all
 - daemon/recv_daemon.py 守护启动顺带补一次
 """
+from utils.tls_policy import tls_verify  # noqa: E402
 import os
 import re
 import json
@@ -621,7 +622,7 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
 
             resp = requests.post(
                 url, headers=headers.get(), cookies=auth.cookie,
-                data=body_bytes, verify=False, timeout=timeout,
+                data=body_bytes, verify=tls_verify(), timeout=timeout,
             )
             if resp.status_code != 200 or len(resp.content) < 100:
                 logger.warning("CAP-004", f"[capture][301] HTTP {resp.status_code} "
