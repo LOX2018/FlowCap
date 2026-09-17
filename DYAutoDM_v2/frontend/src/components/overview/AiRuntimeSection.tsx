@@ -50,15 +50,20 @@ export default function AiRuntimeSection(props: PageProps) {
 
   const toggleRun = useCallback(async () => {
     try {
-      if (enabled) await api.aiStop();
+      // 2026-09-17 修补（OCR 审查 HIGH —— 按钮语义与实际动作相反）：
+      // 原实现用 `enabled`（服务端配置开关）决定 start/stop，而按钮文案/颜色
+      // 由 `running`（实际运行态）驱动。二者不一致时（如 enabled=true 但
+      // running=false，界面显示"启动监听"）点击会走 aiStop() ——
+      // **「启动」按钮执行了停止**。现改为与界面同一判据（running）。
+      if (running) await api.aiStop();
       else await api.aiStart();
       await qc.invalidateQueries({ queryKey: ["ai-status"] });
       await qc.invalidateQueries({ queryKey: ["ai-config"] });
-      push(enabled ? "AI 自动回复已停止" : "AI 自动回复已启动（全自动监听）", 5000);
+      push(running ? "AI 自动回复已停止" : "AI 自动回复已启动（全自动监听）", 5000);
     } catch (e) {
       push(`操作失败: ${errMsg(e)}`, 8000);
     }
-  }, [enabled, api, push, qc]);
+  }, [running, api, push, qc]);
 
   return (
     <Section

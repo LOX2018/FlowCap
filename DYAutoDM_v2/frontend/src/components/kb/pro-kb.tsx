@@ -137,6 +137,11 @@ export function ProKb({
         setPicked({});
         setScan(null);
         invalidate();
+      } else {
+        // 2026-09-17 修补（OCR 审查 HIGH —— 应用层失败被静默吞掉）：
+        // 服务端返回 `{ok:false}` 时原来无任何提示，界面停在原状态，
+        // 用户以为没点到。与 scanMut/patchMut 的报错行为对齐。
+        push(`处理失败：${(d as { error?: string }).error || "未知错误"}`, 8000);
       }
     },
     onError: (e) => push(`处理失败：${errMsg(e)}`),
@@ -161,6 +166,13 @@ export function ProKb({
   const restoreMut = useMutation({
     mutationFn: (id: number) => api.aiProKbRecycleRestore(id),
     onSuccess: (d) => {
+      // 2026-09-17 修补（OCR 审查 HIGH —— 无条件报"已恢复"）：
+      // 原实现不管 `d.ok` 都提示成功，`ok:false` 时用户被误导（以为恢复成功），
+      // 而列表refetch 拿回的是服务端**未变**的数据。
+      if (!d.ok) {
+        push(`恢复失败：${(d as { error?: string }).error || "未知错误"}`, 8000);
+        return;
+      }
       push("已恢复");
       setRecycle(d.items || []);
       invalidate();

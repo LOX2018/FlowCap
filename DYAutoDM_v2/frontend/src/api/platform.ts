@@ -10,7 +10,7 @@
  * 本模块自带一个同约定的薄封装（同样的 BASE + X-Member-Token + X-App-Version），
  * 而不是去改 client.ts 导出一个通用方法（那会影响 22 个页面的既有调用）。
  */
-import { getMemberToken } from "./client";
+import { getMemberToken, setMemberToken } from "./client";
 // ★ 2026-09-15 修复：必须复用 `sidecar.ts` 的 BACKEND_BASE
 //   （`http://127.0.0.1:8000`）。原实现 fallback 为**空串** ⇒ fetch 走相对路径，
 //   Tauri 下解析成 `tauri://localhost/api/...` → 命中 SPA fallback 返回 index.html
@@ -23,6 +23,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const tk = getMemberToken();
   if (tk) headers["X-Member-Token"] = tk;
+  try { headers["X-App-Version"] = String(__APP_VERSION__); } catch { /* ignore */ }
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers,
@@ -30,6 +31,14 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    // 2026-09-17 修补（OCR 审查 HIGH —— 缺少 401 处理，与 client.ts 不一致）：
+    // 所有 /api/* 都要 X-Member-Token，会话过期返回 401。`client.ts` 在 401 时
+    // 清 token，使 UI 轮询观察到未登录并回到登录页；本封装原来不清，于是
+    // 会话过期后每个内容页请求都只抛普通 Error，而 localStorage 里**陈旧 token
+    // 一直在**，界面停留在"已登录"却处处失败。
+    if (res.status === 401 && !path.startsWith("/api/member/")) {
+      setMemberToken("");
+    }
     throw new Error(`API ${path} 失败 (${res.status}): ${text}`);
   }
   return res.json() as Promise<T>;

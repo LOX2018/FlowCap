@@ -12,7 +12,7 @@
  * - **业务逻辑零改动**：登录态检查、submit 校验顺序、错误文案提取正则
  *   （`\{"detail":"([^"]+)"\}`）全部原样保留
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { memberApi, getMemberToken } from "../../api/client";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -28,20 +28,41 @@ export default function MemberGate({ onLogin }: { onLogin: (username: string) =>
   const [msg, setMsg] = useState("");
 
   // 启动时：有 token 则校验有效性，无效自动落登录页
+  //
+  // 2026-09-17 修补（OCR 审查 HIGH，两处）：
+  //  ① 原实现无 try/catch：`memberApi.state()` 一旦抛错（网络异常、
+  //     后续改动让它 rethrow），下面的 `setChecking(false)` 永不执行 →
+  //     `checking` 卡在 true，用户**永久停在"正在检查登录态…"**。
+  //     现用 try/catch/finally 保证一定会落回非检查态。
+  //  ② 依赖数组 `[onLogin]` 不稳定：App.tsx 传的是内联箭头函数
+  //     （`onLogin={(u) => {...}}`），App 因 3s 轮询频繁重渲染 →
+  //     onLogin 身份每次变化 → 该 effect **反复执行**，在有 token 但
+  //     未登录时会重复打 `/api/member/state`。改用 ref 持有回调 + 空依赖，
+  //     只在挂载时校验一次。
+  const onLoginRef = useRef(onLogin);
+  useEffect(() => { onLoginRef.current = onLogin; }, [onLogin]);
+
   useEffect(() => {
     (async () => {
-      if (!getMemberToken()) {
+      try {
+        if (!getMemberToken()) {
+          setChecking(false);
+          return;
+        }
+        const s = await memberApi.state();
+        if (s.loggedIn && s.username) {
+          onLoginRef.current(s.username);
+        } else {
+          setChecking(false);
+        }
+      } catch {
+        // 校验失败（含网络异常）→ 落回登录页，绝不停留在检查态
         setChecking(false);
-        return;
-      }
-      const s = await memberApi.state();
-      if (s.loggedIn && s.username) {
-        onLogin(s.username);
-      } else {
+      } finally {
         setChecking(false);
       }
     })();
-  }, [onLogin]);
+  }, []);
 
   const submit = useCallback(async () => {
     setMsg("");

@@ -78,6 +78,12 @@ export function PlayerPlaybackBar({ getMediaEl, playing, onTogglePlay, resetKey 
         }}
         onPointerMove={(e) => dragging.current && seek(e.clientX)}
         onPointerUp={() => { dragging.current = false; }}
+        // 2026-09-17 修补（OCR 审查 HIGH —— 拖拽状态可能永久卡住）：
+        // 原来只有 onPointerUp 会复位 `dragging.current`。指针被取消
+        // （触摸中断、指针离屏/丢失捕获、组件中途卸载）时它**永久为 true**
+        // → rAF tick 不再更新 cur/dur，进度条**冻死**。补 onPointerCancel。
+        onPointerCancel={() => { dragging.current = false; }}
+        onLostPointerCapture={() => { dragging.current = false; }}
       >
         <div className="absolute top-1/2 h-1 w-full -translate-y-1/2 rounded bg-white/20" />
         <div

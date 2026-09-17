@@ -89,8 +89,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const tk = getMemberToken();
   if (tk) headers["X-Member-Token"] = tk;
   const res = await fetch(`${BASE}${path}`, {
-    headers,
+    // 2026-09-17 修补（OCR 审查 HIGH —— headers 合并顺序颠倒）：
+    // 原为 `{ headers, ...init }`：`init.headers` 会**整体覆盖**默认头，
+    // 使调用方一旦传 headers 就丢掉 `X-Member-Token`（鉴权）、`X-App-Version`
+    // 与 `Content-Type` → 静默 401。
+    // 现**显式合并**：先铺调用方 headers（允许追加自定义头），再让默认头
+    // 覆盖同名项 —— 既保留扩展能力，又保证鉴权/版本头**永远在场**。
     ...init,
+    headers: {
+      ...((init?.headers as Record<string, string> | undefined) || {}),
+      ...headers,
+    },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
