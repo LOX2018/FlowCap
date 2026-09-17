@@ -398,8 +398,7 @@ class AccountInbox:
             new_uid = str(_auth.get_uid()) if _auth else None
             if new_uid and new_uid != self.my_uid:
                 if self.my_uid:
-                    logger.warning("RECV-001", 
-                        f"[recv][{self.name}] my_uid 发生轮换：{self.my_uid} → {new_uid}"
+                    logger.warning(f"[RECV-001] " + f"[recv][{self.name}] my_uid 发生轮换：{self.my_uid} → {new_uid}"
                         f"（已自动更新方向判定基准）")
                 self.my_uid = new_uid
             # 2026-09-17 修补（审查 P0-2 配套）：my_uid 是方向判定的唯一基准，
@@ -425,9 +424,7 @@ class AccountInbox:
         if now - getattr(self, "_my_uid_warn_ts", 0.0) < 60.0:
             return
         self._my_uid_warn_ts = now
-        logger.warning(
-            "RECV-003",
-            f"[recv][{self.name}] my_uid 未就绪：方向判定将兜底为 me"
+        logger.warning(f"[RECV-003] " + f"[recv][{self.name}] my_uid 未就绪：方向判定将兜底为 me"
             f"（凭证未就绪或探活失败？），请检查账号登录状态")
 
     def _extract_peer_uid(self, conv_id: str) -> str | None:
@@ -1299,7 +1296,7 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
     try:
         raw = DouyinAPI.get_message_by_init(auth)
         if len(raw) < 2000:
-            logger.warning("RECV-012", f"[recv][{ib.name}] get_message_by_init 返回 {len(raw)} 字节"
+            logger.warning(f"[RECV-012] " + f"[recv][{ib.name}] get_message_by_init 返回 {len(raw)} 字节"
                            f"（非全量，疑似凭证失效/限频）：{raw[:80]}")
         # 新版：protobuf 精确解析（field 6 = conversation 数组，消息内嵌 conv_id 链接键）
         from auto_dm.conversation_capture import parse_init_protobuf
@@ -1543,8 +1540,7 @@ async def send(body: SendBody) -> dict:
         from services import conv_identity as _cid
         _real, _changed = _cid.correct_peer_id(body.account, body.conv_id, peer_id)
         if _changed:
-            logger.warning("RECV-015",
-                f"[recv][{body.account}] 会话 peer_id 已订正: "
+            logger.warning(f"[RECV-015] " + f"[recv][{body.account}] 会话 peer_id 已订正: "
                 f"{peer_id} -> {_real}（conv_id 重解析）")
         peer_id = _real
         _err = _cid.self_send_error(body.account, peer_id)
@@ -1560,8 +1556,7 @@ async def send(body: SendBody) -> dict:
     # 统一发送闸门：三源（手动/AI/直播 dispatch）一配额
     ok_gate, waited = _send_gate_acquire(body.account)
     if not ok_gate:
-        logger.warning("RECV-016", 
-            f"[recv][{body.account}] 发送闸门限流：等待 {waited:.0f}s 仍未放行"
+        logger.warning(f"[RECV-016] " + f"[recv][{body.account}] 发送闸门限流：等待 {waited:.0f}s 仍未放行"
             f"（最小间隔 {_cfg_min_interval()}s），快速失败")
         return {"ok": False, "error": "rate_limited",
                 "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}

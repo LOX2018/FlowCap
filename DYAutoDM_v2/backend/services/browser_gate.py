@@ -293,9 +293,7 @@ def audit_standalone_launch(account: Optional[str], caller: str,
         if st["online"] and not st["exclusive"]:
             _AUDIT.append({"account": account, "caller": caller,
                            "bcc_port": st["port"], "bcc_alive": st["alive"]})
-            logger.error(
-                "BCC-042",
-                f"[gate] 环境分叉告警：{caller} 为账号「{account}」独立启动了浏览器，"
+            logger.error(f"[BCC-042] " + f"[gate] 环境分叉告警：{caller} 为账号「{account}」独立启动了浏览器，"
                 f"但该账号的 BCC 容器已在运行 (port={st['port']}) —— "
                 f"同一 profile 被两个所有者持有会触发风控。"
                 f"请改走 services.browser_gate.ensure_browser()。")

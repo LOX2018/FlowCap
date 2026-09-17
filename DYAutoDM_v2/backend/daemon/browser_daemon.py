@@ -202,9 +202,7 @@ def _lease_current():
     if not _lease["holder"]:
         return None
     if time.time() > _lease["expires_at"]:
-        logger.warning(
-            "BCC-046",
-            f"[lease] {_lease['holder']}（prio={_lease['prio']} "
+        logger.warning(f"[BCC-046] " + f"[lease] {_lease['holder']}（prio={_lease['prio']} "
             f"{LEASE_PRIO_NAME.get(_lease['prio'], '?')}）租约超时 "
             f"{_lease['ttl']:.0f}s 未释放，强制回收"
             f"（持有者可能崩溃或忘记 release）")
@@ -249,9 +247,7 @@ def _lease_acquire(holder: str, purpose: str = "auto", prio: int = 2,
     if not ttl or ttl <= 0:
         ttl = limit
     if ttl > limit:
-        logger.warning(
-            "BCC-048",
-            f"[lease] {holder} 申请 ttl={ttl:.0f}s 超过 prio={prio}"
+        logger.warning(f"[BCC-048] " + f"[lease] {holder} 申请 ttl={ttl:.0f}s 超过 prio={prio}"
             f"（{LEASE_PRIO_NAME[prio]}）上限 {limit:.0f}s，已按上限授予")
         ttl = limit
 
@@ -266,9 +262,7 @@ def _lease_acquire(holder: str, purpose: str = "auto", prio: int = 2,
                         "expires_at": cur["expires_at"], "waited": 0.0,
                         "renew": True}
             retry = max(0.5, round(cur["expires_at"] - time.time(), 1))
-            logger.debug(
-                "BCC-047",
-                f"[lease] {holder}(prio={prio}) 被拒：当前 {cur['holder']}"
+            logger.debug(f"[BCC-047] " + f"[lease] {holder}(prio={prio}) 被拒：当前 {cur['holder']}"
                 f"(prio={cur['prio']}) 持有，剩余 {retry}s")
             return {"ok": False, "busy": cur["holder"], "busy_prio": cur["prio"],
                     "retry_after": retry, "reason": "busy"}
@@ -299,9 +293,7 @@ def _lease_renew(lease_id: str, ttl: float = 0.0) -> dict:
         new_ttl = ttl if (ttl and ttl > 0) else limit
         total = new_ttl * (cur["renew_count"] + 1)
         if total > limit:
-            logger.warning(
-                "BCC-048",
-                f"[lease] {cur['holder']} renew 被拒：累计 {total:.0f}s 超 "
+            logger.warning(f"[BCC-048] " + f"[lease] {cur['holder']} renew 被拒：累计 {total:.0f}s 超 "
                 f"prio={prio} 上限 {limit:.0f}s（防续租绕过 TTL 上限）")
             return {"ok": False, "reason": "ttl_exceeds_limit",
                     "limit": limit, "total": total}
@@ -323,8 +315,7 @@ def _lease_release(lease_id: str, holder: str = "") -> dict:
         if not cur:
             return {"ok": True, "msg": "本就空闲"}
         if lease_id and cur["lease_id"] != lease_id:
-            logger.debug("BCC-049",
-                         f"[lease] release 被拒：id 不匹配"
+            logger.debug(f"[BCC-049] " + f"[lease] release 被拒：id 不匹配"
                          f"（当前 {cur['lease_id']}，请求 {lease_id}）")
             return {"ok": False, "reason": "not_holder"}
         if not lease_id and holder and cur["holder"] != holder:
@@ -643,9 +634,7 @@ class BrowserContainer:
         # 取 15 分钟阈值，超时强制复位让后续双击能重新走重建流程。
         if self._switching and self._switch_started_at:
             if time.time() - self._switch_started_at > 900:
-                logger.error(
-                    "BCC-006",
-                    f"[bcc] {self.account} 可见性切换卡死超 900s，强制复位 "
+                logger.error(f"[BCC-006] " + f"[bcc] {self.account} 可见性切换卡死超 900s，强制复位 "
                     f"_switching（否则窗口将永久无法唤醒）")
                 self._switching = False
                 self._switch_started_at = 0.0
@@ -655,8 +644,7 @@ class BrowserContainer:
         _ft = getattr(self, "_fatal_until", 0.0)
         if _ft and time.time() < _ft:
             remain = int(_ft - time.time())
-            logger.warning("BCC-043",
-                f"[bcc] {self.account} 处于致命态熔断中（剩余 {remain // 60} 分钟），"
+            logger.warning(f"[BCC-043] " + f"[bcc] {self.account} 处于致命态熔断中（剩余 {remain // 60} 分钟），"
                 f"不再自动重启容器；请先解决凭证/索引问题（见启动日志 BCC-043）")
             raise RuntimeError(
                 f"[bcc] 容器处于致命态熔断（{remain // 60} 分钟）：凭证不可用，"
@@ -684,8 +672,7 @@ class BrowserContainer:
             if self._switching or time.time() < self._switch_cool_until:
                 remain = int(self._switch_cool_until - time.time())
                 phase = "切换中(_launch后台)" if self._switching else "切换冷却期"
-                logger.warning(
-                    "BCC-006", f"[bcc] context 探活失败（{phase}，{max(remain,0)}s "
+                logger.warning(f"[BCC-006] " + f"[bcc] context 探活失败（{phase}，{max(remain,0)}s "
                     f"后恢复强杀）: {e} —— 页面加载中，跳过重启，等冷却结束")
                 return
             logger.warning(f"[BCC-006] " + f"[bcc] context/page 失活，重启: {e}")
@@ -797,7 +784,7 @@ class BrowserContainer:
                     logger.info(f"[bcc] {self.account} 窗口状态设置失败，"
                                 f"回退到重建 context 流程")
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("BCC-035", f"[bcc] {self.account} 窗口状态切换异常"
+                    logger.warning(f"[BCC-035] " + f"[bcc] {self.account} 窗口状态切换异常"
                                                f"（回退重建）: {e}")
             # 关旧 context（释放 profile 内窗口，但保持 profile 目录不动）
             try:
@@ -844,8 +831,7 @@ class BrowserContainer:
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"[BCC-039] " + f"[bcc] {self.account} 切换后导航失败: {e}")
         except Exception as e:
-            logger.error("BCC-006",
-                f"[bcc] 可见性切换失败(切换为{'有头' if target else '无头'}): {e} —— "
+            logger.error(f"[BCC-006] " + f"[bcc] 可见性切换失败(切换为{'有头' if target else '无头'}): {e} —— "
                 f"将在冷却期后由探活自愈（不自动重启，防误杀）", exc_info=True)
         finally:
             self._switching = False
@@ -1262,7 +1248,7 @@ class BrowserContainer:
             if isinstance(res, dict) and res.get("ok"):
                 logger.info(f"[bcc] wp_send_text 成功(DOM) -> {peer_name}: {text[:20]}")
             else:
-                logger.warning("BCC-009", f"[bcc] wp_send_text 失败: "
+                logger.warning(f"[BCC-009] " + f"[bcc] wp_send_text 失败: "
                                f"{res.get('error') if isinstance(res, dict) else res}")
             return res if isinstance(res, dict) else {"ok": False, "error": str(res)}
         except Exception as e:
@@ -1720,8 +1706,7 @@ class BrowserContainer:
                         if _uid and _uid_ok(self.account, _uid):
                             ok = True
                         else:
-                            logger.warning("BCC-036",
-                                f"[bcc] 刷新后凭证仍未通过校验"
+                            logger.warning(f"[BCC-036] " + f"[bcc] 刷新后凭证仍未通过校验"
                                 f"（uid={_uid}，与历史会话不一致或探活为空）"
                                 f"—— 判定为仍需人工扫码，不再视为成功")
                     except Exception as e:
@@ -1797,8 +1782,7 @@ class BrowserContainer:
                     if _fallback_uid and _uid_ok(self.account, _fallback_uid):
                         return _fallback_uid
                     if _fallback_uid:
-                        logger.warning("BCC-014", 
-                            f"[bcc] 账号「{self.account}」裸探活 uid={_fallback_uid} "
+                        logger.warning(f"[BCC-014] " + f"[bcc] 账号「{self.account}」裸探活 uid={_fallback_uid} "
                             f"与历史会话不一致，判为不可信（拒绝返回）")
                     return None
                 except Exception:
@@ -1926,8 +1910,7 @@ class BrowserContainer:
                 new_uid = None
             BrowserContainer._uid_probe_cache = (now_ts, new_uid)
         if not new_uid:
-            logger.warning("BCC-015", 
-                f"[bcc] 拒绝写入 .env：新 cookie 探活失败（无 uid），"
+            logger.warning(f"[BCC-015] " + f"[bcc] 拒绝写入 .env：新 cookie 探活失败（无 uid），"
                 f"保留既有凭证。疑似 profile 登录态失效，请重新扫码。")
             return {"ok": False, "msg": "新 cookie 探活失败（登录态无效），已保留原凭证"}
 
@@ -1939,8 +1922,7 @@ class BrowserContainer:
         try:
             from services.uid_probe import _uid_consistent_with_history as _uid_ok
             if not _uid_ok(self.account, new_uid):
-                logger.error("BCC-016", 
-                    f"[bcc] 拒绝写入 .env：探活 uid={new_uid} 与该账号「{self.account}」"
+                logger.error(f"[BCC-016] " + f"[bcc] 拒绝写入 .env：探活 uid={new_uid} 与该账号「{self.account}」"
                     f"历史会话不一致（幽灵 uid，0 命中）。profile 登录态疑似"
                     f"失效/残留他人凭证，请重新扫码登录本账号。")
                 return {"ok": False,
@@ -1958,8 +1940,7 @@ class BrowserContainer:
         # 不受 keepalive 漂移检测影响，两条链路互不干扰。
         old_uid = getattr(self, "_uid_at_last_env_write", None)
         if old_uid and str(old_uid) != str(new_uid):
-            logger.error("BCC-017", 
-                f"[bcc] 拒绝写入 .env：uid 漂移！old={old_uid} new={new_uid}。"
+            logger.error(f"[BCC-017] " + f"[bcc] 拒绝写入 .env：uid 漂移！old={old_uid} new={new_uid}。"
                 f"疑似账号身份被轮换/替换，保留既有凭证并告警。")
             return {"ok": False,
                     "msg": f"uid 漂移({old_uid}→{new_uid})，已保留原凭证，请重新扫码确认"}
@@ -2071,8 +2052,7 @@ class BrowserContainer:
                 prev_uid = getattr(self, "_last_uid", None)
                 if uid and prev_uid and str(uid) != str(prev_uid):
                     # uid 漂移：身份被替换/轮换，凭证不可信
-                    logger.error("BCC-019", 
-                        f"[bcc] uid 漂移！old={prev_uid} new={uid}，"
+                    logger.error(f"[BCC-019] " + f"[bcc] uid 漂移！old={prev_uid} new={uid}，"
                         f"凭证身份存疑，触发自动刷新…")
                     self._last_uid = uid  # 记录新值，后续漂移检测以新值为基线
                     if self._loop and not in_breaker:
@@ -2086,16 +2066,14 @@ class BrowserContainer:
                                 scan_fail_count = 0
                             else:
                                 scan_fail_count += 1
-                                logger.warning("BCC-020",
-                                    f"[bcc] uid 漂移后自动刷新未通过校验"
+                                logger.warning(f"[BCC-020] " + f"[bcc] uid 漂移后自动刷新未通过校验"
                                     f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
                         except Exception as e:
                             logger.warning(f"[BCC-020] " + f"[bcc] uid 漂移后自动刷新失败: {e}")
                             scan_fail_count += 1
                         if scan_fail_count >= SCAN_BREAKER_LIMIT:
                             breaker_until = time.time() + SCAN_BACKOFF_SEC
-                            logger.error("BCC-024",
-                                f"[bcc] 凭证刷新连续未通过 {scan_fail_count} 次，"
+                            logger.error(f"[BCC-024] " + f"[bcc] 凭证刷新连续未通过 {scan_fail_count} 次，"
                                 f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟（自动救不回，"
                                 f"请在指纹浏览器重新扫码）")
                 elif uid:
@@ -2107,14 +2085,12 @@ class BrowserContainer:
                         if in_breaker:
                             # 熔断中：只告警，绝不重启浏览器（防风控恶性循环）
                             remain = int(breaker_until - now)
-                            logger.warning("BCC-021", 
-                                f"[bcc] 页面仍需重激活（conv={page_state.get('conv')}），"
+                            logger.warning(f"[BCC-021] " + f"[bcc] 页面仍需重激活（conv={page_state.get('conv')}），"
                                 f"scan_login 已熔断（连续失败 {scan_fail_count} 次），"
                                 f"{remain // 60} 分钟内不再自动重启浏览器，"
                                 f"请在指纹浏览器完成扫码登录")
                             continue
-                        logger.warning("BCC-022", 
-                            f"[bcc] 页面级登录态失效（conv={page_state.get('conv')} "
+                        logger.warning(f"[BCC-022] " + f"[bcc] 页面级登录态失效（conv={page_state.get('conv')} "
                             f"rel={page_state.get('rel')}），uid={uid} 仍有效但页面需重新激活，"
                             f"凭证更新方式={cred_mode}"
                             + ("（observe：不弹窗，等用户自行激活）"
@@ -2132,16 +2108,14 @@ class BrowserContainer:
                                     scan_fail_count = 0
                                 else:
                                     scan_fail_count += 1
-                                    logger.warning("BCC-023",
-                                        f"[bcc] 页面重激活未通过校验"
+                                    logger.warning(f"[BCC-023] " + f"[bcc] 页面重激活未通过校验"
                                         f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
                             except Exception as e:
                                 logger.warning(f"[BCC-023] " + f"[bcc] 页面重激活失败: {e}")
                                 scan_fail_count += 1
                             if scan_fail_count >= SCAN_BREAKER_LIMIT:
                                 breaker_until = time.time() + SCAN_BACKOFF_SEC
-                                logger.error("BCC-024", 
-                                    f"[bcc] scan_login 连续失败 {scan_fail_count} 次，"
+                                logger.error(f"[BCC-024] " + f"[bcc] scan_login 连续失败 {scan_fail_count} 次，"
                                     f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟。"
                                     f"session 疑似服务端已失效，自动登录救不回，"
                                     f"请在指纹浏览器重新扫码；期间仅告警不重启浏览器")
@@ -2200,8 +2174,7 @@ class BrowserContainer:
                     logger.warning(f"[BCC-025] " + "[bcc] 登录态失效，自动刷新凭证…")
                     if in_breaker:
                         remain = int(breaker_until - now)
-                        logger.warning("BCC-021",
-                            f"[bcc] 探活仍拿不到有效 uid，scan_login 已熔断"
+                        logger.warning(f"[BCC-021] " + f"[bcc] 探活仍拿不到有效 uid，scan_login 已熔断"
                             f"（连续失败 {scan_fail_count} 次），{remain // 60} 分钟内"
                             f"不再自动重启浏览器，请在指纹浏览器完成扫码登录")
                         continue
@@ -2213,8 +2186,7 @@ class BrowserContainer:
                             _r = fut.result(timeout=120) or {}
                             scan_fail_count += 1
                             if not _r.get("ok"):
-                                logger.warning("BCC-026",
-                                    f"[bcc] 自动刷新凭证未通过校验"
+                                logger.warning(f"[BCC-026] " + f"[bcc] 自动刷新凭证未通过校验"
                                     f"（连续 {scan_fail_count} 次，uid={_r.get('uid')}）")
                         except Exception as e:
                             scan_fail_count += 1
@@ -2222,8 +2194,7 @@ class BrowserContainer:
                         # 关键：探活失败路径同样要触发熔断（原缺失）
                         if scan_fail_count >= SCAN_BREAKER_LIMIT:
                             breaker_until = time.time() + SCAN_BACKOFF_SEC
-                            logger.error("BCC-024",
-                                f"[bcc] 探活/scan_login 连续失败 {scan_fail_count} 次，"
+                            logger.error(f"[BCC-024] " + f"[bcc] 探活/scan_login 连续失败 {scan_fail_count} 次，"
                                 f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟（防浏览器频繁重启"
                                 f"引发风控）。session 疑似服务端已失效，自动登录救不回，"
                                 f"请在指纹浏览器重新扫码；期间仅告警不重启浏览器")

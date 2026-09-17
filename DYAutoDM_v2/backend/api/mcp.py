@@ -191,7 +191,7 @@ def _stop_runtime() -> None:
             from mcp.server import shutdown_httpd
             shutdown_httpd(httpd)
         except Exception as e:
-            logger.warning("MCP-005", f"[mcp] 关闭旧 MCP 实例失败: "
+            logger.warning(f"[MCP-005] " + f"[mcp] 关闭旧 MCP 实例失败: "
                                       f"{type(e).__name__}: {e}")
     _RUNTIME["httpd"] = None
     _RUNTIME["port"] = None

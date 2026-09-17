@@ -509,8 +509,7 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                         _uid_mismatch = not any(
                             _uid_s in str(r[0]).split(":") for r in _rows)
                         if _uid_mismatch:
-                            logger.error("ACC-007", 
-                                f"[verify] 账号 {name} uid 漂移：探活 uid={uid} "
+                            logger.error(f"[ACC-007] " + f"[verify] 账号 {name} uid 漂移：探活 uid={uid} "
                                 f"不存在于该账号 {len(_rows)} 条历史会话中，"
                                 f"凭证身份存疑（疑似身份被轮换/替换）。")
                 except Exception as _e:
@@ -877,7 +876,7 @@ def _rmtree_account_dir(target_dir: str) -> bool:
     if not os.path.isdir(tgt):
         return False
     if os.path.commonpath([base, tgt]) != base or tgt == base:
-        logger.warning("ACC-006", f"[accounts] 拒绝删除越界目录: {tgt}（base={base}）")
+        logger.warning(f"[ACC-006] " + f"[accounts] 拒绝删除越界目录: {tgt}（base={base}）")
         return False
     shutil.rmtree(tgt, ignore_errors=True)
     return True
@@ -1094,7 +1093,7 @@ def _probe(env_path, timeout):
                             f"[accounts] 探活成功但无法由 env_path 推导账号名，"
                             f"跳过 uid 缓存同步: {env_path}")
                 except Exception as _ce:
-                    logger.warning("ACC-007", f"[accounts] uid 缓存同步失败: {_ce}")
+                    logger.warning(f"[ACC-007] " + f"[accounts] uid 缓存同步失败: {_ce}")
                 # 严格校验：对自身 uid 建会话，验证服务端是否真的接受私信签名(web_protect/keys)。
                 # 与启动 _verify_credential 一致，避免“四件套在但服务端拒绝签名”被误判为有效。
                 try:
@@ -1243,8 +1242,7 @@ def _do_recapture_from_profile(name: str, landing_url: str):
         except _RC as _rc:
             # 风控/验证码污染：浏览器保持打开，明确提示用户在指纹浏览器处理验证码
             st["error"] = str(_rc)
-            logger.warning("ACC-014", 
-                f"[recap-profile] 账号 {name} 读取被风控验证页污染，已拒绝写盘，"
+            logger.warning(f"[ACC-014] " + f"[recap-profile] 账号 {name} 读取被风控验证页污染，已拒绝写盘，"
                 f"指纹浏览器保持打开请手动处理验证码: {_rc}")
             return
         except Exception as e:

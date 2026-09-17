@@ -24,6 +24,7 @@ import re
 import sqlite3
 import sys
 from pathlib import Path as _P
+import os
 
 ROOT = _P(os.environ.get("DY_REPO_ROOT", r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"))
 BACKEND = ROOT / "backend"

@@ -305,11 +305,9 @@ class LiveChatHook(DouyinLive):
                             if not sec_uid:
                                 self._enc_no_secuid += 1
                                 if self._enc_no_secuid == 1 or self._enc_no_secuid % 20 == 0:
-                                    logger.error("LIVE-006", 
-                                        f"[昵称加密] 检测到昵称加密且 sec_uid 为空（累计 {self._enc_no_secuid} 次）。\n"
+                                    logger.error(f"[LIVE-006] " + f"[昵称加密] 检测到昵称加密且 sec_uid 为空（累计 {self._enc_no_secuid} 次）。\n"
                                         f"       这是监测账号凭证/会话异常的典型表现。\n"
-                                        f"       请对该监测账号执行【重新扫码】以恢复正常会话。"
-                                    )
+                                        f"       请对该监测账号执行【重新扫码】以恢复正常会话。")
                         if target.get("nickname"):
                             self.dispatch.submit(target)
                     elif item.method == "WebcastMemberMessage":

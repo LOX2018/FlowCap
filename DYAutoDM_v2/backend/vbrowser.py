@@ -467,7 +467,7 @@ def _launch_args_with_proxy(cfg, account=None):
         args += _extra
         logger.info(f"[vbrowser] 指纹开关已钉入内核({len(_extra)}项) account={account}")
     except Exception as _e_fp:
-        logger.warning("BCC-039", f"[vbrowser] 指纹开关接入失败，退回仅种子指纹: "
+        logger.warning(f"[BCC-039] " + f"[vbrowser] 指纹开关接入失败，退回仅种子指纹: "
                                   f"{type(_e_fp).__name__}")
     env_path = _env_path_of_account(account) if account else None
 

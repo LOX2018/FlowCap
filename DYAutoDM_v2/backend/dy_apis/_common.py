@@ -70,11 +70,8 @@ def safe_json(resp, default=None):
     except Exception:
         # 空响应（content-length: 0）或 HTML 错误页 —— 记录状态码便于排查
         try:
-            logger.warning(
-                "IM-001",
-                f"[im] 响应非 JSON（HTTP {resp.status_code}, {len(resp.content)} 字节）"
-                f"→ 降级为 {type(default).__name__ if default is not None else 'None'}",
-            )
+            logger.warning(f"[IM-001] " + f"[im] 响应非 JSON（HTTP {resp.status_code}, {len(resp.content)} 字节）"
+                f"→ 降级为 {type(default).__name__ if default is not None else 'None'}")
         except Exception:
             pass
         if default is not None:

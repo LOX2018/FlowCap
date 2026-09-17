@@ -694,8 +694,7 @@ async def send_dm(body: SendDmRequest):
         return {"ok": False, "error": errors.get(first), "channel": first}
 
     # 首次失败 → 自动回退备用通道
-    logger.warning("SEND-001", 
-        f"[send][{body.account}] {first.upper()} 通道失败（{errors.get(first)}），"
+    logger.warning(f"[SEND-001] " + f"[send][{body.account}] {first.upper()} 通道失败（{errors.get(first)}），"
         f"自动回退 {second.upper()} 通道")
     try:
         d = await _try(second)

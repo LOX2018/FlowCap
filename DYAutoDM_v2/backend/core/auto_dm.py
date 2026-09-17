@@ -176,10 +176,8 @@ class AutoDM:
             if mtime > 0:
                 age = int(time.time()) - mtime
                 if age > max_age:
-                    logger.warning("AUTH-011", 
-                        f"[auth] 凭证年龄={age}s(> {max_age}s)，视为非实时会话，"
-                        f"强制重扫以避免弹幕昵称被加密。"
-                    )
+                    logger.warning(f"[AUTH-011] " + f"[auth] 凭证年龄={age}s(> {max_age}s)，视为非实时会话，"
+                        f"强制重扫以避免弹幕昵称被加密。")
                     force_fresh = True
 
         if force_fresh:

@@ -564,7 +564,7 @@ def find_match_semantic(question: str, cfg: dict,
     try:
         cached_mdl = _kv_get(_KV_SEM_MDL, "")
         if cached_mdl and used_model and cached_mdl != used_model:
-            logger.warning("AI-034", f"[ai] 语义缓存模型不一致（缓存={cached_mdl} "
+            logger.warning(f"[AI-034] " + f"[ai] 语义缓存模型不一致（缓存={cached_mdl} "
                            f"现用={used_model}），本次跳过语义级")
             return None
     except Exception:

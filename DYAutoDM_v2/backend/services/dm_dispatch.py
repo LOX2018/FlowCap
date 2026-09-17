@@ -470,8 +470,7 @@ class AccountQuota:
                 dur = min(cfg("COOLDOWN_ON_FREQUENT") * (2 ** (self.cooldown_level - 1)),
                           cfg("COOLDOWN_MAX"))
                 self.cooldown_until = time.time() + dur
-                logger.warning("SEND-024", 
-                    f"[dm-dispatch][{self.key}] 回执命中频控 → 权重降至 "
+                logger.warning(f"[SEND-024] " + f"[dm-dispatch][{self.key}] 回执命中频控 → 权重降至 "
                     f"{self._weight_unlocked():.2f}，强制冷静 {dur / 60:.0f} 分钟"
                     f"（第 {self.cooldown_level} 次，半衰期 "
                     f"{cfg('WEIGHT_RECOVER_HALFLIFE') / 3600:.0f}h 后自动恢复）")
@@ -1090,7 +1089,7 @@ class DmDispatcher:
                 # 发送失败 → 归还预占的首发额度（失败的发送不该占额度）
                 if task.is_stranger_first:
                     quota.refund_stranger()
-                logger.warning("SEND-036", f"[dm-dispatch] 发送失败 task={task.task_id}: "
+                logger.warning(f"[SEND-036] " + f"[dm-dispatch] 发送失败 task={task.task_id}: "
                                f"{task.error}")
             # 回执交给配额统计（命中频控 -> 降权 + 冷静期）
             quota.on_result(ok, task.error)

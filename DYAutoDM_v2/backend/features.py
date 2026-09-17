@@ -131,8 +131,6 @@ def conversation_list(auth, to_user_id, conversation_short_id):
     # `TypeError: too many positional arguments`。
     # 若目标是「按对端 uid 取会话」，用的是别的方法；此处只透传游标。
     if to_user_id:
-        logger.warning(
-            "FEAT-001",
-            f"[features] conversation_list 收到 to_user_id={to_user_id}，"
+        logger.warning(f"[FEAT-001] " + f"[features] conversation_list 收到 to_user_id={to_user_id}，"
             f"但底层 get_conversation_list 只按 conversation_short_id 分页，已忽略")
     return _safe("get_conversation_list", auth, conversation_short_id)

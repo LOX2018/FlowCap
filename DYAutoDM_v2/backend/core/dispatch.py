@@ -400,8 +400,7 @@ class DispatchCenter:
             # 发送失败不计入 sent，但必须从 pending 移除，
             # 否则 wait_done（软停止等存量）会永久卡在 STOPPING（pending 永不空）。
             self.pending.pop(key, None)
-            logger.warning("SEND-008", 
-                f"[私信发送结果] 目标「{target.get('nickname')}」=失败\n"
+            logger.warning(f"[SEND-008] [私信发送结果] 目标「{target.get('nickname')}」=失败\n"
                 f"   原因: {reason}\n"
                 f"   文案: {content!r}"
             )

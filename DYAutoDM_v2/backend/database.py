@@ -248,9 +248,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             "ON dm_messages(account, conv_id, role, text, CAST(ts*1000 AS INTEGER))"
         )
     except Exception as _e:
-        logger.warning(
-            "DB-002",
-            f"[db] 兜底去重索引 uniq_dmmsg_fallback 创建失败，"
+        logger.warning(f"[DB-002] " + f"[db] 兜底去重索引 uniq_dmmsg_fallback 创建失败，"
             f"同毫秒重复消息将**不会被去重**：{type(_e).__name__}: {_e}；"
             f"通常由库内已存在重复行引起，可手工清理后重启以启用")
 

@@ -368,9 +368,7 @@ class WSLink:
             # ws.send() 只写内核缓冲，对端已关也照样「成功」。
             try:
                 if _peer_closed(sock):
-                    logger.warning(
-                        "RECV-032",
-                        f"[recv][{self.name}] 探测到对端已关闭（半开连接），"
+                    logger.warning(f"[RECV-032] " + f"[recv][{self.name}] 探测到对端已关闭（半开连接），"
                         f"触发重连（rx_age={age:.0f}s）")
                     try:
                         ws.close()
@@ -383,9 +381,7 @@ class WSLink:
             if (self.stats["hb_failed"] > 0
                     and self.stats["hb_failed"] % 3 == 0
                     and age > DEAD_TIMEOUT):
-                logger.warning(
-                    "RECV-032",
-                    f"[recv][{self.name}] {age:.0f}s 未收到下行帧且心跳连续"
+                logger.warning(f"[RECV-032] " + f"[recv][{self.name}] {age:.0f}s 未收到下行帧且心跳连续"
                     f"失败 {self.stats['hb_failed']} 次，判定半开连接，主动重连")
                 try:
                     ws.close()
@@ -404,9 +400,7 @@ class WSLink:
                 self.stats["hb_failed"] += 1
                 # 连续失败即断开交给主循环重连；日志降噪：每 5 次打一条
                 if self.stats["hb_failed"] % 5 == 1:
-                    logger.warning(
-                        "RECV-033",
-                        f"[recv][{self.name}] 心跳发送失败"
+                    logger.warning(f"[RECV-033] " + f"[recv][{self.name}] 心跳发送失败"
                         f"（第 {self.stats['hb_failed']} 次）: {e}")
                 try:
                     ws.close()

@@ -205,9 +205,7 @@ async def parse_command(text: str, llm_cfg: dict[str, Any] | None = None) -> dic
     # —— start_task / stop_task 不在 DESTRUCTIVE 确认集里，无二次确认即执行。
     # 现改为：非白名单 intent 一律降级为 UNKNOWN（不执行任何动作）并告警。
     if intent not in _ALLOWED_INTENTS:
-        logger.warning(
-            "NTY-010",
-            f"[cmd-parse] 非白名单 intent 已拒绝: {intent!r} "
+        logger.warning(f"[NTY-010] " + f"[cmd-parse] 非白名单 intent 已拒绝: {intent!r} "
             f"（允许={sorted(_ALLOWED_INTENTS)}）")
         intent = INTENT_UNKNOWN
         need_confirm = False

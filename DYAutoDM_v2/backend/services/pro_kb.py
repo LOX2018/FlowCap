@@ -488,7 +488,7 @@ def sem_cache_invalidate(item_id=None) -> None:
                          (_PRO_SEM_PREFIX + str(item_id),))
             conn.commit()
     except Exception as e:
-        logger.warning("PKB-001", f"[pro_kb] 清向量缓存失败: "
+        logger.warning(f"[PKB-001] " + f"[pro_kb] 清向量缓存失败: "
                                   f"{type(e).__name__}: {e}")
 
 

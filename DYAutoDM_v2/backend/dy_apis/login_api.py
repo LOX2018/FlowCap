@@ -126,8 +126,7 @@ def _bcc_alive(account_name: str, timeout: float = 0.5) -> bool:
         # 账号一致性：BCC 挂的账号必须就是请求的账号
         bcc_account = str(d.get("account") or "")
         if bcc_account and bcc_account != str(account_name):
-            logger.warning("AUTH-030", 
-                f"[bcc-client] 端口 {port} 上运行的 BCC 属于账号「{bcc_account}」"
+            logger.warning(f"[AUTH-030] " + f"[bcc-client] 端口 {port} 上运行的 BCC 属于账号「{bcc_account}」"
                 f"而非「{account_name}」（端口被占用/手动启动绕过哈希），"
                 f"按未运行处理，拒绝跨账号取 cookie。")
             return False
@@ -400,8 +399,7 @@ class DYLoginApi:
                     "异常请求", "验证中心", "人机验证", "账号存在风险"))
                 if _risk_hit:
                     if not _risk_notified:
-                        logger.warning("AUTH-033", 
-                            f"[风控] 检测到验证码/风控验证页（{_page_url}）。"
+                        logger.warning(f"[AUTH-033] " + f"[风控] 检测到验证码/风控验证页（{_page_url}）。"
                             f"【指纹浏览器保持打开】，请在其中手动完成验证码/滑块验证，"
                             f"完成后程序将自动继续抓取凭证；无需重新扫码。")
                         _risk_notified = True
@@ -596,15 +594,11 @@ class DYLoginApi:
             # 且必须留下 error 级日志。
             import os as _os
             if _os.environ.get("DY_ALLOW_PLAINTEXT_ENV", "") == "1":
-                logger.error(
-                    "AUTH-040",
-                    f"[auth] ⚠️ 加密写盘失败，已按 DY_ALLOW_PLAINTEXT_ENV=1 "
+                logger.error(f"[AUTH-040] " + f"[auth] ⚠️ 加密写盘失败，已按 DY_ALLOW_PLAINTEXT_ENV=1 "
                     f"降级为**明文**写 {env_file}（含私钥与完整 cookie）: "
                     f"{type(_enc_err).__name__}: {_enc_err}")
             else:
-                logger.error(
-                    "AUTH-041",
-                    f"[auth] 加密写盘失败，已拒绝明文降级（凭证未写入）: "
+                logger.error(f"[AUTH-041] " + f"[auth] 加密写盘失败，已拒绝明文降级（凭证未写入）: "
                     f"{type(_enc_err).__name__}: {_enc_err}；"
                     f"如需应急明文落盘请设 DY_ALLOW_PLAINTEXT_ENV=1")
                 raise RuntimeError(
@@ -820,7 +814,7 @@ class DYLoginApi:
                 logger.info(f"[auth] BCC /user_info 批量查昵称："
                             f"{len(data)}/{len(sec_uids)} 个成功")
                 return data
-            logger.warning("AUTH-039", f"[auth] BCC /user_info 返回失败: "
+            logger.warning(f"[AUTH-039] " + f"[auth] BCC /user_info 返回失败: "
                            f"{r.get('msg', '')}，退回直开浏览器")
         # 后备：直开 Playwright（BCC 未运行时）
         from auto_dm.vbrowser import pw_sync_api
@@ -1080,8 +1074,7 @@ class DYLoginApi:
                 "异常请求", "验证中心", "人机验证", "账号存在风险"))
             if _risk_hit:
                 if not _risk_notified:
-                    logger.warning("AUTH-049", 
-                        f"[风控] 检测到验证码/风控验证页（{_page_url}）。【指纹浏览器保持打开】，"
+                    logger.warning(f"[AUTH-049] " + f"[风控] 检测到验证码/风控验证页（{_page_url}）。【指纹浏览器保持打开】，"
                         f"请在其中手动完成验证码/滑块验证，完成后程序将自动继续读取凭证；"
                         f"在您验证通过、页面离开风控页之前，本程序不会关闭浏览器、也不会写入被污染的凭证。")
                     _risk_notified = True

@@ -161,8 +161,7 @@ def ensure_daemons_for(account: str, wait: bool = True,
                 if st.get("ok"):
                     logger.info(f"[daemon-launcher] BCC 已就绪 (port={bport}) via ensure_bcc")
                 else:
-                    logger.warning("SYS-002", 
-                        f"[daemon-launcher] BCC 未拉起（{st.get('msg')}）——"
+                    logger.warning(f"[SYS-002] [daemon-launcher] BCC 未拉起（{st.get('msg')}）——"
                         f"冷静期内或二进制缺失，属预期，不强制拉起")
             except Exception as e:
                 logger.warning(f"[SYS-003] " + f"[daemon-launcher] 拉起 browser_daemon 失败: {e}")

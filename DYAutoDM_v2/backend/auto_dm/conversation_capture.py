@@ -308,8 +308,7 @@ def parse_init_protobuf(raw, my_uid):
             if _common:
                 if _mu in ("", "None", "none", "0"):
                     # 原场景：my_uid 失效（None/空）→ 直接自愈
-                    logger.warning("CAP-003",
-                        f"[capture] my_uid 无效({my_uid!r})，从 {_n} 个 conv_id "
+                    logger.warning(f"[CAP-003] " + f"[capture] my_uid 无效({my_uid!r})，从 {_n} 个 conv_id "
                         f"自愈推断本账号 UID={_common}（出现 {_cnt[_common]} 次）")
                     my_uid = _common
                 elif _mu != _common:
@@ -321,8 +320,7 @@ def parse_init_protobuf(raw, my_uid):
                     # 一致的身份，必须以此为准，否则
                     #   peer_uid = uid_b if uid_a == my_uid else uid_a
                     # 因 uid_a(本号) != my_uid(错值) 恒取 uid_a → 对端全变成自己。
-                    logger.warning("CAP-003",
-                        f"[capture] my_uid({_mu}) 与 {_n} 个 conv_id 的共同项"
+                    logger.warning(f"[CAP-003] " + f"[capture] my_uid({_mu}) 与 {_n} 个 conv_id 的共同项"
                         f"({_common}，出现 {_cnt[_common]} 次) 不一致 —— "
                         f"以 conv_id 为准（web user_uid 与 imapi 会话 uid 可能轮换）")
                     my_uid = _common
@@ -625,7 +623,7 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
                 data=body_bytes, verify=tls_verify(), timeout=timeout,
             )
             if resp.status_code != 200 or len(resp.content) < 100:
-                logger.warning("CAP-004", f"[capture][301] HTTP {resp.status_code} "
+                logger.warning(f"[CAP-004] " + f"[capture][301] HTTP {resp.status_code} "
                                f"len={len(resp.content)} cid={cid} page={page_no}")
                 break
 
@@ -663,8 +661,7 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
         if len(merged) > 1:
             merged.sort(key=lambda x: x.get("ts") or 0)
         if total is not None and len(merged) < total:
-            logger.warning("CAP-013",
-                           f"[capture][301] 会话 {cid} 仅取到 {len(merged)}/{total} 条"
+            logger.warning(f"[CAP-013] " + f"[capture][301] 会话 {cid} 仅取到 {len(merged)}/{total} 条"
                            f"（可能触达 max_pages={max_pages} 上限）")
         return merged
     except Exception as e:
@@ -1026,9 +1023,7 @@ def capture_userinfo_via_browser(name, wait=15, max_age=None, lease_id=""):
                     f"（库 {_j0.get('db')}；零网络请求）")
                 _userinfo_cache[name] = (_t.time(), _out)
                 return _out
-            logger.warning(
-                "CAP-014",
-                f"[capture] /userinfo_idb 无数据（total={_j0.get('total')}），"
+            logger.warning(f"[CAP-014] " + f"[capture] /userinfo_idb 无数据（total={_j0.get('total')}），"
                 f"降级 DOM 抓取")
         else:
             logger.warning(f"[CAP-014] " + f"[capture] /userinfo_idb HTTP {_r0.status_code}，降级 DOM")
@@ -1144,8 +1139,7 @@ def capture_all(name, with_browser=True):
                 _g = ensure_browser(name, purpose=PURPOSE_USER,
                                     holder="capture_all", ttl=300.0)
                 if not _g.get("ok"):
-                    logger.warning("CAP-016",
-                        f"[capture][{name}] 浏览器统一入口未就绪：{_g.get('msg')}"
+                    logger.warning(f"[CAP-016] " + f"[capture][{name}] 浏览器统一入口未就绪：{_g.get('msg')}"
                         f"（不新开独立浏览器，将只用 .env 凭证跑 HTTP 首包）")
                 else:
                     # 跨调用窗口租约：贯穿整个「更新会话」，由调用方 finally 释放
@@ -1279,9 +1273,7 @@ def capture_all(name, with_browser=True):
             if need:
                 _total_need = len(need)
                 if _total_need > hard_cap:
-                    logger.warning(
-                        "CAP-014",
-                        f"[capture][{name}] 待补全 {_total_need} 个会话，超过单次上限 "
+                    logger.warning(f"[CAP-014] " + f"[capture][{name}] 待补全 {_total_need} 个会话，超过单次上限 "
                         f"{hard_cap}（= history_max {max_n} × rounds {rounds_max}）；"
                         f"本轮先补 {hard_cap} 个，剩余 {_total_need - hard_cap} 个"
                         f"请再次点「更新会话」（或调大 capture.history_max_rounds）")
@@ -1328,16 +1320,13 @@ def capture_all(name, with_browser=True):
                             for peer_uid, n, err in ex.map(_fill, batch):
                                 _filled += 1
                                 if err:
-                                    logger.warning("CAP-010",
-                                        f"[capture][{name}] 301 补全失败 {peer_uid}:"
+                                    logger.warning(f"[CAP-010] " + f"[capture][{name}] 301 补全失败 {peer_uid}:"
                                         f" {err}")
                                 else:
                                     logger.info(
                                         f"[capture][{name}] 301 补全 {peer_uid}: {n} 条")
                 if _total_need > hard_cap:
-                    logger.warning(
-                        "CAP-014",
-                        f"[capture][{name}] 本轮补全 {_filled} 个，"
+                    logger.warning(f"[CAP-014] " + f"[capture][{name}] 本轮补全 {_filled} 个，"
                         f"仍有 {_total_need - _filled} 个待补（再点一次「更新会话」即可续补）")
     except Exception as e:
         logger.warning(f"[CAP-011] " + f"[capture][{name}] 长会话补全失败（降级仅首包）: {e}")

@@ -529,7 +529,7 @@ def send_image_message(auth, conversation_id: str, conversation_short_id: int,
         return True, "ok"
     from dy_apis.douyin_api import DouyinAPI
     detail = DouyinAPI._classify_send_fail(resp_json)
-    logger.error("SEND-021", f"[img-send] ⑥ 发送失败 conversation_id={conversation_id} "
+    logger.error(f"[SEND-021] " + f"[img-send] ⑥ 发送失败 conversation_id={conversation_id} "
                  f"resp_json={resp_json}")
     return False, detail
 
@@ -589,7 +589,7 @@ def send_image(auth, peer_id: int, image_data: bytes,
     upload_to_tos(addr, image_data)                     # ③
     enc = commit_upload(auth, cfg, addr["session_key"])  # ④
     if enc["source_md5"] and enc["source_md5"] != md5:
-        logger.warning("SEND-023", f"[img-send] ④ SourceMd5({enc['source_md5']}) 与本地 md5({md5}) "
+        logger.warning(f"[SEND-023] " + f"[img-send] ④ SourceMd5({enc['source_md5']}) 与本地 md5({md5}) "
                        f"不一致，以本地为准")
     ok, detail = send_image_message(                    # ⑥
         auth, conversation_id, short_id, ticket,

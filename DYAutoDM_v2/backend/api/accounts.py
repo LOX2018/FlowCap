@@ -479,10 +479,8 @@ def _quit_browser_daemon(name: str) -> bool:
     if profile:
         killed = _kill_profile_holders(profile)
         if killed:
-            logger.warning("BCC-003", 
-                f"[open-browser] 账号 {name} 发现并清理 {killed} 个持有 "
-                f"profile 的孤儿浏览器进程（端口 {bport} 已死但锁未释放）"
-            )
+            logger.warning(f"[BCC-003] " + f"[open-browser] 账号 {name} 发现并清理 {killed} 个持有 "
+                f"profile 的孤儿浏览器进程（端口 {bport} 已死但锁未释放）")
             return True
     return False
 
