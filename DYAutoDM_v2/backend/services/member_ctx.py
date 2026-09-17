@@ -256,6 +256,29 @@ def _session_file_member_id() -> str | None:
 # 会员感知路径解析（单会员运行时的「应用根」= 会员数据空间）
 # ---------------------------------------------------------------------------
 
+def _resolve_member_id() -> str:
+    """解析当前 member_id 的**唯一入口**（2026-09-17 抽取）。
+
+    优先序：进程内 current → 环境变量 DY_MEMBER → 盘上会话文件。
+    会话文件回退是 2026-09-10 增加的（让独立进程也能解析到会员空间，
+    避免账号路径落到非会员空间后 .env.enc 读不出来）。
+
+    ## 为什么要抽成单一函数
+
+    OCR 审查 HIGH：`accounts_root()` 原先**先**用 `member_space_root()` 的结果
+    做空值守卫、**再**用另一套等价但独立的表达式重新解析 member_id。
+    两处一旦出现任一回退来源缺失（或 `current_member_id()` 在两次调用之间
+    被 `set_current()` 改动），守卫取到的目录根与最终拼接用的 id 就会**指向
+    不同会员** —— 这正是历史上「账号管理校验失效 / .env.enc 读不出来」的
+    事故面：路径归属判断错误会让 `is_member_env()` 落到错误分支。
+    抽成单一函数后，**同一请求内 id 只解析一次**，杜绝该分叉。
+    """
+    mid = current_member_id() or os.environ.get("DY_MEMBER") or ""
+    if not mid:
+        mid = _session_file_member_id() or ""
+    return mid
+
+
 def member_space_root() -> str | None:
     """当前会员的数据空间根目录；未登录返回 None（调用方回退 app_root()）。
 
@@ -263,9 +286,7 @@ def member_space_root() -> str | None:
     让独立进程也能解析到会员空间，避免账号路径落到非会员空间后
     .env.enc 读不出来（账号管理校验失效事故）。
     """
-    mid = current_member_id() or os.environ.get("DY_MEMBER") or ""
-    if not mid:
-        mid = _session_file_member_id() or ""
+    mid = _resolve_member_id()
     if not mid:
         return None
     return member_store.member_dir(mid)
@@ -274,20 +295,26 @@ def member_space_root() -> str | None:
 def accounts_root() -> str | None:
     """当前会员的账号目录 <space>/auto_dm/accounts；未登录 None。
 
-    2026-09-10：member_id 增加「盘上会话文件」回退，与 member_space_root() 保持
-    一致，避免这里拿不到 id 而拼出 <members>/auto_dm/accounts（空 id 目录）。
+    2026-09-17 修补（OCR 审查 HIGH）：改为**复用同一个 mid**，不再二次解析。
+    原实现 `member_space_root()` 做守卫 + 另一套表达式重新解析 id，两者
+    缺任一回退来源时会指向不同会员（详见 `_resolve_member_id` 说明）。
     """
-    r = member_space_root()
-    if r is None:
+    mid = _resolve_member_id()
+    if not mid:
         return None
-    return member_store.member_accounts_dir(current_member_id()
-                                            or os.environ.get("DY_MEMBER", "")
-                                            or _session_file_member_id() or "")
+    return member_store.member_accounts_dir(mid)
 
 
 def db_path() -> str | None:
-    """当前会员的数据库路径；未登录 None。"""
-    mid = current_member_id() or os.environ.get("DY_MEMBER") or ""
+    """当前会员的数据库路径；未登录 None。
+
+    2026-09-17 修补（OCR 审查 HIGH）：补上「盘上会话文件」回退，与
+    `member_space_root()` / `accounts_root()` 保持一致。
+    原实现只有 `current_member_id() or DY_MEMBER`，**未走 set_current 的
+    独立进程**会拿到 None → 上游回落 app_root 的全局库，
+    导致任务/会话数据读的是**全局库**而非会员库（数据串库）。
+    """
+    mid = _resolve_member_id()
     if not mid:
         return None
     return member_store.member_db_path(mid)
