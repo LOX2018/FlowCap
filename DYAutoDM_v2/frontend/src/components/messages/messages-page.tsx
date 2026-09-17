@@ -204,8 +204,17 @@ export default function MessagesPage(props: PageProps) {
         // 后端已修（空对象不入库），此处兜底历史脏数据。
         // 2026-09-04:加过滤 [分享视频] 脏数据（WS 错误解析噪音）。
         .filter((m) => {
+          // 2026-09-17 修正（对齐后端 messages.py 的同口径规则）：
+          //   旧实现 `!/^\[(未知媒体|分享视频|系统提示)\]/` 把**带内容的真实分享**
+          //   也一并滤掉了（`[分享视频] 视频ID x` / 新增的 `[分享商品] 标题`），
+          //   而后端明确保留了它们（"带 ID 的 [分享视频] 是真实视频分享，应正常展示"）
+          //   → 前后端口径不一致 = 真实分享在前端**永远看不见**。
+          //   现改为只滤**裸噪音**：整条就是 `[分享视频]`，或 `[未知媒体] …`。
+          //   `[系统提示] …` 交给 MsgBubble 的专用分支渲染（它有 sysM 分支）。
           const t = (m.text || "").trim();
-          return !/^\[(未知媒体|分享视频|系统提示)\]/.test(t);
+          if (t === "[分享视频]") return false;
+          if (/^\[未知媒体\]/.test(t)) return false;
+          return true;
         })
         .map((m, j) => ({
         id: m.msg_id ? "mid_" + m.msg_id : "dm" + conv.conv_id + "_" + j,
@@ -219,6 +228,7 @@ export default function MessagesPage(props: PageProps) {
         // 2026-09-17：语音转写文本 + 引用回复（均由后端透传，前端只渲染）
         voiceText: m.transcription ? String(m.transcription) : undefined,
         reply: m.reply || null,
+        recalled: m.recalled === true,
       }));
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,

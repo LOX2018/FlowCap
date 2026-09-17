@@ -19,6 +19,8 @@ export interface Msg {
   voiceText?: string;
   /** 2026-09-17：引用回复（protobuf field 18 透传，仅消息自带，不做补查） */
   reply?: MsgReply | null;
+  /** 2026-09-17：撤回（protobuf f11 is_recalled 字段级判据；优于正文占位串） */
+  recalled?: boolean;
 }
 /** 被引用的那条消息（f18 内嵌 JSON），用于在气泡上方渲染引用区块 */
 export interface MsgReply {
@@ -62,6 +64,8 @@ export interface RawMessage {
   transcription?: string;
   /** 2026-09-17：引用回复（protobuf field 18），后端原样透传 */
   reply?: MsgReply | null;
+  /** 2026-09-17：撤回标志（后端由 f11 判定） */
+  recalled?: boolean;
 }
 export interface RawConversation {
   conv_id?: string;

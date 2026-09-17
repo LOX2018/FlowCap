@@ -39,6 +39,7 @@ from .im_protobuf import (
     _extract_long_str, _parse_message_text,
     # 2026-09-17 新增（对照上游 douyin-chat-export v1.0.0/v2.0.0）
     _parse_message_sec_uid, _parse_message_created_at_us, _parse_message_reply,
+    _parse_message_flags,
 )
 
 def _cfg(section: str, key: str):
@@ -153,6 +154,69 @@ def _extract_image_secret(obj: dict):
     return skey, origin
 
 
+def _share_card_text(obj: dict):
+    """分享卡 → 可读文本（2026-09-17 对照上游 `sharePreview.js`）。
+
+    **契约保护（重要）**：含 `itemId` 的分享**一律返回 None**，交给下方既有的
+    `"[分享视频] 视频ID <id>"` 分支处理 —— 该串被知识库（08 §16.4）与
+    `api/messages.py` 的过滤条件（`text <> '[分享视频]'`）依赖，**不得改动**。
+    本函数只新增「无 itemId 的卡片」可读化：商品 / 文章 / 评论 / 图文 / 动图 /
+    直播 / 链接 / 名片。返回 None 表示「不是可识别的分享卡」。
+
+    上游判定顺序（照抄其语义，不照抄魔法数以外的结构）：
+      · 评论：`comment` 字段或 aweType=10500
+      · push_detail 形如 `[分享视频]` / `[图文]` / `[商品]` 取括号内类型
+      · awemeType=68 → `is_live_photo==1 ? 动图 : 图文`；163 → 文章
+      · aweType ∈ {11029,10401} → 商品
+      · aweType ∈ {800,801,803,11054,…} → 有 title 则「视频」，否则「链接」
+    """
+    if not isinstance(obj, dict) or obj.get("itemId"):
+        return None
+    awe = str(obj.get("aweType") or "")
+    title = ""
+    for _k in ("content_title", "aweme_title", "poi_name", "bottom_card_title",
+               "push_detail", "title"):
+        _v = obj.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            title = _v.strip()
+            break
+    # 动态布局卡片（上游 im_dynamic_patch.top_bottom_top.content 等）
+    _lay = obj.get("im_dynamic_patch")
+    if not title and isinstance(_lay, dict):
+        for _k in ("top_bottom_top", "content_top", "bottom_card"):
+            _d = _lay.get(_k)
+            if isinstance(_d, dict) and isinstance(_d.get("content"), str):
+                title = _d["content"].strip()
+                if title:
+                    break
+    comment = obj.get("comment") if isinstance(obj.get("comment"), str) else ""
+    aweme_type = str(obj.get("awemeType") or "")
+    _ty = ""
+    if comment or awe == "10500":
+        _ty = "评论"
+    if not _ty:
+        _pd = str(obj.get("push_detail") or "")
+        _m = re.search(r"\[(?:分享)?(动图|图文|视频|评论|文章|商品)\]", _pd)
+        if _m:
+            _ty = _m.group(1)
+    if not _ty and aweme_type == "68":
+        _ty = "动图" if str(obj.get("is_live_photo")) == "1" else "图文"
+    if not _ty and aweme_type == "163":
+        _ty = "文章"
+    if not _ty and awe in ("11029", "10401"):
+        _ty = "商品"
+    if not _ty and awe in ("800", "801", "803", "11054", "11055",
+                           "11063", "11066", "11067", "11069", "11070"):
+        _ty = "视频" if title else "链接"
+    # 名片（用户主页卡）：上游 getProfileCard 用 aweType=13600
+    if not _ty and awe == "13600":
+        _ty = "名片"
+    if not _ty:
+        return None
+    _body = title or comment
+    return f"[分享{_ty}] {_body}".rstrip()
+
+
 def _extract_media_text(obj: dict):
     """从富媒体消息体里提取可读文本 + 媒体 URL。
 
@@ -223,6 +287,37 @@ def _extract_media_text(obj: dict):
             return body
         if origin:
             return f"[图片] {origin}"
+    # ── 2026-09-17（对照上游 douyinMessage.getWatchTogether / sharePreview）──
+    # 「一起看视频」邀请卡片：aweType=9000、msg_type=0，但不是普通系统提示。
+    # 上游返回 {title, subtitle, cover}，前端单独渲染成卡片。
+    # 我方此前无此分支 → 落到「[未知媒体] {…JSON…}」被前端当噪音过滤（等于丢消息）。
+    try:
+        if str(obj.get("aweType") or "") == "9000":
+            _t = str(obj.get("title") or "").strip() or "一起看视频"
+            _sub = str(obj.get("sub_title") or obj.get("hint") or "").strip()
+            _cov = ""
+            _cur = obj.get("cover_url")
+            if isinstance(_cur, dict):
+                _lst = _cur.get("url_list")
+                if isinstance(_lst, list) and _lst:
+                    _cov = str(_lst[0] or "")
+            _body = f"[一起看视频] {_t}"
+            if _sub:
+                _body += f"\n{_sub}"
+            if _cov:
+                _body += f"\n[封面] {_cov}"
+            return _body
+    except Exception:
+        pass
+    # 分享卡（视频/图文/动图/商品/文章/评论/直播/名片）：上游 sharePreview 依
+    # aweType / awemeType / push_detail / comment 判定类型并给出可读标题。
+    # 我方此前只有 itemId →「[分享视频] 视频ID x」，其余一律「[未知媒体]」。
+    try:
+        _share = _share_card_text(obj)
+        if _share:
+            return _share
+    except Exception:
+        pass
     # 表情包：url.url_list[0]
     urlobj = obj.get("url")
     if isinstance(urlobj, dict):
@@ -519,6 +614,8 @@ def parse_init_protobuf(raw, my_uid):
             _sec14 = _parse_message_sec_uid(sb2)
             _order4 = _parse_message_created_at_us(sb2)
             _reply18 = _parse_message_reply(sb2)
+            # 2026-09-17：撤回/可见性标志（f11/f12）—— 字段级判据，替代「猜文案」。
+            _recall11, _visible12 = _parse_message_flags(sb2)
             messages.append({
                 "role": role,
                 "text": txt[0],
@@ -531,6 +628,8 @@ def parse_init_protobuf(raw, my_uid):
                 "reply": _reply18,
                 "voice_uri": _voice_uri,
                 "voice_skey": _voice_skey,
+                "is_recalled": _recall11,
+                "visible": _visible12,
             })
         # 会话属性（field 4）：含总消息数(field 2) / short_id(field 5)，
         # 用于长会话历史补全（cmd 301）。cbuf 是原始 bytes，须从 cparsed 取。
@@ -795,6 +894,15 @@ def _parse_301_messages(msgs, my_uid):
         except Exception:
             _order4 = None
         _reply18 = _reply_from_dict(m.get("18"))
+        # 撤回/可见性：blackboxprotobuf 已按数字键解出，直接取。
+        try:
+            _recall11 = int(m.get("11")) if m.get("11") is not None else None
+        except Exception:
+            _recall11 = None
+        try:
+            _visible12 = int(m.get("12")) if m.get("12") is not None else None
+        except Exception:
+            _visible12 = None
         # 语音识别要素（uri/skey）：与图片路径同构，取自同一份 content JSON。
         _v_uri, _v_skey = None, None
         try:
@@ -820,6 +928,8 @@ def _parse_301_messages(msgs, my_uid):
             "reply": _reply18,
             "voice_uri": _v_uri,
             "voice_skey": _v_skey,
+            "is_recalled": _recall11,
+            "visible": _visible12,
         })
     return out
 
@@ -1663,6 +1773,11 @@ def capture_all(name, with_browser=True):
                         _ex["voice_uri"] = m["voice_uri"]
                     if m.get("voice_skey"):
                         _ex["voice_skey"] = m["voice_skey"]
+                    # 2026-09-17：撤回/可见性标志（字段级判据，供前端渲染「已撤回」）
+                    if m.get("is_recalled"):
+                        _ex["is_recalled"] = int(m["is_recalled"])
+                    if m.get("visible") is not None:
+                        _ex["visible"] = int(m["visible"])
                     _extra = _json.dumps(_ex, ensure_ascii=False) if _ex else "{}"
                     # 需要「补写」的情形：全新字段（f14/f4/f18）可能出现在
                     # 已存在的旧行里 —— 旧行为 extra='{}' 或只有 skey。
@@ -1670,7 +1785,7 @@ def capture_all(name, with_browser=True):
                     _need_patch = bool(
                         m.get("sender_sec_uid") or m.get("created_at_us")
                         or (isinstance(m.get("reply"), dict) and m["reply"])
-                        or m.get("voice_uri")
+                        or m.get("voice_uri") or m.get("is_recalled")
                     )
                     if _extra != "{}" and _need_patch:
                         # 与 skey 路径同因同解：旧行已存在时 INSERT OR IGNORE 会被

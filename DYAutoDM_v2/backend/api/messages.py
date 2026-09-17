@@ -448,6 +448,9 @@ async def get_conversation(account: str, conv_id: str):
             _reply = ex.get("reply") if isinstance(ex.get("reply"), dict) else None
             # 2026-09-17：语音转写文本（转写结果由 transcribe 接口写入 extra）。
             _trans = ex.get("transcription")
+            # 2026-09-17：撤回标志（f11 字段级判据）。此前前端只能靠正文占位串
+            # （`Recall Content Hided`）猜，现由服务端字段直接判定。
+            _recalled = bool(int(ex.get("is_recalled") or 0))
             out_messages.append({
                 "role": m["role"],
                 "text": m["text"],
@@ -462,6 +465,7 @@ async def get_conversation(account: str, conv_id: str):
                 "source": ex.get("source") or "ws",
                 "reply": _reply,
                 "transcription": str(_trans) if _trans else None,
+                "recalled": _recalled,
             })
         # 字段同时给两套命名,兼容前端不同消费点:
         #   role/msg_type —— 后端原生命名

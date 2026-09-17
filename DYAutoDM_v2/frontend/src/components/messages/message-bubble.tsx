@@ -34,7 +34,11 @@ export function MsgBubble({
 
   // 2026-08-31：撤回消息。抖音把已撤回的消息体替换成占位串
   // 「Recall Content Hided」（英文原文，实测 5 条），直接展示会像乱码。
-  if (t === "Recall Content Hided" || t === "Recall Content Hidden") {
+  //
+  // 2026-09-17 增强（对照上游）：**字段级判据优先** —— 服务端 protobuf f11
+  // `is_recalled` 为真即已撤回（上游 `if (cj?.is_recalled) return true`）。
+  // 占位串判据保留为历史数据兜底（老行 extra 无 f11）。
+  if (m.recalled === true || t === "Recall Content Hided" || t === "Recall Content Hidden") {
     return (
       <div
         className="rounded-[var(--radius-md)] border border-dashed
@@ -191,6 +195,73 @@ export function MsgBubble({
 
     return <div className={bubble}>[{label}]（无图链，需重新捕获）</div>;
   }
+  // 2026-09-17：「一起看视频」邀请卡片（对照上游 getWatchTogether，aweType=9000）。
+  // 后端产出 `[一起看视频] 标题\n副标题\n[封面] url`。它不是系统提示也不是普通文本，
+  // 此前无此分支 → 被当未知媒体丢弃。这里单独渲染为卡片。
+  const watchM = t.match(/^\[一起看视频\]\s*(.*)$/);
+  if (watchM) {
+    const lines = t.split("\n").map((s) => s.trim()).filter(Boolean);
+    const wTitle = (lines[0] || "").replace(/^\[一起看视频\]\s*/, "") || "一起看视频";
+    const wSub = lines.find((l) => !l.startsWith("[") && l !== wTitle) || "";
+    const wCover = (lines.find((l) => l.startsWith("[封面]")) || "").replace(/^\[封面\]\s*/, "");
+    return (
+      <div className={bubble}>
+        <div className="flex min-w-[220px] items-center gap-2.5">
+          <div
+            className="relative grid aspect-video w-[84px] shrink-0 place-items-center
+                      overflow-hidden rounded-[var(--radius-sm)]
+                      bg-[linear-gradient(135deg,var(--color-accent-soft),var(--color-info-soft))]"
+          >
+            {wCover ? (
+              <img src={wCover} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <Play className="h-4 w-4 text-[var(--color-text-secondary)]" aria-hidden="true" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="truncate text-[0.78rem] font-medium leading-relaxed">{wTitle}</div>
+            {wSub ? (
+              <div className="mt-0.5 line-clamp-2 text-[0.7rem] text-[var(--color-text-muted)]">
+                {wSub}
+              </div>
+            ) : null}
+            <div className="font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+              一起看视频
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2026-09-17：结构化分享卡（后端新增：分享商品/文章/评论/图文/动图/链接/名片）。
+  // 形如 `[分享商品] 标题`；无标题时按普通文本渲染，绝不造空卡片。
+  const shareM = t.match(/^\[分享(视频|商品|文章|评论|图文|动图|链接|名片)\]\s*([\s\S]*)$/);
+  if (shareM) {
+    const sKind = shareM[1];
+    const sBody = (shareM[2] || "").trim();
+    if (sBody) {
+      return (
+        <div className={bubble}>
+          <div className="flex min-w-[200px] items-start gap-2.5">
+            <span
+              className="grid h-[46px] w-[46px] shrink-0 place-items-center rounded-[var(--radius-sm)]
+                        bg-[var(--color-accent-soft)] text-[1.05rem]"
+            >
+              {sKind === "商品" ? "🛍" : sKind === "名片" ? "👤" : sKind === "文章" ? "📄" : "🔗"}
+            </span>
+            <div className="min-w-0">
+              <div className="line-clamp-3 break-words text-[0.78rem] leading-relaxed">{sBody}</div>
+              <div className="font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+                分享的{sKind}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+  }
+
   if (m.type === "text")
     return (
       <div className={bubble}>

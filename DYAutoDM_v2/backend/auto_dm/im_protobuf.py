@@ -347,6 +347,35 @@ def _parse_message_reply(b):
     return None
 
 
+def _parse_message_flags(b):
+    """提取消息对象的状态标志（protobuf）：f11 = is_recalled、f12 = visible。
+
+    2026-09-17 新增（对照上游 douyin-chat-export 的 `parseMessage`：
+      「else if (fn===11) r.is_recalled=Number(v); else if (fn===12) r.visible=Number(v);」
+    其撤回判据原文即 `if (cj?.is_recalled) return true`）。
+
+    为什么需要它：我方此前**只靠正文占位串**（`Recall Content Hided`）识别撤回 ——
+    那是抖音把消息体替换后的产物，属「猜文案」；f11 才是服务端给的**字段级判据**
+    （上游 `is_recalled` ⇒ 真值即已撤回）。同理 f12=visible=0 表示对端不可见。
+
+    返回 `(is_recalled, visible)`：各自为 int 或 None（字段缺失）。
+    解析失败返回 `(None, None)`，绝不抛异常。
+    """
+    rec = None
+    vis = None
+    try:
+        for f, wt, v in _parse(b):
+            if wt != WT_VARINT:
+                continue
+            if f == 11:
+                rec = int(v)
+            elif f == 12:
+                vis = int(v)
+    except Exception:
+        pass
+    return rec, vis
+
+
 def _extract_long_str(b, min_len=200, max_len=200000):
     """提取**长**字符串（用于图片等富媒体 JSON）。
 
