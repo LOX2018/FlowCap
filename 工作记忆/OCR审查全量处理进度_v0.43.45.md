@@ -352,3 +352,113 @@ BCC 重启/切账号（context 重建）后仍返回归属失效的旧昵称。
    - TLS：真跑抖音域名验证 `verify=True` 不会破坏生产
    - 断言类：跑测试看是否真通过
    - 装饰器类：AST 确认装饰器已挂上
+5. **校验脚本本身也要校验**：多个"验证脚本"其实**恒通过/跑不起来**
+   （见 3.4），这类缺陷比业务 bug 更危险——它给出**虚假的安全感**。
+6. **"原文仍在"不等于"未修复"**：用 `existing_code` 做批量预筛只能判断
+   "该文本是否还在文件里"，不能替代语义核实（很多条目是同段多报或已被
+   等价改写）。本会话据此把 197 条 HIGH 预筛为 122/75，仍需逐条判。
+7. **自己的改动也要复核**：本会话 `auth_helper.py` 的改动经复核会引入回归
+   （`_dotenv_values` 不写 `os.environ`，下游依赖 environ）→ **完整回退**。
+   教训：改"进程级副作用"时，必须确认**下游是否依赖该副作用**。
+
+---
+
+## 5. 第二轮处置（v0.43.58 ~ v0.43.64，2026-09-17 晚）
+
+### 5.1 校验/门禁类脚本缺陷（v0.43.59、v0.43.61）
+
+| 文件 | 缺陷 | 验证 |
+|---|---|---|
+| `scripts/verify_isolation.py` | 只打印 PASS/FAIL，**无退出码** → CI 里 FAIL>0 也判成功 | 注入 10 项失败后退出码 **1**（原恒 0） |
+| `scripts/verify_live_restart_hotswap.py` | `... or "enabled" in lc` 是**恒真式** | 改为精确断言 `'"enabled": bool('` |
+| `scripts/verify_nickname_link.py` | JS 实体取自 `browser_daemon.py`（只 import 常量）→ **IndexError，脚本从未跑起来** | 改取 `browser_daemon_js.py`，现 **PASS=17 FAIL=0** |
+| 同上 | 两条断言查错文件 / 匹配**已被修正的旧写法** → 假失败 | 改为校验当前正确实现（含"空 sender→me"反断言） |
+| `backend/scripts/verify_capture_parse.py` | `assert` 做**分支环境守卫** → `python -O` 下被剥离 | 改显式 `if + raise SystemExit` |
+| `backend/scripts/verify_api_split.py` | 同款 assert 守卫（**同类第 2 处**） | 同上 |
+| `scripts/check_version_sync.py` | 五处全部提取不到 → `sorted(vals)[0]` **IndexError** | 空集时返回 **1** + 缺失文件列表 |
+| `scripts/wiki_query.py` | `--read` 无参 → 未捕获 IndexError | 打印用法并返回 2 |
+| `scripts/verify_uid_sink.py` | 硬编码 `C:\Users\LOX\...` → 换机 ImportError | 改用 `__file__` 相对定位 |
+| `scripts/gen_api_client.sh` | `curl -s` 对 404/500 仍返回 0 → 垃圾写进 schema | 加 `-fsS --max-time` + JSON 内容复核 |
+| `scripts/chk_refresh.sh` | `cd` 失败静默；`$f` 为空当参数；**路径指向主分支环境** | 显式判空 + `DY_APP_ROOT` 显式指定 |
+
+### 5.2 `.gitignore` 吞掉持久验证资产（v0.43.62）—— **本轮最高价值**
+
+`_*.py` 规则本意只忽略「临时脚本」，但静默吞掉三个**被 ADR 明文引用**的门禁脚本：
+
+```
+backend/daemon/_verify_send_gate_cache.py
+backend/daemon/_verify_conv_identity.py
+backend/daemon/_verify_lease_lock.py
+```
+
+**实测**：`git log --all -- <path>` 三者均为 **0 次提交** → 从未入库，只存在于
+开发机工作区；`docs/adr_conv_identity_single_source.md:72/147` 直接引用它们
+→ **ADR 引用断链**，换机/克隆即永久失去验证能力。
+
+修复：加 `!**/_verify_*.py` 等例外；**关键回归测试**——
+`git rm --cached <脚本>` 后 `git check-ignore` 仍**不忽略**（证明例外真生效），
+临时脚本（`_triage_all.py` 等）**仍被忽略**（设计意图保持）。
+
+> 附带排除报告原例误报：`logs/` 否定规则**实测有效**（`git check-ignore -v` 无输出），
+> `_build_version.py` 入库靠的是"已跟踪文件不受 gitignore 影响"，非例外规则。
+
+### 5.3 静默失效成一类（v0.43.64）
+
+**① `AutoDM.shutdown` 定义两次** —— 后者（仅 `if is_running: stop()`）覆盖前者
+（含 `_finish_history_task("stopped")`）→ 非运行态历史任务收尾**永不执行**。
+AST 断言：修复后定义数 **1**，保留版含 `_finish_history_task`。
+
+**② `api/logs.py` 路径穿越** —— 实测 `logs/"../../secret.txt"` 逃逸、
+`logs/"C:\Windows\win.ini"` **整体替换**为绝对路径 → 可读任意文件。
+修复：纯文件名校验 + `resolve()` 后父目录必须等于 `LOG_DIR`（双重）。
+
+**③ `/start` check-then-act 竞态 + 丢弃 Task** —— `STARTING` 在被调度协程内才赋值
+→ 并发两次都见 IDLE；`create_task` 返回值被丢 → 异常无人取回，路由仍报
+`ok=True`（**假成功**）。修复：`asyncio.Lock` 串行化 + 保留任务引用 +
+`add_done_callback` 记录异常。
+
+**④ `dy_apis` 一类**：`safe_json` 限流降级为 `{}` 后下游**无守卫下标**
+（`notice_list_v2`/`followers`/`data`）→ KeyError；多处 `while True` **无轮数上限**。
+
+**⑤ `get_live_info` 返回形状** —— 失败返**三元组** `(None,None,None)`，而调用方
+全按「dict 或 None」判（元组为真值 → 过 falsy 检查后抛 TypeError）→ 统一 `None`；
+顺带删除残留调试 `print(res)`。
+
+**⑥ 其他**：`douyin_recv_msg` 的 `A or B and C` 优先级（ConnectionRefusedError
+无视 `auto_reconnect`）+ `type()==` 漏子类；`mcp/tools.py` 把 `(name, env_path)`
+元组塞进 `name` 并泄露 env_path；`kb_maintain` 的 loguru 双参数吞**全部正文**；
+`strdata_pure.build_fingerprint()` 不带 account → 每账号**同一份**上报指纹；
+`vbrowser.py` **硬编码 ipapi.is 密钥** → 改 `DY_IPAPI_KEY`。
+
+### 5.4 复核后**回退**的改动（重要）
+
+`auth_helper.py` 曾把 `load_dotenv(env_path, override=True)` 改为
+`_dotenv_values(env_path)`。复核发现：**下游 `common_util.load_env()` 依赖
+environ 已被写入**（原注释即言明"确保 …能读到 DY_COOKIES"），
+`_dotenv_values` 只返回 dict、不写 environ → **我引入回归** → 已 `git checkout`
+完整回退，未进入本批提交。真正的修法应是在 `load_env` 的 `_env_lock` 临界区内
+把该 dict 显式写入 environ（或维持现状）。
+
+### 5.5 本批验证记录（v0.43.64）
+
+```
+backend 全量语法    175 个 .py，失败 0
+单元测试            8/8 OK（app_config/send_gate/delay_sentinel/
+                            killall/mstoken/dup_keys/config_isolation/model_hub_v2）
+门禁脚本            3/3 ALL PASS（lease_lock 结论：缺陷真实且修复有效）
+前端                npx tsc --noEmit 退出码 0
+版本门禁            五处齐平 0.43.64
+硬编码路径复扫       0 处
+AST 精确断言        AutoDM.shutdown 定义数 == 1（含 _finish_history_task）
+```
+
+### 5.6 剩余
+
+- HIGH 约 **90 条**未处理（`start_dev.ps1` 的 `Get-Process` 通配符/`CommandLine`
+  属性、`src-tauri/lib.rs` 句柄竞态与去重、前端 ~20 条、`notify/gateway` open 模式、
+  `member_ctx.destroy_session`、`member_store` 空表回写、`uid_probe.shutdown` 空转、
+  `conv_identity` 回退 uid、`pro_kb`/`reply_kb`、`api/tasks` 字段名、
+  `dy_live/server` 无退避重连、`mcp/server` 401 未 drain body 等）
+- MEDIUM 590 / LOW 487 **完全未动**
+
+
