@@ -267,17 +267,30 @@ async def delete_sessions(body: SessionDeleteBody):
 
 
 def _read_tail(target: Path, limit: int, fname: str) -> dict:
+    """读日志尾部 limit 条。
+
+    2026-09-17 修补（OCR 审查 HIGH —— 全量读入内存）：
+    原实现 `for raw in f: ... out.append(...)` 把**整个文件**解析成对象列表
+    再 `out[-limit:]`；而 `run_*.log` 按 `rotation="20 MB"` 轮转，单个文件可达
+    20MB —— 一次 `?name=<file>` 请求就要解析数万行并占用同等内存。
+    现只保留最后 `limit*5` 行（留冗余以抵消无法解析的堆栈续行），
+    内存与解析量都与 `limit` 成正比。
+    """
+    from collections import deque
+
     out: list[dict] = []
+    tail: deque = deque(maxlen=max(limit * 5, 200))
     try:
         with target.open("r", encoding="utf-8", errors="replace") as f:
             for raw in f:
-                line = raw.rstrip("\n")
-                if not line:
-                    continue
-                parsed = _parse_line(line)
-                if parsed is not None:
-                    out.append(parsed[1])
+                tail.append(raw)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "file": fname, "error": str(e), "lines": []}
-    out = out[-limit:]
-    return {"ok": True, "file": fname, "lines": out}
+    for raw in tail:
+        line = raw.rstrip("\n")
+        if not line:
+            continue
+        parsed = _parse_line(line)
+        if parsed is not None:
+            out.append(parsed[1])
+    return {"ok": True, "file": fname, "lines": out[-limit:]}

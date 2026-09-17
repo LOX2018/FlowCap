@@ -544,7 +544,7 @@ app = FastAPI(
     # （tauri.conf / package.json / frontend/package.json / Cargo.toml）脱节，
     # 会误导排障（OpenAPI 文档显示的版本号是错的）。
     # 现与产品版本同源（手动同步；如需自动校验见版本一致性门禁）。
-    version="0.43.68",
+    version="0.43.69",
     description="抖音直播间自动私信控制台 - 后端 API",
     lifespan=lifespan,
 )
