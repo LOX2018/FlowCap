@@ -87,6 +87,31 @@
 - `dy_apis/douyin_recv_msg.py:on_message` 无异常保护 → try/except + 安全 URL 取值（**实测 6 类畸形输入全安全降级**）
 - **loguru 跨行双参数又修 20 处 / 12 文件**（上轮脚本只处理单行，漏掉的）
 
+## 3. 处理中（HIGH 197 条）
+
+**进度（v0.43.50 时点）**：HIGH 已定性 **110 条 / 235 条高危**；security 类 25 条**全部定性完毕**（真缺陷 3 / 已修 7 / 误报 13 / 待 agent 2）。
+
+| 状态 | 条数 | 说明 |
+|---|---:|---|
+| 真缺陷已修 | 3 | `mstoken.py` 缓存跨账号串用、`player-kernel.ts` 原型污染、`scripts/track_upstream.py` 全局关 TLS |
+| 前轮已修 | 7 | TLS 族 5 条 + `api/mcp.py` 2 条 + `api/accounts.py` 1 条 |
+| 误报 | 13 | `browser_daemon.py` **11 条**（9 条同行 OWASP 模板刷屏 + 2 条把浏览器 fetch 误判 SQL 注入）、`frontend/package.json`（实测官方 npm 有 1.x 线且镜像 integrity 与官方**完全一致**）|
+| 待 agent | 2 | `api/notify.py`、`crawl-page.tsx` |
+
+### 3.4 v0.43.49~0.43.50 已处置
+
+- **`utils/mstoken.py` 缓存跨账号串用（真缺陷）** —— `_cache` 是**单条**模块级 dict，
+  不含 ttwid 键 → 多账号下 A 的 msToken 被 B 复用（msToken 与 ttwid 配套，串用致签名失败/风控）。
+  修复：改 `{ttwid: {...}}` + 容量上限。**验证 5/5**（含旧实现缺陷对照：旧实现确实把 A 的 token 串给 B）。
+- **`player-kernel.ts` 原型污染（真缺陷）** —— `registerKernel` 未校验 name，
+  传 `__proto__` 会改写 Object 原型。**实测：旧实现 `REGISTRY["__proto__"]` 变成函数**。
+  修复：拒绝危险键 + `defineProperty` 写入。（该函数**全仓无调用方**，属防御性加固）
+- **`scripts/track_upstream.py` 全局关 TLS（真缺陷）** —— `CERT_NONE` + 携带
+  `Authorization: Bearer <token>`。修复：默认开启校验 + `DY_UPSTREAM_INSECURE=1` 显式降级。
+  **实测：开启校验下真实请求 GitHub API 返回 200**（不破坏功能）。
+
+> **本轮 TLS 收敛闭环**：全仓 `verify=False` 与 `CERT_NONE` **已清零**（剩余命中均为注释/脚本自身说明）。
+
 ### 3.3 v0.43.48 已处置（commit `abe0fa7`）—— 私信链路 + 捕获链路
 
 **① 「陌生人首发」配额泄漏（发送闸门被自身拒绝路径绕空）**
