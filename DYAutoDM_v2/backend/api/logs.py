@@ -28,6 +28,10 @@ router = APIRouter()
 LOG_DIR = Path("logs")
 
 
+# 2026-09-17：单条前端日志上限（防超长文本撑爆日志/拖慢读取）
+_WRITE_LOG_MAX_CHARS = 4000
+
+
 class LogWriteBody(BaseModel):
     level: str = "INFO"
     text: str
@@ -125,11 +129,19 @@ async def write_log(body: LogWriteBody):
     用法： POST /api/logs/write  {"level":"SUCCESS","text":"凭证守护已启动"}
     支持的 level: DEBUG, INFO, SUCCESS, WARNING, ERROR
     """
+    # 2026-09-17 修补（OCR 审查 MEDIUM —— 日志注入/无上限）：
+    # `body.text` 原样写进共享日志文件，无长度上限、无清洗：
+    #   ① 超长文本可撑爆日志文件（并拖慢所有读日志的调用）；
+    #   ② 含 `\n` 的文本会**伪造日志行**（日志注入），破坏 `_parse_line`
+    #      的"一行一条"约定，还能借此在日志里植入误导性内容。
+    # 现：长度上限 + 把换行/回车/制表收敛为空格（单行语义不变）。
     level = body.level.upper()
     if level not in ("DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR"):
         level = "INFO"
+    text = str(body.text or "")[: _WRITE_LOG_MAX_CHARS]
+    text = "".join((" " if ch in "\r\n\t" else ch) for ch in text)
     log_method = getattr(logger, level.lower(), logger.info)
-    log_method(body.text)
+    log_method(text)
     return {"ok": True}
 
 

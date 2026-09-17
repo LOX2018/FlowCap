@@ -152,6 +152,12 @@ class McpConfig:
     def check_token(self, candidate: str) -> bool:
         """恒定时间比对；空 token 或未启用一律拒绝。"""
         with _LOCK:
+            # 2026-09-17 修补（OCR 审查 MEDIUM —— 未按 docstring 判定 enabled）：
+            # 原实现只比对 token，**从不检查 `enabled`** → 即便用户在设置里
+            # 关闭了 MCP（默认就是 False），只要请求带上 token 就仍能调用工具，
+            # 与 docstring/设置项语义（"关闭即不提供 MCP 能力"）相矛盾。
+            if not self._data.get("enabled"):
+                return False
             if not self._token or not candidate:
                 return False
             return secrets.compare_digest(self._token, candidate)

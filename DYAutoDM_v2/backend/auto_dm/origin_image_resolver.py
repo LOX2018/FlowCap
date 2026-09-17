@@ -23,6 +23,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -348,7 +349,11 @@ def resolve(account: str, msg_id: str, skey: str, origin_url: str,
     if size <= threshold or not force_hosted:
         # 小图:本地静态托管,文件名带 sha 防撞
         cache_dir = _origin_cache_dir()
-        fpath = cache_dir / f"{msg_id or sha[:12]}_{sha[:8]}.{ext}"
+        # 2026-09-17 修补（OCR 审查 MEDIUM —— msg_id 未净化即入文件名）：
+        # `msg_id` 来自 DB/消息数据，若含路径分隔符或 `..`，拼进文件名后
+        # 可越出缓存目录（写到任意位置）。只保留安全字符，非法则回落 sha。
+        _safe_mid = re.sub(r"[^A-Za-z0-9_-]", "", str(msg_id or ""))[:32]
+        fpath = cache_dir / f"{_safe_mid or sha[:12]}_{sha[:8]}.{ext}"
         if not fpath.exists():
             try:
                 fpath.write_bytes(plain)

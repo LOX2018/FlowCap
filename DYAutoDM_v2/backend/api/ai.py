@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import os
 import time
 from pathlib import Path
 
@@ -153,9 +154,15 @@ async def prokb_import_upload(file: UploadFile):
     data = await file.read()
     if len(data) > kb_import.MAX_FILE_MB * 1024 * 1024:
         raise HTTPException(400, f"文件超过 {kb_import.MAX_FILE_MB}MB 上限")
-    tmp = Path(tempfile.gettempdir()) / f"pro_kb_import_{int(time.time())}{suffix}"
+    # 2026-09-17 修补（OCR 审查 MEDIUM —— 可预测的临时文件名）：
+    # 原用 `pro_kb_import_{int(time.time())}`：1 秒内两次同格式上传会**同名碰撞**
+    # （后者覆盖前者），且共享临时目录下的可预测名字存在本地抢占/信息泄露面。
+    # 改用 `mkstemp`（原子创建 + 随机名 + 仅本用户可读）。
+    _fd, _tmp_path = tempfile.mkstemp(prefix="pro_kb_import_", suffix=suffix)
+    tmp = Path(_tmp_path)
     try:
-        tmp.write_bytes(data)
+        with os.fdopen(_fd, "wb") as _f:
+            _f.write(data)
         cfg = ai_reply.get_config()
         result = await asyncio.to_thread(kb_import.import_pro_file, tmp, cfg)
     except Exception as e:

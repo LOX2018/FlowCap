@@ -44,6 +44,14 @@ def verify_req_sign(e, sig_b64: str, pub_hex: str) -> bool:
 
 def generate_bd_ticket_client_data(api: str, ticket: str, ts_sign: str, prv: str) -> str:
     timestamp = int(time.time())
+    # 2026-09-17 修补（OCR 审查 MEDIUM —— 待签串分隔符注入）：
+    # `ticket` / `api` 直接插进 `k=v&k=v` 形式的待签串，若其中含 `&` 或 `=`
+    # 就能**伪造额外键值对**（改变被签名内容的语义）。这两者的取值本应是
+    # 不含分隔符的 token / 路径，此处按契约显式校验（fail-fast），
+    # 而不是静默产出被篡改的签名材料。
+    for _n, _v in (("ticket", ticket), ("api", api)):
+        if "&" in str(_v) or "=" in str(_v):
+            raise ValueError(f"{_n} 含非法分隔符（&/=），拒绝生成签名材料")
     res_sign = f"ticket={ticket}&path={api}&timestamp={timestamp}"
     p = {
         "ts_sign": ts_sign,

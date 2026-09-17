@@ -70,6 +70,13 @@ def _safe_repr(obj, maxlen: int = 300) -> str:
         if isinstance(o, (list, tuple)):
             return [_walk(x, depth + 1) for x in list(o)[:20]]
         s = str(o)
+        # 2026-09-17 修补（OCR 审查 MEDIUM —— 裸敏感串未遮蔽）：
+        # 原实现只按 dict **键名**遮蔽；若直接传进来一个 cookie 头字符串
+        # （`sessionid=...; sid_tt=...`）或 token 明文，会被原样打印。
+        # 现对"看起来就是敏感材料"的字符串整体遮蔽（只留长度）。
+        _low = s.lower()
+        if any(k.lower() in _low for k in _SENSITIVE_KEYS) and "=" in s:
+            return f"<masked len={len(s)}>"
         return s if len(s) <= 120 else s[:120] + f"...(+{len(s) - 120})"
 
     try:
