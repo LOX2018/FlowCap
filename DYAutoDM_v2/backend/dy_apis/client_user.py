@@ -96,7 +96,8 @@ class UserMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=tls_verify(), timeout=kwargs.get("timeout", 10))
-        return json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
+        return safe_json(resp)
 
     @staticmethod
     def get_user_favorite(auth, sec_id: str, max_cursor: str = '0', num: str = '18', **kwargs):
@@ -254,7 +255,9 @@ class UserMixin:
         params.with_a_bogus()
         resp = requests.get(url, params=params.get(), verify=tls_verify(), headers=headers.get(), cookies=auth.cookie,
                             timeout=kwargs.get("timeout", 10))
-        resp_json = json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json
+        # （后续已在 try 内访问，降级后走 except 分支即可）。
+        resp_json = safe_json(resp)
         # 写回 auth.uid + 时间戳（探活成功是最新鲜的 uid，确保轮换自愈链闭合）
         try:
             _fresh_uid = int(resp_json['user_uid'])
@@ -469,7 +472,8 @@ class UserMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=tls_verify())
-        return json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
+        return safe_json(resp)
 
     @staticmethod
     def get_device_id(auth, **kwargs) -> str:
@@ -493,8 +497,13 @@ class UserMixin:
          .with_a_bogus()
          )
         resp = requests.get(url, params=params.get(), verify=tls_verify(), headers=headers.get(), cookies=auth.cookie)
-        resp_json = json.loads(resp.text)
-        return resp_json['id']
+        # 2026-09-17 修补（OCR 审查 HIGH，两处）：
+        # ① 裸 json.loads → safe_json（限流/空响应优雅降级）。
+        # ② `resp_json['id']` 无守卫 → 降级为 {} 时抛 KeyError；改 .get。
+        resp_json = safe_json(resp)
+        if not isinstance(resp_json, dict):
+            return None
+        return resp_json.get('id')
 
     @staticmethod
     def search_some_user(auth, query: str, num: int, **kwargs) -> list:

@@ -92,7 +92,8 @@ class VideoMixin:
         params.add_param("fp", auth.cookie['s_v_web_id'])
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=tls_verify())
-        resp_json = json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
+        resp_json = safe_json(resp)
         return resp_json
 
     @staticmethod

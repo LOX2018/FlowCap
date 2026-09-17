@@ -242,7 +242,13 @@ class RelationsMixin:
         }
         resp = requests.post(url, params=params.get(), headers=headers.get(), cookies=auth.cookie, data=data,
                              verify=tls_verify())
-        print(resp.text)
-        resp_json = json.loads(resp.text)
-        return resp_json['is_digg'] == 0
+        # 2026-09-17 修补（OCR 审查 HIGH，两处）：
+        # ① 残留的调试 `print(resp.text)` 会污染 stdout（daemon 场景下无用且
+        #    可能泄露响应体）→ 删除。
+        # ② 裸 json.loads 未走 safe_json；且 `resp_json['is_digg']` 无守卫 →
+        #    空响应降级为 {} 时抛 KeyError。改用 safe_json + .get 默认 False。
+        resp_json = safe_json(resp)
+        if not isinstance(resp_json, dict):
+            return False
+        return resp_json.get('is_digg') == 0
 

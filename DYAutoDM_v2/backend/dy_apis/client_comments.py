@@ -101,8 +101,10 @@ class CommentsMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=tls_verify())
-        resp_json = json.loads(resp.text)
-        return resp_json
+        # 2026-09-17 修补（OCR 审查 HIGH —— 裸 json.loads 未走 safe_json）：
+        # 抖音限流/风控时返回**空响应体**，`json.loads(resp.text)` 抛
+        # JSONDecodeError 并被上层当 502。项目约定用 safe_json 优雅降级。
+        return safe_json(resp)
 
     @staticmethod
     def get_work_all_out_comment(auth, url: str, **kwargs) -> list:
@@ -116,12 +118,18 @@ class CommentsMixin:
         comment_list = []
         while True:
             res_json = DouyinAPI.get_work_out_comment(auth, url, cursor)
-            comments = res_json["comments"]
-            cursor = str(res_json["cursor"])
+            # 2026-09-17 修补（OCR 审查 HIGH —— 无守卫的下标访问）：
+            # safe_json 在限流/空响应时降级为 `{}` → 原 `res_json["comments"]`
+            # 会抛 KeyError（比 JSONDecodeError 更隐蔽）。改用 .get 并在
+            # 拿不到批次时终止翻页（等价于"平台无更多数据"）。
+            if not isinstance(res_json, dict):
+                break
+            comments = res_json.get("comments")
             if comments is None or len(comments) == 0:
                 break
+            cursor = str(res_json.get("cursor") or "")
             comment_list.extend(comments)
-            if res_json["has_more"] != 1:
+            if res_json.get("has_more") != 1:
                 break
         return comment_list
 
@@ -180,7 +188,8 @@ class CommentsMixin:
         params.with_a_bogus()
         resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
                             params=params.get(), verify=tls_verify())
-        resp_json = json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
+        resp_json = safe_json(resp)
         return resp_json
 
     @staticmethod
@@ -196,11 +205,15 @@ class CommentsMixin:
         comment_list = []
         while True:
             res_json = DouyinAPI.get_work_inner_comment(auth, comment, cursor, count)
-            comments = res_json["comments"]
-            cursor = str(res_json["cursor"])
+            # 2026-09-17 修补（OCR 审查 HIGH —— 无守卫的下标访问）：
+            # 同 get_work_all_out_comment，safe_json 可能返回 `{}`。
+            if not isinstance(res_json, dict):
+                break
+            comments = res_json.get("comments")
+            cursor = str(res_json.get("cursor") or "")
             if type(comments) is list and len(comments) > 0:
                 comment_list.extend(comments)
-            if res_json["has_more"] != 1:
+            if res_json.get("has_more") != 1:
                 break
         return comment_list
 

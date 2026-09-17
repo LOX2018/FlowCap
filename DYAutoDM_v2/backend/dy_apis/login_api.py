@@ -12,6 +12,9 @@ from builder.auth import DouyinAuth
 from builder.header import HeaderBuilder, HeaderType
 from builder.params import Params
 from utils.dy_util import generate_ree_key, generate_bd_ticket_client_data
+# 2026-09-17 修补（OCR 审查 HIGH）：本文件的裸 `json.loads(resp.text)` 统一
+# 改为 `safe_json`（限流/风控返回空响应体时优雅降级，与 dy_apis 其它域模块一致）。
+from dy_apis._common import safe_json  # noqa: E402
 import json
 from threading import Thread
 import qrcode
@@ -1156,7 +1159,8 @@ class DYLoginApi:
         params.add_param("msToken", auth.cookie['msToken'])
         params.with_a_bogus()
         resp = requests.get(self.base_url + api, headers=headers.get(), cookies=auth.cookie, params=params.get(), verify=_TLS_VERIFY)
-        return json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
+        return safe_json(resp)
 
 
     def dyCheckQrCodeLogin(self, auth, token):
@@ -1182,7 +1186,8 @@ class DYLoginApi:
         params.add_param("msToken", auth.cookie['msToken'])
         params.with_a_bogus()
         resp = requests.get(self.base_url + api, headers=headers.get(), cookies=auth.cookie, params=params.get(), verify=_TLS_VERIFY)
-        return json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
+        return safe_json(resp)
 
     # 手机验证码登录
     def dyGeneratePhoneVerificationCode(self, phone_num, auth):
@@ -1381,8 +1386,14 @@ class DYLoginApi:
     async def qrcodeMain(self):
         auth = await self.dyGenerateInitData()
         qrCodeDict = self.dyGenerateQRcode(auth)
-        token = qrCodeDict['data']['token']
-        verify_url = qrCodeDict['data']['qrcode_index_url']
+        # 2026-09-17 修补（OCR 审查 HIGH）：原为深层下标 `['data']['token']`，
+        # 空响应/风控降级（safe_json → {}）时抛 KeyError/TypeError 且无提示。
+        _qd = (qrCodeDict or {}).get('data') or {}
+        if not isinstance(_qd, dict) or not _qd.get('token'):
+            logger.error("[auth] 生成二维码失败（响应为空或缺少 data.token）")
+            return
+        token = _qd['token']
+        verify_url = _qd['qrcode_index_url']
         qrcode_thread = Thread(target=self.generateQrcode, args=(verify_url,))
         qrcode_thread.start()
         while True:

@@ -417,7 +417,11 @@ class ImMixin:
             headers=headers.get(), cookies=auth.cookie,
             params=params.get(), verify=tls_verify(), timeout=8,
         )
-        data = json.loads(resp.text)
+        # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json
+        # （后续已用 .get 访问，故只需统一降级策略）。
+        data = safe_json(resp)
+        if not isinstance(data, dict):
+            return {}
         if data.get("status_code") != 0:
             logger.warning(f"[AUTH-023] " + f"[im] get_im_user_info uid={uid} status={data.get('status_code')}")
             return {}
