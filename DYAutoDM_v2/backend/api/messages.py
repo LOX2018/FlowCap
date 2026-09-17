@@ -18,8 +18,10 @@ from pathlib import Path
 # 顶层 import 确保 PyInstaller onefile 能追踪到 origin_image_resolver
 # (函数体内动态 import 不会被静态分析,导致 onefile 缺少该模块)
 from auto_dm import origin_image_resolver as _origin_image_resolver
+# 2026-09-17：IM 视频（CENC 解密 + 下载）——同样顶层 import，保证 PyInstaller 能追踪
+from services import im_video as _im_video
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from loguru import logger
@@ -511,6 +513,83 @@ async def get_conversation(account: str, conv_id: str):
 # 风控边界:HTTP GET 不带账号 cookie,只靠图片 URL 自带签名参数;
 # 频次 = 首访唯一,后续全缓存。零主动批量,零复用凭证。
 # ---------------------------------------------------------------------------
+class ImVideoReq(BaseModel):
+    """IM 视频：下载 + CENC 解密（2026-09-17 新增）。
+
+    入参直接取消息 `extra` 里的视频要素（同图片 skey/origin_url 思路）：
+      · `url`  —— CDN 密文直链（自带签名，**不带 cookie**）
+      · `skey` —— 32 位 hex（16 字节 AES-128 密钥）
+    `force=True` 忽略缓存重新下载。
+    """
+    url: str
+    skey: str
+    force: bool = False
+
+
+@router.post("/video/resolve")
+async def resolve_im_video(body: ImVideoReq):
+    """下载并 CENC 解密 IM 视频 → 返回可直接播放/下载的本机 url。
+
+    设计取舍（对照铁律 §一·2）：**不经过 BCC**，也不复用账号 cookie ——
+    复用既有图片链路的既定范式（CDN 直链自带签名 + 本地缓存）。
+    """
+    try:
+        res = await asyncio.to_thread(
+            _im_video.download_and_decrypt, body.url, body.skey, force=body.force)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-044] " + f"视频解析异常: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"视频解析异常: {type(e).__name__}")
+    if not res.get("ok"):
+        raise HTTPException(502, res.get("error") or "视频解析失败")
+    name = ""
+    if res.get("path"):
+        name = Path(res["path"]).name
+        res["url"] = f"http://127.0.0.1:{_app_settings.backend_port}/api/messages/video/{name}"
+    res.pop("path", None)     # 不外泄本机绝对路径
+    return res
+
+
+@router.get("/video/{filename}")
+async def serve_im_video(filename: str, request: Request):
+    """返回已解密的视频明文文件（**支持 Range**，供 <video> 拖动播放）。
+
+    filename 仅允许 [A-Za-z0-9_.-]，杜绝路径穿越。
+    """
+    safe = "".join(c for c in filename if c.isalnum() or c in "._-")
+    if safe != filename or not safe:
+        raise HTTPException(400, "filename 非法")
+    fpath = _im_video._cache_dir() / safe
+    if not fpath.exists() or not fpath.is_file():
+        raise HTTPException(404, "视频不存在或已清理")
+    try:
+        _im_video.touch_local(safe)
+    except Exception:
+        pass
+    size = fpath.stat().st_size
+    rng = request.headers.get("range") or request.headers.get("Range")
+    if rng and rng.startswith("bytes="):
+        # 只支持单区间（浏览器 <video> 的实际用法）
+        try:
+            spec = rng.split("=", 1)[1].split(",")[0].strip()
+            a, _, b = spec.partition("-")
+            start = int(a) if a else 0
+            end = int(b) if b else size - 1
+            start = max(0, min(start, size - 1))
+            end = max(start, min(end, size - 1))
+        except Exception:
+            start, end = 0, size - 1
+        length = end - start + 1
+        with open(fpath, "rb") as f:
+            f.seek(start)
+            chunk = f.read(length)
+        return Response(content=chunk, status_code=206, media_type="video/mp4",
+                        headers={"Content-Range": f"bytes {start}-{end}/{size}",
+                                 "Accept-Ranges": "bytes",
+                                 "Content-Length": str(length)})
+    return FileResponse(str(fpath), media_type="video/mp4",
+                        headers={"Accept-Ranges": "bytes"})
+
+
 class OriginImageResolveRequest(BaseModel):
     account: str
     msg_id: str | None = None

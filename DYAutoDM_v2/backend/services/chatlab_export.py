@@ -113,7 +113,7 @@ def build_filename(conv_name: str, fmt: str, ts: int | None = None) -> str:
 def _load_msgs(conn, account: str, conv_id: str) -> tuple[dict, list]:
     """取会话元信息 + 按稳定顺序取消息（与聊天页同排序口径）。"""
     row = conn.execute(
-        "SELECT conv_id, peer_id, peer_name FROM dm_conversations "
+        "SELECT conv_id, peer_id, peer_name, conv_type FROM dm_conversations "
         "WHERE account=? AND conv_id=?", (account, str(conv_id))).fetchone()
     if row is None:
         raise ValueError("会话不存在")
@@ -141,6 +141,15 @@ def export_chatlab(account: str, conv_id: str, dest_dir: str, *,
     conn = get_db()
     conv, msgs = _load_msgs(conn, account, conv_id)
     name = conv["peer_name"] or conv["peer_id"] or conv["conv_id"]
+    # 2026-09-17（群聊支持）：会话类型照上游 exporter ——
+    #   `"type": "group" if row["conv_type"] == 2 else "private"`，
+    #   且群聊额外给出 meta.groupId（上游同款字段）。
+    _ct = 2 if str(conv_id).isdigit() else 1
+    try:
+        _ct = int(conv["conv_type"] or _ct)
+    except Exception:
+        pass
+    is_group = _ct == 2
 
     # 成员表：me 用 self 占位 uid（我方无 owner uid 的可读名时用「我」）
     members_map: dict[str, str] = {}
@@ -182,10 +191,14 @@ def export_chatlab(account: str, conv_id: str, dest_dir: str, *,
     header = {
         "chatlab": {"version": CHATLAB_VERSION, "exportedAt": int(time.time()),
                     "generator": GENERATOR},
-        "meta": {"name": f"与{name}的对话", "platform": "douyin",
-                 "type": "private",
+        "meta": {"name": (f"群聊 {name}" if is_group else f"与{name}的对话"),
+                 "platform": "douyin",
+                 "type": "group" if is_group else "private",
                  "ownerId": "me"},
     }
+    if is_group:
+        # 上游同款：群聊额外标注群 ID
+        header["meta"]["groupId"] = str(conv_id)
     d = Path(dest_dir)
     d.mkdir(parents=True, exist_ok=True)
     path = d / build_filename(str(name), fmt)

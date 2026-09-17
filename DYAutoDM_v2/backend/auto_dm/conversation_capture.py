@@ -1712,12 +1712,23 @@ def capture_all(name, with_browser=True):
             #   （`/aweme/v1/web/im/user/info/` 实测只认 `sec_user_ids`，见
             #    docs/reverse_interface_spec.md §三）。而 `parse_init_protobuf`
             #   其实**早已解析出 sec_uid**，只是从未落库 —— 本次补上最后一公里。
+            # 2026-09-17：群聊判定（照上游 web_scraper._acquire_short_id 口径）
+            #   · conv_id 为**纯数字** → 群聊（实测群聊 conv_id 本身就是 short_id）
+            #   · '0:1:uidA:uidB'     → 单聊
+            # 落库为 conv_type（1=单聊 2=群聊），供列表/导出/统计分流。
+            conv_type = 2 if str(cid).isdigit() else 1
             conn.execute(
                 "INSERT OR IGNORE INTO dm_conversations("
-                "account,conv_id,peer_id,peer_name,short_id,last_ts,unread,avatar) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "account,conv_id,peer_id,peer_name,short_id,conv_type,last_ts,unread,avatar) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 (name, cid, peer_uid, nickname or peer_uid,
-                 c.get("sec_uid") or None, 0, 0, avatar or None),
+                 c.get("sec_uid") or None, conv_type, 0, 0, avatar or None),
+            )
+            # 存量行补/正 conv_type（旧行为默认 1，本轮起按上游口径写入真实值）
+            conn.execute(
+                "UPDATE dm_conversations SET conv_type=? "
+                "WHERE account=? AND conv_id=? AND IFNULL(conv_type,0)<>?",
+                (conv_type, name, cid, conv_type),
             )
             # 存量记录补写 sec_uid（原为 NULL 的行，本次起可回填）
             if c.get("sec_uid"):

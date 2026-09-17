@@ -175,6 +175,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         peer_id TEXT,
         peer_name TEXT,
         short_id TEXT,
+        conv_type INTEGER DEFAULT 1,   -- 1=单聊 2=群聊（2026-09-17 新增，照上游 conv_type）
         last_ts REAL DEFAULT 0,
         unread INTEGER DEFAULT 0,
         avatar TEXT,
@@ -235,6 +236,20 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE dm_conversations ADD COLUMN avatar TEXT")
     except Exception:
         pass  # 列已存在
+    try:
+        # 2026-09-17：会话类型（1=单聊 2=群聊）。
+        # 上游的判定规则：**conv_id 为纯数字 → 群聊**（实测群聊 conv_id 即 short_id）。
+        # 默认 1（单聊），保证旧数据语义不变；由 conversation_capture 回填真实值。
+        conn.execute("ALTER TABLE dm_conversations ADD COLUMN conv_type INTEGER DEFAULT 1")
+    except Exception:
+        pass  # 列已存在
+    try:
+        # 旧库存量数据回填：纯数字 conv_id → 群聊（与上游判定口径一致）
+        conn.execute("UPDATE dm_conversations SET conv_type=2 "
+                     "WHERE conv_type IS NULL OR conv_type=1 AND conv_id GLOB '[0-9]*' "
+                     "AND conv_id NOT GLOB '*[^0-9]*'")
+    except Exception as _e:  # noqa: BLE001
+        logger.warning(f"[db] conv_type 回填失败（不影响启动）: {_e}")
     try:
         conn.execute("ALTER TABLE tasks ADD COLUMN pid INTEGER DEFAULT 0")
     except Exception:

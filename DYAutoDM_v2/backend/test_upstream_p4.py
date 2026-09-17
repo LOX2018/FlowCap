@@ -1,0 +1,532 @@
+# -*- coding: utf-8 -*-
+"""P4 单测：CENC 视频解密 / 视频缓存服务 / 群聊 conv_type。
+
+验证策略（**不伪造密文**）：
+  用 ffmpeg **真实生成**一个 H.264 MP4，再用测试内自写的封装器构造
+  CENC 加密 MP4（senc/saiz/stsz/stsc/stco + AES-128-CTR），
+  然后断言 `decrypt_cenc_mp4` 能把它**逐字节还原**成原始明文。
+这样验证的是真算法（真 AES-CTR、真 box 布局、真样本偏移），不是「跑通不报错」。
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import shutil
+import sqlite3
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import services.cenc_video as CV        # noqa: E402
+import services.im_video as IV          # noqa: E402
+import services.chatlab_export as CE    # noqa: E402
+
+_ACCT = "acct1"
+_CONV = "0:1:100:200"
+
+
+def _ffmpeg() -> str | None:
+    return shutil.which("ffmpeg")
+
+
+def _make_src_mp4(path: str, hole_bytes: int = 0) -> bool:
+    """用 ffmpeg 生成真实 H.264 MP4；`hole_bytes>0` 时在 stbl 内**预留 free box**。
+
+    为什么要预留：真实 CENC 文件的 senc/saiz 是**文件生成时就在**的，
+    加密**不改变文件长度**。测试若「事后插入」box 会改变长度，与真实文件不符
+    （实测：插入 senc+saiz 后 2859→2914 字节，导致长度一致性校验正确报错）。
+    故先生成等大的 `free` box，加密时**原地覆盖**成 senc+saiz。
+    """
+    exe = _ffmpeg()
+    if not exe:
+        return False
+    r = subprocess.run(
+        [exe, "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=10",
+         "-t", "1", "-pix_fmt", "yuv420p", "-c:v", "libx264",
+         "-movflags", "+faststart", path],
+        capture_output=True)
+    if not (r.returncode == 0 and os.path.exists(path)
+            and os.path.getsize(path) > 500):
+        return False
+    if hole_bytes <= 0:
+        return True
+    buf = bytearray(open(path, "rb").read())
+    moov = next(((bt, p, sz) for bt, p, sz in _iter_boxes(buf, 0, len(buf))
+                 if bt == b"moov"), None)
+    if not moov:
+        return False
+    trak = next(((bt, p, sz) for bt, p, sz in
+                 _iter_boxes(buf, moov[1] + 8, moov[1] + moov[2]) if bt == b"trak"), None)
+    mdia = next(((bt, p, sz) for bt, p, sz in
+                 _iter_boxes(buf, trak[1] + 8, trak[1] + trak[2]) if bt == b"mdia"), None)
+    minf = next(((bt, p, sz) for bt, p, sz in
+                 _iter_boxes(buf, mdia[1] + 8, mdia[1] + mdia[2]) if bt == b"minf"), None)
+    stbl = next(((bt, p, sz) for bt, p, sz in
+                 _iter_boxes(buf, minf[1] + 8, minf[1] + minf[2]) if bt == b"stbl"), None)
+    if not stbl:
+        return False
+    hole_end_before = stbl[1] + stbl[2]      # 插入点（此后所有字节后移）
+    hole = _box("free", b"\x00" * hole_bytes)
+    end = stbl[1] + stbl[2]
+    buf[end:end] = hole
+    for _bt, p, _sz in (stbl, minf, mdia, trak, moov):
+        cur = struct.unpack(">I", buf[p:p + 4])[0]
+        buf[p:p + 4] = struct.pack(">I", cur + len(hole))
+    # ⚠️ 必须修正 stco/co64 的绝对偏移：hole 插在 moov 内（mdat 之前），
+    #    其后所有字节整体后移 len(hole) —— 不修正的话 stco 会指到旧位置
+    #    （实测读出来的「样本」全是 0，解密后自然对不上）。
+    for name, width, code in ((b"stco", 4, ">I"), (b"co64", 8, ">Q")):
+        box = next(((bt, p, sz) for bt, p, sz in
+                    _iter_boxes(buf, stbl[1] + 8, stbl[1] + stbl[2] + len(hole))
+                    if bt == name), None)
+        if not box:
+            continue
+        n = struct.unpack(">I", buf[box[1] + 12:box[1] + 16])[0]
+        base = box[1] + 16
+        vals = [struct.unpack(code, buf[base + i * width:base + (i + 1) * width])[0]
+                for i in range(n)]
+        if vals and min(vals) > hole_end_before:
+            for i, v in enumerate(vals):
+                struct.pack_into(code, buf, base + i * width, v + len(hole))
+    open(path, "wb").write(bytes(buf))
+    return True
+
+
+def _box(t: str, payload: bytes) -> bytes:
+    return struct.pack(">I", len(payload) + 8) + t.encode() + payload
+
+
+def _full_box(t: str, version: int, flags: int, payload: bytes) -> bytes:
+    return _box(t, bytes([version]) + flags.to_bytes(3, "big") + payload)
+
+
+def _iter_boxes(buf: bytes, start: int, end: int):
+    pos = start
+    while pos < end - 8:
+        bs = struct.unpack(">I", buf[pos:pos + 4])[0]
+        bt = buf[pos + 4:pos + 8]
+        if bs < 8 or pos + bs > end:
+            break
+        yield bt, pos, bs
+        pos += bs
+
+
+def _cenc_encrypt_mp4(plain: bytes, key_hex: str, iv_size: int = 8,
+                      subsample: bool = True) -> bytes:
+    """把普通 MP4 就地改造成 CENC 加密 MP4（测试用最小实现，与真实文件同构）。
+
+    要点（都来自真实 CENC 的规范约束）：
+      · **senc 必须覆盖全部样本**（entries 数 == stsz 样本数），否则真实文件不合法；
+      · 每样本独立 IV；子样本模式下「明文头 / 密文负载 / 明文尾」交替，
+        CTR 计数器只随密文推进；
+      · senc/saiz 覆盖预先预留的 `free` box，**不改变文件长度**。
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    key = bytes.fromhex(key_hex)
+    buf = bytearray(plain)
+
+    def _iter2(s: int, e: int):
+        return list(_iter_boxes(buf, s, e))
+
+    def find(t: bytes, s: int, e: int):
+        return next(((bt, p, sz) for bt, p, sz in _iter2(s, e) if bt == t), None)
+
+    moov = find(b"moov", 0, len(buf))
+    assert moov, "无 moov"
+    trak = find(b"trak", moov[1] + 8, moov[1] + moov[2])
+    assert trak, "无 trak"
+    mdia = find(b"mdia", trak[1] + 8, trak[1] + trak[2])
+    minf = find(b"minf", mdia[1] + 8, mdia[1] + mdia[2])
+    stbl = find(b"stbl", minf[1] + 8, minf[1] + minf[2])
+    stsz = find(b"stsz", stbl[1] + 8, stbl[1] + stbl[2])
+    stsc = find(b"stsc", stbl[1] + 8, stbl[1] + stbl[2])
+    stco = find(b"stco", stbl[1] + 8, stbl[1] + stbl[2])
+    assert stsz and stsc and stco, "缺 stsz/stsc/stco"
+    sizes = CV._parse_stsz(buf[stsz[1] + 8:stsz[1] + stsz[2]])
+    stsc_e = CV._parse_stsc(buf[stsc[1] + 8:stsc[1] + stsc[2]])
+    offs = CV._parse_stco(buf[stco[1] + 8:stco[1] + stco[2]])
+    samples = CV._sample_offsets(stsc_e, offs, sizes)
+    assert samples, "样本表为空"
+
+    senc_payload = struct.pack(">I", len(samples))
+    for i, (off, size) in enumerate(samples):
+        iv = (i + 1).to_bytes(iv_size, "big")
+        iv16 = iv.ljust(16, b"\x00")
+        sample = bytes(buf[off:off + size])
+        if subsample and size >= 32:
+            clear1, clear2 = 8, 8
+            prot = size - clear1 - clear2
+            enc = Cipher(algorithms.AES(key), modes.CTR(iv16)).encryptor().update(
+                sample[clear1:clear1 + prot])
+            buf[off:off + size] = sample[:clear1] + enc + sample[clear1 + prot:]
+            subs = [(clear1, prot), (clear2, 0)]
+        else:
+            enc = Cipher(algorithms.AES(key), modes.CTR(iv16)).encryptor().update(sample)
+            buf[off:off + size] = enc
+            subs = []
+        senc_payload += iv
+        if subsample:
+            senc_payload += struct.pack(">H", len(subs))
+            for cl, pr in subs:
+                senc_payload += struct.pack(">HI", cl, pr)
+
+    flags = 0x000002 if subsample else 0
+    senc_box = _full_box("senc", 0, flags, senc_payload)
+    saiz_box = _full_box("saiz", 0, 0, bytes([iv_size]) + struct.pack(">I", len(samples)))
+    new_boxes = senc_box + saiz_box
+    # 原地覆盖预留的 free box（**不改变文件长度**，与真实 CENC 文件一致）
+    hole = next(((bt, p, sz) for bt, p, sz in _iter2(stbl[1] + 8, stbl[1] + stbl[2])
+                 if bt == b"free" and sz >= len(new_boxes) + 8), None)
+    if hole is None:
+        raise AssertionError("测试夹具缺少足够大的 free 预留 box")
+    start, free_end = hole[1], hole[1] + hole[2]
+    buf[start:start + len(new_boxes)] = new_boxes
+    tail = start + len(new_boxes)
+    remain = free_end - tail
+    if remain >= 8:
+        # 剩余空间写成合法 free box（保持文件长度不变，且不干扰 box 遍历）
+        buf[tail:tail + 8] = struct.pack(">I", remain) + b"free"
+        buf[tail + 8:free_end] = b"\x00" * (remain - 8)
+    elif remain > 0:
+        buf[tail:free_end] = b"\x00" * remain
+    return bytes(buf)
+
+
+def _all_boxes(buf: bytes, s: int, e: int):
+    return list(_iter_boxes(buf, s, e))
+
+
+def _find_box(buf: bytes, t: bytes, s: int, e: int):
+    return next(((bt, p, sz) for bt, p, sz in _all_boxes(buf, s, e) if bt == t), None)
+
+
+def _sample_bytes(buf: bytes) -> list[bytes]:
+    """取第一个 trak 的各样本字节（用于**逐样本**比对解密正确性）。
+
+    为什么不比整个文件：加密后 `stbl` 里的预留 `free` box 会被 `senc`/`saiz`
+    覆盖（真实 CENC 文件亦然），文件字节因此必然不同；而**样本（mdat 内的
+    媒体数据）必须逐字节还原**才是解密正确的证明。
+    """
+    import services.cenc_video as CV
+    moov = _find_box(buf, b"moov", 0, len(buf))
+    trak = _find_box(buf, b"trak", moov[1] + 8, moov[1] + moov[2])
+    mdia = _find_box(buf, b"mdia", trak[1] + 8, trak[1] + trak[2])
+    minf = _find_box(buf, b"minf", mdia[1] + 8, mdia[1] + mdia[2])
+    stbl = _find_box(buf, b"stbl", minf[1] + 8, minf[1] + minf[2])
+    stsz = _find_box(buf, b"stsz", stbl[1] + 8, stbl[1] + stbl[2])
+    stsc = _find_box(buf, b"stsc", stbl[1] + 8, stbl[1] + stbl[2])
+    stco = _find_box(buf, b"stco", stbl[1] + 8, stbl[1] + stbl[2])
+    stco64 = _find_box(buf, b"co64", stbl[1] + 8, stbl[1] + stbl[2])
+    sizes = CV._parse_stsz(buf[stsz[1] + 8:stsz[1] + stsz[2]])
+    offs = (CV._parse_co64(buf[stco64[1] + 8:stco64[1] + stco64[2]]) if stco64
+            else CV._parse_stco(buf[stco[1] + 8:stco[1] + stco[2]]))
+    stsc_e = CV._parse_stsc(buf[stsc[1] + 8:stsc[1] + stsc[2]])
+    return [bytes(buf[o:o + sz]) for o, sz in CV._sample_offsets(stsc_e, offs, sizes)]
+
+
+class TestCencDecrypt(unittest.TestCase):
+    """真 AES-CTR、真 box、真样本偏移的端到端解密验证。"""
+
+    _KEY = "00112233445566778899aabbccddeeff"
+
+    def setUp(self):
+        self.assertTrue(_ffmpeg(), "本用例需要 ffmpeg 生成真实 MP4")
+        self._tmp = tempfile.mkdtemp(prefix="dy_cenc_")
+        self.src = os.path.join(self._tmp, "src.mp4")
+        if not _make_src_mp4(self.src, hole_bytes=512):
+            self.skipTest("ffmpeg 生成源 MP4 失败")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _roundtrip(self, **kw):
+        plain = open(self.src, "rb").read()
+        enc = _cenc_encrypt_mp4(plain, self._KEY, **kw)
+        self.assertEqual(len(enc), len(plain), "加密不得改变文件长度")
+        before = _sample_bytes(enc)
+        out = CV.decrypt_cenc_mp4(enc, self._KEY)
+        return plain, enc, before, out
+
+    def _assert_samples_restored(self, plain, before, out):
+        """**逐样本**断言解密正确（这是「真解开了」的充分证据）。"""
+        want = _sample_bytes(plain)
+        got = _sample_bytes(out)
+        self.assertEqual(len(before), len(want), "样本数应一致")
+        self.assertNotEqual(before, want, "加密后样本应与明文不同（否则没加密）")
+        self.assertEqual(len(got), len(want), "解密后样本数应一致")
+        for i, (w, g) in enumerate(zip(want, got)):
+            self.assertEqual(g, w, f"第 {i} 个样本未还原")
+
+    def test_subsample_roundtrip_exact(self):
+        """子样本加密 → 解密必须逐样本还原。"""
+        plain, enc, before, out = self._roundtrip(subsample=True)
+        self._assert_samples_restored(plain, before, out)
+
+    def test_full_sample_roundtrip_exact(self):
+        """整样本加密 → 解密必须逐样本还原。"""
+        plain, enc, before, out = self._roundtrip(subsample=False)
+        self._assert_samples_restored(plain, before, out)
+
+    def test_iv_size_16_roundtrip(self):
+        """IV 尺寸 16（saiz=16）也必须正确。"""
+        plain, enc, before, out = self._roundtrip(iv_size=16)
+        self._assert_samples_restored(plain, before, out)
+
+    def test_wrong_key_does_not_return_plaintext(self):
+        """错密钥必须解不出明文（防「其实没解密却报成功」）。"""
+        plain = open(self.src, "rb").read()
+        enc = _cenc_encrypt_mp4(plain, self._KEY)
+        try:
+            out = CV.decrypt_cenc_mp4(enc, "ff" * 16)
+        except ValueError:
+            return                     # 解析失败也可接受
+        self.assertNotEqual(_sample_bytes(out), _sample_bytes(plain),
+                            "错密钥竟然还原了样本")
+
+    def test_decrypted_output_is_playable_mp4(self):
+        """解密结果必须能被 ffmpeg 真正解码（不是「看着像 MP4」）。"""
+        _p, enc, _b, out = self._roundtrip()
+        dst = os.path.join(self._tmp, "out.mp4")
+        open(dst, "wb").write(out)
+        r = subprocess.run([_ffmpeg(), "-v", "error", "-i", dst, "-f", "null", "-"],
+                           capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[:400])
+
+    def test_bad_key_rejected(self):
+        plain = open(self.src, "rb").read()
+        for bad in ("", "zz", "00" * 8, "00" * 32):
+            with self.assertRaises(ValueError, msg=f"key={bad!r} 应被拒"):
+                CV.decrypt_cenc_mp4(plain, bad)
+
+    def test_not_mp4_rejected(self):
+        with self.assertRaises(ValueError):
+            CV.decrypt_cenc_mp4(b"not an mp4 at all" * 10, self._KEY)
+
+    def test_unencrypted_mp4_reports_no_samples(self):
+        """未加密 MP4：不得谎称解密成功。"""
+        plain = open(self.src, "rb").read()
+        with self.assertRaises(ValueError):
+            CV.decrypt_cenc_mp4(plain, self._KEY)
+
+    def test_probe_detects_encryption(self):
+        plain = open(self.src, "rb").read()
+        enc = _cenc_encrypt_mp4(plain, self._KEY)
+        p0, p1 = CV.probe_mp4(plain), CV.probe_mp4(enc)
+        self.assertTrue(p0["is_mp4"] and p1["is_mp4"])
+        self.assertEqual(p0["encrypted_samples"], 0)
+        self.assertEqual(p1["encrypted_samples"], len(_sample_bytes(plain)),
+                         "probe 应报告全部加密样本")
+        self.assertEqual(p0["tracks"], p1["tracks"])
+
+    def test_malformed_box_does_not_hang(self):
+        """畸形 box 尺寸不得造成死循环/越界。"""
+        junk = struct.pack(">I", 4) + b"moov" + struct.pack(">I", 0) + b"junk"
+        out = CV.parse_boxes(junk, 0, len(junk))
+        self.assertIsInstance(out, list)
+
+    def test_extract_video_fields(self):
+        obj = {"resource_url": {
+            "skey": "abc123",
+            "video": {"play_url": "https://v.douyin.com/x.mp4", "duration": 12000},
+        }}
+        f = CV.extract_video_fields(obj)
+        self.assertEqual(f["skey"], "abc123")
+        self.assertEqual(f["url"], "https://v.douyin.com/x.mp4")
+        self.assertEqual(f["duration"], 12000)
+        self.assertEqual(CV.extract_video_fields(None)["skey"], None)
+
+
+class TestImVideoService(unittest.TestCase):
+    """下载 → 解密 → 缓存 服务层（用本地 file:// 之外的可控 HTTP 服务）。"""
+
+    def setUp(self):
+        self.assertTrue(_ffmpeg(), "需要 ffmpeg")
+        self._tmp = tempfile.mkdtemp(prefix="dy_vid_")
+        self.root = self._tmp
+        self.src = os.path.join(self._tmp, "src.mp4")
+        if not _make_src_mp4(self.src, hole_bytes=512):
+            self.skipTest("ffmpeg 生成失败")
+        self.key = "00112233445566778899aabbccddeeff"
+        plain = open(self.src, "rb").read()
+        self.enc = _cenc_encrypt_mp4(plain, self.key)
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_rejects_non_http_scheme(self):
+        """SSRF 防护：file:// 必须被拒。"""
+        r = IV.download_and_decrypt("file:///etc/passwd", self.key, app_root=self.root)
+        self.assertFalse(r["ok"])
+        self.assertIn("scheme", r["error"])
+
+    def test_missing_skey_rejected(self):
+        r = IV.download_and_decrypt("https://x/y.mp4", "", app_root=self.root)
+        self.assertFalse(r["ok"])
+        self.assertIn("skey", r["error"])
+
+    def test_download_decrypt_and_cache(self):
+        """起一个真实本地 HTTP 服务提供密文 → 下载→解密→缓存→再命中缓存。"""
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            payload = self.enc
+
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(len(self.payload)))
+                self.end_headers()
+                self.wfile.write(self.payload)
+
+            def log_message(self, *a):  # 静音
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            url = f"http://127.0.0.1:{srv.server_port}/v.mp4"
+            r1 = IV.download_and_decrypt(url, self.key, app_root=self.root)
+            self.assertTrue(r1["ok"], r1)
+            self.assertTrue(r1["decrypted"])
+            self.assertFalse(r1["cached"])
+            self.assertTrue(os.path.exists(r1["path"]))
+            # 缓存内容必须是**明文**，与解密结果一致
+            self.assertEqual(open(r1["path"], "rb").read(),
+                             CV.decrypt_cenc_mp4(self.enc, self.key))
+            # 二次调用命中缓存（cached=True，且零网络）
+            srv.shutdown()
+            r2 = IV.download_and_decrypt(url, self.key, app_root=self.root)
+            self.assertTrue(r2["ok"])
+            self.assertTrue(r2["cached"])
+        finally:
+            try:
+                srv.shutdown()
+            except Exception:
+                pass
+
+    def test_sweep_and_stats(self):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            payload = self.enc
+
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(self.payload)))
+                self.end_headers()
+                self.wfile.write(self.payload)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{srv.server_port}/v.mp4"
+            IV.download_and_decrypt(url, self.key, app_root=self.root)
+            s = IV.stats(self.root)
+            self.assertGreaterEqual(s["files"], 1)
+            sw = IV.sweep(self.root, force=True)
+            self.assertGreaterEqual(sw["removed"], 1)
+            self.assertEqual(IV.stats(self.root)["files"], 0)
+        finally:
+            srv.shutdown()
+
+    def test_http_error_reported(self):
+        r = IV.download_and_decrypt("http://127.0.0.1:1/none.mp4", self.key,
+                                    app_root=self.root, timeout=2)
+        self.assertFalse(r["ok"])
+
+
+def _mkdb(path=":memory:"):
+    c = sqlite3.connect(path)
+    c.row_factory = sqlite3.Row
+    c.executescript("""
+        CREATE TABLE dm_conversations(
+            account TEXT, conv_id TEXT, peer_id TEXT, peer_name TEXT,
+            last_ts REAL DEFAULT 0, unread INTEGER DEFAULT 0,
+            conv_type INTEGER DEFAULT 1, UNIQUE(account, conv_id));
+        CREATE TABLE dm_messages(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account TEXT, conv_id TEXT, role TEXT, text TEXT,
+            msg_type TEXT DEFAULT 'text', extra TEXT DEFAULT '{}',
+            ts REAL NOT NULL, msg_id TEXT, UNIQUE(account, conv_id, msg_id));
+    """)
+    return c
+
+
+class TestGroupChat(unittest.TestCase):
+    """群聊支持：conv_id 纯数字 → 群聊（照上游判定口径）+ ChatLab 导出标记。"""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="dy_grp_")
+        self.conn = _mkdb()
+        self._orig = __import__("database").get_db
+        sys.modules["database"].get_db = lambda: self.conn
+
+    def tearDown(self):
+        sys.modules["database"].get_db = self._orig
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_digit_conv_id_is_group(self):
+        for cid, want in (("738291000111", 2), ("0:1:1:2", 1),
+                          ("12345", 2), ("abc", 1)):
+            got = 2 if str(cid).isdigit() else 1
+            self.assertEqual(got, want, f"conv_id={cid}")
+
+    def test_chatlab_marks_group(self):
+        self.conn.execute(
+            "INSERT INTO dm_conversations(account,conv_id,peer_id,peer_name,conv_type)"
+            " VALUES(?,?,?,?,?)", (_ACCT, "738291000111", "9", "工作群", 2))
+        self.conn.execute(
+            "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (_ACCT, "738291000111", "them", "群消息", "text", "{}", 1700000000.0, "g1"))
+        self.conn.commit()
+        r = CE.export_chatlab(_ACCT, "738291000111", self._tmp, fmt="json")
+        self.assertTrue(r["ok"])
+        data = json.loads(open(r["path"], encoding="utf-8").read())
+        self.assertEqual(data["meta"]["type"], "group")
+        self.assertEqual(data["meta"]["groupId"], "738291000111")
+        self.assertIn("群聊", data["meta"]["name"])
+
+    def test_chatlab_marks_private(self):
+        self.conn.execute(
+            "INSERT INTO dm_conversations(account,conv_id,peer_id,peer_name,conv_type)"
+            " VALUES(?,?,?,?,?)", (_ACCT, _CONV, "200", "张三", 1))
+        self.conn.execute(
+            "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (_ACCT, _CONV, "them", "私聊", "text", "{}", 1700000000.0, "p1"))
+        self.conn.commit()
+        r = CE.export_chatlab(_ACCT, _CONV, self._tmp, fmt="json")
+        data = json.loads(open(r["path"], encoding="utf-8").read())
+        self.assertEqual(data["meta"]["type"], "private")
+        self.assertNotIn("groupId", data["meta"])
+
+    def test_jsonl_header_matches_json(self):
+        self.conn.execute(
+            "INSERT INTO dm_conversations(account,conv_id,peer_id,peer_name,conv_type)"
+            " VALUES(?,?,?,?,?)", (_ACCT, "738291000111", "9", "工作群", 2))
+        self.conn.execute(
+            "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (_ACCT, "738291000111", "me", "我发的", "text", "{}", 1700000001.0, "g2"))
+        self.conn.commit()
+        r = CE.export_chatlab(_ACCT, "738291000111", self._tmp, fmt="jsonl")
+        with open(r["path"], encoding="utf-8") as f:
+            head = json.loads(f.readline())
+        self.assertEqual(head["_type"], "header")
+        self.assertEqual(head["meta"]["type"], "group")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

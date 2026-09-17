@@ -35,6 +35,7 @@ def _mkdb(path=":memory:"):
         CREATE TABLE dm_conversations(
             account TEXT, conv_id TEXT, peer_id TEXT, peer_name TEXT,
             last_ts REAL DEFAULT 0, unread INTEGER DEFAULT 0,
+            conv_type INTEGER DEFAULT 1,
             UNIQUE(account, conv_id));
         CREATE TABLE dm_messages(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
