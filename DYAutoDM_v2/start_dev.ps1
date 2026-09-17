@@ -28,13 +28,24 @@ $FRONTEND_URL = "http://127.0.0.1:1420"
 
 function Stop-All {
     Write-Host "[1/3] 停止 Vite 前端..." -ForegroundColor Yellow
-    Get-Process -Name "node","vite" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -like "*DYAutoDM_v2*" -or $_.CommandLine -like "*vite*" } |
-        Stop-Process -Force -ErrorAction SilentlyContinue
+    # 2026-09-17 修补（OCR 审查 HIGH —— Get-Process 无 CommandLine 属性）：
+    # `Get-Process` 返回的是 System.Diagnostics.Process，**没有 `CommandLine`**
+    # 属性（只有 `Get-CimInstance Win32_Process` 有）。在
+    # `$ErrorActionPreference = "Stop"` 下访问不存在的属性会**抛终止错误**，
+    # 且 `-or` 右支恒为 $null → 原过滤条件形同"匹配任意含 DYAutoDM_v2 的 node"。
+    # 改用 Get-CimInstance 拿真实命令行。
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*vite*" -and $_.CommandLine -like "*DYAutoDM_v2*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
     Write-Host "[2/3] 停止后端 sidecar..." -ForegroundColor Yellow
-    Get-Process -Name "dyautodm-*" -ErrorAction SilentlyContinue |
-        Stop-Process -Force -ErrorAction SilentlyContinue
+    # 2026-09-17 修补（OCR 审查 HIGH —— `-Name` 不支持通配符）：
+    # `Get-Process -Name "dyautodm-*"` 把 `dyautodm-*` 当**字面量**进程名，
+    # 永远匹配不到；且 `-ErrorAction SilentlyContinue` 并不能可靠抑制
+    # 名称解析错误（配合 `$ErrorActionPreference = "Stop"` 会让脚本在此中止，
+    # 导致下面的「[3/3] 端口检查」永不执行）。改用 CIM 的 Like 过滤。
+    Get-CimInstance Win32_Process -Filter "Name LIKE 'dyautodm-%'" -ErrorAction SilentlyContinue |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
     Write-Host "[3/3] 端口检查..." -ForegroundColor Yellow
     $b = Test-NetConnection -ComputerName 127.0.0.1 -Port 8000 -InformationLevel Quiet -WarningAction SilentlyContinue
@@ -62,7 +73,11 @@ if ($Stop) { Stop-All; exit 0 }
 # 清理可能残留的旧进程
 Write-Host "`n=== DYAutoDM v2 开发模式启动 ===`n" -ForegroundColor Cyan
 Write-Host "[0/3] 清理旧进程..." -ForegroundColor Yellow
-Get-Process -Name "dyautodm-backend*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# 2026-09-17 修补（OCR 审查 HIGH —— 同 Stop-All：`-Name` 不支持通配符）：
+# `Get-Process -Name "dyautodm-backend*"` 匹配不到任何进程 → 「清理旧进程」失效，
+# 残留后端会占用端口导致后续启动失败。改用 CIM Like 过滤。
+Get-CimInstance Win32_Process -Filter "Name LIKE 'dyautodm-backend%'" -ErrorAction SilentlyContinue |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 # 只关闭本项目 Vite
 Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like "*vite*1420*" } |

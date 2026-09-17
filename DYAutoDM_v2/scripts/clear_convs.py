@@ -179,6 +179,7 @@ def main() -> int:
     # 备份
     if not args.no_backup:
         ts = time.strftime("%Y%m%d_%H%M%S")
+        _backup_failed = []
         for suffix in ("", "-wal", "-shm"):
             src = Path(str(db) + suffix)
             if src.exists():
@@ -188,6 +189,20 @@ def main() -> int:
                     print(f"  已备份 {dst.name} ({dst.stat().st_size} B)")
                 except Exception as e:
                     print(f"  ⚠️ 备份 {src.name} 失败: {e}")
+                    _backup_failed.append(src.name)
+        # 2026-09-17 修补（OCR 审查 HIGH —— 备份失败仍继续删数据）：
+        # 原实现备份失败只打印警告就继续 `DELETE`，使「清空前自动备份」的
+        # 保证形同虚设 —— 一旦备份失败（磁盘满/文件被占用/权限），
+        # 用户的数据会在**没有备份**的情况下被不可逆删除。
+        # 这是破坏性操作，必须 fail-closed：备份不成功就中止。
+        if _backup_failed:
+            print(f"\n❌ 备份失败（{', '.join(_backup_failed)}），已中止清空操作。")
+            print("   请处理后再运行，或显式加 --no-backup（自行承担无备份风险）。")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return 2
 
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
