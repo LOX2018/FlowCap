@@ -608,6 +608,216 @@ async def sweep_origin_images():
         return {"ok": False, "error": str(e)}
 
 
+class DbTransferReq(BaseModel):
+    """数据库导入 / 导出 / 迁移（2026-09-17 新增）。
+
+    action: export | import | migrate
+    fmt:    json（默认，**脱敏**）| sqlite（整库物理复制，需 include_secrets=True）
+    mode:   merge（默认，保留目标库独有行）| replace（清空目标表后写入）
+    """
+    action: str
+    fmt: str = "json"
+    mode: str = "merge"
+    path: str = ""                    # 导出目标 / 导入来源
+    include_secrets: bool = False     # 仅 sqlite 格式必须显式开启
+
+
+@router.post("/db/transfer")
+async def db_transfer(body: DbTransferReq) -> dict:
+    """整库导出 / 导入 / 迁移（本地文件，不联网）。
+
+    ⚠️ 安全契约（详见 `services/db_transfer.py`）：
+      · `json` 导出**默认脱敏**（内容级扫描键名，清空 api_key/token/secret 等）；
+      · `sqlite` 导出含账号与密钥，**必须显式** `include_secrets=True`；
+      · 导入/迁移前会**自动备份**目标库为 `<db>.bak.<时间戳>`，失败可回滚。
+    """
+    action = (body.action or "").strip().lower()
+    if action not in ("export", "import", "migrate"):
+        raise HTTPException(422, "action 只能是 export/import/migrate")
+    if not (body.path or "").strip():
+        raise HTTPException(422, "path 必填")
+    try:
+        from services import db_transfer as _t
+        if action == "export":
+            res = await asyncio.to_thread(
+                _t.export_db, body.path, fmt=body.fmt,
+                include_secrets=body.include_secrets)
+        elif action == "import":
+            res = await asyncio.to_thread(_t.import_db, body.path, mode=body.mode)
+        else:
+            res = await asyncio.to_thread(_t.migrate, body.path, mode=body.mode)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-040] " + f"DB 转移失败: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"DB 转移失败: {type(e).__name__}")
+    return {"ok": True, "action": action, **res}
+
+
+class ChatlabExportReq(BaseModel):
+    """ChatLab 导出（文件）或导入知识库。"""
+    account: str
+    conv_id: str = ""
+    dest_dir: str = ""                # 导出目录（action=export 时必填）
+    fmt: str = "jsonl"                # json | jsonl
+    action: str = "export"            # export | to_kb
+    target: str = "reply"             # to_kb 时：reply | pro
+    max_items: int = 50
+
+
+@router.post("/export/chatlab")
+async def export_chatlab(body: ChatlabExportReq) -> dict:
+    """导出 ChatLab 格式，或把会话问答导入知识库（**只读聊天表**）。
+
+    · `action=export`  → 生成 ChatLab JSON/JSONL 文件（`dest_dir` 必填）
+    · `action=to_kb`   → 抽取「对方提问 → 我方作答」配对写入 `reply_kb`/`pro_kb`
+    """
+    if not body.account:
+        raise HTTPException(422, "account 必填")
+    try:
+        from services import chatlab_export as _ce
+        if body.action == "export":
+            if not (body.dest_dir or "").strip():
+                raise HTTPException(422, "dest_dir 必填")
+            res = await asyncio.to_thread(
+                _ce.export_chatlab, body.account, body.conv_id, body.dest_dir,
+                fmt=body.fmt)
+        elif body.action == "to_kb":
+            res = await asyncio.to_thread(
+                _ce.export_to_kb, body.account, body.conv_id,
+                target=body.target, max_items=body.max_items)
+        else:
+            raise HTTPException(422, "action 只能是 export/to_kb")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-041] " + f"ChatLab 导出失败: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"ChatLab 导出失败: {type(e).__name__}")
+    return {"ok": True, **res}
+
+
+@router.post("/render/html")
+async def render_chat_html(body: dict) -> dict:
+    """把消息区间渲染成**自包含 HTML 长图**（本地渲染，内容不出机器）。
+
+    请求体：`{account, conv_id, start_seq?, end_seq?, theme?, title?, subtitle?,
+              self_uid?, width?, scale?}`
+    返回 `{ok, html, chars, theme}`；HTML 中消息文本已强制转义（防注入）。
+
+    注：上游直出 PNG（无头浏览器截图）。我方先产出 HTML（可浏览器打印/另存），
+    服务端直出 PNG 的接法是在 BCC 容器里 `page.screenshot()`——属下一阶段。
+    """
+    account = str(body.get("account") or "").strip()
+    conv_id = str(body.get("conv_id") or "").strip()
+    if not account or not conv_id:
+        raise HTTPException(422, "account 与 conv_id 必填")
+    try:
+        from services import chat_render as _cr
+        html = await asyncio.to_thread(
+            _cr.render_html, account, conv_id,
+            body.get("start_seq"), body.get("end_seq"),
+            theme=str(body.get("theme") or "dark"),
+            title=str(body.get("title") or ""),
+            subtitle=str(body.get("subtitle") or ""),
+            self_uid=str(body.get("self_uid") or ""),
+            width=int(body.get("width") or _cr.DEFAULT_WIDTH),
+            scale=float(body.get("scale") or _cr.DEFAULT_SCALE),
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-042] " + f"长图渲染失败: {type(e).__name__}")
+        raise HTTPException(502, f"长图渲染失败: {type(e).__name__}")
+    return {"ok": True, "html": html, "chars": len(html),
+            "theme": str(body.get("theme") or "dark")}
+
+
+@router.get("/open/conversations")
+async def open_conversations(account: str, search: str = "", page: int = 1,
+                             page_size: int = 50) -> dict:
+    """**开放 API（只读）**：会话列表（照上游 `GET /api/conversations`）。
+
+    只返回公开字段（不含 short_id/extra 等内部键）。
+    """
+    if not account:
+        raise HTTPException(422, "account 必填")
+    from database import get_db
+    conn = get_db()
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 50), 200))
+    where = "account = ?"
+    params: list = [account]
+    if (search or "").strip():
+        where += " AND (peer_name LIKE ? OR conv_id LIKE ?)"
+        pat = f"%{search.strip()}%"
+        params += [pat, pat]
+    total = conn.execute(
+        f"SELECT COUNT(*) n FROM dm_conversations WHERE {where}", tuple(params)
+    ).fetchone()["n"]
+    rows = conn.execute(
+        f"SELECT conv_id, peer_name, last_ts, unread FROM dm_conversations "
+        f"WHERE {where} ORDER BY last_ts DESC LIMIT ? OFFSET ?",
+        tuple(params) + (page_size, (page - 1) * page_size)).fetchall()
+    return {"ok": True, "total": int(total or 0), "page": page,
+            "page_size": page_size,
+            "items": [{"conv_id": r["conv_id"],
+                       "name": r["peer_name"] or r["conv_id"],
+                       "last_ts": float(r["last_ts"] or 0),
+                       "unread": int(r["unread"] or 0)} for r in rows]}
+
+
+@router.get("/open/messages")
+async def open_messages(account: str, conv_id: str, start_seq: int | None = None,
+                        end_seq: int | None = None, self_uid: str = "") -> dict:
+    """**开放 API（只读）**：消息区间（不含 skey/origin_url 等敏感 extra 字段）。"""
+    if not account or not conv_id:
+        raise HTTPException(422, "account 与 conv_id 必填")
+    try:
+        from services import chat_render as _cr
+        res = await asyncio.to_thread(
+            _cr.messages_for_view, account, conv_id, start_seq, end_seq,
+            self_uid=self_uid)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"读取失败: {type(e).__name__}")
+    return {"ok": True, **res}
+
+
+@router.get("/open/messages/by-date")
+async def open_messages_by_date(account: str, conv_id: str, date: str,
+                                tz: int = 8) -> dict:
+    """**开放 API（只读）**：某自然日的全部消息（照上游 `by-date`）。"""
+    if not account or not conv_id or not date:
+        raise HTTPException(422, "account / conv_id / date 必填")
+    try:
+        from services import chat_render as _cr
+        res = await asyncio.to_thread(_cr.by_date, account, conv_id, date, tz)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"读取失败: {type(e).__name__}")
+    return {"ok": True, **res}
+
+
+@router.get("/open/stats/daily")
+async def open_stats_daily(account: str, conv_id: str, tz: int = 8) -> dict:
+    """**开放 API（只读）**：逐日消息量 + 汇总视图（照上游 `stats/daily`）。"""
+    if not account or not conv_id:
+        raise HTTPException(422, "account 与 conv_id 必填")
+    try:
+        from services import dm_search as _s, chat_render as _cr
+        daily = await asyncio.to_thread(_s.daily_stats, account, conv_id, tz)
+        res = _cr.export_stats(daily)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"统计失败: {type(e).__name__}")
+    return {"ok": True, **res}
+
+
 class DmSearchReq(BaseModel):
     """全库/会话内消息检索（2026-09-17 新增，纯读库）。
 
