@@ -123,7 +123,27 @@ export function pickKernel(media: PlayerMedia): VideoKernel {
   return REGISTRY.html5();
 }
 
-/** 注册自定义内核（供接入方扩展，如内嵌 WebAssembly 解码器）。 */
+/**
+ * 注册自定义内核（供接入方扩展，如内嵌 WebAssembly 解码器）。
+ *
+ * 2026-09-17 修补（OCR 审查 HIGH —— 原型污染）：
+ * 原实现直接 `REGISTRY[name] = factory`，未校验 name。若 name 为
+ * `__proto__` / `constructor` / `prototype` 等，会污染 Object 原型链
+ * （`REGISTRY["__proto__"] = fn` 会改写原型而非新增自有属性）。
+ * 现拒绝非标识符名称与原型链危险键，并要求 factory 为函数。
+ *
+ * 注：截至本次审查，本函数**全仓无调用方**（仅定义 + 桶文件 re-export），
+ * 属预留扩展 API；此处为防御性加固，不改变现有行为。
+ */
 export function registerKernel(name: string, factory: KernelFactory): void {
-  REGISTRY[name] = factory;
+  const DANGEROUS = new Set(["__proto__", "constructor", "prototype"]);
+  if (typeof name !== "string" || !name || DANGEROUS.has(name)) {
+    throw new Error(`registerKernel: 非法内核名 ${JSON.stringify(name)}`);
+  }
+  if (typeof factory !== "function") {
+    throw new Error(`registerKernel: factory 必须是函数（收到 ${typeof factory}）`);
+  }
+  Object.defineProperty(REGISTRY, name, {
+    value: factory, writable: true, enumerable: true, configurable: true,
+  });
 }
