@@ -521,5 +521,73 @@ IDLE/STOPPED 或任务结束，再释放锁 → 第二个请求命中 `already`�
 > （状态在被调度的协程内变更、有 `await` 让出点）。仅"看起来加了锁"不算修好。
 > 这条同时推翻了我 v0.43.64 提交里"已修复"的结论 —— 已在本轮订正并重打包。
 
+--- 
+
+## 6. 第三轮处置（v0.43.66 ~ v0.43.69）
+
+### 6.1 静默漏配 / 静默覆盖 / 被忽略入参 成一类（v0.43.66）
+
+| 文件 | 缺陷 | 实测验证 |
+|---|---|---|
+| `services/reply_kb.py` | 阈值用**衰减后**分数比较（衰减恒 ≤1 → 阈值被悄悄抬高）→ 旧的但高相关条目**永不命中**；`best_raw` 只在循环内赋值（无用） | raw=1.000 / decay(50d)=0.368 < 0.85 → 旧判据不命中；新判据(raw≥0.85)命中；`find_match` 实调返回正确 |
+| `services/member_store.py` | `_load_registry()` 读失败返回**空表**，写路径拿到后**写回** → 一次瞬时读错误即**清空全部会员** | 半截 JSON + `register_member` → 返回 `ok:False` 且**文件字节前后一致** |
+| `services/member_ctx.py` | `destroy_session(token)` **无条件**删落盘会话 → 陈旧 token 登出会清掉当前有效会话 | — |
+| `services/pro_kb.py` | `_embed` 内部 `texts[:20]` 截断，而调用方传全量 → 向量数≠入参数 → **静默 (None,0.0)，查重整体失效** | — |
+| `database.py` | ① 会员一致性守卫自身异常被裸 `except: pass` 吞（守卫失效不可观测）② 建连后**立即**发布全局 `_conn`，迁移失败留下半初始化连接 | — |
+| `api/tasks.py` | ① `cfg.dm_pool` 已压成 `list[str]`，写回**抹掉 enabled 标记** ② Excel 导出读 `capture_ts`/`send_ts`，而字段名是 `captured_at`/`sent_at` → 两列**恒空** | `_fmt_ts` 实测 |
+| `notify/gateway.py` | `check_intent` 未处理 open 模式 → **open 模式下每条消息仍被拒** | — |
+| `notify/cmd_parser.py` | `params` 来自 **LLM 输出**，`or {}` 不保证 dict → 非 dict 会 AttributeError | — |
+| `api/overview.py` | 在 `async def` 里**串行**调 2 次同步 `connect_ex`（各 0.3s）→ 阻塞事件循环 | — |
+| `api/platform.py` | `r.json()` 无条件 → 限流空体抛错并**中断整批** | — |
+| `api/linkmic.py` | 早退守卫使「抓 anchor_id」补全逻辑**永不可达**（注释明写其意图） | — |
+| `core/auto_dm.py` | `rescan_and_rebuild(account_name)` 内两条 TODO 占位 → **入参被完全忽略** | — |
+| `utils/code_logger.py` | 重构消息后把 loguru 的 `exception=True` 当模板值传 → **异常堆栈丢失** | — |
+
+### 6.2 前端（v0.43.67）
+
+| 文件 | 缺陷 | 验证 |
+|---|---|---|
+| `src/api/client.ts` | `{headers, ...init}` 展开顺序 → `init.headers` **整体覆盖**默认头（含 X-Member-Token）→ 静默 401 | vite 构建通过 |
+| `src/api/platform.ts` | 自带封装缺 401 处理（与 client.ts 不一致）+ 缺 X-App-Version | 同上 |
+| `MemberGate.tsx` | ① 无 try/catch → 校验抛错则**永久卡在"正在检查登录态…"** ② 依赖 `[onLogin]` 不稳定（App 内联箭头 + 3s 轮询）→ effect 反复执行 | 同上 |
+| `AiRuntimeSection.tsx` | 用 `enabled` 决定 start/stop，而按钮文案由 `running` 驱动 → **"启动"按钮执行停止** | 同上 |
+| `pro-kb.tsx` | `applyMut` 静默吞 `ok:false`；`restoreMut` **无条件**报"已恢复" | 同上 |
+| `scroll-area.tsx` | 垂直 Scrollbar 缺 `h-full` → 轨道/Thumb 布局失效 | 同上 |
+| `player-playback-bar.tsx` | 只有 `onPointerUp` 复位 drag → 指针取消时**永久卡住**，进度条冻结 | 同上 |
+
+### 6.3 脚本与开发工具（v0.43.68 / 0.43.69）
+
+| 文件 | 缺陷 | 验证 |
+|---|---|---|
+| `scripts/clear_convs.py` | 备份失败仅警告，仍继续 `DELETE`+`commit` → **无备份的不可逆删除** | monkeypatch `copy2` 抛错 → 返回码 **2** 且未删任何数据 |
+| `start_dev.ps1` ×3 | `Get-Process` 对象**无 `CommandLine` 属性**；`-Name` **不支持通配符** → 进程清理失效/脚本中途报错 | PowerShell `[Parser]::ParseFile` → **PARSE_OK** |
+| `api/logs.py::_read_tail` | 全量解析整个 20MB 日志再切片 | 50000 行 → 返回 500 行、**0.013s**、首末行正确 |
+
+### 6.4 本轮判为**误报/不改**的（有据）
+
+- `tokens.css` 磨砂："frost 反而更弱" —— 基础 `.glass-premium` 本身有 `blur(48px)`，
+  `html:not([attr])` 那条只是"未开启时降到 14px"，注释与实现一致。
+- `origin_image_resolver.py:348` `if size <= threshold or not force_hosted` ——
+  该条件**逻辑正确**（默认走本地；显式 `force_hosted` 时大图才上图床）。
+- `utils/dy_util.py:168`：函数返回的是**元组** `(csrf_token_1, csrf_token_2)`，
+  `[0]` 取到 `None`（非崩溃），且调用方 `builder/header.py:44-48` 已有 `if tok` 守卫。
+- `dy_apis/douyin_recv_msg.py` 的 14 处 `print` —— 该模块**无任何生产调用方**
+  （遗留独立 WS 客户端），非链路缺陷。
+- `api/crawl.py::_map_user` 字段名 —— 属**推测性**断言（"请核对真实字段名"），
+  代码读的是抖音标准字段名，按「以事实为主」**不改**（需真实凭证请求才能证实）。
+- `utils/bd_ticket.py::verify_req_sign` pub_hex 前缀假设 —— 仅 `__main__` 自测使用，
+  非生产路径。
+- `services/uid_probe.py::shutdown` 空转 —— 收尾清理正确（`Event.set()`），非缺陷。
+- `services/conv_identity.py:80-83` —— 报告所述缺陷**已由 v0.43.39+ 的
+  `uid_probe.get_uid` 自身交叉验证修复**（不返回不一致 uid）。
+
+### 6.5 剩余
+
+- HIGH 仍有一批 **需真机/真实凭证**才能判定的项（`api/crawl.py` 字段名、
+  部分"限流行为"类断言），以及 `browser_daemon.py` 的 10 条
+  （已在 5.x 逐条定性为 OWASP 模板刷屏 + SQL 误判 → **全部误报**）。
+- MEDIUM 590 / LOW 487 未动（报告本身误报率高，建议按"同类收敛"而非逐条）。
+
+
 
 

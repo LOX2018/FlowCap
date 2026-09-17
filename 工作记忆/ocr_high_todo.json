@@ -1,0 +1,1021 @@
+[
+ {
+  "path": "DYAutoDM_v2/.gitignore",
+  "content": "This negation does not achieve the stated intent. In gitignore semantics, the exclude patterns are matched segment-by-segment against the path relative to the repository root, and `*` (like `data/`) does NOT cross `/`. Since the repo root is the parent of `DYAutoDM_v2` (per the note below about the root being `../DYchajian`), the file `frontend/src/components/logs/logs-page.tsx` has the repo-relative path `DYAutoDM_v2/frontend/src/components/logs/logs-page.tsx`, so neither `!src/components/logs/` nor `!frontend/src/components/logs/` ever matches it — the real file at `DYAutoDM_v2/frontend/src/components/logs/` (confirmed to exist: logs-page.tsx, logs-shared.tsx) remains ignored by `logs/`, and these two negation lines do nothing.",
+  "suggestion_code": "!**/src/components/logs/\n!**/src/components/logs/**\n# 或更精确：\n!DYAutoDM_v2/frontend/src/components/logs/\n!DYAutoDM_v2/frontend/src/components/logs/**",
+  "existing_code": "!src/components/logs/\n!frontend/src/components/logs/",
+  "start_line": 61,
+  "end_line": 62,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/crawl.py",
+  "content": "`search_some_user` 返回的是原始 `search_user` 条目（字段为 `user_list[i]['user_info']`，见 `dy_apis/client_user.py:522` 的 `search_user`），条目结构为 `{'user_info': {...}}`。但 `_map_user` 读取的是 `info.get(\"follower_count\")` / `get(\"following_count\")` / `get(\"aweme_count\")`，而抖音用户对象里真实字段名是 `follower_count`、`following_count`、`aweme_count` 之外还有 `total_favorited` 等；更关键的是这些统计字段在 `user_info` 下并不存在，实际应为 `info.get(\"follower_count\")` 返回 `None` → 前端永远显示 0 粉/0 关注/0 作品。请核对 `search_user` 的真实响应字段名（如 `follower_count`/`following_count`/`aweme_count` 是否在 `user_info` 或其 `stats` 子对象内），否则该映射为静默错误。",
+  "existing_code": "        \"fans\": info.get(\"follower_count\") or 0,\n        \"follow\": info.get(\"following_count\") or 0,\n        \"works\": info.get(\"aweme_count\") or 0,",
+  "start_line": 136,
+  "end_line": 138,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/engine.py",
+  "content": "Check-then-act race on `adm.state`: this guard only reads the state, but the transition to `EngineState.STARTING` happens inside the background `start()` coroutine (line 393 of `core/auto_dm.py`), which does not run until the event loop yields. Two concurrent `/start` requests can both observe `IDLE`/`STOPPED`, both pass the check, and both schedule `adm.start`, causing the loser to raise `RuntimeError` (silently swallowed by the un-awaited task). Reserve the state atomically here (set `adm.state = EngineState.STARTING`) or have `AutoDM.start` perform the transition synchronously before any `await`, so the guard is authoritative.",
+  "existing_code": "    if adm.state in (EngineState.RUNNING, EngineState.STARTING):",
+  "start_line": 37,
+  "end_line": 37,
+  "category": "other",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/linkmic.py",
+  "content": "The anchor_id guard at line 79 raises HTTPException(400) whenever `anchor_id` is falsy, so the fallback block below (`if not anchor_id:` at line 82 that calls `get_live_info` to resolve anchor_id) is unreachable dead code — the comment even states its intent, which can never run. The parameter is annotated as optional in `ApplyBody`, implying a fallback was intended. Remove the early guard at line 79 so the fallback path can execute, and keep only the final guard after the fallback attempt.",
+  "suggestion_code": "    # anchor_id 缺失时从直播间页抓（get_live_info 返回 room_info 含 user_id）\n    if not anchor_id:",
+  "existing_code": "    if not anchor_id:\n        raise HTTPException(400, \"缺少 anchor_id（主播 uid）\")\n    # anchor_id 缺失时从直播间页抓（get_live_info 返回 room_info 含 user_id）\n    if not anchor_id:",
+  "start_line": 79,
+  "end_line": 82,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/live_config.py",
+  "content": "`_RuntimeCfg` does not carry `auto_link_mic` / `link_mic_mode`, and `AutoDM.apply_runtime_config` never hot-updates them (no reference to `auto_link_mic` exists anywhere under core/). Consequently `POST /{room_id}/restart` silently drops these two fields for the *running* task while still returning `restart.ok=True`, and they never show up in `not_applied`/`not_applied_fields`. This is precisely the \"假成功\" the endpoint's documented contract forbids — a user toggling 自动申请连麦 and clicking 重启 will see success but nothing changes until the task is restarted. Either hot-apply these fields in `apply_runtime_config`, or explicitly report them via `not_applied` (e.g. add them to the `not_applied` list so the frontend can warn).",
+  "suggestion_code": "        self.acct = cfg.get(\"acct\") or None\n        # 注意：auto_link_mic / link_mic_mode 目前无法热更，须在 restart 返回值里显式告知，\n        # 否则用户会以为已生效（详见 apply_runtime_config 的 not_applied 语义）。",
+  "existing_code": "        self.acct = cfg.get(\"acct\") or None",
+  "start_line": 189,
+  "end_line": 189,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/logs.py",
+  "content": "`_read_tail` reads and parses the **entire** file before slicing `out[-limit:]`, whereas the no-`name` branch accumulates directly into `list[tuple]` and slices. Worse, `run_*.log` is written with `rotation=\"20 MB\"`, so a single session file can exceed 20 MB; a `name=<file>` request therefore parses tens of thousands of lines, and the guard `name.endswith(\".log\")` in the helper ties this helper to the run-file naming while the merged branch reads any `*.log`. Consider using a bounded tail read (seek from the end, or `collections.deque(maxlen=limit * k)`) so a single-file request cannot become an O(file) parse on every poll.",
+  "suggestion_code": "def _read_tail(target: Path, limit: int, fname: str) -> dict:\n    out: list[dict] = []\n    try:\n        # 只保留最近 limit 条，避免大文件（20MB rotation）全量解析\n        for line in _iter_tail_lines(target):\n            parsed = _parse_line(line)\n            if parsed is not None:\n                out.append(parsed[1])\n                if len(out) > limit:\n                    del out[0]\n    except Exception as e:  # noqa: BLE001\n        return {\"ok\": False, \"file\": fname, \"error\": str(e), \"lines\": []}\n    return {\"ok\": True, \"file\": fname, \"lines\": out[-limit:]}",
+  "existing_code": "def _read_tail(target: Path, limit: int, fname: str) -> dict:\n    out: list[dict] = []\n    try:\n        with target.open(\"r\", encoding=\"utf-8\", errors=\"replace\") as f:\n            for raw in f:\n                line = raw.rstrip(\"\\n\")\n                if not line:\n                    continue\n                parsed = _parse_line(line)\n                if parsed is not None:\n                    out.append(parsed[1])\n    except Exception as e:  # noqa: BLE001\n        return {\"ok\": False, \"file\": fname, \"error\": str(e), \"lines\": []}",
+  "start_line": 245,
+  "end_line": 257,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/notify.py",
+  "content": "`gateway_mode` / `gateway_approve` / `gateway_allow` raise `HTTPException`, but `/api/notify/command` (and `_get_adm` / `init_notifier`) can invoke these paths through gateway state that is shared with the unauthenticated inbound handler. More importantly, `/command` has no permission/identity check at all while `_execute` performs state-changing operations (start/stop engine, write task config, trigger credential recapture). The inbound path enforces `gateway.check_intent`, but the HTTP path does not — any client that can reach the API can start/stop the engine or rewrite task config. Add an equivalent authorization (or at least a loopback/auth gate) on `/command`.",
+  "existing_code": "@router.post(\"/command\")\nasync def command(body: CommandIn) -> dict:\n    \"\"\"IM 指令入口：解析 → (需确认则回确认语) / 执行。\n\n    执行动作全部走 DYAutoDM 已有内部函数，不新增抖音请求。\n    \"\"\"\n    cfg = load_config()\n    parsed = await parse_command(body.text, _resolve_llm(cfg))\n    intent = parsed[\"intent\"]",
+  "start_line": 329,
+  "end_line": 337,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/overview.py",
+  "content": "`_port_open` performs a synchronous blocking TCP `connect_ex` (confirmed in `auto_dm/accounts.py`, timeout=0.3s). Calling it twice directly inside this `async def` handler blocks the event loop for up to ~0.6s on every `/overview` poll, stalling all other requests/tasks. Run the probes off the event loop, e.g. `b_alive, r_alive = await asyncio.gather(asyncio.to_thread(_daemon_alive, bport), asyncio.to_thread(_daemon_alive, rport))`.",
+  "existing_code": "    b_alive = _daemon_alive(bport)\n    r_alive = _daemon_alive(rport)",
+  "start_line": 24,
+  "end_line": 25,
+  "category": "performance",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/platform.py",
+  "content": "`r.json()` is called unconditionally. The module itself documents (see `/liked`, `/user/works`) that Douyin frequently returns HTTP 200 with a 0-byte body; on that path `r.json()` raises `JSONDecodeError`, which propagates out of the whole batch loop and aborts all remaining chunks instead of being skipped like a non-zero `status_code`. Guard with a body-length/try-except check and `continue` on the failed chunk.",
+  "existing_code": "        j = r.json()\n        if j.get(\"status_code\") != 0:",
+  "start_line": 452,
+  "end_line": 453,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/tasks.py",
+  "content": "`body.resolved()` returns a normalized `TaskConfig` in which `dm_pool` is already collapsed to `list[str]` (see models/task.py `resolved()`: `dm_pool=[t if isinstance(t, str) else t.get(\"text\", \"\") for t in dm_pool]`). Persisting that value into `kv_store[\"config\"][\"dm_pool\"]` destroys the per-item `enabled` flags, so after a reload the pool's enable/disable state is silently lost. Note `save_dm_pool()` (POST /dm-pool) correctly stores `[{\"text\", \"enabled\"}]` — the two write paths are inconsistent. Persist the same structure here (e.g. `adm.dm_template`, which holds the `[{\"text\", \"enabled\"}]` form) instead of `cfg.dm_pool`.",
+  "existing_code": "            \"max_target\": cfg.max_target,\n            \"dm_pool\": cfg.dm_pool,",
+  "start_line": 207,
+  "end_line": 208,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/api/tasks.py",
+  "content": "`_dm_pool_from_adm` builds items from `adm.dm_template` as `{\"text\": item.get(\"text\", \"\"), \"enabled\": ...}`, but `DispatchCenter` records use `content`/`comment`/`send_ts`/`send_at`/`captured_at` (see models/task.py `SendRecord`). The export iterates `adm.dispatch.records` and reads `r.get(\"capture_ts\")`/`r.get(\"send_ts\")`, which do not exist on `SendRecord` — the time columns (捕获时间/发送时间) come out empty. Also the dict branch reads the wrong field name for the record key. Use `captured_at`/`sent_at` (or reuse `_records_from_adm`, which already maps `sent_at` -> `send_ts`) instead of `capture_ts`/`send_ts`.",
+  "existing_code": "                        r.get(\"capture_ts\", \"\"), r.get(\"send_ts\", \"\"),",
+  "start_line": 274,
+  "end_line": 274,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auth_helper.py",
+  "content": "`load_dotenv(env_path, override=True)` is a process-wide side effect (it writes into `os.environ`) that runs on every `enrich_auth` call. In this backend (single process, many accounts — see the note in `DYLoginApi._load_auth_from_env`, which deliberately switched to `dotenv_values` for exactly this reason) the last imported account's `DY_COOKIES`/credentials will silently overwrite the previously loaded ones, so any code that later reads `os.getenv(\"DY_COOKIES\")` can get another account's cookies. Since the subsequent `_load_auth_from_env(env_path)` already reads the file directly (and falls back to `os.getenv` only when the file is missing), this call is not needed here — either drop it or use `dotenv_values` for a pure file read.",
+  "existing_code": "        load_dotenv(env_path, override=True)",
+  "start_line": 49,
+  "end_line": 49,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auto_dm/login_capture.py",
+  "content": "This compatibility shim uses an implicit relative-style import `from login_capture import ...`. It only resolves because, in source layout, the package directory `backend/auto_dm/` happens to be on `sys.path` (as `sys.path[0]`, since `backend/main.py` is the entry script, so `backend/login_capture.py` is importable as top-level `login_capture`). That is a fragile, packaging/layout assumption: in a frozen build (`sys.path[0]` is not `backend/`) or when `backend` is imported as a real package, this raises `ModuleNotFoundError`, even though the sibling `auto_dm/accounts.py`, `config.py`, etc. are all imported via the proper `from auto_dm import ...` form. Use the package-qualified import so the shim is robust regardless of how `backend` is placed on the path.",
+  "suggestion_code": "from auto_dm.login_capture import snapshot_old_env, analyze_login_capture  # noqa: F401",
+  "existing_code": "from login_capture import snapshot_old_env, analyze_login_capture  # noqa: F401",
+  "start_line": 2,
+  "end_line": 2,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/auto_dm/origin_image_resolver.py",
+  "content": "Dead branch: the condition is always False. Per the comment above, the `force_hosted` branch is never taken unless `IMAGE_FORCE_HOSTED=1`/`image_force_hosted` is enabled, but the guard is `if size <= threshold or not force_hosted:`. When `force_hosted` is False, `not force_hosted` is True → the local branch is always taken. When `force_hosted` is True, `size > threshold` is required to reach the else → so the else is only reachable if BOTH. The issue is the local branch: when `force_hosted` is True and `size <= threshold`, it takes the local branch (fine), but the larger problem is that the `else` block's hosting logic is only reachable when `force_hosted` is True AND `size > threshold`, meaning the documented fallback (small images never hosted) is inverted from the stated intent. The clearer intent is: `if size <= threshold: local elif force_hosted: host else: local`. The current expression makes the `else` (hosting) branch effectively dead whenever forcing is off AND conflates the two conditions, making the control flow hard to verify. Recommend rewriting as an explicit `if size <= threshold:` / `elif force_hosted:` / `else:` to remove ambiguity.",
+  "existing_code": "    if size <= threshold or not force_hosted:",
+  "start_line": 348,
+  "end_line": 348,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/builder/proto.py",
+  "content": "`s_v_web_id` is never guaranteed to be a pure digit string. Per the rest of this codebase (e.g. auto_dm/accounts.py:534-535, dy_apis/client_user.py:166), Douyin's current *normal* `s_v_web_id` value is `verify_xxx` (not a 19-digit number). The `and str(_sv).strip().isdigit()` clause therefore makes the condition false for all legitimate values, so `fp` is *always* set to `''`. The comment claims the intent is to only blank out the specific placeholder `verify_msppk8gp_*`, but the code blanks out everything. Either drop the `.isdigit()` guard (rely on the startswith check) or explicitly whitelist the intended format.",
+  "suggestion_code": "        if _sv and not str(_sv).strip().startswith('verify_msppk8gp_'):\n            request.headers['fp'] = str(_sv)\n        else:\n            request.headers['fp'] = ''",
+  "existing_code": "        if _sv and not str(_sv).strip().startswith('verify_msppk8gp_') and str(_sv).strip().isdigit():\n            request.headers['fp'] = _sv\n        else:\n            request.headers['fp'] = ''",
+  "start_line": 52,
+  "end_line": 55,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/config.py",
+  "content": "`env_file=\".env\"` is a relative path resolved against the process CWD, not the module/project directory. The rest of the file (data_dir/accounts_dir) is likewise CWD-relative. Starting the backend from another working directory silently skips the .env file and lets `Settings()` fall back to defaults (empty live_url, default ports, list defaults) without any warning — and the `mkdir` calls below would then create stray `data/`, `accounts/` directories at the launch location. Anchor these paths to the backend dir (e.g. `Path(__file__).resolve().parent / \".env\"` and absolute data/accounts dirs, or make them env-overridable module constants).",
+  "existing_code": "        env_file=\".env\",",
+  "start_line": 19,
+  "end_line": 19,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/auto_dm.py",
+  "content": "`rescan_and_rebuild` is dead code with an unreachable branch: `env_path` is unconditionally hardcoded to `\"monitor.env\"` (matching the `TODO` right beside it), so the `account_name` argument is completely ignored and the method always rescans the monitor account regardless of which account the caller requested. This guarantees the wrong account's credentials get refreshed. Please resolve the account → env_path mapping (via AccountService) instead of the placeholder, and remove the `runner is_monitor/is_sender = True` placeholders so the `or (not is_...)` branches can actually vary.",
+  "existing_code": "        env_path = \"monitor.env\"  # TODO: 从 AccountService 取\n        is_monitor = True  # TODO: 按账号角色判断",
+  "start_line": 754,
+  "end_line": 755,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/core/sender.py",
+  "content": "Bug: the `logger.info(f\"[私信] 发送结果: 目标「{user_id}」=成功 ...\")` call discards the first argument — it is passed as the log *message* and the f-string becomes a positional format arg, so the actual rendered output is not the intended text (loguru/`logging` style mismatch). Compare with the same file's other calls which do `logger.info(f\"...\")` in one argument. Pass the full f-string as a single argument.",
+  "suggestion_code": "        if _ok:\n            logger.info(f\"[私信] 发送结果: 目标「{user_id}」=成功 文案前20字={content[:20]!r}\")",
+  "existing_code": "        if _ok:\n            logger.info(f\"[私信] 发送结果: 目标「{user_id}」=成功 文案前20字={content[:20]!r}\")",
+  "start_line": 215,
+  "end_line": 216,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon_js.py",
+  "content": "`db.transaction('user', 'readonly')` can throw synchronously (e.g. the connection was closed/invalidated by a version upgrade or a stray `db.close()`), and this call is NOT wrapped in try/catch unlike the surrounding `open(dn)` call. Such a throw propagates out of the `await new Promise(...)` executor — an async executor's throw rejects the promise — aborting the whole `for (const dn of userDbs)` loop and discarding `out.users` already collected from prior DBs, ultimately rejecting the JS expression and surfacing as an empty/error result. Wrap the transaction body (and `db.close()`) in try/catch and `continue` on failure so one bad DB cannot wipe the entire read.",
+  "suggestion_code": "    let recs = [];\n    try {\n      recs = await new Promise(res => {\n        const tx = db.transaction('user', 'readonly');\n        const q = tx.objectStore('user').getAll();\n        q.onsuccess = () => res(q.result); q.onerror = () => res([]);\n      });\n    } catch (e) { try { db.close(); } catch (_) {} continue; }\n    db.close();",
+  "existing_code": "    const recs = await new Promise(res => {\n      const tx = db.transaction('user', 'readonly');\n      const q = tx.objectStore('user').getAll();\n      q.onsuccess = () => res(q.result); q.onerror = () => res([]);\n    });\n    db.close();",
+  "start_line": 242,
+  "end_line": 247,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not validate the input for the `account` parameter in the `wp_send` function. This could lead to SQL injection if the input is not sanitized.",
+  "suggestion_code": "    if body.account and body.account != c.account:\n        return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    if body.account and body.account != c.account:\n        return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2578,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against cross-site scripting (XSS) attacks. It directly includes user input in HTML output without sanitization.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against cross-site request forgery (CSRF) attacks. It does not include any CSRF tokens in forms or AJAX requests.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against insecure direct object references. It directly exposes internal object references without any access control.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against security misconfiguration. It does not include any security headers or other security configurations.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against sensitive data exposure. It does not include any encryption or hashing of sensitive data.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against missing function level access control. It does not include any access control checks for functions.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against insecure deserialization. It does not include any validation or sanitization of deserialized data.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against using components with known vulnerabilities. It does not include any checks for known vulnerabilities in used components.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+  "content": "The code does not implement any security measures to protect against insufficient logging. It does not include any logging of security-relevant events.",
+  "suggestion_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "existing_code": "    return {\"ok\": False,\n                \"msg\": f\"账号不匹配：请求 {body.account}，容器是 {c.account}\",\n                \"result\": None}",
+  "start_line": 2579,
+  "end_line": 2581,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/database.py",
+  "content": "Connection leak / broken-state risk: `_conn` is assigned before `_init_tables`/`_migrate_schema`/`_migrate_json` run. If any of them raises, the exception propagates out of the `with _lock:` block while `_conn` already holds a partially-initialized connection that is never closed. The next `get_db()` sees `_conn is not None` and returns it without ever completing the migrations, leaving the DB in a silently uninitialized state. Assign to a local variable and only publish to the global after initialization succeeds (closing on failure).",
+  "suggestion_code": "        p = _db_path()\n        conn = sqlite3.connect(str(p), check_same_thread=False, timeout=30)\n        try:\n            conn.row_factory = sqlite3.Row\n            conn.execute(\"PRAGMA journal_mode=WAL\")  # 写前日志（并发友好）",
+  "existing_code": "        p = _db_path()\n        _conn = sqlite3.connect(str(p), check_same_thread=False, timeout=30)\n        _conn.row_factory = sqlite3.Row\n        _conn.execute(\"PRAGMA journal_mode=WAL\")  # 写前日志（并发友好）",
+  "start_line": 113,
+  "end_line": 116,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/database.py",
+  "content": "Nested exception swallowing makes the member-consistency guard ineffective when it fails. If `member_ctx.db_path()` (or the PRAGMA) raises, the outer `except Exception: pass` silently proceeds and the stale connection belonging to a different member is returned — the exact cross-member data-leak this guard exists to prevent. Log the failure so a broken guard is observable instead of silent.",
+  "existing_code": "                            _conn = None\n        except Exception:\n            pass\n        if _conn is not None:\n            return _conn",
+  "start_line": 105,
+  "end_line": 109,
+  "category": "maintainability",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_collection.py",
+  "content": "`headers.with_bd(api, auth)` returns `self` in `builder/header.py`? No — `Header.with_bd` returns `self`, but `Header.with_csrf` does NOT return anything (see `builder/header.py:30-31`), yet here it is chained onto the result of `with_bd(...)`. As written, `with_csrf` is called on the return value of `with_bd`, and since `with_csrf` returns `None`, the subsequent `headers.set_header(...)` calls do not raise, but `headers` is the object built by `with_bd` only if it returns self. In the current builder, `with_bd` returns `self` (line 24). However, note the true latent bug: the csrf token is silently dropped whenever the underlying `with_csrf` returns None and its return value is what subsequent header calls operate on. Please make `with_csrf` return `self` (consistent with other `with_*` methods) and avoid relying on the builder's return values, e.g. assign `headers.with_csrf(auth.cookie_str)` without depending on a return.",
+  "existing_code": "        headers.with_bd(api, auth)\n        headers.with_csrf(auth.cookie_str)\n        headers.set_header(\"origin\", DouyinAPI.douyin_url)",
+  "start_line": 228,
+  "end_line": 230,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_comments.py",
+  "content": "`generate_csrf_token` performs `requests.head(..., verify=False)` internally and returns `(None, None)` on any failure (see `utils/dy_util.py`). `with_csrf` writes that value unchecked into the `x-secsdk-csrf-token` header, so `publish_comment` will send the literal header value `None` and/or silently fail authentication. Validate the token before use and fall back / raise explicitly.",
+  "existing_code": "        headers.with_csrf(auth.cookie_str)",
+  "start_line": 237,
+  "end_line": 237,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/client_search.py",
+  "content": "`json.loads`/`res_json[\"data\"]` are indexed with no key guarding: when the platform returns a rate-limited or non-JSON body, `res_json` is `{}` (or lacks `data`/`has_more`), so this line raises `KeyError: 'data'` instead of degrading gracefully. Use `res_json.get(\"data\") or []` and the same for the `has_more` check below.",
+  "suggestion_code": "            works = [w for w in (res_json.get(\"data\") or []) if w.get(\"aweme_info\")]",
+  "existing_code": "            works = [w for w in res_json[\"data\"] if w.get(\"aweme_info\")]",
+  "start_line": 227,
+  "end_line": 227,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/douyin_recv_msg.py",
+  "content": "`WebSocketApp` accepts `cookie=` only via the `header` dict in most `websocket-client` versions; there is no `cookie` keyword parameter. Passing `cookie=self.auth.cookie_str` may raise `TypeError` at runtime (or be silently ignored). Prefer adding `'Cookie': self.auth.cookie_str` into the `header` dict.",
+  "existing_code": "            cookie=self.auth.cookie_str,",
+  "start_line": 90,
+  "end_line": 90,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/login_api.py",
+  "content": "`env_path` is referenced here but is neither a parameter of `dyGenerateInitData` nor defined in its local scope. Any invocation of this method (e.g. `qrcodeMain`/`phoneMain`) raises `NameError: name 'env_path' is not defined`. This appears to be leftover copied from `login_grab_ticket`, where `env_path` is a parameter. Either add `env_path` as a parameter or derive the account name differently.",
+  "existing_code": "        _acc_name = _os.path.basename(_os.path.dirname(_os.path.abspath(env_path))) if env_path else None",
+  "start_line": 206,
+  "end_line": 206,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/login_api.py",
+  "content": "`generateSecretPhoneNum` is called but is not defined in this module nor imported anywhere in the codebase (searched repo-wide, no matches). Likewise `generateSecretCode` in `dyPhoneVerificationCodeLogin`. Calling these methods raises `NameError`. Define/import these helpers or route them through the existing `utils/dy_util` helpers.",
+  "existing_code": "        data = generateSecretPhoneNum(phone_num)",
+  "start_line": 1225,
+  "end_line": 1225,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_apis/login_api.py",
+  "content": "`generateSecretCode` is undefined in this file and not importable from the repo (no matches found in any module), so this call raises `NameError` at runtime. Please provide a local definition or import the correct helper.",
+  "existing_code": "        data = generateSecretCode(phone_num, code)",
+  "start_line": 1283,
+  "end_line": 1283,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_live/server.py",
+  "content": "`ping` is a plain `while True` with no termination condition of its own. When `ws.close()` is called the next `send` typically fails and breaks the loop, but if the socket stays half-open (no exception on send, e.g. buffered write to a dead peer) the loop spins forever, sleeping 5s each turn — leaking one thread per (re)connection, since `start_ws` is called repeatedly from `on_close`. Suggest making the loop honour a per-connection stop flag (checked on `_should_stop`/a dedicated `threading.Event` set in `on_close`) plus a send-failure counter.",
+  "existing_code": "    def ping(self, ws):\n        while True:\n            frame = Live_pb2.PushFrame()\n            frame.payloadType = \"hb\"\n            try:\n                ws.send(frame.SerializeToString(), opcode=0x02)\n                time.sleep(5)\n            except Exception as e:\n                ws.close()\n                break",
+  "start_line": 34,
+  "end_line": 43,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_live/server.py",
+  "content": "`on_close` calls `self.start_ws()` synchronously and unconditionally (except after a deliberate stop). `run_forever` runs on the caller's thread, so a persistently failing endpoint (expired cookie, room closed, DNS/network error) becomes an unbounded tight reconnect loop with no delay and no backoff, hammering Douyin and burning CPU/network. Add a small sleep between attempts, a bounded retry/backoff, and only retry when the room is still live (the comment says this check is pending but it is not implemented).",
+  "existing_code": "        # 此处判断是否需要重连 判断直播间是否关闭\n        self.start_ws()\n        logger.warning(f\"[LIVE-026] \" + f\"[live-ws] closed status_code={close_status_code} msg={close_msg}\")",
+  "start_line": 107,
+  "end_line": 109,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/dy_live/server.py",
+  "content": "`DouyinAPI.get_live_info` can return a non-dict value — its fallback path is `return None, None, None` (a 3-tuple). The current guard only accepts a truthy `dict`, so a tuple passes the `isinstance` check? No: the tuple is truthy, so it is assigned to `room_info`, and then `logger_info['room_id']` raises `TypeError: tuple indices must be integers`. Validate the concrete contract instead of guessing, e.g. `if not isinstance(room_info, dict) or not room_info.get('room_id'): log + return` so a degraded/failed lookup cannot crash the listener thread.",
+  "existing_code": "            room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)\n            if not room_info or not isinstance(room_info, dict):\n                logger.error(f\"[LIVE-023] \" + \"### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###\")\n                return\n            logger_info = room_info",
+  "start_line": 117,
+  "end_line": 121,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/mcp/__main__.py",
+  "content": "`json.loads` accepts any JSON value, not only objects. A client sending a non-object payload such as `[1,2]`, `null`, `42` or `\"x\"` makes `_handle` raise `AttributeError` on `req.get(\"method\")`, and the exception handler then re-raises on `req.get(\"id\")` as well. That uncaught `AttributeError` escapes `serve_stdio`, killing the whole stdio server for one malformed frame. Validate that the parsed value is a `dict` before dispatch (returning a -32600 Invalid Request), and make the fallback handler defensive.",
+  "suggestion_code": "        if not isinstance(req, dict):\n            print(json.dumps(_error(None, -32600, \"无效请求：期望 JSON 对象\")),\n                  flush=True)\n            continue\n        try:\n            resp = _handle(req)\n        except Exception as e:  # noqa: BLE001\n            rid = req.get(\"id\") if isinstance(req, dict) else None\n            resp = _error(rid, -32603, f\"内部错误: {type(e).__name__}\")",
+  "existing_code": "        try:\n            resp = _handle(req)\n        except Exception as e:  # noqa: BLE001\n            resp = _error(req.get(\"id\"), -32603, f\"内部错误: {type(e).__name__}\")",
+  "start_line": 121,
+  "end_line": 124,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/mcp/server.py",
+  "content": "With `protocol_version = \"HTTP/1.1\"`, connections are keep-alive by default. The 401 path returns before reading the request body, so any unread POST body bytes stay in the socket buffer and will be parsed as the next request line (request desync / smuggling-class bug). Drain (or read and discard) the body before sending the 401 — e.g. call `self._read_body()` or set `Connection: close` / `self.close_connection = True` on this response.",
+  "existing_code": "        if not self._authorized():\n            self._json(401, {\"ok\": False, \"code\": \"MCP-401\",\n                             \"message\": \"缺少或无效的 Bearer 令牌\"})\n            return\n\n        body = self._read_body()",
+  "start_line": 108,
+  "end_line": 113,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/models/task.py",
+  "content": "The `delay_range == [40, 65]` guard makes the `delay` alias effectively unusable. Since `get_tasks` always serialises the delay as `f\"{lo},{hi}\"` (e.g. \"40,65\") and the frontend echoes the whole config back on save, `self.delay` will be `\"40,65\"` while `delay_range` still holds its default `[40, 65]` — so parsing `\"40,65\"` yields `[40, 65]` again and the user's edited value is silently dropped. When the user edits the delay to, say, `\"80,120\"`, the frontend also sends the stale canonical field, so the guard is false and the parsed value is ignored. The intent is documented as \"delay_range 优先；否则由 delay 字符串解析\", but the extra `== [40, 65]` condition contradicts that precedence. Prefer an explicit \"was delay_range provided?\" signal (e.g. `delay_range: list[int] | None = None`) and only fall back to `self.delay` when it is None.",
+  "existing_code": "        if (not delay_range or delay_range == [40, 65]) and self.delay:",
+  "start_line": 77,
+  "end_line": 77,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/cmd_parser.py",
+  "content": "`params` comes straight from untrusted LLM output and is only checked with `or {}`, which does not enforce a dict. If the model returns `{\"intent\":\"create_task\",\"params\":\"...\"}` (a string/list), the non-empty value survives and is later passed to `_default_confirm(intent, params)` / `_execute`, where `params.get(...)` raises `AttributeError`, crashing the parsing path. Normalize to a dict and drop non-dict payloads.",
+  "suggestion_code": "    params = data.get(\"params\")\n    if not isinstance(params, dict):\n        params = {}",
+  "existing_code": "    params = data.get(\"params\") or {}",
+  "start_line": 222,
+  "end_line": 222,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/notify/gateway.py",
+  "content": "`check_intent` never handles open mode. When `mode == \"open\"`, `check()` returns `action=allow` with `role=\"open\"` for any sender, but no grant exists. The downstream handler (`handle_inbound_command`) always calls `check_intent(key, intent)`, which finds no grant and returns `{\"ok\": False, \"reason\": \"未授权\"}`, so every message is still rejected with a misleading \"权限不足：未授权\". This defeats the documented purpose of open mode (\"不拦截（兼容旧行为 / 测试）\"). Consider short-circuiting open mode here, e.g. return `{\"ok\": True, \"role\": \"open\"}` when `self._gw().get(\"mode\") == \"open\"`.",
+  "suggestion_code": "    def check_intent(self, key: str, intent: str) -> dict[str, Any]:\n        \"\"\"已授权 sender 的意图级校验（权限组 + 细粒度白名单）。\"\"\"\n        gw = self._gw()\n        if gw.get(\"mode\", \"pairing\") == \"open\":\n            return {\"ok\": True, \"role\": \"open\"}\n        g = gw.get(\"grants\", {}).get(key)",
+  "existing_code": "    def check_intent(self, key: str, intent: str) -> dict[str, Any]:\n        \"\"\"已授权 sender 的意图级校验（权限组 + 细粒度白名单）。\"\"\"\n        gw = self._gw()\n        g = gw.get(\"grants\", {}).get(key)",
+  "start_line": 263,
+  "end_line": 266,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/scripts/verify_logic_replication.py",
+  "content": "`MR.extract_media()` returns `\"videos\"` (a dict of quality -> url list), not `\"video_qualities\"`. The `summary.get(\"video_qualities\")` lookup always yields `None`, so the diagnostic detail will always print `qualities=None`, masking any media-extraction problem this check is meant to surface. Use the actual key returned by `extract_media` (i.e. `summary.get(\"videos\")`).",
+  "suggestion_code": "        check(\"媒体提取\", summary[\"type\"] == \"video\",\n              f\"type={summary['type']} qualities={summary.get('videos')}\")",
+  "existing_code": "        check(\"媒体提取\", summary[\"type\"] == \"video\",\n              f\"type={summary['type']} qualities={summary.get('video_qualities')}\")",
+  "start_line": 98,
+  "end_line": 99,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/scripts/verify_player.py",
+  "content": "The `consts` dict maps each constant name to its expected value, but the loop body only checks that `export const {k}` appears in the file — the expected value `v` is never asserted. Worse, `v` is interpolated into the check label (`f\"  {k} = {v}（照源项目）\"`), so a passing check reads as if the value were verified when only the declaration's presence was checked. A drifted constant (e.g. `PLAYER_VIDEO_LOAD_TIMEOUT_MS = 9000`) would still report `✓`. Either drop the value from the label, or actually assert it — e.g. match `re.search(rf\"export const {k}\\s*=\\s*{re.escape(v)}\\b\", ut)`.",
+  "existing_code": "    consts = {\n        \"IMAGE_DURATION_SECONDS\": \"1.5\",\n        \"LOAD_MORE_THRESHOLD\": \"8\",",
+  "start_line": 53,
+  "end_line": 55,
+  "category": "test",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/app_config.py",
+  "content": "`_load()` and `_from_env()` intentionally return `{}`/`None` to signal failure, but `get()` interprets a **stored `None`** as \"not configured\" — which is indistinguishable from a DB read failure. When `_load()` swallows the exception and the global section already exists on disk (e.g. `{\"dm\": {\"max_daily\": 10}}`), a single transient read error silently reverts every field to the env/default value, i.e. the user's saved config is silently ignored while the write path reports success. Consider distinguishing \"read error\" from \"key absent\" (e.g. let `_load` raise, or return a sentinel) so `get()`/`save_section()` can fail loudly instead of silently degrading.",
+  "suggestion_code": "    from database import get_kv_json\n    data = get_kv_json(scope_key or _KV_KEY, {})\n    return data if isinstance(data, dict) else {}\n    # 注：故意不 try/except —— 读失败必须冒泡，\n    # 否则消费方会把「读不到」当成「未配置」而静默回落到默认值",
+  "existing_code": "    try:\n        from database import get_kv_json\n        data = get_kv_json(scope_key or _KV_KEY, {})\n        return data if isinstance(data, dict) else {}\n    except Exception:\n        return {}",
+  "start_line": 65,
+  "end_line": 70,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/browser_gate.py",
+  "content": "The requested `account` is never validated against the account reported by `/status` (`j.get(\"account\")`). The port is derived from `account`, but another process/account could be listening on that port; `login_api` explicitly performs this check (\"必须核对 /status.account\") whereas here the gate silently adopts whatever account the endpoint reports. Since `bcc_state()` gates every lease acquisition, a mismatch lets the caller lease a *different* account's browser — exactly the cross-account environment split this module is meant to prevent. Compare and fail on mismatch.",
+  "suggestion_code": "        out[\"version\"] = j.get(\"version\")\n        _acc_name = j.get(\"account\") or account\n        if _acc_name != account:\n            out[\"msg\"] = (f\"端口 {port} 上的 BCC 属于其它账号「{_acc_name}」，\"\n                          f\"拒绝复用（防跨账号抢锁）\")\n            out[\"online\"] = False\n            return out\n        out[\"account\"] = _acc_name\n        out[\"msg\"] = \"ok\"",
+  "existing_code": "        out[\"version\"] = j.get(\"version\")\n        out[\"account\"] = j.get(\"account\") or account\n        out[\"msg\"] = \"ok\"",
+  "start_line": 78,
+  "end_line": 80,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/conv_identity.py",
+  "content": "**回退探活写入了无法被认定的 uid（破坏「排除本账号」判定）。** 本模块以「会话池统计推断」为权威（推断为零网络计算），仅在统计不可用时才回退 `uid_probe.get_uid`（网络探活，TTL 300s）。但探活 uid 与**会话体系 uid 可能不是同一个值**（uid 轮换/换绑后 web `query/user` 已变、imapi 历史 conv_id 仍挂老 uid —— 见 `uid_probe.py:239-247` 自己的记录）。当前实现把「探测站点 uid」直接 `set` 进 `_my_uid_cache`，随后 `peer_uid` 会用它与 conv_id 的 idx2/idx3 比对；一旦两者不等，`a==my`/`b==my` 全部落空 → 返回 `None` → `correct_peer_id` 返回未订正的 `claimed`、`self_send_error` 恒为 `None`。这正是本文件开篇要根治的「一边判可发、另一边判拒发」漂移，反而被固化进缓存 60s。\n\n建议：探活结果也必须先与 conv_id 交叉验证（`uid_probe._uid_consistent_with_history`）再写入缓存，不一致则缓存 `\"\"`（表示不可推断）；并给「不可推断」加显著日志，便于上游走 `_peer_from_db` 兜底。",
+  "suggestion_code": "        except Exception:\n            uid = \"\"\n    else:\n        # 探活结果必须与该账号历史 conv_id 交叉验证，避免把陈旧/换绑后的\n        # web uid 缓存在此，导致 peer_uid 永远匹配不上 conv_id → 误判。\n        try:\n            from services.uid_probe import _uid_consistent_with_history\n            if uid and not _uid_consistent_with_history(account, uid):\n                uid = \"\"\n        except Exception:\n            uid = \"\"\n\n    _my_uid_cache.set(account, uid)",
+  "existing_code": "        except Exception:\n            uid = \"\"\n\n    _my_uid_cache.set(account, uid)",
+  "start_line": 80,
+  "end_line": 83,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/member_ctx.py",
+  "content": "`destroy_session` unconditionally deletes the shared persisted session file, ignoring whether the passed `token` actually matches the session stored in it. If a stale/foreign token is presented (e.g. an old tab logs out after a newer login), this wipes the *valid* on-disk session of the currently logged-in member, and `restore_persisted_session()` will then fail after restart. Guard the deletion: only remove the file when the on-disk token equals the token being destroyed (or when the caller is the active session).",
+  "existing_code": "def destroy_session(token: str) -> None:\n    with _LOCK:\n        _sessions.pop(token, None)\n    try:\n        p = _persist_path()\n        if os.path.isfile(p):\n            os.remove(p)\n    except Exception:\n        pass",
+  "start_line": 135,
+  "end_line": 143,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/member_store.py",
+  "content": "On registry read failure the loader logs the error but returns an empty registry, and the caller may then save it back. For write paths this means a transient/parse error (or a partially written file) silently discards every existing member record on the next `register_member`/`change_password`. Since the log says \"避免误删\" (avoid accidental deletion) this contradicts the behavior — a read failure on a write path should abort the write instead of persisting an empty table.",
+  "existing_code": "        logger.error(f\"[MEM-005] \" + f\"[member] 注册表读取失败（返回空表，避免误删）: {e}\")\n        return {\"version\": 1, \"members\": {}}",
+  "start_line": 97,
+  "end_line": 98,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/pro_kb.py",
+  "content": "`_embed` internally truncates to 20 texts (`_ai._embed_failover(texts[:20], ...)`), but `_dedup_check` passes `[content] + [it[\"content\"] for it in candidates]` unbounded. When a topic has >19 existing entries the returned vector count no longer matches, `len(vecs) != len(candidates) + 1` becomes true, and the function silently returns `(None, 0.0)` — disabling dedup entirely with no signal. This is exactly the >20 failure mode already worked around in `semantic_topk` via batching. `_scan_duplicates` (line ~640) has the same unbounded `_embed` call and silently skips any topic group larger than 20. Batch these calls (chunks of ≤20) or raise `_embed`'s truncation limit.",
+  "existing_code": "    vecs = _embed([content] + [it[\"content\"] for it in candidates])\n    if not vecs or len(vecs) != len(candidates) + 1:\n        return None, 0.0",
+  "start_line": 221,
+  "end_line": 223,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/reply_kb.py",
+  "content": "Threshold is compared against the decayed score (`best_score`), but the docstring explicitly says the threshold applies to the raw relevance, not the decayed score. Since `_decay()` is always ≤ 1, the effective threshold is effectively raised (e.g. an item 50 days old must reach raw ≥ 1.43 to pass 0.85), so older-but-relevant entries are silently never matched. Also, `best_raw` and `best_score` are only assigned inside the loop, so if no candidate has `raw > 0` they are never initialized — a NameError waiting to happen if the code later references them. Compute the candidate's raw score, gate on `raw >= threshold`, and rank by the decayed score (or explicitly separate the two).",
+  "suggestion_code": "        if raw > best_raw_score or (raw == best_raw_score and score > best_score):\n            best, best_raw_score, best_score = it, raw, score\n    if best and best_raw_score >= threshold:",
+  "existing_code": "        if score > best_score:\n            best, best_score = it, score\n            # 记录原始相关度，用于阈值判断（阈值针对相关度，不针对衰减后分数）\n            best_raw = raw\n    if best and best_score >= threshold:",
+  "start_line": 148,
+  "end_line": 152,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/services/uid_probe.py",
+  "content": "`shutdown()` only sets `_sched_stop`, but the module never creates a scheduler thread and never reads `_sched_stop`/`_sched_thread` anywhere. The module docstring promises \"后台单线程 `_probe_scheduler` 按账号错峰刷新（避免同秒并发打网），把各调用方的零散需求收敛为「每账号每 DY_UID_PROBE_TTL 秒至多 1 次」\", but no such thread is ever started. As a result the only refresh paths are the caller-driven `get_uid` and the startup one-shot `warm_all`, so the advertised \"每账号每 DY_UID_PROBE_TTL 秒至多 1 次\" convergence is not actually enforced for the whole process lifetime — the core anti-风控 guarantee this refactor was written for is missing. Either implement the scheduler (a daemon thread that periodically calls `_do_probe`/`refresh_now` with per-account staggering, checking `_sched_stop`), or remove the claim from the docstring and stop advertising `shutdown()`.",
+  "existing_code": "def shutdown() -> None:\n    \"\"\"停止后台调度（进程退出时调用）。\"\"\"\n    _sched_stop.set()",
+  "start_line": 336,
+  "end_line": 338,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/test_config_isolation.py",
+  "content": "The module docstring promises \"若已被导入则强制重定位其 DB 路径\", but no such logic exists. If `database` (or `config.settings`) was already imported by an earlier test module before this one at a different `DY_APP_ROOT`, nothing here re-points it: `database._conn` is left open on the old DB file and `config.settings.data_dir` is baked in from the old root, so config tests keep sharing polluted state — the exact failure mode this module claims to fix. Note `fresh()` also only evicts `database` from `sys.modules`; it never calls `database.reset_connection()` before the delete, so an already-open connection/`_conn` is leaked and the old DB file handle stays around. Implement the promised relocation (e.g. call `database.reset_connection()` and re-import, and reset `config.settings`), or drop the claim from the docstring.",
+  "existing_code": "def fresh(section: str | None = None):\n    \"\"\"返回一个干净隔离的 app_config 模块，并可选重置某 section。\"\"\"\n    for m in [k for k in list(sys.modules) if k in (\"database\",) or k.startswith(\"services.\")]:\n        del sys.modules[m]",
+  "start_line": 25,
+  "end_line": 28,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/test_model_hub_v2.py",
+  "content": "`_wipe()` 直接用 `get_db()` 拿到全局连接并执行 DELETE，属于对生产库路径的直连写入；而 `_ROOT` 只在 `DY_APP_ROOT` 生效时才被使用，若 `member_ctx.db_path()` 已登录并返回了别的路径，本用例会清掉真实会员数据库中的 `model_hub` 配置（`test_migrate_from_v1` 更是先删掉 `migrated` 标记再写入伪造的 v1 结构）。测试应显式将数据库指向临时目录（如设置 `DB_PATH`/mock `database._db_path`）后再执行写入，避免误伤真实数据。",
+  "existing_code": "def _wipe():\n    \"\"\"清 hub kv + 迁移标记，防止 ai_reply 默认配置被迁入污染用例。\"\"\"\n    conn = get_db()\n    conn.execute(\"DELETE FROM kv_store WHERE key IN ('model_hub','model_hub.migrated')\")\n    conn.commit()",
+  "start_line": 20,
+  "end_line": 24,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/test_send_gate_config.py",
+  "content": "`setUp` does not neutralize the environment variables `DY_SEND_MIN_INTERVAL` / `DY_SEND_MAX_WAIT`. `app_config.get` falls back to `_from_env` when no stored value exists, so on a machine where these env vars are set (they are read by both `recv_daemon._FALLBACK_*` and the schema `env` mapping) the \"default\" assertions will see the env value instead of the schema default, making the test results environment-dependent. `test_fallback_when_app_config_broken` also patches `ac.get` to always raise, so it silently passes through the env path too — it verifies the module-level env override rather than the intended code-level constant. Explicitly clear/set these env vars in `setUp`/`tearDown` (e.g. via `unittest.mock.patch.dict(os.environ, ...)`).",
+  "existing_code": "    def setUp(self):\n        ac.reset_section(\"send\")\n        rd._send_gate_last.clear()",
+  "start_line": 31,
+  "end_line": 33,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/bd_ticket.py",
+  "content": "The public key parsing silently assumes `pub_hex` starts with a 2-char uncompressed-point prefix (e.g. \"04\") and unconditionally strips `pub_hex[2:]`. If a caller passes the raw `X||Y` hex without a prefix (as `get_ree_key`'s base64 form lacks), the first byte of X is dropped and verification silently fails or returns wrong results. Moreover, `bytes.fromhex(pub_hex[2:])` and the `VerifyingKey.from_string(...)` call are OUTSIDE the `try`, so malformed/odd-length input raises an exception instead of the documented `False` return. Move the key construction inside the `try` and validate the prefix explicitly.",
+  "suggestion_code": "    try:\n        raw = bytes.fromhex(pub_hex)\n        if len(raw) == 65 and raw[0] == 0x04:\n            raw = raw[1:]\n        vk = VerifyingKey.from_string(raw, curve=NIST256p)\n        return vk.verify(base64.b64decode(sig_b64), e.encode(\"utf-8\"),\n                         hashfunc=hashlib.sha256, sigdecode=sigdecode_der)\n    except Exception:\n        return False",
+  "existing_code": "    vk = VerifyingKey.from_string(bytes.fromhex(pub_hex[2:]), curve=NIST256p)\n    try:\n        return vk.verify(base64.b64decode(sig_b64), e.encode(\"utf-8\"),\n                        hashfunc=hashlib.sha256, sigdecode=sigdecode_der)\n    except Exception:\n        return False",
+  "start_line": 37,
+  "end_line": 42,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/code_logger.py",
+  "content": "The wrapper is not transparent to loguru's `**kwargs`. loguru treats extra keyword arguments as *named format values* (options like traceback control must be passed via `logger.opt(exception=True)`, not as kwargs), so re-emitting the call as `orig_(msg, **kwargs)` leaves those kwargs dangling against a merged message that no longer contains any `{placeholder}` for them. A real call site does exactly this: `browser_daemon.py:771` calls `logger.error(\"BCC-006\", \"...\", exc_info=True)` — after this patch the args are folded into the text but `exc_info=True` is still forwarded to loguru, which does not understand `exc_info` (loguru uses `exception=`/`logger.opt`), so the intended traceback is silently lost. Consider stripping/translating known non-format kwargs, or better, only merge when there are no kwargs, so loguru's option semantics are preserved.",
+  "existing_code": "                        msg += extra\n                        return orig_(msg, **kwargs)",
+  "start_line": 59,
+  "end_line": 60,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/utils/dy_util.py",
+  "content": "On any failure the except block returns the tuple `(None, None)`. All callers immediately subscript the result, e.g. `builder/header.py`: `generate_csrf_token(cookie_str)[0]`. When the request fails, `csrf_token_1` is `None`, so `[0]` raises `TypeError: 'NoneType' object is not subscriptable`, crashing the request path instead of degrading gracefully. Return an empty string (or a namedtuple/dict) so callers get a safe default, e.g. `return '', ''`.",
+  "suggestion_code": "    except Exception:\n        return '', ''",
+  "existing_code": "    except Exception as e:\n        return csrf_token_1, csrf_token_2",
+  "start_line": 168,
+  "end_line": 169,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/backend/web_probe.py",
+  "content": "`_pw`, `_browser`, `context`, `_backend` are assigned inside the `try`, but the `finally` reads `_backend`. The `except RuntimeError` around the launch only catches `RuntimeError`; if `launch_async`/`should_use_vb` raises any other exception (e.g. `TimeoutError`, `OSError`, `playwright` errors, `asyncio.CancelledError`), it propagates before the `finally` — that is fine since `try` starts after the call. However if `page = context.pages[0] if ...` or `context.new_page()` raises after a successful launch, the exception escapes with no cleanup at all, because the `try/finally` only covers the scan loop. Wrap the whole post-launch section (including `goto`/`new_page`) in the `try` so the browser is always torn down, and initialize `_backend = None` before the launch call for defensive clarity.",
+  "suggestion_code": "    except RuntimeError as e:\n        logger.error(f\"[BCC-044] \" + f\"[web_probe] 中控台采集无法启动（已禁用原生 Playwright，不采集）：{e}\")\n        return\n    try:\n        page = context.pages[0] if context.pages else await context.new_page()",
+  "existing_code": "    except RuntimeError as e:\n        logger.error(f\"[BCC-044] \" + f\"[web_probe] 中控台采集无法启动（已禁用原生 Playwright，不采集）：{e}\")\n        return\n    page = context.pages[0] if context.pages else await context.new_page()\n    try:",
+  "start_line": 109,
+  "end_line": 113,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/docs/ia_redesign_mock.html",
+  "content": "The stylesheet references CSS custom properties (`--foreground`, `--muted-foreground`, `--border`, `--card`) that are never defined anywhere in this file, and no external stylesheet is linked. When this standalone HTML is opened directly, these variables are invalid, so `color`/`border`/`background` declarations fall back to their initial values (transparent border, default black text) — the entire mock renders incorrectly. Either declare the variables in `:root` or link the theme stylesheet.",
+  "suggestion_code": ":root {\n    --foreground: #e6e6e6;\n    --muted-foreground: #9aa0a6;\n    --border: #2a2a33;\n    --card: #16161c;\n  }\n  * { box-sizing: border-box; }\n  body { font-family: inherit; color: var(--foreground); }",
+  "existing_code": "  * { box-sizing: border-box; }\n  body { font-family: inherit; color: var(--foreground); }",
+  "start_line": 6,
+  "end_line": 7,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/package.json",
+  "content": "`lucide-react` has no released 1.x line on the public npm registry (its versions are `0.4xx`). A `^1.45.0` range only resolves via a third-party mirror (see package-lock.json `registry.npmmirror.com`), so a clean `npm install` against the default registry will fail and any install pulls a non-canonical artifact — a reproducibility / supply-chain risk. Pin to the real published version (e.g. `^0.4xx`) or document the mirror requirement.",
+  "existing_code": "    \"lucide-react\": \"^1.45.0\",",
+  "start_line": 35,
+  "end_line": 35,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/api/client.ts",
+  "content": "Header merge order is inverted: `headers` is spread after `...init`, so any caller-supplied `init.headers` completely overrides the default headers — including `Content-Type`, `X-App-Version` and the `X-Member-Token` auth token. This silently drops authentication for such requests, producing 401s. Put `...init` first so the auth/content headers always win (or explicitly merge them).",
+  "suggestion_code": "  const res = await fetch(`${BASE}${path}`, {\n    ...init,\n    headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) },\n  });",
+  "existing_code": "  const res = await fetch(`${BASE}${path}`, {\n    headers,\n    ...init,\n  });",
+  "start_line": 91,
+  "end_line": 94,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/api/platform.ts",
+  "content": "Missing 401 handling that exists in `client.ts`. All `/api/*` routes require `X-Member-Token` (main.py:583-623) and return 401 when the session expires. `client.ts` clears the stored token on 401 so the UI observes logged-out state and returns to the login page; this wrapper does not, so an expired session causes every platform call to throw a plain `Error` while the stale token stays in `localStorage`, leaving the user stuck on repeated failures instead of being redirected to login.",
+  "suggestion_code": "  if (!res.ok) {\n    const text = await res.text().catch(() => \"\");\n    // 401 = 会话过期：清除本地 token，与 client.ts 行为保持一致\n    if (res.status === 401) {\n      setMemberToken(\"\");\n    }\n    throw new Error(`API ${path} 失败 (${res.status}): ${text}`);\n  }",
+  "existing_code": "  if (!res.ok) {\n    const text = await res.text().catch(() => \"\");\n    throw new Error(`API ${path} 失败 (${res.status}): ${text}`);\n  }",
+  "start_line": 31,
+  "end_line": 34,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/accounts/AccountReview.tsx",
+  "content": "The review table is always empty: `rows` is a local constant initialized to `[]` and never populated (no props/state/derivation feed it). Consequences: `filtered`, `cnt()` and all `rows.filter(...)` calls always return nothing, so the table always renders the \"暂无评论记录\" empty state, and comment history is never reachable. Either derive `rows` from real data (e.g. from `account`/query cache) with `useMemo`, or remove the unused table until data is wired up.",
+  "existing_code": "  const rows: ReviewRow[] = [];",
+  "start_line": 37,
+  "end_line": 37,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/accounts/accounts-page.tsx",
+  "content": "`batchExport` is a no-op that reports success: it never exports anything, yet pushes \"已导出 N 个账号的运行数据\". This misleads the user into believing data was exported (and could be relied on for backup). Either implement the actual export/download or remove the button and handler.",
+  "existing_code": "  const batchExport = () => {\n    if (!batchSel.size) {\n      push(\"请先勾选账号\");\n      return;\n    }\n    push(\"已导出 \" + batchSel.size + \" 个账号的运行数据\");\n  };",
+  "start_line": 201,
+  "end_line": 207,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/accounts/accounts-page.tsx",
+  "content": "Hardcoded backend base URL (`http://127.0.0.1:8000`) bypasses the shared `api` client. Besides the checklist rule against hardcoded URL paths, this breaks in packaged builds / non-default ports and duplicates auth plumbing. Add an `ensureBcc`/`ensureRecv` method to the API client (or reuse an existing helper) and call it through `api`. The same issue appears in the `ensure-recv` fetch below.",
+  "existing_code": "    fetch(`http://127.0.0.1:8000/api/accounts/${encodeURIComponent(a.name)}/ensure-bcc`, {\n      method: \"POST\",\n      headers: { \"X-Member-Token\": (window.localStorage.getItem(\"dy_member_token\") || \"\") },\n    })\n      .then((r) => r.json())",
+  "start_line": 296,
+  "end_line": 300,
+  "category": "maintainability",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/accounts/accounts-shared.tsx",
+  "content": "`a.name` is used without a null check for `.length` (line 159) and string concatenation (line 194). `name` is declared as a required `string` in `RawAccount`, but the data comes from the backend and may be missing/undefined; `a.name.length` would then throw a TypeError during render (the very failure mode this mapper is meant to guard against). Consider `const name = a.name || \"—\"` at the top of `mapAcct` and reuse it.",
+  "suggestion_code": "    uid: a.uid || \"—\",\n    hue: hue(name.length * 2),",
+  "existing_code": "    uid: a.uid || \"—\",\n    hue: hue(a.name.length * 2),",
+  "start_line": 158,
+  "end_line": 159,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/crawl/crawl-page.tsx",
+  "content": "`sendBatch` performs an outward-facing bulk private-message operation (up to 200 candidates, `max_send: 0`, `interval: 0`) with no confirmation dialog and no rate limiting despite the UI showing a `rate_limited` counter. An accidental click immediately blasts messages to all matched comment users. Given this is an irreversible user-facing action, add a confirmation step before dispatching the batch (and consider a sane default interval/max_send).",
+  "existing_code": "      const r = await api.crawlBatch({\n        account,\n        aweme_id: cmtFor.awemeId,\n        text: dmTpl,\n        keyword: cmtFilter.trim(),\n        limit: 200,\n        max_send: 0,\n        interval: 0,\n      });",
+  "start_line": 138,
+  "end_line": 146,
+  "category": "security",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/kb/pro-kb.tsx",
+  "content": "`applyMut.onSuccess` only handles the `d.ok` success path. When the server returns `{ ok: false }` (or an error payload), nothing is reported to the user and the failure is silently swallowed, leaving the UI in an inconsistent state. Add an `else` branch that surfaces the error, consistent with `scanMut`/`patchMut`.",
+  "suggestion_code": "    onSuccess: (d) => {\n      if (d.ok) {\n        push(`已处理 ${d.count} 条 → 回收站`);\n        setPicked({});\n        setScan(null);\n        invalidate();\n      } else push(\"处理失败：服务端返回失败\");\n    },\n    onError: (e) => push(`处理失败：${errMsg(e)}`),",
+  "existing_code": "    onSuccess: (d) => {\n      if (d.ok) {\n        push(`已处理 ${d.count} 条 → 回收站`);\n        setPicked({});\n        setScan(null);\n        invalidate();\n      }\n    },\n    onError: (e) => push(`处理失败：${errMsg(e)}`),",
+  "start_line": 134,
+  "end_line": 142,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/kb/pro-kb.tsx",
+  "content": "`restoreMut.onSuccess` unconditionally pushes \"已恢复\" without checking `d.ok`. If the restore request fails at the application level (`ok: false`), the user is told the item was restored when it was not, and the recycle list is refreshed to the server's (unchanged) data. Guard on `d.ok` and surface the failure otherwise.",
+  "suggestion_code": "    onSuccess: (d) => {\n      if (d.ok) {\n        push(\"已恢复\");\n        setRecycle(d.items || []);\n        invalidate();\n      } else push(\"恢复失败：服务端返回失败\");\n    },",
+  "existing_code": "    onSuccess: (d) => {\n      push(\"已恢复\");\n      setRecycle(d.items || []);\n      invalidate();\n    },",
+  "start_line": 163,
+  "end_line": 167,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/layout/MemberGate.tsx",
+  "content": "Effect dependency `onLogin` is unstable. In App.tsx the prop is passed as an inline arrow `onLogin={(u) => { setMemberName(u); ... }}`, so its identity changes on every parent render (App re-renders frequently due to its 3s polling). Since `onLogin` is in the dependency array, this effect re-runs repeatedly while `checking === true` (no token, or token present but not logged in), firing duplicate `/api/member/state` requests and allowing race conditions / duplicate flushes. Keep the startup check as a one-shot (empty deps) and, if needed, hold the callback in a ref.",
+  "suggestion_code": "      } else {\n        setChecking(false);\n      }\n    })();\n    // eslint-disable-next-line react-hooks/exhaustive-deps\n  }, []);",
+  "existing_code": "      } else {\n        setChecking(false);\n      }\n    })();\n  }, [onLogin]);",
+  "start_line": 40,
+  "end_line": 44,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/layout/MemberGate.tsx",
+  "content": "Async IIFE in useEffect has no try/catch. Although `memberApi.state()` catches internally today, `onLogin(s.username)` is a caller-supplied callback that can throw, and any future change to `state()` (e.g. rethrow on network error) would leave an unhandled promise rejection and, worse, leave `checking` stuck at `true` forever, permanently trapping the user on the \"正在检查登录态…\" splash. Wrap the body in try/catch and always `setChecking(false)` on failure to guarantee the gate resolves.",
+  "suggestion_code": "  useEffect(() => {\n    (async () => {\n      try {\n      if (!getMemberToken()) {",
+  "existing_code": "  useEffect(() => {\n    (async () => {\n      if (!getMemberToken()) {",
+  "start_line": 31,
+  "end_line": 33,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/messages/LeadsSection.tsx",
+  "content": "Exported `PageProps` has no `push` member (and `api` is optional in practice, see `api?: typeof api`). Destructuring `push` (and potentially `api`) without a fallback will yield `undefined`, and `push(...)` in the catch block would then throw a `TypeError` — masking the real error and leaving the UI with no feedback. Provide a default/optional-chain fallback, e.g. `const push = props.push ?? (() => {})` or guard the call with `props.push?.(...)`.",
+  "suggestion_code": "  const { api } = props;\n  const push = props.push ?? (() => {});",
+  "existing_code": "  const { api, push } = props;",
+  "start_line": 38,
+  "end_line": 38,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/messages/message-viewer.tsx",
+  "content": "Bug: the effect only runs once on mount with `[]` deps, but at that moment `media` is typically `null`, so the component returns `null` early and `rootRef.current` is still `null`. The `if (el)` guard then silently skips attaching the listener, and because deps are empty the effect never re-runs when the modal actually opens — so the native wheel handler (and the intended page-scroll prevention) never takes effect. Depend on `media` (or use a callback ref) so the listener is attached when the root node actually exists.",
+  "suggestion_code": "    const el = rootRef.current;\n    if (!el) return;\n    el.addEventListener(\"wheel\", stop, { passive: false });\n    return () => el.removeEventListener(\"wheel\", stop);\n  }, [media]);",
+  "existing_code": "    const el = rootRef.current;\n    if (el) {\n      el.addEventListener(\"wheel\", stop, { passive: false });\n      return () => el.removeEventListener(\"wheel\", stop);\n    }\n  }, []);",
+  "start_line": 36,
+  "end_line": 41,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+  "content": "`qc.invalidateQueries()` with no arguments invalidates every query in the cache (including `accounts`, overview polling, live-monitor queries, etc.), forcing a full application-wide refetch storm after each 更新会话. Scope it to the affected keys: `qc.invalidateQueries({ queryKey: [\"msg-convs\"] })` (and `[\"msg-detail\"]` if needed).",
+  "existing_code": "                      qc.invalidateQueries().catch(() => {});",
+  "start_line": 421,
+  "end_line": 421,
+  "category": "performance",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/overview/AiRuntimeSection.tsx",
+  "content": "`toggleRun` inspects `enabled` (server config flag) to decide start vs stop, but the button label/color are driven by `running`. When they diverge — e.g. `enabled === true` but `running === false` (the UI renders \"启动监听\") — clicking the button calls `api.aiStop()`, i.e. a button labelled \"启动\" performs a stop. Decide based on the same value that drives the UI (e.g. `running ? aiStop() : aiStart()`) so the action matches the label; also `toggleRun`'s `useCallback` deps should then track that value.",
+  "existing_code": "      if (enabled) await api.aiStop();\n      else await api.aiStart();\n      await qc.invalidateQueries({ queryKey: [\"ai-status\"] });\n      await qc.invalidateQueries({ queryKey: [\"ai-config\"] });\n      push(enabled ? \"AI 自动回复已停止\" : \"AI 自动回复已启动（全自动监听）\", 5000);",
+  "start_line": 53,
+  "end_line": 57,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/player/player-media-stage.tsx",
+  "content": "The load-timeout retry calls `v.load()` but never re-arms the timeout and never calls `set(\"load\")` again. It also leaves the timer id in `timerRef` pointing at a fired timer. Consequence: only ONE retry is ever possible (the second/third attempts never get a chance to mark `readyState < 3`), so `PLAYER_VIDEO_MAX_AUTO_RETRIES` is effectively dead and a stalled video never reaches the `error` state — it hangs on the \"加载中…\"/\"缓冲中…\" hint forever. Encapsulate the check in a function that re-arms itself after each `v.load()` and returns a promise so it can be `await`ed.",
+  "suggestion_code": "        const waitForPlayable = () => new Promise<void>((resolve) => {\n          if (timerRef.current) window.clearTimeout(timerRef.current);\n          timerRef.current = window.setTimeout(() => {\n            if (v.readyState >= 3) return resolve();\n            if (retryRef.current < PLAYER_VIDEO_MAX_AUTO_RETRIES) {\n              retryRef.current += 1;\n              v.load();\n              waitForPlayable().then(resolve);\n            } else {\n              set(\"error\");\n              setFailed(true);\n              resolve();\n            }\n          }, PLAYER_VIDEO_LOAD_TIMEOUT_MS);\n        });\n        await waitForPlayable();\n        if (cancelled) return;",
+  "existing_code": "        timerRef.current = window.setTimeout(() => {\n          if (v.readyState < 3) {\n            if (retryRef.current < PLAYER_VIDEO_MAX_AUTO_RETRIES) {\n              retryRef.current += 1;\n              v.load();\n            } else {\n              set(\"error\");\n            }\n          }\n        }, PLAYER_VIDEO_LOAD_TIMEOUT_MS);",
+  "start_line": 85,
+  "end_line": 94,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/player/player-media-stage.tsx",
+  "content": "The resume-position logic runs immediately after `await k.attach(...)`, i.e. before the media metadata is loaded. `v.duration` is `NaN` at that point, so the `Number.isFinite(v.duration)` guard is always false and `v.currentTime = pos` is never executed — the documented \"续播\" (resume playback) feature never works. Apply the position inside the `loadedmetadata` handler instead (or await metadata before seeking), and guard with the `canplay`/`loadeddata` event.",
+  "suggestion_code": "        // 续播（照 YCVideoPlayer \"记录播放位置\"）\n        // 注意：attach 之后 duration 仍为 NaN，必须等 loadedmetadata 后再 seek\n        { const pos = getPosition(media.aweme_id || \"\");\n        if (pos > 0) {\n          const onMeta = () => {\n            v.removeEventListener(\"loadedmetadata\", onMeta);\n            if (Number.isFinite(v.duration) && pos < v.duration - 2) {\n              try { v.currentTime = pos; } catch { /* ignore */ }\n            }\n          };\n          if (v.readyState >= 1) onMeta();\n          else v.addEventListener(\"loadedmetadata\", onMeta);\n          cleanupSeek = () => v.removeEventListener(\"loadedmetadata\", onMeta);\n        } }",
+  "existing_code": "        // 续播（照 YCVideoPlayer \"记录播放位置\"）\n        const pos = getPosition(media.aweme_id || \"\");\n        if (pos > 0 && Number.isFinite(v.duration) && pos < v.duration - 2) {\n          try { v.currentTime = pos; } catch { /* ignore */ }\n        }",
+  "start_line": 79,
+  "end_line": 83,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/player/player-media-stage.tsx",
+  "content": "`videoRef.current` will be `null` on this effect's first run when `media.type === \"video\"`, because the `<video>` element is only rendered after the early returns for `!media` / `failed`. In that case the effect bails out without ever setting status to \"load\" or attaching a kernel, so switching from a non-video media to a video leaves the stage in `idle` and the video is never wired up. Render the `<video>` element unconditionally (hidden when not needed) or track the element in state so the effect re-runs once it is mounted.",
+  "existing_code": "    const v = videoRef.current;\n    setFailed(false);\n    if (!v || media?.type !== \"video\" || !media.url) {",
+  "start_line": 62,
+  "end_line": 64,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/player/player-playback-bar.tsx",
+  "content": "Drag state can get stuck at `true`. Only `onPointerUp` resets `dragging.current`; there is no `onPointerCancel` handler and no `releasePointerCapture`. If the pointer interaction is cancelled (touch interrupted, pointer leaves/loses capture, or component unmounts mid-drag), `dragging.current` stays `true` forever and the rAF tick permanently stops updating `cur`/`dur`, freezing the progress bar. Also, `setPointerCapture` is called on `e.target` (a child element) rather than the track element, so cleanup/release is not tied to the same node. Capture on `barRef.current` instead, and reset drag state in an `onPointerCancel` handler.",
+  "suggestion_code": "        onPointerUp={(e) => { dragging.current = false; (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); }}\n        onPointerCancel={() => { dragging.current = false; }}",
+  "existing_code": "        onPointerUp={() => { dragging.current = false; }}",
+  "start_line": 80,
+  "end_line": 80,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/settings/UnifiedConfigSection.tsx",
+  "content": "The `.catch(() => ({ ok: false, config: {} }))` silently swallows scoped-config load failures. The UI then shows global defaults with no indication that the tag's saved values failed to load, and saving will overwrite the tag's config with those defaults. Surface the error (e.g. set an error state / push() a message) instead of silently discarding it.",
+  "existing_code": "      const sc = await api.getScoped(scope).catch(() => ({ ok: false, config: {} }));",
+  "start_line": 70,
+  "end_line": 70,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/ui/scroll-area.tsx",
+  "content": "The vertical scrollbar height is not constrained. Radix requires each `ScrollAreaPrimitive.Scrollbar` to receive a `h-full` (or equivalent) class on the vertical orientation so the track can size itself and the `flex-1` Thumb can be laid out proportionally. Without it, the track collapses/sizes incorrectly and the scrollbar will not render or drag properly. (For comparison, the sibling `separator.tsx` explicitly sets orientation-dependent sizing.) Also note `transition-colors` has no effect here because the track has no color and no hover/state variant is applied — likely a copied leftover.",
+  "suggestion_code": "      className=\"flex h-full w-[6px] touch-none select-none p-[1px] transition-colors\"",
+  "existing_code": "      className=\"flex w-[6px] touch-none select-none p-[1px] transition-colors\"",
+  "start_line": 22,
+  "end_line": 22,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/components/ui/select.tsx",
+  "content": "`SelectContent` renders items directly inside a plain `Viewport`, but Radix's `SelectScrollUpButton`/`SelectScrollDownButton` are not exposed or rendered anywhere. For long option lists (e.g. account/live-room lists) Radix relies on these scroll buttons plus arrow-key scrolling; without them, scrolling and keyboard navigation inside the viewport are broken/limited. Expose and render them around the viewport, or at least export them so callers can compose them.",
+  "suggestion_code": "      <SelectPrimitive.ScrollUpButton className=\"flex cursor-default items-center justify-center py-1\">\n        <ChevronUp className=\"h-4 w-4 opacity-60\" />\n      </SelectPrimitive.ScrollUpButton>\n      <SelectPrimitive.Viewport className=\"p-0\">{children}</SelectPrimitive.Viewport>\n      <SelectPrimitive.ScrollDownButton className=\"flex cursor-default items-center justify-center py-1\">\n        <ChevronDown className=\"h-4 w-4 opacity-60\" />\n      </SelectPrimitive.ScrollDownButton>",
+  "existing_code": "      <SelectPrimitive.Viewport className=\"p-0\">{children}</SelectPrimitive.Viewport>",
+  "start_line": 53,
+  "end_line": 53,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/stores/app-store.ts",
+  "content": "`ViewType` (the store's public contract) does not include the source project's 11 views it claims to be a superset of (`home`/`search`/`user`/`recommended`/`downloads`/`liked`/`collected`/`notices`/`friends-status`/`automation`), nor does `VIEW_TITLE` cover them. Since `setView` blindly casts a `string` to `ViewType` and `VIEW_TITLE` is typed as `Record<ViewType, string>`, a caller doing `setView(\"home\")` compiles fine but persists an untitled view; `App.tsx` then falls back to `VIEW_TITLE[t as ViewType] ?? \"控制台\"` and renders a nameless tab. Either add the missing members to the union and `VIEW_TITLE`, or derive the type from `SOURCE_VIEWS` (e.g. `type SourceView = (typeof SOURCE_VIEWS)[number]`) so the two definitions cannot drift.",
+  "existing_code": "export const SOURCE_VIEWS = [\n  \"home\", \"search\", \"user\", \"recommended\", \"downloads\",\n  \"liked\", \"collected\", \"notices\", \"friends-status\",\n  \"automation\", \"settings\",\n] as const;",
+  "start_line": 39,
+  "end_line": 43,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/styles/tokens.css",
+  "content": "The frost-on state is never defined. `html:not([data-glass-frost])` only covers the default (frost off) case with blur(14px); when ThemeContext sets `data-glass-frost=\"true\"`, this rule stops matching and no `backdrop-filter` is applied at all — so \"strong frost\" is actually weaker than the default. Either invert the gate or add an explicit `html[data-glass-frost] .glass-premium, html[data-glass-frost] .glass-panel { backdrop-filter: blur(48px); }` rule.",
+  "existing_code": "  html:not([data-glass-frost]) .glass-premium,\n  html:not([data-glass-frost]) .glass-panel {\n    backdrop-filter: blur(14px);\n  }",
+  "start_line": 121,
+  "end_line": 124,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/theme/accents.ts",
+  "content": "Dead code / likely regression: nothing in the app reads `--glow-rgb` or `--glow-deep-rgb` (no CSS/TSX consumer in the repo), so `applyGlowToDom` currently has no visible effect — the “氛围光” glow layer described in the comment no longer exists in the redesign styles. Also `--accent-glow` / `--accent-bg` / `--accent-border` / `--accent-border-strong` written by `applyAccentToDom` have no readers, and `--color-accent-ink` has no readers either (components hardcode `text-[#08130a]`). Please confirm whether the glow layer was dropped in the redesign and remove the now-unconsumed writes (or restore the consumers); keep the mapping table in sync so readers know which variable set is live.",
+  "existing_code": "  root.setProperty(\"--glow-rgb\", `${base.r}, ${base.g}, ${base.b}`);\n  root.setProperty(\"--glow-deep-rgb\", `${deep.r}, ${deep.g}, ${deep.b}`);",
+  "start_line": 270,
+  "end_line": 271,
+  "category": "maintainability",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/src/theme/ThemeContext.tsx",
+  "content": "Storage clobbering on mount. `applyThemeToDom` internally calls `persist(...)`, which unconditionally rewrites `dy.theme`/`dy.accent`/`dy.glow`. This effect runs on every mount even when nothing changed, so a stored value that is *valid* but not reproduced identically by the initializer can be silently overwritten. Concretely: a stored custom-hex accent (e.g. `\"#A1B2C3\"`) is normalized to lowercase (`\"#a1b2c3\"`), and any stored accent that `resolveAccent` fails to match (it silently falls back to `ACCENTS[0]`) is replaced by `\"green\"` — permanently destroying the user's saved choice on page load. Also, first-time visitors get three storage keys written before any explicit action. Prefer writing only to the DOM during initialization and reserving persistence for actual user-initiated setters.",
+  "suggestion_code": "  useEffect(() => {\n    applyAccentToDom(accent, theme);\n    applyGlowToDom(glow, accent, theme);\n    document.documentElement.dataset.theme = theme;\n    document.documentElement.style.colorScheme = theme === \"day\" ? \"light\" : \"dark\";\n    applyGlassFrostToDom(glassFrost);",
+  "existing_code": "  useEffect(() => {\n    applyThemeToDom(theme, accent, glow);\n    applyGlassFrostToDom(glassFrost);",
+  "start_line": 123,
+  "end_line": 125,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/frontend/vite.config.ts",
+  "content": "`devUrl` 与 `server.host` 不一致：`src-tauri/tauri.conf.json` 里 `devUrl` 写的是 `http://localhost:1420`，而这里 host 固定为 `127.0.0.1`。在解析到 IPv6 的机器上，`localhost` 会先走 `::1`，而 dev server 只监听 `127.0.0.1:1420` 且 `strictPort: true` 不会自动换端口，Tauri 窗口加载会直接失败（连接被拒）。此外 `backend/main.py` 的 CORS 白名单同时放行了 `127.0.0.1:1420`/`localhost:1420`/`4173`，说明团队本意是两端兼容。建议二者取其一并对齐：要么把 host 改成 `localhost`（或 `true`，同时监听 IPv4/IPv6），要么把 tauri.conf 的 devUrl 改为 `http://127.0.0.1:1420`（更安全的做法是只监听回环地址，同时修正 devUrl）。",
+  "existing_code": "    // 通过环境变量区分 Tauri 模式\n    host: \"127.0.0.1\",",
+  "start_line": 20,
+  "end_line": 21,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/chk_refresh.sh",
+  "content": "`cd` failure is silently ignored. If `C:/temp/dyautodm_test` does not exist (or this runs on a machine/OS where the path is invalid), the working directory stays unchanged, every relative `logs/...` reference below resolves against the wrong directory, and the script prints `=== ===` with no explanation. Check the exit status and abort with a clear message.",
+  "suggestion_code": "cd \"C:/temp/dyautodm_test\" || { echo \"ERROR: cannot cd to C:/temp/dyautodm_test\" >&2; exit 1; }",
+  "existing_code": "cd \"C:/temp/dyautodm_test\"",
+  "start_line": 3,
+  "end_line": 3,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/clear_convs.py",
+  "content": "The backup result is not verified: if `shutil.copy2` fails for any part (or `--no-backup` is passed), an explicit warning is printed but execution continues straight into the destructive `DELETE`s and `commit()`, and the commit itself is never guarded by try/except. A backup failure should abort before any data is deleted (or at least require explicit confirmation), otherwise the “清空前自动备份” guarantee is not real.",
+  "suggestion_code": "                    print(f\"  ⚠️ 备份 {src.name} 失败: {e}\")\n                    if not args.no_backup:\n                        print(\"  备份失败，已中止清空（如确要继续请加 --no-backup）\")\n                        conn.close()\n                        return 8",
+  "existing_code": "                    print(f\"  ⚠️ 备份 {src.name} 失败: {e}\")",
+  "start_line": 190,
+  "end_line": 190,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/fix_system_notice_text.py",
+  "content": "The docstring promises \"精确匹配，绝不模糊删\", but the replacement is a whole-text overwrite: any row whose `text` merely *contains* a biz string (e.g. `\"喂 aweme_im_consecutive_chat_notice 你好\"`, a quoted/forwarded message, or a debug dump) gets its entire text replaced by `label（#tail）`, silently discarding the rest of the content. The subsequent `WHERE id=? AND text=?` only guards against concurrent modification, not against over-broad replacement. Either restrict the SELECT to texts that are exactly the placeholder (e.g. compare after stripping `（#digits）`) or do a surgical substitution of the biz substring instead of assigning `new` wholesale.",
+  "suggestion_code": "        # 仅整体占位文本才订正，避免把含 biz 串的普通消息正文整条覆盖\n        if re.fullmatch(rf\"{re.escape(label)}（#\\d+）|\", r[\"text\"]):\n            continue\n        new = r[\"text\"].replace(biz, label) if biz in r[\"text\"] else label\n        plan.append((r[\"id\"], r[\"text\"], new))",
+  "existing_code": "        new = f\"{label}（#{tail}）\" if tail else label\n        plan.append((r[\"id\"], r[\"text\"], new))",
+  "start_line": 38,
+  "end_line": 39,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/probe_img_origin.py",
+  "content": "Empty-URL bug: this query can return a message whose remote URL is not stored after the `[图片]` marker (e.g. messages carrying an inline thumbnail plus a separate `[原图] <url>` tail — see probe_remote_fetch.py, which has to regex the URL out of such rows). In that case `row[0].replace(\"[图片]\", \"\").strip()` yields an empty string, and the script silently runs the JS with `url == \"\"`; all three paths then fail and the probe prints a misleading \"远程链不可用\"-style conclusion. Validate the extracted URL and bail out instead.",
+  "suggestion_code": "        url = row[0].replace(\"[图片]\", \"\").strip()\n        if not url.startswith((\"http://\", \"https://\")):\n            print(f\"[!] 取到的不是有效 URL: {url[:80]!r}，请手动传 URL\")\n            sys.exit(1)",
+  "existing_code": "        url = row[0].replace(\"[图片]\", \"\").strip()",
+  "start_line": 133,
+  "end_line": 133,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_dm_dispatch.py",
+  "content": "The test account name is hard-coded as a literal `\"测试账号A\"`, but the injected `_TEST_WHITELIST` (built by `scripts/build_sidecar.py`) maps real account names to allowed peer sets. When `TEST_WHITELIST_ON` is True (the debug build this script targets), `submit()` looks up `_TEST_WHITELIST.get(account)`; since `\"测试账号A\"` is not a key, `allowed is None` and the call is rejected before ever reaching the peer check. So `r1.accepted` is False and the \"白名单内放行\" check always FAILS, while `r2` also fails (also because the account itself is unknown, not because the peer is outside the whitelist) — the second check passes for the wrong reason and gives false confidence. Derive the account from the actual whitelist (e.g. pick a key from `dd._TEST_WHITELIST`) or monkeypatch `dd._TEST_WHITELIST` with a known entry before calling `submit`.",
+  "existing_code": "r1 = d.submit(\"测试账号A\", f\"0:1:{my}:200000000000002\", \"测试\", \"manual\")\ncheck(\"白名单内放行\", r1.accepted, f\"error={r1.error[:40]}\")\n\n# A -> 其他真人（应拒绝）\nr2 = d.submit(\"测试账号A\", f\"0:1:{my}:8888888888\", \"测试\", \"manual\")",
+  "start_line": 53,
+  "end_line": 57,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_isolation.py",
+  "content": "Validation is ineffective — assert the failure count. The script only prints `PASS/FAIL` and always ends successfully, so in CI a run with `FAIL>0` would still exit 0 and be reported as \"verification passed\". Add a non-zero exit code (e.g. `sys.exit(1 if fail_n else 0)`) at the end so failures actually break the build.",
+  "suggestion_code": "print(f\"结果: PASS={ok_n}  FAIL={fail_n}\")\nsys.exit(1 if fail_n else 0)",
+  "existing_code": "print(f\"结果: PASS={ok_n}  FAIL={fail_n}\")",
+  "start_line": 124,
+  "end_line": 124,
+  "category": "test",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_media_branch.py",
+  "content": "The replica diverges from the current frontend `sanitizeDataUri` (message-shared.tsx:186-203), which first applies `decodeURIComponent` to the payload and only then strips illegal chars (`%2F`→`/`, `%2B`→`+`, `%3D`→`=`). Here `%` is simply dropped by `_KEEP`, leaving stray `2F`/`2B` fragments, so base64 tails that the fixed frontend renders successfully will be classified by this script as `无图链兜底`. Since faithfully reproducing frontend behavior is the entire point of the script, add the URL-decode step before sanitizing (guarding for invalid percent-escapes, mirroring the frontend try/catch).",
+  "suggestion_code": "    head = u[: comma + 1]\n    rest = u[comma + 1:]\n    try:\n        rest = unquote(rest)\n    except Exception:\n        pass\n    return head + _KEEP.sub(\"\", rest)",
+  "existing_code": "    head = u[: comma + 1]\n    return head + _KEEP.sub(\"\", u[comma + 1:])",
+  "start_line": 25,
+  "end_line": 26,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_origin_image.py",
+  "content": "The output path is hard-coded to another user's machine-specific absolute directory. Running this script elsewhere (CI, another dev, or a machine without that Desktop layout) raises FileNotFoundError and aborts after all the verification work has already been done. Derive the path from the script location or cwd, e.g. `out = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"origin_image_verify.html\")`, or make it configurable via an env var.",
+  "existing_code": "out = r\"C:\\Users\\LOX\\Desktop\\DYchajian\\origin_image_verify.html\"",
+  "start_line": 84,
+  "end_line": 84,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_sanitize.py",
+  "content": "The Python port omits the `decodeURIComponent` step that the real frontend `sanitizeDataUri` performs before stripping characters (message-shared.tsx:195-199, explicitly documented as the 2026-09-04 fix: `%2F`/`%2B` must be URL-decoded first, otherwise the `%` is dropped and the leftover `2F`/`2B` corrupts the base64 and the image renders as a grey circle). Because this verification script's whole purpose is to prove that \"cleaning restores renderability\", silently skipping that step makes the measured \"清洗后\" result diverge from the actual frontend behaviour and can under-report successes. Add the unquote step to stay faithful to the code under test, e.g.:\n\n```python\nfrom urllib.parse import unquote\n...\ntry:\n    rest = unquote(rest)\nexcept Exception:\n    pass  # 解码失败则保持原样，后面正则兜底\nrest = _KEEP.sub(\"\", rest)\n```",
+  "existing_code": "    head = u[: comma + 1]\n    rest = _KEEP.sub(\"\", u[comma + 1 :])\n    return head + rest",
+  "start_line": 28,
+  "end_line": 30,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/scripts/verify_uid_sink.py",
+  "content": "Hardcoded absolute path (and hardcoded Windows user directory `C:\\Users\\LOX\\...`) ties the script to one developer machine and will fail (ImportError) on any other machine or CI. Derive the backend path from `__file__` or an env var, e.g. `Path(__file__).resolve().parent.parent / \"backend\"`.",
+  "existing_code": "sys.path.insert(0, r\"C:\\Users\\LOX\\Desktop\\DYchajian\\DYAutoDM_v2\\backend\")",
+  "start_line": 4,
+  "end_line": 4,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/src-tauri/src/lib.rs",
+  "content": "Check-then-act race: the aliveness check and the insertion of the new handle into `guard` are not atomic. If `start_backend` is invoked concurrently (e.g. the user's `Enter` double-click in the frontend, or the startup call racing a manual `start_backend`), both callers can pass the `is_alive()` check and the second spawn overwrites the first handle — the first Python backend process is leaked with no handle left to stop it, and it keeps port 8000 bound. Use a single critical section that performs the check and the write without releasing the lock (i.e. hold the guard across the spawn, but then use an async-friendly lock / dedicated state machine), or use `compare_exchange` semantics on an atomic state flag before spawning.",
+  "existing_code": "    if guard.as_ref().map(|h| h.is_alive()).unwrap_or(false) {\n        return Ok(\"already running\".into());\n    }",
+  "start_line": 35,
+  "end_line": 37,
+  "category": "other",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/src-tauri/src/lib.rs",
+  "content": "Handles pushed by `start_browser_daemon`/`start_recv_daemon` are never deduplicated: repeated invocations for the same `(account, port)` append a new handle each time. The old entry becomes unreachable for `stop_browser_daemon` (which removes only the first match, and that one may be a dead stale handle), so the actually-running daemon can never be stopped via the command and `list_daemons` reports duplicates. Reject/ignore a start when a handle with the same label already exists and is alive, and/or garbage-collect dead handles when pushing.",
+  "existing_code": "    state\n        .daemons\n        .lock()\n        .map_err(|e| e.to_string())?\n        .push(handle);\n    Ok(format!(\"browser_daemon for {} on {}\", account, port))",
+  "start_line": 62,
+  "end_line": 67,
+  "category": "other",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/start_dev.ps1",
+  "content": "`Get-Process` returns `System.Diagnostics.Process` objects, which do NOT have a `CommandLine` property (only `Get-CimInstance Win32_Process` does). Under PowerShell 5.1 this always evaluates to `$null`, so the `-or` branch is dead and the filter effectively matches ANY node/vite process whose path contains \"DYAutoDM_v2\". Since `$ErrorActionPreference = \"Stop\"` is set, accessing a non-existent property may also throw. Use `Get-CimInstance Win32_Process` (as done later in the file) and filter on `CommandLine` to reliably target only this project's Vite.",
+  "suggestion_code": "    Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" -ErrorAction SilentlyContinue |\n        Where-Object { $_.CommandLine -like \"*vite*1420*\" } |\n        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+  "existing_code": "        Where-Object { $_.Path -like \"*DYAutoDM_v2*\" -or $_.CommandLine -like \"*vite*\" } |",
+  "start_line": 32,
+  "end_line": 32,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/start_dev.ps1",
+  "content": "`Get-Process -Name` does not support wildcards in PowerShell 5.1: it treats \"dyautodm-*\" as a literal process name, finds nothing, and — because `$ErrorActionPreference = \"Stop\"` — the failed lookup raises a terminating error that `-ErrorAction SilentlyContinue` does not reliably suppress (property/name resolution errors surface anyway). Consequently `Stop-All` aborts here and the \"[3/3] 端口检查\" step never runs. Retrieve processes then filter, or use `Get-CimInstance Win32_Process -Filter \"Name LIKE 'dyautodm-%'\"`.",
+  "suggestion_code": "    Get-CimInstance Win32_Process -Filter \"Name LIKE 'dyautodm-%'\" -ErrorAction SilentlyContinue |\n        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+  "existing_code": "    Get-Process -Name \"dyautodm-*\" -ErrorAction SilentlyContinue |\n        Stop-Process -Force -ErrorAction SilentlyContinue",
+  "start_line": 36,
+  "end_line": 37,
+  "category": "bug",
+  "severity": "high"
+ },
+ {
+  "path": "DYAutoDM_v2/start_dev.ps1",
+  "content": "Same issue as in `Stop-All`: `-Name` does not accept wildcards, so \"dyautodm-backend*\" never matches the running backend and stale processes are not cleaned up, defeating the stated \"清理旧进程\" step. Use `Get-CimInstance Win32_Process` with a `LIKE` filter.",
+  "suggestion_code": "Get-CimInstance Win32_Process -Filter \"Name LIKE 'dyautodm-backend%'\" -ErrorAction SilentlyContinue |\n    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+  "existing_code": "Get-Process -Name \"dyautodm-backend*\" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+  "start_line": 65,
+  "end_line": 65,
+  "category": "bug",
+  "severity": "high"
+ }
+]
