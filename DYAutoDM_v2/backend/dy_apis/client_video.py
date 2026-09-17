@@ -118,9 +118,16 @@ class VideoMixin:
             search_id, guide_search_words, res_json = DouyinAPI.search_video_work(auth, query, offset, count, sort_type,
                                                                                   publish_time, filter_duration,
                                                                                   search_range, search_id)
-            video_works = res_json["data"]
+            # 2026-09-17 修补（OCR 审查 HIGH —— 无守卫下标 + 无轮数上限）：
+            # 限流/空响应（safe_json → {}）时原 `res_json["data"]` 抛 KeyError；
+            # 无上限的 while 在平台恒返 has_more=1 且 data 空时会死循环。
+            if not isinstance(res_json, dict):
+                break
+            video_works = res_json.get("data")
+            if not video_works:
+                break
             video_work_list.extend(video_works)
-            if res_json["has_more"] != 1 or len(video_work_list) >= num:
+            if res_json.get("has_more") != 1 or len(video_work_list) >= num:
                 break
             offset = str(int(offset) + int(count))
         if len(video_work_list) > num:

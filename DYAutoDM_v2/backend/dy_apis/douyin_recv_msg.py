@@ -105,8 +105,13 @@ class DouyinRecvMsg:
         print("\033[31m### error ###")
         print(error)
         print("### ===error=== ###\033[m")
-        if type(error) == ConnectionRefusedError or type(
-                error) == websocket._exceptions.WebSocketConnectionClosedException and self.auto_reconnect:
+        # 2026-09-17 修补（OCR 审查 HIGH —— 运算符优先级 + isinstance）：
+        # 原为 `A or B and C`，Python 解析成 `A or (B and C)` —— 于是
+        # `ConnectionRefusedError` **无视 auto_reconnect** 也触发重连；
+        # 且 `type(x) == Y` 命中不了子类。改为显式括号 + isinstance。
+        if self.auto_reconnect and isinstance(
+                error, (ConnectionRefusedError,
+                        websocket._exceptions.WebSocketConnectionClosedException)):
             self.start()
 
     def on_close(self, ws, close_status_code, close_msg):

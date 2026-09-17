@@ -45,9 +45,17 @@ def encode_strdata(plaintext_bytes, nonce):
     return b64_custom_encode(raw)
 
 
-def build_fingerprint():
+def build_fingerprint(account: str | None = None):
+    """构造上报指纹（**按账号**派生，与浏览器侧同源）。
+
+    2026-09-17 修补（OCR 审查 HIGH —— 账号身份丢失）：
+    原实现无条件 `get_profile()`（等价 account=None → "default" 键），
+    于是每个账号拿到**同一份**指纹（同 cpu_core_num/内存/屏幕/geo），
+    而本函数产出的正是「按账号」的 report 指纹 → 账号身份被静默抹平。
+    现接受 account 并透传；不传时保持旧的 default 行为（向后兼容）。
+    """
     from utils.fingerprint import get_profile
-    prof = get_profile()
+    prof = get_profile(account)
     g = prof["geo"]
     fp = json.loads(FINGERPRINT_TEMPLATE)
     fp["navigator"]["hardwareConcurrency"] = int(prof["cpu_core_num"])

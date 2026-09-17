@@ -115,11 +115,25 @@ class RelationsMixin:
         max_time = "0"
         count = "20"
         follower_list = []
+        # 2026-09-17 修补（OCR 审查 HIGH —— 无守卫下标 + 无轮数上限）：
+        # `get_user_follower_list` 走 safe_json，限流/空响应时降级为 {} →
+        # 原 `res_json["followers"]` 抛 KeyError；且 while True 无上限，
+        # 平台恒返 has_more=1 时会无限翻页。现加守卫 + 轮数上限。
+        _pages = 0
+        _MAX_PAGES = kwargs.get("max_pages", 200) or 200
         while True:
+            _pages += 1
+            if _pages > _MAX_PAGES:
+                logger.warning(f"[REL-001] follower 翻页超过上限 {_MAX_PAGES}，提前终止")
+                break
             res_json = DouyinAPI.get_user_follower_list(auth, user_id, sec_id, max_time, count)
-            followers = res_json["followers"]
+            if not isinstance(res_json, dict):
+                break
+            followers = res_json.get("followers")
+            if not followers:
+                break
             follower_list.extend(followers)
-            if res_json["has_more"] != 1 or len(follower_list) >= num:
+            if res_json.get("has_more") != 1 or len(follower_list) >= num:
                 break
             max_time = res_json["min_time"]
         if len(follower_list) > num:
@@ -199,11 +213,22 @@ class RelationsMixin:
         max_time = "0"
         count = "20"
         following_list = []
+        # 2026-09-17 修补（OCR 审查 HIGH —— 同 follower：守卫 + 轮数上限）。
+        _pages = 0
+        _MAX_PAGES = kwargs.get("max_pages", 200) or 200
         while True:
+            _pages += 1
+            if _pages > _MAX_PAGES:
+                logger.warning(f"[REL-002] following 翻页超过上限 {_MAX_PAGES}，提前终止")
+                break
             res_json = DouyinAPI.get_user_following_list(auth, user_id, sec_id, max_time, count)
-            followings = res_json["followings"]
+            if not isinstance(res_json, dict):
+                break
+            followings = res_json.get("followings")
+            if not followings:
+                break
             following_list.extend(followings)
-            if res_json["has_more"] != 1 or len(following_list) >= num:
+            if res_json.get("has_more") != 1 or len(following_list) >= num:
                 break
             max_time = res_json["min_time"]
         if len(following_list) > num:

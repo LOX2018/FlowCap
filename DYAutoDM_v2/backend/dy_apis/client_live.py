@@ -104,11 +104,17 @@ class LiveMixin:
                         "room_status": room_status,
                         "room_title": room_title
                     }
-                    print(res)
+                    # 2026-09-17 修补：删除残留调试 print（污染 stdout，
+                    # daemon 环境下会混入日志；且会打印直播间全量信息）。
+                    logger.debug(f"[LIVE] get_live_info 解析成功 room={room_id}")
                     return res
                 except Exception as e:
                     pass
-        return None, None, None
+        # 2026-09-17 修补（OCR 审查 HIGH —— 返回形状与调用方约定不符）：
+        # 原返回 `(None, None, None)` 三元组，但调用方一律按「dict 或 None」
+        # 处理（`if not room_info` / `room_info["room_id"]`）→ 元组为真值
+        # 会通过 falsy 检查，随后下标抛 TypeError。统一返回 None。
+        return None
 
     @staticmethod
     def get_live_production(auth, url: str, room_id: str, author_id: str, offset: str, **kwargs):
@@ -170,15 +176,29 @@ class LiveMixin:
         :return:
         """
         room_info = DouyinAPI.get_live_info(auth, url.split("/")[-1].split("?")[0])
+        # 2026-09-17 修补（OCR 审查 HIGH —— None 下标）：
+        # get_live_info 解析不到 roomId 时返回 None → 原 `room_info["room_id"]`
+        # 抛 TypeError 打断整批。现跳过该条（与"房间不可用"语义一致）。
+        if not isinstance(room_info, dict):
+            logger.warning(f"[LIVE-020] get_live_info 无有效房间信息，"
+                           f"返回空商品列表: {url}")
+            return []
         room_id = room_info["room_id"]
         author_id = room_info["author_id"]
         offset = "0"
         production_list = []
         while True:
             res_json = DouyinAPI.get_live_production(auth, url, room_id, author_id, offset)
-            productions = res_json["promotions"]
+            # 2026-09-17 修补（OCR 审查 HIGH —— 无守卫下标 + 无轮数上限）：
+            # safe_json 可能降级为 {} → 原 `res_json["promotions"]` 抛 KeyError；
+            # 且 `while True` 无上限，平台若恒返非 -1 的 next_offset 会死循环。
+            if not isinstance(res_json, dict):
+                break
+            productions = res_json.get("promotions") or []
+            if not productions:
+                break
             production_list.extend(productions)
-            offset = str(res_json["next_offset"])
+            offset = str(res_json.get("next_offset") or "-1")
             if offset == "-1":
                 break
         return production_list

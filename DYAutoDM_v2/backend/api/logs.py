@@ -20,7 +20,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Query
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
@@ -34,7 +34,11 @@ class LogWriteBody(BaseModel):
 
 
 class SessionDeleteBody(BaseModel):
-    files: list[str] = []
+    # 2026-09-17 修补（OCR 审查 HIGH —— 可变默认参数）：
+    # 原为 `files: list[str] = []`。虽然 pydantic 会在校验时复制默认值，
+    # 但模块级共享的可变对象仍是隐患（且不同 pydantic 大版本语义不同）。
+    # 改用 `Field(default_factory=list)` 显式每次新建。
+    files: list[str] = Field(default_factory=list)
 
 
 # 2026-08-31 修复：守护进程日志用完整日期格式
@@ -162,7 +166,27 @@ async def get_logs(
         return {"ok": True, "file": None, "lines": []}
 
     if name:
-        target = LOG_DIR / name
+        # 2026-09-17 修补（OCR 审查 HIGH —— 路径穿越）：
+        # 原实现 `target = LOG_DIR / name` 直接拼接**来自查询串的名字**。
+        # pathlib 语义下 `Path("logs") / "../../secret.txt"` 会逃逸到上层目录，
+        # `Path("logs") / "/etc/passwd"` 更会**整体替换**为绝对路径（实测：
+        # log_dir/"C:\Windows\win.ini" → C:\Windows\win.ini），
+        # 于是 `GET /api/logs?name=../../secret.txt` 可读任意文件。
+        # 现要求：① 只接受纯文件名（无目录分隔符/无上级引用）；
+        #          ② 解析后必须仍在 LOG_DIR 之内（双重保险，防符号链接/UNC）。
+        safe_name = os.path.basename(name.replace("\\", "/").strip())
+        if (not safe_name or safe_name != name.replace("\\", "/").strip()
+                or safe_name in (".", "..")):
+            logger.warning(f"[logs] 拒绝非法日志文件名: {name!r}")
+            return {"ok": False, "file": None, "error": "非法文件名", "lines": []}
+        target = LOG_DIR / safe_name
+        try:
+            root = LOG_DIR.resolve()
+            if target.resolve().parent != root:
+                logger.warning(f"[logs] 拒绝越界路径: {name!r}")
+                return {"ok": False, "file": None, "error": "非法文件名", "lines": []}
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "file": None, "error": "非法文件名", "lines": []}
         if not (target.exists() and target.is_file()):
             return {"ok": True, "file": None, "lines": []}
         return _read_tail(target, limit, target.name)

@@ -888,7 +888,8 @@ class AutoDM:
             return len(self.dispatch.records)
         return 0
 
-    async def shutdown(self) -> None:
-        """应用关闭时调用"""
-        if self.is_running:
-            await self.stop(hard=True)
+    # 2026-09-17 修补（OCR 审查 HIGH —— 同名方法重复定义）：
+    # 此处原本还有第二个 `async def shutdown`，其函数体（仅 `if is_running:
+    # stop(hard=True)`）在 Python 里**静默覆盖**了本文件上方那个带完整
+    # 退出收尾逻辑（含非运行态的 `_finish_history_task("stopped")`）的定义，
+    # 导致历史任务收尾在优雅退出时永不执行。已删除重复定义，保留上方完整版。

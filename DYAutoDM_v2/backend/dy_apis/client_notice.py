@@ -111,12 +111,19 @@ class NoticeMixin:
         notice_list = []
         while True:
             res_json = DouyinAPI.get_notice_list(auth, min_time, max_time, count, notice_group)
-            notices = res_json["notice_list_v2"]
-            notice_list.extend(notices)
-            if res_json["has_more"] != 1 or len(notice_list) >= num:
+            # 2026-09-17 修补（OCR 审查 HIGH —— 无守卫下标）：
+            # safe_json 在限流/空响应时降级为 {}，原 `res_json["notice_list_v2"]`
+            # 会抛 KeyError；改用 .get 并把"无数据"当正常终止。
+            if not isinstance(res_json, dict):
                 break
-            min_time = res_json["min_time"]
-            max_time = res_json["max_time"]
+            notices = res_json.get("notice_list_v2")
+            if not notices:
+                break
+            notice_list.extend(notices)
+            if res_json.get("has_more") != 1 or len(notice_list) >= num:
+                break
+            min_time = res_json.get("min_time")
+            max_time = res_json.get("max_time")
         if len(notice_list) > num:
             notice_list = notice_list[:num]
         return notice_list

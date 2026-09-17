@@ -183,7 +183,15 @@ def pw_sync_api():
         return _f
 
 
-_IPAPI_IS_URL = "https://api.ipapi.is/?key=5dc5e8145af003394288"
+# 2026-09-17 修补（OCR 审查 HIGH —— 源码内硬编码密钥）：
+# 原为 `"https://api.ipapi.is/?key=5dc5e8145af003394288"`，密钥直接写死并
+# 随程序分发。改为从环境变量读取（`DY_IPAPI_KEY`）；未配置时**不带 key**
+# 调用（ipapi.is 的免 key 额度仍可返回基础字段），并在日志提示。
+# 兼容：若用户已配置 `DY_IPAPI_IS_URL` 则整体覆盖。
+_IPAPI_KEY = os.getenv("DY_IPAPI_KEY", "").strip()
+_IPAPI_IS_URL = (os.getenv("DY_IPAPI_IS_URL", "").strip()
+                 or ("https://api.ipapi.is/?key=" + _IPAPI_KEY if _IPAPI_KEY
+                     else "https://api.ipapi.is/"))
 
 _EGRESS_IP_ENDPOINTS = [
     ("https://api.ipify.org?format=json", lambda d: (d or {}).get("ip")),

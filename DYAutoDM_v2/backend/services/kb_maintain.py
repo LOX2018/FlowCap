@@ -54,7 +54,10 @@ _state = {
 def _log(code: str, msg: str) -> None:
     try:
         from loguru import logger as _lg
-        _lg.warning(code, msg)
+        # 2026-09-17 修补（OCR 审查 HIGH —— loguru 双参数吞正文）：
+        # loguru 把首个位置参数当 **str.format 模板**，`code`（如 "KB-101"）
+        # 不含占位符 → `msg` 被整体丢弃，只记下裸错误码，全部诊断信息丢失。
+        _lg.warning(f"[{code}] {msg}")
     except Exception:
         pass
 

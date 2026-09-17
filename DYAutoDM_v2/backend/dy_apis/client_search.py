@@ -232,7 +232,7 @@ class SearchMixin:
             # 2026-09-17 修补（OCR 审查 HIGH）：平台限流/风控时 `search_general_work`
             # 返回 {} 或缺少 "data"/"has_more"（safe_json 的降级结果）→ 直接下标
             # 会抛 KeyError。先做键守卫，缺失即停止翻页（而非崩溃）。
-            if not isinstance(res_json, dict) or "data" not in res_json:
+            if not isinstance(res_json, dict) or not res_json.get("data"):
                 logger.warning(f"[SEARCH-001] 搜索结果缺 data 字段（疑限流/风控），"
                                f"停止翻页: keys={list(res_json)[:6] if isinstance(res_json, dict) else type(res_json).__name__}")
                 break

@@ -29,7 +29,18 @@ def _list_accounts() -> list[dict[str, Any]]:
     """列出已登记账号（仅名称与是否已配置，不返回任何凭据）。"""
     try:
         from auto_dm.accounts import list_accounts
-        return [{"name": n} for n in list_accounts()]
+        # 2026-09-17 修补（OCR 审查 HIGH —— 返回值形状不符）：
+        # `list_accounts()` 返回 [(name, env_path), ...]（见 auto_dm/accounts.py），
+        # 原实现直接 `{"name": n}` 会把**元组**塞进 name（JSON 语义错误），
+        # 还顺带泄露 env_path（与 docstring「不返回任何凭据」相悖）。
+        # 现按元组解包并校验类型，兼容字符串元素。
+        out: list[dict[str, Any]] = []
+        for it in list_accounts():
+            if isinstance(it, (tuple, list)):
+                out.append({"name": str(it[0])})
+            else:
+                out.append({"name": str(it)})
+        return out
     except Exception:
         return []
 
