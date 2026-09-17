@@ -125,4 +125,14 @@ def feed(auth, count="20"):
 
 # ---------------- 私信 ----------------
 def conversation_list(auth, to_user_id, conversation_short_id):
-    return _safe("get_conversation_list", auth, to_user_id, conversation_short_id)
+    # 2026-09-17 修补（OCR 审查 CRITICAL）：`get_conversation_list`
+    # 的定义是 `(auth, conversation_short_id=0, **kwargs)` —— auth 之后**只接受
+    # 一个**位置参数（分页游标）。原调用多传了 to_user_id，会抛
+    # `TypeError: too many positional arguments`。
+    # 若目标是「按对端 uid 取会话」，用的是别的方法；此处只透传游标。
+    if to_user_id:
+        logger.warning(
+            "FEAT-001",
+            f"[features] conversation_list 收到 to_user_id={to_user_id}，"
+            f"但底层 get_conversation_list 只按 conversation_short_id 分页，已忽略")
+    return _safe("get_conversation_list", auth, conversation_short_id)

@@ -34,29 +34,32 @@ class TestSendGateConfig(unittest.TestCase):
 
     # ---- 1. 零回归 ----
     def test_default_matches_pre_change(self):
-        self.assertEqual(rd._cfg_min_interval(), 8.0)
+        # 2026-09-17 修补（OCR 审查 CRITICAL）：兜底闸门在 v0.43.40 已
+        # **有意放宽**为 `max(2.0, 配置值 * 0.5)`（专防绕过调度器的直发，
+        # 见 recv_daemon.py 闸门注释）。原断言写 8.0 未考虑 0.5 折扣 → 必失败。
+        self.assertEqual(rd._cfg_min_interval(), 4.0)   # 8.0 * 0.5
         self.assertEqual(rd._cfg_max_wait(), 30.0)
 
     def test_fallback_constant_unchanged(self):
-        self.assertEqual(rd._SEND_GATE_MIN_INTERVAL, 8.0)
-        self.assertEqual(rd._SEND_GATE_MAX_WAIT, 30.0)
+        # 常量真名是 _FALLBACK_*（_SEND_GATE_* 不存在，原写法必抛 AttributeError）
+        self.assertEqual(rd._FALLBACK_MIN_INTERVAL, 8.0)
+        self.assertEqual(rd._FALLBACK_MAX_WAIT, 30.0)
 
     # ---- 2. 热生效 ----
     def test_config_change_takes_effect_immediately(self):
-        # 同一进程内改配置，无需重启
+        # 同一进程内改配置，无需重启；注意闸门值 = 配置值 * 0.5（下限 2s）
         ac.save_section("send", {"min_interval": 15.0, "max_wait": 45.0})
-        self.assertEqual(rd._cfg_min_interval(), 15.0)
+        self.assertEqual(rd._cfg_min_interval(), 7.5)    # 15.0 * 0.5
         self.assertEqual(rd._cfg_max_wait(), 45.0)
 
     def test_gate_actually_uses_new_value(self):
         """闸门真的按新间隔拦：第二次获取应被拒。
 
-        注意 max_wait 取 schema 下限 5s（低于则被配置中心丢弃回落 30s）。
-        设 min_interval=8（下限）、max_wait=5 → 第二次必在 5s 后快速失败，
-        而不是等到 8s 才放行——这正是「走配置值」与「走兜底 8s」的分界。
+        闸门值 = max(2.0, 配置值 * 0.5)。设 min_interval=8 → 闸门 4s；
+        max_wait=5 → 第二次在 4s 后即可放行（间隔先于 deadline 到期）。
         """
         ac.save_section("send", {"min_interval": 8.0, "max_wait": 5.0})
-        self.assertEqual(rd._cfg_min_interval(), 8.0)
+        self.assertEqual(rd._cfg_min_interval(), 4.0)    # 8.0 * 0.5
         self.assertEqual(rd._cfg_max_wait(), 5.0)
 
         ok1, _ = rd._send_gate_acquire("测试账号")
@@ -64,23 +67,28 @@ class TestSendGateConfig(unittest.TestCase):
         t0 = time.time()
         ok2, waited = rd._send_gate_acquire("测试账号")
         cost = time.time() - t0
-        self.assertFalse(ok2, "间隔未到应被闸门拦住")
-        # 关键：应在 max_wait(5s) 附近失败，而不是等到 min_interval(8s) 才放行
-        self.assertLess(cost, 7.0, f"应在 ~5s 快速失败，实际耗时 {cost:.1f}s")
-        self.assertGreaterEqual(waited, 4.5)
+        # 闸门间隔 4s < max_wait 5s → 等待 4s 后放行（而非失败）
+        self.assertTrue(ok2, "闸门间隔(4s)短于 max_wait(5s)，第二次应等待后放行")
+        self.assertGreaterEqual(cost, 3.5, f"应等待约 4s，实际 {cost:.1f}s")
 
     # ---- 3. 边界 ----
     def test_out_of_range_keeps_default(self):
-        ac.save_section("send", {"min_interval": 1.0})   # 下限 8s
-        self.assertEqual(rd._cfg_min_interval(), 8.0)
+        # min_interval=1.0 被 schema 下限(8)拒绝 → 回落默认 8 → 闸门 4.0
+        ac.save_section("send", {"min_interval": 1.0})
+        self.assertEqual(rd._cfg_min_interval(), 4.0)
 
     def test_fallback_when_app_config_broken(self):
-        """配置中心抛异常时回落兜底常量，绝不崩。"""
+        """配置中心抛异常时回落兜底常量，绝不崩。
+
+        注意：_cfg_min_interval 对兜底值同样打 5 折（下限 2s），
+        故断言的是折扣后的值，而非裸常量。
+        """
         orig = ac.get
         try:
             ac.get = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
-            self.assertEqual(rd._cfg_min_interval(), rd._SEND_GATE_MIN_INTERVAL)
-            self.assertEqual(rd._cfg_max_wait(), rd._SEND_GATE_MAX_WAIT)
+            self.assertEqual(rd._cfg_min_interval(),
+                             max(2.0, rd._FALLBACK_MIN_INTERVAL * 0.5))
+            self.assertEqual(rd._cfg_max_wait(), rd._FALLBACK_MAX_WAIT)
         finally:
             ac.get = orig
 

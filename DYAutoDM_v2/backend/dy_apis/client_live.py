@@ -525,7 +525,13 @@ class LiveMixin:
                             params=params.get(), cookies=auth.cookie, data=data, verify=False)
         return safe_json(res)
 
+    @staticmethod
     def diggLiveRoom(auth, room_id: str, count: str = '1'):
+        # 2026-09-17 修补（OCR 审查 CRITICAL）：本方法由 douyin_api.py 机械
+        # 拆分而来，**丢失了 `@staticmethod`**，但首参是 auth 且方法体不用 self。
+        # 缺装饰器时会变成实例方法，`DouyinAPI.diggLiveRoom(auth, room_id)`
+        # （兄弟方法的统一调用形态）将抛 TypeError。同 mixin 其余方法均带
+        # @staticmethod，此处补齐。
         api = "/webcast/room/like/"
         headers = HeaderBuilder().build(HeaderType.FORM)
         refer = f"https://live.douyin.com/{room_id}"

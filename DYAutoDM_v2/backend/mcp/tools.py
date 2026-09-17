@@ -168,8 +168,15 @@ def _platform_call(account: str, method: str, **kwargs) -> Any:
 
 
 def _search_user(account: str, keyword: str, count: int = 20) -> Any:
-    """搜索用户（照源项目 A2：按昵称/抖音号/UID 搜索）。"""
-    return _platform_call(account, "search_some_user", keyword=keyword, count=str(count))
+    """搜索用户（照源项目 A2：按昵称/抖音号/UID 搜索）。
+
+    2026-09-17 修补（OCR 审查 CRITICAL）：底层签名为
+    `search_some_user(auth, query, num, **kwargs)`。原调用传 `keyword=/count=`
+    会落进 `**kwargs`，而必填的 `query`/`num` 缺失 → 必然
+    `TypeError: missing required positional argument`。改为参数名对齐。
+    """
+    return _platform_call(account, "search_some_user",
+                          query=keyword, num=str(count))
 
 
 def _user_works(account: str, user_url: str) -> Any:
@@ -197,8 +204,14 @@ def _recommend_feed(account: str, count: int = 20, refresh_index: str = "2") -> 
 
 
 def _search_work(account: str, keyword: str, count: int = 20) -> Any:
-    """搜索作品（照源项目 A2）。"""
-    return _platform_call(account, "search_some_general_work", keyword=keyword, count=str(count))
+    """搜索作品（照源项目 A2）。
+
+    2026-09-17 修补（OCR 审查 CRITICAL）：底层签名为
+    `search_some_general_work(auth, query, num, sort_type, publish_time, ...)`。
+    原调用传 `keyword=/count=` → 必填 `query`/`num` 缺失而抛 TypeError。
+    """
+    return _platform_call(account, "search_some_general_work",
+                          query=keyword, num=str(count))
 
 
 def _collected_list(account: str) -> Any:
@@ -222,8 +235,17 @@ def _user_favorite(account: str, sec_id: str, count: int = 18) -> Any:
 
 
 def _work_comments(account: str, aweme_id: str, count: int = 30) -> Any:
-    """作品评论列表（照源项目 A/评论面）。"""
-    return _platform_call(account, "get_work_all_comment", aweme_id=aweme_id, num=str(count))
+    """作品评论列表（照源项目 A/评论面）。
+
+    2026-09-17 修补（OCR 审查 CRITICAL）：底层签名为
+    `get_work_all_comment(auth, url, **kwargs)` —— 它接受**作品 URL**，
+    既没有 aweme_id 参数也没有 num。原调用把两者塞进 kwargs，导致必填的
+    `url` 缺失 → TypeError。此处把 aweme_id 归一化为作品页 URL。
+    """
+    url = aweme_id if str(aweme_id).startswith("http") \
+        else f"https://www.douyin.com/video/{aweme_id}"
+    return _platform_call(account, "get_work_all_comment", url=url,
+                          count=str(count))
 
 
 def _notice_list(account: str, count: int = 20) -> Any:
@@ -232,13 +254,25 @@ def _notice_list(account: str, count: int = 20) -> Any:
 
 
 def _follower_list(account: str, sec_id: str, count: int = 20) -> Any:
-    """粉丝列表（照源项目 A2）。"""
-    return _platform_call(account, "get_user_follower_list", sec_id=sec_id, count=str(count))
+    """粉丝列表（照源项目 A2）。
+
+    2026-09-17 修补（OCR 审查 CRITICAL）：底层签名为
+    `get_user_follower_list(auth, user_id, sec_id, ...)` —— `user_id` 是
+    **必填位置参数**，仅给 sec_id 会抛 TypeError。此处 user_id 未知时
+    传空串（接口按 sec_id 定位，实测可返回），并保留 sec_id。
+    """
+    return _platform_call(account, "get_user_follower_list",
+                          user_id="", sec_id=sec_id, count=str(count))
 
 
 def _following_list(account: str, sec_id: str, count: int = 20) -> Any:
-    """关注列表（照源项目 A2）。"""
-    return _platform_call(account, "get_user_following_list", sec_id=sec_id, count=str(count))
+    """关注列表（照源项目 A2）。
+
+    2026-09-17 修补（OCR 审查 CRITICAL）：同 `_follower_list`，
+    `get_user_following_list(auth, user_id, sec_id, ...)` 的 user_id 必填。
+    """
+    return _platform_call(account, "get_user_following_list",
+                          user_id="", sec_id=sec_id, count=str(count))
 
 
 def _media_stats() -> dict:

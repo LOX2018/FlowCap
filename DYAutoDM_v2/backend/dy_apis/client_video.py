@@ -198,8 +198,17 @@ class VideoMixin:
         json_data = resp.json()
         return search_id, json_data["guide_search_words"], json_data
 
+    @staticmethod
     def get_feed(auth, count='20', refresh_index='2', **kwargs):
         """获取首页推荐视频。
+
+        ## 2026-09-17 修补（OCR 审查 CRITICAL）
+        本方法由 douyin_api.py 机械拆分而来，**丢失了 `@staticmethod` 装饰器**
+        —— 方法体首参是 auth 而非 self。缺少装饰器时定义在 class 体内会被当作
+        普通实例方法，`DouyinAPI.get_feed(auth, ...)`（douyin_api.py:153 的调用
+        形态）会因缺 self 实参抛 `TypeError: get_feed() missing 1 required
+        positional argument`。同文件 get_work_info / search_video_work 均带
+        @staticmethod，此处补齐以保持一致。
 
         ## ★ 2026-09-15 改用源项目接口（业务接口一律换成源项目方案）
 

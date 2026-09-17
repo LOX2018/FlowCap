@@ -37,6 +37,8 @@ import threading
 import time
 from typing import Optional
 
+from loguru import logger
+
 import database
 
 _KV_PRO_KB = "ai_pro_kb"

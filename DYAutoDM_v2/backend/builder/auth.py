@@ -2,6 +2,8 @@ import base64
 import json
 import time
 
+from loguru import logger
+
 from dy_apis.douyin_api import DouyinAPI
 from utils.dy_util import trans_cookies, generate_msToken, generate_dynamic_msToken
 
@@ -24,11 +26,21 @@ class DouyinAuth:
         self._ms_ts = 0          # 缓存时间戳
 
     def perepare_auth(self, cookieStr: str, web_protect_: str = "", keys_: str = ""):
-        self.cookie = trans_cookies(cookieStr)
-        self._ttwid = self.cookie.get("ttwid", "")
-        # 真实请求 msToken 只在 query 携带；cookie 里若有旧 msToken 去掉，避免冲突
-        self.cookie.pop("msToken", None)
-        self.cookie_str = "; ".join([f"{k}={v}" for k, v in self.cookie.items()])
+        # 2026-09-17 修补（OCR 审查 CRITICAL）：原实现无条件执行
+        # `self.cookie = trans_cookies(cookieStr)`。而调用方存在
+        # `auth.perepare_auth("", web_protect, keys)` 的用法
+        # （browser_daemon 页面签名刷新后仅需重算 ticket/ts_sign/私钥），
+        # 此时 trans_cookies("") 返回 {}，会把**已有效的 cookie 清空**
+        # → 后续请求全部 401/风控。现改为：空串不覆盖既有 cookie。
+        if cookieStr:
+            self.cookie = trans_cookies(cookieStr)
+            self._ttwid = self.cookie.get("ttwid", "")
+            # 真实请求 msToken 只在 query 携带；cookie 里若有旧 msToken 去掉，避免冲突
+            self.cookie.pop("msToken", None)
+            self.cookie_str = "; ".join([f"{k}={v}" for k, v in self.cookie.items()])
+        else:
+            logger.debug("[auth] perepare_auth 收到空 cookie，保留现有 cookie 不变"
+                         "（仅刷新签名四件套）")
         if web_protect_ != "":
             web_protect_ = json.loads(json.loads(web_protect_)['data'])
             self.ticket = web_protect_['ticket']

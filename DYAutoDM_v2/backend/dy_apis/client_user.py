@@ -114,7 +114,7 @@ class UserMixin:
         params.add_param("device_platform", 'webapp')
         params.add_param("aid", '6383')
         params.add_param("channel", 'channel_pc_web')
-        params.add_param("sec_user_id", 'MS4wLjABAAAA99bTJ_GOw3odYmsXOe7i7xuEv0iQf2X_Kg_VUyVP0U8')
+        params.add_param("sec_user_id", sec_id)
         params.add_param("max_cursor", max_cursor)
         params.add_param("min_cursor", '0')
         params.add_param("whale_cut_token", '')

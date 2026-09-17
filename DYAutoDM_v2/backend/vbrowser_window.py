@@ -13,6 +13,18 @@ from __future__ import annotations
 
 from loguru import logger
 
+# 2026-09-17 修补（OCR 审查 CRITICAL）：本模块由 vbrowser.py 机械拆分而来，
+# 但拆分时**丢失了 ctypes 导入**，导致 `_enum_workareas()` 首次调用即抛
+# `NameError: name '_ctypes' is not defined`（Windows 下窗口几何判据全失效）。
+# 与 vbrowser_args.py:68-69 保持同一写法；非 Windows 平台下置 None 并走兜底。
+try:
+    import ctypes as _ctypes
+    from ctypes import wintypes as _wintypes
+except Exception:  # pragma: no cover - 非 Windows
+    _ctypes = None
+    _wintypes = None
+
+
 def _enum_workareas():
     """枚举全部显示器工作区。失败退回主屏假设 (0,0)-(1536,864)。"""
     try:

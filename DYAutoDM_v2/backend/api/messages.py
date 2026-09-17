@@ -73,13 +73,35 @@ def _bcc_url(account: str, path: str) -> str:
     # 2026-09-13：走统一调度入口 + 用户显式豁免冷静期。
     # 此前直接调 ensure_bcc 未豁免 → 用户在 backend 启动 30s 内点
     # 「更新会话」必然拿不到 BCC（实测：日志 SYS-002 冷静期拦截）。
+    #
+    # 2026-09-17 修补（OCR 审查 CRITICAL）：`ensure_browser` 拿到 lease_id
+    # **即持租约**（其 docstring 明确「用完必须 release_lease()」）。原实现
+    # 只用返回的 port 拼 URL，从不释放 → 每次 WP 发送/更新会话都占住租约
+    # 直到 BCC 侧 TTL 到期，会把其它调用方（capture / 发送）挡在门外。
+    # 现改为：本处只需探活拿 port，取完后立即释放租约（短 TTL 兜底）。
     _st = None
+    _lease_id = ""
     try:
         from services.browser_gate import (ensure_browser as _eb,
+                                          release_lease as _rl,
                                           PURPOSE_USER as _PU)
-        _st = _eb(account, purpose=_PU, wait=True)
+        _st = _eb(account, purpose=_PU, wait=True, ttl=30.0)
+        _lease_id = (_st or {}).get("lease_id") or ""
+        if _st is not None:
+            st = _st
+            if not st.get("ok"):
+                raise RuntimeError(f"BCC 未就绪: {st.get('msg')}")
+            port = acct_core.browser_daemon_port(account)
+            return f"http://127.0.0.1:{port}{path}"
     except Exception as _e:
         logger.debug(f"[bcc-url] gate 调用异常（回退 ensure_bcc）: {_e}")
+    finally:
+        # 无论成功与否都释放：本函数只借用租约定位端口，不需要长期持有
+        if _lease_id:
+            try:
+                _rl(account, _lease_id, holder="bcc_url")
+            except Exception as _re:
+                logger.debug(f"[bcc-url] 释放租约失败（TTL 兜底）: {_re}")
     if _st is None:
         # 调度器不可用时退回原路径（仍豁免冷静期）
         _st = acct_core.ensure_bcc(account, skip_cooldown=True)

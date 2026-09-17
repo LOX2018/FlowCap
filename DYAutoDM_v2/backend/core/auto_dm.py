@@ -770,7 +770,11 @@ class AutoDM:
             self.live = None
 
         # 2) 重新扫码（由 force_rescan 控制：True 强制重扫，False 复用 .env 凭证）
-        force_fresh = getattr(config, "force_rescan", False)
+        # 2026-09-17 修补（OCR 审查 CRITICAL）：原为 `getattr(config, "force_rescan", False)`
+        # —— 本方法内**没有 config 这个名字**（参数名是 account_name，也未引用
+        # self.config），运行到此必然抛 `NameError: name 'config' is not defined`，
+        # 使「重新扫码」链路完全不可用。正确来源是本实例的 self.force_rescan。
+        force_fresh = getattr(self, "force_rescan", False)
         auth = self._build_one_auth(env_path, force_fresh=force_fresh, max_age=0)
         if auth is None or not getattr(auth, "cookie", None):
             raise RuntimeError(
