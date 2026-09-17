@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 import urllib.error
@@ -204,6 +205,38 @@ def _safe_age(p: Path, now: float) -> float:
         return 0.0
 
 
+def _faststart_mp4(path: Path) -> None:
+    """把 moov 移到文件头（`-movflags +faststart`，**仅重封装不重编码**）。
+
+    为什么必须做：CENC 是**原地解密**，moov 位置不变；若 moov 在文件尾，
+    HTML5 `<video>` 必须**读完整文件**才能起播（无法边下边播/Range 拖动）。
+    上游 `video_downloader._faststart_mp4()` 同做法。
+    ffmpeg 缺失时**静默跳过**（视频仍可播放，只是要缓冲完）。
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        logger.info("[VID-006] ffmpeg 不可用，跳过 faststart（视频仍可播，起播需缓冲）")
+        return
+    tmp = path.with_suffix(".faststart.mp4")
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path),
+             "-c", "copy", "-movflags", "+faststart", "-f", "mp4", str(tmp)],
+            capture_output=True, timeout=120)
+        if proc.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+            os.replace(tmp, path)
+            logger.info(f"[VID-007] faststart 重封装完成: {path.name}")
+        else:
+            tmp.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[VID-008] faststart 失败（保留原文件，不影响播放）: {e}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def download_and_decrypt(url: str, skey: str, *, app_root: str | None = None,
                          force: bool = False, timeout: int = 60
                          ) -> dict[str, Any]:
@@ -265,8 +298,113 @@ def download_and_decrypt(url: str, skey: str, *, app_root: str | None = None,
                 "decrypted": True, "cached": False, "data_written": False,
                 "probe_after": after}
     _evict_if_needed(d)
-    logger.info(f"[VID-005] " + f"视频就绪 {out.name} {len(plain)}B "
+    # moov 移到文件头（否则 HTML5 <video> 需读完整文件才能起播）
+    _faststart_mp4(out)
+    try:
+        final_bytes = out.stat().st_size
+    except OSError:
+        final_bytes = len(plain)
+    logger.info(f"[VID-005] " + f"视频就绪 {out.name} {final_bytes}B "
                 f"（密文样本 {before['encrypted_samples']} → 解密后同长）")
-    return {"ok": True, "path": str(out), "bytes": len(plain),
+    return {"ok": True, "path": str(out), "bytes": final_bytes,
             "mime": "video/mp4", "decrypted": True, "cached": False,
             "probe_before": before, "probe_after": after}
+
+
+def resolve_by_message(account: str, msg_id: str, *, tkey: str = "",
+                       skey: str = "", url: str = "", exec_js=None,
+                       app_root: str | None = None, force: bool = False,
+                       db=None) -> dict[str, Any]:
+    """按**消息**取用视频：缺 URL 时用 `tkey` 经页面上下文换签名地址再下载解密。
+
+    设计意图（2026-09-17）：视频消息**只带 `tkey`+`skey`**，故调用方（前端）
+    只需给出 `account`+`msg_id`；本函数负责
+    ① 从 DB 的 `extra.video` 取要素（或吃调用方显式传入的值）；
+    ② 缺 URL 时经 `exec_js`（BCC 页面上下文）换签名地址；
+    ③ 下载密文 → CENC 解密 → faststart → 落缓存。
+
+    参数 `exec_js` 由端点注入（与语音转写同款范式），使本模块**不依赖 BCC**。
+    """
+    from services.cenc_video import resolve_play_urls
+
+    tk, sk, u = tkey, skey, url
+    if (not tk or not sk) and account and msg_id and db is None:
+        try:
+            from database import get_db
+            db = get_db()
+        except Exception:
+            db = None
+    if (not tk or not sk) and db is not None:
+        try:
+            row = db.execute(
+                "SELECT extra FROM dm_messages WHERE account=? AND msg_id=?",
+                (account, msg_id)).fetchone()
+            if row is not None:
+                ex = {}
+                try:
+                    ex = json.loads(row["extra"] or "{}")
+                except Exception:
+                    ex = {}
+                v = ex.get("video") if isinstance(ex, dict) else None
+                if isinstance(v, dict):
+                    tk = tk or str(v.get("tkey") or "")
+                    sk = sk or str(v.get("skey") or "")
+                    u = u or str(v.get("url") or "")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[VID-014] " + f"读消息视频要素失败: {type(e).__name__}")
+
+    if not u:
+        if not tk:
+            return {"ok": False, "error": "消息内没有视频要素（tkey 缺失）"}
+        if not exec_js:
+            return {"ok": False, "error": "需要 BCC 页面上下文换取播放地址"}
+        got = resolve_play_urls([tk], exec_js)
+        u = got.get(tk) or ""
+        if not u:
+            return {"ok": False, "error": "换取播放地址失败（tkey 无效或登录态失效）"}
+    if not sk:
+        # 少数分享卡是明文（无 skey）；此时按「不加密」直接下载返回
+        logger.info("[VID-015] 无 skey，按明文直链处理（可能为站内分享视频）")
+        return download_plain(u, app_root=app_root, force=force)
+    return download_and_decrypt(u, sk, app_root=app_root, force=force)
+
+
+def download_plain(url: str, *, app_root: str | None = None,
+                   force: bool = False, timeout: int = 60) -> dict[str, Any]:
+    """直接下载**未加密**的视频（站内分享视频可能不带 skey）。
+
+    与 `download_and_decrypt` 同缓存策略；先探测是否真是明文 MP4，
+    是加密的（含 senc）则明确报错而不是存下不可播的文件。
+    """
+    if not url or not isinstance(url, str):
+        return {"ok": False, "error": "url 缺失"}
+    key = cache_key(url, "plain")
+    d = _cache_dir(app_root)
+    out = d / f"{key}.mp4"
+    if out.exists() and not force:
+        try:
+            data = out.read_bytes()
+            return {"ok": True, "path": str(out), "bytes": len(data),
+                    "mime": "video/mp4", "decrypted": False, "cached": True,
+                    "probe": probe_mp4(data)}
+        except OSError:
+            pass
+    try:
+        data = _http_get(url, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"下载失败: {type(e).__name__}"}
+    pr = probe_mp4(data)
+    if not pr["is_mp4"]:
+        return {"ok": False, "error": "下载内容不是 MP4", "probe": pr}
+    if pr.get("encrypted_samples"):
+        return {"ok": False, "error": "该视频是 CENC 加密的，缺少 skey 无法解密",
+                "probe": pr}
+    try:
+        out.write_bytes(data)
+    except OSError as e:
+        return {"ok": False, "error": f"缓存写入失败: {type(e).__name__}"}
+    _faststart_mp4(out)
+    _evict_if_needed(d)
+    return {"ok": True, "path": str(out), "bytes": out.stat().st_size,
+            "mime": "video/mp4", "decrypted": False, "cached": False,
+            "probe": pr}

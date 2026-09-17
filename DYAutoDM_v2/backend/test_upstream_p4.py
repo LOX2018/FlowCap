@@ -397,9 +397,20 @@ class TestImVideoService(unittest.TestCase):
             self.assertTrue(r1["decrypted"])
             self.assertFalse(r1["cached"])
             self.assertTrue(os.path.exists(r1["path"]))
-            # 缓存内容必须是**明文**，与解密结果一致
-            self.assertEqual(open(r1["path"], "rb").read(),
-                             CV.decrypt_cenc_mp4(self.enc, self.key))
+            # 2026-09-17（E3）：缓存内容**不再是解密原样输出** —— 出盘前会做
+            # faststart 重封装（moov 移到文件头），否则 HTML5 <video> 必须读完
+            # 整个文件才能起播。故断言**语义等价**而非整体逐字节相等：
+            #   ① 明文 MP4 且无残留加密样本；
+            #   ② **载荷内容**（mdat 的 payload，即第 5 项）与解密输出一致
+            #      —— 注意不能比整个元组：元组第 2 项是偏移，faststart 后必然变。
+            cached = open(r1["path"], "rb").read()
+            plain = CV.decrypt_cenc_mp4(self.enc, self.key)
+            pc = CV.probe_mp4(cached)
+            self.assertTrue(pc["is_mp4"])
+            self.assertFalse(pc.get("encrypted_samples"))
+            self.assertEqual(CV.find_box(cached, 0, len(cached), ["mdat"])[4],
+                             CV.find_box(plain, 0, len(plain), ["mdat"])[4],
+                             "mdat 载荷应与解密输出一致（解密正确性）")
             # 二次调用命中缓存（cached=True，且零网络）
             srv.shutdown()
             r2 = IV.download_and_decrypt(url, self.key, app_root=self.root)
@@ -526,6 +537,139 @@ class TestGroupChat(unittest.TestCase):
             head = json.loads(f.readline())
         self.assertEqual(head["_type"], "header")
         self.assertEqual(head["meta"]["type"], "group")
+
+
+class TestVideoResolveChain(unittest.TestCase):
+    """2026-09-17（E3）：tkey→签名地址 取址链 + 按消息取用 + faststart。
+
+    锁定的契约（含**真跑**端到端，非模拟）：
+      · `resolve_play_urls` 在页面上下文换签名地址（`batch_play_info`，≤10/批）；
+      · `resolve_by_message` 只给 tkey+skey 就能拿到**可解码**的明文 MP4；
+      · moov 在尾部的源文件经 `_faststart_mp4` 后 moov 前移且仍可解码。
+    """
+
+    def test_parse_play_infos_positional_and_error(self):
+        from services.cenc_video import parse_play_infos
+        payload = {"err_no": 0, "data": {"play_infos": [
+            {"encrypted_url": {"main_url": "https://cdn/a.mp4"}},
+            {"encrypted_url": {"backup_url": "https://cdn/b.mp4"}},
+            {"encrypted_url": {}},
+        ]}}
+        got = parse_play_infos(payload, ["t1", "t2", "t3"])
+        self.assertEqual(got, {"t1": "https://cdn/a.mp4", "t2": "https://cdn/b.mp4"})
+        self.assertEqual(parse_play_infos({"err_no": 5, "data": {}}, ["t1"]), {})
+
+    def test_resolve_play_urls_batch_size_and_isolation(self):
+        """分批上限 10，且**单批失败不影响其余批**。"""
+        from services.cenc_video import resolve_play_urls_batch, BATCH_SIZE
+        calls = []
+
+        def fake(js, arg):
+            _path, keys = arg
+            calls.append(list(keys))
+            if keys and keys[0] == "FAIL":
+                return {"status": 500, "body": "{}"}
+            return {"status": 200, "body": json.dumps({"err_no": 0,
+                "data": {"play_infos": [{"encrypted_url":
+                    {"main_url": f"https://cdn/{k}.mp4"}} for k in keys]}})}
+
+        keys = ["FAIL"] + [f"tk{i}" for i in range(1, 10)] + ["tk10", "tk11"]
+        got = resolve_play_urls_batch(keys, fake)
+        self.assertEqual([len(c) for c in calls], [BATCH_SIZE, 2])
+        self.assertNotIn("FAIL", got)
+        self.assertIn("tk10", got)
+        self.assertIn("tk11", got)
+
+    def test_resolve_by_message_end_to_end(self):
+        """真跑：真 H.264 → CENC 加密 → HTTP → 换址 → 解密 → faststart → 可解码。"""
+        import http.server
+        import socketserver
+        import tempfile
+        import threading
+        from services import im_video as IV
+
+        if not _ffmpeg():
+            self.skipTest("ffmpeg 不可用")
+        key = "0102030405060708090a0b0c0d0e0f10"
+        tmp = tempfile.mkdtemp(prefix="e3_test_")
+        src = os.path.join(tmp, "src.mp4")
+        self.assertTrue(_make_src_mp4(src, hole_bytes=512))
+        plain = open(src, "rb").read()
+        cipher = _cenc_encrypt_mp4(plain, key)
+
+        enc = os.path.join(tmp, "enc.mp4")
+        with open(enc, "wb") as f:
+            f.write(cipher)
+
+        class H(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def translate_path(self, path):
+                return enc
+
+        srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        cdn = f"http://127.0.0.1:{srv.server_address[1]}/v.mp4"
+
+        hit = {}
+
+        def fake_exec(js, arg):
+            _path, tkeys = arg
+            hit["tkeys"] = tkeys
+            return {"status": 200, "body": json.dumps({"err_no": 0,
+                "data": {"play_infos": [{"encrypted_url": {"main_url": cdn}}
+                                        for _ in tkeys]}})}
+
+        out = IV.resolve_by_message("", "", tkey="TK", skey=key,
+                                    exec_js=fake_exec, app_root=tmp)
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(hit["tkeys"], ["TK"])
+        self.assertTrue(out.get("decrypted"))
+        got = open(out["path"], "rb").read()
+        self.assertEqual(CV.probe_mp4(got)["is_mp4"], True)
+        pb = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                             "stream=codec_name,nb_frames", "-of", "csv=p=0",
+                             out["path"]], capture_output=True, text=True)
+        self.assertIn("h264", pb.stdout)
+
+    def test_faststart_moves_moov_from_tail(self):
+        """moov 在尾部的文件 → faststart 后 moov 前移，且仍可解码。"""
+        import pathlib
+        import tempfile
+        from services import im_video as IV
+
+        if not _ffmpeg():
+            self.skipTest("ffmpeg 不可用")
+        tmp = tempfile.mkdtemp(prefix="e3_fs_")
+        p = os.path.join(tmp, "tail.mp4")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                        "-i", "testsrc=size=64x48:rate=10", "-t", "1",
+                        "-pix_fmt", "yuv420p", "-c:v", "libx264", p],
+                       capture_output=True)
+        before = open(p, "rb").read()
+        mb = CV.find_box(before, 0, len(before), ["moov"])
+        db = CV.find_box(before, 0, len(before), ["mdat"])
+        self.assertGreater(mb[1], db[1], "前置条件不成立：源文件 moov 未在尾部")
+
+        IV._faststart_mp4(pathlib.Path(p))
+
+        after = open(p, "rb").read()
+        ma = CV.find_box(after, 0, len(after), ["moov"])
+        da = CV.find_box(after, 0, len(after), ["mdat"])
+        self.assertLess(ma[1], da[1], "faststart 未把 moov 移到 mdat 之前")
+        pb = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                             "stream=codec_name", "-of", "csv=p=0", p],
+                            capture_output=True, text=True)
+        self.assertIn("h264", pb.stdout)
+
+    def test_resolve_requires_something_to_work_with(self):
+        """DbC 前置条件：无任何要素时必须明确失败，不得静默返回空。"""
+        from services import im_video as IV
+        out = IV.resolve_by_message("", "", tkey="", skey="", url="")
+        self.assertFalse(out.get("ok"))
+        self.assertIn("tkey", out.get("error", ""))
 
 
 if __name__ == "__main__":

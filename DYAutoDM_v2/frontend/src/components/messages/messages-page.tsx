@@ -960,6 +960,7 @@ export default function MessagesPage(props: PageProps) {
                       <MsgBubble
                         m={m}
                         sys={sys}
+                        account={activeAcct}
                         onOpenImage={setViewer}
                         onJumpRef={(refId, refText) => {
                           // 2026-09-17：引用块点击 → 定位被引用消息（同会话内）。

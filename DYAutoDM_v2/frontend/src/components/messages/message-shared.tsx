@@ -23,6 +23,8 @@ export interface Msg {
   recalled?: boolean;
   /** 2026-09-17：原始秒级时间戳（跳转定位锚点用） */
   ts?: number;
+  /** 2026-09-17：视频要素（tkey/skey/时长/封面；仅视频消息有值） */
+  video?: MsgVideo | null;
 }
 /** 2026-09-17：跳转高亮（命中/引用/日历定位后闪烁 2.4s） */
 const __dmJumpCss = `
@@ -214,6 +216,20 @@ export interface DailyCount {
   count: number;
   first_msg_id: string | null;
   first_ts: number;
+}
+
+/** 2026-09-17：视频要素（后端 `extra.video` 透传；仅视频消息有值） */
+export interface MsgVideo {
+  /** tos_key —— 需经后端换取签名播放地址（消息**不自带**地址） */
+  tkey: string;
+  /** 32 位 hex，CENC 解密密钥 */
+  skey: string;
+  /** 时长（毫秒，消息自带时才有） */
+  duration?: number | null;
+  /** 封面图地址（可能为图床 https，可直接渲染） */
+  poster?: string | null;
+  /** 少数分享卡自带地址；通常为空 */
+  url?: string;
 }
 
 /** 长图渲染参数（`POST /render/png` 与 `/render/html` 共用；seq 闭区间） */

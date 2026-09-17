@@ -454,6 +454,19 @@ async def get_conversation(account: str, conv_id: str):
             # 2026-09-17：撤回标志（f11 字段级判据）。此前前端只能靠正文占位串
             # （`Recall Content Hided`）猜，现由服务端字段直接判定。
             _recalled = bool(int(ex.get("is_recalled") or 0))
+            # 2026-09-17：IM 视频要素（**只透传，不取址**）。
+            # 视频消息的 `tkey` 需另一跳换签名地址，属外呼——放在用户**点播**时
+            # 才做（`POST /video/resolve`），此处绝不预取，避免浏览会话就狂发请求。
+            _video = ex.get("video") if isinstance(ex.get("video"), dict) else None
+            if _video:
+                _video = {
+                    "tkey": _video.get("tkey") or "",
+                    "skey": _video.get("skey") or "",
+                    "duration": _video.get("duration"),
+                    "poster": _video.get("poster"),
+                    # 只有少数分享卡自带 url；通常为空 → 前端点播时后端再取址
+                    "url": _video.get("url") or "",
+                }
             out_messages.append({
                 "role": m["role"],
                 "text": m["text"],
@@ -469,6 +482,8 @@ async def get_conversation(account: str, conv_id: str):
                 "reply": _reply,
                 "transcription": str(_trans) if _trans else None,
                 "recalled": _recalled,
+                # 2026-09-17：视频要素（tkey/skey/时长/封面）；None = 非视频消息
+                "video": _video,
                 # 2026-09-17：原始秒级时间戳（供前端跳转定位；time 是格式化串）
                 "ts": float(m["ts"] or 0),
             })
@@ -515,28 +530,69 @@ async def get_conversation(account: str, conv_id: str):
 # 频次 = 首访唯一,后续全缓存。零主动批量,零复用凭证。
 # ---------------------------------------------------------------------------
 class ImVideoReq(BaseModel):
-    """IM 视频：下载 + CENC 解密（2026-09-17 新增）。
+    """IM 视频：下载 + CENC 解密（2026-09-17 新增；09-17 二次修订支持按消息取用）。
 
-    入参直接取消息 `extra` 里的视频要素（同图片 skey/origin_url 思路）：
-      · `url`  —— CDN 密文直链（自带签名，**不带 cookie**）
-      · `skey` —— 32 位 hex（16 字节 AES-128 密钥）
-    `force=True` 忽略缓存重新下载。
+    **两种用法**（优先按消息）：
+      · `account` + `msg_id` —— 【推荐】后端自己从 `extra.video` 取要素；
+        缺 URL 时经 BCC 页面上下文用 `tkey` 换签名地址。前端只需知道"哪条消息"。
+      · `url` + `skey` —— 直给要素（少数调用方已知地址时用），跳过取址。
+
+    ⚠️ 关键契约（2026-09-17 实测订正）：抖音 IM 视频消息**不自带播放地址**，
+    只有 `tkey`（tos_key）+ `skey`；地址必须**另一跳**换取（`batch_play_info`）。
     """
-    url: str
-    skey: str
+    account: str = ""
+    conv_id: str = ""
+    msg_id: str = ""
+    url: str = ""
+    skey: str = ""
+    tkey: str = ""
     force: bool = False
 
 
 @router.post("/video/resolve")
 async def resolve_im_video(body: ImVideoReq):
-    """下载并 CENC 解密 IM 视频 → 返回可直接播放/下载的本机 url。
+    """下载并 CENC 解密 IM 视频 → 返回可直接播放/下载的本机 url（v0.43.83 扩展）。
 
-    设计取舍（对照铁律 §一·2）：**不经过 BCC**，也不复用账号 cookie ——
-    复用既有图片链路的既定范式（CDN 直链自带签名 + 本地缓存）。
+    **两步链路**（对照上游 `extractor/video_downloader.py`）：
+      ① 取址：消息里的 `tkey` → `POST /aweme/v1/web/maya/story/batch_play_info/v1/`
+         → 签名 CDN 地址（**在账号自己的 BCC 页面上下文发**，复用登录态）；
+      ② 取用：下载密文 → CENC 原地解密（`skey`）→ faststart 重封装 → 落缓存。
+
+    设计取舍（对照铁律 §一·2）：
+      · 只有**第 ① 步**需要登录态，故走 BCC 页面上下文；
+        第 ② 步是 CDN 直链（自带签名、不带 cookie），与图片链路同款，
+        **不经 BCC、不复制任何凭证到异域**。
+      · 取址按**单条消息触发**（用户点播），不做批量预取；
+        `batch_play_info` 每批 ≤10 由 `cenc_video.BATCH_SIZE` 约束。
+
+    ⚠️ 缓存命中时**零外呼**：已解密过的视频直接回本机 url。
     """
+    url = (body.url or "").strip()
+    skey = (body.skey or "").strip()
+    tkey = (body.tkey or "").strip()
+    account = (body.account or "").strip()
+    msg_id = (body.msg_id or "").strip()
+    if not (url and skey) and not (account and msg_id) and not (tkey and skey):
+        raise HTTPException(400, "需要 account+msg_id，或 url+skey，或 tkey+skey")
+
+    # 需要取址（有 tkey 但没 url）时才拉 BCC；缓存命中/直给 url 时零外呼
+    exec_js = None
+    if tkey and not url:
+        try:
+            _u = _bcc_url(account, "/exec_js") if account else None
+        except Exception:  # noqa: BLE001
+            _u = None
+        if _u:
+            def exec_js(js: str, arg=None, _url=_u):
+                r = _http_post_json(_url, {"js": js, "arg": arg, "timeout": 20},
+                                    timeout=25.0)
+                return r.get("result") if r.get("ok") else None
+
     try:
         res = await asyncio.to_thread(
-            _im_video.download_and_decrypt, body.url, body.skey, force=body.force)
+            _im_video.resolve_by_message,
+            account, msg_id, tkey=tkey, skey=skey, url=url,
+            exec_js=exec_js, force=body.force)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[MSG-044] " + f"视频解析异常: {type(e).__name__}: {e}")
         raise HTTPException(502, f"视频解析异常: {type(e).__name__}")

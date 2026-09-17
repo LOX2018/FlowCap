@@ -989,6 +989,31 @@ export const api = {
     });
   },
 
+  /**
+   * 2026-09-17：IM 视频取用（点播）——下载密文 → CENC 解密 → faststart。
+   *
+   * 只需给 `account`+`msgId`：后端自己从 `extra.video` 取要素，缺地址时经
+   * BCC 页面上下文用 `tkey` 换签名地址。返回 `{url}` 为本机受保护地址，
+   * 前端须用 `useAuthedMediaUrl` / `<AuthedVideo>` 带令牌取 Blob 播放
+   * （`<video src>` 无法携带 `X-Member-Token`，直连必然 401）。
+   */
+  async resolveVideo(
+    account: string,
+    msgId: string,
+    opts: { convId?: string; force?: boolean } = {},
+  ): Promise<{ ok: boolean; url?: string; bytes?: number; cached?: boolean;
+               decrypted?: boolean; error?: string }> {
+    return request("/api/messages/video/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        account,
+        msg_id: msgId,
+        conv_id: opts.convId ?? "",
+        force: opts.force ?? false,
+      }),
+    });
+  },
+
   /** 2026-09-17：会话逐日消息量（日历跳转用，只读）。 */
   async conversationDaily(
     account: string,

@@ -3,16 +3,20 @@ import { openExternal } from "../../utils/openExternal";
 import { cn } from "@/lib/utils";
 import { Msg, MediaInfo, renderTextWithEmoji, parseMedia } from "./message-shared";
 import { AuthedImg } from "@/components/ui/authed-img";
+import { AuthedVideo } from "@/components/ui/authed-video";
 
 export function MsgBubble({
   m,
   sys,
+  account,
   onOpenImage,
   onJumpRef,
 }: {
   m: Msg;
   /** 是否为系统提示消息（判定在父层用 isSystemTip，语义不变；仅用于样式） */
   sys?: boolean;
+  /** 2026-09-17：当前账号 —— 视频点播需按账号取 BCC 上下文换播放地址 */
+  account?: string;
   onOpenImage?: (media: MediaInfo) => void;
   /** 2026-09-17：点击引用块 → 跳转被引用消息（同会话内定位） */
   onJumpRef?: (refMsgId?: string, refText?: string) => void;
@@ -314,6 +318,24 @@ export function MsgBubble({
                    bg-[var(--color-accent-soft)] text-[1.15rem]"
       >
         ✨
+      </div>
+    );
+  if (m.type === "video")
+    return (
+      <div className={bubble}>
+        {/* 2026-09-17：IM 视频点播（对照上游 video_downloader）。
+            消息只带 tkey/skey，播放地址需另一跳换取 —— 故**用户点击才外呼**，
+            避免滚动聊天记录就反复发请求（风控面）。 */}
+        <AuthedVideo
+          account={account || ""}
+          msgId={m.id.startsWith("mid_") ? m.id.slice(4) : m.id}
+          poster={m.video?.poster || undefined}
+          durationMs={m.video?.duration ?? undefined}
+        />
+        {/* 分享视频的说明文字（如 "[分享视频] 视频ID xxx"，非空才显示） */}
+        {t && t !== "[分享视频]" ? (
+          <div className="mt-1.5 text-[0.78rem] opacity-90">{t}</div>
+        ) : null}
       </div>
     );
   if (m.type === "image")
