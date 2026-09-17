@@ -123,3 +123,12 @@ check("发给自己 拒绝", (not r.accepted) and "本账号" in r.error,
 print("\n" + "=" * 62)
 print(f"结果: PASS={ok_n}  FAIL={fail_n}")
 print("=" * 62)
+
+# 2026-09-17 修补（OCR 审查 HIGH —— 校验脚本恒成功）：
+# 原实现只**打印** PASS/FAIL 就结束，退出码恒为 0 → 在 CI / 批处理里
+# FAIL>0 也判为成功，门禁形同虚设。现按失败数返回非零退出码。
+if fail_n:
+    print(f"\n✗ 有 {fail_n} 项断言失败")
+    sys.exit(1)
+print("\n✓ 全部断言通过")
+sys.exit(0)

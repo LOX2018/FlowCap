@@ -171,9 +171,16 @@ check("restart 透出 restart.applied / not_applied / reason",
       all(k in lc for k in ('"applied":', '"not_applied":', '"reason":')))
 check("restart 异常显式失败（LIVE-021，不静默）",
       "LIVE-021" in lc and '"ok": False, "applied": []' in lc)
+# 2026-09-17 修补（OCR 审查 HIGH —— 恒真式检查）：
+# 原为 `'\'enabled\': bool(' in func_src(...) or "enabled" in lc`
+# —— 右操作数 `"enabled" in lc` 对 live_config.py 的**任何版本**都为真
+# （文件里必然出现 "enabled" 字样），于是整个 check 恒通过、永不失败，
+# 起不到回归保护作用。
+# 现改为：只认 `_RuntimeCfg.__init__` 里那行真正的布尔保留写法。
+_rt_init = func_src("api/live_config.py", "__init__").replace("\r", "")
 check("_RuntimeCfg 保留词库 enabled 位（不压成字符串）",
-      '"enabled": bool(' in func_src("api/live_config.py", "__init__").replace("\r", "")
-      or "enabled" in lc)
+      '"enabled": bool(' in _rt_init,
+      f"未在 _RuntimeCfg.__init__ 找到 '\"enabled\": bool(' 写法")
 check("/apply 端点仍保留（供任务中心复用）", '@router.post("/{room_id}/apply")' in lc)
 
 print()
