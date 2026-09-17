@@ -64,11 +64,37 @@
 
 ## 3. 处理中（HIGH 197 条）
 
-已派 5 个甄别 agent 覆盖：
+### 3.0 v0.43.46 已处置（commit `a7166ae`）—— 三条 NameError 存活性缺陷
+
+均为「代码写了但从未生效」的**静默失效**型（被 `except: pass` 或调用方降级成日志）：
+
+| 位置 | 缺陷 | 真实后果 |
+|---|---|---|
+| `auto_dm/accounts.py:287` | `io.open` 但**未导入 io** → NameError | 用户"停止 BCC"标记**永不落盘** → 重启后自动拉起，违背用户显式意图 |
+| `auto_dm/accounts.py:1076` | `_probe(env_path, timeout)` **无 name 形参** → NameError | uid 缓存**永不更新** → 调度器"零打网"设计目标完全未达成 |
+| `login_api.py:206` | `dyGenerateInitData` **无 env_path** → NameError | 该函数 **100% 失败** → 缺签名四件套的账号登录链必挂 |
+
+同批其它修复：
+- `login_api.py` `generateSecretPhoneNum/Code` 全仓不存在 → **fail-closed**（显式 NotImplementedError，不臆造实现）
+- `login_api.py` 硬编码 `x-tt-passport-csrf-token`/`trace-id` → 改从 `auth.cookie` 动态取
+- `builder/header.py:with_csrf` → CSRF 失败不再把 `None` 写进请求头 + 补 `return self`
+- `database.py:exec_modify` → `lastrowid or rowcount` 按 SQL 首关键字分流（SQLite 的 lastrowid 仅对 INSERT 有意义）
+- `api/accounts.py` proxy-test → 消除进程级环境变量竞态（**跨账号代理串味**）+ 线程池避免阻塞事件循环
+- `vbrowser.py:probe_egress_ip_direct` → 增 `mode`/`node` 显式形参
+- 前端 `UnifiedConfigSection` **init 死锁** → 切标签不再把 A 的配置写进 B（回归测试 8/8，含旧逻辑缺陷对照）
+- 前端 `UnifiedConfigSection` `setQueryData` scope 闭包 → 随 mutation 参数传递
+- 前端 `app-store.ts` localStorage 白名单 → 防脏值致界面卡死
+- `dy_apis/douyin_recv_msg.py:on_message` 无异常保护 → try/except + 安全 URL 取值（**实测 6 类畸形输入全安全降级**）
+- **loguru 跨行双参数又修 20 处 / 12 文件**（上轮脚本只处理单行，漏掉的）
+
+### 3.1 已派 agent 甄别（HIGH）
+
 - `browser_daemon.py`（11）、`app_config_schema.py`（10）、`api/logs.py`（3）
 - `dy_apis/client_comments|relations|douyin_recv_msg|login_api`（14）
 - `database.py`/`ws_link.py`/`api/accounts.py`/`api/mcp.py`/`auto_dm/accounts.py`/`builder/header.py`（15）
 - 前端 `player-media-stage`/`UnifiedConfigSection`/`app-store`（9）
+- 私信链路 `recv_daemon`/`dm_dispatch`/`core/sender`/`api/messages`（11）— 进行中
+- 捕获链路 `conversation_capture`/`browser_daemon L900-2829`/`core/live_hook`（进行中）
 
 **已自行处理的安全类 HIGH**：
 - `api/mcp.py` 鉴权缺口（已修）
