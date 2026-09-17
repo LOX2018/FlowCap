@@ -743,9 +743,34 @@ class AutoDM:
         注意：本方法在心跳线程中被调用（同步上下文），保留同步实现。
         """
         logger.info(f"[重扫重建] 开始为账号「{account_name}」重新扫码并重建会话…")
-        env_path = "monitor.env"  # TODO: 从 AccountService 取
-        is_monitor = True  # TODO: 按账号角色判断
-        is_sender = True
+        # 2026-09-17 修补（OCR 审查 HIGH —— 占位符忽略入参，永远重扫"监测账号"）：
+        # 原为硬编码 `env_path = "monitor.env"` + `is_monitor = is_sender = True`
+        # 两条 TODO 占位 —— `account_name` 参数被**完全忽略**，无论调用方请求
+        # 哪个账号，都会去重扫"监测/发送"账号的凭证（core/live_hook.py 的
+        # 心跳自愈路径调用它时不传参，此时按「监测账号」语义解析是对的）。
+        # 现：① 显式传入 account_name 时按名解析其 .env / 角色；
+        #     ② 未传参时保持既有"默认监测+发送"语义（不引入行为回归）。
+        from auto_dm import accounts as _acct_mod
+        is_monitor = is_sender = True
+        env_path = None
+        if account_name:
+            try:
+                env_path = _acct_mod.env_path_of(account_name)
+            except Exception:
+                env_path = None
+            if env_path:
+                _mon = _acct_mod.monitor_name()
+                _snd = _acct_mod.sender_name()
+                # 角色：能确定时才收窄（无名可依则保持"两者皆是"）
+                if _mon or _snd:
+                    is_monitor = bool(_mon and account_name == _mon)
+                    is_sender = bool(_snd and account_name == _snd)
+                    if not (is_monitor or is_sender):
+                        # 该账号既非监测也非发送 —— 仍需刷新其凭证，按发送账号处理
+                        is_sender = True
+        if not env_path:
+            env_path = _acct_mod.current_env_path() or "monitor.env"
+        logger.info(f"[重扫重建] env={env_path} 角色(监测={is_monitor}, 发送={is_sender})")
 
         # 1) 关闭旧监听 WS
         if self.live:

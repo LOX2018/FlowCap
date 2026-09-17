@@ -57,6 +57,15 @@ def install_code_logger_patch() -> bool:
                         if desc:
                             msg += " | " + desc
                         msg += extra
+                        # 2026-09-17 修补（OCR 审查 HIGH —— 丢弃 loguru 语义参数）：
+                        # loguru 的 `exception=True` / `backtrace=` 等是**调用语义参数**
+                        # 而非模板值。原实现重构消息后 `orig_(msg, **kwargs)` 把它们
+                        # 当模板值传，异常堆栈随之丢失 —— 错误码日志最需要的诊断信息
+                        # 被静默吞掉。现对 `exception` 走 `.opt()` 显式开启。
+                        if kwargs.get("exception"):
+                            _kw = {k: v for k, v in kwargs.items()
+                                   if k not in ("exception",)}
+                            return orig_.opt(exception=True)(msg, **_kw)
                         return orig_(msg, **kwargs)
                 except Exception:
                     pass                            # 补丁绝不影响主日志链路

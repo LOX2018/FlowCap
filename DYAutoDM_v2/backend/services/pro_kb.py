@@ -183,13 +183,25 @@ def _embed(texts: list[str]) -> Optional[list]:
     """调用现有语义链路向量化（失败返回 None，调用方降级为不查重）。
 
     复用 ai_reply._embed_failover，避免另起一套 embedding 配置。
+
+    2026-09-17 修补（OCR 审查 HIGH —— 静默截断致向量数与入参不匹配）：
+    原实现 `_ai._embed_failover(texts[:20], ...)` **只取前 20 条**，
+    而 `_dedup_check` 传入的是 `[content] + 全部候选`。当候选 ≥20 时
+    返回的向量数 ≠ 入参数 → 调用方的 `len(vecs) != len(candidates)+1`
+    判据成立 → **静默返回 (None, 0.0)，查重整体失效且无任何信号**。
+    现按 20 条分批全部向量化，返回数量与入参一致。
     """
     if not texts:
         return None
     try:
         from services import ai_reply as _ai
-        vecs, _model = _ai._embed_failover(texts[:20], consumer_id="ai_sem")
-        return vecs
+        out: list = []
+        for i in range(0, len(texts), 20):
+            vecs, _model = _ai._embed_failover(texts[i:i + 20], consumer_id="ai_sem")
+            if not vecs:
+                return None
+            out.extend(vecs)
+        return out if len(out) == len(texts) else None
     except Exception:
         return None
 

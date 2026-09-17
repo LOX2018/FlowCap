@@ -135,6 +135,7 @@ def find_match(text: str, threshold: float = 0.85,
     # ② Jaccard 词级重叠（中文按字符集）+ 时间衰减加权
     now = time.time()
     best, best_score = None, 0.0
+    best_raw = 0.0
     for it in items:
         q = (it.get("question") or "").lower().strip()
         if not q:
@@ -149,7 +150,13 @@ def find_match(text: str, threshold: float = 0.85,
             best, best_score = it, score
             # 记录原始相关度，用于阈值判断（阈值针对相关度，不针对衰减后分数）
             best_raw = raw
-    if best and best_score >= threshold:
+    # 2026-09-17 修补（OCR 审查 HIGH —— 阈值用错量致旧条目永不命中）：
+    # 原为 `if best and best_score >= threshold:` —— 拿**衰减后**分数比阈值，
+    # 而衰减因子 e^(-λ·days) ≤ 1，等于把阈值悄悄抬高（50 天前的条目需
+    # raw ≥ 0.85/0.37 ≈ 2.3，永不可能）→ 旧的但高度相关的条目**静默永不命中**，
+    # 与上方注释「阈值针对相关度」及函数文档「衰减只用于重排」直接矛盾。
+    # 现：仍按衰减后分数**重排**选最优，但阈值**只作用于原始相关度**。
+    if best and best_raw >= threshold:
         _bump_hits(best.get("id"))
         return best.get("answer", "")
     return None

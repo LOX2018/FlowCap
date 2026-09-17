@@ -450,7 +450,18 @@ def _im_user_info_by_sec(auth, sec_uids: list[str]) -> dict[str, Any]:
             data={"sec_user_ids": json.dumps(chunk)},
             verify=tls_verify(), timeout=12,
         )
-        j = r.json()
+        # 2026-09-17 修补（OCR 审查 HIGH —— 无条件 r.json() 中断整批）：
+        # 抖音限流时返回 HTTP 200 + **空响应体**（本模块其它端点已有此记录），
+        # 原实现直接 `r.json()` 抛 JSONDecodeError，异常向上冒泡**中断整批**
+        # 剩余分片，而不是像 status_code≠0 那样 continue。
+        try:
+            j = r.json()
+        except Exception as e:
+            logger.warning(f"[PLT-0xx] im/user/info 响应非 JSON"
+                           f"（HTTP {r.status_code}, {len(r.content)} 字节），跳过本批: {e}")
+            continue
+        if not isinstance(j, dict):
+            continue
         if j.get("status_code") != 0:
             logger.warning(f"[PLT-022] " + f"im/user/info sc={j.get('status_code')} msg={j.get('status_msg')}")
             continue

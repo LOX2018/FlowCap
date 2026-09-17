@@ -7,11 +7,29 @@
   {ok, dmPool, maxTarget, interval, delay, forceRescan,
    liveUrl, enableDanmaku, enableConsole, enableSend}
 """
+import time
+
 from fastapi import APIRouter, Request
 from loguru import logger
 from models.task import TaskConfig
 
 router = APIRouter()
+
+
+def _fmt_ts(v) -> str:
+    """时间戳 → 可读字符串（Excel 导出用；空值返回空串）。
+
+    2026-09-17 新增（配合导出列字段名修复）：`SendRecord` 的时间是
+    float 时间戳，直接写进 Excel 是难读的数字。
+    """
+    try:
+        if v is None or v == "":
+            return ""
+        if isinstance(v, (int, float)):
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(v)))
+        return str(v)
+    except Exception:
+        return str(v) if v is not None else ""
 
 
 def _dm_pool_from_adm(adm) -> list[dict]:
@@ -203,9 +221,21 @@ async def save_config(body: TaskConfig, request: Request):
         # 落盘到 SQLite kv_store（替代 config.json）
         from database import get_kv_json, set_kv_json
         data = get_kv_json("config", {}) or {}
+        # 2026-09-17 修补（OCR 审查 HIGH —— 写回时抹掉词条 enabled 标记）：
+        # `body.resolved()` 的 `cfg.dm_pool` 已被规范化成 **list[str]**
+        # （models/task.py resolved(): [t if isinstance(t,str) else t.get("text")]），
+        # 直接写回会把每条 `{text, enabled}` 压成纯文本 → **重载后启用/停用状态
+        # 全部丢失**。而 POST /dm-pool 走 save_dm_pool() 存的是 `[{text,enabled}]`，
+        # 两条写路径不一致。现统一：落盘前按**已有配置的 enabled 状态**重建对象。
+        _old_pool = {
+            (t.get("text") if isinstance(t, dict) else str(t)): bool(t.get("enabled", True))
+            for t in (data.get("dm_pool") or []) if isinstance(t, (dict, str))
+        }
+        _pool_obj = [{"text": str(t), "enabled": _old_pool.get(str(t), True)}
+                     for t in (cfg.dm_pool or [])]
         data.update({
             "max_target": cfg.max_target,
-            "dm_pool": cfg.dm_pool,
+            "dm_pool": _pool_obj,
             "delay_range": cfg.delay_range,
             "interval": cfg.interval,
             "force_rescan": cfg.force_rescan,
@@ -267,16 +297,22 @@ async def export_stats(request: Request):
             ws.title = "明细"
             ws.append(["序号", "发言人", "评论内容", "私信状态", "私信内容", "捕获时间", "发送时间"])
             for i, r in enumerate(records, 1):
+                # 2026-09-17 修补（OCR 审查 HIGH —— 导出列取错字段名恒为空）：
+                # `SendRecord` 的时间字段是 `captured_at`（捕获）/ `sent_at`（已发），
+                # 而元组分支原读 `capture_ts`/`send_ts` —— 两个名字都不存在 →
+                # 「捕获时间/发送时间」两列**永远导出为空**。
+                # （dict 分支才用 `send_ts`，与 /records 的对外字段一致。）
                 if isinstance(r, dict):
                     ws.append([
                         i, r.get("nickname", ""), r.get("comment", ""),
                         r.get("status", ""), r.get("content", ""),
-                        r.get("capture_ts", ""), r.get("send_ts", ""),
+                        _fmt_ts(r.get("captured_at")), _fmt_ts(r.get("sent_at") or r.get("send_ts")),
                     ])
                 else:
                     ws.append([i, getattr(r, "nickname", ""), getattr(r, "comment", ""),
                                getattr(r, "status", ""), getattr(r, "content", ""),
-                               getattr(r, "capture_ts", ""), getattr(r, "send_ts", "")])
+                               _fmt_ts(getattr(r, "captured_at", None)),
+                               _fmt_ts(getattr(r, "sent_at", None))])
             wb.save(path)
             return {"ok": True, "path": str(path), "count": len(records)}
         except ImportError:

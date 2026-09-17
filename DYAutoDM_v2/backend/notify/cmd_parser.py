@@ -217,7 +217,13 @@ async def parse_command(text: str, llm_cfg: dict[str, Any] | None = None) -> dic
             "source": source,
             "need_confirm": need_confirm,
         }
-    params = data.get("params") or {}
+    # 2026-09-17 修补（OCR 审查 HIGH —— 不可信来源未做类型校验）：
+    # `params` 直接来自 **LLM 输出**，`or {}` 只处理 falsy，不保证是 dict；
+    # 若模型返回字符串/列表，非空值会一路传到 `params.get(...)` → AttributeError
+    # 打崩解析链。强制归一为 dict。
+    params = data.get("params")
+    if not isinstance(params, dict):
+        params = {}
     # 引擎启停同样要求二次确认（原 DESTRUCTIVE 只含 create/recapture）
     need_confirm = intent in DESTRUCTIVE or intent in (INTENT_START, INTENT_STOP)
     confirm_text = str(data.get("confirm_text") or "").strip()

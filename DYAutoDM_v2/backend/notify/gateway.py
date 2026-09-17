@@ -263,6 +263,14 @@ class Gateway:
     def check_intent(self, key: str, intent: str) -> dict[str, Any]:
         """已授权 sender 的意图级校验（权限组 + 细粒度白名单）。"""
         gw = self._gw()
+        # 2026-09-17 修补（OCR 审查 HIGH —— open 模式在意图校验被漏掉）：
+        # `check()` 在 mode=open 时对任意 sender 返回 action=allow/role=open，
+        # 但**不产生 grant**；而下游 `handle_inbound_command` 总会再调
+        # `check_intent`，原实现查不到 grant 就返回"未授权" → **open 模式
+        # 下每条消息仍被拒**（且提示语误导为权限不足），与其文档
+        #「不拦截（兼容旧行为/测试）」直接矛盾。此处按 mode 短路。
+        if str(gw.get("mode") or "").lower() == "open":
+            return {"ok": True, "role": "open", "reason": "open 模式放行"}
         g = gw.get("grants", {}).get(key)
         if not g:
             return {"ok": False, "reason": "未授权"}

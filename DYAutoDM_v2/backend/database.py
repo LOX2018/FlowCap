@@ -103,28 +103,48 @@ def get_db() -> sqlite3.Connection:
                             except Exception:
                                 pass
                             _conn = None
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 2026-09-17 修补（OCR 审查 HIGH —— 守卫失效被静默吞掉）：
+            # 原为裸 `except Exception: pass`。会员一致性守卫一旦自身抛错
+            # （db_path()/PRAGMA 失败），就会**静默**继续并可能返回属于
+            # 另一个会员的连接 —— 正是该守卫要防的跨会员数据泄漏。
+            logger.warning("[db] 会员一致性校验失败（守卫可能失效，"
+                           "存在跨会员读取风险）: %s", e)
         if _conn is not None:
             return _conn
     with _lock:
         if _conn is not None:
             return _conn
         p = _db_path()
-        _conn = sqlite3.connect(str(p), check_same_thread=False, timeout=30)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")  # 写前日志（并发友好）
-        # 2026-09-06 全局并发治理（多进程写竞争）：
-        # backend + N×recv_daemon + BCC 会并发写同一个 db。WAL 只解决
-        # 「读写不互斥」，不解决「写写竞争」——没有 busy_timeout 时，
-        # 并发写会立刻抛 "database is locked"（默认超时 5s 且不重试）。
-        # 设 30s 忙等 + 进程内串行写锁，彻底消灭并发写崩溃。
-        _conn.execute("PRAGMA busy_timeout=30000")  # 30s 忙等重试
-        _conn.execute("PRAGMA synchronous=NORMAL")  # 正常同步（比 FULL 快，仍比 JSON 安全得多）
-        _conn.execute("PRAGMA foreign_keys=ON")
-        _init_tables(_conn)
-        _migrate_schema(_conn)
-        _migrate_json(_conn)
+        # 2026-09-17 修补（OCR 审查 HIGH —— 半初始化连接被发布）：
+        # 原实现在建连后**立即**赋给全局 `_conn`，随后才跑 `_init_tables`
+        # / `_migrate_*`。若其中任一步抛错，异常带着"已发布但未初始化"的
+        # 全局 `_conn` 逃出锁 → 后续 `get_db()` 命中 `_conn is not None`
+        # 直接返回该半成品连接（迁移永不完成，静默不一致）。
+        # 现改为：先建成到**局部** `c`，全部初始化成功后才发布到 `_conn`；
+        # 中途失败则关闭 `c` 并原样抛出。
+        c = sqlite3.connect(str(p), check_same_thread=False, timeout=30)
+        try:
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA journal_mode=WAL")  # 写前日志（并发友好）
+            # 2026-09-06 全局并发治理（多进程写竞争）：
+            # backend + N×recv_daemon + BCC 会并发写同一个 db。WAL 只解决
+            # 「读写不互斥」，不解决「写写竞争」——没有 busy_timeout 时，
+            # 并发写会立刻抛 "database is locked"（默认超时 5s 且不重试）。
+            # 设 30s 忙等 + 进程内串行写锁，彻底消灭并发写崩溃。
+            c.execute("PRAGMA busy_timeout=30000")  # 30s 忙等重试
+            c.execute("PRAGMA synchronous=NORMAL")  # 正常同步（比 FULL 快，仍比 JSON 安全得多）
+            c.execute("PRAGMA foreign_keys=ON")
+            _init_tables(c)
+            _migrate_schema(c)
+            _migrate_json(c)
+        except Exception:
+            try:
+                c.close()
+            except Exception:
+                pass
+            raise
+        _conn = c
         logger.info(f"[db] SQLite 已初始化: {p}")
     return _conn
 

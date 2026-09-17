@@ -135,10 +135,20 @@ def get_session(token: str) -> dict | None:
 def destroy_session(token: str) -> None:
     with _LOCK:
         _sessions.pop(token, None)
+    # 2026-09-17 修补（OCR 审查 HIGH —— 陈旧 token 注销会误删有效会话）：
+    # 原实现**无条件**删除落盘的会话文件。若旧标签页用陈旧 token 登出
+    # （发生在另一次新登录之后），会把当前有效会员的持久化会话一起清掉 →
+    # 重启后 `restore_persisted_session()` 失败，用户被迫重新登录。
+    # 现仅当落盘 token 与本次销毁的 token 一致（或文件已过期/无 token）时才删。
     try:
         p = _persist_path()
-        if os.path.isfile(p):
+        if not os.path.isfile(p):
+            return
+        d = _persist_load() or {}
+        if d.get("token") == token or not d.get("token"):
             os.remove(p)
+        else:
+            logger.info("[member] 注销的是陈旧 token，保留当前有效持久化会话")
     except Exception:
         pass
 

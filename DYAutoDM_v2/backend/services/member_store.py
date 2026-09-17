@@ -98,6 +98,25 @@ def _load_registry() -> dict:
         return {"version": 1, "members": {}}
 
 
+def _load_registry_strict() -> dict:
+    """**写路径专用**的注册表读取 —— 读失败**抛错**，绝不返回空表。
+
+    2026-09-17 修补（OCR 审查 HIGH —— 读失败被写回成空表）：
+    `_load_registry()` 在解析失败时返回空表（注释自称"避免误删"），
+    但 register_member / change_password 拿到它后会**把空表写回** ——
+    一次瞬时的读错误（或半写入文件）就静默清空**全部**会员记录。
+    写路径必须 fail-closed：读不到就中止写入。
+    """
+    p = registry_path()
+    if not os.path.exists(p):
+        return {"version": 1, "members": {}}
+    with open(p, encoding="utf-8") as f:
+        reg = json.load(f)
+    if not isinstance(reg, dict) or "members" not in reg:
+        raise ValueError(f"注册表结构异常（缺少 members）: {p}")
+    return reg
+
+
 def _save_registry(reg: dict) -> None:
     p = registry_path()
     tmp = p + ".tmp"
@@ -236,7 +255,12 @@ def register_member(username: str, password: str) -> dict:
     if len(password or "") < 6:
         return {"ok": False, "msg": "口令至少 6 位"}
     with _REG_LOCK:
-        reg = _load_registry()
+        # 2026-09-17：写路径用 strict 读取（读失败即中止，绝不空表覆盖）
+        try:
+            reg = _load_registry_strict()
+        except Exception as e:
+            logger.error(f"[MEM-006] [member] 注册表读取失败，拒绝写入: {e}")
+            return {"ok": False, "msg": "注册表读取失败，已中止注册（未改动任何数据）"}
         for m in reg["members"].values():
             if m.get("username") == username:
                 return {"ok": False, "msg": f"用户名已存在: {username}"}
@@ -285,7 +309,11 @@ def change_password(member_id: str, old_password: str, new_password: str) -> dic
     if len(new_password or "") < 6:
         return {"ok": False, "msg": "新口令至少 6 位"}
     with _REG_LOCK:
-        reg = _load_registry()
+        try:
+            reg = _load_registry_strict()
+        except Exception as e:
+            logger.error(f"[MEM-007] [member] 注册表读取失败，拒绝改密: {e}")
+            return {"ok": False, "msg": "注册表读取失败，已中止改密（未改动任何数据）"}
         rec = reg["members"].get(member_id)
         if rec is None:
             return {"ok": False, "msg": "会员不存在"}
@@ -323,7 +351,11 @@ def delete_member(member_id: str, password: str) -> dict:
     """删除会员：验证口令 → 删注册表记录 + 整个数据空间（含全部账号/profile）。"""
     import shutil
     with _REG_LOCK:
-        reg = _load_registry()
+        try:
+            reg = _load_registry_strict()
+        except Exception as e:
+            logger.error(f"[MEM-008] [member] 注册表读取失败，拒绝删除: {e}")
+            return {"ok": False, "msg": "注册表读取失败，已中止删除（未改动任何数据）"}
         rec = reg["members"].get(member_id)
         if rec is None:
             return {"ok": False, "msg": "会员不存在"}

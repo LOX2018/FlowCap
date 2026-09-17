@@ -1,4 +1,6 @@
 """总览路由：getOverview / getStats"""
+import asyncio
+
 from fastapi import APIRouter, Request
 from models.overview import OverviewResponse, StatusResponse
 from auto_dm import accounts as acct_core
@@ -21,8 +23,14 @@ async def get_overview(request: Request) -> dict:
     adm = request.app.state.adm
     bport = acct_core.browser_daemon_port()
     rport = acct_core.recv_daemon_port()
-    b_alive = _daemon_alive(bport)
-    r_alive = _daemon_alive(rport)
+    # 2026-09-17 修补（OCR 审查 HIGH —— 在 async 处理器里做阻塞 IO）：
+    # `_port_open` 是同步 `connect_ex`（超时 0.3s）。原来在事件循环里**串行**
+    # 调两次 → 每次 /overview 轮询最高阻塞约 0.6s，拖住所有其它请求。
+    # 改到线程里并发探测（asyncio.to_thread）。
+    b_alive, r_alive = await asyncio.gather(
+        asyncio.to_thread(_daemon_alive, bport),
+        asyncio.to_thread(_daemon_alive, rport),
+    )
     # running 用 adm.is_running（含 starting/stopping）：软停止后存量私信仍在发送，
     # 任务中心必须保留「运行中」行，否则停止存量私信、进入任务的入口就消失了。
     return {

@@ -76,9 +76,11 @@ async def apply_linkmic(body: ApplyBody) -> dict:
     from dy_apis.douyin_api import DouyinAPI
     auth = _auth_for(body.account)
     room_id, anchor_id = _room_ids(body.account, body.room_id, body.anchor_id)
-    if not anchor_id:
-        raise HTTPException(400, "缺少 anchor_id（主播 uid）")
-    # anchor_id 缺失时从直播间页抓（get_live_info 返回 room_info 含 user_id）
+    # 2026-09-17 修补（OCR 审查 HIGH —— 补全分支被早退守卫变成死代码）：
+    # 原实现在此先 `if not anchor_id: raise HTTPException(400)`，
+    # 使下方「从直播间页抓 anchor_id」的补全逻辑**永不可达**（注释明写其意图），
+    # 而 ApplyBody.anchor_id 标注为可选 → 与「可自动补全」的设计相悖。
+    # 现删除该早退，让补全逻辑真正执行；补全失败仍由末尾守卫返回 400。
     if not anchor_id:
         try:
             info = DouyinAPI.get_live_info(auth, room_id)
