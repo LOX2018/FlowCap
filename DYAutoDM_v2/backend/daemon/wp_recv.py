@@ -259,9 +259,18 @@ def process_events(account: str, events: list[dict]) -> int:
         return 0
 
     for ev in events:
-        kind = ev.get("kind")
-        body = ev.get("body") or ""
+        # 2026-09-17 修补（OCR 审查 HIGH）：原 `ev.get("kind")` 在 try **之外**，
+        # 且整个循环无守卫 —— 若 BCC 返回的 events 含非 dict 元素
+        # （畸形/版本不匹配的 payload），`.get` 直接抛 AttributeError 打断
+        # **整个入库循环**，后面的正常事件全部丢失。
+        # 现把取值也纳入 per-event 守卫，单条坏数据只跳过自己。
         try:
+            if not isinstance(ev, dict):
+                logger.debug(f"[wp_recv][{account}] 跳过非 dict 事件: "
+                             f"{type(ev).__name__}")
+                continue
+            kind = ev.get("kind")
+            body = ev.get("body") or ""
             if kind == "http":
                 msgs = parse_http_init(body, my_uid)
             elif kind == "ws":
@@ -269,7 +278,8 @@ def process_events(account: str, events: list[dict]) -> int:
             else:
                 continue
         except Exception as e:
-            logger.debug(f"[wp_recv][{account}] 解析事件失败 kind={kind}: {e}")
+            logger.debug(f"[wp_recv][{account}] 解析事件失败 kind="
+                         f"{ev.get('kind') if isinstance(ev, dict) else '?'}: {e}")
             continue
 
         for m in msgs:
