@@ -87,6 +87,46 @@
 - `dy_apis/douyin_recv_msg.py:on_message` 无异常保护 → try/except + 安全 URL 取值（**实测 6 类畸形输入全安全降级**）
 - **loguru 跨行双参数又修 20 处 / 12 文件**（上轮脚本只处理单行，漏掉的）
 
+### 3.3 v0.43.48 已处置（commit `abe0fa7`）—— 私信链路 + 捕获链路
+
+**① 「陌生人首发」配额泄漏（发送闸门被自身拒绝路径绕空）**
+
+`submit`(L849) / `submit_by_uid`(L927) 把 `note_stranger_sent()`（预占额度）
+放在 `QUEUE_MAX` 容量检查**之前**，队列满时直接 return **不归还**额度
+→ 每次被拒白吃一个额度（2/分钟、30/天），批量场景下额度被**拒绝路径**快速耗空，
+之后真实可发的目标被 `can_stranger_first` 误拒。
+
+修复：容量检查提到预占之前。
+
+> **验证（`test_stranger_quota_leak.py` 新旧顺序对照）**：
+> 旧实现 10 次被拒即**耗空额度**（used=2 达上限）；新实现 **used=0**。
+> 另 3 项回归保护通过（正常入池仍预占 / 额度上限仍生效 / 失败归还仍有效）——**闸门未被改废**。
+
+**② 昵称缓存僵尸值（永不失效）**
+
+`capture_userinfo_via_browser` 的命中判据只有 `(now-ts) < ttl`，而**每次调用都会
+走到该行并复用**（时间窗不断后滚）⇒ 只要 10 分钟内有任意调用，缓存**永不失效**。
+BCC 重启/切账号（context 重建）后仍返回归属失效的旧昵称。
+
+修复：引入 **context 代次**（`_launch` 成功 +1），代次不符即作废重采；
+`_cache_unpack` 兼容旧二元组格式。
+
+**③ 弹幕帧静默丢弃**
+
+`live_hook.on_message` 整帧解码（ParseFromString/gzip/ack）共用单个 except，
+任一步异常即**整帧弹幕全丢**，仅留一行 warning（无计数、无重试）。
+
+修复：增加连续失败计数，连续 5 次触发 `rescan_and_rebuild()` 自愈（`[LIVE-009]`）。
+
+**④ 其他**
+
+| 位置 | 缺陷 | 修复 |
+|---|---|---|
+| `_launch` | 重复 `add_init_script` → 两 hook 互相覆盖（WP 通道静默失效） | 注入前 `clear_init_scripts()` |
+| `/send_image` | `image_b64` 无长度上限（docstring 只写 ≤20MB） | Pydantic `max_length` + 解码后字节数复核 |
+| `/conversation` | 裸透传 `msg_type`（"7"/"27"）→ 前端渲染空白卡片 | 走 `_front_type` 归一化（10/10 用例验证） |
+| `core/sender.py` | loguru 双参（**跨行写法**，前轮脚本漏掉） | 改单串 f-string |
+
 ### 3.2 v0.43.47 已处置（commit `7d3f2ff`）—— 租约竞态 + schema 重复键
 
 **① 租约跨线程竞态（本轮最有价值，实测硬证据）**
