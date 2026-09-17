@@ -238,7 +238,14 @@ class TaskManager:
             return task_id in self._cancel_flags
 
     def wait_if_paused(self, task_id: str, poll: float = 0.2) -> bool:
-        """暂停时阻塞等待；返回 False 表示已被取消。"""
+        """暂停时阻塞等待；返回 False 表示已被取消。
+
+        2026-09-17（OCR 审查 HIGH 核实后：**行为正确，仅文档不精确**）：
+        判定顺序是 **先取消、后暂停** —— 若任务同时处于「已取消 + 已暂停」，
+        本函数返回 False（取消优先）。这是**有意且必要**的设计：否则一个
+        暂停中的任务将永远无法被取消（会一直卡在暂停分支里 sleep）。
+        原 docstring 未写明该优先级，易被误读为"暂停应优先"，故补充说明。
+        """
         while True:
             if self.should_cancel(task_id):
                 return False

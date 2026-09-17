@@ -70,14 +70,37 @@ def _pid_running(pid: int) -> bool:
 
 
 def kill_all(reason: str = "") -> list[int]:
-    """终止本进程登记的所有 sidecar pid；返回实际下手的 pid 列表。"""
+    """终止本进程登记的所有 sidecar pid；返回实际下手的 pid 列表。
+
+    2026-09-17 修补（OCR 审查 HIGH —— PID 回收窗口内可能误杀）：
+    原实现在 `with _lock` 内只做 `pids = sorted(_pids); _pids.clear()`，
+    随后**在锁外**逐个 `_pid_running(pid)` 判定再下手。问题：
+      ① 判定与下手之间无任何保护，PID 若被系统**回收给新进程**，
+         `taskkill /F /T` 会连带杀掉那个无关进程树；
+      ② `_pids` 已被 clear，期间 `register()` 登记的新 pid 与旧列表脱节。
+    现改为两段式（既收窄回收窗口，又不让 IPC 长期持锁）：
+      ① 锁内：快照 pid 列表（不清空）；
+      ② 锁外：逐个 `_pid_running` 判定（IPC 不持锁，避免阻塞 register）；
+      ③ 锁内：**原子地**把「确认存活者」从登记表摘除（`discard(missing_ok)`），
+         与判定结果绑定 —— 若期间该 pid 已被 unregister，则不再下手。
+    """
     with _lock:
         pids = sorted(_pids)
-        _pids.clear()
+    # 锁外做 IPC 判定（可能秒级），不阻塞其它线程的 register/unregister
+    live = [pid for pid in pids if _pid_running(pid)]
+    # 锁内原子摘除：只处理"仍在登记表里"的 pid
+    to_kill: list[int] = []
+    with _lock:
+        for pid in live:
+            if pid in _pids:
+                _pids.discard(pid)
+                to_kill.append(pid)
+        # 已死的 pid 一并清登记，避免表内长期堆积
+        for pid in pids:
+            if pid not in to_kill:
+                _pids.discard(pid)
     killed: list[int] = []
-    for pid in pids:
-        if not _pid_running(pid):
-            continue
+    for pid in to_kill:
         try:
             if sys.platform == "win32":
                 # /T 连带子进程树（PyInstaller 解压器形态下 daemon 还有子进程）
