@@ -253,10 +253,15 @@ def viewport_for(account: str | None = None) -> dict:
     return {"width": int(p["_window_w"]), "height": int(p["_window_h"])}
 
 
-def browser_args(account: str | None = None) -> list:
-    """向后兼容入口 —— 等价于 `launch_args()`（不再含 --window-size）。"""
-    return launch_args(account)
-
+# 2026-09-17 修补（OCR 审查 HIGH —— 同名函数重复定义）：
+# 此处原有一个 `def browser_args(account=None): return launch_args(account)`，
+# 但它与下方（文件更后处）的 `def browser_args(...)` 定义**同名**，
+# Python 以后者为准 → 本处函数体**永不执行**（静默死代码）。
+# 且两者语义不同：本处版「不含 --window-size」，后者「含 --window-size」。
+# 经核实：调用方 vbrowser.py:465 的注释与用途明确要求包含 `--window-size`
+# （"屏幕尺寸用 --window-size（内核无 screen 开关）"），且与 launch_args 的
+# docstring（"本函数不负责 screen"）配合使用 viewport_for 决定 screen。
+# 故**保留后者、删除本处重复定义**（`launch_args` 仍作为等价入口保留）。
 
 
 def fingerprint_profile(account: str | None = None) -> dict:

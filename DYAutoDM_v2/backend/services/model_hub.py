@@ -153,7 +153,12 @@ def _migrate_v1(data: dict) -> dict:
 
         if get_kv(_MIGRATED_KEY):
             return data
-        set_kv(_MIGRATED_KEY, True)
+        # 2026-09-17 修补（OCR 审查 HIGH —— 迁移标志提前置位）：
+        # 原实现在此处（迁移**尚未执行**前）就 `set_kv(_MIGRATED_KEY, True)`。
+        # 若后续迁移体抛异常（下面有 except 兜底），标志已是 True →
+        # **下次启动直接 `return data` 永久跳过迁移**，旧配置再也迁不进来
+        # （静默数据迁移丢失，且无任何提示）。
+        # 现改为：只在迁移**成功持久化**后才置位（见函数末尾 _save 之后）。
     except Exception:  # noqa: BLE001
         return data
 
@@ -238,6 +243,16 @@ def _migrate_v1(data: dict) -> dict:
             "migrated_v1": True,
         }
         _save(out)  # 迁移结果必须持久化，否则二次 _load 会退回空结构
+        # 2026-09-17 修补：迁移**成功持久化后**才置位一次性标志
+        # （原实现提前置位，导致失败后永久跳过迁移，见函数开头说明）。
+        try:
+            from database import set_kv
+            set_kv(_MIGRATED_KEY, True)
+        except Exception as e:  # noqa: BLE001
+            # 标志写失败不影响本次迁移结果（已 _save），但下次会再迁一次
+            # —— 迁移是幂等的（同结构重建），可接受；记录以便观察。
+            logger.warning(f"[HUB-004] [model_hub] 迁移标志写入失败"
+                           f"（下次启动会重试迁移，结果幂等）: {e}")
         logger.info(f"[model_hub] v1 已迁入 v2（{len(providers)} 提供商 / "
                     f"{len(models)} 模型）")
         return out
