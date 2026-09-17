@@ -98,6 +98,47 @@
 | 误报 | 13 | `browser_daemon.py` **11 条**（9 条同行 OWASP 模板刷屏 + 2 条把浏览器 fetch 误判 SQL 注入）、`frontend/package.json`（实测官方 npm 有 1.x 线且镜像 integrity 与官方**完全一致**）|
 | 待 agent | 2 | `api/notify.py`、`crawl-page.tsx` |
 
+### 3.5 v0.43.51~0.43.53 已处置（服务层/API/前端 agent 批次）
+
+**① `app_config._coerce` 的 select 校验恒判非法（长期基线失败的真根因）**
+
+```python
+opts = meta.get("options") or []
+if opts and v not in opts: return None     # ← v 是字符串，opts 是 dict 列表
+```
+
+`options` 是 **dict 列表**（`[{"value":"observe","label":"..."}]`），`v` 是裸值字符串 →
+`v not in opts` **恒为 False** → **所有 select 字段的值被判非法并丢弃**。
+
+> **这是 `test_app_config` 长期失败的真实根因**（此前被当作"既有基线失败"忽略）。
+> 修复后 **15 tests 由 FAILED(1) → OK**。影响面：select 类配置（如凭证更新方式）
+> **保存后读不回来**，一直显示 schema 默认值。
+
+**② `/prokb/import/confirm` 非原子清空（数据丢失）**
+
+`clear_items()` 在 `bulk_add()` **之前**无条件执行 → 写入抛错即"旧库已清空 + 新库半截"，最坏全库归零。修复：**快照 → 写入 → 失败回滚**。
+
+**③ 通知 JSON 手搓转义（消息发不出）**
+
+钉钉 `msgParam`、飞书 `content` 用 `%` 拼接手搓 JSON，仅转义 `"` 和 `\n`。
+
+> **实测：旧实现 4/8 通过**（含反斜杠 → `Invalid \escape`；含 `\r\n\t` → `Invalid control character`）；**新实现 8/8 且原文未被改写**。
+
+**④ `member_ctx` 三路径不同源（账号目录/数据空间分叉）**
+
+`accounts_root()` 用 `member_space_root()` 做守卫却**二次解析** member_id；
+`db_path()` 缺会话文件回退。
+
+> **实测：新实现 4/4 场景三路径必然同源；旧实现在 `current_member_id()` 两次调用间变化时确实分叉**（space=M2 但 accounts=M1）。
+
+**⑤ `app_config._save` 静默吞异常（假成功）**
+
+裸 `except: pass`，注释称"消费方仍能读到本次值"——**该注释是错的**（`get()` 每次从 DB 重新加载，无内存副本）。修复：记 `[CFG-011]` 日志 + 返回 bool + API 层转 HTTP 500。
+
+> **实测**：注入 `OSError` 时返回 `False` 且记日志（原实现无返回值、无日志）。
+
+**⑥ 其他**：`api/ai.py` scheduler 参数被绑成 query（body 提交被忽略，`stop_scheduler` 不可达）→ 新增 `SchedulerBody`。
+
 ### 3.4 v0.43.49~0.43.50 已处置
 
 - **`utils/mstoken.py` 缓存跨账号串用（真缺陷）** —— `_cache` 是**单条**模块级 dict，
