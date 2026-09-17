@@ -98,6 +98,52 @@
 | 误报 | 13 | `browser_daemon.py` **11 条**（9 条同行 OWASP 模板刷屏 + 2 条把浏览器 fetch 误判 SQL 注入）、`frontend/package.json`（实测官方 npm 有 1.x 线且镜像 integrity 与官方**完全一致**）|
 | 待 agent | 2 | `api/notify.py`、`crawl-page.tsx` |
 
+### 3.7 v0.43.57~0.43.60 已处置（并发/静默覆盖/校验有效性）
+
+**① `load_env` 跨账号凭证污染（实测复现）**
+
+`load_env()` 无锁执行 `load_dotenv(env_path, override=True)` —— 这会**写进程级
+`os.environ`**，随后从 `os.getenv` 读 cookie 构造 auth。多账号并发时：
+A 写 environ → B 写 environ（覆盖）→ A 读 → **A 拿到 B 的 cookie**。
+
+> **实测**：旧模型下 **A 账号读到 `COOKIES_B`**（污染成立）；加锁后 A→COOKIES_A、B→COOKIES_B。
+> 修复：模块级 `RLock` 串行化临界区；**注明全局单例仍是残余面**（彻底治理需架构改动）。
+
+**② `wp_recv` 非 dict 事件中断整循环**
+
+`ev.get("kind")` 在 per-event `try` **之外** → BCC 返回畸形 payload 时
+AttributeError 打断**整个入库循环**，其后正常事件全丢。修复：纳入守卫 + 非 dict 跳过。
+
+**③ `browser_args` 重复定义（静默死代码）**
+
+`utils/fingerprint.py` **两次定义** `browser_args`（语义还不同：前者不含
+`--window-size`、后者含）→ Python 以后者为准，前者**永不执行**。
+
+> 实测删掉后 `browser_args()` 仍返回 7 项含 `--window-size`（**行为不变**）；
+> **全库 AST 扫描确认无其它顶层函数重复定义**。
+
+**④ 迁移标志提前置位（永久跳过迁移）**
+
+`_migrate_v1()` 在迁移体执行**之前**就 `set_kv(_MIGRATED_KEY, True)` →
+中途失败则下次启动直接 return，**旧配置永久迁不进来**。修复：成功后置位。
+
+**⑤ 校验脚本自身的有效性（门禁形同虚设）**
+
+| 位置 | 缺陷 |
+|---|---|
+| `verify_isolation.py` | 只打印 PASS/FAIL **无退出码** → CI 里 FAIL>0 也判成功 |
+| `verify_live_restart_hotswap.py` | `... or "enabled" in lc` **恒真式** → 该 check 永不失败 |
+
+> **实测**：`verify_isolation` 注入 10 项失败后**退出码 = 1**（原恒为 0）。
+
+**⑥ `kill_all` 的 PID 回收窗口（TOCTOU）**
+
+锁内 `clear()` 后**锁外**逐个 `_pid_running` 判定再 `taskkill /F /T` ——
+期间 PID 若被回收给新进程，会**连带杀掉无关进程树**。
+
+> **实测**：旧实现**确实会对已 unregister 的 pid 下手**（缺陷复现）；
+> 新实现跳过已注销者、且新登记的 pid 未被误杀。4/4 通过。
+
 ### 3.6 v0.43.54~0.43.56 已处置（loguru 收敛 + 前端/数据层）
 
 **① loguru「错误码当格式模板」（24 文件）**
