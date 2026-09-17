@@ -85,7 +85,24 @@ def _get(url, proxy=None, timeout=20):
         hdrs["Authorization"] = "Bearer " + _tok
     req = urllib.request.Request(url, headers=hdrs)
     if proxy:
-        req.set_proxy(proxy, "http")
+        # 2026-09-17 修复（实机对照实验定位）—— 此处**不得**再调 req.set_proxy()。
+        #
+        # 事故：本函数原先同时使用 req.set_proxy() 与 ProxyHandler，两者叠加会把
+        # 请求写坏：set_proxy 把 URL 改写成绝对形式（selector 变成
+        # "http://127.0.0.1:10808/https://api.github.com/..."），GitHub 前置 CDN
+        # 视为畸形请求，直接回 **HTTP 400「Bad request」的 HTML**（不是 API 的
+        # 404 JSON）。脚本又把 400 误判成「仓库不存在/改名」。
+        #
+        # 后果被放大为「机制整体失效」：端口 10808 在本机常开，_pick_proxy() 的
+        # 自动探测必然命中 → **清单里 11 个项目全部恒定 400** → 基线文件从未写入
+        # 过任何 sha（恒为 {"projects": {}}），prev 永远为空 ⇒ 即使请求成功也只会
+        # 报「🆕」，**永远判不出「有更新」**。
+        #
+        # 单变量对照实验（同一 URL、同一请求头，只改代理写法）：
+        #   ① set_proxy=开 + ProxyHandler=开（旧写法）→ 400
+        #   ② set_proxy=关 + ProxyHandler=开（现写法）→ 200（/repos 与 /commits 都通）
+        #   ③ set_proxy=开 + ProxyHandler=关            → 400
+        # ⇒ 归因到 set_proxy 这一行；ProxyHandler 本身工作正常，仅保留它。
         handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
         opener = urllib.request.build_opener(
             handler, urllib.request.HTTPSHandler(context=CTX))
@@ -177,9 +194,23 @@ def main():
                 item.update(status="ratelimit",
                             reason="GitHub API 匿名限流（60次/小时）"
                                    + ("，约 %s 恢复" % when if when else ""))
-            else:
+            elif e.code == 404:
                 item.update(status="error",
-                            reason="HTTP %d（仓库不存在/改名）" % e.code)
+                            reason="HTTP 404（仓库不存在/改名）——请修正清单 repo")
+            else:
+                # 2026-09-17：非 404 不得再说「仓库不存在」。
+                # 误报实例：代理写法错误时 GitHub 前置 CDN 回 400，脚本却报
+                # 「仓库不存在/改名」，把排查引向清单地址（真相在网络层）。
+                # 这里带响应体摘要，便于一次分清「网络/代理层」与「仓库层」。
+                _hint = ""
+                try:
+                    _body = e.read().decode("utf-8", "replace")
+                    _hint = " | " + " ".join(_body.split())[:80]
+                except Exception:
+                    pass
+                item.update(status="error",
+                            reason="HTTP %d（非 404：多为网络/代理层问题）%s"
+                                   % (e.code, _hint))
             results.append(item); continue
         except Exception as e:
             item.update(status="error", reason="网络失败: %s" % str(e)[:90])

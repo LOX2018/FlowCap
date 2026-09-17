@@ -390,6 +390,14 @@ def _warm_verify_cache() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"DYAutoDM 后端启动，端口 {settings.backend_port}")
+    # 2026-09-17：接入原生 OS 信任库（对照上游 douyin-chat-export common/tls.py）。
+    # 纯增强：只增加信任来源（OS 已受信的根 + certifi 叠加），**绝不关闭**校验；
+    # truststore 未安装或 DY_TLS_NO_TRUSTSTORE=1 时静默降级，不影响任何请求。
+    try:
+        from utils.tls_policy import install_truststore
+        install_truststore()
+    except Exception as _tls_e:  # noqa: BLE001
+        logger.info(f"[TLS-005] " + f"[tls] 原生 OS 信任库接入跳过: {_tls_e}")
     # 数据库初始化（SQLite WAL，替代 JSON 文件存储）
     try:
         import database
@@ -544,7 +552,7 @@ app = FastAPI(
     # （tauri.conf / package.json / frontend/package.json / Cargo.toml）脱节，
     # 会误导排障（OpenAPI 文档显示的版本号是错的）。
     # 现与产品版本同源（手动同步；如需自动校验见版本一致性门禁）。
-    version="0.43.72",
+    version="0.43.73",
     description="抖音直播间自动私信控制台 - 后端 API",
     lifespan=lifespan,
 )

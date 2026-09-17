@@ -410,7 +410,14 @@ async def get_conversation(account: str, conv_id: str):
             # （设计漂移）。空分享的准确特征是「整条文本就是 [分享视频]」。
             "AND text <> '[分享视频]' "
             "AND text NOT LIKE 'https://www.iesdouyin.com/share/%' "  # 群聊分享链接脏数据
-            "ORDER BY ts ASC",
+            # 2026-09-17：优先按服务端单调序号 created_at_us（extra 内）排序，
+            # 缺失时回退 ts —— 同秒消息此前会并列导致顺序抖动。
+            # 关键：兜底值必须**量级对齐**（ts 秒 ×1e6 = 微秒），否则缺失 f4 的行
+            # 会与有 f4 的行按不同量级混排（实测 ts=1/4 会排到 created_at_us=100 之前）。
+            "ORDER BY CASE WHEN json_extract(NULLIF(extra,''),'$.created_at_us')"
+            " IS NOT NULL"
+            " THEN CAST(json_extract(NULLIF(extra,''),'$.created_at_us') AS INTEGER)"
+            " ELSE CAST(ts * 1000000 AS INTEGER) END ASC, ts ASC",
             (account, str(conv_id)),
         ).fetchall()
         out_messages = []
@@ -436,6 +443,11 @@ async def get_conversation(account: str, conv_id: str):
                             image_url = f"http://127.0.0.1:{_app_settings.backend_port}{image_url}"
                 except Exception as e:
                     logger.debug(f"[私信拉取] 解密图片失败 msg_id={msg_id}: {e}")
+            # 2026-09-17：引用回复（f18）随消息输出，供前端渲染引用区块。
+            # 仅透传，不做任何补查（消息自带；昵称红线不涉及）。
+            _reply = ex.get("reply") if isinstance(ex.get("reply"), dict) else None
+            # 2026-09-17：语音转写文本（转写结果由 transcribe 接口写入 extra）。
+            _trans = ex.get("transcription")
             out_messages.append({
                 "role": m["role"],
                 "text": m["text"],
@@ -448,6 +460,8 @@ async def get_conversation(account: str, conv_id: str):
                 # 2026-09-05 新增：消息来源通道。
                 # wp_recv 落库时写 extra.source="wp"；WS 通道无该字段 → 兜底 "ws"。
                 "source": ex.get("source") or "ws",
+                "reply": _reply,
+                "transcription": str(_trans) if _trans else None,
             })
         # 字段同时给两套命名,兼容前端不同消费点:
         #   role/msg_type —— 后端原生命名
@@ -586,6 +600,63 @@ async def sweep_origin_images():
         return {"ok": True, "sweep": _oir.sweep(force=True)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@router.post("/voice/transcribe")
+async def voice_transcribe(body: dict):
+    """语音消息转写（2026-09-17 新增，对照上游 douyin-chat-export v2.0.0）。
+
+    请求体：`{account: str, conv_id?: str, limit?: int}`
+
+    风控边界（铁律 §一 / §二）：
+      · 识别请求在**账号自己的 BCC 容器页面上下文**里发出
+        （`fetch(..., {credentials:'include'})`）—— 复用账号常驻浏览器登录态，
+        **绝不**在后端用 cookie 拼 requests 直发；
+      · 只处理**语音消息**（消息体自带 uri），不查昵称、不遍历用户信息；
+      · 每批 ≤10 条（上游实测上限），已有转写的消息跳过。
+
+    返回 `{ok, requested, succeeded, skipped, reason}`。
+    """
+    account = str(body.get("account") or "").strip()
+    conv_id = str(body.get("conv_id") or "").strip()
+    if not account:
+        raise HTTPException(400, "account 必填")
+    try:
+        limit = int(body.get("limit") or 30)
+    except Exception:
+        limit = 30
+    limit = max(1, min(limit, 60))
+
+    # 取该账号 BCC 地址（含 ensure_bcc 拉起；与 /wp_send 同一寻址方式）
+    try:
+        url = _bcc_url(account, "/exec_js")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"BCC 不可用: {type(e).__name__}",
+                "requested": 0, "succeeded": 0, "skipped": 0,
+                "reason": "bcc-unavailable"}
+
+    def _exec_js(js: str, arg=None):
+        """在 BCC 页面上下文执行 JS（同步，供 voice_transcribe 注入）。"""
+        r = _http_post_json(url, {"js": js, "arg": arg, "timeout": 45},
+                            timeout=60.0)
+        if not r.get("ok"):
+            raise RuntimeError(r.get("msg") or "exec_js 失败")
+        return r.get("result")
+
+    def _run():
+        from services.voice_transcribe import transcribe_pending
+        return transcribe_pending(account, conv_id=conv_id,
+                                  exec_js=_exec_js, limit=limit)
+
+    try:
+        res = await asyncio.to_thread(_run)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-021] " + f"语音转写失败: {type(e).__name__}")
+        return {"ok": False, "error": type(e).__name__, "requested": 0,
+                "succeeded": 0, "skipped": 0, "reason": "exception"}
+    logger.info(f"[MSG-020] " + f"语音转写 account={account} conv={conv_id or '-'} "
+                f"→ {res}")
+    return res
 
 
 @router.post("/request")

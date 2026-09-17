@@ -192,7 +192,25 @@ export function MsgBubble({
     return <div className={bubble}>[{label}]（无图链，需重新捕获）</div>;
   }
   if (m.type === "text")
-    return <div className={bubble}>{renderTextWithEmoji(m.text || "")}</div>;
+    return (
+      <div className={bubble}>
+        {/* 2026-09-17：引用回复区块（protobuf field 18）。
+            仅渲染消息自带的引用信息，不做任何补查；无则完全不出现。 */}
+        {m.reply && (m.reply.text || m.reply.nickname) ? (
+          <div
+            className="mb-1.5 border-l-2 border-current/40 pl-2 text-[0.72rem] opacity-80"
+          >
+            <div className="font-medium opacity-90">
+              {m.reply.nickname || "引用"}
+            </div>
+            <div className="line-clamp-3 break-words">
+              {m.reply.text || "[非文本消息]"}
+            </div>
+          </div>
+        ) : null}
+        {renderTextWithEmoji(m.text || "")}
+      </div>
+    );
   if (m.type === "voice")
     return (
       <div className={bubble}>
@@ -208,6 +226,13 @@ export function MsgBubble({
           </span>
           <span className="font-mono text-[0.75rem]">{m.dur}</span>
         </div>
+        {/* 2026-09-17：语音转写文本（对照上游「语音转文字」能力）。
+            仅在有转写结果时展示；未转写/失败不显示占位，保持界面简洁。 */}
+        {m.voiceText ? (
+          <div className="mt-1.5 border-t border-current/20 pt-1.5 text-[0.75rem] opacity-90">
+            {m.voiceText}
+          </div>
+        ) : null}
       </div>
     );
   if (m.type === "sticker")

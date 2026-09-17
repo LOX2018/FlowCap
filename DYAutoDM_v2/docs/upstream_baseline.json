@@ -1,5 +1,76 @@
 {
   "_comment": "上游追踪基线（track_upstream.py 维护）",
-  "projects": {},
-  "_updated_at": "2026-09-14 09:45:12"
+  "projects": {
+    "douyin_spider": {
+      "name": "cv-cat/DouYin_Spider",
+      "repo": "cv-cat/DouYin_Spider",
+      "pushed_at": "2026-09-13T04:52:52Z",
+      "head_sha": "63ef397e0692dba13cd6da5cd784918a0eb6a314",
+      "checked_at": "2026-09-17 20:33:07"
+    },
+    "douyin_live": {
+      "name": "saermart/DouyinLiveWebFetcher",
+      "repo": "saermart/DouyinLiveWebFetcher",
+      "pushed_at": "2026-09-08T07:59:04Z",
+      "head_sha": "40a904bdb0561a5a9c958a95634a29681cc4fbf4",
+      "checked_at": "2026-09-17 20:33:11"
+    },
+    "douyin_live_recorder": {
+      "name": "ihmily/DouyinLiveRecorder",
+      "repo": "ihmily/DouyinLiveRecorder",
+      "pushed_at": "2026-04-01T14:45:17Z",
+      "head_sha": "add187f8d8c7ff7d231fcbee45cbb4f1ed247d3a",
+      "checked_at": "2026-09-17 20:33:15"
+    },
+    "astrbot": {
+      "name": "AstrBotDevs/AstrBot",
+      "repo": "AstrBotDevs/AstrBot",
+      "pushed_at": "2026-09-17T12:24:24Z",
+      "head_sha": "2704b4c0d35d0057307ccbd2ce1e08278b76a758",
+      "checked_at": "2026-09-17 20:33:18"
+    },
+    "douyin_auto_reply": {
+      "name": "xyc667/douyin-auto-reply-assistant",
+      "repo": "xyc667/douyin-auto-reply-assistant",
+      "pushed_at": "2026-06-29T09:37:29Z",
+      "head_sha": "27302d02dbe7f7e1538104a9c39efbec564a0529",
+      "checked_at": "2026-09-17 20:33:22"
+    },
+    "openbrowser": {
+      "name": "lyu0805/OpenBrowser",
+      "repo": "lyu0805/OpenBrowser",
+      "pushed_at": "2026-09-17T08:26:56Z",
+      "head_sha": "a3bc93d12eee81e07effdaf09c0910b08e0ea506",
+      "checked_at": "2026-09-17 20:33:29"
+    },
+    "satelite_proxy": {
+      "name": "zn0wii/satelite-proxy",
+      "repo": "zn0wii/satelite-proxy",
+      "pushed_at": "2026-09-16T11:52:44Z",
+      "head_sha": "4e7b39d5c25d904eba8d178746e71d4925bf7654",
+      "checked_at": "2026-09-17 20:33:33"
+    },
+    "douyin_chat_export": {
+      "name": "TeamBreakerr/douyin-chat-export",
+      "repo": "TeamBreakerr/douyin-chat-export",
+      "pushed_at": "2026-09-17T08:24:36Z",
+      "head_sha": "2b3ed23ac47884069619f53a2c68350e093ac86c",
+      "checked_at": "2026-09-17 20:33:37"
+    },
+    "fingerprint_chromium": {
+      "name": "adryfish/fingerprint-chromium",
+      "repo": "adryfish/fingerprint-chromium",
+      "pushed_at": "2026-06-21T04:22:01Z",
+      "head_sha": "3f61b0dfa665e883da8824b1450601fc529dd006",
+      "checked_at": "2026-09-17 20:33:41"
+    },
+    "patchright": {
+      "name": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+      "repo": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+      "pushed_at": "2026-09-13T12:47:35Z",
+      "head_sha": "d7e29fd57ea709705d67f325d92fe4cf7accbbdf",
+      "checked_at": "2026-09-17 20:33:45"
+    }
+  },
+  "_updated_at": "2026-09-17 20:33:47"
 }

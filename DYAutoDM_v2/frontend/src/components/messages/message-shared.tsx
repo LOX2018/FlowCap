@@ -14,6 +14,18 @@ export interface Msg {
   image_url?: string;
   /** 2026-09-05：消息来源通道。ws=私信守护(默认) / wp=抖音网页版 chat 页 */
   source?: "ws" | "wp";
+  /** 2026-09-17：语音转写文本（后端 extra.transcription 透传）。
+   *  有则语音气泡下方展示；失败/未转写为 undefined（不显示占位）。 */
+  voiceText?: string;
+  /** 2026-09-17：引用回复（protobuf field 18 透传，仅消息自带，不做补查） */
+  reply?: MsgReply | null;
+}
+/** 被引用的那条消息（f18 内嵌 JSON），用于在气泡上方渲染引用区块 */
+export interface MsgReply {
+  ref_msg_id?: string;
+  text?: string;
+  nickname?: string;
+  sec_uid?: string;
 }
 export interface Conv {
   id: string;
@@ -46,6 +58,10 @@ export interface RawMessage {
   image_url?: string;
   /** 2026-09-05：后端 /conversation 透传的来源通道 */
   source?: string;
+  /** 2026-09-17：语音转写文本（后端 extra 透传） */
+  transcription?: string;
+  /** 2026-09-17：引用回复（protobuf field 18），后端原样透传 */
+  reply?: MsgReply | null;
 }
 export interface RawConversation {
   conv_id?: string;
@@ -95,6 +111,19 @@ export interface MessagesApi {
   ): Promise<{ ok: boolean; error?: string; info?: Record<string, unknown> }>;
   requestDm(name: string): Promise<RequestDmResp>;
   refreshConversations(account: string, withBrowser?: boolean): Promise<RefreshConvsResp>;
+  /** 2026-09-17：语音转写（BCC 上下文内识别；只处理语音消息） */
+  transcribeVoice(
+    account: string,
+    convId?: string,
+    limit?: number,
+  ): Promise<{
+    ok: boolean;
+    requested?: number;
+    succeeded?: number;
+    skipped?: number;
+    reason?: string;
+    error?: string;
+  }>;
   getAccounts(): Promise<unknown>;
   addLog(level: string, text: string): Promise<unknown>;
 }

@@ -37,6 +37,8 @@ from .im_protobuf import (
     _parse, _find_submessages, _extract_str, _strip_pb_prefix,
     _parse_message_sender, _parse_message_create_time, _parse_message_id,
     _extract_long_str, _parse_message_text,
+    # 2026-09-17 新增（对照上游 douyin-chat-export v1.0.0/v2.0.0）
+    _parse_message_sec_uid, _parse_message_created_at_us, _parse_message_reply,
 )
 
 def _cfg(section: str, key: str):
@@ -483,6 +485,7 @@ def parse_init_protobuf(raw, my_uid):
             # → 前端只能降级显示「前往抖音查看」。cmd 301 路径早有该提取
             # （_parse_message_text 返回 skey/origin_url），首包路径漏了，此处补齐。
             _skey, _origin = None, None
+            _voice_uri, _voice_skey = None, None
             try:
                 for _f3, _wt3, _v3 in _parse(sb2):
                     if _f3 == 8 and _wt3 == WT_LEN and isinstance(_v3, bytes):
@@ -492,9 +495,30 @@ def parse_init_protobuf(raw, my_uid):
                             _obj3 = None
                         if isinstance(_obj3, dict):
                             _skey, _origin = _extract_image_secret(_obj3)
+                            # 2026-09-17：语音识别要素（uri/skey）与图片 skey
+                            # 同构，从**同一份 content JSON** 提取后写入 extra ——
+                            # 供 services.voice_transcribe 批量送识别（不查昵称）。
+                            try:
+                                from services.voice_transcribe import (
+                                    extract_voice_fields as _evf,
+                                    is_voice_content as _ivc,
+                                )
+                                if _ivc(_obj3):
+                                    _vf = _evf(_obj3)
+                                    _voice_uri = _vf.get("uri") or None
+                                    _voice_skey = _vf.get("skey") or None
+                            except Exception:
+                                _voice_uri, _voice_skey = None, None
                         break
             except Exception:
                 _skey, _origin = None, None
+            # 2026-09-17 新增（对照上游 douyin-chat-export）：
+            #   f14 = 发送者 sec_uid（消息自带；群聊是唯一线索，本函数只解析不请求）
+            #   f4  = 服务端单调序号 created_at_us（同秒消息也能定序）
+            #   f18 = 引用回复（被引用消息 id/正文/昵称/sec_uid）
+            _sec14 = _parse_message_sec_uid(sb2)
+            _order4 = _parse_message_created_at_us(sb2)
+            _reply18 = _parse_message_reply(sb2)
             messages.append({
                 "role": role,
                 "text": txt[0],
@@ -502,6 +526,11 @@ def parse_init_protobuf(raw, my_uid):
                 "msg_id": _parse_message_id(sb2),
                 "skey": _skey,
                 "origin_url": _origin,
+                "sender_sec_uid": _sec14,
+                "created_at_us": _order4,
+                "reply": _reply18,
+                "voice_uri": _voice_uri,
+                "voice_skey": _voice_skey,
             })
         # 会话属性（field 4）：含总消息数(field 2) / short_id(field 5)，
         # 用于长会话历史补全（cmd 301）。cbuf 是原始 bytes，须从 cparsed 取。
@@ -659,7 +688,19 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
             cursor = nxt
 
         if len(merged) > 1:
-            merged.sort(key=lambda x: x.get("ts") or 0)
+            # 2026-09-17：优先按服务端序号 created_at_us 排序（f4），ts 作次级键。
+            #
+            # 实测修正（本机真实首包 init_pkg.bin，19 条消息）：
+            #   · f4 取值 ≈1.79e15（微秒量级），但**步长 10ms 且有并列**
+            #     （19 条中 7 条并列）→ 它**不是**严格单调的逐条序号，
+            #     而是 10ms 粒度的服务端时间序号。故 ts 必须作次级键兜底。
+            #   · 缺失 f4 时**不能填 0**（会排到最前）；必须与 f4 同量级
+            #     （ts 秒 ×1e6 = 微秒），否则不同量级的行会混排。
+            # 与后端 ORDER BY（api/messages.py）口径保持一致。
+            merged.sort(key=lambda x: (
+                x.get("created_at_us") or int((x.get("ts") or 0) * 1000000),
+                x.get("ts") or 0,
+            ))
         if total is not None and len(merged) < total:
             logger.warning(f"[CAP-013] " + f"[capture][301] 会话 {cid} 仅取到 {len(merged)}/{total} 条"
                            f"（可能触达 max_pages={max_pages} 上限）")
@@ -709,10 +750,12 @@ def _parse_301_messages(msgs, my_uid):
             except Exception:
                 s = ""
         s = str(s)
+        _content_obj = None
         try:
             import json as _json
             obj = _json.loads(s)
             if isinstance(obj, dict):
+                _content_obj = obj
                 text = obj.get("text") or obj.get("tips")
                 if not text:
                     text = _extract_media_text(obj)
@@ -736,6 +779,35 @@ def _parse_301_messages(msgs, my_uid):
             role = "me"
         else:
             role = "them"
+        # 2026-09-17 新增（对照上游）：f14 sender sec_uid / f4 created_at_us /
+        # f18 引用回复。此处 m 已是 blackboxprotobuf 解出的 dict，直接按键取值。
+        _sec14 = m.get("14")
+        if isinstance(_sec14, bytes):
+            try:
+                _sec14 = _sec14.decode("utf-8", "ignore").strip()
+            except Exception:
+                _sec14 = None
+        if not (isinstance(_sec14, str) and _sec14.startswith("MS4wLjAB")):
+            _sec14 = None
+        _order4 = m.get("4")
+        try:
+            _order4 = int(_order4) if _order4 else None
+        except Exception:
+            _order4 = None
+        _reply18 = _reply_from_dict(m.get("18"))
+        # 语音识别要素（uri/skey）：与图片路径同构，取自同一份 content JSON。
+        _v_uri, _v_skey = None, None
+        try:
+            from services.voice_transcribe import (
+                extract_voice_fields as _evf,
+                is_voice_content as _ivc,
+            )
+            if isinstance(_content_obj, dict) and _ivc(_content_obj):
+                _vf = _evf(_content_obj)
+                _v_uri = _vf.get("uri") or None
+                _v_skey = _vf.get("skey") or None
+        except Exception:
+            _v_uri, _v_skey = None, None
         out.append({
             "role": role,
             "text": text,
@@ -743,8 +815,53 @@ def _parse_301_messages(msgs, my_uid):
             "msg_id": str(m.get("3")) if m.get("3") else None,
             "skey": skey,
             "origin_url": origin_url,
+            "sender_sec_uid": _sec14,
+            "created_at_us": _order4,
+            "reply": _reply18,
+            "voice_uri": _v_uri,
+            "voice_skey": _v_skey,
         })
     return out
+
+
+def _reply_from_dict(f18):
+    """把 blackboxprotobuf 解出的 field 18（引用回复）转成统一 dict。
+
+    结构（与 im_protobuf._parse_message_reply 一致，两路取数口径必须统一）：
+      1 = 被引用消息 server_id（varint）
+      2 = JSON（content / nickname / refmsg_sec_uid / refmsg_content）
+    解析失败返回 None。
+    """
+    try:
+        if not isinstance(f18, dict):
+            return None
+        ref_id = f18.get("1")
+        payload = f18.get("2")
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8", "ignore")
+        if not isinstance(payload, str):
+            return None
+        j = _strip_pb_prefix(payload) or payload
+        obj = json.loads(j) if j.strip().startswith("{") else {}
+        if not isinstance(obj, dict):
+            return None
+        text = obj.get("refmsg_content") or obj.get("content") or ""
+        if not text:
+            _data = obj.get("data")
+            if isinstance(_data, dict):
+                text = _data.get("text") or _data.get("content") or ""
+        _rid = str(ref_id) if ref_id not in (None, "", 0) else ""
+        _text = str(text or "").strip()
+        if not _rid and not _text:
+            return None
+        return {
+            "ref_msg_id": _rid,
+            "text": _text,
+            "nickname": str(obj.get("nickname") or "").strip(),
+            "sec_uid": str(obj.get("refmsg_sec_uid") or "").strip(),
+        }
+    except Exception:
+        return None
 
 
 def _system_notice_text(m):
@@ -1521,17 +1638,58 @@ def capture_all(name, with_browser=True):
                 try:
                     # 2026-09-01：图片消息的解密要素写入 extra（08 §三十五）。
                     # 此前恒写 "{}"，skey 被丢弃 → 原图无法解密。
-                    # extra = {"skey":..., "origin_url":...}；非图片消息仍为 {}。
-                    _extra = "{}"
+                    # 2026-09-17 扩展（对照上游 douyin-chat-export）：
+                    #   sender_sec_uid —— f14，消息自带的发送者 sec_uid
+                    #                     （群聊昵称的唯一线索；本处只存不查）
+                    #   created_at_us  —— f4，服务端单调序号（稳定排序用）
+                    #   reply          —— f18，引用回复（被引用 id/正文/昵称/sec_uid）
+                    # 保留原有 skey/origin_url 键位与语义不变（前端/解密链路依赖）。
+                    import json as _json
+                    _ex = {}
                     _sk = m.get("skey")
                     _ou = m.get("origin_url")
                     if _sk and _ou:
-                        try:
-                            import json as _json
-                            _extra = _json.dumps(
-                                {"skey": _sk, "origin_url": _ou}, ensure_ascii=False)
-                        except Exception:
-                            _extra = "{}"
+                        _ex["skey"] = _sk
+                        _ex["origin_url"] = _ou
+                    if m.get("sender_sec_uid"):
+                        _ex["sender_sec_uid"] = m["sender_sec_uid"]
+                    if m.get("created_at_us"):
+                        _ex["created_at_us"] = int(m["created_at_us"])
+                    if isinstance(m.get("reply"), dict) and m["reply"]:
+                        _ex["reply"] = m["reply"]
+                    # 2026-09-17：语音识别要素（对照上游 voice_transcriber）。
+                    # 存 uri/skey 供"转写"接口使用，避免重复解析 content。
+                    if m.get("voice_uri"):
+                        _ex["voice_uri"] = m["voice_uri"]
+                    if m.get("voice_skey"):
+                        _ex["voice_skey"] = m["voice_skey"]
+                    _extra = _json.dumps(_ex, ensure_ascii=False) if _ex else "{}"
+                    # 需要「补写」的情形：全新字段（f14/f4/f18）可能出现在
+                    # 已存在的旧行里 —— 旧行为 extra='{}' 或只有 skey。
+                    # 判据：旧行 extra 里**不含本次新键**即补写。
+                    _need_patch = bool(
+                        m.get("sender_sec_uid") or m.get("created_at_us")
+                        or (isinstance(m.get("reply"), dict) and m["reply"])
+                        or m.get("voice_uri")
+                    )
+                    if _extra != "{}" and _need_patch:
+                        # 与 skey 路径同因同解：旧行已存在时 INSERT OR IGNORE 会被
+                        # 唯一索引静默跳过 → 必须「UPDATE 优先 + 幂等」。
+                        # 只补写「尚未包含该新键」的行，重复跑不覆盖已有正确值。
+                        _newmark = ("sender_sec_uid" if m.get("sender_sec_uid")
+                                    else ("created_at_us" if m.get("created_at_us")
+                                          else "reply"))
+                        _cur = conn.execute(
+                            "UPDATE dm_messages SET extra=? "
+                            "WHERE account=? AND conv_id=? AND msg_id=? "
+                            "  AND (extra IS NULL OR extra='' "
+                            "       OR extra NOT LIKE ?)",
+                            (_extra, name, cid, m.get("msg_id"),
+                             f"%{_newmark}%"),
+                        )
+                        if (_cur.rowcount or 0) > 0:
+                            n_msg += 1
+                            continue
                     if _extra != "{}":
                         # 带 skey 的图片消息：先尝试 UPDATE 补写，无影响行再 INSERT。
                         #

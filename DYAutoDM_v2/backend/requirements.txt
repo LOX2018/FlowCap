@@ -33,6 +33,12 @@ playwright>=1.47.0
 # 工具
 python-multipart>=0.0.9
 
+# TLS：原生 OS 信任库 + 公共 CA 叠加（2026-09-17，对照上游 douyin-chat-export）。
+# 纯增强：企业内网把自签根证书装入系统信任库即可正常校验，**无需**再用
+# DY_TLS_INSECURE=1 关闭校验；未安装时 utils.tls_policy 自动降级，不影响启动。
+truststore>=0.10
+certifi
+
 # IM 入站通道（v0.38.5）：QQ 官方机器人 WebSocket（botpy 1.2.1 实测）
 qq-botpy>=1.2.1
 

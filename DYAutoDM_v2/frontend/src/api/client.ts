@@ -839,6 +839,26 @@ export const api = {
     });
   },
 
+  /** 2026-09-17：语音消息转写（对照上游 douyin-chat-export v2.0.0）。
+   *  识别在账号自己的 BCC 浏览器上下文里发出（带登录态），只处理语音消息。 */
+  async transcribeVoice(
+    account: string,
+    convId = "",
+    limit = 30,
+  ): Promise<{
+    ok: boolean;
+    requested?: number;
+    succeeded?: number;
+    skipped?: number;
+    reason?: string;
+    error?: string;
+  }> {
+    return request("/api/messages/voice/transcribe", {
+      method: "POST",
+      body: JSON.stringify({ account, conv_id: convId, limit }),
+    });
+  },
+
   // ===== tasks =====
   async getTasks(): Promise<unknown> {
     return request("/api/tasks");

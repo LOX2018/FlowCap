@@ -227,6 +227,126 @@ def _parse_message_id(b):
     return None
 
 
+def _parse_message_sec_uid(b):
+    """从消息对象 bytes 里提取发送者 sec_uid（protobuf field 14，len/UTF-8）。
+
+    2026-09-17 新增（对照上游 TeamBreakerr/douyin-chat-export v1.0.0/v2.0.0
+    同一实现，其注释原文：「Field 14: 发送者 sec_uid。群聊补全昵称/头像的
+    唯一线索 —— IM 用户信息接口只认 sec_uid，不认 f7 的数字 uid」）。
+
+    设计边界（不得越界）：
+      · 本函数**只做解析**，不发起任何请求、不查昵称 ——
+        昵称红线仍归 BCC 被动截获（铁律 §二），此处仅把**消息自带**的
+        sec_uid 提取出来，供：(a) 语音识别请求体回填、(b) 前端展示/跳转。
+      · 返回值形如 "MS4wLjABAAAA..."；缺失返回 None。
+
+    len 线上是 UTF-8 串；若解出的串不符合 sec_uid 形态（长度/前缀），
+    返回 None 而不是把噪声当 sec_uid（避免脏值扩散）。
+    """
+    try:
+        for f, wt, v in _parse(b):
+            if f == 14 and wt == WT_LEN and isinstance(v, bytes):
+                try:
+                    s = v.decode("utf-8", "ignore").strip()
+                except Exception:
+                    return None
+                if 8 <= len(s) <= 256 and s.startswith("MS4wLjAB"):
+                    return s
+                return None
+    except Exception:
+        pass
+    return None
+
+
+def _parse_message_created_at_us(b):
+    """从消息对象 bytes 里提取**服务端单调递增**序号（protobuf field 4）。
+
+    2026-09-17 新增（对照上游 douyin-chat-export；其 README 头号特性原文：
+    「**精确排序** — 用服务端 `created_at_us` 单调递增序号排序，消息顺序不乱」，
+    web_scraper.py 注释亦写明「order 用于排序：created_at_us 是单调递增的，
+    用作排序键」，并按 `order_high = created_at_us >> 32` /
+    `order_low = created_at_us & 0xFFFFFFFF` 拆成两列存放）。
+
+    为什么需要它：本模块此前用 field 10（毫秒 create_time）当排序键，
+    **同秒消息会并列** → 顺序不稳定（首包/301 两路合并时尤甚）。
+    field 4 是服务端生成的单调序号，同秒内也能定序。
+
+    返回 int（原值，微秒量级；缺失返回 None，调用方降级到 field 10）。
+    """
+    try:
+        for f, wt, v in _parse(b):
+            if f == 4 and wt == WT_VARINT:
+                # 量级校验：2020-2030 的微秒时间戳（1.577e15 ~ 1.893e15）。
+                # 上游把它当「序号」用，但实测其取值落在微秒区间，故按区间兜底，
+                # 只排除明显不含时间的噪声值。
+                if 1_500_000_000_000_000 <= v <= 2_000_000_000_000_000:
+                    return int(v)
+                return None
+    except Exception:
+        pass
+    return None
+
+
+def _parse_message_reply(b):
+    """解析「引用回复」（protobuf field 18）→ dict 或 None。
+
+    2026-09-17 新增（对照上游 douyin-chat-export 的 `parseMessage`：
+      「Field 18: 引用/回复消息。结构: f1=被引用消息 server_id,
+        f2=JSON(content, nickname, refmsg_sec_uid, refmsg_content)」）。
+
+    返回：
+      {"ref_msg_id": <被引用消息 server_id 字符串>,
+       "text":       <被引用正文，优先 refmsg_content/data.text>,
+       "nickname":   <被引用消息发送者昵称，可能为空>,
+       "sec_uid":    <被引用消息发送者 sec_uid，可能为空>}
+    解析失败返回 None（**不抛异常**，不阻断主消息解析）。
+    """
+    try:
+        for f, wt, v in _parse(b):
+            if f != 18 or wt != WT_LEN or not isinstance(v, bytes):
+                continue
+            ref_id = None
+            payload = None
+            for _f, _wt, _v in _parse(v):
+                if _f == 1:
+                    # 上游 `parseProto` 把 varint 存成字符串 → f1 是 **varint**
+                    # （被引用消息 server_id）。此处对 len 线型也容错（历史形态），
+                    # 两种编码都归一成十进制字符串。
+                    if _wt == WT_VARINT:
+                        ref_id = str(_v)
+                    elif _wt == WT_LEN and isinstance(_v, bytes):
+                        ref_id = _v.decode("utf-8", "ignore").strip() or None
+                elif _f == 2 and _wt == WT_LEN and isinstance(_v, bytes):
+                    payload = _v
+            if not isinstance(payload, bytes):
+                return None
+            try:
+                obj = json.loads(_strip_pb_prefix(payload.decode("utf-8", "ignore")) or "{}")
+            except Exception:
+                return None
+            if not isinstance(obj, dict):
+                return None
+            # 正文：上游按 refmsg_content 优先；本模块另兼容 data.text 形态。
+            text = obj.get("refmsg_content") or obj.get("content") or ""
+            if not text:
+                _data = obj.get("data")
+                if isinstance(_data, dict):
+                    text = _data.get("text") or _data.get("content") or ""
+            _rid = str(ref_id) if ref_id not in (None, "", 0) else ""
+            _text = str(text or "").strip()
+            if not _rid and not _text:
+                return None
+            return {
+                "ref_msg_id": _rid,
+                "text": _text,
+                "nickname": str(obj.get("nickname") or "").strip(),
+                "sec_uid": str(obj.get("refmsg_sec_uid") or "").strip(),
+            }
+    except Exception:
+        pass
+    return None
+
+
 def _extract_long_str(b, min_len=200, max_len=200000):
     """提取**长**字符串（用于图片等富媒体 JSON）。
 

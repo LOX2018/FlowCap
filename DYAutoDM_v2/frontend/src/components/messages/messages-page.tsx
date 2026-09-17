@@ -6,7 +6,7 @@ import {
 import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Avatar, hue, nowHM } from "../../components/ui";
-import { Loader2, Download, Paperclip, ImageIcon, VideoIcon, FileText } from "lucide-react";
+import { Loader2, Download, Paperclip, ImageIcon, VideoIcon, FileText, Mic } from "lucide-react";
 import LeadsSection from "./LeadsSection";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -105,6 +105,8 @@ export default function MessagesPage(props: PageProps) {
   const qc = useQueryClient();
   // 2026-08-31：更新会话耗时 3~6 分钟，按钮显示实时耗时让用户知道还在跑
   const [refreshElapsed, setRefreshElapsed] = useState(0);
+  // 2026-09-17：语音转写进行中标记（对照上游「语音转文字」能力）。
+  const [transcribing, setTranscribing] = useState(false);
 
   // 2026-08-31：更新会话期间每秒累加耗时，让用户看到任务仍在推进
   useEffect(() => {
@@ -214,6 +216,9 @@ export default function MessagesPage(props: PageProps) {
         image_url: m.image_url || undefined,  // 2026-09-02：后端解密后的真原图
         // 2026-09-05：来源通道，后端已兜底 'ws'，这里再兜一层
         source: (m.source === "wp" ? "wp" : "ws") as "ws" | "wp",
+        // 2026-09-17：语音转写文本 + 引用回复（均由后端透传，前端只渲染）
+        voiceText: m.transcription ? String(m.transcription) : undefined,
+        reply: m.reply || null,
       }));
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,
@@ -432,6 +437,56 @@ export default function MessagesPage(props: PageProps) {
                   <>
                     <RefreshCw className="h-3.5 w-3.5" />
                     更新会话
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="voice-transcribe"
+                disabled={transcribing || !activeAcct}
+                title={
+                  activeAcct
+                    ? `把 ${activeAcct} 未转写的语音消息转成文字（只处理语音，不查昵称）`
+                    : "请先选择账号"
+                }
+                onClick={() => {
+                  if (!activeAcct || transcribing) return;
+                  setTranscribing(true);
+                  push(`正在转写语音 · ${activeAcct}…`, 8000);
+                  a.transcribeVoice(activeAcct, "")
+                    .then((r) => {
+                      if (r && r.ok) {
+                        push(
+                          `语音转写完成 · 成功 ${r.succeeded ?? 0} 条` +
+                            (r.skipped ? ` · 跳过 ${r.skipped} 条（缺发送者信息）` : ""),
+                          10000,
+                        );
+                        qc.invalidateQueries().catch(() => {});
+                      } else {
+                        // 失败原因分级提示（不静默）：no-uuid / bcc-unavailable /
+                        // no-pending / no-text-returned 都直接告诉用户。
+                        push(`语音转写未完成 · ${r?.reason || r?.error || "未知原因"}`);
+                      }
+                    })
+                    .catch((e: unknown) => {
+                      push(
+                        "语音转写失败: " +
+                          (e instanceof Error ? e.message : String(e)),
+                      );
+                    })
+                    .finally(() => setTranscribing(false));
+                }}
+              >
+                {transcribing ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    转写中…
+                  </>
+                ) : (
+                  <>
+                    <Mic className="h-3.5 w-3.5" />
+                    语音转写
                   </>
                 )}
               </Button>
