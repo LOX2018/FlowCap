@@ -1,7 +1,14 @@
 """验证 UID 沉淀池：同 UID 多次弹幕只保留一次（跨重启持久化）。"""
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2\backend")
+# 2026-09-17 修补（OCR 审查 HIGH —— 硬编码机器绝对路径）：
+# 原为 `sys.path.insert(0, r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2\backend")`
+# —— 绑死某台机器与用户名，换机/CI 上必然 ImportError。
+# 改为按**本脚本位置**推导仓库根（脚本在 <repo>/scripts/ 下）。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+sys.path.insert(0, os.path.join(_ROOT, "backend"))
 import services.dm_dispatch as dd
 
 ok_n = fail_n = 0

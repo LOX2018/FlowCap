@@ -24,7 +24,12 @@ from pathlib import Path
 
 DESIGN_ROOT = r"C:\temp\dyautodm_design"
 _forbidden = (r"C:\temp\dyautodm_test",)
-assert os.path.abspath(DESIGN_ROOT) not in [os.path.abspath(x) for x in _forbidden]
+# 2026-09-17 修补（OCR 审查 HIGH —— assert 可被 -O 剥离）：
+# 与 backend/scripts/verify_capture_parse.py 同款分支环境守卫，
+# 同样不能用 assert（`python -O` 下会被整体移除，守卫失效）。
+if os.path.abspath(DESIGN_ROOT) in [os.path.abspath(x) for x in _forbidden]:
+    raise SystemExit(
+        "拒绝运行：本脚本属 design/better-douyin 分支，不得指向主分支环境")
 os.environ["DY_APP_ROOT"] = DESIGN_ROOT
 os.environ.setdefault("PYTHON_BASIC_REPL", "1")
 _s = json.loads((Path(DESIGN_ROOT) / "members" / ".session.json").read_text(encoding="utf-8"))

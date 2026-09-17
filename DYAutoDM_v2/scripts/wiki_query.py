@@ -81,6 +81,13 @@ def main():
         return
 
     if args[0] == "--read":
+        # 2026-09-17 修补（OCR 审查 HIGH）：原实现无条件 `args[1]`，
+        # 运行 `python scripts/wiki_query.py --read`（不带路径）时抛
+        # **IndexError**（未捕获栈）；改为给出可读用法提示。
+        if len(args) < 2:
+            print("用法: python scripts/wiki_query.py --read <页面路径>", file=sys.stderr)
+            print(__doc__)
+            return 2
         d = read_page(args[1])
         if "error" in d:
             print("ERR:", d)

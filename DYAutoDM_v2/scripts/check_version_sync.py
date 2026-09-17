@@ -71,9 +71,20 @@ def main() -> int:
         print(f"  [{mark}] {rel:34s} = {v:10s}  # {role}")
 
     vals = {v for v in found.values() if v}
+    # 2026-09-17 修补（OCR 审查 HIGH）：原实现只判 `len(vals) > 1` 与
+    # `vals != {want}` —— 当**五处全部提取不到 version**（文件缺失/字段被
+    # 改名）时 vals 为空集，两个条件都不成立 → 直接落到
+    # `sorted(vals)[0]` 抛 **IndexError 崩溃**，而不是给出可读的门禁失败。
+    # 现显式处理空集：既然前面已把"提取不到"记进 bad，这里只需安全返回。
+    if not vals:
+        print()
+        print("✗ 版本门禁未通过：")
+        for b in bad or ["五处均未提取到 version（缺少目标文件或字段被改名）"]:
+            print("   -", b)
+        return 1
     if len(vals) > 1:
         bad.append(f"版本不一致: {sorted(vals)}")
-    if want and vals and vals != {want}:
+    if want and vals != {want}:
         bad.append(f"期望 {want}，实际 {sorted(vals)}")
 
     print()

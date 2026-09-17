@@ -55,14 +55,26 @@ _cc_code = "\n".join(
 check("①1 不再出现 convs.index(...) 位置猜测（排除注释）",
       "convs.index(" not in _cc_code)
 bd = src("daemon/browser_daemon.py")
+# 2026-09-17 修补（OCR 审查 HIGH —— 断言查错了文件）：
+# `desc: desc` / `ConversationItemDescleft` 属 **JS 常量**，实际定义在
+# daemon/browser_daemon_js.py；browser_daemon.py 只 import 它。
+# 原断言在 bd 上查找 → 恒为 False（假失败）。
+_bdj0 = src("daemon/browser_daemon_js.py")
 check("①2 DOM 抓取新增 desc 字段（文本桥的唯一来源）",
-      "desc: desc" in bd and "ConversationItemDescleft" in bd)
+      "desc: desc" in _bdj0 and "ConversationItemDescleft" in _bdj0)
 # 🔴 本轮漏网 bug：JS 抓了 desc，但组装 _dom_seen 时没带上 → 后端拿不到匹配键。
 # 断言「两端都收 desc」：JS push 处 + _dom_seen 组装处（2 处）。
 _n_desc = bd.count('"desc": (_dit or {}).get("desc")') + bd.count('"desc": (_it or {}).get("desc")')
 check("①2b desc 确实被组装进 _dom_seen（不止 JS 抓、还要传回来）",
       _n_desc == 2, f"命中 {_n_desc} 处（期望 2：主循环 + 末屏补充）")
-_js = bd.split("CAP_DOM_SWEEP_JS", 1)[1].split('"""')[1]
+# 2026-09-17 修补（OCR 审查 HIGH —— JS 提取取自错误的文件）：
+# `daemon/browser_daemon.py` 只**导入** JS 常量（`from .browser_daemon_js import ...`），
+# 自身不含 `CAP_DOM_SWEEP_JS` 的三引号 JS 串 —— 原实现在 bd 上 split
+# 会 IndexError（或被跳过导致该断言失效）。JS 实体在 browser_daemon_js.py。
+_bdj = src("daemon/browser_daemon_js.py")
+if "CAP_DOM_SWEEP_JS" not in _bdj:
+    raise SystemExit("断言前置失败：browser_daemon_js.py 中找不到 CAP_DOM_SWEEP_JS")
+_js = _bdj.split("CAP_DOM_SWEEP_JS", 1)[1].split('"""')[1]
 _js_code = "\n".join(ln for ln in _js.splitlines() if "//" not in ln)
 check("①3 DOM 抓取不读 uid（保持零主动请求）",
       "uid" not in _js_code, "uid 仅允许出现在注释里")
@@ -156,8 +168,19 @@ check("③2 不再把裸 sender 当昵称（无 `or sender`）",
       "sender_nickname\") or sender" not in rd)
 check("③3 昵称取不到就留空（绝不写数字 UID）",
       "peer_name=_nick or None" in rd)
-check("③4 方向判定（08 §13.5 铁律）仍在，未被改动破坏",
-      'role = "me" if sender and str(sender) == str(self.inbox.my_uid) else "them"' in rd)
+# 2026-09-17 修补（OCR 审查 HIGH —— 断言匹配的是已被修正的旧写法）：
+# 原断言查 `role = "me" if sender and str(sender) == ... else "them"`，
+# 但该写法在 v0.43.46 已按 08 §13.5 铁律**修正**为「空 sender → me」
+# （旧写法在 sender 为空时落 them，与 wp_recv / conversation_capture 相反）。
+# 断言应校验**当前正确实现**的语义特征，而不是旧字符串。
+check("③4 方向判定（08 §13.5 铁律：空 sender→me）仍在，未被改回旧写法",
+      # 必须仍按 sender UID 判定，且「有 sender 且不是自己」才判 them
+      'role = "them" if (' in rd
+      and 'str(sender) != str(self.inbox.my_uid)' in rd
+      # 反向保护：不得回退成"空 sender 判 them"的旧式三元
+      # （两侧都去掉空格再比，避免比较基准不一致造成恒真/恒假）
+      and 'role="me"ifsenderandstr(sender)==str(self.inbox.my_uid)else"them"'
+          not in rd.replace(" ", ""))
 check("③5 高频日志已降噪为 debug（原先每消息一条 INFO）",
       "logger.debug(" in seg and "新消息: " in seg)
 
