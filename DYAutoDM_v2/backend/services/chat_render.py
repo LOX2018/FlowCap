@@ -84,7 +84,15 @@ def fetch_range(account: str, conv_id: str, start_seq: int | None = None,
     rows = conn.execute(
         "SELECT rowid AS rid, msg_id, role, text, msg_type, extra, ts FROM dm_messages "
         "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
+        # 2026-09-18（E1/E2）：过滤口径与 `/conversations/{id}` 详情端点**完全一致** ——
+        # 否则详情下发的 seq 与渲染端点的 seq 会错位（选区导出错条）。
+        # 附带修正：此前导出长图会把系统引导噪音也画进去。
+        "  AND NOT (msg_type = '7' AND msg_id IS NULL) "
+        "  AND text NOT LIKE '%对方回复你或互关之前%' "
+        "  AND text NOT LIKE '%请礼貌发言%' "
+        "  AND text NOT LIKE '%自觉遵守%' "
         "  AND text <> '[分享视频]' AND text NOT LIKE '[未知媒体]%' "
+        "  AND text NOT LIKE 'https://www.iesdouyin.com/share/%' "
         "ORDER BY CASE WHEN json_extract(NULLIF(extra,''),'$.created_at_us') IS NOT NULL"
         " THEN CAST(json_extract(NULLIF(extra,''),'$.created_at_us') AS INTEGER)"
         " ELSE CAST(ts*1000000 AS INTEGER) END ASC, ts ASC",

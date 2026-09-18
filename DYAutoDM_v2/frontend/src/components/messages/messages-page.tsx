@@ -7,7 +7,7 @@ import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Avatar, hue, nowHM } from "../../components/ui";
 import { Loader2, Download, Paperclip, ImageIcon, VideoIcon, FileText, Mic } from "lucide-react";
-import { ImageDown, FileDown } from "lucide-react";
+import { ImageDown, FileDown, CheckSquare, SquareDashedMousePointer } from "lucide-react";
 import LeadsSection from "./LeadsSection";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -113,6 +113,12 @@ export default function MessagesPage(props: PageProps) {
   /** 2026-09-17：长图 / ChatLab 导出进行中（各自按钮的 loading 态） */
   const [exportingImg, setExportingImg] = useState(false);
   const [exportingLab, setExportingLab] = useState(false);
+  /** 2026-09-18（E1）：选区导出 —— selMode=是否处于选区模式；selAnchor/selEnd=首/末条 seq */
+  const [selMode, setSelMode] = useState(false);
+  const [selAnchor, setSelAnchor] = useState<number | null>(null);
+  const [selEnd, setSelEnd] = useState<number | null>(null);
+  /** 2026-09-18（E1）：选区导出进行中 */
+  const [exportingSel, setExportingSel] = useState<"" | "png" | "html">("");
   /** 2026-09-17（E6）：正在单条转写的 msg_id（空=无；用于该气泡转圈） */
   const [transcribeOne, setTranscribeOne] = useState("");
   // 2026-09-17：会话内检索面板（对照上游 SearchBar：文本 / 日期 / 媒体三模式）。
@@ -257,6 +263,8 @@ export default function MessagesPage(props: PageProps) {
         reply: m.reply || null,
         recalled: m.recalled === true,
         ts: typeof m.ts === "number" ? m.ts : undefined,
+        // 2026-09-18（E1/E2）：后端下发的消息序号（渲染端点同口径），选区/单条存图锚点
+        seq: typeof m.seq === "number" ? m.seq : undefined,
       }));
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,
@@ -633,6 +641,26 @@ export default function MessagesPage(props: PageProps) {
                   <><ImageDown className="h-3.5 w-3.5" />导出长图</>
                 )}
               </Button>
+              {/* 2026-09-18（E1）：选区导出 —— 先点本按钮进入选区模式，
+                  再点击聊天里**首条**与**末条**消息定区间，浮条上导出 PNG/HTML。 */}
+              <Button
+                variant="ghost"
+                size="sm"
+                data-od-id="dm-export-sel"
+                title="只导出选中的消息区间：进入选区模式后，点首条与末条消息"
+                disabled={!conv.conv_id}
+                onClick={() => {
+                  // 再点一次退出选区模式（进入模式后按钮变成「选区中…」）
+                  setSelMode((v) => !v);
+                  setSelAnchor(null);
+                }}
+              >
+                {selMode ? (
+                  <><CheckSquare className="h-3.5 w-3.5" />选区中…</>
+                ) : (
+                  <><SquareDashedMousePointer className="h-3.5 w-3.5" />选区导出</>
+                )}
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -990,17 +1018,39 @@ export default function MessagesPage(props: PageProps) {
                     );
                   }
                   const sys = isSystemTip(m.text);
+                  // 2026-09-18（E1/E2）：选区模式下点击行 = 定锚点（首条→末条）；
+                  // 高亮 = 已在 [anchor, end] 区间内。E2 的单条存图按钮挂在行尾。
+                  const inSel = selMode && selAnchor !== null && selEnd !== null
+                    && m.seq !== undefined
+                    && m.seq >= Math.min(selAnchor, selEnd)
+                    && m.seq <= Math.max(selAnchor, selEnd);
                   nodes.push(
                     <div
                       className={cn(
-                        "flex max-w-[78%] items-center gap-2.5",
+                        "group flex max-w-[78%] items-center gap-2.5",
                         // 旧 `.msg { animation: slidein .3s ease both }` 保留（keyframes 在 global.css）
                         "animate-[slidein_0.3s_ease_both]",
                         sys ? "max-w-[84%] self-center" : m.dir === "out"
                           ? "flex-row-reverse self-end"
                           : "self-start",
+                        selMode && "cursor-pointer rounded-[var(--radius-md)]",
+                        selMode && inSel &&
+                          "outline outline-1 -outline-offset-1 outline-[var(--color-accent)]",
                       )}
                       key={m.id}
+                      onClick={selMode ? () => {
+                        if (m.seq === undefined) {
+                          push("该消息没有序号锚点（可能来自本地缓存）", 5000);
+                          return;
+                        }
+                        if (selAnchor === null) {
+                          setSelAnchor(m.seq);
+                          push(`已选首条（seq=${m.seq}），再点末条`, 4000);
+                        } else {
+                          setSelEnd(m.seq);
+                          push(`选区 seq=${Math.min(selAnchor, m.seq)}–${Math.max(selAnchor, m.seq)}，请在浮条导出`, 4000);
+                        }
+                      } : undefined}
                       /* 2026-09-17：跳转锚点 —— 命中/引用/日历定位靠这两个属性 */
                       data-msg-id={m.id.startsWith("mid_") ? m.id.slice(4) : undefined}
                       data-msg-ts={m.ts}
@@ -1042,6 +1092,42 @@ export default function MessagesPage(props: PageProps) {
                       <span className="shrink-0 self-center font-mono text-[0.66rem] text-[var(--color-text-muted)]">
                         {(m.mt || "").slice(11, 16)}
                       </span>
+                      {/* 2026-09-18（E2）：单条存图 —— hover 出现的小按钮。
+                          走渲染端点 start_seq=end_seq=本条 seq，只渲染这一条。
+                          seq 缺失（本地兜底消息）时不显示，避免导出错条。 */}
+                      {m.seq !== undefined && !selMode && (
+                        <button
+                          type="button"
+                          data-od-id={"msg-save-img-" + (m.id.startsWith("mid_") ? m.id.slice(4) : m.id)}
+                          title="把这条消息保存为图片"
+                          className="shrink-0 self-center rounded p-1 text-[var(--color-text-muted)]
+                                     opacity-0 transition hover:text-[var(--color-accent)]
+                                     focus:opacity-100 group-hover:opacity-100"
+                          onClick={async (ev) => {
+                            ev.stopPropagation();
+                            if (!conv.conv_id || !activeAcct) return;
+                            try {
+                              const r = await a.renderChatPng(activeAcct, conv.conv_id, {
+                                theme: "dark", scale: 2.0, asBase64: true,
+                                startSeq: m.seq, endSeq: m.seq,
+                              });
+                              if (r?.ok && r.data_uri) {
+                                const el = document.createElement("a");
+                                el.href = r.data_uri;
+                                el.download = `chat_msg_${m.seq}.png`;
+                                el.click();
+                                push("单条消息图已保存");
+                              } else {
+                                push(`保存失败 · ${r?.error || "未知原因"}`);
+                              }
+                            } catch (e: unknown) {
+                              push("保存失败: " + (e instanceof Error ? e.message : String(e)));
+                            }
+                          }}
+                        >
+                          <ImageDown className="h-3 w-3" />
+                        </button>
+                      )}
                       {/* 2026-09-05：通道角标，仅在 WP 通道时显示（WS 是默认，不打扰） */}
                       {m.source === "wp" && (
                         <span
@@ -1069,6 +1155,116 @@ export default function MessagesPage(props: PageProps) {
               className="hidden"
               onChange={handleFileChange}
             />
+            {/* 2026-09-18（E1）：选区导出浮条 —— selMode 时出现。
+                导出走既有渲染端点（start_seq/end_seq 闭区间），
+                PNG = base64 直存；HTML = Blob 下载（内容不出机器）。 */}
+            {selMode && (
+              <div
+                data-od-id="dm-sel-bar"
+                className="flex flex-wrap items-center gap-2 border-t
+                           border-[var(--color-border)] bg-[var(--color-surface-raised)]
+                           px-3.5 py-2 text-[0.76rem]"
+              >
+                <SquareDashedMousePointer className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+                {selAnchor === null ? (
+                  <span className="text-[var(--color-text-secondary)]">
+                    点击聊天里的**首条**消息
+                  </span>
+                ) : selEnd === null ? (
+                  <span className="text-[var(--color-text-secondary)]">
+                    已选首条 seq={selAnchor} · 再点**末条**（或点它本身=单条）
+                  </span>
+                ) : (
+                  <span className="font-mono text-[var(--color-text-secondary)]">
+                    选区 seq={Math.min(selAnchor, selEnd)}–{Math.max(selAnchor, selEnd)}
+                  </span>
+                )}
+                <div className="flex-1" />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-od-id="dm-sel-png"
+                  disabled={selAnchor === null || selEnd === null || exportingSel !== ""}
+                  onClick={async () => {
+                    if (selAnchor === null || selEnd === null || !conv.conv_id) return;
+                    setExportingSel("png");
+                    try {
+                      const r = await a.renderChatPng(activeAcct, conv.conv_id, {
+                        theme: "dark", scale: 2.0, asBase64: true,
+                        startSeq: Math.min(selAnchor, selEnd),
+                        endSeq: Math.max(selAnchor, selEnd),
+                      });
+                      if (r?.ok && r.data_uri) {
+                        const el = document.createElement("a");
+                        el.href = r.data_uri;
+                        el.download = `chat_sel_${Math.min(selAnchor, selEnd)}-${Math.max(selAnchor, selEnd)}.png`;
+                        el.click();
+                        push(`选区长图已导出（${Math.round((r.bytes || 0) / 1024)} KB）`);
+                      } else {
+                        push(`选区导出失败 · ${r?.error || "未知原因"}`);
+                      }
+                    } catch (e: unknown) {
+                      push("选区导出失败: " + (e instanceof Error ? e.message : String(e)));
+                    } finally {
+                      setExportingSel("");
+                    }
+                  }}
+                >
+                  {exportingSel === "png" ? (
+                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
+                  ) : (
+                    <><ImageDown className="h-3.5 w-3.5" />导出 PNG</>
+                  )}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-od-id="dm-sel-html"
+                  disabled={selAnchor === null || selEnd === null || exportingSel !== ""}
+                  onClick={async () => {
+                    if (selAnchor === null || selEnd === null || !conv.conv_id) return;
+                    setExportingSel("html");
+                    try {
+                      const r = await a.renderChatHtml(activeAcct, conv.conv_id, {
+                        theme: "dark",
+                        startSeq: Math.min(selAnchor, selEnd),
+                        endSeq: Math.max(selAnchor, selEnd),
+                      });
+                      if (r?.ok && r.html) {
+                        const blob = new Blob([r.html], { type: "text/html;charset=utf-8" });
+                        const href = URL.createObjectURL(blob);
+                        const el = document.createElement("a");
+                        el.href = href;
+                        el.download = `chat_sel_${Math.min(selAnchor, selEnd)}-${Math.max(selAnchor, selEnd)}.html`;
+                        el.click();
+                        setTimeout(() => URL.revokeObjectURL(href), 8000);
+                        push(`选区 HTML 已导出（${Math.round(r.html.length / 1024)} KB）`);
+                      } else {
+                        push(`HTML 导出失败 · ${r?.error || "未知原因"}`);
+                      }
+                    } catch (e: unknown) {
+                      push("HTML 导出失败: " + (e instanceof Error ? e.message : String(e)));
+                    } finally {
+                      setExportingSel("");
+                    }
+                  }}
+                >
+                  {exportingSel === "html" ? (
+                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
+                  ) : (
+                    <><FileDown className="h-3.5 w-3.5" />导出 HTML</>
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="dm-sel-cancel"
+                  onClick={() => { setSelMode(false); setSelAnchor(null); setSelEnd(null); }}
+                >
+                  取消
+                </Button>
+              </div>
+            )}
             {/* 2026-09-05：发送通道选择。
                 ws = 私信守护 HTTP API（默认，稳定）
                 wp = 抖音网页版 chat 页 IM SDK（需浏览器容器就绪） */}

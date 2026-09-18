@@ -23,6 +23,8 @@ export interface Msg {
   recalled?: boolean;
   /** 2026-09-17：原始秒级时间戳（跳转定位锚点用） */
   ts?: number;
+  /** 2026-09-18（E1/E2）：消息序号 —— 与 `/render/png` 同口径，选区/单条渲染锚点 */
+  seq?: number;
   /** 2026-09-17：视频要素（tkey/skey/时长/封面；仅视频消息有值） */
   video?: MsgVideo | null;
 }
@@ -88,6 +90,8 @@ export interface RawMessage {
   recalled?: boolean;
   /** 2026-09-17：原始秒级时间戳（后端新增，供跳转定位） */
   ts?: number;
+  /** 2026-09-18（E1/E2）：渲染端点同口径序号 */
+  seq?: number;
 }
 export interface RawConversation {
   conv_id?: string;

@@ -718,3 +718,39 @@ class TestConversationSeq(unittest.TestCase):
         self.assertEqual(len(msgs), 3, f"过滤后条数不对: {msgs}")
         seqs = [m.get("seq") for m in msgs]
         self.assertEqual(seqs, [1, 2, 3], f"seq 序列异常: {seqs}")
+
+    def test_seq_same_as_render_fetch_range(self):
+        """E1 关键契约：详情端点 seq 与 `fetch_range`（渲染端点）seq **完全一致**。
+
+        口径不一致 ⇒ 前端选区导出错条（把没选中的消息画进长图）。
+        额外验证详情里多出的过滤条件（系统引导噪音）两处一致生效。
+        """
+        from api.messages import get_conversation
+        from services import chat_render as CR
+        import asyncio
+        self.conn.execute(
+            "INSERT INTO dm_conversations(account,conv_id,peer_id,peer_name,conv_type)"
+            " VALUES(?,?,?,?,?)", (_ACCT, _CONV, "200", "李四", 1))
+        rows = [
+            (_ACCT, _CONV, "me",   "第一条",        "text",  "{}", 1700000001.0, "a"),
+            # 系统引导噪音（详情端点过滤；fetch_range 2026-09-18 起同样过滤）
+            (_ACCT, _CONV, "them", "对方回复你或互关之前可以发送一条消息", "text", "{}", 1700000002.0, "n1"),
+            (_ACCT, _CONV, "them", "第二条",        "text",  "{}", 1700000003.0, "b"),
+            (_ACCT, _CONV, "them", "",              "50001", "{}", 1700000004.0, "n2"),
+            (_ACCT, _CONV, "me",   "https://www.iesdouyin.com/share/xxx", "text", "{}", 1700000005.0, "n3"),
+            (_ACCT, _CONV, "them", "第三条",        "text",  "{}", 1700000006.0, "c"),
+        ]
+        for row in rows:
+            self.conn.execute(
+                "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                " VALUES(?,?,?,?,?,?,?,?)", row)
+        self.conn.commit()
+        res = asyncio.run(get_conversation(_ACCT, _CONV))
+        detail = (res.get("conversation") or {}).get("messages") or []
+        render = CR.fetch_range(_ACCT, _CONV)["messages"]
+        # 3 条有效（两条系统噪音 + 回执 + share 链接被滤）
+        self.assertEqual([m.get("seq") for m in detail], [1, 2, 3])
+        self.assertEqual([m["seq"] for m in render], [1, 2, 3])
+        # 两边 msg_id 逐条相等 = 同一集合同一序
+        self.assertEqual([m.get("msg_id") for m in detail],
+                         [m["msg_id"] for m in render])
