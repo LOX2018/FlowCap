@@ -234,9 +234,12 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
     # 静态分析扫不到（与 ws_link / conv_identity 完全同类的坑），
     # 缺失则打包后环境基线比对静默失效（try/except 吞掉，无报错）。
     # 它内部引用 services.kv_store（顶层 import，静态分析可追，但一并声明保险）。
+    # 2026-09-18 v0.43.88：环境泄漏监测（services/env_audit.py）同坑同修——
+    # browser_daemon 在 env_audit_snapshot 内函数体延迟导入。
     if entry in ("daemon/browser_daemon.py", "main.py"):
         for _m in ("services.env_baseline", "env_baseline",
-                   "services.kv_store", "kv_store"):
+                   "services.kv_store", "kv_store",
+                   "services.env_audit", "env_audit"):
             cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
