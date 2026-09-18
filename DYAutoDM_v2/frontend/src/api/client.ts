@@ -590,6 +590,41 @@ export const api = {
     });
   },
 
+  /**
+   * 2026-09-18（E8）：聊天记录 → 知识库。
+   *
+   * `preview=true` → `action=to_kb_preview`，**零写入**，返回抽取出的问答对
+   *   `[{question, answer, source_msg_id, ts}]` 供前端勾选（计划铁律：必须预览后再入库）；
+   * `preview=false` → `action=to_kb`，把**全量抽取结果**写入 `reply_kb`/`pro_kb`。
+   *   注意：后端 to_kb 是「整会话抽取即入库」，无逐条勾选参数 —— 前端勾选预览
+   *   用于**人工把关**（看了不对就取消），精细逐条入库走 ReplyKb 页的手动添加。
+   */
+  async exportToKb(
+    account: string,
+    convId: string,
+    opts: { target?: "reply" | "pro"; maxItems?: number; preview?: boolean } = {},
+  ): Promise<{
+    ok: boolean;
+    pairs?: { question: string; answer: string; source_msg_id: string | null; ts: number }[];
+    count?: number;
+    added?: number;
+    skipped?: number;
+    target?: string;
+    error?: string;
+  }> {
+    const action = opts.preview ? "to_kb_preview" : "to_kb";
+    return request("/api/messages/export/chatlab", {
+      method: "POST",
+      body: JSON.stringify({
+        account,
+        conv_id: convId,
+        action,
+        target: opts.target ?? "reply",
+        max_items: opts.maxItems ?? 50,
+      }),
+    });
+  },
+
   /** 2026-09-17：长图直出 PNG（Pillow 原生绘制，不经 BCC）。 */
   async renderChatPng(
     account: string,

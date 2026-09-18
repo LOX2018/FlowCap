@@ -837,6 +837,22 @@ async def export_chatlab(body: ChatlabExportReq) -> dict:
             res = await asyncio.to_thread(
                 _ce.export_to_kb, body.account, body.conv_id,
                 target=body.target, max_items=body.max_items)
+        elif body.action == "to_kb_preview":
+            # 2026-09-18（E8）：预览问答对 —— **零写入**，只抽取供前端勾选。
+            # 计划铁律：必须预览后再入库（避免把噪音批量灌进知识库）。
+            from database import get_db as _gdb
+            def _preview():
+                if body.conv_id:
+                    _conv, msgs = _ce._load_msgs(_gdb(), body.account, body.conv_id)
+                else:
+                    msgs = list(_gdb().execute(
+                        "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
+                        "WHERE account=? AND msg_type <> '50001' ORDER BY ts ASC",
+                        (body.account,)).fetchall())
+                pairs = _ce.extract_qa_pairs(msgs)[:body.max_items]
+                return {"ok": True, "pairs": pairs, "count": len(pairs),
+                        "target": body.target}
+            res = await asyncio.to_thread(_preview)
         else:
             raise HTTPException(422, "action 只能是 export/to_kb")
     except ValueError as e:
