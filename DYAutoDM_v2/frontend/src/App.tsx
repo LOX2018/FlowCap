@@ -407,12 +407,22 @@ export default function App() {
   }; 
 
   // ===== 会员门禁 + 启动预对齐门（2026-09-08）：后端就绪后才显示登录框 =====
-  // 2026-09-17 修复：旧实现 prealigned 完成即弹出登录框，但后端尚未 ready
-  //   （overview 首帧未到），用户填完凭证点登录 → API 失败 → 体验断层。
-  //   铁律：登录框与所有业务 UI 必须在后端引擎就绪（ready=true）后才允许渲染。
+  // 2026-09-18 修复（循环依赖重大缺陷）：
+  //   旧实现 v0.43.44 把「登录框」的渲染门控加了 `|| !ready`，而 `ready` 取自
+  //   `/api/overview` 的 isSuccess。问题：**/api/overview 需要登录**（会员门禁 401）
+  //   → 形成循环依赖：未登录 → overview 失败无法 ready → 登录框不渲染 → 无法登录。
+  //   用户侧：未登录(会话过期/首次装) 的情况下永远卡在 BootSplash
+  //   「正在唤醒后端引擎」。
+  //   为何 v0.43.44 验证时没暴露：当时会话有效（自动登录），overview 成功
+  //   → 看着正常；**只有会话过期**才暴露 —— 典型的「只测顺利路径」假通过。
+  //
+  //   正解：登录框的「后端就绪」判据应用**免鉴权**的 `prealigned`
+  //   （来自 `/api/ready`，其 docstring 明写它就是「前端等 daemons_ready=true 才
+  //   显示登录框」的就绪针，且内部已分未登录分支）。
+  //   `ready`（overview）仅用于登录**后**的业务 UI 与顶栏状态，不参与登录门控。
   if (!memberName) {
-    // prealigned 未完成 / 后端尚未 ready → 持续闪屏
-    if (!prealigned || !ready) return <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />;
+    // prealigned 未完成 → 持续闪屏（**不得引用 ready**：它需要登录）
+    if (!prealigned) return <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />;
     return memberChecked ? (
       <MemberGate onLogin={(u) => { setMemberName(u); setPrealigned(true); }} />
     ) : (
