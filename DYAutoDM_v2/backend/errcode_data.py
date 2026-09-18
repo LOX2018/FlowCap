@@ -274,6 +274,12 @@ ERRCODES = {
     "BCC-051": {"meaning": "[bcc] 致命态熔断：凭证不可用（env_path 为空），不再自动重启", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-052": {"meaning": "[bcc] context 失活自愈：已重建容器（按最小化启动，窗口不再快闪）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-063": {"meaning": "[bcc] 出口环境漂移：当前出口 IP 与登录基线不一致（登录环境与运行环境不一致，先重扫建立新基线）", "file": "daemon/browser_daemon.py", "line": 0},
+"BCC-064": {"meaning": "[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）", "file": "daemon/browser_daemon.py", "line": 0},
+"BCC-065": {"meaning": "[bcc] 自动化痕迹暴露（navigator.webdriver=true / HeadlessChrome UA / 注入对象）", "file": "services/env_audit.py", "line": 0},
+"BCC-066": {"meaning": "[bcc] 原生函数被篡改（toString 不含 [native code]）", "file": "services/env_audit.py", "line": 0},
+"BCC-067": {"meaning": "[bcc] WebGL 软件渲染特征（GPU 伪装失效，检查 --disable-gpu）", "file": "services/env_audit.py", "line": 0},
+"BCC-068": {"meaning": "[bcc] 浏览器环境与项目档案不一致（时区/语言/核心数/screen/UA）", "file": "services/env_audit.py", "line": 0},
+"BCC-069": {"meaning": "[bcc] 环境一致性弱点（screen 三值全等/worker 分叉/canvas 或 audio 不稳定/Client Hints 缺失）", "file": "services/env_audit.py", "line": 0},
     "SEND-037": {"meaning": "[调度] dm_dispatch 接入失败，已放弃发送（不再回退直发绕过风控闸门）", "file": "core/dispatch.py", "line": 0},
     "CAP-001": {"meaning": "refresh][] browser_daemon 未拉起，昵称关联可能失效", "file": "api/messages.py", "line": 735},
     "CAP-002": {"meaning": "refresh][] 更新会话失败:", "file": "api/messages.py", "line": 749},
@@ -480,6 +486,79 @@ CODE_DESIGN = {
                  "_apply_to_task_kv（写 kv 供下次启动）→ adm.apply_runtime_config",
         "root": "任务未启动 / 已停止 / 启动失败回退 IDLE —— 属调用时序问题，不是配置错",
         "verify": "curl :8000/api/tasks/current 看 engine_state；日志 grep '热更被拒'。",
+    },
+    "BCC-064": {
+        "design": "把 rebrowser-bot-detector / CreepJS / liarjs 的检测逻辑"
+                  "移植为内置只读 JS 探针（零外网请求、零第三方上传），"
+                  "keepalive 低频巡检 + /env_audit 即时快照，环境泄漏在"
+                  "被风控判罚之前暴露。",
+        "contract": "探针零外网请求、零主动抖音请求、不导航不点 DOM；"
+                    "告警不阻断（不重启浏览器不改环境）；"
+                    "internal=True 让位于业务租约。",
+        "deviation": "探针执行失败或发现泄漏项",
+        "chain": "run_keepalive → env_audit_snapshot → ENV_AUDIT_JS → "
+                 "compare_with_profile → BCC-064 告警",
+        "root": "见具体泄漏项（065 自动化痕迹 / 066 篡改 / 067 软渲染 / "
+                "068 档案不一致 / 069 一致性弱点）。探针执行失败通常是 "
+                "context 正在重建，等下轮即可。",
+        "verify": "curl -X POST :<bcc_port>/env_audit 读回完整 leaks 与 "
+                  "js_view；fatal 项必须人工处置后复测归零。",
+    },
+    "BCC-065": {
+        "design": "自动化标志绝不可暴露（webdriver/HeadlessChrome/注入对象）"
+                  "—— rebrowser-bot-detector 的 runtimeEnableLeak/webdriver "
+                  "同族检测，主流反bot 必测项。",
+        "contract": "patchright 接管驱动层后这些值必须干净；fatal 级。",
+        "deviation": "webdriver=true / UA 含 HeadlessChrome / window 上有 "
+                     "cdc_/__webdriver 等注入键",
+        "chain": "ENV_AUDIT_JS 基本面采集 → compare_with_profile E1/E2",
+        "root": "驱动层回退到原生 playwright（检查 DY_PW_BACKEND）或 "
+                "启动参数被改",
+        "verify": "chrome 主进程实参应无 --disable-component-update 且有 "
+                  "--disable-blink-features=AutomationControlled（patchright "
+                  "判据）；复跑 /env_audit 应归零。",
+    },
+    "BCC-066": {
+        "design": "原生函数必须保持 [native code]（CreepJS toString 篡改检测）"
+                  "—— JS 注入式伪装会被原型检查拆穿，内核级伪装不应触发。",
+        "contract": "patchright + fingerprint-chromium 下 tamperedCount=0。",
+        "deviation": "原生函数 toString 暴露 JS 源码",
+        "chain": "ENV_AUDIT_JS nativeChecks → compare_with_profile E3",
+        "root": "有 JS 层 monkey-patch 伪装在跑（stealth 插件类）；本项目 "
+                "架构是内核级伪装，出现即说明混入了 JS 层补丁",
+        "verify": "排查 add_init_script 是否注入了额外伪装脚本；复跑归零。",
+    },
+    "BCC-067": {
+        "design": "WebGL 必须呈现真实显卡（fingerprint-chromium 种子伪装）"
+                  "—— 软件渲染兜底值是 2026-09-13 实测的最强破绽。",
+        "contract": "dbgRenderer 不得含 swiftshader/basic render/software。",
+        "deviation": "WebGL renderer 为软件渲染字符串",
+        "chain": "ENV_AUDIT_JS webgl 采集 → compare_with_profile E4",
+        "root": "--disable-gpu 被注入（DY_DISABLE_GPU=1？）或内核伪装失效",
+        "verify": "chrome 实参无 --disable-gpu；WebGL renderer 显示真实显卡；",
+    },
+    "BCC-068": {
+        "design": "浏览器层真值必须与项目档案（utils/fingerprint 单源）恒等"
+                  "—— v0.43.14 单源化的常驻监测形态（verify_fp_single_source "
+                  "的一次性脚本转为 keepalive 周期检测）。",
+        "contract": "时区/语言/核心数/screen/UA 与 fingerprint_profile(account) "
+                    "逐项一致；UA Chrome 版本与 kernel_version() 一致。",
+        "deviation": "任一项不一致",
+        "chain": "ENV_AUDIT_JS 采集 → compare_with_profile E5-E9",
+        "root": "单源化接线被绕过（launch_args/viewport_for 未走）或档案派生 "
+                "逻辑被改",
+        "verify": "复跑 verify_fp_single_source.py；/env_audit 归零。",
+    },
+    "BCC-069": {
+        "design": "环境内部一致性（liarjs/CreepJS 思路）：screen 三值不全等、"
+                  "worker 与主线程同值、canvas/audio 同 context 恒定。",
+        "contract": "真实用户浏览器不可能出现三值全等/跨线程分叉/同库不稳。",
+        "deviation": "任一一致性弱点命中",
+        "chain": "ENV_AUDIT_JS worker/canvas/audio 采集 → compare_with_profile "
+                 "E10/E11/E12",
+        "root": "viewport 未设（Playwright 默认 1280x720）或驱动层状态异常；"
+                "Client Hints 缺失为内核已知缺口（info 级，v0.43.14 已记录）",
+        "verify": "排查 vbrowser 是否注入 viewport_for(account)；复跑归零。",
     },
     "BCC-063": {
         "design": "同一账号的出口环境（出口 IP+代理模式）必须与登录时恒等"

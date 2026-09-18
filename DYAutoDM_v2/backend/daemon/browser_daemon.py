@@ -1532,6 +1532,27 @@ class BrowserContainer:
                                 purpose="auto", prio=1, ttl=300.0,
                                 lease_id=lease_id)
 
+    async def env_audit_snapshot(self, internal: bool = False) -> dict:
+        """采集浏览器环境真值并对照项目档案做泄漏检测（v0.43.88）。
+
+        移植 rebrowser-bot-detector / CreepJS / liarjs 的核心检测逻辑
+        （services/env_audit.py），纯本地 JS 只读计算，零外网请求、
+        零主动抖音请求。检测在常驻 chat 页上下文执行，不导航不点 DOM。
+
+        返回 {ok, fatal_count, warn_count, leaks: [...], js_view}。
+        告警不阻断（不重启浏览器不改环境——与 env_baseline 同纪律）。
+        """
+        from services.env_audit import ENV_AUDIT_JS, compare_with_profile
+
+        async def _do():
+            if self._page is None:
+                raise RuntimeError("page 未就绪")
+            view = await self._page.evaluate(ENV_AUDIT_JS)
+            return compare_with_profile(self.account, view or {})
+
+        return await self._exec(_do, holder="env_audit", internal=internal)
+
+
     async def capture_wp_messages(self) -> list[dict]:
         """读取 BCC hook 截到的 WP 通道私信事件（读后清空）。
 
@@ -2074,6 +2095,36 @@ class BrowserContainer:
                     logger.debug(f"[bcc] 环境基线比对一致: ip={_ec.get('current_ip')}")
             except Exception as _e:
                 logger.debug(f"[bcc] 环境基线比对异常（不影响保活）: {_e}")
+
+            # 2026-09-18 v0.43.88 环境泄漏监测（移植 rebrowser/CreepJS/liarjs）：
+            # 低频对浏览器环境做全套只读检测（CDP 痕迹/WebGL 软渲染/原生函数
+            # 篡改/跨信号矛盾/worker 分叉），与项目档案交叉比对。发现泄漏只
+            # 告警 BCC-064+，绝不重启浏览器。internal=True：让位于业务租约。
+            try:
+                _now2 = time.time()
+                if _now2 - getattr(self, "_last_env_audit_at", 0) >= 3600:
+                    self._last_env_audit_at = _now2
+                    # 在保活线程投递协程到容器 loop（与 scan_login 同手法）
+                    if self._loop and not self._loop.is_closed():
+                        _fut = asyncio.run_coroutine_threadsafe(
+                            self.env_audit_snapshot(internal=True), self._loop)
+                        try:
+                            _er = _fut.result(timeout=60) or {}
+                        except Exception as _ee:
+                            _er = {"ok": False, "error": str(_ee), "leaks": []}
+                        for _lk in (_er.get("leaks") or []):
+                            _sev = _lk.get("severity")
+                            if _sev == "fatal":
+                                logger.error(f"[BCC-064] " + f"[bcc] 环境泄漏(fatal): "
+                                    f"{_lk.get('code')}: {_lk.get('detail')}")
+                            elif _sev == "warn":
+                                logger.warning(f"[BCC-064] " + f"[bcc] 环境泄漏(warn): "
+                                    f"{_lk.get('code')}: {_lk.get('detail')}")
+                        if not (_er.get("leaks") or []) and _er.get("ok"):
+                            logger.debug("[bcc] 环境泄漏监测通过（本轮无 leaks）")
+            except Exception as _e2:
+                logger.debug(f"[bcc] 环境泄漏监测异常（不影响保活）: {_e2}")
+
 
             try:
                 uid = self._load_uid_from_env()
@@ -2722,6 +2773,32 @@ async def wp_send(body: WpSendBody) -> dict:
     except Exception as e:
         logger.warning(f"[BCC-034] " + f"[bcc] /wp_send 失败: {e}")
         return {"ok": False, "msg": str(e), "result": None}
+
+
+class EnvAuditBody(BaseModel):
+    internal: bool = False
+
+
+@app.post("/env_audit")
+async def env_audit(body: EnvAuditBody | None = None) -> dict:
+    """实时环境泄漏监测（v0.43.88，移植 rebrowser/CreepJS/liarjs 检测逻辑）。
+
+    纯本地只读 JS 探针，零外网请求。供前端/后端随时调取即时快照；
+    keepalive 另按低频周期自动跑并告警。返回 {ok, fatal_count,
+    warn_count, leaks:[...], js_view}。
+    """
+    c = _state.get("container")
+    if not c:
+        return {"ok": False, "msg": "容器未启动", "leaks": [], "js_view": {}}
+    try:
+        out = await c.env_audit_snapshot(
+            internal=bool(body.internal) if body else False)
+        return {"ok": True, **out}
+    except ContainerBusy as e:
+        return {"ok": False, "busy": str(e), "leaks": [], "js_view": {}}
+    except Exception as e:
+        logger.warning(f"[BCC-064] " + f"[bcc] /env_audit 失败: {e}")
+        return {"ok": False, "msg": str(e), "leaks": [], "js_view": {}}
 
 
 @app.post("/scan_login")
