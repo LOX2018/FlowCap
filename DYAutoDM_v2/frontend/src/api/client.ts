@@ -947,6 +947,7 @@ export const api = {
     account: string,
     convId = "",
     limit = 30,
+    msgId = "",
   ): Promise<{
     ok: boolean;
     requested?: number;
@@ -957,7 +958,7 @@ export const api = {
   }> {
     return request("/api/messages/voice/transcribe", {
       method: "POST",
-      body: JSON.stringify({ account, conv_id: convId, limit }),
+      body: JSON.stringify({ account, conv_id: convId, limit, msg_id: msgId }),
     });
   },
 
@@ -1010,6 +1011,48 @@ export const api = {
         msg_id: msgId,
         conv_id: opts.convId ?? "",
         force: opts.force ?? false,
+      }),
+    });
+  },
+
+  /** 2026-09-17（E11）：昵称兜底状态（**默认关闭**；用于确认关闭态一眼可见）。 */
+  nicknameFallbackStatus(): Promise<{
+    ok: boolean;
+    config?: {
+      enabled?: boolean;
+      min_interval_sec?: number;
+      max_per_run?: number;
+      max_per_day?: number;
+    };
+    limit_info?: Record<string, unknown>;
+    would_allow_now?: boolean;
+    gate?: string;
+  }> {
+    return request("/api/messages/nickname_fallback/status");
+  },
+
+  /**
+   * 2026-09-17（E11）：执行一次昵称兜底（受开关/间隔/上限三重约束）。
+   * `dryRun=true` 只列候选、**不发任何请求** —— 用于先看会查到谁。
+   */
+  nicknameFallbackRun(
+    account: string,
+    opts: { limit?: number; dryRun?: boolean } = {},
+  ): Promise<{
+    ok: boolean;
+    reason?: string;
+    candidates?: number;
+    queried?: number;
+    updated?: number;
+    skipped?: number;
+    limit_info?: Record<string, unknown>;
+  }> {
+    return request("/api/messages/nickname_fallback/run", {
+      method: "POST",
+      body: JSON.stringify({
+        account,
+        limit: opts.limit ?? null,
+        dry_run: opts.dryRun ?? false,
       }),
     });
   },

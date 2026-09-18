@@ -55,6 +55,8 @@ export interface Conv {
   name: string;
   unread: number;
   avatar?: string;
+  /** 2026-09-17：是否群聊（E5 徽标与筛选用；后端 conv_type 透传） */
+  isGroup?: boolean;
   msgs: Msg[];
 }
 export interface Account {
@@ -93,6 +95,9 @@ export interface RawConversation {
   unread?: number;
   messages?: RawMessage[];
   avatar?: string;
+  /** 2026-09-17：1=单聊 2=群聊（后端按 DB conv_type 下发，存量行按 conv_id 回退判定） */
+  conv_type?: number;
+  is_group?: boolean;
 }
 export interface ConversationsResp {
   ok?: boolean;
@@ -136,10 +141,12 @@ export interface MessagesApi {
   requestDm(name: string): Promise<RequestDmResp>;
   refreshConversations(account: string, withBrowser?: boolean): Promise<RefreshConvsResp>;
   /** 2026-09-17：语音转写（BCC 上下文内识别；只处理语音消息） */
+  /** 2026-09-17（E6）：语音转写。`msgId` 非空 = 只转写该条（气泡按钮用）。 */
   transcribeVoice(
     account: string,
     convId?: string,
     limit?: number,
+    msgId?: string,
   ): Promise<{
     ok: boolean;
     requested?: number;

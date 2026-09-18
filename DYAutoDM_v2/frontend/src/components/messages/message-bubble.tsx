@@ -1,4 +1,4 @@
-import { Play } from "lucide-react";
+import { Play, Loader2, FileText } from "lucide-react";
 import { openExternal } from "../../utils/openExternal";
 import { cn } from "@/lib/utils";
 import { Msg, MediaInfo, renderTextWithEmoji, parseMedia } from "./message-shared";
@@ -11,6 +11,8 @@ export function MsgBubble({
   account,
   onOpenImage,
   onJumpRef,
+  onTranscribe,
+  transcribing,
 }: {
   m: Msg;
   /** 是否为系统提示消息（判定在父层用 isSystemTip，语义不变；仅用于样式） */
@@ -20,6 +22,10 @@ export function MsgBubble({
   onOpenImage?: (media: MediaInfo) => void;
   /** 2026-09-17：点击引用块 → 跳转被引用消息（同会话内定位） */
   onJumpRef?: (refMsgId?: string, refText?: string) => void;
+  /** 2026-09-17（E6）：点「转写」→ 只识别该条语音（用户显式触发，经 BCC） */
+  onTranscribe?: (msgId: string) => void;
+  /** 该条是否正在转写（按钮转圈用；父层持有，避免每条各自状态失同步） */
+  transcribing?: boolean;
 }) {
   const t = (m.text || "").trim();
 
@@ -308,6 +314,31 @@ export function MsgBubble({
           <div className="mt-1.5 border-t border-current/20 pt-1.5 text-[0.75rem] opacity-90">
             {m.voiceText}
           </div>
+        ) : onTranscribe ? (
+          /* 2026-09-17（E6）：未转写时给**用户显式触发**入口（单条精确转写）。
+             不自动转写：识别是外呼（经 BCC），必须用户点击才发。 */
+          <button
+            type="button"
+            data-od-id={"voice-transcribe-" + m.id}
+            disabled={transcribing}
+            onClick={() => onTranscribe(m.id.startsWith("mid_") ? m.id.slice(4) : m.id)}
+            className="mt-1.5 flex items-center gap-1 border-t border-current/20 pt-1.5
+                       text-[0.72rem] underline decoration-dotted opacity-80
+                       transition hover:opacity-100 disabled:opacity-50"
+            title="把这条语音转成文字（在账号登录态里识别，只处理语音消息）"
+          >
+            {transcribing ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" />
+                转写中…
+              </>
+            ) : (
+              <>
+                <FileText className="h-3 w-3" />
+                转写
+              </>
+            )}
+          </button>
         ) : null}
       </div>
     );

@@ -30,12 +30,15 @@ import ModelHubSection from "./ModelHubSection";
 import NotifySection from "./NotifySection";
 import TagSection from "./TagSection";
 import AiEngineSection from "./AiEngineSection";
+import NicknameFallbackSection from "./NicknameFallbackSection";
+import { MessageSquare } from "lucide-react";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type SectionKey =
-  | "general" | "send" | "live" | "capture" | "ai" | "agent" | "tag" | "notify";
+  | "general" | "send" | "live" | "capture" | "dm"
+  | "ai" | "agent" | "tag" | "notify";
 
 const TABS: {
   key: SectionKey;
@@ -47,6 +50,7 @@ const TABS: {
   { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", icon: <Send className="h-3.5 w-3.5" /> },
   { key: "live", label: "直播监听", hint: "监听节奏与轮询", icon: <Radio className="h-3.5 w-3.5" /> },
   { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", icon: <Database className="h-3.5 w-3.5" /> },
+  { key: "dm", label: "私信 / 昵称兜底", hint: "昵称兜底（默认关，主动查询有风控成本）", icon: <MessageSquare className="h-3.5 w-3.5" /> },
   { key: "ai", label: "AI 回复引擎", hint: "模型链路 + 回复内容 / 护栏 / 黑名单", icon: <Bot className="h-3.5 w-3.5" /> },
   { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", icon: <Users className="h-3.5 w-3.5" /> },
   { key: "tag", label: "配置标签", hint: "发送策略：怎么发", icon: <Tags className="h-3.5 w-3.5" /> },
@@ -104,6 +108,14 @@ export default function SettingsPage(props: PageProps) {
             )}
             {section === "capture" && (
               <UnifiedConfigSection {...props} onlySections={["capture"]} />
+            )}
+            {section === "dm" && (
+              <>
+                {/* 配置域 dm：昵称兜底开关 + 三重上限（唯一可写处） */}
+                <UnifiedConfigSection {...props} onlySections={["dm"]} />
+                {/* 运维卡：状态 / 候选（零外呼）/ 执行一次（显式触发） */}
+                                <NicknameFallbackSection />
+              </>
             )}
             {section === "ai" && (
               <>

@@ -341,7 +341,7 @@ def persist_transcripts(conn, account: str, mapping: dict) -> int:
 
 
 def transcribe_pending(account: str, conv_id: str = "", exec_js=None,
-                       limit: int = 30) -> dict:
+                       limit: int = 30, msg_id: str = "") -> dict:
     """把该账号「尚未转写」的语音消息批量送识别并落库。
 
     流程：
@@ -352,6 +352,9 @@ def transcribe_pending(account: str, conv_id: str = "", exec_js=None,
          （extra.sender_sec_uid，缺则跳过该条 —— 上游 uuid/sec_uid 为必备项）；
       3. 在 BCC 页面上下文探测 uuid；
       4. 按 BATCH_SIZE=10 分批请求，逐条落库。
+
+    `msg_id`（2026-09-17 新增）：只转写**指定的一条**消息（前端语音气泡上的
+    「转写」按钮需要精确到条；空串 = 整会话/全账号批量）。
 
     返回 {ok, requested, succeeded, skipped, reason}
     """
@@ -369,7 +372,11 @@ def transcribe_pending(account: str, conv_id: str = "", exec_js=None,
             "  AND m.text LIKE '[语音]%' "
         )
         params: list[Any] = [account]
-        if conv_id:
+        if msg_id:
+            # 单条模式：精确命中，且**不受 limit 语义影响**（limit 仍留 1 条）
+            sql += " AND m.msg_id=? "
+            params.append(str(msg_id))
+        elif conv_id:
             sql += " AND m.conv_id=? "
             params.append(str(conv_id))
         sql += " ORDER BY m.ts DESC LIMIT ?"

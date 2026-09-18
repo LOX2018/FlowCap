@@ -113,6 +113,8 @@ export default function MessagesPage(props: PageProps) {
   /** 2026-09-17：长图 / ChatLab 导出进行中（各自按钮的 loading 态） */
   const [exportingImg, setExportingImg] = useState(false);
   const [exportingLab, setExportingLab] = useState(false);
+  /** 2026-09-17（E6）：正在单条转写的 msg_id（空=无；用于该气泡转圈） */
+  const [transcribeOne, setTranscribeOne] = useState("");
   // 2026-09-17：会话内检索面板（对照上游 SearchBar：文本 / 日期 / 媒体三模式）。
   const [showDmSearch, setShowDmSearch] = useState(false);
   const [dmQuery, setDmQuery] = useState("");
@@ -167,6 +169,10 @@ export default function MessagesPage(props: PageProps) {
         name: c.name || "会话" + i,
         unread: c.unread || 0,
         avatar: c.avatar || "",
+        // 2026-09-17（E5）：群聊标识 —— 后端下发 conv_type/is_group；
+        // 存量行缺失时按 conv_id 是否纯数字回退（与后端同判据）。
+        isGroup: c.is_group ?? (c.conv_type ? c.conv_type === 2
+                                 : /^\d+$/.test(String(c.conv_id || ""))),
         msgs: (c.messages || []).map((m, j) => ({
           id: "rm" + i + "_" + j,
           dir: (m.dir || "in") as "in" | "out",
@@ -183,12 +189,16 @@ export default function MessagesPage(props: PageProps) {
 
   const realAccts = accountsQ.data || [];
   const allConvs: Conv[] = convsQ.data || [];
+  // 2026-09-17（E5）：会话类型筛选（全部 / 单聊 / 群聊）。与昵称搜索**叠加**生效。
+  const [convKind, setConvKind] = useState<"all" | "direct" | "group">("all");
+  const groupCount = allConvs.filter((c) => c.isGroup).length;
   // 2026-09-06：按昵称搜索过滤（大小写不敏感的包含匹配）
-  const shownConvs: Conv[] = convSearch.trim()
-    ? allConvs.filter((c) =>
-        (c.name || "").toLowerCase().includes(convSearch.trim().toLowerCase()),
-      )
-    : allConvs;
+  const shownConvs: Conv[] = allConvs
+    .filter((c) => (convKind === "all" ? true
+                  : convKind === "group" ? !!c.isGroup
+                  : !c.isGroup))
+    .filter((c) => !convSearch.trim()
+      || (c.name || "").toLowerCase().includes(convSearch.trim().toLowerCase()));
 
   // 当前选中会话对象（先取出 conv_id，供详情 query 使用）
   const conv: Conv =
@@ -808,6 +818,21 @@ export default function MessagesPage(props: PageProps) {
               )}
             </div>
           )}
+          {/* 2026-09-17（E5）：会话类型筛选（全部 / 单聊 / 群聊）。
+              纯前端过滤，零外呼；与昵称搜索叠加。群聊数取自后端 conv_type。 */}
+          {allConvs.length > 0 && (
+            <div className="flex items-center gap-1.5 pb-2 pt-0.5">
+              <SegmentedTabs
+                value={convKind}
+                onChange={(v) => setConvKind(v as "all" | "direct" | "group")}
+                items={[
+                  { value: "all", label: `全部 ${allConvs.length}` },
+                  { value: "direct", label: "单聊" },
+                  { value: "group", label: `群聊 ${groupCount}` },
+                ]}
+              />
+            </div>
+          )}
           {/* 2026-09-06：会话搜索框（按昵称过滤定位） */}
           {showSearch && (
             <div className="flex items-center gap-2 pb-2">
@@ -858,7 +883,13 @@ export default function MessagesPage(props: PageProps) {
                 没有昵称包含「{convSearch.trim()}」的会话
               </div>
             )}
-            {shownConvs.length === 0 && !(convSearch.trim() && allConvs.length > 0) && (
+            {shownConvs.length === 0 && !(convSearch.trim() && allConvs.length > 0)
+              && (allConvs.length > 0) && (
+              <div className="px-2.5 py-3 text-[0.78rem] text-[var(--color-text-muted)]">
+                当前筛选（{convKind === "group" ? "仅群聊" : "仅单聊"}）下没有会话
+              </div>
+            )}
+            {shownConvs.length === 0 && allConvs.length === 0 && (
               <div className="px-2.5 py-3 text-[0.78rem] text-[var(--color-text-muted)]">
                 暂无会话（接收守护未收到消息）
               </div>
@@ -869,7 +900,24 @@ export default function MessagesPage(props: PageProps) {
                   <Avatar name={c.name} h={c.hue} src={c.avatar} />
                   <div className="min-w-0 flex-1">
                     <div className="flex justify-between gap-2 text-[0.82rem] font-medium text-[var(--color-text)]">
-                      <span className="truncate">{c.name}</span>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        {/* 2026-09-17（E5）：群聊徽标。后端 conv_type 透传，
+                            纯展示、零外呼；单聊不显示徽标以免噪音。 */}
+                        {c.isGroup ? (
+                          <span
+                            data-od-id={"conv-group-badge-" + c.id}
+                            className="shrink-0 rounded-[var(--radius-sm)] border
+                                       border-[var(--color-border-strong)]
+                                       bg-[var(--color-info-soft)] px-1 py-[1px]
+                                       font-mono text-[0.62rem] font-normal
+                                       text-[var(--color-info)]"
+                            title="群聊会话"
+                          >
+                            群
+                          </span>
+                        ) : null}
+                        <span className="truncate">{c.name}</span>
+                      </span>
                       <span className="shrink-0 font-mono text-[0.68rem] font-normal text-[var(--color-text-muted)]">
                         {c.msgs && c.msgs.length ? c.msgs[c.msgs.length - 1].mt : ""}
                       </span>
@@ -962,6 +1010,29 @@ export default function MessagesPage(props: PageProps) {
                         sys={sys}
                         account={activeAcct}
                         onOpenImage={setViewer}
+                        onTranscribe={(mid) => {
+                          // 2026-09-17（E6）：单条语音转写（用户显式触发）。
+                          // 识别在账号登录态（BCC 页面上下文）里做，属外呼 —— 故绝不自动跑。
+                          if (!activeAcct || !mid || transcribeOne === mid) return;
+                          setTranscribeOne(mid);
+                          push("正在转写该条语音…", 6000);
+                          a.transcribeVoice(activeAcct, conv.conv_id, 1, mid)
+                            .then((r) => {
+                              if (r && r.ok) {
+                                if (r.succeeded) push("转写完成", 4000);
+                                else if (r.reason === "no-pending")
+                                  push("该条无需转写（可能已转写或缺要素）", 6000);
+                                else push(`未转写：${r.reason || "未知原因"}`, 7000);
+                                qc.invalidateQueries().catch(() => {});
+                              } else {
+                                push(`转写失败：${(r && r.error) || "未知错误"}`, 8000);
+                              }
+                            })
+                            .catch(() => push("转写请求异常", 8000))
+                            .finally(() => setTranscribeOne(""));
+                        }}
+                        transcribing={!!transcribeOne && transcribeOne ===
+                          (m.id.startsWith("mid_") ? m.id.slice(4) : m.id)}
                         onJumpRef={(refId, refText) => {
                           // 2026-09-17：引用块点击 → 定位被引用消息（同会话内）。
                           // 有 ref_msg_id 走精确匹配；缺失时退化为「同文本最近一条」。

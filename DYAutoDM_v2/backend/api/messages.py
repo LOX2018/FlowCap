@@ -314,7 +314,8 @@ async def list_conversations(account: str):
             #    仅按 last_ts 排序不稳定（依赖内部扫描顺序），会让前端 5s
             #    轮询拿到的顺序每次都变（会话「乱跳」+ 选中态错位）。
             # 注：统计消息数时排除 50001 回执（不落库后已无，但历史库可能有）。
-            "SELECT c.conv_id,c.peer_id,c.peer_name,c.short_id,c.last_ts,c.unread,c.avatar "
+            "SELECT c.conv_id,c.peer_id,c.peer_name,c.short_id,c.last_ts,c.unread,c.avatar,"
+            "       c.conv_type "
             "FROM dm_conversations c "
             "LEFT JOIN (SELECT conv_id, COUNT(*) n FROM dm_messages "
             "           WHERE account=? AND msg_type <> '50001' GROUP BY conv_id) m "
@@ -344,6 +345,11 @@ async def list_conversations(account: str):
             peer_id = r["peer_id"]
             peer_name = r["peer_name"]
             name = peer_name or nickname_by_peer.get(str(peer_id)) or peer_id or cid or "会话"
+            # 2026-09-17：会话类型（1=单聊 2=群聊；DB 由 capture 写入，上游同口径）。
+            # 存量行可能为 NULL/0 → 按 conv_id 是否纯数字回退判定（群聊 conv_id 为数字串）。
+            ct = r["conv_type"] if "conv_type" in r.keys() else None
+            if not ct:
+                ct = 2 if str(cid).isdigit() else 1
             convs.append({
                 "conv_id": cid,
                 "name": name,
@@ -351,6 +357,8 @@ async def list_conversations(account: str):
                 "peer_name": peer_name,
                 "unread": r["unread"] or 0,
                 "avatar": r["avatar"] or "",
+                "conv_type": int(ct),
+                "is_group": int(ct) == 2,
                 "messages": [],
             })
         unread_total = sum((c.get("unread") or 0) for c in convs)
@@ -424,8 +432,11 @@ async def get_conversation(account: str, conv_id: str):
             (account, str(conv_id)),
         ).fetchall()
         out_messages = []
-        for m in msgs:
+        for seq_i, m in enumerate(msgs, start=1):
             msg_id = m["msg_id"]
+            # 2026-09-17（E1/E2）：下发消息序号（与 `/render/png` 的 seq 同口径
+            # —— 同过滤 + 同排序）。前端据此做**逐条/选区**渲染，零错位。
+            _seq = seq_i
             extra_raw = m["extra"] or "{}"
             image_url = None
             try:
@@ -469,6 +480,7 @@ async def get_conversation(account: str, conv_id: str):
                 }
             out_messages.append({
                 "role": m["role"],
+                "seq": _seq,
                 "text": m["text"],
                 "msg_type": m["msg_type"],
                 "dir": "out" if m["role"] == "me" else "in",
@@ -481,6 +493,7 @@ async def get_conversation(account: str, conv_id: str):
                 "source": ex.get("source") or "ws",
                 "reply": _reply,
                 "transcription": str(_trans) if _trans else None,
+
                 "recalled": _recalled,
                 # 2026-09-17：视频要素（tkey/skey/时长/封面）；None = 非视频消息
                 "video": _video,
@@ -1120,6 +1133,8 @@ async def voice_transcribe(body: dict):
     """
     account = str(body.get("account") or "").strip()
     conv_id = str(body.get("conv_id") or "").strip()
+    # 2026-09-17（E6）：单条转写 —— 语音气泡上的「转写」按钮精确到条
+    msg_id = str(body.get("msg_id") or "").strip()
     if not account:
         raise HTTPException(400, "account 必填")
     try:
@@ -1127,6 +1142,8 @@ async def voice_transcribe(body: dict):
     except Exception:
         limit = 30
     limit = max(1, min(limit, 60))
+    if msg_id:
+        limit = 1          # 单条模式：只可能命中一条
 
     # 取该账号 BCC 地址（含 ensure_bcc 拉起；与 /wp_send 同一寻址方式）
     try:
@@ -1147,7 +1164,7 @@ async def voice_transcribe(body: dict):
     def _run():
         from services.voice_transcribe import transcribe_pending
         return transcribe_pending(account, conv_id=conv_id,
-                                  exec_js=_exec_js, limit=limit)
+                                  exec_js=_exec_js, limit=limit, msg_id=msg_id)
 
     try:
         res = await asyncio.to_thread(_run)

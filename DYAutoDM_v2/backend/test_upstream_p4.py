@@ -463,8 +463,9 @@ def _mkdb(path=":memory:"):
     c.executescript("""
         CREATE TABLE dm_conversations(
             account TEXT, conv_id TEXT, peer_id TEXT, peer_name TEXT,
-            last_ts REAL DEFAULT 0, unread INTEGER DEFAULT 0,
-            conv_type INTEGER DEFAULT 1, UNIQUE(account, conv_id));
+            short_id TEXT DEFAULT '', last_ts REAL DEFAULT 0, unread INTEGER DEFAULT 0,
+            avatar TEXT DEFAULT '', conv_type INTEGER DEFAULT 1,
+            UNIQUE(account, conv_id));
         CREATE TABLE dm_messages(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account TEXT, conv_id TEXT, role TEXT, text TEXT,
@@ -674,3 +675,46 @@ class TestVideoResolveChain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestConversationSeq(unittest.TestCase):
+    """2026-09-17（E1/E2）：会话详情 `get_conversation` 下发消息 seq。
+
+    契约：seq 连续从 1 起，与 `/render/png` 的 fetch_range **过滤+排序口径一致**，
+    前端据此做**逐条/选区**渲染零错位。
+    """
+    def setUp(self):
+        self.conn = _mkdb()
+        sys.modules.setdefault("database", __import__("database"))
+        self._orig = sys.modules["database"].get_db
+        sys.modules["database"].get_db = lambda: self.conn
+
+    def tearDown(self):
+        sys.modules["database"].get_db = self._orig
+        del sys.modules["database"]
+
+    def test_seq_continuous_from_1(self):
+        from api.messages import get_conversation
+        import asyncio
+        self.conn.execute(
+            "INSERT INTO dm_conversations(account,conv_id,peer_id,peer_name,conv_type)"
+            " VALUES(?,?,?,?,?)", (_ACCT, _CONV, "200", "李四", 1))
+        for i, row in enumerate([
+            (_ACCT, _CONV, "me",    "你好吗",       "text",      "{}",           1700000001.0, "a"),
+            (_ACCT, _CONV, "them",  "还好呢",       "text",      "{}",           1700000002.0, "b"),
+            (_ACCT, _CONV, "me",    "[分享视频] c", "text",      "{}",           1700000003.0, "c"),
+            # 被过滤的脏数据：不应出现在 seq
+            (_ACCT, _CONV, "them",  "[分享视频]",   "text",      "{}",           1700000004.0, "d"),
+            (_ACCT, _CONV, "them",  "",             "50001",     "{}",           1700000005.0, "e"),
+            (_ACCT, _CONV, "them",  "[未知媒体]",  "image",     "{}",           1700000006.0, "f"),
+        ], start=0):
+            self.conn.execute(
+                "INSERT INTO dm_messages(account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                " VALUES(?,?,?,?,?,?,?,?)", row)
+        self.conn.commit()
+        res = asyncio.run(get_conversation(_ACCT, _CONV))
+        msgs = (res.get("conversation") or {}).get("messages") if isinstance(res, dict) else []
+        # 3 条有效（过滤掉 [分享视频]/50001/[未知媒体]）
+        self.assertEqual(len(msgs), 3, f"过滤后条数不对: {msgs}")
+        seqs = [m.get("seq") for m in msgs]
+        self.assertEqual(seqs, [1, 2, 3], f"seq 序列异常: {seqs}")
