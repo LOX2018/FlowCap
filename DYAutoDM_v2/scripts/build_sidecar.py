@@ -228,6 +228,16 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
                    "services.uid_probe", "uid_probe",
                    "services.ttl_cache", "ttl_cache"):
             cmd += ["--hidden-import", _m]
+    # 2026-09-18 v0.43.87：账号环境基线（services/env_baseline.py）。
+    # browser_daemon 在 run_keepalive / scan_login 内**函数体延迟导入**
+    # （`from services.env_baseline import ...`）——函数体动态 import
+    # 静态分析扫不到（与 ws_link / conv_identity 完全同类的坑），
+    # 缺失则打包后环境基线比对静默失效（try/except 吞掉，无报错）。
+    # 它内部引用 services.kv_store（顶层 import，静态分析可追，但一并声明保险）。
+    if entry in ("daemon/browser_daemon.py", "main.py"):
+        for _m in ("services.env_baseline", "env_baseline",
+                   "services.kv_store", "kv_store"):
+            cmd += ["--hidden-import", _m]
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))

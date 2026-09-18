@@ -273,6 +273,7 @@ ERRCODES = {
     "BCC-050": {"meaning": "[bcc] 单例守卫命中：该账号已有 BCC 在运行，拒绝启动第二个", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-051": {"meaning": "[bcc] 致命态熔断：凭证不可用（env_path 为空），不再自动重启", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-052": {"meaning": "[bcc] context 失活自愈：已重建容器（按最小化启动，窗口不再快闪）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-063": {"meaning": "[bcc] 出口环境漂移：当前出口 IP 与登录基线不一致（登录环境与运行环境不一致，先重扫建立新基线）", "file": "daemon/browser_daemon.py", "line": 0},
     "SEND-037": {"meaning": "[调度] dm_dispatch 接入失败，已放弃发送（不再回退直发绕过风控闸门）", "file": "core/dispatch.py", "line": 0},
     "CAP-001": {"meaning": "refresh][] browser_daemon 未拉起，昵称关联可能失效", "file": "api/messages.py", "line": 735},
     "CAP-002": {"meaning": "refresh][] 更新会话失败:", "file": "api/messages.py", "line": 749},
@@ -479,6 +480,23 @@ CODE_DESIGN = {
                  "_apply_to_task_kv（写 kv 供下次启动）→ adm.apply_runtime_config",
         "root": "任务未启动 / 已停止 / 启动失败回退 IDLE —— 属调用时序问题，不是配置错",
         "verify": "curl :8000/api/tasks/current 看 engine_state；日志 grep '热更被拒'。",
+    },
+    "BCC-063": {
+        "design": "同一账号的出口环境（出口 IP+代理模式）必须与登录时恒等"
+                  "（知识库 9.30 铁律）。env_baseline 在登录成功时记录基线，"
+                  "run_keepalive 低频比对（30min 节流），环境跳变在被强制"
+                  "下线之前暴露，而不是事后从弹窗反推。",
+        "contract": "比对走 probe_egress_ip_direct（零浏览器副作用）；"
+                    "探测失败/无基线/节流窗口内 = 未比对，绝不告警；"
+                    "只告警不重启（重启是更强风控信号）。",
+        "deviation": "当前出口 IP 与基线 IP 不一致",
+        "chain": "run_keepalive → env_baseline.compare_baseline → "
+                 "probe_egress_ip_direct → 与基线比对",
+        "root": "出口环境与登录时分叉（系统代理开关/换节点/配置改动未重扫）。"
+                "注意：若刚改过代理配置，基线应已被 save_proxy 清除，不应误报。",
+        "verify": "curl 该账号 proxy-test 看当前出口；读 kv_store "
+                  "env_baseline_<账号> 看基线；两条不一致即坐实。"
+                  "处置=重扫或全链路同改环境。",
     },
     "ENG-014": {
         "design": "引擎 RUNNING 时 dispatch（DispatchCenter）必须已构造完成，"

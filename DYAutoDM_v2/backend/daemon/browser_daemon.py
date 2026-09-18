@@ -1711,6 +1711,18 @@ class BrowserContainer:
                                 f"—— 判定为仍需人工扫码，不再视为成功")
                     except Exception as e:
                         logger.warning(f"[BCC-036] " + f"[bcc] 刷新后凭证校验异常，判为未成功: {e}")
+
+                # 2026-09-18 环境基线（补知识库 02 §七缺口）：登录成功时刻
+                # = 基线确立时刻。记录出口 IP+代理模式，供运行期低频比对
+                # （run_keepalive → env_baseline.compare_baseline），环境跳变
+                # 在被强制下线之前暴露。探测零浏览器副作用；失败静默不写。
+                try:
+                    from services.env_baseline import record_baseline as _rec_base
+                    _b = _rec_base(self.account, source="scan_login")
+                    if _b:
+                        logger.info(f"[bcc] 环境基线已记录: ip={_b['ip']} mode={_b['mode']} country={_b['country']}")
+                except Exception as _e:
+                    logger.debug(f"[bcc] 环境基线记录失败（不影响登录）: {_e}")
                 # 重启容器 context
                 await self._launch()
                 return {"ok": ok, "uid": _uid}
@@ -2047,6 +2059,22 @@ class BrowserContainer:
                 logger.debug(
                     f"[bcc] {phase}({max(remain,0)}s)，跳过探活（防误杀新 context）")
                 continue
+            # 2026-09-18 环境基线比对（补知识库 02 §七缺口）：低频校验出口环境
+            # 与登录基线是否一致（模块内 30min 节流；探测失败/无基线静默，
+            # 绝不误报）。漂移只告警 BCC-063，不重启浏览器（重启本身是更强风控信号）。
+            try:
+                from services.env_baseline import compare_baseline as _env_cmp
+                _ec = _env_cmp(self.account)
+                if _ec.get("drift"):
+                    logger.error(f"[BCC-063] " + f"[bcc] 出口环境漂移！{_ec.get('reason')}。"
+                        f"登录环境与运行环境不一致（知识库 9.30 铁律），若出现「安全风险"
+                        f"阻止访问」/ 强制下线 / INVALID_REQUEST，先重扫建立新基线，"
+                        f"不要先改发送/风控代码。")
+                elif _ec.get("checked"):
+                    logger.debug(f"[bcc] 环境基线比对一致: ip={_ec.get('current_ip')}")
+            except Exception as _e:
+                logger.debug(f"[bcc] 环境基线比对异常（不影响保活）: {_e}")
+
             try:
                 uid = self._load_uid_from_env()
                 prev_uid = getattr(self, "_last_uid", None)

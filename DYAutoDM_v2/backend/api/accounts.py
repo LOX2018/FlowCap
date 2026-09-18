@@ -902,11 +902,25 @@ async def save_proxy(name: str, req: Request) -> ScanLoginResponse:
         # 不走代理：显式写 MODE=direct（走本机 IP，豁免代理软件端口），清节点
         from services.member_ctx import write_env_file
         write_env_file(env_path, {"DY_PROXY_MODE": "direct", "DY_PROXY": None}, merge=True)
+        # 2026-09-18：代理配置变更 = 环境定义变更，清除旧基线（下次扫码重建），
+        # 防运行期比对误报漂移。
+        try:
+            from services.env_baseline import clear_baseline
+            clear_baseline(name)
+        except Exception:
+            pass
         return ScanLoginResponse(ok=True, msg="已设为「不走代理」（走本机 IP，豁免代理端口）")
     if ptype == "system":
         # 走系统代理：显式写 MODE=system，清节点（由 vbrowser 读系统代理落地）
         from services.member_ctx import write_env_file
         write_env_file(env_path, {"DY_PROXY_MODE": "system", "DY_PROXY": None}, merge=True)
+        # 2026-09-18：代理配置变更 = 环境定义变更，清除旧基线（下次扫码重建），
+        # 防运行期比对误报漂移。
+        try:
+            from services.env_baseline import clear_baseline
+            clear_baseline(name)
+        except Exception:
+            pass
         return ScanLoginResponse(ok=True, msg="已设为「系统代理」（跟随本机系统代理设置）")
     if ptype not in ("socks5", "socks4", "http", "https"):
         return ScanLoginResponse(ok=False, msg=f"不支持的代理类型: {ptype}")
@@ -935,4 +949,11 @@ async def save_proxy(name: str, req: Request) -> ScanLoginResponse:
     except Exception as e:
         return ScanLoginResponse(ok=False, msg=f"写入代理配置失败: {e}")
     from auto_dm.vbrowser import _mask_proxy
+    # 2026-09-18：代理配置变更 = 环境定义变更，清除旧基线（下次扫码重建），
+    # 防运行期比对误报漂移。
+    try:
+        from services.env_baseline import clear_baseline
+        clear_baseline(name)
+    except Exception:
+        pass
     return ScanLoginResponse(ok=True, msg=f"代理配置已保存 · {name}（{_mask_proxy(url)}）")
