@@ -1,0 +1,91 @@
+fix(audit): OCR 增量审查 v0.43.71-88 全量修复 —— 3 处 JS 契约 + 风控限速 + 视频点播（v0.43.89）
+
+[设计理念回归]
+原设计假设:
+  1. `exec_js(js, [a, b])` 的项目约定是「**数组传参 + 函数内解构**」
+     （正解范式 `services/voice_transcribe.py` 的 `RECOGNIZE_JS`），
+     三个新增页面脚本却写成对象解构形参 `async ({path, x}) =>`。
+  2. `services/nickname_fallback` 的设计契约是「三重约束（间隔/单次/每日）
+     把主动查询的风控成本压到最低」——**失败也应受约束**。
+  3. `services/env_baseline` 契约第 1 条：「基线**只在**凭证真判据通过
+     （ok=True）时记录，**绝不**在凭证存疑时写入（否则把失效环境当基线）」。
+  4. 后端把 `msg_type 8` 映射成前端 `type="video"`，并保留
+     `[分享视频] 视频ID x` 正文说明；点播由 `MsgBubble` 的 video 分支承担。
+
+本修复回归的设计契约:
+  · 跨语言（Python→JS）参数形状必须是**单一约定**（数组），否则整条链路静默失效；
+  · 风控约束必须在**所有出口**（含失败路径）生效，否则等于没有约束；
+  · DbC 的前置条件必须由**调用点**强制，而非只写在 docstring 里；
+  · 「流程跑完」≠「结果正确」——无产物即失败，绝不返回 ok=True。
+
+[标准-契约遵循]
+  · 群聊判定（`conv_id` 纯数字 → 群聊）原先在 3 处独立重写，现收敛到
+    `services/conv_identity.conv_type()`（该模块正是为消灭此类重复而建，
+    见其 docstring「会话 ID 与账号 UID 的解析，全项目只允许一处实现」）。
+    归一化后调用方仅剩「取用」，无第二份判据。
+  · 错误码语义未漂移：新增的 platform 一致性告警用 `BCC-068`
+    （「浏览器环境与项目档案不一致」），**未误用** `BCC-066`（其语义是
+    「原生函数被篡改」）—— 这是本次自审中当场发现并修正的一处语义漂移。
+
+[问题分析链路]
+源头:
+  A. `*_JS` 形参为对象解构，调用方传数组 → Playwright 把 list 当单个 arg →
+     解构得 undefined → `tkeys.map(...)` 抛 TypeError。
+  B. `run_fallback` 的两个失败 return 未调 `_mark_run` → 冷静期/日额永不累计。
+  C. `browser_daemon` 的 `record_baseline` 调用无 `ok` 守卫。
+  D. `im_video.download_and_decrypt` 磁盘写失败仍返回 `{"ok": True, "path": ""}`。
+  E. `MsgBubble` 的 `shareM` 正则含「视频」且早退，抢在 video 分支之前。
+  F. `RawMessage` 未声明 `video`，messages-page 映射丢弃该字段。
+  G. 前端 `gateText` 只认 `interval`/`daily-limit`，与后端实际产出的
+     `disabled`/`daily-cap`/`cooldown(Ns)`/`ok` 完全不匹配。
+  H. `NicknameFallbackSection` 硬编码 `limit: 10`，覆盖用户配置的单次上限。
+  I. `database.py` 回填 SQL：缺括号（AND 优先于 OR）**且** `conv_type IS NULL`
+     独立成真 → 把单聊形态的行也写成群聊。
+
+传播:
+  A → 视频取址 / 昵称兜底 / 合并转发补抓 三条链路**静默恒失败**（返回空 dict，
+      上层当「换取失败」，用户只看到「无地址/无正文」）。
+  B → 持续 4xx/超时时可被死循环重试，直接击穿本模块唯一的风控意图。
+  C → 存疑环境被当基线 → 后续真实漂移不再告警（BCC-063 假阴性）。
+  D → 前端收到「成功」但无 url，无从分辨。
+  E/F → E3 视频点播与封面/时长**永不显示**（功能接线被短路）。
+  H/I → 用户核对 A 入库 B（同族）与群聊/单聊误判。
+
+终端:
+  用户可见症状 = 「视频点不播」「封面时长空白」「合并转发无正文」
+  「昵称兜底没反应」「配置了上限被忽略」——全部是**运行期**表现，
+  静态读代码与 Python 单测**都测不出**（单测只 stub `exec_js`，从不真跑 JS）。
+
+开源组件分析: 不涉及（open-code-review 仅作审查工具，未改其源码）。审查引擎
+  v1.12.5 (189be5b02) 的默认 `--timeout 15` 对本仓（单文件 1600~2700 行）不足，
+  会整组硬超时并连带触发子进程 `0xc0000142`（DLL 初始化失败，是次生现象），
+  故本轮改用 `--timeout 60 --concurrency 4`：50/50 完成、684 次工具调用零失败。
+
+[实机验证]
+- 命令: `python scripts/diag/verify_audit_fixes_v0.43.89.py`
+- 环境: Windows 11 / Python314（项目打包解释器）/ 零常驻进程、零浏览器
+- 结果: **通过 40 / 失败 0（exit=0）**。关键硬证据：
+  · A1 三条 `*_JS` 用 node **真跑** JS（非 stub）：
+    修复前 `async ({path,tkeys})` + 数组参 → `TypeError: …reading 'map'`；
+    修复后 → `{"status":200}`。三条全部 OK。
+  · A2 失败路径 → `_last_run_at` 已写入、`_day_count=1`、
+    立即再调返回 `cooldown(599s)`（修复前可无限重试）。
+  · A14 用真实 sqlite 跑回填 SQL：单聊形态 `0:1:11:22` / `0:1:55:66` 保持 1，
+    纯数字判为 2 —— 与 `conv_identity.conv_type()` 判据逐条一致。
+    （该断言在首次运行时**抓出我的第一版修复仍是错的**，已重做为按形态分类。）
+- 全量回归: `python -m unittest discover`（项目解释器）→ 271 tests，
+  `failures=1, errors=1`，与 `git stash` 到 HEAD 的**基线完全一致**
+  （`test_member_smoke` Fernet 签名、`test_ai_agent` 断言 —— 均为既有失败，
+  已用 `git show HEAD:<file>` 证明断言在 HEAD 上就不成立）。
+  前端 `npx tsc -b` → 0 错误。
+- 无新增回归: 上述基线对照为准；另修掉本轮引入的 3 个失败
+  （`api/messages.py` 缩进、回调断言恒真、p3 撤回断言方向错）。
+- 版本: 四处版本号同步 0.43.88 → **0.43.89**（package.json /
+  frontend/package.json / tauri.conf.json / Cargo.toml + `_build_version.py`）。
+
+[知识归档]
+- 标准更新: `open-code-review-audit` skill 增补「review 默认超时对本仓不适用」
+  与「报告 0 字节 = 没跑成」判据；新增 2 类误报模式与「假成功」专项。
+- 案例归档: `工作记忆/cases/2026-09-18_OCR增量审查_v0.43.71-88重审.md`
+  分诊账目: `artifacts/audit/triage_v0.43.71-88.md`
+  原始报告: `artifacts/audit/ocr_report_v0.43.71-88.json`

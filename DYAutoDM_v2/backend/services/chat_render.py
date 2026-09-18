@@ -73,9 +73,17 @@ def fetch_range(account: str, conv_id: str, start_seq: int | None = None,
     （排序口径与聊天页一致：created_at_us 优先，缺失按 ts×1e6 量级对齐）。
     返回 `{conv, messages[], seq_range}`；`messages[i]` 带 `seq` 字段。
     """
-    from database import get_db
+    # 2026-09-18 审查修复（LOW→实修）：`db_path` 参数此前被线程化到本函数却**从不使用**，
+    # 调用方传具体库路径时被静默忽略（误导）。现真正生效：显式给出路径则用独立连接，
+    # 否则沿既有单例（保持默认行为逐字不变）。
+    if db_path:
+        import sqlite3 as _sq3
+        conn = _sq3.connect(str(db_path))
+        conn.row_factory = _sq3.Row
+    else:
+        from database import get_db
+        conn = get_db()
     limit = max(1, min(int(limit or MAX_SPAN), MAX_SPAN))
-    conn = get_db()
     row = conn.execute(
         "SELECT conv_id, peer_id, peer_name FROM dm_conversations "
         "WHERE account=? AND conv_id=?", (account, str(conv_id))).fetchone()
@@ -144,6 +152,15 @@ def by_date(account: str, conv_id: str, date: str, tz_hours: int = 8,
     start = d0.timestamp() - off
     end = start + 86400
     r = fetch_range(account, conv_id, db_path=db_path)
+    # 2026-09-18 审查修复（MEDIUM）：`fetch_range` 默认 `limit=MAX_SPAN(2000)`，
+    # 会把**前 2000 条**切出来再按时间过滤 → 消息数 >2000 的会话「按日期渲染」
+    # **静默缺数据**（缺哪一天取决于 seq 顺序，用户无从察觉）。
+    # 该场景在当前架构下无正确解（seq 必须基于全量计算），故按 DbC：宁显式失败。
+    total = int((r.get("seq_range") or {}).get("total") or 0)
+    if total > MAX_SPAN:
+        raise ValueError(
+            f"会话消息数 {total} 超过单次渲染上限 {MAX_SPAN}，按日期渲染会缺失数据；"
+            f"请改用选区/区间渲染（start_seq/end_seq）")
     return {**r, "date": date,
             "messages": [m for m in r["messages"] if start <= m["ts"] < end]}
 

@@ -245,9 +245,22 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         pass  # 列已存在
     try:
         # 旧库存量数据回填：纯数字 conv_id → 群聊（与上游判定口径一致）
+        # 2026-09-18 审查修复（MEDIUM，两处；第二处是验收脚本抓出来的）：
+        # ① 原串缺括号 → AND 优先于 OR，实际语义是
+        #    `(conv_type IS NULL) OR (conv_type=1 AND conv_id 纯数字)`；
+        # ② **① 修好后仍不对**：`conv_type IS NULL` 独立成真，会把**单聊形态**
+        #    （`0:1:a:b`）的行也无条件写成群聊(2)。验收脚本 A14 用真实 sqlite
+        #    跑出该误判（被误改: 0:1:11:22）才发现 —— 「补个括号」这种看似
+        #    安全的修法，若不做形态分类判定照样是错的。
+        # 现按 **conv_id 形态**分类（判据同 `services.conv_identity.conv_type()`）：
+        #    纯数字 → 2（群聊）；其余形态（含 NULL，多为旧库）→ 1（单聊）。
         conn.execute("UPDATE dm_conversations SET conv_type=2 "
-                     "WHERE conv_type IS NULL OR conv_type=1 AND conv_id GLOB '[0-9]*' "
-                     "AND conv_id NOT GLOB '*[^0-9]*'")
+                     "WHERE conv_id GLOB '[0-9]*' "
+                     "  AND conv_id NOT GLOB '*[^0-9]*'")
+        conn.execute("UPDATE dm_conversations SET conv_type=1 "
+                     "WHERE conv_type IS NULL "
+                     "  AND NOT (conv_id GLOB '[0-9]*' "
+                     "           AND conv_id NOT GLOB '*[^0-9]*')")
     except Exception as _e:  # noqa: BLE001
         logger.warning(f"[db] conv_type 回填失败（不影响启动）: {_e}")
     try:

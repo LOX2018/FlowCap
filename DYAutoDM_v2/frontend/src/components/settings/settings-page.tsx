@@ -21,7 +21,9 @@
  */
 import { useState } from "react";
 import {
-  Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users,
+  // 2026-09-18 审查修复（#54）：`MessageSquare` 原先在下方**重复 import**
+  // 同一个模块（lucide-react 被 import 两次）；合并到这一处。
+  Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users, MessageSquare,
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
@@ -31,7 +33,6 @@ import NotifySection from "./NotifySection";
 import TagSection from "./TagSection";
 import AiEngineSection from "./AiEngineSection";
 import NicknameFallbackSection from "./NicknameFallbackSection";
-import { MessageSquare } from "lucide-react";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -114,7 +115,7 @@ export default function SettingsPage(props: PageProps) {
                 {/* 配置域 dm：昵称兜底开关 + 三重上限（唯一可写处） */}
                 <UnifiedConfigSection {...props} onlySections={["dm"]} />
                 {/* 运维卡：状态 / 候选（零外呼）/ 执行一次（显式触发） */}
-                                <NicknameFallbackSection />
+                <NicknameFallbackSection />
               </>
             )}
             {section === "ai" && (

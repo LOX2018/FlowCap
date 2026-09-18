@@ -1057,7 +1057,9 @@ export const api = {
       enabled?: boolean;
       min_interval_sec?: number;
       max_per_run?: number;
-      max_per_day?: number;
+      // 2026-09-18 审查修复：后端 `_cfg()` 的键是 `daily_cap`，
+      // 原字段名 `max_per_day` 在响应里**根本不存在**（类型撒谎）。
+      daily_cap?: number;
     };
     limit_info?: Record<string, unknown>;
     would_allow_now?: boolean;

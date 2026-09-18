@@ -349,7 +349,9 @@ async def list_conversations(account: str):
             # 存量行可能为 NULL/0 → 按 conv_id 是否纯数字回退判定（群聊 conv_id 为数字串）。
             ct = r["conv_type"] if "conv_type" in r.keys() else None
             if not ct:
-                ct = 2 if str(cid).isdigit() else 1
+                # 2026-09-18：收敛到 conv_identity.conv_type（唯一实现，勿再内联重写）
+                from services.conv_identity import conv_type as _conv_type
+                ct = _conv_type(cid)
             convs.append({
                 "conv_id": cid,
                 "name": name,

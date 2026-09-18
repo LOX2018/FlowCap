@@ -184,7 +184,9 @@ def export_chatlab(account: str, conv_id: str, dest_dir: str, *,
     # 2026-09-17（群聊支持）：会话类型照上游 exporter ——
     #   `"type": "group" if row["conv_type"] == 2 else "private"`，
     #   且群聊额外给出 meta.groupId（上游同款字段）。
-    _ct = 2 if str(conv_id).isdigit() else 1
+    # 2026-09-18：收敛到 conv_identity.conv_type（唯一实现，勿再内联重写）
+    from services.conv_identity import conv_type as _conv_type
+    _ct = _conv_type(conv_id)
     try:
         _ct = int(conv["conv_type"] or _ct)
     except Exception:

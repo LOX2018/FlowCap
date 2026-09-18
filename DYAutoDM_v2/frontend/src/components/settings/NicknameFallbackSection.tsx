@@ -23,13 +23,26 @@ import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/api/client";
 import { cn } from "@/lib/utils";
 
-/** 把后端闸门原因翻译成用户能看懂的话（**不隐藏、不改写语义**）。 */
+/** 把后端闸门原因翻译成用户能看懂的话（**不隐藏、不改写语义**）。
+ *
+ * 2026-09-18 审查修复（HIGH）：原实现只认 `interval` / `daily-limit`，而后端
+ * `services/nickname_fallback.rate_limit_check` 实际产出的是
+ * `"disabled"` / `"daily-cap"` / `f"cooldown({left}s)"` / `"ok"` ——
+ * 两个分支**永不命中**，且末尾 `|| enabled` 会把「已开启但正被限速」
+ * 吞成「已开启」，与「用户能分清是没开还是被限速」的要求直接冲突。
+ * 现按后端真实取值翻译，且**未知闸门原样暴露**，绝不因 enabled 而掩盖。
+ */
 function gateText(gate?: string, enabled?: boolean): string {
-  if (gate === "disabled" || enabled === false) return "已关闭（默认）";
-  if (gate === "interval") return "距上次执行未满最小间隔";
-  if (gate === "daily-limit") return "已达当日上限";
-  if (gate === "ok" || enabled) return "已开启";
-  return gate ? `闸门：${gate}` : "状态未知";
+  if (gate === "disabled") return "已关闭（默认）";
+  if (gate === "ok") return "已开启";
+  if (gate === "daily-cap") return "已达当日上限";
+  if (gate && gate.startsWith("cooldown")) {
+    const secs = gate.slice("cooldown(".length, -1);
+    return `距上次执行未满最小间隔（剩余 ${secs}）`;
+  }
+  if (gate) return `闸门：${gate}`;          // 未知取值原样暴露，不吞
+  if (enabled === false) return "已关闭（默认）";
+  return enabled ? "已开启" : "状态未知";
 }
 
 export default function NicknameFallbackSection() {
@@ -63,10 +76,11 @@ export default function NicknameFallbackSection() {
     setErr("");
     setLast("");
     try {
-      const r = await api.nicknameFallbackRun(account.trim(), {
-        dryRun: dry,
-        limit: 10,
-      });
+      // 2026-09-18 审查修复（HIGH）：原先硬编码 `limit: 10`，而后端
+      // `run_fallback` 里 `if limit is not None: cf["max_per_run"] = ...` ——
+      // 任何非空 limit 都会**覆盖用户配置的单次上限**（用户设 3 也照样查 10）。
+      // 故此处省略 limit，让后端读配置值。
+      const r = await api.nicknameFallbackRun(account.trim(), { dryRun: dry });
       if (!r.ok) {
         // 闸门拒绝（关闭态/限速）——原因原样展示，不吞
         setLast(`未执行：${r.reason || "未知原因"}`);
@@ -97,8 +111,10 @@ export default function NicknameFallbackSection() {
               昵称兜底（主动查询 · 有风控成本）
             </div>
             <div className="mt-0.5 text-[0.76rem] leading-relaxed text-[var(--color-text-muted)]">
-              昵称的常规来源是「被动截获」。本功能仅在**库里没有昵称**时做低频兜底，
-              在账号自己的登录态里查询；**绝不覆盖已有昵称，也不会自动执行**。
+              昵称的常规来源是「被动截获」。本功能仅在
+              <strong className="text-[var(--color-text-secondary)]">库里没有昵称</strong>
+              时做低频兜底，在账号自己的登录态里查询；
+              <strong className="text-[var(--color-text-secondary)]">绝不覆盖已有昵称，也不会自动执行</strong>。
             </div>
           </div>
         </div>
@@ -115,7 +131,7 @@ export default function NicknameFallbackSection() {
                 : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]",
             )}
           >
-            {enabled ? "已开启" : "已关闭"}
+            {!status ? "未读取" : enabled ? "已开启" : "已关闭"}
           </span>
           <span className="text-[var(--color-text-secondary)]">
             {status ? gateText(status.gate, enabled) : "（未读取状态）"}

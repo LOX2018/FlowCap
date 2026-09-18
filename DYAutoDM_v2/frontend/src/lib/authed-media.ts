@@ -32,6 +32,11 @@ import { fetchAuthedBlob, isLocalApiUrl, toBackendUrl } from "@/api/client";
 
 /** 进程内缓存：src → objectURL（命中即复用，避免重复 fetch 与重复对象）。 */
 const urlCache = new Map<string, string>();
+/** 负缓存：src → 失败时刻。避免「必然失败」的地址在每次挂载/滚动时重打网络。
+ *  2026-09-18 审查修复（#56）：原实现只缓存成功，401/404 会被无限重试
+ *  （每次都跑一遍 ensureBackendReady + 网络往返）。 */
+const failCache = new Map<string, number>();
+const FAIL_TTL_MS = 30_000;        // 30s：短到不影响「修好后重试」
 /** 进行中的请求：src → Promise（并发去重）。 */
 const inflight = new Map<string, Promise<string | null>>();
 
@@ -39,6 +44,8 @@ const inflight = new Map<string, Promise<string | null>>();
 async function load(src: string): Promise<string | null> {
   const cached = urlCache.get(src);
   if (cached) return cached;
+  const failedAt = failCache.get(src);
+  if (failedAt && Date.now() - failedAt < FAIL_TTL_MS) return null;   // 负缓存命中
   const running = inflight.get(src);
   if (running) return running;
 
@@ -49,7 +56,9 @@ async function load(src: string): Promise<string | null> {
       urlCache.set(src, url);
       return url;
     } catch {
-      // 静默降级：调用方按既有 onError / 占位分支处理，不打断聊天渲染
+      // 静默降级：调用方按既有 onError / 占位分支处理，不打断聊天渲染。
+      // 同时写负缓存（#56）：必然失败的地址（401/404）在 TTL 内不再重打网络。
+      failCache.set(src, Date.now());
       return null;
     } finally {
       inflight.delete(src);
@@ -68,10 +77,20 @@ async function load(src: string): Promise<string | null> {
 export function useAuthedMediaUrl(src?: string): string | null | undefined {
   const local = isLocalApiUrl(src);
   // 外部地址（图床 / data URI）无需任何处理：同步即可用，零闪烁
-  const [state, setState] = useState<string | null | undefined>(() => {
+  const initial = (): string | null | undefined => {
     if (!src) return null;
-    return local ? undefined : src;
-  });
+    return local ? urlCache.get(src) ?? undefined : src;
+  };
+  const [state, setState] = useState<string | null | undefined>(initial);
+  // 2026-09-18 审查修复（#60）：`src` 变化时**同步复位**。
+  // 仅靠 useEffect 复位会晚一帧 —— 那一帧里渲染的是**上一个 src 的 blob URL**，
+  // 表现为「切换消息瞬间闪出上一张图」。React 官方推荐的「渲染期派生状态」写法
+  // （state 记录自己跟着哪个 src 算出来的）可消除该窗口。
+  const [stateFor, setStateFor] = useState<string | undefined>(src);
+  if (stateFor !== src) {
+    setStateFor(src);
+    setState(initial());
+  }
 
   useEffect(() => {
     if (!src) {
@@ -109,6 +128,7 @@ export function clearAuthedMediaCache(): void {
   }
   urlCache.clear();
   inflight.clear();
+  failCache.clear();
 }
 
 /** 缓存统计（供自检 / 调试展示）。 */

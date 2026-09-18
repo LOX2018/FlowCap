@@ -95,7 +95,8 @@ def export_db(dest: str, *, fmt: str = "json", include_secrets: bool = False,
 
     返回 `{ok, path, format, bytes, tables, redacted}`。
     """
-    from database import _db_path as _proj_db_path, get_db
+    # 2026-09-18 审查清理：`get_db` 未在此函数使用（本函数刻意用独立只读连接）
+    from database import _db_path as _proj_db_path
     src = str(db_path or _proj_db_path())
     if not os.path.exists(src):
         raise FileNotFoundError(f"数据库不存在: {src}")

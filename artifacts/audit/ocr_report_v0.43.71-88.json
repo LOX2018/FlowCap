@@ -1,0 +1,1453 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "cd-new",
+    "model": "deepseek-v4.1-flash"
+  },
+  "message": "Review complete: 77 finding(s) across 50 selected item(s).",
+  "summary": {
+    "files_reviewed": 50,
+    "comments": 77,
+    "total_tokens": 17164853,
+    "input_tokens": 16959284,
+    "output_tokens": 205569,
+    "cache_read_tokens": 15694208,
+    "elapsed": "10m18s"
+  },
+  "tool_calls": {
+    "total": 684,
+    "by_tool": {
+      "code_comment": 33,
+      "code_search": 309,
+      "file_find": 8,
+      "file_read": 326,
+      "file_read_diff": 8
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [
+    {
+      "path": "DYAutoDM_v2/backend/services/app_config_schema.py",
+      "content": "待实现的功能：`nickname_fallback_*` 四个配置项声明为 `apply: \"hot\"`，但缺少 `min`/`max` 边界约束。`hint` 里写明了「下限 60 秒」「上限 20」「每日上限」这些取值范围，但 schema 未声明，配置写入时不会做范围校验，用户可写入 `nickname_fallback_min_interval_sec=0` 从而绕过「三重约束」中的间隔限流（风控红线）。建议补上与 hint 一致的 `min`/`max`（参考下方 live 段 `max_target`/`interval` 的写法）。",
+      "suggestion_code": "            \"nickname_fallback_min_interval_sec\": {\n                \"label\": \"兜底最小间隔（秒）\",\n                \"type\": \"int\", \"default\": 600, \"min\": 60, \"max\": 86400, \"env\": None,\n                \"apply\": \"hot\",\n                \"hint\": \"两次兜底调用之间的最小间隔，下限 60 秒；默认 600 秒（10 分钟）\",\n            },\n            \"nickname_fallback_max_per_run\": {\n                \"label\": \"单次最多查询用户数\",\n                \"type\": \"int\", \"default\": 10, \"min\": 1, \"max\": 20, \"env\": None,\n                \"apply\": \"hot\", \"hint\": \"单次调用最多查询的用户数（上限 20，与接口批次一致）\",\n            },\n            \"nickname_fallback_daily_cap\": {\n                \"label\": \"每日最多查询用户数\",\n                \"type\": \"int\", \"default\": 50, \"min\": 1, \"env\": None,\n                \"apply\": \"hot\", \"hint\": \"当日累计查询上限，达到后当日不再查询\",\n            },",
+      "existing_code": "            \"nickname_fallback_min_interval_sec\": {\n                \"label\": \"兜底最小间隔（秒）\",\n                \"type\": \"int\", \"default\": 600, \"env\": None,\n                \"apply\": \"hot\",\n                \"hint\": \"两次兜底调用之间的最小间隔，下限 60 秒；默认 600 秒（10 分钟）\",\n            },\n            \"nickname_fallback_max_per_run\": {\n                \"label\": \"单次最多查询用户数\",\n                \"type\": \"int\", \"default\": 10, \"env\": None,\n                \"apply\": \"hot\", \"hint\": \"单次调用最多查询的用户数（上限 20，与接口批次一致）\",\n            },\n            \"nickname_fallback_daily_cap\": {\n                \"label\": \"每日最多查询用户数\",\n                \"type\": \"int\", \"default\": 50, \"env\": None,\n                \"apply\": \"hot\", \"hint\": \"当日累计查询上限，达到后当日不再查询\",\n            },",
+      "start_line": 76,
+      "end_line": 91,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/database.py",
+      "content": "SQL 运算符优先级问题：`AND` 优先级高于 `OR`，该 WHERE 实际被解析为\n`(conv_type IS NULL) OR (conv_type=1 AND conv_id GLOB '[0-9]*' AND conv_id NOT GLOB '*[^0-9]*')`。\n其后果是**所有 `conv_type IS NULL` 的行（不限 conv_id 形态）都会被无条件改成 2**，与「纯数字 conv_id → 群聊」的判定口径不一致。由于 `ALTER TABLE ... DEFAULT 1` 不会回填已有行为非 NULL，若库中历史上以 `NULL` 存过单聊，会被误标记成群聊。建议加括号收紧分组。",
+      "suggestion_code": "        conn.execute(\"UPDATE dm_conversations SET conv_type=2 \"\n                     \"WHERE (conv_type IS NULL OR conv_type=1) \"\n                     \"AND conv_id GLOB '[0-9]*' \"\n                     \"AND conv_id NOT GLOB '*[^0-9]*'\")",
+      "existing_code": "        conn.execute(\"UPDATE dm_conversations SET conv_type=2 \"\n                     \"WHERE conv_type IS NULL OR conv_type=1 AND conv_id GLOB '[0-9]*' \"\n                     \"AND conv_id NOT GLOB '*[^0-9]*'\")",
+      "start_line": 248,
+      "end_line": 250,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+      "content": "Backfill idempotency check keys only on the *first* present marker (`_newmark`), but `_extra` carries all new keys. If a legacy row already contains `sender_sec_uid` (so `extra NOT LIKE '%sender_sec_uid%'` is false → rowcount 0) yet is still missing `created_at_us`/`reply`/`video`/`is_recalled`, this UPDATE is skipped and the code falls through to the skey-path UPDATE (`%skey%`, also skipped when skey is present) and finally `INSERT OR IGNORE`, which the unique index (`uniq_dmmsg`, msg_id IS NOT NULL) silently drops. The freshly parsed f4/f18/video/recall data is then permanently lost for that row — the opposite of the stated backfill goal. The check should verify that none of the newly produced keys are already present (or merge into the existing extra) rather than testing a single arbitrary marker.\n\nNote also that SQLite `LIKE` treats `_` as a single-char wildcard, so even the intended marker `sender_sec_uid` matches unrelated strings like `senderXsecYuid`.",
+      "existing_code": "                        _newmark = (\"sender_sec_uid\" if m.get(\"sender_sec_uid\")\n                                    else (\"created_at_us\" if m.get(\"created_at_us\")\n                                          else \"reply\"))",
+      "start_line": 1870,
+      "end_line": 1872,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+      "content": "The two capture paths apply inconsistent validation for the f4 ordering key. `_parse_message_created_at_us` (init path) enforces the 1.5e15–2.0e15 µs range and returns None otherwise, but this 301 path coerces `m.get(\"4\")` with a bare `int()` and no range check. A missing-field fallback in `_parse` can yield a sentinel/0 (e.g. `int(False)` → 0), and any out-of-range or mis-mapped value gets stored as `created_at_us` verbatim and used directly as the ORDER BY key (`api/messages.py` CASTs the stored value). This breaks the ordering contract the change explicitly tries to unify (\"与后端 ORDER BY 口径保持一致\") — a row captured via 301 can sort differently than the same message captured from the first packet. Apply the same range/lower-bound guard here (and reject 0) so both paths agree.",
+      "existing_code": "        _order4 = m.get(\"4\")\n        try:\n            _order4 = int(_order4) if _order4 else None\n        except Exception:\n            _order4 = None",
+      "start_line": 942,
+      "end_line": 946,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/app_config_schema.py",
+      "content": "新增的 `nickname_fallback_*` 字段未标注 `risk: True`，与仓库既有约定不一致。该模块（`services/nickname_fallback.py`）的文档明确将其与「禁止主动批量查昵称」风控红线绑定，且 `app_config_schema.py` 中所有风控敏感字段（`send` 段、`DM_*` 等）均标注了 `risk: True`；前端 `unified-config-widgets.tsx` 依据该标志渲染 `is-risk` 醒目样式与告警（`{s.risk \u0026\u0026 ...}`）。缺省后，用户在 UI 上不会看到风控警示。建议为 `nickname_fallback_enabled` 及三个限流字段补上 `\"risk\": True`。",
+      "suggestion_code": "            \"nickname_fallback_enabled\": {\n                \"label\": \"启用昵称兜底查询（默认关闭）\",\n                \"type\": \"bool\", \"default\": False, \"env\": None,\n                \"apply\": \"hot\", \"risk\": True,",
+      "existing_code": "            \"nickname_fallback_enabled\": {\n                \"label\": \"启用昵称兜底查询（默认关闭）\",\n                \"type\": \"bool\", \"default\": False, \"env\": None,\n                \"apply\": \"hot\",",
+      "start_line": 67,
+      "end_line": 70,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+      "content": "`str(e)` on a `ContainerBusy` yields `\"容器被独占操作占用: scan_login\"`, not the holder name. The established contract (global handler `_container_busy_handler`, `browser_gate.py`, docs) is `busy: \"\u003cholder\u003e\"` (e.g. `busy: \"scan_login\"`). Consumers that read `busy` as the holder name will mis-handle this response. Use `e.holder` to preserve the contract.",
+      "suggestion_code": "    except ContainerBusy as e:\n        return {\"ok\": False, \"busy\": e.holder, \"leaks\": [], \"js_view\": {}}",
+      "existing_code": "    except ContainerBusy as e:\n        return {\"ok\": False, \"busy\": str(e), \"leaks\": [], \"js_view\": {}}",
+      "start_line": 2797,
+      "end_line": 2798,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+      "content": "`out` (from `compare_with_profile`) already contains an `ok` key meaning \"no fatal leaks\". Because `{\"ok\": True, **out}` unpacks `out` last, the literal `\"ok\": True` is always overwritten — it reads as if `ok` always reflects request success, which is misleading. Either drop the dead literal (`return {**out}`) or assign the intended value explicitly to make the semantics obvious.",
+      "suggestion_code": "        out = await c.env_audit_snapshot(\n            internal=bool(body.internal) if body else False)\n        return {**out}",
+      "existing_code": "        out = await c.env_audit_snapshot(\n            internal=bool(body.internal) if body else False)\n        return {\"ok\": True, **out}",
+      "start_line": 2794,
+      "end_line": 2796,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/api/messages.py",
+      "content": "The `_download` wrapper drops the `max_bytes` parameter: `fetch_uploaded_bodies` calls `download(url, MAX_RESOURCE_BYTES)` expecting a size cap (its docstring says the callback must enforce streaming byte limits), but this wrapper ignores it and passes `60` as the second positional arg to `_im_video._http_get`, where that argument is `timeout`, not a byte limit. The byte cap ends up relying solely on the generic 200MB `_MAX_VIDEO_BYTES` guard before `decode_resource` rejects anything over 16MB — so a malicious/large resource can be fully buffered in memory before being rejected. Pass the limit through explicitly.",
+      "suggestion_code": "            async def _download(u: str, max_bytes: int) -\u003e bytes:\n                # _http_get only enforces its own global cap; honor the caller's limit here\n                return await asyncio.to_thread(_im_video._http_get_limited, u, 60, max_bytes)",
+      "existing_code": "            async def _download(u: str, max_bytes: int) -\u003e bytes:\n                return await asyncio.to_thread(_im_video._http_get, u, 60)",
+      "start_line": 1358,
+      "end_line": 1359,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/errcode_data.py",
+      "content": "Entries BCC-064 through BCC-069 are added at column 0 while every neighboring entry in the `ERRCODES` dict is indented by 4 spaces. The dict is still syntactically valid, but the inconsistent indentation breaks the readability of this contract table; align them with the surrounding entries.",
+      "suggestion_code": "    \"BCC-064\": {\"meaning\": \"[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）\", \"file\": \"daemon/browser_daemon.py\", \"line\": 0},",
+      "existing_code": "\"BCC-064\": {\"meaning\": \"[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）\", \"file\": \"daemon/browser_daemon.py\", \"line\": 0},",
+      "start_line": 277,
+      "end_line": 277,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+      "content": "The baseline is recorded unconditionally, regardless of the `ok` credential-validation result. `env_baseline.py`'s documented contract is explicit: \"基线只在【凭证真判据通过】时记录（scan_login ok=True ...），绝不在凭证存疑时写入（否则把失效环境当基线）\". When `ok` is False (uid probe failed / inconsistent with history), the current environment may not be the real login environment, so recording it as the baseline would suppress a genuine subsequent drift alarm (BCC-063 false negative). Gate the call on `ok`.",
+      "suggestion_code": "                    if ok:\n                        from services.env_baseline import record_baseline as _rec_base\n                        _b = _rec_base(self.account, source=\"scan_login\")\n                        if _b:\n                            logger.info(f\"[bcc] 环境基线已记录: ip={_b['ip']} mode={_b['mode']} country={_b['country']}\")",
+      "existing_code": "                    from services.env_baseline import record_baseline as _rec_base\n                    _b = _rec_base(self.account, source=\"scan_login\")",
+      "start_line": 1741,
+      "end_line": 1742,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+      "content": "These new branches (watch-together 9000, `_share_card_text`) are only reachable from the 301 path, which calls `_extract_media_text` directly. In the init path (`parse_init_protobuf` → `_parse_message_text`), the injected extractor is invoked **only** in the long-string branch, which is gated by `if '\"resource_url\"' not in s and '\"inline_pic\"' not in s: continue`. Share cards (商品/文章/评论/图文/名片) and the 9000 invite card typically carry neither `resource_url` nor `inline_pic` (the 9000 card uses `cover_url`), so `_extract_media_text` is never called for them on the init path and the new logic silently has no effect there. The new unit tests call `_extract_media_text` directly, so they don't exercise this gap. Consider broadening the gate in `im_protobuf._parse_message_text` (e.g. also proceed on `aweType`/`push_detail`/`comment`/dynamic-layout keys), or run the share/watch-together extraction before the `resource_url`/`inline_pic` guard.",
+      "existing_code": "    try:\n        if str(obj.get(\"aweType\") or \"\") == \"9000\":",
+      "start_line": 320,
+      "end_line": 321,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+      "content": "`_need_patch` omits several keys that `_extra` actually carries: `visible`, `voice_skey`, and `video_url`/`video_duration`/`video_poster`/`video_vid`. A legacy row that only gains one of these (e.g. a video message with `video_url` but no `video_tkey`, or a message with `visible=0` only) sets `_need_patch=False`, skipping the dedicated patch UPDATE; it then falls through to the `if _extra != \"{}\"` block whose guard is `extra NOT LIKE '%skey%'`, so an old row that already contains `skey` matches 0 rows and is never updated. Align the backfill predicate with the keys actually written into `_extra`.",
+      "existing_code": "                    _need_patch = bool(\n                        m.get(\"sender_sec_uid\") or m.get(\"created_at_us\")\n                        or (isinstance(m.get(\"reply\"), dict) and m[\"reply\"])\n                        or m.get(\"voice_uri\") or m.get(\"is_recalled\")\n                        or m.get(\"video_tkey\")\n                    )",
+      "start_line": 1860,
+      "end_line": 1865,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/cenc_video.py",
+      "content": "JS signature / call-site arg mismatch. `RESOLVE_URLS_JS` is written as `async ({path, tkeys}) =\u003e {…}` (object destructuring), but `resolve_play_urls` invokes it as `exec_js(RESOLVE_URLS_JS, [BATCH_PLAY_INFO_PATH, keys])` — a 2-element list. Playwright's `page.evaluate(js, arg)` passes that list as the single argument, and destructuring `{path, tkeys}` from an array yields `undefined` for both fields, so `tkeys.map(...)` throws and the resolver always returns `{err: …}` → tkey→URL exchange can never succeed. The unit test only stubs `exec_js` (never runs the JS) so it does not catch this. Align the JS with the array convention used elsewhere in this codebase (e.g. `RECOGNIZE_JS`'s `async (arg) =\u003e { const [a, b] = arg; … }`), or pass an object `{\"path\": …, \"tkeys\": …}`.",
+      "existing_code": "RESOLVE_URLS_JS = \"\"\"async ({path, tkeys}) =\u003e {",
+      "start_line": 274,
+      "end_line": 274,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/im_video.py",
+      "content": "`_HTTP_CACHE` is an unbounded module-level dict: entries are keyed by URL and only checked against `_HTTP_TTL`, never evicted (expired entries stay resident forever). With `_MAX_VIDEO_BYTES = 200MB`, a long-running server accumulates entire video bodies in RAM without limit as distinct URLs are fetched. Consider an LRU/size-capped cache or deleting the entry once it is written to disk.",
+      "suggestion_code": "    _HTTP_CACHE[url] = (now, data)\n    # bound the cache: drop expired entries, then trim oldest if still too large\n    if len(_HTTP_CACHE) \u003e _HTTP_CACHE_MAX_ENTRIES:\n        for k in [k for k, (t, _d) in _HTTP_CACHE.items() if now - t \u003e= _HTTP_TTL]:\n            _HTTP_CACHE.pop(k, None)\n    return data",
+      "existing_code": "    _HTTP_CACHE[url] = (now, data)\n    return data",
+      "start_line": 109,
+      "end_line": 110,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/chat_render.py",
+      "content": "`by_date` calls `fetch_range(...)` with no seq bounds, so it inherits the default `limit=MAX_SPAN` (2000) and `fetch_range` slices to the **first 2000 messages by seq** before `by_date` filters by timestamp. For conversations with more than 2000 messages, any date whose messages fall beyond seq 2000 is silently dropped (possibly returning an empty list), i.e. the open `by-date` view can be silently incomplete. Push the date window into the SQL query (or raise the limit) rather than post-filtering a truncated set.",
+      "existing_code": "    r = fetch_range(account, conv_id, db_path=db_path)\n    return {**r, \"date\": date,\n            \"messages\": [m for m in r[\"messages\"] if start \u003c= m[\"ts\"] \u003c end]}",
+      "start_line": 146,
+      "end_line": 148,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/cenc_video.py",
+      "content": "`_iv_size_for`'s first parameter `senc_content` is never referenced in the body (only `saiz_content` is used), yet callers pass `senc[4] if senc else b\"\"`. Either use it as an additional IV-size hint or drop the parameter to avoid a misleading signature.",
+      "existing_code": "def _iv_size_for(senc_content: bytes, saiz_content: bytes | None) -\u003e int:",
+      "start_line": 363,
+      "end_line": 363,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/merged_forward.py",
+      "content": "The sender fallback is broken by operator precedence. The conditional expression (`X if isinstance(...) else Y`) binds to the whole preceding `or` chain, so when `sender` is NOT a dict the true branch collapses to `o.get(\"sender_name\") or \"\"`, silently dropping the `o.get(\"nick_name\")` fallback. Messages whose only name lives in `nick_name` (and have no `sender` dict) render as `未知`. Extract the lookup into separate statements with parenthesized conditionals.",
+      "suggestion_code": "        _snd = o.get(\"sender\") if isinstance(o.get(\"sender\"), dict) else {}\n        who = str(o.get(\"sender_name\") or o.get(\"nick_name\")\n                  or _snd.get(\"nickname\") or \"\") or \"未知\"",
+      "existing_code": "        who = str(o.get(\"sender_name\") or o.get(\"nick_name\")\n                  or (o.get(\"sender\") or {}).get(\"nickname\") if isinstance(\n                      o.get(\"sender\"), dict) else o.get(\"sender_name\") or \"\") or \"未知\"",
+      "start_line": 356,
+      "end_line": 358,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/chatlab_export.py",
+      "content": "Both arms of this ternary return `_TYPE_SHARE`, so the `t.startswith(\"[分享视频]\")` check is dead code and 分享视频 is not distinguished from other shares as intended. Either implement the distinct type (e.g. a video/FORWARD-ish type) or drop the conditional and simply `return _TYPE_SHARE`.",
+      "suggestion_code": "        return _TYPE_SHARE",
+      "existing_code": "        return _TYPE_SHARE if not t.startswith(\"[分享视频]\") else _TYPE_SHARE",
+      "start_line": 83,
+      "end_line": 83,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/chatlab_export.py",
+      "content": "The docstring claims this pairing is 「保守，宁缺勿错」, but `len(q) \u003c= 24` admits essentially any short `them` utterance (\"好的\", \"收到\", \"嗯嗯\") as a question and pairs it with the next `me` message. `export_to_kb` writes these straight into `reply_kb`, where a match triggers an automatic reply — so low-quality entries can fire wrong auto-responses. Tighten the heuristic (require `_ASK_RE` match, or an explicit interrogative/short-question allowlist) rather than a raw length cutoff.",
+      "existing_code": "        if not (_ASK_RE.search(q) or len(q) \u003c= 24):",
+      "start_line": 285,
+      "end_line": 285,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/chatlab_export.py",
+      "content": "`dest_dir` originates from the HTTP request body (`ChatlabExportReq.dest_dir` in api/messages.py) and is used here directly as `Path(dest_dir)` with `mkdir(parents=True, exist_ok=True)` — there is no containment / allow-list check like `_safe_export_file` performs for reads. A caller can write the export to an arbitrary filesystem path (e.g. a startup or config directory). Validate/confine `dest_dir` (resolve against the default export root, or reject paths outside it).",
+      "existing_code": "    d = Path(dest_dir) if (dest_dir or \"\").strip() else default_export_dir()\n    d.mkdir(parents=True, exist_ok=True)",
+      "start_line": 242,
+      "end_line": 243,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/db_transfer.py",
+      "content": "`target`/`backup` are derived from `db_path or _proj_db_path()`, but the actual writes go through `get_db()`, which resolves its own path via `_db_path()`/`member_ctx` and ignores `db_path`. When a caller passes a non-default `db_path`, the module backs up (and reports) one file while writing rows into the application connection's database — a silent data-integrity mismatch. Open the connection from `target` (read-only-independent source/target connections, as `export_db` already does) instead of using `get_db()`.",
+      "existing_code": "    target = str(db_path or _proj_db_path())\n    backup = _backup_file(target) if os.path.exists(target) else \"\"\n    conn = get_db()",
+      "start_line": 216,
+      "end_line": 218,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/db_transfer.py",
+      "content": "This writes an unredacted (`include_secrets=True`) logical export containing all API keys/tokens to a plaintext temp file next to the source. The `finally` block swallows any `unlink` failure (`except Exception: pass`), so a deletion error leaves a full credential dump on disk at a predictable `\u003csrc\u003e.migrate.\u003cts\u003e.json` path — contradicting the module's own \"默认脱敏\" contract. At minimum, log the failure and consider placing the temp file in a restricted temp dir with owner-only permissions.",
+      "existing_code": "    tmp = p.with_suffix(f\".migrate.{int(time.time())}.json\")\n    export_db(str(tmp), fmt=\"json\", include_secrets=True, db_path=str(p))\n    try:\n        return import_db(str(tmp), mode=mode, db_path=db_path)\n    finally:\n        try:\n            tmp.unlink()\n        except Exception:\n            pass",
+      "start_line": 272,
+      "end_line": 280,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/env_audit.py",
+      "content": "`exp_os`, `exp_brand`, `exp_ver` are computed from the profile but never referenced anywhere in the function (nor elsewhere). These are dead assignments — either wire them into a comparison (e.g. a platform/brand consistency check) or remove them to avoid implying a check that does not exist.",
+      "existing_code": "    exp_os = (p.get(\"_platform_arg\") or \"\").lower()\n    exp_brand = p.get(\"_brand_arg\") or \"Chrome\"\n    exp_ver = (p.get(\"browser_version\") or \"\").split(\".\")[0]",
+      "start_line": 234,
+      "end_line": 236,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/env_baseline.py",
+      "content": "The throttle timestamp is only written on probe success (below), so the `probe_failed` path returns before updating `last_compare_at`. When the egress probe fails persistently (proxy down, endpoint timeout), `compare_baseline` will re-probe on every keepalive round (~5 min), contradicting the module's stated 30-min cadence and its claim that probe failures \"不构成规律性信号\" — a regular outbound request every round is itself a periodic signal. Consider also stamping `last_compare_at` on the probe-failure path (or a separate short backoff) so the cadence holds regardless of probe outcome.",
+      "existing_code": "        if not r or not r.get(\"ok\") or not r.get(\"ip\"):\n            # 探测失败 ≠ 漂移：静默等下一轮，绝不告警\n            out[\"reason\"] = \"probe_failed\"\n            return out",
+      "start_line": 139,
+      "end_line": 142,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/api/messages.py",
+      "content": "Response contract violation: when `resolve_by_message` succeeds but the cache write fails, `im_video.download_and_decrypt` returns `{\"ok\": True, \"path\": \"\", ...}` (see im_video.py line ~297). Here `res.get(\"ok\")` is truthy so no error is raised, but the `if res.get(\"path\")` guard is False, so `res[\"url\"]` is never set and the caller receives `ok=True` with no playable URL. The endpoint docstring promises \"返回可直接播放/下载的本机 url\". Consider treating a missing/empty path as a failure (or returning an explicit error) so the client does not get a success payload it cannot use.",
+      "existing_code": "    if not res.get(\"ok\"):\n        raise HTTPException(502, res.get(\"error\") or \"视频解析失败\")\n    name = \"\"\n    if res.get(\"path\"):\n        name = Path(res[\"path\"]).name\n        res[\"url\"] = f\"http://127.0.0.1:{_app_settings.backend_port}/api/messages/video/{name}\"",
+      "start_line": 612,
+      "end_line": 617,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/api/messages.py",
+      "content": "The guard accepts a `tkey` + `skey` request without `account`, and the class docstring advertises this as a supported usage. However, when `account` is empty the closure at line ~595 evaluates `_bcc_url(account, ...) if account else None` to `None`, so `exec_js` stays `None`; `resolve_by_message` then can never exchange `tkey` for a signed URL and always returns `{\"ok\": False, \"error\": \"需要 BCC 页面上下文换取播放地址\"}`. This input combination is thus accepted but can never succeed — either require `account` for the `tkey` path, or drop this combination from the validation/docstring.",
+      "existing_code": "    if not (url and skey) and not (account and msg_id) and not (tkey and skey):\n        raise HTTPException(400, \"需要 account+msg_id，或 url+skey，或 tkey+skey\")",
+      "start_line": 588,
+      "end_line": 589,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/env_audit.py",
+      "content": "`nativeChecks.getParameter` is initialized to `null` and never assigned afterwards (only the sibling key `WebGLRenderingContext_getParameter` is filled below). Since `tamperedCount` counts only `v === false`, this null entry is permanently inert — a dead placeholder that suggests a check (CreepJS's `WebGLRenderingContext.prototype.getParameter` toString test) that is never actually performed. Either fill it with the real value and drop the redundant duplicate key, or remove the stale `getParameter: null` entry so the collected set matches what is compared.",
+      "suggestion_code": "      WebGLRenderingContext_getParameter: null, // 下面填",
+      "existing_code": "      getParameter: null, WebGLRenderingContext_getParameter: null, // 下面填",
+      "start_line": 87,
+      "end_line": 87,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/nickname_fallback.py",
+      "content": "`limit_info` metadata can disagree with the limit actually enforced in this call. `cf[\"max_per_run\"]` is overridden from the caller-supplied `limit` here, but every return path builds `limit_info` via `_limit_info()`, which re-reads `_cfg()` and therefore reports the config default (ignoring `limit`). Pass the effective `cf` (or the overridden value) into `_limit_info` so the returned metadata reflects what was enforced.",
+      "suggestion_code": "    cf = _cfg()\n    if limit is not None:\n        cf[\"max_per_run\"] = max(1, min(int(limit), BATCH))\n    # NOTE: _limit_info() should be given `cf` so limit_info.max_per_run matches\n    # the value actually enforced below.",
+      "existing_code": "    cf = _cfg()\n    if limit is not None:\n        cf[\"max_per_run\"] = max(1, min(int(limit), BATCH))",
+      "start_line": 186,
+      "end_line": 188,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/nickname_fallback.py",
+      "content": "The rate-limit state (`_last_run_at`, `_day_key`, `_day_count`) is a single set of module-level globals mutated here and in `rate_limit_check` with no lock. The endpoint invokes `run_fallback` via `asyncio.to_thread`, so two concurrent requests can interleave: the check-then-act in `rate_limit_check` is separate from the `_mark_run` call, and `_day_count += ...` is a non-atomic read-modify-write. This can let concurrent calls exceed the intended interval/daily cap (and, since the counters are not keyed by account, one account's run consumes the shared budget for all accounts). Consider a `threading.Lock` around the check+mark, or per-account counters, if concurrent use is possible.",
+      "existing_code": "def _mark_run(n: int, now: float | None = None) -\u003e None:\n    global _last_run_at, _day_key, _day_count",
+      "start_line": 101,
+      "end_line": 102,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/cenc_video.py",
+      "content": "Off-by-one in the box loop bound. `end` is exclusive and a minimal box needs exactly 8 header bytes, so the guard should be `pos + 8 \u003c= end` (i.e. `pos \u003c= end - 8`). As written, `pos \u003c end - 8` requires 9+ bytes remaining and silently skips a valid 8-byte box located at the very tail (e.g. a trailing empty `free`/container box), which can make `find_box`/`probe_mp4` miss it.",
+      "suggestion_code": "    while pos + 8 \u003c= end and len(out) \u003c _MAX_BOXES:",
+      "existing_code": "    while pos \u003c end - 8 and len(out) \u003c _MAX_BOXES:",
+      "start_line": 62,
+      "end_line": 62,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/cenc_video.py",
+      "content": "`sample_count` is taken verbatim from the file (up to ~4.29e9). When `default_size != 0` the code materialises `[default_size] * sample_count` with no bound check, so a malformed/hostile stsz can allocate gigabytes and OOM — even though the module advertises malformed-box protection elsewhere. Consider sanity-capping `sample_count` against the file size (or a hard limit) before materialising the list.",
+      "suggestion_code": "    _MAX_SAMPLES = 5_000_000\n    if default_size != 0:\n        if sample_count \u003e _MAX_SAMPLES:\n            return []\n        return [default_size] * sample_count",
+      "existing_code": "    if default_size != 0:\n        return [default_size] * sample_count",
+      "start_line": 107,
+      "end_line": 108,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/cenc_video.py",
+      "content": "`_CONTAINERS` is defined but never referenced anywhere in the module (box traversal uses hard-coded paths in `find_box`). Dead constant — either use it to guard recursion or remove it.",
+      "existing_code": "_CONTAINERS = (\"moov\", \"trak\", \"mdia\", \"minf\", \"stbl\", \"edts\", \"udta\",\n               \"meta\", \"mvex\", \"moof\", \"traf\", \"dinf\")",
+      "start_line": 42,
+      "end_line": 43,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/chat_render_png.py",
+      "content": "`MAX_SPAN` is imported but never used in this module (the docstring mentions it, but no code reads it). Remove the unused import to avoid a misleading dependency.",
+      "suggestion_code": "from services.chat_render import THEMES, DEFAULT_WIDTH",
+      "existing_code": "from services.chat_render import THEMES, MAX_SPAN, DEFAULT_WIDTH",
+      "start_line": 38,
+      "end_line": 38,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/chat_render.py",
+      "content": "`db_path` is accepted (and threaded through from `by_date` / `messages_for_view` / `render_html`) but never used inside `fetch_range` — the body always calls `get_db()` with no argument. Callers passing a specific DB path get silently ignored, which is misleading. Either honour the parameter (e.g. `get_db(db_path)`) or drop it.",
+      "existing_code": "def fetch_range(account: str, conv_id: str, start_seq: int | None = None,\n                end_seq: int | None = None, *, limit: int = MAX_SPAN,\n                db_path: str | None = None) -\u003e dict:",
+      "start_line": 67,
+      "end_line": 69,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/db_transfer.py",
+      "content": "`get_db` is imported here but never used in `export_db` (the function deliberately opens its own read-only `sqlite3.connect`). Only `_db_path` is needed; `import_db` below already imports `get_db` on its own. Dead import — drop it to avoid confusion.",
+      "suggestion_code": "    from database import _db_path as _proj_db_path\n    src = str(db_path or _proj_db_path())",
+      "existing_code": "    from database import _db_path as _proj_db_path, get_db\n    src = str(db_path or _proj_db_path())",
+      "start_line": 98,
+      "end_line": 99,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/merged_forward.py",
+      "content": "`text = \"\"` is assigned but never read anywhere in `render_text` (the rendered output is built into `out`/`head`). Remove this dead local.",
+      "suggestion_code": "    title = str(c.get(\"title\") or \"聊天记录\").strip()\n    ids = expected_ids(c)",
+      "existing_code": "    title = str(c.get(\"title\") or \"聊天记录\").strip()\n    ids = expected_ids(c)\n    text = \"\"",
+      "start_line": 324,
+      "end_line": 326,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/utils/tls_policy.py",
+      "content": "`client_ssl_context()` is documented as API \"供需要显式传 context 的调用点使用\", but a repo-wide search finds no caller — it is the only consumer of the `ssl` import and of the `lru_cache` import at the top of this file. As written, the SSLContext construction, certifi overlay, and SSL_CERT_FILE/SSL_CERT_DIR handling are entirely unreachable. Either wire it into a real call site (e.g. the httpx/urllib3 paths it targets) or drop it along with the now-unused `ssl`/`lru_cache` imports to avoid shipping untested, dead TLS code.",
+      "existing_code": "@lru_cache(maxsize=1)\ndef client_ssl_context():",
+      "start_line": 85,
+      "end_line": 86,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/services/nickname_fallback.py",
+      "content": "On the failure paths (`exec_js` raises, or the response is not HTTP 200) the function returns **without** calling `_mark_run(...)`. Since `_last_run_at`/`_day_count` are only updated after a successful 200 response, a persistently failing call (e.g. upstream 401/403/429, timeout, or BCC error) never engages the `min_interval_sec` cooldown nor counts against `daily_cap`. The caller can therefore retry in a tight loop and defeat the very rate-limit guard this module exists to enforce — which is the core risk-control requirement. Record the attempt (e.g. `_mark_run(len(ids))`) on these error branches as well, or set `_last_run_at` before issuing the request.",
+      "existing_code": "    if not isinstance(res, dict) or res.get(\"status\") != 200:\n        return {\"ok\": False, \"reason\": f\"http:{res.get('status') if isinstance(res, dict) else '?'}\",\n                \"candidates\": len(cands), \"queried\": 0, \"updated\": 0,\n                \"skipped\": len(cands), \"limit_info\": _limit_info()}",
+      "start_line": 213,
+      "end_line": 216,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/test_upstream_p4.py",
+      "content": "`TestConversationSeq` is defined *after* the `if __name__ == \"__main__\": unittest.main()` guard. When this file is executed directly (`python test_upstream_p4.py`), `unittest.main()` collects and runs tests before the class is even defined, so these E1/E2 seq-contract tests silently never execute. Move the class (and any test code) above the `__main__` guard, or remove the guard so discovery/direct-run behave consistently.",
+      "existing_code": "if __name__ == \"__main__\":\n    unittest.main(verbosity=2)\n\n\nclass TestConversationSeq(unittest.TestCase):",
+      "start_line": 676,
+      "end_line": 680,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/test_upstream_p4.py",
+      "content": "`tearDown` unconditionally does `del sys.modules[\"database\"]`. Under `unittest discover` all `test_*.py` share one process; deleting the module here leaves stale bindings in modules that already imported `database` (e.g. `api.messages`), and combined with `TestGroupChat` in the same file (which patches `sys.modules[\"database\"].get_db` without re-`setdefault`) this makes results order-dependent. Prefer restoring the original `get_db` (as `test_dm_search._Base` does) and avoid `del sys.modules[...]` unless the module is explicitly re-imported.",
+      "existing_code": "    def tearDown(self):\n        sys.modules[\"database\"].get_db = self._orig\n        del sys.modules[\"database\"]",
+      "start_line": 692,
+      "end_line": 694,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/test_upstream_p3.py",
+      "content": "This test claims to verify that a recalled message's original text is *not* rendered, but both assertions are tautological (`assertGreaterEqual(..., 0)` is always true) and it never compares the two renders. It would pass even if the recall path regressed to drawing the original text. Assert something meaningful — e.g. that the recalled render's ink/pixel count or height differs from the un-recalled render, or that the original text no longer appears.",
+      "existing_code": "        self.assertGreaterEqual(im.size[1], 0)\n        self.assertGreaterEqual(im2.size[1], 0)",
+      "start_line": 432,
+      "end_line": 433,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/test_upstream_p4.py",
+      "content": "These tests invoke `ffprobe` via `subprocess.run`, but the guard only checks for `ffmpeg` (`_ffmpeg()`). On a host where `ffmpeg` exists but `ffprobe` does not (or only `ffmpeg` is vendored), `subprocess.run([\"ffprobe\", ...])` raises `FileNotFoundError` instead of skipping, contradicting the module's \"skip when toolchain missing\" policy. Guard on `shutil.which(\"ffprobe\")` (or reuse a shared probe helper) before calling it.",
+      "existing_code": "        pb = subprocess.run([\"ffprobe\", \"-v\", \"error\", \"-show_entries\",\n                             \"stream=codec_name,nb_frames\", \"-of\", \"csv=p=0\",\n                             out[\"path\"]], capture_output=True, text=True)\n        self.assertIn(\"h264\", pb.stdout)",
+      "start_line": 633,
+      "end_line": 636,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/api/client.ts",
+      "content": "`renderChatPng` defaults `asBase64` to `false`, but it routes through `request()`, which unconditionally does `res.json()`. With `as_base64=false` the backend returns a raw `image/png` body (`/api/messages/render/png`), so `res.json()` throws a parse error and the declared return type (`{ok, data_uri?, bytes?, error?}`) is unreachable for the default invocation. Current call sites only work because they all pass `asBase64: true`. Either default to `true` here, or (if binary is genuinely needed) fetch the PNG via `fetchAuthedBlob`-style handling instead of `request()`.",
+      "suggestion_code": "        theme: opts.theme ?? \"dark\", title: opts.title ?? \"\",\n        subtitle: opts.subtitle ?? \"\", width: opts.width ?? 520,\n        scale: opts.scale ?? 2.0, as_base64: opts.asBase64 ?? true,",
+      "existing_code": "        theme: opts.theme ?? \"dark\", title: opts.title ?? \"\",\n        subtitle: opts.subtitle ?? \"\", width: opts.width ?? 520,\n        scale: opts.scale ?? 2.0, as_base64: opts.asBase64 ?? false,",
+      "start_line": 642,
+      "end_line": 644,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+      "content": "The per-row checkboxes and the \"已勾选 N 对\" counter are decorative: `doImport` ignores `checked` entirely and imports the whole conversation (`exportToKb(..., { preview: false })`). The backend `to_kb` branch (see `messages.py:836` → `chatlab_export.export_to_kb`) accepts no item/subset selection parameter, so the visual affordance of a checkable table plus a \"确认入库\" button placed inside that panel strongly implies selective import while actually writing *all* extracted pairs. A user who unchecks unwanted pairs will still get them written to the KB — a real data-integrity hazard. Either pass a selection (e.g. an `items`/`msg_ids` field) that the backend honors, or remove the checkboxes / relabel the action to make it explicit that import is whole-conversation.",
+      "suggestion_code": "                {(checked.size === 0 || checked.size === pairs.length) \u0026\u0026 (\n                  \u003cButton\n                    variant=\"secondary\"\n                    size=\"sm\"\n                    data-od-id=\"kb-import-confirm\"\n                    disabled={busy !== \"\"}\n                    onClick={doImport}\n                  \u003e\n                    {busy === \"import\" ? (\n                      \u003c\u003e\u003cLoader2 className=\"h-3.5 w-3.5 animate-spin\" /\u003e入库中…\u003c/\u003e\n                    ) : (\n                      \u003c\u003e\u003cDownload className=\"h-3.5 w-3.5\" /\u003e确认入库\u003c/\u003e\n                    )}\n                  \u003c/Button\u003e\n                )}",
+      "existing_code": "                    data-od-id=\"kb-import-confirm\"\n                    disabled={busy !== \"\"}\n                    onClick={doImport}",
+      "start_line": 212,
+      "end_line": 214,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+      "content": "Stale-response race in `preview()`: `acct`/`convId` are captured at call time and the awaited `r.pairs` is applied unconditionally via `setPairs(r.pairs || [])`. If the user changes the account or conversation while the request is in flight (the account `\u003cselect\u003e` `onChange` clears `convId` and `pairs`), the late response still repopulates the table with pairs belonging to the previous conversation — the user may then click 确认入库 against a conversation they did not intend to import. Guard by capturing the target in a ref/token and discarding the response if it no longer matches the current `acct`/`convId`.",
+      "suggestion_code": "      const r = await api.exportToKb(acct, convId, { target, preview: true });\n      // 丢弃过期响应：期间用户可能切换了账号/会话\n      if (reqRef.current !== token) return;\n      if (r.ok) {\n        setPairs(r.pairs || []);",
+      "existing_code": "      const r = await api.exportToKb(acct, convId, { target, preview: true });\n      if (r.ok) {\n        setPairs(r.pairs || []);",
+      "start_line": 81,
+      "end_line": 83,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+      "content": "The accounts query declares `enabled: true`, which is the default and therefore a no-op, and the conversations query sets `refetchInterval: 0`, which is likewise redundant (React Query polls only when the interval is \u003e 0). These add noise and can mislead readers into thinking polling is intended. Remove both.",
+      "suggestion_code": "  });",
+      "existing_code": "    enabled: true,\n  });",
+      "start_line": 54,
+      "end_line": 55,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+      "content": "`ConvOption.acct` is populated in the mapping below but never read anywhere in the component — dead field. Additionally, `id: c.conv_id || String(i)` can collide with a real `conv_id` value (a conversation whose `conv_id` happens to equal another row's index string), weakening the uniqueness of the select `\u003coption\u003e` keys/values. Consider dropping the unused `acct` field and using a collision-free fallback id.",
+      "suggestion_code": "      return (d?.conversations || []).map((c, i) =\u003e ({\n        id: c.conv_id || `idx-${i}`,\n        acct,\n        name: c.name || c.conv_id || \"会话\",\n      }));",
+      "existing_code": "      return (d?.conversations || []).map((c, i) =\u003e ({\n        id: c.conv_id || String(i),\n        acct,\n        name: c.name || c.conv_id || \"会话\",\n      }));",
+      "start_line": 62,
+      "end_line": 66,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+      "content": "`key={p.source_msg_id || i}` mixes a stable id with the array index. Since the backend permits multiple pairs whose `source_msg_id` is null (or duplicate), duplicate React keys are possible, causing React to warn and potentially reuse the wrong DOM row when the preview list changes. Prefer a guaranteed-unique key.",
+      "suggestion_code": "                        \u003ctr key={`${p.source_msg_id ?? \"none\"}-${i}`}",
+      "existing_code": "                        \u003ctr key={p.source_msg_id || i}",
+      "start_line": 237,
+      "end_line": 237,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+      "content": "`m.video` is never populated here, so `MsgBubble`'s video branch always reads `m.video?.poster`/`m.video?.duration` as `undefined` (cover image and duration never render). The backend `/conversation` endpoint emits a `video` object (`{tkey, skey, duration, poster, url}` — see api/messages.py:472-480), but `RawMessage` doesn't declare `video` and this mapping drops it. Add the field to `RawMessage` and copy it through.",
+      "suggestion_code": "        seq: typeof m.seq === \"number\" ? m.seq : undefined,\n        // 2026-09-17：视频要素（后端 extra.video 透传；仅视频消息有值）\n        video: m.video || null,\n      }));",
+      "existing_code": "        seq: typeof m.seq === \"number\" ? m.seq : undefined,\n      }));",
+      "start_line": 267,
+      "end_line": 268,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/message-shared.tsx",
+      "content": "`RawMessage` declares `transcription`/`reply`/`recalled`/`ts`/`seq` but not `video`, yet the backend `/conversation` response includes a `video` object (api/messages.py:499) and `Msg.video`/`MsgVideo` already exist. Without this field, the mapping in messages-page.tsx cannot forward `video` to `Msg.video`, so poster/duration are always missing. Declare it here.",
+      "suggestion_code": "  /** 2026-09-18（E1/E2）：渲染端点同口径序号 */\n  seq?: number;\n  /** 2026-09-17：视频要素（后端 extra.video 透传；仅视频消息有值） */\n  video?: MsgVideo | null;\n}",
+      "existing_code": "  /** 2026-09-18（E1/E2）：渲染端点同口径序号 */\n  seq?: number;\n}",
+      "start_line": 93,
+      "end_line": 95,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+      "content": "`selMode`/`selAnchor`/`selEnd` are not reset when switching conversations (`openConv`/`setActive`/`setActiveAcct` don't touch them). A stale `selAnchor`/`selEnd` from a previous conversation then survives into the new one, and the selection export uses `Math.min(selAnchor, selEnd)..Math.max(...)` against the **new** conversation's seq space — exporting an unintended range. Reset the selection state whenever the active conversation changes.",
+      "suggestion_code": "  const openConv = (id: string) =\u003e {\n    setActive(id);\n    // 切会话时清空选区锚点，避免旧会话 seq 泄漏到新会话导出\n    setSelAnchor(null);\n    setSelEnd(null);\n  };",
+      "existing_code": "  const openConv = (id: string) =\u003e {\n    setActive(id);\n  };",
+      "start_line": 392,
+      "end_line": 394,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+      "content": "Cross-conversation jump loses its target: clicking a search hit in another conversation calls `setActive(...)` and `setJumpTo(...)` in the same handler. The effect runs right after the re-render, but the new conversation's messages are still being fetched, so the DOM still holds the *old* conversation's nodes; `jumpTo` is consumed against stale content and `setJumpTo(null)` clears the target before the new messages render — the click appears to do nothing. Keep the pending jump until the new conversation's messages have loaded (e.g. re-key/effect on `conv.conv_id` + `convMsgs` identity, and only clear `jumpTo` once a matching node is found).",
+      "existing_code": "                        if (target \u0026\u0026 target.id !== active) setActive(target.id);\n                        setJumpTo({ msgId: h.msg_id, ts: h.ts });",
+      "start_line": 834,
+      "end_line": 835,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+      "content": "`qc.invalidateQueries()` with no key refetches **every** query in the app (accounts, conversation list, details, etc.). After a single-message transcription or an export only the message detail needs refreshing, and the project notes conversation refresh takes 3–6 minutes. Scope it to the messages detail key. The bare `.catch(() =\u003e {})` also silently swallows failures.",
+      "suggestion_code": "                                qc.invalidateQueries({ queryKey: [\"messages\"] }).catch(() =\u003e {});",
+      "existing_code": "                                qc.invalidateQueries().catch(() =\u003e {});",
+      "start_line": 581,
+      "end_line": 581,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+      "content": "Same over-broad invalidation as the single-message path: this refetches all queries in the app after a batch transcription. Scope to the messages query key (and surface/catch errors rather than swallowing them with an empty `.catch`).",
+      "suggestion_code": "                        qc.invalidateQueries({ queryKey: [\"messages\"] }).catch(() =\u003e {});\n                      } else {\n                        // 失败原因分级提示（不静默）：no-uuid / bcc-unavailable /",
+      "existing_code": "                        qc.invalidateQueries().catch(() =\u003e {});\n                      } else {\n                        // 失败原因分级提示（不静默）：no-uuid / bcc-unavailable /",
+      "start_line": 581,
+      "end_line": 583,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/message-bubble.tsx",
+      "content": "The watch-together subtitle heuristic is fragile: `lines.find(l =\u003e !l.startsWith(\"[\") \u0026\u0026 l !== wTitle)` silently depends on the backend always emitting exactly `[一起看视频] {title}\\n{subtitle}\\n[封面] {url}`. If the subtitle text happens to equal the title, or a bracketed metadata line other than `[封面]` is added, `wSub` silently degrades to an empty/partial card with no fallback. Consider parsing into explicit fields (or have the backend emit a structured payload) instead of positional line scanning.",
+      "existing_code": "    const wSub = lines.find((l) =\u003e !l.startsWith(\"[\") \u0026\u0026 l !== wTitle) || \"\";\n    const wCover = (lines.find((l) =\u003e l.startsWith(\"[封面]\")) || \"\").replace(/^\\[封面\\]\\s*/, \"\");",
+      "start_line": 213,
+      "end_line": 214,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/api/client.ts",
+      "content": "The declared `config.max_per_day` field does not exist in the backend response. `/api/messages/nickname_fallback/status` returns `NF.status()`, whose `config` comes from `_cfg()` with keys `enabled`, `min_interval_sec`, `max_per_run`, `daily_cap` (see `services/nickname_fallback.py` DEFAULTS / `_limit_info`). There is no `max_per_day`, so any code reading `status.config.max_per_day` will always get `undefined`. Rename to `daily_cap` (or add a mapped field) to keep the type contract honest.",
+      "suggestion_code": "      daily_cap?: number;",
+      "existing_code": "      max_per_day?: number;",
+      "start_line": 1060,
+      "end_line": 1060,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/kb-page.tsx",
+      "content": "This introduces a nested ternary (three branches), which the project's checklist explicitly forbids. Replace it with a cleared-up conditional (e.g. an early-branching helper or `if/else` before the return) so each branch reads linearly.",
+      "suggestion_code": "      {sub === \"pro\" \u0026\u0026 \u003cProKb push={push} api={api} qc={qc} /\u003e}\n      {sub === \"reply\" \u0026\u0026 \u003cReplyKb push={push} api={api} qc={qc} /\u003e}\n      {sub === \"import\" \u0026\u0026 \u003cKbImportSection push={push} /\u003e}",
+      "existing_code": "      {sub === \"pro\"\n        ? \u003cProKb push={push} api={api} qc={qc} /\u003e\n        : sub === \"reply\"\n          ? \u003cReplyKb push={push} api={api} qc={qc} /\u003e\n          : \u003cKbImportSection push={push} /\u003e}",
+      "start_line": 35,
+      "end_line": 39,
+      "category": "style",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+      "content": "The conversation `\u003cselect\u003e` only updates `convId`, unlike the account select above which also clears `pairs`/`checked`. After previewing conversation A, switching to conversation B leaves A's QA pairs on screen while「确认入库」imports B — the user reviews one conversation's data but imports another's. Clear the preview state on conversation change as well (and reset `checked`).",
+      "suggestion_code": "            onChange={(e) =\u003e { setConvId(e.target.value); setPairs(null); setChecked(new Set()); }}\n            disabled={!acct}",
+      "existing_code": "            onChange={(e) =\u003e setConvId(e.target.value)}\n            disabled={!acct}",
+      "start_line": 169,
+      "end_line": 170,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+      "content": "This query uses a private key `[\"kb-import-accounts\"]`, so it does not read the App-level shared `[\"accounts\"]` cache (see App.tsx ~L274 and messages-page.tsx L152). Result: an extra cold accounts request that bypasses the intended single-source cache/refetch policy. Reuse the shared key (and ideally gate it with the `ready` flag like the other call sites) instead of duplicating the fetch.",
+      "suggestion_code": "    queryKey: [\"accounts\"],",
+      "existing_code": "    queryKey: [\"kb-import-accounts\"],",
+      "start_line": 49,
+      "end_line": 49,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/settings/NicknameFallbackSection.tsx",
+      "content": "Gate values do not match the backend contract. The backend (`services/nickname_fallback.py` / `api/messages.py nickname_fallback_status`) emits `gate` as `\"disabled\"`, `\"daily-cap\"`, `\"cooldown(\u003cNs\u003e)\"`, or `\"ok\"` — but this function only recognizes `\"interval\"` and `\"daily-limit\"`, which never occur. Worse, when `enabled === true` but the run is currently gated by cooldown/daily-cap, the `|| enabled` fallback returns `\"已开启\"`, silently swallowing the actual gate reason. That directly contradicts the documented \"失败原因不静默 / 用户能分清是没开还是被限速\" requirement. Handle the real values and let `enabled` be a last resort only after the gate is surfaced.",
+      "suggestion_code": "  if (gate === \"disabled\" || enabled === false) return \"已关闭（默认）\";\n  if (gate === \"ok\") return \"已开启\";\n  if (gate?.startsWith(\"cooldown\")) return `距上次执行未满最小间隔（${gate.slice(9, -1)}s）`;\n  if (gate === \"daily-cap\") return \"已达当日上限\";\n  // 未知闸门优先原样暴露，绝不因 enabled=true 就吞掉\n  return gate ? `闸门：${gate}` : (enabled ? \"已开启\" : \"状态未知\");",
+      "existing_code": "  if (gate === \"disabled\" || enabled === false) return \"已关闭（默认）\";\n  if (gate === \"interval\") return \"距上次执行未满最小间隔\";\n  if (gate === \"daily-limit\") return \"已达当日上限\";\n  if (gate === \"ok\" || enabled) return \"已开启\";\n  return gate ? `闸门：${gate}` : \"状态未知\";",
+      "start_line": 28,
+      "end_line": 32,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/settings/NicknameFallbackSection.tsx",
+      "content": "Before any status is loaded, `status` is `null`, so `enabled` is `undefined` and the badge renders the authoritative-looking 「已关闭」 even though nothing has been read yet. The doc-comment promises \"关闭态一眼可见\", but this makes the unloaded state indistinguishable from a confirmed-off state (a user who never clicks 刷新状态 sees a misleading \"已关闭\"). Guard the badge on `status` so the pre-load state is visually distinct.",
+      "suggestion_code": "            {status ? (enabled ? \"已开启\" : \"已关闭\") : \"未读取\"}",
+      "existing_code": "            {enabled ? \"已开启\" : \"已关闭\"}",
+      "start_line": 118,
+      "end_line": 118,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/settings/settings-page.tsx",
+      "content": "Indentation is off: this line has a stray extra 12 spaces before `\u003cNicknameFallbackSection /\u003e`, making it deeper than its sibling `\u003cUnifiedConfigSection /\u003e` and the closing `\u003c/\u003e`. This will be reformatted by prettier/lint; align it with the sibling element indentation.",
+      "suggestion_code": "                \u003cUnifiedConfigSection {...props} onlySections={[\"dm\"]} /\u003e\n                {/* 运维卡：状态 / 候选（零外呼）/ 执行一次（显式触发） */}\n                \u003cNicknameFallbackSection /\u003e",
+      "existing_code": "+                \u003cUnifiedConfigSection {...props} onlySections={[\"dm\"]} /\u003e\n+                {/* 运维卡：状态 / 候选（零外呼）/ 执行一次（显式触发） */}\n+                                \u003cNicknameFallbackSection /\u003e",
+      "start_line": 115,
+      "end_line": 117,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/settings/NicknameFallbackSection.tsx",
+      "content": "JSX text node contains literal Markdown bold markers (`**`) that will render as raw asterisks to the user rather than emphasis. Use `\u003cstrong\u003e`/`\u003cb\u003e` elements or remove the `**` here (the surrounding doc-comments use Markdown deliberately, but this is JSX prose).",
+      "suggestion_code": "              昵称的常规来源是「被动截获」。本功能仅在\u003cstrong\u003e库里没有昵称\u003c/strong\u003e时做低频兜底，\n              在账号自己的登录态里查询；\u003cstrong\u003e绝不覆盖已有昵称，也不会自动执行\u003c/strong\u003e。",
+      "existing_code": "              昵称的常规来源是「被动截获」。本功能仅在**库里没有昵称**时做低频兜底，\n              在账号自己的登录态里查询；**绝不覆盖已有昵称，也不会自动执行**。",
+      "start_line": 100,
+      "end_line": 101,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/backend/test_upstream_p4.py",
+      "content": "This test does not exercise any production code — it re-implements the group predicate inline (`2 if str(cid).isdigit() else 1`) and asserts against that same inline expression, so `got` is computed from the identical formula as `want`. It would still pass if `chatlab_export.export_chatlab` / `conversation_capture` regressed their real group-vs-private classification. Prefer asserting against the actual code path (e.g. call `CE.export_chatlab` and check `meta[\"type\"]`, as `test_chatlab_marks_group`/`test_chatlab_marks_private` already do), or drop this redundant case.",
+      "existing_code": "    def test_digit_conv_id_is_group(self):\n        for cid, want in ((\"738291000111\", 2), (\"0:1:1:2\", 1),\n                          (\"12345\", 2), (\"abc\", 1)):\n            got = 2 if str(cid).isdigit() else 1\n            self.assertEqual(got, want, f\"conv_id={cid}\")",
+      "start_line": 491,
+      "end_line": 495,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/message-bubble.tsx",
+      "content": "The shared-card branch (`[分享视频] ...`) is evaluated before the `m.type === \"video\"` player branch and returns early. The backend maps msg_type `8` → frontend type `\"video\"` and emits the text as `[分享视频] 视频ID \u003cid\u003e` (see api/messages.py `_front_type` and conversation_capture.py:355). So every real video message matches `shareM` first and renders as a generic 🔗 card, making the `AuthedVideo` player branch (poster/duration/playback) unreachable. Either move the `video` branch above `shareM`, or exclude 视频 from the share regex so video messages reach the player.",
+      "suggestion_code": "  // 先让真实视频消息走点播分支；分享卡不再匹配「视频」\n  const shareM = t.match(/^\\[分享(商品|文章|评论|图文|动图|链接|名片)\\]\\s*([\\s\\S]*)$/);",
+      "existing_code": "  const shareM = t.match(/^\\[分享(视频|商品|文章|评论|图文|动图|链接|名片)\\]\\s*([\\s\\S]*)$/);",
+      "start_line": 247,
+      "end_line": 247,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+      "content": "`refText` is only used in the guard, never for locating the referenced message. The comment promises a \"同文本最近一条\" fallback, but when `refId` is missing (only `refText` present) `setJumpTo({ msgId: undefined })` produces a jump with no msgId/ts, so the effect immediately clears it and nothing happens — the click silently does nothing. Either implement the text fallback (e.g. match a `data-msg-text`) or drop the misleading comment and the unused parameter.",
+      "suggestion_code": "                          if (refId) setJumpTo({ msgId: refId });\n                          else if (refText) setJumpTo({ refText } as never); // TODO: implement text-based fallback",
+      "existing_code": "                          if (refId || refText) setJumpTo({ msgId: refId || undefined });",
+      "start_line": 1089,
+      "end_line": 1089,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+      "content": "JSX text does not interpret Markdown, so the `**` markers render as literal asterisks in the selection bar (e.g. \"点击聊天里的**首条**消息\"). Remove the asterisks or wrap the emphasised words in a \u003cstrong\u003e element.",
+      "suggestion_code": "                    点击聊天里的首条消息",
+      "existing_code": "                    点击聊天里的**首条**消息",
+      "start_line": 1171,
+      "end_line": 1171,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/settings/settings-page.tsx",
+      "content": "`MessageSquare` is imported via a second, separate `import ... from \"lucide-react\"` statement, while the same module is already imported a few lines above (SettingsIcon/Send/Radio/Database/Bot/Tags/Bell/Users). Duplicate imports from the same module are redundant and typically flagged by lint; merge `MessageSquare` into the existing lucide-react import.",
+      "existing_code": "import NicknameFallbackSection from \"./NicknameFallbackSection\";\nimport { MessageSquare } from \"lucide-react\";",
+      "start_line": 33,
+      "end_line": 34,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/settings/NicknameFallbackSection.tsx",
+      "content": "The hardcoded `limit: 10` overrides the user's configured 单次上限 (`dm.nickname_fallback_max_per_run`). In the backend, `run_fallback` does `if limit is not None: cf[\"max_per_run\"] = max(1, min(int(limit), BATCH))` — so any non-null limit from the client replaces the configured value. This means the configurable \"三重上限\" shown in the UI is silently ignored here (e.g. a user setting max_per_run=3 will still have up to 10 queried). Either omit `limit` so the backend uses the configured cap, or derive it from the fetched status/config.",
+      "existing_code": "      const r = await api.nicknameFallbackRun(account.trim(), {\n        dryRun: dry,\n        limit: 10,\n      });",
+      "start_line": 66,
+      "end_line": 69,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/lib/authed-media.ts",
+      "content": "`clearAuthedMediaCache()`/`authedMediaStats()` are exported but never imported anywhere in the codebase (verified by search) — the documented contract \"退出登录 / 切换账号时调用\" is not wired up. Combined with the deliberate decision not to revoke on unmount, `urlCache` grows monotonically for the whole session, retaining every distinct media Blob (including scrolled-past messages the user has left). Please wire the cache clear into the logout / account-switch path, or add an explicit LRU/upper bound; otherwise the memory footprint is effectively unbounded.",
+      "existing_code": "export function clearAuthedMediaCache(): void {",
+      "start_line": 102,
+      "end_line": 102,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/lib/authed-media.ts",
+      "content": "Failures are never negatively cached: `urlCache` only stores successes, so a persistently failing src (e.g. 401 expired token or 404 missing file) is re-fetched on every effect re-run / remount, and each retry re-runs the full `ensureBackendReady()` + network round-trip. Consider recording a short-lived negative result so broken media does not hammer the backend on every scroll/render.",
+      "existing_code": "    } catch {\n      // 静默降级：调用方按既有 onError / 占位分支处理，不打断聊天渲染\n      return null;\n    } finally {\n      inflight.delete(src);\n    }",
+      "start_line": 51,
+      "end_line": 56,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/ui/authed-img.tsx",
+      "content": "The caller's `onError` is invoked before the fallback logic. If a consumer passes an `onError` that throws (or the error handler itself throws), the subsequent `setUseFallback` / `setFailed` never executes, leaving the image permanently broken with no fallback or placeholder. Guard the call so the component's own fallback state machine always runs.",
+      "suggestion_code": "      onError={(e) =\u003e {\n        try {\n          rest.onError?.(e);\n        } catch { /* 调用方的 onError 不应影响降级 */ }\n        if (!useFallback \u0026\u0026 fallbackSrc) {\n          setUseFallback(true);      // 破图 → 换缩略图再试一次\n        } else {\n          setFailed(true);           // 彻底失败 → 占位\n        }\n      }}",
+      "existing_code": "      onError={(e) =\u003e {\n        rest.onError?.(e);\n        if (!useFallback \u0026\u0026 fallbackSrc) {\n          setUseFallback(true);      // 破图 → 换缩略图再试一次\n        } else {\n          setFailed(true);           // 彻底失败 → 占位\n        }\n      }}",
+      "start_line": 97,
+      "end_line": 104,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/ui/authed-img.tsx",
+      "content": "The reset effect runs after render, so on the first render after `src`/`fallbackSrc` changes, `useFallback`/`failed` still hold the previous values: a new image can briefly render the previous message's fallback (or the \"图片不可用\" placeholder) for a frame before the effect resets it. Consider deriving the fallback state from a key (e.g. reset via `key={src}`) or comparing the tracked src inside render to avoid the stale-frame flicker.",
+      "existing_code": "  // 主地址变化时重置降级状态（切换会话/消息更新）\n  useEffect(() =\u003e {\n    setFailed(false);\n    setUseFallback(false);\n  }, [src, fallbackSrc]);",
+      "start_line": 45,
+      "end_line": 49,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/ui/authed-video.tsx",
+      "content": "On retry after an error, `phase` is reset to \"idle\" but `videoUrl` is kept; when the resolve succeeds the hook may receive the stale URL until the new one is set. Clear `videoUrl` on retry (and when the resolve result changes) so a re-resolve cannot momentarily show the previous blob.",
+      "suggestion_code": "  const play = async () =\u003e {\n    if (phase === \"loading\") return;\n    setPhase(\"loading\");\n    setErr(\"\");\n    setVideoUrl(\"\");",
+      "existing_code": "  const play = async () =\u003e {\n    if (phase === \"loading\") return;\n    setPhase(\"loading\");\n    setErr(\"\");",
+      "start_line": 71,
+      "end_line": 74,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/lib/authed-media.ts",
+      "content": "`state` is not reset synchronously when `src` changes (the `useState` initializer only runs on mount). On the render immediately after `src` switches to a different protected local URL, the hook still returns the *previous* src's blob URL, so an `\u003cimg\u003e`/`\u003cvideo\u003e` consumer can display the wrong media for one frame before the effect's `setState` corrects it. Since `local` is already derived from `src`, deriving the initial value per-src (or keying the state to `src`) avoids the stale frame.",
+      "suggestion_code": "    let alive = true;\n    // 立即对齐到新 src（避免沿用上一个 src 的 blob 造成一帧串图）\n    setState(urlCache.get(src) ?? undefined);",
+      "existing_code": "    let alive = true;\n    setState(urlCache.get(src) ?? undefined);",
+      "start_line": 85,
+      "end_line": 86,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/ui/authed-img.tsx",
+      "content": "While loading/failed the placeholder branches return early and drop `...rest` entirely. Callers such as `message-bubble.tsx` pass `onClick` (open image) and `message-viewer.tsx` passes `style`/`draggable`; during the (possibly multi-frame) loading window, or when the image finally fails, those handlers/styles silently disappear. Consider forwarding the safe, presentational props (at least `onClick`, `style`, `title`) to the placeholder wrapper so the interactive contract is preserved, or document that they only apply when an image renders.",
+      "existing_code": "        className={cn(\"animate-pulse rounded-[var(--radius-sm)] bg-[var(--color-border)]\",\n                      \"min-h-[72px] min-w-[72px]\", className)}\n        aria-busy=\"true\"\n      \u003e\n        {placeholder}",
+      "start_line": 80,
+      "end_line": 84,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "DYAutoDM_v2/frontend/src/components/ui/authed-img.tsx",
+      "content": "This expression is hard to follow and its `finalSrc || shown` right operand is effectively dead: after the two early returns above, `shown` is always a non-empty string, and `finalSrc` equals `resolved` (== `shown`) when `useFallback` is false or `fallbackSrc` otherwise. Also `isLocalApiUrl(finalSrc)` is false whenever `!useFallback` (finalSrc is already a blob/external URL). Simplifying to `const realSrc = shown;` (both `useAuthedMediaUrl` branches already yield a `\u003cimg\u003e`-ready URL) would remove the redundant branch and the extra `finalSrc` bookkeeping.",
+      "suggestion_code": "  const realSrc = shown;",
+      "existing_code": "  const realSrc = isLocalApiUrl(finalSrc) ? shown : (finalSrc || shown);",
+      "start_line": 90,
+      "end_line": 90,
+      "category": "maintainability",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "Build versions and repository ignores",
+      "files": [
+        "DYAutoDM_v2/.gitignore",
+        "DYAutoDM_v2/backend/_build_version.py",
+        "DYAutoDM_v2/package.json",
+        "DYAutoDM_v2/src-tauri/Cargo.toml",
+        "DYAutoDM_v2/src-tauri/tauri.conf.json"
+      ]
+    },
+    {
+      "label": "Backend message API and error code definitions",
+      "files": [
+        "DYAutoDM_v2/backend/api/accounts.py",
+        "DYAutoDM_v2/backend/api/messages.py",
+        "DYAutoDM_v2/backend/errcode_data.py",
+        "DYAutoDM_v2/backend/main.py"
+      ]
+    },
+    {
+      "label": "Auto DM conversation capture and protobuf parsing",
+      "files": [
+        "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+        "DYAutoDM_v2/backend/auto_dm/im_protobuf.py"
+      ]
+    },
+    {
+      "label": "Browser daemon support for media capture",
+      "files": [
+        "DYAutoDM_v2/backend/daemon/browser_daemon.py"
+      ]
+    },
+    {
+      "label": "Database schema and app config settings",
+      "files": [
+        "DYAutoDM_v2/backend/database.py",
+        "DYAutoDM_v2/backend/services/app_config_schema.py"
+      ]
+    },
+    {
+      "label": "New media processing services (video, voice, rendering)",
+      "files": [
+        "DYAutoDM_v2/backend/services/cenc_video.py",
+        "DYAutoDM_v2/backend/services/chat_render.py",
+        "DYAutoDM_v2/backend/services/chat_render_png.py",
+        "DYAutoDM_v2/backend/services/im_video.py",
+        "DYAutoDM_v2/backend/services/voice_transcribe.py"
+      ]
+    },
+    {
+      "label": "Chat data export, search, and transfer services",
+      "files": [
+        "DYAutoDM_v2/backend/services/chatlab_export.py",
+        "DYAutoDM_v2/backend/services/db_transfer.py",
+        "DYAutoDM_v2/backend/services/dm_search.py",
+        "DYAutoDM_v2/backend/services/merged_forward.py"
+      ]
+    },
+    {
+      "label": "Environment auditing and baseline services",
+      "files": [
+        "DYAutoDM_v2/backend/services/env_audit.py",
+        "DYAutoDM_v2/backend/services/env_baseline.py"
+      ]
+    },
+    {
+      "label": "Nickname fallback backend service",
+      "files": [
+        "DYAutoDM_v2/backend/services/nickname_fallback.py"
+      ]
+    },
+    {
+      "label": "Backend tests for new services and upstream features",
+      "files": [
+        "DYAutoDM_v2/backend/test_dm_search.py",
+        "DYAutoDM_v2/backend/test_upstream_p1.py",
+        "DYAutoDM_v2/backend/test_upstream_p3.py",
+        "DYAutoDM_v2/backend/test_upstream_p4.py",
+        "DYAutoDM_v2/backend/test_upstream_p5.py",
+        "DYAutoDM_v2/backend/test_voice_transcribe.py"
+      ]
+    },
+    {
+      "label": "TLS policy utility update",
+      "files": [
+        "DYAutoDM_v2/backend/utils/tls_policy.py"
+      ]
+    },
+    {
+      "label": "Upstream baseline documentation and tracking",
+      "files": [
+        "DYAutoDM_v2/docs/upstream_baseline.json",
+        "DYAutoDM_v2/scripts/track_upstream.py"
+      ]
+    },
+    {
+      "label": "Frontend API client and package update",
+      "files": [
+        "DYAutoDM_v2/frontend/package.json",
+        "DYAutoDM_v2/frontend/src/api/client.ts"
+      ]
+    },
+    {
+      "label": "Knowledge base import UI",
+      "files": [
+        "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+        "DYAutoDM_v2/frontend/src/components/kb/kb-page.tsx"
+      ]
+    },
+    {
+      "label": "Message viewer UI and shared message components",
+      "files": [
+        "DYAutoDM_v2/frontend/src/components/messages/message-bubble.tsx",
+        "DYAutoDM_v2/frontend/src/components/messages/message-shared.tsx",
+        "DYAutoDM_v2/frontend/src/components/messages/message-viewer.tsx",
+        "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx"
+      ]
+    },
+    {
+      "label": "Settings nickname fallback UI",
+      "files": [
+        "DYAutoDM_v2/frontend/src/components/settings/NicknameFallbackSection.tsx",
+        "DYAutoDM_v2/frontend/src/components/settings/settings-page.tsx"
+      ]
+    },
+    {
+      "label": "Authenticated media UI components and library",
+      "files": [
+        "DYAutoDM_v2/frontend/src/components/ui/authed-img.tsx",
+        "DYAutoDM_v2/frontend/src/components/ui/authed-video.tsx",
+        "DYAutoDM_v2/frontend/src/lib/authed-media.ts"
+      ]
+    },
+    {
+      "label": "Build and deploy scripts",
+      "files": [
+        "DYAutoDM_v2/scripts/build_sidecar.py",
+        "DYAutoDM_v2/scripts/deploy.py"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "file": "DYAutoDM_v2/backend/test_upstream_p3.py",
+      "message": "comment filed against DYAutoDM_v2/backend/test_upstream_p4.py describes code in DYAutoDM_v2/backend/test_upstream_p3.py; re-filed",
+      "type": "comment_refiled"
+    }
+  ],
+  "session_id": "9b35c4fb-0b59-4684-9c3b-5d9ad7117902",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "9b35c4fb-0b59-4684-9c3b-5d9ad7117902",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {},
+    "input": {
+      "mode": "range",
+      "requested_from": "32852b3",
+      "requested_head": "HEAD",
+      "resolved_base": "32852b356db9b9759c30c9feb251649898715b4a",
+      "resolved_head": "ee522ab1172cd1196387365e3463731847ce8053",
+      "exact_range": "32852b356db9b9759c30c9feb251649898715b4a..ee522ab1172cd1196387365e3463731847ce8053",
+      "source_artifact_sha256": "7aac7fe0655b4f8ab41010ca371338547bc1a2d1f4c984443579b63a925901dc"
+    },
+    "execution": {
+      "ocr_version": "v1.12.5",
+      "provider": "cd-new",
+      "model": "deepseek-v4.1-flash",
+      "configured_concurrency": 4,
+      "rule_config_sha256": "ef2e3a83e21a9b09831cef3e02d305a254e9bd7f46f0e57fd62b149b1afbfc74",
+      "runtime_config_sha256": "b653acbc0bbaa8a455bdd7b5151dd7ab29804e3c0a06fd8ccd3f1dda81c19a84"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "121690ceab60b370bd9209170ffd6d255eb00cccb2926ca39f404a5fd9513440",
+          "path": "DYAutoDM_v2/backend/errcode_data.py",
+          "fingerprint": "eecd0939682279ff7209b64b7413d5a915a1a1f9473be334e414fc5866a31713"
+        },
+        {
+          "item_id": "12f63a99c8cad635835aa4b5f3dde16efa58e8706fa3e9c7da2cc6be47eededc",
+          "path": "DYAutoDM_v2/backend/auto_dm/im_protobuf.py",
+          "fingerprint": "58d8b19a4e1e8a119533129e9b306af471ecffcb1f874999c0e15455fa06a853"
+        },
+        {
+          "item_id": "136e0a8acc3c29787af7ea84e0819bd4303913d66e8605e159e7a1c658143a79",
+          "path": "DYAutoDM_v2/backend/test_voice_transcribe.py",
+          "fingerprint": "1288133c6ec1117a6fb06db618be968834c298492b18b9ca286032bc63285872"
+        },
+        {
+          "item_id": "19205fa2dc6e479930a0a006bdb941b26aabf8f9070070ac3e80d250963be5d9",
+          "path": "DYAutoDM_v2/.gitignore",
+          "fingerprint": "3d2b4e15d51773eb1efa8e6be2487dbc31392fb3fe7310985f4fd95326f4662a"
+        },
+        {
+          "item_id": "1cc6212d355b8ace2edefe5850d43aa5eceaa1af0ee504a750263d8eae17fa96",
+          "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+          "fingerprint": "6b53c8a029ecfd0334dc9e9ac13e8ee5944a3c7893b2b3a1f1c5581782c5e256"
+        },
+        {
+          "item_id": "1eb14c3bfabb209db67b6b20e724b93e00be2f616e732cdc3c14887fe5ce3f12",
+          "path": "DYAutoDM_v2/docs/upstream_baseline.json",
+          "fingerprint": "74e29390d8c1e2236565a7ad875eab1ae4a61b84252518756c7226e41f3fce8b"
+        },
+        {
+          "item_id": "205c784f3bde6604c4382dfa328e5bacbfb361e337ba5df3e4d5b8b1303822fc",
+          "path": "DYAutoDM_v2/backend/services/chatlab_export.py",
+          "fingerprint": "9e1955dd6ba1a730ef684e8df9b446c1a8edc4c2ed7f6366cc240e793497117e"
+        },
+        {
+          "item_id": "21fe9c41b5ec7803321a6c216644a7f96742c0ad9b9dc61886ae60ead563522b",
+          "path": "DYAutoDM_v2/src-tauri/Cargo.toml",
+          "fingerprint": "fca534f623bae9ea4d57ada9ab40f31b163b57ea91ffbccbb63cba6670be9e21"
+        },
+        {
+          "item_id": "2bcc94a9f556d3fa3cd7344269e6e6c0fe8ba8ecca395ec9192f645358cbf127",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+          "fingerprint": "dd71c466e3674429e291e5a781611ff1372a6beaf79b3f9844022445b4f5451a"
+        },
+        {
+          "item_id": "2f3f0d641691459254c60c2ff1e2fd6d97df1d81803dc8a9292b71bd5446ba33",
+          "path": "DYAutoDM_v2/backend/test_upstream_p1.py",
+          "fingerprint": "83d5a2105cc6e97e2de61552bd9a81a4e442ea39be1a90849dfa8f096c57518a"
+        },
+        {
+          "item_id": "302997d2811cf782f35a4c0715b72d8cf0a058d715e9b5e6ef553bc218fe1c22",
+          "path": "DYAutoDM_v2/frontend/src/components/ui/authed-img.tsx",
+          "fingerprint": "eb7053e1f8470eb3d590bffb28bb5cb99479d79d80a9e55b281645056875912b"
+        },
+        {
+          "item_id": "3439650fcc5b4b0639fb3d531b9f0a84c47e101bf14b9690d8c1dd75b53aeaae",
+          "path": "DYAutoDM_v2/frontend/src/components/kb/kb-page.tsx",
+          "fingerprint": "e44d03a307434e8cd82cab53c73482190f9fcd418eda75069b889d20195dceac"
+        },
+        {
+          "item_id": "3c3237527fae2c9bfa4373b388af212a61fd12115593dfd85bf3277c5dfec767",
+          "path": "DYAutoDM_v2/backend/services/chat_render.py",
+          "fingerprint": "03647a2e6d90f263a591cf03f2d10dbc9d27db22e50e51bc6865e5bf4951b083"
+        },
+        {
+          "item_id": "4bc76bd0f5103604295a05060b91793474e0ce78629ddfc125b3776ee2b6bb78",
+          "path": "DYAutoDM_v2/backend/services/im_video.py",
+          "fingerprint": "64466e89ef50d62ae8841b1706c67d7e1981114b49cb11722ce2080df7ccd280"
+        },
+        {
+          "item_id": "4c7905e379bd09689552e535e97c114d6ccfc55140c49e7f1399493d57a89e67",
+          "path": "DYAutoDM_v2/backend/services/nickname_fallback.py",
+          "fingerprint": "2637b64ecebc5c745ef8085cd508a5eb5ef3d2501e8101d3acbea0fa7d447d95"
+        },
+        {
+          "item_id": "5097bbfb265c42bbdfd139b9cefa4d44b595fb1cc970807096f23bc07556cfa1",
+          "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+          "fingerprint": "d1c0ec9b3785b2f3fe51cabd893f8764edcbaf3c7aca17d74d6a15e3c0a8b771"
+        },
+        {
+          "item_id": "50d22bb6cfd5959a2dc35c3ab0fb4b97f54bca05f211e845d46deffc7561b25a",
+          "path": "DYAutoDM_v2/backend/database.py",
+          "fingerprint": "5d6b109a4515f5d026938d420a386c67f8820ecb5dcd9814d2ff9b2e25924874"
+        },
+        {
+          "item_id": "521ca9dba8067899c6536fde49c2942b55db1192b1b27e47d87915a78136542c",
+          "path": "DYAutoDM_v2/frontend/package.json",
+          "fingerprint": "a88ba0caa3a79652d0809c28c216e3e7a02c45a44f17198e825311bb225c469d"
+        },
+        {
+          "item_id": "52e211fc03547c16e9722516a0401894ae6237e88b41d46201a01f7457e301e6",
+          "path": "DYAutoDM_v2/frontend/src/api/client.ts",
+          "fingerprint": "d435c967ee9e017d64e1b88ea23d99a2d0f74b690353b8353f4eab4585abc800"
+        },
+        {
+          "item_id": "5436d96619a86a841d7b9df8d65bb70e15ad5337664212ed1a1e969679b9ffe7",
+          "path": "DYAutoDM_v2/package.json",
+          "fingerprint": "a71619b0f43b062a800582a921120f8505cde410d74f1ca842ee56cba8b1f0f2"
+        },
+        {
+          "item_id": "56e3d72e521804eaf01e42d9667a74d0d7c9ea7b98455cd29590fc4410d1d3a9",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/message-shared.tsx",
+          "fingerprint": "f6acf8f26842ef05f2cf84e3e091c194a34a87e5592da180411076d42b22d9d4"
+        },
+        {
+          "item_id": "6eb4d904bb8c7530b135b7db5fd7cca6b8a3089ee2d26bcd816da5c7b2da0342",
+          "path": "DYAutoDM_v2/backend/services/chat_render_png.py",
+          "fingerprint": "fd388442cabb718b41533f486104e575c7b5b0d5ca8d2740c06b1b5937791a8b"
+        },
+        {
+          "item_id": "7c793aa8c1f20feecc1d4bdc5d8b23f676cb0cfc906418980617e6d2d5785674",
+          "path": "DYAutoDM_v2/backend/test_upstream_p5.py",
+          "fingerprint": "b6b6dd827516efbde9f34f232d7ec79db5cfa90e12635d3343b4a43c3c3cfe6d"
+        },
+        {
+          "item_id": "7fc7bac04119bb6c79be559cda1ad1156dca11cec57e7e489f0589c3288ccf6a",
+          "path": "DYAutoDM_v2/scripts/track_upstream.py",
+          "fingerprint": "40cf84d8d04eac2672c1acbd06fba56305b53c4cb2b08c02ba5720d59415eeda"
+        },
+        {
+          "item_id": "8045acc5c4985d07de2b837ffd2d26bbada57af1e81fd8f7c33446b81ea04c7e",
+          "path": "DYAutoDM_v2/frontend/src/lib/authed-media.ts",
+          "fingerprint": "7af1a7bf7b498b6c89ff919ced4e5630764d8920493fe538f4ee0299dfd65379"
+        },
+        {
+          "item_id": "831dfc70bdd609383de45f93571f3bb9e43529b351d98c69e7b54830f07c9f46",
+          "path": "DYAutoDM_v2/scripts/deploy.py",
+          "fingerprint": "8ea5e6647d9ad29df98d73239111facaaa97b46a52f9a3f433408c25bd5e7daa"
+        },
+        {
+          "item_id": "84a39e150f65a11017e935add7177946488676e0fd0fea573926267f4a0c07a1",
+          "path": "DYAutoDM_v2/backend/services/voice_transcribe.py",
+          "fingerprint": "e0531bdb88b5a62d8b524502fb98219a349deb0c9701f29ad4bf405451407802"
+        },
+        {
+          "item_id": "9252a48e3b3a4768865058e6e8fbb6fc5659708121eca7551c89893a3bf1fa4f",
+          "path": "DYAutoDM_v2/src-tauri/tauri.conf.json",
+          "fingerprint": "dbf650b767b0157881ac79d0b76baea4d034d20263ccb5aa6fdd7adb6b49127e"
+        },
+        {
+          "item_id": "9385872e0b491da50782d8a7686fa5ff513ec13ebf71f1cf5a83a86d1ff35ed9",
+          "path": "DYAutoDM_v2/scripts/build_sidecar.py",
+          "fingerprint": "c16f4f8c1cee42a1216792fdc951d67dda64b75dc1dc5656fa295a359e803e1b"
+        },
+        {
+          "item_id": "93db04ca1cbeb76cb23e3ceca5d794e9f623ea85821b0087b51483ae90434cad",
+          "path": "DYAutoDM_v2/backend/services/env_audit.py",
+          "fingerprint": "ec4e67ec58466110705559df2d2150a2ffdf94c2a82b512df7621c270eef6e8f"
+        },
+        {
+          "item_id": "996948700905cb53fc32e231332234fb44b240af07a04dbd5d2e9d0cfa91b70a",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/message-bubble.tsx",
+          "fingerprint": "489cfb18a0fc1487776d9de4b08c9607cce9077f914ee526230de6e22807bba3"
+        },
+        {
+          "item_id": "a314fef5b82361b5041406d6f43d548efc591c5442264a214fcdc5101fbb9ce8",
+          "path": "DYAutoDM_v2/backend/test_upstream_p3.py",
+          "fingerprint": "0df73055ffde33f7f458748ac3c2611d592e69b861dd9528b8207a1bdfdc8a5c"
+        },
+        {
+          "item_id": "a7cdbfe787c4e21182dc34bc2a4b3d022aa7a0c3f329f9b11c5660032aae5001",
+          "path": "DYAutoDM_v2/frontend/src/components/settings/NicknameFallbackSection.tsx",
+          "fingerprint": "1ac17ca1ef124b4e9657e67fd6296c3edef1f4cbc6ae01f365bc3ec646cdb7c3"
+        },
+        {
+          "item_id": "ad1ddc448c06e224946a7c300b45cb876b9dcc87d9965f29f1a719d80bb281f2",
+          "path": "DYAutoDM_v2/backend/services/cenc_video.py",
+          "fingerprint": "229a9a3d1d6f1995f43f2de4e60e3d09d0e8e5e4ac7b3c047b9017a2f17c5b01"
+        },
+        {
+          "item_id": "b28877a14718a7ceb579dc9b0c32b730a1459d28cd4813450ff98db96629d947",
+          "path": "DYAutoDM_v2/backend/services/merged_forward.py",
+          "fingerprint": "339af9ae9b9f92bb51c224fc47c333803be2b8752301e8708b6eb38bea2236e8"
+        },
+        {
+          "item_id": "c08c28bad748ea30d35683f0ec96ac3d84fca889ec85f93270154508d168768e",
+          "path": "DYAutoDM_v2/backend/api/messages.py",
+          "fingerprint": "431a29ed0e2f618a4608ec9dced69d524612966a0a5b57e027d2364ebd5bc220"
+        },
+        {
+          "item_id": "c36dc17f9636000a3d9495cfac33296923ff5901364aaa33fe17d8bfae1aff2f",
+          "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+          "fingerprint": "18fd19eff599d028734b36000adf49ae7521a9ba210eb89258c39fadca5ae2ee"
+        },
+        {
+          "item_id": "c4c7c0ba93ad8486a8ddff98057d85d5b1354cbfccf9dcf53e28374739b348fc",
+          "path": "DYAutoDM_v2/backend/main.py",
+          "fingerprint": "b039ca201a077de66266acf9ff578fed744121bf613db06d3e25e34b46a49264"
+        },
+        {
+          "item_id": "cd9c328305cf6e1a9cf25d45a348d71aa19e6043dc0497182b13e0246164c3ea",
+          "path": "DYAutoDM_v2/frontend/src/components/settings/settings-page.tsx",
+          "fingerprint": "0826bfc76b1e1fd12dc0047b626b8ed7770199fb4a7fb1b74d3974d9f7b56cf7"
+        },
+        {
+          "item_id": "d1b7091e0531def875aeff6561bb1fee062a353565b4122406833c8d162f16df",
+          "path": "DYAutoDM_v2/backend/test_upstream_p4.py",
+          "fingerprint": "60fc559bdc7aa040f7b9c6dd17c271be78b52598ece2638adc979329390cba98"
+        },
+        {
+          "item_id": "e2741072196af73b00fbd8b8d20a8b7e32972aa37b946270bc189934411e6c45",
+          "path": "DYAutoDM_v2/frontend/src/components/ui/authed-video.tsx",
+          "fingerprint": "2a266503b306fe79f00fa16bba6a247d81537cfc46d2557c5a1207dbb9107d1a"
+        },
+        {
+          "item_id": "e297f53fd6b2ca0e52ee1833d2aecfea25595dd193bdaef0bb8775ee00b0f778",
+          "path": "DYAutoDM_v2/backend/utils/tls_policy.py",
+          "fingerprint": "2e860d895f33f83532a2fee8f76ebe01efe66c3017caa395737ad73d0960ce35"
+        },
+        {
+          "item_id": "e525f4b4415a6921772954da2de6a9b09f5c8cfae6819e88d64a41b51bf32df2",
+          "path": "DYAutoDM_v2/backend/api/accounts.py",
+          "fingerprint": "60690450bde8c5e55a47f14c405b0e83e3af3656e9588bd5f8c81895ee2b1cb3"
+        },
+        {
+          "item_id": "e84f920eb91fbd824a7b0c52d4bc25272a9e716dc2e33ddeb81391e030d58bb5",
+          "path": "DYAutoDM_v2/backend/test_dm_search.py",
+          "fingerprint": "ba062f1b6524869f2e779ec091e637796a689e3287ddb3fc28debba8a1f45ec0"
+        },
+        {
+          "item_id": "eabc32e9ae1a43af05b7bbe8413471a2d9e2cd259d0c39c5ea954718a231608f",
+          "path": "DYAutoDM_v2/backend/services/env_baseline.py",
+          "fingerprint": "a919b9efb6c5db3bc8138419185f3034b2abce8f287095be767dd03763b92292"
+        },
+        {
+          "item_id": "eb25a9daef9d16c34ff86393ae31747b02d9c9b4265490c99c7485e38bfbeb38",
+          "path": "DYAutoDM_v2/backend/services/db_transfer.py",
+          "fingerprint": "7477f867cac43fe791d37265caecd627b1281b2fbe94e56d00cdc39c3745fcbd"
+        },
+        {
+          "item_id": "ec6620e0b73188c9df043fb95645b981175aeb5f606ec046ff194f24ff6a72bc",
+          "path": "DYAutoDM_v2/backend/_build_version.py",
+          "fingerprint": "1f6c40f41f06d503bbc3e6246d3d7dfd13429e74f85ca2dc209aff2e8f594ff8"
+        },
+        {
+          "item_id": "ed4f2e6980839e35c37b314561ff7557373f6c4bcf64ae82c55ac121f8cef175",
+          "path": "DYAutoDM_v2/backend/services/app_config_schema.py",
+          "fingerprint": "91ae347b7a7c6e731acc31a1a7c26cadc823eeead3bb99b7d801100cfb518bf3"
+        },
+        {
+          "item_id": "f02e67b0483b000819bc9f77abfaad263391e2abdbaa74ed9103df005a7268c9",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/message-viewer.tsx",
+          "fingerprint": "c90183553e61442f10444500001f7ec3960bbdf09cb2c9616091255d7e40e132"
+        },
+        {
+          "item_id": "ffc3e5c59def06a091de9ea60c398888f18f9ab627e8874da664ba7c122557e1",
+          "path": "DYAutoDM_v2/backend/services/dm_search.py",
+          "fingerprint": "5221438c46c7da03b25e857facfc9010bdb2569cd47775aa902e766d4420aef1"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "121690ceab60b370bd9209170ffd6d255eb00cccb2926ca39f404a5fd9513440",
+          "path": "DYAutoDM_v2/backend/errcode_data.py",
+          "fingerprint": "eecd0939682279ff7209b64b7413d5a915a1a1f9473be334e414fc5866a31713"
+        },
+        {
+          "item_id": "12f63a99c8cad635835aa4b5f3dde16efa58e8706fa3e9c7da2cc6be47eededc",
+          "path": "DYAutoDM_v2/backend/auto_dm/im_protobuf.py",
+          "fingerprint": "58d8b19a4e1e8a119533129e9b306af471ecffcb1f874999c0e15455fa06a853"
+        },
+        {
+          "item_id": "136e0a8acc3c29787af7ea84e0819bd4303913d66e8605e159e7a1c658143a79",
+          "path": "DYAutoDM_v2/backend/test_voice_transcribe.py",
+          "fingerprint": "1288133c6ec1117a6fb06db618be968834c298492b18b9ca286032bc63285872"
+        },
+        {
+          "item_id": "19205fa2dc6e479930a0a006bdb941b26aabf8f9070070ac3e80d250963be5d9",
+          "path": "DYAutoDM_v2/.gitignore",
+          "fingerprint": "3d2b4e15d51773eb1efa8e6be2487dbc31392fb3fe7310985f4fd95326f4662a"
+        },
+        {
+          "item_id": "1cc6212d355b8ace2edefe5850d43aa5eceaa1af0ee504a750263d8eae17fa96",
+          "path": "DYAutoDM_v2/backend/daemon/browser_daemon.py",
+          "fingerprint": "6b53c8a029ecfd0334dc9e9ac13e8ee5944a3c7893b2b3a1f1c5581782c5e256"
+        },
+        {
+          "item_id": "1eb14c3bfabb209db67b6b20e724b93e00be2f616e732cdc3c14887fe5ce3f12",
+          "path": "DYAutoDM_v2/docs/upstream_baseline.json",
+          "fingerprint": "74e29390d8c1e2236565a7ad875eab1ae4a61b84252518756c7226e41f3fce8b"
+        },
+        {
+          "item_id": "205c784f3bde6604c4382dfa328e5bacbfb361e337ba5df3e4d5b8b1303822fc",
+          "path": "DYAutoDM_v2/backend/services/chatlab_export.py",
+          "fingerprint": "9e1955dd6ba1a730ef684e8df9b446c1a8edc4c2ed7f6366cc240e793497117e"
+        },
+        {
+          "item_id": "21fe9c41b5ec7803321a6c216644a7f96742c0ad9b9dc61886ae60ead563522b",
+          "path": "DYAutoDM_v2/src-tauri/Cargo.toml",
+          "fingerprint": "fca534f623bae9ea4d57ada9ab40f31b163b57ea91ffbccbb63cba6670be9e21"
+        },
+        {
+          "item_id": "2bcc94a9f556d3fa3cd7344269e6e6c0fe8ba8ecca395ec9192f645358cbf127",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/messages-page.tsx",
+          "fingerprint": "dd71c466e3674429e291e5a781611ff1372a6beaf79b3f9844022445b4f5451a"
+        },
+        {
+          "item_id": "2f3f0d641691459254c60c2ff1e2fd6d97df1d81803dc8a9292b71bd5446ba33",
+          "path": "DYAutoDM_v2/backend/test_upstream_p1.py",
+          "fingerprint": "83d5a2105cc6e97e2de61552bd9a81a4e442ea39be1a90849dfa8f096c57518a"
+        },
+        {
+          "item_id": "302997d2811cf782f35a4c0715b72d8cf0a058d715e9b5e6ef553bc218fe1c22",
+          "path": "DYAutoDM_v2/frontend/src/components/ui/authed-img.tsx",
+          "fingerprint": "eb7053e1f8470eb3d590bffb28bb5cb99479d79d80a9e55b281645056875912b"
+        },
+        {
+          "item_id": "3439650fcc5b4b0639fb3d531b9f0a84c47e101bf14b9690d8c1dd75b53aeaae",
+          "path": "DYAutoDM_v2/frontend/src/components/kb/kb-page.tsx",
+          "fingerprint": "e44d03a307434e8cd82cab53c73482190f9fcd418eda75069b889d20195dceac"
+        },
+        {
+          "item_id": "3c3237527fae2c9bfa4373b388af212a61fd12115593dfd85bf3277c5dfec767",
+          "path": "DYAutoDM_v2/backend/services/chat_render.py",
+          "fingerprint": "03647a2e6d90f263a591cf03f2d10dbc9d27db22e50e51bc6865e5bf4951b083"
+        },
+        {
+          "item_id": "4bc76bd0f5103604295a05060b91793474e0ce78629ddfc125b3776ee2b6bb78",
+          "path": "DYAutoDM_v2/backend/services/im_video.py",
+          "fingerprint": "64466e89ef50d62ae8841b1706c67d7e1981114b49cb11722ce2080df7ccd280"
+        },
+        {
+          "item_id": "4c7905e379bd09689552e535e97c114d6ccfc55140c49e7f1399493d57a89e67",
+          "path": "DYAutoDM_v2/backend/services/nickname_fallback.py",
+          "fingerprint": "2637b64ecebc5c745ef8085cd508a5eb5ef3d2501e8101d3acbea0fa7d447d95"
+        },
+        {
+          "item_id": "5097bbfb265c42bbdfd139b9cefa4d44b595fb1cc970807096f23bc07556cfa1",
+          "path": "DYAutoDM_v2/frontend/src/components/kb/KbImportSection.tsx",
+          "fingerprint": "d1c0ec9b3785b2f3fe51cabd893f8764edcbaf3c7aca17d74d6a15e3c0a8b771"
+        },
+        {
+          "item_id": "50d22bb6cfd5959a2dc35c3ab0fb4b97f54bca05f211e845d46deffc7561b25a",
+          "path": "DYAutoDM_v2/backend/database.py",
+          "fingerprint": "5d6b109a4515f5d026938d420a386c67f8820ecb5dcd9814d2ff9b2e25924874"
+        },
+        {
+          "item_id": "521ca9dba8067899c6536fde49c2942b55db1192b1b27e47d87915a78136542c",
+          "path": "DYAutoDM_v2/frontend/package.json",
+          "fingerprint": "a88ba0caa3a79652d0809c28c216e3e7a02c45a44f17198e825311bb225c469d"
+        },
+        {
+          "item_id": "52e211fc03547c16e9722516a0401894ae6237e88b41d46201a01f7457e301e6",
+          "path": "DYAutoDM_v2/frontend/src/api/client.ts",
+          "fingerprint": "d435c967ee9e017d64e1b88ea23d99a2d0f74b690353b8353f4eab4585abc800"
+        },
+        {
+          "item_id": "5436d96619a86a841d7b9df8d65bb70e15ad5337664212ed1a1e969679b9ffe7",
+          "path": "DYAutoDM_v2/package.json",
+          "fingerprint": "a71619b0f43b062a800582a921120f8505cde410d74f1ca842ee56cba8b1f0f2"
+        },
+        {
+          "item_id": "56e3d72e521804eaf01e42d9667a74d0d7c9ea7b98455cd29590fc4410d1d3a9",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/message-shared.tsx",
+          "fingerprint": "f6acf8f26842ef05f2cf84e3e091c194a34a87e5592da180411076d42b22d9d4"
+        },
+        {
+          "item_id": "6eb4d904bb8c7530b135b7db5fd7cca6b8a3089ee2d26bcd816da5c7b2da0342",
+          "path": "DYAutoDM_v2/backend/services/chat_render_png.py",
+          "fingerprint": "fd388442cabb718b41533f486104e575c7b5b0d5ca8d2740c06b1b5937791a8b"
+        },
+        {
+          "item_id": "7c793aa8c1f20feecc1d4bdc5d8b23f676cb0cfc906418980617e6d2d5785674",
+          "path": "DYAutoDM_v2/backend/test_upstream_p5.py",
+          "fingerprint": "b6b6dd827516efbde9f34f232d7ec79db5cfa90e12635d3343b4a43c3c3cfe6d"
+        },
+        {
+          "item_id": "7fc7bac04119bb6c79be559cda1ad1156dca11cec57e7e489f0589c3288ccf6a",
+          "path": "DYAutoDM_v2/scripts/track_upstream.py",
+          "fingerprint": "40cf84d8d04eac2672c1acbd06fba56305b53c4cb2b08c02ba5720d59415eeda"
+        },
+        {
+          "item_id": "8045acc5c4985d07de2b837ffd2d26bbada57af1e81fd8f7c33446b81ea04c7e",
+          "path": "DYAutoDM_v2/frontend/src/lib/authed-media.ts",
+          "fingerprint": "7af1a7bf7b498b6c89ff919ced4e5630764d8920493fe538f4ee0299dfd65379"
+        },
+        {
+          "item_id": "831dfc70bdd609383de45f93571f3bb9e43529b351d98c69e7b54830f07c9f46",
+          "path": "DYAutoDM_v2/scripts/deploy.py",
+          "fingerprint": "8ea5e6647d9ad29df98d73239111facaaa97b46a52f9a3f433408c25bd5e7daa"
+        },
+        {
+          "item_id": "84a39e150f65a11017e935add7177946488676e0fd0fea573926267f4a0c07a1",
+          "path": "DYAutoDM_v2/backend/services/voice_transcribe.py",
+          "fingerprint": "e0531bdb88b5a62d8b524502fb98219a349deb0c9701f29ad4bf405451407802"
+        },
+        {
+          "item_id": "9252a48e3b3a4768865058e6e8fbb6fc5659708121eca7551c89893a3bf1fa4f",
+          "path": "DYAutoDM_v2/src-tauri/tauri.conf.json",
+          "fingerprint": "dbf650b767b0157881ac79d0b76baea4d034d20263ccb5aa6fdd7adb6b49127e"
+        },
+        {
+          "item_id": "9385872e0b491da50782d8a7686fa5ff513ec13ebf71f1cf5a83a86d1ff35ed9",
+          "path": "DYAutoDM_v2/scripts/build_sidecar.py",
+          "fingerprint": "c16f4f8c1cee42a1216792fdc951d67dda64b75dc1dc5656fa295a359e803e1b"
+        },
+        {
+          "item_id": "93db04ca1cbeb76cb23e3ceca5d794e9f623ea85821b0087b51483ae90434cad",
+          "path": "DYAutoDM_v2/backend/services/env_audit.py",
+          "fingerprint": "ec4e67ec58466110705559df2d2150a2ffdf94c2a82b512df7621c270eef6e8f"
+        },
+        {
+          "item_id": "996948700905cb53fc32e231332234fb44b240af07a04dbd5d2e9d0cfa91b70a",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/message-bubble.tsx",
+          "fingerprint": "489cfb18a0fc1487776d9de4b08c9607cce9077f914ee526230de6e22807bba3"
+        },
+        {
+          "item_id": "a314fef5b82361b5041406d6f43d548efc591c5442264a214fcdc5101fbb9ce8",
+          "path": "DYAutoDM_v2/backend/test_upstream_p3.py",
+          "fingerprint": "0df73055ffde33f7f458748ac3c2611d592e69b861dd9528b8207a1bdfdc8a5c"
+        },
+        {
+          "item_id": "a7cdbfe787c4e21182dc34bc2a4b3d022aa7a0c3f329f9b11c5660032aae5001",
+          "path": "DYAutoDM_v2/frontend/src/components/settings/NicknameFallbackSection.tsx",
+          "fingerprint": "1ac17ca1ef124b4e9657e67fd6296c3edef1f4cbc6ae01f365bc3ec646cdb7c3"
+        },
+        {
+          "item_id": "ad1ddc448c06e224946a7c300b45cb876b9dcc87d9965f29f1a719d80bb281f2",
+          "path": "DYAutoDM_v2/backend/services/cenc_video.py",
+          "fingerprint": "229a9a3d1d6f1995f43f2de4e60e3d09d0e8e5e4ac7b3c047b9017a2f17c5b01"
+        },
+        {
+          "item_id": "b28877a14718a7ceb579dc9b0c32b730a1459d28cd4813450ff98db96629d947",
+          "path": "DYAutoDM_v2/backend/services/merged_forward.py",
+          "fingerprint": "339af9ae9b9f92bb51c224fc47c333803be2b8752301e8708b6eb38bea2236e8"
+        },
+        {
+          "item_id": "c08c28bad748ea30d35683f0ec96ac3d84fca889ec85f93270154508d168768e",
+          "path": "DYAutoDM_v2/backend/api/messages.py",
+          "fingerprint": "431a29ed0e2f618a4608ec9dced69d524612966a0a5b57e027d2364ebd5bc220"
+        },
+        {
+          "item_id": "c36dc17f9636000a3d9495cfac33296923ff5901364aaa33fe17d8bfae1aff2f",
+          "path": "DYAutoDM_v2/backend/auto_dm/conversation_capture.py",
+          "fingerprint": "18fd19eff599d028734b36000adf49ae7521a9ba210eb89258c39fadca5ae2ee"
+        },
+        {
+          "item_id": "c4c7c0ba93ad8486a8ddff98057d85d5b1354cbfccf9dcf53e28374739b348fc",
+          "path": "DYAutoDM_v2/backend/main.py",
+          "fingerprint": "b039ca201a077de66266acf9ff578fed744121bf613db06d3e25e34b46a49264"
+        },
+        {
+          "item_id": "cd9c328305cf6e1a9cf25d45a348d71aa19e6043dc0497182b13e0246164c3ea",
+          "path": "DYAutoDM_v2/frontend/src/components/settings/settings-page.tsx",
+          "fingerprint": "0826bfc76b1e1fd12dc0047b626b8ed7770199fb4a7fb1b74d3974d9f7b56cf7"
+        },
+        {
+          "item_id": "d1b7091e0531def875aeff6561bb1fee062a353565b4122406833c8d162f16df",
+          "path": "DYAutoDM_v2/backend/test_upstream_p4.py",
+          "fingerprint": "60fc559bdc7aa040f7b9c6dd17c271be78b52598ece2638adc979329390cba98"
+        },
+        {
+          "item_id": "e2741072196af73b00fbd8b8d20a8b7e32972aa37b946270bc189934411e6c45",
+          "path": "DYAutoDM_v2/frontend/src/components/ui/authed-video.tsx",
+          "fingerprint": "2a266503b306fe79f00fa16bba6a247d81537cfc46d2557c5a1207dbb9107d1a"
+        },
+        {
+          "item_id": "e297f53fd6b2ca0e52ee1833d2aecfea25595dd193bdaef0bb8775ee00b0f778",
+          "path": "DYAutoDM_v2/backend/utils/tls_policy.py",
+          "fingerprint": "2e860d895f33f83532a2fee8f76ebe01efe66c3017caa395737ad73d0960ce35"
+        },
+        {
+          "item_id": "e525f4b4415a6921772954da2de6a9b09f5c8cfae6819e88d64a41b51bf32df2",
+          "path": "DYAutoDM_v2/backend/api/accounts.py",
+          "fingerprint": "60690450bde8c5e55a47f14c405b0e83e3af3656e9588bd5f8c81895ee2b1cb3"
+        },
+        {
+          "item_id": "e84f920eb91fbd824a7b0c52d4bc25272a9e716dc2e33ddeb81391e030d58bb5",
+          "path": "DYAutoDM_v2/backend/test_dm_search.py",
+          "fingerprint": "ba062f1b6524869f2e779ec091e637796a689e3287ddb3fc28debba8a1f45ec0"
+        },
+        {
+          "item_id": "eabc32e9ae1a43af05b7bbe8413471a2d9e2cd259d0c39c5ea954718a231608f",
+          "path": "DYAutoDM_v2/backend/services/env_baseline.py",
+          "fingerprint": "a919b9efb6c5db3bc8138419185f3034b2abce8f287095be767dd03763b92292"
+        },
+        {
+          "item_id": "eb25a9daef9d16c34ff86393ae31747b02d9c9b4265490c99c7485e38bfbeb38",
+          "path": "DYAutoDM_v2/backend/services/db_transfer.py",
+          "fingerprint": "7477f867cac43fe791d37265caecd627b1281b2fbe94e56d00cdc39c3745fcbd"
+        },
+        {
+          "item_id": "ec6620e0b73188c9df043fb95645b981175aeb5f606ec046ff194f24ff6a72bc",
+          "path": "DYAutoDM_v2/backend/_build_version.py",
+          "fingerprint": "1f6c40f41f06d503bbc3e6246d3d7dfd13429e74f85ca2dc209aff2e8f594ff8"
+        },
+        {
+          "item_id": "ed4f2e6980839e35c37b314561ff7557373f6c4bcf64ae82c55ac121f8cef175",
+          "path": "DYAutoDM_v2/backend/services/app_config_schema.py",
+          "fingerprint": "91ae347b7a7c6e731acc31a1a7c26cadc823eeead3bb99b7d801100cfb518bf3"
+        },
+        {
+          "item_id": "f02e67b0483b000819bc9f77abfaad263391e2abdbaa74ed9103df005a7268c9",
+          "path": "DYAutoDM_v2/frontend/src/components/messages/message-viewer.tsx",
+          "fingerprint": "c90183553e61442f10444500001f7ec3960bbdf09cb2c9616091255d7e40e132"
+        },
+        {
+          "item_id": "ffc3e5c59def06a091de9ea60c398888f18f9ab627e8874da664ba7c122557e1",
+          "path": "DYAutoDM_v2/backend/services/dm_search.py",
+          "fingerprint": "5221438c46c7da03b25e857facfc9010bdb2569cd47775aa902e766d4420aef1"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 618493
+  }
+}

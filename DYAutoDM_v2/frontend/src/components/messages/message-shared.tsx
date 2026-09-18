@@ -92,6 +92,10 @@ export interface RawMessage {
   ts?: number;
   /** 2026-09-18（E1/E2）：渲染端点同口径序号 */
   seq?: number;
+  /** 2026-09-17：IM 视频要素（后端 `/conversation` 透传 `extra.video`，仅视频消息有值）。
+   *  2026-09-18 审查修复（HIGH）：此前漏声明 → messages-page 映射丢弃该字段 →
+   *  `MsgBubble` 的 `m.video?.poster/duration` 恒 undefined（封面、时长永不显示）。 */
+  video?: MsgVideo | null;
 }
 export interface RawConversation {
   conv_id?: string;

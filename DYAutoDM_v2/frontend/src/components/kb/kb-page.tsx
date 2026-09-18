@@ -32,11 +32,13 @@ export default function KbPage({ push, api }: PageProps) {
         ]}
       />
 
-      {sub === "pro"
-        ? <ProKb push={push} api={api} qc={qc} />
-        : sub === "reply"
-          ? <ReplyKb push={push} api={api} qc={qc} />
-          : <KbImportSection push={push} />}
+      {/* 2026-09-18 审查修复（#46）：原为三层嵌套三元（项目 checklist 明令禁止
+          —— 每个分支需要读者自己配对 `?`/`:`）。改为线性 if/else。 */}
+      {(() => {
+        if (sub === "pro") return <ProKb push={push} api={api} qc={qc} />;
+        if (sub === "reply") return <ReplyKb push={push} api={api} qc={qc} />;
+        return <KbImportSection push={push} />;
+      })()}
     </PageContainer>
   );
 }

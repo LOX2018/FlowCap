@@ -321,6 +321,32 @@ class TestRenderAndOpenApi(_Base):
         self.assertEqual(s["peak"], 5)
 
 
+def _rendered_texts(account: str, conv_id: str) -> str:
+    """抓取 `render_png` 实际写入画布的**正文文本**（用于撤回态断言）。
+
+    实现：临时替换 `ImageDraw.text`，把每次绘制的字符串收集起来。
+    这样判据直接对准「正文有没有被画出来」，不受提示块/边距的像素干扰。
+    """
+    from PIL import ImageDraw
+    got: list[str] = []
+    orig = ImageDraw.ImageDraw.text
+
+    def spy(self, xy, text, *a, **kw):          # noqa: ANN001
+        try:
+            got.append(str(text))
+        except Exception:
+            pass
+        return orig(self, xy, text, *a, **kw)
+
+    ImageDraw.ImageDraw.text = spy
+    try:
+        import services.chat_render_png as PNG
+        PNG.render_png(account, conv_id, scale=1.0, theme="dark")
+    finally:
+        ImageDraw.ImageDraw.text = orig
+    return "\n".join(got)
+
+
 class TestRenderPng(_Base):
     """PNG 长图渲染（Pillow 原生，**不经 BCC / 无浏览器**）。
 
@@ -416,21 +442,36 @@ class TestRenderPng(_Base):
                           "转写文本未渲染（高度未增加）")
 
     def test_recalled_message_text_replaced(self):
+        """撤回后**不应**把原文画出来。
+
+        2026-09-18 审查修复（A15）：旧断言是两条 `assertGreaterEqual(..., 0)`
+        —— **恒为真**，撤回路径即使退化回「照画原文」也会通过（假通过）。
+        现改为把两种状态都渲染出来，比较**含原文的墨迹量**：
+        撤回态必须严格少于未撤回态，且不再出现原文的像素痕迹。
+        """
         self._mk()
         self._ins2(self._ACCT2, self._CONV2, "them", "原始内容原文", 1,
                   {"is_recalled": True}, 1758000300.0, "p5")
         self.conn.commit()
-        from PIL import Image
-        import statistics as st
-        from services.chat_render import THEMES
-        _, im = self._decode(scale=1.0, theme="dark")
-        # 撤回后不应把原文画出来：墨迹总量应小于「原文未撤回」的情况
+        _, recalled = self._decode(scale=1.0, theme="dark")
+        # 判据①（主）：撤回态渲染的是「已撤回」占位，**不得包含原文**
+        # 说明：这里比较的是**渲染后的正文文本**（PNG.render_png 内部的写入内容），
+        # 而不是像素墨迹量 —— 实测撤回态因为多渲染了「已撤回」提示，
+        # 像素反而更多，用墨迹量会得到相反结论（这正是旧断言退化为恒真的原因）。
+        import services.chat_render_png as PNG
+        texts_recalled = _rendered_texts(self._ACCT2, self._CONV2)
+        self.assertNotIn("原始内容原文", texts_recalled,
+                         "撤回态仍渲染了原文 —— 撤回路径失效")
         self.conn.execute("UPDATE dm_messages SET extra=? WHERE msg_id='p5'",
                           (json.dumps({"is_recalled": False}),))
         self.conn.commit()
-        _, im2 = self._decode(scale=1.0, theme="dark")
-        self.assertGreaterEqual(im.size[1], 0)
-        self.assertGreaterEqual(im2.size[1], 0)
+        _, normal = self._decode(scale=1.0, theme="dark")
+        texts_normal = _rendered_texts(self._ACCT2, self._CONV2)
+        # 判据②（反向对照）：未撤回态**必须**包含原文 —— 证明①不是因为整体没渲染
+        self.assertIn("原始内容原文", texts_normal,
+                      "未撤回态未渲染原文 —— 前置条件不成立（测试无效）")
+        # 判据③：两态渲染结果确实不同（避免「两边都空 → 恒真」）
+        self.assertNotEqual(texts_recalled, texts_normal)
 
     def test_empty_range_does_not_crash(self):
         self._mk()

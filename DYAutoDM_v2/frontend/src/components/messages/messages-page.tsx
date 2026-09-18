@@ -131,7 +131,12 @@ export default function MessagesPage(props: PageProps) {
   const [dmDays, setDmDays] = useState<DailyCount[]>([]);
   const [dmShowCal, setDmShowCal] = useState(false);
   /** 跳转请求：{msgId, ts} —— 命中/引用/日历都会设置它 */
-  const [jumpTo, setJumpTo] = useState<{ msgId?: string | null; ts?: number } | null>(null);
+  // 2026-09-18 审查修复（HIGH）：`pendingConv` = 该跳转**期望落在哪个会话**。
+  // 旧实现切会话后立刻消费 jumpTo，而新会话消息还没到（convMsgs.length 初值 0）
+  // → 目标在陈旧 DOM 上查不到 → 两条 setJumpTo(null) 把目标清掉 → 点击「没反应」。
+  // 现在 effect 只在「当前会话 == 期望会话」时才尝试定位。
+  const [jumpTo, setJumpTo] = useState<{ msgId?: string | null; ts?: number;
+                                          text?: string; pendingConv?: string } | null>(null);
 
   // 2026-08-31：更新会话期间每秒累加耗时，让用户看到任务仍在推进
   useEffect(() => {
@@ -265,6 +270,9 @@ export default function MessagesPage(props: PageProps) {
         ts: typeof m.ts === "number" ? m.ts : undefined,
         // 2026-09-18（E1/E2）：后端下发的消息序号（渲染端点同口径），选区/单条存图锚点
         seq: typeof m.seq === "number" ? m.seq : undefined,
+        // 2026-09-18 审查修复（HIGH）：透传视频要素（后端 extra.video），
+        // 否则 MsgBubble 的封面/时长恒空（点播分支拿不到 poster/duration）。
+        video: m.video || null,
       }));
     },
     enabled: !!ready && !!activeAcct && !!conv.conv_id,
@@ -288,11 +296,23 @@ export default function MessagesPage(props: PageProps) {
   // 先按 msg_id 精确定位（data-msg-id），退化按 ts 找最近一条；命中后高亮 2.4s。
   useEffect(() => {
     if (!jumpTo) return;
+    // 2026-09-18 审查修复（HIGH）：目标会话尚未就位时**不要**消费该跳转
+    // （否则在新会话消息到达前就被 setJumpTo(null) 清掉，表现为点击无反应）。
+    if (jumpTo.pendingConv && jumpTo.pendingConv !== conv.conv_id) return;
     const root = document.querySelector<HTMLElement>("[data-dm-scroll]");
     if (!root) return;
     let el: HTMLElement | null = null;
     if (jumpTo.msgId) {
       el = root.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(jumpTo.msgId)}"]`);
+    }
+    // 仅 ref_msg_id 缺失时才用「同文本最近一条」兜底（#52：refText 此前只用于守卫、从未定位）
+    if (!el && jumpTo.text) {
+      const want = jumpTo.text.trim().replace(/\s+/g, " ");
+      const nodes = Array.from(root.querySelectorAll<HTMLElement>("[data-dm-text]"));
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const got = (nodes[i].dataset.dmText || "").trim().replace(/\s+/g, " ");
+        if (got && got === want) { el = nodes[i]; break; }
+      }
     }
     if (!el && jumpTo.ts) {
       // 按时间戳就近定位（日历「跳到那天第一条」用）
@@ -311,8 +331,9 @@ export default function MessagesPage(props: PageProps) {
       setJumpTo(null);
       return () => window.clearTimeout(t);
     }
-    setJumpTo(null);
-  }, [jumpTo, convMsgs.length]);
+    // 本会话消息已就位（convMsgs.length > 0）却找不到目标 → 才放弃
+    if (convMsgs.length > 0) setJumpTo(null);
+  }, [jumpTo, convMsgs.length, conv.conv_id]);
 
   // 2026-09-17：执行检索（会话内 / 全库）
   const runDmSearch = (opts: { withinConv: boolean }) => {
@@ -391,6 +412,11 @@ export default function MessagesPage(props: PageProps) {
 
   const openConv = (id: string) => {
     setActive(id);
+    // 2026-09-18 审查修复（HIGH）：切会话必须清空选区锚点。
+    // 旧实现保留上一个会话的 selAnchor/selEnd，导出时用 **新会话的 seq 空间**
+    // 套旧锚点取值（Math.min/max），会导出完全非预期的区间。
+    setSelAnchor(null);
+    setSelEnd(null);
   };
 
   const createConv = () => {
@@ -578,7 +604,12 @@ export default function MessagesPage(props: PageProps) {
                             (r.skipped ? ` · 跳过 ${r.skipped} 条（缺发送者信息）` : ""),
                           10000,
                         );
-                        qc.invalidateQueries().catch(() => {});
+                        // 2026-09-18 审查修复（#42/#43）：原先无 key 的
+                        // `qc.invalidateQueries()` 会失效**全应用所有 query**
+                        // （账号/会话列表/详情…），而此处只有消息详情变了
+                        // （本项目会话重拉实测 3~6 分钟）。改为只失效消息详情。
+                        qc.invalidateQueries({ queryKey: ["msg-detail"] }).catch(() => {});
+                        qc.invalidateQueries({ queryKey: ["msg-convs"] }).catch(() => {});
                       } else {
                         // 失败原因分级提示（不静默）：no-uuid / bcc-unavailable /
                         // no-pending / no-text-returned 都直接告诉用户。
@@ -805,7 +836,8 @@ export default function MessagesPage(props: PageProps) {
                       <button
                         key={d.date}
                         title={`${d.date}：${d.count} 条`}
-                        onClick={() => setJumpTo({ msgId: d.first_msg_id, ts: d.first_ts })}
+                        onClick={() => setJumpTo({ msgId: d.first_msg_id, ts: d.first_ts,
+                                                   pendingConv: conv.conv_id })}
                         className="rounded border border-[var(--color-border)] px-1.5 py-0.5
                                    font-mono text-[0.68rem] hover:border-[var(--color-accent)]"
                       >
@@ -829,10 +861,11 @@ export default function MessagesPage(props: PageProps) {
                       className="block w-full rounded px-1.5 py-1 text-left hover:bg-[var(--color-surface-raised)]"
                       onClick={() => {
                         // 命中可能在别的会话：先切会话再定位（切会话后由 convMsgs 长度变化触发 effect）
+                        // 2026-09-18 审查修复（HIGH）：带上期望会话，effect 等它到位再定位。
                         const target = allConvs.find((c) => c.conv_id === h.conv_id)
                           || shownConvs.find((c) => c.conv_id === h.conv_id);
                         if (target && target.id !== active) setActive(target.id);
-                        setJumpTo({ msgId: h.msg_id, ts: h.ts });
+                        setJumpTo({ msgId: h.msg_id, ts: h.ts, pendingConv: h.conv_id });
                       }}
                     >
                       <div className="truncate text-[0.76rem]">{h.snippet || h.text}</div>
@@ -1054,6 +1087,9 @@ export default function MessagesPage(props: PageProps) {
                       /* 2026-09-17：跳转锚点 —— 命中/引用/日历定位靠这两个属性 */
                       data-msg-id={m.id.startsWith("mid_") ? m.id.slice(4) : undefined}
                       data-msg-ts={m.ts}
+                      /* 2026-09-18 审查修复（#52）：ref_msg_id 缺失时按「同文本最近一条」
+                         兜底定位，需要把正文挂到 DOM 上供查询。 */
+                      data-dm-text={m.text || undefined}
                     >
                       <MsgBubble
                         m={m}
@@ -1073,7 +1109,8 @@ export default function MessagesPage(props: PageProps) {
                                 else if (r.reason === "no-pending")
                                   push("该条无需转写（可能已转写或缺要素）", 6000);
                                 else push(`未转写：${r.reason || "未知原因"}`, 7000);
-                                qc.invalidateQueries().catch(() => {});
+                                // 2026-09-18 审查修复（#43）：同上，只失效消息详情。
+                                qc.invalidateQueries({ queryKey: ["msg-detail"] }).catch(() => {});
                               } else {
                                 push(`转写失败：${(r && r.error) || "未知错误"}`, 8000);
                               }
@@ -1086,7 +1123,11 @@ export default function MessagesPage(props: PageProps) {
                         onJumpRef={(refId, refText) => {
                           // 2026-09-17：引用块点击 → 定位被引用消息（同会话内）。
                           // 有 ref_msg_id 走精确匹配；缺失时退化为「同文本最近一条」。
-                          if (refId || refText) setJumpTo({ msgId: refId || undefined });
+                          // 2026-09-18 审查修复（LOW→实修）：此前只判断 refText 存在、
+                          // 却从不把它用于定位 → refId 缺失时生成空跳转（立即被清掉，点了没反应）。
+                          if (refId || refText)
+                            setJumpTo({ msgId: refId || undefined, text: refText || undefined,
+                                        pendingConv: conv.conv_id });
                         }}
                       />
                       <span className="shrink-0 self-center font-mono text-[0.66rem] text-[var(--color-text-muted)]">
@@ -1172,7 +1213,7 @@ export default function MessagesPage(props: PageProps) {
                   </span>
                 ) : selEnd === null ? (
                   <span className="text-[var(--color-text-secondary)]">
-                    已选首条 seq={selAnchor} · 再点**末条**（或点它本身=单条）
+                    已选首条 seq={selAnchor} · 再点<strong>末条</strong>（或点它本身=单条）
                   </span>
                 ) : (
                   <span className="font-mono text-[var(--color-text-secondary)]">

@@ -14,7 +14,7 @@
  * 前端勾选的价值是**人工把关**：预览为 0 条或不满意 → 不点入库即可，零副作用。
  * 精细逐条录入走「对话回复库」页的手动添加。
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Database, Loader2, Eye, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -31,8 +31,10 @@ interface QaPair {
 }
 
 interface ConvOption {
+  /** 2026-09-18 审查清理：原 `id: c.conv_id || String(i)` 会用下标兜底，
+   *  可能与真实 conv_id 撞值（削弱 React key 唯一性）；且 `acct` 字段从未被读取。
+   *  会话列表来自后端，conv_id 缺失的行直接丢弃（宁缺勿错）。 */
   id: string;
-  acct: string;
   name: string;
 }
 
@@ -44,6 +46,13 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<"" | "preview" | "import">("");
 
+  // 2026-09-18（#38）：预览请求的竞态守卫需要读「当前最新」的账号/会话。
+  // 直接用闭包捕获的 state 会永远是发起那一刻的值，故用 ref 镜像。
+  const acctRef = useRef(acct);
+  const convRef = useRef(convId);
+  useEffect(() => { acctRef.current = acct; }, [acct]);
+  useEffect(() => { convRef.current = convId; }, [convId]);
+
   // 账号 + 会话列表（只读，与私信页同源数据）
   const acctsQ = useQuery({
     queryKey: ["kb-import-accounts"],
@@ -51,7 +60,6 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
       const d = (await api.getAccounts()) as unknown as { name: string }[];
       return Array.isArray(d) ? d : [];
     },
-    enabled: true,
   });
   const convsQ = useQuery({
     queryKey: ["kb-import-convs", acct],
@@ -59,14 +67,14 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
       const d = (await api.getConversations(acct)) as unknown as {
         conversations?: { conv_id?: string; name?: string }[];
       };
-      return (d?.conversations || []).map((c, i) => ({
-        id: c.conv_id || String(i),
-        acct,
-        name: c.name || c.conv_id || "会话",
-      }));
+      return (d?.conversations || [])
+        .filter((c) => !!c.conv_id)
+        .map((c) => ({
+          id: String(c.conv_id),
+          name: c.name || c.conv_id || "会话",
+        }));
     },
     enabled: !!acct,
-    refetchInterval: 0,
   });
 
   const realAccts = acctsQ.data || [];
@@ -74,11 +82,17 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
 
   const preview = async () => {
     if (!acct || !convId) return;
+    // 2026-09-18 审查修复（#38）：记录本次请求的账号/会话，应答回来时若已切换
+    // 则**丢弃**该结果（否则会把 A 的问答对填给 B，做二次污染）。
+    const reqAcct = acct;
+    const reqConv = convId;
+    const still = () => reqAcct === acctRef.current && reqConv === convRef.current;
     setBusy("preview");
     setPairs(null);
     setChecked(new Set());
     try {
-      const r = await api.exportToKb(acct, convId, { target, preview: true });
+      const r = await api.exportToKb(reqAcct, reqConv, { target, preview: true });
+      if (!still()) return;                    // 已切走 → 丢弃，不污染当前视图
       if (r.ok) {
         setPairs(r.pairs || []);
         if ((r.count || 0) === 0) push?.("没有抽到问答对（对方没提问，或我方没作答）", 6000);
@@ -166,7 +180,10 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
                        border-[var(--color-border)] bg-[var(--color-surface)]
                        px-2 text-[0.78rem] text-[var(--color-text)]"
             value={convId}
-            onChange={(e) => setConvId(e.target.value)}
+            // 2026-09-18 审查修复（HIGH）：切会话必须清空预览与勾选。
+            // 旧实现只 setConvId → 上一会话的问答对仍留在屏上，而 doImport 用的是
+            // **当前 convId** → 用户核对的是 A、实际入库的是 B（数据错位）。
+            onChange={(e) => { setConvId(e.target.value); setPairs(null); setChecked(new Set()); }}
             disabled={!acct}
           >
             <option value="">选会话…</option>
@@ -234,10 +251,17 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
                     </thead>
                     <tbody>
                       {pairs.map((p, i) => (
-                        <tr key={p.source_msg_id || i}
+                        // 2026-09-18 审查修复（#41）：后端允许多条问答对 source_msg_id 为
+                        // null/重复，`key={p.source_msg_id || i}` 会撞 key（React 复用错行）。
+                        // 统一用「来源 id + 下标」复合键，稳定且唯一。
+                        <tr key={`${p.source_msg_id ?? "x"}-${i}`}
                             className="border-t border-[var(--color-border)]">
                           <td className="px-2 py-1.5">
-                            <input type="checkbox" checked={checked.has(i)}
+                            {/* 2026-09-18 审查修复（#6）：后端 `to_kb` 是整会话抽取，
+                                没有逐条选择参数 → 复选框语义只能是「人工核对标记」，
+                                不可让它看起来像「只入库勾选项」。加 title 说明 + aria-label。 */}
+                            <input type="checkbox" title="仅作人工核对标记，入库始终为整会话"
+                                aria-label="人工核对标记（不影响入库范围）" checked={checked.has(i)}
                                    onChange={() => toggle(i)} />
                           </td>
                           <td className="px-2 py-1.5 text-[var(--color-text)]">{p.question}</td>

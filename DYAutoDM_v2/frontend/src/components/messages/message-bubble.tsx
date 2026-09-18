@@ -242,9 +242,13 @@ export function MsgBubble({
     );
   }
 
-  // 2026-09-17：结构化分享卡（后端新增：分享商品/文章/评论/图文/动图/链接/名片）。
-  // 形如 `[分享商品] 标题`；无标题时按普通文本渲染，绝不造空卡片。
-  const shareM = t.match(/^\[分享(视频|商品|文章|评论|图文|动图|链接|名片)\]\s*([\s\S]*)$/);
+  // 2026-09-18 审查修复（HIGH·真实回归）：**真实视频消息必须走点播分支**。
+  // 后端把 msg_type 8 映射成前端 type="video"，并把文本写成 `[分享视频] 视频ID <id>`
+  // （api/messages.py `_front_type` + conversation_capture.py:355）。而本分支在
+  // 视频播放器分支（下方 `m.type === "video"`）**之前**且带 `视频` 关键字 → 早退，
+  // 使 AuthedVideo 点播**永不可达**（封面/时长/播放全失效）。故此处不再匹配「视频」，
+  // 视频由下方 player 分支渲染（它自己会显示 `[分享视频] 视频ID x` 说明文字）。
+  const shareM = t.match(/^\[分享(商品|文章|评论|图文|动图|链接|名片)\]\s*([\s\S]*)$/);
   if (shareM) {
     const sKind = shareM[1];
     const sBody = (shareM[2] || "").trim();

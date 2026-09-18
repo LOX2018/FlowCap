@@ -293,8 +293,12 @@ def download_and_decrypt(url: str, skey: str, *, app_root: str | None = None,
     try:
         out.write_bytes(plain)
     except OSError as e:
+        # 2026-09-18 审查修复（MEDIUM·「假成功」族）：原先返回 `ok=True, path=""`，
+        # 调用方只判 `ok` → 响应既无 `url` 也宣称成功，前端拿到空地址无从分辨。
+        # 无路径即无可用产物 → 必须显式失败（宁缺勿错，成本未降低）。
         logger.warning(f"[VID-004] " + f"缓存写入失败: {e}")
-        return {"ok": True, "path": "", "bytes": len(plain), "mime": "video/mp4",
+        return {"ok": False, "error": f"解密成功但缓存写入失败（磁盘/权限）: {e}",
+                "bytes": len(plain), "mime": "video/mp4",
                 "decrypted": True, "cached": False, "data_written": False,
                 "probe_after": after}
     _evict_if_needed(d)

@@ -188,6 +188,20 @@ def self_send_error(account: str, peer_id) -> Optional[str]:
     return None
 
 
+def conv_type(conv_id: str) -> int:
+    """从 conv_id 判定会话类型 → 1=单聊 / 2=群聊（**唯一实现**）。
+
+    照上游口径（web_scraper._acquire_short_id）：**conv_id 为纯数字**即群聊
+    （实测群聊 conv_id 本身就是 short_id）；形如 `0:1:uidA:uidB` 为单聊。
+
+    2026-09-18 收敛：此前同一判据在 3 处独立重写
+    （`api/messages.py`、`auto_dm/conversation_capture.py`、`services/chatlab_export.py`），
+    属本模块设计契约第 1 条明令禁止的重复实现（改一处漏两处即隐性 bug）。
+    调用方是**纯 DB 路径**（不依赖本账号 uid），故不接收 account 参数。
+    """
+    return 2 if str(conv_id or "").strip().isdigit() else 1
+
+
 def clear_cache(account: str = "") -> None:
     """清缓存（账号迁移/换号后用；account 空则全清）。"""
     if not account:

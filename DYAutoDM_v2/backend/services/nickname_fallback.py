@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any, Callable
 
@@ -41,7 +42,8 @@ DEFAULTS = {"enabled": False, "min_interval_sec": 600, "max_per_run": 10,
             "daily_cap": 50}
 
 # 在**已登录页面上下文**里发同域 POST（表单编码，照实测参数）
-FETCH_JS = """async ({path, ids}) => {
+FETCH_JS = """async (arg) => {
+    const [path, ids] = arg;          // 本项目约定：exec_js(js, [a, b]) → JS 内解构
     if (location.origin !== 'https://www.douyin.com')
         throw new Error('需要抖音网页登录上下文');
     const body = new URLSearchParams();
@@ -55,9 +57,12 @@ FETCH_JS = """async ({path, ids}) => {
 }"""
 
 # 运行期状态（进程内；重启即重置，符合「低频兜底」语义）
+# 端点经 asyncio.to_thread 调用 → 多请求可并发；限流是「读-判-写」序列，
+# 必须加锁，否则两个请求能同时通过 cooldown/daily_cap 判定（check-then-act 竞态）。
 _last_run_at = 0.0
 _day_key = ""
 _day_count = 0
+_STATE_LOCK = threading.Lock()
 
 
 def _cfg() -> dict:
@@ -81,31 +86,36 @@ def _cfg() -> dict:
 
 
 def rate_limit_check(now: float | None = None) -> tuple[bool, str]:
-    """限速判定 → (是否放行, 原因)。**先判限速再取数据**，不做无谓读库。"""
+    """限速判定 → (是否放行, 原因)。**先判限速再取数据**，不做无谓读库。
+
+    判定与「跨日清零」在同一把锁内，避免并发下两个请求同时放行。
+    """
     global _last_run_at, _day_key, _day_count
     cf = _cfg()
     if not cf["enabled"]:
         return False, "disabled"
     now = time.time() if now is None else now
     today = time.strftime("%Y-%m-%d", time.localtime(now))
-    if today != _day_key:
-        _day_key, _day_count = today, 0
-    if _day_count >= cf["daily_cap"]:
-        return False, "daily-cap"
-    if _last_run_at and (now - _last_run_at) < cf["min_interval_sec"]:
-        left = int(cf["min_interval_sec"] - (now - _last_run_at))
-        return False, f"cooldown({left}s)"
-    return True, "ok"
+    with _STATE_LOCK:
+        if today != _day_key:
+            _day_key, _day_count = today, 0
+        if _day_count >= cf["daily_cap"]:
+            return False, "daily-cap"
+        if _last_run_at and (now - _last_run_at) < cf["min_interval_sec"]:
+            left = int(cf["min_interval_sec"] - (now - _last_run_at))
+            return False, f"cooldown({left}s)"
+        return True, "ok"
 
 
 def _mark_run(n: int, now: float | None = None) -> None:
     global _last_run_at, _day_key, _day_count
     now = time.time() if now is None else now
     today = time.strftime("%Y-%m-%d", time.localtime(now))
-    if today != _day_key:
-        _day_key, _day_count = today, 0
-    _last_run_at = now
-    _day_count += max(0, int(n))
+    with _STATE_LOCK:
+        if today != _day_key:
+            _day_key, _day_count = today, 0
+        _last_run_at = now
+        _day_count += max(0, int(n))
 
 
 def missing_nickname_convs(account: str, limit: int, db=None) -> list[dict]:
@@ -189,31 +199,35 @@ def run_fallback(account: str, exec_js: Callable[[str, Any], Any], *,
     allow, why = rate_limit_check()
     if not allow:
         return {"ok": False, "reason": why, "candidates": 0, "queried": 0,
-                "updated": 0, "skipped": 0, "limit_info": _limit_info()}
+                "updated": 0, "skipped": 0, "limit_info": _limit_info(cf)}
     cands = missing_nickname_convs(account, cf["max_per_run"], db=db)
     if not cands:
         _mark_run(0)
         return {"ok": True, "reason": "no-candidates", "candidates": 0,
                 "queried": 0, "updated": 0, "skipped": 0,
-                "limit_info": _limit_info()}
+                "limit_info": _limit_info(cf)}
     if dry_run:
         return {"ok": True, "reason": "dry-run", "candidates": len(cands),
                 "queried": 0, "updated": 0, "skipped": len(cands),
                 "would_query": [c["sec_uid"] for c in cands],
-                "limit_info": _limit_info()}
+                "limit_info": _limit_info(cf)}
 
     ids = [c["sec_uid"] for c in cands]
     try:
         res = exec_js(FETCH_JS, [IM_USER_INFO_PATH, ids])
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[NICK-001] " + f"兜底查询失败: {type(e).__name__}")
+        # 失败也必须记账：否则上游持续 4xx/超时时永不进入冷静期、不耗日额，
+        # 调用方可死循环重试 —— 恰好击穿本模块唯一的风控意图。
+        _mark_run(len(ids))
         return {"ok": False, "reason": f"exec:{type(e).__name__}",
                 "candidates": len(cands), "queried": 0, "updated": 0,
-                "skipped": len(cands), "limit_info": _limit_info()}
+                "skipped": len(cands), "limit_info": _limit_info(cf)}
     if not isinstance(res, dict) or res.get("status") != 200:
+        _mark_run(len(ids))                      # 同上：非 200 同样计入限流
         return {"ok": False, "reason": f"http:{res.get('status') if isinstance(res, dict) else '?'}",
                 "candidates": len(cands), "queried": 0, "updated": 0,
-                "skipped": len(cands), "limit_info": _limit_info()}
+                "skipped": len(cands), "limit_info": _limit_info(cf)}
     users = parse_user_info(res.get("body"))
     _mark_run(len(ids))
 
@@ -251,11 +265,12 @@ def run_fallback(account: str, exec_js: Callable[[str, Any], Any], *,
                 f"更新 {updated}（限速 {cf['min_interval_sec']}s / 日上限 {cf['daily_cap']}）")
     return {"ok": True, "reason": "ok", "candidates": len(cands),
             "queried": len(ids), "updated": updated,
-            "skipped": len(cands) - updated, "limit_info": _limit_info()}
+            "skipped": len(cands) - updated, "limit_info": _limit_info(cf)}
 
 
-def _limit_info() -> dict:
-    cf = _cfg()
+def _limit_info(cf: dict | None = None) -> dict:
+    """本次生效的限速参数。传入 `cf` 时用它（避免与调用侧 `limit` 改写不一致）。"""
+    cf = cf if cf is not None else _cfg()
     return {"enabled": cf["enabled"], "min_interval_sec": cf["min_interval_sec"],
             "max_per_run": cf["max_per_run"], "daily_cap": cf["daily_cap"],
             "used_today": _day_count, "last_run_at": int(_last_run_at or 0)}

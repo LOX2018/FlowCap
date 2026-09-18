@@ -231,10 +231,20 @@ def compare_with_profile(account: str, js_view: dict) -> dict:
     exp_ua = p.get("ua") or ""
     exp_w = int(p.get("_window_w") or 0)
     exp_h = int(p.get("_window_h") or 0)
+    # 2026-09-18 审查修复（LOW→实修）：`exp_os` 原先算出却从未使用（dead assignment），
+    # 暗示着一个不存在的检查。现补上 `navigator.platform` vs 档案平台的比对。
+    # ⚠️ 错误码用 BCC-068（「浏览器环境与项目档案不一致」），**不用 BCC-066**
+    # （其语义是「原生函数被篡改」，写错就是 DSSCC 语义漂移）。
+    # ⚠️ UA / 内核版本比对**已由下方 E9 覆盖**，此处绝不重复判定（否则同一缺陷刷两条告警）。
     exp_os = (p.get("_platform_arg") or "").lower()
     exp_brand = p.get("_brand_arg") or "Chrome"
     exp_ver = (p.get("browser_version") or "").split(".")[0]
     kernel_v = (kernel_version() or "").split(".")[0]
+    if exp_os and js_view.get("platform") and exp_os != str(js_view["platform"]).lower():
+        _add("BCC-068", "warn", f"navigator.platform 与档案不一致: "
+             f"期望 {exp_os} / 实际 {js_view['platform']}")
+    # exp_ver / exp_brand 由下方 E9 消费（UA 与内核比对），保留以备将来扩展
+    _ = (exp_ver, exp_brand)
 
     # ---- E1: navigator.webdriver / HeadlessChrome（rebrowser/sannysoft）----
     if js_view.get("webdriver") is True:

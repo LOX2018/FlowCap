@@ -1737,13 +1737,22 @@ class BrowserContainer:
                 # = 基线确立时刻。记录出口 IP+代理模式，供运行期低频比对
                 # （run_keepalive → env_baseline.compare_baseline），环境跳变
                 # 在被强制下线之前暴露。探测零浏览器副作用；失败静默不写。
-                try:
-                    from services.env_baseline import record_baseline as _rec_base
-                    _b = _rec_base(self.account, source="scan_login")
-                    if _b:
-                        logger.info(f"[bcc] 环境基线已记录: ip={_b['ip']} mode={_b['mode']} country={_b['country']}")
-                except Exception as _e:
-                    logger.debug(f"[bcc] 环境基线记录失败（不影响登录）: {_e}")
+                #
+                # ⚠️ 2026-09-18 审查修复（DbC 违约）：`env_baseline` 契约第一条
+                # 明写「基线**只在**凭证真判据通过（ok=True）时记录，**绝不**在
+                # 凭证存疑时写入，否则把失效环境当基线」。此处原先无条件记录 →
+                # 探活失败时把存疑环境写成基线，之后的真实漂移**不再告警**
+                # （BCC-063 假阴性）。故必须以 `ok` 门控。
+                if ok:
+                    try:
+                        from services.env_baseline import record_baseline as _rec_base
+                        _b = _rec_base(self.account, source="scan_login")
+                        if _b:
+                            logger.info(f"[bcc] 环境基线已记录: ip={_b['ip']} mode={_b['mode']} country={_b['country']}")
+                    except Exception as _e:
+                        logger.debug(f"[bcc] 环境基线记录失败（不影响登录）: {_e}")
+                else:
+                    logger.debug("[bcc] 凭证未通过校验，跳过环境基线记录（防把失效环境当基线）")
                 # 重启容器 context
                 await self._launch()
                 return {"ok": ok, "uid": _uid}

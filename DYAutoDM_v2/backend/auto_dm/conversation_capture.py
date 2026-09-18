@@ -1767,7 +1767,9 @@ def capture_all(name, with_browser=True):
             #   · conv_id 为**纯数字** → 群聊（实测群聊 conv_id 本身就是 short_id）
             #   · '0:1:uidA:uidB'     → 单聊
             # 落库为 conv_type（1=单聊 2=群聊），供列表/导出/统计分流。
-            conv_type = 2 if str(cid).isdigit() else 1
+            # 2026-09-18：收敛到 conv_identity.conv_type（唯一实现，勿再内联重写）
+            from services.conv_identity import conv_type as _conv_type
+            conv_type = _conv_type(cid)
             conn.execute(
                 "INSERT OR IGNORE INTO dm_conversations("
                 "account,conv_id,peer_id,peer_name,short_id,conv_type,last_ts,unread,avatar) "

@@ -34,6 +34,12 @@ def _ffmpeg() -> str | None:
     return shutil.which("ffmpeg")
 
 
+def _ffprobe() -> str | None:
+    """2026-09-18 审查修复：`ffprobe` 与 `ffmpeg` 是两个可执行文件，
+    只查 ffmpeg 会出现「守卫通过、调用 FileNotFoundError」的假失败。"""
+    return shutil.which("ffprobe")
+
+
 def _make_src_mp4(path: str, hole_bytes: int = 0) -> bool:
     """用 ffmpeg 生成真实 H.264 MP4；`hole_bytes>0` 时在 stbl 内**预留 free box**。
 
@@ -489,10 +495,12 @@ class TestGroupChat(unittest.TestCase):
         shutil.rmtree(self._tmp, ignore_errors=True)
 
     def test_digit_conv_id_is_group(self):
+        """2026-09-18 审查修复（A15）：旧实现把判据内联重写一遍再与期望表比对
+        （`got` 与 `want` 同源，恒真，永不触达生产代码）。现改为真调单一真相源。"""
+        from services.conv_identity import conv_type
         for cid, want in (("738291000111", 2), ("0:1:1:2", 1),
-                          ("12345", 2), ("abc", 1)):
-            got = 2 if str(cid).isdigit() else 1
-            self.assertEqual(got, want, f"conv_id={cid}")
+                          ("12345", 2), ("abc", 1), ("", 1), ("  42  ", 2)):
+            self.assertEqual(conv_type(cid), want, f"conv_id={cid!r}")
 
     def test_chatlab_marks_group(self):
         self.conn.execute(
@@ -630,6 +638,8 @@ class TestVideoResolveChain(unittest.TestCase):
         self.assertTrue(out.get("decrypted"))
         got = open(out["path"], "rb").read()
         self.assertEqual(CV.probe_mp4(got)["is_mp4"], True)
+        if not _ffprobe():
+            self.skipTest("ffprobe 不可用")
         pb = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                              "stream=codec_name,nb_frames", "-of", "csv=p=0",
                              out["path"]], capture_output=True, text=True)
@@ -673,8 +683,6 @@ class TestVideoResolveChain(unittest.TestCase):
         self.assertIn("tkey", out.get("error", ""))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class TestConversationSeq(unittest.TestCase):
@@ -690,8 +698,10 @@ class TestConversationSeq(unittest.TestCase):
         sys.modules["database"].get_db = lambda: self.conn
 
     def tearDown(self):
+        # 2026-09-18 审查修复（A16）：恢复 get_db 后**不要** del sys.modules["database"]。
+        # unittest discover 下所有 test_*.py 共享一个进程，删模块会让已 import database 的
+        # 模块（如 api.messages）持有陈旧绑定 → 后续用例串库/随执行顺序而变。
         sys.modules["database"].get_db = self._orig
-        del sys.modules["database"]
 
     def test_seq_continuous_from_1(self):
         from api.messages import get_conversation
@@ -754,3 +764,7 @@ class TestConversationSeq(unittest.TestCase):
         # 两边 msg_id 逐条相等 = 同一集合同一序
         self.assertEqual([m.get("msg_id") for m in detail],
                          [m["msg_id"] for m in render])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

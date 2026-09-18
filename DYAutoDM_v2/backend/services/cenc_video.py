@@ -38,13 +38,13 @@ from typing import Any
 
 from loguru import logger
 
-# 容器 box（需要递归下钻的类型）
-_CONTAINERS = ("moov", "trak", "mdia", "minf", "stbl", "edts", "udta",
-               "meta", "mvex", "moof", "traf", "dinf")
-
 # box 解析安全上限（防畸形文件导致内存/时间爆炸）
 _MAX_BOXES = 200000
 _MAX_NEST = 32
+
+# 单次解引用上限（`stsz` 的 sample_count 直接取自文件，恶意值可达 4.29e9；
+# 超过此数即拒绝，防 `[default_size] * sample_count` 撑爆内存）
+_MAX_SAMPLES = 5_000_000
 
 
 def parse_boxes(buf: bytes, start: int, end: int, _depth: int = 0
@@ -59,7 +59,7 @@ def parse_boxes(buf: bytes, start: int, end: int, _depth: int = 0
         return out
     pos = start
     end = min(int(end), len(buf))
-    while pos < end - 8 and len(out) < _MAX_BOXES:
+    while pos + 8 <= end and len(out) < _MAX_BOXES:
         try:
             bs = struct.unpack(">I", buf[pos:pos + 4])[0]
             bt = buf[pos + 4:pos + 8].decode("ascii", errors="replace")
@@ -104,6 +104,8 @@ def _parse_stsz(content: bytes) -> list[int]:
     if len(content) < 12:
         return []
     default_size, sample_count = struct.unpack(">II", content[4:12])
+    if sample_count > _MAX_SAMPLES:
+        return []                      # 畸形/恶意 stsz：拒绝，绝不按其分配内存
     if default_size != 0:
         return [default_size] * sample_count
     need = 12 + sample_count * 4
@@ -271,7 +273,8 @@ BATCH_PLAY_INFO_PATH = ("/aweme/v1/web/maya/story/batch_play_info/v1/"
 BATCH_SIZE = 10
 
 # 在页面上下文换取签名地址（body 已在 Python 侧序列化，避免 64 位 ID 经 JS Number）
-RESOLVE_URLS_JS = """async ({path, tkeys}) => {
+RESOLVE_URLS_JS = """async (arg) => {
+    const [path, tkeys] = arg;        // 本项目约定：exec_js(js, [a, b]) → JS 内解构
     try {
         if (location.origin !== 'https://www.douyin.com')
             throw new Error('需要抖音网页登录上下文');
@@ -361,7 +364,11 @@ def resolve_play_urls_batch(tkeys: list[str], exec_js,
 
 
 def _iv_size_for(senc_content: bytes, saiz_content: bytes | None) -> int:
-    """IV 尺寸：优先 saiz，回退 8（上游硬编码值），最后 16。"""
+    """IV 尺寸：优先 saiz，回退 8（上游硬编码值），最后 16。
+
+    `senc_content` 目前不参与判定（保留为签名占位/调用点形状统一，
+    日后若需按 senc 长度兜底可直接使用，见 2026-09-18 审查 LOW 项）。
+    """
     if saiz_content:
         z = _parse_saiz(saiz_content)
         if z in (8, 16):

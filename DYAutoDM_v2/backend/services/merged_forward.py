@@ -60,7 +60,8 @@ _AWE_MERGE = "13600"
 
 # 在**已登录的抖音页面上下文**里发同域 POST（复用网页登录态；不向第三方域转发 cookie，
 # 也不把 64 位 ID 经 JS Number 往返 —— body 已在 Python 侧序列化为字符串）。
-WEB_FETCH_JS = """async ({path, body}) => {
+WEB_FETCH_JS = """async (arg) => {
+    const [path, body] = arg;       // 本项目约定：exec_js(js, [a, b]) → JS 内解构
     if (location.origin !== 'https://www.douyin.com')
         throw new Error('需要抖音网页登录上下文');
     const r = await fetch(path + '?aid=6383&device_platform=webapp', {
@@ -323,7 +324,7 @@ def render_text(content: Any, bodies: list[dict] | None = None,
     c = _as_obj(content)
     title = str(c.get("title") or "聊天记录").strip()
     ids = expected_ids(c)
-    text = ""
+    # 2026-09-18 审查清理：此处原有 dead local `text = ""`（全文未被读取）
     if complete(c, c.get("inline_content")):
         bodies = c["inline_content"]
     elif complete(c, bodies):
