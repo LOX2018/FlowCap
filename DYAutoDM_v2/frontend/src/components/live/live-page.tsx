@@ -405,6 +405,7 @@ export default function LivePage(props: PageProps) {
         onClose={() => setCfgMgr(false)}
         currentRoom={room}
         push={push}
+        onChanged={loadRoomCfgs}
         onApply={(cfg) => {
           if (cfg.live_url) setRoom(cfg.live_url);
           else if (cfg.room_id) setRoom(cfg.room_id);

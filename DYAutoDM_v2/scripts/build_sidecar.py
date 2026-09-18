@@ -25,6 +25,10 @@ BINARIES = ROOT / "src-tauri" / "binaries"
 
 EXT = ".exe" if platform.system() == "Windows" else ""
 
+# 测试白名单注入标记（build_sidecar.inject/restore 与守卫测试共用，避免字面量漂移）
+_WS_START = "# ---DM_TEST_WHITELIST_INJECT_START---"
+_WS_END = "# ---DM_TEST_WHITELIST_INJECT_END---"
+
 
 def _app_version() -> str:
     """从 tauri.conf.json 读当前版本（唯一真源），供构建时注入 sidecar。
@@ -241,10 +245,58 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
                    "services.kv_store", "kv_store",
                    "services.env_audit", "env_audit"):
             cmd += ["--hidden-import", _m]
+    # 2026-09-18 v0.43.91：🔴 **函数体延迟导入的本地模块**（结构性漏打，实测致
+    # 「直播/采集私信一条都发不出」）。事故：`core/dispatch.py:350` 在函数体内
+    # `from services.dm_dispatch import get_dispatcher`；`services/dm_dispatch.py`
+    # 在**任何应用模块里都没有顶层 import**（只有 test_*/_*.py 有，而那些不进产物），
+    # 于是 PyInstaller 静态分析与「函数体 import 也能被扫到」的既有认知**双双落空**
+    # → 打包后 backend 侧 `No module named 'services.dm_dispatch'`，日志仅一行
+    # `SEND-037 dm_dispatch 接入失败，已放弃发送`，其余功能全正常，极难发现。
+    #
+    # 判据（不要靠推测）：`scripts/diag/list_archive_modules.py <exe> <模块名>`
+    # 直接读产物 PYZ 归档核对；`scripts/diag/scan_lazy_imports.py --check` 做静态守卫。
+    # 实测三份 sidecar 中真缺失的只有本模块（automation_engine 无生产调用路径，
+    # image_sender 在 recv-daemon 里已被静态追到）。
+    #
+    # ⚠️ 加入内存调节/自动化模块（services.automation_engine 等大依赖）前必须
+    # 用 list_archive_modules 复核体积与收录，本批刻意不加入（不扩大交付面）。
+    for _m in (
+        "services.dm_dispatch", "dm_dispatch",
+        # 发送闸门/配额裁决的依赖面（dm_dispatch 内部延迟导入，保持自洽）
+        "services.config_tag",
+    ):
+        cmd += ["--hidden-import", _m]
+
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=str(BACKEND))
     print(f"产出: {out}")
+
+
+def build_whitelist_block(WL: dict) -> tuple[str, str]:
+    """生成注入体（纯函数，便于单测）。返回 (body, 完整注入块)。
+
+    ## 🔴 为什么必须独立可测（v0.43.91 事故）
+
+    原实现直接内联拼字符串，**空 WL 时产出 `_TEST_WHITELIST = {\\n,\\n}`** ——
+    语法非法。而注入发生在 PyInstaller 分析**之前** ⇒ ModuleGraph 解析
+    `services/dm_dispatch.py` 时 SyntaxError ⇒ 该模块被**静默丢弃**（日志连
+    `Analyzing hidden import 'services.dm_dispatch'` 都不打印），打包后
+    backend 调 dm_dispatch 时 `No module named 'services.dm_dispatch'`
+    ⇒ 直播/采集**私信一条都发不出**，而其余功能全正常。
+    构建末尾 `restore_whitelist()` 又把源码还原成合法空壳 → 源码态 import 正常，
+    问题被**完全掩盖**，只有真跑打包产物才暴露。
+
+    契约：任何 WL（含空 dict）产出的注入块都必须 `compile()` 通过。
+    """
+    lines = ",\n".join(f'    "{k}": {{"{v}"}}' for k, v in (WL or {}).items())
+    if WL:
+        body = f'_TEST_WHITELIST = {{\n{lines},\n}}\nTEST_WHITELIST_ON = True\n'
+    else:
+        # 空映射绝不能留裸逗号 —— 那正是 SyntaxError 的来源
+        body = "_TEST_WHITELIST = {}\nTEST_WHITELIST_ON = False\n"
+    block = (_WS_START + "\n" + body + _WS_END + "\n")
+    return body, block
 
 
 def inject_test_whitelist() -> None:
@@ -281,21 +333,30 @@ def inject_test_whitelist() -> None:
     if not WL:
         print("[warn] 未设 DY_DM_TEST_WHITELIST，注入空白名单（调试版不限制目标）")
     target = Path(__file__).resolve().parent.parent / "backend" / "services" / "dm_dispatch.py"
+    start = _WS_START
+    end = _WS_END
     src = target.read_text(encoding="utf-8")
-    start = "# ---DM_TEST_WHITELIST_INJECT_START---"
-    end = "# ---DM_TEST_WHITELIST_INJECT_END---"
     if start not in src or end not in src:
         print("[warn] 未找到注入标记，跳过白名单注入")
         return
     # 直接按 WL 的语义生成，不做任何对称推导
     # （2026-09-07 踩坑：旧代码用 WL[对方名] 取值生成，导致收发关系反转）
-    lines = ",\n".join(
-        f'    "{k}": {{"{v}"}}' for k, v in WL.items())
-    body = f'_TEST_WHITELIST = {{\n{lines},\n}}\nTEST_WHITELIST_ON = True\n'
+    # 2026-09-18 v0.43.91：🔴 生成逻辑抽到 `build_whitelist_block`（可单测），
+    # 原实现在 WL 为空时产出 `_TEST_WHITELIST = {\n,\n}` 这种**语法非法**代码，
+    # 注入后 PyInstaller 解析该模块即 SyntaxError → **静默丢弃整个模块** →
+    # 打包后 `No module named 'services.dm_dispatch'`（SEND-037）。
+    _body, _block = build_whitelist_block(WL)
     new = re.sub(re.escape(start) + r".*?" + re.escape(end),
-                 start + "\n" + body + end, src, flags=re.S)
+                 lambda _m: _block.rstrip("\n"), src, flags=re.S)
+    # 语法自证：注入态必须能被 compile —— 否则 PyInstaller 会静默丢模块
+    try:
+        compile(new, str(target), "exec")
+    except SyntaxError as e:
+        raise SystemExit(
+            f"[fatal] 白名单注入产生语法错误，打包将静默丢失 services.dm_dispatch："
+            f"{e.msg} @ line {e.lineno}: {e.text!r}")
     target.write_text(new, encoding="utf-8")
-    print(f"[debug] 已注入测试白名单（仅调试版）: {WL}")
+    print(f"[debug] 已注入测试白名单（仅调试版）: {WL or '（空 = 不限制目标）'}")
 
 
 def restore_whitelist() -> None:

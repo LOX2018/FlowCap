@@ -22,6 +22,8 @@ interface Props {
   currentRoom: string;
   /** toast */
   push: (msg: string, holdMs?: number) => void;
+  /** 保存/删除/应用等写操作完成后通知父页刷新列表（v0.43.91） */
+  onChanged?: () => void;
   /** 应用某条配置到页面（回填输入框与各配置项） */
   onApply: (cfg: RoomConfig) => void;
 }
@@ -34,6 +36,7 @@ const EMPTY_DRAFT: Partial<RoomConfig> = {
   delay: "50,120",
   force_rescan: false,
   auto_link_mic: false,
+  dm_pool: [],
   link_mic_mode: "audio",
 };
 
@@ -51,7 +54,7 @@ const FIELD_CN: Record<string, string> = {
 const cnFields = (keys?: string[]): string =>
   (keys || []).map((k) => FIELD_CN[k] || k).join("、");
 
-export default function RoomConfigManager({ open, onClose, currentRoom, push, onApply }: Props) {
+export default function RoomConfigManager({ open, onClose, currentRoom, push, onApply, onChanged }: Props) {
   const [items, setItems] = useState<RoomConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState<Partial<RoomConfig>>({ ...EMPTY_DRAFT });
@@ -71,9 +74,14 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
   useEffect(() => {
     if (open) {
       load();
-      // 用当前输入框预填新建草稿
+      // v0.43.91：新建草稿**不再预填 live_url**。
+      // 原实现把「页面当前直播间」写进 live_url，而保存时该值优先于
+      // 输入框里的 room_id 被代入 → 新建房间存的是**另一个直播间的地址**
+      // （实测 room_id=777666555 存成 live_url=992931212705）。草稿只带 room_id，
+      // live_url 由后端按 room_id 推导。
+
       const rid = extractRoomId(currentRoom);
-      setDraft({ ...EMPTY_DRAFT, room_id: rid || "", live_url: currentRoom || "" });
+      setDraft({ ...EMPTY_DRAFT, room_id: rid || "" });
       setEditing(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,6 +100,7 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
           push(`已保存直播间 ${r.config?.room_id} 的配置` + (r.config?.auto_link_mic ? "（含自动申请连麦）" : ""));
           setDraft({ ...EMPTY_DRAFT });
           setEditing(null);
+          onChanged?.();
           load();
         } else {
           push("保存失败: " + (r.error || "未知错误"));
@@ -106,6 +115,7 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
       .then((r) => {
         if (r.ok) {
           push(`已删除直播间 ${roomId} 的配置`);
+          onChanged?.();
           load();
         } else push("删除失败: " + (r.error || ""));
       })
@@ -167,6 +177,7 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
           );
         }
         load();
+        onChanged?.();
       })
       .catch((e: unknown) => push("重启异常: " + errMsg(e)))
       .finally(() => setRestarting(null));
@@ -340,6 +351,59 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
               />
               <span style={{ color: "var(--color-text-muted)" }}>强制重扫</span>
             </label>
+            <div className="col-span-2 flex flex-col gap-1.5 border-t
+                            border-[var(--color-border)] pt-3">
+              <div className="flex items-center gap-2 text-[0.74rem]">
+                <span style={{ color: "var(--color-text-muted)" }}>私信词库</span>
+                <span style={{ color: "var(--color-text-muted)", opacity: 0.8 }}>
+                  发送时随机抽已启用的一条；至少 1 条启用才能发出私信
+                </span>
+              </div>
+              {(draft.dm_pool || []).map((t, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <Switch
+                    checked={t.enabled !== false}
+                    onCheckedChange={(v) => {
+                      const pool = [...(draft.dm_pool || [])];
+                      pool[idx] = { ...pool[idx], enabled: v };
+                      setDraft({ ...draft, dm_pool: pool });
+                    }}
+                  />
+                  <Input
+                    value={t.text || ""}
+                    placeholder="私信文案（如：你好，看到您咨询工伤问题）"
+                    onChange={(e) => {
+                      const pool = [...(draft.dm_pool || [])];
+                      pool[idx] = { ...pool[idx], text: e.target.value };
+                      setDraft({ ...draft, dm_pool: pool });
+                    }}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="删除该条文案"
+                    onClick={() => {
+                      const pool = (draft.dm_pool || []).filter((_, k) => k !== idx);
+                      setDraft({ ...draft, dm_pool: pool });
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setDraft({
+                    ...draft,
+                    dm_pool: [...(draft.dm_pool || []), { text: "", enabled: true }],
+                  })}
+                >
+                  + 新增一条文案
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--color-border)] px-4 py-3">
