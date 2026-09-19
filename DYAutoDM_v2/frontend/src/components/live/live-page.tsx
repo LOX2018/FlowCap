@@ -5,13 +5,12 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 
 import {
-  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X, Radio,
+  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X,
 } from "lucide-react";
 
 import { PageProps, ReusePayload, RoomConfig } from "../../api/client";
 
-import RoomConfigPage from "./RoomConfigPage";
-import TargetRoomPage from "./TargetRoomPage";
+import RoomConfigPage from "./RoomConfigPage";
 
 import { Avatar, hue, KIND_NAME } from "../../components/ui";
 
@@ -45,6 +44,9 @@ import {
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
 
+/** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
+const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
+
 export default function LivePage(props: PageProps) {
   const { push, ready, goMsg, api, reviewPayload, reusePayload } = props;
   const [viewMode, setViewMode] = useState<"single" | "grid">("single");
@@ -63,11 +65,9 @@ export default function LivePage(props: PageProps) {
   // 「直播间配置管理」里（唯一可写入口）。这里只读展示生效配置。
   const [roomCfgs, setRoomCfgs] = useState<RoomConfig[]>([]);
   const [selCfgId, setSelCfgId] = useState<string>("");
-  // 直播页三个子视图（2026-09-19 用户定调：目标直播间与配置管理必须分开）
-  //   · monitor = 监听（原页面主体）
-  //   · targets = 「目标直播间」：监听哪些房间 + 绑定哪条配置
-  //   · configs = 「直播配置标签」：参数唯一可写入口
-  const [subView, setSubView] = useState<"monitor" | "targets" | "configs">("monitor");
+  // 直播策略弹窗开关（2026-09-19 用户定调：**不要** tab 切换栏 / 子 tab 页面；
+  // 策略编辑以弹窗提供，入口在「直播间」板块的策略下拉旁）
+  const [cfgMgr, setCfgMgr] = useState(false);
   // 申请连麦进行中（防重复点击）
   const [linkMicBusy, setLinkMicBusy] = useState(false);
   // 任务中心「复用」载荷（标记已应用，避免容器回读覆盖用户刚改的字段）
@@ -152,15 +152,14 @@ export default function LivePage(props: PageProps) {
   // 选择某条配置：只读到页面（不写库、不起任务）——「选择配置的调用口」
   const pickRoomCfg = (roomId: string) => {
     setSelCfgId(roomId);
-    const c = roomCfgs.find((x) => x.room_id === roomId);
+    const c = roomCfgs.find((x) => sidOf(x) === roomId);
     if (!c) return;
-    setRoom(c.live_url || `https://live.douyin.com/${c.room_id}`);
     if (c.acct && realAccts.some((a) => a.name === c.acct)) setActiveAcct(c.acct);
-    push(`已选择配置「${c.name || c.room_id}」· 配置内容在「直播间配置管理」中编辑`);
+    push(`已选择直播策略「${c.name || roomId}」· 内容可在「管理策略」中改后点「重启」`);
   };
 
   const selCfg = useMemo(
-    () => roomCfgs.find((c) => c.room_id === selCfgId) || null,
+    () => roomCfgs.find((c) => sidOf(c) === selCfgId) || null,
     [roomCfgs, selCfgId],
   );
 
@@ -193,10 +192,8 @@ export default function LivePage(props: PageProps) {
     if (!reusePayload) return;
     const c = reusePayload;
     if (c.room) setRoom(c.room);
-    const matched = roomCfgs.find(
-      (x) => x.live_url === c.room || x.room_id === c.room,
-    );
-    if (matched) setSelCfgId(matched.room_id);
+    const matched = roomCfgs.find((x) => sidOf(x) === c.room);
+    if (matched) setSelCfgId(sidOf(matched));
     push(
       "已复用历史任务的直播间到直播监听页；发送参数请在「直播间配置管理」中核对该房间的配置",
     );
@@ -404,30 +401,31 @@ export default function LivePage(props: PageProps) {
           </div>
         </div>
       )}
+      <RoomConfigPage
+        open={cfgMgr}
+        onClose={() => setCfgMgr(false)}
+        push={push}
+        onChanged={loadRoomCfgs}
+        onApply={(cfg) => {
+          const sid = String(cfg.id || cfg.room_id || "");
+          if (sid) setSelCfgId(sid);
+          if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
+        }}
+      />
+
       <PageHeader
         title="直播监听"
         description="实时弹幕 / 礼物 / 评论采集与私信自动化"
         actions={
           <>
             <SegmentedTabs
-              value={subView}
-              onChange={(v) => setSubView(v as "monitor" | "targets" | "configs")}
+              value={viewMode}
+              onChange={setViewMode}
               items={[
-                { value: "monitor", label: "监听", icon: <Radio className="h-3.5 w-3.5" /> },
-                { value: "targets", label: "目标直播间", icon: <Users className="h-3.5 w-3.5" /> },
-                { value: "configs", label: "配置标签", icon: <Settings2 className="h-3.5 w-3.5" /> },
+                { value: "single", label: "单账户", icon: <LogIn className="h-3.5 w-3.5" /> },
+                { value: "grid", label: "多账户总览", icon: <Users className="h-3.5 w-3.5" /> },
               ]}
             />
-            {subView === "monitor" && (
-              <SegmentedTabs
-                value={viewMode}
-                onChange={setViewMode}
-                items={[
-                  { value: "single", label: "单账户", icon: <LogIn className="h-3.5 w-3.5" /> },
-                  { value: "grid", label: "多账户总览", icon: <Users className="h-3.5 w-3.5" /> },
-                ]}
-              />
-            )}
             <Badge variant={streaming ? "success" : engineBusy ? "warning" : "outline"}>
               <StatusDot
                 tone={streaming ? "ok" : engineBusy ? "warn" : "muted"}
@@ -459,30 +457,7 @@ export default function LivePage(props: PageProps) {
         }
       />
 
-      {subView === "targets" && (
-        <TargetRoomPage
-          push={push}
-          onChanged={loadRoomCfgs}
-          gotoConfigs={() => setSubView("configs")}
-        />
-      )}
-
-      {subView === "configs" && (
-        <RoomConfigPage
-          push={push}
-          currentRoom={room}
-          onChanged={loadRoomCfgs}
-          onApply={(cfg) => {
-            if (cfg.live_url) setRoom(cfg.live_url);
-            else if (cfg.room_id) setRoom(cfg.room_id);
-            if (cfg.room_id) setSelCfgId(cfg.room_id);
-            if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
-            setSubView("monitor");
-          }}
-        />
-      )}
-
-      {subView !== "monitor" ? null : viewMode === "grid" ? (
+      {viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2" data-od-id="live-grid">
           {realAccts.slice(0, 2).map((acct) => (
             <Card key={acct.name} className="overflow-hidden">
@@ -653,26 +628,26 @@ export default function LivePage(props: PageProps) {
             className="mb-3.5"
             data-od-id="live-input"
             title="直播间"
-            description="选择已保存的配置（标签）即可；配置内容与「重启」在「直播间配置管理」中统一维护"
+            description="选择已保存的直播策略即可；策略内容与「重启」在「管理策略」中维护"
             actions={
               <>
                 <Select value={selCfgId} onValueChange={pickRoomCfg}>
                   <SelectTrigger
                     className="h-8 min-w-[220px]"
-                    aria-label="选择直播间配置"
+                    aria-label="选择直播策略"
                     data-od-id="live-cfg-select"
                   >
-                    <SelectValue placeholder="选择已保存的直播间配置…" />
+                    <SelectValue placeholder="选择直播策略…" />
                   </SelectTrigger>
                   <SelectContent>
                     {roomCfgs.length === 0 && (
                       <SelectItem value="__none__" disabled>
-                        暂无配置 · 请到「直播间配置管理」新建
+                        暂无策略 · 点右侧「管理策略」新建
                       </SelectItem>
                     )}
                     {roomCfgs.map((c) => (
-                      <SelectItem key={c.room_id} value={c.room_id}>
-                        {(c.name || c.room_id) + ` · ${c.room_id}`}
+                      <SelectItem key={sidOf(c)} value={sidOf(c)}>
+                        {c.name || sidOf(c)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -681,10 +656,10 @@ export default function LivePage(props: PageProps) {
                   variant="ghost"
                   size="sm"
                   data-od-id="live-room-configs"
-                  title="打开「直播配置标签」（参数唯一可写入口：内容编辑 + 重启）"
-                  onClick={() => setSubView("configs")}
+                  title="管理直播策略（增删改 + 重启，不中断监听）"
+                  onClick={() => setCfgMgr(true)}
                 >
-                  <Settings2 className="h-3.5 w-3.5" />配置标签
+                  <Settings2 className="h-3.5 w-3.5" />管理策略
                 </Button>
               </>
             }
@@ -793,15 +768,7 @@ export default function LivePage(props: PageProps) {
                       if (!room.trim()) {
                         setAlert({
                           title: "请先填写直播间",
-                          msg: "请填写直播间 URL 或 room_id（失焦会自动解析），或直接选择一条已保存的直播间配置。",
-                        });
-                        return;
-                      }
-                      if (selCfg.acct && activeAcct && selCfg.acct !== activeAcct) {
-                        setAlert({
-                          title: "账号不一致",
-                          msg: `所选配置「${selCfg.name || selCfg.room_id}」绑定的是账号「${selCfg.acct}」，`
-                            + `而当前监听账号是「${activeAcct}」。请到「配置管理」改该配置，或改选账号。`,
+                          msg: "请填写直播间 URL 或 room_id（失焦会自动解析），或直接选择一条已保存的策略。",
                         });
                         return;
                       }
@@ -811,7 +778,6 @@ export default function LivePage(props: PageProps) {
                         interval: selCfg.interval ?? 60,
                         delay: selCfg.delay || "50,120",
                         dm_pool: selCfg.dm_pool || [],
-                        force_rescan: !!selCfg.force_rescan,
                         acct: activeAcct || selCfg.acct || undefined,
                       };
                       api
@@ -886,7 +852,7 @@ export default function LivePage(props: PageProps) {
             title="生效的自动私信配置"
             description={
               selCfg
-                ? `来自「${selCfg.name || selCfg.room_id}」· 任务进行中修改请到「配置管理」改后点「重启」`
+                ? `来自策略「${selCfg.name || sidOf(selCfg)}」· 任务进行中修改请点「管理策略」改后点「重启」`
                 : "尚未选择主播间配置（上方下拉选择）"
             }
             actions={
@@ -894,9 +860,9 @@ export default function LivePage(props: PageProps) {
                 variant="ghost"
                 size="sm"
                 data-od-id="live-cfg-goto"
-                onClick={() => setSubView("configs")}
+                onClick={() => setCfgMgr(true)}
               >
-                <Settings2 className="h-3.5 w-3.5" />去配置
+                <Settings2 className="h-3.5 w-3.5" />管理策略
               </Button>
             }
           >
@@ -921,12 +887,6 @@ export default function LivePage(props: PageProps) {
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.76rem]
                                 text-[var(--color-text-secondary)]">
                   <span>
-                    强制重扫：
-                    <b className="font-mono text-[var(--color-text)]">
-                      {selCfg.force_rescan ? "开" : "关"}
-                    </b>
-                  </span>
-                  <span>
                     自动申请连麦：
                     <b className="font-mono text-[var(--color-text)]">
                       {selCfg.auto_link_mic
@@ -937,7 +897,7 @@ export default function LivePage(props: PageProps) {
                   <span>
                     监听账号：
                     <b className="font-mono text-[var(--color-text)]">
-                      {selCfg.acct || "页面当前选择"}
+                      {activeAcct || selCfg.acct || "未选择"}
                     </b>
                   </span>
                 </div>
@@ -951,7 +911,7 @@ export default function LivePage(props: PageProps) {
                   <div className="flex flex-col gap-1">
                     {(selCfg.dm_pool || []).length === 0 && (
                       <span className="text-[0.75rem] text-[var(--color-text-muted)]">
-                        该配置尚未设置词库 · 请到「配置管理」补充
+                        该策略尚未设置词库 · 请点「管理策略」补充
                       </span>
                     )}
                     {(selCfg.dm_pool || []).map((t, i) => (
@@ -974,8 +934,8 @@ export default function LivePage(props: PageProps) {
               </div>
             ) : (
               <Blank>
-                请在上方「直播间」区选择一条已保存的配置（标签）——
-                或在「配置管理」中新建一条。
+                请在上方「直播间」区选择一条已保存的策略，
+                或点「管理策略」新建一条。
               </Blank>
             )}
           </Section>

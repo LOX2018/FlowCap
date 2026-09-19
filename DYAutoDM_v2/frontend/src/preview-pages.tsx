@@ -63,32 +63,22 @@ const MOCK_VIDEOS = [
 function mockApi() {
   return {
     getAccounts: async () => MOCK_ACCOUNTS,
-    // 2026-09-19：直播「配置标签 / 目标直播间」子视图的 mock 数据
+    // 2026-09-19：直播**策略弹窗**（纯策略，无身份字段）的 mock 数据
     listRoomConfigs: async () => ({
       ok: true,
       items: [
-        { id: "992931212705", room_id: "992931212705", name: "标准-快速", max_target: 50,
-          interval: 45, delay: "40,80", force_rescan: false, acct: "主账号_A",
+        { id: "lc_standard", name: "标准-快速", max_target: 50,
+          interval: 45, delay: "40,80", acct: "主账号_A",
           auto_link_mic: true, link_mic_mode: "audio",
           dm_pool: [{ text: "你好，看到你咨询工伤，方便留个电话吗", enabled: true },
                     { text: "在的哈，有什么可以帮您", enabled: false }] },
-        { id: "保守-慢速", room_id: "保守-慢速", name: "保守-慢速", max_target: 8,
-          interval: 300, delay: "300,600", force_rescan: true, acct: null,
+        { id: "lc_conservative", name: "保守-慢速", max_target: 8,
+          interval: 300, delay: "300,600", acct: null,
           auto_link_mic: false, link_mic_mode: "audio", dm_pool: [] },
       ],
     }),
-    listTargetRooms: async () => ({
-      ok: true,
-      items: [
-        { room_id: "992931212705", name: "张老师工伤直播间", tag_id: "992931212705", enabled: true },
-        { room_id: "777666555", name: "另一间（未绑定）", tag_id: null, enabled: false },
-      ],
-    }),
-    saveTargetRoom: async () => ({ ok: true }),
-    deleteTargetRoom: async () => ({ ok: true }),
-    resolveTargetRoom: async () => ({ ok: true, params: {} }),
     saveRoomConfig: async () => ({ ok: true }),
-    deleteRoomConfig: async () => ({ ok: true, unbound_rooms: [] }),
+    deleteRoomConfig: async () => ({ ok: true }),
     applyRoomConfig: async () => ({ ok: true }),
     restartRoomConfig: async () => ({
       ok: true, applied_fields: [],

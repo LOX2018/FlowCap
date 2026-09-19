@@ -116,7 +116,7 @@ class TestResolve(unittest.TestCase):
         """general（前端/系统行为）不受标签影响。"""
         t = config_tag.save_tag("", "标签")
         config_tag.bind("账号A", t["id"])
-        base = {"force_rescan": True}
+        base = {"interval": 123.0}
         self.assertEqual(config_tag.resolve("账号A", "general", base), base)
 
 

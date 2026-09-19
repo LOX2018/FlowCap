@@ -17,12 +17,6 @@ SECTIONS: dict[str, dict[str, Any]] = {
     "general": {
         "label": "通用 / 启动",
         "fields": {
-            "force_rescan": {
-                "label": "启动前强制重新扫码",
-                "type": "bool", "default": False, "env": None,
-                "apply": "hot",
-                "hint": "勾选则每次启动自动私信都强制重扫，忽略磁盘凭证",
-            },
             "bcc_on_start": {
                 "label": "启动时拉起 BCC 浏览器容器",
                 "type": "bool", "default": False, "env": "DY_BCC_ON_START",

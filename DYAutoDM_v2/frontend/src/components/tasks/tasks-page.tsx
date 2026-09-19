@@ -93,7 +93,6 @@ export default function TasksPage(props: PageProps) {
       interval: cfg.interval,
       delay: cfg.delay,
       dmPool: Array.isArray(cfg.dm_pool) ? cfg.dm_pool : cfg.dmPool,
-      forceRescan: cfg.forceRescan,
       acct: cfg.acct,
     });
     push(`已复用任务「${item.acct || ""}」配置到直播监听页`);

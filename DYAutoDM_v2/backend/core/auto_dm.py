@@ -100,7 +100,6 @@ class AutoDM:
         self.dm_template: list[dict] = list(getattr(settings, "dm_pool", []) or [])
         self.delay_range: tuple[int, int] = tuple(getattr(settings, "delay_range", [40, 65]))
         self.interval: float = float(getattr(settings, "interval", 60.0))
-        self.force_rescan: bool = bool(getattr(settings, "force_rescan", False))
         # captured_count 是只读 property（从 dispatch.records 派生），无需初始化
         self.status_msg: str = "未启动"
         self.room_title: str = ""
@@ -291,7 +290,6 @@ class AutoDM:
         self.limit = max(1, int(config.max_target))
         self.interval = float(config.interval)
         self.delay_range = tuple(config.delay_range or [40, 65])
-        self.force_rescan = bool(config.force_rescan)
         self._acct = getattr(config, "acct", None)
         self.dm_template = self._normalize_dm_pool(config.dm_pool)
         self.pick_dm_message = self._make_pick_dm_message()
@@ -325,7 +323,6 @@ class AutoDM:
             "max_target": int(self.limit),
             "interval": float(self.interval),
             "delay": f"{dr[0]},{dr[1]}" if len(dr) == 2 else str(list(dr)),
-            "force_rescan": bool(self.force_rescan),
             "acct": getattr(self, "_acct", None),
             "dm_pool": [
                 {"text": t.get("text", ""), "enabled": t.get("enabled", True)}
@@ -786,13 +783,11 @@ class AutoDM:
             self.live.stop_heartbeat()
             self.live = None
 
-        # 2) 重新扫码（由 force_rescan 控制：True 强制重扫，False 复用 .env 凭证）
-        # 2026-09-17 修补（OCR 审查 CRITICAL）：原为 `getattr(config, "force_rescan", False)`
-        # —— 本方法内**没有 config 这个名字**（参数名是 account_name，也未引用
-        # self.config），运行到此必然抛 `NameError: name 'config' is not defined`，
-        # 使「重新扫码」链路完全不可用。正确来源是本实例的 self.force_rescan。
-        force_fresh = getattr(self, "force_rescan", False)
-        auth = self._build_one_auth(env_path, force_fresh=force_fresh, max_age=0)
+        # 2) 重新扫码（本路径本身即「重新扫码」语义 → 强制重扫）
+        # 2026-09-19：「启动前强制重扫」配置项已彻底移除（用户定调：该策略早已废弃）。
+        # 本方法只在调用方明确要求重建凭证时进入，故直接 force_fresh=True；
+        # 凭证「过龄强制重扫」仍由 _build_one_auth 的 max_age 分支负责，与本项无关。
+        auth = self._build_one_auth(env_path, force_fresh=True, max_age=0)
         if auth is None or not getattr(auth, "cookie", None):
             raise RuntimeError(
                 f"账号「{account_name}」扫码未成功拿到有效凭证。"
@@ -831,7 +826,7 @@ class AutoDM:
 
         与 `start()` 的区别（这是本方法存在的唯一理由）：
           - **不重建** LiveChatHook / WS 连接（监听不断）；
-          - **不重扫** 凭证（`force_rescan` 不在此生效，避免把运行中任务踢回扫码）；
+          - **不重扫** 凭证（避免把运行中任务踢回扫码）；
           - **不清空** 延迟发送队列、不重置去重集合与已发计数；
           - 只热更「调度参数」：发送上限 / 间隔 / 延迟抖动 / 私信词库。
 
@@ -863,11 +858,7 @@ class AutoDM:
         if new_acct and cur_acct and new_acct != cur_acct:
             not_applied.append("acct")
 
-        # ③ force_rescan：运行期无从生效（凭证早已构造）
-        if getattr(cfg, "force_rescan", None) is not None:
-            not_applied.append("force_rescan")
-
-        # ④ 调度参数热更
+        # ③ 调度参数热更
         want_limit = max(1, int(getattr(cfg, "max_target", self.limit) or self.limit))
         want_interval = float(getattr(cfg, "interval", self.interval) or self.interval)
         want_delay = tuple(getattr(cfg, "delay_range", None) or self.delay_range or [40, 65])

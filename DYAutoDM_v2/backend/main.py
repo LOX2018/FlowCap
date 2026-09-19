@@ -635,7 +635,6 @@ from api import member as member_api
 app.include_router(member_api.router, prefix="/api/member", tags=["member"])
 from api import errcodes as errcodes_api
 from api import live_config as live_config_api
-from api import target_rooms as target_rooms_api
 app.include_router(errcodes_api.router, prefix="/api/errcodes", tags=["errcodes"])
 # 模型链路中心（v0.38.4）：模型配置唯一真源，AI / IM 通知都对接此模块
 from api import model_hub as model_hub_api
@@ -646,7 +645,6 @@ app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 app.include_router(live.router, prefix="/api/live", tags=["live"])
 app.include_router(live_config_api.router, prefix="/api/live/room-configs", tags=["live"])
 app.include_router(live_config_api.router, prefix="/api/live/config-tags", tags=["live"])
-app.include_router(target_rooms_api.router, prefix="/api/live/target-rooms", tags=["live"])
 from api import linkmic as linkmic_api
 app.include_router(linkmic_api.router, prefix="/api/live/linkmic", tags=["live"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])

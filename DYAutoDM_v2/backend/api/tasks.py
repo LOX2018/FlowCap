@@ -4,7 +4,7 @@
 注意：删除原版 tasks.js 的本地 setInterval 模拟任务进度（误导）。
 
 前端 tasks.tsx 依赖的返回字段（扁平）：
-  {ok, dmPool, maxTarget, interval, delay, forceRescan,
+  {ok, dmPool, maxTarget, interval, delay,
    liveUrl, enableDanmaku, enableConsole, enableSend}
 """
 import time
@@ -180,7 +180,6 @@ async def get_tasks(request: Request) -> dict:
         "maxTarget": int(getattr(adm, "limit", getattr(settings, "max_target", 3))),
         "interval": float(getattr(adm, "interval", getattr(settings, "interval", 60.0))),
         "delay": delay_str,
-        "forceRescan": bool(getattr(adm, "force_rescan", getattr(settings, "force_rescan", False))),
         "liveUrl": getattr(adm, "live_url", "") or "",
         # 三个全局开关：优先读统一配置中心（未配置时回落到 settings 实例，零回归）
         "enableDanmaku": _flag("enable_danmaku", settings),
@@ -203,7 +202,6 @@ async def save_config(body: TaskConfig, request: Request):
         settings.dm_pool = cfg.dm_pool
         settings.delay_range = cfg.delay_range
         settings.interval = cfg.interval
-        settings.force_rescan = cfg.force_rescan
         settings.enable_danmaku = cfg.enable_danmaku
         settings.enable_console = cfg.enable_console
         settings.enable_send = cfg.enable_send
@@ -238,7 +236,6 @@ async def save_config(body: TaskConfig, request: Request):
             "dm_pool": _pool_obj,
             "delay_range": cfg.delay_range,
             "interval": cfg.interval,
-            "force_rescan": cfg.force_rescan,
             "enable_danmaku": cfg.enable_danmaku,
             "enable_console": cfg.enable_console,
             "enable_send": cfg.enable_send,

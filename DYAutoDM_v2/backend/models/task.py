@@ -35,7 +35,6 @@ class TaskConfig(BaseModel):
     dm_pool: list[str] = []
     delay_range: list[int] | None = None
     interval: float = 60.0
-    force_rescan: bool = False
     enable_danmaku: bool = True
     enable_console: bool = True
     enable_send: bool = True
@@ -51,7 +50,6 @@ class TaskConfig(BaseModel):
     maxTarget: int | None = None
     dmPool: list = []
     delay: str | None = None  # 形如 "50,120" 或 "60"
-    forceRescan: bool | None = None
     enableDanmaku: bool | None = None
     enableConsole: bool | None = None
     enableSend: bool | None = None
@@ -63,12 +61,11 @@ class TaskConfig(BaseModel):
         - max_target/maxTarget 二选一
         - dm_pool/dmPool 二选一
         - delay_range 优先；否则由 delay 字符串("50,120"/"60")解析
-        - force_rescan 优先；否则取 forceRescan
+        - 其余字段按别名归一
         """
         live_url = self.live_url or self.liveUrl or ""
         max_target = self.max_target if self.maxTarget is None else self.maxTarget
         dm_pool = self.dm_pool or self.dmPool or []
-        force_rescan = self.force_rescan if self.forceRescan is None else self.forceRescan
         enable_danmaku = self.enable_danmaku if self.enableDanmaku is None else self.enableDanmaku
         enable_console = self.enable_console if self.enableConsole is None else self.enableConsole
         enable_send = self.enable_send if self.enableSend is None else self.enableSend
@@ -93,7 +90,6 @@ class TaskConfig(BaseModel):
             dm_pool=[t if isinstance(t, str) else t.get("text", "") for t in dm_pool],
             delay_range=delay_range,
             interval=self.interval,
-            force_rescan=bool(force_rescan),
             enable_danmaku=bool(enable_danmaku),
             enable_console=bool(enable_console),
             enable_send=bool(enable_send),

@@ -90,7 +90,7 @@ class TestAppConfig(unittest.TestCase):
         self.assertEqual(
             ac.apply_modes_of("send", ["min_interval", "stranger_per_day"]), ["daemon"])
         self.assertEqual(
-            sorted(ac.apply_modes_of("general", ["bcc_on_start", "force_rescan"])),
+            sorted(ac.apply_modes_of("general", ["bcc_on_start", "auto_capture_on_start"])),
             ["backend"])
 
     # ---- reset ----

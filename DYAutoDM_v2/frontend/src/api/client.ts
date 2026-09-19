@@ -830,7 +830,7 @@ export const api = {
     return request("/api/live/config-tags");
   },
 
-  async saveRoomConfig(cfg: Partial<RoomConfig> & { room_id: string; id?: string }): Promise<{ ok: boolean; config?: RoomConfig; error?: string }> {
+  async saveRoomConfig(cfg: Partial<RoomConfig> & { id?: string }): Promise<{ ok: boolean; config?: RoomConfig; error?: string }> {
     return request("/api/live/config-tags", {
       method: "POST",
       body: JSON.stringify(cfg),
@@ -840,8 +840,6 @@ export const api = {
   async deleteRoomConfig(roomId: string): Promise<{
     ok: boolean;
     deleted?: string;
-    /** 因该标签被删而自动解绑的目标直播间（只清引用，不删目标直播间） */
-    unbound_rooms?: string[];
     error?: string;
   }> {
     return request(`/api/live/config-tags/${encodeURIComponent(roomId)}`, {
@@ -849,39 +847,13 @@ export const api = {
     });
   },
 
-  // ===== 目标直播间（监听哪个房间 + 绑定哪条配置标签；不存任何参数） =====
-
-  async listTargetRooms(): Promise<{ ok: boolean; items: TargetRoom[] }> {
-    return request("/api/live/target-rooms");
-  },
-
-  async saveTargetRoom(t: TargetRoom): Promise<{ ok: boolean; target?: TargetRoom; error?: string }> {
-    return request("/api/live/target-rooms", {
+  async applyRoomConfig(
+    sid: string,
+    ctx: { room_id?: string; account?: string } = {},
+  ): Promise<{ ok: boolean; config?: Record<string, unknown>; error?: string }> {
+    return request(`/api/live/config-tags/${encodeURIComponent(sid)}/apply`, {
       method: "POST",
-      body: JSON.stringify(t),
-    });
-  },
-
-  async deleteTargetRoom(roomId: string): Promise<{ ok: boolean; removed?: string; error?: string }> {
-    return request(`/api/live/target-rooms/${encodeURIComponent(roomId)}`, {
-      method: "DELETE",
-    });
-  },
-
-  /** 解析该目标直播间生效的配置（目标身份 + 绑定标签的参数） */
-  async resolveTargetRoom(roomId: string): Promise<{
-    ok: boolean;
-    target?: TargetRoom;
-    tag?: RoomConfig | null;
-    params?: Record<string, unknown>;
-    error?: string;
-  }> {
-    return request(`/api/live/target-rooms/${encodeURIComponent(roomId)}/resolve`);
-  },
-
-  async applyRoomConfig(roomId: string): Promise<{ ok: boolean; config?: Record<string, unknown>; error?: string }> {
-    return request(`/api/live/config-tags/${encodeURIComponent(roomId)}/apply`, {
-      method: "POST",
+      body: JSON.stringify({ room_id: ctx.room_id || "", account: ctx.account || "" }),
     });
   },
 
@@ -895,7 +867,10 @@ export const api = {
    *   - restart.ok=false           引擎未运行 → 已保存，点「开始自动私信」后生效
    *   - restart.not_applied_fields 换直播间/换账号/强制重扫属「换任务」语义，未生效
    */
-  async restartRoomConfig(roomId: string): Promise<{
+  async restartRoomConfig(
+    sid: string,
+    ctx: { room_id?: string; account?: string } = {},
+  ): Promise<{
     ok: boolean;
     config?: RoomConfig;
     applied_fields?: string[];
@@ -909,8 +884,9 @@ export const api = {
       engine_state?: string;
     };
   }> {
-    return request(`/api/live/config-tags/${encodeURIComponent(roomId)}/restart`, {
+    return request(`/api/live/config-tags/${encodeURIComponent(sid)}/restart`, {
       method: "POST",
+      body: JSON.stringify({ room_id: ctx.room_id || "", account: ctx.account || "" }),
     });
   },
 
@@ -1899,32 +1875,21 @@ export interface TaskHistoryItem {
   config?: Partial<TaskConfigSnapshot>;
 }
 
-/** 直播配置标签（一条 = 一套监听参数；2026-09-19 起支持多标签并存） */
+/** 直播策略（一条 = 一套发送策略；**只含策略字段**，无身份字段） */
 export interface RoomConfig {
-  /** 标签 id（旧数据 = 原直播间号，天然兼容） */
+  /** 策略 id（服务端生成 lc_<ts>，或用户自定义 ≤40 字） */
   id?: string;
-  /** @deprecated 兼容别名，等于 id（旧前端/脚本读它） */
-  room_id: string;
+  /** @deprecated 兼容别名，等于 id（旧数据/脚本读它） */
+  room_id?: string;
+  /** 策略名称（如「保守-慢速」） */
   name?: string;
-  live_url?: string;
   max_target?: number;
   interval?: number;
   delay?: string;
-  force_rescan?: boolean;
   dm_pool?: { text: string; enabled: boolean }[];
   acct?: string | null;
   auto_link_mic?: boolean;
   link_mic_mode?: "audio" | "video";
-  updated_at?: number;
-}
-
-/** 目标直播间（监听哪个房间 + 绑定哪条配置标签；本身不存任何参数） */
-export interface TargetRoom {
-  room_id: string;
-  name?: string;
-  /** 绑定的配置标签 id；null / 空 = 不绑定配置（解绑，配置标签本身保留） */
-  tag_id?: string | null;
-  enabled?: boolean;
   updated_at?: number;
 }
 
@@ -1935,7 +1900,6 @@ export interface TaskConfigSnapshot {
   max_target: number;
   interval: number;
   delay: string;
-  force_rescan: boolean;
   acct?: string | null;
   dm_pool: { text: string; enabled: boolean }[];
   status_msg: string;
@@ -1968,7 +1932,6 @@ export interface ReusePayload {
   interval?: number;
   delay?: string;
   dmPool?: { text: string; enabled: boolean }[];
-  forceRescan?: boolean;
   acct?: string | null;
 }
 

@@ -1,20 +1,22 @@
 /**
- * 直播配置标签（整页视图）
+ * 直播策略编辑弹窗 —— **只保留直播策略，策略以外全部删除**
  *
- * ## 沿革（2026-09-19 用户定调）
- * 前身 = `RoomConfigManager.tsx`「直播间配置管理」弹窗（2026-09-10 新增）。
- * 用户原话：「直播监听的配置管理修改只能对现有的配置反复覆盖，没有实现多配置
- * 标签的功能；目标直播间可以管理，但别放到配置管理中，单独加一个目标直播间
- * 管理，在该页面中选择是否绑定配置。」
+ * ## 沿革（2026-09-19 用户定调，勿回退）
+ * 用户原话：
+ *   「直播策略放到直播监听页面中『直播间』板块的配置标签中，该编辑页面中**只保留
+ *    直播策略**，策略以外的全部删除。不需要 tab 切换栏，也不需要子 tab 页面。
+ *    『强制重扫』策略早就废弃了，彻底移除。」
  *
- * 因此本页承担「配置标签」职责（一条配置 = 一个标签，按 room_id 唯一）：
- *   - 参数编辑能力与弹窗版逐字保留（上限/间隔/抖动/词库/强制重扫/连麦/账号）
- *   - 唯一变化：外壳由 modal 升级为**整页子视图**，标题明确为「直播配置标签」
- *   - 「目标直播间」的增删与绑定选择**不在这里** —— 在「目标直播间」子视图维护
+ * 因此本组件 = **纯策略编辑器**：
+ *   - 保留：策略名称 / 发送上限 / 间隔 / 延迟抖动 / 私信词库 /
+ *     自动申请连麦（含连麦方式）/ 监听账号
+ *   - **删除**：直播间号、备注名、原直播链接、已废弃的「启动前强制重扫」
+ *     （前三个属「身份」，归「直播间」板块输入框；最后一项属已废弃策略，全仓移除）
  *
- * 数据源：/api/live/room-configs（SQLite kv "live_room_configs"）
+ * 数据源：/api/live/config-tags（SQLite kv "live_room_configs"）
  */
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { api, RoomConfig } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,23 +27,23 @@ import {
 import { Blank } from "@/components/page/kit";
 
 interface Props {
+  /** 弹窗开关 */
+  open: boolean;
+  onClose: () => void;
   /** toast */
   push: (msg: string, holdMs?: number) => void;
-  /** 当前输入框的直播间（新建标签时预填 room_id） */
-  currentRoom?: string;
-  /** 保存/删除/应用等写操作完成后通知父页刷新列表（v0.43.91） */
+  /** 写操作完成（保存/删除/重启）后通知父页刷新策略列表 */
   onChanged?: () => void;
-  /** 应用某条标签到直播页（切回「直播间」子视图并选中该标签） */
-  onApply: (cfg: RoomConfig) => void;
+  /** 选用某条策略（保存成功后立即回填直播页） */
+  onApply?: (cfg: RoomConfig) => void;
 }
 
+/** 新建草稿：**只含策略字段**，不含任何身份字段 */
 const EMPTY_DRAFT: Partial<RoomConfig> = {
-  room_id: "",
   name: "",
   max_target: 100,
   interval: 60,
   delay: "50,120",
-  force_rescan: false,
   auto_link_mic: false,
   dm_pool: [],
   link_mic_mode: "audio",
@@ -53,20 +55,22 @@ const FIELD_CN: Record<string, string> = {
   interval: "间隔",
   delay_range: "延迟抖动",
   dm_pool: "私信词库",
-  live_url: "直播间链接",
+  live_url: "直播间",
   acct: "监听账号",
-  force_rescan: "强制重扫",
 };
 
 const cnFields = (keys?: string[]): string =>
   (keys || []).map((k) => FIELD_CN[k] || k).join("、");
 
-export default function RoomConfigPage({ push, currentRoom = "", onChanged, onApply }: Props) {
+/** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
+const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
+
+export default function RoomConfigPage({ open, onClose, push, onChanged, onApply }: Props) {
   const [items, setItems] = useState<RoomConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState<Partial<RoomConfig>>({ ...EMPTY_DRAFT });
-  const [editing, setEditing] = useState<string | null>(null); // 正在编辑的 room_id
-  /** 正在「重启」的 room_id（防重复点击） */
+  const [editing, setEditing] = useState<string | null>(null); // 正在编辑的策略 id
+  /** 正在「重启」的策略 id（防重复点击） */
   const [restarting, setRestarting] = useState<string | null>(null);
 
   const load = () => {
@@ -74,38 +78,39 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
     api
       .listRoomConfigs()
       .then((r) => setItems(r.items || []))
-      .catch((e: unknown) => push("加载配置失败: " + errMsg(e)))
+      .catch((e: unknown) => push("加载策略失败: " + errMsg(e)))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
-    load();
-    // v0.43.91：新建草稿**不再预填 live_url**。
-    // 原实现把「页面当前直播间」写进 live_url，而保存时该值优先于
-    // 输入框里的 room_id 被代入 → 新建房间存的是**另一个直播间的地址**
-    // （实测 room_id=777666555 存成 live_url=992931212705）。草稿只带 room_id，
-    // live_url 由后端按 room_id 推导。
-    const rid = extractRoomId(currentRoom);
-    setDraft({ ...EMPTY_DRAFT, room_id: rid || "" });
-    setEditing(null);
+    if (open) {
+      load();
+      setDraft({ ...EMPTY_DRAFT });
+      setEditing(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [open]);
 
   const save = () => {
-    const rid = draft.room_id?.trim();
-    if (!rid) {
-      push("请填写直播间号或 URL");
+    const name = String(draft.name || "").trim();
+    if (!name) {
+      push("请填写策略名称（如：保守-慢速）");
       return;
     }
     api
-      .saveRoomConfig({ ...draft, room_id: rid } as RoomConfig & { room_id: string })
+      .saveRoomConfig({ ...draft, name, id: editing || undefined } as
+        Partial<RoomConfig> & { id?: string })
       .then((r) => {
         if (r.ok) {
-          push(`已保存直播间 ${r.config?.room_id} 的配置` + (r.config?.auto_link_mic ? "（含自动申请连麦）" : ""));
+          push(
+            `已保存直播策略「${r.config?.name || r.config?.id}」` +
+              (r.config?.auto_link_mic ? "（含自动申请连麦）" : ""),
+          );
           setDraft({ ...EMPTY_DRAFT });
           setEditing(null);
           onChanged?.();
           load();
+          if (r.config) onApply?.(r.config);
         } else {
           push("保存失败: " + (r.error || "未知错误"));
         }
@@ -113,12 +118,12 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
       .catch((e: unknown) => push("保存异常: " + errMsg(e)));
   };
 
-  const remove = (roomId: string) => {
+  const remove = (sid: string) => {
     api
-      .deleteRoomConfig(roomId)
+      .deleteRoomConfig(sid)
       .then((r) => {
         if (r.ok) {
-          push(`已删除直播间 ${roomId} 的配置`);
+          push(`已删除直播策略 ${sid}`);
           onChanged?.();
           load();
         } else push("删除失败: " + (r.error || ""));
@@ -126,37 +131,32 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
       .catch((e: unknown) => push("删除异常: " + errMsg(e)));
   };
 
-  const applyToTask = (roomId: string) => {
-    api
-      .applyRoomConfig(roomId)
-      .then((r) => {
-        if (r.ok) {
-          const cfg = items.find((x) => x.room_id === roomId);
-          if (cfg) onApply(cfg);
-          push(`已应用直播间 ${roomId} 的配置到当前任务`);
-        } else push("应用失败: " + (r.error || ""));
-      })
-      .catch((e: unknown) => push("应用异常: " + errMsg(e)));
+  /** 「选用」：把该策略回填到直播页（不写库、不起任务） */
+  const useStrategy = (sid: string) => {
+    const cfg = items.find((x) => sidOf(x) === sid);
+    if (cfg) onApply?.(cfg);
+    push(`已选用策略「${cfg?.name || sid}」`);
+    onClose();
   };
 
   const edit = (cfg: RoomConfig) => {
-    setEditing(cfg.room_id);
+    setEditing(sidOf(cfg));
     setDraft({ ...cfg });
   };
 
   /**
-   * 「重启标签」：保存配置 + 热更到正在运行的监听任务。
+   * 「重启」：保存该策略 + 热更到正在运行的监听任务（不中断监听）。
    *
-   * 后端契约见 `api.restartRoomConfig` —— 三种结果都必须如实告诉用户：
-   *   ① 引擎运行中：仅列出**实际生效**的字段（applied）；
+   * 后端契约见 `api.restartRoomConfig` —— 三种结果都必须如实告知：
+   *   ① 引擎运行中：只列**实际生效**字段（applied）；
    *   ② 引擎未运行：明说「已保存，点开始自动私信后生效」，不谎称已重启；
-   *   ③ 换直播间/换账号/强制重扫：明说这类改动热更不覆盖（需停止后重新开始）。
+   *   ③ 换直播间/换账号：明说热更不覆盖（需停止后重新开始）。
    */
-  const restart = (roomId: string) => {
+  const restart = (sid: string) => {
     if (restarting) return;
-    setRestarting(roomId);
+    setRestarting(sid);
     api
-      .restartRoomConfig(roomId)
+      .restartRoomConfig(sid)
       .then((r) => {
         if (!r.ok) {
           push("重启失败: " + (r.error || "未知错误"));
@@ -167,14 +167,14 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
         const skipped = cnFields(rs.not_applied_fields);
         if (rs.ok) {
           push(
-            `已重启「${roomId}」· 监听未中断` +
+            `已重启「${sid}」· 监听未中断` +
               (applied ? `｜已生效：${applied}` : "") +
               (skipped ? `｜未生效：${skipped}` : ""),
             6000,
           );
         } else {
           push(
-            `配置已保存到「${roomId}」，但未能热更到运行中的任务：` +
+            `策略已保存到「${sid}」，但未能热更到运行中的任务：` +
               (rs.reason || "引擎未运行") +
               (skipped ? `（${skipped} 需停止后重新开始）` : ""),
             8000,
@@ -187,111 +187,121 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
       .finally(() => setRestarting(null));
   };
 
+  if (!open) return null;
+
   return (
-    <div data-od-id="live-config-tags">
-      <div className="mx-auto w-full max-w-[860px] glass-premium rounded-[var(--radius-xl)] px-4 py-3.5">
-        <div className="mb-2 flex items-center justify-between">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="glass-premium max-h-[86vh] w-[720px] max-w-[92vw] overflow-auto
+                   rounded-[var(--radius-xl)]"
+        onClick={(e) => e.stopPropagation()}
+        data-od-id="live-strategy-modal"
+      >
+        <div className="flex items-center justify-between border-b border-[var(--color-border)]
+                        px-4 py-3">
           <h3 className="text-[0.95rem] font-semibold text-[var(--color-text)]">
-            直播配置标签
+            直播策略
           </h3>
-          <span className="text-[0.72rem] text-[var(--color-text-muted)]">
-            一条标签 = 一套监听参数；「目标直播间」里选择绑定哪条
-          </span>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
-        <div>
-          {/* 配置标签列表 */}
+
+        <div className="p-4">
+          {/* 策略列表 */}
           <div style={{ marginBottom: 14 }}>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[0.78rem] font-semibold text-[var(--color-text)]">
+                已保存策略（{items.length}）
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                data-od-id="strategy-new"
+                title="清空表单，开始新建一条策略"
+                onClick={() => {
+                  setEditing(null);
+                  setDraft({ ...EMPTY_DRAFT });
+                }}
+              >
+                ＋ 新建策略
+              </Button>
+            </div>
             {loading && (
               <div className="text-[0.74rem] text-[var(--color-text-muted)]">加载中…</div>
             )}
             {!loading && items.length === 0 && (
-              <Blank>暂无标签。填写下方表单保存第一条直播配置标签。</Blank>
+              <Blank>暂无策略。点右上「新建策略」或直接在下方表单填写后保存。</Blank>
             )}
-            {items.map((cfg) => (
-              <div
-                key={cfg.room_id}
-                className="flex flex-wrap items-center gap-2 border-b
-                           border-[var(--color-border)] px-2.5 py-2"
-              >
-                <div className="min-w-[200px] flex-1">
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>
-                    {cfg.name || cfg.room_id}
-                    {cfg.auto_link_mic && (
-                      <span
-                        className="mono"
-                        style={{ marginLeft: 8, fontSize: 11, color: "var(--color-accent)" }}
-                      >
-                        自动连麦({cfg.link_mic_mode === "video" ? "视频" : "语音"})
-                      </span>
-                    )}
-                  </div>
-                  <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                    {cfg.room_id} · 上限{cfg.max_target ?? "—"} · 间隔{cfg.interval ?? "—"}s · 抖动
-                    {cfg.delay || "—"}
-                    {cfg.acct ? ` · 账号:${cfg.acct}` : ""}
-                  </div>
-                </div>
-                <Button
-                  variant="default"
-                  size="sm"
-                  disabled={restarting === cfg.room_id}
-                  title="保存该配置并立即热更到正在运行的监听任务（不中断监听）"
-                  onClick={() => restart(cfg.room_id)}
+            {items.map((cfg) => {
+              const sid = sidOf(cfg);
+              return (
+                <div
+                  key={sid}
+                  className="flex flex-wrap items-center gap-2 border-b
+                             border-[var(--color-border)] px-2.5 py-2"
                 >
-                  {restarting === cfg.room_id ? "重启中…" : "重启"}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => applyToTask(cfg.room_id)}>
-                  应用
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => edit(cfg)}>
-                  编辑
-                </Button>
-                <Button variant="danger-outline" size="sm" onClick={() => remove(cfg.room_id)}>
-                  删除
-                </Button>
-              </div>
-            ))}
+                  <div className="min-w-[200px] flex-1">
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>
+                      {cfg.name || sid}
+                      {cfg.auto_link_mic && (
+                        <span
+                          className="mono"
+                          style={{ marginLeft: 8, fontSize: 11, color: "var(--color-accent)" }}
+                        >
+                          自动连麦({cfg.link_mic_mode === "video" ? "视频" : "语音"})
+                        </span>
+                      )}
+                    </div>
+                    <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                      上限{cfg.max_target ?? "—"} · 间隔{cfg.interval ?? "—"}s · 抖动
+                      {cfg.delay || "—"}
+                      {cfg.acct ? ` · 账号:${cfg.acct}` : ""}
+                    </div>
+                  </div>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    disabled={restarting === sid}
+                    title="保存该策略并立即热更到正在运行的监听任务（不中断监听）"
+                    onClick={() => restart(sid)}
+                  >
+                    {restarting === sid ? "重启中…" : "重启"}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => useStrategy(sid)}>
+                    选用
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => edit(cfg)}>
+                    编辑
+                  </Button>
+                  <Button variant="danger-outline" size="sm" onClick={() => remove(sid)}>
+                    删除
+                  </Button>
+                </div>
+              );
+            })}
           </div>
 
-          {/* 编辑/新建表单 */}
+          {/* 新建 / 编辑表单：**只有策略字段** */}
           <div className="grid grid-cols-2 gap-2.5 border-t border-[var(--color-border)] pt-3">
             <div className="col-span-2 flex flex-col gap-1">
               <label>
-                标签键（直播间号或 URL）{editing && `（编辑中: ${editing}）`}
+                策略名称
+                {editing && `（编辑中: ${items.find((x) => sidOf(x) === editing)?.name || editing}）`}
               </label>
-              <span className="text-[0.7rem] text-[var(--color-text-muted)]">
-                同一直播间号只有一条标签：已存在则更新，不存在则新建 —— 想并排放多套参数请用不同直播间号做标签键
-              </span>
               <Input
-                
-                value={draft.room_id || ""}
-                onChange={(e) => setDraft({ ...draft, room_id: e.target.value })}
-                placeholder="如 840377749201 或 https://live.douyin.com/..."
-                disabled={!!editing}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label>备注名</label>
-              <Input
-                
                 value={draft.name || ""}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                placeholder="如 张老师工伤直播间"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label>监听账号</label>
-              <Input
-                
-                value={draft.acct || ""}
-                onChange={(e) => setDraft({ ...draft, acct: e.target.value })}
-                placeholder="留空 = 使用页面当前选择"
+                placeholder="如：标准-快速 / 保守-慢速"
+                data-od-id="strategy-name"
               />
             </div>
             <div className="flex flex-col gap-1">
               <label>发送上限</label>
               <Input
-                
                 type="number"
                 value={draft.max_target ?? 100}
                 onChange={(e) => setDraft({ ...draft, max_target: parseInt(e.target.value, 10) || 0 })}
@@ -300,7 +310,6 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
             <div className="flex flex-col gap-1">
               <label>间隔（秒）</label>
               <Input
-                
                 type="number"
                 value={draft.interval ?? 60}
                 onChange={(e) => setDraft({ ...draft, interval: parseFloat(e.target.value) || 0 })}
@@ -309,10 +318,17 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
             <div className="flex flex-col gap-1">
               <label>延迟抖动（秒）</label>
               <Input
-                
                 value={draft.delay || ""}
                 onChange={(e) => setDraft({ ...draft, delay: e.target.value })}
                 placeholder="50,120"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label>监听账号</label>
+              <Input
+                value={draft.acct || ""}
+                onChange={(e) => setDraft({ ...draft, acct: e.target.value })}
+                placeholder="留空 = 使用页面当前选择"
               />
             </div>
             <div className="flex flex-col gap-1">
@@ -341,13 +357,6 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
               <span style={{ color: "var(--color-text-muted)" }}>
                 自动申请连麦（引擎开播监听后自动对本期直播间发起连麦申请）
               </span>
-            </label>
-            <label className="col-span-2 flex items-center gap-2 text-[0.74rem]">
-              <Switch
-                checked={!!draft.force_rescan}
-                onCheckedChange={(v) => setDraft({ ...draft, force_rescan: v })}
-              />
-              <span style={{ color: "var(--color-text-muted)" }}>强制重扫</span>
             </label>
             <div className="col-span-2 flex flex-col gap-1.5 border-t
                             border-[var(--color-border)] pt-3">
@@ -404,31 +413,27 @@ export default function RoomConfigPage({ push, currentRoom = "", onChanged, onAp
             </div>
           </div>
         </div>
-        <div className="mt-3 flex justify-end gap-2 border-t border-[var(--color-border)] pt-3">
+
+        <div className="flex justify-end gap-2 border-t border-[var(--color-border)] px-4 py-3">
+          <Button variant="secondary" onClick={onClose}>
+            关闭
+          </Button>
           <Button
             variant="secondary"
             onClick={() => {
               setEditing(null);
-              setDraft({ ...EMPTY_DRAFT, room_id: extractRoomId(currentRoom) || "" });
+              setDraft({ ...EMPTY_DRAFT });
             }}
           >
             清空表单
           </Button>
           <Button onClick={save}>
-            {editing ? "更新配置" : "保存配置"}
+            {editing ? "更新策略" : "保存策略"}
           </Button>
         </div>
       </div>
     </div>
   );
-}
-
-/** 从输入提取直播间号 */
-function extractRoomId(raw: string): string {
-  const s = (raw || "").trim();
-  if (/^\d+$/.test(s)) return s;
-  const m = s.match(/live\.douyin\.com\/(\d+)/);
-  return m ? m[1] : "";
 }
 
 function errMsg(e: unknown): string {

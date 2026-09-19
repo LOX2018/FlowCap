@@ -138,51 +138,74 @@ class TestDmPoolEditorExists(unittest.TestCase):
 
 
 class TestConfigTagAndTargetRoomSeparation(unittest.TestCase):
-    """2026-09-19 用户定调：配置可多标签；目标直播间独立管理并选择是否绑定配置。
+    """2026-09-19 用户定调（两次修正后的**最终**契约）。
 
-    用户原话：「配置管理修改只能对现有的配置反复覆盖，没有实现多配置标签的功能。
+    第一次原话：「配置管理修改只能对现有的配置反复覆盖，没有实现多配置标签的功能。
     目标直播间可以管理，但别放到配置管理中，单独加一个目标直播间管理，
     在该页面中选择是否绑定配置。」
 
-    判据（四条，缺一条即回退到「反复覆盖」形态）：
-      1. 目标直播间页存在，且提供「绑定配置」选择（含「不绑定配置」）
-      2. 目标直播间页**没有**参数编辑绑定（参数只能来自配置标签，防两处可写）
-      3. 配置标签页仍是参数唯一可写入口（含词库/连麦/上限等全部控件）
-      4. 直播页把两个页面作为子视图挂载（不是弹窗）
+    第二次修正（覆盖第一次，最终生效，本类以此为准）：
+    「把直播策略放到直播监听页面中『直播间』板块的配置标签中，该编辑页面中只保留
+      直播策略，策略以外的全部删除。直播间管理也是一样，不需要『监听 / 目标直播间 /
+      配置标签』tab 切换栏也不需要子 tab 页面。还有『强制重扫』策略早就废弃了，
+      给彻底移除。」
+
+    最终判据：
+      1. 策略编辑页 = 参数唯一可写入口，且**只含策略**（身份字段与强制重扫已删）
+      2. 无子 tab 切换栏、无「目标直播间」页（直播间号在「直播间」板块直接填）
+      3. 策略以弹窗提供，入口在「直播间」板块的策略下拉旁
+      4. 直播页保存后仍通知父页刷新（onChanged）
     """
 
-    def test_target_room_page_exists_with_binding_select(self):
-        self.assertTrue(os.path.isfile(_TARGETPAGE),
-                        "缺少「目标直播间」独立页 —— 用户明确要求它不能塞进配置管理里")
-        src = _read(_TARGETPAGE)
-        self.assertIn("不绑定配置", src,
-                      "目标直播间页必须有「是否绑定配置」的选择（且要能解绑）")
-        self.assertIn("bindOnly", src, "缺少就地绑定/解绑的写路径")
-        self.assertIn("saveTargetRoom", src)
-        self.assertIn("deleteTargetRoom", src)
+    def test_target_room_page_removed(self):
+        """用户明确要求：不要子 tab / 不要「目标直播间」页。防止它被无意复活。"""
+        self.assertFalse(os.path.isfile(_TARGETPAGE),
+                         "「目标直播间」页已被用户明确要求删除，不得复活")
+        self.assertFalse(
+            os.path.isfile(os.path.join(_ROOT, "backend", "api", "target_rooms.py")),
+            "后端 target_rooms 模块已被用户明确要求删除，不得复活")
 
-    def test_target_room_page_has_no_param_editing(self):
-        src = _read(_TARGETPAGE)
-        bad = re.findall(
-            r"setDraft\(\{ \.\.\.draft, (max_target|interval|delay|dm_pool|"
-            r"auto_link_mic|link_mic_mode|force_rescan)", src)
-        self.assertEqual(
-            [], bad,
-            "目标直播间页出现了参数编辑绑定 —— 参数必须只在「配置标签」页编辑，"
-            "两处可写会让用户不知道真源是哪个（违反唯一可写入口铁律）。")
+    def test_no_subview_tabs_in_live_page(self):
+        """直播页不得出现「监听 / 目标直播间 / 配置标签」三 tab 子视图。"""
+        src = _read(_LIVEPAGE)
+        self.assertNotIn("subView", src, "直播页又出现了子 tab 状态（用户明确不要）")
+        self.assertNotIn("目标直播间", src, "直播页又出现了「目标直播间」tab 文案")
 
     def test_config_page_is_single_writable_entry(self):
+        """策略编辑页 = 参数唯一可写入口，且**只保留策略**（身份/废弃字段已删除）。"""
         src = _read(_ROOMCFG)
         for k in ("发送上限", "间隔（秒）", "延迟抖动（秒）", "私信词库",
-                  "强制重扫", "自动申请连麦"):
-            self.assertIn(k, src, f"配置标签页缺少「{k}」编辑控件")
+                  "自动申请连麦", "监听账号"):
+            self.assertIn(k, src, f"策略编辑页缺少「{k}」编辑控件")
+        jsx = src.split("export default function RoomConfigPage")[-1]
+        for k in ("备注名", "直播间号或 URL", "直播链接", "强制重扫"):
+            self.assertNotIn(k, jsx, f"策略编辑页 JSX 仍含非策略字段「{k}」")
 
-    def test_live_page_mounts_both_subviews(self):
+    def test_live_page_mounts_strategy_modal(self):
+        """策略弹窗挂在直播页；入口在「直播间」板块的策略下拉旁（无子 tab）。"""
         src = _read(_LIVEPAGE)
-        self.assertIn("<TargetRoomPage", src, "直播页未挂载「目标直播间」子视图")
-        self.assertIn("<RoomConfigPage", src, "直播页未挂载「配置标签」子视图")
-        self.assertNotIn("RoomConfigManager", src,
-                         "直播页仍引用旧弹窗组件（配置入口会退回「反复覆盖」形态）")
+        self.assertIn("<RoomConfigPage", src, "直播页未挂载策略弹窗")
+        self.assertIn("管理策略", src, "「直播间」板块缺少策略管理入口")
+        self.assertIn("选择直播策略", src, "「直播间」板块缺少策略下拉")
+
+    def test_explicit_new_strategy_entry(self):
+        """策略弹窗必须有**显式的新建入口** —— 用户反馈「没有新增入口」。
+
+        仅有「清空表单 + 保存」时，用户无法知道那就是新建；且编辑态下也无从
+        退出到新建态。判据：存在 data-od-id="strategy-new" 的按钮。
+        """
+        src = _read(_ROOMCFG)
+        self.assertIn('data-od-id="strategy-new"', src,
+                      "策略弹窗缺少显式「新建策略」入口（用户明确反馈过没有）")
+        self.assertIn("新建策略", src, "新建入口的文案应为「新建策略」")
+
+    def test_force_rescan_fully_removed(self):
+        """「强制重扫」策略已废弃，全仓业务代码不得再有该配置项的读写。"""
+        for rel in ("api/tasks.py", "core/auto_dm.py", "services/app_config_schema.py",
+                    "models/task.py"):
+            src = _read(os.path.join(_ROOT, "backend", rel))
+            self.assertNotIn("force_rescan", src, f"{rel} 仍有 force_rescan 残留")
+            self.assertNotIn("forceRescan", src, f"{rel} 仍有 forceRescan 残留")
 
     def test_old_modal_component_removed(self):
         p = os.path.join(_ROOT, "frontend", "src", "components", "live",

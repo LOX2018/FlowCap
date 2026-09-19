@@ -36,7 +36,6 @@ class Settings(BaseSettings):
     # 延迟抖动区间（前端 delay "40,65" -> [40, 65]）
     delay_range: list[int] = [40, 65]
     interval: float = 60.0
-    force_rescan: bool = False
 
     # 采集开关（前端 Tasks 页）
     enable_danmaku: bool = True
