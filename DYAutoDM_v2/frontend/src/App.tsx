@@ -35,6 +35,8 @@ import { type TabId } from "./components/layout/sidebar";
 import { useAppViewStore, VIEW_TITLE, type ViewType } from "./stores/app-store";
 import { StatusDot } from "./components/ui/status-dot";
 import { memberApi, getMemberToken } from "./api/client";
+// 元素选择模式（调试工具：点击页面元素复制其结构位置，不触发功能）
+import { ElementInspectorButton } from "./lib/element-inspector";
 
 // TabId 唯一真源在 components/layout/sidebar（含导航分组）
 // 旧 `type TabId = (typeof TABS)[number][0]` 已废弃 —— TABS 缺 kb/notify 两项。
@@ -500,6 +502,8 @@ export default function App() {
         memberName={memberName}
         topRight={
           <>
+            {/* 元素选择模式：顶栏调试按钮（点击进入「只选不触发」的元素取址模式） */}
+            <ElementInspectorButton currentTab={tab} />
             {gwPendingCount > 0 && (
               <button
                 onClick={() => setTab("notify")}
@@ -578,6 +582,10 @@ export default function App() {
         onClose={() => { /* 启动自检已移除，弹窗恒不开启 */ }}
         push={push}
       />
+
+      {/* 元素选择模式（调试）：按钮在 TopBar（见 topRight），此处挂覆盖层与结果面板。
+          设计契约：只选择、不触发；不读不写任何业务数据。 */}
+      <ElementInspectorButton currentTab={tab} showButton={false} />
     </>
   );
 }
