@@ -150,10 +150,34 @@ class TestElementInspectorContract(unittest.TestCase):
                       "登录门/闪屏分支未渲染入口 —— 未登录时无法定位元素")
 
     def test_no_business_data_access(self):
-        """零业务耦合：工具不得读写业务 API / localStorage。"""
-        for forbidden in ("localStorage", "sessionStorage", "fetch(", "/api/"):
+        """零业务耦合：工具不得读写业务 API。
+
+        **唯一豁免**：拖动位置记忆需要 localStorage，但**只允许**存在一个专用键
+        `dy.inspector.pos`（仅存坐标），且不得出现第二处 localStorage 访问。
+        """
+        for forbidden in ("sessionStorage", "fetch(", "/api/"):
             hits = [ln.strip() for ln in self.src.splitlines() if forbidden in ln]
             self.assertEqual(hits, [], f"元素选择器不应访问 {forbidden}：{' | '.join(hits)}")
+        ls_hits = [ln.strip() for ln in self.src.splitlines() if "localStorage" in ln]
+        for ln in ls_hits:
+            self.assertIn("dy.inspector.pos", ln,
+                          f"localStorage 仅可用于位置记忆键 dy.inspector.pos：{ln}")
+
+    # ── 契约 8：悬浮入口可长按拖动、位置记忆、双击复位 ──
+    def test_fab_is_draggable_with_memory(self):
+        """入口必须可拖动（长按阈值）且记住位置，并提供复位路径。"""
+        self.assertIn("onPointerDown", self.src, "入口缺少指针按下处理（无法拖动）")
+        self.assertIn("onPointerMove", self.src, "入口缺少指针移动处理（无法跟手）")
+        self.assertIn("onPointerUp", self.src, "入口缺少指针抬起处理（无法落位/存位置）")
+        self.assertIn("setPointerCapture", self.src, "拖动未接管指针（移出按钮即断）")
+        self.assertIn("DRAG_HOLD_MS", self.src, "缺少长按阈值 —— 短按与拖动会互相干扰")
+        self.assertIn("dy.inspector.pos", self.src, "缺少位置记忆键")
+        self.assertIn("onFabDoubleClick", self.src, "缺少双击复位路径（拖丢后无法找回）")
+        # 位置写入必须唯一集中在 saveFabPos（防多处散写）
+        self.assertIn("saveFabPos", self.src)
+        # 拖动结束后不得落回 onClick（否则拖一下就切换模式）—— 短按切换必须写在 pointerUp 里
+        self.assertNotIn("onClick={() => { setActive", self.src,
+                         "入口不得再用 onClick 切换（会与拖动冲突），应在 pointerUp 判定短按")
 
 
 if __name__ == "__main__":

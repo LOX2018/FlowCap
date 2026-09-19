@@ -512,6 +512,129 @@ export function ElementInspectorButton({ currentTab = "" }: InspectorProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const hoverRef = useRef<HTMLElement | null>(null);
   const pickedRef = useRef<Element | null>(null);
+  const fabRef = useRef<HTMLButtonElement | null>(null);
+  const dragRef = useRef<{
+    startX: number; startY: number; baseX: number; baseY: number;
+    moved: boolean; active: boolean; pointerId: number;
+  } | null>(null);
+  /** 悬浮入口位置（视口坐标，左上角）。null = 尚未拖动，用 CSS 默认（左下角）。 */
+  const [fabPos, setFabPos] = useState<{ x: number; y: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [posTip, setPosTip] = useState("");
+
+  /**
+   * 读取记忆的位置（localStorage `dy.inspector.pos`）。
+   *
+   * ⚠️ 这是本工具**唯一**允许碰 localStorage 的地方，且只存「自己按钮的坐标」
+   *   （不涉及任何业务数据）；`test_element_inspector_guards.py` 的
+   *   「零业务耦合」断言已按此**显式豁免本函数**，不要让豁免范围扩大。
+   */
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("dy.inspector.pos");
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (typeof p?.x === "number" && typeof p?.y === "number") setFabPos(p);
+    } catch { /* 无记忆或损坏 → 用默认位置 */ }
+  }, []);
+
+  /** 视口尺寸变化时把按钮夹回可视区（防拖到屏幕外/换分辨率后丢失）。 */
+  useEffect(() => {
+    const onResize = () => {
+      setFabPos((p) => {
+        if (!p) return p;
+        const b = fabRef.current?.getBoundingClientRect();
+        const w = b?.width ?? 110;
+        const h = b?.height ?? 32;
+        const nx = Math.min(Math.max(4, p.x), Math.max(4, window.innerWidth - w - 4));
+        const ny = Math.min(Math.max(4, p.y), Math.max(4, window.innerHeight - h - 4));
+        if (nx === p.x && ny === p.y) return p;
+        try { localStorage.setItem("dy.inspector.pos", JSON.stringify({ x: nx, y: ny })); } catch { /* ignore */ }
+        return { x: nx, y: ny };
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const saveFabPos = (x: number, y: number) => {
+    setFabPos({ x, y });
+    try { localStorage.setItem("dy.inspector.pos", JSON.stringify({ x, y })); } catch { /* ignore */ }
+  };
+
+  /** 长按（160ms）后才进入拖动 —— 短按仍是「开关选择模式」，两者不冲突。 */
+  const DRAG_HOLD_MS = 160;
+
+  const onFabPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0) return; // 只响应左键
+    const el = fabRef.current;
+    if (!el) return;
+    const b = el.getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX, startY: e.clientY,
+      baseX: b.left, baseY: b.top,
+      moved: false, active: false, pointerId: e.pointerId,
+    };
+    // 160ms 长按后仍未抬起 → 进入拖动（并接管指针）
+    window.setTimeout(() => {
+      const d = dragRef.current;
+      if (d && d.pointerId === e.pointerId && !d.moved) {
+        d.active = true;
+        setDragging(true);
+        try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      }
+    }, DRAG_HOLD_MS);
+  };
+
+  const onFabPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.active) {
+      // 长按前就移动了 → 记为「已移动」，抬起时不切换模式（避免误触）
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) d.moved = true;
+      return;
+    }
+    d.moved = true;
+    const el = fabRef.current;
+    const w = el?.offsetWidth ?? 110;
+    const h = el?.offsetHeight ?? 32;
+    const x = Math.min(Math.max(4, d.baseX + dx), Math.max(4, window.innerWidth - w - 4));
+    const y = Math.min(Math.max(4, d.baseY + dy), Math.max(4, window.innerHeight - h - 4));
+    setFabPos({ x, y });
+  };
+
+  const onFabPointerUp = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (!d) return;
+    try { fabRef.current?.releasePointerCapture(d.pointerId); } catch { /* ignore */ }
+    if (d.active) {
+      setDragging(false);
+      const el = fabRef.current;
+      const b = el?.getBoundingClientRect();
+      const x = Math.round(b ? b.left : d.baseX);
+      const y = Math.round(b ? b.top : d.baseY);
+      saveFabPos(x, y);
+      setPosTip("位置已记住");
+      window.setTimeout(() => setPosTip(""), 1600);
+      return; // ★ 拖动结束不触发 onClick
+    }
+    // 未进入拖动：若几乎没动 → 视为短按，切换选择模式
+    if (!d.moved) {
+      setActive((v) => !v);
+      setTip("");
+    }
+  };
+
+  /** 双击复位到默认位置（左下角） */
+  const onFabDoubleClick = () => {
+    try { localStorage.removeItem("dy.inspector.pos"); } catch { /* ignore */ }
+    setFabPos(null);
+    setPosTip("已复位到默认位置");
+    window.setTimeout(() => setPosTip(""), 1600);
+  };
 
   // 选中元素变化 → 重建报告
   useEffect(() => {
@@ -611,19 +734,31 @@ export function ElementInspectorButton({ currentTab = "" }: InspectorProps) {
 
   return (
     <>
-      {/* 全局顶层悬浮调试入口（始终可见：覆盖闪屏 / 登录门 / 主界面） */}
+      {/* 全局顶层悬浮调试入口（始终可见：覆盖闪屏 / 登录门 / 主界面）
+          · 长按 160ms 拖动 → 位置记住（localStorage `dy.inspector.pos`，仅存坐标）
+          · 短按 = 开关选择模式；双击 = 复位到默认左下角 */}
       <button
+        ref={fabRef}
         data-ei-ui
         data-od-id="debug-inspector-toggle"
         title={active
-          ? "退出元素选择模式（Esc）"
-          : "元素选择模式：点击页面元素复制其结构位置，不触发元素功能"}
-        onClick={() => { setActive((v) => !v); setTip(""); }}
-        className={`ei-fab${active ? " ei-fab-on" : ""}`}
+          ? "退出元素选择模式（Esc）｜长按可拖动"
+          : "元素选择模式：点击页面元素复制其结构位置，不触发元素功能｜长按可拖动｜双击复位"}
+        onPointerDown={onFabPointerDown}
+        onPointerMove={onFabPointerMove}
+        onPointerUp={onFabPointerUp}
+        onPointerCancel={onFabPointerUp}
+        onDoubleClick={onFabDoubleClick}
+        style={fabPos
+          ? { left: fabPos.x, top: fabPos.y, right: "auto", bottom: "auto" }
+          : undefined}
+        className={`ei-fab${active ? " ei-fab-on" : ""}${dragging ? " ei-fab-dragging" : ""}`}
       >
         <span className="ei-fab-glyph">◎</span>
         <span className="ei-fab-label">{active ? "退出选择" : "元素选择"}</span>
       </button>
+
+      {posTip && <div className="ei-postip" data-ei-ui>{posTip}</div>}
 
       {/* 悬停高亮框 */}
       <div ref={boxRef} className="ei-box" data-ei-ui style={{ display: "none" }} />

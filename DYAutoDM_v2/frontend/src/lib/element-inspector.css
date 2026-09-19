@@ -78,6 +78,33 @@
   50% { opacity: 0.35; }
 }
 
+/* 拖动中：禁掉过渡与 hover 位移，避免「跟手」被动画拖慢 */
+.ei-fab-dragging {
+  transition: none !important;
+  transform: none !important;
+  cursor: grabbing;
+}
+.ei-fab {
+  touch-action: none; /* 指针拖动时不要让浏览器抢去做滚动/手势 */
+}
+
+/* 位置记忆提示（拖动松手 / 双击复位时短暂出现） */
+.ei-postip {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 2147483100;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
 /* 悬停高亮框（跟随鼠标所在的候选元素） */
 .ei-box {
   position: fixed;
