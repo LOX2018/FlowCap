@@ -7,7 +7,7 @@
 |---|---|---|
 | 1 | `services.dm_dispatch` 未在 `build_sidecar.py` 声明 hidden-import | 打包后 `No module named 'services.dm_dispatch'` → 直播/采集**一条私信都发不出**，日志仅一行 `SEND-037` |
 | 2 | 新建配置草稿用「页面当前直播间」预填 `live_url` | 新建房间的配置里存的是**另一个直播间的地址**（实测 room_id=777666555 → live_url=992931212705） |
-| 3 | `RoomConfigManager` 保存后不通知父页 | 保存成功但直播页下拉**不刷新**（需整页重载才出现） |
+| 3 | 配置页保存后不通知父页 | 保存成功但直播页下拉**不刷新**（需整页重载才出现） |
 | 4 | 唯一可写入口无「私信词库」编辑 UI | 页面提示「请到配置管理补充」但那里没有入口 → `dm_pool` 恒空 → 私信发不出 |
 
 判据来源均为**真实浏览器 + 真实后端**实测（见 `工作记忆/cases/`），不是代码推断。
@@ -24,8 +24,11 @@ import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.normpath(os.path.join(_HERE, ".."))
+# 2026-09-19：配置管理弹窗 → 整页视图「配置标签」（参数唯一可写入口不变）
 _ROOMCFG = os.path.join(_ROOT, "frontend", "src", "components", "live",
-                        "RoomConfigManager.tsx")
+                        "RoomConfigPage.tsx")
+_TARGETPAGE = os.path.join(_ROOT, "frontend", "src", "components", "live",
+                           "TargetRoomPage.tsx")
 _LIVEPAGE = os.path.join(_ROOT, "frontend", "src", "components", "live",
                          "live-page.tsx")
 _BUILD = os.path.join(_ROOT, "scripts", "build_sidecar.py")
@@ -93,7 +96,7 @@ class TestNoLiveUrlPrefill(unittest.TestCase):
             r"setDraft\(\{\s*\.\.\.EMPTY_DRAFT[^)]*live_url", src)
         self.assertEqual(
             bad, [],
-            "RoomConfigManager 的新建草稿又在预填 live_url —— 保存时该值会"
+            "配置标签页的新建草稿又在预填 live_url —— 保存时该值会"
             "覆盖按 room_id 推导的地址，导致配置指向别的直播间（实测 777666555 "
             "存成 992931212705）。草稿只应带 room_id。")
 
@@ -104,7 +107,7 @@ class TestParentRefreshWiring(unittest.TestCase):
     def test_component_has_onchanged_prop(self):
         src = _read(_ROOMCFG)
         self.assertIn("onChanged", src,
-                      "RoomConfigManager 未提供 onChanged 回调 → 保存后父页"
+                      "配置标签页未提供 onChanged 回调 → 保存后父页"
                       "（直播页下拉）不刷新，用户看到「保存了但不显示」。")
 
     def test_calls_onchanged_after_writes(self):
@@ -127,11 +130,66 @@ class TestDmPoolEditorExists(unittest.TestCase):
     def test_editor_present(self):
         src = _read(_ROOMCFG)
         self.assertIn("私信词库", src,
-                      "RoomConfigManager 缺少「私信词库」编辑入口 —— 直播页会提示"
+                      "配置标签页缺少「私信词库」编辑入口 —— 直播页会提示"
                       "「请到配置管理补充」，但那里没有入口 → dm_pool 恒空 → "
                       "pick_dm_message() 返回 None → 私信永远发不出。")
         self.assertIn("dm_pool", src)
         self.assertIn("新增一条文案", src, "缺少「新增一条文案」按钮")
+
+
+class TestConfigTagAndTargetRoomSeparation(unittest.TestCase):
+    """2026-09-19 用户定调：配置可多标签；目标直播间独立管理并选择是否绑定配置。
+
+    用户原话：「配置管理修改只能对现有的配置反复覆盖，没有实现多配置标签的功能。
+    目标直播间可以管理，但别放到配置管理中，单独加一个目标直播间管理，
+    在该页面中选择是否绑定配置。」
+
+    判据（四条，缺一条即回退到「反复覆盖」形态）：
+      1. 目标直播间页存在，且提供「绑定配置」选择（含「不绑定配置」）
+      2. 目标直播间页**没有**参数编辑绑定（参数只能来自配置标签，防两处可写）
+      3. 配置标签页仍是参数唯一可写入口（含词库/连麦/上限等全部控件）
+      4. 直播页把两个页面作为子视图挂载（不是弹窗）
+    """
+
+    def test_target_room_page_exists_with_binding_select(self):
+        self.assertTrue(os.path.isfile(_TARGETPAGE),
+                        "缺少「目标直播间」独立页 —— 用户明确要求它不能塞进配置管理里")
+        src = _read(_TARGETPAGE)
+        self.assertIn("不绑定配置", src,
+                      "目标直播间页必须有「是否绑定配置」的选择（且要能解绑）")
+        self.assertIn("bindOnly", src, "缺少就地绑定/解绑的写路径")
+        self.assertIn("saveTargetRoom", src)
+        self.assertIn("deleteTargetRoom", src)
+
+    def test_target_room_page_has_no_param_editing(self):
+        src = _read(_TARGETPAGE)
+        bad = re.findall(
+            r"setDraft\(\{ \.\.\.draft, (max_target|interval|delay|dm_pool|"
+            r"auto_link_mic|link_mic_mode|force_rescan)", src)
+        self.assertEqual(
+            [], bad,
+            "目标直播间页出现了参数编辑绑定 —— 参数必须只在「配置标签」页编辑，"
+            "两处可写会让用户不知道真源是哪个（违反唯一可写入口铁律）。")
+
+    def test_config_page_is_single_writable_entry(self):
+        src = _read(_ROOMCFG)
+        for k in ("发送上限", "间隔（秒）", "延迟抖动（秒）", "私信词库",
+                  "强制重扫", "自动申请连麦"):
+            self.assertIn(k, src, f"配置标签页缺少「{k}」编辑控件")
+
+    def test_live_page_mounts_both_subviews(self):
+        src = _read(_LIVEPAGE)
+        self.assertIn("<TargetRoomPage", src, "直播页未挂载「目标直播间」子视图")
+        self.assertIn("<RoomConfigPage", src, "直播页未挂载「配置标签」子视图")
+        self.assertNotIn("RoomConfigManager", src,
+                         "直播页仍引用旧弹窗组件（配置入口会退回「反复覆盖」形态）")
+
+    def test_old_modal_component_removed(self):
+        p = os.path.join(_ROOT, "frontend", "src", "components", "live",
+                         "RoomConfigManager.tsx")
+        self.assertFalse(os.path.isfile(p),
+                         "旧弹窗 RoomConfigManager.tsx 仍在 —— 两个配置入口并存会让"
+                         "测试与用户都分不清哪个是真源")
 
 
 if __name__ == "__main__":

@@ -209,11 +209,27 @@ check("直播间输入框为自动解析（无「解析房间号」按钮）",
       "onBlur" in live and 'data-od-id="live-parse"' not in live)
 check("直播页配置区为只读展示（含「去配置」指引）", "去配置" in live)
 
-rc = src("components/live/RoomConfigManager.tsx", FE)
-check("配置管理保留全部可写控件（发送上限/间隔/抖动/词库/强制重扫/自动连麦）",
+# 2026-09-19：配置管理弹窗 → 整页视图「配置标签」（RoomConfigPage.tsx）
+# 参数可写能力必须逐项保留；同时旧弹窗文件不得复活（它是「反复覆盖」的载体）
+check("旧弹窗组件 RoomConfigManager.tsx 已移除（防止配置入口回退）",
+      not os.path.exists(os.path.join(FE, "components", "live", "RoomConfigManager.tsx")))
+rc = src("components/live/RoomConfigPage.tsx", FE)
+check("配置标签页保留全部可写控件（发送上限/间隔/抖动/词库/强制重扫/自动连麦）",
       all(k in rc for k in ("发送上限", "间隔（秒）", "延迟抖动（秒）", "自动申请连麦", "强制重扫")))
-check("配置管理有「重启」按钮", "重启" in rc and "restartRoomConfig" in rc)
-check("配置管理调 restartRoomConfig（新 API）", "api.restartRoomConfig" in rc)
+check("配置标签页有「重启」按钮", "重启" in rc and "restartRoomConfig" in rc)
+check("配置标签页调 restartRoomConfig（新 API）", "api.restartRoomConfig" in rc)
+
+# 2026-09-19 新增：目标直播间独立页 + 职责分离（用户定调）
+trp = src("components/live/TargetRoomPage.tsx", FE)
+check("目标直播间页存在且提供「是否绑定配置」选择",
+      "目标直播间" in trp and "不绑定配置" in trp)
+# 判据用「是否有参数编辑绑定」，不是「是否出现参数名」——摘要只读展示是设计内的
+check("目标直播间页无参数编辑绑定（参数归配置标签页，本页只读展示）",
+      not re.search(r"setDraft\(\{ \.\.\.draft, (max_target|interval|delay|dm_pool|auto_link_mic)",
+                    trp))
+check("直播页三子视图（监听 / 目标直播间 / 配置标签）挂载",
+      'useState<"monitor" | "targets" | "configs">' in live
+      and "<TargetRoomPage" in live and "<RoomConfigPage" in live)
 
 cli = src("api/client.ts", FE)
 check("client.ts 有 restartRoomConfig",

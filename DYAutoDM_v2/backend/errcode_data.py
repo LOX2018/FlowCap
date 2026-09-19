@@ -341,7 +341,8 @@ ERRCODES = {
     "LIVE-018": {"meaning": "resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：", "file": "link_resolve.py", "line": 276},
     "LIVE-019": {"meaning": "resolve] 用户  当前未在直播或无法解析房间", "file": "link_resolve.py", "line": 307},
     "LIVE-020": {"meaning": "resolve] 浏览器解析失败:", "file": "link_resolve.py", "line": 309},
-    "LIVE-021": {"meaning": "room-config] 热更失败:", "file": "api/live_config.py", "line": 0},
+    "LIVE-021": {"meaning": "room-config] 热更失败:", "file": "api/live_config.py", "line": 0},
+    "LIVE-022": {"meaning": "room-config] 解绑目标直播间失败（标签已删除，引用可能残留）:", "file": "api/live_config.py", "line": 0},
     "MEM-001": {"meaning": "member] 会员 DB 初始化失败:", "file": "api/member.py", "line": 72},
     "MEM-002": {"meaning": "member] .env 迁移异常（不阻塞登录）:", "file": "api/member.py", "line": 79},
     "MEM-003": {"meaning": "member] 登录后守护拉起失败（不影响登录）:", "file": "api/member.py", "line": 90},
@@ -587,6 +588,20 @@ CODE_DESIGN = {
         "root": "引擎刚进 RUNNING 但 _run 尚未建 dispatch，或启动中途失败（状态未回退）",
         "verify": "curl :8000/api/tasks/current 看 has_task/engine_state；"
                   "日志 grep ENG-014 与紧邻的引擎启动日志。",
+    },
+    "LIVE-022": {
+        "design": "删除「直播配置标签」时，引用它的**目标直播间**必须自动解绑"
+                  "（只清 tag_id 引用，目标直播间记录保留）；解绑本身是删除的附带"
+                  "清理，不允许反过来把已完成的删除回滚掉。",
+        "contract": "解绑失败不得静默 —— 必须留错误码日志，否则目标直播间会留下"
+                    "指向已删除标签的**悬空引用**，前端表现为「已绑定：xxx」而参数读不到。",
+        "deviation": "删除标签成功，但 target_rooms 侧解绑未完成（返回的 unbound_rooms 少于实际引用数）",
+        "chain": "DELETE /api/live/config-tags/{id} → live_config.delete_room_config → "
+                 "_unbind_from_targets → target_rooms.unbind_tag → kv live_target_rooms",
+        "root": "target_rooms 模块不可导入 / kv 写盘异常 / 目标直播间存储与标签存储分属两个 kv，"
+                "跨模块解绑缺少事务",
+        "verify": "日志 grep LIVE-022；再 GET /api/live/target-rooms 检查是否仍有 "
+                  "tag_id 指向已不存在的标签（resolve 端点返回 params 为空即悬空）。",
     },
     "LIVE-021": {
         "design": "「直播间配置管理」是房间级配置的**唯一可写入口**；点「重启」应把"

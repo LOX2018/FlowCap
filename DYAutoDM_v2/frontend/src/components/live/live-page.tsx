@@ -5,12 +5,13 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 
 import {
-  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X,
+  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X, Radio,
 } from "lucide-react";
 
 import { PageProps, ReusePayload, RoomConfig } from "../../api/client";
 
-import RoomConfigManager from "./RoomConfigManager";
+import RoomConfigPage from "./RoomConfigPage";
+import TargetRoomPage from "./TargetRoomPage";
 
 import { Avatar, hue, KIND_NAME } from "../../components/ui";
 
@@ -62,8 +63,11 @@ export default function LivePage(props: PageProps) {
   // 「直播间配置管理」里（唯一可写入口）。这里只读展示生效配置。
   const [roomCfgs, setRoomCfgs] = useState<RoomConfig[]>([]);
   const [selCfgId, setSelCfgId] = useState<string>("");
-  // 直播间配置管理弹窗（按直播间号管理配置 + 自动申请连麦）
-  const [cfgMgr, setCfgMgr] = useState(false);
+  // 直播页三个子视图（2026-09-19 用户定调：目标直播间与配置管理必须分开）
+  //   · monitor = 监听（原页面主体）
+  //   · targets = 「目标直播间」：监听哪些房间 + 绑定哪条配置
+  //   · configs = 「直播配置标签」：参数唯一可写入口
+  const [subView, setSubView] = useState<"monitor" | "targets" | "configs">("monitor");
   // 申请连麦进行中（防重复点击）
   const [linkMicBusy, setLinkMicBusy] = useState(false);
   // 任务中心「复用」载荷（标记已应用，避免容器回读覆盖用户刚改的字段）
@@ -400,33 +404,30 @@ export default function LivePage(props: PageProps) {
           </div>
         </div>
       )}
-      <RoomConfigManager
-        open={cfgMgr}
-        onClose={() => setCfgMgr(false)}
-        currentRoom={room}
-        push={push}
-        onChanged={loadRoomCfgs}
-        onApply={(cfg) => {
-          if (cfg.live_url) setRoom(cfg.live_url);
-          else if (cfg.room_id) setRoom(cfg.room_id);
-          if (cfg.room_id) setSelCfgId(cfg.room_id);
-          if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
-        }}
-      />
-
       <PageHeader
         title="直播监听"
         description="实时弹幕 / 礼物 / 评论采集与私信自动化"
         actions={
           <>
             <SegmentedTabs
-              value={viewMode}
-              onChange={setViewMode}
+              value={subView}
+              onChange={(v) => setSubView(v as "monitor" | "targets" | "configs")}
               items={[
-                { value: "single", label: "单账户", icon: <LogIn className="h-3.5 w-3.5" /> },
-                { value: "grid", label: "多账户总览", icon: <Users className="h-3.5 w-3.5" /> },
+                { value: "monitor", label: "监听", icon: <Radio className="h-3.5 w-3.5" /> },
+                { value: "targets", label: "目标直播间", icon: <Users className="h-3.5 w-3.5" /> },
+                { value: "configs", label: "配置标签", icon: <Settings2 className="h-3.5 w-3.5" /> },
               ]}
             />
+            {subView === "monitor" && (
+              <SegmentedTabs
+                value={viewMode}
+                onChange={setViewMode}
+                items={[
+                  { value: "single", label: "单账户", icon: <LogIn className="h-3.5 w-3.5" /> },
+                  { value: "grid", label: "多账户总览", icon: <Users className="h-3.5 w-3.5" /> },
+                ]}
+              />
+            )}
             <Badge variant={streaming ? "success" : engineBusy ? "warning" : "outline"}>
               <StatusDot
                 tone={streaming ? "ok" : engineBusy ? "warn" : "muted"}
@@ -458,7 +459,30 @@ export default function LivePage(props: PageProps) {
         }
       />
 
-      {viewMode === "grid" ? (
+      {subView === "targets" && (
+        <TargetRoomPage
+          push={push}
+          onChanged={loadRoomCfgs}
+          gotoConfigs={() => setSubView("configs")}
+        />
+      )}
+
+      {subView === "configs" && (
+        <RoomConfigPage
+          push={push}
+          currentRoom={room}
+          onChanged={loadRoomCfgs}
+          onApply={(cfg) => {
+            if (cfg.live_url) setRoom(cfg.live_url);
+            else if (cfg.room_id) setRoom(cfg.room_id);
+            if (cfg.room_id) setSelCfgId(cfg.room_id);
+            if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
+            setSubView("monitor");
+          }}
+        />
+      )}
+
+      {subView !== "monitor" ? null : viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2" data-od-id="live-grid">
           {realAccts.slice(0, 2).map((acct) => (
             <Card key={acct.name} className="overflow-hidden">
@@ -657,10 +681,10 @@ export default function LivePage(props: PageProps) {
                   variant="ghost"
                   size="sm"
                   data-od-id="live-room-configs"
-                  title="直播间配置管理（唯一可写入口：内容编辑 + 重启）"
-                  onClick={() => setCfgMgr(true)}
+                  title="打开「直播配置标签」（参数唯一可写入口：内容编辑 + 重启）"
+                  onClick={() => setSubView("configs")}
                 >
-                  <Settings2 className="h-3.5 w-3.5" />配置管理
+                  <Settings2 className="h-3.5 w-3.5" />配置标签
                 </Button>
               </>
             }
@@ -870,7 +894,7 @@ export default function LivePage(props: PageProps) {
                 variant="ghost"
                 size="sm"
                 data-od-id="live-cfg-goto"
-                onClick={() => setCfgMgr(true)}
+                onClick={() => setSubView("configs")}
               >
                 <Settings2 className="h-3.5 w-3.5" />去配置
               </Button>

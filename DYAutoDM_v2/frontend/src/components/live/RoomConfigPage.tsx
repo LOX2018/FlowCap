@@ -1,11 +1,20 @@
 /**
- * 直播间配置管理弹窗（按直播间号管理配置 + 自动申请连麦）
+ * 直播配置标签（整页视图）
  *
- * 2026-09-10 新增。数据源：/api/live/room-configs（SQLite kv "live_room_configs"）。
- * 配置项 = 现有直播任务全部配置 + auto_link_mic（自动申请连麦）+ link_mic_mode。
+ * ## 沿革（2026-09-19 用户定调）
+ * 前身 = `RoomConfigManager.tsx`「直播间配置管理」弹窗（2026-09-10 新增）。
+ * 用户原话：「直播监听的配置管理修改只能对现有的配置反复覆盖，没有实现多配置
+ * 标签的功能；目标直播间可以管理，但别放到配置管理中，单独加一个目标直播间
+ * 管理，在该页面中选择是否绑定配置。」
+ *
+ * 因此本页承担「配置标签」职责（一条配置 = 一个标签，按 room_id 唯一）：
+ *   - 参数编辑能力与弹窗版逐字保留（上限/间隔/抖动/词库/强制重扫/连麦/账号）
+ *   - 唯一变化：外壳由 modal 升级为**整页子视图**，标题明确为「直播配置标签」
+ *   - 「目标直播间」的增删与绑定选择**不在这里** —— 在「目标直播间」子视图维护
+ *
+ * 数据源：/api/live/room-configs（SQLite kv "live_room_configs"）
  */
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
 import { api, RoomConfig } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,15 +25,13 @@ import {
 import { Blank } from "@/components/page/kit";
 
 interface Props {
-  open: boolean;
-  onClose: () => void;
-  /** 当前输入框的直播间（用于「保存当前」预填） */
-  currentRoom: string;
   /** toast */
   push: (msg: string, holdMs?: number) => void;
+  /** 当前输入框的直播间（新建标签时预填 room_id） */
+  currentRoom?: string;
   /** 保存/删除/应用等写操作完成后通知父页刷新列表（v0.43.91） */
   onChanged?: () => void;
-  /** 应用某条配置到页面（回填输入框与各配置项） */
+  /** 应用某条标签到直播页（切回「直播间」子视图并选中该标签） */
   onApply: (cfg: RoomConfig) => void;
 }
 
@@ -54,7 +61,7 @@ const FIELD_CN: Record<string, string> = {
 const cnFields = (keys?: string[]): string =>
   (keys || []).map((k) => FIELD_CN[k] || k).join("、");
 
-export default function RoomConfigManager({ open, onClose, currentRoom, push, onApply, onChanged }: Props) {
+export default function RoomConfigPage({ push, currentRoom = "", onChanged, onApply }: Props) {
   const [items, setItems] = useState<RoomConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState<Partial<RoomConfig>>({ ...EMPTY_DRAFT });
@@ -72,20 +79,17 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
   };
 
   useEffect(() => {
-    if (open) {
-      load();
-      // v0.43.91：新建草稿**不再预填 live_url**。
-      // 原实现把「页面当前直播间」写进 live_url，而保存时该值优先于
-      // 输入框里的 room_id 被代入 → 新建房间存的是**另一个直播间的地址**
-      // （实测 room_id=777666555 存成 live_url=992931212705）。草稿只带 room_id，
-      // live_url 由后端按 room_id 推导。
-
-      const rid = extractRoomId(currentRoom);
-      setDraft({ ...EMPTY_DRAFT, room_id: rid || "" });
-      setEditing(null);
-    }
+    load();
+    // v0.43.91：新建草稿**不再预填 live_url**。
+    // 原实现把「页面当前直播间」写进 live_url，而保存时该值优先于
+    // 输入框里的 room_id 被代入 → 新建房间存的是**另一个直播间的地址**
+    // （实测 room_id=777666555 存成 live_url=992931212705）。草稿只带 room_id，
+    // live_url 由后端按 room_id 推导。
+    const rid = extractRoomId(currentRoom);
+    setDraft({ ...EMPTY_DRAFT, room_id: rid || "" });
+    setEditing(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
   const save = () => {
     const rid = draft.room_id?.trim();
@@ -183,36 +187,25 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
       .finally(() => setRestarting(null));
   };
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="glass-premium w-[720px] max-w-[92vw] max-h-[86vh] overflow-auto
-                   rounded-[var(--radius-xl)]"
-        onClick={(e) => e.stopPropagation()}
-        data-od-id="room-config-modal"
-      >
-        <div className="flex items-center justify-between border-b border-[var(--color-border)]
-                        px-4 py-3">
+    <div data-od-id="live-config-tags">
+      <div className="mx-auto w-full max-w-[860px] glass-premium rounded-[var(--radius-xl)] px-4 py-3.5">
+        <div className="mb-2 flex items-center justify-between">
           <h3 className="text-[0.95rem] font-semibold text-[var(--color-text)]">
-            直播间配置管理
+            直播配置标签
           </h3>
-          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭">
-            <X className="h-4 w-4" />
-          </Button>
+          <span className="text-[0.72rem] text-[var(--color-text-muted)]">
+            一条标签 = 一套监听参数；「目标直播间」里选择绑定哪条
+          </span>
         </div>
-        <div className="p-4">
-          {/* 配置列表 */}
+        <div>
+          {/* 配置标签列表 */}
           <div style={{ marginBottom: 14 }}>
             {loading && (
               <div className="text-[0.74rem] text-[var(--color-text-muted)]">加载中…</div>
             )}
             {!loading && items.length === 0 && (
-              <Blank>暂无配置。填写下方表单保存第一个直播间配置。</Blank>
+              <Blank>暂无标签。填写下方表单保存第一条直播配置标签。</Blank>
             )}
             {items.map((cfg) => (
               <div
@@ -263,7 +256,12 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
           {/* 编辑/新建表单 */}
           <div className="grid grid-cols-2 gap-2.5 border-t border-[var(--color-border)] pt-3">
             <div className="col-span-2 flex flex-col gap-1">
-              <label>直播间号或 URL {editing && `(编辑中: ${editing})`}</label>
+              <label>
+                标签键（直播间号或 URL）{editing && `（编辑中: ${editing}）`}
+              </label>
+              <span className="text-[0.7rem] text-[var(--color-text-muted)]">
+                同一直播间号只有一条标签：已存在则更新，不存在则新建 —— 想并排放多套参数请用不同直播间号做标签键
+              </span>
               <Input
                 
                 value={draft.room_id || ""}
@@ -406,10 +404,7 @@ export default function RoomConfigManager({ open, onClose, currentRoom, push, on
             </div>
           </div>
         </div>
-        <div className="flex justify-end gap-2 border-t border-[var(--color-border)] px-4 py-3">
-          <Button variant="secondary" onClick={onClose}>
-            关闭
-          </Button>
+        <div className="mt-3 flex justify-end gap-2 border-t border-[var(--color-border)] pt-3">
           <Button
             variant="secondary"
             onClick={() => {
