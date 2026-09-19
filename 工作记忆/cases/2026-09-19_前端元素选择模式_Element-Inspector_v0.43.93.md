@@ -82,10 +82,41 @@ harness：一次性 `preview-inspector.html`（含「危险按钮 + 计数」，
      `KB.find_match(...)`，而代码已改为 `reply_kb.find_match(...)`（并发线改动，测试未同步）；
    - `test_member_smoke` —— import 期 Fernet 签名不匹配（会员凭证/环境问题）。
    两项均在**我的文件之外**，且与本功能无调用关系。
-3. **未部署**：本次只做代码 + 构建产物（`dist/`）。是否打包进 exe / 部署到
-   `C:\temp\dyautodm_design` 由并发线统一收口时决定（用户明确可继续）。
+3. **已打包并部署（19:30 完成）**：`build_sidecar.py --onedir` → `tauri build --no-bundle`
+   → `deploy.py`，三阶段退出码 **0/0/0**。部署到 `C:\temp\dyautodm_design`。
 
-## 七、文件清单
+## 七、部署与部署后实机验证（18:47~19:32）
+
+| 验证项 | 判据 | 实测结果 |
+|---|---|---|
+| 版本五处齐平 | `check_version_sync.py 0.43.93` | ✓ 五处齐平（含 `_build_version.py`，由 `build_sidecar.py` 写入） |
+| 构建链 | 逐段捕获退出码（**禁把命令接进管道读 `$?`**） | `step1_exit=0 step2_exit=0 step3_exit=0` |
+| 部署 exe = 构建产物 | `md5sum` 双向 | **一致**（`3ccd848ea2c640f5cc9d844c6acf6a36`） |
+| 前端 bundle 已进 exe | `grep <bundle名> <exe>` | 命中 `index-4vu0aOS3.js`（= `index.html` 实际引用、且**含** `debug-inspector-toggle` 的那一个） |
+| 部署目录唯一主 exe | `ls \| grep '^DYAutoDM.*\.exe$'` | 仅 `DYAutoDM_v2_0.43.93.exe` |
+| 运行实例版本 | `curl :8000/api/version` | `{"backend":"0.43.93","frozen":true}` |
+| 就绪探针 | `curl :8000/api/ready` | `{"ok":true,"daemons_ready":true,"accounts":2}` |
+| **真实链路可用** | `curl :12726/status` | `version 0.43.93`；账号「尚进工伤小助理」`connected:true`、`connects:1`、`backoff_stage:0`、**conv_count 83** |
+
+### ⚠️ 本轮踩坑：`dist/` 旧 bundle 堆积（已知坑复现）
+
+`frontend/dist/assets/` 下同时存在 **3 个** `index-*.js`，其中**只有 `index-4vu0aOS3.js`
+含本次的 inspector**（另两个 inspector=0）。原因是项目已记录的「`emptyOutDir` 被 IDE
+safe-delete 拦截」坑（见 `vite.config.ts` 注释与 08 §三十一）。
+
+**判据（勿凭 bundle 名新旧推断）**：必须**读 `dist/index.html` 的实际引用**，
+再核对**那一个文件**是否含目标特征串 —— 我一开始按 `ls -t` 取「最新」的 `index-F3_Uwzbp.js`，
+它就**不含** inspector，差点得出「功能没打进产物」的错误结论。
+
+### ⚠️ 强杀 backend 会留 recv 孤儿（本项目铁律复现）
+
+smoke 脚本按 `/api/version` 的 pid 精确 `Stop-Process` 关闭 backend，verification 成功，
+但**留下 2 个 recv_daemon 孤儿**（父进程=刚被杀掉的 backend pid，占 12726/12687）
+—— 印证「`_kill_spawned_daemons()` 只在**优雅退出**时执行」。
+**收尾必须走 `POST /quit`**（实测两个孤儿均返回 `{"ok":true}` 并退出），
+绝不用 taskkill；清理后复查进程表与端口应双双归零。
+
+## 八、文件清单
 
 | 文件 | 类型 |
 |---|---|
