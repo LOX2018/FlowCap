@@ -161,17 +161,20 @@ check("A9b 策略编辑页 JSX **不含**身份/废弃字段控件",
 check("A9c 新建草稿无身份字段",
       not re.search(r"EMPTY_DRAFT[^}]*room_id", rcp, re.S)
       and not re.search(r"EMPTY_DRAFT[^}]*force_rescan", rcp, re.S))
-check("A9d 策略弹窗有**显式新建入口**（用户反馈「没有新增入口」）",
-      'data-od-id="strategy-new"' in rcp and "新建策略" in rcp)
-_rcp_footer = rcp.split("flex justify-end gap-2")[-1]
-check("A9e 新建入口在页脚且位于「保存/更新策略」左侧（用户指定版式）",
-      'data-od-id="strategy-new"' in _rcp_footer
+# 草稿模式（2026-09-19 用户第三次定调：取消「新建策略」按钮）
+_rcp_jsx = rcp.split("export default function RoomConfigPage")[-1]
+_rcp_footer = _rcp_jsx.split("flex justify-end gap-2")[-1]
+check("A9d 已取消「新建策略」按钮（用户要求：改为有变化即草稿模式）",
+      "＋ 新建策略" not in _rcp_jsx and "const startNew" not in _rcp_jsx)
+check("A9e strategy-new 回归「清空表单」，仍在保存按钮左侧",
+      'data-od-id="strategy-new"' in _rcp_footer and "清空表单" in _rcp_footer
       and _rcp_footer.index('data-od-id="strategy-new"') < _rcp_footer.index("save}"),
       "版式不符")
-check("A9f 点击新建有可见变化（用户两次反馈「点击没变化」）",
-      "const startNew" in rcp and "newMode" in rcp
-      and 'data-od-id="strategy-draft-row"' in rcp
-      and "已进入「新建策略」" in rcp)
+check("A9f 草稿模式：有变化即出现列表区草稿行（用户指明的位置）",
+      "const [dirty, setDirty]" in _rcp_jsx and "const touch =" in _rcp_jsx
+      and 'data-od-id="strategy-draft-row"' in _rcp_jsx
+      and "const draftActive = dirty && !editing" in _rcp_jsx)
+check("A9g 标题区文案 =「策略详情」（用户指定）", "策略详情" in _rcp_jsx)
 check("A10 策略为弹窗（data-od-id=live-strategy-modal），非整页子视图",
       'data-od-id="live-strategy-modal"' in rcp and "fixed inset-0 z-50" in rcp)
 

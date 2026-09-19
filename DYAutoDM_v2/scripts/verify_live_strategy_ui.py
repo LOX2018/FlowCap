@@ -12,8 +12,9 @@
 判据全部读页面内真实 DOM，不靠截图、不靠 console 猜测：
 
   R1 按钮存在于弹窗页脚，且位于「保存/更新策略」左侧
-  R2 默认态点击 → 触发 push 反馈 + **列表区出现草稿行**（用户指明的位置必须变）
-  R2b 再次点击 → 取消新建（草稿行消失、按钮文案回退）—— 连点也必须有可见变化
+  R2 改动任一字段 → 自动进入草稿模式（列表区出现草稿行，**无「新建策略」按钮**）
+  R2b 点「清空表单」→ 退出草稿模式（草稿行消失）—— [strategy-new] 回归清空本义
+  R2c 标题区文字 ==「策略详情」（用户指定）
   R3 点「编辑」进入编辑态（标题出现「编辑中」）→ 再点「新建」
      ⇒ 标题回到「新建」、表单被清空、列表中编辑标记消失
   R4 编辑态点击「新建」后，保存按钮文案由「更新策略」变为「保存策略」
@@ -130,21 +131,26 @@ try:
               f"opened={opened} modal={modal.count()}")
 
         newbtn = page.locator('[data-od-id="strategy-new"]')
-        check("R1 存在「＋ 新建策略」按钮", newbtn.count() == 1, f"count={newbtn.count()}")
+        check("R1 存在清空表单按钮（data-od-id=strategy-new 回归清空本义）",
+              newbtn.count() == 1, f"count={newbtn.count()}")
+        check("R1a 页脚**没有**「新建策略」按钮（用户要求取消）",
+              page.evaluate("""(() => {
+                const m = document.querySelector('[data-od-id="live-strategy-modal"]');
+                return !(m.innerText || '').includes('新建策略');
+              })()"""),
+              "弹窗内仍出现「新建策略」字样")
+        check("R1b 清空表单按钮文案正确",
+              newbtn.inner_text().strip() == "清空表单",
+              repr(newbtn.inner_text().strip()))
 
-        # R1b 位于页脚、且在保存按钮左侧（用真实几何 x 坐标判定）
-        geo = page.evaluate("""(() => {
-          const modal = document.querySelector('[data-od-id="live-strategy-modal"]');
-          const nb = modal.querySelector('[data-od-id="strategy-new"]');
-          const save = [...modal.querySelectorAll('button')]
-            .find(b => ['保存策略','更新策略'].includes((b.textContent||'').trim()));
-          if (!nb || !save) return null;
-          const nbR = nb.getBoundingClientRect(), sR = save.getBoundingClientRect();
-          return { nbX: nbR.x, saveX: sR.x, nbY: nbR.y, saveY: sR.y, sameRow: Math.abs(nbR.y-sR.y) < 8 };
+        # R1c 标题区必须是「策略详情」（用户指定的那个元素）
+        title_txt = page.evaluate("""(() => {
+          const m = document.querySelector('[data-od-id="live-strategy-modal"]');
+          const t = m.querySelector('.p-4 > div.mb-1.font-semibold');
+          return t ? (t.textContent || '').trim() : null;
         })()""")
-        check("R1b 新建按钮在保存按钮左侧（真实几何）",
-              bool(geo) and geo["nbX"] < geo["saveX"] and geo["sameRow"],
-              str(geo))
+        check("R1c 标题区文字为「策略详情」（用户指定）",
+              bool(title_txt) and title_txt.startswith("策略详情"), repr(title_txt))
 
         # R2 默认态点击 → handler 必须真的给出反馈。
         # 注意：预览 harness 的 push = console.log（不渲染 toast），
@@ -158,23 +164,24 @@ try:
             console.log = (...a) => { window.__pushed.push(a.join(' ')); _orig(...a); };
           }
         })()""")
-        # ⚠️ 用户指明的元素：[data-od-id="live-strategy-modal"] > .p-4 > div:nth-of-type(1)
-        #    > .flex.flex-wrap.items-center —— 即**列表区**。默认态点击必须让它变化。
+        # 用户指明的元素：[data-od-id="live-strategy-modal"] > .p-4 > div:nth-of-type(1)
+        #   > .flex.flex-wrap.items-center —— 即**列表区**。
+        # 新契约：改任一字段即自动进入草稿模式，列表区必须出现草稿行。
         list_html_before = page.evaluate("""(() => {
           const m = document.querySelector('[data-od-id="live-strategy-modal"]');
           const list = m.querySelector('.p-4 > div:nth-of-type(1)');
           return list ? list.innerHTML.length : -1;
         })()""")
-        newbtn.click()
-        page.wait_for_timeout(600)
-        pushed = page.evaluate("window.__pushed || []")
-        check("R2 默认态点击触发反馈（push 被调用）",
-              any("新建策略" in str(x) for x in pushed),
-              f"pushed={pushed}")
-        # R2b 列表区（用户指的那个元素）必须出现草稿行
-        draft_row = page.locator('[data-od-id="strategy-draft-row"]')
-        check("R2b 点击后**列表区出现草稿行**（用户指明的元素确实变化）",
-              draft_row.count() == 1, f"draft_row={draft_row.count()}")
+        check("R2 初始态无草稿行（干净浏览态）",
+              page.locator('[data-od-id="strategy-draft-row"]').count() == 0,
+              "初始就出现了草稿行")
+        # 改动 → 草稿模式
+        namebox = page.locator('[data-od-id="strategy-name"]')
+        namebox.fill("草稿验证-甲")
+        page.wait_for_timeout(500)
+        check("R2b 改动字段后**列表区自动出现草稿行**（用户指明的元素）",
+              page.locator('[data-od-id="strategy-draft-row"]').count() == 1,
+              "草稿行未出现")
         list_html_after = page.evaluate("""(() => {
           const m = document.querySelector('[data-od-id="live-strategy-modal"]');
           const list = m.querySelector('.p-4 > div:nth-of-type(1)');
@@ -183,18 +190,24 @@ try:
         check("R2c 列表区 DOM 长度确实变化（非空操作）",
               list_html_after != list_html_before,
               f"before={list_html_before} after={list_html_after}")
+        check("R2d 标题区出现「（草稿）」标记",
+              "草稿" in page.evaluate("""(() => {
+                const m = document.querySelector('[data-od-id="live-strategy-modal"]');
+                const t = m.querySelector('.p-4 > div.mb-1.font-semibold');
+                return t ? (t.textContent || '') : '';
+              })()"""),
+              "标题未出现草稿标记")
 
-        # R2d 再次点击 → 取消新建（也必须有可见变化）
+        # R2e 「清空表单」→ 退出草稿模式（strategy-new 的本义）
         newbtn.click()
         page.wait_for_timeout(500)
-        check("R2d 再点一次取消新建 → 草稿行消失（连点非空操作）",
-              page.locator('[data-od-id="strategy-draft-row"]').count() == 0,
-              "草稿行仍在")
-        # 回到新建态，供后续用例
-        newbtn.click()
-        page.wait_for_timeout(500)
+        _draft_n = page.locator('[data-od-id="strategy-draft-row"]').count()
+        _name_v = namebox.input_value()
+        check("R2e 点「清空表单」→ 草稿行消失 + 输入框清空",
+              _draft_n == 0 and _name_v == "",
+              f"draft={_draft_n} name={_name_v!r}")
 
-        # R3 进入编辑态 → 点新建 → 必须回到新建态
+        # R3 进入编辑态 → 改字段 → 仍为编辑态（编辑与草稿互斥）
         page.evaluate("""(() => {
           const modal = document.querySelector('[data-od-id="live-strategy-modal"]');
           const edit = [...modal.querySelectorAll('button')]
@@ -208,30 +221,34 @@ try:
         })()""")
         check("R3a 点「编辑」后进入编辑态（标题含「编辑中」）", in_edit, "未进入编辑态")
 
-        name_val_edit = page.locator('[data-od-id="strategy-name"]').input_value()
-        newbtn.click()
-        page.wait_for_timeout(600)
-        back_to_new = page.evaluate("""(() => {
-          const t = document.querySelector('[data-od-id="live-strategy-modal"]').innerText;
-          return !t.includes('编辑中');
-        })()""")
-        name_val_new = page.locator('[data-od-id="strategy-name"]').input_value()
-        check("R3b 编辑态点「新建」→ 退出编辑态（可见变化 ✅）", back_to_new,
-              "仍在编辑态 —— 点击无变化")
-        check("R3b2 同时列表区出现草稿行",
-              page.locator('[data-od-id="strategy-draft-row"]').count() == 1,
-              "草稿行未出现")
-        check("R3c 编辑态点「新建」→ 表单被清空", name_val_new == "",
-              f"编辑时={name_val_edit!r} 点新建后={name_val_new!r}")
+        # 编辑态下改字段 → 仍在编辑（不显示草稿行，用 ✎ 高亮标记）
+        page.locator('[data-od-id="strategy-name"]').fill("改名后的策略")
+        page.wait_for_timeout(500)
+        check("R3b 编辑态改字段 → 仍为编辑中（不显示草稿行，避免与新建混淆）",
+              page.locator('[data-od-id="strategy-draft-row"]').count() == 0
+              and page.evaluate("""(() => {
+                const t = document.querySelector('[data-od-id="live-strategy-modal"]').innerText;
+                return t.includes('编辑中');
+              })()"""),
+              "编辑态下出现了草稿行或丢失编辑标记")
+        check("R3c 编辑态按钮文案为「更新策略」",
+              page.evaluate("""(() => {
+                const m = document.querySelector('[data-od-id="live-strategy-modal"]');
+                const b = [...m.querySelectorAll('button')]
+                  .find(x => ['保存策略','更新策略'].includes((x.textContent||'').trim()));
+                return b ? (b.textContent||'').trim() : null;
+              })()""") == "更新策略")
 
-        # R4 保存按钮文案随之变化
+        # R4 退出编辑态（清空表单）后，保存按钮应回「保存策略」
+        newbtn.click()
+        page.wait_for_timeout(500)
         save_text = page.evaluate("""(() => {
           const modal = document.querySelector('[data-od-id="live-strategy-modal"]');
           const b = [...modal.querySelectorAll('button')]
             .find(x => ['保存策略','更新策略'].includes((x.textContent||'').trim()));
           return b ? (b.textContent||'').trim() : null;
         })()""")
-        check("R4 新建态下保存按钮文案 =「保存策略」", save_text == "保存策略", str(save_text))
+        check("R4 退出编辑态后保存按钮文案 =「保存策略」", save_text == "保存策略", str(save_text))
 
         browser.close()
 except Exception as e:

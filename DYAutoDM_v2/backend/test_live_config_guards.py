@@ -188,29 +188,46 @@ class TestConfigTagAndTargetRoomSeparation(unittest.TestCase):
         self.assertIn("管理策略", src, "「直播间」板块缺少策略管理入口")
         self.assertIn("选择直播策略", src, "「直播间」板块缺少策略下拉")
 
-    def test_explicit_new_strategy_entry(self):
-        """策略弹窗必须有**显式的新建入口** —— 用户反馈「没有新增入口」。
+    def test_draft_mode_replaces_new_button(self):
+        """**草稿模式**取代「新建策略」按钮（用户 2026-09-19 第三次定调）。
 
-        仅有「清空表单 + 保存」时，用户无法知道那就是新建；且编辑态下也无从
-        退出到新建态。判据：存在 data-od-id="strategy-new" 的按钮。
+        用户原话：「既然新建策略按钮的本质也需要通过保存策略按钮才能固化写入，
+        那不如直接取消新建策略的按钮……只要有变化或者有写入，则默认变成草稿模式，
+        然后通过点击保存策略就可以新建完成。把 [strategy-new] 改回清空表单。
+        [live-strategy-modal] > div.p-4 > div.mb-1.font-semibold 改成策略详情。」
+
+        判据：
+          1. 弹窗内**不得**再有「新建策略」按钮/字样
+          2. `data-od-id="strategy-new"` 仍在页脚，但文案 =「清空表单」
+          3. 改动字段即进入草稿模式（有 dirty 状态 + touch 统一入口 + 草稿行）
+          4. 标题区文案 =「策略详情」
         """
         src = _read(_ROOMCFG)
-        self.assertIn('data-od-id="strategy-new"', src,
-                      "策略弹窗缺少显式「新建策略」入口（用户明确反馈过没有）")
-        self.assertIn("新建策略", src, "新建入口的文案应为「新建策略」")
-        # 用户指定版式：放在页脚里、且在「保存/更新策略」按钮**左侧**
-        footer = src.split("flex justify-end gap-2")[-1]
+        jsx = src.split("export default function RoomConfigPage")[-1]
+
+        # 1) 取消「新建策略」按钮
+        self.assertNotIn("＋ 新建策略", jsx, "「新建策略」按钮已被用户要求取消")
+        self.assertNotIn("startNew", jsx, "旧的新建入口函数应已移除")
+
+        # 2) strategy-new 回归「清空表单」本义，且仍在页脚、位于保存按钮左侧
+        footer = jsx.split("flex justify-end gap-2")[-1]
         self.assertIn('data-od-id="strategy-new"', footer,
-                      "「新建策略」必须位于弹窗页脚（用户指定位置）")
+                      "「清空表单」按钮必须仍在弹窗页脚")
+        self.assertIn("清空表单", footer, "strategy-new 按钮文案应回归「清空表单」")
         self.assertLess(footer.index('data-od-id="strategy-new"'), footer.index("save}"),
-                        "「新建策略」必须排在「保存/更新策略」按钮左侧")
-        # 点击必须有**可见变化**（用户两次反馈"点击没变化"）
-        # 判据：列表区必须有一条可见草稿行 —— 这是用户指明要变的元素位置
-        self.assertIn('data-od-id="strategy-draft-row"', src,
-                      "点「新建策略」必须在**列表区**产生可见草稿行"
-                      "（否则默认态下与打开时无差别，用户判定为无反应）")
-        self.assertIn("newMode", src, "缺少新建态状态位（无法让列表区显式变化）")
-        self.assertIn("const startNew", src, "缺少统一的新建入口处理函数")
+                        "「清空表单」必须排在「保存/更新策略」按钮左侧")
+
+        # 3) 草稿模式：有变化即有写入 → 列表区出现草稿行（用户指明的元素位置）
+        self.assertIn("const [dirty, setDirty]", jsx, "缺少 dirty 状态（草稿模式的基础）")
+        self.assertIn("const touch =", jsx, "缺少统一的字段改动入口 touch()")
+        self.assertIn('data-od-id="strategy-draft-row"', jsx,
+                      "草稿模式必须在**列表区**显示草稿行"
+                      "（否则用户看不到「有变化」，会再次判定为无反应）")
+        self.assertIn("const draftActive = dirty && !editing", jsx,
+                      "草稿行应在非编辑态且有改动时显示")
+
+        # 4) 标题区「策略详情」（用户指定）
+        self.assertIn("策略详情", jsx, "标题区文案应为「策略详情」")
 
     def test_force_rescan_fully_removed(self):
         """「强制重扫」策略已废弃，全仓业务代码不得再有该配置项的读写。"""

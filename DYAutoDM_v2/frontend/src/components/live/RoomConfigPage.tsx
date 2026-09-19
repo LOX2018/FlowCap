@@ -15,7 +15,7 @@
  *
  * 数据源：/api/live/config-tags（SQLite kv "live_room_configs"）
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { api, RoomConfig } from "../../api/client";
 import { Button } from "@/components/ui/button";
@@ -72,37 +72,31 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
   const [editing, setEditing] = useState<string | null>(null); // 正在编辑的策略 id
   /** 正在「重启」的策略 id（防重复点击） */
   const [restarting, setRestarting] = useState<string | null>(null);
-  /** 是否处于「新建态」（列表区显示草稿行 —— 用户可见的新建状态） */
-  const [newMode, setNewMode] = useState(false);
-  /** 新建态时聚焦策略名称输入框 */
-  const nameRef = useRef<HTMLInputElement>(null);
+  /** 草稿模式：表单有变化/有写入即 true（取代原「新建策略」按钮） */
+  const [dirty, setDirty] = useState(false);
+  /**
+   * 草稿模式（2026-09-19 用户定调，替代原「新建策略」按钮）。
+   *
+   * 用户原话：
+   *   「既然新建策略按钮的本质也需要通过保存策略按钮才能固化写入，那不如直接取消
+   *    新建策略的按钮……只要有变化或者有写入，则默认变成草稿模式，然后通过点击
+   *    保存策略就可以新建完成。」
+   *
+   * 因此**没有显式的"新建"动作**：表单任意字段一改 → dirty=true → 进入草稿模式
+   * （列表区出现草稿行，这是用户可见的状态），点「保存策略」落库即完成新建。
+   * `[data-od-id="strategy-new"]` 按钮回归其本义：**清空表单**。
+   */
+  /** 改任意字段 = 进入草稿模式（这是"新建"的唯一入口语义） */
+  const touch = (patch: Partial<RoomConfig>) => {
+    setDraft((d) => ({ ...d, ...patch }));
+    setDirty(true);
+  };
 
   /**
-   * 进入「新建态」——**必须产生可见变化**（用户两次反馈"点击没变化"）。
-   *
-   * 根因：弹窗每次打开时 useEffect 已把表单复位为 EMPTY_DRAFT + editing=null，
-   * 即"默认态 == 新建态"。所以只在页脚点「新建」而列表区不动，用户看不出差别。
-   *
-   * 现做法：① 复位表单/编辑态；② 置 newMode=true，让**列表区插入一条草稿行**
-   * （用户指出的那个元素位置）；③ 清空名称后聚焦输入框；④ toast 反馈。
-   * 连点两次 → 第二次视为取消新建（也必须有可见变化，不能是空操作）。
+   * 草稿行是否显示：**非编辑态**且有改动（dirty）→ 用户在新建一条。
+   * 编辑已有策略时不显示（那条已在列表中，用 ✎ 高亮标记即可）。
    */
-  const startNew = () => {
-    setNewMode((prev) => {
-      const turningOff = prev;
-      setEditing(null);
-      if (turningOff) {
-        setDraft({ ...EMPTY_DRAFT });
-        push("已取消新建");
-      } else {
-        // 保留已填的发送参数，只清名称（避免用户改过的参数被无谓重置）
-        setDraft((d) => ({ ...d, name: "" }));
-        push("已进入「新建策略」：填写策略名称后点「保存策略」");
-        setTimeout(() => nameRef.current?.focus(), 0);
-      }
-      return !prev;
-    });
-  };
+  const draftActive = dirty && !editing;
 
   const load = () => {
     setLoading(true);
@@ -118,7 +112,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
       load();
       setDraft({ ...EMPTY_DRAFT });
       setEditing(null);
-      setNewMode(false);   // 打开时默认不显示草稿行；由「新建策略」显式开启
+      setDirty(false);     // 打开时是干净的浏览态，改动后才进草稿模式
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -140,7 +134,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
           );
           setDraft({ ...EMPTY_DRAFT });
           setEditing(null);
-          setNewMode(false);
+          setDirty(false);
           onChanged?.();
           load();
           if (r.config) onApply?.(r.config);
@@ -175,7 +169,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
   const edit = (cfg: RoomConfig) => {
     setEditing(sidOf(cfg));
     setDraft({ ...cfg });
-    setNewMode(false);   // 编辑与新建互斥
+    setDirty(false);     // 刚点开不算草稿；改动后才算
   };
 
   /**
@@ -253,11 +247,12 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
             {loading && (
               <div className="text-[0.74rem] text-[var(--color-text-muted)]">加载中…</div>
             )}
-            {!loading && items.length === 0 && !newMode && (
-              <Blank>暂无策略。点下方「＋ 新建策略」填写后保存。</Blank>
+            {!loading && items.length === 0 && !draftActive && (
+              <Blank>暂无策略。在下方「策略详情」里填写后点「保存策略」即新建。</Blank>
             )}
-            {/* 新建态草稿行：用户点「新建策略」后**在列表区可见**（用户指明的位置） */}
-            {newMode && (
+            {/* 草稿行（2026-09-19 用户定调）：**表单一有变化就自动出现**，
+                不再需要「新建策略」按钮。这里就是用户指明的列表区位置。 */}
+            {draftActive && (
               <div
                 data-od-id="strategy-draft-row"
                 className="flex flex-wrap items-center gap-2 rounded-[var(--radius-sm)]
@@ -267,10 +262,10 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
               >
                 <div className="min-w-[200px] flex-1">
                   <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-accent)" }}>
-                    ● 新策略（未保存）
+                    ● 草稿（未保存）
                   </div>
                   <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                    在下方表单填写并点「保存策略」即创建
+                    点「保存策略」即新建完成
                   </div>
                 </div>
               </div>
@@ -329,21 +324,24 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
             })}
           </div>
 
-          {/* 新建 / 编辑表单：**只有策略字段** */}
-          <div className="mb-1 text-[0.74rem] font-semibold"
-               style={{ color: editing ? "var(--color-text)" : "var(--color-accent)" }}>
-            {editing ? "编辑已有策略" : (newMode ? "新建策略（草稿）" : "新建策略")}
+          {/* 策略详情表单：**只有策略字段** */}
+          <div className="mb-1 text-[0.74rem] font-semibold text-[var(--color-text)]">
+            策略详情
+            {editing && (
+              <span className="ml-2 font-normal text-[var(--color-text-muted)]">
+                （编辑中：{items.find((x) => sidOf(x) === editing)?.name || editing}）
+              </span>
+            )}
+            {!editing && dirty && (
+              <span className="ml-2 font-normal text-[var(--color-accent)]">（草稿）</span>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-2.5 border-t border-[var(--color-border)] pt-3">
             <div className="col-span-2 flex flex-col gap-1">
-              <label>
-                策略名称
-                {editing && `（编辑中: ${items.find((x) => sidOf(x) === editing)?.name || editing}）`}
-              </label>
+              <label>策略名称</label>
               <Input
-                ref={nameRef}
                 value={draft.name || ""}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                onChange={(e) => touch({ name: e.target.value })}
                 placeholder="如：标准-快速 / 保守-慢速"
                 data-od-id="strategy-name"
               />
@@ -353,7 +351,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
               <Input
                 type="number"
                 value={draft.max_target ?? 100}
-                onChange={(e) => setDraft({ ...draft, max_target: parseInt(e.target.value, 10) || 0 })}
+                onChange={(e) => touch({ max_target: parseInt(e.target.value, 10) || 0 })}
               />
             </div>
             <div className="flex flex-col gap-1">
@@ -361,14 +359,14 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
               <Input
                 type="number"
                 value={draft.interval ?? 60}
-                onChange={(e) => setDraft({ ...draft, interval: parseFloat(e.target.value) || 0 })}
+                onChange={(e) => touch({ interval: parseFloat(e.target.value) || 0 })}
               />
             </div>
             <div className="flex flex-col gap-1">
               <label>延迟抖动（秒）</label>
               <Input
                 value={draft.delay || ""}
-                onChange={(e) => setDraft({ ...draft, delay: e.target.value })}
+                onChange={(e) => touch({ delay: e.target.value })}
                 placeholder="50,120"
               />
             </div>
@@ -376,7 +374,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
               <label>监听账号</label>
               <Input
                 value={draft.acct || ""}
-                onChange={(e) => setDraft({ ...draft, acct: e.target.value })}
+                onChange={(e) => touch({ acct: e.target.value })}
                 placeholder="留空 = 使用页面当前选择"
               />
             </div>
@@ -385,7 +383,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
               <Select
                 value={draft.link_mic_mode || "audio"}
                 onValueChange={(v) =>
-                  setDraft({ ...draft, link_mic_mode: v as "audio" | "video" })
+                  touch({ link_mic_mode: v as "audio" | "video" })
                 }
                 disabled={!draft.auto_link_mic}
               >
@@ -401,7 +399,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
             <label className="col-span-2 flex items-center gap-2 text-[0.74rem]">
               <Switch
                 checked={!!draft.auto_link_mic}
-                onCheckedChange={(v) => setDraft({ ...draft, auto_link_mic: v })}
+                onCheckedChange={(v) => touch({ auto_link_mic: v })}
               />
               <span style={{ color: "var(--color-text-muted)" }}>
                 自动申请连麦（引擎开播监听后自动对本期直播间发起连麦申请）
@@ -422,7 +420,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                     onCheckedChange={(v) => {
                       const pool = [...(draft.dm_pool || [])];
                       pool[idx] = { ...pool[idx], enabled: v };
-                      setDraft({ ...draft, dm_pool: pool });
+                      touch({ dm_pool: pool });
                     }}
                   />
                   <Input
@@ -431,7 +429,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                     onChange={(e) => {
                       const pool = [...(draft.dm_pool || [])];
                       pool[idx] = { ...pool[idx], text: e.target.value };
-                      setDraft({ ...draft, dm_pool: pool });
+                      touch({ dm_pool: pool });
                     }}
                   />
                   <Button
@@ -440,7 +438,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                     title="删除该条文案"
                     onClick={() => {
                       const pool = (draft.dm_pool || []).filter((_, k) => k !== idx);
-                      setDraft({ ...draft, dm_pool: pool });
+                      touch({ dm_pool: pool });
                     }}
                   >
                     删除
@@ -451,8 +449,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => setDraft({
-                    ...draft,
+                  onClick={() => touch({
                     dm_pool: [...(draft.dm_pool || []), { text: "", enabled: true }],
                   })}
                 >
@@ -468,12 +465,17 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
             关闭
           </Button>
           <Button
-            variant={newMode ? "default" : "secondary"}
+            variant="secondary"
             data-od-id="strategy-new"
-            title={newMode ? "再次点击取消新建" : "开始新建一条策略"}
-            onClick={startNew}
+            title="清空表单，回到干净的浏览态"
+            onClick={() => {
+              setEditing(null);
+              setDraft({ ...EMPTY_DRAFT });
+              setDirty(false);
+              push("已清空表单");
+            }}
           >
-            {newMode ? "✕ 取消新建" : "＋ 新建策略"}
+            清空表单
           </Button>
           <Button onClick={save}>
             {editing ? "更新策略" : "保存策略"}
