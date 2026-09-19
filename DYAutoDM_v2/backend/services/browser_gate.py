@@ -25,6 +25,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from typing import Any, Optional
 
 from loguru import logger
@@ -34,6 +36,86 @@ PURPOSE_AUTO = "auto"            # 纯自动/后台路径（启动期预对齐�
 PURPOSE_USER = "user"            # **用户显式操作**（点「更新会话」/「启动守护」/
                                  # 「打开浏览器」）—— 一律豁免启动冷静期
 PURPOSE_EXCLUSIVE = "exclusive"  # 用户显式独占：扫码登录、重扫、读 profile 凭证
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2026-09-19 v0.43.98【双实例根治】profile 所有权互斥（跨进程内所有调用点）
+#
+# 病根（实测复现）：「停 BCC」与「拉 BCC」分属两个模块、互不共享锁，而
+# 「扫码/重捕」另起 chromium 的旧路径夹在两者之间。同一账号上出现：
+#     ① BCC 持有 profile
+#     ② 重捕路径 _quit_browser_daemon → ②另起 headed chromium 持同一 profile
+#     ③ 同一次校验的 dm 段 ensure_daemons_for → ③再拉 BCC 抢同一 profile
+#   ⇒ ②③ 重叠 → TargetClosedError（已精确复现）、加载卡顿、扫码回执读不到。
+#
+# 设计契约：**任何「交出/取回 profile 所有权」的整段操作必须在本锁内串行**，
+# 锁覆盖「停 → 用 → 还」全过程，而不只是各自的单步。锁按账号维度，不同账号
+# 互不阻塞（不牺牲并发）。
+# ═══════════════════════════════════════════════════════════════════════════
+_PROFILE_OWNER_LOCKS: dict[str, threading.RLock] = {}
+_PROFILE_LOCKS_GUARD = threading.Lock()
+_PROFILE_OWNER: dict[str, str] = {}   # account -> 当前所有者标记（便于取证）
+
+
+def profile_owner_lock(account: str) -> threading.RLock:
+    """取该账号的 profile 所有权互斥锁（RLock：允许同线程重入）。"""
+    key = str(account or "")
+    with _PROFILE_LOCKS_GUARD:
+        lk = _PROFILE_OWNER_LOCKS.get(key)
+        if lk is None:
+            lk = threading.RLock()
+            _PROFILE_OWNER_LOCKS[key] = lk
+        return lk
+
+
+def profile_owner_of(account: str) -> str:
+    """当前持有该账号 profile 的操作名（空 = 无人持有）。取证用。"""
+    return _PROFILE_OWNER.get(str(account or ""), "")
+
+
+class ProfileOwnership:
+    """上下文管理器：在锁内独占某账号的 profile 所有权。
+
+    用法：
+        with ProfileOwnership(account, "scan_login"):
+            _quit_browser_daemon(account)     # 停 BCC
+            ...独占使用 profile...
+            ensure_daemons_for(account)       # 还回 BCC
+    锁释放前，其它任何「停/起 BCC」操作都会排队，杜绝两实例重叠。
+    """
+
+    def __init__(self, account: str, holder: str, timeout: float = 900.0):
+        self.account = str(account or "")
+        self.holder = str(holder or "unknown")
+        self.timeout = float(timeout)
+        self._lk = None
+        self._acquired = False
+
+    def __enter__(self) -> "ProfileOwnership":
+        self._lk = profile_owner_lock(self.account)
+        # 超时获取：宁可失败也不要永久卡死（acquire 无超时版会静默挂起）
+        self._acquired = self._lk.acquire(timeout=self.timeout)
+        if not self._acquired:
+            logger.error(f"[BCC-054] " + f"[gate] 账号「{self.account}」profile 所有权"
+                f"获取超时（{self.timeout:.0f}s），当前持有者={profile_owner_of(self.account)}"
+                f"—— 放弃本次独占，避免与既有所有者抢 profile")
+            # 延后 import：BrowserUnavailable 定义在本类之后（模块加载顺序）
+            from services.browser_gate import BrowserUnavailable as _BU
+            raise _BU(
+                f"获取账号「{self.account}」浏览器所有权超时"
+                f"（当前持有者：{profile_owner_of(self.account) or '未知'}），请稍后重试")
+        _PROFILE_OWNER[self.account] = self.holder
+        logger.debug(f"[gate] profile 所有权 → {self.holder} (account={self.account})")
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            _PROFILE_OWNER.pop(self.account, None)
+            logger.debug(f"[gate] profile 所有权 释放 ← {self.holder} (account={self.account})")
+        finally:
+            if self._acquired and self._lk is not None:
+                self._lk.release()
+        return False
 
 
 class BrowserUnavailable(RuntimeError):

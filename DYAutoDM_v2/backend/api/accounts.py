@@ -181,6 +181,18 @@ def _do_scan(name: str):
     st["done"] = False
     st["loggedIn"] = False
     st["error"] = ""
+    # 2026-09-19 v0.43.98【双实例根治】整段独占 profile 所有权：
+    # 「停守护 → 弹扫码浏览器独占 profile → 拉回 BCC」必须在同一把锁内，
+    # 否则与并发的 ensure_daemons_for 撞车 ⇒ 两 chromium 抢同一 profile
+    # （实测 TargetClosedError：扫码页加载异常、授权后读不到回执）。
+    try:
+        from services.browser_gate import ProfileOwnership as _Own
+        _own = _Own(name, "scan_login")
+        _own.__enter__()
+    except Exception as _e_own:
+        logger.warning(f"[ACC-024] " + f"[scan] 账号 {name} 未取得 profile 所有权锁"
+            f"（降级不加锁，存在多实例风险）: {_e_own}")
+        _own = None
     try:
         # 重扫前先停该账号凭证守护，释放与「查看模式」共有的 profile 锁，
         # 否则 force=True 清空 vb_profile_default 时会因 Chromium 占用而失败
@@ -196,7 +208,15 @@ def _do_scan(name: str):
         st["error"] = str(e)
         st["done"] = True
     finally:
+        # 在锁内把 BCC 拉回，杜绝与并发拉起重叠
+        try:
+            from auto_dm.daemon_launcher import ensure_daemons_for
+            ensure_daemons_for(name, wait=False)
+        except Exception as _e_rd:
+            logger.debug(f"[scan] 账号 {name} 守护回拉跳过: {_e_rd}")
         st["running"] = False
+        if _own is not None:
+            _own.__exit__(None, None, None)
 
 
 def _do_open_browser(name: str):
@@ -581,7 +601,7 @@ async def ensure_recv_ep(name: str):
 
 
 @router.post("/{name}/open-browser")
-async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
+async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse:
     """查看/操作登录态：把该账号的【常驻 BCC 容器就地切为有头可见】。
 
     2026-09-12 根治（用户明确需求：「打开浏览器的目的是能直观看到登录态」）：
@@ -606,6 +626,65 @@ async def open_fingerprint_browser(name: str) -> ScanLoginResponse:
     env_path = acct_core.env_path_of(name)
     if not os.path.exists(os.path.dirname(env_path)):
         return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
+    # ══════════════════════════════════════════════════════════════════════
+    # 2026-09-19 v0.43.98【用户定拍板的边界契约】
+    #
+    #   ① 凭证有效 + 有任务在跑  → **禁止**打开有头浏览器（有头是观测态，
+    #      不是运行态；运行中切可见会造成环境跳变、打断任务）
+    #   ② 凭证失效               → **允许并引导**：所有任务暂停，由用户
+    #      双击打开有头浏览器作为观测态，判断/恢复凭证
+    #
+    # 判据必须用真实校验（verify_account），不能用「端口在不在」推断
+    # （端口在 ≠ 凭证有效，这是本项目的历史假成功来源）。
+    # ══════════════════════════════════════════════════════════════════════
+    try:
+        _v = acct_core.verify_account(name, timeout=6, dm_loopback=False,
+                                      auto_fix=False)
+        _wp_level = (_v.get("wp") or {}).get("level")
+        _cred_ok = (_wp_level == "ok")
+    except Exception as _e_v:
+        # 校验本身失败 → 保守放行（用户显式查看登录态的正当路径不该被拦）
+        logger.debug(f"[open-browser] 账号 {name} 凭证校验失败，放行打开: {_e_v}")
+        _cred_ok = False
+        _wp_level = "unknown"
+
+    if _cred_ok:
+        # 引擎运行态：用 AutoDM 单例（request.app.state.adm）的真实 is_running。
+        # 注意：不能用「守护端口在不在」推断 —— 端口在 ≠ 引擎在跑。
+        _running = False
+        try:
+            _adm = getattr(req.app.state, "adm", None)
+            _running = bool(getattr(_adm, "is_running", False))
+        except Exception:
+            _running = False
+        if _running:
+            logger.info(
+                f"[open-browser] 账号 {name} 凭证有效且引擎运行中 → "
+                f"拒绝切有头（有头是观测态；如需停止任务请先暂停引擎）")
+            return ScanLoginResponse(
+                ok=False,
+                msg=f"凭证有效且引擎正在运行，已阻止打开有头浏览器"
+                    f"（运行中切可见会造成环境跳变并打断任务）。"
+                    f"请先暂停引擎，或在账号页点「停止守护」后再查看。")
+        logger.info(
+            f"[open-browser] 账号 {name} 凭证有效且引擎未运行 → 允许打开有头观测")
+    else:
+        # 凭证失效：按契约暂停全部任务，并引导用户在有头窗口恢复凭证。
+        # AutoDM.stop/pause 是 async，这里在线程池执行以免阻塞事件循环
+        # （本路由是 async，直接 await 会与引擎协程交错）。
+        logger.warning(
+            f"[ACC-025] " + f"[open-browser] 账号 {name} 凭证失效（wp={_wp_level}）"
+            f"→ 暂停全部任务并打开有头浏览器供观测/重新授权")
+        try:
+            _adm = getattr(req.app.state, "adm", None)
+            if _adm is not None and hasattr(_adm, "pause"):
+                import asyncio as _aio
+                _aio.get_event_loop().run_in_executor(
+                    None, lambda: _aio.run(_adm.pause()))
+                logger.info(f"[open-browser] 账号 {name} 引擎已暂停（凭证失效）")
+        except Exception as _e_stop:
+            logger.warning(f"[ACC-026] " + f"[open-browser] 账号 {name} 引擎暂停失败"
+                f"（不阻塞打开浏览器）: {_e_stop}")
     bport = acct_core.browser_daemon_port(name)
     # 1) 确保 BCC 在运行（懒加载；已在跑则立即返回）
     if not acct_core._port_open(bport, timeout=0.3):

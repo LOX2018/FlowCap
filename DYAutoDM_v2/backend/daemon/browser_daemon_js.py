@@ -50,8 +50,21 @@ CAP_USERINFO_HOOK_JS = r"""
 (() => {
   if (window.__CAP_USERINFO__) return 'already';
   window.__CAP_USERINFO__ = { map: {} };
+  // 2026-09-19 v0.43.98【最小痕迹】：包装 window.fetch 时必须**保留原函数的
+  // 可观测身份**（name/length）。
+  // 旧实现直接 `window.fetch = function(...)` → 新函数的 name 变成 ''、
+  // toString() 不再是 `function fetch() { [native code] }`。而抖音前端与
+  // 风控脚本普遍用这两项做「原生函数是否被篡改」的探测，属自动化强特征。
+  // 现用 Object.defineProperty 把 name/length 还原为原生值。
+  const _hideFetch = (fn, nativeName, nativeLen) => {
+    try {
+      Object.defineProperty(fn, 'name', { value: nativeName, configurable: true });
+      Object.defineProperty(fn, 'length', { value: nativeLen, configurable: true });
+    } catch (e) {}
+    return fn;
+  };
   const origFetch = window.fetch.bind(window);
-  window.fetch = function(u, o) {
+  window.fetch = _hideFetch(function(u, o) {
     const p = origFetch(u, o);
     try {
       const url = (typeof u === 'string') ? u : (u && u.url) || '';
@@ -71,7 +84,7 @@ CAP_USERINFO_HOOK_JS = r"""
       }
     } catch(e) {}
     return p;
-  };
+  }, 'fetch', 1);
   const origXHR = window.XMLHttpRequest;
   window.XMLHttpRequest = function() {
     const x = new origXHR();
@@ -134,8 +147,17 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
     ')'
   );
   // ---- fetch hook ----
+  // 2026-09-19 v0.43.98【最小痕迹】保留被包装函数的可观测身份
+  // （name/length），避免被前端/风控的「原生函数篡改」探测命中。
+  const _hide = (fn, nativeName, nativeLen) => {
+    try {
+      Object.defineProperty(fn, 'name', { value: nativeName, configurable: true });
+      Object.defineProperty(fn, 'length', { value: nativeLen, configurable: true });
+    } catch (e) {}
+    return fn;
+  };
   const origFetch = window.fetch.bind(window);
-  window.fetch = function(u, o) {
+  window.fetch = _hide(function(u, o) {
     const p = origFetch(u, o);
     try {
       const url = (typeof u === 'string') ? u : (u && u.url) || '';
@@ -146,7 +168,7 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
       }
     } catch(e) {}
     return p;
-  };
+  }, 'fetch', 1);
   // ---- XMLHttpRequest hook ----
   const origXHR = window.XMLHttpRequest;
   window.XMLHttpRequest = function() {
@@ -163,8 +185,11 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
     return x;
   };
   // ---- WebSocket hook（双向：send 发出 + message 收进）----
+  // 2026-09-19 v0.43.98：旧实现用普通函数替换 WebSocket，**丢失了
+  // CONNECTING/OPEN/CLOSING/CLOSED 四个静态常量**（实测原生有、包装后无），
+  // 前端若读 ws.OPEN 会得到 undefined。现显式继承原型与静态常量。
   const OrigWS = window.WebSocket;
-  window.WebSocket = function(u, p) {
+  const WrappedWS = function(u, p) {
     const ws = (typeof p === 'string') ? new OrigWS(u, p) : new OrigWS(u);
     const origAdd = ws.addEventListener.bind(ws);
     ws.addEventListener = function(ev, cb) {
@@ -198,6 +223,16 @@ CAP_WP_MESSAGE_HOOK_JS = r"""(() => {
     };
     return ws;
   };
+  // 继承原型 + 静态常量，使包装类在「形状」上与原生 WebSocket 一致
+  try {
+    WrappedWS.prototype = OrigWS.prototype;
+    for (const _k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
+      try {
+        Object.defineProperty(WrappedWS, _k, { value: OrigWS[_k], configurable: true });
+      } catch (e) {}
+    }
+  } catch (e) {}
+  window.WebSocket = _hide(WrappedWS, 'WebSocket', 1);
   return 'captured';
 })()
 """

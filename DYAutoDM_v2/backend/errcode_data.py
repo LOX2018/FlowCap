@@ -142,6 +142,11 @@ ERRCODES = {
     "ACC-014": {"meaning": "recap-profile] 账号  读取被风控验证页污染，已拒绝写盘，指纹浏览器保持打开请手动处理验证码:", "file": "auto_dm/accounts.py", "line": 1137},
     "ACC-015": {"meaning": "recap-profile] 账号  从 profile 读取凭证失败:", "file": "auto_dm/accounts.py", "line": 1143},
     "ACC-016": {"meaning": "recap-profile] 账号  重读异常:", "file": "auto_dm/accounts.py", "line": 1151},
+    "ACC-022": {"meaning": "recap] 账号  未取得 profile 所有权锁（降级不加锁，存在多实例风险）:", "file": "auto_dm/accounts.py", "line": 0},
+    "ACC-023": {"meaning": "recap-profile] 账号  未取得 profile 所有权锁（降级不加锁，存在多实例风险）:", "file": "auto_dm/accounts.py", "line": 0},
+    "ACC-024": {"meaning": "scan] 账号  未取得 profile 所有权锁（降级不加锁，存在多实例风险）:", "file": "api/accounts.py", "line": 0},
+    "ACC-025": {"meaning": "open-browser] 账号  凭证失效 → 暂停全部任务并打开有头浏览器供观测/重新授权", "file": "api/accounts.py", "line": 0},
+    "ACC-026": {"meaning": "open-browser] 账号  引擎暂停失败（不阻塞打开浏览器）:", "file": "api/accounts.py", "line": 0},
     "ACC-017": {"meaning": "捕获分析] 报告落盘失败:", "file": "login_capture.py", "line": 227},
     "AI-001": {"meaning": "ai-kb-import] 解析异常:", "file": "api/ai.py", "line": 155},
     "AI-002": {"meaning": "ai] 语义缓存重建失败:", "file": "api/ai.py", "line": 201},
@@ -273,6 +278,8 @@ ERRCODES = {
     "BCC-050": {"meaning": "[bcc] 单例守卫命中：该账号已有 BCC 在运行，拒绝启动第二个", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-051": {"meaning": "[bcc] 致命态熔断：凭证不可用（env_path 为空），不再自动重启", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-052": {"meaning": "[bcc] context 失活自愈：已重建容器（按最小化启动，窗口不再快闪）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-053": {"meaning": "[bcc] 可见性切换完成后 OS 层未检测到可见窗口（切换未达成，状态回退为无头）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-054": {"meaning": "[gate] 获取账号 profile 所有权超时（已有其它操作持有，放弃本次独占）", "file": "services/browser_gate.py", "line": 0},
     "BCC-063": {"meaning": "[bcc] 出口环境漂移：当前出口 IP 与登录基线不一致（登录环境与运行环境不一致，先重扫建立新基线）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-064": {"meaning": "[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-065": {"meaning": "[bcc] 自动化痕迹暴露（navigator.webdriver=true / HeadlessChrome UA / 注入对象）", "file": "services/env_audit.py", "line": 0},
@@ -281,7 +288,53 @@ ERRCODES = {
 "BCC-068": {"meaning": "[bcc] 浏览器环境与项目档案不一致（时区/语言/核心数/screen/UA）", "file": "services/env_audit.py", "line": 0},
 "BCC-069": {"meaning": "[bcc] 环境一致性弱点（screen 三值全等/worker 分叉/canvas 或 audio 不稳定/Client Hints 缺失）", "file": "services/env_audit.py", "line": 0},
     "SEND-037": {"meaning": "[调度] dm_dispatch 接入失败，已放弃发送（不再回退直发绕过风控闸门）", "file": "core/dispatch.py", "line": 0},
-    "CAP-001": {"meaning": "refresh][] browser_daemon 未拉起，昵称关联可能失效", "file": "api/messages.py", "line": 735},
+        "ACC-017": {
+        "design": "重捕整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
+                  "按账号维度的所有权锁内完成。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_auto_recapture → ProfileOwnership → _quit_browser_daemon",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-022；正常情况应恒不出现。",
+    },
+    "ACC-018": {
+        "design": "从 profile 读凭证的整段操作同样必须在所有权锁内完成。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_recapture_from_profile → ProfileOwnership → _quit_browser_daemon",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-023；正常情况应恒不出现。",
+    },
+    "ACC-019": {
+        "design": "扫码整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
+                  "所有权锁内完成；否则与并发拉起 BCC 撞车 → 抢锁 → "
+                  "扫码页加载异常/授权回执读不到。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_scan → ProfileOwnership → _quit_browser_daemon → enrich_auth",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-024；正常情况应恒不出现。",
+    },
+    "ACC-020": {
+        "design": "凭证失效时打开有头浏览器是**正当且被引导**的观测入口，"
+                  "同时必须暂停全部任务（无效凭证下继续发送=风控暴露）。",
+        "contract": "凭证失效 ⇒ 任务暂停 + 有头观测放行；凭证有效且任务在跑 ⇒ 拒绝有头。",
+        "deviation": "检测到凭证失效，已按契约暂停任务并放行有头观测（信息级）",
+        "chain": "POST /open-browser → verify_account(wp!=ok) → adm.pause() → BCC /show",
+        "root": "凭证失效本身（UID 漂移 / 签名过期 / 登录态被下线）",
+        "verify": "1) 日志出现 ACC-020 且引擎 state=PAUSED；"
+                  "2) 之后扫码成功 → 凭证回写 → 任务可恢复。",
+    },
+    "ACC-021": {
+        "design": "暂停引擎是凭证失效时的保护动作，失败不得阻断"
+                  "「打开有头浏览器观测」这条用户显式路径。",
+        "contract": "暂停失败只告警，仍放行观测。",
+        "deviation": "引擎暂停调用抛异常",
+        "chain": "POST /open-browser → adm.pause() 异常",
+        "root": "引擎状态机处于不可暂停态 / 事件循环不可用",
+        "verify": "人工确认引擎状态；若未暂停应手动在界面停止。",
+    },
+"CAP-001": {"meaning": "refresh][] browser_daemon 未拉起，昵称关联可能失效", "file": "api/messages.py", "line": 735},
     "CAP-002": {"meaning": "refresh][] 更新会话失败:", "file": "api/messages.py", "line": 749},
     "CAP-003": {"meaning": "capture] my_uid 无效()，从  个 conv_id 自愈推断本账号 UID=（出现  次）", "file": "auto_dm/conversation_capture.py", "line": 526},
     "CAP-004": {"meaning": "capture][301] HTTP  len= cid=", "file": "auto_dm/conversation_capture.py", "line": 759},
@@ -342,6 +395,8 @@ ERRCODES = {
     "LIVE-019": {"meaning": "resolve] 用户  当前未在直播或无法解析房间", "file": "link_resolve.py", "line": 307},
     "LIVE-020": {"meaning": "resolve] 浏览器解析失败:", "file": "link_resolve.py", "line": 309},
     "LIVE-021": {"meaning": "room-config] 热更失败:", "file": "api/live_config.py", "line": 0},
+
+
     "MEM-001": {"meaning": "member] 会员 DB 初始化失败:", "file": "api/member.py", "line": 72},
     "MEM-002": {"meaning": "member] .env 迁移异常（不阻塞登录）:", "file": "api/member.py", "line": 79},
     "MEM-003": {"meaning": "member] 登录后守护拉起失败（不影响登录）:", "file": "api/member.py", "line": 90},
@@ -667,6 +722,40 @@ CODE_DESIGN = {
         "root": "重建本身是自愈行为；若频率高，回到 BCC-006 查外力",
         "verify": "统计当日 BCC-052 次数；配合 Win32_Process 看实例数是否曾 >1。",
     },
+    "BCC-053": {
+        "design": "可见性切换的**完成判据是 OS 层真实可见窗口**，不是 CDP 返回值。"
+                  "纯 native headless 下 Browser.setWindowBounds('normal') 恒返回"
+                  "成功但无真实窗口，故「已切为有头」必须经 OS 枚举确认；"
+                  "无法确认即如实报未达成，绝不谎报成功。",
+        "contract": "切换为可见后，该容器 chromium 进程在 OS 层必须存在 "
+                    "IsWindowVisible=True 且类名含 Chrome_WidgetWin 的顶层窗口。",
+        "deviation": "重建完成后 OS 层未见可见窗口 → 切换未真正达成"
+                     "（用户侧表现为「提示已打开却看不到浏览器」）。",
+        "chain": "POST /show(visible=true) → set_visible → _do_switch_background"
+                 " → _launch(headless=False) → _window_really_visible()",
+        "root": "内核仍被以 native headless 启动（或窗口被最小化/移出屏幕），"
+                "使「有头」意图未落到真实窗口；亦可能是多实例抢 profile 导致重建失败。",
+        "verify": "1) EnumWindows 枚举该 chromium PID 的可见窗口数（headless=0 / "
+                  "headed=1，已实测）；2) 查 chrome 主进程实参是否含 --headless；"
+                  "3) Win32_Process 确认同 profile 无第二个实例。",
+    },
+    "BCC-054": {
+        "design": "同一账号同一时刻只能有一个 profile 所有者；任何『交出/取回 "
+                  "profile 所有权』的整段操作（停 BCC \u2192 独占使用 \u2192 还回 BCC）"
+                  "必须在同一把按账号维度的互斥锁内完成，而不是只锁各自的单步。",
+        "contract": "锁覆盖『停 \u2192 用 \u2192 还』全过程；不同账号的锁互相独立，"
+                    "不牺牲跨账号并发。",
+        "deviation": "申请独占时锁已被其它操作持有且超过超时阈值 \u2192 放弃本次独占"
+                     "（绝不与之抢 profile）。",
+        "chain": "重捕/扫码 \u2192 ProfileOwnership(account) \u2192 _quit_browser_daemon"
+                 " \u2192 独占使用 \u2192 ensure_daemons_for",
+        "root": "旧实现里『停 BCC』与『拉 BCC』分属两模块、无共享锁，"
+                "而另起 chromium 的旧路径夹在中间 \u2192 两实例重叠持有同一 profile"
+                "（实测 TargetClosedError）。",
+        "verify": "1) Win32_Process 统计同一 profile 的 chrome 主进程数，"
+                  "恒 \u22641；2) 并发跑重捕+校验，日志不应出现 BCC-054；"
+                  "3) 锁按账号维度：两账号并发互不阻塞（耗时不叠加）。",
+    },
     "CAP-001": {
         "design": "「更新会话」必须依赖 BCC 才能截昵称；拿不到 BCC 时必须让用户知道，"
                   "而不是静默降级。",
@@ -731,6 +820,53 @@ CODE_DESIGN = {
         "chain": "dispatch._do_send → dm_dispatch.submit → 失败分支",
         "root": "调度器内部异常（非账号风控）",
         "verify": "日志前后是否有 SEND-006/007；DB 无 role=me 新增即为放弃成功。",
+    },
+    "ACC-022": {
+        "design": "重捕整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
+                  "按账号维度的所有权锁内完成。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_auto_recapture → ProfileOwnership → _quit_browser_daemon",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-022；正常情况应恒不出现。",
+    },
+    "ACC-023": {
+        "design": "从 profile 读凭证的整段操作同样必须在所有权锁内完成。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_recapture_from_profile → ProfileOwnership → _quit_browser_daemon",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-023；正常情况应恒不出现。",
+    },
+    "ACC-024": {
+        "design": "扫码整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
+                  "所有权锁内完成；否则与并发拉起 BCC 撞车 → 抢锁 → "
+                  "扫码页加载异常/授权回执读不到。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_scan → ProfileOwnership → _quit_browser_daemon → enrich_auth",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-024；正常情况应恒不出现。",
+    },
+    "ACC-025": {
+        "design": "凭证失效时打开有头浏览器是**正当且被引导**的观测入口，"
+                  "同时必须暂停全部任务（无效凭证下继续发送=风控暴露）。",
+        "contract": "凭证失效 ⇒ 任务暂停 + 有头观测放行；"
+                    "凭证有效且任务在跑 ⇒ 拒绝有头。",
+        "deviation": "检测到凭证失效，已按契约暂停任务并放行有头观测（信息级）",
+        "chain": "POST /open-browser → verify_account(wp!=ok) → adm.pause() → BCC /show",
+        "root": "凭证失效本身（UID 漂移 / 签名过期 / 登录态被下线）",
+        "verify": "1) 日志出现 ACC-025 且引擎 state 已暂停；"
+                  "2) 之后扫码成功 → 凭证回写 → 任务可恢复。",
+    },
+    "ACC-026": {
+        "design": "暂停引擎是凭证失效时的保护动作，失败不得阻断"
+                  "「打开有头浏览器观测」这条用户显式路径。",
+        "contract": "暂停失败只告警，仍放行观测。",
+        "deviation": "引擎暂停调用抛异常",
+        "chain": "POST /open-browser → adm.pause() 异常",
+        "root": "引擎状态机处于不可暂停态 / 事件循环不可用",
+        "verify": "人工确认引擎状态；若未暂停应手动在界面停止。",
     },
 }
 

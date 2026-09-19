@@ -1155,8 +1155,25 @@ def _do_auto_recapture(name: str, landing_url: str):
     st = _recap_state.setdefault(name, {"running": False, "last": 0.0, "error": ""})
     st["running"] = True
     st["error"] = ""
+    # ══════════════════════════════════════════════════════════════════════
+    # 2026-09-19 v0.43.98【双实例根治】整段独占 profile 所有权。
+    #
+    # 病根：本线程「停守护 → 另起 chromium 独占 profile →（调用方随后）拉回 BCC」
+    # 三段分布在两个模块，中间无互斥 —— 与 verify_account 的 dm 段
+    # ensure_daemons_for 撞车时，两个 chromium 同时持有同一 profile
+    # （实测 TargetClosedError：浏览器加载异常/卡顿、扫码回执读不到）。
+    # 现把「停 → 用 → 还」整段放进同一把按账号维度的锁内串行。
+    # ══════════════════════════════════════════════════════════════════════
     try:
-        # 复用 api 层的停守护逻辑（向该账号凭证守护端口发 /quit，释放 Chromium profile 锁）
+        from services.browser_gate import ProfileOwnership as _Own
+        _own = _Own(name, "auto_recapture")
+        _own.__enter__()          # 显式进入（with 语句在 finally 里不便表达）
+    except Exception as _e_own:   # 门禁不可用时降级为不加锁（不阻断业务）
+        logger.warning(f"[ACC-022] " + f"[recap] 账号 {name} 未取得 profile 所有权锁"
+            f"（降级不加锁，存在多实例风险）: {_e_own}")
+        _own = None
+    try:
+        # 停该账号凭证守护释放 Chromium profile 锁（与查看/重扫同逻辑）
         try:
             from api.accounts import _quit_browser_daemon
             _quit_browser_daemon(name)
@@ -1172,7 +1189,15 @@ def _do_auto_recapture(name: str, landing_url: str):
         st["error"] = str(e)
         logger.error(f"[ACC-012] " + f"[recap] 账号 {name} 自动重新捕获异常: {e}")
     finally:
+        # 归还所有权前把 BCC 拉回（在锁内完成，杜绝与并发拉起重叠）
+        try:
+            from auto_dm.daemon_launcher import ensure_daemons_for
+            ensure_daemons_for(name, wait=False)
+        except Exception as _e_rd:
+            logger.debug(f"[recap] 账号 {name} 守护回拉跳过: {_e_rd}")
         st["running"] = False
+        if _own is not None:
+            _own.__exit__(None, None, None)
 
 
 def recapture_from_profile(name: str = None, landing_url: str = "https://www.douyin.com/chat?isPopup=1"):
@@ -1223,6 +1248,16 @@ def _do_recapture_from_profile(name: str, landing_url: str):
     st = _recap_state.setdefault(name, {"running": False, "last": 0.0, "error": ""})
     st["running"] = True
     st["error"] = ""
+    # 2026-09-19 v0.43.98【双实例根治】整段独占 profile 所有权（同上，
+    # 「停守护 → 另起 chromium 读 profile → 拉回 BCC」必须在同一把锁内）。
+    try:
+        from services.browser_gate import ProfileOwnership as _Own
+        _own = _Own(name, "recapture_from_profile")
+        _own.__enter__()
+    except Exception as _e_own:
+        logger.warning(f"[ACC-023] " + f"[recap-profile] 账号 {name} 未取得 profile 所有权锁"
+            f"（降级不加锁，存在多实例风险）: {_e_own}")
+        _own = None
     try:
         # 停该账号凭证守护释放 Chromium profile 锁（与查看/重扫同逻辑）
         try:
@@ -1242,6 +1277,9 @@ def _do_recapture_from_profile(name: str, landing_url: str):
         except _RC as _rc:
             # 风控/验证码污染：浏览器保持打开，明确提示用户在指纹浏览器处理验证码
             st["error"] = str(_rc)
+            # ⚠️ 浏览器保持打开 → **不得**把 BCC 拉回（否则抢同一 profile，
+            # 正是本次要根治的双实例重叠）。标记留给 finally 判断。
+            st["_keep_browser_open"] = True
             logger.warning(f"[ACC-014] " + f"[recap-profile] 账号 {name} 读取被风控验证页污染，已拒绝写盘，"
                 f"指纹浏览器保持打开请手动处理验证码: {_rc}")
             return
@@ -1257,4 +1295,19 @@ def _do_recapture_from_profile(name: str, landing_url: str):
         st["error"] = str(e)
         logger.error(f"[ACC-016] " + f"[recap-profile] 账号 {name} 重读异常: {e}")
     finally:
+        # 归还所有权前把 BCC 拉回（在锁内完成，杜绝与并发拉起重叠）。
+        # 例外：风控/验证码污染时浏览器被有意保持打开供用户处理 ——
+        # 此时拉回 BCC 会立刻抢同一 profile（双实例），必须跳过。
+        if not st.get("_keep_browser_open"):
+            try:
+                from auto_dm.daemon_launcher import ensure_daemons_for
+                ensure_daemons_for(name, wait=False)
+            except Exception as _e_rd:
+                logger.debug(f"[recap-profile] 账号 {name} 守护回拉跳过: {_e_rd}")
+        else:
+            logger.info(f"[recap-profile] 账号 {name} 浏览器保持打开等待人工验证，"
+                        f"暂不拉回 BCC（防双实例抢 profile）")
+        st.pop("_keep_browser_open", None)
         st["running"] = False
+        if _own is not None:
+            _own.__exit__(None, None, None)

@@ -856,3 +856,42 @@ python scripts/verify_lease_wiring.py            # 期望 PASS=31 FAIL=0
   「捕获逻辑（DOM/hook）」直接锁定到「**两个进程之间的租约协商**」。只看 backend 日志会误判为捕获失效。
 - **两份日志必须同刻对照**：单看任何一份都能自洽（BCC 说成功、backend 说失败），
   只有并排才能看到「同一把租约 83a780e866e2」。
+
+## 【2026-09-20 v0.43.98】可见性切换的完成判据 = OS 层真实窗口（静默假成功根治）
+
+**症状**：双击「打开指纹浏览器」→ 只看到弹窗，看不到浏览器页面；扫码授权后读不到回执、一直转圈。
+
+**根因①（主）**：`set_visible` 的「只改窗口状态」（`Browser.setWindowBounds`）路径，
+前提是「容器常驻**真有头 + 最小化**」（`7395c59`，09-13）。`2bdea46`（09-14）把内核
+改为**纯 native headless** 后**前提作废，而 `set_visible` 从未同步**；且该分支命中后
+直接 `return`，使下方真正的「关 context → 重建有头」成为**死代码**。
+
+**实测（决定性）**：
+| 模式 | `setWindowBounds('normal')` | OS 层可见窗口数 |
+|---|---|---|
+| native headless | 返回 **True** | **0** ← 静默假成功 |
+| headed | True | 1 |
+
+**铁律**：
+1. **「有没有出窗口」必须以 OS 层枚举（EnumWindows + IsWindowVisible）为判据**，
+   不得以 CDP 返回值或 `setWindowBounds` 结果为准。
+2. `window` 快路径**仅在容器当前确实有头时可用**；纯无头必须走真实重建
+   （Playwright 无法运行中切 headless）。
+3. **重建后实测校验，未出现即报 `BCC-053` 并回退状态为无头** —— 绝不谎报。
+
+### 「为什么会出现两个实例」（用户提问的答案）
+
+**结构原因**：扫码/重捕路径（`enrich_auth` → `login_grab_ticket` / `read_auth_from_profile`）
+**绕过**统一入口 `browser_gate.ensure_browser`，自行 `launch_persistent_context(headless=False)`。
+**时序原因**：它启动前 `_quit_browser_daemon` 停掉 BCC，而同一次 `verify_account` 的 dm 段
+紧接着 `ensure_daemons_for` 又拉 BCC —— 两段分属不同模块、**中间无共享锁** ⇒ 两 chromium
+重叠持有同一 profile（实测 `TargetClosedError`，已精确复现）。
+**约束为何没拦住**：`audit_standalone_launch` 只打 `BCC-042` 告警、**不阻断**（源码自述
+「先观测，收敛完残余路径后再收紧为阻断」——一直没收紧）。
+
+**根治（v0.43.98）**：`services.browser_gate.ProfileOwnership` —— 按账号维度的 RLock
+（可重入、超时获取、所有者追踪），把「停 → 用 → 还」**整段**包进同一把锁。
+- 风控/验证码污染时浏览器被**有意保持打开** → 必须**跳过**拉回 BCC
+  （`_keep_browser_open`），否则立刻构成双实例。
+- 守护测试：`backend/test_browser_visibility_guard.py`（26 项）。
+

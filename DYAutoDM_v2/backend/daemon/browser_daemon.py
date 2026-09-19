@@ -520,7 +520,7 @@ class BrowserContainer:
         self._started = True
         logger.info(f"[bcc] 浏览器容器启动成功 account={self.account} profile={self._profile_dir}")
 
-    async def _launch(self) -> None:
+    async def _launch(self, headless: bool | None = None) -> None:
         from auto_dm import accounts as _acc
         from auto_dm import config as _cfg
         from auto_dm.vbrowser import should_use_vb, launch_async
@@ -581,11 +581,25 @@ class BrowserContainer:
         # 回退开关：DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH=1（恢复旧行为，仅调试）。
         _restore_vis = (str(os.environ.get(
             "DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH", "")).strip() == "1")
-        _launch_headless = self._headless if _restore_vis else True
-        if not _restore_vis and not self._headless:
-            logger.info(
-                "[bcc] 容器重建：按最小化启动（不继承上次可见态，避免窗口快闪）；"
-                "需要查看登录态请走 /show")
+        # ════════════════════════════════════════════════════════════════════
+        # 2026-09-19 修正（v0.43.98）：区分「自愈重建」与「用户显式可见性重建」。
+        #
+        # 原逻辑把所有重建都按「最小化/无头」启动（防快闪），用户点「打开浏览器」
+        # 时若需要重建 context，也会被强制拉成无头 —— 在纯 native headless 下
+        # 等价于「永远出不了窗口」（实测：setWindowBounds 返回 True 但 OS 可见
+        # 窗口数 = 0）。
+        # 现改为：调用方显式传 headless 时以它为准（用户显式路径）；未传时
+        # 沿用旧的「按无头重建」自愈语义，防快闪行为不变。
+        # ════════════════════════════════════════════════════════════════════
+        if headless is None:
+            _launch_headless = self._headless if _restore_vis else True
+            if not _restore_vis and not self._headless:
+                logger.info(
+                    "[bcc] 容器重建：按最小化启动（不继承上次可见态，避免窗口快闪）；"
+                    "需要查看登录态请走 /show")
+        else:
+            _launch_headless = bool(headless)
+            logger.info(f"[bcc] 容器重建（显式指定可见性）: headless={_launch_headless}")
         self._pw, self._browser, self._context, self._backend = await launch_async(
             _vb_mode, _cfg, headless=_launch_headless, user_data_dir=self._profile_dir,
             force=False, account=self.account)
@@ -759,8 +773,24 @@ class BrowserContainer:
             # 回退：DY_BCC_SWITCH_MODE=rebuild 可恢复旧的「重建 context」行为。
             _switch_mode = str(os.environ.get(
                 "DY_BCC_SWITCH_MODE", "window")).strip().lower()
+            # ═══════════════════════════════════════════════════════════════
+            # 2026-09-19 v0.43.98【前提校验】：window 模式的前提是「容器常驻
+            # 真有头 + 最小化」。2026-09-14 起内核已改为**纯 native headless**
+            # （§十七 用户拍板），该前提不再成立 —— 实测：headless 下
+            # setWindowBounds('normal') 返回 True，而 OS 可见窗口数 = 0。
+            # 故：仅当容器**当前确实是有头**时才能走「只改窗口状态」；
+            # 纯无头必须走真实重建（Playwright 无法运行中切 headless）。
+            # ═══════════════════════════════════════════════════════════════
+            _can_window_mode = (
+                _switch_mode == "window" and self._backend == "exe"
+                and self._context is not None and not self._headless
+            )
             if _switch_mode == "window" and self._backend == "exe" \
-                    and self._context is not None:
+                    and self._context is not None and not _can_window_mode:
+                logger.info(
+                    f"[bcc] {self.account} 容器当前为纯无头，"
+                    f"「只改窗口状态」无效（headless 下无真实窗口）→ 走重建 context")
+            if _can_window_mode:
                 try:
                     from vbrowser import _set_window_state
                     _st = "normal" if target is False else "minimized"
@@ -804,23 +834,44 @@ class BrowserContainer:
             # 超时（实测冷启动 2~8 分钟）。若同步 await self._launch()，/show 请求会
             # 在 60~180s 超时，前端误报「打开失败」，且 BCC 主循环被阻塞卡死。
             # 改后台任务：立即返回「切换中」，launch 完成后设冷却期保护探活不误杀。
+            #
+            # 2026-09-19 v0.43.98：显式传入目标可见性，保证「用户要可见」时
+            # 重建出来的是**有头**容器（旧代码一律按无头重建 → 永远出不了窗口）。
             self._switching = True
             self._switch_started_at = time.time()
             asyncio.get_event_loop().create_task(
-                self._do_switch_background(target, url))
+                self._do_switch_background(target, url, headless=target))
             mode_str = "有头可见" if visible else "纯无头"
             return {"ok": True, "headless": target, "changed": True,
                     "switching": True,
                     "msg": f"正在切换为{mode_str}，"
                            f"窗口就绪后自动完成（冷启动约 1~3 分钟）"}
 
-    async def _do_switch_background(self, target: bool, url: str = "") -> None:
+    async def _do_switch_background(self, target: bool, url: str = "",
+                                    headless: bool | None = None) -> None:
         """后台执行可见性切换的 _launch 部分。失败只告警、不卡死容器。"""
         try:
             # _launch 内部已统一调用 _wait_profile_released（BCC 作为 profile
             # 唯一持有者的调度：重建 context 前先等旧进程完全退出，防 TargetClosed）。
-            await self._launch()
+            await self._launch(headless=headless)
             self._switch_cool_until = time.time() + _SWITCH_COOLDOWN_SEC
+            # ═══════════════════════════════════════════════════════════════
+            # 2026-09-19 v0.43.98【诚实降级】：切「可见」必须以 OS 层真实窗口
+            # 为判据。若重建后仍无可见窗口，说明切换实际未达成 —— 如实记
+            # BCC-053 并把状态回退为无头，绝不让 /status 谎报「已可见」
+            # （假成功正是用户「看到弹窗却看不到浏览器」的直接成因）。
+            # ═══════════════════════════════════════════════════════════════
+            if target is False:  # 目标是「有头可见」
+                _vis = await self._window_really_visible()
+                if _vis:
+                    logger.info(
+                        f"[bcc] {self.account} 可见性切换完成："
+                        f"OS 层已确认存在可见窗口")
+                else:
+                    logger.error(f"[BCC-053] " + f"[bcc] {self.account} 可见性切换后"
+                        f"OS 层未检测到可见窗口 —— 判定切换未达成，"
+                        f"状态回退为无头（请检查内核参数/是否仍为 native headless）")
+                    self._headless = True
             logger.info(
                 f"[bcc] {self.account} 可见性切换完成(headless={target})，"
                 f"进入 {_SWITCH_COOLDOWN_SEC}s 切换冷却期（探活只告警不强杀）")
@@ -1665,6 +1716,62 @@ class BrowserContainer:
                     if getattr(self, "_nav_page", None) is page:
                         self._nav_page = None
         return await self._exec(_do)
+
+    async def _window_really_visible(self) -> bool:
+        """实机校验：本容器的 chromium 在**操作系统层面**是否有可见窗口。
+
+        2026-09-19 v0.43.98：纯 native headless 下 CDP `Browser.setWindowBounds`
+        **恒返回成功**，但 synthesized 窗口在 OS 层并不可见（实测 EnumWindows：
+        headless → 可见窗口 0 个；headed → 1 个）。故「有没有出窗口」必须以
+        OS 层枚举为判据，不能以 CDP 返回值或 setWindowBounds 的结果为准
+        ——否则就是「静默假成功」（用户在 UI 上看到「已打开」却什么都没有）。
+
+        判据：枚举本容器 chromium 主进程所属的顶层窗口，存在 IsWindowVisible
+        且类名含 Chrome_WidgetWin 者即视为真可见。
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except Exception:
+            return False
+        pids = set()
+        # 本容器的 chromium PID：优先从 Playwright browser 对象拿，失败则回落
+        # 到进程命令行匹配（兜底，不影响判定正确性）。
+        try:
+            _b = getattr(self, "_browser", None)
+            if _b is not None:
+                _proc = getattr(_b, "process", None) or getattr(_b, "_process", None)
+                if _proc is not None and getattr(_proc, "pid", None):
+                    pids.add(int(_proc.pid))
+        except Exception:
+            pass
+        if not pids:
+            return False
+        # 连同子进程（renderer 与主进程同 PID 树）一起判定：直接查主进程即可，
+        # 窗口由 browser 进程持有。
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        EnumWindows = u32.EnumWindows
+        EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        IsWindowVisible = u32.IsWindowVisible
+        GetClassNameW = u32.GetClassNameW
+        GetWindowThreadProcessId = u32.GetWindowThreadProcessId
+        hit = {"n": 0}
+
+        def _cb(hwnd, lparam):
+            pid = wintypes.DWORD()
+            GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids:
+                cbuf = ctypes.create_unicode_buffer(256)
+                GetClassNameW(hwnd, cbuf, 256)
+                if "Chrome_WidgetWin" in (cbuf.value or "") and IsWindowVisible(hwnd):
+                    hit["n"] += 1
+            return True
+
+        try:
+            EnumWindows(EnumWindowsProc(_cb), 0)
+        except Exception:
+            return False
+        return hit["n"] > 0
 
     async def scan_login(self, force: bool = False, timeout: int = 300) -> dict:
         """扫码登录/刷新凭证。force=True 忽略现有凭证重新扫码。
