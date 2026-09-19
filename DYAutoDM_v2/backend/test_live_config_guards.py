@@ -204,9 +204,13 @@ class TestConfigTagAndTargetRoomSeparation(unittest.TestCase):
                       "「新建策略」必须位于弹窗页脚（用户指定位置）")
         self.assertLess(footer.index('data-od-id="strategy-new"'), footer.index("save}"),
                         "「新建策略」必须排在「保存/更新策略」按钮左侧")
-        # 点击必须有**可见变化**：进入新建态要清空表单并退出编辑
-        self.assertIn("setEditing(null)", footer, "点击新建必须退出编辑态")
-        self.assertIn("setDraft({ ...EMPTY_DRAFT })", footer, "点击新建必须清空表单")
+        # 点击必须有**可见变化**（用户两次反馈"点击没变化"）
+        # 判据：列表区必须有一条可见草稿行 —— 这是用户指明要变的元素位置
+        self.assertIn('data-od-id="strategy-draft-row"', src,
+                      "点「新建策略」必须在**列表区**产生可见草稿行"
+                      "（否则默认态下与打开时无差别，用户判定为无反应）")
+        self.assertIn("newMode", src, "缺少新建态状态位（无法让列表区显式变化）")
+        self.assertIn("const startNew", src, "缺少统一的新建入口处理函数")
 
     def test_force_rescan_fully_removed(self):
         """「强制重扫」策略已废弃，全仓业务代码不得再有该配置项的读写。"""

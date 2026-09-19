@@ -15,7 +15,7 @@
  *
  * 数据源：/api/live/config-tags（SQLite kv "live_room_configs"）
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { api, RoomConfig } from "../../api/client";
 import { Button } from "@/components/ui/button";
@@ -72,6 +72,37 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
   const [editing, setEditing] = useState<string | null>(null); // 正在编辑的策略 id
   /** 正在「重启」的策略 id（防重复点击） */
   const [restarting, setRestarting] = useState<string | null>(null);
+  /** 是否处于「新建态」（列表区显示草稿行 —— 用户可见的新建状态） */
+  const [newMode, setNewMode] = useState(false);
+  /** 新建态时聚焦策略名称输入框 */
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * 进入「新建态」——**必须产生可见变化**（用户两次反馈"点击没变化"）。
+   *
+   * 根因：弹窗每次打开时 useEffect 已把表单复位为 EMPTY_DRAFT + editing=null，
+   * 即"默认态 == 新建态"。所以只在页脚点「新建」而列表区不动，用户看不出差别。
+   *
+   * 现做法：① 复位表单/编辑态；② 置 newMode=true，让**列表区插入一条草稿行**
+   * （用户指出的那个元素位置）；③ 清空名称后聚焦输入框；④ toast 反馈。
+   * 连点两次 → 第二次视为取消新建（也必须有可见变化，不能是空操作）。
+   */
+  const startNew = () => {
+    setNewMode((prev) => {
+      const turningOff = prev;
+      setEditing(null);
+      if (turningOff) {
+        setDraft({ ...EMPTY_DRAFT });
+        push("已取消新建");
+      } else {
+        // 保留已填的发送参数，只清名称（避免用户改过的参数被无谓重置）
+        setDraft((d) => ({ ...d, name: "" }));
+        push("已进入「新建策略」：填写策略名称后点「保存策略」");
+        setTimeout(() => nameRef.current?.focus(), 0);
+      }
+      return !prev;
+    });
+  };
 
   const load = () => {
     setLoading(true);
@@ -87,6 +118,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
       load();
       setDraft({ ...EMPTY_DRAFT });
       setEditing(null);
+      setNewMode(false);   // 打开时默认不显示草稿行；由「新建策略」显式开启
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -108,6 +140,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
           );
           setDraft({ ...EMPTY_DRAFT });
           setEditing(null);
+          setNewMode(false);
           onChanged?.();
           load();
           if (r.config) onApply?.(r.config);
@@ -142,6 +175,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
   const edit = (cfg: RoomConfig) => {
     setEditing(sidOf(cfg));
     setDraft({ ...cfg });
+    setNewMode(false);   // 编辑与新建互斥
   };
 
   /**
@@ -219,20 +253,44 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
             {loading && (
               <div className="text-[0.74rem] text-[var(--color-text-muted)]">加载中…</div>
             )}
-            {!loading && items.length === 0 && (
+            {!loading && items.length === 0 && !newMode && (
               <Blank>暂无策略。点下方「＋ 新建策略」填写后保存。</Blank>
+            )}
+            {/* 新建态草稿行：用户点「新建策略」后**在列表区可见**（用户指明的位置） */}
+            {newMode && (
+              <div
+                data-od-id="strategy-draft-row"
+                className="flex flex-wrap items-center gap-2 rounded-[var(--radius-sm)]
+                           border border-dashed border-[var(--color-accent)]
+                           bg-[var(--color-surface-raised)] px-2.5 py-2"
+                style={{ marginBottom: 6 }}
+              >
+                <div className="min-w-[200px] flex-1">
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-accent)" }}>
+                    ● 新策略（未保存）
+                  </div>
+                  <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                    在下方表单填写并点「保存策略」即创建
+                  </div>
+                </div>
+              </div>
             )}
             {items.map((cfg) => {
               const sid = sidOf(cfg);
               return (
                 <div
                   key={sid}
-                  className="flex flex-wrap items-center gap-2 border-b
-                             border-[var(--color-border)] px-2.5 py-2"
+                  data-od-id={"strategy-row-" + sid}
+                  className={
+                    "flex flex-wrap items-center gap-2 border-b px-2.5 py-2" +
+                    (editing === sid
+                      ? " bg-[var(--color-surface-raised)] border-l-2 border-l-[var(--color-accent)]"
+                      : " border-[var(--color-border)]")
+                  }
                 >
                   <div className="min-w-[200px] flex-1">
                     <div style={{ fontSize: 13, fontWeight: 600 }}>
-                      {editing === sid ? `● ${cfg.name || sid}` : (cfg.name || sid)}
+                      {editing === sid ? `✎ 编辑中：${cfg.name || sid}` : (cfg.name || sid)}
                       {cfg.auto_link_mic && (
                         <span
                           className="mono"
@@ -272,6 +330,10 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
           </div>
 
           {/* 新建 / 编辑表单：**只有策略字段** */}
+          <div className="mb-1 text-[0.74rem] font-semibold"
+               style={{ color: editing ? "var(--color-text)" : "var(--color-accent)" }}>
+            {editing ? "编辑已有策略" : (newMode ? "新建策略（草稿）" : "新建策略")}
+          </div>
           <div className="grid grid-cols-2 gap-2.5 border-t border-[var(--color-border)] pt-3">
             <div className="col-span-2 flex flex-col gap-1">
               <label>
@@ -279,6 +341,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                 {editing && `（编辑中: ${items.find((x) => sidOf(x) === editing)?.name || editing}）`}
               </label>
               <Input
+                ref={nameRef}
                 value={draft.name || ""}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder="如：标准-快速 / 保守-慢速"
@@ -405,16 +468,12 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
             关闭
           </Button>
           <Button
-            variant="secondary"
+            variant={newMode ? "default" : "secondary"}
             data-od-id="strategy-new"
-            title="清空表单并退出编辑态，开始新建一条策略"
-            onClick={() => {
-              setEditing(null);
-              setDraft({ ...EMPTY_DRAFT });
-              push("已进入「新建策略」：填写策略名称后点「保存策略」");
-            }}
+            title={newMode ? "再次点击取消新建" : "开始新建一条策略"}
+            onClick={startNew}
           >
-            ＋ 新建策略
+            {newMode ? "✕ 取消新建" : "＋ 新建策略"}
           </Button>
           <Button onClick={save}>
             {editing ? "更新策略" : "保存策略"}
