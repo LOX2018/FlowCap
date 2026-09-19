@@ -17,12 +17,87 @@ class Header:
     def __init__(self):
         self.headers = {}
 
-    def with_bd(self, api, auth):
-        self.set_header('bd-ticket-guard-client-data', generate_bd_ticket_client_data(api, auth.ticket, auth.ts_sign, auth.private_key))
-        self.set_header('bd-ticket-guard-iteration-version', '1')
+    def with_bd(self, api, auth, aid=6383, origin='https://www.douyin.com',
+                timestamp=None, dtrait_timestamp=None, dtrait_randbytes=None,
+                require_dtrait=False):
+        """bd-ticket-guard 请求头（2026 版，对齐源项目 passport zero.js 拦截器分支）。
+
+        :param api: 请求 pathname（不含 query）。
+        :param aid: 该子域 aid（www=6383，creator=2906）。
+        :param origin: 换证书站点，需与业务请求同源。
+
+        差异说明（2026-09-19 对齐源项目 cv-cat/DouYin_Spider）：
+          - 补齐 `bd-ticket-guard-web-sign-type`（hmac=1 / ecdsa=0）；
+          - `web-version` 由 ts_sign 前缀决定（ts.1 -> 1，其余 -> 2），
+            不再是固定的 '1'；
+          - 移除旧版多余的 `iteration-version` 头（2026 抓包无此头）；
+          - ticket 与 cookie 会话一致性：本项目 auth 无 `ticket_matches_session`
+            强校验方法，改为可判定时告警、不硬抛（避免因能力缺口直接不可用）；
+          - `x-tt-session-dtrait` 设备特征头：本项目 auth 无
+            `session_dtrait_header` 能力，优雅跳过（高风控接口需要它，
+            IM 私信发送以 bd-ticket-guard 为鉴权主体，缺 dtrait 不阻断）。
+        """
+        from utils.bd_ticket import ticket_guard_version
+        # 会话一致性门禁（能力存在时强校验；缺失时降级告警）
+        try:
+            if hasattr(auth, "ticket_matches_session") and not auth.ticket_matches_session():
+                raise RuntimeError(
+                    'bd-ticket-guard 的 ticket/ts_sign 与当前 cookie 不是同一次登录'
+                    '（cookie 里的 bd_ticket_guard_ts_sign_id 对不上 DY_TS_SIGN）。'
+                    '强校验接口会失败且报错无从判断，请重新抓取配套的凭证。')
+        except RuntimeError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[header] ticket 会话一致性校验异常（放行）：{e}")
+        client_data = generate_bd_ticket_client_data(
+            api, auth.ticket, auth.ts_sign, auth.private_key)
+        self.set_header('bd-ticket-guard-client-data', client_data)
         self.set_header('bd-ticket-guard-ree-public-key', generate_ree_key(auth.private_key))
         self.set_header('bd-ticket-guard-version', '2')
-        self.set_header('bd-ticket-guard-web-version', '1')
+        self.set_header('bd-ticket-guard-web-version',
+                        str(ticket_guard_version(getattr(auth, 'ts_sign', '') or '')))
+        # web-sign-type 由客户端证书格式决定：pub.<b64> 新版证书走 hmac(=1)，
+        # 否则 ECDSA 兜底(=0)。与 with_bd_readonly 用同一套判定，保证自洽。
+        algo = 'hmac' if str(getattr(auth, 'client_cert', '') or '').startswith('pub.') else 'ecdsa'
+        self.set_header('bd-ticket-guard-web-sign-type', '1' if algo == 'hmac' else '0')
+        # 设备特征头（能力存在才发）
+        try:
+            if hasattr(auth, "session_dtrait_header"):
+                dtrait = auth.session_dtrait_header(
+                    api, aid=aid, origin=origin, timestamp=dtrait_timestamp,
+                    randbytes=dtrait_randbytes, strict=require_dtrait,
+                    allow_static=not require_dtrait)
+                if dtrait:
+                    self.set_header('x-tt-session-dtrait', dtrait)
+                elif require_dtrait:
+                    raise RuntimeError('发布接口必须携带 x-tt-session-dtrait，当前未能生成')
+        except RuntimeError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            if require_dtrait:
+                raise
+            logger.debug(f"[header] dtrait 头生成跳过：{e}")
+        return self
+
+    def with_bd_readonly(self, auth):
+        """只读接口的 bd-ticket-guard 头（4 个，**不含 client-data**）。
+
+        2026-08-16 实录（comment/list 等）：只读接口浏览器只发
+        ree-public-key / version:2 / web-sign-type / web-version:2，不发 client-data。
+        """
+        from utils.bd_ticket import ticket_guard_version
+        try:
+            if not getattr(auth, 'private_key', None):
+                return self
+            self.set_header('bd-ticket-guard-ree-public-key',
+                            generate_ree_key(auth.private_key))
+            self.set_header('bd-ticket-guard-version', '2')
+            self.set_header('bd-ticket-guard-web-version',
+                            str(ticket_guard_version(getattr(auth, 'ts_sign', '') or '')))
+            algo = 'hmac' if str(getattr(auth, 'client_cert', '') or '').startswith('pub.') else 'ecdsa'
+            self.set_header('bd-ticket-guard-web-sign-type', '1' if algo == 'hmac' else '0')
+        except Exception:
+            pass
         return self
 
     def set_header(self, key, value):

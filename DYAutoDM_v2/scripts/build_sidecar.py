@@ -266,6 +266,15 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
         "services.config_tag",
     ):
         cmd += ["--hidden-import", _m]
+    # 2026-09-19 v0.43.97：uid_probe 探活依赖 qrcode（扫码登录）。
+    # services/uid_probe.py 在函数体内 `import qrcode`（生成二维码用），
+    # 静态分析扫不到 → 打包后 `No module named 'qrcode'`，探活整体失败，
+    # 使 my_uid 失去「探活回退」来源（叠加 conv_id 推断失败时 my_uid 归空，
+    # 导致私信 peer 解析退化、发送异常）。requirements.txt:21 已声明，此处补齐。
+    if entry in ("daemon/recv_daemon.py", "daemon/browser_daemon.py",
+                 "daemon/wp_recv.py", "main.py"):
+        for _m in ("qrcode", "qrcode.image.pil", "qrcode.image.base"):
+            cmd += ["--hidden-import", _m]
 
     cmd += [str(BACKEND / entry)]
     print(" ".join(cmd))

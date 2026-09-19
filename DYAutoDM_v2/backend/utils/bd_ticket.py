@@ -63,6 +63,14 @@ def generate_bd_ticket_client_data(api: str, ticket: str, ts_sign: str, prv: str
     return base64.urlsafe_b64encode(p.encode("utf-8")).decode()
 
 
+def ticket_guard_version(ts_sign: str) -> int:
+    """bd-ticket-guard 的 web-version 由 ts_sign 前缀决定（源项目 zero.js `nQ`）。
+
+    `ts.1` 前缀 -> 1，其余 -> 2。2026 起主流会话为 `ts.2`（web-version=2）。
+    """
+    return 1 if (ts_sign or "").startswith("ts.1") else 2
+
+
 if __name__ == "__main__":
     sk = SigningKey.generate(curve=NIST256p)
     pem = sk.to_pem().decode()

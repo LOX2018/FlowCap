@@ -91,10 +91,20 @@ def infer_my_uid_from_conv_ids(conv_ids, coverage: float = _MY_UID_COVERAGE) -> 
     IndexedDB 截获结果），无需落库即可推断 —— 但仍必须是**同一套算法**，
     故实现只有这一处。
 
-    判据：覆盖度 ≥ coverage 且位置稳定（只出现在 idx=2 或 idx=3 之一）。
+    判据（2026-09-19 修正）：
+      本号 uid 在 conv_id `X:Y:<uid_a>:<uid_b>` 里**位次不固定** ——
+      作为会话属主时出现在 idx=3，被他人主动会话时出现在 idx=2。
+      因此旧判据「只出现在 idx=2 或 idx=3 之一」会把**本号既当属主又当对端**
+      的账号（本次实测：张老师本号 idx2×20 + idx3×260 = 280/280 会话）
+      误判为推断失败，导致 my_uid 归空、peer 解析退化「取 b」→ create 发自己。
+
+      新判据：统计某 uid 在 idx2/idx3 的**合计**出现次数，取"合计 ≥ 会话数 ×
+      coverage"者为本号 uid（本号出现在几乎每条会话里）。
+      附加排除：若某 uid 合计覆盖度虽高，但**明显低于**次高者（>2 倍差距且非
+      全覆盖），说明它更像热门对端而非本号 —— 此时保守返回 ""（数据异常不猜）。
+      （覆盖度由调用方 coverage 参数控制，默认见模块常量。）
     """
     cnt: dict[str, int] = {}
-    pos: dict[str, set] = {}
     n = 0
     for cid in (conv_ids or []):
         parts = str(cid or "").split(":")
@@ -102,17 +112,16 @@ def infer_my_uid_from_conv_ids(conv_ids, coverage: float = _MY_UID_COVERAGE) -> 
             n += 1
             for idx in (2, 3):
                 u = parts[idx]
-                cnt[u] = cnt.get(u, 0) + 1
-                pos.setdefault(u, set()).add(idx)
+                if u:
+                    cnt[u] = cnt.get(u, 0) + 1
     if not n:
         return ""
-    best, best_c = "", 0
-    for uid, c in cnt.items():
-        if c > best_c:
-            best, best_c = uid, c
-    if best and best_c >= n * coverage and len(pos.get(best, ())) <= 1:
-        return best
-    return ""
+    ranked = sorted(cnt.items(), key=lambda kv: kv[1], reverse=True)
+    best, best_c = ranked[0]
+    if not best or best_c < n * coverage:
+        # 无任何 uid 达到覆盖阈值 —— 会话数据太杂乱（如被污染），不猜
+        return ""
+    return best
 
 
 def _infer_from_conv_pool(account: str) -> str:

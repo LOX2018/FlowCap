@@ -275,6 +275,71 @@ class ImMixin:
         return result
 
     @staticmethod
+    def get_identity_security_token(auth, force=False, **kwargs) -> tuple:
+        """取 PC IM 发送所需的短时身份令牌（2026 rollout 新增）。
+
+        网页 IM bundle 自 2026 起在 ``imapi/v1/message/send`` 之前会调用
+        ``/passport/safe/get_identity_security_token/``。返回的 token **不是
+        Cookie**，而是与返回的 device_id 一起写进 protobuf header map。它绑定
+        当前 ticket/dtrait 会话，**绝不可合成或跨 Auth 实例复用**。
+
+        :return: (token, device_id)；失败抛 RuntimeError。
+        """
+        now = time.time()
+        cached = str(getattr(auth, 'identity_security_token', '') or '')
+        cached_ts = float(getattr(auth, 'identity_security_token_ts', 0) or 0)
+        if cached and not force and now - cached_ts < 240:
+            return cached, str(getattr(auth, 'identity_security_device_id', '') or '')
+
+        api = '/passport/safe/get_identity_security_token/'
+        referer = kwargs.get('referer') or 'https://www.douyin.com/chat?isPopup=1'
+        trace_id = uuid.uuid4().hex[:8]
+        params = {
+            'passport_jssdk_version': '4.2.3',
+            'passport_jssdk_type': 'lite',
+            'is_from_ttaccountsdk': '1',
+            'aid': '6383',
+            'language': 'zh',
+            'scene': 'web_im',
+            'auto_retry_req': '0',
+            'skip_verify': 'false',
+            'identity_token_force_get_tag': '0',
+            'biz_trace_id': trace_id,
+            'id_token_version': '1.2.10',
+            'msToken': getattr(auth, 'msToken', '') or (auth.cookie or {}).get('msToken', ''),
+        }
+        # 浏览器先签 query 再自行追加 a_bogus；该 passport 端点无 verifyFp/fp。
+        params['a_bogus'] = generate_a_bogus(splice_url(params))
+
+        headers = HeaderBuilder().build(HeaderType.GET)
+        headers.set_referer(referer)
+        headers.set_header('accept', 'application/json, text/javascript')
+        _ck = auth.cookie or {}
+        headers.set_header(
+            'x-tt-passport-csrf-token',
+            _ck.get('passport_csrf_token', '') or _ck.get('passport_csrf_token_default', ''))
+        headers.set_header('x-tt-passport-trace-id', trace_id)
+        # 与 send 同一安全会话：带同一套 bd-ticket-guard 客户端数据。
+        headers.with_bd(api, auth)
+
+        resp = requests.get(
+            f'https://www.douyin.com{api}', params=params,
+            headers=headers.get(), cookies=auth.cookie, verify=tls_verify())
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise RuntimeError('身份安全 token 接口返回不可解析响应') from exc
+        data = payload.get('data') or {}
+        token = str(data.get('identity_security_token') or '')
+        device_id = str(data.get('device_id') or '')
+        if payload.get('message') not in (None, 'success') or not token:
+            raise RuntimeError(f'身份安全 token 获取失败: {payload!r}')
+        auth.identity_security_token = token
+        auth.identity_security_device_id = device_id
+        auth.identity_security_token_ts = now
+        return token, device_id
+
+    @staticmethod
     def send_msg(auth, conversation_id, conversation_short_id, ticket, content: str, **kwargs) -> tuple:
         """
         发送私信（V2：返回 (bool ok, str detail)）。
@@ -293,24 +358,29 @@ class ImMixin:
         if len(str(content)) > 500:
             logger.warning(f"[AUTH-025] " + f"[私信] 文案长度 {len(str(content))} 超过 500 字，可能被平台截断，仅前 500 字发送")
         url = 'https://imapi.douyin.com/v1/message/send'
-        # IM 私有网关靠 protobuf body 内签名鉴权，不叠加 bd-ticket-guard-* HTTP 头
+        # 2026 版：请求由 bd-ticket-guard HTTP 头鉴权（with_bd），不再依赖 body 内
+        # 顶层签名。同时 message/send 需携带短时 identity-security 材料。
         headers = HeaderBuilder().build(HeaderType.PROTOBUF)
         headers.set_header('referer', 'https://www.douyin.com/')
-        requestProto = ProtoBuilder.build_send_message_request(auth, conversation_id, conversation_short_id, ticket,
-                                                               content)
-        webid = auth.cookie.get('s_v_web_id', '')
-        # 回归基座私信设计：msToken 必须随请求动态生成（随机 107 位），
-        # 空串会被 IM 网关风控拒绝(KICK/INVALID_REQUEST)。优先用 cookie 中真实 msToken，
-        # 缺失则动态生成（基座原版即 generate_msToken()）。
-        _cookie_ms = auth.cookie.get('msToken') or ''
-        params = {
-            'verifyFp': webid,
-            'fp': webid,
-            'msToken': _cookie_ms if _cookie_ms else generate_msToken()
-        }
+        headers.with_bd('/v1/message/send', auth)
+        try:
+            identity_token, identity_device_id = DouyinAPI.get_identity_security_token(auth)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[AUTH-030] " + f"[私信] identity_security_token 获取失败: {e}")
+            return False, f"身份令牌获取失败：{e}"
+        requestProto = ProtoBuilder.build_send_message_request(
+            auth, conversation_id, conversation_short_id, ticket, content,
+            identity_security_token=identity_token,
+            identity_security_device_id=identity_device_id)
+        # 浏览器顺序：msToken -> a_bogus -> verifyFp -> fp。
+        # 仅第一个字段参与本端点的 a_bogus 输入。
+        params = {'msToken': getattr(auth, 'msToken', '') or (
+            auth.cookie.get('msToken') if auth.cookie else '') or generate_msToken()}
         query = splice_url(params)
-        abogus = generate_a_bogus(query)
-        params['a_bogus'] = abogus
+        params['a_bogus'] = generate_a_bogus(query)
+        webid = auth.cookie.get('s_v_web_id', '') if auth.cookie else ''
+        params['verifyFp'] = webid
+        params['fp'] = webid
         resp = requests.post(url, params=params, headers=headers.get(), verify=tls_verify(), cookies=auth.cookie,
                              data=requestProto.SerializeToString())
         if resp.status_code != 200:
