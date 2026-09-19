@@ -30,6 +30,54 @@
   background: var(--color-accent-soft);
 }
 
+/* ── 全局顶层悬浮调试入口（全局唯一入口，始终可见） ──
+   位置：左下角 —— 避开右下角的结果面板；z-index 高于面板与所有业务层。
+   可见性：App 根部无条件渲染 ⇒ 闪屏 / 登录门 / 主界面三个阶段都在。 */
+.ei-fab {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 2147483100; /* 高于面板(…3000)与提示条(…3001) */
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px 7px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong, var(--color-border));
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  transition: color 0.2s, border-color 0.2s, background-color 0.2s, transform 0.2s;
+}
+.ei-fab:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+  transform: translateY(-1px);
+}
+.ei-fab-glyph {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.ei-fab-on {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 45%, transparent),
+              0 6px 18px rgba(0, 0, 0, 0.28);
+}
+.ei-fab-on .ei-fab-glyph {
+  animation: ei-pulse 1.4s ease-in-out infinite;
+}
+@keyframes ei-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* 悬停高亮框（跟随鼠标所在的候选元素） */
 .ei-box {
   position: fixed;

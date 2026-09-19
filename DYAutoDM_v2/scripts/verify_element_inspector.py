@@ -64,12 +64,28 @@ def main():
             check("工具按钮渲染",
                   lambda: (page.locator('[data-od-id="debug-inspector-toggle"]').count() == 1, ""))
 
+            # ★入口形态：全局顶层悬浮（左下角、浮于业务元素之上）
+            check("入口为全局悬浮（position:fixed 且左下角）",
+                  lambda: (lambda cs, r: (
+                      cs["position"] == "fixed" and r["left"] < 200 and r["bottom"] > 300,
+                      f"pos={cs['position']} left={round(r['left'])} bottom={round(r['bottom'])}"
+                  ))(page.eval_on_selector('[data-od-id="debug-inspector-toggle"]',
+                                           "el => getComputedStyle(el)"),
+                      page.eval_on_selector('[data-od-id="debug-inspector-toggle"]',
+                                            "el => el.getBoundingClientRect()")))
+            check("★入口浮于业务元素之上（命中测试命中自己）",
+                  lambda: (page.eval_on_selector(
+                      '[data-od-id="debug-inspector-toggle"]',
+                      "el => { const r = el.getBoundingClientRect();"
+                      " const hit = document.elementFromPoint(r.x + r.width/2, r.y + r.height/2);"
+                      " return !!hit && (hit === el || el.contains(hit)); }"), ""))
+
             # 进入选择模式
             page.click('[data-od-id="debug-inspector-toggle"]')
             page.wait_for_timeout(300)
             check("进入选择模式：提示条 + 激活态",
                   lambda: (page.locator(".ei-hint").count() == 1
-                           and page.locator(".ei-btn-on").count() == 1, ""))
+                           and page.locator(".ei-fab-on").count() == 1, ""))
 
             page.hover("#danger-btn")
             page.wait_for_timeout(250)
@@ -148,7 +164,7 @@ def main():
             page.wait_for_timeout(300)
             check("Esc 退出选择模式",
                   lambda: (page.locator(".ei-hint").count() == 0
-                           and page.locator(".ei-btn-on").count() == 0, ""))
+                           and page.locator(".ei-fab-on").count() == 0, ""))
 
             # ★退出后恢复
             b2 = page.inner_text("#click-count")

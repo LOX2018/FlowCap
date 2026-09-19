@@ -137,11 +137,17 @@ class TestElementInspectorContract(unittest.TestCase):
                       "App.tsx 未引入元素选择器")
         self.assertIn('data-od-id="debug-inspector-toggle"', self.src,
                       "工具按钮缺少稳定锚点 data-od-id")
-        # 顶栏按钮（用户点得到）：出现在 topRight 段内
-        self.assertIn("showButton={false}", self.app,
-                      "App 根部面板应关闭自带按钮（按钮已在 TopBar，避免双按钮）")
+        # 2026-09-19 用户定调：入口改为「全局顶层悬浮」，不再挂在 TopBar。
+        self.assertIn("ei-fab", self.src, "缺失全局顶层悬浮入口样式（ei-fab）")
+        self.assertNotIn("showButton", self.src,
+                         "showButton 开关已废弃（入口全局唯一，不再可关）")
+        # 必须**无条件**渲染：登录门与主界面两处各一个实例
         self.assertEqual(self.app.count("<ElementInspectorButton"), 2,
-                         "ElementInspectorButton 应恰好挂两处：TopBar 按钮 + App 根部面板")
+                         "ElementInspectorButton 应恰好挂两处：登录门分支 + 主界面分支")
+        # 登录门分支必须在 `if (!memberName)` 段内（否则未登录时看不到入口）
+        gate_seg = self.app.split("if (!memberName)", 1)[1].split("// =====", 1)[0]
+        self.assertIn("<ElementInspectorButton", gate_seg,
+                      "登录门/闪屏分支未渲染入口 —— 未登录时无法定位元素")
 
     def test_no_business_data_access(self):
         """零业务耦合：工具不得读写业务 API / localStorage。"""

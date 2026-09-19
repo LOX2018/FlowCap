@@ -424,11 +424,18 @@ export default function App() {
   //   `ready`（overview）仅用于登录**后**的业务 UI 与顶栏状态，不参与登录门控。
   if (!memberName) {
     // prealigned 未完成 → 持续闪屏（**不得引用 ready**：它需要登录）
-    if (!prealigned) return <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />;
-    return memberChecked ? (
-      <MemberGate onLogin={(u) => { setMemberName(u); setPrealigned(true); }} />
-    ) : (
-      <BootSplash onSkip={() => setMemberChecked(true)} />
+    const gate = !prealigned
+      ? <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />
+      : memberChecked
+        ? <MemberGate onLogin={(u) => { setMemberName(u); setPrealigned(true); }} />
+        : <BootSplash onSkip={() => setMemberChecked(true)} />;
+    // 元素选择模式入口在此**一并渲染** —— 登录门/闪屏阶段也要能定位元素
+    // （2026-09-19 用户定调：入口必须是全局顶层悬浮，不得被登录门挡住）。
+    return (
+      <>
+        {gate}
+        <ElementInspectorButton />
+      </>
     );
   }
 
@@ -502,8 +509,6 @@ export default function App() {
         memberName={memberName}
         topRight={
           <>
-            {/* 元素选择模式：顶栏调试按钮（点击进入「只选不触发」的元素取址模式） */}
-            <ElementInspectorButton currentTab={tab} />
             {gwPendingCount > 0 && (
               <button
                 onClick={() => setTab("notify")}
@@ -583,9 +588,9 @@ export default function App() {
         push={push}
       />
 
-      {/* 元素选择模式（调试）：按钮在 TopBar（见 topRight），此处挂覆盖层与结果面板。
+      {/* 元素选择模式：全局顶层悬浮入口 + 覆盖层 + 结果面板。
           设计契约：只选择、不触发；不读不写任何业务数据。 */}
-      <ElementInspectorButton currentTab={tab} showButton={false} />
+      <ElementInspectorButton currentTab={tab} />
     </>
   );
 }

@@ -487,15 +487,23 @@ function reportToText(r: Report, tab: string): string {
 export interface InspectorProps {
   /** 当前页面 tab（写进报告，便于定位在哪个页面选的） */
   currentTab?: string;
-  /** 右下角按钮是否常显 */
-  showButton?: boolean;
 }
 
 /**
- * 顶栏「调试」按钮 + 选择模式覆盖层 + 结果面板。
- * 挂载于 App 根部（见 App.tsx），全局唯一实例。
+ * 全局顶层悬浮「调试」入口 + 选择模式覆盖层 + 结果面板。
+ *
+ * ## 入口设计（2026-09-19 用户定调，勿回退）
+ *  用户原话：「这个入口不合理，把该入口设定为全局顶层悬浮」。
+ *  旧实现把按钮塞进 TopBar 的 `topRight`，有两个硬伤：
+ *    ① 未登录时整个 `AppShell` 不渲染 ⇒ **登录框/闪屏阶段根本看不到入口**
+ *       （而那正是最需要定位元素的时候）；
+ *    ② 挤在状态徽章/退出/窗口控制之间，不是「调试工具」该在的位置。
+ *  现改为**全局顶层悬浮按钮**：`App` 根部无条件渲染（覆盖登录门与闪屏），
+ *  固定左下角（避开右下角的结果面板），`z-index` 高于面板与所有业务层。
+ *
+ * 挂载于 `App` 根部，全局唯一实例；按钮与覆盖层共用同一份选择状态。
  */
-export function ElementInspectorButton({ currentTab = "", showButton = true }: InspectorProps) {
+export function ElementInspectorButton({ currentTab = "" }: InspectorProps) {
   const [active, setActive] = useState(false);
   const [picked, setPicked] = useState<Element | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -603,17 +611,19 @@ export function ElementInspectorButton({ currentTab = "", showButton = true }: I
 
   return (
     <>
-      {showButton && (
-        <button
-          data-ei-ui
-          data-od-id="debug-inspector-toggle"
-          title={active ? "退出元素选择模式（Esc）" : "元素选择模式：点击页面元素复制其结构位置（不触发功能）"}
-          onClick={() => { setActive((v) => !v); setTip(""); }}
-          className={`ei-btn${active ? " ei-btn-on" : ""}`}
-        >
-          ◎
-        </button>
-      )}
+      {/* 全局顶层悬浮调试入口（始终可见：覆盖闪屏 / 登录门 / 主界面） */}
+      <button
+        data-ei-ui
+        data-od-id="debug-inspector-toggle"
+        title={active
+          ? "退出元素选择模式（Esc）"
+          : "元素选择模式：点击页面元素复制其结构位置，不触发元素功能"}
+        onClick={() => { setActive((v) => !v); setTip(""); }}
+        className={`ei-fab${active ? " ei-fab-on" : ""}`}
+      >
+        <span className="ei-fab-glyph">◎</span>
+        <span className="ei-fab-label">{active ? "退出选择" : "元素选择"}</span>
+      </button>
 
       {/* 悬停高亮框 */}
       <div ref={boxRef} className="ei-box" data-ei-ui style={{ display: "none" }} />
