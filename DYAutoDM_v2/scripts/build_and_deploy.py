@@ -129,6 +129,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="构建/部署范围门禁")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--fast", action="store_true", help="声明仅前端改动（跳过 sidecar 重建）")
+    g.add_argument("--frontend-only", action="store_true",
+                   help="显式声明「本次只交付前端」：即使树里有后端改动（属他人/未完成）"
+                        "也跳过 sidecar 重建，只重编 exe。会打印被忽略的后端文件清单。")
     g.add_argument("--full", action="store_true", help="强制全量（重建 sidecar）")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不构建")
     args = ap.parse_args()
@@ -158,6 +161,19 @@ def main() -> int:
 
     if args.full:
         needs_sidecar = True
+
+    if args.frontend_only:
+        # 显式「只交付前端」：忽略后端改动（属他人/未完成的工作），但必须**大声报告**，
+        # 且要如实说明部署后果：主程序与「已构建的 sidecar」一起被复制 ——
+        # 若同版本 sidecar 已被别的构建覆盖过，则实际会把那些后端改动带上线。
+        needs_sidecar = False
+        if c["backend"]:
+            print("\n⚠️  --frontend-only：以下后端改动将被**忽略**（不重建 sidecar）：")
+            for f in c["backend"]:
+                print("    - " + f)
+            print("  注意：deploy.py 会把**当前已构建的 sidecar** 一起复制到部署目录。")
+            print("        若该 sidecar 恰好包含这些未完成改动，它们会随本次部署上线 ——")
+            print("        并发工作线存在时，请先与其确认，或用 --full 重建一份干净的 sidecar。")
 
     print("\n判定：")
     print(f"  · 需要重建 sidecar : {'是' if needs_sidecar else '否'}")
