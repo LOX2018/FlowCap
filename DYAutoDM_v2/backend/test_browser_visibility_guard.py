@@ -323,6 +323,60 @@ class TestI_ProxyPathResolution(unittest.TestCase):
             self.fail(f"vbrowser 导入失败（可能引入循环导入）: {e}")
 
 
+class TestJ_CamoufoxSwitch(unittest.TestCase):
+    """J：内核可切换（Chromium / Camoufox）—— 换指纹浏览器的接入契约。
+
+    背景：抖音在 Chromium + JS 注入方案下于**交互时刻**（扫码/输手机号）
+    弹「安全风险…已阻止此次访问」。Camoufox 实测同出口、同交互路径连续两轮
+    未弹窗（其指纹注入在 C++ 层，无 JS 注入痕迹）。故接入 Camoufox，
+    但必须**可配置回退**，避免把路走死。
+    """
+
+    def test_01_dispatch_in_launch_async(self):
+        src = _read(os.path.join(BE, "vbrowser.py"))
+        seg = src[src.find("async def launch_async"):]
+        seg = seg[:seg.find("def launch_sync")]
+        self.assertIn("camoufox_enabled(cfg)", seg)
+        self.assertIn("launch_camoufox_async", seg)
+
+    def test_02_dispatch_in_launch_sync(self):
+        src = _read(os.path.join(BE, "vbrowser.py"))
+        seg = src[src.find("def launch_sync"):]
+        self.assertIn("camoufox_enabled(cfg)", seg)
+        self.assertIn("launch_camoufox_sync", seg)
+
+    def test_03_opt_in_by_config_only(self):
+        """必须显式配置才启用（默认 Chromium），绝不自动探测。"""
+        try:
+            from vbrowser_camoufox import camoufox_enabled
+        except Exception as e:  # noqa: BLE001
+            self.skipTest(f"camoufox 未安装: {e}")
+
+        class _C:
+            DY_BROWSER_KERNEL = ""
+
+        self.assertFalse(camoufox_enabled(_C()), "缺省必须走 Chromium（保留回退）")
+        _C.DY_BROWSER_KERNEL = "camoufox"
+        self.assertTrue(camoufox_enabled(_C()))
+        _C.DY_BROWSER_KERNEL = "chromium"
+        self.assertFalse(camoufox_enabled(_C()))
+
+    def test_04_no_js_injection_under_camoufox(self):
+        """Camoufox 模式下禁止 JS 注入（注入会抵消其反检测优势）。"""
+        src = _read(BROWSER_DAEMON)
+        seg = src[src.find("Camoufox 模式禁止 JS 注入"):]
+        seg = seg[:seg.find("直接打开 chat 页")]
+        self.assertIn('self._backend == "camoufox"', seg)
+        self.assertIn("跳过 JS 注入", seg)
+        # 注入必须被条件包住，不能在条件外无条件执行
+        self.assertLess(seg.find("add_init_script"), seg.find("else:") + 400)
+
+    def test_05_failure_falls_back(self):
+        """Camoufox 启动失败必须回退 Chromium 并记 BCC-058。"""
+        src = _read(os.path.join(BE, "vbrowser.py"))
+        self.assertIn("BCC-058", src)
+
+
 class TestZ_Syntax(unittest.TestCase):
     def test_all_files_parse(self):
         for f in (BROWSER_DAEMON, JS, GATE, API_ACC, AUTO_ACC):

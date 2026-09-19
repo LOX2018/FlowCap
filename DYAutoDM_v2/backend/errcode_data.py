@@ -282,6 +282,7 @@ ERRCODES = {
     "BCC-054": {"meaning": "[gate] 获取账号 profile 所有权超时（已有其它操作持有，放弃本次独占）", "file": "services/browser_gate.py", "line": 0},
     "BCC-055": {"meaning": "[bcc] 有头观测态下探活失败 —— 不自动重建（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-057": {"meaning": "[bcc] 有头观测态下不触发自动重扫（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-058": {"meaning": "[vbrowser] Camoufox 内核启动失败，已回退 Chromium", "file": "vbrowser.py", "line": 0},
     "BCC-063": {"meaning": "[bcc] 出口环境漂移：当前出口 IP 与登录基线不一致（登录环境与运行环境不一致，先重扫建立新基线）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-064": {"meaning": "[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-065": {"meaning": "[bcc] 自动化痕迹暴露（navigator.webdriver=true / HeadlessChrome UA / 注入对象）", "file": "services/env_audit.py", "line": 0},
@@ -888,6 +889,15 @@ CODE_DESIGN = {
         "chain": "run_keepalive → BCC-025 → 有头态判定 → continue",
         "root": "后台自动动作与用户交互争抢同一 profile/context",
         "verify": "有头期间不应出现 scan_login / context 代次增长。",
+    },
+    "BCC-058": {
+        "design": "内核可切换（Chromium / Camoufox）由配置显式决定；Camoufox 启动失败"
+                  "必须回退 Chromium，绝不因换内核导致浏览器整体不可用。",
+        "contract": "DY_BROWSER_KERNEL=camoufox 启用；其它值（含缺省）走 Chromium。",
+        "deviation": "尝试以 Camoufox 启动但失败（未安装/geoip 缺失/profile 冲突等）",
+        "chain": "launch_async/launch_sync → camoufox_enabled → launch_camoufox_* → 异常",
+        "root": "Camoufox 未安装或依赖缺失（需 pip install camoufox[geoip]）",
+        "verify": "日志是否出现 BCC-058 并成功回退；pip show camoufox 确认安装。",
     },
 }
 

@@ -620,12 +620,30 @@ class BrowserContainer:
         # 重复注入** → 两个脚本各自包裹 window.fetch/XMLHttpRequest，内层包装
         # 被外层覆盖，先注入者再也观察不到请求（WP 私信通道静默失效）。
         # 现先清空再注入，保证「每个 context 恰好一套」。
-        try:
-            await self._context.clear_init_scripts()
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[bcc] clear_init_scripts 不可用（不影响本次注入）: {e}")
-        await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
-        await self._context.add_init_script(CAP_WP_MESSAGE_HOOK_JS)  # 2026-09-05 WP
+        # ════════════════════════════════════════════════════════════════════
+        # 2026-09-20 v0.44.0【Camoufox 模式禁止 JS 注入】
+        #
+        # 这两个 hook 通过 add_init_script 改写 window.fetch / XMLHttpRequest /
+        # WebSocket，属「可被 JS 检查发现」的痕迹 —— 正是抖音在**交互时刻**
+        # 弹「安全风险…已阻止此次访问」的嫌疑成因（实测：带注入时点「验证码
+        # 登录」即弹窗）。
+        #
+        # Camoufox 的指纹注入在 **C++ 实现层**，本就无需 JS 注入，且**注入会
+        # 抵消它的反检测优势**。故该模式下跳过全部 init script。
+        #
+        # 影响（如实记录）：Camoufox 模式下 WP 私信通道的 JS 劫持不可用，
+        # 需改用 Playwright 原生 WebSocket 事件（非页面注入，无痕迹）。
+        # ════════════════════════════════════════════════════════════════════
+        if self._backend == "camoufox":
+            logger.info(f"[bcc] {self.account} 内核=Camoufox → 跳过 JS 注入"
+                        f"（C++ 层指纹注入，注入反而留下可检痕迹）")
+        else:
+            try:
+                await self._context.clear_init_scripts()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[bcc] clear_init_scripts 不可用（不影响本次注入）: {e}")
+            await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
+            await self._context.add_init_script(CAP_WP_MESSAGE_HOOK_JS)  # 2026-09-05 WP
         # 直接打开 chat 页（前端才会自发调 im/user/info）
         try:
             await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=20000)

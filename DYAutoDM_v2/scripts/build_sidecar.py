@@ -196,6 +196,18 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             # 扫不到，必须显式声明，否则代理连接测试的 socks5 模式失效。
             "socks",
             "sockshandler",
+            # 2026-09-20：Camoufox（Firefox 内核，C++ 层指纹注入）。
+            # vbrowser_camoufox 在 launch_async/launch_sync 内**函数体 import**，
+            # 静态分析扫不到，必须显式声明；否则 DY_BROWSER_KERNEL=camoufox
+            # 在打包产物里恒走 BCC-058 回退分支（换内核无效且无声）。
+            "vbrowser_camoufox",
+            "camoufox",
+            "camoufox.sync_api",
+            "camoufox.async_api",
+            "browserforge",
+            "orjson",
+            "geoip2",
+            "maxminddb",
             # 2026-09-17：TLS 原生 OS 信任库（backend/utils/tls_policy.py）。
             # main.py 在 lifespan 内函数体导入 + truststore.inject_into_ssl()，
             # 静态分析扫不到 → 缺失则打包后无 OS 信任库（自签证书环境仍会失败）。

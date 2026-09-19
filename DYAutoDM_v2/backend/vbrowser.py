@@ -854,6 +854,26 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
       - force=True 仅表示“不复用已有登录态、强制重新扫码”，仍使用同一固定 profile 目录，
         不清空、不新建临时目录（清空/临时化都是风控根因）。
     """
+    # ════════════════════════════════════════════════════════════════════
+    # 2026-09-20【内核可切换】Camoufox 分派（用户拍板更换指纹浏览器）
+    #
+    # 抖音在现行 Chromium + JS 注入方案下，于**交互时刻**（扫码授权、
+    # 输手机号）弹「安全风险…已阻止此次访问」。而 Camoufox 在同一出口、
+    # 同一交互路径下实测**连续两轮未弹窗** —— 其指纹注入在 C++ 实现层，
+    # 无 JS 注入痕迹（官方：Fingerprint injection without JS injection）。
+    #
+    # 分派完全由配置显式决定（DY_BROWSER_KERNEL=camoufox），
+    # 默认仍走 Chromium —— 保留回退，避免把路走死。调用方零改动。
+    # ════════════════════════════════════════════════════════════════════
+    try:
+        from vbrowser_camoufox import camoufox_enabled, launch_camoufox_async
+        if camoufox_enabled(cfg):
+            logger.info("[vbrowser] 内核=Camoufox（Firefox，C++ 层指纹注入，无 JS 注入）")
+            return await launch_camoufox_async(
+                headless=headless, user_data_dir=user_data_dir,
+                account=account, cfg=cfg)
+    except Exception as _e_cam:  # noqa: BLE001
+        logger.error(f"[BCC-058] " + f"[vbrowser] Camoufox 启动失败，回退 Chromium: {_e_cam}")
     # 2026-09-13 统一入口审计（用户要求：所有启动路径走同一入口，杜绝环境分叉）：
     # 本函数是**所有**浏览器启动的最底层出口（login_api / web_probe / link_resolve /
     # api.accounts / browser_daemon 共 12 处调用点都经过这里）。在此统一登记：
@@ -964,6 +984,16 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
 
     account 参数语义同 launch_async（读账号 .env DY_PROXY 注入代理）。
     """
+    # 2026-09-20【内核可切换】Camoufox 分派（同 launch_async，见其说明）
+    try:
+        from vbrowser_camoufox import camoufox_enabled, launch_camoufox_sync
+        if camoufox_enabled(cfg):
+            logger.info("[vbrowser] 内核=Camoufox（Firefox，C++ 层指纹注入，无 JS 注入）")
+            return launch_camoufox_sync(
+                headless=headless, user_data_dir=user_data_dir,
+                account=account, cfg=cfg)
+    except Exception as _e_cam:  # noqa: BLE001
+        logger.error(f"[BCC-058] " + f"[vbrowser] Camoufox 启动失败，回退 Chromium: {_e_cam}")
     # 统一入口审计（同 launch_async，见其说明）
     try:
         from services.browser_gate import audit_standalone_launch as _audit
