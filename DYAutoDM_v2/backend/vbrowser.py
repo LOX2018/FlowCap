@@ -384,7 +384,36 @@ async def check_egress_ip(context, proxy_url, timeout_ms=15000):
 
 
 def _env_path_of_account(account):
-    """由账号名找 .env 路径（避免 vbrowser 反向 import accounts 造成循环导入）。"""
+    """由账号名找 .env 路径。
+
+    ⚠️ 2026-09-20 v0.43.99【致命修复 · 出口 IP 分叉根因】
+    原实现为避免反向 import 造成循环导入，自行硬拼
+    `<app_root>/auto_dm/accounts/<name>/.env`。但**会员体系下真实路径是**
+    `<app_root>/members/<member_id>/auto_dm/accounts/<name>/.env`，
+    故本函数在会员环境恒返回 None。
+
+    后果链（本次弹窗真因）：
+      env_path=None → parse_proxy_config 读不到 → mode 落到缺省 "direct"
+      → 浏览器强制 `--no-proxy-server` 直连（本机国内 IP）
+      → 而用户用 Edge 时跟随**系统代理**（境外出口）
+      → 同一抖音账号在「境外/境内」之间跳 = 异地登录
+      → 弹「您正在尝试访问的网站存在安全风险…已阻止此次访问」
+      （知识库 02 §363-384 早有「出口 IP 分叉」记载，本次为其代码落点）
+
+    修复：优先委托 accounts.env_path_of（唯一真源，含会员路径解析），
+    失败再退回原硬拼逻辑（保持无循环导入时的鲁棒性）。
+    """
+    if not account:
+        return None
+    # 优先：委托 accounts 模块（会员空间路径解析的唯一真源）
+    try:
+        from auto_dm import accounts as _acc  # 延后导入，避免模块级循环
+        p = _acc.env_path_of(account)
+        if p:
+            return p
+    except Exception:
+        pass
+    # 兜底：原硬拼（非会员/全局环境）
     try:
         root = app_root()
         cand = os.path.join(root, "auto_dm", "accounts", account, ".env")

@@ -239,6 +239,90 @@ class TestG_ErrorCodes(unittest.TestCase):
         self.assertEqual(missing, [], f"存在无 design 的错误码: {missing}")
 
 
+class TestH_NoEnvironmentFlapping(unittest.TestCase):
+    """H：禁止无头↔有头横跳与有头期的重建/重扫（v0.43.99 环境跳变风暴根治）。
+
+    背景：v0.43.98 让「切可见」= 真正重建为有头，但自愈重建仍恒按无头，
+    二者叠加造成无头↔有头横跳。每次 context 重建在抖音侧都是一次「全新
+    环境」访问，短间隔横跳 = 风控判环境异常的教科书特征，表现为**扫码/
+    输手机号时**弹「安全风险…已阻止此次访问」（首屏渲染看不出来）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = _read(BROWSER_DAEMON)
+
+    def test_01_selfheal_inherits_visibility(self):
+        """自愈重建必须继承当前可见性意图（不再一律无头）。"""
+        seg = self.src[self.src.find("context 失活自愈"):]
+        seg = seg[:seg.find("async def set_visible")]
+        self.assertIn("await self._launch(headless=self._headless)", seg,
+                      "自愈重建必须传 headless=self._headless，否则把有头冲回无头 → 横跳")
+
+    def test_02_headed_no_silent_rebuild(self):
+        """有头观测态下探活失败不得自动重建。"""
+        self.assertIn("BCC-055", self.src)
+        seg = self.src[self.src.find("async def _ensure_alive("):]
+        seg = seg[:seg.find("async def set_visible(")]
+        self.assertIn("if not self._headless:", seg)
+        self.assertIn("BCC-055", seg, "有头态必须有『不自动重建』的显式分支")
+        # 该分支必须在真正重建之前 return
+        i_gate = seg.find("BCC-055")
+        i_rebuild = seg.find("await self._launch(headless=self._headless)")
+        self.assertLess(i_gate, i_rebuild, "有头闸必须在重建之前拦截")
+
+    def test_03_headed_no_auto_rescan(self):
+        """有头观测态下不得触发自动重扫（scan_login 会重建 context）。
+
+        判据：定位到「不触发自动重扫」这条告警，其后 6 行内必须有 continue。
+        注：窗口取得太窄会漏判（探针自身的缺陷会伪造出「后端 bug」）。
+        """
+        i = self.src.find("**不触发自动重扫**")
+        self.assertNotEqual(i, -1, "未找到有头态禁止重扫的告警文案")
+        # 错误码在该文案【之前】的一行内（loguru 拼接写法），故向前取窗口
+        seg = self.src[max(0, i - 300):i + 400]
+        self.assertIn("BCC-057", seg)
+        j = self.src.find("continue", i)
+        self.assertNotEqual(j, -1, "有头态应 continue 跳过重扫")
+        self.assertLess(j - i, 400, "continue 必须紧随该告警（而非别处的 continue）")
+
+    def test_04_old_force_headless_removed(self):
+        """旧的『重建一律把 _headless 置 True』必须已移除（那是横跳根源）。"""
+        seg = self.src[self.src.find("async def _ensure_alive("):]
+        seg = seg[:seg.find("async def set_visible(")]
+        self.assertNotIn(
+            'if str(os.environ.get(\n                    "DY_BCC_RESTORE_VISIBLE_ON_RELAUNCH", "")).strip() != "1":\n                self._headless = True',
+            seg, "旧逻辑『重建即强制无头』仍在 → 必然造成可见性横跳")
+
+
+class TestI_ProxyPathResolution(unittest.TestCase):
+    """I：账号 .env 路径解析必须走唯一真源（会员空间）—— 出口 IP 分叉根因。
+
+    背景：_env_path_of_account 曾硬拼 <root>/auto_dm/accounts/<name>/.env，
+    而会员体系真实路径是 <root>/members/<id>/auto_dm/accounts/<name>/.env，
+    故恒返回 None → 代理模式读不到 → 落 direct 强制直连（国内 IP），
+    与用户用 Edge（跟系统代理，境外）形成出口 IP 分叉 → 抖音判异地登录
+    → 弹「安全风险…已阻止此次访问」。
+    """
+
+    def test_01_delegates_to_accounts(self):
+        """必须优先委托 accounts.env_path_of（唯一真源）。"""
+        src = _read(os.path.join(BE, "vbrowser.py"))
+        seg = src[src.find("def _env_path_of_account"):]
+        seg = seg[:seg.find("def fingerprint_seed_of")]
+        self.assertIn("_acc.env_path_of(account)", seg,
+                      "必须委托 accounts.env_path_of，否则会员空间恒解析失败")
+
+    def test_02_no_circular_import_break(self):
+        """延后导入，避免模块级循环导入。"""
+        import importlib
+        try:
+            m = importlib.import_module("vbrowser")
+            self.assertTrue(callable(getattr(m, "_env_path_of_account", None)))
+        except Exception as e:  # noqa: BLE001
+            self.fail(f"vbrowser 导入失败（可能引入循环导入）: {e}")
+
+
 class TestZ_Syntax(unittest.TestCase):
     def test_all_files_parse(self):
         for f in (BROWSER_DAEMON, JS, GATE, API_ACC, AUTO_ACC):

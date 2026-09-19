@@ -280,6 +280,8 @@ ERRCODES = {
     "BCC-052": {"meaning": "[bcc] context 失活自愈：已重建容器（按最小化启动，窗口不再快闪）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-053": {"meaning": "[bcc] 可见性切换完成后 OS 层未检测到可见窗口（切换未达成，状态回退为无头）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-054": {"meaning": "[gate] 获取账号 profile 所有权超时（已有其它操作持有，放弃本次独占）", "file": "services/browser_gate.py", "line": 0},
+    "BCC-055": {"meaning": "[bcc] 有头观测态下探活失败 —— 不自动重建（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-057": {"meaning": "[bcc] 有头观测态下不触发自动重扫（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-063": {"meaning": "[bcc] 出口环境漂移：当前出口 IP 与登录基线不一致（登录环境与运行环境不一致，先重扫建立新基线）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-064": {"meaning": "[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-065": {"meaning": "[bcc] 自动化痕迹暴露（navigator.webdriver=true / HeadlessChrome UA / 注入对象）", "file": "services/env_audit.py", "line": 0},
@@ -867,6 +869,25 @@ CODE_DESIGN = {
         "chain": "POST /open-browser → adm.pause() 异常",
         "root": "引擎状态机处于不可暂停态 / 事件循环不可用",
         "verify": "人工确认引擎状态；若未暂停应手动在界面停止。",
+    },
+    "BCC-055": {
+        "design": "有头可见 = 用户正在观测/操作的窗口。此时任何 context 重建都会"
+                  "销毁用户眼前窗口，并在抖音侧记一次『全新环境』访问 —— 恰在"
+                  "step-up 校验（扫码/输手机号）时刻触发『安全风险阻止访问』。",
+        "contract": "有头态下探活失败只告警，**绝不自动重建**；无头态保留自愈。",
+        "deviation": "有头态探活失败，已跳过自动重建（保护用户交互与环境稳定）",
+        "chain": "_ensure_alive 探活失败 → 有头态判定 → return（不重建）",
+        "root": "v0.43.98 起切可见=真实重建；若叠加自愈重建会造成无头↔有头横跳",
+        "verify": "有头期间 context 代次应保持不变；日志出现 BCC-055 而非 BCC-052。",
+    },
+    "BCC-057": {
+        "design": "自动重扫（scan_login）会关闭并重建 context；有头观测态下必须与"
+                  "之互斥，否则打断授权并在抖音侧新增『新环境』记录。",
+        "contract": "有头态下不触发自动重扫；由用户在打开的窗口中完成登录。",
+        "deviation": "检测到登录态失效但处于有头态 → 跳过自动重扫",
+        "chain": "run_keepalive → BCC-025 → 有头态判定 → continue",
+        "root": "后台自动动作与用户交互争抢同一 profile/context",
+        "verify": "有头期间不应出现 scan_login / context 代次增长。",
     },
 }
 
