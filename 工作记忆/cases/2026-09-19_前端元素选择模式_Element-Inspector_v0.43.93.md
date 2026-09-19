@@ -148,3 +148,45 @@ smoke 脚本按 `/api/version` 的 pid 精确 `Stop-Process` 关闭 backend，ve
 | `frontend/src/App.tsx` | 改 8 行（import + TopBar 按钮 + App 根部面板） |
 | `scripts/verify_element_inspector.py` | 新增（20 项实机验证，可重复运行） |
 | `backend/test_element_inspector_guards.py` | 新增（13 项静态守卫） |
+
+
+## 十、追加需求：入口可长按拖动（用户原话「这个按钮设定为非固定位置可以长按拖动」）
+
+**为什么必须支持**：本工具要把页面元素点一遍，**固定位置会压住被调试元素**。
+
+**核心判据（易错点）**：**短按与拖动绝不能用同一事件**。
+浏览器在 `pointerup` 之后会**合成 `click`** —— 若沿用 `onClick` 切模式，
+则拖动结束也会触发一次切换，用户「拖一下按钮」就意外进出选择模式
+（页面点击随即被吞，看起来像界面卡死）。
+⇒ 开关逻辑必须从 `onClick` 移到 `pointerup`，按「是否已进入拖动 / 是否移动过」分流。
+
+**实现**：`DRAG_HOLD_MS = 160ms` 长按后才进拖动 → `setPointerCapture` 接管指针
+（移出按钮也不断）→ `pointermove` 更新坐标并夹在可视区内 → `pointerup` 落位 +
+写 `localStorage["dy.inspector.pos"]`；拖动结束**不**走短按分支。
+`touch-action:none` 防浏览器抢手势；拖动中禁过渡（保证跟手）。
+
+**防丢**：视口 resize 时夹回可视区；**双击复位**默认左下角并清除记忆。
+
+**localStorage 契约**：这是本工具**唯一**允许碰 localStorage 之处 ——
+只允许 `dy.inspector.pos` **一个键、只存坐标**（守卫测试显式豁免并限制为单键，
+防后续把豁免范围扩大）。
+
+**验证**：`scripts/verify_inspector_drag.py`（**11 项**，真实鼠标 `mouse.down/move/up`）
+—— dev 与**生产构建**均 11/11 PASS；原有功能回归 22/22 PASS；守卫 14/14 OK。
+
+| 用例 | 实测 |
+|---|---|
+| 初始位在左下角 | x=14 y=675 |
+| 长按拖动跟随 | (14,674) → (434,374) |
+| 松手不回弹 | x=434 y=373 |
+| 拖动不触发 onClick | 未进入选择模式 ✓ |
+| 写 localStorage | `{"x":434,"y":374}` |
+| 刷新后仍在原处 | x=434 y=374 ✓ |
+| 双击复位并清记忆 | x=14 y=675 / stored=None |
+| 长按不移动不误切 | 仍处于选择模式 ✓ |
+
+**第二次部署（快速通道）**：前端改动 → 走 `--frontend-only`（跳过 sidecar，~5 分钟）；
+sidecar 三份 md5 与上次**完全一致**（`6f947e844c7d`/`98ea7e52c38d`/`f98afaa739b9`）
+⇒ **证实未把并发工作线未提交的后端改动带上线**。
+部署 exe md5 `3588337594ff` == 构建产物；冒烟 `/api/version=0.43.93`、`daemons_ready=true`；
+清理 2 个 recv 孤儿（均 `{"ok":true}`）后进程数与端口归零。
