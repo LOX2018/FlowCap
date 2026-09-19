@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  X, RefreshCw, Plus, SearchIcon,
+  X, RefreshCw, SearchIcon,
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
@@ -38,8 +38,6 @@ export default function MessagesPage(props: PageProps) {
   // 2026-09-14：留资线索子页 —— 原「AI 获客」页按作用域打散归类而来
   // （线索表含 account 列，是按账号产出的资产，且产生于私信对话）。
   const [subPage, setSubPage] = useState<"conv" | "leads">("conv");
-  const [showNew, setShowNew] = useState(false);
-  const [newName, setNewName] = useState("");
   // 2026-09-06：会话搜索 —— 按昵称过滤定位会话（用户要求）
   const [convSearch, setConvSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
@@ -419,25 +417,6 @@ export default function MessagesPage(props: PageProps) {
     setSelEnd(null);
   };
 
-  const createConv = () => {
-    const nm = newName.trim();
-    if (!nm) {
-      push("请输入对方昵称");
-      return;
-    }
-    a.requestDm(nm)
-      .then((r) => {
-        setShowNew(false);
-        setNewName("");
-        push(
-          r && r.ok
-            ? (r.msg || "已加入发送队列") + " · " + nm
-            : "发送失败: " + ((r && r.error) || ""),
-        );
-      })
-      .catch((e) => push("失败:异常 " + errMsg(e)));
-  };
-
   return (
     <PageContainer>
       <PageHeader
@@ -582,171 +561,7 @@ export default function MessagesPage(props: PageProps) {
                   </>
                 )}
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="voice-transcribe"
-                disabled={transcribing || !activeAcct}
-                title={
-                  activeAcct
-                    ? `把 ${activeAcct} 未转写的语音消息转成文字（只处理语音，不查昵称）`
-                    : "请先选择账号"
-                }
-                onClick={() => {
-                  if (!activeAcct || transcribing) return;
-                  setTranscribing(true);
-                  push(`正在转写语音 · ${activeAcct}…`, 8000);
-                  a.transcribeVoice(activeAcct, "")
-                    .then((r) => {
-                      if (r && r.ok) {
-                        push(
-                          `语音转写完成 · 成功 ${r.succeeded ?? 0} 条` +
-                            (r.skipped ? ` · 跳过 ${r.skipped} 条（缺发送者信息）` : ""),
-                          10000,
-                        );
-                        // 2026-09-18 审查修复（#42/#43）：原先无 key 的
-                        // `qc.invalidateQueries()` 会失效**全应用所有 query**
-                        // （账号/会话列表/详情…），而此处只有消息详情变了
-                        // （本项目会话重拉实测 3~6 分钟）。改为只失效消息详情。
-                        qc.invalidateQueries({ queryKey: ["msg-detail"] }).catch(() => {});
-                        qc.invalidateQueries({ queryKey: ["msg-convs"] }).catch(() => {});
-                      } else {
-                        // 失败原因分级提示（不静默）：no-uuid / bcc-unavailable /
-                        // no-pending / no-text-returned 都直接告诉用户。
-                        push(`语音转写未完成 · ${r?.reason || r?.error || "未知原因"}`);
-                      }
-                    })
-                    .catch((e: unknown) => {
-                      push(
-                        "语音转写失败: " +
-                          (e instanceof Error ? e.message : String(e)),
-                      );
-                    })
-                    .finally(() => setTranscribing(false));
-                }}
-              >
-                {transcribing ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    转写中…
-                  </>
-                ) : (
-                  <>
-                    <Mic className="h-3.5 w-3.5" />
-                    语音转写
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="dm-export-img"
-                title="把当前会话渲染成聊天长图（PNG，本地渲染，不经浏览器）"
-                disabled={!conv.conv_id || exportingImg}
-                onClick={async () => {
-                  if (!conv.conv_id) return;
-                  setExportingImg(true);
-                  try {
-                    const r = await a.renderChatPng(activeAcct, conv.conv_id, {
-                      theme: "dark", scale: 2.0, asBase64: true,
-                    });
-                    if (r?.ok && r.data_uri) {
-                      const el = document.createElement("a");
-                      el.href = r.data_uri;
-                      el.download = `chat_${conv.conv_id.replace(/[^0-9A-Za-z]/g, "_").slice(0, 40)}.png`;
-                      el.click();
-                      push(`长图已导出（${Math.round((r.bytes || 0) / 1024)} KB）`);
-                    } else {
-                      push(`长图导出失败 · ${r?.error || "未知原因"}`);
-                    }
-                  } catch (e: unknown) {
-                    push("长图导出失败: " + (e instanceof Error ? e.message : String(e)));
-                  } finally {
-                    setExportingImg(false);
-                  }
-                }}
-              >
-                {exportingImg ? (
-                  <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
-                ) : (
-                  <><ImageDown className="h-3.5 w-3.5" />导出长图</>
-                )}
-              </Button>
-              {/* 2026-09-18（E1）：选区导出 —— 先点本按钮进入选区模式，
-                  再点击聊天里**首条**与**末条**消息定区间，浮条上导出 PNG/HTML。 */}
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="dm-export-sel"
-                title="只导出选中的消息区间：进入选区模式后，点首条与末条消息"
-                disabled={!conv.conv_id}
-                onClick={() => {
-                  // 再点一次退出选区模式（进入模式后按钮变成「选区中…」）
-                  setSelMode((v) => !v);
-                  setSelAnchor(null);
-                }}
-              >
-                {selMode ? (
-                  <><CheckSquare className="h-3.5 w-3.5" />选区中…</>
-                ) : (
-                  <><SquareDashedMousePointer className="h-3.5 w-3.5" />选区导出</>
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="dm-export-chatlab"
-                title="导出为 ChatLab 标准格式（JSONL，可导入 AI 分析工具/知识库）"
-                disabled={!conv.conv_id || exportingLab}
-                onClick={async () => {
-                  if (!conv.conv_id) return;
-                  setExportingLab(true);
-                  try {
-                    const r = await a.exportChatlab(activeAcct, conv.conv_id, "jsonl");
-                    if (r?.ok && r.url) {
-                      // 乙方案：导出落在后端默认目录，前端带令牌取回后触发保存
-                      // （媒体端点受会员门禁，<a download> 无法带 X-Member-Token）
-                      const { fetchAuthedBlob } = await import("@/api/client");
-                      const blob = await fetchAuthedBlob(r.url);
-                      const href = URL.createObjectURL(blob);
-                      const el = document.createElement("a");
-                      el.href = href; el.download = r.filename || "chatlab.jsonl";
-                      el.click();
-                      setTimeout(() => URL.revokeObjectURL(href), 8000);
-                      push(`ChatLab 已导出 · ${r.messages} 条消息`);
-                    } else {
-                      push(`ChatLab 导出失败 · ${r?.error || "未知原因"}`);
-                    }
-                  } catch (e: unknown) {
-                    push("ChatLab 导出失败: " + (e instanceof Error ? e.message : String(e)));
-                  } finally {
-                    setExportingLab(false);
-                  }
-                }}
-              >
-                {exportingLab ? (
-                  <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
-                ) : (
-                  <><FileDown className="h-3.5 w-3.5" />导出 ChatLab</>
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="dm-search"
-                title="在当前会话或全库中检索消息（文本 / 日期 / 媒体）"
-                onClick={() => {
-                  setShowDmSearch((s) => !s);
-                  if (showDmSearch) {
-                    setDmHits([]);
-                    setDmTotal(0);
-                    setDmShowCal(false);
-                  }
-                }}
-              >
-                <SearchIcon className="h-3.5 w-3.5" />
-                {showDmSearch ? "关闭检索" : "检索消息"}
-              </Button>
+
               <Button
                 variant="ghost"
                 size="sm"
@@ -766,119 +581,9 @@ export default function MessagesPage(props: PageProps) {
                   </>
                 )}
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="new-conv"
-                onClick={() => setShowNew((s) => !s)}
-              >
-                {showNew ? (
-                  "取消"
-                ) : (
-                  <>
-                    <Plus className="h-3.5 w-3.5" />
-                    新建会话
-                  </>
-                )}
-              </Button>
             </Toolbar>
           }
         >
-          {/* 2026-09-17：会话内检索面板（对照上游 SearchBar：文本 / 日期 / 媒体） */}
-          {showDmSearch && (
-            <div className="mt-2 rounded-[var(--radius-md)] border border-[var(--color-border)]
-                            bg-[var(--color-surface)] p-2.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  className="h-[32px] min-w-[180px] flex-1 text-[0.78rem]"
-                  placeholder="关键词（正文 / 引用 / 语音转写）…"
-                  value={dmQuery}
-                  onChange={(e) => setDmQuery(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") runDmSearch({ withinConv: true }); }}
-                />
-                <Button size="sm" disabled={dmBusy}
-                        onClick={() => runDmSearch({ withinConv: true })}>
-                  本会话
-                </Button>
-                <Button size="sm" variant="ghost" disabled={dmBusy}
-                        onClick={() => runDmSearch({ withinConv: false })}>
-                  全库
-                </Button>
-                <div className="flex items-center gap-1">
-                  {([["", "全部"], ["image", "图片"], ["video", "视频"], ["media", "媒体"]] as const)
-                    .map(([v, label]) => (
-                      <button
-                        key={v || "all"}
-                        onClick={() => setDmMedia(v)}
-                        className={cn(
-                          "rounded border px-2 py-0.5 text-[0.7rem]",
-                          dmMedia === v
-                            ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
-                            : "border-[var(--color-border)] bg-transparent text-[var(--color-text-muted)]",
-                        )}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                </div>
-                <Button size="sm" variant="ghost" disabled={dmBusy || !conv.conv_id}
-                        onClick={loadCalendar}>
-                  日历
-                </Button>
-                {dmBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              </div>
-
-              {/* 日历：逐日条数，点某天 → 跳到那天第一条 */}
-              {dmShowCal && dmDays.length > 0 && (
-                <div className="mt-2 max-h-[132px] overflow-y-auto border-t border-[var(--color-border)] pt-2">
-                  <div className="flex flex-wrap gap-1">
-                    {dmDays.map((d) => (
-                      <button
-                        key={d.date}
-                        title={`${d.date}：${d.count} 条`}
-                        onClick={() => setJumpTo({ msgId: d.first_msg_id, ts: d.first_ts,
-                                                   pendingConv: conv.conv_id })}
-                        className="rounded border border-[var(--color-border)] px-1.5 py-0.5
-                                   font-mono text-[0.68rem] hover:border-[var(--color-accent)]"
-                      >
-                        {d.date.slice(5)}
-                        <span className="ml-1 text-[var(--color-text-muted)]">{d.count}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* 检索命中：点一条 → 定位到该消息 */}
-              {dmHits.length > 0 && (
-                <div className="mt-2 max-h-[190px] overflow-y-auto border-t border-[var(--color-border)] pt-2">
-                  <div className="mb-1 text-[0.7rem] text-[var(--color-text-muted)]">
-                    命中 {dmTotal} 条（显示前 {dmHits.length} 条）
-                  </div>
-                  {dmHits.map((h, i) => (
-                    <button
-                      key={`${h.conv_id}-${h.msg_id ?? i}`}
-                      className="block w-full rounded px-1.5 py-1 text-left hover:bg-[var(--color-surface-raised)]"
-                      onClick={() => {
-                        // 命中可能在别的会话：先切会话再定位（切会话后由 convMsgs 长度变化触发 effect）
-                        // 2026-09-18 审查修复（HIGH）：带上期望会话，effect 等它到位再定位。
-                        const target = allConvs.find((c) => c.conv_id === h.conv_id)
-                          || shownConvs.find((c) => c.conv_id === h.conv_id);
-                        if (target && target.id !== active) setActive(target.id);
-                        setJumpTo({ msgId: h.msg_id, ts: h.ts, pendingConv: h.conv_id });
-                      }}
-                    >
-                      <div className="truncate text-[0.76rem]">{h.snippet || h.text}</div>
-                      <div className="text-[0.66rem] text-[var(--color-text-muted)]">
-                        {h.conv_name} · {h.role === "me" ? "我" : "对方"}
-                        {h.media_type ? ` · ${h.media_type}` : ""}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
           {/* 2026-09-17（E5）：会话类型筛选（全部 / 单聊 / 群聊）。
               纯前端过滤，零外呼；与昵称搜索叠加。群聊数取自后端 conv_type。 */}
           {allConvs.length > 0 && (
@@ -918,27 +623,6 @@ export default function MessagesPage(props: PageProps) {
             </div>
           )}
           <div className="mt-3 flex max-h-[calc(100vh-186px)] flex-col gap-0.5 overflow-y-auto">
-            {showNew && (
-              <div
-                className="flex items-center gap-2 pb-2"
-                data-od-id="new-conv-form"
-              >
-                <Input
-                  className="h-[34px] flex-1 text-[0.78rem]"
-                  autoFocus
-                  placeholder="输入对方昵称，回车创建…"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") createConv();
-                    if (e.key === "Escape") setShowNew(false);
-                  }}
-                />
-                <Button variant="secondary" size="sm" onClick={createConv}>
-                  创建
-                </Button>
-              </div>
-            )}
             {shownConvs.length === 0 && convSearch.trim() && allConvs.length > 0 && (
               <div className="px-2.5 py-3 text-[0.78rem] text-[var(--color-text-muted)]">
                 没有昵称包含「{convSearch.trim()}」的会话
@@ -1010,21 +694,279 @@ export default function MessagesPage(props: PageProps) {
             <div className="flex items-center gap-2.5 border-b border-[var(--color-border)] px-3.5 py-3">
               <Avatar name={conv.name} h={conv.hue} sm src={conv.avatar} />
               <span className="font-semibold text-[var(--color-text)]">{conv.name}</span>
-              <span className="font-mono text-[0.7rem] text-[var(--color-text-muted)]">
-                会话 ID {conv.id}
-              </span>
-              <div className="flex-1" />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  push("已导出该会话为 JSON");
-                }}
-              >
-                <Download className="h-3.5 w-3.5" />
-                导出会话
-              </Button>
+              <Toolbar className="flex-1 justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="voice-transcribe"
+                  disabled={transcribing || !activeAcct}
+                  title={
+                    activeAcct
+                      ? `把 ${activeAcct} 未转写的语音消息转成文字（只处理语音，不查昵称）`
+                      : "请先选择账号"
+                  }
+                  onClick={() => {
+                    if (!activeAcct || transcribing) return;
+                    setTranscribing(true);
+                    push(`正在转写语音 · ${activeAcct}…`, 8000);
+                    a.transcribeVoice(activeAcct, "")
+                      .then((r) => {
+                        if (r && r.ok) {
+                          push(
+                            `语音转写完成 · 成功 ${r.succeeded ?? 0} 条` +
+                              (r.skipped ? ` · 跳过 ${r.skipped} 条（缺发送者信息）` : ""),
+                            10000,
+                          );
+                          // 2026-09-18 审查修复（#42/#43）：原先无 key 的
+                          // `qc.invalidateQueries()` 会失效**全应用所有 query**
+                          // （账号/会话列表/详情…），而此处只有消息详情变了
+                          // （本项目会话重拉实测 3~6 分钟）。改为只失效消息详情。
+                          qc.invalidateQueries({ queryKey: ["msg-detail"] }).catch(() => {});
+                          qc.invalidateQueries({ queryKey: ["msg-convs"] }).catch(() => {});
+                        } else {
+                          // 失败原因分级提示（不静默）：no-uuid / bcc-unavailable /
+                          // no-pending / no-text-returned 都直接告诉用户。
+                          push(`语音转写未完成 · ${r?.reason || r?.error || "未知原因"}`);
+                        }
+                      })
+                      .catch((e: unknown) => {
+                        push(
+                          "语音转写失败: " +
+                            (e instanceof Error ? e.message : String(e)),
+                        );
+                      })
+                      .finally(() => setTranscribing(false));
+                  }}
+                >
+                  {transcribing ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      转写中…
+                    </>
+                  ) : (
+                    <>
+                      <Mic className="h-3.5 w-3.5" />
+                      语音转写
+                    </>
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="dm-export-img"
+                  title="把当前会话渲染成聊天长图（PNG，本地渲染，不经浏览器）"
+                  disabled={!conv.conv_id || exportingImg}
+                  onClick={async () => {
+                    if (!conv.conv_id) return;
+                    setExportingImg(true);
+                    try {
+                      const r = await a.renderChatPng(activeAcct, conv.conv_id, {
+                        theme: "dark", scale: 2.0, asBase64: true,
+                      });
+                      if (r?.ok && r.data_uri) {
+                        const el = document.createElement("a");
+                        el.href = r.data_uri;
+                        el.download = `chat_${conv.conv_id.replace(/[^0-9A-Za-z]/g, "_").slice(0, 40)}.png`;
+                        el.click();
+                        push(`长图已导出（${Math.round((r.bytes || 0) / 1024)} KB）`);
+                      } else {
+                        push(`长图导出失败 · ${r?.error || "未知原因"}`);
+                      }
+                    } catch (e: unknown) {
+                      push("长图导出失败: " + (e instanceof Error ? e.message : String(e)));
+                    } finally {
+                      setExportingImg(false);
+                    }
+                  }}
+                >
+                  {exportingImg ? (
+                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
+                  ) : (
+                    <><ImageDown className="h-3.5 w-3.5" />导出长图</>
+                  )}
+                </Button>
+                {/* 2026-09-18（E1）：选区导出 —— 先点本按钮进入选区模式，
+                    再点击聊天里**首条**与**末条**消息定区间，浮条上导出 PNG/HTML。 */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="dm-export-sel"
+                  title="只导出选中的消息区间：进入选区模式后，点首条与末条消息"
+                  disabled={!conv.conv_id}
+                  onClick={() => {
+                    // 再点一次退出选区模式（进入模式后按钮变成「选区中…」）
+                    setSelMode((v) => !v);
+                    setSelAnchor(null);
+                  }}
+                >
+                  {selMode ? (
+                    <><CheckSquare className="h-3.5 w-3.5" />选区中…</>
+                  ) : (
+                    <><SquareDashedMousePointer className="h-3.5 w-3.5" />选区导出</>
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="dm-export-chatlab"
+                  title="导出为 ChatLab 标准格式（JSONL，可导入 AI 分析工具/知识库）"
+                  disabled={!conv.conv_id || exportingLab}
+                  onClick={async () => {
+                    if (!conv.conv_id) return;
+                    setExportingLab(true);
+                    try {
+                      const r = await a.exportChatlab(activeAcct, conv.conv_id, "jsonl");
+                      if (r?.ok && r.url) {
+                        // 乙方案：导出落在后端默认目录，前端带令牌取回后触发保存
+                        // （媒体端点受会员门禁，<a download> 无法带 X-Member-Token）
+                        const { fetchAuthedBlob } = await import("@/api/client");
+                        const blob = await fetchAuthedBlob(r.url);
+                        const href = URL.createObjectURL(blob);
+                        const el = document.createElement("a");
+                        el.href = href; el.download = r.filename || "chatlab.jsonl";
+                        el.click();
+                        setTimeout(() => URL.revokeObjectURL(href), 8000);
+                        push(`ChatLab 已导出 · ${r.messages} 条消息`);
+                      } else {
+                        push(`ChatLab 导出失败 · ${r?.error || "未知原因"}`);
+                      }
+                    } catch (e: unknown) {
+                      push("ChatLab 导出失败: " + (e instanceof Error ? e.message : String(e)));
+                    } finally {
+                      setExportingLab(false);
+                    }
+                  }}
+                >
+                  {exportingLab ? (
+                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
+                  ) : (
+                    <><FileDown className="h-3.5 w-3.5" />导出 ChatLab</>
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="dm-search"
+                  title="在当前会话或全库中检索消息（文本 / 日期 / 媒体）"
+                  onClick={() => {
+                    setShowDmSearch((s) => !s);
+                    if (showDmSearch) {
+                      setDmHits([]);
+                      setDmTotal(0);
+                      setDmShowCal(false);
+                    }
+                  }}
+                >
+                  <SearchIcon className="h-3.5 w-3.5" />
+                  {showDmSearch ? "关闭检索" : "检索消息"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    push("已导出该会话为 JSON");
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  导出会话
+                </Button>
+              </Toolbar>
             </div>
+            {/* 2026-09-17：会话内检索面板（对照上游 SearchBar：文本 / 日期 / 媒体） */}
+            {showDmSearch && (
+              <div className="mt-2 shrink-0 rounded-[var(--radius-md)] border border-[var(--color-border)]
+                              bg-[var(--color-surface)] p-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    className="h-[32px] min-w-[180px] flex-1 text-[0.78rem]"
+                    placeholder="关键词（正文 / 引用 / 语音转写）…"
+                    value={dmQuery}
+                    onChange={(e) => setDmQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") runDmSearch({ withinConv: true }); }}
+                  />
+                  <Button size="sm" disabled={dmBusy}
+                          onClick={() => runDmSearch({ withinConv: true })}>
+                    本会话
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={dmBusy}
+                          onClick={() => runDmSearch({ withinConv: false })}>
+                    全库
+                  </Button>
+                  <div className="flex items-center gap-1">
+                    {([["", "全部"], ["image", "图片"], ["video", "视频"], ["media", "媒体"]] as const)
+                      .map(([v, label]) => (
+                        <button
+                          key={v || "all"}
+                          onClick={() => setDmMedia(v)}
+                          className={cn(
+                            "rounded border px-2 py-0.5 text-[0.7rem]",
+                            dmMedia === v
+                              ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                              : "border-[var(--color-border)] bg-transparent text-[var(--color-text-muted)]",
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                  </div>
+                  <Button size="sm" variant="ghost" disabled={dmBusy || !conv.conv_id}
+                          onClick={loadCalendar}>
+                    日历
+                  </Button>
+                  {dmBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                </div>
+
+                {/* 日历：逐日条数，点某天 → 跳到那天第一条 */}
+                {dmShowCal && dmDays.length > 0 && (
+                  <div className="mt-2 max-h-[132px] overflow-y-auto border-t border-[var(--color-border)] pt-2">
+                    <div className="flex flex-wrap gap-1">
+                      {dmDays.map((d) => (
+                        <button
+                          key={d.date}
+                          title={`${d.date}：${d.count} 条`}
+                          onClick={() => setJumpTo({ msgId: d.first_msg_id, ts: d.first_ts,
+                                                     pendingConv: conv.conv_id })}
+                          className="rounded border border-[var(--color-border)] px-1.5 py-0.5
+                                     font-mono text-[0.68rem] hover:border-[var(--color-accent)]"
+                        >
+                          {d.date.slice(5)}
+                          <span className="ml-1 text-[var(--color-text-muted)]">{d.count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 检索命中：点一条 → 定位到该消息 */}
+                {dmHits.length > 0 && (
+                  <div className="mt-2 max-h-[190px] overflow-y-auto border-t border-[var(--color-border)] pt-2">
+                    <div className="mb-1 text-[0.7rem] text-[var(--color-text-muted)]">
+                      命中 {dmTotal} 条（显示前 {dmHits.length} 条）
+                    </div>
+                    {dmHits.map((h, i) => (
+                      <button
+                        key={`${h.conv_id}-${h.msg_id ?? i}`}
+                        className="block w-full rounded px-1.5 py-1 text-left hover:bg-[var(--color-surface-raised)]"
+                        onClick={() => {
+                          // 命中可能在别的会话：先切会话再定位（切会话后由 convMsgs 长度变化触发 effect）
+                          // 2026-09-18 审查修复（HIGH）：带上期望会话，effect 等它到位再定位。
+                          const target = allConvs.find((c) => c.conv_id === h.conv_id)
+                            || shownConvs.find((c) => c.conv_id === h.conv_id);
+                          if (target && target.id !== active) setActive(target.id);
+                          setJumpTo({ msgId: h.msg_id, ts: h.ts, pendingConv: h.conv_id });
+                        }}
+                      >
+                        <div className="truncate text-[0.76rem]">{h.snippet || h.text}</div>
+                        <div className="text-[0.66rem] text-[var(--color-text-muted)]">
+                          {h.conv_name} · {h.role === "me" ? "我" : "对方"}
+                          {h.media_type ? ` · ${h.media_type}` : ""}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3.5"
                  data-dm-scroll="1">
               {(() => {
