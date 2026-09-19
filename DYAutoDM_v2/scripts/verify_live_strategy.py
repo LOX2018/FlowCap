@@ -163,6 +163,14 @@ check("A9c 新建草稿无身份字段",
       and not re.search(r"EMPTY_DRAFT[^}]*force_rescan", rcp, re.S))
 check("A9d 策略弹窗有**显式新建入口**（用户反馈「没有新增入口」）",
       'data-od-id="strategy-new"' in rcp and "新建策略" in rcp)
+_rcp_footer = rcp.split("flex justify-end gap-2")[-1]
+check("A9e 新建入口在页脚且位于「保存/更新策略」左侧（用户指定版式）",
+      'data-od-id="strategy-new"' in _rcp_footer
+      and _rcp_footer.index('data-od-id="strategy-new"') < _rcp_footer.index("save}"),
+      "版式不符")
+check("A9f 点击新建有可见变化（退出编辑态 + 清空表单 + toast 反馈）",
+      "setEditing(null)" in _rcp_footer and "setDraft({ ...EMPTY_DRAFT })" in _rcp_footer
+      and "已进入「新建策略」" in _rcp_footer)
 check("A10 策略为弹窗（data-od-id=live-strategy-modal），非整页子视图",
       'data-od-id="live-strategy-modal"' in rcp and "fixed inset-0 z-50" in rcp)
 

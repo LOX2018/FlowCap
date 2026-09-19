@@ -213,28 +213,14 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
         <div className="p-4">
           {/* 策略列表 */}
           <div style={{ marginBottom: 14 }}>
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[0.78rem] font-semibold text-[var(--color-text)]">
-                已保存策略（{items.length}）
-              </span>
-              <Button
-                variant="secondary"
-                size="sm"
-                data-od-id="strategy-new"
-                title="清空表单，开始新建一条策略"
-                onClick={() => {
-                  setEditing(null);
-                  setDraft({ ...EMPTY_DRAFT });
-                }}
-              >
-                ＋ 新建策略
-              </Button>
+            <div className="mb-2 text-[0.78rem] font-semibold text-[var(--color-text)]">
+              已保存策略（{items.length}）
             </div>
             {loading && (
               <div className="text-[0.74rem] text-[var(--color-text-muted)]">加载中…</div>
             )}
             {!loading && items.length === 0 && (
-              <Blank>暂无策略。点右上「新建策略」或直接在下方表单填写后保存。</Blank>
+              <Blank>暂无策略。点下方「＋ 新建策略」填写后保存。</Blank>
             )}
             {items.map((cfg) => {
               const sid = sidOf(cfg);
@@ -246,7 +232,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                 >
                   <div className="min-w-[200px] flex-1">
                     <div style={{ fontSize: 13, fontWeight: 600 }}>
-                      {cfg.name || sid}
+                      {editing === sid ? `● ${cfg.name || sid}` : (cfg.name || sid)}
                       {cfg.auto_link_mic && (
                         <span
                           className="mono"
@@ -420,12 +406,15 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
           </Button>
           <Button
             variant="secondary"
+            data-od-id="strategy-new"
+            title="清空表单并退出编辑态，开始新建一条策略"
             onClick={() => {
               setEditing(null);
               setDraft({ ...EMPTY_DRAFT });
+              push("已进入「新建策略」：填写策略名称后点「保存策略」");
             }}
           >
-            清空表单
+            ＋ 新建策略
           </Button>
           <Button onClick={save}>
             {editing ? "更新策略" : "保存策略"}

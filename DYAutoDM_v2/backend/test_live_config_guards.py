@@ -198,6 +198,15 @@ class TestConfigTagAndTargetRoomSeparation(unittest.TestCase):
         self.assertIn('data-od-id="strategy-new"', src,
                       "策略弹窗缺少显式「新建策略」入口（用户明确反馈过没有）")
         self.assertIn("新建策略", src, "新建入口的文案应为「新建策略」")
+        # 用户指定版式：放在页脚里、且在「保存/更新策略」按钮**左侧**
+        footer = src.split("flex justify-end gap-2")[-1]
+        self.assertIn('data-od-id="strategy-new"', footer,
+                      "「新建策略」必须位于弹窗页脚（用户指定位置）")
+        self.assertLess(footer.index('data-od-id="strategy-new"'), footer.index("save}"),
+                        "「新建策略」必须排在「保存/更新策略」按钮左侧")
+        # 点击必须有**可见变化**：进入新建态要清空表单并退出编辑
+        self.assertIn("setEditing(null)", footer, "点击新建必须退出编辑态")
+        self.assertIn("setDraft({ ...EMPTY_DRAFT })", footer, "点击新建必须清空表单")
 
     def test_force_rescan_fully_removed(self):
         """「强制重扫」策略已废弃，全仓业务代码不得再有该配置项的读写。"""
