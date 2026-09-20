@@ -377,6 +377,62 @@ class TestJ_CamoufoxSwitch(unittest.TestCase):
         self.assertIn("BCC-058", src)
 
 
+class TestK_CamoufoxCaptureContract(unittest.TestCase):
+    """K：Camoufox 凭证捕获的路径契约与判据一致性（防两处 profile 分叉）。
+
+    实测踩坑：`open_camoufox_window` 传 `<账号>/profile`，而 `capture_from_camoufox`
+    若传 `<账号>`（env 的 dirname），Camoufox 各自再拼 `_camoufox`，会生成
+    **两个 profile** —— 用户在 A 授权，脚本从 B 读 → 误报"未检测到登录态"。
+    """
+
+    def setUp(self):
+        import camoufox_capture as cc
+        self.cc = cc
+
+    def test_both_paths_use_same_profile_dir(self):
+        """两个入口的 profile 目录必须完全同源（本测试是防分叉的机械门禁）。"""
+        import inspect
+        src_open = inspect.getsource(self.cc.open_camoufox_window)
+        src_cap = inspect.getsource(self.cc.capture_from_camoufox)
+        for src, name in ((src_open, "open"), (src_cap, "capture")):
+            self.assertIn(
+                'os.path.join(os.path.dirname(env_path), "profile")', src,
+                f"{name} 未使用 <账号>/profile 路径契约 → 会与另一入口分叉")
+
+    def test_web_protect_valid_rejects_shell(self):
+        """空壳/占位 web_protect 必须拒绝（否则写回残缺凭证 → 私信 KICK）。"""
+        v = self.cc._web_protect_valid
+        for bad in (None, "", "   ", "not-json", '{"a":1}', "[]", '{"x":"y"}'):
+            self.assertFalse(v(bad), f"空壳未被拒绝: {bad!r}")
+        for good in ('{"ticket":"abc"}', '{"data":{"key":"k"}}',
+                     '{"app_id":"1","salt":"s"}'):
+            self.assertTrue(v(good), f"有效凭证被误拒: {good!r}")
+
+    def test_web_protect_judgement_matches_upstream(self):
+        """本地复刻判据必须与 login_api 嵌套实现行为一致（防上游漂移）。"""
+        import re
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "dy_apis", "login_api.py")
+        src = open(p, encoding="utf-8").read()
+        ns = {}
+        exec(re.search(r"def _web_protect_valid\(s\):.*?\n            return False\n",
+                       src, re.S).group(0), ns)
+        upstream = ns["_web_protect_valid"]
+        mine = self.cc._web_protect_valid
+        cases = [None, "", "  ", "junk", "{}", '{"a":1}', '{"ticket":"t"}',
+                 '{"sign":"s"}', '{"data":{"salt":"x"}}', '[]', '["sign"]']
+        for c in cases:
+            self.assertEqual(upstream(c), mine(c),
+                             f"判据不一致（输入={c!r}）→ 上游已漂移，须同步")
+
+    def test_capture_without_login_refuses_write(self):
+        """无登录态时必须拒绝写回，且给出可操作提示（绝不污染 .env）。"""
+        import inspect
+        src = inspect.getsource(self.cc.capture_from_camoufox)
+        self.assertIn("未检测到登录态", src)
+        self.assertIn("不写残缺凭证", src)
+
+
 class TestZ_Syntax(unittest.TestCase):
     def test_all_files_parse(self):
         for f in (BROWSER_DAEMON, JS, GATE, API_ACC, AUTO_ACC):

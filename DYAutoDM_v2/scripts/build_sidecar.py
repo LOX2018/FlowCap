@@ -201,6 +201,7 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             # 静态分析扫不到，必须显式声明；否则 DY_BROWSER_KERNEL=camoufox
             # 在打包产物里恒走 BCC-058 回退分支（换内核无效且无声）。
             "vbrowser_camoufox",
+            "camoufox_capture",
             "camoufox",
             "camoufox.sync_api",
             "camoufox.async_api",
