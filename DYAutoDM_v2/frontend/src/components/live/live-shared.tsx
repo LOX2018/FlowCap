@@ -141,7 +141,9 @@ export interface TaskConfig {
   live_url?: string;
   max_target?: number;
   keywords?: string[];
-  dm_pool?: string[];
+  // 2026-09-20：与后端 TaskConfig 契约对齐 —— 词库两种形态都合法
+  //（后端已放宽为 List[Union[str, dict]]；直播间配置里的主形态是 [{text,enabled}]）
+  dm_pool?: (string | { text: string; enabled?: boolean })[];
   delay_range?: [number, number];
   interval?: number;
 }

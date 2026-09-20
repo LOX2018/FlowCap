@@ -103,6 +103,11 @@ class AutoDM:
         # captured_count 是只读 property（从 dispatch.records 派生），无需初始化
         self.status_msg: str = "未启动"
         self.room_title: str = ""
+        # 2026-09-20：AI 生成回调（直播/采集来源的私信文案）。
+        # 由 _apply_config 构建；None 时发送完全走词库（与改造前逐字一致）。
+        self.gen_dm_message: Optional[Any] = None
+        # 当前任务的目标账号（供 AI 生成时解析 Agent 绑定/作用域）
+        self.target_acct: Optional[str] = None
 
         # 凭证
         self.auth: Any = None              # 发送账号 auth
@@ -293,6 +298,11 @@ class AutoDM:
         self._acct = getattr(config, "acct", None)
         self.dm_template = self._normalize_dm_pool(config.dm_pool)
         self.pick_dm_message = self._make_pick_dm_message()
+        # 2026-09-20：AI 生成回调（按「账号绑定 Agent + scopes 含 live」判定；
+        # 未绑定/未启用 → 返回空串 → 调度器回落词库，零回归）。
+        self.gen_dm_message = self._make_gen_dm_message()
+        if self.dispatch is not None:
+            self.dispatch.gen_dm_message = self.gen_dm_message
 
     def _make_pick_dm_message(self):
         """从已启用词库随机抽一条文案（修复旧版恒取 dm_pool[0] 导致文案重复被风控）。"""
@@ -313,6 +323,73 @@ class AutoDM:
             return random.choice(active)
 
         return _pick
+
+    def _make_gen_dm_message(self):
+        """构造「AI 生成私信文案」回调（直播监听 / 视频采集来源）。
+
+        设计契约（用户 2026-09-19 口径）：直播与采集两场景的私信统一走调度器，
+        文案来源由 `pick_dm_message`（词库）扩展为「AI 生成优先、词库回落」。
+        接线点只有一处（本方法）—— 不允许在 live/crawl 各自实现。
+
+        生效条件（全部满足才启用 AI）：
+          ① 账号绑定了私信 Agent（未绑定 → 保持全局配置行为）；
+          ② 该 Agent 的 `scopes` 含 `live`（作用域由 Agent 决定，不看账号维度）；
+          ③ `resolve_config` 后 `enabled=True` 且 `strict_level != "kb_only"`
+             （kb_only = 用户显式选择「AI 完全不参与」，必须尊重）。
+        任一条不满足 → 返回 None，发送链路回落词库，与改造前逐字一致。
+
+        线程安全：`_do_send` 在 asyncio 事件循环内调用本回调，回调内只用
+        `asyncio.to_thread` 包装（禁止在事件循环内做阻塞网络请求）。
+        """
+        try:
+            from services import ai_agent, ai_reply
+
+            base = ai_reply.get_config()
+            account = (self.target_acct or getattr(self, "_acct", None) or "")
+            if not account:
+                return None
+            aid = ai_agent.agent_of(account)
+            if not aid:
+                # 未绑定 Agent ⇒ 调用方（api/live_config / api/engine）已判定不接线
+                return None
+            cfg = ai_agent.resolve_config(account, base)
+            if not cfg.get("enabled"):
+                return None
+            if str(cfg.get("strict_level", "rag")) == "kb_only":
+                return None
+            if "live" not in (cfg.get("scopes") or []):
+                return None
+            logger.info(f"[live-ai] 私信文案已接入 AI 生成（账号={account} "
+                        f"agent={aid} 档位={cfg.get('strict_level')}）")
+        except Exception as e:
+            logger.warning(f"[SEND-039] " + f"[调度] AI 文案接线判定失败，回落词库: {e}")
+            return None
+
+        async def _gen(target: dict) -> str:
+            """按目标生成一条私信文案；任何失败都返回空串（调用方回落词库）。"""
+            try:
+                uid = str((target or {}).get("user_id")
+                          or (target or {}).get("uid") or "").strip()
+                nick = str((target or {}).get("nickname") or "").strip()
+                comment = str((target or {}).get("comment") or "").strip()
+                # 语境：把弹幕/评论作为「对方说的话」，让第一步有内容可回应
+                ctx = comment or nick or "（直播间新观众）"
+                text, source = await asyncio.to_thread(
+                    ai_reply.generate_dm_for_live,
+                    account=account, peer_name=nick or uid,
+                    comment=ctx, cfg=cfg,
+                )
+                text = str(text or "").strip()
+                if not text:
+                    return ""
+                logger.info(f"[live-ai] 已生成文案（来源={source} 账号={account} "
+                            f"目标={nick or uid}）: {text[:30]!r}")
+                return text
+            except Exception as e:
+                logger.warning(f"[SEND-040] " + f"[调度] AI 文案生成失败，回落词库: {e}")
+                return ""
+
+        return _gen
 
     def _snapshot_config(self) -> dict:
         """当前任务的配置快照（任务中心「进入/复用」回读数据源）。"""
@@ -439,6 +516,9 @@ class AutoDM:
                 setattr(self.monitor_auth, "account_name", _m_name)
             except Exception:
                 pass
+            # 2026-09-20：目标账号 = 私信发给谁用的账号（AI 生成时解析 Agent 绑定）
+            self.target_acct = (getattr(config, "acct", None)
+                                or getattr(self, "_acct", None) or None)
             if not getattr(self.monitor_auth, "cookie", None):
                 logger.error(f"[AUTH-018] " + "[auth] 监测账号未获取到登录 cookie，无法监听。")
                 self.status_msg = "监测登录失败"
@@ -484,6 +564,7 @@ class AutoDM:
                 interval=config.interval,
                 enable_send=True,
                 pick_dm_message=self.pick_dm_message,
+                gen_dm_message=self.gen_dm_message,
             )
             self.dispatch.on_idle = self._on_dispatch_idle
             await self.dispatch.start()
@@ -878,6 +959,7 @@ class AutoDM:
                 interval=want_interval,
                 delay_range=(int(want_delay[0]), int(want_delay[1])),
                 pick_dm_message=self.pick_dm_message,
+                gen_dm_message=self.gen_dm_message,
             )
         else:
             # 引擎 RUNNING 却无 dispatch：属异常态，显式失败而不是假装热更成功

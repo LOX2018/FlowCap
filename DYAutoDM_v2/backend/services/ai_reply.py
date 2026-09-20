@@ -1422,6 +1422,77 @@ WORKER = AutoReplyWorker()
 # 线索查询 / 导出（API 层用）
 # ---------------------------------------------------------------------------
 
+def generate_dm_for_live(account: str, peer_name: str, comment: str,
+                         cfg: dict) -> tuple[str, str]:
+    """为「直播监听 / 视频采集」来源生成一条开场私信文案（同步，供 to_thread 调用）。
+
+    设计契约（用户 2026-09-19 口径 + 9.29 §AI 接入点收敛）：
+      直播与采集两场景的私信统一走 core/dispatch 调度，文案由
+      `pick_dm_message`（词库）扩展为「AI 生成优先 -> 词库回落」。
+      本函数是**唯一**的生成入口 —— 不允许在 live/crawl 各自实现一份。
+
+    与 AutoReplyWorker._generate_reply 的差异（刻意不同，勿强行合并）：
+      - 无 conv_id / 无历史消息（目标是陌生人首触，不是会话内回复）；
+      - 语境 = 对方在公屏的评论/弹幕内容（`comment`）；
+      - 严格档（kb_only）由调用方拦掉，不进来。
+
+    返回 `(text, source)`：
+      - `"AI"`   -> 生成成功且过了护栏；
+      - `"兜底"` -> 生成/护栏失败 -> 返回兜底话术；
+      - `""`     -> 未启用 / 配置异常 -> **返回空串让调度器回落词库**
+                   （这是与会话回复不同的处置：直播侧词库本就存在）。
+    """
+    try:
+        if not cfg or not cfg.get("enabled"):
+            return "", ""
+        if str(cfg.get("strict_level", "rag")) == "kb_only":
+            return "", ""
+        text_in = (comment or "").strip() or "（直播间新观众，暂无发言）"
+
+        # ① 对话回复库（命中库）：命中即回，零 token（与私信侧同一条链路）
+        try:
+            from services import reply_kb
+
+            hit = reply_kb.find_match(text_in, account=account)
+            if hit:
+                return str(hit).strip(), "回复库"
+        except Exception:
+            pass
+
+        # ② 专业库（RAG 参考）+ 系统提示词（与私信侧同一构建器）
+        kb_items = KB.list_items()
+        try:
+            from services import ai_agent
+
+            kb_items = ai_agent.resolve_knowledge(account, kb_items)
+        except Exception:
+            pass
+        prompt = build_system_prompt(cfg, kb_items, text_in)
+        # 直播首触没有对话历史：明确告知模型，避免它编造上下文
+        prompt = (prompt + "\n\n【场景】这是你主动向直播间观众发起的第一条私信。"
+                  "请紧扣对方在公屏说的话开场，不要假装此前有过对话。"
+                  f"对方昵称：{peer_name or '观众'}。")
+
+        raw = AIClient(cfg).chat_failover(
+            text_in, consumer_id="ai_main",
+            user_id=f"live:{account}:{peer_name or ''}",
+            system_prompt=prompt)
+        if not raw:
+            logger.info(f"[ai] 直播文案 AI 返回空，回落兜底（账号={account}）")
+            return str(fallback_reply(cfg) or "").strip(), "兜底"
+        if _looks_like_reasoning(raw) and len(raw) > 40:
+            logger.warning(f"[AI-019] " + f"[ai] 直播文案疑似思考过程残留，丢弃改兜底: {raw[:40]}")
+            return str(fallback_reply(cfg) or "").strip(), "兜底"
+        cleaned = validate_reply(raw, cfg)
+        if not cleaned:
+            logger.info(f"[ai] 直播文案被护栏拦截，改发兜底: {(raw or '')[:40]}")
+            return str(fallback_reply(cfg) or "").strip(), "兜底"
+        return str(cleaned).strip(), "AI"
+    except Exception as e:
+        logger.warning(f"[AI-032] " + f"[ai] 直播文案生成失败: {e}")
+        return "", ""
+
+
 def list_leads(limit: int = 200) -> list:
     rows = database.get_db().execute(
         "SELECT * FROM ai_leads ORDER BY created_at DESC LIMIT ?",

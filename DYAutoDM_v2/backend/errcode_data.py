@@ -292,6 +292,9 @@ ERRCODES = {
 "BCC-068": {"meaning": "[bcc] 浏览器环境与项目档案不一致（时区/语言/核心数/screen/UA）", "file": "services/env_audit.py", "line": 0},
 "BCC-069": {"meaning": "[bcc] 环境一致性弱点（screen 三值全等/worker 分叉/canvas 或 audio 不稳定/Client Hints 缺失）", "file": "services/env_audit.py", "line": 0},
     "SEND-037": {"meaning": "[调度] dm_dispatch 接入失败，已放弃发送（不再回退直发绕过风控闸门）", "file": "core/dispatch.py", "line": 0},
+    "SEND-038": {"meaning": "[调度] gen_dm_message（AI 文案）异常，回落词库", "file": "core/dispatch.py", "line": 0},
+    "SEND-039": {"meaning": "[调度] AI 文案接线判定失败，回落词库", "file": "core/auto_dm.py", "line": 0},
+    "SEND-040": {"meaning": "[调度] AI 文案生成失败，回落词库", "file": "core/auto_dm.py", "line": 0},
         "ACC-017": {
         "design": "重捕整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
                   "按账号维度的所有权锁内完成。",
@@ -848,6 +851,30 @@ CODE_DESIGN = {
         "chain": "dispatch._do_send → dm_dispatch.submit → 失败分支",
         "root": "调度器内部异常（非账号风控）",
         "verify": "日志前后是否有 SEND-006/007；DB 无 role=me 新增即为放弃成功。",
+    },
+    "SEND-038": {
+        "design": "私信文案来源 = AI 生成优先、词库回落；生成回调抛异常不得影响发送。",
+        "contract": "回调异常只降级文案来源，绝不中断本次发送、绝不污染风控闸门。",
+        "deviation": "gen_dm_message 抛异常 → 已静默降级为词库文案",
+        "chain": "dispatch._do_send → gen_dm_message(target) → 异常分支",
+        "root": "AI 侧异常（配置/网络/Agent 解析），非发送侧问题",
+        "verify": "日志出现 SEND-038 且同条记录 content 非空（取自词库）即为预期降级。",
+    },
+    "SEND-039": {
+        "design": "直播/采集的私信文案是否接 AI，由「账号绑定 Agent + scopes 含 live + enabled 且非 kb_only」判定。",
+        "contract": "判定失败必须回退词库（调用方零感知）；kb_only 档位绝不允许 AI 参与。",
+        "deviation": "接线判定抛异常 → 已回落词库",
+        "chain": "AutoDM._make_gen_dm_message → agent_of/resolve_config → 异常分支",
+        "root": "Agent 模块不可导入或 kv 读取异常",
+        "verify": "日志 SEND-039 + 发送仍成功（content 来自词库）= 预期降级。",
+    },
+    "SEND-040": {
+        "design": "AI 生成的直播私信文案必须过现有护栏（validate_reply/违禁词/长度）后才可发送。",
+        "contract": "生成失败或被护栏拦下 → 返回空串 → 调度器回落词库，绝不发空文案、绝不发泄漏文本。",
+        "deviation": "生成/护栏环节抛异常 → 已回落词库",
+        "chain": "AutoDM._gen → ai_reply.generate_dm_for_live → 异常分支",
+        "root": "模型链路不可用 / 网关不可达 / 输出被护栏拒绝",
+        "verify": "日志 SEND-040；对照 live-ai 成功行判断是「未接线」还是「生成失败」。",
     },
     "ACC-022": {
         "design": "重捕整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"

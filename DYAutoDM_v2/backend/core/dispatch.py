@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import random
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,9 @@ class DispatchCenter:
         interval: float = 60.0,
         enable_send: bool = True,
         pick_dm_message: Optional[Any] = None,
+        # 2026-09-20：直播/采集来源的 AI 生成回调。由上层（AutoDM）传入；
+        # 与 pick_dm_message 同为 None 时由调用方自带 content。
+        gen_dm_message: Optional[Any] = None,
     ) -> None:
         self.auth = auth
         self.max_target = int(max_target)
@@ -65,6 +69,8 @@ class DispatchCenter:
         self.enable_send = enable_send
         # pick_dm_message: 可调用对象，返回一条私信文案；为 None 时由调用方传入 content
         self.pick_dm_message = pick_dm_message
+        # gen_dm_message: 按目标生成 AI 文案；None 或返回空 → 回落词库/调用方 content
+        self.gen_dm_message = gen_dm_message
 
         # 去重集合
         self.sent_ids: set[str] = set()
@@ -133,6 +139,7 @@ class DispatchCenter:
         interval: float | None = None,
         delay_range: tuple[int, int] | None = None,
         pick_dm_message: Any | None = None,
+        gen_dm_message: Any | None = None,
     ) -> list[str]:
         """运行期热更调度参数（**不打断消费循环、不清队列、不重置去重/计数**）。
 
@@ -156,6 +163,9 @@ class DispatchCenter:
         if pick_dm_message is not None:
             self.pick_dm_message = pick_dm_message
             applied.append("dm_pool")
+        if gen_dm_message is not None:
+            self.gen_dm_message = gen_dm_message
+            applied.append("ai_gen")
         if applied:
             logger.info(f"[调度] 运行时参数热更：{applied}")
         return applied
@@ -330,7 +340,20 @@ class DispatchCenter:
             return
 
         content = ""
-        if self.pick_dm_message is not None:
+        # 2026-09-20：来源回调优先 —— 有 gen_dm_message 时先按目标生成 AI 文案；
+        # 生成失败/被护栏拦/未接线 → 回落 pick_dm_message（词库），行为与改造前一致。
+        if self.gen_dm_message is not None:
+            try:
+                # gen_dm_message 可为同步或 async（AutoDM 传入的是 async 协程函数：
+                # AI 生成含阻塞网络请求，必须 await 出去，绝不阻塞事件循环）
+                _r = self.gen_dm_message(target)
+                if inspect.isawaitable(_r):
+                    _r = await _r
+                content = str(_r or "")
+            except Exception as e:
+                logger.warning(f"[SEND-038] " + f"[调度] gen_dm_message 异常: {e}")
+                content = ""
+        if not content and self.pick_dm_message is not None:
             try:
                 content = self.pick_dm_message()
             except Exception as e:

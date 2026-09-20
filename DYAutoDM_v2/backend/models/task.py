@@ -1,4 +1,6 @@
 """任务/发送记录相关协议"""
+from typing import Any, List, Union
+
 from pydantic import BaseModel
 from .enums import RecordStatus
 
@@ -32,7 +34,14 @@ class TaskConfig(BaseModel):
     live_url: str | None = None
     max_target: int = 3
     keywords: list[str] = []
-    dm_pool: list[str] = []
+    # 2026-09-20：契约放宽 —— 词库两种形态都要吃得下：
+    #   `list[str]`（旧）与 `[{text,enabled}]`（live_room_configs / RoomConfigPage 的
+    #   **主形态**）。此前声明为 list[str]，而直播页把所选策略整条 cfg 原样传入
+    #   （live-page.tsx 的 `dm_pool: selCfg.dm_pool`）→ Pydantic 在 resolved() 之前
+    #   就抛 422（实机：「Input should be a valid string」×N）→ /api/engine/start 永不生效。
+    #   消费侧（core/auto_dm._normalize_dm_pool / api/live_config._RuntimeCfg）本就按
+    #   对象归一，故放宽声明即与真实契约对齐，不改任何业务语义。
+    dm_pool: List[Union[str, dict]] = []
     delay_range: list[int] | None = None
     interval: float = 60.0
     enable_danmaku: bool = True
@@ -87,7 +96,17 @@ class TaskConfig(BaseModel):
             live_url=live_url,
             max_target=int(max_target or 3),
             keywords=self.keywords,
-            dm_pool=[t if isinstance(t, str) else t.get("text", "") for t in dm_pool],
+            # 2026-09-20：对象形态保留 `enabled` 位（旧写法只取 text，会把「停用」
+            # 的文案重新变成启用 —— 与 api/tasks.save_config 的既有修补同一条原则：
+            # 不做「写回时抹掉启用标记」的静默降级。消费侧 _normalize_dm_pool 对
+            # dict 直接读 enabled，对 str 回落 dm_template 的既有启用位。
+            dm_pool=[
+                ({"text": str(t.get("text", "") or ""),
+                  "enabled": bool(t.get("enabled", True))}
+                 if isinstance(t, dict) else str(t))
+                for t in dm_pool
+                if isinstance(t, dict) or str(t or "").strip()
+            ],
             delay_range=delay_range,
             interval=self.interval,
             enable_danmaku=bool(enable_danmaku),
