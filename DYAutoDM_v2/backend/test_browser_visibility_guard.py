@@ -42,11 +42,18 @@ class TestA_VisibilityRebuild(unittest.TestCase):
 
     def test_01_window_mode_requires_headed(self):
         """window 快路径的前提必须包含「当前非无头」。"""
-        m = re.search(r"_can_window_mode\s*=\s*\((.*?)\)\s*\n", self.src, re.S)
+        # 2026-09-20：正则原为 `\((.*?)\)\s*\n`，会被表达式内的
+        # `("exe", "camoufox")` 里的 `)` 提前截断（非贪婪 + 换行边界）
+        # → 断言失效。改为锚定「赋值起始」到「行首右括号结束」的整段。
+        m = re.search(
+            r"_can_window_mode\s*=\s*\((.*?)^\s*\)",
+            self.src, re.S | re.M)
         self.assertIsNotNone(m, "未找到 _can_window_mode 定义")
         expr = m.group(1)
         self.assertIn("not self._headless", expr,
                       "window 模式必须以「当前有头」为前提（纯无头下 setWindowBounds 无效）")
+        self.assertIn('"camoufox"', expr,
+                      "window 模式的后端判断必须含 camoufox（否则切可见永远走重建）")
 
     def test_02_switch_passes_target_headless(self):
         """切可见时后台重建必须显式传目标可见性。"""
@@ -471,6 +478,153 @@ class TestL_CamoufoxNoFallback(unittest.TestCase):
             self.assertIn("禁止回退 Chromium", src,
                           f"{name} 缺少禁止回退分支 → Camoufox 失败会静默降级")
             self.assertIn("BCC-058", src, f"{name} 未上报 BCC-058")
+
+
+class TestM_CamoufoxAsyncApi(unittest.TestCase):
+    """M：Camoufox 在 asyncio 环境下**必须使用 async API**（v0.44.8 实测事故）。
+
+    事故：`launch_camoufox_async` 初版用 `run_in_executor` 包同步 API ——
+    Playwright 的「Sync API inside asyncio loop」检测是**进程级**的，换线程无效。
+    后果：BCC（FastAPI/asyncio）拿不到 context 句柄，但 Camoufox 进程**已经起来**
+    → 变成**无人回收的孤儿进程**，占着 `_camoufox` 的 parent.lock，
+    用户双击打开浏览器被提示「占用」。
+    """
+
+    def test_async_launcher_uses_async_camoufox(self):
+        """必须 import AsyncCamoufox 且用 __aenter__（不得包 sync API）。
+
+        只检查**可执行代码行**（剔除 docstring/注释）——docstring 里会提到
+        "run_in_executor" 作为反例说明，不能据此误判。
+        """
+        import inspect
+        import tokenize
+        import io
+        import vbrowser_camoufox as vc
+        src = inspect.getsource(vc.launch_camoufox_async)
+        # 去注释
+        code_lines = []
+        for ln in src.splitlines():
+            s = ln.strip()
+            if s.startswith("#"):
+                continue
+            code_lines.append(ln)
+        code = "\n".join(code_lines)
+        # 去 docstring（粗粒度：去掉三引号块内容）
+        import re as _re
+        code = _re.sub(r'"""[\s\S]*?"""', '""', code)
+        code = _re.sub(r"'''[\s\S]*?'''", "''", code)
+
+        self.assertIn("AsyncCamoufox", code,
+                      "async 启动未使用 AsyncCamoufox → asyncio 环境会失败并残留孤儿进程")
+        self.assertIn("__aenter__", code, "未使用异步上下文进入（__aenter__）")
+        self.assertNotIn("run_in_executor", code,
+                         "仍用线程池包同步 API —— 实测必然失败")
+        self.assertNotIn("launch_camoufox_sync", code,
+                         "async 路径不得调用同步启动函数")
+
+    def test_sync_launcher_unchanged_contract(self):
+        """同步版仍须存在且用同步 API（CLI/脚本路径依赖它）。"""
+        import inspect
+        import vbrowser_camoufox as vc
+        src = inspect.getsource(vc.launch_camoufox_sync)
+        self.assertIn("from camoufox.sync_api import Camoufox", src)
+        self.assertIn("__enter__", src)
+
+    def test_orphan_guard_profile_path_contract(self):
+        """两个启动器必须共用同一 profile 路径契约（防再次出现双 profile）。"""
+        import inspect
+        import vbrowser_camoufox as vc
+        for fn, name in ((vc.launch_camoufox_sync, "sync"),
+                         (vc.launch_camoufox_async, "async")):
+            src = inspect.getsource(fn)
+            self.assertIn('os.path.join(user_data_dir, "_camoufox")', src,
+                          f"{name} 未使用 <profile>/_camoufox 契约 → 会与另一路径分叉")
+
+
+class TestN_CamoufoxBackendParity(unittest.TestCase):
+    """N：Camoufox 必须与 Chromium 在 BCC 生命周期操作上**同等对待**（v0.44.9）。
+
+    事故（2026-09-20 用户报「双击提示占用 / 弹窗没窗口」）：
+    BCC 的可见性切换、context 清理等处硬编码 `self._backend == "exe"`，
+    而 Camoufox 的 backend 是 `"camoufox"` → 全部不匹配 →
+    **旧 Camoufox 进程不被关闭**，继续占住 `_camoufox` profile →
+    新的有头实例启动报 `Failed to launch the browser process`。
+
+    同时：AsyncCamoufox 只调 `context.close()` **不会**结束浏览器进程，
+    必须走 `__aexit__`（见 vbrowser_camoufox.close_camoufox_context）。
+    """
+
+    def setUp(self):
+        self.p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "daemon", "browser_daemon.py")
+        self.src = open(self.p, encoding="utf-8").read()
+
+    def test_no_bare_exe_backend_check(self):
+        """不得再有只认 "exe" 的裸判断（会漏掉 camoufox）。"""
+        bad = 'self._backend == "exe"' in self.src or 'c._backend == "exe"' in self.src
+        self.assertFalse(
+            bad,
+            "存在 `_backend == \"exe\"` 裸判断 → camoufox 会被漏掉（context 不关闭）")
+
+    def test_backend_checks_include_camoufox(self):
+        """所有后端判断必须同时覆盖 exe 与 camoufox。"""
+        self.assertIn('self._backend in ("exe", "camoufox")', self.src)
+        self.assertIn('c._backend in ("exe", "camoufox")', self.src)
+
+    def test_context_close_dispatches_to_camoufox_helper(self):
+        """关闭 Camoufox context 必须走 close_camoufox_context（__aexit__）。"""
+        self.assertGreaterEqual(
+            self.src.count("close_camoufox_context"), 5,
+            "Camoufox 关闭点未全部走统一 helper")
+
+    def test_helper_uses_aexit(self):
+        """helper 本体必须调用 __aexit__（否则进程不退，profile 被占）。"""
+        import inspect
+        import vbrowser_camoufox as vc
+        src = inspect.getsource(vc.close_camoufox_context)
+        self.assertIn("__aexit__", src)
+        src_sync = inspect.getsource(vc.close_camoufox_context_sync)
+        self.assertIn("__exit__", src_sync)
+
+
+class TestO_WindowVisibleCrossKernel(unittest.TestCase):
+    """O：可见窗口检测必须跨内核（Camoufox/Firefox 的窗口类名 ≠ Chromium）。
+
+    事故（2026-09-20 用户报「双击没窗口」）：`_window_really_visible` 只认
+    `Chrome_WidgetWin`，且 PID 只从 `self._browser` 取；而 Camoufox 走
+    AsyncCamoufox 返回 **BrowserContext**（`_browser` 为 None）→ pids 为空
+    直接 return False → 把**已出来的 Firefox 窗口**判为不可见 →
+    BCC-053 误判切换失败、回退无头。实测系统里确有可见的 MozillaWindowClass 窗口。
+    """
+
+    def setUp(self):
+        self.p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "daemon", "browser_daemon.py")
+        self.src = open(self.p, encoding="utf-8").read()
+
+    def test_accepts_mozilla_window_class(self):
+        self.assertIn("MozillaWindowClass", self.src,
+                      "未支持 Firefox 窗口类名 → Camoufox 有头窗口会被判不可见")
+
+    def test_keeps_chromium_window_class(self):
+        self.assertIn("Chrome_WidgetWin", self.src, "不得丢弃 Chromium 支持")
+
+    def test_pid_fallback_when_browser_is_none(self):
+        """_browser 为 None（Camoufox/AsyncCamoufox）时必须有 PID 兜底。"""
+        i = self.src.find("async def _window_really_visible")
+        self.assertGreater(i, 0)
+        seg = self.src[i:i + 4000]
+        self.assertIn("_profile_dir", seg,
+                      "缺少按 profile 路径匹配进程的兜底 → Camoufox 下 pids 恒空")
+        self.assertIn("camoufox.exe", seg, "兜底未按 camoufox 进程名匹配")
+
+    def test_no_wmic_dependency(self):
+        """不得依赖 wmic（本机已移除，实测 FileNotFoundError）。"""
+        i = self.src.find("async def _window_really_visible")
+        seg = self.src[i:i + 4000]
+        self.assertNotIn('"wmic"', seg,
+                         "wmic 在本机不可用；用 PowerShell Get-CimInstance")
+        self.assertIn("powershell", seg.lower())
 
 
 class TestZ_Syntax(unittest.TestCase):

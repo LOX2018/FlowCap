@@ -726,8 +726,12 @@ class BrowserContainer:
                 return
             logger.warning(f"[BCC-006] " + f"[bcc] context/page 失活，重启: {e}")
             try:
-                if self._backend == "exe" and self._context is not None:
-                    await self._context.close()
+                if self._backend in ("exe", "camoufox") and self._context is not None:
+                    if self._backend == "camoufox":
+                        from vbrowser_camoufox import close_camoufox_context
+                        await close_camoufox_context(self._context)
+                    else:
+                        await self._context.close()
                 if self._pw is not None:
                     await self._pw.stop()
             except Exception:
@@ -832,10 +836,10 @@ class BrowserContainer:
             # 纯无头必须走真实重建（Playwright 无法运行中切 headless）。
             # ═══════════════════════════════════════════════════════════════
             _can_window_mode = (
-                _switch_mode == "window" and self._backend == "exe"
+                _switch_mode == "window" and self._backend in ("exe", "camoufox")
                 and self._context is not None and not self._headless
             )
-            if _switch_mode == "window" and self._backend == "exe" \
+            if _switch_mode == "window" and self._backend in ("exe", "camoufox") \
                     and self._context is not None and not _can_window_mode:
                 logger.info(
                     f"[bcc] {self.account} 容器当前为纯无头，"
@@ -868,8 +872,12 @@ class BrowserContainer:
                                                f"（回退重建）: {e}")
             # 关旧 context（释放 profile 内窗口，但保持 profile 目录不动）
             try:
-                if self._backend == "exe" and self._context is not None:
-                    await self._context.close()
+                if self._backend in ("exe", "camoufox") and self._context is not None:
+                    if self._backend == "camoufox":
+                        from vbrowser_camoufox import close_camoufox_context
+                        await close_camoufox_context(self._context)
+                    else:
+                        await self._context.close()
                 if self._pw is not None:
                     await self._pw.stop()
             except Exception:
@@ -1785,7 +1793,7 @@ class BrowserContainer:
         except Exception:
             return False
         pids = set()
-        # 本容器的 chromium PID：优先从 Playwright browser 对象拿，失败则回落
+        # 本容器的浏览器 PID：优先从 Playwright browser 对象拿，失败则回落
         # 到进程命令行匹配（兜底，不影响判定正确性）。
         try:
             _b = getattr(self, "_browser", None)
@@ -1795,6 +1803,61 @@ class BrowserContainer:
                     pids.add(int(_proc.pid))
         except Exception:
             pass
+        # 2026-09-20【Camoufox 修复】兜底：按 **profile 路径**匹配进程命令行。
+        #
+        # 为什么必须兜底：Camoufox 走 AsyncCamoufox，返回的是 **BrowserContext**
+        # 而非 Browser → `self._browser` 恒为 None → pids 为空 → 旧代码直接
+        # `return False`，把**已经出来的有头窗口**误判为「OS 层不可见」，
+        # 于是 BCC-053 把状态强行回退为无头（用户看到「窗口一闪或没有窗口」）。
+        # 实测证据：pids 为空返回 False 的同时，系统里确有 2 个**不带 -headless**
+        # 的 camoufox.exe 在跑。
+        #
+        # profile 路径在命令行里唯一（含账号名），用它匹配最可靠；
+        # 同时排除 --type=（子进程）避免抓到 renderer/utility 进程。
+        #
+        # ⚠️ 用 PowerShell 而非 wmic：**本机 wmic 已被移除**（实测
+        # FileNotFoundError [WinError 2]），若用 wmic 则兜底恒失败 →
+        # 又回到「窗口明明出来却判不可见」。输出按 UTF-8 容错解码。
+        #
+        # ⚠️ 匹配**不要用含中文的完整 profile 路径**：PowerShell 输出的中文与
+        # Python 字符串不是同一编码（实测「尚进工伤小助理」两侧字面量不同 →
+        # 命中数恒 0，修复形同虚设）。改用**非中文稳定片段**：
+        #   `<member_id>`（如 m17db0f8209156f26）与 `_camoufox` —— 二者共同
+        #   唯一标识本账号的 Camoufox 进程，且全为 ASCII。
+        if not pids and getattr(self, "_profile_dir", None):
+            try:
+                import json as _json
+                import subprocess as _sp
+                _ps = (
+                    'Get-CimInstance Win32_Process | Where-Object '
+                    '{ $_.Name -eq "camoufox.exe" -and '
+                    '$_.CommandLine -notlike "*--type=*" } | '
+                    'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
+                )
+                _r = _sp.run(
+                    ["powershell", "-NoProfile", "-Command", _ps],
+                    capture_output=True, timeout=25,
+                )
+                _out = (_r.stdout or b"").decode("utf-8", errors="replace")
+                _d = _json.loads(_out) if _out.strip() else []
+                if isinstance(_d, dict):
+                    _d = [_d]
+                # ASCII 稳定片段：member_id 段 + _camoufox
+                _prof = str(self._profile_dir).replace("\\", "/")
+                _mem = ""
+                _m = __import__("re").search(r"/members/([^/]+)/", _prof)
+                if _m:
+                    _mem = _m.group(1)
+                _stable = [s for s in (_mem, "_camoufox") if s]
+                for _it in _d:
+                    _c = str(_it.get("CommandLine") or "")
+                    _pid_v = _it.get("ProcessId")
+                    if not _pid_v:
+                        continue
+                    if _stable and all(s.lower() in _c.lower() for s in _stable):
+                        pids.add(int(_pid_v))
+            except Exception:
+                pass
         if not pids:
             return False
         # 连同子进程（renderer 与主进程同 PID 树）一起判定：直接查主进程即可，
@@ -1813,7 +1876,18 @@ class BrowserContainer:
             if pid.value in pids:
                 cbuf = ctypes.create_unicode_buffer(256)
                 GetClassNameW(hwnd, cbuf, 256)
-                if "Chrome_WidgetWin" in (cbuf.value or "") and IsWindowVisible(hwnd):
+                # 2026-09-20【Camoufox/Firefox 修复】窗口类名按内核分派：
+                #   Chromium → "Chrome_WidgetWin"
+                #   Firefox  → "MozillaWindowClass"（Camoufox 即此内核）
+                # 实测（本机枚举）Firefox 顶层窗口：
+                #   class=MozillaWindowClass  IsWindowVisible=True   ← 真窗口在这
+                #   class=MozillaHiddenWindowClass / MozillaBatteryClass  ← 隐藏辅助窗口
+                # 只认 Chrome_WidgetWin 会把「已出来的 Firefox 窗口」判为不可见 →
+                # BCC-053 误判切换失败并回退无头（用户看到没有窗口）。
+                _cls = cbuf.value or ""
+                _is_browser_win = ("Chrome_WidgetWin" in _cls
+                                   or "MozillaWindowClass" in _cls)
+                if _is_browser_win and IsWindowVisible(hwnd):
                     hit["n"] += 1
             return True
 
@@ -1852,8 +1926,12 @@ class BrowserContainer:
             try:
                 # 关闭本容器 context，让 DYLoginApi 独占 profile
                 try:
-                    if self._backend == "exe" and self._context is not None:
-                        await self._context.close()
+                    if self._backend in ("exe", "camoufox") and self._context is not None:
+                        if self._backend == "camoufox":
+                            from vbrowser_camoufox import close_camoufox_context
+                            await close_camoufox_context(self._context)
+                        else:
+                            await self._context.close()
                     if self._pw is not None:
                         await self._pw.stop()
                 except Exception:
@@ -2553,8 +2631,12 @@ async def _shutdown() -> None:
     c = _state.get("container")
     if c:
         try:
-            if c._backend == "exe" and c._context is not None:
-                await c._context.close()
+            if c._backend in ("exe", "camoufox") and c._context is not None:
+                if c._backend == "camoufox":
+                    from vbrowser_camoufox import close_camoufox_context
+                    await close_camoufox_context(c._context)
+                else:
+                    await c._context.close()
             if c._pw is not None:
                 await c._pw.stop()
         except Exception:
@@ -3043,9 +3125,13 @@ async def quit_() -> dict:
     for ch in []:
         pass
     c = _state.get("container")
-    if c and c._backend == "exe" and c._context is not None:
+    if c and c._backend in ("exe", "camoufox") and c._context is not None:
         try:
-            await c._context.close()
+            if c._backend == "camoufox":
+                from vbrowser_camoufox import close_camoufox_context
+                await close_camoufox_context(c._context)
+            else:
+                await c._context.close()
         except Exception:
             pass
     threading.Timer(0.5, lambda: os._exit(0)).start()

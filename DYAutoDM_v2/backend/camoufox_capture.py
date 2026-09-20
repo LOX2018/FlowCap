@@ -57,6 +57,28 @@ def _web_protect_valid(s) -> bool:
     return False
 
 
+def _assert_not_in_asyncio(where: str) -> None:
+    """守卫：同步 Playwright 调用不得在 asyncio 事件循环内执行。
+
+    2026-09-20 实测事故：`launch_camoufox_async` 初版用 run_in_executor 包同步
+    API → Playwright 的「Sync API inside asyncio loop」检测是**进程级**的，
+    换线程无效 → BCC 拿不到 context 句柄，而浏览器进程**已经起来** →
+    孤儿进程占住 `_camoufox`/parent.lock，用户双击被提示「占用」。
+
+    本模块的函数是**同步**语义（供 CLI / 脚本调用）。若被误用在 asyncio 环境，
+    这里**显式报错**而不是让它以「孤儿进程 + 占用」的形式死得不明不白。
+    """
+    try:
+        import asyncio
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # 无运行中的 loop —— 正常同步场景
+    raise RuntimeError(
+        f"[camoufox] {where} 是同步 API，不可在 asyncio 事件循环内调用"
+        "（Playwright 会拒绝并在磁盘留下孤儿浏览器进程）。"
+        "asyncio 环境请改用 vbrowser_camoufox.launch_camoufox_async。")
+
+
 def _env_path_of(account: str) -> Optional[str]:
     try:
         from auto_dm import accounts as _acc
@@ -75,6 +97,7 @@ def open_camoufox_window(account: str, url: str = _LANDING) -> Tuple[bool, str]:
     """
     from vbrowser_camoufox import launch_camoufox_sync
 
+    _assert_not_in_asyncio("open_camoufox_window")
     env_path = _env_path_of(account)
     if not env_path:
         return False, f"账号 {account} 的 .env 未登记"
@@ -104,6 +127,7 @@ def capture_from_camoufox(account: str, wait_sec: int = 12) -> Tuple[bool, str]:
     from vbrowser_camoufox import launch_camoufox_sync
     from dy_apis.login_api import DYLoginApi
 
+    _assert_not_in_asyncio("capture_from_camoufox")
     env_path = _env_path_of(account)
     if not env_path:
         return False, f"账号 {account} 的 .env 未登记"

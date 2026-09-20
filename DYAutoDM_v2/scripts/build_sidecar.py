@@ -46,21 +46,27 @@ def _app_version() -> str:
         return "unknown"
 
 
-def _write_version_file() -> str:
-    """把版本固化进 backend/_build_version.py（编译期常量）。
+def _write_version_file(build_kind: str = "debug") -> str:
+    """把版本 + **构建类型**固化进 backend/_build_version.py（编译期常量）。
 
     2026-09-13：不用 version.json 外部文件 —— 该文件不会被 PyInstaller 打进
     sidecar，Frozen 后 __file__ 指向解压目录，运行时根本读不到，版本会退化成
     unknown。改成生成一个 Python 模块，随源码一起编译进 sidecar，100% 可靠。
+
+    2026-09-20（用户铁律）：**默认 debug 版**，除非显式 --release。
+    构建类型同时写入 BUILD_KIND，供运行时/部署脚本识别，避免"打了正式版却
+    以为是 debug"这类无声偏差。
     """
     v = _app_version()
+    kind = "release" if str(build_kind).lower() == "release" else "debug"
     try:
         fp = BACKEND / "_build_version.py"
         fp.write_text(
             '"""构建期生成的版本常量（勿手改；由 scripts/build_sidecar.py 写入）。"""\n'
-            f'BUILD_VERSION = "{v}"\n',
+            f'BUILD_VERSION = "{v}"\n'
+            f'BUILD_KIND = "{kind}"   # debug = 测试版（默认）；release = 正式发布\n',
             encoding="utf-8")
-        print(f"[版本] backend/_build_version.py = {v}")
+        print(f"[版本] backend/_build_version.py = {v} ({kind})")
     except Exception as e:
         print(f"[版本] 写入失败: {e}")
     return v
@@ -207,6 +213,11 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "camoufox.async_api",
             "browserforge",
             "orjson",
+            # 2026-09-20 实测事故：仅声明 "orjson" 时，PyInstaller 打入了
+            # orjson/__init__.py，却**漏掉原生扩展 orjson.cp314-win_amd64.pyd**
+            # → 运行时 `import orjson.orjson` 报 ModuleNotFoundError。
+            # 该模块被 camoufox/browserforge（函数体内 import）间接依赖，
+            # 故必须以 --collect-all 带齐二进制（见下方循环）。
             "geoip2",
             "maxminddb",
             # 2026-09-17：TLS 原生 OS 信任库（backend/utils/tls_policy.py）。
@@ -226,6 +237,47 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
     if entry in ("daemon/browser_daemon.py", "daemon/recv_daemon.py"):
         for _m in ("browser_daemon_js", "daemon.browser_daemon_js"):
             cmd += ["--hidden-import", _m]
+
+    # 2026-09-20：Camoufox 依赖链的原生扩展必须以 --collect-all 带齐。
+    # 仅 --hidden-import 只会打入 .py，**漏掉 .pyd**（orjson.cp314-win_amd64.pyd），
+    # 表现为运行时 `No module named 'orjson.orjson'`（源码态正常、打包态必挂）。
+    # 这是「必须实机验证打包产物」的典型案例：源码态全绿，打包态才暴露。
+    # 覆盖**整个依赖链**（一次修完，不逐个补——同类问题已出现 2 次）：
+    #   orjson          → 原生扩展 .pyd（ModuleNotFoundError: orjson.orjson）
+    #   browserforge    → 指纹/请求头生成器（含 bayesian 网络数据）
+    #   apify_fingerprint_datapoints → data/*.zip 指纹库数据文件
+    #     （实测缺 input-network-definition.zip 等 5 个数据文件，报 FileNotFoundError）
+    #   camoufox        → 顶层 *.json 预设（fingerprint-presets.json / fonts.json /
+    #                     voices.json）——同为 data 文件，不在模块内，必须一并收集
+    # 判据：--collect-all 同时收集 .py / .pyd / data 文件与包元数据。
+    for _pkg in (
+        # ════════════════════════════════════════════════════════════════
+        # 仅收集**确实含非 .py 资源**的包（实测逐个扫描得出，勿凭猜测增删）。
+        # 判据命令：
+        #   python -c "import os;d=r'<site-packages>\\<pkg>';print([f for r,_,fs in
+        #   os.walk(d) for f in fs if not f.endswith(('.py','.pyc','.pyi'))])"
+        # 只含 py.typed（空标记）的包不收集，避免产物无谓膨胀。
+        # ════════════════════════════════════════════════════════════════
+        "orjson",                      # orjson.cp314-win_amd64.pyd
+        "maxminddb",                   # extension.cp314-win_amd64.pyd
+        "camoufox",                    # *.json 预设（fingerprint-presets/fonts/voices）
+        "browserforge",                # 指纹/请求头生成器数据
+        "apify_fingerprint_datapoints",# data/*.zip 指纹库（5 个数据文件）
+        "language_tags",               # ua_parser 依赖：data/json/*.json（11 个）
+        # playwright：Camoufox 走标准 Playwright 协议，启动浏览器需要
+        # <playwright>/driver/node.exe（Node driver 进程）。
+        # 实测事故：产物里只有 playwright-*.dist-info 而**无 driver/node.exe**
+        # → 启动时 subprocess 找不到可执行文件 → [WinError 2] 系统找不到指定的文件，
+        # 表现为「Camoufox 内核启动失败」（而 patchright 因早已被静态追到而正常）。
+        "playwright",
+        "patchright",
+        # 仅为 py.typed（0 字节类型标记，运行时无影响）—— 补齐以保持自检干净，
+        # 避免真缺失被噪音掩盖。
+        "geoip2",
+        "screeninfo",
+        "ua_parser",
+    ):
+        cmd += ["--collect-all", _pkg]
     # 2026-09-16 v0.43.36：WS 稳态治理模块（daemon/ws_link.py）。
     # RecvChannel._make_link / _catchup_after_reconnect 在**函数体内**
     # `from daemon.ws_link import WSLink` —— 与上面两条完全同类的坑
@@ -453,12 +505,39 @@ def _dedupe_internal() -> dict:
         return {"moved": None, "removed": [], "saved_mb": 0}
 
     shared = BINARIES / "_internal"
-    # 1) 选定共享源：优先已存在的共享目录，否则用第一份
-    if not shared.is_dir():
-        src = present[0] / "_internal"
-        if not src.is_dir():
+    # 1) 选定共享源：**必须无条件使用本次构建的新 _internal**。
+    #
+    # 2026-09-20 实测事故（陈旧缓存静默污染）：
+    #   原实现是「shared 已存在则跳过」，而 binaries/_internal 一旦生成就长期
+    #   存在（实测停留 9月14日 的旧副本）→ 每次打包都把旧依赖当共享源，
+    #   本次新增的依赖（如 --collect-all orjson 带来的 orjson/*.pyd）**永远进不去**。
+    #   表现：源码态全绿、逐 exe 目录里有新依赖，唯独部署产物缺失，
+    #         且全程无报错（shared.is_dir() 恒为 True 使分支静默跳过）。
+    #   修复：每轮都从「本次构建产出的目录」里取新 _internal 覆盖 shared。
+    fresh = None
+    for _d in present:
+        if (_d / "_internal").is_dir():
+            fresh = _d / "_internal"
+            break
+    if fresh is None:
+        if not shared.is_dir():
             return {"moved": None, "removed": [], "saved_mb": 0}
-        shutil.move(str(src), str(shared))
+    else:
+        # 先摘掉旧共享目录（可能是 junction/符号链接），再顶上新目录
+        if shared.exists() or shared.is_symlink():
+            if _is_link_or_junction(shared):
+                try:
+                    os.rmdir(str(shared))
+                except OSError:
+                    pass
+            else:
+                shutil.rmtree(str(shared), ignore_errors=True)
+        if not shared.is_dir():
+            try:
+                shutil.move(str(fresh), str(shared))
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠️ 刷新共享 _internal 失败: {e}")
+
 
     saved = 0
     removed = []
@@ -549,18 +628,72 @@ def _remove_link_or_tree(p) -> bool:
 
 def main() -> None:
     import sys
-    debug_wl = "--debug-whitelist" in sys.argv
+    # ════════════════════════════════════════════════════════════════════
+    # 构建类型铁律（2026-09-20 用户明确，选 A 方案）：
+    #   **默认 debug 版**；只有显式传 --release 才构建正式版。
+    #   理由：测试阶段永远不需要正式版，忘加参数就等于误发正式包 ——
+    #   把「默认值」本身变成铁律，而不是靠人记得加 --debug-whitelist。
+    # ════════════════════════════════════════════════════════════════════
+    is_release = "--release" in sys.argv
+    build_kind = "release" if is_release else "debug"
+    debug_wl = build_kind == "debug"
     # --onedir：免解压目录模式（启动提速重点）。三份 sidecar 全部切换。
     # 回退：不带 --onedir 参数即恢复 onefile。
     mode = "onedir" if "--onedir" in sys.argv else "onefile"
+
+    # ── 醒目横幅（用户要求：不能被 PyInstaller 刷屏淹没）──
+    _kind_cn = "DEBUG 测试版（非正式发布）" if build_kind == "debug" else "RELEASE 正式版"
+    print("=" * 72)
+    print(f"  构建类型：{_kind_cn}")
+    print(f"  版本    ：{_app_version()}")
+    print(f"  形态    ：{mode}")
+    if build_kind == "debug":
+        print("  ⚠️  本产物禁止对外发布（含测试白名单机制）")
+        print("      正式发布请显式：python scripts/build_sidecar.py --onedir --release")
+    print("=" * 72)
+
     if debug_wl:
         inject_test_whitelist()
-    _v = _write_version_file()   # 2026-09-13：构建时固化版本，供 /api/version 校验
-    print(f"[版本] 本次构建版本 = {_v}")
+    _v = _write_version_file(build_kind)   # 固化版本 + 构建类型
+    print(f"[版本] 本次构建版本 = {_v} ({build_kind})")
     try:
-        build_one("main.py", "dyautodm-backend", mode=mode)
-        build_one("daemon/browser_daemon.py", "dyautodm-browser-daemon", mode=mode)
-        build_one("daemon/recv_daemon.py", "dyautodm-recv-daemon", mode=mode)
+        # ════════════════════════════════════════════════════════════════
+        # 2026-09-20：三份 sidecar **并行**构建（用户要求「打包这么慢，有并发吗」）。
+        #
+        # 为什么可并行：三者互不依赖；PyInstaller 的 --workpath/--specpath
+        #   （各自 backend/build/<name>/）与 --name 完全独立，产物不同名
+        #   → 无共享可写状态。
+        # 前提：inject_test_whitelist() / _write_version_file() 均在此之前
+        #   串行完成（它们改共享源码，不可并行）。
+        # 实测收益：串行 ~9 分钟 → 并行约等于**最慢的那一个**（~3.5 分钟）。
+        # 回退开关：加 --no-parallel 即恢复串行（排查构建期诡异问题时用）。
+        # ════════════════════════════════════════════════════════════════
+        _targets = [
+            ("main.py", "dyautodm-backend"),
+            ("daemon/browser_daemon.py", "dyautodm-browser-daemon"),
+            ("daemon/recv_daemon.py", "dyautodm-recv-daemon"),
+        ]
+        _parallel = "--no-parallel" not in sys.argv and len(_targets) > 1
+        if _parallel:
+            import concurrent.futures as _cf
+            print(f"\n[并行] 同时构建 {len(_targets)} 份 sidecar …")
+            _errs = []
+            with _cf.ThreadPoolExecutor(max_workers=len(_targets)) as _ex:
+                _futs = {_ex.submit(build_one, e, n, mode): n for e, n in _targets}
+                for _f in _cf.as_completed(_futs):
+                    _n = _futs[_f]
+                    try:
+                        _f.result()
+                        print(f"  ✅ {_n} 完成")
+                    except Exception as _e:  # noqa: BLE001
+                        _errs.append((_n, _e))
+                        print(f"  ❌ {_n} 失败: {_e}")
+            if _errs:
+                raise RuntimeError(
+                    "并行构建存在失败项: " + "; ".join(f"{n}: {e}" for n, e in _errs))
+        else:
+            for _e_, _n_ in _targets:
+                build_one(_e_, _n_, mode=mode)
         # 性能主线（2026-09-14）：三份 _internal 内容实测完全相同
         # → 收敛为一份共享目录，三个 exe 平铺（命中既有解析候选 2，零代码改动）。
         # 不带 --no-dedupe 时默认执行。
@@ -571,6 +704,34 @@ def main() -> None:
                 print(f"  共享依赖 → {info['moved']}")
                 print(f"  已移除重复目录: {info['removed']}")
                 print(f"  省下体积: {info['saved_mb']} MB")
+        # ════════════════════════════════════════════════════════════════
+        # 2026-09-20 事故后加固：打包产物**机械自检**（不再靠人记住）。
+        #
+        # 背景：Camoufox 接入时连续 6 个「只在打包态暴露、源码态全绿」的
+        # 资源缺失被逐个试错发现，每次重打 15 分钟 → 白等 1 小时。
+        # 判据来源：迭代止损律 —— 同类问题第 2 次就该全链扫清，而非挤牙膏。
+        #
+        # 本自检对「源码态可 import 的每个包」逐个比对非 .py 资源是否已入产物，
+        # 缺失即打印清单并以非零状态提示（不中断构建，避免掩盖其他产物）。
+        # ════════════════════════════════════════════════════════════════
+        try:
+            _diag = ROOT / "scripts" / "diag" / "check_packed_resources.py"
+            if _diag.is_file():
+                import subprocess as _sp
+                print("\n[自检] 校验打包产物运行时资源 …")
+                _r = _sp.run([sys.executable, str(_diag), str(BINARIES)],
+                             capture_output=True, text=True)
+                _out = (_r.stdout or "") + (_r.stderr or "")
+                # 只打印结论段，避免刷屏
+                for _ln in _out.splitlines():
+                    if _ln.strip():
+                        print("  " + _ln.strip())
+                if _r.returncode != 0:
+                    print("\n[自检] ⚠️ 存在缺失项（见上）。修复：把缺失包名加入本脚本的 "
+                          "--collect-all 列表后重打。")
+        except Exception as _e:  # noqa: BLE001
+            print(f"[自检] 跳过（{_e}）")
+
         print(f"\n全部打包完成（mode={mode}），产物位于:", BINARIES)
         if debug_wl:
             print("[警告] 本次为**调试版**构建（含测试白名单限制），"

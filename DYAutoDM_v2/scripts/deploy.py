@@ -111,6 +111,18 @@ def build_version_const() -> str:
     return ""
 
 
+def build_kind_const() -> str:
+    """读 sidecar 的构建类型（debug/release；缺省按 debug —— 用户铁律）。"""
+    fp = ROOT / "backend" / "_build_version.py"
+    if not fp.is_file():
+        return "debug"
+    for line in fp.read_text(encoding="utf-8").splitlines():
+        if line.startswith("BUILD_KIND"):
+            v = line.split("=", 1)[1].split("#")[0].strip().strip('"').strip("'")
+            return v if v in ("debug", "release") else "debug"
+    return "debug"
+
+
 def norm(v: str) -> str:
     """归一化版本：tauri 写 0.43.1，Windows 资源可能是 0.43.1.0。
 
@@ -164,7 +176,22 @@ def main() -> int:
     log("=" * 74)
 
     # ---- 校验 1：主程序 exe 资源版本 ----
-    exe_src = ROOT / "src-tauri" / "target" / "release" / "dyautodm-v2.exe"
+    # 主程序产物路径：auto 探测 debug / release，取**较新**者。
+    # 2026-09-20：引入 `tauri build --debug`（快速测试构建，Rust 阶段 ~1.5min
+    # 对比 release 的 ~7min，原因是 [profile.release] 开了 lto+codegen-units=1）
+    # → 产物落在 target/debug/ 而非 target/release/。
+    # 判据用 mtime 而非「优先 debug」：避免 debug 残留旧产物盖过新 release。
+    _rel = ROOT / "src-tauri" / "target" / "release" / "dyautodm-v2.exe"
+    _dbg = ROOT / "src-tauri" / "target" / "debug" / "dyautodm-v2.exe"
+    _cands = [p for p in (_rel, _dbg) if p.is_file()]
+    if not _cands:
+        log("  ❌ 未找到主程序产物（debug/release 均不存在）")
+        log(f"     尝试过: {_rel}")
+        log(f"              {_dbg}")
+        return 7
+    exe_src = max(_cands, key=lambda p: p.stat().st_mtime)
+    log("  主程序产物: %s (%s)" % (
+        exe_src.parent.name, "release" if exe_src is _rel else "debug"))
     real = exe_file_version(exe_src)
     log("\n[校验1] 主程序 exe 真实资源版本 = %s" % (real or "(读不到)"))
     if not exe_src.is_file():
@@ -225,18 +252,28 @@ def main() -> int:
         log("  ❌ 应用根目录不存在：%s" % app_root)
         return 6
 
-    # 主程序：用【产物真实版本】命名
-    dst_exe = app_root / f"DYAutoDM_v2_{norm(real)}.exe"
+    # 主程序：用【产物真实版本 + 构建类型】命名
+    #   2026-09-20 用户铁律（选 A 方案）：默认 debug 版；debug 产物名带 -debug 后缀，
+    #   正式版不带。这样「一眼可辨」，杜绝把 debug 包当正式包发出去。
+    _kind = build_kind_const()
+    _suffix = "-debug" if _kind == "debug" else ""
+    dst_exe = app_root / f"DYAutoDM_v2_{norm(real)}{_suffix}.exe"
     shutil.copy2(exe_src, dst_exe)
-    log("  ✅ 主程序 → %s (md5=%s)" % (dst_exe.name, _md5(dst_exe)[:12]))
-    # 清理同名旧版本
+    log("  ✅ 主程序 → %s (md5=%s) [%s]" % (dst_exe.name, _md5(dst_exe)[:12], _kind))
+    # 清理旧版本：**只清理同类型**（debug 不删 release，反之亦然），
+    # 避免交叉删除把另一种构建误删。
+    is_debug_target = _kind == "debug"
     for p in app_root.glob("DYAutoDM_v2_*.exe"):
-        if p.name != dst_exe.name:
-            try:
-                p.unlink()
-                log("     🗑 移除旧版本 %s" % p.name)
-            except Exception as e:
-                log("     ⚠️ 移除 %s 失败：%s" % (p.name, str(e)[:60]))
+        if p.name == dst_exe.name:
+            continue
+        p_is_debug = p.stem.endswith("-debug")
+        if p_is_debug != is_debug_target:
+            continue  # 另一种构建类型，保留
+        try:
+            p.unlink()
+            log("     🗑 移除同类旧版本 %s" % p.name)
+        except Exception as e:
+            log("     ⚠️ 移除 %s 失败：%s" % (p.name, str(e)[:60]))
 
     # sidecar：md5 必须一致
     # 2026-09-14：共享形态（_internal 一份 + 三 exe 平铺）与传统形态都要支持。

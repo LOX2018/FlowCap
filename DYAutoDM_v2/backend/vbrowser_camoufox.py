@@ -120,12 +120,108 @@ async def launch_camoufox_async(*, headless: bool = False,
                                 user_data_dir: str | None = None,
                                 account: str | None = None,
                                 cfg: Any = None) -> tuple:
-    """异步启动 Camoufox。Playwright 的 Camoufox 同步 API 在子线程执行，
-    避免阻塞事件循环（本项目 async 路径均在事件循环内）。"""
-    import asyncio
-    return await asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: launch_camoufox_sync(
-            headless=headless, user_data_dir=user_data_dir,
-            account=account, cfg=cfg),
+    """异步启动 Camoufox（persistent_context）。返回 (None, None, context, 'camoufox')。
+
+    ## 为什么必须用 AsyncCamoufox 而不是「线程池包 sync」（2026-09-20 实测）
+
+    初版实现是 `run_in_executor(None, launch_camoufox_sync)` —— **必然失败**：
+    Playwright 的「Sync API 检测」是**进程级**的（driver 连接时会校验调用线程
+    之外是否存在运行中的 asyncio loop），换线程不解决。实测报错原文：
+
+        It looks like you are using Playwright Sync API inside the asyncio loop.
+
+    正确做法：改用 `camoufox.async_api.AsyncCamoufox`——它基于
+    `playwright.async_api`，与 BCC（FastAPI/asyncio）同构。
+    """
+    if not user_data_dir:
+        raise RuntimeError(
+            "[camoufox] 未指定固定 profile 目录。单 profile 铁律："
+            "禁止临时目录，必须传入 accounts.profile_dir_of(env_path)")
+
+    try:
+        from camoufox.async_api import AsyncCamoufox
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            f"[camoufox] 未安装或不可用（pip install camoufox[geoip]）: {e}") from e
+
+    # Camoufox 的 profile 与 Chromium 不兼容：同一账号目录下用独立子目录，
+    # 保证「单 profile 铁律」语义一致（路径契约见 camoufox_capture 同名说明）。
+    cam_dir = os.path.join(user_data_dir, "_camoufox")
+    os.makedirs(cam_dir, exist_ok=True)
+    logger.info(f"[camoufox] 复用固定 profile: {cam_dir}")
+
+    proxy = _proxy_for_camoufox(cfg, account)
+    if proxy:
+        logger.info(f"[camoufox] 环境门阀：代理 → {proxy.get('server')}")
+    else:
+        logger.info("[camoufox] 环境门阀：无代理（直连）")
+
+    ctx_mgr = AsyncCamoufox(
+        persistent_context=True,
+        user_data_dir=cam_dir,
+        headless=bool(headless),
+        proxy=proxy,
+        locale="zh-CN",
+        os="windows",
+        i_know_what_im_doing=True,
     )
+    context = await ctx_mgr.__aenter__()
+    try:
+        context.__dict__["_camoufox_ctx_mgr"] = ctx_mgr
+        context.__dict__["_camoufox_is_async"] = True
+    except Exception:
+        pass
+    return None, None, context, "camoufox"
+
+
+async def close_camoufox_context(context) -> None:
+    """统一关闭 Camoufox context（含其 AsyncCamoufox 上下文管理器）。
+
+    ## 为什么必须单独一个函数（2026-09-20 实测事故）
+
+    `AsyncCamoufox` 是 PlaywrightContextManager：只调 `context.close()` **不会**
+    真正结束它拉起的浏览器进程/驱动，必须走 `ctx_mgr.__aexit__()`。
+    漏掉的后果（实测）：可见性切换时旧进程仍占 `_camoufox` profile →
+    新有头实例启动报 `Failed to launch the browser process` →
+    用户看到「弹窗没有浏览器窗口」。
+
+    ## 兼容同步/异步两种来源
+
+    - async 启动（BCC 路径）：context.__dict__ 里有 `_camoufox_ctx_mgr`，
+      且带 `_camoufox_is_async=True` → 用 await __aexit__。
+    - sync 启动（CLI/camoufox_capture 路径）：ctx_mgr 只有 __exit__，
+      直接调同步退出（此时不处于事件循环）。
+    """
+    if context is None:
+        return
+    mgr = getattr(context, "__dict__", {}).get("_camoufox_ctx_mgr")
+    is_async = bool(getattr(context, "__dict__", {}).get("_camoufox_is_async"))
+    try:
+        if mgr is not None:
+            if is_async or hasattr(mgr, "__aexit__"):
+                aexit = getattr(mgr, "__aexit__", None)
+                if aexit is not None:
+                    await aexit(None, None, None)
+                    return
+            exit_ = getattr(mgr, "__exit__", None)
+            if exit_ is not None:
+                exit_(None, None, None)
+                return
+        # 兜底：普通 context
+        await context.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[camoufox] 关闭 context 异常（忽略以继续清理）: {e}")
+
+
+def close_camoufox_context_sync(context) -> None:
+    """同步版关闭（供 CLI/脚本路径使用，不得在 asyncio 循环内调用）。"""
+    if context is None:
+        return
+    mgr = getattr(context, "__dict__", {}).get("_camoufox_ctx_mgr")
+    try:
+        if mgr is not None and hasattr(mgr, "__exit__"):
+            mgr.__exit__(None, None, None)
+            return
+        context.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[camoufox] 同步关闭 context 异常（忽略）: {e}")
