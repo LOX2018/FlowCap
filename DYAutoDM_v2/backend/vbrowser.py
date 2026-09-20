@@ -1181,6 +1181,33 @@ def should_use_vb(cfg):
         raise RuntimeError(
             "[vbrowser] 已禁用原生 Playwright：USE_VIRTUAL_BROWSER 必须为 True（指纹浏览器强制启用）。"
             "请检查 config.py / 前端配置，不要关闭指纹浏览器开关。")
+    # ════════════════════════════════════════════════════════════════════
+    # 2026-09-20【Camoufox 为唯一内核】用户拍板彻底移除 vb_chromium。
+    #
+    # 原实现在 exe 模式下**强制要求 vb_chromium/.../chrome.exe 存在**，
+    # 而 8 条启动路径（browser_daemon / login_api×5 / link_resolve / web_probe）
+    # 都先调本函数 ⇒ 删掉 vb_chromium 后它们会全部抛错，BCC/扫码/探测全起不来。
+    #
+    # 现在：Camoufox 启用时改校验 **Camoufox 可用性**（模块 + 已装浏览器），
+    #       不再要求 Chromium 内核存在。Chromium 分支保留为历史回退。
+    # ════════════════════════════════════════════════════════════════════
+    try:
+        from vbrowser_camoufox import camoufox_enabled
+        if camoufox_enabled(cfg):
+            ver = ""
+            try:
+                from camoufox.pkgman import installed_verstr
+                ver = (installed_verstr() or "").strip()
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(
+                    f"[BCC-070] Camoufox 已启用但浏览器不可用（{e}）。"
+                    f"请执行 `camoufox fetch` 安装内核；本版本已移除 Chromium 回退，"
+                    f"不可用时必须显式失败，不静默降级。")
+            return True, "camoufox"
+    except ImportError:
+        # 产物里缺 vbrowser_camoufox（旧构建）→ 落回 Chromium 分支，按原逻辑报错
+        pass
+
     mode = getattr(cfg, "VB_MODE", "cdp")
     if mode == "exe":
         # exe 模式只需文件存在即可（相对路径按应用根解析，与启动目录无关）

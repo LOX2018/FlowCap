@@ -211,6 +211,11 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "camoufox",
             "camoufox.sync_api",
             "camoufox.async_api",
+            # 2026-09-20 v0.44.12：Camoufox 成为唯一内核后，内核可用性校验与指纹版本
+            # 解析改从 camoufox.pkgman 取（installed_verstr / launch_path），且这两处在
+            # **函数体内** import（vbrowser.should_use_vb / utils/fingerprint._chrome_exe_path）
+            # → 静态分析扫不到，必须显式声明；漏打则打包态抛 BCC-070。
+            "camoufox.pkgman",
             "browserforge",
             "orjson",
             # 2026-09-20 实测事故：仅声明 "orjson" 时，PyInstaller 打入了

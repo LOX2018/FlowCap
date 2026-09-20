@@ -61,7 +61,23 @@ _kernel_ver_resolved = False
 
 
 def _chrome_exe_path() -> str:
-    """取指纹内核可执行文件路径（优先配置，其次扫 vb_chromium 目录）。"""
+    """取指纹内核可执行文件路径（Camoufox 优先；保留 Chromium 历史回退）。"""
+    # ════════════════════════════════════════════════════════════════════
+    # 2026-09-20【Camoufox 为唯一内核】：先按 Camoufox 解析真实启动 exe。
+    # 原实现只认 vb_chromium，删掉内核后会静默退到 _FALLBACK_VERSION
+    # → HTTP 层声明的 Chrome 版本与浏览器实际版本脱钩（本次要根除的矛盾）。
+    # ════════════════════════════════════════════════════════════════════
+    try:
+        import os as _os
+        from auto_dm import config as _c
+        from vbrowser_camoufox import camoufox_enabled as _ce
+        if _ce(_c):
+            from camoufox.pkgman import launch_path as _launch_path
+            p = _launch_path()
+            if p and _os.path.isfile(p):
+                return p
+    except Exception:
+        pass
     try:
         from auto_dm import config as _cfg
         rel = (getattr(_cfg, "VB_CHROME_EXE", "") or "").strip()

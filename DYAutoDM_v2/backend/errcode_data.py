@@ -283,6 +283,7 @@ ERRCODES = {
     "BCC-055": {"meaning": "[bcc] 有头观测态下探活失败 —— 不自动重建（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-057": {"meaning": "[bcc] 有头观测态下不触发自动重扫（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-058": {"meaning": "[vbrowser] Camoufox 内核启动失败，已回退 Chromium", "file": "vbrowser.py", "line": 0},
+    "BCC-070": {"meaning": "[vbrowser] Camoufox 已启用但浏览器内核不可用（camoufox fetch 未安装）", "file": "vbrowser.py", "line": 0},
     "BCC-063": {"meaning": "[bcc] 出口环境漂移：当前出口 IP 与登录基线不一致（登录环境与运行环境不一致，先重扫建立新基线）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-064": {"meaning": "[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-065": {"meaning": "[bcc] 自动化痕迹暴露（navigator.webdriver=true / HeadlessChrome UA / 注入对象）", "file": "services/env_audit.py", "line": 0},
@@ -544,6 +545,19 @@ CODE_DESIGN = {
                  "_apply_to_task_kv（写 kv 供下次启动）→ adm.apply_runtime_config",
         "root": "任务未启动 / 已停止 / 启动失败回退 IDLE —— 属调用时序问题，不是配置错",
         "verify": "curl :8000/api/tasks/current 看 engine_state；日志 grep '热更被拒'。",
+    },
+    "BCC-070": {
+        "design": "Camoufox 已成为**唯一**浏览器内核（用户 2026-09-20 拍板彻底移除 vb_chromium）。"
+                  "启动层必须把「内核可用」当作硬前置：Camoufox 未安装时宁可显式失败，"
+                  "也不得静默回退 Chromium —— 静默降级会让「内核没切过去」变成无声事实"
+                  "（本项目已实测踩坑）。",
+        "contract": "camoufox_enabled(cfg) 为真时，should_use_vb 只校验 Camoufox 可用性"
+                    "（模块可导入 + installed_verstr() 成功），**不再要求 vb_chromium/.../chrome.exe 存在**；不可用即抛 BCC-070，绝不返回可继续的假成功。",
+        "deviation": "should_use_vb() 抛 RuntimeError: Camoufox 已启用但浏览器不可用",
+        "chain": "browser_daemon._launch / login_api×5 / link_resolve / web_probe → should_use_vb(cfg) → camoufox_enabled → installed_verstr",
+        "root": "camoufox 包已装但未执行 `camoufox fetch`（浏览器本体缺失）；"
+                "或产物未打入 camoufox hidden-import（打包态 ModuleNotFoundError）。",
+        "verify": "源码态: python -c 'from camoufox.pkgman import installed_verstr; print(installed_verstr())' 应打印内核版本；实机: 启动后日志应出现 '[vbrowser] 内核=Camoufox'，且无 BCC-070。",
     },
     "BCC-064": {
         "design": "把 rebrowser-bot-detector / CreepJS / liarjs 的检测逻辑"
