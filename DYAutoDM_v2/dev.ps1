@@ -59,6 +59,82 @@ function Write-Warn2($msg){ Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
 function Write-Err2($msg) { Write-Host "  [ERROR] $msg" -ForegroundColor Red }
 
 # ---------------------------------------------------------------------------
+# 进程清理（-Stop 与启动结束的 finally 共用）
+#
+# 为什么需要"按名字兜底"而不是只杀自己记录的 handle：
+#   Rust 侧 on_window_event 用 taskkill /F /T 强杀后端 → Python 的 atexit /
+#   lifespan 优雅清理被跳过 → 后端自 spawn 的 BCC/recv（daemon_launcher
+#   ._spawn_sidecar 起的，**不在** Rust 的 AppState.daemons 台账里）残留成孤儿，
+#   占住 8000/11231/账号端口 → 二次启动端口争用卡死。
+#   进程名是唯一能覆盖全部形态的判据，故以名字为准。
+# ---------------------------------------------------------------------------
+function Stop-DyAll {
+    param([switch]$Quiet)
+
+    # ① BCC / recv 守护：优先 /quit 优雅退出（铁律：绝不强杀浏览器）
+    $graceful = 0
+    foreach ($nm in @('dyautodm-browser-daemon', 'dyautodm-recv-daemon')) {
+        foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                         Where-Object { $_.Name -like "$nm*" })) {
+            $port = $null
+            if ($p.CommandLine -match "--port\s+(\d+)") { $port = $Matches[1] }
+            if ($port) {
+                try {
+                    Invoke-WebRequest "http://127.0.0.1:$port/quit" -Method POST `
+                        -UseBasicParsing -TimeoutSec 5 | Out-Null
+                    $graceful++
+                } catch { }
+            }
+        }
+    }
+    if (-not $Quiet) {
+        if ($graceful -gt 0) { Write-OK "$graceful 个守护已 /quit 优雅退出" }
+        else { Write-Host "   （无守护需优雅退出）" -ForegroundColor DarkGray }
+    }
+    Start-Sleep -Seconds 2
+
+    # ② 残留强清：3 份 sidecar + dev 主程序 + 编排进程（npx/tauri-cli/vite/cargo）
+    #    + 本项目 camoufox（按命令行含本数据根精准匹配，绝不误杀用户的正常浏览器）。
+    #
+    #    为什么要连编排进程一起清（实测）：关掉 Tauri 窗口后，Rust 壳会退出，
+    #    但 `npx tauri dev` 的 CLI 父进程**有时并不随之退出**（只报告子进程结束），
+    #    于是 dev.ps1 的 finally 悬在那里不返回 → 表面看"窗口关了"，实际
+    #    node/cargo 仍占着 1420 端口与 target\debug → 二次启动卡死。
+    #    故必须按名字把它们一并收干净，不能只依赖 finally。
+    $killed = 0
+    $targets = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like 'dyautodm-backend*' -or
+        $_.Name -like 'dyautodm-browser-daemon*' -or
+        $_.Name -like 'dyautodm-recv-daemon*' -or
+        $_.Name -like 'dyautodm-v2*' -or
+        # 本项目相关的 node（vite / tauri-cli / npm run dev），按命令行精准匹配
+        ($_.Name -eq 'node.exe' -and $_.CommandLine -like "*DYAutoDM_v2*") -or
+        # cargo / rustc 编译期进程（只在本项目目录下运行）
+        (($_.Name -eq 'cargo.exe' -or $_.Name -eq 'rustc.exe') -and
+         $_.CommandLine -like "*DYAutoDM_v2*") -or
+        ($_.Name -like 'camoufox*' -and $_.CommandLine -like "*$AppRoot*")
+    })
+    foreach ($p in $targets) {
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        $killed++
+    }
+    Start-Sleep -Seconds 1
+
+    # ③ 复核：端口必须释放（否则二次启动会卡死）
+    $busy = @()
+    foreach ($pt in @($BACKEND_PORT, $FRONTEND_PORT)) {
+        if (Test-NetConnection -ComputerName 127.0.0.1 -Port $pt -InformationLevel Quiet `
+                -WarningAction SilentlyContinue) { $busy += $pt }
+    }
+    if (-not $Quiet) {
+        Write-OK "已清理 $killed 个残留进程"
+        if ($busy.Count -eq 0) { Write-OK "端口已释放（$BACKEND_PORT / $FRONTEND_PORT 均空闲）" }
+        else { Write-Warn2 "端口仍被占用: $($busy -join ', ')" }
+    }
+    return ($busy.Count -eq 0)
+}
+
+# ---------------------------------------------------------------------------
 # 环境解析（显式配置原则：只认 -AppRoot，绝不探测本机状态自行决定）
 # ---------------------------------------------------------------------------
 function Get-MemberEnv([string]$root) {
@@ -74,6 +150,19 @@ function Get-MemberEnv([string]$root) {
 }
 
 $env:DY_APP_ROOT = $AppRoot
+# ---------------------------------------------------------------------------
+# 编码固定（2026-09-20 修「dev 日志中文乱码」）
+#   现象：run_*.log 文件本身是**正确 UTF-8**（utf-8 可解码、gbk 解出「鍚庣」乱码），
+#         但控制台/dev 日志显示乱码。
+#   根因：Python 3.15+ 起 stdout 默认编码不再是 UTF-8 而是**区域编码**（本机 GBK），
+#         子进程把 UTF-8 文本按 GBK 写出 → 显示端乱码。
+#   修法：显式钉死 Python I/O 为 UTF-8。子进程继承环境变量（daemon_launcher
+#         只透传 DY_*/PYTHONPATH 等白名单，故这里加到白名单键上见 build 侧；
+#         但 DY_* 全部透传的路径下本行足以覆盖 sidecar 本体）。
+# ---------------------------------------------------------------------------
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONLEGACYWINDOWSSTDIO = "0"
 $mem = Get-MemberEnv $AppRoot
 if ($mem -and $mem.id) {
     $env:DY_MEMBER = $mem.id
@@ -91,46 +180,7 @@ if (-not (Test-Path $AppRoot)) {
 # ---------------------------------------------------------------------------
 if ($Stop) {
     Write-Host "`n=== 停止 dev 进程 ===`n" -ForegroundColor Cyan
-
-    # 1) BCC（browser-daemon）优先 /quit 优雅退出（铁律：绝不强杀浏览器）
-    Write-Step "1/3" "优雅停止 BCC（browser-daemon）..."
-    $bccs = Get-CimInstance Win32_Process -Filter "Name LIKE 'dyautodm-browser-daemon%'" -ErrorAction SilentlyContinue
-    foreach ($p in $bccs) {
-        $port = $null
-        if ($p.CommandLine -match "--port\s+(\d+)") { $port = $Matches[1] }
-        if ($port) {
-            try {
-                Invoke-WebRequest "http://127.0.0.1:$port/quit" -Method POST -UseBasicParsing -TimeoutSec 5 | Out-Null
-                Write-OK "BCC pid=$($p.ProcessId) port=$port 已 /quit"
-            } catch {
-                Write-Warn2 "BCC pid=$($p.ProcessId) /quit 失败（可能已退出）: $($_.Exception.Message)"
-            }
-        } else {
-            Write-Warn2 "BCC pid=$($p.ProcessId) 命令行未取到 --port，跳过优雅退出"
-        }
-    }
-    Start-Sleep -Seconds 3
-
-    # 2) dev 主程序 + 残留 sidecar（仅在 graceful 未退出时兜底）
-    Write-Step "2/3" "停止 dev 主程序与残留 sidecar..."
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'dyautodm-v2*' -or
-                       $_.Name -like 'dyautodm-browser-daemon*' -or
-                       $_.Name -like 'dyautodm-backend*' -or
-                       $_.Name -like 'dyautodm-recv-daemon*' } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-
-    # 3) Vite dev server（只关本项目的）
-    Write-Step "3/3" "停止 Vite dev server..."
-    Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*vite*" -and $_.CommandLine -like "*DYAutoDM_v2*" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-
-    Start-Sleep -Seconds 1
-    $b = Test-NetConnection -ComputerName 127.0.0.1 -Port $BACKEND_PORT  -InformationLevel Quiet -WarningAction SilentlyContinue
-    $f = Test-NetConnection -ComputerName 127.0.0.1 -Port $FRONTEND_PORT -InformationLevel Quiet -WarningAction SilentlyContinue
-    if (-not $b -and -not $f) { Write-OK "端口已释放（$BACKEND_PORT / $FRONTEND_PORT 均空闲）" }
-    else { Write-Warn2 "端口仍被占用: backend=$b frontend=$f" }
+    [void](Stop-DyAll)
     Write-Host ""
     exit 0
 }
@@ -243,10 +293,23 @@ if ($EnvOnly) {
 
 # ---------------------------------------------------------------------------
 # 启动 tauri dev（前台运行，便于看 HMR 与 sidecar 日志）
+#
+# ★ 关键：dev 模式下 Rust 的 on_window_event 用 taskkill /F 强杀后端
+#   → Python atexit/lifespan 清理被跳过 → 后端 spawn 的 BCC/recv 变孤儿，
+#   占住 8000/11231/账号端口 → 二次启动卡死。
+#   故无论正常退出（关窗口/Ctrl+C）还是异常退出，finally 一律兜底清理干净。
 # ---------------------------------------------------------------------------
 Push-Location $TAURI_DIR
 try {
     npx tauri dev
 } finally {
     Pop-Location
+    Write-Host "`n=== tauri dev 已结束，正在清理残留进程（防二次启动卡死）===" -ForegroundColor Cyan
+    $clean = Stop-DyAll
+    if ($clean) {
+        Write-Host "`n  可以再次运行 .\dev.ps1 启动（端口已释放）。`n" -ForegroundColor Green
+    } else {
+        Write-Warn2 "仍有端口被占用，二次启动可能卡死；请检查上方告警。"
+        Write-Host "        （手动重试： .\dev.ps1 -Stop ）" -ForegroundColor DarkGray
+    }
 }

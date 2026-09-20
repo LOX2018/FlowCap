@@ -21,6 +21,28 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+# ---------------------------------------------------------------------------
+# 2026-09-20 修「dev/控制台日志中文乱码」——必须在任何日志输出之前执行。
+#
+# 根因（最小复现实证，非推断）：
+#   PyInstaller 冻结产物的 stdio 编码被 bootloader 钉死为**区域编码**（本机 GBK），
+#   且 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8` 在冻结态**完全无效**
+#   （同一产物带/不带这两个变量输出字节完全相同，实测 sys.stderr.encoding 恒为 'gbk'）。
+#   → loguru 的 stderr sink 按 GBK 写出 UTF-8 文本 → Rust `String::from_utf8_lossy`
+#     解出大批 U+FFFD（\xef\xbf\xbd）→ 控制台/dev 日志乱码。
+#   （文件 sink 自带 encoding="utf-8"，故 run_*.log 一直是干净的 —— 这是关键分化证据。）
+#
+# 修法：显式 reconfigure 为 UTF-8（实测 reconfigure 在冻结态有效）。
+#   只动编码，errors='replace' 保证任何异常字节都不会中断请求处理。
+# ---------------------------------------------------------------------------
+for _stream_name in ("stdout", "stderr"):
+    _s = getattr(sys, _stream_name, None)
+    if _s is not None and hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass  # 极端环境下不可 reconfigure 时静默降级，不影响启动
+
 from config import settings
 from api import accounts, engine, live, messages, overview, settings as settings_api, tasks, logs as logs_api
 from api import ai as ai_api
