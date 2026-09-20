@@ -201,7 +201,10 @@ def main() -> int:
     _o = (_agent.agent_of, _agent.resolve_config, _agent.resolve_knowledge,
           _air.get_config)
     try:
-        _air.get_config = lambda: {"enabled": True, "strict_level": "rag", "scopes": ["live"]}
+        # 全局配置桩里**不得**预置 scopes —— scopes 是「是否接线」的唯一开关，
+        # 由各场景的 cfg_extra 提供。若在全局就塞 scopes，「未绑定 Agent」场景
+        # 也会接线，把「全局也可生效」这条语义测反（本脚本开发中实际踩过）。
+        _air.get_config = lambda: {"enabled": True, "strict_level": "rag"}
 
         def _make(account, aid, cfg_extra):
             _agent.agent_of = lambda a: aid
@@ -211,27 +214,34 @@ def main() -> int:
             m._acct = None
             return m._make_gen_dm_message()
 
-        # 3.1 未绑定 Agent → 不接线（保持全局配置行为）
-        chk(_make("账号A", None, {}) is None, "未绑定 Agent → 不接线")
-        # 3.2 绑定但 scopes 不含 live → 不接线
-        chk(_make("账号A", "ag1", {"scopes": ["dm"]}) is None, "scopes 不含 live → 不接线")
-        # 3.3 绑定 + live + enabled + rag → 接线
+        # 3.1 未绑定 Agent + 全局含 live → 接线（既有「未绑定=零回归」语义）
+        chk(callable(_make("账号A", None, {"scopes": ["live"]})),
+            "未绑定 Agent + 全局含 live → 接线（零回归语义）")
+        # 3.2 未绑定 Agent + 全局不含 live → 不接线
+        chk(_make("账号A", None, {"scopes": ["dm"]}) is None,
+            "未绑定 Agent + 全局不含 live → 不接线")
+        # 3.3 全局未设 scopes → 不接线（防「默认开」漂移）
+        chk(_make("账号A", None, {}) is None, "全局未设 scopes → 不接线（默认不启用）")
+        # 3.4 绑定 + live + enabled + rag → 接线
         chk(callable(_make("账号A", "ag1",
                            {"scopes": ["live"], "enabled": True,
                             "strict_level": "rag"})),
             "绑定 + scopes 含 live + enabled + rag → 接线")
-        # 3.4 绑定 + live 但 enabled=False → 不接线
+        # 3.5 绑定但 scopes 不含 live → 不接线（绑定只决定「用哪个 Agent」）
+        chk(_make("账号A", "ag1", {"scopes": ["dm"]}) is None,
+            "绑定但 scopes 不含 live → 不接线")
+        # 3.6 enabled=False → 不接线
         chk(_make("账号A", "ag1", {"scopes": ["live"], "enabled": False}) is None,
             "enabled=False → 不接线")
-        # 3.5 kb_only 档位 → 不接线（用户显式选择 AI 不参与，必须尊重）
+        # 3.7 kb_only 档位 → 不接线（用户显式选择 AI 不参与，必须尊重）
         chk(_make("账号A", "ag1",
                   {"scopes": ["live"], "enabled": True,
                    "strict_level": "kb_only"}) is None,
             "strict_level=kb_only → 不接线（尊重用户显式选择）")
-        # 3.6 无账号上下文 → 不接线
+        # 3.8 无账号上下文 → 不接线
         chk(_make("", "ag1", {"scopes": ["live"], "enabled": True}) is None,
             "无账号上下文 → 不接线")
-        # 3.7 判定环节抛异常 → 不接线（且不抛出）
+        # 3.9 判定环节抛异常 → 不接线（且不抛出，否则会打断发送链路）
         _agent.agent_of = lambda a: (_ for _ in ()).throw(RuntimeError("kv down"))
         m = _adm.AutoDM.__new__(_adm.AutoDM)
         m.target_acct, m._acct = "账号A", None

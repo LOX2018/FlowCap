@@ -180,10 +180,20 @@ class TestAutoDMWiringDecision(unittest.TestCase):
         m._acct = None
         return m._make_gen_dm_message()
 
-    def test_unbound_agent_not_wired(self):
+    def test_unbound_agent_uses_global_config(self):
+        """未绑定 Agent 时用**全局配置**（resolve_config 既有「零回归」语义）：
+        「是否接线」由 scopes 决定，而不是由「有没有绑定」决定。"""
+        self.assertTrue(callable(self._make("账号A", None, {"scopes": ["live"]})))
+
+    def test_unbound_agent_without_live_scope_not_wired(self):
+        self.assertIsNone(self._make("账号A", None, {"scopes": ["dm"]}))
+
+    def test_global_without_scopes_not_wired(self):
+        """防「默认开」漂移：全局配置没有 scopes 键时不得接线。"""
         self.assertIsNone(self._make("账号A", None, {}))
 
-    def test_scope_without_live_not_wired(self):
+    def test_bound_but_scope_without_live_not_wired(self):
+        """绑定只决定「用哪个 Agent」；作用域仍由该 Agent 的 scopes 决定。"""
         self.assertIsNone(self._make("账号A", "ag1", {"scopes": ["dm"]}))
 
     def test_live_scope_and_enabled_is_wired(self):

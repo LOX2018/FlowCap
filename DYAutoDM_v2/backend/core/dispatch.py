@@ -351,6 +351,8 @@ class DispatchCenter:
                     _r = await _r
                 content = str(_r or "")
             except Exception as e:
+                # 注：生成的 AI 文案已在 ai_reply.generate_dm_for_live 内经护栏
+                # （validate_reply/思考泄漏检测）；此处只兜「回调本身抛异常」。
                 logger.warning(f"[SEND-038] " + f"[调度] gen_dm_message 异常: {e}")
                 content = ""
         if not content and self.pick_dm_message is not None:

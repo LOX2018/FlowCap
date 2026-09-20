@@ -330,12 +330,19 @@ class AutoDM:
         设计契约（用户 2026-09-19 口径）：直播与采集两场景的私信统一走调度器，
         文案来源由 `pick_dm_message`（词库）扩展为「AI 生成优先、词库回落」。
         接线点只有一处（本方法）—— 不允许在 live/crawl 各自实现。
+        失败语义：判定环节异常记 `SEND-039`；生成环节异常记 `SEND-040`；
+        两者都只回落词库，不中断发送。
 
         生效条件（全部满足才启用 AI）：
-          ① 账号绑定了私信 Agent（未绑定 → 保持全局配置行为）；
-          ② 该 Agent 的 `scopes` 含 `live`（作用域由 Agent 决定，不看账号维度）；
-          ③ `resolve_config` 后 `enabled=True` 且 `strict_level != "kb_only"`
-             （kb_only = 用户显式选择「AI 完全不参与」，必须尊重）。
+          ① `enabled=True`；
+          ② `scopes` 含 `live`；
+          ③ `strict_level != "kb_only"`（kb_only = 用户显式选择「AI 完全不参与」，必须尊重）。
+
+        配置来源 = `ai_agent.resolve_config(account, base)`：
+          账号绑定了 Agent → 用该 Agent 的配置；**未绑定 → 原样返回全局
+          `ai_reply_config`**（这是该方法既有契约，文档原话「未绑定 → 零回归」）。
+          所以「是否生效」由 **scopes** 决定，而不是由「有没有绑定」决定 ——
+          与 9.29 §AI 接入点收敛一致（账号绑定只决定「用哪个 Agent」）。
         任一条不满足 → 返回 None，发送链路回落词库，与改造前逐字一致。
 
         线程安全：`_do_send` 在 asyncio 事件循环内调用本回调，回调内只用
@@ -348,10 +355,9 @@ class AutoDM:
             account = (self.target_acct or getattr(self, "_acct", None) or "")
             if not account:
                 return None
-            aid = ai_agent.agent_of(account)
-            if not aid:
-                # 未绑定 Agent ⇒ 调用方（api/live_config / api/engine）已判定不接线
-                return None
+            aid = ai_agent.agent_of(account) or ""
+            # 未绑定 Agent 时 resolve_config 原样返回全局配置（零回归语义），
+            # 因此这里不能用「未绑定」当否决条件 —— 由下方 scopes 判定。
             cfg = ai_agent.resolve_config(account, base)
             if not cfg.get("enabled"):
                 return None
@@ -360,7 +366,8 @@ class AutoDM:
             if "live" not in (cfg.get("scopes") or []):
                 return None
             logger.info(f"[live-ai] 私信文案已接入 AI 生成（账号={account} "
-                        f"agent={aid} 档位={cfg.get('strict_level')}）")
+                        f"agent={aid or '未绑定/用全局'} 档位={cfg.get('strict_level')} "
+                        f"scopes={cfg.get('scopes')}）")
         except Exception as e:
             logger.warning(f"[SEND-039] " + f"[调度] AI 文案接线判定失败，回落词库: {e}")
             return None
