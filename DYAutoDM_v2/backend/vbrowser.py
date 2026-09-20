@@ -862,9 +862,12 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
     # 同一交互路径下实测**连续两轮未弹窗** —— 其指纹注入在 C++ 实现层，
     # 无 JS 注入痕迹（官方：Fingerprint injection without JS injection）。
     #
-    # 分派完全由配置显式决定（DY_BROWSER_KERNEL=camoufox），
-    # 默认仍走 Chromium —— 保留回退，避免把路走死。调用方零改动。
-    # ════════════════════════════════════════════════════════════════════
+    # 分派完全由配置显式决定（auto_dm/config.py: DY_BROWSER_KERNEL）。
+    # 2026-09-20 v0.44.2（用户拍板：专测 Camoufox，禁用 vb_chromium）：
+    #   启用 camoufox 时**禁止回退** Chromium —— 启动失败直接抛错（BCC-058），
+    #   不再静默降级。理由：静默降级会让"内核没切过去"变成无声事实，
+    #   实测已踩坑（GUI 启动不继承环境变量 → 以为切了内核、实际仍 Chromium）。
+    #   失败必须响亮，这是「诚实的失败」原则。
     try:
         from vbrowser_camoufox import camoufox_enabled, launch_camoufox_async
         if camoufox_enabled(cfg):
@@ -873,7 +876,17 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
                 headless=headless, user_data_dir=user_data_dir,
                 account=account, cfg=cfg)
     except Exception as _e_cam:  # noqa: BLE001
+        # 启用 camoufox 时不回退：直接以 BCC-058 抛出（调用方可见、可上报）
+        try:
+            from vbrowser_camoufox import camoufox_enabled as _ce
+            if _ce(cfg):
+                raise RuntimeError(
+                    f"[BCC-058] Camoufox 内核启动失败，且已按配置禁止回退 Chromium: {_e_cam}"
+                ) from _e_cam
+        except ImportError:
+            pass
         logger.error(f"[BCC-058] " + f"[vbrowser] Camoufox 启动失败，回退 Chromium: {_e_cam}")
+
     # 2026-09-13 统一入口审计（用户要求：所有启动路径走同一入口，杜绝环境分叉）：
     # 本函数是**所有**浏览器启动的最底层出口（login_api / web_probe / link_resolve /
     # api.accounts / browser_daemon 共 12 处调用点都经过这里）。在此统一登记：
@@ -993,6 +1006,15 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 headless=headless, user_data_dir=user_data_dir,
                 account=account, cfg=cfg)
     except Exception as _e_cam:  # noqa: BLE001
+        # 同 launch_async：启用 camoufox 时禁止静默回退 Chromium（失败须响亮）
+        try:
+            from vbrowser_camoufox import camoufox_enabled as _ce
+            if _ce(cfg):
+                raise RuntimeError(
+                    f"[BCC-058] Camoufox 内核启动失败，且已按配置禁止回退 Chromium: {_e_cam}"
+                ) from _e_cam
+        except ImportError:
+            pass
         logger.error(f"[BCC-058] " + f"[vbrowser] Camoufox 启动失败，回退 Chromium: {_e_cam}")
     # 统一入口审计（同 launch_async，见其说明）
     try:

@@ -433,6 +433,46 @@ class TestK_CamoufoxCaptureContract(unittest.TestCase):
         self.assertIn("不写残缺凭证", src)
 
 
+class TestL_CamoufoxNoFallback(unittest.TestCase):
+    """L：启用 Camoufox 时必须**禁止静默回退** Chromium（v0.44.2 用户拍板）。
+
+    背景：GUI 启动的 sidecar 不继承 shell 的 DY_BROWSER_KERNEL，导致
+    「以为切了内核、实际仍走 Chromium」而全程无声。现要求：
+      ① 内核由配置真源 auto_dm/config.py 的 DY_BROWSER_KERNEL 决定；
+      ② 启用 camoufox 时启动失败必须抛 BCC-058，不得降级到 Chromium。
+    """
+
+    def test_config_declares_kernel(self):
+        """配置真源必须显式声明内核（GUI 路径不继承环境变量）。"""
+        from auto_dm import config as cfg
+        self.assertEqual(
+            getattr(cfg, "DY_BROWSER_KERNEL", ""), "camoufox",
+            "auto_dm/config.py 未声明 DY_BROWSER_KERNEL=camoufox → GUI 启动会走 Chromium")
+
+    def test_kernel_decision_ignores_env_when_config_set(self):
+        """配置已声明时，判定只看配置（显式配置原则：不依赖外部可变状态）。"""
+        import os
+        from auto_dm import config as cfg
+        from vbrowser_camoufox import camoufox_enabled
+        old = os.environ.pop("DY_BROWSER_KERNEL", None)
+        try:
+            self.assertTrue(camoufox_enabled(cfg))
+        finally:
+            if old is not None:
+                os.environ["DY_BROWSER_KERNEL"] = old
+
+    def test_no_silent_fallback_on_camoufox_failure(self):
+        """两个启动出口都必须含「禁止回退」抛错分支（防单边漂移）。"""
+        import inspect
+        import vbrowser as vb
+        for fn, name in ((vb.launch_async, "launch_async"),
+                         (vb.launch_sync, "launch_sync")):
+            src = inspect.getsource(fn)
+            self.assertIn("禁止回退 Chromium", src,
+                          f"{name} 缺少禁止回退分支 → Camoufox 失败会静默降级")
+            self.assertIn("BCC-058", src, f"{name} 未上报 BCC-058")
+
+
 class TestZ_Syntax(unittest.TestCase):
     def test_all_files_parse(self):
         for f in (BROWSER_DAEMON, JS, GATE, API_ACC, AUTO_ACC):
