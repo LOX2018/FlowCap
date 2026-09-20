@@ -905,6 +905,51 @@ class BrowserContainer:
                     "msg": f"正在切换为{mode_str}，"
                            f"窗口就绪后自动完成（冷启动约 1~3 分钟）"}
 
+    # 可见窗口出现前的轮询参数（2026-09-20 v0.44.11 实机实测：
+    # Camoufox 有头实例从 launch 返回到「OS 层可见 MozillaWindowClass」约 12s，
+    # 可用即返回；90s 仅为异常内核/机器兜底上限——原注释「冷启动 1~3 分钟」与
+    # 实测不符，故不再依赖它的时间假设）。
+    _VISIBLE_POLL_EVERY = 3.0
+    _VISIBLE_POLL_MAX = 90.0
+
+    async def _wait_window_visible(self, target: bool) -> bool | None:
+        """有头重建后，轮询确认 OS 层出现可见窗口。
+
+        ## 为什么（2026-09-20 BCC-053 精确定位）
+
+        原实现在 `_launch()` 返回后**只检查一次**。实测 Camoufox 冷启动
+        launch 返回到窗口真正可见存在时间差（本机 ~12s），单次检查会误判。
+        但**不能**为了不误报就把「检测不到」当成成功 —— 那是把 BCC-053 从
+        「误报失败」换成「谎报成功」，更危险（用户以为已打开却什么都看不到）。
+
+        故：轮询直到「确认可见」，返回 True；
+        轮询耗尽仍不可见，返回 **False**（如实上报）；
+        若检测函数自身抛异常/拿不到证据，返回 **None**（诚实降级，不判定）。
+
+        返回值语义：
+          True  = 已确认存在可见窗口
+          False = 轮询耗尽仍无可见窗口（可据此报 BCC-053）
+          None  = 无法取得证据（检测函数异常），保留状态、不擅自下定论
+        """
+        deadline = time.time() + self._VISIBLE_POLL_MAX
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                vis = await self._window_really_visible()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[bcc] {self.account} 可见窗口检测异常（不判定）: "
+                               f"{type(e).__name__}: {e}")
+                return None
+            if vis:
+                if attempt > 1:
+                    logger.info(f"[bcc] {self.account} 可见窗口在第 {attempt} 次轮询"
+                                f"（约 {attempt * self._VISIBLE_POLL_EVERY:.0f}s）后确认")
+                return True
+            if time.time() >= deadline:
+                return False
+            await asyncio.sleep(self._VISIBLE_POLL_EVERY)
+
     async def _do_switch_background(self, target: bool, url: str = "",
                                     headless: bool | None = None) -> None:
         """后台执行可见性切换的 _launch 部分。失败只告警、不卡死容器。"""
@@ -915,21 +960,30 @@ class BrowserContainer:
             self._switch_cool_until = time.time() + _SWITCH_COOLDOWN_SEC
             # ═══════════════════════════════════════════════════════════════
             # 2026-09-19 v0.43.98【诚实降级】：切「可见」必须以 OS 层真实窗口
-            # 为判据。若重建后仍无可见窗口，说明切换实际未达成 —— 如实记
-            # BCC-053 并把状态回退为无头，绝不让 /status 谎报「已可见」
-            # （假成功正是用户「看到弹窗却看不到浏览器」的直接成因）。
+            # 为判据，绝不让 /status 谎报「已可见」（假成功正是用户「看到弹窗
+            # 却看不到浏览器」的直接成因）。
+            # 2026-09-20 v0.44.11【检查时机修正】：由「单次检查」改为
+            # **带重试轮询**——实测窗口从 launch 返回到可见约 12s，单次检查
+            # 会误报 BCC-053。轮询耗尽仍不可见才如实判定失败；检测函数异常则
+            # 诚实降级（None），既不误报失败也不谎报成功。
             # ═══════════════════════════════════════════════════════════════
             if target is False:  # 目标是「有头可见」
-                _vis = await self._window_really_visible()
-                if _vis:
+                _vis = await self._wait_window_visible(target)
+                if _vis is True:
                     logger.info(
                         f"[bcc] {self.account} 可见性切换完成："
                         f"OS 层已确认存在可见窗口")
-                else:
+                elif _vis is False:
                     logger.error(f"[BCC-053] " + f"[bcc] {self.account} 可见性切换后"
-                        f"OS 层未检测到可见窗口 —— 判定切换未达成，"
+                        f"（最长等待 {_VISIBLE_POLL_MAX:.0f}s）"
+                        f"OS 层仍未检测到可见窗口 —— 判定切换未达成，"
                         f"状态回退为无头（请检查内核参数/是否仍为 native headless）")
                     self._headless = True
+                else:  # None：检测函数据取不到，诚实降级，保留 _headless 意图
+                    logger.warning(
+                        f"[bcc] {self.account} 可见性切换完成，但 OS 层可见性"
+                        f"**无法确认**（检测函数据取不到证据）—— 保留当前可见性意图，"
+                        f"不擅自回退；请以屏幕实际窗口为准")
             logger.info(
                 f"[bcc] {self.account} 可见性切换完成(headless={target})，"
                 f"进入 {_SWITCH_COOLDOWN_SEC}s 切换冷却期（探活只告警不强杀）")
@@ -947,19 +1001,86 @@ class BrowserContainer:
             self._switch_started_at = 0.0
 
     async def _wait_profile_released(self, timeout: float = 10.0) -> None:
-        """等待 profile 的锁文件消失（chromium 进程完全退出）。
+        """等待 profile 的锁 / 占用进程消失（旧实例完全退出）。
 
-        切换可见性时 close()+stop() 是异步的，chromium 进程可能还没退，
-        新 launch_persistent_context 立即启动会 TargetClosed。这里轮询
-        profile 下的锁文件消失；超时则继续（不再等，避免永久卡死）。
+        切换可见性时 close()+stop() 是异步的，旧进程可能还没退，新
+        launch_persistent_context 立即启动会 TargetClosed。这里轮询等旧占用消失；
+        超时则继续（不再等，避免永久卡死）。
 
         Chromium 锁文件命名随内核/版本变化：官方 Chromium 用 SingletonLock，
         ungoogled-chromium 实测是 lockfile（2026-09-12 现场核实）。两者都查。
+
+        ## 2026-09-20 v0.44.11 修复：本函数对 Camoufox **曾经是空操作**
+
+        实机取证实录：
+          · Camoufox 是 **Firefox 内核**，锁文件是 `parent.lock`——不在上述
+            Chromium 名字列表里，于是 `if not locks: return` **立即返回**，
+            「等旧进程退净」这条保护对 Camoufox **完全失效**（静默形同虚设）；
+          · 且 Firefox 退出后 `parent.lock` **不会删除**（实测 close 后仍在），
+            故**不能**靠「锁文件消失」判断 Firefox 进程已退 —— 若简单把名字
+            加进列表，反而会在每次重建时白等满 timeout（性能回归）。
+
+        正解（仅对 Camoufox 生效，Chromium 路径**一行不动**）：
+        用 psutil 按 **本账号 profile 路径** 匹配进程，等其全部退出。进程退出
+        才是跨内核唯一可靠的判据。psutil 不可用时回落到原锁文件轮询。
         """
         if not self._profile_dir:
             return
+        # —— Camoufox/Firefox：按**进程退出**等待（不看锁文件）——
+        # ⚠️ 判定用**配置真源**而非只看 self._backend：`_launch` 里本函数在
+        #    `launch_async(...)` 之前调用，**首次启动时 self._backend 尚未赋值**
+        #    （仍是 None/旧值），只看它会漏判。配置是显式真源（显式配置原则）。
+        _is_camoufox = getattr(self, "_backend", "") == "camoufox"
+        if not _is_camoufox:
+            try:
+                from auto_dm import config as _cfg
+                from vbrowser_camoufox import camoufox_enabled
+                _is_camoufox = bool(camoufox_enabled(_cfg))
+            except Exception:
+                _is_camoufox = False
+        if _is_camoufox:
+            _needle = str(self._profile_dir).replace("\\", "/").lower()
+
+            def _owner_alive():
+                """返回 True=仍有占用进程 / False=已全部退出 / None=无法判定。"""
+                try:
+                    import psutil
+                except Exception:
+                    return None
+                try:
+                    for _p in psutil.process_iter(["pid", "cmdline"]):
+                        try:
+                            _cl = " ".join(_p.info.get("cmdline") or [])
+                        except Exception:
+                            continue
+                        if _needle and _needle in _cl.replace("\\", "/").lower():
+                            return True
+                except Exception:
+                    return None
+                return False
+
+            _st = _owner_alive()
+            if _st is False:
+                return
+            if _st is True:
+                _deadline = time.time() + timeout
+                while time.time() < _deadline:
+                    _st = _owner_alive()
+                    if _st is False:
+                        logger.info(f"[bcc] {self.account} profile 旧进程已退净"
+                                    f"（Camoufox 进程判据），可安全启动新 context")
+                        return
+                    if _st is None:
+                        break
+                    await asyncio.sleep(0.3)
+                if _st is not False:
+                    logger.warning(
+                        f"[bcc] {self.account} profile 仍被旧进程占用 "
+                        f"{timeout:.0f}s 未退净，继续启动（可能仍冲突）")
+                    return
+            # _st is None（psutil 不可用）→ 落到下方锁文件轮询兜底
         lock_files = [os.path.join(self._profile_dir, n)
-                      for n in ("SingletonLock", "lockfile")]
+                      for n in ("SingletonLock", "lockfile", "parent.lock", ".parentlock")]
         locks = [p for p in lock_files if os.path.exists(p)]
         if not locks:
             return
@@ -1793,71 +1914,108 @@ class BrowserContainer:
         except Exception:
             return False
         pids = set()
-        # 本容器的浏览器 PID：优先从 Playwright browser 对象拿，失败则回落
-        # 到进程命令行匹配（兜底，不影响判定正确性）。
+        # 本容器的浏览器 PID：优先从 Playwright browser 对象拿。
+        # 2026-09-20【v0.44.11 取证修正】Camoufox 走 AsyncCamoufox，它返回的是
+        # **BrowserContext**；此时 `self._browser` 为 None，但 context 自带
+        # `context.browser`（实测存在）。故主路径额外从 context 取一次——
+        # 这是「同构契约」在调用侧的兜底补强（reason 详见下方兜底注释）。
         try:
-            _b = getattr(self, "_browser", None)
+            _b = getattr(self, "_browser", None) or getattr(self._context, "browser", None)
             if _b is not None:
                 _proc = getattr(_b, "process", None) or getattr(_b, "_process", None)
                 if _proc is not None and getattr(_proc, "pid", None):
                     pids.add(int(_proc.pid))
         except Exception:
             pass
-        # 2026-09-20【Camoufox 修复】兜底：按 **profile 路径**匹配进程命令行。
+        # 2026-09-20【Camoufox 兜底】按 **进程命令行** 匹配本账号的内核进程。
         #
-        # 为什么必须兜底：Camoufox 走 AsyncCamoufox，返回的是 **BrowserContext**
-        # 而非 Browser → `self._browser` 恒为 None → pids 为空 → 旧代码直接
-        # `return False`，把**已经出来的有头窗口**误判为「OS 层不可见」，
-        # 于是 BCC-053 把状态强行回退为无头（用户看到「窗口一闪或没有窗口」）。
-        # 实测证据：pids 为空返回 False 的同时，系统里确有 2 个**不带 -headless**
-        # 的 camoufox.exe 在跑。
+        # 背景（实机取证）：Camoufox 的 `browser.process` 为 None（AsyncCamoufox
+        # 注入的是 ms-playwright 的 firefox，非 camoufox.exe），主路径可能拿不到 PID。
         #
-        # profile 路径在命令行里唯一（含账号名），用它匹配最可靠；
-        # 同时排除 --type=（子进程）避免抓到 renderer/utility 进程。
+        # ⚠️ 取证教训（2026-09-20 打包态复现）：旧实现**按固定进程名过滤**
+        # （只认 camoufox.exe）。一旦真实进程名不是它（本机实测进程名为
+        # `firefox.exe`），查询恒空 → pids 空 → `return False`，于是
+        # **窗口明明已在** 却报「OS 层无可见窗口」→ BCC-053 误判切换失败；
+        # 且异常被 `except: pass` 吞掉，**全程无任何日志**（静默失败）。
+        # 故本次改为三级、且**失败必须响亮**：
+        #   ① psutil（随包分发，不依赖 PATH / 外部命令）；按 cmdline 匹配
+        #      profile 的 ASCII 稳定片段，**不依赖具体进程名**；
+        #   ② PowerShell Get-CimInstance（最后防线，同样按 cmdline 匹配，
+        #      不再写死进程名）；
+        #   ③ 都拿不到 → WARNING 记录，绝不静默。
         #
-        # ⚠️ 用 PowerShell 而非 wmic：**本机 wmic 已被移除**（实测
-        # FileNotFoundError [WinError 2]），若用 wmic 则兜底恒失败 →
-        # 又回到「窗口明明出来却判不可见」。输出按 UTF-8 容错解码。
-        #
-        # ⚠️ 匹配**不要用含中文的完整 profile 路径**：PowerShell 输出的中文与
+        # ⚠️ 匹配**不要用含中文的完整 profile 路径**：外部工具输出的中文与
         # Python 字符串不是同一编码（实测「尚进工伤小助理」两侧字面量不同 →
         # 命中数恒 0，修复形同虚设）。改用**非中文稳定片段**：
-        #   `<member_id>`（如 m17db0f8209156f26）与 `_camoufox` —— 二者共同
-        #   唯一标识本账号的 Camoufox 进程，且全为 ASCII。
+        #   `<member_id>`（如 m17db0f8209156f26）与 `_camoufox` —— 全 ASCII，
+        #   二者共同唯一标识本账号的内核进程。
+        #
+        # ⚠️ 排除 `--type=`（子进程）：窗口由主进程持有，renderer/utility 无关。
+        _names_seen: set = set()
         if not pids and getattr(self, "_profile_dir", None):
+            _prof = str(self._profile_dir).replace("\\", "/")
+            _mem = ""
             try:
-                import json as _json
-                import subprocess as _sp
-                _ps = (
-                    'Get-CimInstance Win32_Process | Where-Object '
-                    '{ $_.Name -eq "camoufox.exe" -and '
-                    '$_.CommandLine -notlike "*--type=*" } | '
-                    'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
-                )
-                _r = _sp.run(
-                    ["powershell", "-NoProfile", "-Command", _ps],
-                    capture_output=True, timeout=25,
-                )
-                _out = (_r.stdout or b"").decode("utf-8", errors="replace")
-                _d = _json.loads(_out) if _out.strip() else []
-                if isinstance(_d, dict):
-                    _d = [_d]
-                # ASCII 稳定片段：member_id 段 + _camoufox
-                _prof = str(self._profile_dir).replace("\\", "/")
-                _mem = ""
                 _m = __import__("re").search(r"/members/([^/]+)/", _prof)
                 if _m:
                     _mem = _m.group(1)
-                _stable = [s for s in (_mem, "_camoufox") if s]
-                for _it in _d:
-                    _c = str(_it.get("CommandLine") or "")
-                    _pid_v = _it.get("ProcessId")
-                    if not _pid_v:
-                        continue
-                    if _stable and all(s.lower() in _c.lower() for s in _stable):
-                        pids.add(int(_pid_v))
             except Exception:
-                pass
+                _mem = ""
+            _stable = [s.lower() for s in (_mem, "_camoufox") if s]
+
+            def _cmdline_hit(_c: str) -> bool:
+                if not _stable:
+                    return False
+                _lc = str(_c or "").lower()
+                return all(s in _lc for s in _stable)
+
+            # ① psutil（首选：不依赖 PATH / 外部命令 / 进程名）
+            try:
+                import psutil as _psu
+                for _p in _psu.process_iter(["pid", "name", "cmdline"]):
+                    try:
+                        _names_seen.add(_p.info.get("name") or "")
+                        _cl = " ".join(_p.info.get("cmdline") or [])
+                        if _cmdline_hit(_cl):
+                            pids.add(int(_p.info["pid"]))
+                    except Exception:
+                        continue
+            except Exception as _e1:
+                logger.debug(f"[bcc] psutil PID 兜底不可用: {type(_e1).__name__}: {_e1}")
+            # ② PowerShell（次选：本机保留，作最后防线；按 cmdline 而非进程名）
+            if not pids:
+                try:
+                    import json as _json
+                    import subprocess as _sp
+                    _ps = (
+                        'Get-CimInstance Win32_Process | Where-Object '
+                        '{ $_.CommandLine -like "*_camoufox*" -and '
+                        '$_.CommandLine -notlike "*--type=*" } | '
+                        'Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress'
+                    )
+                    _r = _sp.run(
+                        ["powershell", "-NoProfile", "-Command", _ps],
+                        capture_output=True, timeout=25,
+                    )
+                    _out = (_r.stdout or b"").decode("utf-8", errors="replace")
+                    _d = _json.loads(_out) if _out.strip() else []
+                    if isinstance(_d, dict):
+                        _d = [_d]
+                    for _it in _d:
+                        _names_seen.add(str(_it.get("Name") or ""))
+                        if not _it.get("ProcessId"):
+                            continue
+                        if _cmdline_hit(str(_it.get("CommandLine") or "")):
+                            pids.add(int(_it["ProcessId"]))
+                except Exception as _e2:
+                    logger.debug(f"[bcc] PowerShell PID 兜底不可用: {type(_e2).__name__}: {_e2}")
+            # ③ 仍拿不到 PID → 必须响亮（旧实现静默 return False 正是本案真因）
+            if not pids:
+                logger.warning(
+                    f"[bcc] {getattr(self, 'account', '?')} 可见窗口检测：未能解析到"
+                    f"本容器进程 PID（兜底未命中；进程名样本="
+                    f"{sorted(n for n in _names_seen if n)[:8]}，匹配片段={_stable}）"
+                    f" —— 本次判为不可见，请检查进程名/匹配片段是否漂移")
         if not pids:
             return False
         # 连同子进程（renderer 与主进程同 PID 树）一起判定：直接查主进程即可，

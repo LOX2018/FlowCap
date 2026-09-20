@@ -610,13 +610,40 @@ class TestO_WindowVisibleCrossKernel(unittest.TestCase):
         self.assertIn("Chrome_WidgetWin", self.src, "不得丢弃 Chromium 支持")
 
     def test_pid_fallback_when_browser_is_none(self):
-        """_browser 为 None（Camoufox/AsyncCamoufox）时必须有 PID 兜底。"""
+        """_browser 为 None（Camoufox/AsyncCamoufox）时必须有 PID 兜底。
+
+        2026-09-20 修正：原断言只查字面量 `"camoufox.exe"`，而该字符串会出现在
+        **注释**里 → 断言「假绿」（把注释当实现，典型的形式主义门禁）。现改为
+        断言**真机制**：进程名不作过滤依据，改按 cmdline 稳定片段匹配。
+        """
         i = self.src.find("async def _window_really_visible")
         self.assertGreater(i, 0)
-        seg = self.src[i:i + 4000]
+        seg = self.src[i:i + 9000]
         self.assertIn("_profile_dir", seg,
                       "缺少按 profile 路径匹配进程的兜底 → Camoufox 下 pids 恒空")
-        self.assertIn("camoufox.exe", seg, "兜底未按 camoufox 进程名匹配")
+        self.assertIn("psutil", seg,
+                      "首选机制必须是 psutil（不依赖 PATH / 外部命令 / 进程名）")
+        self.assertIn("process_iter", seg, "兜底应遍历进程而非只看窗口")
+        self.assertIn("cmdline", seg, "兜底应按命令行匹配，而非写死进程名")
+
+    def test_no_hardcoded_process_name_filter(self):
+        """不得再写死进程名过滤（本案真因）。
+
+        实测：真实内核进程名不是 camoufox.exe（本机是 firefox.exe），
+        `$_.Name -eq "camoufox.exe"` 使查询恒空 → pids 空 → 误判不可见 → BCC-053。
+        """
+        i = self.src.find("async def _window_really_visible")
+        seg = self.src[i:i + 9000]
+        self.assertNotIn('$_.Name -eq', seg,
+                         "不得按固定进程名过滤（进程名会漂移，须按 cmdline 匹配）")
+
+    def test_fallback_failure_is_loud(self):
+        """兜底拿不到 PID 必须响亮告警，不得静默 return False。"""
+        i = self.src.find("async def _window_really_visible")
+        seg = self.src[i:i + 9000]
+        self.assertIn("未能解析到", seg,
+                      "兜底未命中必须留下可诊断的 WARNING（静默失败正是本案真因）")
+        self.assertIn("logger.warning", seg)
 
     def test_no_wmic_dependency(self):
         """不得依赖 wmic（本机已移除，实测 FileNotFoundError）。"""
@@ -625,6 +652,60 @@ class TestO_WindowVisibleCrossKernel(unittest.TestCase):
         self.assertNotIn('"wmic"', seg,
                          "wmic 在本机不可用；用 PowerShell Get-CimInstance")
         self.assertIn("powershell", seg.lower())
+
+
+class TestP_SwitchTimingAndProfileRelease(unittest.TestCase):
+    """P：切换判据必须「轮询 + 诚实降级」；profile 释放必须对 Firefox 有效。
+
+    事故（2026-09-20 实测）：`_do_switch_background` 在 `_launch()` 返回后**只检查
+    一次**；同时 `_wait_profile_released` 只认 Chromium 锁名（Camoufox 是 Firefox，
+    锁名 `parent.lock`）→ 对 Camoufox **静默空操作**。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = _read(BROWSER_DAEMON)
+
+    def test_polling_replaces_single_check(self):
+        self.assertIn("async def _wait_window_visible(self, target: bool) -> bool | None:",
+                      self.src, "必须新增带重试的可见性轮询")
+        i = self.src.find("async def _do_switch_background")
+        j = self.src.find("async def _wait_profile_released")
+        seg = self.src[i:j]
+        self.assertIn("await self._wait_window_visible(target)", seg,
+                      "切换完成判据必须走轮询，而非单次检查")
+        self.assertNotIn("await self._window_really_visible()", seg,
+                         "不得再在切换路径单次直查（窗口尚未出现即误判 → BCC-053）")
+
+    def test_honest_degradation_does_not_force_headless(self):
+        """检测函数据取不到时，不得擅自把 _headless 回退（既不误报也不谎报）。"""
+        i = self.src.find("async def _do_switch_background")
+        j = self.src.find("async def _wait_profile_released")
+        seg = self.src[i:j]
+        self.assertIn("无法确认", seg, "必须有「证据取不到」的诚实降级分支")
+        self.assertIn("elif _vis is False:", seg,
+                      "回退为无头只能出现在「确认不可见」的严格分支里")
+        # 诚实降级分支（else）内不得出现状态回退
+        k = seg.find("else:  # None")
+        self.assertGreater(k, 0, "缺少 None 分支")
+        self.assertNotIn("self._headless = True", seg[k:k + 400],
+                         "诚实降级分支不得擅自回退状态")
+
+    def test_wait_profile_released_covers_camoufox(self):
+        i = self.src.find("async def _wait_profile_released")
+        j = self.src.find("async def submit(")
+        seg = self.src[i:j]
+        self.assertIn('"camoufox"', seg, "Camoufox 必须走进程退出判据")
+        self.assertIn("psutil", seg)
+        self.assertIn("_needle", seg)
+        # Chromium 路径不得被破坏
+        self.assertIn("SingletonLock", seg, "不得删除 Chromium 锁名（回归）")
+        self.assertIn("lockfile", seg, "不得删除 ungoogled-chromium 锁名（回归）")
+
+    def test_browser_pid_falls_back_to_context(self):
+        """同构契约漏洞的调用侧补强：context 自带 browser 时也要用上。"""
+        self.assertIn('getattr(self._context, "browser", None)', self.src,
+                      "Camoufox 返回 BrowserContext，_browser 为 None，须从 context 取")
 
 
 class TestZ_Syntax(unittest.TestCase):

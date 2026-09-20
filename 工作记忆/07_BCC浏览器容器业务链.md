@@ -895,3 +895,89 @@ python scripts/verify_lease_wiring.py            # 期望 PASS=31 FAIL=0
   （`_keep_browser_open`），否则立刻构成双实例。
 - 守护测试：`backend/test_browser_visibility_guard.py`（26 项）。
 
+
+## 【2026-09-20 v0.44.11】BCC-053 误判精确定位：PID 兜底「按固定进程名过滤」+ 检查时机
+
+> 接上节 v0.43.98：上一轮把「判据」定对了（OS 层真窗口），但**判据的取数链路**
+> 仍有一个静默失败点，直到本节才查清。上一轮的部分结论（「冷启动需 1~3 分钟」）
+> 经实测**是错的**，本轮一并纠正。
+
+### 症状
+`/show` 后日志必报 `[BCC-053] … OS 层未检测到可见窗口`，但**窗口实际已在屏幕上**
+（权威枚举可见 `MozillaWindowClass`）。
+
+### 实测取证（决定性，均为真机运行数据）
+
+| 取证项 | 结果 |
+|---|---|
+| 干净复刻 `/show` 切换序列（关旧 context → 重建有头） | launch 返回后**立即**检测即 `True`，**不复现** BCC-053 |
+| 打包态（0.44.10）真实 `/show` | **稳定复现**（14:05、14:28、14:47 三次，重建后 6~16s 报错） |
+| 窗口出现时刻 | Camoufox 有头实例从 launch 返回 → OS 层可见 **约 12s**（**不是** 1~3 分钟） |
+| 真实内核进程名 | 现场**无法复现为** `camoufox.exe`（安装目录里确有 camoufox.exe，但 AsyncCamoufox 注入的是 ms-playwright 的 firefox）→ 按固定名过滤**不可靠** |
+| `browser.process.pid` | **None**（AsyncCamoufox 路径拿不到） |
+| `context.browser` | **存在**（可直接用） |
+
+### 根因（真因，不是表面症状）
+1. **PID 解析静默失败**：`_window_really_visible` 的兜底用
+   `Get-CimInstance Win32_Process` 按**固定进程名**（`camoufox.exe`）过滤。
+   进程名一旦不是它，查询恒空 → `pids` 为空 → `return False`
+   →「窗口明明已在」却判不可见 → BCC-053。
+   **且异常被 `except: pass` 吞掉，全程无任何日志**（静默失败，不可观测）。
+2. **检查时机**：`_do_switch_background` 在 `_launch()` 返回后**只检查一次**；
+   而 launch 返回到窗口可见仍有 ~12s 时间差 → 单次检查必然误判。
+   （但**不能**因此把「检测不到」当成功——那是把误报换成**谎报**，更危险。）
+3. **整链路缺陷**：`_wait_profile_released` 只查 Chromium 锁名
+   （`SingletonLock`/`lockfile`），而 Camoufox 是 Firefox，锁名 `parent.lock`
+   → `if not locks: return` **立即返回**，该保护对 Camoufox **完全空操作**。
+
+### 修复（v0.44.11）
+| 位置 | 措施 |
+|---|---|
+| `_window_really_visible` | 主路径补 `context.browser`；兜底改**三级**：① `psutil` 按 **cmdline 稳定片段**（member_id + `_camoufox`）匹配，**不依赖进程名** ② PowerShell（同样按 cmdline，**不再写死进程名**）③ 都拿不到 → **WARNING 响亮告警**（消灭静默失败） |
+| `_do_switch_background` | 单次检查 → **`_wait_window_visible` 轮询**（每 3s、上限 90s）；并引入**三态**：`True`=已确认 / `False`=轮询耗尽仍不可见（如实报 BCC-053）/ `None`=检测函数据取不到（**诚实降级，不擅自回退 `_headless`**） |
+| `_wait_profile_released` | 对 Camoufox 改按 **进程退出** 等待（psutil 按 profile 路径匹配），不看锁文件；Chromium 路径**一行不动**。判定用**配置真源**（`camoufox_enabled(cfg)`），因 `_launch` 中本函数先于 `launch_async` 调用、首次启动时 `self._backend` 尚未赋值 |
+
+### 铁律（新增）
+1. **外部工具/系统查询的「查不到」必须响亮**：任何 `except: pass` 包裹的
+   系统探测都会把「机制失效」伪装成「结果就是否」，不可观测 = 不可修复。
+2. **指纹内核的进程名不可假定**：AsyncCamoufox 与 Camoufox 官方安装目录的
+   进程名**可能不一致**，一律按 **cmdline 中的 profile 稳定片段**匹配。
+3. **「探测不到」≠「不存在」**：完成判据的取数失败，既不许当真（误报失败），
+   也不许当成功（谎报成功），**必须第三种结果**（诚实降级）。
+4. **同一件事的进程判据跨内核不通用**：Chromium 认锁文件，Firefox 须认**进程
+   是否退出**（且 Firefox 退出后 `parent.lock` 残留 → 锁文件判据在 Firefox 上
+   `false` 与 `true` 都可能骗人）。
+5. **等待窗口的两条约束要同时满足**：时长上界必须**实测**（本轮实测 ~12s，
+   原注释「1~3 分钟」是错的）；同时在等待期**必须**有「切换中/冷却期」保护，
+   否则探活失败会触发重启风暴 → 无头↔有头横跳 → 抖音判环境异常
+   （这正是「扫码时弹安全风险」的成因，见 §24.10 与 v0.43.99）。
+
+### 实施后验证（打包态 0.44.11-debug，实测）
+```
+POST /status                                    → version=0.44.11
+POST /show                                      → headless=false, switching=true
+日志                                            → 「可见性切换完成：OS 层已确认存在可见窗口」
+独立 EnumWindows 枚举（该账号 profile 进程）      → MozillaWindowClass visible=True，计数 1
+本次启动后 BCC-053 计数                            → 0
+「未能解析到本容器进程 PID」告警计数                 → 0（说明 psutil 兜底命中）
+未确认可见窗口时                                   → 仍走 BCC-053（诚实降级未被削弱）
+```
+- 守卫测试 `test_browser_visibility_guard.py`：**61/61 PASS**（新增 6 项，
+  并把原「只查字面量 `camoufox.exe`」的**假绿**断言（把注释当实现）改为断言真机制）。
+- `_wait_profile_released` 真机验证：实例存活时等满超时并告警（旧实现 0.00s 空操作）；
+  关闭后 0.05s 判为已退净。
+
+### 未处理（如实记录，未动手）
+1. **Camoufox 下 WP 私信链路未验证**：`browser_daemon_js.py` 的注入 hook 在 camoufox
+   模式**已禁用**；理论替代是 Playwright 原生 `page.on("websocket")`（**未实施**）。
+   `recv_daemon` 的独立 WS 通道**不依赖注入**，2026-09-20 实测
+   `connected=true, disconnects=0, conv_count=280/83`。
+2. **`get_message_by_init` 被拒（cmd 609 / `unexepcted session length`）**：
+   既有缺陷，**与内核无关**——取证 09-16 失败率 0% → 09-20 89%，**换 Camoufox 前
+   就在恶化**。按「迭代止损律」：同一症状已试 2 次，须换视角，本轮不动。
+3. **出口 IP 隐患**：曾观测到 `23.191.200.205` = 美国机房 IP（`proxy=true, hosting=true`）。
+   复核 §环境门阀：当前账号配置为「系统代理」而本机未开系统代理 → `BCC-038` 如实
+   告警并走**直连**（这是**设计如此**，不是缺陷）。若弹窗再现，优先核对
+   「代理配置模式」与实际出口是否一致（选项见本文件 §环境门阀）。
+
+

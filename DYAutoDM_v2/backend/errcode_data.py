@@ -729,18 +729,29 @@ CODE_DESIGN = {
         "design": "可见性切换的**完成判据是 OS 层真实可见窗口**，不是 CDP 返回值。"
                   "纯 native headless 下 Browser.setWindowBounds('normal') 恒返回"
                   "成功但无真实窗口，故「已切为有头」必须经 OS 枚举确认；"
-                  "无法确认即如实报未达成，绝不谎报成功。",
-        "contract": "切换为可见后，该容器 chromium 进程在 OS 层必须存在 "
-                    "IsWindowVisible=True 且类名含 Chrome_WidgetWin 的顶层窗口。",
-        "deviation": "重建完成后 OS 层未见可见窗口 → 切换未真正达成"
-                     "（用户侧表现为「提示已打开却看不到浏览器」）。",
+                  "无法确认即如实报未达成，绝不谎报成功。"
+                  "（2026-09-20 v0.44.11：判据改为**带重试轮询**——实测窗口从 "
+                  "launch 返回到可见约 12s，单次检查必然误报；轮询上限 90s。）",
+        "contract": "切换为可见后，该容器内核进程在 OS 层必须存在 "
+                    "IsWindowVisible=True 且类名为浏览器顶层窗口"
+                    "（Chromium=Chrome_WidgetWin / Camoufox=MozillaWindowClass）"
+                    "的顶层窗口；窗口在轮询窗口内出现即算达成。",
+        "deviation": "轮询耗尽（最长 90s）仍未见可见窗口 → 切换未真正达成"
+                     "（用户侧表现为「提示已打开却看不到浏览器」）。"
+                     "检测函数据取不到时**不判失败**，走诚实降级（不清空状态）。",
         "chain": "POST /show(visible=true) → set_visible → _do_switch_background"
-                 " → _launch(headless=False) → _window_really_visible()",
-        "root": "内核仍被以 native headless 启动（或窗口被最小化/移出屏幕），"
-                "使「有头」意图未落到真实窗口；亦可能是多实例抢 profile 导致重建失败。",
-        "verify": "1) EnumWindows 枚举该 chromium PID 的可见窗口数（headless=0 / "
-                  "headed=1，已实测）；2) 查 chrome 主进程实参是否含 --headless；"
-                  "3) Win32_Process 确认同 profile 无第二个实例。",
+                 " → _launch(headless=False) → _wait_window_visible()"
+                 "（轮询）→ _window_really_visible()",
+        "root": "① 内核仍被以 native headless 启动（窗口被最小化/移出屏幕）；"
+                "② 多实例抢 profile 导致重建失败；"
+                "③【2026-09-20 实测真因】PID 兜底静默失败：旧实现按固定进程名"
+                "过滤，而真实内核进程名会漂移 → 进程列表恒空 → 判不可见；"
+                "异常又被 `except: pass` 吞掉，全程无日志。",
+        "verify": "1) EnumWindows 枚举该内核 PID 的可见窗口数（headless=0 / "
+                  "headed=1，已实测）；2) 查内核主进程实参是否含 --headless；"
+                  "3) Win32_Process 确认同 profile 无第二个实例；"
+                  "4) 若日志出现「未能解析到本容器进程 PID」= PID 兜底失效，"
+                  "按 cmdline 片段（member_id + _camoufox）核对进程名是否漂移。",
     },
     "BCC-054": {
         "design": "同一账号同一时刻只能有一个 profile 所有者；任何『交出/取回 "
