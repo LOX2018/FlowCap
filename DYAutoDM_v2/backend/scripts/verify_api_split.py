@@ -3,8 +3,9 @@
 
 ## 铁律：环境隔离
 
-本脚本**强制**使用本分支独立环境 `C:\\temp\\dyautodm_design`，
-绝不触碰主分支环境（`C:\\temp\\dyautodm_test`）。
+本脚本**强制**使用本分支独立环境 `C:\\temp\\dyautodm_design`。
+（2026-09-20 起两分支已合并为单分支 `design/better-douyin`，
+ 旧主分支环境 `C:\\temp\\dyautodm_test` 已废弃删除，不再作为禁入目标。）
 
 ## 验证目标
 
@@ -23,13 +24,14 @@ import sys
 from pathlib import Path
 
 DESIGN_ROOT = r"C:\temp\dyautodm_design"
-_forbidden = (r"C:\temp\dyautodm_test",)
-# 2026-09-17 修补（OCR 审查 HIGH —— assert 可被 -O 剥离）：
-# 与 backend/scripts/verify_capture_parse.py 同款分支环境守卫，
-# 同样不能用 assert（`python -O` 下会被整体移除，守卫失效）。
-if os.path.abspath(DESIGN_ROOT) in [os.path.abspath(x) for x in _forbidden]:
+_SOURCE_REPO = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
+# 2026-09-20：主分支环境 C:\temp\dyautodm_test 已废弃删除（两分支合并为
+# design/better-douyin）。隔离门禁据此改为防「数据落进源码树」
+# —— 铁律：源码目录不得产生 db / profile / data / accounts。
+if os.path.abspath(DESIGN_ROOT).startswith(os.path.abspath(_SOURCE_REPO) + os.sep):
     raise SystemExit(
-        "拒绝运行：本脚本属 design/better-douyin 分支，不得指向主分支环境")
+        "拒绝运行：环境根落在源码树内，会污染源码库"
+        r"（应使用 C:\temp\dyautodm_design）")
 os.environ["DY_APP_ROOT"] = DESIGN_ROOT
 os.environ.setdefault("PYTHON_BASIC_REPL", "1")
 _s = json.loads((Path(DESIGN_ROOT) / "members" / ".session.json").read_text(encoding="utf-8"))

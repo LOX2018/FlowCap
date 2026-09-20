@@ -19,7 +19,14 @@ import sys
 from pathlib import Path
 
 DESIGN_ROOT = r"C:\temp\dyautodm_design"
-assert os.path.abspath(DESIGN_ROOT) != os.path.abspath(r"C:\temp\dyautodm_test")
+_SOURCE_REPO = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
+# 2026-09-20：主分支环境 C:\temp\dyautodm_test 已废弃删除（两分支合并为
+# design/better-douyin）。隔离门禁改为显式 if + raise，防「数据落进源码树」
+# —— 原本用 assert，但 `python -O` 会整体剥离 assert 使守卫失效。
+if os.path.abspath(DESIGN_ROOT).startswith(os.path.abspath(_SOURCE_REPO) + os.sep):
+    raise SystemExit(
+        "拒绝运行：环境根落在源码树内，会污染源码库"
+        r"（应使用 C:\temp\dyautodm_design）")
 os.environ["DY_APP_ROOT"] = DESIGN_ROOT
 os.environ.setdefault("PYTHON_BASIC_REPL", "1")
 _s = json.loads((Path(DESIGN_ROOT) / "members" / ".session.json").read_text(encoding="utf-8"))

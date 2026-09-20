@@ -21,14 +21,15 @@ import json
 import glob
 
 DESIGN_ROOT = r"C:\temp\dyautodm_design"
-FORBIDDEN = (r"C:\temp\dyautodm_test",)
-# 2026-09-17 修补（OCR 审查 HIGH —— assert 可被剥离）：
-# 原用 `assert` 做安全守卫，但 `python -O` / `-OO` / PYTHONOPTIMIZE=1 下
-# **assert 会被整体剥离** → 守卫失效，脚本可能在主分支环境上运行并污染它。
-# 改为显式 if + raise（任何优化级别都生效）。
-if os.path.abspath(DESIGN_ROOT) in [os.path.abspath(x) for x in FORBIDDEN]:
+_SOURCE_REPO = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
+# 2026-09-20：主分支环境 C:\temp\dyautodm_test 已废弃删除（两分支合并为
+# design/better-douyin）。隔离门禁据此改为防「数据落进源码树」。
+# 原用 `assert` 做守卫，但 `python -O` / `-OO` / PYTHONOPTIMIZE=1 下
+# **assert 会被整体剥离** → 守卫失效；此处用显式 if + raise（任何优化级别都生效）。
+if os.path.abspath(DESIGN_ROOT).startswith(os.path.abspath(_SOURCE_REPO) + os.sep):
     raise SystemExit(
-        "拒绝运行：本脚本属 design/better-douyin 分支，不得指向主分支环境")
+        "拒绝运行：环境根落在源码树内，会污染源码库"
+        r"（应使用 C:\temp\dyautodm_design）")
 os.environ.setdefault("DY_APP_ROOT", DESIGN_ROOT)
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

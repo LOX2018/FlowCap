@@ -3,8 +3,9 @@
 
 ## 铁律：环境隔离
 
-本脚本**强制**使用本分支的独立部署目录，绝不触碰主分支环境
-（`C:\\temp\\dyautodm_test`）。若环境变量指向主分支，脚本**拒绝运行**。
+本脚本**强制**使用本分支的独立部署目录（`C:\\temp\\dyautodm_design`）。
+（2026-09-20 起主分支与设计分支已合并为单分支 `design/better-douyin`，
+ 旧主分支环境 `C:\\temp\\dyautodm_test` 已废弃删除，不再作为禁入目标。）
 
 用法（在 backend 目录下）：
     python scripts/verify_logic_replication.py
@@ -23,12 +24,12 @@ from pathlib import Path
 
 # ── 1. 环境隔离门禁（先于任何业务导入）──────────────────────────────
 DESIGN_ROOT = r"C:\temp\dyautodm_design"
-FORBIDDEN = (r"C:\temp\dyautodm_test",)      # 主分支环境，绝不使用
-
-_root = os.path.abspath(DESIGN_ROOT)
-for bad in FORBIDDEN:
-    if os.path.abspath(bad) == _root:
-        raise SystemExit(f"[隔离门禁] 拒绝运行：目标环境指向主分支 {bad}")
+_SOURCE_REPO = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
+# 2026-09-20：主分支环境 C:\temp\dyautodm_test 已废弃删除（两分支合并为
+# design/better-douyin）。隔离门禁改为防「数据落进源码树」。
+for _bad in (_SOURCE_REPO,):
+    if os.path.abspath(DESIGN_ROOT).startswith(os.path.abspath(_bad) + os.sep):
+        raise SystemExit(f"[隔离门禁] 拒绝运行：环境根落在源码树内 {_bad}")
 
 os.environ["DY_APP_ROOT"] = DESIGN_ROOT
 os.environ.setdefault("PYTHON_BASIC_REPL", "1")

@@ -714,8 +714,8 @@ def app_root():
     """应用根目录（持久化数据基准）：
 
     - **最高优先级**：环境变量 `DY_APP_ROOT`。设置后直接返回该路径，
-      用于**源码态指向隔离测试路径**（如 C:\\temp\\dyautodm_test），
-      使账号 .env / data / vb_chromium / logs 全部落到隔离目录，
+      用于**源码态指向隔离数据路径**（如 C:\\temp\\dyautodm_design），
+      使账号 .env / data / logs 全部落到隔离目录，
       不必再把测试库复制回源码仓库（违反隔离铁律且危险）。
       正常开发/打包均不设此变量，行为与之前完全一致。
     - 源码态：本文件位于 backend/vbrowser.py，向上两级（backend 的上一级）即项目根
