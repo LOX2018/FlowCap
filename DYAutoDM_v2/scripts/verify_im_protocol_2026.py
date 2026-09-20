@@ -101,6 +101,51 @@ def main() -> int:
     check("I8 bd_ticket.ticket_guard_version 存在",
           "def ticket_guard_version" in bd, "未定义 ticket_guard_version")
 
+    # 8b) 【2026-09-21 新增】文本消息 content 必须包 aweType 信封。
+    #
+    # 历史缺陷：v0.43.97 重构 build_send_message_request 引入 content 参数后，
+    # 裸字符串直接 str() 发出，aweType 信封被静默丢弃 ⇒ 服务端「收妥回 OK 但不
+    # 投递」（GitHub cv-cat/DouYin_Spider issue #44 / #64 同一形态）。
+    # 原 14 项守卫只校验信封与鉴权字段，对 content 载荷零覆盖，故放行了回归。
+    #
+    # 判据不用 grep 源码（注释里出现 aweType 会造成假绿），改为**真实调用**
+    # 构造函数并断言产出 —— 只信运行时输出。
+    try:
+        sys.path.insert(0, str(BACKEND))
+        from builder.proto import ProtoBuilder  # type: ignore
+        import json as _json
+
+        class _FakeAuth:
+            """最小 auth 桩：build_send_message_request 只读取这几个字段。"""
+            ticket = ""
+            ts_sign = ""
+            client_cert = ""
+            cookie = {}
+
+        _auth = _FakeAuth()
+
+        _req = ProtoBuilder.build_send_message_request(
+            _auth, "0:1:1:2", 1, "t", "你好")
+        _payload = _json.loads(_req.body.send_message_body.content)
+        check("I8b 文本 content 包 aweType=700 信封",
+              isinstance(_payload, dict) and _payload.get("aweType") == 700
+              and _payload.get("type") == 0
+              and _payload.get("text") == "你好",
+              f"文本 content 不是 aweType 信封：{_req.body.send_message_body.content[:80]!r}")
+        check("I8c message_type 仍为 7（IM_TEXT）",
+              _req.body.send_message_body.message_type == 7,
+              f"message_type={_req.body.send_message_body.message_type}")
+        # 富媒体（dict）必须原样序列化，不能被信封二次包裹
+        _rich = {"aweType": 2702, "resource_url": {"oid": "x"}}
+        _req2 = ProtoBuilder.build_send_message_request(
+            _auth, "0:1:1:2", 1, "t", content=_rich, message_type=27)
+        check("I8d 富媒体 dict 不被二次包裹",
+              _json.loads(_req2.body.send_message_body.content) == _rich,
+              f"富媒体 content 被改写：{_req2.body.send_message_body.content[:80]!r}")
+    except Exception as exc:  # noqa: BLE001
+        check("I8b 文本 content 包 aweType=700 信封", False,
+              f"守卫自身执行失败（不得静默通过）: {type(exc).__name__}: {exc}")
+
     ci = _read("backend/services/conv_identity.py")
     # 9) 旧判据已移除
     check("I9 conv_identity 不再用「位置数<=1」旧判据",

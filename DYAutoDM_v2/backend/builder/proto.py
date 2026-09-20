@@ -106,6 +106,28 @@ class ProtoBuilder:
             content = message
         if content is None:
             content = ""
+        # 2026-09-21 回归（v0.44.16）：**文本消息必须包 aweType 信封**。
+        #
+        # 设计契约：protobuf 的 message_type=7（IM_TEXT）声明这是一条富媒体
+        # 消息，其 content 不是裸文本，而是浏览器 SDK 的固定 JSON 信封
+        #   {"aweType":700,"type":0,"richTextInfos":[],"text":"..."}
+        # 服务端对裸文本会「收妥回 OK 但不投递」（GitHub cv-cat/DouYin_Spider
+        # issue #44「返回 OK 对方收不到」、#64「10502」同一故障形态）。
+        #
+        # v0.43.97 重构本函数时为支持富媒体引入 content 参数，裸字符串落到
+        # 下面的 else 分支直接 str() 发出，信封被静默丢弃 —— 09-19 23:44 起
+        # 私信「显示成功实际未投递」即由此而来。
+        #
+        # 四来源一致（zhinjs/douyin-im buildDesktopTextContent、
+        # cv-cat DouYin_Spider send_msg、xiaoxiaodafeng Douyin_messages、
+        # 本项目 v0.43.97 前的实现）：aweType=700 / type=0 / richTextInfos=[]。
+        if not isinstance(content, (dict, list, tuple)) and message_type == 7:
+            content = {
+                "aweType": 700,
+                "type": 0,
+                "richTextInfos": [],
+                "text": str(content),
+            }
         client_message_id = str(client_message_id or uuid.uuid4())
         request = ProtoBuilder.build_normal_request(auth, 100)
         if isinstance(content, (dict, list, tuple)):
