@@ -422,11 +422,10 @@ class AutoDM:
         聚合引擎状态 + 直播流 + 调度进度 + 发送记录为单个 JSON，前端两页共用。
         """
         live = self.live
-        ws_active = bool(
-            live
-            and getattr(live, "ws", None)
-            and not getattr(live, "_should_stop", True)
-        )
+        # 2026-09-21（ENG-015）：与 `_on_dispatch_idle` 共用同一存活判据。
+        # 原判据 `live.ws is not None` 在 WS 握手窗口内恒 False → 前端在
+        # 「已开始监听但尚未连上」的 1~2s 内读到 alive=False、误显示「等待启动」。
+        ws_active = self._listen_line_active()
         records = self.dispatch.records_list() if self.dispatch else []
         sent = sum(1 for r in records if getattr(r, "status", None) == RecordStatus.SENT)
         queue = self.dispatch.queue_size() if self.dispatch else 0
@@ -808,16 +807,51 @@ class AutoDM:
         if self.state not in (EngineState.RUNNING, EngineState.STOPPING, EngineState.PAUSED):
             return
         # 监听还活着 -> 队列空只是正常间隙，忽略
-        live_active = (
-            self.live is not None
-            and getattr(self.live, "ws", None) is not None
-            and not getattr(self.live, "_should_stop", False)
-        )
-        if live_active:
+        #
+        # 2026-09-21（ENG-015 根因修复）：这里的「监听是否活着」此前判成
+        # `self.live.ws is not None`。而 `ws` 是 `run_forever()` 内部才赋值的，
+        # **启动握手窗口内恒为 None** —— 于是本回调在引擎刚进 RUNNING、
+        # WS 还没连上的那一两秒里被触发时，会把手握中的监听判成「已死」，
+        # 直接把整个任务收尾成 STOPPED。
+        # 实机（run_20260921_010907.log）：
+        #   01:21:41 已在直播，直接开始监听
+        #   01:21:41 [引擎] 私信收尾 … 状态=finished   ← 误收尾
+        #   01:21:42 [live-ws] 连接已建立               ← WS 一秒后才连上
+        # 后果：弹幕/AI 照常工作，但 engineState 恒为 stopped，
+        #       前端徽章与「暂停/继续/停止」控件全部失效（用户报的现象）。
+        #
+        # 正确判据分两层：
+        #   ① `_ws_alive`：WS 已连上，或正处于自动重连中（on_close 未走停止分支）；
+        #   ② 回退：尚未置停且 ws 句柄已存在 —— 覆盖握手刚完成、
+        #      on_open 尚未被调度的极短窗口，避免反向误判。
+        # 另：上方 `self.state not in (RUNNING, STOPPING, PAUSED)` 的守卫已排除
+        #     STARTING 态，本处不再重复判 STARTING（避免两处语义漂移）。
+        if self._listen_line_active():
             return
         self.state = EngineState.STOPPED
         self.status_msg = "已停止"
+        # 收尾已完成：解绑队列空回调（ENG-015 —— 调度器不再自行解绑）
+        if self.dispatch is not None:
+            self.dispatch.detach_on_idle()
         self._finish_history_task("finished")
+
+    def _listen_line_active(self) -> bool:
+        """监听线是否仍在运行（收尾判据的唯一真源）。
+
+        设计契约：`live.ws` 只在 `run_forever()` 内赋值，握手窗口内为 None，
+        **不能**单独用作存活判据（ENG-015）。本方法按「已连上 → 正在重连 →
+        刚拿到句柄」的顺序判定，任一层成立即视为监听线存活。
+        """
+        live = self.live
+        if live is None:
+            return False
+        if getattr(live, "_ws_alive", False):
+            return True
+        # 回退：已拿到 ws 句柄且尚未被置停（覆盖 on_open 未及调度的窗口）
+        return (
+            getattr(live, "ws", None) is not None
+            and not getattr(live, "_should_stop", False)
+        )
 
     # ------------------------------------------------------------------
     # 重新扫码重建（迁移自 rescan_and_rebuild，同步逻辑）

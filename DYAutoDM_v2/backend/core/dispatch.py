@@ -95,6 +95,15 @@ class DispatchCenter:
         self._task: Optional[asyncio.Task] = None
         self.on_idle: Optional[Any] = None  # 回调：队列自然发空时触发
 
+    def detach_on_idle(self) -> None:
+        """解绑队列空回调（由上层在真正收尾时调用）。
+
+        2026-09-21（ENG-015）：「只触发一次」的语义从调度器移到上层 ——
+        调度器不再自行 `on_idle = None`，改由 AutoDM 收尾时显式解绑，
+        避免握手窗口吃掉唯一一次触发机会后，真正的收尾再无回调可用。
+        """
+        self.on_idle = None
+
     # ------------------------------------------------------------------
     # 状态控制
     # ------------------------------------------------------------------
@@ -308,13 +317,21 @@ class DispatchCenter:
             try:
                 item = await asyncio.wait_for(self._queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
-                # 队列空：触发 on_idle（只触发一次）
+                # 队列空：触发 on_idle
+                #
+                # 2026-09-21（ENG-015）：原实现触发后置 `self.on_idle = None`
+                # ——把「只触发一次」这一语义硬编码在调度器里。而队列空在
+                # **启动握手窗口内是必然的正常中间态**（还没捕获到任何目标），
+                # 于是这次唯一的触发机会被握手窗口吃掉，后续真正发空时反而
+                # 再也没有回调可用（自然关播的任务永远停在「运行中」）。
+                # 何时解绑属于**上层（AutoDM）的状态机语义**，不在调度器职责内：
+                # 调度器只负责「队列空了」这一事实的通知，由 AutoDM 在真正
+                # 收尾时调 `detach_on_idle()` 解绑。
                 if self._queue.empty() and not self.pending and self.on_idle:
                     try:
                         await self.on_idle() if asyncio.iscoroutinefunction(self.on_idle) else self.on_idle()
                     except Exception as e:
                         logger.warning(f"[SEND-003] " + f"[调度] on_idle 异常: {e}")
-                    self.on_idle = None
                 continue
 
             # 等到 send_at 时刻

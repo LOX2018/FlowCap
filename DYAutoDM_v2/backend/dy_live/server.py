@@ -30,6 +30,17 @@ class DouyinLive:
         self.live_id = live_id
         self.ws = None
         self._should_stop = False   # 停止开关：置 True 后 on_close 不再自动重连
+        # 2026-09-21（ENG-015 根因修复）：监听线存活判据。
+        # 设计契约：`self.ws` 只在 run_forever() 内部赋值，**握手窗口内恒为 None**；
+        # 而「监听是否活着」的正确语义是「已连上 或 正处于自动重连中」。
+        # 上游（AutoDM._on_dispatch_idle / snapshot）此前用 `self.ws is not None`
+        # 当存活判据 → 启动握手期间被判成「监听已死」，进而在首个队列空窗口
+        # 误收尾整个任务（实机：WS 建立前 1 秒就落 STOPPED）。
+        # 语义：True=监听线处于活跃生命周期（正在连接 / 已连上 / 正在重连）；
+        #       False=从未发起连接，或已被主动停止。
+        # 置活点在 start_ws() 入口（覆盖握手窗口），置死点只在「主动停止」分支
+        # 与 get_live_info 失败的早退分支。**重连空隙保持 True** —— 那不是停止。
+        self._ws_alive = False
 
     def ping(self, ws):
         while True:
@@ -44,6 +55,8 @@ class DouyinLive:
 
     def on_open(self, ws):
         logger.info(f"[LIVE-022] " + "[live-ws] 连接已建立")
+        # 监听线存活标记（ENG-015）：on_close 会把它清掉
+        self._ws_alive = True
         threading.Thread(target=self.ping, args=(ws,)).start()
 
     def on_message(self, ws, message):
@@ -102,6 +115,9 @@ class DouyinLive:
     def on_close(self, ws, close_status_code, close_msg):
         # 若主动停止（stop() 已置 _should_stop），不再自动重连，确保 WS 真正断开
         if getattr(self, "_should_stop", False):
+            # 仅「真停止」才清存活标记；要重连的情形下保持 True，
+            # 否则重连的空隙会被上游误判成「监听已死」而收尾整个任务（ENG-015）
+            self._ws_alive = False
             logger.info(f"[LIVE-025] " + "[live-ws] closed（主动停止，不重连）")
             return
         # 此处判断是否需要重连 判断直播间是否关闭
@@ -109,6 +125,11 @@ class DouyinLive:
         logger.warning(f"[LIVE-026] " + f"[live-ws] closed status_code={close_status_code} msg={close_msg}")
 
     def start_ws(self, room_info=None):
+        # 进入连接流程即视为「监听线活跃」（ENG-015）：
+        # 从本处到 on_open 之间是 WS 握手窗口，此期间上游（AutoDM 收尾判据 /
+        # snapshot / /api/live/stream）若按「未连上」判定，会把正在启动的
+        # 监听误判成已死 —— 实机即因此把刚启动的任务收尾成 STOPPED。
+        self._ws_alive = True
         # room_info：可选，由调用方预查并传入（避免重复查询同一直播间，加速启动）。
         # 为 None 时回退原行为：自行调用 get_live_info。
         if room_info and isinstance(room_info, dict) and room_info.get("room_id"):
@@ -117,6 +138,8 @@ class DouyinLive:
             room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
             if not room_info or not isinstance(room_info, dict):
                 logger.error(f"[LIVE-023] " + "### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###")
+                # 连接未真正发起 → 撤回落款，绝不留「活跃」的假状态（ENG-015）
+                self._ws_alive = False
                 return
             logger_info = room_info
         room_id = logger_info['room_id']

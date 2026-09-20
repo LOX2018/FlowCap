@@ -46,8 +46,10 @@ async def get_stream(request: Request) -> LiveStreamResponse:
     # 直播间标题：AutoDM 启动时已把 check_room_live 返回的 title 存到 self.room_title
     room_title = getattr(adm, "room_title", "") or str(room_info.get("title") or "")
 
-    # 运行态判断：LiveChatHook 无 running 属性，用基类 _should_stop（False=运行中）+ ws 连接存活
-    running = not bool(getattr(live, "_should_stop", True)) and bool(getattr(live, "ws", None))
+    # 运行态判断：与 AutoDM._listen_line_active 共用同一判据（ENG-015）。
+    # 原判据依赖 `live.ws`，而 ws 在 WS 握手窗口内恒为 None → 监听已开始
+    # 但尚未连上的 1~2s 内被判成「未运行」，前端徽章显示「未连接」。
+    running = adm is not None and adm._listen_line_active()
 
     # 弹幕流：feed_snapshot 返回 [{type,nickname,content,ts,epoch},...]，映射成 LiveMessage
     feed_items = live.feed_snapshot(limit=50) if hasattr(live, "feed_snapshot") else []

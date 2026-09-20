@@ -663,6 +663,28 @@ CODE_DESIGN = {
         "verify": "curl :8000/api/tasks/current 看 has_task/engine_state；"
                   "日志 grep ENG-014 与紧邻的引擎启动日志。",
     },
+    "ENG-015": {
+        "design": "引擎任务收尾只应在监听线确实结束后发生。WS 握手窗口（已发起连接、尚未连上）" \
+"属于监听线的活跃生命周期，此期间队列空是必然的正常中间态，不得据此收尾。" ,
+        "contract": "① 存活判据必须覆盖『已发起→已确认』完整区间，不得用 live.ws is not None" \
+"（ws 由 run_forever() 内部赋值，握手窗口内恒为 None）；② 该判据在" \
+"_on_dispatch_idle / snapshot() / /api/live/stream 三处必须同源；③ 是否" \
+"继续关心『队列空』由上层状态机决定，通知方不得自行解绑。" ,
+        "deviation": "引擎刚进 RUNNING、WS 尚未连上时就被收尾成 STOPPED；此后弹幕捕获 / AI 生成 /" \
+"私信发送照常工作，但 engineState 恒为 stopped，前端徽章与" \
+"『暂停/继续/停止监听』控件全部失效。" ,
+        "chain": "AutoDM.start → _run 建 dispatch → dispatch._loop 队列空超时 → on_idle →" \
+"_on_dispatch_idle（判据用 ws is None → 判为监听已死）→ state=STOPPED →" \
+"snapshot/engineState 下发 stopped → 前端控件全灰" ,
+        "root": "两处连坐：① DispatchCenter._loop 触发 on_idle 后自行 self.on_idle = None，" \
+"把上层状态机语义硬编码进通知方，唯一的触发机会被握手窗口吃掉；" \
+"② 存活判据用 live.ws is not None，而 ws 在 run_forever() 内才赋值，" \
+"握手窗口内恒 None。" ,
+        "verify": "① python -m unittest test_engine_idle_guard -v（10 项全绿；回退判据后应红 3 项）；" \
+"② 实机：启动直播监听，日志中『私信收尾』必须晚于『[live-ws] 连接已建立』；" \
+"③ curl :8000/api/tasks/current 的 engine_state 应为 running；" \
+"④ 前端徽章显示『直播引擎监听中』且暂停/继续/停止按钮可用。" ,
+    },
     "LIVE-021": {
         "design": "「直播间配置管理」是房间级配置的**唯一可写入口**；点「重启」应把"
                   "配置内容热更进正在运行的任务，且四种结果都要如实下发（已生效 / "
