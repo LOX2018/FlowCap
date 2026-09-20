@@ -75,3 +75,19 @@ data/*.db-wal
 工作记忆/ocr_remaining_items.json
 工作记忆/ocr_high_still.json
 工作记忆/ocr_high_gone.json
+
+# ── 2026-09-20 补充（实测污染源，防复发）─────────────────────────
+# 1) 未展开的环境变量被当路径：tauri dev 期间 Windows 字体缓存工具在
+#    src-tauri/ 下创建了字面量目录 `%SystemDrive%/ProgramData/...`
+**/%SystemDrive%/
+**/%ProgramData%/
+**/%SystemRoot%/
+**/%TEMP%/
+**/%APPDATA%/
+# 2) 源码树运行期数据目录（铁律：源码目录不得产生 data/accounts）
+DYAutoDM_v2/src-tauri/data/
+DYAutoDM_v2/src-tauri/accounts/
+DYAutoDM_v2/accounts/
+# 3) 知识库/Docs 的 .bak.<时间戳> 备份（我自己脚本生成的，不入库）
+*.bak.[0-9]*
+*.bak2.[0-9]*

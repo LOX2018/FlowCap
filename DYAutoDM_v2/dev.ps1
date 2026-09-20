@@ -202,6 +202,33 @@ if ($NoVersionCheck) {
 }
 
 Write-Step "6/6" "准备启动..."
+# ---------------------------------------------------------------------------
+# 6.5/6 源码树污染自检（铁律：源码目录不得产生 data/ accounts/ 未展开变量目录）
+#   实测事故：tauri dev 期间 Windows 字体缓存工具在 src-tauri/ 下创建了字面量目录
+#   `%SystemDrive%/ProgramData/...`（环境变量未展开被当路径），且空 data/ accounts/
+#   也出现过。加机械门禁，避免"下次又悄悄长出来"。
+# ---------------------------------------------------------------------------
+$POLLUTION = @(
+    (Join-Path $ROOT "data"),
+    (Join-Path $ROOT "accounts"),
+    (Join-Path $TAURI_DIR "data"),
+    (Join-Path $TAURI_DIR "accounts"),
+    (Join-Path $TAURI_DIR "%SystemDrive%"),
+    (Join-Path $TAURI_DIR "%ProgramData%"),
+    (Join-Path $TAURI_DIR "%SystemRoot%")
+)
+$dirty = @($POLLUTION | Where-Object { Test-Path $_ })
+if ($dirty.Count -gt 0) {
+    Write-Warn2 "源码树出现疑似运行时污染目录（铁律：源码目录不得产生 data/accounts/）："
+    foreach ($d in $dirty) {
+        $n = @(Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue).Count
+        Write-Host "        $d  ($n 文件)" -ForegroundColor DarkYellow
+    }
+    Write-Host "        如为空目录可直接删；有内容先查引用。gen/ 与 logs/ 属正常。" -ForegroundColor DarkGray
+} else {
+    Write-OK "源码树无污染目录"
+}
+
 $env:PATH = "$CARGO_BIN;$env:PATH"
 Write-Host ""
 Write-Host "  注入环境: DY_APP_ROOT=$($env:DY_APP_ROOT)" -ForegroundColor DarkGray
