@@ -62,6 +62,57 @@ _FALLBACK_UID_TTL_FAIL = float(os.environ.get("DY_UID_PROBE_TTL_FAIL", "60"))
 # 同账号并发探活的加锁等待上限（超时则本线程自己去打网，不无限等）
 _FALLBACK_LOCK_WAIT = float(os.environ.get("DY_UID_PROBE_LOCK_WAIT", "10"))
 
+# ---------------------------------------------------------------------------
+# 强探活（force）调用方白名单 —— 风控频次唯一后门，必须显式登记（2026-09-21）
+# ---------------------------------------------------------------------------
+# 背景：`force=True` 能穿透 300s TTL，是本模块里**唯一**能造成探活频次失控的
+# 入口。原文只说「仅凭证落盘门禁可用」，但签名上任何调用方都能传 —— 属于
+# 「约束靠约定、不靠强制」（skill §〇·丙 三根因之一），一旦有调用方写错，
+# 单账号探活频次就会脱离 300s 门控，形成规律性风控信号。
+#
+# 现改为**显式登记制**：调用方必须出现在白名单里，否则 force 被静默降级为
+# 普通（走 TTL）并告警。降级而非抛错，保证任何路径都不会因本守卫而中断。
+_FORCE_CALLERS = {
+    # 凭证落盘门禁（browser_daemon 内在 .env 写入前必须拿鲜值）。
+    # 实测函数名：daemon/browser_daemon.py 的 _page_login_state_sync
+    # （绝不能吃缓存，否则把陈旧登录态当有效写入 —— BCC-015/BCC-016 成因）。
+    "_page_login_state_sync",
+    # 重扫/重捕后的复验（camoufox_capture）。
+    # 实测函数名：camoufox_capture.py 的 verify_credentials。
+    "verify_credentials",
+    # accounts.py 内的凭证落盘校验 worker（闭包，栈帧名 worker）。
+    "worker",
+    # 判别工具（诊断用，人工触发，非常驻路径）。
+    "diag",
+}
+
+
+def _caller_tag() -> str:
+    """从调用栈推断调用方标签（白名单匹配用）。
+
+    取栈上第一个**不在本模块内**的函数的限定名末段。失败返回 ""（= 不在
+    白名单 → force 会被降级），这是**安全侧降级**：宁可多打一次 TTL 门控，
+    也不要放行未登记的高频探活。
+    """
+    try:
+        import inspect
+        frame = inspect.currentframe()
+        # 跳过本模块内的帧（_caller_tag / get_uid / _do_probe …）
+        while frame is not None:
+            mod = frame.f_globals.get("__name__", "")
+            if mod != __name__ and not mod.startswith("services.uid_probe"):
+                return frame.f_code.co_name
+            frame = frame.f_back
+        return ""
+    except Exception:
+        return ""
+
+
+def _force_allowed() -> bool:
+    """当前调用方是否被允许强探活。"""
+    return (_caller_tag() or "") in _FORCE_CALLERS
+
+
 _LAZY_MAP = {
     "UID_TTL_OK": ("capture", "uid_probe_ttl_ok"),
     "UID_TTL_FAIL": ("capture", "uid_probe_ttl_fail"),
@@ -186,10 +237,21 @@ def get_uid(name: str, force: bool = False,
     force=True 强制真探活（**仅**凭证落盘门禁等必须鲜值的路径可用）。
     ttl 可临时覆盖有效期（测试/特殊场景用；常规不要传）。
 
+    ⚠️ 2026-09-21：force 已改为**调用方白名单制**（见 `_FORCE_CALLERS`）。
+    未登记的调用方传 force=True 会被**降级**为走 TTL 的普通探活并告警，
+    保证探活频次不会因某个调用方写错而脱离 300s 门控（频次=风控面）。
+
     同账号并发调用时只有一个线程真正打网，其余等待并复用结果。
     """
     if not name:
         return None
+    if force and not _force_allowed():
+        # 未登记调用方 → 降级（安全侧），不静默穿透缓存
+        logger.warning(
+            f"[AUTH-052] [uid-probe] 调用方「{_caller_tag() or '?'}」不在强探活"
+            f"白名单内，force=True 已降级为普通探活（走 {cfg('UID_TTL_OK'):.0f}s "
+            f"TTL）—— 如需真探活请登记到 services.uid_probe._FORCE_CALLERS")
+        force = False
     if not force:
         cached = _valid(name, ttl)
         if cached is not None:

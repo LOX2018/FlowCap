@@ -429,11 +429,17 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
       - 因此 wp 引擎判定只依赖：.env 凭证能否被 _load_auth_from_env 还原出完整签名
         四件套 + web_protect/keys 是否齐全 + get_my_uid 探活是否成功。
         守护起没起、端口开没开，都不应影响 wp 判定结果。
-      - 私信引擎：用 DouyinAPI.get_conversation_list 拉取全部私信会话列表，
-                  成功则说明私信凭证（imapi 私有网关签名）有效、列表可读取。
+      - 私信引擎：对**自身 uid** 发起一次真实 imapi 写操作
+                （`create_conversation`，cmd 609，不投递任何消息）
+                → 服务端接受则说明私信凭证**可写**。
+                这是唯一能识别「账号级只读态」（读可用、写被拒）的判据；
+                仅看四件套字段/探活/守护端口都会把它误判为有效。
 
-    dm_loopback=False 时只做 wp 引擎+uid 探活（getAccounts 轮询调用，不污染私信）；
-    dm_loopback=True 时额外触发私信引擎列表拉取测试（点「校验」按钮时调用）。
+    dm_loopback=False 时（getAccounts 30s 轮询）：**不新增网络请求**，
+      只读 IM 写探针的缓存态给出诚实三态（ok / fail / unknown），
+      **不再用 wp 结果冒充 dm**。
+    dm_loopback=True 时（用户点「引擎校验」）：强探活（force）真实写校验，
+      守护进程状态降级为 detail 里的**补充信息**（守护没起 ≠ 凭证无效）。
 
     auto_fix=True（默认）时：当 wp 引擎判定为失效/需重新授权（fail/warn/error）
       且 dm_loopback=True（即用户主动校验或启动自检场景），自动触发 auto_recapture
@@ -535,16 +541,44 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
                     "detail": f"凭证有效，wp 签名四件套已捕获(uid={uid})。",
                 }
             elif _has_sign and not uid:
-                # 有签名但探活(uid)失败：多为网络抖动/账号偶发风控。
-                # 注意：不再以 s_v_web_id='verify_' 开头判“需重新授权”——抖音新版
-                # s_v_web_id 正常值就是 'verify_' 开头（基座直测实证），不再据此提示风控。
-                result["wp"] = {
-                    "level": "warn",
-                    "label": "捕获齐全但探活失败",
-                    "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败"
-                              "（网络抖动/账号偶发风控），"
-                              "可稍后重试引擎校验；私信凭证可能仍可用。",
-                }
+                # 有签名但探活(uid)失败。**必须区分两种成因**，文案不能混：
+                #   ① uid_probe 判定「陈旧/不可信」（AUTH-050，身份漂移）
+                #      → 这不是网络抖动，是**凭证身份失效**，重试无用，须重扫；
+                #   ② 真·网络抖动/偶发风控 → 可稍后重试。
+                # 修复前一律写成 ①→「网络抖动」，会把身份失效误导成临时故障，
+                # 用户反复「稍后重试」而问题永不消失（张老师实测即此形态）。
+                _stale = False
+                try:
+                    from services.uid_probe import _uid_consistent_with_history
+                    from dy_apis.login_api import DYLoginApi as _LA
+                    _a2 = _LA._load_auth_from_env(env_path)
+                    _probe_uid = None
+                    try:
+                        # 直接问一次（零缓存语义）：拿到的值若与历史不一致
+                        # 说明服务端认的是另一个身份。
+                        _probe_uid = _a2.get_uid() if hasattr(_a2, "get_uid") else None
+                    except Exception:
+                        _probe_uid = None
+                    if _probe_uid and not _uid_consistent_with_history(name, _probe_uid):
+                        _stale = True
+                except Exception:
+                    _stale = False
+                if _stale:
+                    result["wp"] = {
+                        "level": "fail",
+                        "label": "身份漂移（AUTH-050）",
+                        "detail": "探活拿到的 uid 与该账号历史会话不一致 —— "
+                                  "登录身份已被轮换/替换（属凭证失效，非网络问题）。"
+                                  "稍后重试无效，请对该账号【重新扫码】。",
+                    }
+                else:
+                    result["wp"] = {
+                        "level": "warn",
+                        "label": "捕获齐全但探活失败",
+                        "detail": "wp 签名四件套已捕获，但 get_my_uid 探活失败"
+                                  "（网络抖动/账号偶发风控），"
+                                  "可稍后重试引擎校验；私信写校验结果见私信引擎。",
+                    }
             elif uid and not _has_sign:
                 result["wp"] = {
                     "level": "warn",
@@ -599,76 +633,100 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
         except Exception as e:
             logger.warning(f"[ACC-008] " + f"[verify] 账号 {name} 自动重捕触发失败: {e}")
 
-    # ---- 私信引擎校验（只校验「私信守护」有效性，不做列表捕获）----
-    # 2026-08-29 收敛（用户要求）：引擎校验 = 校验守护凭证(wp) + 私信守护有效性(dm)。
-    # 私信列表/会话详情的捕获不再由校验触发，改由私信页「更新会话」按钮按需触发
-    # （端点 POST /api/messages/{account}/refresh）。
+    # ---- 私信引擎校验（**真实 IM 写校验**，不再只探端口）----
+    # 2026-09-21 v0.44.17 重写。
+    #
+    # 设计契约（本函数 docstring 第 432 行早已写明，但实现长期未兑现）：
+    #   「私信引擎：拉取私信会话列表成功则说明私信凭证有效」。
+    # 实测缺陷：旧实现只做 `_port_open(bport/rport)` —— **只探测端口是否 LISTEN，
+    #   完全不碰 imapi**。于是张老师账号（609 建会话被服务端拒、发送全废）
+    #   依然被判 `ok / 私信守护正常`。
+    #   第 638 行自己的注释都写着「端口在 ≠ 凭证有效」，dm 引擎却正是这么判的。
+    #
+    # 现改为**真实写校验**：调 probe_im_write → create_conversation(自身 uid)。
+    #   · 用户手动点「引擎校验」→ force=True（必真打网，不看缓存）；
+    #   · 守护进程状态降级为**补充信息**，附在 detail 里，不再单独决定成败
+    #     （守护没起 ≠ 凭证无效；这两件事必须分开判，见单 profile 铁律 #35）。
     if dm_loopback:
         try:
-            from auto_dm.daemon_launcher import ensure_daemons_for
-
-            bport = browser_daemon_port(name)
-            rport = recv_daemon_port(name)
-            # 幂等拉起（端口已开则跳过），再查活性
-            ensure_daemons_for(name)
-            b_ok = _port_open(bport, timeout=0.5)
-            r_ok = _port_open(rport, timeout=0.5)
-            if r_ok and b_ok:
+            _w_ok, _w_detail = probe_im_write(name, force=True)
+            # 守护态仅作补充信息（不影响 level 判定）
+            _daemon_note = ""
+            try:
+                from auto_dm.daemon_launcher import ensure_daemons_for
+                bport = browser_daemon_port(name)
+                rport = recv_daemon_port(name)
+                ensure_daemons_for(name)
+                b_ok = _port_open(bport, timeout=0.5)
+                r_ok = _port_open(rport, timeout=0.5)
+                if not (b_ok and r_ok):
+                    _miss = []
+                    if not r_ok:
+                        _miss.append(f"recv_daemon(port={rport})")
+                    if not b_ok:
+                        _miss.append(f"browser_daemon(port={bport})")
+                    _daemon_note = f"；守护未就绪：{'、'.join(_miss)}"
+            except Exception as _de:
+                _daemon_note = f"；守护态检测失败: {_de}"
+            if _w_ok:
                 result["dm"] = {
                     "level": "ok",
-                    "label": "私信守护正常",
-                    "detail": f"私信守护 recv_daemon(port={rport}) 与 "
-                              f"凭证守护 browser_daemon(port={bport}) 均已就绪。",
-                }
-            elif r_ok and not b_ok:
-                result["dm"] = {
-                    "level": "warn",
-                    "label": "私信守护在，凭证守护缺失",
-                    "detail": f"recv_daemon 已就绪(port={rport})，但 browser_daemon"
-                              f"(port={bport}) 未拉起，昵称关联可能失效。",
-                }
-            elif b_ok and not r_ok:
-                result["dm"] = {
-                    "level": "warn",
-                    "label": "凭证守护在，私信守护缺失",
-                    "detail": f"browser_daemon 已就绪(port={bport})，但 recv_daemon"
-                              f"(port={rport}) 未拉起，实时新消息不会入库"
-                              f"（可在账号页点「启动私信守护」）。",
+                    "label": "私信凭证可用（写校验通过）",
+                    "detail": f"{_w_detail}{_daemon_note}",
                 }
             else:
                 result["dm"] = {
                     "level": "fail",
-                    "label": "私信守护未运行",
-                    "detail": f"recv_daemon(port={rport}) 与 browser_daemon"
-                              f"(port={bport}) 均未拉起，私信引擎不可用。",
+                    "label": "私信凭证不可写",
+                    "detail": f"{_w_detail}。私信发送将全部失败，"
+                              f"请对该账号执行【重新扫码】重建登录态。",
                 }
         except Exception as e:
             result["dm"] = {
                 "level": "error",
-                "label": "守护状态检测异常",
-                "detail": f"检测私信守护状态失败: {e}",
+                "label": "私信写校验异常",
+                "detail": f"IM 写校验未能完成: {e}",
             }
     else:
-        # 轮询场景（dm_loopback=False）：沿用 wp 引擎结果作轻量近似，
-        # 不跑真实列表拉取也不探守护端口（避免高频开销）。
-        wp_level = result["wp"].get("level")
-        if wp_level == "ok":
+        # 轮询场景（dm_loopback=False）：**不得用 wp 结果冒充 dm**。
+        #
+        # 历史缺陷（本次修正）：旧实现把 `wp_level == "ok"` 直接映射成
+        # `dm = {"level": "ok", "label": "正常（沿用 wp）"}`。
+        # 但 wp 是「web_protect 四件套 + query/user 探活」，与 imapi 私信凭证
+        # 是**两条独立通路**——wp 正常完全不代表 imapi 可写（张老师实测：
+        # wp 全绿而 609 拒绝）。在前端 30s 轮询下，这会让「私信引擎」长期
+        # 谎报 ok，用户点开页面看到的是绿灯，实际一条都发不出去。
+        #
+        # 现改为基于 **IM 写探针的缓存态**给出诚实三态（不新增网络请求：
+        # 轮询路径只读缓存，缓存为空则如实报「未校验」而非伪造 ok）。
+        _cw_ok: Optional[bool] = None
+        _cw_detail = ""
+        try:
+            with _im_write_lock:
+                _hit = _im_write_cache.get(name)
+            if _hit:
+                _cw_ok, _cw_detail = _hit[1], _hit[2]
+        except Exception:
+            _cw_ok = None
+        if _cw_ok is True:
             result["dm"] = {
                 "level": "ok",
-                "label": "正常（沿用 wp）",
-                "detail": "wp 引擎正常时私信凭证通常亦可用；点「引擎校验」可检测守护真实状态。",
+                "label": "私信凭证可用（写校验通过）",
+                "detail": _cw_detail or "imapi 写校验通过。",
             }
-        elif wp_level in ("fail", "error"):
+        elif _cw_ok is False:
             result["dm"] = {
                 "level": "fail",
-                "label": "私信凭证失效",
-                "detail": "wp 引擎判定失败，私信凭证亦不可信；请重新获取凭证后再校验。",
+                "label": "私信凭证不可写",
+                "detail": _cw_detail or "imapi 写校验未通过，请重新获取凭证。",
             }
-        elif wp_level == "warn":
+        else:
+            # 三态之「未知」：**诚实降级**，不伪造 ok 也不谎报 fail。
             result["dm"] = {
-                "level": "warn",
-                "label": "可能可用（沿用 wp）",
-                "detail": "wp 引擎告警但凭证可能仍可用；点「引擎校验」可检测守护真实状态。",
+                "level": "unknown",
+                "label": "私信凭证未校验",
+                "detail": "尚未执行 IM 写校验；点「引擎校验」可检测私信凭证"
+                          "能否真实写入 imapi。",
             }
     result["ok"] = (result["wp"]["level"] in ("ok", "warn")
                     and result["dm"]["level"] in ("ok", "warn", "skip"))
@@ -986,6 +1044,113 @@ def credentials_complete(env_path):
     return True, "凭证齐全"
 
 
+# ---------------------------------------------------------------------------
+# IM 写能力探针（2026-09-21 v0.44.17）
+# ---------------------------------------------------------------------------
+# 设计契约：私信凭证「有效」的充分条件不是「字段非空」也不是「探活通」，
+# 而是**能完成一次真实的 imapi 写操作**。
+#
+# 为什么必须新增（实证教训，见 工作记忆/cases/2026-09-20_直播监听失败_cmd609…md §8.3）：
+#   「探活能过 ⇒ 凭证有效」在**写会话**这一层**不成立**。
+#   四川工伤张老师实测：探活 ✅、cmd 610 读会话列表 ✅，但 cmd 609 建会话
+#   被服务端以 `unexepcted session length` 拒绝 —— 账号级「只读态」。
+#   而旧 verify_account 只查「四件套字段非空 + 探活通」，把它判成 ok，
+#   直到引擎启动才在 609 处失败（用户侧表现为「校验说可靠，一发就废」）。
+#
+# 探针选型：create_conversation(自身 uid)
+#   · 只**建/取会话**，不投递任何消息 ⇒ 零真人打扰、可安全高频调用；
+#   · 对自身 uid 建会话不会影响任何真实用户；
+#   · 与 core/auto_dm._verify_credential 的预检同参同判据（口径统一）。
+_IM_WRITE_PROBE_TTL = 120.0          # 写入路径探针结果缓存秒数（写能力变化慢，可缓存）
+_im_write_cache: Dict[str, Tuple[float, bool, str]] = {}
+_im_write_lock = threading.Lock()
+
+
+def probe_im_write(name: str, auth=None, force: bool = False,
+                   ttl: Optional[float] = None) -> Tuple[bool, str]:
+    """探测账号是否具备 imapi **写**能力（cmd 609 建会话）。
+
+    返回 (ok, detail)。ok=True 表示服务端接受该账号的写会话请求。
+
+    缓存：默认 120s（写能力不会秒变；但比读凭证的 300s 短，便于只读态自愈后
+    较快重新放行）。force=True 跳过缓存（用户手动点「引擎校验」时用）。
+
+    异常一律转为 (False, 原因) —— 绝不让探针异常冒泡成「校验异常」而丢失
+    「凭证不可用」这一确定结论。
+    """
+    if not name:
+        return False, "未指定账号"
+    if not force:
+        with _im_write_lock:
+            hit = _im_write_cache.get(name)
+        _ttl = ttl if ttl is not None else _IM_WRITE_PROBE_TTL
+        if hit and (time.time() - hit[0]) < _ttl:
+            return hit[1], hit[2]
+    try:
+        from dy_apis.login_api import DYLoginApi
+        from dy_apis.douyin_api import DouyinAPI
+
+        if auth is None:
+            env_path = env_path_of(name)
+            if not env_path:
+                return False, "账号 .env 不存在"
+            auth = DYLoginApi._load_auth_from_env(env_path)
+        if not auth or not getattr(auth, "cookie", None):
+            return False, "凭证为空（无 cookie），无法进行写校验"
+
+        # 目标 uid：优先用**会话体系** uid（conv_id 推断，权威且零网络），
+        # 因为它才是 imapi 认的身份；web 探活 uid 可能是另一个体系。
+        my_uid = ""
+        try:
+            from services.conv_identity import my_uid as _conv_my_uid
+            my_uid = str(_conv_my_uid(name) or "")
+        except Exception:
+            my_uid = ""
+        if not my_uid:
+            # 无历史会话（新账号）→ 退化为 web 探活 uid
+            try:
+                from services.uid_probe import get_uid as _uid_get
+                _u = _uid_get(name)
+                my_uid = str(_u) if _u else ""
+            except Exception:
+                my_uid = ""
+        if not my_uid or not my_uid.isdigit():
+            return False, "无法确定自身 uid（无历史会话且探活失败），无法进行写校验"
+
+        DouyinAPI.create_conversation(auth, int(my_uid))
+        detail = f"imapi 写校验通过（cmd 609 建会话被接受，uid={my_uid}）"
+        with _im_write_lock:
+            _im_write_cache[name] = (time.time(), True, detail)
+        return True, detail
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "INVALID_REQUEST" in msg or "KICK" in msg:
+            detail = (f"imapi 写校验被拒（{msg[:120]}）—— 凭证被服务端判非法，"
+                      f"请重新扫码")
+        elif "session length" in msg:
+            # 账号级「只读态」：读可以、写不行。属凭证需重建，不是网络问题。
+            detail = (f"imapi 写校验被拒：{msg[:120]} —— 该账号 web 会话被服务端"
+                      f"判为「只读」（读可用、写不可用），请重新扫码重建登录态")
+        elif "HTTP" in msg:
+            detail = f"imapi 写校验网络失败：{msg[:120]}"
+        else:
+            detail = f"imapi 写校验异常：{msg[:120]}"
+        with _im_write_lock:
+            _im_write_cache[name] = (time.time(), False, detail)
+        logger.warning(f"[ACC-030] [verify] 账号 {name} {detail}")
+        return False, detail
+
+
+def invalidate_im_write_cache(name: str = "") -> None:
+    """作废 IM 写校验缓存（重扫/重捕凭证后调用）。"""
+    with _im_write_lock:
+        if name:
+            _im_write_cache.pop(name, None)
+        else:
+            _im_write_cache.clear()
+
+
+
 def account_status(name=None, force=False, timeout=10):
     """返回账号状态字典：包含签名存在性与探活结果。
 
@@ -1099,7 +1264,25 @@ def _probe(env_path, timeout):
                 try:
                     DouyinAPI.create_conversation(auth, int(uid))
                 except Exception:
+                    # 2026-09-21 v0.44.17：写校验失败同样写入 IM 写探针缓存，
+                    # 让引擎校验立刻能报出「不可写」，而不是等下次手动校验。
+                    try:
+                        with _im_write_lock:
+                            _im_write_cache[name] = (
+                                time.time(), False,
+                                "imapi 写校验被拒（凭证落盘门禁）——请重新扫码")
+                    except Exception:
+                        pass
                     return "SIGN_REJECTED"
+                # 2026-09-21 v0.44.17：写校验通过 → 同步写探针缓存（鲜值），
+                # 使引擎校验/轮询立刻显示「私信凭证可用」，零额外网络请求。
+                try:
+                    with _im_write_lock:
+                        _im_write_cache[name] = (
+                            time.time(), True,
+                            f"imapi 写校验通过（cmd 609 建会话被接受，uid={uid}）")
+                except Exception:
+                    pass
                 return uid
             except Exception as e:
                 return None
