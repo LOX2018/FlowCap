@@ -2258,6 +2258,54 @@ class BrowserContainer:
             logger.debug(f"[bcc] 页面登录态探测失败: {e}")
             return {}
 
+    async def _refresh_page_for_session(self) -> bool:
+        """就地让页面重载一次，促使 passport 用当前 profile 的会话换发新 cookie。
+
+        用途（2026-09-21 自锁根治）：refresh_cookie_to_env 发现「读到的 cookie
+        会话未被服务端承认」时，不直接放弃，而是先刷新页面 —— 若 profile 本身的
+        登录态是好的，服务端会在这次导航中承认它并换发/续期会话，随后重读即可写回。
+
+        风控边界（本方法只需 profile 自身登录态有效，**不触发扫码**）：
+          - 先判断 `_has_real_login`；无有效会话 → 直接放弃（不导航，交人工扫码）。
+          - 路径只是**重载当前页**（不跨站），不制造「全新环境」访问。
+          - 观测态（有头）**不刷新** —— 用户可能正开着窗口操作，避免抢镜/打断。
+        在 _lock 内执行（浏览器串行铁律）。
+        """
+        async def _do() -> bool:
+            page = self._page
+            if page is None or page.is_closed():
+                return False
+            try:
+                # 观测态（有头）不刷新：把窗口交还用户，避免打断人工操作
+                if not getattr(self, "_headless", True):
+                    logger.debug("[bcc] 观测态（有头）跳过会话刷新，避免打断用户")
+                    return False
+                # 无有效登录会话 ⇒ 刷新也换不出被承认的会话，直接放弃（交人工）
+                _is_real = None
+                try:
+                    from dy_apis.login_api import DYLoginApi as _LA
+                    _is_real = _LA._is_real_login
+                    if not await _is_real(self._context):
+                        return False
+                except Exception:
+                    _is_real = None
+                await page.reload(wait_until="domcontentloaded", timeout=20000)
+                # 给 passport 换发会话留时间：最多轮询 ~8s，见到真实登录态即返回
+                for _ in range(8):
+                    await page.wait_for_timeout(1000)
+                    if _is_real is None:
+                        break
+                    try:
+                        if await _is_real(self._context):
+                            break
+                    except Exception:
+                        break
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[bcc] 会话刷新失败（不阻塞）: {e}")
+                return False
+        return await self._exec(_do, internal=True)
+
     async def _read_page_sign(self) -> dict:
         """从当前页面读取 security-sdk 的最新签名数据（web_protect / keys）。
 
@@ -2366,6 +2414,70 @@ class BrowserContainer:
         except Exception:
             pass
 
+        # ---- P0 门禁 1.6（2026-09-21 自锁根治）：会话活性必须被服务端承认 ----
+        # 门禁 1.5 判的是**身份一致性**（query/user 能否探到本账号的 uid），
+        # 而 query/user **容忍陈旧会话** —— 实测：张老师 .env 里那套会话
+        # sessionid=24f1ba95（浏览器 13:04:23 已换成 55dccaf8）探活照样返回正确 uid，
+        # 却过不了 profile/self（status_code=8）⇒ 门禁 1.5 放行、坏快照被固化。
+        # ⇒ 写盘前必须再过一道**会话活性**门禁。判据 = `probe_live_identity`
+        #    （`user/profile/self/` 是否被服务端承认），与 1.5 **互不代替**。
+        # 三态铁律：只有**明确被拒**（state is False）才拒写；
+        #    取不到证据（None，探测自身失败）**保守放行** ——
+        #    否则网络抖动会误拦并制造与门禁 1.5 同型的死锁。
+        _sess_ok = True
+        _sess_detail = ""
+        try:
+            from auto_dm.accounts import live_session_state as _lss
+            _sess_state, _sess_detail = _lss(self.account, auth=probe_auth,
+                                             force=True)
+            if _sess_state is False:
+                _sess_ok = False
+        except Exception as _e_ss:
+            _sess_state, _sess_detail = None, f"会话活性探测异常（保守放行）: {_e_ss}"
+        if not _sess_ok:
+            # 自锁根治（2026-09-21）：**不直接放弃** —— 本函数随后就会用
+            # `_read_page_sign()` 读页面最新签名。先让浏览器就地刷新一次页面
+            # （导航/重载会让 passport 用当前 profile 的会话换发新 cookie），
+            # 再从同一 context 重读一次；两次之间会话被服务端承认即可写回。
+            # 旧实现在这里直接 return ⇒ 坏快照被永久固化（自锁）。
+            logger.warning(
+                f"[BCC-071] [bcc] 新 cookie 的会话未被服务端承认"
+                f"（{_sess_detail}）—— 先就地刷新页面再复验，避免把过期会话固化进 .env。")
+            _refreshed = False
+            try:
+                _refreshed = await self._refresh_page_for_session()
+            except Exception as _e_rf:
+                logger.debug(f"[BCC-071] 页面刷新异常（继续复验）: {_e_rf}")
+            if _refreshed:
+                try:
+                    cks2 = await self.get_cookies(lease_id=lease_id, internal=internal)
+                    if cks2.get("sessionid") or cks2.get("sid_tt"):
+                        probe_auth.cookie = cks2
+                        probe_auth.cookie_str = "; ".join(
+                            f"{k}={v}" for k, v in cks2.items())
+                        probe_auth.uid = None
+                        _st2, _dt2 = _lss(self.account, auth=probe_auth, force=True)
+                        if _st2 is True:
+                            cks = cks2                       # 采用刷新后的真会话
+                            _sess_ok, new_uid = True, new_uid  # uid 不变（同账号）
+                            logger.info(
+                                f"[BCC-071] [bcc] 就地刷新后会话已被服务端承认，"
+                                f"继续写回 .env（{_dt2}）")
+                        else:
+                            _sess_detail = _dt2 or _sess_detail
+                except Exception as _e_rc:
+                    logger.debug(f"[BCC-071] 刷新后复验异常: {_e_rc}")
+            if not _sess_ok:
+                # 复用同一轮仍拿不到被承认的会话 → 放弃本轮（不写坏凭证）。
+                # keepalive 侧对 session_ok=False 会**立即重试一轮**（不等 30min），
+                # 所以这不是终态，只是本轮的安全退出。
+                logger.warning(
+                    f"[BCC-071] [bcc] 就地刷新后仍未获承认，本轮放弃写入 .env"
+                    f"（保留既有凭证）。keepalive 将立即重试。")
+                return {"ok": False, "uid": str(new_uid), "session_ok": False,
+                        "retry_now": True,
+                        "msg": f"会话未被服务端承认，本轮未写入（{_sess_detail}）"}
+
         # ---- P0 门禁 2：uid 与既有值一致性（漂移 = 身份被替换/轮换）----
         # 2026-09-06 全局治理：原比对 self._last_uid，但 run_keepalive 在
         # uid 漂移时会【先更新 _last_uid 再触发 scan_login】（browser_daemon
@@ -2468,6 +2580,62 @@ class BrowserContainer:
         # 初始值设成「刚启动」以便启动后第一个探活周期就同步一次新鲜凭证
         # （原实现从不回写，.env 长期停留在旧凭证）。
         last_cookie_sync = 0.0
+
+        def _sync_env(uid_for_log=None) -> bool:
+            """保活回写：把浏览器 profile 的实时态写回 .env。
+
+            2026-09-21 自锁根治的关键：**不依赖 .env 的探活结果**。
+            旧实现的回写埋在「登录态正常（uid 非空）」分支里，而 uid 取自
+            `_load_uid_from_env()`（就是 .env）；一旦 .env 是坏快照，uid 为空
+            ⇒ 永远进不了回写分支 ⇒ 坏快照被永久固化（自锁）。
+            `refresh_cookie_to_env` 自身带「身份一致性 + 会话活性」双门禁自证，
+            所以这里的调用门控用**页面登录态**（由 branch 判定），不用 .env。
+
+            返回 True = 已成功写回（.env 被刷新）。
+            """
+            nonlocal last_cookie_sync
+            if cred_mode == "popup":
+                logger.debug("[bcc] 凭证更新方式=popup，跳过观测态静默回写"
+                             "（等待用户弹窗激活）")
+                return False
+            try:
+                _sync_sec = int(os.environ.get("DY_BCC_COOKIE_SYNC_SEC", "1800"))
+            except Exception:
+                _sync_sec = 1800
+            if _sync_sec <= 0 or (time.time() - last_cookie_sync) < _sync_sec:
+                return False
+            last_cookie_sync = time.time()
+            if not self._loop:
+                return False
+            try:
+                r = {}
+                for _attempt in range(2):
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self.refresh_cookie_to_env(internal=True), self._loop)
+                    r = fut.result(timeout=90) or {}
+                    if r.get("ok"):
+                        logger.info(
+                            f"[bcc] 保活回写：已将 profile 新鲜凭证同步至账号 .env"
+                            f"（uid={uid_for_log}）"
+                            + ("（第 2 次重试成功）" if _attempt else ""))
+                        return True
+                    if r.get("retry_now"):
+                        # 会话未被服务端承认（BCC-071）：立即重试一轮，不等 30min
+                        logger.warning(
+                            f"[bcc] 保活回写会话未获承认，立即重试"
+                            f"（第 {_attempt + 1} 次）: {r.get('msg')}")
+                        continue
+                    logger.debug(f"[bcc] 保活回写跳过：{r.get('msg', '无更新')}")
+                    return False
+                # 两次都 session_ok=False：响亮告警，不静默
+                logger.error(
+                    "[BCC-072] [bcc] 保活回写连续两次会话未获承认"
+                    " —— .env 保留既有凭证；疑似 profile 登录态需人工重新登录"
+                    "（不自动重扫，防风控）。")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[bcc] 保活回写失败（不影响运行）: {e}")
+            return False
+
         while not stop_ev.is_set():
             if stop_ev.wait(interval):
                 break
@@ -2605,45 +2773,10 @@ class BrowserContainer:
                         scan_fail_count = 0
                         logger.debug(f"[bcc] 登录态正常(uid={uid}, "
                                      f"conv={page_state.get('conv')})")
-                        # 2026-09-06（2.1a 保活回写）：原实现「保活心跳」
-                        # 只做探活 + scan_login，**从不把浏览器 profile 里的
-                        # 新鲜 cookie 回写 .env** —— 导致 .env 长期停留在
-                        # 上次扫码/POST /cookie 时的旧凭证，而 BCC 手里其实
-                        # 一直有更新鲜的（浏览器会自动续期）。recv_daemon 等
-                        # 消费者读 .env 拿到的就是陈旧凭证。
-                        #
-                        # 修复：登录态正常时【节流】回写（默认 30 分钟一次，
-                        # DY_BCC_COOKIE_SYNC_SEC 可调；设为 0 可关闭）。
-                        # 只在「页面登录态确认正常」时写，绝不覆盖有效凭证。
-                        try:
-                            _sync_sec = int(os.environ.get(
-                                "DY_BCC_COOKIE_SYNC_SEC", "1800"))
-                        except Exception:
-                            _sync_sec = 1800
-                        # 2026-09-12：popup 模式明确要求「只弹窗激活更新」，
-                        # 故不做静默回写（把更新时机交给用户手动激活）。
-                        if cred_mode == "popup":
-                            logger.debug(
-                                "[bcc] 凭证更新方式=popup，跳过观测态静默回写"
-                                "（等待用户弹窗激活）")
-                        elif _sync_sec > 0 and (now - last_cookie_sync) >= _sync_sec:
-                            last_cookie_sync = now
-                            try:
-                                if self._loop:
-                                    fut = asyncio.run_coroutine_threadsafe(
-                                        self.refresh_cookie_to_env(internal=True),
-                                        self._loop)
-                                    r = fut.result(timeout=60)
-                                    if r and r.get("ok"):
-                                        logger.info(
-                                            f"[bcc] 保活回写：已将 profile 新鲜凭证"
-                                            f"同步至账号 .env（uid={uid}）")
-                                    else:
-                                        logger.debug(
-                                            f"[bcc] 保活回写跳过："
-                                            f"{(r or {}).get('msg', '无更新')}")
-                            except Exception as e:
-                                logger.debug(f"[bcc] 保活回写失败（不影响运行）: {e}")
+                        # 2026-09-06（2.1a）保活回写 + 2026-09-21 自锁根治：
+                        # 回写逻辑抽到 `_sync_env()`，门控用**页面登录态**而不是
+                        # .env 的 uid —— 见函数 docstring。
+                        _sync_env(uid)
                 else:
                     # 2026-09-13 止血：此处原为「探活拿不到 uid → 直接 scan_login」
                     # 且【从不累加 scan_fail_count、从不置 breaker_until】——
@@ -2654,15 +2787,29 @@ class BrowserContainer:
                     # 反复重启 + 反复刷新凭证对抖音是极强风控信号，必须熔断。
                     logger.warning(f"[BCC-025] " + "[bcc] 登录态失效，自动刷新凭证…")
                     # ═══════════════════════════════════════════════════════════
-                    # 2026-09-20 v0.43.99【第三道闸 · 有头观测态禁止自动重扫】
-                    #
-                    # scan_login 会**关闭并重建 context**（让登录流程独占 profile）。
-                    # 若用户此刻正开着有头窗口扫码/输手机号，自动重扫会：
-                    #   · 销毁用户眼前窗口 → 正在进行的授权被打断；
-                    #   · 记一次「全新环境」访问 → 触发 step-up 拦截
-                    #     （用户实测：扫码时弹、输手机号时弹）。
-                    # 且有头态本就是「等用户操作」的状态，不该有后台动作抢镜。
+                    # 2026-09-21【自锁根治】探活拿不到 uid 有两种成因，必须分开：
+                    #   ① .env 是坏快照（会话未被服务端承认），但**页面登录态正常**
+                    #      ⇒ **不需要** scan_login（那条路要 `_is_real_login`，会因页面
+                    #      已登录而失败，反而把 `.env` 卡死）。正确动作 = 从页面读实时态
+                    #      回写 `.env`（`_sync_env` 内部带双门禁自证）。
+                    #      这正是「自锁」的另一半：坏 .env 让 uid 为空 ⇒ 永远进不了
+                    #      回写分支 ⇒ 坏快照被永久固化。
+                    #   ② 页面登录态也失效 ⇒ 才走下面的重扫/熔断。
                     # ═══════════════════════════════════════════════════════════
+                    try:
+                        _ps = self._page_login_state_sync()
+                        if _ps and (_ps.get("conv") or not _ps.get("rel")):
+                            if _sync_env(None):
+                                scan_fail_count = 0
+                                logger.info(
+                                    "[bcc] 探活异常但页面登录态正常 —— 已用 profile "
+                                    "实时态刷新 .env（自锁恢复），本轮不触发重扫。")
+                                continue
+                            # 门禁拒写（会话确未被承认）⇒ 落回下方重扫/告警
+                            logger.warning(
+                                "[bcc] 探活异常且会话未被服务端承认 —— 转入重扫/熔断处置。")
+                    except Exception as _e_rec:
+                        logger.debug(f"[bcc] 自锁恢复分支异常（继续原路径）: {_e_rec}")
                     if not self._headless:
                         logger.warning(f"[BCC-057] " + f"[bcc] {self.account} 处于【有头观测态】，"
                             f"**不触发自动重扫** —— 重扫会重建 context，销毁用户正在"

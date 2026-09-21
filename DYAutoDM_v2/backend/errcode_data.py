@@ -45,6 +45,24 @@ DOMAIN_INFO = {
 #   verify    **实机**判据（命令/现象/DB 证据；禁止纯代码推断定论）
 # ════════════════════════════════════════════════════════════════════════════
 DOMAIN_DESIGN = {
+    # 直播监听域（2026-09-21 ENG-018 补齐：此前该域整体缺设计契约，
+    # 域内全部码在 contract_gaps() 审计里恒报缺 design）
+    "LIVE": {
+        "intent": "监听目标直播间：建连直播流（WS）收弹幕/礼物/进场/热度，"
+                  "把弹幕转成私信目标交给调度中心。",
+        "invariant": "① 直播流建连**不依赖账号登录态**（平台允许匿名观看）；"
+                     "② 凭证的职责是「部分直播间昵称加密时的解密权」——"
+                     "有解密权才收得到真实 uid/nickname/sec_uid；"
+                     "③ 无解密权时**降级而非中断**：继续收弹幕但明确告知昵称脱敏；"
+                     "④ 「有 cookie」不是可用性判据，必须是服务端承认的登录态。",
+        "chain": "TaskConfig(live_url/acct) → AutoDM._run → probe_live_identity → "
+                 "check_room_live → LiveChatHook(auth_, session_ok) → "
+                 "DouyinLive.start_ws → WS 帧 → on_message → dispatch.submit",
+        "verify": "① 弹幕日志的 uid 是否为 111111、sec_uid 是否为空；"
+                  "② scripts/diag/diag_live_cred_ab.py —— 同房间只换 cookie 的 "
+                  "A/B 判型；③ GET /api/live/stream 的 alive/feed。",
+    },
+
     "BCC": {
         "intent": "每账号唯一浏览器所有者：常驻持有该账号 profile，对外只通过 HTTP "
                   "端点提供「读凭证/截昵称/发送/切换可见性」；绝不新开第二个实例"
@@ -402,6 +420,10 @@ ERRCODES = {
     "LIVE-019": {"meaning": "resolve] 用户  当前未在直播或无法解析房间", "file": "link_resolve.py", "line": 307},
     "LIVE-020": {"meaning": "resolve] 浏览器解析失败:", "file": "link_resolve.py", "line": 309},
     "LIVE-021": {"meaning": "room-config] 热更失败:", "file": "api/live_config.py", "line": 0},
+    "LIVE-034": {"meaning": "live-ws] 会话态未知（未探测或探测失败），按「有 cookie」继续", "file": "core/live_hook.py", "line": 0},
+    "LIVE-035": {"meaning": "live-identity] 监测账号无直播昵称解密权 —— 弹幕昵称将被脱敏（uid=111111）", "file": "auto_dm/accounts.py", "line": 0},
+    "LIVE-036": {"meaning": "live-identity] 登录态探测失败（结论未知，不据此降级）", "file": "auto_dm/accounts.py", "line": 0},
+    "LIVE-037": {"meaning": "live-ws] 带凭证进房未获 room_id/异常，回落匿名进房", "file": "dy_live/server.py", "line": 0},
 
 
     "MEM-001": {"meaning": "member] 会员 DB 初始化失败:", "file": "api/member.py", "line": 72},
@@ -525,6 +547,9 @@ ERRCODES = {
     "AI-032": {"meaning": "ai] 视觉候选失败，切下一个:", "file": "services/ai_reply.py", "line": 0},
     "AI-033": {"meaning": "ai] 语义候选失败，切下一个:", "file": "services/ai_reply.py", "line": 0},
     "AI-034": {"meaning": "ai] 语义缓存模型不一致，本次跳过语义级:", "file": "services/ai_reply.py", "line": 0},
+    "AUTH-053": {"meaning": "[auth] 抓取到的会话未被服务端承认（重读仍未获承认）", "file": "dy_apis/login_api.py", "line": 0},
+    "BCC-071": {"meaning": "[bcc] 新 cookie 的会话未被服务端承认（profile/self status_code≠0），不写入 .env", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-072": {"meaning": "[bcc] 保活回写连续两次会话未获承认，会话需人工重新登录", "file": "daemon/browser_daemon.py", "line": 0},
 }
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -685,6 +710,48 @@ CODE_DESIGN = {
 "③ curl :8000/api/tasks/current 的 engine_state 应为 running；" \
 "④ 前端徽章显示『直播引擎监听中』且暂停/继续/停止按钮可用。" ,
     },
+    "ENG-017": {
+        "design": "直播流连接应**独立于账号凭证**：抖音直播支持匿名观看，凭证的真正职责是" \
+"「部分直播间昵称解密」与「私信发送」。因此凭证失效时，监听线必须继续" \
+"（降级为只听不发），而不是整条链路中断。" ,
+        "contract": "① 进房（room_id/ttwid/开播状态）与 WS 建连不得依赖登录态，无凭证走匿名；" \
+"② 凭证缺失只关闭发送能力（enable_send=False），不得 return / 置 IDLE；" \
+"③ 不得把 None 传给 DouyinAPI.get_live_info（其内部 auth_.cookie 会崩）；" \
+"④ 有凭证时行为与改造前逐字一致（零回归）。" ,
+        "deviation": "凭证失效/缺失时，_run 在 AUTH-018/019/020 处直接 return 并置 IDLE，" \
+"状态显示「监测登录失败 / 发送登录失败」，前端连直播流都建不起来 ——" \
+"与「直播可匿名观看」的平台事实矛盾。" ,
+        "chain": "AutoDM._run → 构造 monitor_auth/auth → 凭证判据失败 → return + IDLE →" \
+"LiveChatHook 从未被创建 → /api/live/stream alive=false → 前端无任何直播数据" ,
+        "root": "把「昵称解密/发送所需的凭证」与「直播流建连能力」耦合在同一条判据上：" \
+"实现方按「没有凭证就不能干活」直译，而平台实际允许匿名建连。" \
+"另有一处实现坑：DouyinAPI.get_live_info(auth_=None) 会 AttributeError，" \
+"匿名路径必须自建请求或改走 LiveChatHook._anon_live_info()。" ,
+        "verify": "① python -m unittest test_live_anon_decouple（10 项，含回退验证）；" \
+"② python scripts/diag/verify_anon_live_decouple.py —— 用假失效凭证实测：" \
+"匿名进房拿 room_id/status/ttwid + 匿名 WS 握手成功并收到帧（实测 3/3 通过）；" \
+"③ 有凭证账号启动任务，行为与改造前一致（仍能发送）。" ,
+    },
+    "ENG-016": {
+        "design": "软停止（stop(hard=False)）的语义是「停止接收新目标，存量队列发完即收尾」。" \
+"收尾必须在存量发完后**立即**发生，不能被尚未开始的随机延迟窗口拖住。" ,
+        "contract": "① 等待发送时刻的 sleep 必须可被停止信号打断；② 停止后被丢弃的目标" \
+"必须同步清理 pending（否则收尾判据永远不成立）；③ wait_done 与 on_idle" \
+"的收尾条件都依赖 pending 为空，二者不得被同一条记录同时堵死。" ,
+        "deviation": "点「停止监听」后界面长时间无变化：实测 stop 后状态卡在 STOPPING，" \
+"耗时 = 该记录的随机延迟窗口（50s 实测 / delay 上限可达 ~120s）才转 STOPPED。" ,
+        "chain": "AutoDM.stop(hard=False) → dispatch.stop_soft() → _loop 仍在" \
+"`await asyncio.sleep(item.send_at - now)` → 该记录 pending 未清 →" \
+"on_idle 判据 `not self.pending` 不成立、wait_done 的 while 永真 →" \
+"无人推进状态 → state 恒为 STOPPING → 前端徽章/按钮无变化" ,
+        "root": "两点叠加：① _loop 无条件 sleep 到 send_at，软停止（_accept_new=False 但" \
+"_stopped 未置）不打断它；② 该记录在软停止后必然走不到发送（闸门拒收），" \
+"却仍要睡满才在 _do_send 里 pop pending —— 收尾被它独占阻塞。" ,
+        "verify": "① python scripts/diag/diag_soft_stop_state.py —— 复现脚本：修复前" \
+"50s 才落 stopped，修复后 2.5s 内落 stopped；" \
+"② 实机：点「停止监听」，观察 ≤3s 内 engine_state 变 stopped、" \
+"前端徽章与按钮立即更新；③ 日志出现「软停止：丢弃尚未到发送时刻的目标」。" ,
+    },
     "LIVE-021": {
         "design": "「直播间配置管理」是房间级配置的**唯一可写入口**；点「重启」应把"
                   "配置内容热更进正在运行的任务，且四种结果都要如实下发（已生效 / "
@@ -698,6 +765,57 @@ CODE_DESIGN = {
                 "引擎方法内部异常；属数据面问题，非前端展示问题",
         "verify": "POST /api/live/room-configs/{id}/restart 的响应里 "
                   "restart.ok=false 且 reason 非空；日志 grep LIVE-021 看原始异常。",
+    },
+
+    "LIVE-034": {
+        "design": "监听线存活期间，「凭证是否可用」必须有明确判据。"
+                  "但该判据不能是「有 cookie」——实测张老师 cookie 70 个字段齐全"
+                  "（sessionid/sid_tt/ttwid/uid_tt 全在），服务端仍判其未登录。",
+        "contract": "三态且诚实降级：True=已确认被服务端承认 / False=已确认未承认 /"
+                    " None=取不到证据 → 保留原行为并留痕，绝不擅自降级。",
+        "deviation": "会话态探测无结论时调用方无法区分「没探测」与「探测失败」。",
+        "chain": "AutoDM._run → probe_live_identity → LiveChatHook.session_ok → "
+                 "_has_credential()",
+        "root": "探测结果未传递或被探测异常吞掉（异常一律转可读原因，不冒泡）。",
+        "verify": "日志出现 LIVE-034 时，检查 upstream 是否真跑过 probe_live_identity。",
+    },
+    "LIVE-035": {
+        "design": "凭证的职责是「部分直播间昵称加密时的解密权」。账号无解密权时，"
+                  "直播帧只下发脱敏数据（uid=111111 + 昵称 `威***` + sec_uid 空），"
+                  "**与完全不带 cookie 的真匿名逐字相同**。",
+        "contract": "① 判据落在真实业务通路（主站 user/profile/self/ 是否承认登录态）；"
+                    "② 无解密权必须显式告知用户并给出唯一动作（重新扫码）；"
+                    "③ 不得因为「有 cookie」就宣称具备解密权。",
+        "deviation": "实测：同一房间、同一时刻，张老师 cookie → uid=111111/sec_uid 空；"
+                     "尚进 cookie → uid=63676672247/sec_uid=MS4wLjABAAAA…；"
+                     "无 cookie → uid=111111（与张老师完全一致）。",
+        "chain": "账号 .env cookie → 主站 profile/self(status_code=8 用户未登录) → "
+                 "直播 WS 帧 User.id=111111 / sec_uid 空 / desensitized_nickname 有值",
+        "root": "账号会话未被服务端承认（cookie 存在但登录态无效），"
+                "或账号本身处于「只读态」（另一独立证据：imapi cmd609 建会话被拒）。",
+        "verify": "① 弹幕日志 uid=111111 且 LIVE-006 计数上升；"
+                  "② python scripts/diag/diag_live_cred_ab.py 三组对照；"
+                  "③ probe_live_identity 返回 ok=False 且 detail 带 status_code=8。",
+    },
+    "LIVE-036": {
+        "design": "登录态探测是「能力判定」的输入，探测自身失败不等于能力缺失。",
+        "contract": "探测异常必须转为可读原因并**不据此降级**（诚实三态之 None），"
+                    "否则「机制坏了」会被伪装成「账号不行」。",
+        "deviation": "网络/风控导致 profile/self 请求异常。",
+        "chain": "probe_live_identity → requests.get(profile/self) → except → (False, 原因)",
+        "root": "外网异常或响应形状变化；判定真值应由下一次探测刷新。",
+        "verify": "detail 含「结论未知」即表示未定论；此时 AutoDM 不置 session_ok=False。",
+    },
+    "LIVE-037": {
+        "design": "带凭证取直播间信息；若服务端把该会话当未登录，则回落匿名路径。",
+        "contract": "回落必须显式留痕（不得静默），且不得用非登录会话的 ttwid 建连。",
+        "deviation": "实测张老师带 cookie 请求直播间页，响应体 1158.9KB，"
+                     "页面渲染「请登录」文案 4 处（与无 cookie 完全一致）。",
+        "chain": "start_ws → _room_info_with_credential → DouyinAPI.get_live_info → "
+                 "无 room_id/异常 → _anon_live_info",
+        "root": "DouyinAPI.get_live_info 依赖 res.cookies['ttwid']，"
+                "在服务端未承认该会话时可能取不到或返回结构异常。",
+        "verify": "日志出现 LIVE-037 后应紧跟 LIVE-033，且最终仍能建连（收帧数>0）。",
     },
     "BCC-005": {
         "design": "打开 chat 页是 BCC 一切能力（昵称 hook/发送/页面探活）的前置；"
@@ -972,6 +1090,30 @@ CODE_DESIGN = {
         "chain": "launch_async/launch_sync → camoufox_enabled → launch_camoufox_* → 异常",
         "root": "Camoufox 未安装或依赖缺失（需 pip install camoufox[geoip]）",
         "verify": "日志是否出现 BCC-058 并成功回退；pip show camoufox 确认安装。",
+    },
+    "AUTH-053": {
+        "design": "扫码/重捕得到的凭证应是被服务端承认的、当前生效的会话，而不是扫码瞬间的旧快照。",
+        "contract": "抓取到的 cookie 必须通过 user/profile/self/ 被服务端承认（status_code==0 且含 MS4wLjABAAAA）。",
+        "deviation": "扫码完成后立即读 context.cookies()，得到的是被服务端拒绝的轮换前会话（profile/self status_code=8）。",
+        "chain": "scan_login/recapture → context.cookies() → save_credential → .env（写入即快照）",
+        "root": "抖音在扫码完成后会再换发一次会话（passport 换发窗口），快照采在换发前 ⇒ 永远落后一站。",
+        "verify": "抓取后用 profile/self 复验该 cookie；日志出现 AUTH-053 即为未获承认。",
+    },
+    "BCC-071": {
+        "design": "BCC 保活回写只能写入「被服务端承认的」会话；旧旧会话绝不写入 .env。",
+        "contract": "写盘前必须同时过「身份一致性」（门禁1.5）与「会话活性」（profile/self）两道门禁，二者互不代替。",
+        "deviation": "读到的 cookie 探活到正确 uid，但 profile/self 返 status_code=8（服务端不承认该会话）。",
+        "chain": "run_keepalive → refresh_cookie_to_env → get_cookies(profile) → 门禁1.5 → 门禁1.6(profile/self) → save_credential",
+        "root": "query/user 容忍陈旧会话→门禁1.5 放行；而 profile/self 严格→会话被拒。先就地刷新页面复验。",
+        "verify": "日志出现 BCC-071 后是否出现 BCC-072；手动核对 .env 与 profile 的 sessionid 家族是否一致。",
+    },
+    "BCC-072": {
+        "design": "自愈回路（保活回写）不得静默失效；持续两次拿不到被承认的会话必须响亮上报。",
+        "contract": "保活回写被 BCC-071 拒掉时应立即重试一轮（不等 30min 节流），两次仍失败则明确告警交人工。",
+        "deviation": "会话未获承认 → .env 不被刷新 → 下一轮探活仍坏 → 自锁（不恢复）。",
+        "chain": "门禁1.5/1.6 拒写 → keepalive 当轮跳过 → 下一轮（30min）→ 坏会话持续",
+        "root": "回写失败后无立即重试与明确告警 → 故障不被发现。",
+        "verify": "日志出现 BCC-072 即该账号 profile 登录态需人工重新登录（不自动重扫）。",
     },
 }
 

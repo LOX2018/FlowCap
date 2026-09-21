@@ -535,6 +535,35 @@ class DYLoginApi:
                 f"抓取到的凭证被抖音风控验证页污染（字段={'/'.join(_fields)}），"
                 f"已【拒绝写入】.env。【指纹浏览器保持打开】，请在其中手动处理验证码/滑块，"
                 f"处理完成后重新点击「重新获取凭证」。")
+        # 2026-09-21 根治「扫码瞬间快照」：本方法在扫码完成后**立刻**读
+        # context.cookies()，而抖音常在此刻之后**再换发一次会话**（实测 .env 写于
+        # 13:04:08、浏览器真正被服务端承认的会话生成于 13:04:23，差 15s）⇒ 写进
+        # .env 的会话永远落后一站、过不了 profile/self（status_code=8）→ 后续被
+        # BCC-058 门禁拒写 → .env 被定为坏快照、形成自锁。
+        # 修法：拿到 cookie 后先复验「会话是否被服务端承认」；未承认则等一拍重读一次
+        # （passport 换发窗口），最多 3 次。仍不承认也照常返回（不在此处中断用户流程），
+        # 由 BCC-058 门禁在写盘处兜底。
+        _sess_state, _sess_detail = None, ""
+        try:
+            from auto_dm.accounts import _live_session_probe_raw as _raw_probe
+            _tmp_auth = DouyinAuth()
+            for _try in range(3):
+                _tmp_auth.cookie = cookies
+                _sess_state, _sess_detail = await asyncio.to_thread(
+                    _raw_probe, _tmp_auth)
+                if _sess_state is True:
+                    break
+                await asyncio.sleep(2.0)
+                cookies = {c["name"]: c["value"] for c in await context.cookies()}
+            if _sess_state is not True:
+                logger.warning(
+                    f"[AUTH-053] [auth] 抓取到的会话未被服务端承认"
+                    f"（重读 {_try + 1} 次仍未获承认：{_sess_detail}）——"
+                    f" 该凭证写入 .env 会被 BCC-058 门禁拦截；"
+                    f"若仍反复出现，请在指纹浏览器内重新登录本账号。")
+        except Exception as _e_probe:
+            logger.debug(f"[auth] 会话承认复验跳过（不阻塞抓取）: {_e_probe}")
+
         # 【不立即关闭浏览器】成功抓到凭证后保持指纹浏览器打开，让用户确认登录态/处理可能的二次验证。
         # 浏览器由用户手动关闭，或由后续「关闭指纹浏览器」按钮/enrich_auth 上层关闭。
         logger.info("[auth] 凭证抓取完成，指纹浏览器保持打开（用户可手动关闭或继续操作页面）")

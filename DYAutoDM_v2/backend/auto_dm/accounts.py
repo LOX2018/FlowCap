@@ -1151,6 +1151,120 @@ def invalidate_im_write_cache(name: str = "") -> None:
 
 
 
+# ---------------------------------------------------------------------------
+# 直播「昵称解密权」探针（ENG-018，2026-09-21）
+# ---------------------------------------------------------------------------
+# 设计契约（用户 2026-09-21 明确）：
+#   抖音直播**本身支持匿名观看**；凭证的职责是「部分直播间昵称加密时的解密权」。
+# 实测缺陷（本函数存在的理由）：
+#   张老师账号 cookie 70 个字段齐全（sessionid/sid_tt/ttwid/uid_tt 全在），
+#   但服务端判其「未登录」⇒ 直播帧下发脱敏数据
+#   （uid=111111 + 昵称 `威***` + sec_uid 空），与**完全不带 cookie 的真匿名**
+#   现象逐字相同。⇒「有 cookie」是**代理信号**，判据为真、能力为零。
+#   正确判据 = 主站 `user/profile/self/` 是否承认该会话（status_code=0 + sec_uid）。
+#
+# 判据落点（§〇·己·3）：真实业务通路上的**登录态确认**，不新增任何昵称类主动查询。
+LIVE_IDENTITY_PROBE_TTL = 300.0
+_live_identity_cache: Dict[str, Tuple[float, bool, str]] = {}
+_live_identity_lock = threading.Lock()
+
+
+def _live_session_probe_raw(auth) -> Tuple[Optional[bool], str]:
+    """原始三态探测（不缓存、只读）：True=服务端承认 / False=明确拒绝 / None=**取不到证据**。
+
+    与 probe_live_identity 的分工：本函数**不把「探测失败」折成 False**
+    —— 「探测不到」≠「不存在」（三态铁律）。写入门禁必须能区分二者：
+    只有 False 才允许据此拒绝写入，None 只能保守放行（诚实降级）。
+    """
+    import requests
+    from builder.header import HeaderBuilder
+    from utils.dy_util import tls_verify
+    api = "/aweme/v1/web/user/profile/self/"
+    url = (f"https://www.douyin.com{api}"
+           "?device_platform=webapp&aid=6383&channel=channel_pc_web")
+    r = requests.get(url, headers={"user-agent": HeaderBuilder.ua,
+                                   "referer": "https://www.douyin.com/"},
+                     cookies=auth.cookie, timeout=20, verify=tls_verify())
+    body = r.text or ""
+    try:
+        js_status = (r.json() or {}).get("status_code")
+    except Exception:
+        js_status = None
+    if bool(js_status == 0 and "MS4wLjABAAAA" in body):
+        return True, "服务端承认登录态：具备直播昵称解密权"
+    return False, (f"服务端判为未登录（profile/self status_code={js_status}）—— "
+                   f"无直播昵称解密权，弹幕昵称将被脱敏（uid=111111）。请重新扫码；"
+                   f"若重扫后仍如此，则可能是该直播间开启了「隐藏观众信息」")
+
+
+def live_session_state(name: str, auth=None, force: bool = False,
+                       ttl: Optional[float] = None) -> Tuple[Optional[bool], str]:
+    """账号会话活性**三态**（带缓存）：True=已确认被承认 / False=已确认被拒 / None=取不到证据。
+
+    None（探测自身失败/无 cookie）**不得**折成 False —— 调用方必须保守放行。
+    判据落在**真实业务通路**（`user/profile/self/` 是否被服务端承认）上，
+    而不是「有 cookie / 端口活着」这类代理信号。
+
+    ⚠️ 判据边界（禁止超载）：本判据只覆盖「会话活性/能力授权」这一类失效。
+    **身份漂移**用 `query/user` + 历史 conv_id 判（`_uid_consistent_with_history`）；
+    二者结论**互不代替**（`query/user` 容忍陈旧会话，`profile/self` 严格）。
+    """
+    if not name:
+        return None, "未指定账号"
+    if not force:
+        with _live_identity_lock:
+            hit = _live_identity_cache.get(name)
+        _ttl = ttl if ttl is not None else LIVE_IDENTITY_PROBE_TTL
+        if hit and (time.time() - hit[0]) < _ttl:
+            return hit[1], hit[2]
+    try:
+        from dy_apis.login_api import DYLoginApi
+        if auth is None:
+            env_path = env_path_of(name)
+            if not env_path:
+                return False, "账号 .env 不存在"
+            auth = DYLoginApi._load_auth_from_env(env_path)
+        if not auth or not getattr(auth, "cookie", None):
+            detail = "无 cookie —— 无解密权（只能收到匿名脱敏弹幕）"
+            with _live_identity_lock:
+                _live_identity_cache[name] = (time.time(), False, detail)
+            return False, detail
+        state, detail = _live_session_probe_raw(auth)
+        with _live_identity_lock:
+            _live_identity_cache[name] = (time.time(), state, detail)
+        if state is False:
+            # 只记 debug：调用方（AutoDM / 重扫路径）会用 LIVE-035 显式上报并透出到 UI，
+            # 这里再 warning 一次会变成同一结论双份日志（§日志去重）。
+            logger.debug(f"[live-identity] 账号 {name} {detail}")
+        elif state is None:
+            logger.warning(f"[LIVE-036] [live-identity] 账号 {name} {detail}")
+        return state, detail
+    except Exception as e:  # noqa: BLE001
+        detail = f"登录态探测失败：{type(e).__name__}: {str(e)[:120]}（结论未知，不据此降级）"
+        logger.warning(f"[LIVE-036] [live-identity] 账号 {name} {detail}")
+        return None, detail
+
+
+def probe_live_identity(name: str, auth=None, force: bool = False,
+                        ttl: Optional[float] = None) -> Tuple[bool, str]:
+    """兼容入口（既有二元契约，行为与改造前逐字一致）：
+
+    ok=False 同时涵盖「服务端明确拒绝」与「结论未知（探测失败）」两种。
+    需要区分二者的代码（写入门禁）请改用 live_session_state() 拿三态。
+    """
+    state, detail = live_session_state(name, auth=auth, force=force, ttl=ttl)
+    return bool(state), detail
+
+
+def invalidate_live_identity_cache(name: str = "") -> None:
+    """作废直播解密权探针缓存（重扫/重捕凭证后调用）。"""
+    with _live_identity_lock:
+        if name:
+            _live_identity_cache.pop(name, None)
+        else:
+            _live_identity_cache.clear()
+
+
 def account_status(name=None, force=False, timeout=10):
     """返回账号状态字典：包含签名存在性与探活结果。
 
