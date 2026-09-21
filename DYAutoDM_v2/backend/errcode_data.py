@@ -548,6 +548,8 @@ ERRCODES = {
     "AI-033": {"meaning": "ai] 语义候选失败，切下一个:", "file": "services/ai_reply.py", "line": 0},
     "AI-034": {"meaning": "ai] 语义缓存模型不一致，本次跳过语义级:", "file": "services/ai_reply.py", "line": 0},
     "AUTH-053": {"meaning": "[auth] 抓取到的会话未被服务端承认（重读仍未获承认）", "file": "dy_apis/login_api.py", "line": 0},
+    "AUTH-054": {"meaning": "[auth] 凭证加密写盘失败，已拒绝明文降级（凭证未写入）", "file": "dy_apis/login_api.py", "line": 0},
+    "MEM-007": {"meaning": "[member] 拒绝写入/读取凭证：主密钥不可用（明文 .env 已废弃，绝不明文落盘）", "file": "services/member_ctx.py", "line": 0},
     "BCC-071": {"meaning": "[bcc] 新 cookie 的会话未被服务端承认（profile/self status_code≠0），不写入 .env", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-072": {"meaning": "[bcc] 保活回写连续两次会话未获承认，会话需人工重新登录", "file": "daemon/browser_daemon.py", "line": 0},
 }
@@ -1114,6 +1116,22 @@ CODE_DESIGN = {
         "chain": "门禁1.5/1.6 拒写 → keepalive 当轮跳过 → 下一轮（30min）→ 坏会话持续",
         "root": "回写失败后无立即重试与明确告警 → 故障不被发现。",
         "verify": "日志出现 BCC-072 即该账号 profile 登录态需人工重新登录（不自动重扫）。",
+    },
+    "MEM-007": {
+        "design": "凭证唯一存储形态是 Fernet 加密的 <env_path>.enc；主密钥不可用（未登录）时读写凭证都必须显式失败。",
+        "contract": "member_ctx.write_env_file / parse_env_dict 不得回落到明文；明文 .env 即使存在也不被读取。",
+        "deviation": "旧实现主密钥不可用时回落明文读/写（明文凭证静默落盘或静默被读取）。",
+        "chain": "调用方 → member_ctx.write_env_file/parse_env_* → master_key() 为空 → 旧实现走明文分支",
+        "root": "明文兼容分支与主密钥门禁缺失，使「未登录」被当成「可用明文模式」。",
+        "verify": "无主密钥进程内调用 write_env_file：抛错；调用 parse_env_dict 且仅有明文 .env：返回空（不读明文）。",
+    },
+    "AUTH-054": {
+        "design": "凭证必须加密落盘（<path>.enc）；加密不可用时应显式失败并上报，绝不静默写出明文凭证。",
+        "contract": "save_credential 的任何写盘路径都不允许产生明文 .env；失败必须响亮（error 级）且不推进任何基线。",
+        "deviation": "加密写盘失败（主密钥缺失/磁盘故障）时，旧实现存在降级为明文 set_key 的路径。",
+        "chain": "scan_login/refresh_cookie_to_env → save_credential → member_ctx.write_env_file → 异常",
+        "root": "明文降级路径未被根除（DY_ALLOW_PLAINTEXT_ENV 逃生口 + is_member_env 为假时的 set_key 分支）。",
+        "verify": "在无主密钥进程内保存凭证：应报 AUTH-054 且磁盘不出现明文 .env。",
     },
 }
 

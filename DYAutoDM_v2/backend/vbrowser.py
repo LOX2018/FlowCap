@@ -74,28 +74,16 @@ def parse_proxy_env(env_path):
     try:
         if not env_path:
             return None, None  # 无 .env 不算错（静默无代理）
-        # 会员体系（v0.37.0）：会员空间内 .env 加密存 <path>.enc，
-        # 经 member_ctx.parse_env_dict 解密读；外部路径沿用逐行读。
+        # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）—— 统一走 member_ctx
         from urllib.parse import urlparse
         val = None
-        _dec = None
         try:
             from services import member_ctx
-            if member_ctx.is_member_env(env_path):
-                _dec = member_ctx.parse_env_dict(env_path)
+            _dec = member_ctx.parse_env_dict(env_path)
         except Exception:
             _dec = None
-        if _dec is not None:
+        if _dec:
             val = (_dec.get("DY_PROXY") or "").strip().strip('"').strip("'") or None
-        else:
-            if not os.path.isfile(env_path):
-                return None, None
-            with open(env_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("DY_PROXY="):
-                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
         if not val:
             return None, None
         u = urlparse(val)
@@ -573,23 +561,13 @@ def parse_proxy_config(env_path):
         dec = None
         try:
             from services import member_ctx
-            if member_ctx.is_member_env(env_path):
-                dec = member_ctx.parse_env_dict(env_path)
+            dec = member_ctx.parse_env_dict(env_path)
         except Exception:
             dec = None
         vals = {}
-        if dec is not None:
+        if dec:
             vals = {k: (v or "").strip().strip('"').strip("'")
                     for k, v in dec.items() if k in ("DY_PROXY", "DY_PROXY_MODE")}
-        else:
-            if not os.path.isfile(env_path):
-                return None, None, None
-            with open(env_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    for k in ("DY_PROXY=", "DY_PROXY_MODE="):
-                        if line.startswith(k):
-                            vals[k[:-1]] = line.split("=", 1)[1].strip().strip('"').strip("'")
         mode = (vals.get("DY_PROXY_MODE") or "").strip().lower()
         node = (vals.get("DY_PROXY") or "").strip() or None
         if mode not in ("node", "system", "direct"):

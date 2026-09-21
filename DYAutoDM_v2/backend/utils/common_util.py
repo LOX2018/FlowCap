@@ -43,20 +43,37 @@ def load_env(env_path: str | None = None):
     # 注：彻底消除跨账号污染需改造为"按账号取 auth、不落全局"，属架构改动，
     # 见 TODO 注释；本次先消除可观测的并发撕裂。
     with _env_lock:
+        # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）——
+        # 不再 load_dotenv(env_path) 注入 os.environ（明文时代做法，且跨账号污染）。
+        # 传 env_path 时经 member_ctx 解密读取该账号凭证；不传时只补充根 .env。
+        cookies_dy = ""
+        cookies_live = ""
         if env_path:
-            load_dotenv(env_path, override=True)
+            try:
+                from services import member_ctx
+                _vals = member_ctx.parse_env_dict(env_path)
+                cookies_dy = _vals.get("DY_COOKIES") or ""
+                cookies_live = _vals.get("DY_LIVE_COOKIES") or ""
+            except Exception:
+                cookies_dy = ""
         else:
             # 不指定账号时：只补充、不覆盖（override=False 是护栏核心）
             load_dotenv(override=False)
-        cookies_dy = os.getenv('DY_COOKIES')
-        cookies_live = os.getenv('DY_LIVE_COOKIES')
+            cookies_dy = os.getenv('DY_COOKIES')
+            cookies_live = os.getenv('DY_LIVE_COOKIES')
         from builder.auth import DouyinAuth
+        # 凭证值：传 env_path 时取自解密后的值，否则取自环境（根 .env 兜底）
+        if env_path:
+            _src = _vals if isinstance(_vals, dict) else {}
+        else:
+            _src = {k: os.getenv(k) for k in
+                    ("DY_TICKET", "DY_TS_SIGN", "DY_CLIENT_CERT", "DY_PRIVATE_KEY")}
         _auth = DouyinAuth()
         _auth.perepare_auth(cookies_dy, "", "")
-        _auth.ticket = os.getenv('DY_TICKET') or None
-        _auth.ts_sign = os.getenv('DY_TS_SIGN') or None
-        _auth.client_cert = os.getenv('DY_CLIENT_CERT') or None
-        _auth.private_key = os.getenv('DY_PRIVATE_KEY') or None
+        _auth.ticket = _src.get('DY_TICKET') or None
+        _auth.ts_sign = _src.get('DY_TS_SIGN') or None
+        _auth.client_cert = _src.get('DY_CLIENT_CERT') or None
+        _auth.private_key = _src.get('DY_PRIVATE_KEY') or None
         _live = DouyinAuth()
         _live.perepare_auth(cookies_live, "", "")
         dy_auth = _auth

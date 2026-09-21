@@ -23,7 +23,6 @@ import os
 import json
 import time
 from datetime import datetime
-from dotenv import load_dotenv
 
 from loguru import logger
 
@@ -46,32 +45,31 @@ def snapshot_old_env(env_path):
     """
     snap = {
         "env_path": env_path,
-        "exists": os.path.exists(env_path),
+        # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）—— 存在性只认 .enc
+        "exists": False,
         "mtime": None,
         "age_seconds": None,
         "cookie_field_count": 0,
         "raw": {},
     }
+    try:
+        from services import member_ctx
+        snap["exists"] = member_ctx.env_exists(env_path)
+    except Exception:
+        snap["exists"] = os.path.exists(env_path)
     if not snap["exists"]:
         return snap
     try:
-        snap["mtime"] = os.path.getmtime(env_path)
+        from services import member_ctx
+        _mt = env_path + ".enc"
+        snap["mtime"] = os.path.getmtime(_mt if os.path.exists(_mt) else env_path)
         snap["age_seconds"] = int(time.time() - snap["mtime"])
     except Exception:
         pass
     try:
-        # 会员体系（v0.37.0）：会员空间内走解密视图（.enc），外部原样 dotenv
-        from dotenv import dotenv_values
-        try:
-            from services import member_ctx
-            if member_ctx.is_member_env(env_path):
-                vals = member_ctx.parse_env_dict(env_path)
-            else:
-                load_dotenv(env_path, override=True)
-                vals = dotenv_values(env_path)
-        except ImportError:
-            load_dotenv(env_path, override=True)
-            vals = dotenv_values(env_path)
+        # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）—— 统一走 member_ctx
+        from services import member_ctx
+        vals = member_ctx.parse_env_dict(env_path)
         for k in list(_SIGN_KEYS) + ["DY_COOKIES"]:
             v = vals.get(k)
             if v is None:

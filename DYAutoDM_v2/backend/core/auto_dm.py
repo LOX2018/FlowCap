@@ -23,7 +23,6 @@ import threading
 import time
 from typing import Any, Optional
 
-from dotenv import load_dotenv
 from loguru import logger
 
 from config import settings
@@ -133,10 +132,15 @@ class AutoDM:
     # ------------------------------------------------------------------
     @staticmethod
     def _credential_age(env_path: str) -> int:
-        """返回 .env 距上次写入的秒数；不存在返回 -1。"""
+        """返回凭证距上次写入的秒数；不存在返回 -1。
+
+        🔴 2026-09-21：明文 .env 已废弃 —— mtime 取加密文件 <env_path>.enc。
+        """
         try:
-            if os.path.exists(env_path):
-                return int(os.path.getmtime(env_path))
+            from services import member_ctx
+            ep = env_path + ".enc"
+            if member_ctx.env_exists(env_path) and os.path.exists(ep):
+                return int(os.path.getmtime(ep))
         except Exception:
             pass
         return -1
@@ -156,21 +160,10 @@ class AutoDM:
             env_path = os.path.join(app_root(), ".env")
         elif not os.path.isabs(env_path):
             env_path = os.path.join(app_root(), env_path)
-        if os.path.exists(env_path):
-            load_dotenv(env_path, override=True)
-        # P3（09 台账 5.3）：进程级 os.environ 是多账号交叉污染源——
-        # 本函数只负责构造「这一个 env_path」的 auth，凭证值直接从文件读。
-        from dotenv import dotenv_values
-        # 会员体系（v0.37.0）：会员空间内走解密视图（.enc）
-        _vals = None
-        try:
-            from services import member_ctx
-            if member_ctx.is_member_env(env_path):
-                _vals = member_ctx.parse_env_dict(env_path)
-        except Exception:
-            _vals = None
-        if _vals is None:
-            _vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
+        # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）——
+        # 不再 load_dotenv 注入 os.environ；值经 member_ctx 精确读取。
+        from services import member_ctx
+        _vals = member_ctx.parse_env_dict(env_path)
         cookies = _vals.get("DY_COOKIES") or ""
 
         if force_fresh:

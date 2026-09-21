@@ -23,7 +23,6 @@ import asyncio
 import platform
 import subprocess
 import threading
-from dotenv import load_dotenv, dotenv_values
 from loguru import logger
 
 from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
@@ -819,10 +818,8 @@ def add_account(name):
     rel = os.path.join(name, ".env")   # 相对 _accounts_dir()，避免与 _accounts_dir() 拼接出双重前缀
     env_path = os.path.join(_accounts_dir(), name, ".env")
     os.makedirs(os.path.dirname(env_path), exist_ok=True)
-    # 创建完全空的 .env（不预置任何凭证内容，仅扫码后才会写入）
-    if not os.path.exists(env_path):
-        with open(env_path, "w", encoding="utf-8") as f:
-            pass
+    # 🔴 2026-09-21：明文 .env 已废弃 —— 不再预创建空明文文件；
+    # 凭证由扫码后经 member_ctx.write_env_file 加密写入 <env_path>.enc。
     idx["accounts"][name] = rel
     _save_index(idx)
     return env_path
@@ -837,29 +834,26 @@ _CREDENTIAL_KEYS = (
 
 
 def _strip_credential_lines(env_path):
-    """把 .env 中凭证字段行删除并重写，返回是否发生了改动。"""
-    if not os.path.exists(env_path):
+    """清空加密凭证里的敏感字段，返回是否发生了改动（**只操作 .enc**）。
+
+    🔴 2026-09-21：明文 .env 已废弃 —— 走 member_ctx.write_env_file，
+    以空值覆盖即被其「过滤空值键」语义删除。
+    """
+    from services import member_ctx
+    if not member_ctx.env_exists(env_path):
         return False
-    with open(env_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-    kept = [ln for ln in lines
-            if not any(ln.strip().startswith(k + "=") or ln.strip().startswith(k + " =")
-                       for k in _CREDENTIAL_KEYS)]
-    changed = len(kept) != len(lines)
-    if changed:
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(kept)
-    return changed
+    cur = member_ctx.parse_env_dict(env_path)
+    if not any(k in cur for k in _CREDENTIAL_KEYS):
+        return False
+    member_ctx.write_env_file(env_path, {k: "" for k in _CREDENTIAL_KEYS}, merge=True)
+    return True
 
 
 def clear_credentials_of(env_path):
-    """仅清空单个账号 .env 的凭证字段（保留文件/结构/其他配置）。"""
-    if not env_path or not os.path.exists(env_path):
+    """仅清空单个账号凭证的敏感字段（保留其他配置）。**只操作 .enc**。"""
+    if not env_path:
         return False
     try:
-        load_dotenv(env_path, override=True)
-        for k in _CREDENTIAL_KEYS:
-            os.environ.pop(k, None)
         return _strip_credential_lines(env_path)
     except Exception as e:
         logger.warning(f"[ACC-009] " + f"[账号] 清空凭证失败 {env_path}: {e}")
@@ -966,17 +960,13 @@ def _read_status(env_path):
     其他账号环境变量（否则空 .env 的账号会误读到上一个账号的 DY_COOKIES/TICKET，
     导致跨账号 UID 重复、凭证误判）。
     """
-    # 会员体系（v0.37.0）：会员空间内经解密视图读（.enc 加密文件也算存在）
-    _exists = os.path.exists(env_path)
-    _enc_exists = os.path.exists(env_path + ".enc") if env_path else False
-    if not _exists and not _enc_exists:
+    # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）
+    # 会员体系（v0.37.0）：会员空间内经解密视图读（只认 .enc 加密文件）
+    from services import member_ctx
+    if not member_ctx.env_exists(env_path):
         return {"exists": False, "has_ticket": False, "has_private_key": False,
                 "has_cookie": False, "has_web_protect": False}
-    try:
-        from services import member_ctx
-        vals = member_ctx.parse_env_dict(env_path)
-    except ImportError:
-        vals = dotenv_values(env_path)
+    vals = member_ctx.parse_env_dict(env_path)
     ticket = vals.get("DY_TICKET")
     pkey = vals.get("DY_PRIVATE_KEY")
     cookie = vals.get("DY_COOKIES")
@@ -1009,22 +999,11 @@ def credentials_complete(env_path):
 
     返回 (complete: bool, reason: str)。
     """
-    # 会员体系（v0.37.0）：会员空间内支持加密 .enc（经解密视图读）
-    _exists = os.path.exists(env_path) if env_path else False
-    if env_path and not _exists:
-        try:
-            from services import member_ctx
-            if member_ctx.is_member_env(env_path):
-                _exists = os.path.exists(env_path + ".enc")
-        except Exception:
-            pass
-    if not env_path or not _exists:
-        return False, "账号 .env 不存在（请先新增账号并扫码）"
-    try:
-        from services import member_ctx
-        vals = member_ctx.parse_env_dict(env_path)
-    except ImportError:
-        vals = dotenv_values(env_path)
+    # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）—— 存在性只认 .enc
+    from services import member_ctx
+    if not member_ctx.env_exists(env_path):
+        return False, "账号凭证不存在（请先新增账号并扫码）"
+    vals = member_ctx.parse_env_dict(env_path)
     cookie = vals.get("DY_COOKIES") or ""
     ticket = vals.get("DY_TICKET")
     ts_sign = vals.get("DY_TS_SIGN")
@@ -1323,10 +1302,9 @@ def _probe(env_path, timeout):
 
         def worker():
             try:
-                # 用 dotenv_values 显式读该账号 .env，避免 os.getenv 读到进程级
-                # 残留的其他账号环境变量导致跨账号 UID 重复。
-                from dy_apis.login_api import DYLoginApi as _DL
-                vals = dotenv_values(env_path)
+                # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）—— 统一走 member_ctx
+                from services import member_ctx as _mc
+                vals = _mc.parse_env_dict(env_path)
                 web_protect = vals.get("DY_WEB_PROTECT") or ""
                 keys = vals.get("DY_KEYS") or ""
                 auth = DouyinAuth()

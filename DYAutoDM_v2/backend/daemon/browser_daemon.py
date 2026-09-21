@@ -2161,6 +2161,7 @@ class BrowserContainer:
 
     def status(self) -> dict:
         from auto_dm import accounts as _acc
+        from services import member_ctx
         env_path = getattr(self, "_env_path", None) or _acc.env_path_of(self.account)
         alive = self._started and self._context is not None
         uid = self._last_uid
@@ -2175,7 +2176,7 @@ class BrowserContainer:
             "profile": self._profile_dir,
             "uid": uid,
             "last_refresh": int(self._last_refresh),
-            "logged_in": bool(env_path and os.path.exists(env_path)),
+            "logged_in": bool(env_path and member_ctx.env_exists(env_path)),
             # 2026-09-13：上报自身版本，供桌面端比对「前端新/后端旧」
             "version": _app_version(),
             # 2026-09-13 S2：暴露租约状态（browser_gate 此前读的 "exclusive"

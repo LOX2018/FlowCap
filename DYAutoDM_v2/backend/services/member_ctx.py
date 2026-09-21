@@ -332,6 +332,11 @@ def db_path() -> str | None:
 
 # ---------------------------------------------------------------------------
 # .env 加密封装（会员空间内账号凭证整文件加密）
+#
+# 🔴 2026-09-21 架构决定（用户拍板）：**凭证永久加密，明文 .env 彻底废弃**。
+#    本模块只认 <env_path>.enc（Fernet）。任何「写成明文 / 按明文读」的路径
+#    一律**显式失败**（fail loud），绝不静默降级 —— 明文凭证落盘等同失守。
+#    主密钥不可用（未登录）时同样拒绝读写，而不是回落到明文。
 # ---------------------------------------------------------------------------
 
 _ENC_SUFFIX = ".enc"
@@ -340,24 +345,17 @@ _SIGN_KEYS = ("DY_COOKIES", "DY_TICKET", "DY_TS_SIGN", "DY_CLIENT_CERT",
 
 
 def is_member_env(env_path: str) -> bool:
-    """该 .env 是否走会员加密封装（决定读写是否走加密视图）。
+    """该 env_path 的凭证是否以**会员加密封装**（<path>.enc）存在。
 
-    2026-09-10 修复（账号管理校验失效事故）：
-      原实现**只靠路径前缀**判断 env_path 是否位于 member_space_root() 内，
-      但 member_space_root() 依赖 current()（进程内内存会话）——子进程、
-      独立 Python 进程、以及未登录/会话态丢失的场景一律返回 None，
-      于是 is_member_env 恒 False → parse_env_dict 走明文分支 →
-      实际存在的 <env_path>.enc 被无视 → credentials_complete 判
-      「账号 .env 不存在」→ wp 引擎 fail → 无谓重捕获循环。
-      （凭证本身是好的：指纹浏览器可发私信、探活 uid 正确。）
+    2026-09-21 语义收敛（明文 .env 已彻底废弃）：
+      凭证只有一种存在形态 —— <env_path>.enc。本函数现在**只回答一个事实**：
+      「该路径是否存在加密凭证，且主密钥可用」。不再有「明文分支」可走，
+      因此调用方无需再写 `if is_member_env(...): 解密读 else: dotenv读`。
+      新代码应直接用 member_ctx.parse_env_dict / env_exists。
 
-    现改为**双判据**（任一成立即视为会员加密凭证）：
-      ① 路径位于当前会员数据空间内（原语义，保留）；
-      ② 存在 <env_path>.enc 且主密钥可用——**以文件事实为准**，
-         不再依赖路径归属与进程会话态。
-
-    判据 ② 是根治：无论路径是否错配、会话态是否注入，
-    只要磁盘上确有该账号的加密凭证且密钥在手，就按会员加密凭证读。
+    判据（两条任一成立即视为会员加密凭证）：
+      ① 路径位于当前会员数据空间内（保留原有语义）；
+      ② 存在 <env_path>.enc 且主密钥可用 —— **以文件事实为准**。
     """
     if not env_path:
         return False
@@ -384,6 +382,16 @@ def _enc_path(env_path: str) -> str:
     return env_path + _ENC_SUFFIX
 
 
+def env_exists(env_path: str) -> bool:
+    """凭证是否存在（**只认加密** <env_path>.enc）。
+
+    🔴 2026-09-21：明文 .env 已废弃 —— 存在性判据一律以 .enc 为准。
+    所有 `os.path.exists(env_path)` 形式的凭证存在性检查都应改用它，
+    否则在会员空间内会恒为 False（明文文件已不存在）。
+    """
+    return bool(env_path) and os.path.exists(_enc_path(env_path))
+
+
 def _encrypt_env_text(plain: str) -> str:
     key = master_key()
     if not key:
@@ -405,18 +413,20 @@ def _decrypt_env_file(env_path: str) -> str | None:
 
 
 def write_env_file(env_path: str, updates: dict, merge: bool = True) -> str:
-    """写入 .env（会员空间内自动加密；外部路径走原 dotenv 语义）。
+    """写入凭证（**只写加密** <env_path>.enc）。
 
-    updates: {KEY: value}；merge=True 时保留原文件其余键。
-    返回实际落盘路径（会员空间内是 <env_path>.enc）。
+    🔴 2026-09-21：明文 .env 已彻底废弃 —— 本函数**不再**有明文分支。
+    主密钥不可用（未登录）时显式抛错，绝不降级为明文落盘。
+
+    updates: {KEY: value}；merge=True 时保留原 .enc 内其余键。
+    返回实际落盘路径（<env_path>.enc）。
     """
-    if not is_member_env(env_path):
-        # 非会员空间（默认账号/调试态）：保持原 dotenv 行为
-        from dotenv import set_key
-        os.makedirs(os.path.dirname(env_path), exist_ok=True)
-        for k, v in updates.items():
-            set_key(env_path, k, v, quote_mode="never")
-        return os.path.abspath(env_path)
+    key = master_key()
+    if not key:
+        logger.error("[MEM-007] [member] 拒绝写入凭证：会员主密钥不可用（未登录？）"
+                     " —— 明文 .env 已废弃，绝不明文落盘。")
+        raise RuntimeError(
+            "会员主密钥不可用（未登录？）：明文 .env 已废弃，拒绝写入凭证")
 
     os.makedirs(os.path.dirname(env_path), exist_ok=True)
     current_vals: dict[str, str] = {}
@@ -439,28 +449,20 @@ def write_env_file(env_path: str, updates: dict, merge: bool = True) -> str:
     try:
         if os.path.exists(env_path):
             os.remove(env_path)
+            logger.warning(f"[MEM-007] [member] 已删除历史明文凭证残留: {env_path}")
     except Exception:
         pass
     return os.path.abspath(ep)
 
 
 def parse_env_dict(env_path: str) -> dict:
-    """读取 .env 为 {KEY: value} 字典（会员空间内自动解密；外部原样 dotenv）。
+    """读取凭证为 {KEY: value} 字典（**只认加密** <env_path>.enc）。
 
-    会员空间内：优先读 <path>.enc；不存在则读明文 <path>（旧数据迁移场景）。
+    🔴 2026-09-21：明文 .env 已彻底废弃 —— 明文文件**不再**被读取（拒绝静默使用
+    未加密凭证）。文件不存在返回 {}；主密钥不可用则显式抛错。
     """
-    if not is_member_env(env_path):
-        from dotenv import dotenv_values
-        if not os.path.exists(env_path):
-            return {}
-        return {k: v for k, v in dotenv_values(env_path).items() if v is not None}
-
     plain = _decrypt_env_file(env_path)
     if plain is None:
-        # 无加密文件但有明文文件：按明文读（供一次性迁移加密）
-        if os.path.exists(env_path):
-            from dotenv import dotenv_values
-            return {k: v for k, v in dotenv_values(env_path).items() if v is not None}
         return {}
     out = {}
     for line in plain.splitlines():
@@ -473,40 +475,18 @@ def parse_env_dict(env_path: str) -> dict:
 
 
 def parse_env_text(env_path: str) -> str | None:
-    """读取 .env 全文（会员空间内解密；外部读原文件）。不存在返回 None。"""
-    if not is_member_env(env_path):
-        if os.path.exists(env_path):
-            with io.open(env_path, encoding="utf-8") as f:
-                return f.read()
-        return None
+    """读取凭证全文（**只认加密** <env_path>.enc）。不存在返回 None。
+
+    🔴 2026-09-21：明文 .env 已废弃，不再回落到明文读取。
+    """
     return _decrypt_env_file(env_path)
 
 
 def migrate_plain_envs(member_id: str, master_key_val: str) -> dict:
-    """一次性迁移：把会员空间内所有明文 .env 加密为 .enc 并删除明文。
+    """已废弃（2026-09-21）：明文 .env 彻底废弃后无需迁移。
 
-    登录成功后自动调用（幂等：无明文文件时零操作）。
-    返回 {migrated: n, skipped: n}。
+    保留本函数仅为兼容旧调用方（返回零操作），新代码不要依赖它。
     """
-    migrated = skipped = 0
-    acc_dir = member_store.member_accounts_dir(member_id)
-    if not os.path.isdir(acc_dir):
-        return {"migrated": 0, "skipped": 0}
-    for name in os.listdir(acc_dir):
-        d = os.path.join(acc_dir, name)
-        envp = os.path.join(d, ".env")
-        if not os.path.isfile(envp):
-            continue
-        try:
-            with io.open(envp, encoding="utf-8") as f:
-                plain = f.read()
-            enc = member_store.encrypt_text(master_key_val, plain)
-            with open(envp + _ENC_SUFFIX, "w", encoding="ascii") as f:
-                f.write(enc)
-            os.remove(envp)
-            migrated += 1
-            logger.info(f"[member] 已加密迁移账号凭证: {name}")
-        except Exception as e:  # noqa: BLE001
-            skipped += 1
-            logger.error(f"[MEM-004] " + f"[member] 加密迁移失败（保留明文）: {name}: {e}")
-    return {"migrated": migrated, "skipped": skipped}
+    logger.info("[MEM-007] [member] migrate_plain_envs 已废弃（明文 .env 已废弃），"
+                "本次零操作。")
+    return {"migrated": 0, "skipped": 0}

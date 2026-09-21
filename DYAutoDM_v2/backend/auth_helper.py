@@ -39,14 +39,19 @@ def enrich_auth(auth, cookies_dy="", headless=False,
         logger.warning(f"[AUTH-002] " + "[auth] 请先安装依赖：pip install aiohttp（基座 login_api 需要）")
         return auth, cookies_dy
 
+    # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）——
+    # 不再 load_dotenv 注入 os.environ（那是明文时代的做法，会跨账号污染）；
+    # 凭证一律经 member_ctx 按 env_path 精确解密读取。
+    if not os.path.isabs(env_path):
+        from auto_dm.vbrowser import app_root
+        env_path = os.path.join(app_root(), env_path)
+    env_path = os.path.abspath(env_path)
     try:
-        from dotenv import load_dotenv
-        # 强制用指定 .env 绝对路径加载（override=True），确保 get_login_auth 内部的
-        # common_util.load_env() 能读到 DY_COOKIES（否则 trans_cookies(None) 会崩）。
-        if not os.path.isabs(env_path):
-            from auto_dm.vbrowser import app_root
-            env_path = os.path.join(app_root(), env_path)
-        load_dotenv(env_path, override=True)
+        from services import member_ctx
+        if not member_ctx.env_exists(env_path):
+            raise FileNotFoundError(f"凭证不存在（明文 .env 已废弃）: {env_path}")
+    except FileNotFoundError:
+        raise
     except Exception as e:
         logger.warning(f"[AUTH-003] " + f"[auth] 加载 {env_path} 失败: {e}")
 
@@ -182,25 +187,15 @@ def ensure_uid(auth):
 
 
 def save_cookie_to_env(cookie_str, env_path=".env"):
-    """把 cookie 写回 .env（DY_COOKIES=...）。enrich_auth 已通过基座写全凭证，
-    此函数仅作补充，一般无需调用。"""
+    """把 cookie 写回凭证（**只写加密** <env_path>.enc）。
+
+    🔴 2026-09-21：明文 .env 已废弃 —— 统一走 member_ctx.write_env_file。
+    """
     if not cookie_str:
         return
-    lines = []
-    found = False
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    for i, line in enumerate(lines):
-        if line.strip().startswith("DY_COOKIES"):
-            lines[i] = f"DY_COOKIES='{cookie_str}'\n"
-            found = True
-            break
-    if not found:
-        lines.append(f"DY_COOKIES='{cookie_str}'\n")
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
-    logger.info(f"[auth] 已将 cookie 写入 {env_path}")
+    from services import member_ctx
+    member_ctx.write_env_file(env_path, {"DY_COOKIES": cookie_str}, merge=True)
+    logger.info(f"[auth] 已将 cookie 加密写入 {env_path}.enc")
 
 
 def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
@@ -211,7 +206,6 @@ def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
     返回 (auth, cookie_str)；若当前账号无 cookie 且无法登录则返回 (None, None)。
     """
     try:
-        from dotenv import load_dotenv
         from builder.auth import DouyinAuth
         from auto_dm import accounts
     except Exception as e:
@@ -220,18 +214,11 @@ def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
 
     env_path = accounts.current_env_path()
     cookies = ""
-    if env_path and os.path.exists(env_path):
-        # P3（09 台账 5.3）：dotenv_values 纯文件读，不写 os.environ
-        # 会员体系（v0.37.0）：会员空间内走解密视图（.enc）
-        from dotenv import dotenv_values
-        try:
-            from services import member_ctx
-            if member_ctx.is_member_env(env_path):
-                cookies = member_ctx.parse_env_dict(env_path).get("DY_COOKIES") or ""
-            else:
-                cookies = dotenv_values(env_path).get("DY_COOKIES") or ""
-        except ImportError:
-            cookies = dotenv_values(env_path).get("DY_COOKIES") or ""
+    # 🔴 2026-09-21：凭证永久加密（明文 .env 已废弃）—— 存在性只认 .enc
+    if env_path:
+        from services import member_ctx
+        if member_ctx.env_exists(env_path):
+            cookies = member_ctx.parse_env_dict(env_path).get("DY_COOKIES") or ""
     auth = DouyinAuth()
     if cookies:
         auth.perepare_auth(cookies, "", "")

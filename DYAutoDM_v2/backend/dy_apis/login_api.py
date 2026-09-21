@@ -611,42 +611,19 @@ class DYLoginApi:
             "DY_KEYS": getattr(auth, "keys_str", "") or "",
         }
         set_values = {k: v for k, v in values.items() if v}
-        # 会员体系（v0.37.0）：会员空间内整文件 Fernet 加密写 <path>.enc；
-        # 外部路径保持原 dotenv set_key 行为。
+        # 🔴 2026-09-21 架构决定（用户拍板）：凭证**永久加密**，明文 .env 彻底废弃。
+        # 统一走 member_ctx.write_env_file（只写 <path>.enc）；主密钥不可用即显式
+        # 失败，**不再**有任何明文 set_key 降级路径（原 DY_ALLOW_PLAINTEXT_ENV
+        # 逃生口一并移除 —— 明文落盘等同凭证失守）。
+        from services import member_ctx
         try:
-            from services import member_ctx
-            if member_ctx.is_member_env(env_file):
-                member_ctx.write_env_file(env_file, set_values, merge=True)
-                logger.debug(f"[auth] 凭证已加密写回 {env_file}.enc")
-                return os.path.abspath(env_file + ".enc")
-        except RuntimeError:
+            ep = member_ctx.write_env_file(env_file, set_values, merge=True)
+        except RuntimeError as _enc_err:
+            logger.error(f"[AUTH-054] " + f"[auth] 凭证加密写盘失败，已拒绝明文降级"
+                         f"（凭证未写入）: {_enc_err}")
             raise
-        except Exception as _enc_err:
-            # 2026-09-17 安全修补（审查 P1-4）：原为 `except Exception: pass`
-            # —— 加密路径一旦出现非 RuntimeError 故障（导入失败、is_member_env
-            # 误判、磁盘只读…），会**静默**降级为明文写 .env，而 set_values 含
-            # DY_COOKIES / DY_TICKET / DY_PRIVATE_KEY / DY_WEB_PROTECT / DY_KEYS。
-            # 明文落盘等同凭证失守，且没有任何告警，运维无从察觉。
-            #
-            # 现改为：默认**拒绝**明文降级（宁可失败也不泄凭证）。
-            # 仅在显式设置 DY_ALLOW_PLAINTEXT_ENV=1 时允许降级（应急排障用），
-            # 且必须留下 error 级日志。
-            import os as _os
-            if _os.environ.get("DY_ALLOW_PLAINTEXT_ENV", "") == "1":
-                logger.error(f"[AUTH-040] " + f"[auth] ⚠️ 加密写盘失败，已按 DY_ALLOW_PLAINTEXT_ENV=1 "
-                    f"降级为**明文**写 {env_file}（含私钥与完整 cookie）: "
-                    f"{type(_enc_err).__name__}: {_enc_err}")
-            else:
-                logger.error(f"[AUTH-041] " + f"[auth] 加密写盘失败，已拒绝明文降级（凭证未写入）: "
-                    f"{type(_enc_err).__name__}: {_enc_err}；"
-                    f"如需应急明文落盘请设 DY_ALLOW_PLAINTEXT_ENV=1")
-                raise RuntimeError(
-                    f"会员加密写盘失败，拒绝明文降级: {_enc_err}") from _enc_err
-        from dotenv import set_key
-        for key, value in set_values.items():
-            set_key(env_file, key, value, quote_mode="never")
-        logger.debug(f"[auth] 凭证已写回 {env_file}（DY_PRIVATE_KEY 已编码换行）")
-        return os.path.abspath(env_file)
+        logger.debug(f"[auth] 凭证已加密写回 {ep}")
+        return ep
 
     @staticmethod
     def _load_auth_from_env(env_path):
@@ -658,29 +635,14 @@ class DYLoginApi:
         各处 os.getenv 拿到串号凭证。现按 env_path 精确读取；
         文件缺某键时回退 os.getenv（兼容扫码流程先写环境的旧路径）。
         """
-        from dotenv import load_dotenv, dotenv_values
         from builder.auth import DouyinAuth
         if env_path and env_path != ".env":
-            # 会员体系（v0.37.0）：会员空间内 .env 是 Fernet 加密的 <path>.enc，
-            # 统一经 member_ctx.parse_env_dict 解密读取；外部路径原样 dotenv。
-            _vals_member = None
-            try:
-                from services import member_ctx
-                if member_ctx.is_member_env(env_path):
-                    _vals_member = member_ctx.parse_env_dict(env_path)
-            except Exception:
-                _vals_member = None
-            if _vals_member is not None:
-                vals = _vals_member
-            else:
-                vals = dotenv_values(env_path) if os.path.exists(env_path) else {}
-                # 兼容：仅当文件不存在时才退回环境变量（存在但不完整以文件为准，
-                # 避免陈旧环境值覆盖刚扫码的新凭证）
-                if not os.path.exists(env_path):
-                    load_dotenv(env_path, override=True)
-                    vals = {}
+            # 🔴 2026-09-21：凭证永久加密，明文 .env 已废弃 —— 统一走
+            # member_ctx.parse_env_dict（只认 <path>.enc）。主密钥不可用/文件
+            # 不存在都不再回落到明文或 os.environ。
+            from services import member_ctx
+            vals = member_ctx.parse_env_dict(env_path)
         else:
-            load_dotenv(override=True)
             vals = {}
 
         def _val(key):
@@ -761,8 +723,9 @@ class DYLoginApi:
             from auto_dm import accounts as _acc
             from auto_dm.vbrowser import should_use_vb, launch_sync
             from auto_dm import config as _cfg
-            if not env_path or not os.path.exists(env_path):
-                logger.info(f"[auth] profile 刷新 cookie：env 不存在跳过 env_path={env_path}")
+            from services import member_ctx
+            if not env_path or not member_ctx.env_exists(env_path):
+                logger.info(f"[auth] profile 刷新 cookie：凭证不存在跳过 env_path={env_path}")
                 return False
             profile = _acc.profile_dir_of(env_path)
             if not profile or not os.path.isdir(profile):
@@ -861,8 +824,9 @@ class DYLoginApi:
         from auto_dm import accounts as _acc
         from auto_dm.vbrowser import should_use_vb, launch_sync
         from auto_dm import config as _cfg
+        from services import member_ctx
         out = {}
-        if not sec_uids or not env_path or not os.path.exists(env_path):
+        if not sec_uids or not env_path or not member_ctx.env_exists(env_path):
             return out
         profile = _acc.profile_dir_of(env_path)
         if not profile or not os.path.isdir(profile):
@@ -883,7 +847,7 @@ class DYLoginApi:
                 logger.warning(f"[AUTH-040] " + "[auth] 批量查昵称：打开 chat 页失败")
                 return out
             if not page.url.startswith("https://www.douyin.com"):
-                logger.warning(f"[AUTH-041] " + "[auth] 批量查昵称：未落在 douyin.com 域，跳过")
+                logger.warning(f"[AUTH-054] " + "[auth] 批量查昵称：未落在 douyin.com 域，跳过")
                 return out
             api_url = "/aweme/v1/web/im/user/info/?device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&update_version_code=170400&version_code=170400&version_name=17.4.0&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Mozilla&browser_version=5.0&browser_online=true&os_name=Windows&os_version=10&platform=PC&downlink=10&effective_type=4g&round_trip_time=100"
             # 分批（每批 6 个），浏览器单次 fetch 批量查询
