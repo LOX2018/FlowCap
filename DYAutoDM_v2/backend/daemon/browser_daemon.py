@@ -483,6 +483,9 @@ class BrowserContainer:
         self._page = None
         # P2-A：独立导航 tab（resolve_url 专用，不占用常驻 chat 页）
         self._nav_page = None
+        # ENG-020：观测专用导航 tab（exec_js / capture_wp_messages 用，
+        # 使「只读取数」不再把主 page 导航走）
+        self._diag_page = None
         self._backend = ""  # "exe" / "cdp"
         self._profile_dir = ""
         self._started = False
@@ -741,6 +744,7 @@ class BrowserContainer:
             self._context = None
             self._page = None
             self._nav_page = None  # P2-A：context 已重建，导航 tab 引用作废
+            self._diag_page = None  # ENG-020：同理，观测 tab 引用一并作废
             # ═══════════════════════════════════════════════════════════════
             # 2026-09-20 v0.43.99【致命修复 · 环境跳变风暴】
             #
@@ -887,6 +891,7 @@ class BrowserContainer:
             self._context = None
             self._page = None
             self._nav_page = None
+            self._diag_page = None  # ENG-020
             self._headless = target
             # 切换改为后台执行：有头指纹内核冷启动 + 页面加载可能远超 HTTP 调用方
             # 超时（实测冷启动 2~8 分钟）。若同步 await self._launch()，/show 请求会
@@ -1357,6 +1362,41 @@ class BrowserContainer:
 
         return await self._exec(_do)
 
+    async def _ensure_nav_tab(self, url: str = "https://www.douyin.com/chat?isPopup=1"):
+        """返回一个**位于抖音 /chat 的独立导航 tab**（懒创建，绝不用主 page）。
+
+        🔴 2026-09-21（ENG-020）新增 —— 统一原语，替代「把主 page goto 走」的旧做法。
+
+        背景（实机取证）：`exec_js` / `capture_wp_messages` 原先在「页面不在 /chat」时
+        直接 `self._page.goto("/chat")`。这属于**观测动作产生副作用**：
+          - 主 page 停在 `/jingxuan` 等重 SPA 页面时，该次 goto 会被挂住 ——
+            实测每轮正好挂满 25.0s 超时（日志：14:57:00→14:57:25、15:02:26→15:02:51…），
+            调用方（页面级登录态探针）据此判「页面失效」→ 保活回写被跳过
+            → `.env` 凝固在坏会话（ENG-020 根因）；
+          - 探针不该改变被观测对象的位置。
+        正解沿用项目既有先例 `resolve_url`（2026-09-06 同款修复：主 chat 页全程不动）：
+        用**同 context 的独立 tab**（同指纹、同 cookie、同代理出口）。
+
+        注：WP/昵称 hook 均为 **context 级** `add_init_script`（见 `_launch`），
+        对本 tab 同样生效 ⇒ wp_recv 通过本 tab 仍能取到被动截获的事件。
+        """
+        page = getattr(self, "_diag_page", None)
+        try:
+            if page is not None and not page.is_closed() and "/chat" in (page.url or ""):
+                return page
+        except Exception:  # noqa: BLE001
+            page = None
+        try:
+            if page is None or page.is_closed():
+                page = await self._context.new_page()
+                self._diag_page = page
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            await page.wait_for_timeout(1200)
+            return page
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[bcc] 独立导航 tab 不可用（{type(e).__name__}），回落主 page")
+            return None
+
     async def exec_js(self, js: str, arg=None, timeout: int = 30,
                       lease_id: str = "", holder: str = "exec_js"):
         """在抖音页面上下文里执行 JS（**只读取数**用途）。
@@ -1379,14 +1419,15 @@ class BrowserContainer:
         本方法未透传 → 自我死锁，与知识库 §〇·戊 同族）。
         """
         async def _do():
-            if "/chat" not in (self._page.url or ""):
-                # 取图需要抖音域上下文（同域 fetch + 登录态 + 前端解密）
-                await self._page.goto(
-                    "https://www.douyin.com/chat?isPopup=1",
-                    wait_until="domcontentloaded", timeout=25000)
-                await self._page.wait_for_timeout(1500)
-            self._page.set_default_timeout(timeout * 1000)
-            return await self._page.evaluate(js, arg)
+            page = self._page
+            if "/chat" not in (page.url or ""):
+                # 🔴 2026-09-21（ENG-020）：**不再把主 page 导航走** —— 改用独立
+                # 导航 tab 取抖音域上下文（同域 fetch + 登录态 + 前端解密），
+                # 主 page 全程不动。原实现的 goto 会在页面停于重 SPA 页时挂满 25s
+                # 超时，把页面级探针打成「页面失效」（见 _ensure_nav_tab docstring）。
+                page = await self._ensure_nav_tab() or page
+            page.set_default_timeout(timeout * 1000)
+            return await page.evaluate(js, arg)
 
         return await self._exec(_do, holder=holder, lease_id=lease_id or "")
 
@@ -1793,15 +1834,18 @@ class BrowserContainer:
         返回 [{kind: 'http'|'ws', url, body, ts}, ...]。
         """
         async def _do():
-            if "/chat" not in (self._page.url or ""):
-                await self._page.goto("https://www.douyin.com/chat?isPopup=1",
-                                       wait_until="domcontentloaded", timeout=25000)
-                await self._page.wait_for_timeout(2000)
+            page = self._page
+            if "/chat" not in (page.url or ""):
+                # 🔴 2026-09-21（ENG-020）：改用独立导航 tab —— 原实现把主 page
+                # goto 到 /chat，既挂满 25s 超时（主 page 停在重 SPA 页时），
+                # 又让「页面在哪」变成随机事件，令页面级探针与 WP 通道互相踩。
+                # hook 是 context 级 add_init_script，独立 tab 同样生效。
+                page = await self._ensure_nav_tab() or page
             try:
-                evs = await self._page.evaluate(
+                evs = await page.evaluate(
                     "() => window.__CAP_WP_MESSAGE__ ? window.__CAP_WP_MESSAGE__.events : []")
                 # 取回后立即清空，避免下次重复处理
-                await self._page.evaluate(
+                await page.evaluate(
                     "() => { if (window.__CAP_WP_MESSAGE__) window.__CAP_WP_MESSAGE__.events = []; }")
             except Exception as e:
                 logger.warning(f"[BCC-012] " + f"[bcc] 读 wp message 失败: {e}")
@@ -2099,6 +2143,7 @@ class BrowserContainer:
                 self._context = None
                 self._page = None
                 self._nav_page = None  # P2-A：context 已关闭，导航 tab 引用作废
+                self._diag_page = None  # ENG-020：同理
                 api = DYLoginApi()
                 auth = await api.get_login_auth(
                     headless=False, env_path=env_path, force=force,
@@ -2234,6 +2279,12 @@ class BrowserContainer:
         （页面显示"一键登录"待激活）下依然返回 uid，导致 keepalive 误报
         "登录态正常"，而页面内一切操作（WP 发送/昵称捕获）实际已失效。
         页面级判据（知识库 08 §24.1 铁律）：convItems>0 且无「一键登录/扫码」。
+
+        🔴 2026-09-21（ENG-020）**三态**：探针取不到证据时返回 `{"unknown": True}`
+        （而不是空 dict）。空 dict 与「明确失效」无法区分 ⇒ 调用方会把
+        **超时/异常**当成「页面失效」，进而跳过本与页面无关的凭证回写
+        （实机：张老师容器每轮挂满 25.0s → 回写停摆 → `.env` 凝固坏会话）。
+        诚实降级：结论未知就标未知，**不得**折成「失效」（§〇·己·2 三态铁律）。
         """
         import asyncio as _aio
 
@@ -2254,10 +2305,16 @@ class BrowserContainer:
             loop = self._loop or asyncio.get_event_loop()
             fut = _aio.run_coroutine_threadsafe(_probe(), loop) \
                 if loop.is_running() else _aio.ensure_future(_probe())
-            return fut.result(timeout=25) or {}
+            got = fut.result(timeout=25)
+            if isinstance(got, dict):
+                return got
+            logger.debug(f"[BCC-073] [bcc] 页面级探针无结论（返回 {type(got).__name__}）—— 记为未知")
+            return {"unknown": True}
         except Exception as e:
-            logger.debug(f"[bcc] 页面登录态探测失败: {e}")
-            return {}
+            # 超时/异常：这是「结论未知」，**不是**「页面失效」
+            logger.debug(f"[BCC-073] [bcc] 页面级探针取不到证据（{type(e).__name__}）—— 记为未知，"
+                         f"不得据以判定页面失效，也不影响凭证回写")
+            return {"unknown": True}
 
     async def _refresh_page_for_session(self) -> bool:
         """就地让页面重载一次，促使 passport 用当前 profile 的会话换发新 cookie。
@@ -2590,7 +2647,9 @@ class BrowserContainer:
             `_load_uid_from_env()`（就是 .env）；一旦 .env 是坏快照，uid 为空
             ⇒ 永远进不了回写分支 ⇒ 坏快照被永久固化（自锁）。
             `refresh_cookie_to_env` 自身带「身份一致性 + 会话活性」双门禁自证，
-            所以这里的调用门控用**页面登录态**（由 branch 判定），不用 .env。
+            所以本函数的调用**不依赖页面证据**（页面`conv` 只回答「页面操作是否可用」，
+            与「凭证是否有效」是两类失效，不得混用——2026-09-21 ENG-020 铁证）。
+            调用点：run_keepalive 在「uid 有效」分支内**无条件**调用本函数。
 
             返回 True = 已成功写回（.env 被刷新）。
             """
@@ -2605,12 +2664,19 @@ class BrowserContainer:
                 _sync_sec = 1800
             if _sync_sec <= 0 or (time.time() - last_cookie_sync) < _sync_sec:
                 return False
-            last_cookie_sync = time.time()
             if not self._loop:
                 return False
+            # 🔴 2026-09-21（ENG-020）：节流时间戳**只在「真正尝试过并取得成功/被门禁明确
+            #   否决」后推进**，不得在尝试前推进。原实现先置位再尝试 —— 一旦首次尝试
+            #   撞上瞬时租约争用（`lock_busy_yield`）或异常，就要再等满一个节流周期
+            #   （默认 1800s）才可能重试 ⇒ 坏 `.env` 白白多固化半小时，
+            #   与「30 分钟内自愈」的设计意图相悖（实机：19:51:45 撞锁即静默等待）。
+            tried = False            # 本轮是否真正进入了业务尝试（区别于被节流跳过）
+            succeeded = False        # 是否已确定结论（成功 / 明确拒写），可推进节流
             try:
                 r = {}
                 for _attempt in range(2):
+                    tried = True
                     fut = asyncio.run_coroutine_threadsafe(
                         self.refresh_cookie_to_env(internal=True), self._loop)
                     r = fut.result(timeout=90) or {}
@@ -2619,6 +2685,7 @@ class BrowserContainer:
                             f"[bcc] 保活回写：已将 profile 新鲜凭证同步至账号 .env"
                             f"（uid={uid_for_log}）"
                             + ("（第 2 次重试成功）" if _attempt else ""))
+                        succeeded = True
                         return True
                     if r.get("retry_now"):
                         # 会话未被服务端承认（BCC-071）：立即重试一轮，不等 30min
@@ -2627,14 +2694,24 @@ class BrowserContainer:
                             f"（第 {_attempt + 1} 次）: {r.get('msg')}")
                         continue
                     logger.debug(f"[bcc] 保活回写跳过：{r.get('msg', '无更新')}")
+                    succeeded = True     # 门禁明确否决（如 BCC-015/016/017）→ 已定论
                     return False
                 # 两次都 session_ok=False：响亮告警，不静默
                 logger.error(
                     "[BCC-072] [bcc] 保活回写连续两次会话未获承认"
                     " —— .env 保留既有凭证；疑似 profile 登录态需人工重新登录"
                     "（不自动重扫，防风控）。")
+                succeeded = True
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[bcc] 保活回写失败（不影响运行）: {e}")
+            finally:
+                # 只有「真正尝试过」才推进节流；撞锁/异常保持原时间戳，
+                # 使下一轮（默认 300s 后）能继续重试，而不是等满 1800s。
+                if tried and (succeeded or _sync_sec <= interval):
+                    last_cookie_sync = time.time()
+                elif tried:
+                    logger.debug("[bcc] 保活回写本轮未定论（疑似租约争用），"
+                                 "不推进节流时间戳，下轮继续重试")
             return False
 
         while not stop_ev.is_set():
@@ -2730,8 +2807,32 @@ class BrowserContainer:
                     # 2026-09-06 P1：uid 探活通过 ≠ 页面登录态有效。
                     # 「半登录态」（页面显示一键登录待激活）下 query/user 仍返回
                     # uid，但页面内 WP 发送/昵称捕获已全部失效（实测）。
+                    #
+                    # 🔴 2026-09-21（ENG-020）判据分层修复：**回写门控改用账号级判据**。
+                    #   原实现在此处先 `continue`，使 `_sync_env()`（保活回写）
+                    #   只挂在「页面级探针通过」这一分支上 ⇒ **把「凭证有效性」错绑到
+                    #   「页面恰好在 /chat 且探针未超时」**。实机铁证：张老师容器
+                    #   每轮探针挂满 25.0s 超时（14:57:00→14:57:25…）→ 判页面失效
+                    #   → observe 下 continue ⇒ 回写永不执行 ⇒ .env.enc 凝固坏会话
+                    #   （mtime 停在 13:04）⇒ 引擎 WS 用它 ⇒ 服务端不承认 ⇒
+                    #   弹幕全体脱敏（uid=111111）。而尚进恰被 wp_recv 钉在 /chat ⇒ 正常。
+                    #
+                    #   分层契约（此后不得混淆）：
+                    #     · 回写凭证的充分依据 = **账号级** `live_session_state`（profile/self
+                    #       是否被服务端承认）—— 与页面位置无关。由 `_sync_env()` 内部
+                    #       的门禁 1.5/1.6 自证，调用方不需要页面证据。
+                    #     · 页面级 `conv` 判据只回答「页面操作（WP 发送/昵称抓取）是否可用」，
+                    #       仅用于决定「要不要重新激活页面」，**不再充当回写前置条件**。
+                    #     · 三态铁律：探针取不到证据（{} / 无 conv 且非明确 rel）**不得**
+                    #       折成「页面失效」—— 否则超时/网络抖动会把自愈打成停摆。
+                    _sync_env(uid)
                     page_state = self._page_login_state_sync()
-                    if page_state.get("rel") or not page_state.get("conv"):
+                    if page_state.get("unknown"):
+                        # 三态：取不到证据 ⇒ 不判「失效」、不触发重激活，也不影响回写。
+                        logger.debug("[BCC-073] [bcc] 页面级登录态结论未知（探针无证据）"
+                                     " —— 按保守处理：不判页面失效、不触发重激活；"
+                                     "凭证回写已独立执行")
+                    elif page_state.get("rel") or not page_state.get("conv"):
                         if in_breaker:
                             # 熔断中：只告警，绝不重启浏览器（防风控恶性循环）
                             remain = int(breaker_until - now)
@@ -2740,8 +2841,9 @@ class BrowserContainer:
                                 f"{remain // 60} 分钟内不再自动重启浏览器，"
                                 f"请在指纹浏览器完成扫码登录")
                             continue
-                        logger.warning(f"[BCC-022] " + f"[bcc] 页面级登录态失效（conv={page_state.get('conv')} "
-                            f"rel={page_state.get('rel')}），uid={uid} 仍有效但页面需重新激活，"
+                        logger.warning(f"[BCC-022] " + f"[bcc] 页面操作级登录态失效（conv={page_state.get('conv')} "
+                            f"rel={page_state.get('rel')}），uid={uid} 凭证仍有效（回写已独立执行），"
+                            f"受影响的是 WP 发送/昵称抓取等**页面操作**；"
                             f"凭证更新方式={cred_mode}"
                             + ("（observe：不弹窗，等用户自行激活）"
                                if cred_mode == "observe" else "，触发 scan_login…"))
@@ -2775,9 +2877,8 @@ class BrowserContainer:
                         logger.debug(f"[bcc] 登录态正常(uid={uid}, "
                                      f"conv={page_state.get('conv')})")
                         # 2026-09-06（2.1a）保活回写 + 2026-09-21 自锁根治：
-                        # 回写逻辑抽到 `_sync_env()`，门控用**页面登录态**而不是
-                        # .env 的 uid —— 见函数 docstring。
-                        _sync_env(uid)
+                        # 回写逻辑抽到 `_sync_env()`；2026-09-21（ENG-020）起回写已在
+                        # **本分支上方无条件执行**（不再以页面证据为前置），此处不重复调用。
                 else:
                     # 2026-09-13 止血：此处原为「探活拿不到 uid → 直接 scan_login」
                     # 且【从不累加 scan_fail_count、从不置 breaker_until】——
@@ -2797,18 +2898,20 @@ class BrowserContainer:
                     #      回写分支 ⇒ 坏快照被永久固化。
                     #   ② 页面登录态也失效 ⇒ 才走下面的重扫/熔断。
                     # ═══════════════════════════════════════════════════════════
+                    # 🔴 2026-09-21（ENG-020）：与「uid 有效」分支同契约 —— **回写
+                    #   凭证不依赖页面证据**（`_sync_env` 内部走门禁 1.5/1.6 自证）。
+                    #   原实现要求「页面级探针说已登录」才回写，于是探针超时（张老师
+                    #   实测每轮 25.0s）就把自愈打成停摆。
                     try:
-                        _ps = self._page_login_state_sync()
-                        if _ps and (_ps.get("conv") or not _ps.get("rel")):
-                            if _sync_env(None):
-                                scan_fail_count = 0
-                                logger.info(
-                                    "[bcc] 探活异常但页面登录态正常 —— 已用 profile "
-                                    "实时态刷新 .env（自锁恢复），本轮不触发重扫。")
-                                continue
-                            # 门禁拒写（会话确未被承认）⇒ 落回下方重扫/告警
-                            logger.warning(
-                                "[bcc] 探活异常且会话未被服务端承认 —— 转入重扫/熔断处置。")
+                        if _sync_env(None):
+                            scan_fail_count = 0
+                            logger.info(
+                                "[bcc] 探活异常但 profile 会话可用 —— 已用 profile "
+                                "实时态刷新 .env（自锁恢复），本轮不触发重扫。")
+                            continue
+                        # 门禁拒写（会话确未被承认）⇒ 落回下方重扫/告警
+                        logger.warning(
+                            "[bcc] 探活异常且会话未被服务端承认 —— 转入重扫/熔断处置。")
                     except Exception as _e_rec:
                         logger.debug(f"[bcc] 自锁恢复分支异常（继续原路径）: {_e_rec}")
                     if not self._headless:

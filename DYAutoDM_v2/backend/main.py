@@ -497,8 +497,29 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning(f"[SYS-019] " + f"[startup] 会员态判断失败，按未登录处理: {_e}")
     # WP 通道私信接收循环（抖音网页版 chat 页 hook）
-    # 2026-09-05 新增。BCC 是单例（所有账号共享一个浏览器，用 names[0] 的端口），
-    # 故 wp_recv 也只对第一个账号轮询。与 WS 通道（recv_daemon）并存、应用层去重。
+    # 2026-09-05 新增。与 WS 通道（recv_daemon）并存、应用层去重。
+    #
+    # 🔴 2026-09-21 根治（ENG-020）：原实现「只对第一个账号轮询」，其依据是
+    #   2026-09-05 当时的「BCC 是单例（所有账号共享一个浏览器）」——
+    #   该假设在 2026-09-20 已失效：01b5cfa 起 Camoufox 改为**每账号独立容器**
+    #   （各自独立 profile 与 BCC 端口：尚进 11231 / 张老师 10042）。
+    #   而 `capture_wp_messages()` 每次调用都会把**该容器**的主 page 导航到
+    #   `/chat`（browser_daemon.py:1796）——即 wp_recv 每 3s 一次轮询，
+    #   实际上在**替被轮询的账号维持「页面停在 /chat」**这一状态。
+    #
+    #   后果（实机取证）：`list_accounts()[0]` = 尚进 → 尚进容器被钉在 /chat，
+    #   其 `_page_login_state_sync()`（经 exec_js，要求页面在 /chat）正常 →
+    #   保活回写正常运行（09-20/09-21 命中 6/8 次）；
+    #   张老师容器无人驱动 → 页面停在上次所在页（实测停在 `/jingxuan`）→
+    #   页面级探针每轮走 `goto('/chat')` 并挂满 25.0s 超时（实机：14:57:00→14:57:25…）
+    #   → 探针返回 {} → 被判「页面级登录态失效」→ cred_mode=observe 下 continue
+    #   → **保活回写分支永不进入** → `.env.enc` 凝固在坏会话（mtime 停在 13:04），
+    #     引擎读它建 WS ⇒ 服务端不承认该会话 ⇒ 直播帧/接口全体脱敏
+    #     （弹幕 uid=111111、昵称 `奋***`、sec_uid 空）。
+    #   同时张老师 WP 私信也全部漏收（实测 recv 条数 尚进 8848 : 张老师 154）。
+    #
+    #   修法：每账号各起一个循环（各自打自己的 BCC 端口），与「每账号独立容器」
+    #   的架构对齐。这是**过期假设**的修正，不是新增能力。
     try:
         from auto_dm import accounts as _acct_wp
         from daemon.wp_recv import run_wp_recv_loop
@@ -508,10 +529,14 @@ async def lifespan(app: FastAPI):
             for n in _acct_wp.list_accounts()
         ])
         if _wp_names:
-            _wp_task = asyncio.create_task(run_wp_recv_loop(_wp_names[0]))
+            _wp_tasks = []
+            for _nm in _wp_names:
+                _t = asyncio.create_task(run_wp_recv_loop(_nm))
+                _wp_tasks.append(_t)
+                logger.info(f"[startup] WP 通道接收循环已启动 (account={_nm})")
             # 防止任务被 GC（asyncio 只持有弱引用）
-            app.state.wp_recv_task = _wp_task
-            logger.info(f"[startup] WP 通道接收循环已启动 (account={_wp_names[0]})")
+            app.state.wp_recv_tasks = _wp_tasks
+            app.state.wp_recv_task = _wp_tasks[0]   # 兼容既有引用
     except Exception as e:
         logger.warning(f"[SYS-020] " + f"[startup] WP 接收循环启动失败（不影响 WS 通道）: {e}")
     # AI 获客自动回复：建表 + 若配置启用则自启监听（2026-09-06 嵌入）

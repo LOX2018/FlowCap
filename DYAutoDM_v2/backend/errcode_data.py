@@ -552,6 +552,7 @@ ERRCODES = {
     "MEM-007": {"meaning": "[member] 拒绝写入/读取凭证：主密钥不可用（明文 .env 已废弃，绝不明文落盘）", "file": "services/member_ctx.py", "line": 0},
     "BCC-071": {"meaning": "[bcc] 新 cookie 的会话未被服务端承认（profile/self status_code≠0），不写入 .env", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-072": {"meaning": "[bcc] 保活回写连续两次会话未获承认，会话需人工重新登录", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-073": {"meaning": "[bcc] 页面级登录态探针取不到证据（独立 tab 亦不可用/超时）—— 结论未知，不得据以判定页面失效或跳过凭证回写（ENG-020）", "file": "daemon/browser_daemon.py", "line": 0},
 }
 
 # ════════════════════════════════════════════════════════════════════════════
