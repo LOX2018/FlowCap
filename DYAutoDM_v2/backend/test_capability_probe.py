@@ -273,13 +273,91 @@ class TestAggregation(unittest.TestCase):
         res = self.P.run_probes(accounts=["acc1"])
         self.assertEqual(res["state"], "failed")   # conversation_capture 无日志→failed
         self.assertIn("conversation_capture@acc1", res["summary"]["attention"])
-        self.assertEqual(res["summary"]["total"], 3)
+        self.assertEqual(res["summary"]["total"], len(self.P.CAPABILITY_ORDER))
 
     def test_registry_and_order(self):
+        # 顺序须与 02_效果定义与探针.md §2 的五大业务域 + message_integrity 对齐
         self.assertEqual(self.P.list_capabilities(),
-                         ["conversation_capture", "credential_identity", "message_integrity"])
+                         ["conversation_capture", "send_delivery", "credential_identity",
+                          "live_danmaku", "ai_lead_capture", "message_integrity"])
         for c in self.P.list_capabilities():
             self.assertIn(c, self.P.REGISTRY)
+
+    def test_all_probes_are_readonly_and_return_contract(self):
+        """六个探针都必须在隔离库里安全执行，并返回完整契约字段。"""
+        _seed(conv_rows=[(f"0:1:me:p{i}", f"p{i}", f"昵称{i}") for i in range(12)])
+        for cap in self.P.CAPABILITY_ORDER:
+            r = self.P.run_probe(cap, "acc1")
+            for k in ("capability", "state", "coverage", "confidence",
+                      "measured_at", "evidence", "metrics", "reasons"):
+                self.assertIn(k, r, f"{cap} 缺字段 {k}")
+            self.assertIn(r["state"], ("healthy", "degraded", "failed", "unknown"),
+                          f"{cap} 不得返回二态以外/未知状态")
+            self.assertNotEqual(r["state"], "healthy") if not r["evidence"] else None
+
+    def test_send_delivery_needs_delivery_proof(self):
+        """发送域：只有 role='me' 落库、无投递验证标记 → 不得报 healthy。"""
+        import database
+        conn = database.get_db()
+        for i in range(5):
+            conn.execute("INSERT OR REPLACE INTO dm_messages"
+                         "(account,conv_id,role,text,msg_type,extra,ts,msg_id) "
+                         "VALUES(?,?,?,?,?,?,?,?)",
+                         ("acc1", "0:1:me:p1", "me", f"普通消息{i}", "text",
+                          "{}", 1.0, f"m{i}"))
+        conn.commit()
+        r = self.P.run_probe("send_delivery", "acc1")
+        self.assertEqual(r["state"], "degraded")
+        self.assertTrue(any("不能证明服务端已投递" in x for x in r["reasons"]))
+
+    def test_live_danmaku_desensitized_is_failed(self):
+        """直播域：脱敏判据必须用 uid==111111 且 sec_uid 空（勿用 desensitized_nickname）。"""
+        import shutil
+        import time
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        lines = [
+            f"{stamp}.000 | INFO | x - [弹幕] 豫***(uid=111111 sec_uid=): 在吗",
+            f"{stamp}.001 | INFO | x - [弹幕] 小***(uid=111111 sec_uid=): 谢谢",
+        ]
+        d = os.path.join(_ROOT, "logs")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "run_live_test.log")
+        open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+        try:
+            r = self.P.run_probe("live_danmaku", "acc1")
+            self.assertEqual(r["state"], "failed")
+            self.assertEqual(r["coverage"], 0.0)
+        finally:
+            os.remove(p)
+
+    def test_live_danmaku_no_activity_is_unknown(self):
+        """窗口内无弹幕 → unknown（未监听 ≠ 失效），绝不冒充 healthy。"""
+        # 清空隔离 logs，避免受其它测试写入的弹幕行影响
+        d = os.path.join(_ROOT, "logs")
+        for f in (os.listdir(d) if os.path.isdir(d) else []):
+            if f.endswith(".log"):
+                try:
+                    os.remove(os.path.join(d, f))
+                except Exception:
+                    pass
+        r = self.P.run_probe("live_danmaku", "nonexistent_acct")
+        self.assertEqual(r["state"], "unknown")
+        self.assertNotEqual(r["state"], "healthy")
+
+    def test_ai_lead_no_activity_is_unknown(self):
+        """AI 域：有留资但窗口内无 AI 活动 → unknown（不得报 healthy）。"""
+        import database
+        conn = database.get_db()
+        conn.execute("CREATE TABLE IF NOT EXISTS ai_leads("
+                     "id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, conv_id TEXT,"
+                     "peer_name TEXT, contact_type TEXT, contact_value TEXT,"
+                     "source_text TEXT, status TEXT, created_at REAL)")
+        conn.execute("INSERT INTO ai_leads(account,conv_id,peer_name,contact_type,"
+                     "contact_value,status,created_at) VALUES(?,?,?,?,?,?,?)",
+                     ("acc1", "0:1:me:p1", "张三", "wechat", "wx123", "new", 1.0))
+        conn.commit()
+        r = self.P.run_probe("ai_lead_capture", "acc1")
+        self.assertEqual(r["state"], "unknown")
 
     def test_unknown_capability_is_unknown_not_healthy(self):
         r = self.P.run_probe("no_such_capability", "acc1")

@@ -352,6 +352,31 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "env": "DY_PROBE_CAPTURE_STALE_SEC", "apply": "hot",
                 "hint": "最新捕获日志超此秒数未更新 → 判 failed（能力停摆）",
             },
+            # ---- 其余业务域探针（P1，2026-09-21 v0.44.27）----
+            "probe_live_window_hours": {
+                "label": "探针·直播弹幕观察窗（小时）",
+                "type": "int", "default": 24, "min": 1, "max": 720,
+                "env": "DY_PROBE_LIVE_WINDOW_HOURS", "apply": "hot",
+                "hint": "窗口内无弹幕记录 → 判 unknown（未监听，非失效）",
+            },
+            "probe_live_healthy": {
+                "label": "探针·弹幕真实率健康线",
+                "type": "float", "default": 0.95, "min": 0.0, "max": 1.0,
+                "env": "DY_PROBE_LIVE_HEALTHY", "apply": "hot",
+                "hint": "脱敏判据：uid==111111 且 sec_uid 空（勿用 desensitized_nickname）",
+            },
+            "probe_live_degraded": {
+                "label": "探针·弹幕真实率失败线",
+                "type": "float", "default": 0.50, "min": 0.0, "max": 1.0,
+                "env": "DY_PROBE_LIVE_DEGRADED", "apply": "hot",
+                "hint": "低于此值判 failed（昵称被脱敏 = 无解密权/凭证降权）",
+            },
+            "probe_ai_window_hours": {
+                "label": "探针·AI 活动观察窗（小时）",
+                "type": "int", "default": 72, "min": 1, "max": 2160,
+                "env": "DY_PROBE_AI_WINDOW_HOURS", "apply": "hot",
+                "hint": "窗口内 AI 相关日志行数，用于判断该域是否在活动",
+            },
             "image_inline_max_kb": {
                 "label": "图片内联阈值（KB）",
                 "type": "int", "default": 32, "min": 0, "max": 10240,

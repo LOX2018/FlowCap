@@ -624,16 +624,249 @@ def probe_credential_identity(account: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 探针 4：send_delivery（真实投递 / 幂等性）
+# ─────────────────────────────────────────────────────────────────────────────
+def probe_send_delivery(account: str) -> dict:
+    """发送投递探针。
+
+    设计契约（`02_效果定义与探针.md` §2.2）：**禁止用「接口返回 200」「UI 弹窗」当投递判据**
+    （曾发生「回 OK 但从未投递」）。本探针只认三类**本地硬证据**：
+      ① `role='me'` 落库行；② 带 `skey` 的实发要素（图片/语音等）；
+      ③ 主动写入的 `[投递验证]` 文本（本项目实测投递用的显式标记）。
+    并按唯一索引口径查 (conv_id,msg_id) 重复行（幂等性）。
+
+    ⚠️ 诚实边界：`role='me'` 行只证明「本地落库」，**不等于服务端确认投递**。
+    故无校验证据时最多报 degraded，不得报 healthy。
+    """
+    reasons: list[str] = []
+    evidence: list[str] = []
+    rows = _db_query(
+        "SELECT COUNT(*) AS n, "
+        "SUM(CASE WHEN extra LIKE '%skey%' THEN 1 ELSE 0 END) AS sk, "
+        "SUM(CASE WHEN text LIKE '%投递验证%' THEN 1 ELSE 0 END) AS ver "
+        "FROM dm_messages WHERE account=? AND role='me'", (account,))
+    n = int(rows[0]["n"] or 0) if rows else 0
+    sk = int(rows[0]["sk"] or 0) if rows else 0
+    ver = int(rows[0]["ver"] or 0) if rows else 0
+
+    dup = _db_query(
+        "SELECT COUNT(*) AS n FROM (SELECT conv_id, msg_id FROM dm_messages "
+        "WHERE account=? AND msg_id IS NOT NULL AND msg_id<>'' "
+        "GROUP BY conv_id, msg_id HAVING COUNT(*)>1)", (account,))
+    dup_n = int(dup[0]["n"] or 0) if dup else 0
+
+    if n == 0:
+        state = "unknown"
+        reasons.append("库内无 role='me' 记录（该账号从未发送或数据被清）→ 无法判定")
+    elif dup_n > 0:
+        state = "failed"
+        reasons.append(f"存在 {dup_n} 组 (conv_id,msg_id) 重复发送行 —— 幂等性失守")
+    elif ver == 0:
+        # 只有落库、无「投递验证」直接证据 —— 不得报 healthy（契约：不采信中间步骤）
+        state = "degraded"
+        reasons.append(f"有 {n} 条 role='me' 落库，但**无投递验证直接证据**"
+                       f"（`[投递验证]` 标记 {ver} 条）"
+                       f"→ 只证明「本地落库」，不能证明服务端已投递；"
+                       f"skey {sk} 条只是「实发要素」，不作为投递证据")
+    else:
+        state = "healthy"
+        reasons.append(f"发送 {n} 条，含投递验证直接证据 {ver} 条，且无重复行")
+    if n:
+        evidence.append(f"role='me' 落库 {n} 条；`[投递验证]` {ver} 条；带 skey {sk} 条")
+        evidence.append(f"(conv_id,msg_id) 重复组 {dup_n}；库文件 {db_evidence()}")
+        evidence.append("判据口径：仅以 DB 落库 + 显式投递验证标记为准，"
+                        "**不采信**接口 200 / UI 弹窗 / skey 存在性")
+
+    snapshot = {"score": round(ver / n, 4) if n else 0.0}
+    base = _baseline_compare("send_delivery", account, snapshot)
+    if state == "healthy" and not evidence:
+        state = "unknown"
+        reasons.append("无证据不得报 healthy")
+    return {
+        "capability": "send_delivery",
+        "state": state,
+        "coverage": None,
+        "coverage_note": "真实投递率需「对端收到」的独立证据；本探针以落库+校验标记近似",
+        "confidence": "A" if (ver or sk) else "D",
+        "measured_at": _iso(),
+        "evidence": evidence,
+        "metrics": {"sent_db_rows": n, "with_skey": sk, "delivery_verified": ver,
+                    "dup_groups": dup_n},
+        "baseline_delta": base,
+        "reasons": reasons,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 探针 5：live_danmaku（直播弹幕 / 昵称解密权）
+# ─────────────────────────────────────────────────────────────────────────────
+_RE_DANMAKU = re.compile(r"\[弹幕\]\s*(?P<nick>.+?)\(uid=(?P<uid>\d+)\s+sec_uid=(?P<sec>[^)]*)\)")
+
+
+def probe_live_danmaku(account: str) -> dict:
+    """直播弹幕探针。
+
+    判据（**ENG-020 卡校正**）：脱敏 ⇔ `uid == 111111` **且** `sec_uid` 为空。
+    ⚠️ **不可**用 `desensitized_nickname` / `is_anonymous` / `mystery_man` 当判据
+    （实测三组均为非空且等于各自昵称）。
+
+    数据源：本项目运行日志的 `[弹幕] 昵称(uid=… sec_uid=…)` 行（近 N 小时窗口）。
+    """
+    window_h = _cfg_int("capture", "probe_live_window_hours", 24)
+    th = _cfg_float("capture", "probe_live_healthy", 0.95)
+    th_d = _cfg_float("capture", "probe_live_degraded", 0.50)
+    since = _now() - max(1, window_h) * 3600
+
+    total = desens = 0
+    samples: list[str] = []
+    src = None
+    for p in _log_candidates(since):
+        try:
+            for line in open(p, "r", encoding="utf-8", errors="replace"):
+                m = _RE_TS.match(line)
+                if not m:
+                    continue
+                ts = _parse_ts(m.group("ts"))
+                if ts is None or ts < since:
+                    continue
+                d = _RE_DANMAKU.search(line)
+                if not d:
+                    continue
+                total += 1
+                is_des = (d.group("uid") == "111111" and not d.group("sec").strip())
+                if is_des:
+                    desens += 1
+                if len(samples) < 3:
+                    samples.append(f"uid={d.group('uid')} sec_uid={'空' if not d.group('sec').strip() else '有'}")
+                src = p
+        except Exception:
+            continue
+
+    reasons: list[str] = []
+    evidence: list[str] = []
+    if total == 0:
+        return {
+            "capability": "live_danmaku", "state": "unknown", "coverage": None,
+            "confidence": "D", "measured_at": _iso(),
+            "evidence": [f"近 {window_h}h 运行日志内无 `[弹幕]` 记录（窗口内未监听直播）"],
+            "metrics": {"window_hours": window_h, "danmaku_lines": 0},
+            "baseline_delta": None,
+            "reasons": [f"近 {window_h}h 内未监听直播 → 无法判定（不得报 healthy）"],
+        }
+    ratio = round((total - desens) / total, 4)
+    evidence.append(f"近 {window_h}h 弹幕 {total} 条，其中脱敏 {desens} 条 "
+                    f"（真实率 {(total-desens)/total:.2%}）← {Path(str(src)).name}")
+    evidence.append(f"判据：脱敏 ⇔ uid==111111 且 sec_uid 空；样例 {samples}")
+    if ratio >= th:
+        state = "healthy"
+        reasons.append(f"弹幕真实昵称率 {ratio} ≥ {th}（有解密权）")
+    elif ratio >= th_d:
+        state = "degraded"
+        reasons.append(f"弹幕真实昵称率 {ratio} 介于 [{th_d},{th}) —— 部分脱敏")
+    else:
+        state = "failed"
+        reasons.append(f"弹幕真实昵称率 {ratio} < {th_d} —— 昵称被脱敏（无解密权/凭证降权）")
+    base = _baseline_compare("live_danmaku", account, {"score": ratio})
+    return {
+        "capability": "live_danmaku", "state": state, "coverage": ratio,
+        "confidence": "A", "measured_at": _iso(), "evidence": evidence,
+        "metrics": {"window_hours": window_h, "danmaku_lines": total,
+                    "desensitized": desens, "real_ratio": ratio},
+        "baseline_delta": base, "reasons": reasons,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 探针 6：ai_lead_capture（AI 回复 / 留资捕获）
+# ─────────────────────────────────────────────────────────────────────────────
+def probe_ai_lead_capture(account: str) -> dict:
+    """AI 获客域探针：留资捕获有效性。
+
+    判据：`ai_leads` 表里该账号的留资条目数，以及**联系方式非空率**
+    （`contact_value` 为空 = 捕获到线索但没抓到可用联系方式 = 无效留资）。
+    另查近窗口 AI 回复活动（日志），无活动则只报留资现状、不报能力健康。
+    """
+    window_h = _cfg_int("capture", "probe_ai_window_hours", 72)
+    rows = _db_query(
+        "SELECT COUNT(*) AS n, "
+        "SUM(CASE WHEN contact_value IS NOT NULL AND contact_value<>'' THEN 1 ELSE 0 END) AS ok, "
+        "SUM(CASE WHEN status='new' THEN 1 ELSE 0 END) AS newn "
+        "FROM ai_leads WHERE account=?", (account,))
+    n = int(rows[0]["n"] or 0) if rows else 0
+    ok = int(rows[0]["ok"] or 0) if rows else 0
+    newn = int(rows[0]["newn"] or 0) if rows else 0
+    ratio = round(ok / n, 4) if n else None
+
+    # AI 回复活动（日志）
+    since = _now() - max(1, window_h) * 3600
+    ai_lines = 0
+    for p in _log_candidates(since):
+        try:
+            for line in open(p, "r", encoding="utf-8", errors="replace"):
+                m = _RE_TS.match(line)
+                if m:
+                    ts = _parse_ts(m.group("ts"))
+                    if ts and ts >= since and ("AI 回复" in line or "ai_reply" in line
+                                               or "留资" in line or "决策链" in line):
+                        ai_lines += 1
+        except Exception:
+            continue
+
+    reasons: list[str] = []
+    evidence: list[str] = []
+    if n == 0:
+        state = "unknown"
+        reasons.append("库内无留资记录 → 无法判定（可能从未触发，非缺陷）")
+        evidence.append(f"近 {window_h}h AI 相关日志行 {ai_lines} 条")
+    else:
+        evidence.append(f"留资 {n} 条（联系方式有效 {ok}，待处理 {newn}）← ai_leads 表")
+        evidence.append(f"近 {window_h}h AI 相关日志行 {ai_lines} 条；库文件 {db_evidence()}")
+        if ratio is not None and ratio >= 0.9 and ai_lines > 0:
+            state = "healthy"
+            reasons.append(f"留资 {n} 条，联系方式有效率 {ratio} ≥ 0.9，"
+                           f"且窗口内有 AI 活动（{ai_lines} 行）")
+        elif ratio is not None and ratio >= 0.9:
+            # 留资数据在，但窗口内无 AI 活动 —— 无法确认「当前」能力（诚实：unknown）
+            state = "unknown"
+            reasons.append(f"留资 {n} 条、有效率 {ratio}，但近 {window_h}h **无 AI 活动**"
+                           f"→ 只能证明历史捕获过，无法确认当前能力（不得报 healthy）")
+        elif ratio is not None and ratio >= 0.5:
+            state = "degraded"
+            reasons.append(f"联系方式有效率 {ratio} 介于 [0.5,0.9) —— 部分线索不可用")
+        else:
+            state = "failed"
+            reasons.append(f"联系方式有效率 {ratio} < 0.5 —— 留资捕获基本无效")
+
+    snapshot = {"score": ratio if ratio is not None else 0.0}
+    base = _baseline_compare("ai_lead_capture", account, snapshot)
+    if state == "healthy" and not evidence:
+        state = "unknown"
+        reasons.append("无证据不得报 healthy")
+    return {
+        "capability": "ai_lead_capture", "state": state, "coverage": ratio,
+        "confidence": "A", "measured_at": _iso(), "evidence": evidence,
+        "metrics": {"leads": n, "leads_with_contact": ok, "contact_ratio": ratio,
+                    "leads_new": newn, "ai_log_lines": ai_lines,
+                    "window_hours": window_h},
+        "baseline_delta": base, "reasons": reasons,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 注册表与统一入口
 # ─────────────────────────────────────────────────────────────────────────────
 REGISTRY: dict[str, Callable[[str], dict]] = {
     "conversation_capture": probe_conversation_capture,
     "message_integrity": probe_message_integrity,
     "credential_identity": probe_credential_identity,
+    "send_delivery": probe_send_delivery,
+    "live_danmaku": probe_live_danmaku,
+    "ai_lead_capture": probe_ai_lead_capture,
 }
 
-# 顺序 = 建议关注优先级
-CAPABILITY_ORDER = ["conversation_capture", "credential_identity", "message_integrity"]
+# 顺序 = 建议关注优先级（对齐 02_效果定义与探针.md §2 的五大业务域）
+CAPABILITY_ORDER = ["conversation_capture", "send_delivery", "credential_identity",
+                    "live_danmaku", "ai_lead_capture", "message_integrity"]
 
 _STATE_RANK = {"failed": 0, "unknown": 1, "degraded": 2, "healthy": 3}
 
