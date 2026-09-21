@@ -1,0 +1,23 @@
+{
+  "_doc": "契约门禁的『已知缺口』基线。仅记录【已核实存在、但尚未修复】的偏离，附理由与验证方法。门禁只对【新增】违规失败；本文件中的项会以 KNOWN 提示，不阻断提交。任何一项修复后必须从本文件删除（否则门禁会因『已消除的缺口仍在基线』而失败）。",
+  "_version": "1.0.0",
+  "_updated": "2026-09-21",
+  "known_gaps": [
+    {
+      "check": "G2 C-02 secsdk 签名接线",
+      "target": "backend/dy_apis/client_video.py:/aweme/v1/web/tab/feed/",
+      "reason": "该调用点 docstring 声称实测 HTTP 200 / 659465 字节成功，与 secsdk 保护清单（tab/feed 属受保护 GET）矛盾。二者必有一误：要么清单过宽、要么该次实测处于特殊 cookie/msToken 状态。",
+      "status": "open-conflict",
+      "verify_how": "取一次真实 webcast/www 请求对照：同一 cookie 下分别发【带签名】与【不带签名】两次，比对 status_code。带签成功→清单正确、代码需补签；不带签也成功→清单过宽、secsdk_web_sign 的保护表需按实测收窄。",
+      "risk": "风险等级低：该端点不在核心业务链（评论截流已有替代路径）。若上游策略收紧，表现为静默 403（非崩溃）。"
+    },
+    {
+      "check": "G2 C-02 secsdk 签名接线",
+      "target": "backend/dy_apis/client_collection.py:/aweme/v1/web/aweme/listcollection/|mix/listcollection/|collects/list/",
+      "reason": "实现（utils/secsdk_web_sign.py）完整且 5/5 抓包回归通过，但接线只覆盖 get_mix_aweme 一处；其余调用点仍走 params.get()。",
+      "status": "work-in-progress",
+      "verify_how": "为每个端点补 signed_url() 后，用【带/不带签名】对照实测确认修复；再删本项。",
+      "risk": "风险等级中：属他人未提交在制品（client_collection.py 为 M 状态），不得由本会话擅改。上游策略漂移时将静默 403。"
+    }
+  ]
+}

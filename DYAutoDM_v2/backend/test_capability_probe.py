@@ -118,6 +118,11 @@ REAL_FIRSTPACK = ("2026-09-21 19:56:17.414 | INFO | utils.code_logger:wrapper:72
 REAL_WRITE = ("2026-09-21 19:56:38.341 | INFO | utils.code_logger:wrapper:72 - "
               "[capture][尚进工伤小助理] 写库完成：会话 44（含消息 108），"
               "昵称命中 uid关联=0 sec_uid关联=0 未命中=44/44")
+# 2026-09-21 新增字段后的真实行形态（recv_daemon 的 with_browser=False 前移捕获）
+REAL_WRITE_W0 = REAL_WRITE + " with_browser=0"
+# 手动「更新会话」的等价路径（浏览器抓昵称，实测 44/44）
+REAL_WRITE_W1 = (REAL_WRITE.replace("昵称命中 uid关联=0", "昵称命中 uid关联=44")
+                 .replace("未命中=44/44", "未命中=0/44") + " with_browser=1")
 
 
 class TestLogParsing(unittest.TestCase):
@@ -195,6 +200,48 @@ class TestConversationCapture(unittest.TestCase):
         self.assertEqual(r["metrics"]["effective_ratio"], 0.0)
         self.assertEqual(r["metrics"]["nickname_ratio"], 1.0)   # 库内历史仍是好的
         self.assertTrue(any("冒充健康" in x for x in r["reasons"]))
+
+    def test_write_real_line_with_browser_field(self):
+        """新增 with_browser 字段后仍能解析；旧行（无该字段）保持向后兼容。"""
+        P = _fresh_probe()
+        m = P._RE_WRITE.search(REAL_WRITE_W0)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group("wb"), "0")
+        self.assertEqual(int(m.group("byuid")), 0)
+        # 浏览器路径（44/44）
+        m1 = P._RE_WRITE.search(REAL_WRITE_W1)
+        self.assertEqual(m1.group("wb"), "1")
+        self.assertEqual(int(m1.group("byuid")), 44)
+        # 旧行（无字段）→ 组为 None（向后兼容）
+        m0 = P._RE_WRITE.search(REAL_WRITE)
+        self.assertIsNotNone(m0)
+        self.assertIsNone(m0.group("wb"))
+
+    def test_with_browser_zero_is_not_failed(self):
+        """★ 假失效回归：recv_daemon 的 with_browser=0 捕获按设计不抓昵称，
+        其 uid关联=0 属**预期**。若无带浏览器证据 → unknown（未定论），
+        **绝不得**报 failed（否则每天误报）。"""
+        _seed(conv_rows=[(f"0:1:me:p{i}", f"p{i}", f"昵称{i}") for i in range(20)])
+        _plant_log([REAL_FIRSTPACK.replace("尚进工伤小助理", "acc1"),
+                    REAL_WRITE_W0.replace("尚进工伤小助理", "acc1")])
+        r = self.P.run_probe("conversation_capture", "acc1")
+        self.assertEqual(r["state"], "unknown",
+                         "with_browser=0 且无带浏览器证据 → 必须 unknown，不得 failed")
+        self.assertTrue(any("不抓昵称" in x for x in r["reasons"]),
+                        "必须说明该次捕获按设计不抓昵称")
+
+    def test_with_browser_zero_uses_browser_evidence(self):
+        """★ 关键回归：最近一次是 with_browser=0，但窗口内有带浏览器捕获
+        （44/44）→ 必须按**带浏览器那次**判定（healthy），不得被无昵称路径否定。"""
+        _seed(conv_rows=[(f"0:1:me:p{i}", f"p{i}", f"昵称{i}") for i in range(20)])
+        _plant_log([REAL_FIRSTPACK.replace("尚进工伤小助理", "acc1"),
+                    REAL_WRITE_W1.replace("尚进工伤小助理", "acc1"),   # 先：带浏览器 44/44
+                    REAL_WRITE_W0.replace("尚进工伤小助理", "acc1")])  # 后：无浏览器
+        r = self.P.run_probe("conversation_capture", "acc1")
+        self.assertEqual(r["state"], "healthy",
+                         "带浏览器证据 44/44 必须胜出，不被 with_browser=0 否定")
+        self.assertEqual(r["metrics"]["last_capture_fresh_ratio"], 1.0)
+        self.assertTrue(any("不抓昵称" in x for x in r["evidence"]))
 
     def test_healthy_requires_evidence(self):
         """报 healthy 时 evidence 不得为空（02 §3.2 硬性要求）。"""

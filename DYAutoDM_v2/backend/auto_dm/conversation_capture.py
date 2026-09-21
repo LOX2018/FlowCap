@@ -2019,5 +2019,6 @@ def capture_all(name, with_browser=True):
         traceback.print_exc()
     logger.info(f"[capture][{name}] 写库完成：会话 {n_conv}（含消息 {n_msg}），"
                 f"昵称命中 uid关联={_by_uid} sec_uid关联={_by_sec} "
-                f"未命中={len(convs) - _by_uid - _by_sec}/{len(convs)}")
+                f"未命中={len(convs) - _by_uid - _by_sec}/{len(convs)} "
+                f"with_browser={1 if with_browser else 0}")
     return (n_conv, n_msg)

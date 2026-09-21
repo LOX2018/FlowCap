@@ -179,11 +179,16 @@ _RE_FIRSTPACK = re.compile(
     r"\[capture\]\[(?P<acct>[^\]]+)\]\s*首包\s*拉取=(?P<pull>[\d.]+)s\s*解析=(?P<parse>[\d.]+)s"
     r"\s*[（(](?P<bytes>[\d,]+)B\s*->\s*(?P<convs>\d+)\s*会话[）)]"
 )
-# `[capture][账号] 写库完成：会话 44（含消息 108），昵称命中 uid关联=0 sec_uid关联=0 未命中=44/44`
+# `[capture][账号] 写库完成：会话 44（含消息 108），昵称命中 uid关联=0 sec_uid关联=0 未命中=44/44 with_browser=0`
+#   ↑ 2026-09-21：追加 `with_browser=`。recv_daemon 的 _safe_capture 走
+#     with_browser=False（按设计**不抓昵称**，避免抢 profile），其 `uid关联=0`
+#     是**预期行为**；探针必须据此区分，否则会把它误判为「昵称链路失效」。
+#     旧日志无该字段 → 组为 None（= 未知），按既有口径处理，保持向后兼容。
 _RE_WRITE = re.compile(
     r"\[capture\]\[(?P<acct>[^\]]+)\]\s*写库完成：会话\s*(?P<conv>\d+)\s*"
     r"[（(]含消息\s*(?P<msg>\d+)[）)][，,]?\s*昵称命中\s*uid关联=(?P<byuid>\d+)\s*"
     r"sec_uid关联=(?P<bysec>\d+)\s*未命中=(?P<miss>\d+)/(?P<total>\d+)"
+    r"(?:\s*with_browser=(?P<wb>[01]))?"
 )
 
 
@@ -222,11 +227,16 @@ def _log_candidates(since_ts: float) -> list[Path]:
     return [p for _, p in out]
 
 
-def latest_capture_facts(account: str, lookback_sec: float = 86400.0) -> dict:
+def latest_capture_facts(account: str, lookback_sec: float = 86400.0,
+                         with_browser: int | None = None) -> dict:
     """从运行日志里提取该账号**最新**一条捕获事实（首包 + 写库完成）。
 
+    :param with_browser: 仅取指定路径的写库事实（1=带浏览器 / 0=不带 /
+        None=不限）。用于把「按设计不抓昵称」的捕获与「昵称能力」证据分开 ——
+        前者 uid关联=0 属预期，不能用来否定后者（见 probe_conversation_capture）。
+
     返回 {ts, convs_parsed, n_conv, n_msg, by_uid, by_sec, miss, total,
-          firstpack_bytes, source}
+          with_browser, firstpack_bytes, source}
     找不到 → 空 dict（调用方据此报 failed/unknown，**不得**用 0 冒充）。
     """
     since = _now() - max(60.0, float(lookback_sec))
@@ -251,7 +261,9 @@ def latest_capture_facts(account: str, lookback_sec: float = 86400.0) -> dict:
                         continue
                     m2 = _RE_WRITE.search(line)
                     if m2 and m2.group("acct") == account:
-                        facts.update({
+                        _wb = m2.groupdict().get("wb")
+                        _wbv = None if _wb is None else int(_wb)
+                        _new = {
                             "ts": ts,
                             "n_conv": int(m2.group("conv")),
                             "n_msg": int(m2.group("msg")),
@@ -259,11 +271,30 @@ def latest_capture_facts(account: str, lookback_sec: float = 86400.0) -> dict:
                             "by_sec": int(m2.group("bysec")),
                             "miss": int(m2.group("miss")),
                             "total": int(m2.group("total")),
+                            "with_browser": _wbv,
                             "source": str(p),
-                        })
+                        }
+                        # 时间戳比较而非文件顺序覆盖：优先取**真正最新**的一条，
+                        # 「最近一次」才是链路当前状态的证据（同一账号多路径写日志）。
+                        # with_browser 过滤：只收指定路径的事实（None=不限）。
+                        if with_browser is not None and _wbv != with_browser:
+                            continue
+                        # 不限路径时按时间取最新；同时间戳优先带浏览器的
+                        # （带浏览器证据包含昵称能力信息，信息量更大）。
+                        if facts.get("ts") is None or ts > facts["ts"] or (
+                                ts == facts.get("ts") and _wbv == 1
+                                and facts.get("with_browser") != 1):
+                            facts.update(_new)
         except Exception:  # noqa: BLE001
             continue
     return facts
+
+
+def latest_capture_facts_filtered(account: str, with_browser: int = 1,
+                                  lookback_sec: float = 86400.0) -> dict:
+    """只取带（或不带）浏览器路径的写库事实（薄封装，语义更明确）。"""
+    return latest_capture_facts(account, lookback_sec=lookback_sec,
+                                with_browser=with_browser)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -379,9 +410,33 @@ def probe_conversation_capture(account: str) -> dict:
         #    链路当前状态；库内比例是**历史快照**（可停在好状态），二者必须同时看。
         #    实测：最近一次捕获 `昵称命中 uid关联=0 未命中=44/44`（链路已失效），
         #    而库内 0.9775（历史值）→ 只看库会报 healthy = **探针假健康**。
-        if _has_write:
-            _a_total = facts.get("total") or 0
-            _a_hit = (facts.get("by_uid") or 0) + (facts.get("by_sec") or 0)
+        #
+        # ⚠️ 2026-09-21 二次修正（**假失效**，与上面的假健康互为镜像）：
+        #    `with_browser=0` 的捕获（recv_daemon._safe_capture 的启动前移捕获）
+        #    **按设计不抓昵称**（避免抢 profile），其 uid关联=0 是**预期**，不是失效。
+        #    实测：探针读了这条日志 → 报 failed；而手动跑 with_browser=1 得
+        #    `uid关联=44 未命中=0/44`（链路完全正常）。判据必须按 with_browser 分流：
+        #      · with_browser=1 → 参与昵称关联率判定（唯一有效证据）
+        #      · with_browser=0 → 仅用于「新鲜度」判定，**若它比带浏览器那次更新，
+        #        不得用它否定昵称能力**（保留带浏览器证据的 fresh_ratio）
+        _wb = facts.get("with_browser")
+        _fresh_facts = facts
+        _nick_evidence = bool(_has_write)
+        if _wb == 0:
+            # 取最近一条**带浏览器**的写库事实（可能更早，但那是昵称能力的真证据）
+            _f2 = latest_capture_facts_filtered(account, with_browser=1,
+                                                lookback_sec=max(stale_sec * 4, 86400))
+            # 必须要求**真有写库完成**（n_conv 非空）；只有首包的 dict 也是 truthy，
+            # 但那种没有昵称证据（实测踩过：仅凭 truthy 判断 → 误当作有证据 → 假健康）。
+            if _f2.get("n_conv") is not None:
+                _fresh_facts = _f2
+            else:
+                # 窗口内**只有**「不抓昵称」的捕获 → 昵称能力本次未被验证，
+                # 既不能报 healthy，也不能凭它报 failed（那是假失效）。
+                _nick_evidence = False
+        if _fresh_facts.get("n_conv") is not None:
+            _a_total = _fresh_facts.get("total") or 0
+            _a_hit = (_fresh_facts.get("by_uid") or 0) + (_fresh_facts.get("by_sec") or 0)
             fresh_ratio = round(_a_hit / _a_total, 4) if _a_total else None
         else:
             fresh_ratio = None
@@ -390,10 +445,17 @@ def probe_conversation_capture(account: str) -> dict:
         eff_ratio = min(_cands) if _cands else None
         evidence.append(
             f"最近一次捕获自身关联率="
-            + (f"{fresh_ratio}（uid关联={facts.get('by_uid')} "
-               f"sec_uid关联={facts.get('by_sec')} / 共{facts.get('total')}）"
+            + (f"{fresh_ratio}（uid关联={_fresh_facts.get('by_uid')} "
+               f"sec_uid关联={_fresh_facts.get('by_sec')} / 共{_fresh_facts.get('total')}）"
                if fresh_ratio is not None else "（本次未见写库完成）")
             + f"；库内历史比例={nick_ratio} → 有效判定取 min={eff_ratio}")
+        if _wb == 0:
+            evidence.append(
+                "⚠ 最近一次写库为 `with_browser=0`（recv_daemon 启动前移捕获，"
+                "按设计**不抓昵称**）—— 其 uid关联=0 属预期，"
+                + ("已改用最近一次**带浏览器**捕获作昵称能力证据。"
+                   if _nick_evidence else
+                   "窗口内无带浏览器捕获作证 → 昵称能力**本次未定论**。"))
         evidence.append(f"SQLite 落库：会话 {total}，真实昵称 {named}，头像 {avatar}，"
                         f"消息 {m_total}（带 msg_id {m_withid}）")
         evidence.append(f"库文件：{db_evidence()}")
@@ -403,6 +465,14 @@ def probe_conversation_capture(account: str) -> dict:
             state = "unknown"
             reasons.append("日志只到首包、未见「写库完成」——本次捕获未定论"
                            "（长会话补全可能仍在进行，或中途中断）")
+        elif not _nick_evidence:
+            # 最近一次是「不抓昵称」的路径且窗口内无带浏览器证据：
+            # 昵称能力未被验证 —— 不得报 failed（假失效），也不得报 healthy。
+            state = "unknown"
+            reasons.append(
+                "最近一次捕获为 `with_browser=0`（按设计不抓昵称）且窗口内无"
+                "带浏览器捕获 → 昵称关联能力本次未定论（不得据此判失效，"
+                "也不得凭库内历史判健康）")
         elif age is not None and age > stale_sec:
             state = "failed"
             reasons.append(f"最新捕获距今 {age:.0f}s > 陈旧阈值 {stale_sec}s —— 能力可能已停摆")
