@@ -28,6 +28,7 @@ DOMAIN_INFO = {
     "RECV": ["接收守护", "WS 长连接稳态(L0-L3) / msg 解析 / 方向判定 / 重连追赶", "30s 定时断连=曾用 ping_interval+ping_timeout（已在 v0.43.36 移除，属客户端自杀非服务端掐断）；KICK 时 protobuf 解析失败实为 JSON 风控响应"],
     "SEND": ["发送链路", "统一闸门限速 / 通道回退 / KICK 风控", "rate_limited=8s 闸门属预期；KICK=账号信誉；必须 DB 落库 role=me 才算成功"],
     "SYS": ["系统与启动", "daemon 拉起 / 路由挂载 / 配置", "BCC frozen exe 必须带 DY_APP_ROOT；并行拉起 ~15s"],
+    "PROBE": ["能力探针", "M1 探针缺失 / 三态判定 / 覆盖率与基线 / 探针假健康", "探针只读本地事实（DB+本项目日志），零网络零浏览器；报 healthy 必须带 evidence；三态禁止二态"],
     "TSK": ["任务历史", "历史任务读写 / 导出", "读失败多为文件占用，重试即可"],
     "MISC": ["未分类", "", "按消息里的 [tag] 定位模块"],
 }
@@ -139,6 +140,22 @@ DOMAIN_DESIGN = {
                   "/status 的 connected/conv_count **与 link{connects,hb_sent,"
                   "last_rx_age,backoff_stage}**；"
                   "回归脚本 backend/daemon/verify_ws_link.py 与 verify_ws_ab.py。",
+    },
+
+    # 能力探针域（2026-09-21 P2 落地：此前 M1 探针 0 个，见 工作记忆/02_效果定义与探针.md）
+    "PROBE": {
+        "intent": "能力探针（M1）：回答「现在这个能力行不行？」，输出**三态**"
+                  "（healthy/degraded/failed/unknown）+ 覆盖率 + 置信度 + 硬证据 + 基线差值（M7）。",
+        "invariant": "① 禁止二态：部分成功必须判 degraded 并带覆盖率；② 报 healthy 时 "
+                     "evidence 不得为空（无证据不得报健康）；③ 探针**只读本地事实**"
+                     "（SQLite + 本项目日志），绝不发起网络请求、绝不触碰/启动浏览器；"
+                     "④ 无法判定时判 unknown，绝不用 0 或推断值冒充 healthy。",
+        "chain": "触发（GET /api/probe/run）→ services/probe.run_probes → 各能力探针 → "
+                 "只读 DB（dm_conversations/dm_messages）+ 只读 logs → 判定 → kv 基线比对（M7）。"
+                 "源头是「本地事实是否有该能力的近期成功记录」，不是「代码写得对不对」。",
+        "verify": "curl :8000/api/probe/run（401=已注册）；"
+                  "人为制造失效（如改名 DB 路径/断网）后 probe 必须先于用户报 degraded/failed；"
+                  "对照 02_效果定义与探针.md §2 的覆盖率阈值。",
     },
 }
 

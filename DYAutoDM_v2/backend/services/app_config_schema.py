@@ -325,6 +325,33 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "env": "DY_UID_PROBE_LOCK_WAIT", "apply": "restart_daemon",
                 "hint": "超时退化为读缓存，绝不无限等待",
             },
+            # ===== 能力探针 M1 阈值（2026-09-21 P2，见 工作记忆/02_效果定义与探针.md）=====
+            # 探针只读本地事实（DB + 本项目日志），不发起任何网络/浏览器动作。
+            # 这些阈值定义「什么算健康/降级/失败」，可按账号实测调。
+            "probe_min_convs": {
+                "label": "探针·最低会话数",
+                "type": "int", "default": 10, "min": 1, "max": 5000,
+                "env": "DY_PROBE_MIN_CONVS", "apply": "hot",
+                "hint": "低于此数判 degraded —— 覆盖骤降属典型静默失效",
+            },
+            "probe_nickname_healthy": {
+                "label": "探针·昵称覆盖率健康线",
+                "type": "float", "default": 0.95, "min": 0.0, "max": 1.0,
+                "env": "DY_PROBE_NICKNAME_HEALTHY", "apply": "hot",
+                "hint": "≥此值判 healthy（02 文档：昵称覆盖率 ≥ 95%）",
+            },
+            "probe_nickname_degraded": {
+                "label": "探针·昵称覆盖率失败线",
+                "type": "float", "default": 0.50, "min": 0.0, "max": 1.0,
+                "env": "DY_PROBE_NICKNAME_DEGRADED", "apply": "hot",
+                "hint": "低于此值判 failed；介于两线之间判 degraded（三态，非二态）",
+            },
+            "probe_capture_stale_sec": {
+                "label": "探针·捕获陈旧阈值（秒）",
+                "type": "int", "default": 3600, "min": 60, "max": 604800,
+                "env": "DY_PROBE_CAPTURE_STALE_SEC", "apply": "hot",
+                "hint": "最新捕获日志超此秒数未更新 → 判 failed（能力停摆）",
+            },
             "image_inline_max_kb": {
                 "label": "图片内联阈值（KB）",
                 "type": "int", "default": 32, "min": 0, "max": 10240,

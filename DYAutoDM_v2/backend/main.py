@@ -736,6 +736,16 @@ try:
 except Exception as _e_mcp:  # noqa: BLE001
     logger.warning(f"[MCP-005] " + f"[mcp] 模块挂载失败（不影响主流程）: {_e_mcp}")
 
+# 能力探针（M1，2026-09-21 P2）—— 「现在这个能力行不行？」
+#   只读本地事实（SQLite + 本项目日志），零网络零浏览器，可安全高频调用。
+#   落地依据：工作记忆/02_效果定义与探针.md（探针 0 个 → P3 重构无法验收）。
+try:
+    from api import probe as probe_api
+
+    app.include_router(probe_api.router, prefix="/api/probe", tags=["probe"])
+except Exception as _e_probe:  # noqa: BLE001
+    logger.warning(f"[PROBE-001] " + f"[probe] 模块挂载失败（不影响主流程）: {_e_probe}")
+
 # 运行日志输出到控制台（CMD 窗口），方便在桌面应用外独立查看
 # 错误码日志补丁：loguru 会把第一个位置参数当格式模板，导致
 # logger.warning(f"[BCC-006] " + "描述") 的描述被丢弃（运行日志只剩代码）。
