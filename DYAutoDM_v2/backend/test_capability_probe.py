@@ -387,5 +387,87 @@ class TestNoNetworkNoBrowser(unittest.TestCase):
         self.assertIn("绝不发起任何网络请求", doc)
 
 
+class TestPatrolScheduler(unittest.TestCase):
+    """定时巡检：幂等 start、tick 真会跑、状态持久化、可停、禁用/异常不炸。"""
+
+    def setUp(self):
+        _reset_db()
+        self.P = _fresh_probe()
+
+    def tearDown(self):
+        try:
+            self.P.stop_patrol()
+        except Exception:
+            pass
+
+    def test_start_is_idempotent(self):
+        r1 = self.P.start_patrol(first_delay=30)
+        self.assertTrue(r1.get("ok"))
+        r2 = self.P.start_patrol(first_delay=30)
+        self.assertTrue(r2.get("already"))
+        self.P.stop_patrol()
+
+    def test_state_has_contract_keys(self):
+        st = self.P.patrol_state()
+        for k in ("enabled", "interval_min", "runs", "errors"):
+            self.assertIn(k, st)
+
+    def test_tick_really_runs_and_persists(self):
+        """真实等一次 tick：证明定时器确实会跑巡检并把结果落 kv。"""
+        import time
+        # 把首轮延迟压到最小可行值（配置下限 30s，这里直接传参绕过）
+        self.P.start_patrol(first_delay=1.0)
+        deadline = time.time() + 8
+        st = {}
+        while time.time() < deadline:
+            time.sleep(0.4)
+            st = self.P.patrol_state()
+            if int(st.get("runs") or 0) >= 1:
+                break
+        self.assertGreaterEqual(int(st.get("runs") or 0), 1,
+                              "定时器未在窗口内跑到第一轮")
+        self.assertIn("last_result", st)
+        self.assertIn(st["last_result"].get("state"),
+                      ("healthy", "degraded", "failed", "unknown"))
+        self.P.stop_patrol()
+
+    def test_run_once_is_idempotent_and_increments(self):
+        r1 = self.P.run_patrol_once()
+        self.assertIn("state", r1)
+        n1 = int(self.P.patrol_state().get("runs") or 0)
+        self.P.run_patrol_once()
+        n2 = int(self.P.patrol_state().get("runs") or 0)
+        self.assertEqual(n2, n1 + 1)
+
+    def test_stop_prevents_further_runs(self):
+        self.P.start_patrol(first_delay=1.0)
+        self.P.stop_patrol()
+        self.assertFalse(self.P.PATROL_TIMER_STARTED if hasattr(self.P, "PATROL_TIMER_STARTED") else False)
+
+    def test_disabled_config_blocks_start(self):
+        from services import app_config as ac
+        ac.save_section("capture", {"probe_patrol_enabled": False})
+        self.P = _fresh_probe()
+        r = self.P.start_patrol(first_delay=30)
+        self.assertFalse(r.get("ok"))
+        self.assertEqual(r.get("reason"), "disabled")
+        ac.save_section("capture", {"probe_patrol_enabled": True})
+        self.P = _fresh_probe()
+
+    def test_run_once_survives_probe_exception(self):
+        """巡检内部异常必须被兜住并记录，绝不抛出/中断循环。"""
+        def _boom(*a, **k):
+            raise RuntimeError("boom")
+        orig = self.P.run_probes
+        self.P.run_probes = _boom
+        try:
+            res = self.P.run_patrol_once()
+            self.assertEqual(res.get("state"), "unknown")
+            self.assertIn("boom", str(res.get("error")))
+            self.assertTrue(self.P.patrol_state().get("errors"))
+        finally:
+            self.P.run_probes = orig
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

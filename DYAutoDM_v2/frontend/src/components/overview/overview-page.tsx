@@ -22,6 +22,7 @@ import { Activity, Send, MessageSquare, Cpu, Users } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { Avatar, KIND_NAME } from "../../components/ui";
 import AiRuntimeSection from "@/components/overview/AiRuntimeSection";
+import CapabilityHealthSection from "@/components/overview/CapabilityHealthSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -316,6 +317,10 @@ export default function OverviewPage(props: PageProps) {
             {/* AI 运行状态 —— 原「AI 获客」页的运行控制，按作用域（全局运行状态）
                 归类到总览页（2026-09-14 打散归类）。 */}
             <AiRuntimeSection {...props} />
+
+            {/* 能力健康（M1 能力探针）—— 同为「产品级运行状态」，2026-09-21 P1 收尾。
+                只读本地事实（DB + 本项目日志），零网络零浏览器。 */}
+            <CapabilityHealthSection {...props} />
           </div>
         </div>
       )}

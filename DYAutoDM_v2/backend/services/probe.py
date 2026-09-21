@@ -955,3 +955,158 @@ def run_probes(accounts: list[str] | None = None,
         "measured_at": _iso(),
         "results": results,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 定时巡检（M1 的「发现『悄悄坏了』」那一环）
+#
+# 设计契约（02_效果定义与探针.md §3.3 接入点）：
+#   ① 探针必须能**定期跑**，否则只能在用户点击时才发现失效（本项目历史失效都是
+#      用户先发现的）。② 巡检**只读本地事实**（零网络零浏览器），故可安全高频。
+#   ③ 状态与结果持久化到 kv（进程重启不丢），供 `/api/probe/status` 与前端读取。
+#
+# 为什么独立成模块而非塞进 kb_maintain：kb_maintain 是「知识库学习/陈旧扫描」
+# 的 84h 周期任务，语义不同；探针巡检需要更短的周期（默认 15 分钟）。
+# 但**调度原语与 kb_maintain 保持一致**（threading.Timer 循环 + kv 状态 + 幂等 start），
+# 避免新增第二套调度机制（铁律：禁止新增第 N+1 个决策点）。
+# ═══════════════════════════════════════════════════════════════════════════
+
+PATROL_KV_KEY = "capability_probe:patrol:state"
+PATROL_DEFAULT_INTERVAL_MIN = 15
+
+
+def _patrol_enabled() -> bool:
+    """是否启用定时巡检（默认启用；探针零风控，可安全常驻）。"""
+    v = _cfg("capture", "probe_patrol_enabled", None)
+    if v is None:
+        return True
+    return bool(v)
+
+
+def _patrol_interval_sec() -> float:
+    mins = _cfg_int("capture", "probe_patrol_interval_min", PATROL_DEFAULT_INTERVAL_MIN)
+    return max(60.0, float(mins) * 60.0)
+
+
+def _patrol_first_delay() -> float:
+    sec = _cfg_int("capture", "probe_patrol_first_delay_sec", 120)
+    return max(30.0, float(sec))
+
+
+def patrol_state() -> dict:
+    """读巡检状态（供 API / 前端；含是否启用、上次结果、下次时间）。"""
+    st = _kv_get(PATROL_KV_KEY) or {}
+    if not isinstance(st, dict):
+        st = {}
+    st.setdefault("enabled", _patrol_enabled())
+    st.setdefault("interval_min", int(_patrol_interval_sec() // 60))
+    st.setdefault("runs", 0)
+    st.setdefault("errors", [])
+    st["next_run_at"] = getattr(_PATROL_TIMER, "next_at", None) or st.get("next_run_at")
+    return st
+
+
+def run_patrol_once() -> dict:
+    """跑一轮巡检并落盘状态（幂等；异常不抛出）。返回本轮汇总。"""
+    import traceback as _tb
+    t0 = _now()
+    summary: dict = {}
+    err = ""
+    try:
+        res = run_probes()
+        summary = res.get("summary") or {}
+        result = {
+            "at": _iso(t0),
+            "ts": t0,
+            "state": res.get("state"),
+            "elapsed": round(_now() - t0, 2),
+            "summary": summary,
+            "attention": summary.get("attention") or [],
+            "app_version": res.get("app_version"),
+        }
+    except Exception as e:  # noqa: BLE001
+        err = f"{e}"
+        result = {"at": _iso(t0), "ts": t0, "state": "unknown",
+                  "error": err, "traceback": _tb.format_exc(limit=3)}
+    st = _kv_get(PATROL_KV_KEY) or {}
+    if not isinstance(st, dict):
+        st = {}
+    st["runs"] = int(st.get("runs") or 0) + 1
+    st["last_run_at"] = result["at"]
+    st["last_result"] = result
+    if err:
+        errs = list(st.get("errors") or [])
+        errs.append({"at": result["at"], "error": err})
+        st["errors"] = errs[-20:]
+    _kv_set(PATROL_KV_KEY, st)
+    if err:
+        logger.warning(f"[PROBE-006] " + f"[probe] 定时巡检异常: {err}")
+    else:
+        logger.info(
+            f"[probe] 定时巡检完成 state={result.get('state')} "
+            f"healthy={summary.get('healthy')} degraded={summary.get('degraded')} "
+            f"failed={summary.get('failed')} unknown={summary.get('unknown')}"
+            + (f"；需关注 {result.get('attention')}" if result.get("attention") else ""))
+    return result
+
+
+class _PatrolTimer:
+    """可重启的守护定时器（幂等 start；stop 后不再排下一轮）。"""
+
+    def __init__(self) -> None:
+        self._timer = None
+        self.next_at = None
+        self.started = False
+
+    def _arm(self, delay: float) -> None:
+        import threading
+        if self._timer is not None:
+            try:
+                self._timer.cancel()
+            except Exception:
+                pass
+        self._timer = threading.Timer(delay, self._tick)
+        self._timer.daemon = True
+        self._timer.start()
+        self.next_at = _now() + delay
+
+    def _tick(self) -> None:
+        try:
+            run_patrol_once()
+        finally:
+            if self.started and _patrol_enabled():
+                self._arm(_patrol_interval_sec())
+
+    def start(self, first_delay: float | None = None,
+              interval: float | None = None) -> dict:
+        if self.started:
+            return {"ok": True, "already": True, "state": patrol_state()}
+        if not _patrol_enabled():
+            return {"ok": False, "reason": "disabled", "state": patrol_state()}
+        self.started = True
+        self._arm(first_delay if first_delay is not None else _patrol_first_delay())
+        return {"ok": True, "already": False, "interval_sec": _patrol_interval_sec(),
+                "next_at": self.next_at, "state": patrol_state()}
+
+    def stop(self) -> dict:
+        self.started = False
+        if self._timer is not None:
+            try:
+                self._timer.cancel()
+            except Exception:
+                pass
+        self.next_at = None
+        return {"ok": True, "stopped": True}
+
+
+_PATROL_TIMER = _PatrolTimer()
+
+
+def start_patrol(first_delay: float | None = None,
+                 interval: float | None = None) -> dict:
+    """启动巡检定时器（幂等）。"""
+    return _PATROL_TIMER.start(first_delay=first_delay, interval=interval)
+
+
+def stop_patrol() -> dict:
+    return _PATROL_TIMER.stop()

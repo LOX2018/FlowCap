@@ -6,6 +6,8 @@
 | `GET /api/probe/capabilities` | 列出已注册的能力探针 |
 | `GET /api/probe/run` | 跑探针：`?account=`（缺省=全部账号）`&capability=`（缺省=全部能力） |
 | `POST /api/probe/run` | 同上（POST 便于前端携带 body） |
+| `GET /api/probe/status` | **定时巡检状态**（是否启用/上次结果/下次时间/历史错误） |
+| `POST /api/probe/patrol` | 手动触发一轮巡检（等价于定时器那一次） |
 
 ## 零风控边界（与 services/probe.py 一致）
 
@@ -67,3 +69,21 @@ async def run_probe_post(
 ):
     """跑能力探针（POST 版，便于前端传 body）。"""
     return _run(account, capability)
+
+
+@router.get("/status")
+async def probe_status():
+    """定时巡检状态：是否启用 / 上次结果 / 下次时间 / 历史错误。
+
+    `last_result` 由 `run_patrol_once()` 持久化在 kv
+    （`capability_probe:patrol:state`），进程重启不丢。
+    """
+    st = P.patrol_state()
+    return {"ok": True, "patrol": st}
+
+
+@router.post("/patrol")
+async def probe_patrol_now():
+    """手动触发一轮巡检（与定时器那一轮等价；只读本地事实）。"""
+    res = P.run_patrol_once()
+    return {"ok": True, "result": res, "patrol": P.patrol_state()}

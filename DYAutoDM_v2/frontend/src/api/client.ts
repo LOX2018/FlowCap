@@ -544,6 +544,16 @@ export const api = {
     return request("/api/status");
   },
 
+  // ===== 能力探针（M1，2026-09-21 P1 收尾）=====
+  // 只读本地事实（DB + 本项目日志），零网络零浏览器，可安全高频轮询。
+  async getProbeStatus(): Promise<unknown> {
+    return request("/api/probe/status");
+  },
+
+  async runProbePatrol(): Promise<unknown> {
+    return request("/api/probe/patrol", { method: "POST" });
+  },
+
   async getOverview(): Promise<Overview> {
     return request("/api/overview");
   },

@@ -556,6 +556,20 @@ async def lifespan(app: FastAPI):
         logger.info("[startup] 知识维护定时器已启动（每 84h 一轮，首次延迟 30 分钟）")
     except Exception as e:
         logger.warning(f"[SYS-024] " + f"[startup] 知识维护定时器启动失败（不影响主流程）: {e}")
+    # 能力探针定时巡检（v0.44.28，P1 收尾）：默认每 15 分钟跑一轮，
+    # 首次延迟 2 分钟。探针**只读本地事实**（零网络零浏览器），可安全常驻。
+    # 目的：能力劣化时**先于用户**被报出（此前历史失效全是用户先发现）。
+    try:
+        from services import probe as _probe
+        _r = _probe.start_patrol()
+        if _r.get("ok"):
+            logger.info(f"[startup] 能力探针巡检已启动（每 "
+                        f"{_probe.patrol_state().get('interval_min')} 分钟一轮，"
+                        f"首次延迟 {_probe._patrol_first_delay():.0f}s）")
+        else:
+            logger.info(f"[startup] 能力探针巡检未启动：{_r.get('reason')}")
+    except Exception as e:
+        logger.warning(f"[PROBE-007] " + f"[startup] 探针巡检启动失败（不影响主流程）: {e}")
     yield
     logger.info("DYAutoDM 后端关闭")
     # 先清扫本进程拉起的 sidecar（前端窗口关闭不保证会走到这里，

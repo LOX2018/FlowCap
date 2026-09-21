@@ -377,6 +377,26 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "env": "DY_PROBE_AI_WINDOW_HOURS", "apply": "hot",
                 "hint": "窗口内 AI 相关日志行数，用于判断该域是否在活动",
             },
+            # ---- 定时巡检（P1 收尾，2026-09-21 v0.44.28）----
+            # 探针只读本地事实（DB+本项目日志），零网络零浏览器，故可安全常驻。
+            "probe_patrol_enabled": {
+                "label": "探针·启用定时巡检",
+                "type": "bool", "default": True,
+                "env": "DY_PROBE_PATROL_ENABLED", "apply": "restart_backend",
+                "hint": "关闭后只能手动跑（/api/probe/run）；探针零风控，建议保持开启",
+            },
+            "probe_patrol_interval_min": {
+                "label": "探针·巡检周期（分钟）",
+                "type": "int", "default": 15, "min": 1, "max": 1440,
+                "env": "DY_PROBE_PATROL_INTERVAL_MIN", "apply": "restart_backend",
+                "hint": "能力劣化时由此周期决定「多久先于用户被发现」",
+            },
+            "probe_patrol_first_delay_sec": {
+                "label": "探针·巡检首轮延迟（秒）",
+                "type": "int", "default": 120, "min": 30, "max": 3600,
+                "env": "DY_PROBE_PATROL_FIRST_DELAY_SEC", "apply": "restart_backend",
+                "hint": "避开启动初始化高峰；最小 30s",
+            },
             "image_inline_max_kb": {
                 "label": "图片内联阈值（KB）",
                 "type": "int", "default": 32, "min": 0, "max": 10240,
