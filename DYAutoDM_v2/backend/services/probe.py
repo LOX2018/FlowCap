@@ -174,7 +174,16 @@ def _is_real_nickname(peer_name: Any, peer_id: Any) -> bool:
 # 运行日志只读访问（捕获链路的最新事实）
 # ─────────────────────────────────────────────────────────────────────────────
 _RE_LOGIN = re.compile(r"^\[(?P<acct>[^\]]+)\] (?P<kind>.)+")
-_RE_TS = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)")
+# 时间戳前缀两种形态（2026-09-22 实测补全）：
+#   ① 带日期：`2026-09-22 09:18:46.715 | …`（recv_daemon_*.log / browser_daemon_*.log）
+#   ② **无日期**：`09:22:12 | INFO | …`（backend 主进程 run 日志 / 控制台格式）
+# 只认 ① 会让探针**永远读不到 run 日志**里的捕获事实 —— 而「用户点『更新会话』」
+# 这条带浏览器的正路恰好写在 run 日志里 ⇒ 真证据被系统性漏读（实测踩过）。
+# ② 的日期由调用方按**文件 mtime** 补齐（见 latest_capture_facts 的 _resolve_ts）。
+_RE_TS = re.compile(
+    r"^(?:(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)"
+    r"|(?P<hms>\d{2}:\d{2}:\d{2}(?:\.\d+)?))\s*[|]")
+_RE_HMS = re.compile(r"^(?P<hms>\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s*[|]")
 _RE_FIRSTPACK = re.compile(
     r"\[capture\]\[(?P<acct>[^\]]+)\]\s*首包\s*拉取=(?P<pull>[\d.]+)s\s*解析=(?P<parse>[\d.]+)s"
     r"\s*[（(](?P<bytes>[\d,]+)B\s*->\s*(?P<convs>\d+)\s*会话[）)]"
@@ -203,6 +212,27 @@ def _parse_ts(s: str) -> float | None:
         except Exception:
             continue
     return None
+
+
+def _line_ts(line: str, m: "re.Match | None", file_day) -> float | None:
+    """从 `_RE_TS.match(line)` 的结果里取时间戳（带日期 or 无日期两种形态）。
+
+    无日期形态（`09:22:12 | …`）用 **file_day**（文件 mtime 的日期）补齐 ——
+    run_*.log 就是这种格式，只认带日期的会让探针系统性漏读那条正路证据。
+    """
+    if not m:
+        return None
+    ts = _parse_ts(m.group("ts"))
+    if ts is None and m.groupdict().get("hms") and file_day:
+        ts = _parse_ts(f"{file_day} {m.group('hms')}")
+    return ts
+
+
+def _file_day_of(p: Path):
+    try:
+        return datetime.fromtimestamp(p.stat().st_mtime).date()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _log_candidates(since_ts: float) -> list[Path]:
@@ -242,13 +272,14 @@ def latest_capture_facts(account: str, lookback_sec: float = 86400.0,
     since = _now() - max(60.0, float(lookback_sec))
     facts: dict[str, Any] = {}
     for p in _log_candidates(since):
+        _file_day = _file_day_of(p)
         try:
             with open(p, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     m = _RE_TS.match(line)
                     if not m:
                         continue
-                    ts = _parse_ts(m.group("ts"))
+                    ts = _line_ts(line, m, _file_day)
                     if ts is None or ts < since:
                         continue
                     m1 = _RE_FIRSTPACK.search(line)
@@ -791,12 +822,13 @@ def probe_live_danmaku(account: str) -> dict:
     samples: list[str] = []
     src = None
     for p in _log_candidates(since):
+        _fd = _file_day_of(p)
         try:
             for line in open(p, "r", encoding="utf-8", errors="replace"):
                 m = _RE_TS.match(line)
                 if not m:
                     continue
-                ts = _parse_ts(m.group("ts"))
+                ts = _line_ts(line, m, _fd)
                 if ts is None or ts < since:
                     continue
                 d = _RE_DANMAKU.search(line)

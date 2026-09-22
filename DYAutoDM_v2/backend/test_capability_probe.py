@@ -151,6 +151,28 @@ class TestLogParsing(unittest.TestCase):
         P = _fresh_probe()
         self.assertIsNotNone(P._RE_TS.match(REAL_WRITE))
 
+    def test_no_year_timestamp_resolved_by_file_mtime(self):
+        """★ run 日志是**无年份**格式（`09:22:12 | INFO | …`）。
+        探针必须能借文件 mtime 的日期补齐时间戳 —— 否则「用户点『更新会话』」
+        这条**带浏览器的正路证据**（写进 run 日志）会被系统性漏读（实测踩过）。"""
+        P = _fresh_probe()
+        import time as _t
+        # 造一份 run 风格日志（无年份前缀），内容为带浏览器的写库完成
+        d = os.path.join(_ROOT, "logs")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "run_20260922_090923.log")
+        body = ("09:22:12 | INFO     | [capture][acc1] 写库完成：会话 44（含消息 108），"
+                "昵称命中 uid关联=44 sec_uid关联=0 未命中=0/44 with_browser=1\n")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(body)
+        now = _t.time()
+        os.utime(p, (now, now))
+        f2 = P.latest_capture_facts("acc1", with_browser=1)
+        self.assertEqual(f2.get("n_conv"), 44, "无年份 run 日志必须能被读到")
+        self.assertEqual(f2.get("with_browser"), 1)
+        self.assertIsNotNone(f2.get("ts"))
+        os.remove(p)
+
     def test_latest_facts_picks_latest(self):
         P = _fresh_probe()
         _plant_log([REAL_FIRSTPACK, REAL_WRITE])

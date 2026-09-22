@@ -2,8 +2,8 @@
 
 | 项 | 值 |
 |---|---|
-| **状态** | **Proposed（待用户批准）** —— 未实施 |
-| **日期** | 2026-09-21 |
+| **状态** | **Accepted（决策已定）** |
+| **日期** | 2026-09-21 提案 / 2026-09-22 决策补全 |
 | **决策者** | 用户（LOX） |
 | **来源** | 《架构审计报告》P0-1 / P0-2；本轮实测复核 |
 | **影响面** | 守护进程启动路径（BCC / recv_daemon / backend 全部 sidecar） |
@@ -37,37 +37,59 @@
 
 ---
 
-## 2. 决策（待批）
+## 2. 关键事实（2026-09-22 实测，回答提案期的开放问题）
+
+**Q1：哪些场景需要守护随 backend 一起终止？**
+
+**A：没有。** 实测证据（`backend/daemon_registry.py` + `backend/main.py`）：
+
+| 机制 | 位置 | 作用 |
+|---|---|---|
+| pid 台账 | `daemon_registry.register/unregister` | 所有 spawn 路径**共用同一份** |
+| 退出清扫 | `main.py:228 _kill_spawned_daemons()` → `_dreg.kill_all(reason="shutdown")` | 按**登记 pid**逐个 `taskkill /F /T` |
+| 触发点 | `main.py:578`（lifespan shutdown）+ `atexit`（`main.py:12`） | 双保险 |
+
+⇒ 生命周期清扫是**显式、进程级**完成的（且只杀自己登记过的 pid，不误伤用户手起的实例），
+**不依赖 OS 进程组级联**。故 `CREATE_NEW_PROCESS_GROUP` 在本项目**无消费方** ——
+§1「行为差异的后果」里那段推测（「同组→被带走 / 独立组→变孤儿」）**被实测否证**。
+
+**Q2：`CREATE_NO_WINDOW` 缺失是否是真问题？**
+
+**A：是，且与历史抱怨吻合。** `main.py` 的实现**没有** `CREATE_NO_WINDOW`；
+在 Tauri 宿主（无 console）下，PyInstaller console 子进程可能**新建 console 窗口** ——
+这是用户反复抱怨的「**窗口快闪**」的可疑机理之一（另一处已确认的机理是「停止态未建模」，
+见 dev-guards §〇·丁 规则 3）。
+
+---
+
+## 3. 决策（Accepted）
 
 **采用方案 A：`daemon_launcher._spawn_sidecar` 提为唯一实现，`main.py` 改为 import 调用。**
 
 理由：
 1. `daemon_launcher` 语义上就是「守护启动器」，职责正确（Separation of Concerns）。
 2. `main.py` 是应用入口，不应承载进程创建细节。
+3. Q1 证明两处语义差异**无消费方**，收敛**预期零功能影响**，同时补上缺失的 `CREATE_NO_WINDOW`。
 
-**必须同时做的参数化**（否则会丢行为）：
+**参数化形态**（默认值 = A 的现行语义 + 补 `no_window`）：
 
 ```python
-def _spawn_sidecar(binary, args, *, own_process_group: bool = True) -> subprocess.Popen:
-    """own_process_group：True=独立进程组（backend 退出后守护存活）；
-    False=同组（随 backend 一起终止）。"""
+def _spawn_sidecar(binary: str, args: list, *,
+                   no_window: bool = True,
+                   own_process_group: bool = False) -> subprocess.Popen:
+    """唯一 sidecar 启动入口。
+
+    no_window=True（默认）：CREATE_NO_WINDOW，避免 Tauri 宿主下弹 console 窗口。
+    own_process_group：默认 False —— 生命周期清扫已由 daemon_registry 显式负责
+        （见 Q1），无需 OS 级隔离；保留参数仅为将来若确需「守护独立于 backend 存活」。
+    """
 ```
 
-| 调用场景 | `own_process_group` | 依据 |
-|---|---|---|
-| 正常服务启动（守护应长驻） | `True` | B 的现行语义 |
-| 需要随 backend 同生共死（若有） | `False` | A 的现行语义 |
+### P0-2 一并裁决
 
-> ⚠️ **必须先回答**：**哪些场景需要守护随 backend 一起死？**
-> 若答案是「没有」，则统一为 `True`，并删除 `daemon_launcher` 的 `CREATE_NO_WINDOW` 分支改由参数控制。
-> **此问题未答清前不得实施**——它决定「backend 退出后守护该不该活」。
-
-### P0-2 一并裁决（二选一，必须显式声明）
-
-- [ ] **选项 1**：Python `daemon_registry` 为唯一权威，Rust 侧删除管理逻辑（或在 ADR 声明为死面）。
-- [ ] **选项 2**：Rust `SidecarManager` 为唯一权威，Python 侧降为「仅登记 pid 用于日志」。
-
----
+✅ **选项 1：Python `daemon_registry` 为唯一权威。**
+Rust `SidecarManager` 不管理 backend 自己 spawn 的守护（它只管 Tauri 直接 spawn 的进程）；
+若 `lib.rs` 中存在对 daemon 的管理逻辑，**声明为死面**（不参与生命周期决策）。
 
 ## 3. 风险评估
 
