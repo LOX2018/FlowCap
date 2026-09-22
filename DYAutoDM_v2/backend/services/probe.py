@@ -1164,17 +1164,38 @@ def run_patrol_once() -> dict:
     summary: dict = {}
     err = ""
     try:
-        res = run_probes()
-        summary = res.get("summary") or {}
-        result = {
-            "at": _iso(t0),
-            "ts": t0,
-            "state": res.get("state"),
-            "elapsed": round(_now() - t0, 2),
-            "summary": summary,
-            "attention": summary.get("attention") or [],
-            "app_version": res.get("app_version"),
-        }
+            res = run_probes()
+            summary = res.get("summary") or {}
+
+            # ── D4: 契约漂移自动化检测（check_contracts.py 静默巡检） ──
+            contract_ok = True
+            contract_detail = ""
+            try:
+                import subprocess as _sp, sys as _sys
+                _cc = _sp.run(
+                    [_sys.executable, "-m", "scripts.check_contracts", "--quiet"],
+                    capture_output=True, text=True, timeout=60,
+                    cwd=str(Path(__file__).resolve().parent.parent.parent / "scripts"),
+                )
+                contract_ok = _cc.returncode == 0
+                contract_detail = _cc.stdout.strip()[:200] if not contract_ok else "all pass"
+            except Exception as _ce:
+                contract_detail = f"check_contracts exec fail: {_ce}"
+
+            # ── 报告 ──
+            result_detail = {
+                "at": _iso(t0),
+                "ts": t0,
+                "state": res.get("state"),
+                "elapsed": round(_now() - t0, 2),
+                "summary": summary,
+                "attention": summary.get("attention") or [],
+                "app_version": res.get("app_version"),
+                "contract_check": {"ok": contract_ok, "detail": contract_detail},
+            }
+            if not contract_ok:
+                result_detail["attention"] = list(result_detail["attention"]) + [f"契约漂移检测告警: {contract_detail}"]
+            result = result_detail
     except Exception as e:  # noqa: BLE001
         err = f"{e}"
         result = {"at": _iso(t0), "ts": t0, "state": "unknown",
