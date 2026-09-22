@@ -182,6 +182,9 @@ ERRCODES = {
     "ACC-024": {"meaning": "scan] 账号  未取得 profile 所有权锁（降级不加锁，存在多实例风险）:", "file": "api/accounts.py", "line": 0},
     "ACC-025": {"meaning": "open-browser] 账号  凭证失效 → 暂停全部任务并打开有头浏览器供观测/重新授权", "file": "api/accounts.py", "line": 0},
     "ACC-026": {"meaning": "open-browser] 账号  引擎暂停失败（不阻塞打开浏览器）:", "file": "api/accounts.py", "line": 0},
+    # 2026-09-22 校正（D-05）：原此处与文件尾部一条**同键**六段契约冲突（后写覆盖 → 丢 meaning），
+    # 且尾部那条缺 meaning → lookup() 的 c["meaning"] 抛 KeyError → all_codes()/`/api/errcodes` 500。
+    # 现六段契约统一归 CODE_DESIGN（单一宿主），此处只留 meaning/file/line 三字段。
     "ACC-017": {"meaning": "捕获分析] 报告落盘失败:", "file": "login_capture.py", "line": 227},
     "AI-001": {"meaning": "ai-kb-import] 解析异常:", "file": "api/ai.py", "line": 155},
     "AI-002": {"meaning": "ai] 语义缓存重建失败:", "file": "api/ai.py", "line": 201},
@@ -330,52 +333,9 @@ ERRCODES = {
     "SEND-038": {"meaning": "[调度] gen_dm_message（AI 文案）异常，回落词库", "file": "core/dispatch.py", "line": 0},
     "SEND-039": {"meaning": "[调度] AI 文案接线判定失败，回落词库", "file": "core/auto_dm.py", "line": 0},
     "SEND-040": {"meaning": "[调度] AI 文案生成失败，回落词库", "file": "core/auto_dm.py", "line": 0},
-        "ACC-017": {
-        "design": "重捕整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
-                  "按账号维度的所有权锁内完成。",
-        "contract": "同一账号任一时刻只有一个 profile 所有者。",
-        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
-        "chain": "_do_auto_recapture → ProfileOwnership → _quit_browser_daemon",
-        "root": "browser_gate 不可导入或锁获取异常",
-        "verify": "grep 日志 ACC-022；正常情况应恒不出现。",
-    },
-    "ACC-018": {
-        "design": "从 profile 读凭证的整段操作同样必须在所有权锁内完成。",
-        "contract": "同一账号任一时刻只有一个 profile 所有者。",
-        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
-        "chain": "_do_recapture_from_profile → ProfileOwnership → _quit_browser_daemon",
-        "root": "browser_gate 不可导入或锁获取异常",
-        "verify": "grep 日志 ACC-023；正常情况应恒不出现。",
-    },
-    "ACC-019": {
-        "design": "扫码整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
-                  "所有权锁内完成；否则与并发拉起 BCC 撞车 → 抢锁 → "
-                  "扫码页加载异常/授权回执读不到。",
-        "contract": "同一账号任一时刻只有一个 profile 所有者。",
-        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
-        "chain": "_do_scan → ProfileOwnership → _quit_browser_daemon → enrich_auth",
-        "root": "browser_gate 不可导入或锁获取异常",
-        "verify": "grep 日志 ACC-024；正常情况应恒不出现。",
-    },
-    "ACC-020": {
-        "design": "凭证失效时打开有头浏览器是**正当且被引导**的观测入口，"
-                  "同时必须暂停全部任务（无效凭证下继续发送=风控暴露）。",
-        "contract": "凭证失效 ⇒ 任务暂停 + 有头观测放行；凭证有效且任务在跑 ⇒ 拒绝有头。",
-        "deviation": "检测到凭证失效，已按契约暂停任务并放行有头观测（信息级）",
-        "chain": "POST /open-browser → verify_account(wp!=ok) → adm.pause() → BCC /show",
-        "root": "凭证失效本身（UID 漂移 / 签名过期 / 登录态被下线）",
-        "verify": "1) 日志出现 ACC-020 且引擎 state=PAUSED；"
-                  "2) 之后扫码成功 → 凭证回写 → 任务可恢复。",
-    },
-    "ACC-021": {
-        "design": "暂停引擎是凭证失效时的保护动作，失败不得阻断"
-                  "「打开有头浏览器观测」这条用户显式路径。",
-        "contract": "暂停失败只告警，仍放行观测。",
-        "deviation": "引擎暂停调用抛异常",
-        "chain": "POST /open-browser → adm.pause() 异常",
-        "root": "引擎状态机处于不可暂停态 / 事件循环不可用",
-        "verify": "人工确认引擎状态；若未暂停应手动在界面停止。",
-    },
+    # 2026-09-22 搬迁（D-05）：ACC-017~ACC-021 的六段契约原错放在本字典内部 ——
+    # ① ACC-017 与其单行记录同键冲突（后写覆盖 → 丢 meaning → lookup()/all_codes() 抛 KeyError）；
+    # ② 其余 4 条只有六段而无 meaning；③ 六段契约的单一宿主应为 CODE_DESIGN（见该字典尾部）。
 "CAP-001": {"meaning": "refresh][] browser_daemon 未拉起，昵称关联可能失效", "file": "api/messages.py", "line": 735},
     "CAP-002": {"meaning": "refresh][] 更新会话失败:", "file": "api/messages.py", "line": 749},
     "CAP-003": {"meaning": "capture] my_uid 无效()，从  个 conv_id 自愈推断本账号 UID=（出现  次）", "file": "auto_dm/conversation_capture.py", "line": 526},
@@ -1168,6 +1128,51 @@ CODE_DESIGN = {
         "chain": "scan_login/refresh_cookie_to_env → save_credential → member_ctx.write_env_file → 异常",
         "root": "明文降级路径未被根除（DY_ALLOW_PLAINTEXT_ENV 逃生口 + is_member_env 为假时的 set_key 分支）。",
         "verify": "在无主密钥进程内保存凭证：应报 AUTH-054 且磁盘不出现明文 .env。",
+    },
+    "ACC-017": {
+        "design": "重捕整段操作（停守护 → 独占 profile → 拉回 BCC）必须在按账号维度的所有权锁内完成。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_auto_recapture → ProfileOwnership → _quit_browser_daemon",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-022；正常情况应恒不出现。",
+    },
+    "ACC-018": {
+        "design": "从 profile 读凭证的整段操作同样必须在所有权锁内完成。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_recapture_from_profile → ProfileOwnership → _quit_browser_daemon",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-023；正常情况应恒不出现。",
+    },
+    "ACC-019": {
+        "design": "扫码整段操作（停守护 → 独占 profile → 拉回 BCC）必须在"
+                  "所有权锁内完成；否则与并发拉起 BCC 撞车 → 抢锁 → "
+                  "扫码页加载异常/授权回执读不到。",
+        "contract": "同一账号任一时刻只有一个 profile 所有者。",
+        "deviation": "未能取得所有权锁 → 降级为无锁执行（有双实例风险）",
+        "chain": "_do_scan → ProfileOwnership → _quit_browser_daemon → enrich_auth",
+        "root": "browser_gate 不可导入或锁获取异常",
+        "verify": "grep 日志 ACC-024；正常情况应恒不出现。",
+    },
+    "ACC-020": {
+        "design": "凭证失效时打开有头浏览器是**正当且被引导**的观测入口，"
+                  "同时必须暂停全部任务（无效凭证下继续发送=风控暴露）。",
+        "contract": "凭证失效 ⇒ 任务暂停 + 有头观测放行；凭证有效且任务在跑 ⇒ 拒绝有头。",
+        "deviation": "检测到凭证失效，已按契约暂停任务并放行有头观测（信息级）",
+        "chain": "POST /open-browser → verify_account(wp!=ok) → adm.pause() → BCC /show",
+        "root": "凭证失效本身（UID 漂移 / 签名过期 / 登录态被下线）",
+        "verify": "1) 日志出现 ACC-020 且引擎 state=PAUSED；"
+                  "2) 之后扫码成功 → 凭证回写 → 任务可恢复。",
+    },
+    "ACC-021": {
+        "design": "暂停引擎是凭证失效时的保护动作，失败不得阻断"
+                  "「打开有头浏览器观测」这条用户显式路径。",
+        "contract": "暂停失败只告警，仍放行观测。",
+        "deviation": "引擎暂停调用抛异常",
+        "chain": "POST /open-browser → adm.pause() 异常",
+        "root": "引擎状态机处于不可暂停态 / 事件循环不可用",
+        "verify": "人工确认引擎状态；若未暂停应手动在界面停止。",
     },
 }
 

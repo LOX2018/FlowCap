@@ -28,6 +28,14 @@ from urllib.parse import urlparse, parse_qs
 from loguru import logger
 
 _LIVE_RE = re.compile(r"live\.douyin\.com/([^?/\s\"']+)")
+# 2026-09-22（T-01 / ENG-021）：抖音「直播页」还有一类**非 live.douyin.com 域名**的
+# 分享/关注链接，形如 https://www.douyin.com/follow/live/<web_rid>?anchor_id=…。
+# 其 `<web_rid>` 与 live.douyin.com/<web_rid> 同源（实测：follow/live/992931212705
+# 进房 room_id=7688251038101556006，与 live.douyin.com/992931212705 逐字一致）。
+# 此前未识别 ⇒ 解析失败 ⇒ 调用方退回整段 URL 当 live_id ⇒ 进房 URL 变成
+# live.douyin.com/https://…（实测 404）。此正则**零网络**直接抠出 web_rid。
+# ⚠️ 必须忽略 `anchor_id` 等查询参数（它**不是**直播间号）。
+_LIVE_PAGE_RE = re.compile(r"douyin\.com/(?:[A-Za-z0-9_\-]+/)*live/(\d{5,})")
 # reflow 重定向链接里抽 sec_user_id
 _SEC_UID_RE = re.compile(r"sec_user_id=([\w_\-]+)")
 # reflow/info 返回 JSON 取 web_rid 的路径：data.room.owner.web_rid
@@ -340,6 +348,11 @@ def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=Non
         _cache_put(raw, (raw, raw))
         return raw, raw
     m = _LIVE_RE.search(raw)
+    if m:
+        _cache_put(raw, (m.group(1), raw))
+        return m.group(1), raw
+    # 直播页链接（www.douyin.com/follow/live/<web_rid> 等）零网络快速路径（T-01 / ENG-021）
+    m = _LIVE_PAGE_RE.search(raw)
     if m:
         _cache_put(raw, (m.group(1), raw))
         return m.group(1), raw

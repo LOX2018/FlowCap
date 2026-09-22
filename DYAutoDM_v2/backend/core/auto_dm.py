@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import threading
 import time
 from typing import Any, Optional
@@ -119,6 +120,10 @@ class AutoDM:
         self.gen_dm_message: Optional[Any] = None
         # 当前任务的目标账号（供 AI 生成时解析 Agent 绑定/作用域）
         self.target_acct: Optional[str] = None
+        # 直播监听指定账号（TaskConfig.acct）。__init__ 里先置 None，供 start()
+        # 解析 live_url 时安全读取（避免 getattr 默认值掩盖真正的属性缺失）——
+        # ENG-021：原实现只在 _apply_config 里赋值，而 start() 解析 live_url 早于它。
+        self._acct: Optional[str] = None
 
         # 凭证
         self.auth: Any = None              # 发送账号 auth
@@ -479,13 +484,36 @@ class AutoDM:
             raise RuntimeError(f"当前状态 {self.state.value} 无法启动")
         self.state = EngineState.STARTING
         # 从 live_url 解析出真实直播间号 web_rid（live.douyin.com/<web_rid>）
-        try:
-            from link_resolve import resolve_live_id
-            from auto_dm.accounts import current_name
-            self.live_id, _ = resolve_live_id(
-                config.live_url, account_name=self._acct or current_name())
-        except Exception:
-            self.live_id = config.live_url
+        # ENG-021（2026-09-22 T-01 实机取证）：原实现在解析失败时**静默**把整段
+        # live_url 当作 live_id（`except: self.live_id = config.live_url`）⇒ 进房
+        # URL 变成 `live.douyin.com/https://…`（实测 HTTP 404）⇒ 秒停「已停止」，
+        # 用户完全无从判断是解析失败还是账号没解密权。实测已复现：粘贴
+        # `www.douyin.com/follow/live/992931212705?anchor_id=…` 即触发。
+        # 设计契约：直播间号必须是「纯数字 web_rid」；解析不出就**显式失败并透出原因**，
+        # 绝不用一个不可能成功的 URL 假装启动（静默兜底 = 故障隐藏层，本项目铁律）。
+        _raw_url = (config.live_url or "").strip()
+        if not re.fullmatch(r"\d{5,}", _raw_url):
+            # 非纯数字输入才需要解析；纯 room_id 走快速路径、零网络。
+            try:
+                from link_resolve import resolve_live_id
+                from auto_dm.accounts import current_name
+                _resolved, _ = resolve_live_id(
+                    config.live_url, account_name=self._acct or current_name())
+            except Exception as _e:  # noqa: BLE001
+                _resolved = None
+                logger.warning(f"[ENG-021] [engine] live_url 解析异常: "
+                               f"{type(_e).__name__}: {_e}")
+            if not _resolved or not re.fullmatch(r"\d{5,}", str(_resolved)):
+                _detail = (f"无法从直播间链接解析出有效房间号（原始输入：{config.live_url!r}）。"
+                           f"请使用直播页链接（live.douyin.com/<房间号> 或 "
+                           f"www.douyin.com/follow/live/<房间号>）或直接填写纯房间号。")
+                self.status_msg = f"启动失败：{_detail}"
+                logger.error(f"[ENG-021] [engine] {_detail}")
+                self.state = EngineState.STOPPED
+                return
+            self.live_id = str(_resolved)
+        else:
+            self.live_id = _raw_url
         self._apply_config(config)
         self.status_msg = "启动中"
         self._stop_event.clear()

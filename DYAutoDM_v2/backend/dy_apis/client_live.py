@@ -82,7 +82,13 @@ class LiveMixin:
             "user-agent": get_profile()["ua"]
         }
         res = requests.get(url, headers=headers, cookies=auth_.cookie, verify=tls_verify())
-        ttwid = res.cookies.get_dict()['ttwid']
+        # 2026-09-22（T-01 / ENG-022）：原实现 `res.cookies.get_dict()['ttwid']`
+        # 是**硬 KeyError** —— 服务端未下发 ttwid 时（直播间不存在 / 连接被拦 /
+        # 域名或路径拼错，实测 `live.douyin.com/https://…` 即此）异常在解析前抛出，
+        # 被调用方 `_room_info_with_credential` 捕获成「带凭证进房异常」→ 回落匿名
+        # → 也失败 → 进房全断。ttwid 只是建连用的设备级 cookie，缺失不该让整条
+        # 进房链崩掉：缺失时置空由服务端裁决（与 _anon_live_info 的 `or ""` 同构）。
+        ttwid = (res.cookies.get_dict() or {}).get('ttwid') or ""
         soup = BeautifulSoup(res.text, 'html.parser')
         scripts = soup.select('script[nonce]')
         # print(res.text)
