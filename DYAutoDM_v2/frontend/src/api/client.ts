@@ -563,27 +563,42 @@ export const api = {
   },
 
   // ===== engine =====
-  async start(config: Record<string, unknown>): Promise<{ ok: boolean; state?: string }> {
+  async start(config: Record<string, unknown>): Promise<{ ok: boolean; state?: string; acct?: string }> {
     return request("/api/engine/start", {
       method: "POST",
       body: JSON.stringify(config),
     });
   },
 
-  async stop(): Promise<{ ok: boolean; state?: string }> {
-    return request("/api/engine/stop", { method: "POST" });
+  /**
+   * 按账号控制引擎：`{"ok":true,"state":"..."}` 。
+   *
+   * - ``account`` 指定账号（空串 = 由后端按「单任务回落 / 多任务歧义 409」规则解析）。
+   * - ADR-002（v0.44.39+）必须走这条，不直接用 `stop()` / `pause()` / `resume()` ——
+   *   后者没有 `account` 参数，在并发下会回落「最近一个实例」而停错任务。
+   */
+  async stopEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
+    const body: Record<string, unknown> = {};
+    if (account) body.account = account;
+    return request("/api/engine/stop", { method: "POST", body: JSON.stringify(body) });
   },
 
-  async stopSoft(): Promise<{ ok: boolean; state?: string }> {
-    return request("/api/engine/stop-soft", { method: "POST" });
+  async stopSoftEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
+    const body: Record<string, unknown> = {};
+    if (account) body.account = account;
+    return request("/api/engine/stop-soft", { method: "POST", body: JSON.stringify(body) });
   },
 
-  async pause(): Promise<{ ok: boolean; state?: string }> {
-    return request("/api/engine/pause", { method: "POST" });
+  async pauseEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
+    const body: Record<string, unknown> = {};
+    if (account) body.account = account;
+    return request("/api/engine/pause", { method: "POST", body: JSON.stringify(body) });
   },
 
-  async resume(): Promise<{ ok: boolean; state?: string }> {
-    return request("/api/engine/resume", { method: "POST" });
+  async resumeEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
+    const body: Record<string, unknown> = {};
+    if (account) body.account = account;
+    return request("/api/engine/resume", { method: "POST", body: JSON.stringify(body) });
   },
 
   // ===== accounts =====

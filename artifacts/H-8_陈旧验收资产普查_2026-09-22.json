@@ -1,0 +1,625 @@
+[
+  {
+    "path": "backend/scripts/verify_ai_live_wiring.py",
+    "verdict": "有效",
+    "depends_on": "backend 源码 + frontend/src + errcode（monkeypatch 发送出口）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，37/37 全 PASS（L1 契约/L2 调度/L3 判定/L4 错误码/L5 前端源码一致性）。零真发零浏览器。"
+  },
+  {
+    "path": "backend/scripts/verify_api_split.py",
+    "verdict": "有效（有条件，已过期）",
+    "depends_on": "members/.session.json + DY_TEST_ACCOUNT 账号 .env.enc + 抖音在线接口",
+    "exists": "True",
+    "evidence": "会话与账号齐备，13 项断言非空转；但需 DY_TEST_ACCOUNT（脚本不内置账号名），且判据含 git HEAD 对比与真实收藏/会话接口。未运行（真发 5 类接口）。"
+  },
+  {
+    "path": "backend/scripts/verify_automation.py",
+    "verdict": "有效",
+    "depends_on": "app_config automation 分区 + automation_engine",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，33/33 全 PASS（字段契约/clamp/过滤算法/门槛/去重/编排/节流/dry_run）。零网络零浏览器。"
+  },
+  {
+    "path": "backend/scripts/verify_logic_replication.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "members/.session.json + DY_TEST_ACCOUNT + 抖音在线接口（缓存/下载/MCP）",
+    "exists": "True",
+    "evidence": "环境门禁齐备（members/.session.json 存在，产物只落 <DESIGN_ROOT>/_logic_verify），15 项断言非空转。未运行（真实收藏/合集接口 + 媒体下载）。"
+  },
+  {
+    "path": "backend/scripts/verify_player.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "members/.session.json + DY_TEST_ACCOUNT + 抖音在线接口（播放器取址）",
+    "exists": "True",
+    "evidence": "环境门禁齐备，19 项断言非空转（含真实作品取址）。未运行（真发接口 + 媒体地址）。"
+  },
+  {
+    "path": "scripts/_live_send_test.py",
+    "verdict": "有效（有条件，会真发）",
+    "depends_on": "127.0.0.1:8000/api/messages/send + DY_TEST_ACCOUNT/DY_TEST_CONV_ID",
+    "exists": "False",
+    "evidence": "端口 8000 closed，且账号/会话须由环境变量给出（无默认）→ 当前不可运行；有依赖后是有效发送探针。属一次性脚本，未运行（会真发私信）。"
+  },
+  {
+    "path": "scripts/_rebuild_backend_only.py",
+    "verdict": "有效（构建器，形态不符）",
+    "depends_on": "PyInstaller + src-tauri/binaries",
+    "exists": "True",
+    "evidence": "可用但硬编码 --onedir 只产出传统形态；与现行共享形态（部署根一份 _internal + 三 exe 平铺）不匹配 —— 技能库已明确『要动单文件请用 build_sidecar.build_one(..., mode=onedir)+手动 dedupe 或跑全量』。非验收脚本。"
+  },
+  {
+    "path": "scripts/_rebuild_recv_only.py",
+    "verdict": "有效（构建器，形态不符）",
+    "depends_on": "PyInstaller + src-tauri/binaries",
+    "exists": "True",
+    "evidence": "同 _rebuild_backend_only：形态与现行共享布局不符，属需注意的构建旁路。"
+  },
+  {
+    "path": "scripts/_scan_missing_staticmethod.py",
+    "verdict": "有效",
+    "depends_on": "backend/{dy_apis,core,services,daemon,auto_dm}/*.py",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，实测『未发现：所有类方法首参均为 self/cls 或其已带 @staticmethod』—— 静态守卫，非空转。"
+  },
+  {
+    "path": "scripts/_triage_all.py",
+    "verdict": "有效（工具，需外部输入）",
+    "depends_on": "D:\\SJ  agent\\DYchajian-review-design-better-douyin.json",
+    "exists": "True",
+    "evidence": "输入 JSON 实测存在（D:\\SJ  agent\\...）；输出目录为 C:\\Users\\LOX\\Desktop\\DYchajian\\工作记忆（存在）。属一次性分诊工具；未运行（会写 triage_items.json，超出本次写文件约束）。"
+  },
+  {
+    "path": "scripts/_triage_ocr_critical.py",
+    "verdict": "有效",
+    "depends_on": "backend 源码（复读具体行号/正则）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，实测输出『真实: 1 误报: 8 待定: 0』，逐项给出可复核证据。注意其中 1 项『真实缺陷』(builder/auth.py) 是它自己的判据口径，未再复核。"
+  },
+  {
+    "path": "scripts/_verify_staticmethod_fix.py",
+    "verdict": "有效",
+    "depends_on": "backend/dy_apis/client_video.py、client_live.py",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，实测『client_video.py VideoMixin.get_feed 装饰器=[staticmethod] -> OK』『client_live.py LiveMixin.diggLiveRoom -> OK』+ 语义验证通过。"
+  },
+  {
+    "path": "scripts/build_all.py",
+    "verdict": "有效（构建编排）",
+    "depends_on": "scripts/build_sidecar.py / deploy.py / tauri",
+    "exists": "True",
+    "evidence": "--help EXIT 0，参数面完整（--release/--skip-sidecar/--skip-rust/--no-deploy/--app-root/--dry-run）。属构建器，非验收脚本；未跑真构建。"
+  },
+  {
+    "path": "scripts/build_and_deploy.py",
+    "verdict": "有效（门禁）",
+    "depends_on": "git 改动范围 + check_version_sync.py",
+    "exists": "True",
+    "evidence": "已运行：--dry-run EXIT 0，实测输出『改动文件数 9 · 后端/sidecar 2 · 判定：需要重建 sidecar: 是；版本齐平门禁：跳过』。判据取自 git 实时改动，非空转。"
+  },
+  {
+    "path": "scripts/build_sidecar.py",
+    "verdict": "有效（构建器）",
+    "depends_on": "backend/main.py、daemon/*、src-tauri/binaries",
+    "exists": "True",
+    "evidence": "本次实际构建中（正在运行）产出三个 sidecar；末尾自动调用 scripts/diag/check_packed_resources.py。⚠️ 无 argparse：`--help` 会被忽略并**直接执行全量构建**（本次实测踩中）。"
+  },
+  {
+    "path": "scripts/check_contracts.py",
+    "verdict": "有效",
+    "depends_on": "docs/design-contracts/C-*.md + .known-gaps.json + backend 源码",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，G0~G5 全 PASS（G2 报『已知缺口 5 处（见 .known-gaps.json）』）。门禁、非空转。"
+  },
+  {
+    "path": "scripts/check_version_sync.py",
+    "verdict": "有效",
+    "depends_on": "package.json / frontend/package.json / tauri.conf.json / Cargo.toml / _build_version.py",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，'✓ 五处版本齐平: 0.44.33'。五处文件实测全部存在。"
+  },
+  {
+    "path": "scripts/clean_dist.py",
+    "verdict": "有效（构建前置）",
+    "depends_on": "frontend/dist",
+    "exists": "True",
+    "evidence": "纯清理 frontend/dist 的构建前置脚本；dist 目录实测存在。非验收脚本。"
+  },
+  {
+    "path": "scripts/clear_convs.py",
+    "verdict": "有效（运维工具）",
+    "depends_on": "DY_APP_ROOT 会员库（默认 C:\\temp\\dyautodm_design）",
+    "exists": "True",
+    "evidence": "环境隔离固化在代码（拒绝 C:\\temp\\dyautodm_test，可 --allow-foreign-root）；默认预演、--yes 才清、自动备份。有意识地使用 → 有效；非验收脚本。"
+  },
+  {
+    "path": "scripts/deploy.py",
+    "verdict": "有效（部署器）",
+    "depends_on": "src-tauri/target/release 产物 + 部署根",
+    "exists": "True",
+    "evidence": "--help EXIT 0。属部署器，非验收脚本。"
+  },
+  {
+    "path": "scripts/diag/_diag_modulegraph.py",
+    "verdict": "有效（工具）",
+    "depends_on": "PyInstaller 6.22 + src-tauri/binaries 产物",
+    "exists": "True",
+    "evidence": "已运行：python314 scripts/diag/_diag_modulegraph.py → EXIT 0；实测 services.dm_dispatch/config_tag/dm_search/ai_reply/core.dispatch 均在依赖图（before 全 True）。非验收断言脚本；结论 2026-09-21 后未复跑但机制可用。注意会真跑 PyInstaller 分析（约 66s），只读源码树。"
+  },
+  {
+    "path": "scripts/diag/check_packed_resources.py",
+    "verdict": "有效",
+    "depends_on": "<打包根>/_internal 与当前解释器的 site-packages",
+    "exists": "True",
+    "evidence": "已运行：python314 scripts/diag/check_packed_resources.py C:\\temp\\dyautodm_design → EXIT 0，'✅ 全部运行时资源齐备'（9 包 / 260 资源）。已被 scripts/build_sidecar.py 末尾自动调用（机械自检）。"
+  },
+  {
+    "path": "scripts/diag/diag_anon_boundary.py",
+    "verdict": "有效",
+    "depends_on": "公网 live.douyin.com（零凭证）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，实际发起网络。判据真实产出：B_with_anon_cookie=False / C_with_anon_cookie=False（WS 502）。仅需外网，无孤儿资产依赖。"
+  },
+  {
+    "path": "scripts/diag/diag_anonymous_live_access.py",
+    "verdict": "有效",
+    "depends_on": "公网 live.douyin.com（零凭证）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0；A_page=True/room_id=7688075724920589097，B_first_packet=False，C_ws=False。判据非空转。"
+  },
+  {
+    "path": "scripts/diag/diag_im_create_conversation.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "members/.session.json + members/<id>/auto_dm/accounts/<账号>/.env.enc + 数字 uid",
+    "exists": "True",
+    "evidence": "环境实测存在：members/.session.json(222B) + 账号 四川工伤张老师/尚进工伤小助理 的 .env.enc(12644/11192B)；账号目录非空 → 环境门禁通过、断言非空转。未运行（会真发 609 建会话，且需解密凭证）。"
+  },
+  {
+    "path": "scripts/diag/diag_live_pipeline.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "members/.session.json + 账号 .env.enc + 直播间号（--live-id 或 data/config.json）",
+    "exists": "True",
+    "evidence": "账号与会员会话均在（同上）；但直播间号来源 data/config.json 实测不存在（C:\\temp\\dyautodm_design\\data 无 config.json，仓库 data 也无）→ 必须显式 --live-id，否则退出 2。未运行（真发直播接口请求）。"
+  },
+  {
+    "path": "scripts/diag/diag_selflock_recovery.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "DY_DIAG_ACCOUNT 账号 profile/_camoufox/cookies.sqlite + .env.enc",
+    "exists": "True",
+    "evidence": "账号目录与 profile 存在（四川工伤张老师/尚进工伤小助理 均有 profile 与 cookies.sqlite），账号名运行期从环境变量取。未运行（会对抖音发会话活性探活，且需解密凭证）。"
+  },
+  {
+    "path": "scripts/diag/diag_soft_stop_hang.py",
+    "verdict": "有效",
+    "depends_on": "backend 源码 core.dispatch（纯状态机）",
+    "exists": "True",
+    "evidence": "已运行：python314 scripts/diag/diag_soft_stop_hang.py → EXIT 0；实测输出 'wait_done: 返回了 ✅(3s 内)' + 空队列对照。零网络零浏览器，断言真实产出。"
+  },
+  {
+    "path": "scripts/diag/diag_soft_stop_state.py",
+    "verdict": "有效（离线推演）",
+    "depends_on": "backend 源码 core.auto_dm / core.dispatch",
+    "exists": "True",
+    "evidence": "纯对象状态机推演（AutoDM.__new__ 桩，零网络/零浏览器）；断言最终 state=='stopped' 非空转。未运行（脚本自带 60s 观察循环，本次仅静态读源码核验）。"
+  },
+  {
+    "path": "scripts/diag/list_archive_modules.py",
+    "verdict": "有效",
+    "depends_on": "src-tauri/binaries/dyautodm-backend-*.exe + PyInstaller",
+    "exists": "True",
+    "evidence": "已运行：EXIT 1（因为本次查询含 daemon.recv_daemon —— 该模块只在 recv-daemon 产物里）；同一产物上 'main'/'services.dm_dispatch' 命中。仪器本身有效。"
+  },
+  {
+    "path": "scripts/diag/prove_live_ai_wiring_in_artifact.py",
+    "verdict": "有效",
+    "depends_on": "src-tauri/binaries/dyautodm-backend-*.exe + PyInstaller",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，10/10 全 PASS（core.auto_dm/core.dispatch/models.task/services.ai_reply 特征串全部命中）。产物归属证明成立。"
+  },
+  {
+    "path": "scripts/diag/scan_lazy_imports.py",
+    "verdict": "有效",
+    "depends_on": "backend 全仓 + scripts/build_sidecar.py + src-tauri/binaries 产物",
+    "exists": "True",
+    "evidence": "已运行：--against-artifact → EXIT 0，实测报『真缺失 2 个：dy_apis.image_sender / services.automation_engine』；补丁勾到真缺口，非空转。"
+  },
+  {
+    "path": "scripts/diag/verify_anon_live_decouple.py",
+    "verdict": "有效（已迁移旁证）",
+    "depends_on": "公网直播间（零凭证，FakeDeadAuth）",
+    "exists": "True",
+    "evidence": "断言真实（ok_room/ok_ws 基于真网络建连），零账号凭证。ENG-017 部分已由 backend/replay 回放层承接，但本脚本仍是唯一的『凭证失效不影响建连』在线实证。未运行（会建真实 WS）。"
+  },
+  {
+    "path": "scripts/diag/verify_audit_fixes_v0.43.89.py",
+    "verdict": "有效",
+    "depends_on": "backend/ + frontend/src 源码 + node（真跑 *_JS）",
+    "exists": "True",
+    "evidence": "已运行：python314 scripts/diag/verify_audit_fixes_v0.43.89.py → EXIT 0，40 通过 / 0 失败（A1 用 node 真跑 JS）。当前 HEAD 仍全绿。"
+  },
+  {
+    "path": "scripts/diag/verify_content_playback.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "运行中的部署态后端 127.0.0.1:8000 + members/.session.json token + 账号有收藏作品",
+    "exists": "部分",
+    "evidence": "token 文件在（members/.session.json 含 token）。判据链路真实（favorite→stream-ticket→stream Range/206/MISS→HIT/md5/ftyp）。未运行：端口 8000 实测 closed，且它需向抖音取真实视频流。"
+  },
+  {
+    "path": "scripts/diag/verify_credential_verdicts.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "members/.session.json + 账号 .env.enc（真实服务端判定）",
+    "exists": "True",
+    "evidence": "环境齐备（账号 2 个、.env.enc 存在）→ verify_account(dm_loopback=True) 会真正探活并产出 wp/dm 判据，非空转。未运行（会真探活服务端）。"
+  },
+  {
+    "path": "scripts/diag/verify_engine_idle_live.py",
+    "verdict": "有效",
+    "depends_on": "backend 源码 core.auto_dm/core.live_hook",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，9/9 全 ✅（'握手窗口误收尾已修复'）。零网络零浏览器（FakeDispatch 桩）。"
+  },
+  {
+    "path": "scripts/diag/verify_text_send_delivery.py",
+    "verdict": "有效（有条件）",
+    "depends_on": "members/.session.json + 账号 .env.enc + 已互关的对端 uid（--peer 必填）",
+    "exists": "True",
+    "evidence": "环境齐备且断言口径最硬（以服务端 server_message_id + cmd301 回读为准，非日志）。未运行（会真发一条文本私信）。"
+  },
+  {
+    "path": "scripts/find_blank.py",
+    "verdict": "有效（可确定判据）",
+    "depends_on": "frontend/dist/assets/*.js",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，实测命中 messages-page-nvh2NCxb.js 1 处（/api/ai/leads/export 的 target:\"_blank\"），可复核。注：判据非空转，但本次命中项仍在（属 openExternal 的已知白名单/剩余项）。"
+  },
+  {
+    "path": "scripts/track_upstream.py",
+    "verdict": "有效（工具）",
+    "depends_on": "docs/upstream_sources.json + docs/upstream_baseline.json + GitHub",
+    "exists": "True",
+    "evidence": "上游清单与基线文件实测存在（8902B/2874B）；属知识/情报工具，非验收脚本；未运行（会打 GitHub 匿名 API）。"
+  },
+  {
+    "path": "scripts/verify_build.py",
+    "verdict": "有效（有条件，版本号已陈旧）",
+    "depends_on": "src-tauri/target/release/dyautodm-v2.exe + capabilities/default.json + gen/schemas + frontend/dist",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，实测输出『>>> 构建验证: 通过』（shell:allow-open 三项 OK、target:\"_blank\" 属性残留 0）。其中 '去抖音看原图'/'可滚轮缩放'/'0.33.1' 三项报告缺失，是脚本内写死的**旧版**特征串（当前 0.44.33）→ 该三条判据已失效，其余仍有效。"
+  },
+  {
+    "path": "scripts/verify_dm_dispatch.py",
+    "verdict": "有效（部分陈旧）",
+    "depends_on": "backend/services/dm_dispatch.py",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，PASS=12/FAIL=3。3 项 FAIL 是脚本假设『调试版已注入测试白名单』，而当前进程未注入（源码默认 _TEST_WHITELIST={}）→ 属**判据过期**而非缺陷暴露；其余 12 项（导入/入池/整理池/首发限流/降权冷静）真跑且通过。⚠️ 会以 cwd 落库到 data/dyautodm.db（已 gitignore）。"
+  },
+  {
+    "path": "scripts/verify_im_protocol_2026.py",
+    "verdict": "有效",
+    "depends_on": "backend/builder/*、dy_apis/client_im.py、utils/bd_ticket、build_sidecar.py",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，'✓ 全部通过：17 通过 / 0 失败'。零网络零浏览器。"
+  },
+  {
+    "path": "scripts/verify_isolation.py",
+    "verdict": "有效",
+    "depends_on": "backend/services/dm_dispatch.py（合成账号/uid，测白名单与首发限流）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，PASS=10/FAIL=0（含『非测试账号一律拒绝』『发给自己拒绝』）。零网络。注意：会往 data/dyautodm.db 写测试行（已 gitignore；可人工清理）。"
+  },
+  {
+    "path": "scripts/verify_lease_wiring.py",
+    "verdict": "有效（发现真回归）",
+    "depends_on": "backend 源码（quota/gate/capture 链路 + errcode 六段契约）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 1 → PASS=30 FAIL=1；失败项 D3：『capture_all 统一入口失败仍保留 CAP-016（含显式失败契约）』——**当前源码未满足该契约**。这是本报告最重要的『有效但红』证据：脚本会真的抓到回归。"
+  },
+  {
+    "path": "scripts/verify_live_restart_hotswap.py",
+    "verdict": "有效（发现真回归 + 1 项探针陈旧）",
+    "depends_on": "backend/core/auto_dm.apply_runtime_config + dispatch + api/live_config + frontend",
+    "exists": "True",
+    "evidence": "已运行：EXIT 1 → PASS=38 FAIL=8。其中 7 项为『force_rescan 已彻底移除 / 只读展示 / restart 端点』等**已随 v0.43.93 重构过期**的断言；另 1 项为真实探针缺陷：脚本的 _StubDispatch.apply_runtime 未接收 gen_dm_message → TypeError（与 backend/scripts/verify_ai_live_wiring.py L2『apply_runtime 支持热更 gen_dm_message』正相反，后者 PASS）→ 该断言恒红、需修脚本。"
+  },
+  {
+    "path": "scripts/verify_live_strategy.py",
+    "verdict": "有效",
+    "depends_on": "backend（隔离临时 DB）+ TestClient + frontend/src",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，PASS=58 FAIL=0。全程用 tempfile 隔离根（env_root=…\\Temp\\dyautodm_strategy_verify），不起 uvicorn、不碰浏览器、不碰会员环境。"
+  },
+  {
+    "path": "scripts/verify_nickname_link.py",
+    "verdict": "有效",
+    "depends_on": "backend/auto_dm/conversation_capture.py + daemon 行为（离线样本仿真）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，'结果：PASS=17 FAIL=0 · 全部通过 ✅'（文本桥唯一命中/歧义放弃/不取裸 sender 等不变式）。零网络零浏览器。"
+  },
+  {
+    "path": "scripts/verify_uid_sink.py",
+    "verdict": "有效",
+    "depends_on": "backend/services/dm_dispatch.py（UidSink，跨实例持久化）",
+    "exists": "True",
+    "evidence": "已运行：EXIT 0，PASS=7/FAIL=0（同 UID 二次拦截/跨账号隔离/重启后仍拦截）。注意会落库 data/dyautodm.db（已 gitignore）。"
+  },
+  {
+    "path": "backend/scripts/verify_capture_parse.py",
+    "verdict": "空转（C 段）/有效（A、B、C8~C14 段）",
+    "depends_on": "<DESIGN_ROOT>/_repro352_fresh/init_live.bin（C 段）",
+    "exists": "False",
+    "evidence": "已运行：EXIT 0 → 结果 6/6，但 [C] 段打印 '[SKIP] 未找到真实首包样本'；实测 C:\\temp\\dyautodm_design\\_repro352_fresh 与 init_live.bin 均 MISSING → C1~C7 功能验收自 2026-09-20 起从未执行。已就地更正为『不计入通过项』。功能验收已迁移：backend/replay/fixtures/init_packet/init_packet.bin + backend/test_replay_capture_parse.py（已运行，11 项 OK）。"
+  },
+  {
+    "path": "scripts/_check_live_auth.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test/auto_dm/accounts/<DY_TEST_ACCOUNT>/.env",
+    "exists": "False",
+    "evidence": "默认数据根 C:\\temp\\dyautodm_test 不存在（且账号目录结构已迁到 members/<id>/auto_dm/accounts）→ 必然 .env 加载失败。孤立账号取证脚本，无文档引用。"
+  },
+  {
+    "path": "scripts/_engine_auth_repro.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test 同上",
+    "exists": "False",
+    "evidence": "同 _check_live_auth：默认数据根不存在，路径结构已迁移。"
+  },
+  {
+    "path": "scripts/_verify_sidecar_modules.py",
+    "verdict": "空转（形态已变）",
+    "depends_on": "工作目录下的 <name>-<triple>/ 目录（含 *.pyz）",
+    "exists": "False",
+    "evidence": "已运行：EXIT 0，但三行输出均为『单文件/无 _internal（跳过 PYZ 扫描）』—— 现行部署为共享形态（_internal 与 exe 平铺，无 per-name 目录）→ 脚本实际一个模块都没检查。已被 scripts/diag/list_archive_modules.py（读 CArchive→PYZ，实测 3622 模块）取代。"
+  },
+  {
+    "path": "scripts/diag/_clean_roomcfg.py",
+    "verdict": "空转",
+    "depends_on": "frontend/src/components/live/RoomConfigManager.tsx",
+    "exists": "False",
+    "evidence": "目标文件已不存在（现为 RoomConfigPage.tsx）→ io.open 抛 FileNotFoundError。功能已迁移为独立策略页。"
+  },
+  {
+    "path": "scripts/diag/_fix_roomcfg.py",
+    "verdict": "空转",
+    "depends_on": "RoomConfigManager.tsx",
+    "exists": "False",
+    "evidence": "目标文件不存在 → find() 抛 SystemExit('restart anchor miss')。一次性补丁，功能已迁移到 RoomConfigPage.tsx。"
+  },
+  {
+    "path": "scripts/diag/_patch_livepage.py",
+    "verdict": "空转",
+    "depends_on": "live-page.tsx 的 setDraft(... live_url: currentRoom ...) 锚点",
+    "exists": "False",
+    "evidence": "实测 live-page.tsx 已无该锚点（'v0.43.91：新建草稿' 字符串 0 命中）→ SystemExit anchor miss。属已应用的历史补丁，且其修补对象 RoomConfigManager 已不存在。"
+  },
+  {
+    "path": "scripts/diag/_patch_livepage2.py",
+    "verdict": "空转",
+    "depends_on": "live-page.tsx push={push} 锚点 + RoomConfigManager.tsx",
+    "exists": "部分",
+    "evidence": "live-page 侧 'onChanged={loadRoomCfgs}' 已存在 → 打印 already patched；但首个动作 strip_lone_cr(RoomConfigManager.tsx) 目标文件不存在 → 抛错。属已应用的历史补丁。"
+  },
+  {
+    "path": "scripts/diag/_patch_prefill.py",
+    "verdict": "空转",
+    "depends_on": "RoomConfigManager.tsx",
+    "exists": "False",
+    "evidence": "目标文件不存在 → anchor miss。同族一次性补丁，功能已迁移。"
+  },
+  {
+    "path": "scripts/diag/_patch_roomcfg.py",
+    "verdict": "空转",
+    "depends_on": "RoomConfigManager.tsx 行内锚点",
+    "exists": "False",
+    "evidence": "目标文件不存在 → anchor miss。同族一次性补丁。"
+  },
+  {
+    "path": "scripts/probe_bcc_speed.py",
+    "verdict": "空转（旧根）",
+    "depends_on": "BCC 端口 10074 的 /capture_userinfo",
+    "exists": "False",
+    "evidence": "硬编码 PORT=10074，实测端口 closed；且该端口与本环境账号哈希端口（尚进工伤小助理=11231、四川工伤张老师=10042）不符 → 需手动改端口/起 BCC 才有意义。"
+  },
+  {
+    "path": "scripts/probe_img_inconv.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test 的账号 profile + 库",
+    "exists": "False",
+    "evidence": "默认数据根 C:\\temp\\dyautodm_test 实测不存在；脚本不在本次验收范围（私信图片历史探针）。"
+  },
+  {
+    "path": "scripts/probe_img_lightbox.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "同上，目标数据根不存在。"
+  },
+  {
+    "path": "scripts/probe_img_origin.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "同上，目标数据根不存在。"
+  },
+  {
+    "path": "scripts/probe_img_real_browser.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "同上，目标数据根不存在。"
+  },
+  {
+    "path": "scripts/probe_img_struct.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "同上，目标数据根不存在。"
+  },
+  {
+    "path": "scripts/probe_img_urls.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "同上，目标数据根不存在。"
+  },
+  {
+    "path": "scripts/probe_img_watch.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "同上，目标数据根不存在。"
+  },
+  {
+    "path": "scripts/probe_inline_dims.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "默认数据根不存在。"
+  },
+  {
+    "path": "scripts/probe_logs.py",
+    "verdict": "空转（需应用在线）",
+    "depends_on": "127.0.0.1:8000 /api/logs",
+    "exists": "False",
+    "evidence": "端口 8000 实测 closed（无应用在跑）；且它只探旧日志页接口。属历史探针。"
+  },
+  {
+    "path": "scripts/probe_remote_fetch.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "默认数据根不存在。"
+  },
+  {
+    "path": "scripts/verify_capture.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test 的 dyautodm.db",
+    "exists": "False",
+    "evidence": "默认数据根不存在。功能已被 backend/replay（db 夹具回放）与 api/messages 读库路径承接。"
+  },
+  {
+    "path": "scripts/verify_element_inspector.py",
+    "verdict": "空转（资产即脚本，必然找不到）",
+    "depends_on": "C:\\temp\\dyautodm_design\\vb_chromium + http://127.0.0.1:1420/preview-inspector.html",
+    "exists": "False",
+    "evidence": "CHROME 指向 已废弃的 vb_chromium（实测目录不存在），且 frontend/preview-inspector.html 也不存在（现为 preview.html/preview-kit.html/preview-pages.html）→ 端口/路径双重失效。属历史探针（真实浏览器驱动，未运行）。"
+  },
+  {
+    "path": "scripts/verify_inspector_drag.py",
+    "verdict": "空转（资产失效）",
+    "depends_on": "C:\\temp\\dyautodm_design\\vb_chromium + preview-inspector.html",
+    "exists": "False",
+    "evidence": "同 verify_element_inspector：vb_chromium 与 preview-inspector.html 均不存在。"
+  },
+  {
+    "path": "scripts/verify_live_restart_live.py",
+    "verdict": "空转（孤儿前置）",
+    "depends_on": "artifacts/live_hotswap_token.txt + 127.0.0.1:8077 探针后端",
+    "exists": "False",
+    "evidence": "实测 artifacts/live_hotswap_token.txt 不存在、backend/_live_hotswap_probe.py 不存在、端口 8077 closed → 脚本第 15 行 open() 直接 FileNotFoundError。属以临时探针为前置的一次性验证。"
+  },
+  {
+    "path": "scripts/verify_live_strategy_live.py",
+    "verdict": "空转（版本已前进 + 需应用在线）",
+    "depends_on": "127.0.0.1:8000/api/version == '0.43.93' + members/.session.json token",
+    "exists": "部分",
+    "evidence": "判据写死 v0.43.93（当前 0.44.33）→ 版本断言必然 FAIL；且端口 8000 closed。属部署态一次性验证（现由 scripts/verify_live_strategy.py 的 TestClient 层承接）。"
+  },
+  {
+    "path": "scripts/verify_media_branch.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test 的 dyautodm.db",
+    "exists": "False",
+    "evidence": "默认数据根不存在。"
+  },
+  {
+    "path": "scripts/verify_origin_image.py",
+    "verdict": "空转（需应用在线 + 旧测试根）",
+    "depends_on": "127.0.0.1:8000/api/messages/conversation + DY_TEST_ACCOUNT/DY_TEST_CONV_ID + origin_image_verify.html",
+    "exists": "False",
+    "evidence": "端口 8000 closed；产物路径 C:\\Users\\LOX\\Desktop\\DYchajian\\origin_image_verify.html 的目录不存在；且其期望的数据根是旧测试根。功能已被 backend/replay（会话读取夹具）与内容页播放链路（verify_content_playback）取代。"
+  },
+  {
+    "path": "scripts/verify_sanitize.py",
+    "verdict": "空转（旧数据根）",
+    "depends_on": "C:\\temp\\dyautodm_test",
+    "exists": "False",
+    "evidence": "默认数据根不存在。"
+  },
+  {
+    "path": "backend/scripts/migrate_global_to_member.py",
+    "verdict": "已迁移（一次性/幂等）",
+    "depends_on": "<app_root>/data/dyautodm.db 与 members/<id>/data/dyautodm.db",
+    "exists": "部分",
+    "evidence": "一次性数据迁移（2026-09-08 会员体系上线时）。当前 C:\\temp\\dyautodm_design 无全局 data/dyautodm.db 的会话数据（全局库仅 1 行 kv_store），会员库已有 408 会话 → 幂等空转。属历史迁移工具，非验收脚本。"
+  },
+  {
+    "path": "scripts/_apply_tls_policy.py",
+    "verdict": "已迁移",
+    "depends_on": "backend 全仓的 verify=False 出现处",
+    "exists": "部分",
+    "evidence": "只读实测：backend 下仅 utils/tls_policy.py 自身残留 4 处 verify=False（该文件在 SKIP_FILES 内），其余文件 0 处 → re-run 不会再改任何文件（空转）。补丁已落地。"
+  },
+  {
+    "path": "scripts/_fix_loguru_code_prefix.py",
+    "verdict": "已迁移",
+    "depends_on": "backend 全仓 logger.<level>(\"CODE-…\", …) 调用",
+    "exists": "部分",
+    "evidence": "只读 AST 全仓扫描：backend 下『首参为裸错误码』的 logger 调用 **0 处** → 当前 re-run 无命中（空转），修复已生效。"
+  },
+  {
+    "path": "scripts/_fix_loguru_multiline.py",
+    "verdict": "已迁移",
+    "depends_on": "同一类日志调用（跨行写法）",
+    "exists": "部分",
+    "evidence": "与 _fix_loguru_code_prefix 同判据：AST 实测 0 处裸码 logger 调用 → 已落地，脚本空转。"
+  },
+  {
+    "path": "scripts/_fix_missing_import_os.py",
+    "verdict": "已迁移",
+    "depends_on": "全仓「用 os.* 但无 import os」的文件",
+    "exists": "部分",
+    "evidence": "只读 AST 全仓扫描：除 src-tauri 产物外的源码树 0 处 → 脚本空转（注：产物内 camoufox/webgl/sample.py 仍缺，但 SKIP 列表覆盖 build/dist，且那是第三方文件）。"
+  },
+  {
+    "path": "scripts/diag/_bump_version.py",
+    "verdict": "已迁移",
+    "depends_on": "旧版本字符串 0.43.90 → 0.43.91（一次性）",
+    "exists": "False",
+    "evidence": "一次性版本号替换；当前版本 0.44.33 已前进 9 位，OLD='0.43.90' 在五处版本源中 0 命中 → print SKIP。现行版本同步由 scripts/check_version_sync.py（门禁）+ scripts/_build_version.py 生成承接。"
+  },
+  {
+    "path": "scripts/diag/_patch_errcodes_plaintext_deprecation.py",
+    "verdict": "已迁移",
+    "depends_on": "errcode_data.py 的 AUTH-053 锚点",
+    "exists": "True",
+    "evidence": "实测 backend/errcode_data.py 已含 AUTH-054 等条目 → 运行走 print('already patched, skip')。补丁已落地，脚本只剩幂等空转。"
+  },
+  {
+    "path": "scripts/fix_system_notice_text.py",
+    "verdict": "已迁移（存量订正，当前无命中）",
+    "depends_on": "members/m17db0f8209156f26/data/dyautodm.db 的 dm_messages",
+    "exists": "部分",
+    "evidence": "只读实测：库内 aweme_im_api_gateway_confirm_stranger_message / aweme_im_consecutive_chat_notice / aweme_im_user_follow_action_hello_msg 三个 biz 串均 0 行 → 当前无可订正对象（空转）。若要跑，默认预演、--yes 才写。"
+  },
+  {
+    "path": "scripts/verify_live_strategy_ui.py",
+    "verdict": "未核验（需真浏览器/起 vite，按约束未运行）",
+    "depends_on": "npx vite --port 5199 + frontend 真实组件",
+    "exists": "部分",
+    "evidence": "脚本自带起/停 vite（端口 5199 实测 closed），17 项 check 面向 v0.43.93 表单/弹窗契约，部分选择器（如策略弹窗）可能已随重构变化。⚠️ 会 launch_persistent_context（虽为临时 profile）→ 本约束下未运行、未逐条核验。"
+  },
+  {
+    "path": "scripts/wiki_query.py",
+    "verdict": "未核验（需 LLM Wiki 服务 + token）",
+    "depends_on": "127.0.0.1:19828（LLM Wiki 本地 API）+ LLM_WIKI_API_TOKEN",
+    "exists": "部分",
+    "evidence": "端口 19828 实测 OPEN（服务在跑），但脚本需 LLM_WIKI_API_TOKEN 环境变量（本次未提供）→ 未运行、未核验判据。属工具脚本而非验收脚本。"
+  },
+  {
+    "path": "scripts/wiki_verify.py",
+    "verdict": "未核验（依赖 wiki_query + token）",
+    "depends_on": "同上（import wiki_query）",
+    "exists": "部分",
+    "evidence": "依赖 wiki_query.py 与 LLM Wiki 服务/token；未运行。"
+  }
+]

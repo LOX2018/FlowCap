@@ -1,0 +1,36 @@
+fix(live): [弹幕] 日志行账号归因 —— 并发下唯一可靠（ADR-002 §5.1 前置，v0.44.38）
+
+[Design-Intent Regression]
+Original design assumption: `[弹幕]` 行不带账号字段；探针侧靠「最近一条
+  『使用前端指定账号「X」作为监测账号』标记」推断归因（2026-09-22 已实现并有守卫）。
+The design contract this fix restores: ADR-002 §5.1 要求「`[弹幕]` 每行带账号字段；
+  探针按账号分别统计（不再互相计入）」—— 因为多账号并发时**两个引擎实例交错写同一
+  `logs/`**，标记推断的分段假设被破坏：实测形态 `A标记 → B标记 → A弹幕` 会把 A 的
+  弹幕归到 B 名下（A 假失效、B 含他人弹幕）。行内字段是唯一在真并发下可靠的归因。
+Expected behavior: 每行弹幕自带账号；探针优先按行内字段归因（回落标记仅用于历史日志）。
+
+[Standard-Contract Adherence]
+日志字段沿用本项目既有 `[域][键=值]` 形态（如 `[弹幕][账号=X]`），未新增命名体系；
+  探针归因口径与「脱敏 ⇔ uid==111111 且 sec_uid 空」既有判据保持一致（未改判据本体）。
+
+[Problem-Analysis Chain]
+Source: 归因信息**不在产生它的那一行上**（跨行推断）—— 单写者假设下成立，并发下失效。
+Propagation: 两引擎实例交错写同一 logs/ → 标记分段错位 → 弹幕行被记到错误账号。
+Terminal: 能力探针读数失真（本账号 0 条=假失效；他账号 2 条=含他人弹幕），
+  多账号并发（H-9）一上线即不可归因。
+Open-source component analysis: 不涉及 OSS 组件（本项目日志/探针链路）。
+
+[Live Verification]
+- Command 1: python -m unittest discover -s . -p "test_*.py" -t .（backend/）
+- Environment: 隔离临时根（test_config_isolation 钉 DY_APP_ROOT，不碰真实库）
+- Result: **连续 3 次 Ran 587 tests — OK**（run1/2/3 exit=0）
+- Command 2（D-07 失败态自证）: 注入 `_RE_DANMAKU_ACCT = 永不匹配` 模拟旧实现
+  → 真并发交错夹具读数 accA=0 / accB=2（变红）；现行实现 accA=1 / accB=1 ✅
+- 新增用例 3 条：行内字段权威性 / 历史日志回落仍可用 / 源码契约（行必须带账号字段）
+- 一处实测修正：断言改为**自净化同类标记日志**——否则同套件重复运行会累积
+  同名标记文件，出现「单跑绿、全量红」的间歇性失败（本轮实测复现 1 次后修正）
+
+[Knowledge Archival]
+- Standards updated: docs/adr/ADR-002-multi-account-live-orchestration.md（§1.2 前置状态：
+  由「未做」→「已做（v0.44.38）」，并记录「标记推断在并发下失效」这一实测结论）
+- Case archived: 归入 HC-05 卡的 H-9 实施链；证据 artifacts/_suite_h9_run{1,2,3}.log（本地）

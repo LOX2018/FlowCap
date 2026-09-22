@@ -1,0 +1,40 @@
+feat(live): 直播引擎编排层 + 通知链路按账号解析（ADR-002 §5.2/5.3，v0.44.39）
+
+[Design-Intent Regression]
+Original design assumption: `app.state.adm = AutoDM()` 是唯一入口，五个引擎端点
+  共读单实例（单状态机）。用户「两个账号同时监听」意图**未落实现**。
+The design contract this fix restores: 编排层改为 `account → Engine` 表（惰性创建、
+  同账号复用）；API 加 `acct` 维度；同账号重复启动 → **409**（不再静默 ok:true）；
+  未指定 acct 而存在多个任务时 → **409**（不猜账号）。通知链路（QQ/iLink）按用户
+  显式给出的账号解析。
+Expected behavior: 小助理监 A 房、张老师监 B 房同时 RUNNING；任一端点/通知
+  指令都能**正确选中目标账号的实例**；收尾时逐账号 shutdown，不留孤儿监听。
+
+[Standard-Contract Adherence]
+路由形态（POST /start, GET /pause 等）**未改**（保持既有 URL 模式，前端零改动）；
+新增 GET /api/engine/accounts（多任务卡片数据源，见 ADR-002 §5.6）。
+字段：`acct`（对齐 `TaskConfig.acct`）、返回值 `ok/acct/state`。
+kv / 命名无新增（`EngineRegistry` 走 Python 内存表，无持久化）。
+
+[Problem-Analysis Chain]
+Source: 单例状态机 + 五个端点共享 `app.state.adm` = 多账号调用必串号。
+Propagation: 并发启动 → 状态错乱；并发停止 → 停错任务；通知链路无账号上下文
+  → 只能猜「最近的那个」= 假成功。
+Terminal: 用户点「启动」后界面显示 running 但实际**没新任务**（旧假成功形态）。
+
+[Live Verification]
+- 命令: cd backend && python -m unittest discover -s . -p "test_*.py" -t .
+- 环境: 隔离临时根（test_config_isolation 钉 DY_APP_ROOT）
+- 结果: **Ran 610 tests — OK**（新增 26 项）
+- 失败态自证（D-07）：
+  * 同账号第二 start → 旧返回 ok:true，新 raise 409
+  * 两任务未给 acct → 旧静默选「最近」，新 raise 409
+  * 未知账号 → 旧回落 app.state.adm（停错任务），新 raise 404
+- 环境：DYAutoDM_v2_0.44.37-debug.exe 仍在运行，未在此会话启动/停止
+- 结果: 期望行为恢复；零新增回归；无性能指标变化（编排层纯内存表）
+
+[Knowledge Archival]
+- Standards updated: docs/adr/ADR-002-multi-account-live-orchestration.md §5 实施进度
+  更新（§5.2 编排层已落，§5.3 API acct 维度已落；§5.5 前端多任务卡片**未落**）
+- Case archived: 待收口 —— HC-05 台账 H-9 未结项（还需 (A) 真实库双账号验证）
+- 证据: artifacts/_suite_h9b.log（Ran 610 tests — OK）

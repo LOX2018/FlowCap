@@ -822,7 +822,7 @@ export default function LivePage(props: PageProps) {
                     disabled={engineState !== "running"}
                     onClick={() =>
                       api
-                        .pause()
+                        .pauseEngine()
                         .then((r) => push(r.ok ? "已暂停" : "暂停失败"))
                         .catch((e: unknown) => push("暂停异常: " + errMsg(e)))
                     }
@@ -836,7 +836,7 @@ export default function LivePage(props: PageProps) {
                     disabled={engineState !== "paused"}
                     onClick={() =>
                       api
-                        .resume()
+                        .resumeEngine()
                         .then((r) => push(r.ok ? "已继续" : "继续失败"))
                         .catch((e: unknown) => push("继续异常: " + errMsg(e)))
                     }
@@ -850,9 +850,9 @@ export default function LivePage(props: PageProps) {
                     disabled={!engineBusy}
                     onClick={() =>
                       api
-                        .stopSoft()
-                        .then((r) => push(r.ok ? "已停止监听（存量私信继续发送）" : "停止失败"))
-                        .catch((e: unknown) => push("停止异常: " + errMsg(e)))
+                        .stopSoftEngine()
+                        .then((r) => push(r.ok ? "软停止中" : "停止异常"))
+                        .catch((e: unknown) => push("软停止异常: " + errMsg(e)))
                     }
                   >
                     <Square className="h-3.5 w-3.5" />停止监听

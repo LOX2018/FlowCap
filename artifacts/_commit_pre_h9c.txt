@@ -1,0 +1,34 @@
+fix(engine): 前端 API 传 account 维度（ADR-002 §5.3，v0.44.40）
+
+[Design-Intent Regression]
+Original design assumption: 前端 `client.ts` 的 `stop()` / `pause()` / `resume()` 无
+  `account` 参数，调用时后端 `req.query_params.acct` 恒空 → `_resolve_adm(request, "")`
+  走「单任务回落」路径。单账号时隐式正确，多账号时必串号。
+The design contract this fix restores: 每个控制端点都显式透传 `account`（由页面当前选中的
+  账号驱动）。后端已按 ADR-002 §5.3 改造成「未指定 + 多任务歧义 → 409」;
+  前端补上参数，歧义场景才能正确报错（比静默停错任务强得多）。
+Expected behavior: 前端点「暂停/停止」后请求体带 `{account: "当前选中账号"}`，
+  后端按该账号的实例操作；若未选中但存在多任务 → 前端 409 错误提示，而非静默操作错账号。
+
+[Standard-Contract Adherence]
+新增方法名 `stopEngine(account?)` / `pauseEngine(account?)` / `resumeEngine(account?)` ——
+  旧名保留不删（前端暂无调用方用旧名了，但保留给外部可能引用），新名强制走 account 维度。
+HTTP 语义：POST /api/engine/stop 加 body `{"account":"..."}`，路由签名不变。
+
+[Problem-Analysis Chain]
+Source: 前端 client.ts 的 engine 控制方法没有 account 字段。
+Propagation: 后端收到空 acct → 单账号回落 OK；两账号并发时 fallback 取「最近启动的那个」
+  → 用户点张老师的停止却停到小助理 → 用户不知道停错，行为静默漂移。
+Terminal: 真机验收脚本（_h9_verify_a.py）发现所有 acct 返回空字符串，验证通过但归因是
+  假成功（单账号匿名任务）；改为传 account 后才能真正复现/验证 409/404 冲突。
+
+[Live Verification]
+- 命令: cd frontend/src && npx tsc -b
+- 结果: TSC=0（前端 TypeScript 通过，无新增类型断言失败）
+- 环境: 开发态前端（未随主 exe 重新构建），仅验证类型系统；真机运行时由下一轮
+  `npx tauri build --no-bundle` 验证前端 bundle 与后端契约一致
+- 结果: 期望行为恢复（前端控制命令将携带 account 维度）
+
+[Knowledge Archival]
+- Standards updated: 无
+- Case archived: 待收口 —— HC-05 台账 H-9 仍未结项（还需 0.44.40 重跑真机验收）

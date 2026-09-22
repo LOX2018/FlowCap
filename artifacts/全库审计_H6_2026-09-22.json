@@ -1,0 +1,145 @@
+[
+  {
+    "id": "F1",
+    "category": "逻辑漏洞",
+    "severity": "致命",
+    "file": "backend/core/sender.py",
+    "line": 221,
+    "evidence": "core/sender.py:210-223 优先调 recv_daemon /send_by_uid；守护不可达时 core/sender.py:221-261 兜底本进程 imapi 直发（sender.py:227 create_conversation、sender.py:247 send_msg），仅打一条 SEND-013 warning（sender.py:222）。调用方 backend/api/crawl.py:280（单发）与 crawl.py:364（批量循环）。",
+    "impact": "违反「发送必须收敛到 recv_daemon 闸门、禁止新的 imapi 直发旁路」铁律。守护不可达时静默降级为无统一限速闸门直发，频率风控重新暴露；批量截流（crawl.py:364 循环）风险最高。",
+    "suggestion": "与 core/dispatch.py:448-452 同构：守护不可达时放弃发送并上报，不再直发。",
+    "gateable": true
+  },
+  {
+    "id": "F2",
+    "category": "契约一致性",
+    "severity": "致命",
+    "file": "backend/auto_dm/conversation_capture.py",
+    "line": 1761,
+    "evidence": "写入侧自证 conversation_capture.py:1761-1765 注释「short_id 列改为写入 sec_uid」，落库 1777-1778（INSERT 用 c.get('sec_uid')）与 1787-1792（UPDATE SET short_id=? ← c['sec_uid']）；列 DDL 仍叫 short_id（backend/database.py:177）。消费侧按列名/语义消费：services/voice_transcribe.py:367（c.short_id AS conv_short_id）→ 405 → 244（上传上游 conv_short_id）；services/nickname_fallback.py:131-141（用作 sec_user_ids 查询键）。",
+    "impact": "列名声明为会话短 ID(int64)、实际存 sec_uid(字符串)。任何按列名语义读 short_id 的新代码会静默拿到 sec_uid；与 conversation_capture.py:685-706 解析的『真 short_id(.4.5)』同名不同物；群聊 conv_id(=short_id) 与单聊 sec_uid 混入同列。",
+    "suggestion": "改名列为 sec_uid（迁移+6 处读写改字段），或至少在全读取点显式标注本列存 sec_uid 并把 voice_transcribe/nickname_fallback 变量名从 conv_short_id 改正为 sec_uid。",
+    "gateable": true
+  },
+  {
+    "id": "S1",
+    "category": "契约一致性",
+    "severity": "严重",
+    "file": "src-tauri/Cargo.lock",
+    "line": 939,
+    "evidence": "Cargo.lock:938-939 name=\"dyautodm-v2\" version=\"0.44.32\"，而 Cargo.toml:3=0.44.33、其余四处(package.json/frontend/package.json/tauri.conf.json:4/_build_version.py)=0.44.33；git show HEAD 同值（已提交缺陷）。门禁 scripts/check_version_sync.py:32-38 的 TARGETS 只列 5 处、不含 Cargo.lock，实跑输出『✓ 五处版本齐平: 0.44.33』exit 0。",
+    "impact": "版本源漏升 1 处且门禁无感（假通过）。下一位审计者只跑 check_version_sync.py 会得出『已齐平』的错误结论；与历史『Cargo.lock 段易漏』事故同族。",
+    "suggestion": "同步 Cargo.lock 的 dyautodm-v2 段；把 Cargo.lock 纳入 check_version_sync.py TARGETS 并断言等于其余五处。",
+    "gateable": true
+  },
+  {
+    "id": "S2",
+    "category": "技术债",
+    "severity": "严重",
+    "file": "backend/daemon/recv_daemon.py",
+    "line": 505,
+    "evidence": "AST 全量统计（排除 test_/verify_，175 文件）handler 体仅 pass/continue 或仅 logger.debug 者共 386 处：browser_daemon.py 43、recv_daemon.py 24、core/auto_dm.py 15、accounts.py 14、im_protobuf.py 14、origin_image_resolver.py 14、vbrowser.py 13、probe.py 12、ai_reply.py 11、api/messages.py 10。写库路径实例：recv_daemon.py:499-506（INSERT 失败 pass）与 516-527（UPDATE 覆盖失败 pass）。对照历史口径 340 处为净增。",
+    "impact": "except:pass 是项目自定的『故障隐藏层』；落在落库/凭证/浏览器生命周期上就是『不报错但功能静默失效』的直接机理。",
+    "suggestion": "不做一次性全清；对关键域（落库/凭证/发送）禁 pass-only handler，其余域至少 logger.debug 带上下文；基线入 .known-gaps。",
+    "gateable": true
+  },
+  {
+    "id": "S3",
+    "category": "逻辑漏洞",
+    "severity": "严重",
+    "file": "backend/daemon/recv_daemon.py",
+    "line": 1270,
+    "evidence": "recv_daemon.py:1268 每请求一条 info，1270 遍历每个会话再打一条 info（含 peer_name/peer_id）。同业务后端读库 messages.py:365-372 已按『总数/关联数/未读』变化去重。",
+    "impact": "违反 §七⑥『高频轮询接口禁止每次 logger.info』；44+ 会话时每次拉取刷 45 行，放大日志体积并淹没有效线索。",
+    "suggestion": "与 messages.py 同口径：模块级 _last_summary 缓存仅变化时 info，其余降 debug；删除/降级 1270 逐会话日志。",
+    "gateable": true
+  },
+  {
+    "id": "S4",
+    "category": "逻辑漏洞",
+    "severity": "严重",
+    "file": "backend/api/accounts.py",
+    "line": 320,
+    "evidence": "权威出口 accounts.py:1275-1321 uid_identity_verdict()，调用方仅 core/auto_dm.py:583 与 1038。旁路仍在：api/accounts.py:320 logged_in=wp_level=='ok'（前端已登录取 wp 单引擎）；auto_dm/accounts.py:505-542 verify_account 自建 uid 漂移判据（与 uid_identity_verdict 的 ② 分支 accounts.py:1305-1308 两条独立实现）；daemon/browser_daemon.py:2224 logged_in=bool(env_path and member_ctx.env_exists(env_path))（仅表示凭证文件存在）。",
+    "impact": "『凭证是否有效』历史上散在 13 入口，现有权威出口但至少 3 处仍自判，其中 api/accounts.py:320 与 browser_daemon.py:2224 语义弱化（单引擎/文件存在），会把失效账号判为有效。",
+    "suggestion": "api/accounts.py:320 与 verify_account 漂移段改调 uid_identity_verdict()；browser_daemon.py:2224 字段改名或注释说明其语义仅为『凭证文件存在』。",
+    "gateable": true
+  },
+  {
+    "id": "S5",
+    "category": "逻辑漏洞",
+    "severity": "严重",
+    "file": "backend/services/dm_dispatch.py",
+    "line": 1057,
+    "evidence": "dm_dispatch.py:1036-1057：quota.can_send() 包在 try 内，except 分支(1057)仅 logger.debug('...放行由兜底闸门管')，不中断不停发，继续 requests.post（dm_dispatch.py:1073）。同文件 1036-1042 注释声明调度器是『唯一风控裁决点』。",
+    "impact": "调度器异常时静默 fail-open，限速仅靠 recv_daemon 物理兜底；若兜底同因异常则限速形同不存在，且 debug 在正式构建 INFO 级别下完全不可见。",
+    "suggestion": "异常改 fail-closed：跳过本次发送 + 计指标 + logger.warning 带错误码（与 dispatch.py:448-452『宁可少发』一致）。",
+    "gateable": true
+  },
+  {
+    "id": "G1",
+    "category": "技术债",
+    "severity": "一般",
+    "file": "backend/api/messages.py",
+    "line": 390,
+    "evidence": "messages.py:390 logger.info(f\"[私信拉取] 拉取账号「{account}」会话详情 conv_id={conv_id}\")，每次打开会话即一条，无去重；同文件 365-372 列表端点已做变化去重。",
+    "impact": "与 S3 同族高频刷屏；详情端点漏做去重。",
+    "suggestion": "降 debug 或按 (account, conv_id) 变化去重。",
+    "gateable": true
+  },
+  {
+    "id": "G2",
+    "category": "技术债",
+    "severity": "一般",
+    "file": "backend/services/ai_reply.py",
+    "line": 131,
+    "evidence": "硬编码地址：api/ai.py:840、services/ai_reply.py:131/151/616、services/model_hub_data.py:35、services/app_config_schema.py:237 均 http://127.0.0.1:31415/v1；auto_dm/config.py:127 http://localhost:9000；auto_dm/origin_image_resolver.py:277 127.0.0.1:9912。前端 api/client.ts:16、accounts-page.tsx:296/368、messages/LeadsSection.tsx:59 硬编码 127.0.0.1:8000。",
+    "impact": "端口变更需多点同步；前端 4 处绕过 backend/config.py:25 的 backend_port 配置，改端口时静默失败。",
+    "suggestion": "后端统一走 config.py/app_config 单一常量；前端统一走 api/sidecar.ts 的 BACKEND_BASE。",
+    "gateable": true
+  },
+  {
+    "id": "G3",
+    "category": "逻辑漏洞",
+    "severity": "一般",
+    "file": "backend/services/browser_gate.py",
+    "line": 382,
+    "evidence": "browser_gate.py:363-382 audit_standalone_launch：命中环境分叉仅 logger.error('[BCC-042]...')（379），docstring(366-367)自承『先观测，收敛完残余路径后再收紧』；函数末尾 except Exception: pass(382) 使审计自身异常也被吞。",
+    "impact": "单例/环境分叉门禁为静默绕过，审计函数兜底吞异常会让『观测』本身失效，绕过无修正压力。",
+    "suggestion": "审计异常至少 logger.warning；收尾阶段把 audit_standalone_launch 升级为阻断（返回失败）。",
+    "gateable": false
+  },
+  {
+    "id": "G4",
+    "category": "契约一致性",
+    "severity": "一般",
+    "file": "backend/database.py",
+    "line": 407,
+    "evidence": "database.py:404-407 迁移路径写 d.get(\"short_id\")；新写入语义为 sec_uid（见 F2）。两来源同名不同物，INSERT OR IGNORE 后同列混存。",
+    "impact": "旧库行 short_id 可能是真 short_id(int64)，新行是 sec_uid(字符串)；下游按单语义消费（nickname_fallback.py:141 sec.isdigit() 过滤）出现部分命中/部分漏的静默不一致。",
+    "suggestion": "迁移时按来源标注/隔离，或随 F2 改名方案统一。",
+    "gateable": true
+  },
+  {
+    "id": "G5",
+    "category": "逻辑漏洞",
+    "severity": "一般",
+    "file": "backend/api/messages.py",
+    "line": 1338,
+    "evidence": "全仓 grep '__short_id' 仅 1 处命中：messages.py:1338 读取 content.get('__short_id') 组装 conv_id（合并转发远端补抓 access_chain）；无任何写入点。",
+    "impact": "该表达式恒取默认 0，conv_id 恒为 0，access_chain 的会话维度信息静默失效。",
+    "suggestion": "确认 access_chain 消费方是否需 conv_id；不需要则删字段，需要则补生产方。",
+    "gateable": true
+  },
+  {
+    "id": "G6",
+    "category": "技术债",
+    "severity": "一般",
+    "file": "frontend/src/components/messages/LeadsSection.tsx",
+    "line": 59,
+    "evidence": "LeadsSection.tsx:59 用 <a href=\"http://127.0.0.1:8000/api/ai/leads/export\">（HTML 链接无法带自定义头）；accounts-page.tsx:296-298 与 368-370 直接 fetch 并手动塞 X-Member-Token，绕过后端统一请求封装。会员中间件 main.py:629-676 拦全部 /api/*，豁免表 main.py:631-641 不含 /api/ai/leads/export。",
+    "impact": "绕过统一 request()（api/client.ts）+ 端口硬编码（G2）；<a> 直链导出在会员门禁下必然 401。",
+    "suggestion": "三处改走 api.* 或带 token 的 blob 下载；导出改 fetch + createObjectURL。",
+    "gateable": true
+  }
+]

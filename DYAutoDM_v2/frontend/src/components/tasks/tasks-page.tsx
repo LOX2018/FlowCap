@@ -219,7 +219,7 @@ export default function TasksPage(props: PageProps) {
                           title="立即终止仍在发送的存量私信"
                           onClick={() =>
                             api
-                              .stop()
+                              .stopEngine()
                               .then(() => push("已硬停止，存量私信终止发送"))
                               .catch((e: unknown) => push("异常: " + errMsg(e)))
                           }
@@ -232,7 +232,7 @@ export default function TasksPage(props: PageProps) {
                           size="sm"
                           onClick={() =>
                             api
-                              .resume()
+                              .resumeEngine()
                               .then(() => push("已继续"))
                               .catch((e: unknown) => push("异常: " + errMsg(e)))
                           }
@@ -245,7 +245,7 @@ export default function TasksPage(props: PageProps) {
                           size="sm"
                           onClick={() =>
                             api
-                              .pause()
+                              .pauseEngine()
                               .then(() => push("已暂停"))
                               .catch((e: unknown) => push("异常: " + errMsg(e)))
                           }
@@ -258,7 +258,7 @@ export default function TasksPage(props: PageProps) {
                         size="sm"
                         onClick={() =>
                           api
-                            .stop()
+                            .stopEngine()
                             .then(() => push("已停止"))
                             .catch((e: unknown) => push("异常: " + errMsg(e)))
                         }
