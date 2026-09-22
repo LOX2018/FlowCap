@@ -474,6 +474,16 @@ class DispatchCenter:
                 f"[进度] 已发送 {self.count}/{self.max_target}"
                 f"（目标「{target.get('nickname')}」文案前20字={content[:20]!r}）"
             )
+            # M-5：只有直发回落路径（非 dm_dispatch 入池）才是实际投递
+            if not _routed:
+                _acct = getattr(self.auth, "account_name", "") or ""
+                if _acct:
+                    try:
+                        from services.delivery_verify import mark_delivery_verified as _mk
+                        _mk(_acct, str(target.get("user_id", "") or ""),
+                            msg_id_hint="", status_code=0, check_code=0)
+                    except Exception as _e:
+                        logger.debug(f"[delivery-verify] _do_send 调用跳过: {_e}")
             if self.count >= self.max_target:
                 self.reached_limit = True
                 logger.info(f"[完成] 达到目标数量 {self.max_target}，停止私信")
