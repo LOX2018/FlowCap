@@ -413,8 +413,15 @@ async def lifespan(app: FastAPI):
         fix_stuck_tasks()
     except Exception as e:
         logger.warning(f"[SYS-016] " + f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
-    # 引擎主控单例（替代原版 WebBridge.adm）
-    app.state.adm = AutoDM()
+    # 引擎主控（v0.44.39 起改为**按账号编排**，ADR-002 §5.2）：
+    #   app.state.engines = account → AutoDM 表（惰性创建；单账号/匿名仍是一个实例）
+    #   app.state.adm     = 「最近启动的那个实例」的兼容别名 —— 既有单值读取方
+    #                       （notify / overview / tasks / live）在单账号下行为不变。
+    from services.engine_registry import EngineRegistry
+
+    _default_adm = AutoDM()
+    app.state.adm = _default_adm
+    app.state.engines = EngineRegistry(factory=AutoDM)
     # 2026-09-08：把引擎实例显式注入通知模块 —— 指令执行（启动/停止/查询）
     # 需要真实 adm。运行时 `from main import app` 反查在 PyInstaller onefile 下
     # 不可靠（实测返回「引擎实例不可用」），改为启动即绑定。
@@ -422,6 +429,7 @@ async def lifespan(app: FastAPI):
         from api import notify as _notify_api
 
         _notify_api.bind_adm(app.state.adm)
+        _notify_api.bind_engines(app.state.engines)
         # v0.38.5 修复：入站通道（QQ/iLink）与派发 worker 需要 running loop ——
         # 模块级调用曾因 no running event loop 静默失败（NTY-005 处注释）。
         _notify_api.init_notifier()
@@ -557,7 +565,21 @@ async def lifespan(app: FastAPI):
         _kill_spawned_daemons()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"SYS-025 [shutdown] 清扫守护进程失败: {e}")
-    await app.state.adm.shutdown()
+    # 逐账号收尾（ADR-002）：不得只关「最近一个」—— 未关的实例会留下
+    # 监听线程/心跳/WS，表现为「进程退了但 BCC 仍被占用」。
+    _reg = getattr(app.state, "engines", None)
+    if _reg is not None:
+        _res = await _reg.shutdown_all()
+        if any(v != "ok" for v in _res.values()):
+            logger.warning(f"[shutdown] 部分引擎实例未干净退出: {_res}")
+    else:
+        await app.state.adm.shutdown()
+    # 兼容别名实例若与 registry 中的不是同一个（默认实例未启动过），也要关
+    if _reg is not None and app.state.adm not in [e for _, e in _reg.items()]:
+        try:
+            await app.state.adm.shutdown()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[shutdown] 默认实例收尾跳过: {e}")
 
 
 # 兜底：uvicorn 被强杀 / 信号退出时 lifespan 可能不执行，atexit 再扫一次。
