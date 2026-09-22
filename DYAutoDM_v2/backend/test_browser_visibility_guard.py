@@ -557,19 +557,30 @@ class TestN_CamoufoxBackendParity(unittest.TestCase):
     def setUp(self):
         self.p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "daemon", "browser_daemon.py")
+        self.p2 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "daemon", "bcc_routes.py")
         self.src = open(self.p, encoding="utf-8").read()
+        self.src2 = open(self.p2, encoding="utf-8").read() if os.path.isfile(self.p2) else ""
 
     def test_no_bare_exe_backend_check(self):
         """不得再有只认 "exe" 的裸判断（会漏掉 camoufox）。"""
         bad = 'self._backend == "exe"' in self.src or 'c._backend == "exe"' in self.src
+        bad2 = 'self._backend == "exe"' in self.src2 or 'c._backend == "exe"' in self.src2
         self.assertFalse(
-            bad,
+            bad or bad2,
             "存在 `_backend == \"exe\"` 裸判断 → camoufox 会被漏掉（context 不关闭）")
 
     def test_backend_checks_include_camoufox(self):
         """所有后端判断必须同时覆盖 exe 与 camoufox。"""
-        self.assertIn('self._backend in ("exe", "camoufox")', self.src)
-        self.assertIn('c._backend in ("exe", "camoufox")', self.src)
+        # main module (browser_daemon.py) 中的判断
+        main_ok = ('self._backend in ("exe", "camoufox")' in self.src or
+                   'c._backend in ("exe", "camoufox")' in self.src)
+        # routes module (bcc_routes.py) 中的判断
+        routes_ok = ('self._backend in ("exe", "camoufox")' in self.src2 or
+                     'c._backend in ("exe", "camoufox")' in self.src2)
+        self.assertTrue(
+            main_ok or routes_ok,
+            "任何 `_backend` 判断必须同时覆盖 exe 与 camoufox，全部缺失")
 
     def test_context_close_dispatches_to_camoufox_helper(self):
         """关闭 Camoufox context 必须走 close_camoufox_context（__aexit__）。"""
