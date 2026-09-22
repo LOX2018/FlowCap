@@ -122,5 +122,71 @@ class TestAppConfig(unittest.TestCase):
                 self.assertIsNotNone(v, f"{name}.{k} 默认值 {m.get('default')!r} 未通过校验")
 
 
+class TestLiveOrchestrationSchema(unittest.TestCase):
+    """ADR-002 §5.4 策略中心契约守卫（v0.44.41）。
+
+    D-07 自证：删除 live_orchestration 分区、改任一默认值或选项集 → 本类必变红。
+    """
+
+    SEC = "live_orchestration"
+
+    def test_section_registered(self):
+        self.assertIn(self.SEC, ac.SECTIONS)
+        self.assertTrue(ac.SECTIONS[self.SEC].get("label"))
+
+    def test_field_set_is_exactly_the_contract(self):
+        fields = set((ac.SECTIONS[self.SEC].get("fields") or {}).keys())
+        self.assertEqual(fields, {
+            "connection_mode", "anonymous_max_rooms", "rotation_strategy",
+            "desensitized_strategy", "sink_global_scope",
+            "sink_cooldown_days", "sink_permanent",
+        })
+
+    def test_defaults_match_adr(self):
+        self.assertEqual(ac.get(self.SEC, "connection_mode"), "credential")
+        self.assertEqual(ac.get(self.SEC, "anonymous_max_rooms"), 4)
+        self.assertEqual(ac.get(self.SEC, "rotation_strategy"), "per_target")
+        self.assertEqual(ac.get(self.SEC, "desensitized_strategy"), "skip")
+        self.assertIs(ac.get(self.SEC, "sink_global_scope"), True)
+        self.assertEqual(ac.get(self.SEC, "sink_cooldown_days"), 90.0)
+        self.assertIs(ac.get(self.SEC, "sink_permanent"), False)
+
+    def test_select_options_complete(self):
+        f = ac.SECTIONS[self.SEC]["fields"]
+
+        def vals(k):
+            return [o["value"] if isinstance(o, dict) else o
+                    for o in (f[k].get("options") or [])]
+
+        self.assertEqual(vals("connection_mode"), ["credential", "anonymous"])
+        self.assertEqual(vals("rotation_strategy"),
+                         ["per_target", "per_time_window", "per_room"])
+        self.assertEqual(vals("desensitized_strategy"),
+                         ["skip", "observe_only", "prompt", "reduce_anonymous"])
+
+    def test_roundtrip_save_and_reset(self):
+        ac.save_section(self.SEC, {"anonymous_max_rooms": 3,
+                                   "sink_cooldown_days": 30.0,
+                                   "sink_permanent": True})
+        self.assertEqual(ac.get(self.SEC, "anonymous_max_rooms"), 3)
+        self.assertEqual(ac.get(self.SEC, "sink_cooldown_days"), 30.0)
+        self.assertIs(ac.get(self.SEC, "sink_permanent"), True)
+        ac.reset_section(self.SEC)
+        self.assertEqual(ac.get(self.SEC, "anonymous_max_rooms"), 4)
+
+    def test_out_of_range_rejected(self):
+        ac.save_section(self.SEC, {"anonymous_max_rooms": 99})
+        self.assertEqual(ac.get(self.SEC, "anonymous_max_rooms"), 4)
+        ac.save_section(self.SEC, {"sink_cooldown_days": 99999.0})
+        self.assertEqual(ac.get(self.SEC, "sink_cooldown_days"), 90.0)
+
+    def test_invalid_option_rejected(self):
+        ac.save_section(self.SEC, {"desensitized_strategy": "evil"})
+        self.assertEqual(ac.get(self.SEC, "desensitized_strategy"), "skip")
+
+    def test_all_fields_are_hot_apply(self):
+        for k, m in ac.SECTIONS[self.SEC]["fields"].items():
+            self.assertEqual(m.get("apply", "hot"), "hot", f"{k} 应为 hot")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -140,6 +140,81 @@ SECTIONS: dict[str, dict[str, Any]] = {
         },
     },
 
+    # ===== 直播编排策略（ADR-002 §5.4 策略中心；2026-09-22 v0.44.41）=====
+    # 走统一配置中心（schema 驱动，前端零改动自动生成表单）。本 section 只声明参数与默认值；
+    # 🔴 消费点在 ADR-002 §5.5（(B) 跨账号沉淀池 + 轮转）落地时接入 —— 当前**可配置**，
+    #    但运行时**暂不消费**（label 已标「待接线」，避免「改了以为生效」的假成功）。
+    "live_orchestration": {
+        "label": "直播编排策略（多账号）· 待接线",
+        "fields": {
+            "connection_mode": {
+                "label": "连接模式",
+                "type": "select", "default": "credential", "env": None,
+                "options": [
+                    {"value": "credential", "label": "凭证连接（1 账号 1 任务，可解密）"},
+                    {"value": "anonymous", "label": "匿名连接（多房间，身份脱敏）"},
+                ],
+                "apply": "hot",
+                "hint": ("凭证 = 带账号 cookie，单账号单任务、能拿真实昵称/uid；"
+                         "匿名 = 不带 cookie，可同时盯多个房间但**身份被脱敏为 111111**"
+                         "（只适合开播检测/热度，拿不到真昵称）。两模式风控面不同。"),
+            },
+            "anonymous_max_rooms": {
+                "label": "匿名模式并发房间上限",
+                "type": "int", "default": 4, "min": 1, "max": 10, "env": None,
+                "apply": "hot",
+                "hint": "仅匿名模式生效；凭证模式硬约束为 1 账号 1 任务（不可调）",
+            },
+            "rotation_strategy": {
+                "label": "发送轮转策略（同房间多账号）",
+                "type": "select", "default": "per_target", "env": None,
+                "options": [
+                    {"value": "per_target", "label": "按目标轮转（同一用户交替由不同账号接待）"},
+                    {"value": "per_time_window", "label": "按时间窗交替（账号按时间段轮换）"},
+                    {"value": "per_room", "label": "按房间分配（每房间固定主责账号）"},
+                ],
+                "apply": "hot",
+                "hint": ("仅多账号同房间（(B) 场景）时生效，决定「由哪个账号发」；"
+                         "无论选哪种，同一用户都**绝不被双账号发送**（沉淀池兜底）。"),
+            },
+            "desensitized_strategy": {
+                "label": "脱敏直播间处理策略",
+                "type": "select", "default": "skip", "env": None,
+                "options": [
+                    {"value": "skip", "label": "跳过（不监听）— 默认"},
+                    {"value": "observe_only", "label": "仅统计（不采昵称、不发送）"},
+                    {"value": "prompt", "label": "提示后由用户决定"},
+                    {"value": "reduce_anonymous", "label": "降级为匿名模式"},
+                ],
+                "apply": "hot",
+                "hint": ("检测判据 = 无解密权（弹幕 uid=111111）。解密权取决于**房间归属**"
+                         "（自营房间有、他人房间默认脱敏）；脱敏是他人房间正常态，非故障。"),
+            },
+            "sink_global_scope": {
+                "label": "沉淀池全局作用域（跨账号去重）",
+                "type": "bool", "default": True, "env": None,
+                "apply": "hot", "risk": True,
+                "hint": ("开启 = 同一用户被本机**任一**账号发过后，其余账号不再发"
+                         "（多账号并发下防重复私信的关键）；关闭会退回按账号各自去重，"
+                         "**同一用户可能被双账号发送**，增加风控面。"),
+            },
+            "sink_cooldown_days": {
+                "label": "沉淀池冷却（天）",
+                "type": "float", "default": 90.0, "min": 0.0, "max": 3650.0, "env": None,
+                "apply": "hot", "risk": True,
+                "hint": ("默认 90 天内的用户不再重复发送；0 = 不冷却（每次都发，风控面最大）。"
+                         "「永久」档须另开下方开关，默认不选。"),
+            },
+            "sink_permanent": {
+                "label": "「永久冷却」档",
+                "type": "bool", "default": False, "env": None,
+                "apply": "hot", "risk": True,
+                "hint": ("默认关闭（保留可逆性）。开启后忽略上方天数：该用户一经发送**永不再发**"
+                         "（不可逆，仅在确认无需复联时开启）。"),
+            },
+        },
+    },
+
     # ===== 私信发送与风控（敏感，UI 需下限保护）=====
     "send": {
         "label": "私信发送与风控",
