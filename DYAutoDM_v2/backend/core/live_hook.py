@@ -44,7 +44,8 @@ class LiveChatHook(DouyinLive):
     """
 
     def __init__(self, live_id: str, auth_: Any, dispatch: Any, controller: Any = None,
-                 session_ok: Optional[bool] = None) -> None:
+                 session_ok: Optional[bool] = None,
+                 verdict_hint: str = "") -> None:
         super().__init__(live_id, auth_)
         self.dispatch = dispatch
         # 所属控制器 AutoDM（用于心跳探活失败时自动触发重新扫码）；可为 None
@@ -53,6 +54,9 @@ class LiveChatHook(DouyinLive):
         # None=取不到证据（探测失败或未探测）。**判据由 AutoDM 探测后传入**，
         # LiveChatHook 只消费 —— 避免两个模块各自发明一套「凭证是否可用」。
         self.session_ok: Optional[bool] = session_ok
+        # 账号侧解密权结论（人可读摘要，由 AutoDM 传入）。仅用于 LIVE-006 日志
+        # **如实显示本会话的账号侧判据**，避免在无证据时把脱敏归因成「凭证异常」。
+        self._live_verdict_hint: str = verdict_hint or ""
         # 开播状态（由 AutoDM 在启动前查询并写入）
         self.room_status: Optional[Any] = None
         # 诊断计数：本会话遇到的加密昵称 / 其中 sec_uid 缺失的数量
@@ -250,14 +254,23 @@ class LiveChatHook(DouyinLive):
 
     @staticmethod
     def _is_encrypted_nickname(nickname: str) -> bool:
-        """判定弹幕昵称是否被加密/隐藏。"""
+        """判定弹幕昵称是否被**脱敏**（服务端下发的隐藏形态）。
+
+        ⚠️ 判据必须与真相一致（2026-09-22 实测修正）：
+        原实现含「昵称形如『用户』+ 纯数字即判为加密」这一条 —— 它**会误报真实昵称**。
+        实测反例：`run_20260918_170957.log` 的 11:18 健康帧里出现昵称
+        `用户5927163527973`，其 `uid=805306322911928`、`sec_uid=MS4wLjABAAAA…` 完整，
+        属**真实昵称**（该帧可捕获评论并派发私信）。按旧判据它被判为「加密」，
+        从而在**完全正常**的会话里刷出 `LIVE-006` 告警，把人引向「凭证异常」的误判。
+
+        真相判据与本项目其他处一致：**脱敏 ⇔ `uid == 111111` 且 `sec_uid` 为空**
+        （`***` 只是该形态的伴随表现，单独出现不足以定性）。因此本函数只保留 `***`
+        这一形态信号，「用户+纯数字」**不再**作为脱敏判据；最终定性以帧内 uid/sec_uid 为准
+        （见调用处的 `not sec_uid` 分支）。
+        """
         if not nickname:
             return True
-        if "*" in nickname:
-            return True
-        if re.fullmatch(r"用户\d+", nickname.strip()):
-            return True
-        return False
+        return "*" in nickname
 
     # ------------------------------------------------------------------
     # 凭证可用性判据（ENG-017：直播流连接与凭证解耦）
@@ -410,9 +423,25 @@ class LiveChatHook(DouyinLive):
                             if not sec_uid:
                                 self._enc_no_secuid += 1
                                 if self._enc_no_secuid == 1 or self._enc_no_secuid % 20 == 0:
-                                    logger.error(f"[LIVE-006] " + f"[昵称加密] 检测到昵称加密且 sec_uid 为空（累计 {self._enc_no_secuid} 次）。\n"
-                                        f"       这是监测账号凭证/会话异常的典型表现。\n"
-                                        f"       请对该监测账号执行【重新扫码】以恢复正常会话。")
+                                    # ⚠️ 归因必须落在**已有取证**的判据上，不得猜账号。
+                                    # 实测（2026-09-22）：同一 `uid=111111` + 空 sec_uid
+                                    # 有两种来源，仅凭帧内数据不可区分 ——
+                                    #   ① 监测账号无解密权（凭证被服务端降权）；
+                                    #   ② 该直播间开启「隐藏观众信息」（房间级开关，
+                                    #      见 saermart/DouyinLiveWebFetcher issue #98）。
+                                    # 因此这里只报**事实 + 两种可能**；「请重新扫码」这一
+                                    # 确定性动作交给与账号会话态绑定的 `LIVE-035`。
+                                    _v = getattr(self, "_live_verdict_hint", "") or (
+                                        "本会话未取到监测账号解密权结论（LIVE-036）")
+                                    logger.error(
+                                        f"[LIVE-006] [昵称加密] 检测到昵称加密且 sec_uid 为空"
+                                        f"（累计 {self._enc_no_secuid} 次）。\n"
+                                        f"       本会话账号侧判据：{_v}\n"
+                                        f"       该现象有两种可能来源，仅凭帧内数据不可区分：\n"
+                                        f"         ① 监测账号无解密权（凭证被服务端降权）—— 处置见 LIVE-035；\n"
+                                        f"         ② 该直播间开启「隐藏观众信息」（房间级开关）——\n"
+                                        f"            验证法：换一个**已知有解密权**的账号进同一房间，"
+                                        f"若同样脱敏即属此类。")
                         if target.get("nickname"):
                             self.dispatch.submit(target)
                     elif item.method == "WebcastMemberMessage":

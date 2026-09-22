@@ -380,13 +380,19 @@ class TestAggregation(unittest.TestCase):
         self.assertTrue(any("不能证明服务端已投递" in x for x in r["reasons"]))
 
     def test_live_danmaku_desensitized_is_failed(self):
-        """直播域：脱敏判据必须用 uid==111111 且 sec_uid 空（勿用 desensitized_nickname）。"""
-        import shutil
+        """直播域：脱敏判据必须用 uid==111111 且 sec_uid 空（勿用 desensitized_nickname）。
+
+        ⚠️ 2026-09-22 夹具修正：`[弹幕]` 行**不含账号字段**，探针改为按
+        「使用前端指定账号「X」作为监测账号」标记归因后，夹具**必须**先写该标记，
+        否则归因不到账号 → 只能报 unknown（这正是反向用例
+        `..._other_account_not_attributed` 所守护的行为）。
+        """
         import time
         stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         lines = [
-            f"{stamp}.000 | INFO | x - [弹幕] 豫***(uid=111111 sec_uid=): 在吗",
-            f"{stamp}.001 | INFO | x - [弹幕] 小***(uid=111111 sec_uid=): 谢谢",
+            f"{stamp}.000 | INFO | x - [auth] 使用前端指定账号「acc1」作为监测账号",
+            f"{stamp}.001 | INFO | x - [弹幕] 豫***(uid=111111 sec_uid=): 在吗",
+            f"{stamp}.002 | INFO | x - [弹幕] 小***(uid=111111 sec_uid=): 谢谢",
         ]
         d = os.path.join(_ROOT, "logs")
         os.makedirs(d, exist_ok=True)
@@ -396,6 +402,31 @@ class TestAggregation(unittest.TestCase):
             r = self.P.run_probe("live_danmaku", "acc1")
             self.assertEqual(r["state"], "failed")
             self.assertEqual(r["coverage"], 0.0)
+        finally:
+            os.remove(p)
+
+    def test_live_danmaku_other_account_not_attributed(self):
+        """直播域**账号归因**：他账号的弹幕不得计入本账号（2026-09-22 回归守卫）。
+
+        修复前实测缺陷：探针把**全部**含弹幕的日志无差别计入**每个**被查账号，
+        致两个账号返回**完全相同**读数（各 11 条 / 同一文件）。本用例断言：
+        本账号无弹幕时必须报 unknown，而不是把他人的弹幕算成自己的 failed。
+        """
+        import time
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        lines = [
+            f"{stamp}.000 | INFO | x - [auth] 使用前端指定账号「other」作为监测账号",
+            f"{stamp}.001 | INFO | x - [弹幕] 豫***(uid=111111 sec_uid=): 在吗",
+        ]
+        d = os.path.join(_ROOT, "logs")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "run_live_test2.log")
+        open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+        try:
+            r = self.P.run_probe("live_danmaku", "acc1")
+            self.assertEqual(r["state"], "unknown",
+                             "他账号的弹幕不得归因给本账号（否则读数不可归因）")
+            self.assertEqual(r["metrics"]["danmaku_lines"], 0)
         finally:
             os.remove(p)
 

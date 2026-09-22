@@ -802,6 +802,11 @@ def probe_send_delivery(account: str) -> dict:
 # 探针 5：live_danmaku（直播弹幕 / 昵称解密权）
 # ─────────────────────────────────────────────────────────────────────────────
 _RE_DANMAKU = re.compile(r"\[弹幕\]\s*(?P<nick>.+?)\(uid=(?P<uid>\d+)\s+sec_uid=(?P<sec>[^)]*)\)")
+# 弹幕行的**账号归因**标记：直播引擎每次启动都写一行「使用前端指定账号「X」作为监测账号」，
+# 且实测恒**先于**该会话的首条弹幕（6/6 文件）。同一文件可先后出现多个监测账号
+# （实测：一个会话里先起张老师、1 分钟后改起尚进）⇒ 必须按**最近一条**标记归因，
+# 不能「文件里出现过某账号就全算它」。
+_RE_MONITOR = re.compile(r"使用前端指定账号「(?P<acct>[^」]+)」作为监测账号")
 
 
 def probe_live_danmaku(account: str) -> dict:
@@ -812,19 +817,33 @@ def probe_live_danmaku(account: str) -> dict:
     （实测三组均为非空且等于各自昵称）。
 
     数据源：本项目运行日志的 `[弹幕] 昵称(uid=… sec_uid=…)` 行（近 N 小时窗口）。
+
+    ⚠️ **账号归因（2026-09-22 修复）**：`[弹幕]` 行**不含账号字段**，而日志是按
+    **运行会话**落在文件里、多账号共写同一 `logs/` 目录。修复前本探针把**全部**含弹幕
+    的日志无差别计入**每个**被查账号 ⇒ 两个账号返回**完全相同**的条数与比例
+    （实测各 11 条 / 同一文件 `run_20260921_170980.log`）。现按「最近一条
+    `使用前端指定账号「X」作为监测账号`」标记归因，只统计属于本账号的弹幕；
+    窗口内**无标记**的行计入 `unattributed` 并如实上报（不猜给谁）。
     """
     window_h = _cfg_int("capture", "probe_live_window_hours", 24)
     th = _cfg_float("capture", "probe_live_healthy", 0.95)
     th_d = _cfg_float("capture", "probe_live_degraded", 0.50)
     since = _now() - max(1, window_h) * 3600
 
-    total = desens = 0
+    total = desens = unattributed = 0
     samples: list[str] = []
     src = None
     for p in _log_candidates(since):
         _fd = _file_day_of(p)
+        cur_monitor: "str | None" = None
         try:
             for line in open(p, "r", encoding="utf-8", errors="replace"):
+                # 归因标记先于时间窗判定：标记可能早于窗口起点，但同一会话的
+                # 弹幕在窗内 —— 若先按 ts 过滤就会丢掉归因。
+                mm = _RE_MONITOR.search(line)
+                if mm:
+                    cur_monitor = mm.group("acct")
+                    continue
                 m = _RE_TS.match(line)
                 if not m:
                     continue
@@ -833,6 +852,11 @@ def probe_live_danmaku(account: str) -> dict:
                     continue
                 d = _RE_DANMAKU.search(line)
                 if not d:
+                    continue
+                if cur_monitor is None:
+                    unattributed += 1
+                    continue
+                if cur_monitor != account:
                     continue
                 total += 1
                 is_des = (d.group("uid") == "111111" and not d.group("sec").strip())
@@ -847,18 +871,27 @@ def probe_live_danmaku(account: str) -> dict:
     reasons: list[str] = []
     evidence: list[str] = []
     if total == 0:
+        ev = [f"近 {window_h}h 运行日志内**无属于本账号**的 `[弹幕]` 记录"
+              f"（窗口内本账号未监听直播）"]
+        if unattributed:
+            ev.append(f"另有 {unattributed} 条弹幕行**无法归因**"
+                      f"（前文无「作为监测账号」标记），已排除、不猜给本账号")
         return {
             "capability": "live_danmaku", "state": "unknown", "coverage": None,
             "confidence": "D", "measured_at": _iso(),
-            "evidence": [f"近 {window_h}h 运行日志内无 `[弹幕]` 记录（窗口内未监听直播）"],
-            "metrics": {"window_hours": window_h, "danmaku_lines": 0},
+            "evidence": ev,
+            "metrics": {"window_hours": window_h, "danmaku_lines": 0,
+                        "unattributed_lines": unattributed},
             "baseline_delta": None,
-            "reasons": [f"近 {window_h}h 内未监听直播 → 无法判定（不得报 healthy）"],
+            "reasons": [f"近 {window_h}h 内本账号未监听直播 → 无法判定（不得报 healthy）"],
         }
     ratio = round((total - desens) / total, 4)
-    evidence.append(f"近 {window_h}h 弹幕 {total} 条，其中脱敏 {desens} 条 "
+    evidence.append(f"近 {window_h}h 本账号({account})弹幕 {total} 条，其中脱敏 {desens} 条 "
                     f"（真实率 {(total-desens)/total:.2%}）← {Path(str(src)).name}")
     evidence.append(f"判据：脱敏 ⇔ uid==111111 且 sec_uid 空；样例 {samples}")
+    if unattributed:
+        evidence.append(f"另有 {unattributed} 条弹幕行无法归因"
+                        f"（前文无「作为监测账号」标记），已排除")
     if ratio >= th:
         state = "healthy"
         reasons.append(f"弹幕真实昵称率 {ratio} ≥ {th}（有解密权）")
@@ -873,7 +906,8 @@ def probe_live_danmaku(account: str) -> dict:
         "capability": "live_danmaku", "state": state, "coverage": ratio,
         "confidence": "A", "measured_at": _iso(), "evidence": evidence,
         "metrics": {"window_hours": window_h, "danmaku_lines": total,
-                    "desensitized": desens, "real_ratio": ratio},
+                    "desensitized": desens, "real_ratio": ratio,
+                    "unattributed_lines": unattributed},
         "baseline_delta": base, "reasons": reasons,
     }
 

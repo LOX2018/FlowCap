@@ -717,7 +717,10 @@ class AutoDM:
             self._listen_started = True
             self._listen_ended = False
             self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch,
-                                     controller=self, session_ok=self._live_session_ok)
+                                     controller=self, session_ok=self._live_session_ok,
+                                     verdict_hint=(f"{self._live_ident_label}"
+                                                   f"（{self._live_ident_detail}）"
+                                                   if self._live_ident_detail else ""))
             self.live.room_status = room_status
             # 心跳间隔默认 300s
             self.live.start_heartbeat(interval=300)
@@ -1054,7 +1057,10 @@ class AutoDM:
                 self._live_ident_label = ""
                 logger.warning(f"[重扫重建] 解密权复测失败（结论未知，不据此降级）: {_e}")
             self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch,
-                                     controller=self, session_ok=self._live_session_ok)
+                                     controller=self, session_ok=self._live_session_ok,
+                                     verdict_hint=(f"{self._live_ident_label}"
+                                                   f"（{self._live_ident_detail}）"
+                                                   if self._live_ident_detail else ""))
             self.live.start_heartbeat(interval=300)
             threading.Thread(target=self.live.start_ws, daemon=True).start()
             logger.info(f"[重扫重建] 监测账号「{account_name}」监听已用新凭证重建")

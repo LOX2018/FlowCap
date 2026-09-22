@@ -421,7 +421,7 @@ ERRCODES = {
     "LIVE-003": {"meaning": "心跳] 登录态失效（get_my_uid 无返回，cookie 可能过期/账号被挤下线）。        自动触发重新扫码以恢复监测账号有效会话，避免弹幕昵称", "file": "core/live_hook.py", "line": 219},
     "LIVE-004": {"meaning": "心跳] 自动重新扫码失败（请手动点【重新扫码】）:", "file": "core/live_hook.py", "line": 244},
     "LIVE-005": {"meaning": "心跳] 未绑定控制器，无法自动重扫，请手动重新扫码。", "file": "core/live_hook.py", "line": 246},
-    "LIVE-006": {"meaning": "昵称加密] 检测到昵称加密且 sec_uid 为空（累计  次）。        这是监测账号凭证/会话异常的典型表现。        请对该监测账号执行【重", "file": "core/live_hook.py", "line": 308},
+    "LIVE-006": {"meaning": "昵称加密] 检测到昵称加密且 sec_uid 为空（累计  次）。        本会话账号侧判据：        该现象有两种可能来源，仅凭帧内数据不可区分：         ① 监测账号无解密权（凭证被服务端降权）—— 处置见 LIVE-035；         ② 该直播间开启「隐藏观众信息」（房间级开关）——            验证法：换一个已知有解密权的账号进同一房间，若同样脱敏即属此类。", "file": "core/live_hook.py", "line": 0},
     "LIVE-007": {"meaning": "live_hook item error:", "file": "core/live_hook.py", "line": 345},
     "LIVE-008": {"meaning": "live_hook on_message error:", "file": "core/live_hook.py", "line": 347},
     "LIVE-009": {"meaning": "resolve] 跟随重定向失败:", "file": "link_resolve.py", "line": 99},
