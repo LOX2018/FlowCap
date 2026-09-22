@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| **状态** | **Accepted（2026-09-22 用户决策完成）** —— 待实施 |
+| **状态** | **已实施（2026-09-22，v0.44.37）** —— 实施记录见 §7 |
 | **日期** | 2026-09-22 |
 | **决策者** | 用户（LOX） |
 | **来源** | 「直播监听页需要『直播间管理』按钮与页面」；数据模型经 3 问确认 |
@@ -112,3 +112,41 @@
 5. 升版 → 构建 → 部署 → 实机验证。
 6. 文档：更新 `api/live_config.py` 与 `RoomConfigPage.tsx` 头部的**旧断言**
    （「没有目标直播间体系」）→ 改为「房间层见 ADR-003」。
+
+---
+
+## 7. 实施记录（2026-09-22，v0.44.37）
+
+| 项 | 值 |
+|---|---|
+| 提交 | `1bf1d65`（14 文件） |
+| 版本 | 0.44.36 → **0.44.37**（六处版本源齐平） |
+| 部署 | `DYAutoDM_v2_0.44.37-debug.exe`，构建/部署 md5 四处逐一致 |
+| 后端 | 新增 `backend/api/live_rooms.py`（CRUD + `unbind_strategy` + 迁移）；`live_config.delete_strategy` 加自动解绑并回 `unbound: N`；`main.py` 挂 `/api/live/rooms` |
+| 前端 | 新增 `components/live/RoomManagePage.tsx`；`live-page.tsx` 加并排按钮 `data-od-id="live-room-registry"`；`client.ts` 加 4 个方法与 `LiveRoom` 类型 |
+| 测试 | 新增 `backend/test_live_rooms.py`（22 项）；**全量 584 项 OK**；`npx tsc -b` 通过 |
+
+### §5 验收判据逐条实测（真实库 + 真机）
+
+| 判据 | 结果 | 证据 |
+|---|---|---|
+| 新页写 `live_rooms`；**不污染** `live_room_configs` | ✅ | 写房间前后策略 kv 逐字节相同（unittest）+ 实测策略列表无 `room_id`/`live_url` 字段 |
+| 策略删除 → `unbound ≥ 1`，悬空引用 = 0 | ✅ | 真机 `DELETE /api/live/config-tags/lc_e2e_probe` → `{"unbound":2}`；`DANGLING=0` |
+| 同一策略被 2 房引用 → **两个**都解绑 | ✅ | 临时两房（`777000111`/`777000222`）删除后 `strategy_id` 均为 `''` |
+| `allow_desensitized` 持久化 | ✅ | kv 读回 + `/api/live/rooms` 返回；unittest 覆盖 |
+| 旧 `992931212705` 迁移**不丢信息** | ✅ | 真机迁移：房间 `lr_1790070439452` / room_id `992931212705` / name `21` / live_url 归一化为链接；旧键已清理 |
+| 前端 `tsc -b` + 真机渲染 | ✅ | TSC=0；CDP 读真机 WebView2：按钮并排（`sameParent=true, gapX=8`）、弹窗 760×619、四控件齐备、列表渲染「21 · 房间 992931212705 · 策略:21」、脱敏文案含「仅统计」「房间归属」 |
+
+**截图**：`artifacts/H10_真机_直播间管理页_2026-09-22.png`
+
+### 失败态自证（D-07）
+
+把 `unbind_strategy` 注入为 no-op → 悬空引用 = 1、`unbound` = 0 ⇒ 判据确实会变红
+（不是恒真断言）。unittest `Ran 584 tests — OK`，日志 `artifacts/_suite_h10.log`。
+
+### 已知边界（诚实标注）
+
+- `allow_desensitized` 的运行时消费（引擎在检测到脱敏时是否真的「仅统计」）**本 ADR 未接线** ——
+  该开关当前只做**登记与持久化**；消费点在 ADR-002（多账号并发）落地时接入。
+- 房间层与直播页输入框的**联动仍是「选用回填」**（把房间号填进输入框），
+  尚未把「选择房间 → 自动带出绑定策略」做成单一入口；属后续可用性优化，不影响本 ADR 判据。
