@@ -58,6 +58,44 @@ def _parse_expect(items):
     return out
 
 
+def record_blob(blob: bytes, name: str, desc: str, provenance: str,
+                account_uid=None, expected=None, filename=None,
+                update: bool = False, extra: dict | None = None) -> dict:
+    """直接録入内存字节（用于**构造型夹具**：脱敏 DB 快照、合成帧序列）。"""
+    if not blob:
+        raise SystemExit(f"夹具内容为空：{name}")
+    m = loader._read_manifest()
+    if name in m and not update:
+        raise SystemExit(
+            f"样本 {name!r} 已存在（sha256={m[name].get('sha256')}）。\n"
+            f"若确为有意更新，请加 --update。"
+        )
+    rel = f"{name}/{filename or name + '.bin'}"
+    dst = os.path.join(loader.fixtures_dir(), rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, "wb") as f:
+        f.write(blob)
+    entry = {
+        "file": rel,
+        "sha256": loader.sha256_of(blob),
+        "size": len(blob),
+        "desc": desc,
+        "provenance": provenance,
+        "recorded_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if account_uid:
+        entry["account_uid"] = str(account_uid)
+    if expected:
+        entry["expected"] = expected
+    if extra:
+        entry.update(extra)
+    if name in m:
+        entry["previous_sha256"] = m[name].get("sha256")
+    m[name] = entry
+    loader.write_manifest(m)
+    return entry
+
+
 def record(src: str, name: str, desc: str, provenance: str, account_uid=None,
            expected=None, filename=None, update: bool = False) -> dict:
     if not os.path.exists(src):
@@ -66,6 +104,9 @@ def record(src: str, name: str, desc: str, provenance: str, account_uid=None,
         blob = f.read()
     if not blob:
         raise SystemExit(f"源样本为空：{src}")
+    if filename is None:
+        ext = os.path.splitext(src)[1] or ".bin"
+        filename = f"{name}{ext}"
 
     m = loader._read_manifest()
     if name in m and not update:
@@ -74,8 +115,7 @@ def record(src: str, name: str, desc: str, provenance: str, account_uid=None,
             f"若确为有意更新，请加 --update。"
         )
 
-    ext = os.path.splitext(src)[1] or ".bin"
-    rel = f"{name}/{name}{ext}" if not filename else f"{name}/{filename}"
+    rel = f"{name}/{filename}"
     dst = os.path.join(loader.fixtures_dir(), rel)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copyfile(src, dst)

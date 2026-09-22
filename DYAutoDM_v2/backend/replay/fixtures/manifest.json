@@ -1,4 +1,22 @@
 {
+  "dm_read_fixture": {
+    "desc": "脱敏只读 DB 快照（408 会话/559 消息，会话读取路径回归用）",
+    "expected": {
+      "accounts": 2,
+      "conversations": 408,
+      "convs_with_msgs": 134,
+      "empty_convs": 273,
+      "kv_store_rows": 0,
+      "messages": 559,
+      "roles_me": 367,
+      "roles_them": 192
+    },
+    "file": "dm_read_fixture/dm_read_fixture.db",
+    "provenance": "2026-09-22 由活库派生：replay/sanitize_db.py 双向映射脱敏（源库只读，未改动）",
+    "recorded_at": "2026-09-22 15:01:08",
+    "sha256": "ba75d7cee474fb5af37d62d9ab662c30b8b1eb7b6d078c098c5fd9a3787709e1",
+    "size": 409600
+  },
   "init_packet": {
     "account_uid": "316276709526638",
     "desc": "get_message_by_init 首包（cmd2043 包裹，44 会话骨架）",
