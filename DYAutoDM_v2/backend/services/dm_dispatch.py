@@ -369,7 +369,7 @@ class AccountQuota:
             if now < self.cooldown_until:
                 left = int(self.cooldown_until - now)
                 return False, f"冷静期内（剩余 {left}s），暂停陌生人首发"
-            # 分钟窗
+        # 分钟窗
             self._stranger_minute = [t for t in self._stranger_minute
                                      if now - t < 60]
             limit_min = max(1, int(cfg("STRANGER_PER_MINUTE") * self._weight_unlocked()))
@@ -503,6 +503,114 @@ class AccountQuota:
                 "limit_per_day": max(1, int(cfg("STRANGER_PER_DAY") * self._weight_unlocked())),
                 "cooldown_left_sec": max(0, int(self.cooldown_until - now)),
             }
+
+
+# ===========================================================================
+# 2026-09-22：跨账号沉淀池（ADR-002 §5.5(B)）
+# ---------------------------------------------------------------------------
+# 多账号并发下，同一 peer_uid 被本机**任一**账号发过后，其余账号不得再发。
+# 与 UidSink（per-account）并存，由 sink_global_scope 开关选择路径：
+#   sink_global_scope=true  → 优先查 dm_cross_sink（全局去重）
+#   sink_global_scope=false → 沿用 UidSink（单账号）作为回退
+#
+# 冷却值取自 live_orchestration.sink_cooldown_days（默认 90 天）；
+# sink_permanent=true 时冷却时间为无穷（永不复发）。
+# ===========================================================================
+
+def _live_orch_cool() -> tuple:
+    """读 §5.4 直播编排配置的冷却参数。返回 (cooldown_seconds, permanent)。"""
+    try:
+        from services.app_config import get as _cfgget
+        days = float(_cfgget("live_orchestration", "sink_cooldown_days") or 90.0)
+        perm = bool(_cfgget("live_orchestration", "sink_permanent") or False)
+        return (days * 86400, perm)
+    except Exception:
+        return (90 * 86400, False)
+
+
+def _cross_sink_global_scope() -> bool:
+    """读 §5.4 的 sink_global_scope 开关（默认 True）。"""
+    try:
+        from services.app_config import get as _cfgget
+        return bool(_cfgget("live_orchestration", "sink_global_scope") or True)
+    except Exception:
+        return True
+
+
+class CrossAccountSink:
+    """跨账号沉淀池（dm_cross_sink 表）：peer_uid 全局唯一。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # 一级内存缓存：{peer_uid: cool_until}
+        self._cache: Dict[str, float] = {}
+        self._loaded = False
+
+    def _ensure_loaded(self) -> None:
+        with self._lock:
+            if self._loaded:
+                return
+            try:
+                from database import get_db
+                conn = get_db()
+                rows = conn.execute(
+                    "SELECT peer_uid, cool_until FROM dm_cross_sink"
+                ).fetchall()
+                for r in rows:
+                    cu = r["cool_until"]
+                    if cu is not None and float(cu) > 0:
+                        self._cache[str(r["peer_uid"])] = float(cu)
+                self._loaded = True
+            except Exception:
+                self._loaded = True
+
+    def should_send(self, peer_uid: str) -> tuple:
+        """跨账号检查：该 UID 是否可被**任一账号**发送。"""
+        if not peer_uid:
+            return True, ""
+        puid = str(peer_uid).strip()
+        self._ensure_loaded()
+        now = time.time()
+        with self._lock:
+            cool_until = self._cache.get(puid)
+        if cool_until is not None:
+            if cool_until < 0:  # permanent（负值表示永久冷却）
+                return False, "跨账号沉淀池：该 UID 标记为永久冷却（sink_permanent）"
+            if now < cool_until:
+                left_days = (cool_until - now) / 86400
+                return False, f"跨账号沉淀池：该 UID 冷却中（剩余 {left_days:.1f} 天）"
+        return True, ""
+
+    def mark_sent(self, peer_uid: str, account: str, nickname: str = "",
+                  source: str = "") -> None:
+        """标记该 UID 已被**某账号**发送。写入 dm_cross_sink + 内存。"""
+        puid = str(peer_uid).strip()
+        cooldown_sec, permanent = _live_orch_cool()
+        now = time.time()
+        cool_until = -1 if permanent else (now + cooldown_sec)
+        with self._lock:
+            self._cache[puid] = cool_until
+        try:
+            from database import get_db
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO dm_cross_sink("
+                "peer_uid,account_sent,nickname,source,"
+                "sent_ts,cool_until,send_count) "
+                "VALUES(?,?,?,?,?,?,"
+                "  COALESCE((SELECT send_count+1 FROM dm_cross_sink "
+                "            WHERE peer_uid=?), 1)) "
+                "ON CONFLICT(peer_uid) DO UPDATE SET "
+                "  account_sent=excluded.account_sent, "
+                "  sent_ts=excluded.sent_ts, "
+                "  cool_until=excluded.cool_until, "
+                "  send_count=send_count+1, "
+                "  nickname=COALESCE(excluded.nickname, dm_cross_sink.nickname)",
+                (puid, account, nickname or "", source or "",
+                 now, cool_until, puid))
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[SEND-038] [cross-sink] 落库失败（仅内存生效）: {e}")
 
 
 # ===========================================================================
@@ -744,6 +852,8 @@ class DmDispatcher:
         self.pool = pool or ConvPool()
         # 2026-09-07：UID 沉淀池（同 UID 多次弹幕只保留一次）
         self.uid_sink = UidSink()
+        # 2026-09-22：跨账号沉淀池（ADR-002 §5.5(B)）
+        self.cross_sink = CrossAccountSink()
         self._queues: Dict[str, "queue.PriorityQueue"] = {}
         self._workers: Dict[str, threading.Thread] = {}
         self._tasks: Dict[str, SendTask] = {}      # task_id -> task（查状态用）
@@ -917,9 +1027,16 @@ class DmDispatcher:
             logger.info(f"[dm-dispatch] [测试白名单] 放行(uid直发)："
                         f"{account} -> {peer_uid}")
 
-        # ②-b UID 沉淀池：同一 UID 多次弹幕只保留一次有效目标。
-        # 直播/采集场景同一个人会刷很多条弹幕，若无此层会对同一人重复发
-        # 私信（骚扰 + 风控）。冷却期默认 7 天，跨任务/跨重启有效。
+        # ②-b 跨账号沉淀池（ADR-002 §5.5(B)）：sink_global_scope=true 优先
+        if _cross_sink_global_scope():
+            ok_cross, cross_reason = self.cross_sink.should_send(peer_uid)
+            if not ok_cross:
+                logger.info(
+                    f"[dm-dispatch][{account}] 跨账号沉淀池拦截: "
+                    f"{peer_uid} - {cross_reason}")
+                return SubmitResult(False, error=f"跨账号沉淀池: {cross_reason}")
+
+        # ②-c UID 沉淀池（per-account）：同一 (account,peer_uid) 只保留一次
         ok_sink, sink_reason = self.uid_sink.should_send(account, peer_uid)
         if not ok_sink:
             logger.info(
@@ -1080,6 +1197,10 @@ class DmDispatcher:
                 if task.is_stranger_first and not task.conv_id:
                     self.uid_sink.mark_sent(task.account, task.peer_uid,
                                             source=task.source)
+                    # 2026-09-22：跨账号沉淀池（ADR-002 §5.5(B)）
+                    if _cross_sink_global_scope():
+                        self.cross_sink.mark_sent(
+                            task.peer_uid, task.account, source=task.source)
                 logger.info(f"[dm-dispatch] 已发送 task={task.task_id} "
                             f"账号={task.account} 会话={(task.conv_id or task.peer_uid)[:12]}…"
                             f"{' [陌生人首发]' if task.is_stranger_first else ''}")

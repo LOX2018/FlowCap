@@ -225,6 +225,18 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         send_count INTEGER DEFAULT 0,    -- 已发送次数（正常应 <=1）
         PRIMARY KEY (account, peer_uid)
     );
+    -- 多账号跨账号沉淀池（2026-09-22，ADR-002 §5.5(B)）：
+    -- 同一 peer_uid 被本机任一账号发过后，其余账号不再发。
+    -- 与 dm_uid_sink（per-account）共存，由 sink_global_scope 开关选择。
+    CREATE TABLE IF NOT EXISTS dm_cross_sink (
+        peer_uid TEXT NOT NULL PRIMARY KEY,
+        account_sent TEXT NOT NULL,       -- 最后发送的账号
+        nickname TEXT DEFAULT '',
+        source TEXT DEFAULT '',           -- live(弹幕) | crawl(采集) | manual
+        sent_ts REAL,                     -- 最后发送时间
+        cool_until REAL,                  -- 冷却到期时间（sent_ts + cooldown_seconds，预计算）
+        send_count INTEGER DEFAULT 0      -- 累计发送次数
+    );
     CREATE INDEX IF NOT EXISTS idx_uid_sink_ts ON dm_uid_sink(sent_ts DESC);
     """)
     conn.commit()
