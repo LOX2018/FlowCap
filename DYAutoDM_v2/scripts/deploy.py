@@ -153,6 +153,34 @@ def _dir_size_mb(p) -> str:
         return "?"
 
 
+def find_blocking_processes(app_root: "Path") -> list:
+    """列出**占用部署目录**的进程（Windows）。
+
+    2026-09-22 加固：旧逻辑先 `rmtree(dst_i, ignore_errors=True)` 再 `copytree`
+    —— 应用若在运行（exe / 共享 _internal 被占用），rmtree 会**静默失败或删一半**，
+    紧接着 copytree 必抛 FileExistsError，部署目录便停在「半新半旧」
+    （实测：_internal 7004→73 个文件、主 exe 新旧并存）。根因是**缺少前置占用检查**。
+    返回 [] 表示未检出占用；psutil 缺失时降级为宽松放行（调用处打印降级提示）。
+    """
+    out: list = []
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return out
+    try:
+        target = str(Path(app_root).resolve()).lower()
+    except Exception:
+        target = str(app_root).lower()
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
+        try:
+            exe = (proc.info.get("exe") or "")
+            if exe and str(Path(exe).resolve()).lower().startswith(target):
+                out.append((proc.info.get("pid"), proc.info.get("name"), exe))
+        except Exception:
+            continue
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     # 2026-09-15 隔离门禁（用户铁律：分支环境隔离须固化为代码，不靠记忆）。
@@ -242,6 +270,16 @@ def main() -> int:
             return 8
         log("  ✅ %-46s %s" % (full[:46], _md5(f)[:12]))
 
+    # ---- 占用预检（2026-09-22 加固：必须在**任何写操作之前**）----
+    blockers = find_blocking_processes(app_root)
+    if blockers:
+        log("\n[占用检测] ❌ 部署目录被进程占用，拒绝部署（避免半新半旧）：")
+        for pid, name, exe in blockers:
+            log("    PID %-7s %-40s %s" % (pid, (name or "")[:40], exe))
+        log("  → 请先优雅停止应用（各守护 POST /quit + 关主窗口）再重跑本脚本。")
+        return 9
+    log("\n[占用检测] ✅ 无进程占用部署目录")
+
     if args.dry_run:
         log("\n[dry-run] 校验全部通过，未执行部署")
         return 0
@@ -283,8 +321,18 @@ def main() -> int:
         src_i = bins / "_internal"
         dst_i = app_root / "_internal"
         if dst_i.exists():
-            shutil.rmtree(dst_i, ignore_errors=True)
-        shutil.copytree(src_i, dst_i)
+            # 2026-09-22 加固：**不得 ignore_errors**（旧写法会静默删一半后仍继续，
+            # 制造「半新半旧」）。删除失败即报错并拒绝继续。
+            try:
+                shutil.rmtree(dst_i)
+            except Exception as e:  # noqa: BLE001
+                log("  ❌ 未能清空旧 _internal（%s）—— 部署目录可能被占用，已中止部署"
+                    % str(e)[:100])
+                return 9
+            if dst_i.exists():
+                log("  ❌ 旧 _internal 删除后仍存在—— 已中止部署")
+                return 9
+        shutil.copytree(src_i, dst_i, dirs_exist_ok=True)
         log("  ✅ %-46s %s" % ("_internal（共享依赖，唯一一份）", _dir_size_mb(dst_i)))
     for name in SIDECARS:
         full = f"{name}-{TRIPLE}"
