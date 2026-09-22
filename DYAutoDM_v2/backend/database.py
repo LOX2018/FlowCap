@@ -39,8 +39,8 @@ def _db_path() -> Path:
             p = Path(mp)
             p.parent.mkdir(parents=True, exist_ok=True)
             return p
-    except Exception:
-        pass
+    except Exception as _e_db:
+        logger.warning(f"[DB] db_path() 异常: {_e_db}")
     try:
         from vbrowser import app_root
         p = Path(app_root()) / "data" / "dyautodm.db"
@@ -233,9 +233,9 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         account_sent TEXT NOT NULL,       -- 最后发送的账号
         nickname TEXT DEFAULT '',
         source TEXT DEFAULT '',           -- live(弹幕) | crawl(采集) | manual
-        sent_ts REAL,                     -- 最后发送时间
-        cool_until REAL,                  -- 冷却到期时间（sent_ts + cooldown_seconds，预计算）
-        send_count INTEGER DEFAULT 0      -- 累计发送次数
+        sent_ts REAL,                    -- 最后发送时间
+        cool_until REAL,                 -- 冷却到期时间（sent_ts + cooldown_seconds，预计算）
+        send_count INTEGER DEFAULT 0     -- 累计发送次数
     );
     CREATE INDEX IF NOT EXISTS idx_uid_sink_ts ON dm_uid_sink(sent_ts DESC);
     """)

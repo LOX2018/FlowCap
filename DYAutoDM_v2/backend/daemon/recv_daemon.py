@@ -43,13 +43,13 @@ os.environ.setdefault("no_proxy", "*")
 if sys.stdout is not None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    except Exception as _e_ver1:
+        logger.warning(f"[recv-daemon] 版本探测第1步失败（stdout reconfigure）: {_e_ver1}")
 if sys.stderr is not None:
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    except Exception as _e_ver2:
+        logger.warning(f"[recv-daemon] 版本探测第2步失败（stderr reconfigure）: {_e_ver2}")
 
 from vbrowser import app_root
 
@@ -93,8 +93,8 @@ def _rt_version() -> str:
         from _build_version import BUILD_VERSION as _bv
         if _bv:
             return str(_bv)
-    except Exception:
-        pass
+    except Exception as _e_ver3:
+        logger.warning(f"[recv-daemon] 版本探测第3步失败（_build_version）: {_e_ver3}")
     try:
         import json as _json
         base = os.path.dirname(os.path.abspath(
@@ -106,8 +106,8 @@ def _rt_version() -> str:
                     v = (_json.load(f) or {}).get("version")
                 if v:
                     return str(v)
-    except Exception:
-        pass
+    except Exception as _e_ver4:
+        logger.warning(f"[recv-daemon] 版本探测第4步失败（version.json）: {_e_ver4}")
     return "unknown"
 
 

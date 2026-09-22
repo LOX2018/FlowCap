@@ -290,14 +290,14 @@ def _auto_start_daemons() -> None:
                     if acct_core._port_open(bport, timeout=0.2):
                         logger.info(f"[startup] browser_daemon 已在运行 (port={bport})，跳过")
                     else:
-                        proc = _spawn_sidecar(bcc_binary, ["--account", names[0], "--port", str(bport)])
-                        # BCC 有意常驻（保活凭证，退出后不清凭证的依据），
-                        # 不随 backend 退出清扫 —— 从台账注销。铁律：不强杀 BCC。
-                        _dreg.unregister(proc.pid)
-                        spawned.append((bport, proc.pid, f"browser_daemon({names[0]})"))
-                        logger.info(
-                            f"[startup] 已随启动拉起 browser_daemon (port={bport}, "
-                            f"pid={proc.pid})—— 保证用户点任何按钮时浏览器已就绪")
+                        # P3-B: 直_spawn_sidecar -> ensure_daemons_for（与 _prealign 同源）
+                        from auto_dm.daemon_launcher import ensure_daemons_for as _ensure_bcc_boot
+                        _bcc_r = _ensure_bcc_boot(names[0], wait=True, skip_cooldown=True)
+                        if _bcc_r.get("browser", False):
+                            logger.info(f"[startup] BCC 已随启动拉起 via ensure_daemons_for (port={bport})")
+                        else:
+                            logger.warning(f"[startup] BCC 随启动拉起失败（{_bcc_r.get('msg','')}），"
+                                f"用户点按钮时会自动救起")
                 except Exception as e:
                     logger.warning(f"[SYS-009] " + f"[startup] 拉起 browser_daemon 失败: {e}")
 

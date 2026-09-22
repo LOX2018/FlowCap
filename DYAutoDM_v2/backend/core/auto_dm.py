@@ -823,13 +823,13 @@ class AutoDM:
         if self.live:
             try:
                 self.live._should_stop = True
-            except Exception:
-                pass
+            except Exception as _e_ws1:
+                logger.warning(f"[auto_dm] 关闭WS时设置 _should_stop 异常: {_e_ws1}")
             if getattr(self.live, "ws", None):
                 try:
                     self.live.ws.close()
-                except Exception:
-                    pass
+                except Exception as _e_ws2:
+                    logger.warning(f"[auto_dm] 关闭WS连接时异常: {_e_ws2}")
             self.live.stop_heartbeat()
 
         # 等待主任务结束

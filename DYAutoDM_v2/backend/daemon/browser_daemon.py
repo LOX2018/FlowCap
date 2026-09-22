@@ -1789,8 +1789,8 @@ class BrowserContainer:
                 _proc = getattr(_b, "process", None) or getattr(_b, "_process", None)
                 if _proc is not None and getattr(_proc, "pid", None):
                     pids.add(int(_proc.pid))
-        except Exception:
-            pass
+        except Exception as _e_pid:
+            logger.warning(f"[bcc] 获取浏览器 PID 异常: {_e_pid}")
         # 2026-09-20【Camoufox 兜底】按 **进程命令行** 匹配本账号的内核进程。
         #
         # 背景（实机取证）：Camoufox 的 `browser.process` 为 None（AsyncCamoufox
