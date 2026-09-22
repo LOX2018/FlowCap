@@ -24,6 +24,7 @@ import platform
 import subprocess
 import threading
 from loguru import logger
+from typing import Dict, Optional, Tuple
 
 from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
 
