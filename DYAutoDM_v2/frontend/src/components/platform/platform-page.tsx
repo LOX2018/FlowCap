@@ -12,6 +12,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User, MessageSquare,
+  Users, BookOpen,
 } from "lucide-react";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -30,7 +31,7 @@ import { FullscreenPlayer } from "@/components/player";
 import type { PlayerMedia } from "@/components/player";
 
 /** 作品卡片（封面 + 统计；点击打开播放器）。 */
-import { Grid } from "./platform-cards";
+import { Grid, UserCard } from "./platform-cards";
 
 export default function PlatformPage(props: PageProps) {
   // ★ 账号来源（2026-09-14 修复）：原用 `props.overview.accounts`，
@@ -63,8 +64,7 @@ export default function PlatformPage(props: PageProps) {
   const [playerOpen, setPlayerOpen] = useState(false);
   // 选中作品（采集模式复用：点开卡片即设为当前采集目标）
   const [selectedAweme, setSelectedAweme] = useState<string>("");
-  // 选中的收藏夹（2026-09-15：点卡片 → 加载该收藏夹内作品）
-  const [pickedCollect, setPickedCollect] = useState<{ id: string; name: string } | null>(null);
+  // 选中的收藏夹（2026-09-21 移除：收藏改为直接列作品，不再有「夹」这一层）
   const [playerErr, setPlayerErr] = useState<string>("");
   const openAweme = async (it: AwemeItem) => {
     setPlayerErr("");
@@ -72,15 +72,25 @@ export default function PlatformPage(props: PageProps) {
     setSelectedAweme(it.aweme_id || "");
     setPlayerMedia({ type: "video", aweme_id: it.aweme_id, cover: it.cover, desc: it.desc });
     try {
-      // ★ 回传列表返回的作品对象（实测自带播放地址；详情接口平台侧返空）
-      const r = await platformApi.mediaResolve(account, it.aweme_id, "origin",
-                                               (it as AwemeItem & { media?: Record<string, unknown> }).media);
-      if (!r?.ok) throw new Error("取址失败");
+      // ★ 2026-09-21 方案 B：换 **本机同源流地址**，而不是直接用 CDN 直链。
+      //   原因（实测）：<video src="https://v26-web.douyinvod.com/..."> 是跨域
+      //   请求，webview 受 CORS/Referer 约束 → 后端能取到 200 的真实地址，
+      //   播放器仍失败。改由本机后端带正确 headers 转发流，前端同源通信。
+      const t = await platformApi.mediaStreamTicket(
+        account, it.aweme_id, "origin",
+        (it as AwemeItem & { media?: Record<string, unknown> }).media);
+      if (!t?.ok || !t.stream_url) throw new Error("取址失败");
       setPlayerMedia({
-        type: r.type, aweme_id: r.aweme_id, url: r.url,
-        images: r.images, live_photos: r.live_photos,
-        cover: r.cover || it.cover, duration: r.duration, desc: r.desc || it.desc,
-      });
+        type: t.type, aweme_id: it.aweme_id,
+        url: platformApi.mediaStreamUrl(t.stream_url),
+        images: t.images, live_photos: t.live_photos,
+        cover: t.cover || it.cover, duration: t.duration, desc: t.desc || it.desc,
+        author: t.author,
+        resolved_via: t.resolved_via,
+      } as PlayerMedia & { resolved_via?: string });
+      if (t.resolved_via === "passthrough") {
+        setPlayerErr("未能解析出终极播放地址（该作品可能仅提供会话签名直链，CDN 会拒绝直接请求）");
+      }
     } catch (e) {
       setPlayerErr(String((e as Error)?.message || "取址失败"));
     }
@@ -124,29 +134,60 @@ export default function PlatformPage(props: PageProps) {
     staleTime: 300_000,
   });
 
-  const collectedQ = useQuery({
-    queryKey: ["platform-collected", account],
-    queryFn: () => platformApi.collected(account),
+  // 「收藏」——直接列收藏作品（2026-09-21 新端点 `/favorite`，不依赖文件夹）
+  const favoriteQ = useQuery({
+    queryKey: ["platform-favorite", account],
+    queryFn: () => platformApi.favorite(account, "", 30),
     enabled: !!account && tab === "collected",
     staleTime: 300_000,
   });
 
-  // 收藏夹内的作品（2026-09-15 补：点收藏夹卡片才请求，避免无用主动请求）
-  //
-  // 2026-09-17 修补（OCR 审查 CRITICAL）：queryKey 里带了 `pickedCollect?.id`
-  // 但 queryFn 恒传 cursor="0"，且**后端接口
-  // `/aweme/v1/web/aweme/listcollection/` 只支持 max_cursor 分页、
-  // 不支持按收藏夹筛选**（referer 即 favorite_collection 总列表）——
-  // 即抖音该接口返回的是「我的收藏」总表，无法按夹区分。
-  // 原实现会让用户以为进了某个夹，实际看到的是全部收藏。
-  // 现显式把这一限制暴露出来（提示文案），避免误导；queryKey 与请求参数
-  // 保持一致（都不含 id），消除「切夹命中缓存却不刷新」的假象。
-  const collectItemsQ = useQuery({
-    queryKey: ["platform-collect-items", account],
-    queryFn: () => platformApi.collectionItems(account, "0", 20),
-    enabled: !!account && !!pickedCollect,
+  // 2026-09-21 补齐：后端已实现、前端此前无入口（合集 / 关注列表 / 互动）
+  const [pickedMix, setPickedMix] = useState<{ id: string; name: string } | null>(null);
+  const [relationOf, setRelationOf] = useState<{ uid: string; sec: string; name: string } | null>(null);
+  const [relationKind, setRelationKind] = useState<"follower" | "following">("follower");
+  const [actionBusy, setActionBusy] = useState<string>("");
+  // 关注列表查询（2026-09-21 补）
+  const relationQ = useQuery({
+    queryKey: ["platform-relation", account, relationOf?.uid, relationKind],
+    queryFn: () => platformApi.relationList(
+      account, relationOf!.uid, relationOf!.sec, relationKind, 20),
+    enabled: !!account && !!relationOf?.uid,
     staleTime: 300_000,
   });
+  const collectMixesQ = useQuery({
+    queryKey: ["platform-mixes", account],
+    queryFn: () => platformApi.collectMixes(account, 20),
+    enabled: !!account && tab === "mixes",
+    staleTime: 300_000,
+  });
+  // 合集内作品（2026-09-21 补：点合集卡片进入）
+  const seriesQ = useQuery({
+    queryKey: ["platform-series", account, pickedMix?.id],
+    queryFn: () => platformApi.collectionSeries(account, pickedMix!.id, 20),
+    enabled: !!account && !!pickedMix?.id,
+    staleTime: 300_000,
+  });
+
+  // ── 互动（赞 / 藏）：平台写接口实测常返空，失败要明确提示，不假装成功 ──
+  // 返回值对齐 `FullscreenPlayer` 的契约：`Promise<boolean>` 表示是否成功。
+  const doAction = async (kind: "digg" | "collect", awemeId: string, label: string): Promise<boolean> => {
+    if (!awemeId) return false;
+    setActionBusy(`${kind}:${awemeId}`);
+    try {
+      const r = kind === "digg"
+        ? await platformApi.digg(account, awemeId, "1")
+        : await platformApi.collect(account, awemeId, "1");
+      const ok = r?.ok === true;
+      props.push(ok ? `${label}成功` : `${label}未返回成功（平台侧可能已限流）`);
+      return ok;
+    } catch (e) {
+      props.push(`${label}失败：${String((e as Error)?.message || e).slice(0, 120)}`, 6000);
+      return false;
+    } finally {
+      setActionBusy("");
+    }
+  };
 
   const noticesQ = useQuery({
     queryKey: ["platform-notices", account],
@@ -200,6 +241,8 @@ export default function PlatformPage(props: PageProps) {
           <TabsTrigger value="works"><User className="h-3.5 w-3.5" />用户作品</TabsTrigger>
           <TabsTrigger value="liked"><Heart className="h-3.5 w-3.5" />点赞</TabsTrigger>
           <TabsTrigger value="collected"><Star className="h-3.5 w-3.5" />收藏夹</TabsTrigger>
+          <TabsTrigger value="mixes"><BookOpen className="h-3.5 w-3.5" />合集</TabsTrigger>
+          <TabsTrigger value="relation"><Users className="h-3.5 w-3.5" />粉丝/关注</TabsTrigger>
           <TabsTrigger value="notices"><Bell className="h-3.5 w-3.5" />站内通知</TabsTrigger>
           <TabsTrigger value="crawl"><MessageSquare className="h-3.5 w-3.5" />采集</TabsTrigger>
         </TabsList>
@@ -277,49 +320,121 @@ export default function PlatformPage(props: PageProps) {
         </TabsContent>
 
         <TabsContent value="collected">
-          {pickedCollect ? (
-            // ── 收藏夹内作品（2026-09-15：原卡片不可点，用户进不去）──
+          {/* 2026-09-21 用户反馈重做：不再要求「收藏夹文件夹」——
+              多数人收藏就是一堆作品，不专门建文件夹（该账号实测文件夹数 = 0，
+              但收藏作品有 19 条）。改为直接列收藏作品。 */}
+          <div className="space-y-3">
+            <div className="text-[0.78rem] text-[var(--color-text-secondary)]">
+              你的收藏作品（直接列出，无需先建文件夹）
+            </div>
+            {favoriteQ.isPending ? <LoadingState /> :
+              favoriteQ.isError ? (
+                <ErrorState message={String((favoriteQ.error as Error)?.message)}
+                            onRetry={favoriteQ.refetch} />
+              ) : (favoriteQ.data?.items?.length
+                ? <Grid items={favoriteQ.data.items} kind="video" onOpenAweme={openAweme} />
+                : <EmptyState title="暂无收藏"
+                    description="该账号没有收藏作品，或平台侧临时返回空（稍后重试）。" />)}
+          </div>
+        </TabsContent>
+
+        {/* 合集（mix）—— 与「收藏夹」是两种实体：合集是作者自建的作品集 */}
+        <TabsContent value="mixes">
+          {pickedMix ? (
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="ghost" onClick={() => setPickedCollect(null)}>
-                  ← 返回收藏夹
+                <Button size="sm" variant="ghost" onClick={() => setPickedMix(null)}>
+                  ← 返回合集
                 </Button>
                 <span className="text-[0.8rem] text-[var(--color-text-secondary)]">
-                  {pickedCollect.name}
+                  {pickedMix.name}
                 </span>
               </div>
-              {collectItemsQ.isPending ? <LoadingState /> :
-                collectItemsQ.isError ? (
-                  <ErrorState
-                    message={String((collectItemsQ.error as Error)?.message)}
-                    onRetry={collectItemsQ.refetch}
-                  />
-                ) :
-                (collectItemsQ.data?.items?.length
-                  ? <Grid items={collectItemsQ.data.items} kind="video" onOpenAweme={openAweme} />
-                  : <EmptyState title="该收藏夹暂无作品" />)}
+              {seriesQ.isPending ? <LoadingState /> :
+                seriesQ.isError ? (
+                  <ErrorState message={String((seriesQ.error as Error)?.message)}
+                              onRetry={seriesQ.refetch} />
+                ) : (seriesQ.data?.items?.length
+                  ? <Grid items={seriesQ.data.items} kind="video" onOpenAweme={openAweme} />
+                  : <EmptyState title="该合集暂无作品" />)}
             </div>
-          ) : (
-            collectedQ.isPending ? <LoadingState /> :
-            collectedQ.isError ? <ErrorState message={String((collectedQ.error as Error)?.message)} onRetry={collectedQ.refetch} /> :
-            (collectedQ.data?.items?.length ? (
+          ) : collectMixesQ.isPending ? <LoadingState /> :
+            collectMixesQ.isError ? (
+              <ErrorState message={String((collectMixesQ.error as Error)?.message)}
+                          onRetry={collectMixesQ.refetch} />
+            ) : (collectMixesQ.data?.items?.length ? (
               <div className="grid grid-cols-3 gap-3">
-                {collectedQ.data.items.map((c) => (
-                  <Card
-                    key={c.collects_id}
-                    className="cursor-pointer transition-colors hover:border-[var(--color-accent)]"
-                    onClick={() => setPickedCollect({ id: c.collects_id, name: c.name || "未命名" })}
-                  >
+                {collectMixesQ.data.items.map((m) => (
+                  <Card key={m.mix_id}
+                        className="cursor-pointer transition-colors hover:border-[var(--color-accent)]"
+                        onClick={() => setPickedMix({ id: m.mix_id, name: m.mix_name || "未命名" })}>
                     <CardContent className="p-3">
-                      <div className="text-[0.84rem] font-medium text-[var(--color-text)]">{c.name || "未命名"}</div>
+                      <div className="text-[0.84rem] font-medium text-[var(--color-text)]">
+                        {m.mix_name || "未命名"}
+                      </div>
                       <div className="mt-1 text-[0.72rem] text-[var(--color-text-secondary)]">
-                        {fmtNum(c.count)} 个作品 · 点击查看
+                        {fmtNum(m.item_total)} 个作品 · 点击查看
                       </div>
                     </CardContent>
                   </Card>
                 ))}
               </div>
-            ) : <EmptyState title="暂无收藏夹" description="该账号没有收藏夹，或收藏夹为空。" />)
+            ) : <EmptyState title="暂无收藏合集" description="该账号没有收藏合集，或合集为空。" />)}
+        </TabsContent>
+
+        {/* 粉丝 / 关注（2026-09-21 补：后端 /relation/list 早已实现，前端无入口） */}
+        <TabsContent value="relation">
+          <div className="mb-3 flex items-center gap-2">
+            <Input
+              value={userUrl}
+              onChange={(e) => setUserUrl(e.target.value)}
+              placeholder="粘贴用户主页链接或 sec_uid，回车查看 TA 的粉丝/关注…"
+              className="max-w-lg"
+            />
+            <Button size="sm" onClick={() => {
+              const v = userUrl.trim();
+              if (!v) return;
+              // sec_uid 可直接用；主页链接则先取用户信息换 sec_uid
+              const sec = v.startsWith("MS4w") ? v : "";
+              if (sec) {
+                setRelationOf({ uid: "", sec, name: "该用户" });
+              } else {
+                platformApi.userInfo(account, v)
+                  .then((r) => setRelationOf({
+                    uid: String((r.user as { uid?: string })?.uid || ""),
+                    sec: r.user?.sec_uid || "",
+                    name: r.user?.nickname || "该用户",
+                  }))
+                  .catch(() => props.push("获取用户信息失败，请检查链接或 sec_uid", 6000));
+              }
+            }}>查看</Button>
+            {relationOf && (
+              <Select value={relationKind}
+                      onValueChange={(v) => setRelationKind(v as "follower" | "following")}>
+                <SelectTrigger className="h-9 w-[120px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="follower">粉丝</SelectItem>
+                  <SelectItem value="following">关注</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+          {relationOf ? (
+            relationQ.isPending ? <LoadingState /> :
+            relationQ.isError ? (
+              <ErrorState message={String((relationQ.error as Error)?.message)}
+                          onRetry={relationQ.refetch} />
+            ) : (relationQ.data?.items?.length
+              ? <div className="grid grid-cols-2 gap-2">
+                  {relationQ.data.items.map((u, i) => (
+                    <UserCard key={u.uid || i} item={u} />
+                  ))}
+                </div>
+              : <EmptyState title="暂无数据"
+                    description="平台侧对粉丝/关注列表常返回空（非本项目缺陷），或对非本人账号不开放。" />)
+          ) : (
+            <EmptyState title="填入用户主页链接或 sec_uid"
+              description="注意：平台一般只对本人账号返回关注列表，查他人常为空。" />
           )}
         </TabsContent>
 
@@ -383,7 +498,21 @@ export default function PlatformPage(props: PageProps) {
             ) : (
               <FullscreenPlayer
                 media={playerMedia}
+                author={playerMedia?.author}
                 onClose={() => setPlayerOpen(false)}
+                // ★ 2026-09-21：此前从未注入赞/藏回调 → 按组件契约按钮
+                //   **根本不渲染**（"未注入则不渲染，避免假可用"）。
+                //   现接上真实写接口；平台侧常返空，失败由 doAction 明确提示。
+                onLike={
+                  actionBusy.startsWith("digg:")
+                    ? undefined
+                    : (id) => doAction("digg", id, "点赞")
+                }
+                onCollect={
+                  actionBusy.startsWith("collect:")
+                    ? undefined
+                    : (id) => doAction("collect", id, "收藏")
+                }
                 onDownload={() => { /* 交由后端 downloader（后续接线） */ }}
               />
             )}

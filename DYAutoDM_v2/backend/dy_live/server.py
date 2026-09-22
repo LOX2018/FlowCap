@@ -124,6 +124,42 @@ class DouyinLive:
         self.start_ws()
         logger.warning(f"[LIVE-026] " + f"[live-ws] closed status_code={close_status_code} msg={close_msg}")
 
+    def _room_info_with_credential(self):
+        """带凭证取直播间信息；**若服务端判为未登录则回落匿名**。
+
+        ENG-018：`_has_credential()` 为真（有 cookie 且会话态非 False）时走这里。
+        取证：张老师账号带 cookie 请求直播间页，响应体大小与「无 cookie」实测
+        几乎一致（1158.9KB vs 1157.3KB），页面把 `登录`（请登录）文案渲染了 4 处
+        —— 与真匿名完全相同。故按「凭证未被承认」处理，走匿名路径，
+        避免用**非登录会话**的 ttwid 去建连。
+        """
+        try:
+            info = DouyinAPI.get_live_info(self.auth_, self.live_id)
+            if info and isinstance(info, dict) and info.get("room_id"):
+                return info
+            logger.warning("[LIVE-037] [live-ws] 带凭证进房未获 room_id，回落匿名进房")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LIVE-037] [live-ws] 带凭证进房异常，回落匿名进房: {e}")
+        return self._anon_live_info()
+
+    def _anon_ttwid_from(self, info) -> str:
+        """从 room_info 里取匿名 ttwid（**返回裸值**，不含 `ttwid=` 前缀）。
+
+        ENG-018 修复：原实现直接调 `_anon_cookie()` → 内部**再请求一次**直播间页。
+        而 `start_ws` 早已持有 `logger_info`（含 ttwid）⇒ 每个任务多打一次网，
+        且与取 room_info 那次可能是**不同 ttwid 会话**。改为复用已取得的那一份。
+        前缀由调用方拼（`f"ttwid={...}"`），本函数只返回裸值。
+        仅在 room_info 里确实没有 ttwid 时才回落到 `_anon_cookie()`（多做一次请求，
+        好过用空 cookie 建连）。
+        """
+        try:
+            _t = str((info or {}).get("ttwid") or "")
+        except Exception:
+            _t = ""
+        if _t:
+            return _t
+        return self._anon_cookie()
+
     def start_ws(self, room_info=None):
         # 进入连接流程即视为「监听线活跃」（ENG-015）：
         # 从本处到 on_open 之间是 WS 握手窗口，此期间上游（AutoDM 收尾判据 /
@@ -135,9 +171,18 @@ class DouyinLive:
         if room_info and isinstance(room_info, dict) and room_info.get("room_id"):
             logger_info = room_info
         else:
-            room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
+            # ENG-017：无凭证时走**本类的匿名进房**（自建请求，不带账号身份）。
+            # 注意：不能把 None 传给 `DouyinAPI.get_live_info` —— 它内部直接
+            # `cookies=auth_.cookie`，传 None 会 AttributeError（实测踩过）。
+            if self._has_credential():
+                room_info = self._room_info_with_credential()
+            else:
+                logger.info(f"[LIVE-033] " + "[live-ws] 无可用凭证（或已被服务端判为未登录）"
+                            " —— 改走匿名进房（直播流可看；昵称将被脱敏）")
+                room_info = self._anon_live_info()
             if not room_info or not isinstance(room_info, dict):
-                logger.error(f"[LIVE-023] " + "### get_live_info 返回空，无法建立监听（可能直播间不存在或 cookie 失效） ###")
+                logger.error(f"[LIVE-023] " + "### 进房失败，无法建立监听"
+                             "（可能直播间不存在 / 未开播 / 网络异常）###")
                 # 连接未真正发起 → 撤回落款，绝不留「活跃」的假状态（ENG-015）
                 self._ws_alive = False
                 return
@@ -147,9 +192,27 @@ class DouyinLive:
         ttwid = logger_info['ttwid']
         params = Params()
 
-        res = DouyinAPI.get_webcast_detail(self.auth_, str(user_id), room_id, f"https://live.douyin.com/{self.live_id}")
+        # 2026-09-21（ENG-017）：首包获取**允许无凭证降级**。
+        # 设计契约：直播流连接不应依赖账号登录态 —— 抖音直播支持匿名观看，
+        # 凭证的真正职责是「部分直播间昵称解密」。因此这里在无凭证时：
+        #   ① 跳过需要 cookie 派生的 csrf/msToken 路径；
+        #   ② 直接以「无 cursor 的初始状态」建 WS（服务端会推首包）。
+        # 绝不因凭证缺失就 raise 断掉整条监听。
+        _has_cred = self._has_credential()
         frame = Live_pb2.LiveResponse()
-        frame.ParseFromString(res)
+        if _has_cred:
+            try:
+                res = DouyinAPI.get_webcast_detail(
+                    self.auth_, str(user_id), room_id,
+                    f"https://live.douyin.com/{self.live_id}")
+                frame.ParseFromString(res)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[LIVE-028] " + f"[live-ws] 凭证态取首包失败，转匿名建连: {e}")
+                frame = Live_pb2.LiveResponse()
+        else:
+            logger.info(f"[LIVE-029] " + "[live-ws] 无可用凭证 —— 以匿名模式建连"
+                        "（直播流可看；昵称若加密将无法解密）")
+
         (params
          .add_param('app_name', 'douyin_web')
          .add_param('version_code', '180800')
@@ -186,6 +249,15 @@ class DouyinLive:
          .add_param('signature', generate_signature(room_id, user_id))
          )
         wss_url = f"wss://webcast100-ws-web-hl.douyin.com/webcast/im/push/v2/?{urlencode(params.get())}"
+        # ENG-017：cookie 可选 —— 有凭证用账号 cookie（可解昵称加密），
+        # 无凭证则退回匿名 cookie（ttwid，设备级、不含账号身份）。
+        if self._has_credential():
+            _ws_cookie = self.auth_.cookie_str
+        else:
+            _ttwid = self._anon_ttwid_from(logger_info or {})
+            _ws_cookie = f"ttwid={_ttwid}" if _ttwid else ""
+            logger.info(f"[LIVE-030] " + f"[live-ws] 匿名 cookie 已准备"
+                        f"（ttwid={'有' if _ttwid else '无'}）")
         self.ws = WebSocketApp(
             url=wss_url,
             header={
@@ -196,7 +268,7 @@ class DouyinLive:
                 'Cache-Control': 'no-cache',
                 'Connection': 'Upgrade',
             },
-            cookie=self.auth_.cookie_str,
+            cookie=_ws_cookie,
             on_message=self.on_message,
             on_error=self.on_error,
             on_close=self.on_close,

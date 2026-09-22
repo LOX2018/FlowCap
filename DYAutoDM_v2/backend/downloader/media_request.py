@@ -17,18 +17,52 @@
 
 ## 职责边界
 
-本模块**只做媒体地址解析与质量选择**（纯计算，不发请求）。
+本模块做**媒体地址解析与质量选择**，多数函数为纯计算。
+唯一例外是 `resolve_playable()`：抖音的无签名入口是 **302 跳转入口**，
+必须发一次请求跟随它才能拿到真实地址 —— 该次请求用
+`Range: bytes=0-0` 只取 1 字节，**不下载视频本体**（见其文档字符串）。
+
 实际传输在 `media_transfer.py`，任务状态在 `tasks.py`。
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
+
+from loguru import logger
 
 # 质量档位（照源项目 `quality.rs` 的语义；数值越高越好）
 # 降级链：由高到低（2026-09-15 修正 —— 原为 lowbr 在首位，会永远选最低画质）。
 # 语义：hd/origin 优先，其次 h265/h264，再次 lowbr，最后 download 兜底。
 # 注：download_addr 可能是音频（图集作品），必须排在真正的视频档之后。
 QUALITY_ORDER = ("hd", "origin", "h265", "h264", "lowbr", "download")
+
+# ─────────────────────────────────────────────────────────────────────────
+# 会话签名直链识别（2026-09-21 根因修复，详见下方 resolve_playable()）
+# ─────────────────────────────────────────────────────────────────────────
+# 抖音 `play_addr.url_list` 同时给出两类链接：
+#   · **会话签名直链**：host 为 `*-web*.douyinvod.com`，带 tk=/signature=/policy=，
+#     签名绑定取址时的浏览器会话 —— 脱离该会话（播放器 <video> / 后端 requests）
+#     请求，CDN 一律 **403 Forbidden**（openresty）。实测与 UA / Referer /
+#     cookie / IPv4-IPv6 / policy 取值 / URL 编码 **全部无关**。
+#   · **无签名入口**：`https://www.douyin.com/aweme/v1/play/?video_id=...`
+#     跟随 302 才拿到真实流（实测 200 / video/mp4 / 49,821,029 字节 / ftyp isom）。
+# 上游佐证（GitHub，同根因）：
+#   · Evil0ctal/Douyin_TikTok_Download_API issues #500 / #583 / #720
+#   · Jane-xiaoer/xiaoer-videolab commit b455eda「优先选无签名链接，根除 403」
+_SIGNED_HOST_RE = re.compile(r"-web[a-z]*\.douyinvod\.com", re.I)
+_SIGNED_PARAM_RE = re.compile(r"[?&](?:tk|signature|policy)=", re.I)
+
+
+def is_session_signed(url: str) -> bool:
+    """是否「会话签名直链」（脱离取址会话请求必 403）。
+
+    判据（二者具一即判定）：host 命中 `*-web*.douyinvod.com`；或
+    query 含 `tk=` / `signature=` / `policy=`。
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    return bool(_SIGNED_HOST_RE.search(url) or _SIGNED_PARAM_RE.search(url))
 
 
 def _urls_of(addr: Any) -> list[str]:
@@ -184,20 +218,106 @@ def pick_quality(media: dict[str, Any], preferred: str = "origin") -> Optional[s
 
     降级顺序：preferred → origin → dash → h265 → h264 → lowbr。
     找不到返回 None。
+
+    ## 2026-09-21 修正：同档位内**优先无签名链接**
+
+    原实现取 `us[0]` —— 而抖音 `url_list` 的 **前两位就是会话签名直链**
+    （播放器 `<video>` 裸请求必 403，见 `is_session_signed()`）。
+    现改为：同一 quality 档位内，先把**无签名**的候选排在前面；
+    全部有签名时才回退首条（交由 `resolve_playable()` 跟随 302 兜底）。
     """
     videos: dict[str, list[str]] = media.get("videos") or {}
     if not videos:
         return None
-    chain = [preferred] + [q for q in QUALITY_ORDER if q != preferred]
+    # 2026-09-21 修正：`download` 档**不参与**视频降级链 —— 图集作品的
+    # download_addr 是**音频(.mp3)**（见 2026-09-15 记录），降级到它会给出
+    # 一个「能拉到 200 但播不了」的地址。仅当**没有任何视频档位**时才用它兜底。
+    real = [q for q in (QUALITY_ORDER + (preferred,)) if q != "download"]
+    chain = [preferred] + [q for q in real if q != preferred]
     for q in chain:
         us = videos.get(q)
         if us:
-            return us[0]
-    # 兜底：任意第一档
-    for us in videos.values():
-        if us:
-            return us[0]
-    return None
+            return _prefer_unsigned(us)
+    # 兜底：任意第一档（仍优先无签名）
+    for q, us in videos.items():
+        if q != "download" and us:
+            return _prefer_unsigned(us)
+    # 最后才用 download 档（可能是音频，但总比没有强）
+    dl = videos.get("download")
+    return _prefer_unsigned(dl) if dl else None
+
+
+def _prefer_unsigned(urls: list[str]) -> str:
+    """候选列表内优先返回无签名链接（保持相对顺序）。"""
+    if not urls:
+        return ""
+    for u in urls:
+        if not is_session_signed(u):
+            return u
+    return urls[0]
+
+
+def resolve_playable(url: str, *, timeout: float = 10.0,
+                     max_redirects: int = 5) -> tuple[str, str]:
+    """把候选地址解析成**可直接播放的真实地址**。
+
+    ## 为什么需要它（2026-09-21 根因）
+
+    `play_addr.url_list` 里的无签名入口
+    `https://www.douyin.com/aweme/v1/play/?video_id=...`
+    本身 **不是**视频数据，而是一个 **302 跳转入口**；`<video>` 与大部分
+    HTTP 客户端会跟随重定向没问题，但：
+
+      · 若配到的是**会话签名直链**（CDN 403），跟随也没用 —— 必须避开；
+      · 部分环境下需要**显式**解析出终极地址（下载器要 Content-Length、
+        要鉴 Host），故在此统一解析。
+
+    ## 行为契约
+
+    · 只用 **HEAD**，不下载视频本体（省 ~50MB 流量）；
+    · 服务端不支持 HEAD 时自动退回 **GET + Range: bytes=0-0**；
+    · 失败/超时**不抛异常**，返回原 URL（调用方照常使用，由播放器自行重试）。
+
+    Returns:
+        `(真实地址, 解析方式)` —— 方式 ∈ {`direct`, `head`, `get-range`, `passthrough`}
+    """
+    if not isinstance(url, str) or not url:
+        return ("", "empty")
+    try:
+        import requests
+        from utils.tls_policy import tls_verify
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.douyin.com/",
+            "Accept": "*/*",
+        }
+        # ★ 探测方法必须是 **GET + Range**，不能用 HEAD（2026-09-21 实测修正）：
+        # 抖音 CDN 对 HEAD 与 GET 的签名校验**不一致** —— HEAD 返回 200 而
+        # GET 同一 URL 返回 403。用 HEAD 探测会把「必然 403」谎报成「已解析可播」
+        # （实测 6 个作品里 3 个因此误判）。故改为与播放器同方法的 GET 探测，
+        # 并用 Range: bytes=0-0 只取 1 字节，不下载视频本体（省 ~50MB）。
+        try:
+            h2 = dict(headers, **{"Range": "bytes=0-0"})
+            r = requests.get(url, headers=h2, timeout=timeout, stream=True,
+                             allow_redirects=True, verify=tls_verify())
+            status = r.status_code
+            final = r.url
+            had_redirect = bool(r.history)
+            r.close()
+            if 200 <= status < 300:
+                return (final, "get-range" if had_redirect else "direct")
+            # 明确失败：记下来，让调用方能区分「解析失败」与「地址本身被拒」
+            logger.debug(f"[media_request] 候选地址 GET 返回 {status}: {url[:80]}")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[media_request] 候选地址探测异常 {type(e).__name__}: {url[:80]}")
+    except Exception:  # noqa: BLE001 —— requests / tls_policy 导入失败：不阻断
+        pass
+    # 解析不了就用原地址（播放器自己会再试；不假装成功）
+    return (url, "passthrough")
 
 
 def summarize(media: dict[str, Any]) -> dict[str, Any]:

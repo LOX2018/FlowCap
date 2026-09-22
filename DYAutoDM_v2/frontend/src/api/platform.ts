@@ -61,12 +61,32 @@ export interface AwemeItem {
   media?: Record<string, unknown>;
 }
 
+/** 流地址票据（`POST /api/platform/media/stream-ticket` 的返回）。 */
+export interface StreamTicketDTO {
+  ok: boolean;
+  /** 本机同源流地址（相对路径，用 mediaStreamUrl() 转绝对） */
+  stream_url: string;
+  /** 有效期（秒） */
+  expires_in: number;
+  resolved_via?: string;
+  type: "video" | "images" | "live_photo";
+  cover: string;
+  duration: number;
+  desc: string;
+  author: { nickname: string; avatar: string; sec_uid: string };
+  images: string[];
+  live_photos: { image: string; video: string }[];
+}
+
 /** 播放器媒体（对齐后端 `POST /api/platform/media/resolve` 的返回） */
 export interface PlayerMediaDTO {
   ok: boolean;
   aweme_id: string;
   type: "video" | "images" | "live_photo";
   url: string;
+  /** 取址方式（2026-09-21）：direct / head / get-range / passthrough。
+   *  `passthrough` 表示未解析出终极地址，可能不可播。 */
+  resolved_via?: string;
   images: string[];
   live_photos: { image: string; video: string }[];
   cover: string;
@@ -92,6 +112,17 @@ export interface CollectItem {
   collects_id: string;
   name: string;
   count: number;
+}
+
+/** 收藏合集（mix）—— 与「收藏夹 collects」是两种不同实体，勿混用。 */
+export interface MixItem {
+  mix_id: string;
+  mix_name: string;
+  desc: string;
+  cover: string;
+  item_total: number;
+  play_vv: number;
+  update_time: number;
 }
 
 export interface NoticeItem {
@@ -129,6 +160,13 @@ export const platformApi = {
     post<{ ok: boolean; kind: string; items: (AwemeItem | UserItem)[] }>(
       "/api/platform/search", { account, query, kind, num }),
 
+  /** ★ 2026-09-21：我的收藏（作品维度）——**不依赖收藏夹文件夹**。
+   *  实测该账号文件夹数 0 但收藏作品 19 条，故「收藏」tab 用这个。 */
+  favorite: (account: string, sec_id = "", num = 30) =>
+    post<{ ok: boolean; items: AwemeItem[]; has_more: boolean; unavailable?: boolean }>(
+      "/api/platform/favorite", { account, sec_id, num }),
+
+  /** 收藏夹**文件夹**列表（历史保留：多数账号为 0，仅供按夹浏览）。 */
   collected: (account: string) =>
     post<{ ok: boolean; items: CollectItem[] }>("/api/platform/collected", { account }),
 
@@ -167,6 +205,52 @@ export const platformApi = {
   /** 媒体代理缓存统计（照源项目 media_proxy_cache.rs 语义） */
   mediaStats: () => post<{ ok: boolean } & Record<string, unknown>>(
     "/api/platform/media/stats", {}),
+
+  /**
+   * ★ 2026-09-21 新增：换取**本机同源流地址**（方案 B）。
+   *
+   * 为什么需要：`<video>` 直接指向 CDN（`v26-web.douyinvod.com`）是**跨域
+   * 请求**，webview 受 CORS/Referer 策略约束 → 即使后端能取到 200 的真实
+   * 地址，播放器仍然失败（实测）。本接口把直链换成
+   * `/api/platform/media/stream?...`，由本机后端带正确 headers 转发流，
+   * 前端只与本机同源通信 → 无跨域、支持 Range 拖动。
+   */
+  mediaStreamTicket: (account: string, aweme_id: string, quality = "origin",
+                      raw?: Record<string, unknown>) =>
+    post<StreamTicketDTO>("/api/platform/media/stream-ticket",
+                          raw ? { account, aweme_id, raw, quality }
+                              : { account, aweme_id, quality }),
+
+  /** 流地址的**绝对**形式（`<video src>` 需要能被 webview 解析）。 */
+  mediaStreamUrl: (streamUrl: string) =>
+    streamUrl.startsWith("http") ? streamUrl : `${BASE}${streamUrl}`,
+
+  // ---- 2026-09-21 补齐：后端早已实现、前端此前无入口的端点 ----
+  // 判据：后端 api/platform.py 有 20 个路由，前端此前只接了 12 个。
+
+  /** 收藏合集（合集列表，不同于「收藏夹」）。对应 `/collection/mixes`。 */
+  collectMixes: (account: string, count = 20, cursor = "0") =>
+    post<{ ok: boolean; items: MixItem[]; has_more: boolean; cursor: number | string | null }>(
+      "/api/platform/collection/mixes", { account, count, cursor }),
+
+  /** 合集内的作品。对应 `/collection/series`。 */
+  collectionSeries: (account: string, series_id: string, count = 20, cursor = "0") =>
+    post<{ ok: boolean; items: AwemeItem[]; has_more: boolean }>(
+      "/api/platform/collection/series", { account, series_id, count, cursor }),
+
+  /** 粉丝 / 关注列表。对应 `/relation/list`（kind: follower | following）。 */
+  relationList: (
+    account: string, user_id: string, sec_id = "",
+    kind: "follower" | "following" = "follower", count = 20,
+    max_time = "0",
+  ) =>
+    post<{ ok: boolean; items: UserItem[]; total: number | null }>(
+      "/api/platform/relation/list", { account, user_id, sec_id, kind, count, max_time }),
+
+  /** 作品评论（与采集页 crawlComments 同源；此处按作品 URL 取）。 */
+  awemeComments: (account: string, url: string, limit = 20) =>
+    post<{ ok: boolean; items: CommentItem[]; has_more: boolean }>(
+      "/api/platform/comments", { account, url, limit }),
 
   // ---- 写操作（须由用户显式点击触发，不做自动批量） ----
   digg: (account: string, aweme_id: string, action: "1" | "0" = "1") =>

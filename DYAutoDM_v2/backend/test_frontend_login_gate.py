@@ -56,24 +56,68 @@ class TestLoginGateNoAuthedDependency(unittest.TestCase):
         self.assertNotIn("\ufffd", self.src, "App.tsx 含非法字节（写入被破坏）")
 
     def test_boot_splash_guard_does_not_use_ready(self):
-        """BootSplash 的守卫不得引用 ready（它来自需登录的 /api/overview）。"""
-        # 取 `if (!memberName) {` 之后到下一个顶层 `}` 的近似区段
-        m = re.search(r"if \(!memberName\)\s*\{(.{0,1200}?)\n  \}", self.src, re.S)
+        """BootSplash 的守卫不得引用 ready（它来自需登录的 /api/overview）。
+
+        ## 2026-09-21 修正（原断言绑死了具体实现写法）
+
+        原实现用正则找 `if (...) return <BootSplash` —— 但 App.tsx 登录门控
+        已重构为**三元表达式**：
+
+            const gate = !prealigned ? <BootSplash .../> : memberChecked ? ... : ...;
+
+        结构含义未变（仍是「未就绪 → 闪屏」），写法变了，正则就恒红 ——
+        **守的是写法，不是不变式**。这是「断言字面量」的典型失效：
+        实现一重构，守卫立刻失能（而它守的循环依赖缺陷反而没人看了）。
+
+        ## 现在的判据（只看不变式，不看写法）
+
+        1. 能切出 `if (!memberName) { ... }` 门控段（切不出 = 结构真变了，报错）；
+        2. 该段内**不出现裸 `ready`**（`prealigned` / `memberChecked` 允许）；
+        3. 该段内仍须有 `BootSplash`（否则门控被删，未就绪界面会闪过）。
+        """
+        m = re.search(r"if \(!memberName\)\s*\{(.{0,1500}?)\n  \}", self.src, re.S)
         self.assertIsNotNone(m, "未能切出登录门控段（结构可能已变）")
         seg = m.group(1)
-        guards = re.findall(r"if \(([^)]*)\)\s*return <BootSplash", seg)
-        self.assertTrue(guards, "登录门控段内未找到 BootSplash 守卫")
-        for g in guards:
-            self.assertNotIn(
-                "ready", g.replace("prealigned", ""),
-                f"BootSplash 守卫引用了需登录的 ready → 循环依赖复发: if ({g})",
-            )
+        # ③ 门控段必须仍渲染 BootSplash（写法不限：if-return / 三元 / 变量赋值）
+        self.assertIn("BootSplash", seg, "登录门控段内不再渲染 BootSplash")
+        # ② 段内不得出现裸 ready（prealigned 含 'align' 不含 'ready'，无需额外剔除）
+        #
+        # ★ 必须先剥注释再判（2026-09-21 实测踩坑）：本段注释里原文写着
+        #   「**不得引用 ready**：它需要登录」——那是**防复发说明**，不是引用。
+        #   不剥注释会被自己的说明文字绊倒（假红）。
+        #   同时这也是「断言不得断言字面量/注释文本」的同一条纪律的另一面：
+        #   判据只看**代码**，不看叙述。
+        code_only = re.sub(r"//[^\n]*", "", seg)
+        code_only = re.sub(r"/\*.*?\*/", "", code_only, flags=re.S)
+        bare_ready = [
+            w for w in re.findall(r"\b(\w*ready\w*)\b", code_only, re.I)
+            if w.lower() not in ("prealigned", "already")
+        ]
+        self.assertFalse(
+            bare_ready,
+            f"登录门控段引用了需登录的 ready → 循环依赖复发: {sorted(set(bare_ready))}",
+        )
 
     def test_prealigned_guard_exists(self):
-        """必须存在基于免鉴权 prealigned 的守卫（否则会闪过未就绪界面）。"""
-        self.assertRegex(
-            self.src, r"if \(!prealigned[^)]*\)\s*return <BootSplash",
-            "缺少 prealigned 守卫",
+        """必须存在基于免鉴权 prealigned 的守卫（否则会闪过未就绪界面）。
+
+        ## 2026-09-21 修正：判据改为「prealigned 出现在 BootSplash 之前」
+
+        原正则要求 `if (!prealigned...) return <BootSplash` 连续出现，三元写法
+        下同样不成立。不变式其实是：**prealigned 参与决定 BootSplash 的渲染**。
+        故改为：门控段内 `prealigned` 与 `BootSplash` 必须同时存在，且
+        `prealigned` 出现在 `BootSplash` 首次出现之前（顺序即因果关系）。
+        """
+        m = re.search(r"if \(!memberName\)\s*\{(.{0,1500}?)\n  \}", self.src, re.S)
+        self.assertIsNotNone(m, "未能切出登录门控段（结构可能已变）")
+        seg = m.group(1)
+        i_pre = seg.find("prealigned")
+        i_bs = seg.find("BootSplash")
+        self.assertGreaterEqual(i_pre, 0, "门控段内未使用免鉴权的 prealigned")
+        self.assertGreaterEqual(i_bs, 0, "门控段内未渲染 BootSplash")
+        self.assertLess(
+            i_pre, i_bs,
+            "prealigned 未参与 BootSplash 的渲染判定（门控可能引用了其它状态）",
         )
 
     def test_ready_still_used_after_login(self):

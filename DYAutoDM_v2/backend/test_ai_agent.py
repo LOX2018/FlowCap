@@ -174,10 +174,56 @@ class TestConsumerWiring(unittest.TestCase):
         self.assertIn("ai_agent.resolve_config", src)
 
     def test_generate_reply_passes_account(self):
-        with open(os.path.join(os.path.dirname(__file__), "services",
-                               "ai_reply.py"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn("KB.find_match(text, account=account)", src)
+        """回复生成必须「按账号」解析知识库/配置 —— 用**行为机制**断言。
+
+        ## 2026-09-21 修正（原断言是假红，守的是已废弃的写法）
+
+        原断言在 `ai_reply.py` 全文里找字面量 `KB.find_match(text, account=account)`。
+        但 v0.39.0 起两库职责已明确拆分（源码注释原文）：
+
+            · 命中即回 → `reply_kb.find_match(text, account=account)`（对话回复库）
+            · 专业库   → 只做 RAG 参考，**旧 `KB.find_match` 已从回复链路移除**
+
+        ⇒ 字面量断言守的是一个**已被有意废弃**的调用，恒红且毫无保护力；
+          而真正在跑的新链路 `reply_kb` 反倒**无人守卫**。典型的
+          「断言绑字面量而非机制」：实现一重构就失灵（见调试方法论
+          「守卫测试必须断言机制，不能断言字面量」）。
+
+        ## 现在的判据（逐条对应真实机制）
+
+        1. `_generate_reply` 里**必须有一次**带 `account=` 的 find_match 调用
+           （不论它挂在 `reply_kb` 还是 `KB` —— 换库不算破坏契约）；
+        2. 该函数体必须做 Agent 级知识库解析（`ai_agent.resolve_knowledge`），
+           否则「知识库跟随 Agent」这条设计契约无人执行；
+        3. 行为验证：`reply_kb` 暴露且签名含 `account` 形参（可自省，不靠文本）。
+        """
+        import inspect
+        import re
+
+        src = inspect.getsource(ai_reply.AutoReplyWorker._generate_reply)
+
+        # ① 带账号的 find_match 调用（库名不限，防再次因换库而假红）
+        calls = re.findall(r"[\w.]*find_match\([^)]*\)", src)
+        account_aware = [c for c in calls if re.search(r"account\s*=\s*\w+", c)]
+        self.assertTrue(
+            account_aware,
+            f"回复生成链路中找不到带 account= 的 find_match 调用（实际: {calls}）",
+        )
+
+        # ② Agent 级知识库解析（设计契约：知识库跟随 Agent）
+        self.assertIn(
+            "ai_agent.resolve_knowledge", src,
+            "回复生成未做 Agent 级知识库解析 —— 「知识库跟随 Agent」契约失效",
+        )
+
+        # ③ 行为验证：回复库签名须支持 account（可自省，不依赖文本匹配）
+        try:
+            from services import reply_kb
+        except Exception as e:  # 模块缺失则明确失败，不静默跳过
+            self.fail(f"回复库 reply_kb 不可用: {e}")
+        sig = inspect.signature(reply_kb.find_match)
+        self.assertIn("account", sig.parameters,
+                      f"reply_kb.find_match 缺少 account 形参: {sig}")
 
     def test_find_match_semantic_accepts_items(self):
         import inspect

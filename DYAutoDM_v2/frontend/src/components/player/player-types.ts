@@ -92,6 +92,19 @@ export interface PlayerMedia {
   desc?: string;
   /** 作品 id */
   aweme_id?: string;
+  /**
+   * 作者信息（2026-09-21 补）。
+   * 后端 `POST /api/platform/media/resolve` **已返回** `author`
+   * （nickname / avatar / sec_uid），前端此前未承接 → 播放器头部
+   * 恒回退显示 desc。现纳入契约；播放器 `author` prop 与此处同构。
+   */
+  author?: PlayerAuthor;
+  /**
+   * 取址方式（2026-09-21 补，对齐后端 `resolved_via`）：
+   * `direct` / `head` / `get-range` / `passthrough`。
+   * `passthrough` = 未解析出终极地址，可能不可播（用于给出准确提示）。
+   */
+  resolved_via?: string;
 }
 
 /** 作者信息（照源项目 `player-info.tsx` 的职责）。 */

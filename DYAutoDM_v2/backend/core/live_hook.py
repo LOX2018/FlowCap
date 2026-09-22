@@ -43,11 +43,16 @@ class LiveChatHook(DouyinLive):
     AutoDM 通过 asyncio.to_thread 包装 start_ws 调用。
     """
 
-    def __init__(self, live_id: str, auth_: Any, dispatch: Any, controller: Any = None) -> None:
+    def __init__(self, live_id: str, auth_: Any, dispatch: Any, controller: Any = None,
+                 session_ok: Optional[bool] = None) -> None:
         super().__init__(live_id, auth_)
         self.dispatch = dispatch
         # 所属控制器 AutoDM（用于心跳探活失败时自动触发重新扫码）；可为 None
         self.controller = controller
+        # 会话态三态（ENG-018）：True=服务端承认登录 / False=已确认未登录 /
+        # None=取不到证据（探测失败或未探测）。**判据由 AutoDM 探测后传入**，
+        # LiveChatHook 只消费 —— 避免两个模块各自发明一套「凭证是否可用」。
+        self.session_ok: Optional[bool] = session_ok
         # 开播状态（由 AutoDM 在启动前查询并写入）
         self.room_status: Optional[Any] = None
         # 诊断计数：本会话遇到的加密昵称 / 其中 sec_uid 缺失的数量
@@ -253,6 +258,106 @@ class LiveChatHook(DouyinLive):
         if re.fullmatch(r"用户\d+", nickname.strip()):
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # 凭证可用性判据（ENG-017：直播流连接与凭证解耦）
+    # ------------------------------------------------------------------
+    # 2026-09-21（ENG-018）：把「凭证可用」升级为**会话态判据**。
+    #
+    # 原先的判据是「auth 带非空 cookie」——实测这是**代理信号**（本项目
+    # §〇·己·3 明令禁止）：张老师账号 cookie 70 个字段齐全，但服务端判其
+    # 「未登录」，直播帧下发脱敏数据（`uid=111111` + `威***` + `sec_uid` 空），
+    # 与「完全不带 cookie 的真匿名」现象**逐字相同**。判据为真、能力为零。
+    #
+    # 正确判据 = **主站会话被服务端承认**（`user/profile/self/` 是否返回
+    # `status_code=0` 且带 `MS4wLjABAAAA` 段），由 AutoDM 在启动时写入
+    # `self.session_ok`。三态（§〇·己·2）：True=已确认登录 / False=已确认
+    # 未登录 / None=取不到证据（探测失败或未跑）→ 诚实降级，保留原状态。
+    def _has_credential(self) -> bool:
+        """当前监听是否持有**被服务端承认的**可用凭证。"""
+        if not (self.auth_ is not None and getattr(self.auth_, "cookie_str", "")):
+            return False
+        sess = getattr(self, "session_ok", None)
+        if sess is None:
+            # 未探测到结论 → 不擅自改写既有行为（诚实降级），仅在日志留痕
+            logger.debug("[LIVE-034] 会话态未知（未探测或探测失败），按「有 cookie」继续")
+            return True
+        return bool(sess)
+
+    def _anon_live_info(self) -> dict:
+        """匿名获取直播间信息（room_id / ttwid / 开播状态）。
+
+        2026-09-21（ENG-017）：**不走 `DouyinAPI.get_live_info`** ——
+        该函数签名要求 `auth_` 非空（内部 `cookies=auth_.cookie`），传 None 会
+        `AttributeError`；而它是并发写者正在维护的文件，本会话不叠加改动。
+
+        这里自建等价的匿名请求：GET 直播间页面 → 响应里取 ttwid、页面里正则取
+        room_id/user_id/status。全程**不带任何账号身份**（ttwid 为服务端
+        下发的设备级标识），属匿名观看，不触碰账号风控面。
+
+        实测（本会话）：匿名 GET → HTTP 200、~905KB、含 roomId / ttwid(127)。
+        """
+        import re as _re
+        import requests
+        from builder.header import HeaderBuilder
+        from utils.dy_util import tls_verify
+
+        url = f"https://live.douyin.com/{self.live_id}"
+        sess = requests.Session()
+        r = sess.get(url, headers={
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "cache-control": "no-cache",
+            "referer": "https://live.douyin.com/?from_nav=1",
+            "user-agent": HeaderBuilder.ua,
+        }, timeout=20, verify=tls_verify())
+        if r.status_code != 200:
+            logger.error(f"[LIVE-031] " + f"[live-ws] 匿名进房失败 HTTP {r.status_code}")
+            return {}
+        ttwid = (sess.cookies.get_dict() or {}).get("ttwid") or ""
+
+        # 页面脚本里取 room_id / user_id / status（与官方解析同源，但匿名）
+        room_id = user_id = status = None
+        for m in _re.finditer(r'\\"roomId\\":\\"(\d+)\\"', r.text):
+            room_id = m.group(1)
+            break
+        if not room_id:
+            m = _re.search(r'"roomId"\s*:\s*"(\d+)"', r.text)
+            if m:
+                room_id = m.group(1)
+        m = _re.search(r'\\"user_unique_id\\":\\"(\d+)\\"', r.text) or \
+            _re.search(r'"user_unique_id"\s*:\s*"(\d+)"', r.text)
+        if m:
+            user_id = m.group(1)
+        m = _re.search(r'\\"status\\":(\d+)', r.text)
+        if m:
+            status = m.group(1)
+
+        if not room_id:
+            logger.error(f"[LIVE-032] " + "[live-ws] 匿名进房未解析出 room_id"
+                         "（页面结构可能变更 / 直播间不存在）")
+            return {}
+        return {
+            "room_id": room_id,
+            "user_id": user_id,
+            "ttwid": ttwid,
+            "room_status": int(status) if status is not None else None,
+            "room_title": "",
+        }
+
+    def _anon_cookie(self) -> str:
+        """无凭证时用于建立 WS 的匿名 cookie（页面侧下发的 ttwid）。
+
+        ttwid 是**设备级**标识，由服务端在无登录态访问直播间页面时下发，
+        不携带任何账号身份 —— 用它建连属匿名观看，不触碰账号风控面。
+        取不到时返回空串（此时仍按空 cookie 尝试，由服务端裁决）。
+        """
+        try:
+            info = self._anon_live_info()
+            return str((info or {}).get("ttwid") or "")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LIVE-027] " + f"[live-ws] 匿名 ttwid 获取失败（将按空 cookie 尝试）: {e}")
+        return ""
 
     # ------------------------------------------------------------------
     # on_message：protobuf 解析 + 推送 dispatch

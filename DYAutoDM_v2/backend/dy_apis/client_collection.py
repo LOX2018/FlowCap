@@ -102,8 +102,61 @@ class CollectionMixin:
         return safe_json(resp)
 
     @staticmethod
+    def get_mix_aweme(auth, mix_id: str, cursor: str = '0', count: str = '20', **kwargs):
+        """**普通合集**内的作品（`/aweme/v1/web/mix/aweme/`，参数 `mix_id`）。
+
+        ## 为什么新增（2026-09-21，用户反馈「合集内的视频一个都没获取到」）
+
+        此前 `api/platform.py:/collection/series` 用的是 `get_series_aweme`
+        —— 那是**短剧（series）专用**接口，参数叫 `series_id`。对普通合集
+        （实测 `is_serial_mix = 0`、有 `mix_id` 但无 `series_id`）调用它会返回
+
+            {"status_code": 5, "status_msg": "参数不合法", "aweme_list": null}
+
+        ⇒ 前端因此永远看到空列表。正确接口是 `/aweme/v1/web/mix/aweme/`，
+          参数 `mix_id`（上游 `mafqla/douyin-api` docs/user-api.md 与
+          tikhub `fetch_video_mix_post_list` 一致：mix_id + cursor + count）。
+
+        Args:
+            mix_id: 合集 id（来自 `get_mix_list_collection` 的 `mix_infos[].mix_id`）
+        """
+        api = "/aweme/v1/web/mix/aweme/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        # referer 必须是该合集的页面（实测 collection/<mix_id> 是正确来源页）
+        headers.set_referer(f"https://www.douyin.com/collection/{mix_id}")
+        params = Params()
+        (params.add_param("device_platform", "webapp").add_param("aid", "6383")
+         .add_param("channel", "channel_pc_web").add_param("pc_client_type", "1")
+         .add_param("version_code", "170400").add_param("version_name", "17.4.0")
+         .add_param("cookie_enabled", "true").add_param("browser_language", "zh-CN")
+         .add_param("browser_platform", "Win32")
+         .add_param("browser_name", get_profile()["browser_name"])
+         .add_param("browser_version", get_profile()["browser_version"])
+         .add_param("browser_online", "true").add_param("engine_name", "Blink")
+         .add_param("os_name", "Windows").add_param("os_version", "10")
+         .add_param("platform", "PC")
+         .add_param("mix_id", str(mix_id))
+         .add_param("cursor", str(cursor)).add_param("count", str(count)))
+        params.with_web_id(auth, f"https://www.douyin.com/collection/{mix_id}")
+        params.add_param("msToken", auth.msToken)
+        params.with_a_bogus()
+        # ★ 必须走 secsdk 签名（2026-09-21 实测）：
+        #   本接口在 PROTECTED_PATHS_GET 清单内，不加签服务端直接 403；
+        #   且签名对规范化 query 算，**不能**再用 params= 传给 requests。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url, headers=headers.get(), cookies=auth.cookie,
+                            verify=tls_verify(), timeout=15)
+        return safe_json(resp)
+
+    @staticmethod
     def get_series_aweme(auth, series_id: str, cursor: str = '0', count: str = '20', **kwargs):
-        """合集内的作品（源项目 `/aweme/v1/web/series/aweme/`）。"""
+        """**短剧**合集内的作品（`/aweme/v1/web/series/aweme/`，参数 `series_id`）。
+
+        ⚠️ 2026-09-21 澄清：本接口**只适用于短剧**（`is_serial_mix = 1`）。
+        普通合集请用 `get_mix_aweme`（参数 `mix_id`）—— 传错会得到
+        `status_code: 5 / 参数不合法`。前端 `/collection/series` 端点已按
+        `is_serial_mix` 分流到两个接口。
+        """
         api = "/aweme/v1/web/series/aweme/"
         headers = HeaderBuilder().build(HeaderType.GET)
         headers.set_referer("https://www.douyin.com/")

@@ -41,7 +41,8 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from loguru import logger
 from pydantic import BaseModel
 
@@ -511,9 +512,55 @@ async def search(req: SearchReq) -> dict[str, Any]:
         raise HTTPException(502, f"搜索失败: {type(e).__name__}")
 
 
+@router.post("/favorite")
+async def favorite(req: LikedReq) -> dict[str, Any]:
+    """**我的收藏（作品维度）** —— 不依赖「收藏夹」文件夹。
+
+    ## 为什么单开这个端点（2026-09-21，用户反馈）
+
+    原设计只暴露 `/collected`（收藏夹**文件夹列表**）→ 前端「收藏夹」tab
+    先要求用户有文件夹、再点进去才看作品。但实测该账号
+
+        get_collect_list → collects_list = **0 个文件夹**
+
+    而**收藏作品本身有 19 条**（`get_user_favorite` 实测 status_code=0）。
+
+    ⇒ 多数人并不专门建文件夹，收藏就是一堆作品。故提供本端点
+      **直接返回收藏作品**，与「点赞」同源（`get_user_favorite`），
+      区别只在语义与文案。前端「收藏」tab 用它，不再要求文件夹。
+    """
+    auth = _auth_for(req.account)
+    api = _api()
+    sec = req.sec_id
+    if not sec:
+        try:
+            sec = await asyncio.to_thread(api.get_my_sec_uid, auth)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"获取自身 sec_uid 失败: {type(e).__name__}")
+    try:
+        raw = await asyncio.to_thread(
+            api.get_user_favorite, auth, sec, "0", str(max(1, min(req.num, 50))))
+    except Exception as e:  # noqa: BLE001
+        # 与 /liked 同样的处置：平台侧偶发空响应体 → 空列表 + 标记，不弹误导性错误
+        logger.warning(f"[PLT-007] " + f"收藏列表获取失败（平台侧常返空）: {type(e).__name__}")
+        return {"ok": True, "items": [], "has_more": False, "unavailable": True}
+    if not isinstance(raw, dict):
+        return {"ok": True, "items": [], "has_more": False, "unavailable": True}
+    return {
+        "ok": True,
+        "items": [_pick_aweme(w) for w in (raw.get("aweme_list") or [])],
+        "has_more": bool(raw.get("has_more")),
+        "cursor": raw.get("max_cursor"),
+    }
+
+
 @router.post("/collected")
 async def collected(req: CollectListReq) -> dict[str, Any]:
-    """收藏夹列表。对应基座 `get_collect_list`。"""
+    """收藏夹**文件夹列表**（历史保留）。对应基座 `get_collect_list`。
+
+    ⚠️ 2026-09-21：前端「收藏」tab 已改用 `/favorite`（直接看作品），
+    本端点保留供未来「按文件夹浏览」使用 —— 实测多数账号文件夹数为 0。
+    """
     auth = _auth_for(req.account)
     api = _api()
     try:
@@ -900,7 +947,24 @@ async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
         raise HTTPException(502, "取址失败：未获得作品数据（建议由前端回传列表返回的作品对象 raw）")
 
     m = MR.extract_media(raw)
-    url = MR.pick_quality(m, req.quality) or ""
+    picked = MR.pick_quality(m, req.quality) or ""
+    # ── 2026-09-21 根因修复：跟随 302 拿真实可播地址 ──
+    # `pick_quality` 已优先挑无签名链接，但无签名入口
+    # `/aweme/v1/play/?video_id=` 本身是 **302 跳转入口**而非视频数据；
+    # 不解析它，<video> 拿到的是一个 text/plain 的 302 页面 → 播放失败。
+    # 会话签名直链则相反：必须避开（CDN 403），挑选逻辑见 is_session_signed()。
+    url = picked
+    how = "unsigned-entry"
+    if picked:
+        url, how = await asyncio.to_thread(MR.resolve_playable, picked)
+        # 告警判据（2026-09-21 修正）：只有**解析未生效**（passthrough，仍是
+        # 未经 302 的候选地址）且该地址带会话签名时，才判定「必然 403」。
+        # 解析成功后的真实流 host 同样落在 douyinvod.com —— 那不是签名直链，
+        # 早期版本按 host 告警，会把「已解析可播」误报成「必然失败」。
+        if how == "passthrough" and MR.is_session_signed(url):
+            logger.warning(f"[PLT-042] " + f"播放地址未解析且为会话签名直链（CDN 会 403）: {picked[:80]}")
+        elif how != "passthrough":
+            logger.info(f"[crawl] 播放地址已解析 via={how} aweme={req.aweme_id or (raw.get('aweme_id') or '')}")
     summary = MR.summarize(m)
     # 2026-09-15：前端回传的是 _pick_aweme 的裁剪对象（媒体在 media 子树、
     # author 亦在 media.author），故作者信息需兼容两种形态读取。
@@ -911,6 +975,9 @@ async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
         "aweme_id": str(raw.get("aweme_id") or req.aweme_id or ""),
         "type": m.get("type"),
         "url": url,
+        # 取址方式（2026-09-21）：direct=直给 / head|get-range=已跟随302 /
+        # passthrough=解析失败沿用原地址。前端与排障据此判断地址是否可信。
+        "resolved_via": how,
         "images": m.get("images") or [],
         "live_photos": m.get("live_photos") or [],
         "cover": m.get("cover") or "",
@@ -930,7 +997,272 @@ async def media_stats() -> dict[str, Any]:
     """媒体代理缓存统计（照源项目 `media_proxy_cache.rs` 的语义）。"""
     from services import media_proxy as MP
     try:
-        return {"ok": True, **MP.stats()}
+        return {"ok": True, **MP.stats(), "stream_cache": stream_cache_stats()}
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[PLT-041] " + f"媒体统计失败: {type(e).__name__}")
         raise HTTPException(502, f"媒体统计失败: {type(e).__name__}")
+
+
+# ===========================================================================
+# 播放流反向代理（★ 2026-09-21 新增，方案 B —— 根治「取到地址仍播不了」）
+# ===========================================================================
+# ## 为什么必须有它（实测根因）
+#
+# 方案 A 已能让后端拿到 200/video/mp4 的真实地址，但**播放器仍然失败**：
+# Tauri 的 webview 里 `<video src="https://v26-web.douyinvod.com/...">` 是
+# **跨域直接请求抖音 CDN**，浏览器侧受 CORS / Referer / 来源策略约束，
+# 与 Python 侧 `requests` 能否 200 是**两件事**。
+#
+# ⇒ 正解是让 `<video>` 只请求**同源的本机后端**，由后端带正确 headers 去
+#   拉流并转发（源项目 `media_proxy_cache.rs` 的对应物）。
+#
+# ## 设计要点
+# · **不落盘**：50MB×N 的作品全落盘会撑爆磁盘，故边收边转（stream）。
+# · **透传 Range**：<video> 拖进度条必须支持 206，故 Range 头原样转发。
+# · **URL 白名单**：只允许抖音媒体域，防 SSRF（与 merged_forward 同范式）。
+# · **签名校验**：用 urlsafe 签名(aweme_id+过期) 防被当开放代理滥用。
+
+_ALLOWED_MEDIA_HOSTS = (
+    "douyinvod.com",
+    "douyinpic.com",
+    "douyinstatic.com",
+    "byteimg.com",
+    "bytegoofy.com",
+    "ixigua.com",
+    "snssdk.com",
+)
+_STREAM_SIGN_TTL_SEC = 6 * 3600
+
+# ── 流缓存（2026-09-21 用户要求：保留 30 分钟）──────────────────────────
+# ## 为什么用「内存 + 上限」而不是落盘
+# 单个作品可达 50–400MB（实测 401,673,127 字节），落盘会迅速撑爆磁盘
+# （此前设计中已刻意避免）。而 30 分钟窗口内重复播放同一作品是很常见的
+# 操作（拖进度条会触发多次 Range 请求）—— 故缓存 **Range 片段**而非整片：
+#   · key = (target_url, range_spec)
+#   · value = (bytes, content_type, content_range, ts)
+# 拖进度条时同一片段通常被请求多次，命中即可省一次上游往返。
+# 上限 64MB / 200 条，LRU 淘汰，过期 30 分钟。
+_STREAM_CACHE_TTL_SEC = 30 * 60
+_STREAM_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_STREAM_CACHE_MAX_ITEMS = 200
+_stream_cache: "OrderedDict[tuple[str, str], tuple[bytes, str, str, float]]" = None  # type: ignore
+_stream_cache_lock = None
+_stream_cache_bytes = 0
+
+
+def _cache_init():
+    """懒初始化（模块导入期不建锁/字典，避免多进程 fork 问题）。"""
+    global _stream_cache, _stream_cache_lock
+    if _stream_cache is None:
+        from collections import OrderedDict
+        import threading
+        _stream_cache = OrderedDict()
+        _stream_cache_lock = threading.Lock()
+
+
+def _cache_get(key):
+    """取缓存片段；过期返回 None（并顺手清理该条）。"""
+    _cache_init()
+    import time as _t
+    with _stream_cache_lock:
+        ent = _stream_cache.get(key)
+        if not ent:
+            return None
+        data, ctype, crange, ts = ent
+        if _t.time() - ts > _STREAM_CACHE_TTL_SEC:
+            _stream_cache.pop(key, None)
+            globals()["_stream_cache_bytes"] -= len(data)
+            return None
+        _stream_cache.move_to_end(key)   # LRU：命中即置最新
+        return (data, ctype, crange)
+
+
+def _cache_put(key, data, ctype, crange):
+    """写入缓存片段，超上限即按 LRU 淘汰。"""
+    _cache_init()
+    import time as _t
+    global _stream_cache_bytes
+    with _stream_cache_lock:
+        if key in _stream_cache:
+            old = _stream_cache.pop(key)
+            _stream_cache_bytes -= len(old[0])
+        _stream_cache[key] = (data, ctype, crange, _t.time())
+        _stream_cache_bytes += len(data)
+        # 双重上限：字节数 + 条目数（防大量小片段占满条目）
+        while (_stream_cache_bytes > _STREAM_CACHE_MAX_BYTES
+               or len(_stream_cache) > _STREAM_CACHE_MAX_ITEMS):
+            _, (d, *_rest) = _stream_cache.popitem(last=False)
+            _stream_cache_bytes -= len(d)
+
+
+def stream_cache_stats() -> dict:
+    """流缓存统计（可观测：命中率能直接说明缓存是否真在工作）。"""
+    _cache_init()
+    with _stream_cache_lock:
+        return {"items": len(_stream_cache), "bytes": _stream_cache_bytes,
+                "max_bytes": _STREAM_CACHE_MAX_BYTES,
+                "max_items": _STREAM_CACHE_MAX_ITEMS,
+                "ttl_sec": _STREAM_CACHE_TTL_SEC}
+
+
+def _media_sign(aweme_id: str, exp: int) -> str:
+    """本机流地址的短签名（防被当开放代理）。仅本机使用，密钥派生自应用盐。"""
+    import hashlib
+    import hmac
+    secret = b"dyautodm-media-stream-v1"
+    msg = f"{aweme_id}:{exp}".encode()
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()[:32]
+
+
+def _media_host_ok(url: str) -> bool:
+    """URL 主机是否属于抖音媒体域（防 SSRF）。"""
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    if not host:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _ALLOWED_MEDIA_HOSTS)
+
+
+class StreamTicketReq(BaseModel):
+    account: str
+    aweme_id: str
+    quality: str = "origin"
+    raw: dict[str, Any] | None = None
+
+
+@router.post("/media/stream-ticket")
+async def media_stream_ticket(req: StreamTicketReq) -> dict[str, Any]:
+    """把取到的直链换成**本机同源流地址**（`<video>` 用这个，绕开跨域）。
+
+    返回 `{ok, stream_url, expires_in}`；`stream_url` 指向
+    `GET /api/platform/media/stream?u=<b64url>&exp=&sig=`，Flutter/webview
+    只与本机后端通信 → 无跨域、无 Referer 限制。
+    """
+    import base64
+    import time as _t
+    r = await media_resolve(MediaResolveReq(
+        account=req.account, aweme_id=req.aweme_id, raw=req.raw, quality=req.quality))
+    direct = r.get("url") or ""
+    if not direct:
+        raise HTTPException(502, "取址失败：无可用地址")
+    if not _media_host_ok(direct):
+        # 非白名单域不代理（防 SSRF）；罕见但必须显式拒绝而非静默放行
+        logger.warning(f"[PLT-043] " + f"直链主机不在白名单，拒绝代理: {direct[:80]}")
+        raise HTTPException(502, "取址失败：地址主机不在允许列表")
+    exp = int(_t.time()) + _STREAM_SIGN_TTL_SEC
+    sig = _media_sign(req.aweme_id, exp)
+    u = base64.urlsafe_b64encode(direct.encode()).decode()
+    stream_url = (f"/api/platform/media/stream?u={u}&exp={exp}&sig={sig}"
+                  f"&aid={req.aweme_id}")
+    return {"ok": True, "stream_url": stream_url, "expires_in": _STREAM_SIGN_TTL_SEC,
+            "resolved_via": r.get("resolved_via"), "type": r.get("type"),
+            "cover": r.get("cover"), "duration": r.get("duration"),
+            "desc": r.get("desc"), "author": r.get("author"),
+            "images": r.get("images") or [], "live_photos": r.get("live_photos") or []}
+
+
+@router.get("/media/stream")
+async def media_stream(u: str, exp: int, sig: str, aid: str = "", request: Request = None):
+    """反向代理抖音媒体流（支持 Range；`<video>` 直接指向本机此处）。
+
+    安全：签名校验 + 过期校验 + 主机白名单，三重防滥用/SSRF。
+    """
+    import base64
+    import time as _t
+    from fastapi.responses import StreamingResponse
+    import requests
+
+    if exp < int(_t.time()):
+        raise HTTPException(403, "流地址已过期，请重新取址")
+    if _media_sign(aid, exp) != sig:
+        raise HTTPException(403, "流地址签名无效")
+    try:
+        target = base64.urlsafe_b64decode(u.encode()).decode()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "u 参数非法")
+    if not _media_host_ok(target):
+        raise HTTPException(403, "目标主机不在允许列表")
+
+    rng = None
+    if request is not None:
+        rng = request.headers.get("range") or request.headers.get("Range")
+
+    # ── 缓存查找（30 分钟内同一 (url, range) 直接回放，不再打上游）──
+    ckey = (target, rng or "")
+    hit = _cache_get(ckey)
+    if hit is not None:
+        data, ctype, crange = hit
+        hdrs = {"Accept-Ranges": "bytes", "Content-Length": str(len(data)),
+                "X-Stream-Cache": "HIT"}
+        if crange:
+            hdrs["Content-Range"] = crange
+        return Response(content=data, status_code=206 if crange else 200,
+                        media_type=ctype, headers=hdrs)
+
+    fwd_headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+        "Referer": "https://www.douyin.com/",
+        "Accept": "*/*",
+    }
+    if rng:
+        fwd_headers["Range"] = rng
+
+    from utils.tls_policy import tls_verify
+    try:
+        up = requests.get(target, headers=fwd_headers, stream=True, timeout=20,
+                          verify=tls_verify())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[PLT-044] " + f"上游流拉取失败: {type(e).__name__}")
+        raise HTTPException(502, f"上游流拉取失败: {type(e).__name__}")
+
+    if up.status_code >= 400:
+        up.close()
+        logger.warning(f"[PLT-045] " + f"上游返回 {up.status_code}（直链可能过期）")
+        raise HTTPException(502, f"上游返回 {up.status_code}，直链可能已过期")
+
+    media_type = up.headers.get("Content-Type") or "video/mp4"
+    crange = up.headers.get("Content-Range")
+    out_headers = {"Accept-Ranges": "bytes", "X-Stream-Cache": "MISS"}
+    for k in ("Content-Length", "Content-Range"):
+        v = up.headers.get(k)
+        if v:
+            out_headers[k] = v
+
+    # ── 缓存写入策略（2026-09-21）──
+    # · 带 Range 的**片段**请求（<video> 拖动/起播常见）→ 读全后缓存并直返；
+    #   片段通常 KB~MB 级，读进内存安全，且这正是会被重复请求的部分。
+    # · **无 Range 的整片**请求（可达 400MB）→ 不读进内存，保持边收边转，
+    #   否则一次播放就能把内存打满。
+    # 判据用 Content-Length（上游声明）而非读到的字节数，避免先读后判。
+    _cl = up.headers.get("Content-Length")
+    _is_small = False
+    try:
+        _is_small = bool(rng) and _cl and int(_cl) <= 8 * 1024 * 1024
+    except Exception:  # noqa: BLE001
+        _is_small = False
+    if _is_small:
+        try:
+            body = up.content          # 上游已声明长度且带 Range → 片段可安全读全
+            status = up.status_code
+            up.close()
+            _cache_put(ckey, body, media_type, crange or "")
+            out_headers["Content-Length"] = str(len(body))
+            return Response(content=body, status_code=status, media_type=media_type,
+                            headers=out_headers)
+        except Exception as e:  # noqa: BLE001 —— 读失败则回落到流式（不阻断播放）
+            logger.warning(f"[PLT-046] " + f"片段缓存读失败，回落流式: {type(e).__name__}")
+
+    try:
+        up.kwargs["stream"] = True
+    except Exception:  # noqa: BLE001
+        pass
+    return StreamingResponse(
+        up.iter_content(chunk_size=64 * 1024),
+        status_code=up.status_code,
+        media_type=media_type,
+        headers=out_headers,
+    )

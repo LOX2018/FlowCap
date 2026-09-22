@@ -55,10 +55,22 @@ def check_room_live(auth: Any, live_id: str):
 
     返回 (is_live, room_status, room_title, info)。
     迁移自 run.py 的 check_room_live。
+
+    2026-09-21（ENG-017）：auth 为 None 时走**匿名进房**（自建请求），
+    不得把 None 直接传给 `DouyinAPI.get_live_info`（其内部 `auth_.cookie`
+    会 AttributeError）。开播状态本来就从页面解析得到，与登录态无关。
     """
     try:
         from dy_apis.douyin_api import DouyinAPI
-        info = DouyinAPI.get_live_info(auth, live_id)
+        if auth is not None and getattr(auth, "cookie", None):
+            info = DouyinAPI.get_live_info(auth, live_id)
+        else:
+            # 匿名路径：复用 LiveChatHook 的匿名进房实现（同一份解析逻辑）
+            from core.live_hook import LiveChatHook
+            _probe = LiveChatHook.__new__(LiveChatHook)
+            _probe.live_id = live_id
+            _probe.auth_ = None
+            info = _probe._anon_live_info()
         if not info or not isinstance(info, dict):
             logger.warning(f"[ENG-001] " + "[直播间状态] get_live_info 返回空，保守视为已开播以免误阻断监听")
             return True, None, "", None
@@ -117,6 +129,14 @@ class AutoDM:
         # 子系统
         self.dispatch: Optional[DispatchCenter] = None
         self.live: Optional[LiveChatHook] = None
+        # 监听线生命周期标记（ENG-019，2026-09-21）
+        # 设计契约：「监听线是否活跃」的判据必须在**整条生命周期内**都成立——
+        # 从「决定监听」开始，到「WS 收尾」结束。此前判据只覆盖「已连上/在重连」，
+        # 于是「LiveChatHook 已创建、start_ws 还没被调度」这一窗口被判成「监听已死」，
+        # 第一个队列空回调就把整个任务误收尾（实机：引擎启动 2s 后即 stopped，
+        # 而 WS 在 1s 后才连上；前端于是显示「已停止」，正是用户报的现象）。
+        self._listen_started = False       # 已决定监听（置活点）
+        self._listen_ended = False         # 监听线真的收尾了（置死点）
 
         # 运行任务
         self._task: Optional[asyncio.Task] = None
@@ -469,6 +489,10 @@ class AutoDM:
         self._apply_config(config)
         self.status_msg = "启动中"
         self._stop_event.clear()
+        # 新任务复位监听线标记（ENG-019）：否则上一轮任务的 _listen_ended
+        # 会让本轮「已启动未收尾」判据恒不成立 → 监听窗口内被误收尾。
+        self._listen_started = False
+        self._listen_ended = False
 
         # 记录历史任务（任务中心展示），附配置快照供「复用」回读
         try:
@@ -519,49 +543,85 @@ class AutoDM:
             self.target_acct = (getattr(config, "acct", None)
                                 or getattr(self, "_acct", None) or None)
             if not getattr(self.monitor_auth, "cookie", None):
-                logger.error(f"[AUTH-018] " + "[auth] 监测账号未获取到登录 cookie，无法监听。")
-                self.status_msg = "监测登录失败"
-                self.state = EngineState.IDLE
-                return
+                logger.warning(f"[AUTH-018] " + "[auth] 监测账号未获取到登录 cookie —— "
+                    "以【匿名模式】继续监听直播流（弹幕可收；昵称若加密将无法解密）。")
+                # ENG-017：不再 return。凭证的真正职责是「昵称解密 + 私信发送」，
+                # 而直播流连接本身支持匿名查看（用户明确要求解耦）。
+                # 此处降级：monitor_auth 置 None，由 LiveChatHook 走匿名 cookie 建连。
+
+            # 2026-09-21（ENG-018）：探测**直播昵称解密权**（= 服务端是否承认登录态）。
+            # 判据不能只看「有 cookie」——实测张老师 cookie 70 个字段齐全（sessionid/
+            # sid_tt/ttwid/uid_tt 全在），服务端仍判其「未登录」⇒ 直播帧下发脱敏数据
+            # （uid=111111 + 昵称 `威***` + sec_uid 空），与**完全不带 cookie 的真匿名**
+            # 现象逐字相同 ⇒「有 cookie」是代理信号，判据为真、能力为零。
+            # 三态（§〇·己·2）：True=有解密权 / False=已确认无解密权 / None=取不到证据。
+            # 该值一路传给 LiveChatHook（它只消费、不自创判据）。
+            self._live_session_ok = None
+            self._live_ident_detail = ""
+            try:
+                from auto_dm.accounts import probe_live_identity as _probe_li
+                _li_ok, _live_ident_detail = await asyncio.to_thread(
+                    _probe_li, _m_name, self.monitor_auth, False)
+                # 探测异常时 detail 带「结论未知」⇒ 不据此降级（诚实三态）
+                self._live_session_ok = (None if "结论未知" in (_live_ident_detail or "")
+                                         else bool(_li_ok))
+                self._live_ident_detail = _live_ident_detail
+            except Exception as _e:  # noqa: BLE001
+                logger.debug(f"[live-identity] 直播解密权探测跳过: {_e}")
+            if self._live_session_ok is True:
+                logger.info("[live-identity] 监测账号具备直播昵称解密权（会话被服务端承认）")
+            elif self._live_session_ok is False:
+                logger.warning(
+                    f"[LIVE-035] [live-identity] 监测账号**无直播昵称解密权** —— "
+                    f"弹幕昵称将被脱敏（uid=111111）。原因：{_live_ident_detail}")
 
             # 2) 构造发送账号 auth（与监测同一 env 时复用）
+            #    ENG-017：发送线凭证缺失**不阻断监听线** —— 只关掉发送能力。
+            _send_ok = True
             s_env = self.sender_env_path or m_env
             if s_env == m_env:
                 self.auth = self.monitor_auth
                 logger.info("[auth] 发送账号与监测账号共用 .env，复用现场会话凭证")
             else:
-                self.auth = await asyncio.to_thread(self._build_one_auth, s_env, False, 0)
+                try:
+                    self.auth = await asyncio.to_thread(self._build_one_auth, s_env, False, 0)
+                except Exception as e:  # noqa: BLE001
+                    self.auth = None
+                    _send_ok = False
+                    logger.warning(f"[AUTH-019] " + f"[auth] 发送账号构造失败，转为只听不发: {e}")
                 # P1-B：独立发送账号同样标记 account_name
                 try:
                     from auto_dm.accounts import name_of_env_path
                     _s_name = name_of_env_path(s_env)
-                    if _s_name:
+                    if _s_name and self.auth is not None:
                         setattr(self.auth, "account_name", _s_name)
                 except Exception:
                     pass
-            if not getattr(self.auth, "cookie", None):
-                logger.error(f"[AUTH-019] " + "[auth] 发送账号未获取到登录 cookie，无法发私信。")
-                self.status_msg = "发送登录失败"
-                self.state = EngineState.IDLE
-                return
-            if not (getattr(self.auth, "ticket", None) and getattr(self.auth, "private_key", None)):
-                logger.error(f"[AUTH-020] " + "[auth] 发送账号私信签名缺失（DY_TICKET/DY_PRIVATE_KEY 为空）。"
-                    "请在该账号下点重新扫码完成一次登录。")
-                self.status_msg = "发送账号需重新扫码"
-                self.state = EngineState.IDLE
-                return
-            if not await asyncio.to_thread(self._verify_credential, self.auth):
-                self.status_msg = "发送账号凭证失效"
-                self.state = EngineState.IDLE
-                return
+            if _send_ok and not getattr(self.auth, "cookie", None):
+                logger.warning(f"[AUTH-019] " + "[auth] 发送账号未获取到登录 cookie —— "
+                    "转为【只听不发】（监听继续，私信能力关闭）。")
+                _send_ok = False
+            if _send_ok and not (getattr(self.auth, "ticket", None) and getattr(self.auth, "private_key", None)):
+                logger.warning(f"[AUTH-020] " + "[auth] 发送账号私信签名缺失（DY_TICKET/DY_PRIVATE_KEY 为空）—— "
+                    "转为【只听不发】。请在该账号下点重新扫码恢复发送能力。")
+                _send_ok = False
+            if _send_ok and not await asyncio.to_thread(self._verify_credential, self.auth):
+                logger.warning(f"[AUTH-021] " + "[auth] 发送账号凭证失效 —— 转为【只听不发】"
+                    "（监听继续；请重新扫码恢复发送）。")
+                _send_ok = False
+            self._send_available = _send_ok
+            if not _send_ok:
+                self.status_msg = "监听中（只听不发·发送凭证不可用）"
 
             # 3) 构造 DispatchCenter（词库随机抽取由 self.pick_dm_message 提供）
+            #    ENG-017：发送不可用时 enable_send=False —— 调度器仍接收并入库
+            #    弹幕记录（前端可见「已捕获未发」），但不触发实际发送。
             self.dispatch = DispatchCenter(
                 auth=self.auth,
                 max_target=self.limit,
                 delay_range=config.delay_range,
                 interval=config.interval,
-                enable_send=True,
+                enable_send=_send_ok,   # ENG-017：发送凭证不可用 → 只听不发
                 pick_dm_message=self.pick_dm_message,
                 gen_dm_message=self.gen_dm_message,
             )
@@ -569,9 +629,12 @@ class AutoDM:
             await self.dispatch.start()
 
             # 4) 检查直播间是否开播
+            #    ENG-017：check_room_live 只用 auth 发 GET 页面（cookie 只是「带上」），
+            #    无凭证时传 None 走匿名请求同样能拿到 room_status/title。
+            _live_auth = self.monitor_auth if getattr(self.monitor_auth, "cookie", None) else None
             self.status_msg = f"等待开播 {self.live_id}"
             is_live, room_status, room_title, live_info = await asyncio.to_thread(
-                check_room_live, self.monitor_auth, self.live_id
+                check_room_live, _live_auth, self.live_id
             )
             if not is_live:
                 logger.warning(f"[ENG-005] " + f"[直播间状态] 未开播，进入轮询等待（每 30s 复查）")
@@ -585,7 +648,7 @@ class AutoDM:
                     except asyncio.TimeoutError:
                         pass
                     is_live, room_status, room_title, live_info = await asyncio.to_thread(
-                        check_room_live, self.monitor_auth, self.live_id
+                        check_room_live, _live_auth, self.live_id
                     )
                     if is_live:
                         logger.info("[直播间状态] 检测到已开播，开始监听")
@@ -601,6 +664,11 @@ class AutoDM:
             # 5) 启动 LiveChatHook（WS 监听 + 心跳）
             self.state = EngineState.RUNNING
             self.status_msg = f"监听中 {self.live_id}"
+            # 2026-09-21（ENG-018）：无解密权必须**在 UI 上可见**，否则用户只看得到
+            # 「监听中」而弹幕昵称全是脱敏值，无从判断是代码坏了还是账号没权限。
+            if getattr(self, "_live_session_ok", None) is False:
+                self.status_msg = (f"监听中 {self.live_id}（昵称脱敏·账号无解密权，"
+                                   f"请重新扫码）")
             self.room_title = room_title or ""
             # 2026-09-08：任务启动 IM 汇报
             try:
@@ -612,7 +680,12 @@ class AutoDM:
                 )
             except Exception as _e:  # noqa: BLE001
                 logger.debug(f"[notify] 任务启动汇报跳过: {_e}")
-            self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch, controller=self)
+            # 置活点必须在 `LiveChatHook(...)` **之前**：构造与 on_idle 回调之间
+            # 任何一刻被判成「不活跃」都会误收尾（ENG-019）。
+            self._listen_started = True
+            self._listen_ended = False
+            self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch,
+                                     controller=self, session_ok=self._live_session_ok)
             self.live.room_status = room_status
             # 心跳间隔默认 300s
             self.live.start_heartbeat(interval=300)
@@ -632,6 +705,8 @@ class AutoDM:
             except Exception as _ne:  # noqa: BLE001
                 logger.debug(f"[notify] 任务异常告警跳过: {_ne}")
         finally:
+            # 监听线到此结束（ENG-019）：此后 on_idle 的收尾判据可以正常生效。
+            self._listen_ended = True
             # 启动失败（登录/凭证等）已在 _run 内把状态置回 IDLE：保留失败信息，任务标为停止
             if self.state == EngineState.IDLE:
                 logger.warning(f"[ENG-007] " + f"[引擎] 启动未成功: {self.status_msg}")
@@ -835,6 +910,11 @@ class AutoDM:
         **不能**单独用作存活判据（ENG-015）。本方法按「已连上 → 正在重连 →
         刚拿到句柄」的顺序判定，任一层成立即视为监听线存活。
         """
+        # ① 已决定监听且尚未收尾 —— 覆盖「hook 已创建 / start_ws 尚未被调度」
+        #    的窗口。该窗口内 `live.ws` 与 `live._ws_alive` 都还不存在，
+        #    旧判据在此必然返回 False（= 把「还没开始」判成「已经死了」）。
+        if getattr(self, "_listen_started", False) and not getattr(self, "_listen_ended", False):
+            return True
         live = self.live
         if live is None:
             return False
@@ -912,7 +992,25 @@ class AutoDM:
         # 3)+4) 按账号角色重建
         if is_monitor or (not is_sender):
             self.monitor_auth = auth
-            self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch, controller=self)
+            # 2026-09-21（ENG-018）：重扫后必须**重新判定**解密权 —— 否则会带着
+            # 旧的三态值继续监听（用户实测症状：重扫了仍不解密、日志无任何线索）。
+            try:
+                from auto_dm.accounts import (
+                    probe_live_identity as _probe_li,
+                    invalidate_live_identity_cache as _inval_li,
+                )
+                _inval_li(account_name)
+                _li_ok, _li_detail = _probe_li(account_name, auth, force=True)
+                self._live_session_ok = (None if "结论未知" in (_li_detail or "")
+                                         else bool(_li_ok))
+                self._live_ident_detail = _li_detail
+                logger.info(f"[重扫重建] 直播昵称解密权判定："
+                            f"{'有' if self._live_session_ok else '无'} —— {_li_detail}")
+            except Exception as _e:  # noqa: BLE001
+                self._live_session_ok = None
+                logger.warning(f"[重扫重建] 解密权复测失败（结论未知，不据此降级）: {_e}")
+            self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch,
+                                     controller=self, session_ok=self._live_session_ok)
             self.live.start_heartbeat(interval=300)
             threading.Thread(target=self.live.start_ws, daemon=True).start()
             logger.info(f"[重扫重建] 监测账号「{account_name}」监听已用新凭证重建")

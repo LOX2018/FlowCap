@@ -33,7 +33,16 @@ interface Props {
   api: {
     crawlComments(body: unknown): Promise<{ ok?: boolean; items?: CommentItem[] }>;
     crawlDm(body: unknown): Promise<{ ok?: boolean; msg?: string }>;
-    crawlBatch(body: unknown): Promise<{ ok?: boolean; msg?: string }>;
+    /** ★ 契约（2026-09-21）：入参是 **aweme_id**，不是 uids
+     *  —— 后端按作品重新采集评论区并批量私信，返回候选/成功/失败计数。 */
+    crawlBatch(body: unknown): Promise<{
+      ok?: boolean;
+      candidates?: number;
+      sent_ok?: number;
+      sent_fail?: number;
+      rate_limited?: number;
+      results?: { uid: string; nickname: string; ok: boolean; reason: string }[];
+    }>;
   };
   /** 当前选中的作品 aweme_id（由内容浏览传入） */
   awemeId: string;
@@ -77,18 +86,35 @@ export function CrawlPanel({ account, api, awemeId, push }: Props) {
   };
 
   const batch = async () => {
-    const uids = cmts
-      .map((c) => String(c.uid || ""))
-      .filter(Boolean)
-      .slice(0, 50);
-    if (!uids.length) {
-      push("没有可发送的评论用户");
+    // ★ 2026-09-21 修复：原实现传 `{ uids }`，而后端 `CrawlBatchRequest`
+    //   的契约是 `{ aweme_id, text, keyword, limit, max_send, interval }`
+    //   —— `uids` 是未声明字段，pydantic 直接 **422**，批量私信必然失败。
+    //   后端语义是按「作品」重新采集评论区并发私信（含去重/关键词筛选），
+    //   故改为传 awemeId；候选人数与成功数由后端返回。
+    if (!awemeId) {
+      push("请先选择一个作品");
       return;
     }
     setBatching(true);
     try {
-      const r = await api.crawlBatch({ account, uids, text: dmTpl });
-      push(r?.ok ? `批量已提交（${uids.length} 人）` : `批量失败: ${r?.msg || ""}`, 8000);
+      const r = await api.crawlBatch({
+        account,
+        aweme_id: awemeId,
+        text: dmTpl,
+        limit: 200,
+        max_send: 0,
+        interval: 0,
+      });
+      push(
+        `批量完成：候选 ${r.candidates} · 成功 ${r.sent_ok} · 失败 ${r.sent_fail} · 限流 ${r.rate_limited}`,
+        8000,
+      );
+      // 回写每条评论作者的发送状态
+      const ns: Record<string, string> = {};
+      (r.results || []).forEach((x) => {
+        ns[x.uid] = x.ok ? "已发送" : `失败: ${x.reason || ""}`;
+      });
+      setDmState((s) => ({ ...s, ...ns }));
     } catch (e) {
       push(`批量异常: ${(e as Error)?.message || ""}`, 8000);
     } finally {

@@ -35,9 +35,13 @@ def generate_req_sign(e, priK):
 
 
 # query, data都是拼接字符串
-def generate_a_bogus(query, data=""):
-    """a_bogus。"""
-    return _pure_sign().sign(f'https://www.douyin.com/?{query}', data)
+def generate_a_bogus(query, data="", host=None):
+    """a_bogus。
+
+    host 必须是本次请求的子域（www / live / creator）：签名里内嵌
+    (aid, page_id)，三套值不同，用错了强校验接口会判人机验证。
+    """
+    return _pure_sign().sign_query(query, data, host=host)
 
 
 def generate_signature(room_id, user_unique_id):

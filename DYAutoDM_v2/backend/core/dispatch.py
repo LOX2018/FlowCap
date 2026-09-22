@@ -94,6 +94,13 @@ class DispatchCenter:
 
         self._task: Optional[asyncio.Task] = None
         self.on_idle: Optional[Any] = None  # 回调：队列自然发空时触发
+        # 停止信号（ENG-016）：用于**打断"睡到发送时刻"的等待**。
+        # 语义：置位 = 不再接收新发送，正在等待延迟窗口的目标立即清理。
+        # 为什么需要它：软停止后 `_accept_new=False` 会让待发目标必然走
+        # 「不入池」路径，却仍要睡满整个随机延迟（最长 ~120s）才清 `pending`；
+        # 而 wait_done()/on_idle 的收尾条件都要求 `pending` 为空
+        # → 前端「停止监听」最长 2 分钟无反应。置位即让等待立刻返回。
+        self._stop_signal = asyncio.Event()
 
     def detach_on_idle(self) -> None:
         """解绑队列空回调（由上层在真正收尾时调用）。
@@ -112,6 +119,8 @@ class DispatchCenter:
         self._clear_queue = True
         self._accept_new = False
         self._stopped = True
+        # 打断正在等待延迟窗口的目标（ENG-016）
+        self._stop_signal.set()
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -123,6 +132,9 @@ class DispatchCenter:
     def stop_soft(self) -> None:
         """软停止：停止接收新目标，但保留已入队的延迟私信继续发完。"""
         self._accept_new = False
+        # 打断正在等待延迟窗口的目标（ENG-016）：软停止后这些目标必然
+        # 走不到发送（_accept_new=False），继续空等只会把收尾卡住。
+        self._stop_signal.set()
         logger.info(
             f"[调度] 软停止（保留延迟队列）：已停止接收新目标，"
             f"已捕获未发的待发私信将在延迟后继续发出"
@@ -294,6 +306,7 @@ class DispatchCenter:
         """启动后台消费任务"""
         if self._task is None or self._task.done():
             self._stopped = False
+            self._stop_signal.clear()   # ENG-016：新一轮任务须清除上一轮的停止信号
             self._task = asyncio.create_task(self._loop())
 
     async def _loop(self) -> None:
@@ -335,12 +348,43 @@ class DispatchCenter:
                 continue
 
             # 等到 send_at 时刻
+            #
+            # 2026-09-21（ENG-016 根因修复）：休眠必须可被停止打断。
+            # 原实现无条件 `await asyncio.sleep(item.send_at - now)` ——
+            # 而 `stop(hard=False)` 的语义是「存量私信发完」，实现上却变成
+            # 「等最后一条的随机延迟窗口（最长 ~120s）睡满」。更糟的是：
+            # 软停止后 `_accept_new=False` 使 `_do_send` 必然走「不入池」路径，
+            # 这条记录既不会发出、也要等睡满才清 `pending`；而
+            # `wait_done()` 与 `on_idle` 触发条件都要求 `pending` 为空
+            # → 两条收尾路径被同一条记录**同时堵死**，状态卡在 STOPPING，
+            # 前端「停止监听」点了没反应（实机：11:20:49 点击，11:22:xx 才生效）。
+            #
+            # 修法：把「睡到点」改成「等 min(到点, 停止信号)」，并显式区分
+            # 三种走向 —— 睡满正常发送 / 收到停止信号后丢弃 / 硬停止丢弃。
             now = time.time()
             if item.send_at > now:
-                await asyncio.sleep(item.send_at - now)
+                _wake = self._stop_signal.wait()
+                try:
+                    await asyncio.wait_for(_wake, timeout=item.send_at - now)
+                except asyncio.TimeoutError:
+                    pass          # 睡满：正常走发送
+                else:
+                    # 被停止信号唤醒：不再空等延迟窗口，丢弃该目标并清理 pending，
+                    # 让 wait_done()/on_idle 能立即收尾（软停止语义本就是
+                    # 「停止接收新目标」，未开始的延迟发送不应继续占用收尾）。
+                    self.pending.pop(item.key, None)
+                    rec = self.records.get(item.key)
+                    if rec is not None:
+                        rec.status = RecordStatus.SKIPPED
+                        rec.reason = "软停止：尚未到发送时刻，已丢弃"
+                    logger.info(
+                        "[调度] 软停止：丢弃尚未到发送时刻的目标 " +
+                        f"「{item.target.get('nickname')}」（不再空等延迟窗口）")
+                    continue
 
             if self._stopped or self._clear_queue:
                 logger.warning(f"[SEND-004] " + f"[调度] 停止中，丢弃待发私信「{item.target.get('nickname')}」")
+                self.pending.pop(item.key, None)
                 continue
 
             await self._do_send(item.key, item.target)

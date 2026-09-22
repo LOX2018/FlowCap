@@ -47,13 +47,16 @@ class Params:
         self.params['webid'] = webid
         return self
 
-    def with_a_bogus(self, data=None):
+    def with_a_bogus(self, data=None, host='www.douyin.com'):
+        """算 a_bogus。host 必须是本次请求的子域：签名里内嵌 (aid, page_id)，
+        www / live / creator 三套值不同，用错了强校验接口会判人机验证。
+        """
         query = splice_url(self.get())
         if data is not None:
             data = splice_url(data)
         else:
             data = ''
-        abogus = generate_a_bogus(query, data)
+        abogus = generate_a_bogus(query, data, host=host)
         self.add_param('a_bogus', abogus)
         return self
 
@@ -61,6 +64,39 @@ class Params:
         msToken = generate_msToken()
         self.params['msToken'] = msToken
         return self
+
+    def signed_url(self, base_url, auth=None, ts=None):
+        """拼出带 `timestamp` + `x-secsdk-web-signature` 的完整 URL。
+
+        ## 何时需要（2026-09-21 实测）
+
+        secsdk 的 webSign 策略只覆盖部分接口，清单见
+        `utils.secsdk_web_sign.PROTECTED_PATHS_GET`。命中清单却**没签**时，
+        服务端直接返回 **HTTP 403（46 字节非 JSON）** —— 这就是
+        `/aweme/v1/web/mix/aweme/`（合集作品）此前恒取不到数据的原因。
+
+        ## 必须发本方法的返回值（不能把 get() 传给 requests 的 params）
+
+        签名对**规范化后的 query** 计算，服务端也按收到的 query 校验。
+        若把 `params=self.get()` 交给 requests，requests 会**再编码一遍**，
+        与签名输入对不上 → 依旧 403。
+
+        用法::
+
+            url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+            requests.get(url, headers=..., cookies=...)   # 注意：不传 params
+        """
+        from utils.secsdk_web_sign import sign_url
+        uifid = (auth.cookie or {}).get('UIFID', '') if auth else ''
+        return sign_url(base_url + '?' + self.toString(), ts=ts, uifid=uifid)
+
+    def needs_secsdk_sign(self, path, method='GET'):
+        """该 path 是否在 secsdk webSign 保护清单内（决定用哪种发送方式）。"""
+        try:
+            from utils.secsdk_web_sign import is_protected
+            return is_protected(path, method)
+        except Exception:  # noqa: BLE001 —— 模块缺失时保守返回 False（不阻断既有链路）
+            return False
 
     def add_param(self, key, value):
         self.params[key] = value

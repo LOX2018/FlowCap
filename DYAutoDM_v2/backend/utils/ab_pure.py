@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """a_bogus"""
 
+import os
 import random as _rnd
 import re
 import time as _time
@@ -11,6 +12,37 @@ from utils.sm3 import sm3_hash
 
 SALT = "dhzx"
 BDMS_VERSION = "1.0.1.19-fix.01"
+# 2026-08-16 在各子域页面内用其自身 SDK 对同一 query 签名，再解码回填得到：
+#   L[35]/L[36] = le(SDK_VERSION_CODE, 2)
+#   L[67..70]   = le(page_id, 4)   页面 ID，**每个子域不同**
+#   L[71..74]   = le(aid, 4)       站点 aid，也随子域变
+# 用错子域的这两个值，强校验接口（如 aweme/detail、discover/search，
+# 以及直播域 /webcast/*）会判人机验证/静默拒绝。
+SDK_VERSION_CODE = 1
+SDK_MINOR_CODE = 12
+L40_FLAG = 0
+L41_FLAG = 0
+L42_FLAG = 0
+
+HOST_ABOGUS_CONFIGS = {
+    # Main-site XHR parity capture (fixed Date.now/Math.random preload).
+    "www.douyin.com": {"sdk_minor": 8, "l40": 132, "l41": 1, "l42": 1},
+    # login.douyin.com/passport/web/check_qrconnect parity capture.
+    "login.douyin.com": {"sdk_minor": 14, "l40": 0, "l41": 0, "l42": 0},
+}
+
+HOST_APP_IDS = {
+    "www.douyin.com": (6383, 11881),
+    "live.douyin.com": (6383, 7571),
+    "creator.douyin.com": (2906, 33638),
+    "login.douyin.com": (6383, 6241),
+}
+DEFAULT_HOST = "www.douyin.com"
+
+
+def app_ids_for(host):
+    """按子域取 (aid, page_id)，未知子域退回主站的一组。"""
+    return HOST_APP_IDS.get(host, HOST_APP_IDS[DEFAULT_HOST])
 FORTNIGHT_EPOCH = 1721836800000
 DUMP_CLOSURE_TIME = 1720000000000
 DUMP_COUNTER_INIT = 2
@@ -197,17 +229,31 @@ class ABogusPureSigner:
     def _rand(self):
         return FIXED_RAND if self.fixed else _rnd.random()
 
-    def sign(self, url, body=""):
-        return self.sign_query(urllib.parse.urlsplit(url).query, body)
+    def _host_config(self, host):
+        """Return host constants with explicit debug-fixture overrides."""
+        cfg = dict(HOST_ABOGUS_CONFIGS.get(host, {}))
+        for field in ("sdk_version", "sdk_minor", "l40", "l41", "l42"):
+            value = os.getenv("DY_ABOGUS_" + field.upper())
+            if value is not None and value != "":
+                cfg[field] = int(value)
+        return cfg
 
-    def sign_query(self, query, body=""):
+    def sign(self, url, body="", host=None):
+        parts = urllib.parse.urlsplit(url)
+        return self.sign_query(parts.query, body, host=host or parts.hostname)
+
+    def sign_query(self, query, body="", host=None):
+        host = host or DEFAULT_HOST
+        aid, page_id = app_ids_for(host)
+        host_config = self._host_config(host)
         L = {}
         self.counter += 1
         L[12] = 3
         t = self._now()
         L[14] = t
-        v129 = 129
-        v14 = 14
+        # 两个版本常量，取自页面 SDK 真值回填（L[35]/L[36] 与 ua_key 都由 v129 决定）
+        v129 = host_config.get("sdk_version", SDK_VERSION_CODE)
+        v14 = host_config.get("sdk_minor", SDK_MINOR_CODE)
         h1 = sm3_hash(sm3_hash((query + SALT).encode("utf-8")))
         h2 = sm3_hash(sm3_hash((body + SALT).encode("utf-8")))
         ua_key = [v129 // 256, v129 % 256, v14 % 256]
@@ -227,8 +273,10 @@ class ABogusPureSigner:
         flags = env_flags_byte(self.fixed, self.ua)
         L[37] = [0, 0, 0, 0, flags]
         L[38], L[39] = le_bytes(flags, 2)
-        for i in range(4):
-            L[40 + i] = 0
+        L[40] = host_config.get("l40", L40_FLAG)
+        L[41] = host_config.get("l41", L41_FLAG)
+        L[42] = host_config.get("l42", L42_FLAG)
+        L[43] = 0
         for i, b in enumerate(le_bytes(v14, 4)):
             L[44 + i] = b
         L[48], L[49] = h1[9], h1[18]
@@ -240,9 +288,9 @@ class ABogusPureSigner:
         for i, b in enumerate(le_bytes(ink, 6)):
             L[60 + i] = b
         L[66] = L[12]
-        for i, b in enumerate(le_bytes(6383, 4)):
+        for i, b in enumerate(le_bytes(page_id, 4)):
             L[67 + i] = b
-        for i, b in enumerate(le_bytes(6383, 4)):
+        for i, b in enumerate(le_bytes(aid, 4)):
             L[71 + i] = b
         geo_str = "|".join([str(v) for v in self.geo] + [GEO_PLATFORM])
         L[77] = str_to_bytes(geo_str)
