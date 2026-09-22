@@ -228,8 +228,11 @@
 | 越界/非法选项 | 提交 `anonymous_max_rooms=99` + `rotation_strategy=evil` | **均被拒**，保持原值 |
 | 重置 | `POST /api/settings/reset` | 7 项**全回默认** |
 | 前端类型 | `tsc -b` | 0 错误 |
-| 构建/部署 | `build_all.py` | 主 exe 构建==部署 md5 `50f554953ad9`；sidecar 三份一致 |
+| 构建/部署 | `build_all.py` | 后端实现版主 exe md5 `50f554953ad9`（提交 `47368b2`）；含前端接线的最终部署版 md5 `dd5c11bf0f92`（提交 `77ce6ea`）；sidecar 三份一致 |
 | 实机启动 | `/api/version` | `0.44.41`，`frozen=true` |
+| **实机 UI·渲染** | CDP 驱动真机 WebView2（`artifacts/_ui_verify_544.py`） | 配置中心 →「直播监听」下分区卡出现；**7 个 label 全渲染**；3 个 select 选项数 **2/3/4** 与契约精确一致 |
+| **实机 UI·risk** | 同上（`artifacts/_ui_verify_544b.py`） | **3 个 `sink_*` 带 `.is-risk`+⚠，其余 14 个字段不带**（判据有区分度）|
+| **实机 UI·保存路径** | UI 改「沉淀池冷却」=45 → 点「保存此分组」→ 读后端 | 后端真值 = **45.0**；改回 90 → **90.0**（无残留副作用）|
 
 **已知边界（诚实标注）**：
 - 🔴 **消费点未接线**：本 ADR 只落**配置面**。运行时**尚不消费**这些参数 ——
