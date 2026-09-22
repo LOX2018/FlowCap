@@ -39,6 +39,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from loguru import logger
 
+from daemon.bcc_lease import (
+    ContainerBusy,
+    _lease_lock, _is_busy,
+    _scan_exclusive_get, _scan_exclusive_set,
+    _lease_reset, _lease_current, _lease_status,
+    _lease_acquire, _lease_renew, _lease_release, _lease_owned_by,
+    LEASE_PRIO_TTL_LIMIT, LEASE_PRIO_NAME,
+)
+
+
 # 2026-09-13：标记「本进程是浏览器守护」——供 services.browser_gate 豁免
 # 自身启动告警（否则 BCC 拉自己的容器会误报 BCC-042 环境分叉）。
 os.environ.setdefault("DY_BROWSER_DAEMON", "1")
@@ -91,35 +101,13 @@ app = FastAPI(title="browser-container")
 # ContainerBusy 异常 + 全局异常处理器：独占期内其他端点立即返回
 # {ok:false, busy:"scan_login"}，FastAPI HTTP 层不阻塞、不排队。
 # ============================================================================
-class ContainerBusy(Exception):
-    def __init__(self, holder: str = "scan_login"):
-        self.holder = holder
-        super().__init__(f"容器被独占操作占用: {holder}")
-
-
-_scan_exclusive = {"holder": None}  # None=空闲；否则是独占操作名
-
-# 2026-09-17 修补（OCR 审查 HIGH）：租约与 _scan_exclusive 的互斥锁。
-#
-# 背景：`_lease` / `_scan_exclusive` 是**模块级可变 dict**，其读写出现在两条
-# **不同线程**上：HTTP 端点（FastAPI 主事件循环）与 `run_keepalive`
-# （`threading.Thread`，见文件末尾 start_keepalive）。原先所有读写**完全无锁**，
-# 而 `_lease_acquire` 是「读 _lease_current() → 判 cur is None → _lease.update()」
-# 三步非原子：两个线程可同时通过 `cur is None` 检查 → 双写覆盖，
 # 后写者的 lease_id 生效，先写者从此无法 release（_lease_release 返回 not_holder），
 # 该租约要等 TTL（最高 600s）才被惰性回收，期间全部业务被 403/busy 挡回。
-#
 # 用 **threading.RLock**（不是 asyncio.Lock）：因为 keepalive 跑在子线程、
 # 且 `_lease_acquire` 内部会再调 `_lease_current`（可重入），RLock 最合适。
 # 定义必须早于 _is_busy / _lease_* 的使用点。
-_lease_lock = threading.RLock()
 
 
-def _is_busy() -> bool:
-    # 2026-09-17 修补（OCR 审查 HIGH）：_scan_exclusive 与 _lease 同属
-    # 独占状态，读写同样跨线程（HTTP 端点 + keepalive 线程），统一走 _lease_lock。
-    with _lease_lock:
-        return _scan_exclusive["holder"] is not None
 
 
 def _cache_unpack(cache):
@@ -135,16 +123,8 @@ def _cache_unpack(cache):
     return cache[0], cache[1], -1   # 旧二元组 → 代次 -1，必然 != 当前代次
 
 
-def _scan_exclusive_set(holder) -> None:
-    """写入独占标志（None=空闲）。与 _lease 共用同一把锁，保证状态一致。"""
-    with _lease_lock:
-        _scan_exclusive["holder"] = holder
 
 
-def _scan_exclusive_get():
-    """原子读取独占标志（None=空闲）。避免「判空 + 取值」两次读的 TOCTOU。"""
-    with _lease_lock:
-        return _scan_exclusive["holder"]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -179,158 +159,6 @@ def _scan_exclusive_get():
 # 2026-09-14 v0.43.11：P0 300 -> 600s。实机实测「更新会话」整轮可达 302s+
 # （滚动 10+ 轮 × 每轮 30~40s），300s 上限导致租约中途被 BCC-046 强制回收，
 # 释放时 lease_id 已不匹配（ok=False）。放宽到 600s 覆盖真实耗时。
-LEASE_PRIO_TTL_LIMIT = {0: 600.0, 1: 180.0, 2: 30.0}
-LEASE_PRIO_NAME = {0: "用户显式", 1: "业务自动", 2: "后台保活"}
-
-_lease: dict = {
-    "holder": None, "purpose": None, "prio": None, "lease_id": None,
-    "acquired_at": 0.0, "ttl": 0.0, "expires_at": 0.0, "renew_count": 0,
-}
-
-def _lease_reset() -> None:
-    with _lease_lock:
-        _lease.update(holder=None, purpose=None, prio=None, lease_id=None,
-                      acquired_at=0.0, ttl=0.0, expires_at=0.0, renew_count=0)
-
-
-def _lease_current():
-    """返回当前有效租约 dict；已过期则惰性释放并返回 None。
-
-    **惰性判定**（无需后台定时器）：任何读取都先检查 expires_at——
-    这样持有者崩溃/忘记 release 时，TTL 到期即自动释放，不会永久独占。
-    """
-    if not _lease["holder"]:
-        return None
-    if time.time() > _lease["expires_at"]:
-        logger.warning(f"[BCC-046] " + f"[lease] {_lease['holder']}（prio={_lease['prio']} "
-            f"{LEASE_PRIO_NAME.get(_lease['prio'], '?')}）租约超时 "
-            f"{_lease['ttl']:.0f}s 未释放，强制回收"
-            f"（持有者可能崩溃或忘记 release）")
-        _lease_reset()
-        return None
-    return _lease
-
-
-def _lease_status() -> dict:
-    """对外可读的租约状态（空闲时 holder=None）。"""
-    cur = _lease_current()
-    if not cur:
-        return {"holder": None, "purpose": None, "prio": None,
-                "lease_id": None, "expires_at": 0.0, "remaining": 0.0,
-                "renew_count": 0}
-    return {
-        "holder": cur["holder"], "purpose": cur["purpose"],
-        "prio": cur["prio"], "lease_id": cur["lease_id"],
-        "expires_at": cur["expires_at"],
-        "remaining": max(0.0, round(cur["expires_at"] - time.time(), 1)),
-        "renew_count": cur["renew_count"],
-    }
-
-
-def _lease_acquire(holder: str, purpose: str = "auto", prio: int = 2,
-                   ttl: float = 0.0, lease_id: str = "") -> dict:
-    """申请租约。
-
-    返回 {ok, lease_id, expires_at, waited, renew} 或
-         {ok: False, busy, busy_prio, retry_after, reason}
-
-    规则：
-      · 同 lease_id 重入 → 复用（renew，不新建）
-      · 同 holder 且未持 id → 视为重入，复用现有租约
-      · 已被他人持有 → 拒绝（不抢占），给出 retry_after
-      · ttl 超该 prio 上限 → 拒绝（防"续租绕过上限"）
-    """
-    prio = int(prio) if prio is not None else 2
-    if prio not in LEASE_PRIO_TTL_LIMIT:
-        prio = 2
-    limit = LEASE_PRIO_TTL_LIMIT[prio]
-    if not ttl or ttl <= 0:
-        ttl = limit
-    if ttl > limit:
-        logger.warning(f"[BCC-048] " + f"[lease] {holder} 申请 ttl={ttl:.0f}s 超过 prio={prio}"
-            f"（{LEASE_PRIO_NAME[prio]}）上限 {limit:.0f}s，已按上限授予")
-        ttl = limit
-
-    # 2026-09-17 修补（OCR 审查 HIGH）：整个「读-判-写」必须是原子的，
-    # 否则并发申请会双写覆盖（详见 _lease_lock 定义处说明）。
-    with _lease_lock:
-        cur = _lease_current()
-        if cur is not None:
-            # 重入：同一 lease_id，或同一 holder（调用链内层再取）
-            if (lease_id and cur["lease_id"] == lease_id) or                 (not lease_id and cur["holder"] == holder):
-                return {"ok": True, "lease_id": cur["lease_id"],
-                        "expires_at": cur["expires_at"], "waited": 0.0,
-                        "renew": True}
-            retry = max(0.5, round(cur["expires_at"] - time.time(), 1))
-            logger.debug(f"[BCC-047] " + f"[lease] {holder}(prio={prio}) 被拒：当前 {cur['holder']}"
-                f"(prio={cur['prio']}) 持有，剩余 {retry}s")
-            return {"ok": False, "busy": cur["holder"], "busy_prio": cur["prio"],
-                    "retry_after": retry, "reason": "busy"}
-
-        import uuid as _uuid
-        _lease.update(
-            holder=holder, purpose=purpose, prio=prio,
-            lease_id=lease_id or _uuid.uuid4().hex[:12],
-            acquired_at=time.time(), ttl=ttl,
-            expires_at=time.time() + ttl, renew_count=0)
-        logger.debug(
-            f"[lease] {holder} 获得租约（prio={prio} {LEASE_PRIO_NAME[prio]}, "
-            f"ttl={ttl:.0f}s, id={_lease['lease_id']}）")
-        return {"ok": True, "lease_id": _lease["lease_id"],
-                "expires_at": _lease["expires_at"], "waited": 0.0, "renew": False}
-
-
-def _lease_renew(lease_id: str, ttl: float = 0.0) -> dict:
-    """续租。累计时长不得超过该 prio 上限（防绕过 TTL 上限）。"""
-    # 2026-09-17 修补（OCR 审查 HIGH）：renew 也是对 _lease 的读-改-写，
-    # 与 acquire/release 同为跨线程临界区，必须加锁。
-    with _lease_lock:
-        cur = _lease_current()
-        if not cur or (lease_id and cur["lease_id"] != lease_id):
-            return {"ok": False, "reason": "not_holder"}
-        prio = cur["prio"]
-        limit = LEASE_PRIO_TTL_LIMIT.get(prio, 30.0)
-        new_ttl = ttl if (ttl and ttl > 0) else limit
-        total = new_ttl * (cur["renew_count"] + 1)
-        if total > limit:
-            logger.warning(f"[BCC-048] " + f"[lease] {cur['holder']} renew 被拒：累计 {total:.0f}s 超 "
-                f"prio={prio} 上限 {limit:.0f}s（防续租绕过 TTL 上限）")
-            return {"ok": False, "reason": "ttl_exceeds_limit",
-                    "limit": limit, "total": total}
-        cur["renew_count"] += 1
-        cur["ttl"] = new_ttl
-        cur["expires_at"] = time.time() + new_ttl
-        logger.debug(f"[lease] {cur['holder']} 续租 {new_ttl:.0f}s"
-                     f"（第 {cur['renew_count']} 次）")
-        return {"ok": True, "expires_at": cur["expires_at"],
-                "renew_count": cur["renew_count"]}
-
-
-def _lease_release(lease_id: str, holder: str = "") -> dict:
-    """释放租约（必须 id 匹配，防误释放他人租约）。"""
-    # 2026-09-17 修补（OCR 审查 HIGH）：release 的「读-判-重置」必须原子，
-    # 否则可能与并发的 acquire 交错，释放掉别人刚拿到的租约。
-    with _lease_lock:
-        cur = _lease_current()
-        if not cur:
-            return {"ok": True, "msg": "本就空闲"}
-        if lease_id and cur["lease_id"] != lease_id:
-            logger.debug(f"[BCC-049] " + f"[lease] release 被拒：id 不匹配"
-                         f"（当前 {cur['lease_id']}，请求 {lease_id}）")
-            return {"ok": False, "reason": "not_holder"}
-        if not lease_id and holder and cur["holder"] != holder:
-            return {"ok": False, "reason": "not_holder"}
-        _h = cur["holder"]
-        _lease_reset()
-        logger.debug(f"[lease] {_h} 释放租约")
-        return {"ok": True}
-
-
-def _lease_owned_by(holder: str) -> bool:
-    with _lease_lock:
-        cur = _lease_current()
-        return bool(cur and cur["holder"] == holder)
-
 
 
 
