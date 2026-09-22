@@ -1,60 +1,120 @@
-"""引擎控制路由：start / pause / resume / stop
+"""引擎控制路由：start / pause / resume / stop（**按账号**，ADR-002）
 
 取代原版 AutoDM 的多标志位状态机（_running/listen_active/hard_stopped/no_new/paused），
-改用单一 enum EngineState。
+改用单一 enum EngineState —— 且自 ADR-002（v0.44.39）起该状态机是**每账号一个实例**。
+
+## 账号维度（ADR-002 §5.3）
+
+| 请求 | 行为 |
+|---|---|
+| `acct` 非空 | 取/建该账号的引擎实例 |
+| `acct` 为空且**只有一个**任务在跑 | 作用于该任务（单账号零回归） |
+| `acct` 为空且有**多个**任务在跑 | **409**（歧义必须显式失败，不猜账号） |
+| 同账号重复 `/start` | **409**「该账号已在监听」（**不再是静默 `already:true`**） |
+
+⚠️ 旧实现的静默假成功（实测：张老师 RUNNING 时对小助理 `/start` 返回
+`{"ok":true,"already":true}`，实际什么都没发生）违反项目规则「拿不到资源必须显式失败」。
 """
 import asyncio
 
 from loguru import logger
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Query
 from models.task import TaskConfig
 from models.enums import EngineState
 from core.auto_dm import AutoDM
+from services.engine_registry import EngineRegistry, ANONYMOUS_KEY
 
 router = APIRouter()
 
 
+# ── 编排层访问（兼容未初始化 registry 的场景：退回旧单例语义）──────────────
+def _registry(request: Request) -> EngineRegistry | None:
+    return getattr(request.app.state, "engines", None)
+
+
+def _resolve_adm(request: Request, acct: str | None, *, for_start: bool = False,
+                 create: bool = True) -> AutoDM:
+    """按账号取引擎实例。
+
+    ``create=False`` 时只取已存在的实例（查询/控制路径不该把实例「建」出来），
+    且**取不到必须显式失败**（绝不退回别人的实例 —— 那会停错任务）。
+    ``acct`` 为空时的单任务回落：恰好一个任务在跑 → 用它；多个 → 409。
+    """
+    reg = _registry(request)
+    if reg is None:                       # 未挂 registry（旧调用方/测试替身）
+        return request.app.state.adm
+    a = str(acct or "").strip()
+    if a:
+        eng = reg.get(a) if create else reg.get_or_none(a)
+        if eng is None:
+            # 🔴 不得回落到 app.state.adm：那会「停掉别的账号的任务」而调用方不知道
+            raise HTTPException(
+                404, f"账号「{a}」没有进行中的直播任务（该账号尚未启动引擎）")
+        return eng
+    busy = reg.busy_keys()
+    if len(busy) == 1:
+        return reg.get(busy[0]) if create else (reg.get_or_none(busy[0])
+                                               or request.app.state.adm)
+    if len(busy) > 1:
+        raise HTTPException(
+            409,
+            f"存在多个进行中的直播任务（{', '.join(busy)}）—— 请显式指定 acct，"
+            f"不猜测账号",
+        )
+    # 无任务在跑
+    if create:
+        return reg.get(ANONYMOUS_KEY)     # 等价于旧单例语义
+    eng = reg.get_or_none(ANONYMOUS_KEY)
+    if eng is None:
+        raise HTTPException(404, "当前没有进行中的直播任务")
+    return eng
+
+
+def _account_of(adm: AutoDM) -> str:
+    return str(getattr(adm, "target_acct", "") or getattr(adm, "_acct", "") or "")
+
+
 @router.post("/start")
 async def start_engine(request: Request, config: TaskConfig):
-    """启动自动私信引擎。
+    """启动自动私信引擎（**按账号**）。
 
     优化（#51）：改为后台任务立即返回，消除前端 2.4s 同步等待。
-    - adm.start 内部有 STARTING 轮询（最长 60s）+ _run 前几步网络探活
-      （_verify_credential + check_room_live，各 1~2s），同步 await 会让
-      前端按钮点击后卡住 2.4s。
-    - 改为 asyncio.create_task 后台跑，路由立即返回 {ok:True, state:"starting"}，
-      前端由 /api/engine/status 轮询反映真实状态（listening/running 等）。
     """
-    adm: AutoDM = request.app.state.adm
     # 把前端别名归一到规范字段
     cfg = config.resolved()
     # 空直播间链接属于不合法的启动参数，应返回结构化 400 而非 500 崩溃
     if not cfg.live_url or not cfg.live_url.strip():
         logger.warning(f"[ENG-010] " + "[engine] 启动被拒：live_url 为空")
         raise HTTPException(400, "live_url 不能为空（需提供直播间链接或房间号）")
-    # 已在运行/启动中则直接返回当前状态（不重复拉起）
+
+    reg = _registry(request)
+    adm: AutoDM = _resolve_adm(request, cfg.acct)
+    key = str(cfg.acct or "").strip() or ANONYMOUS_KEY
+
+    # 已在运行/启动中 → **显式 409**（ADR-002 §5.3；旧实现静默 ok:true = 假成功）
     #
-    # 2026-09-17 修补（OCR 审查 HIGH —— check-then-act 竞态 + 丢弃 Task）。
-    # 原实现只**读** `adm.state` 就 `create_task`；而 `AutoDM.start()` 里的
-    # `self.state = EngineState.STARTING` 要等该协程被真正调度才执行 →
-    # 两个并发的 /start 都会看到 IDLE 而各自拉起一个任务（第二个会在任务内
-    # 抛 RuntimeError("当前状态 ... 无法启动")）。且 create_task 返回值被丢弃：
-    # 任务内异常无人取回，路由仍返回 {"ok": True, "state": "starting"} —— 假成功。
-    #
-    # ⚠️ 第一版修复（只加 asyncio.Lock）**不够**：锁只串行化了"读状态"，
-    #    状态仍要等被调度才更新，于是第二个请求进锁时依然看到 IDLE →
-    #    实测 starts=2（未修复）。正确做法是在锁内**先让出控制权**，
-    #    等首个 start 协程跑到把状态推成 STARTING（或已非 IDLE）再检查，
-    #    这样第二个请求才会命中"已在启动中"分支。
-    lock = getattr(request.app.state, "_engine_start_lock", None)
+    # 2026-09-17 修补（OCR 审查 HIGH —— check-then-act 竞态 + 丢弃 Task）保留：
+    # `AutoDM.start()` 里的 `self.state = EngineState.STARTING` 要等该协程被真正
+    # 调度才执行，故必须在锁内先让出控制权再检查状态，否则并发 /start 都会看到 IDLE。
+    # ADR-002 起锁是**每账号一把**（多账号并发时不同账号不得互相阻塞）。
+    locks = getattr(request.app.state, "_engine_start_locks", None)
+    if locks is None:
+        locks = {}
+        request.app.state._engine_start_locks = locks
+    lock = locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
-        request.app.state._engine_start_lock = lock
+        locks[key] = lock
+
     async with lock:
         if adm.state in (EngineState.RUNNING, EngineState.STARTING):
-            logger.info(f"[engine] start 请求但已在 {adm.state.value}，忽略重复启动")
-            return {"ok": True, "state": adm.state.value, "already": True}
+            logger.info(f"[engine] acct={key} 已在 {adm.state.value}，拒绝重复启动（409）")
+            raise HTTPException(
+                409,
+                f"该账号已在监听（acct={key}，state={adm.state.value}）—— "
+                f"如需换房请先停止",
+            )
 
         def _on_start_done(t: asyncio.Task) -> None:
             if t.cancelled():
@@ -65,7 +125,7 @@ async def start_engine(request: Request, config: TaskConfig):
                 logger.error(f"[ENG-011] [engine] 启动任务异常: "
                              f"{type(exc).__name__}: {exc}")
 
-        logger.info(f"[engine] 引擎启动中 live_url={cfg.live_url}")
+        logger.info(f"[engine] 引擎启动中 acct={key} live_url={cfg.live_url}")
         task = asyncio.create_task(adm.start(cfg))
         # 保留引用（避免被 GC 提前回收），并挂完成回调以观测异常
         running = getattr(request.app.state, "_engine_start_tasks", None)
@@ -84,38 +144,70 @@ async def start_engine(request: Request, config: TaskConfig):
             if task.done():        # start 已结束（成功进入 RUNNING 或失败）
                 break
             await asyncio.sleep(0)
-        return {"ok": True, "state": getattr(adm.state, "value", "starting")}
+        # 兼容：把「最近启动的引擎」暴露为 app.state.adm（旧调用方单值读取）
+        request.app.state.adm = adm
+        return {"ok": True, "state": getattr(adm.state, "value", "starting"),
+                "acct": "" if key == ANONYMOUS_KEY else key}
 
 
 @router.post("/pause")
-async def pause_engine(request: Request):
-    adm: AutoDM = request.app.state.adm
-    logger.info("[engine] 引擎暂停")
+async def pause_engine(request: Request, acct: str = Query("")):
+    adm: AutoDM = _resolve_adm(request, acct, create=False)
+    logger.info(f"[engine] 引擎暂停 acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.pause()
-    return {"ok": True, "state": adm.state.value}
+    return {"ok": True, "state": adm.state.value, "acct": _account_of(adm)}
 
 
 @router.post("/resume")
-async def resume_engine(request: Request):
-    adm: AutoDM = request.app.state.adm
-    logger.info("[engine] 引擎恢复")
+async def resume_engine(request: Request, acct: str = Query("")):
+    adm: AutoDM = _resolve_adm(request, acct, create=False)
+    logger.info(f"[engine] 引擎恢复 acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.resume()
-    return {"ok": True, "state": adm.state.value}
+    return {"ok": True, "state": adm.state.value, "acct": _account_of(adm)}
 
 
 @router.post("/stop")
-async def stop_engine(request: Request):
+async def stop_engine(request: Request, acct: str = Query("")):
     """硬停止：立即清队列"""
-    adm: AutoDM = request.app.state.adm
-    logger.warning(f"[ENG-012] " + "[engine] 引擎硬停止（清空队列）")
+    adm: AutoDM = _resolve_adm(request, acct, create=False)
+    logger.warning(f"[ENG-012] " + f"[engine] 引擎硬停止（清空队列）acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.stop(hard=True)
-    return {"ok": True, "state": adm.state.value}
+    return {"ok": True, "state": adm.state.value, "acct": _account_of(adm)}
 
 
 @router.post("/stop-soft")
-async def stop_soft(request: Request):
+async def stop_soft(request: Request, acct: str = Query("")):
     """软停止：停止监听，存量队列发完"""
-    adm: AutoDM = request.app.state.adm
-    logger.info("[engine] 引擎软停止（存量队列发完）")
+    adm: AutoDM = _resolve_adm(request, acct, create=False)
+    logger.info(f"[engine] 引擎软停止（存量队列发完）acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.stop(hard=False)
-    return {"ok": True, "state": adm.state.value}
+    return {"ok": True, "state": adm.state.value, "acct": _account_of(adm)}
+
+
+@router.get("/accounts")
+async def list_engine_accounts(request: Request) -> dict:
+    """各账号引擎状态一览（前端多任务卡片的数据源，ADR-002 §5.6）。
+
+    只读：不创建实例（``get_or_none``），未启动的账号不出现。
+    """
+    reg = _registry(request)
+    if reg is None:
+        adm: AutoDM = request.app.state.adm
+        return {"ok": True, "items": [{
+            "acct": _account_of(adm), "state": getattr(adm.state, "value", "idle"),
+            "live_url": getattr(adm, "live_url", None),
+            "sent": getattr(adm, "sent_count", 0),
+        }]}
+    items = []
+    for key, eng in reg.items():
+        if key == ANONYMOUS_KEY and not eng.state:
+            continue
+        items.append({
+            "acct": "" if key == ANONYMOUS_KEY else key,
+            "state": getattr(getattr(eng, "state", None), "value", "idle"),
+            "live_url": getattr(eng, "live_url", None),
+            "live_id": getattr(eng, "live_id", None),
+            "sent": getattr(eng, "sent_count", 0),
+            "status_msg": getattr(eng, "status_msg", ""),
+        })
+    return {"ok": True, "items": items}

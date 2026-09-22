@@ -353,13 +353,25 @@ async def _execute(intent: str, params: dict[str, Any]) -> Any:
 
     所有动作都走 DYAutoDM 已有内部接口，不新增任何抖音请求 —— 遵守
     「昵称唯一来源 = BCC 被动 hook」的风控红线。
+
+    ⚠️ ADR-002（多账号并发）：``adm`` 必须按**用户显式给出的账号**解析
+    （``params['account']``）。存在多个任务而用户未指定账号时 → **显式回话失败**，
+    绝不替用户猜一个账号（否则会启停错任务）。单任务/无任务时与旧行为逐字一致。
     """
     from fastapi import Request
 
     from core.auto_dm import AutoDM
 
-    # 取引擎实例（main.py: app.state.adm = AutoDM()）
-    adm: AutoDM | None = _get_adm()
+    # 取引擎实例：优先按用户给的账号解析（ADR-002 §5.2）
+    adm: AutoDM | None = None
+    _acct_hint = str(params.get("account") or params.get("acct") or "").strip()
+    if intent in ("query_status", "start_task", "stop_task", "create_task"):
+        try:
+            adm = resolve_notify_adm(_acct_hint or None)
+        except RuntimeError as e:
+            return {"reply": f"无法执行：{e}"}
+    if adm is None:
+        adm = _get_adm()
     if adm is None and intent in ("query_status", "start_task", "stop_task"):
         return {"reply": "引擎实例不可用"}
 
@@ -430,7 +442,40 @@ def bind_adm(adm) -> None:
     _BOUND_ADM = adm
 
 
-def _fake_request(adm) -> Request:
+_BOUND_ENGINES = None
+
+
+def bind_engines(reg) -> None:
+    """main.py 启动时注入**编排层**（account → AutoDM 表，ADR-002 §5.2）。
+
+    notifier 是外部指令通道（QQ/iLink 等），**没有**「页面当前选中的账号」
+    这一上下文 ⇒ 必须让用户显式给出账号，绝不替他猜。
+    """
+    global _BOUND_ENGINES
+    _BOUND_ENGINES = reg
+
+
+def resolve_notify_adm(acct: str | None = None):
+    """按账号取实例供通知链路使用；歧义时**显式失败**（绝不猜账号）。"""
+    reg = _BOUND_ENGINES
+    if reg is None:
+        return _get_adm()
+    a = str(acct or "").strip()
+    if a:
+        eng = reg.get_or_none(a)
+        if eng is None:
+            raise RuntimeError(f"账号「{a}」没有进行中的直播任务（尚未启动引擎）")
+        return eng
+    busy = reg.busy_keys()
+    if len(busy) == 1:
+        return reg.get_or_none(busy[0])
+    if len(busy) > 1:
+        raise RuntimeError(
+            f"存在多个进行中的直播任务（{', '.join(busy)}）—— 请指定账号，不猜测")
+    return _get_adm()                 # 无任务在跑：回落兼容别名（旧语义）
+
+
+def _fake_request(adm, engines=None) -> Request:
     """构造最小 Request 供现有路由函数使用（它们签名依赖 request.app.state.adm）。"""
     from fastapi import Request as _Req
 
@@ -447,6 +492,11 @@ def _fake_request(adm) -> Request:
         req.app.state.adm = adm
     except Exception:  # noqa: BLE001
         pass
+    if engines is not None:
+        try:
+            req.app.state.engines = engines
+        except Exception:  # noqa: BLE001
+            pass
     return req
 
 
