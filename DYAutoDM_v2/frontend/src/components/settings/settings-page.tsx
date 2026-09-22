@@ -105,7 +105,12 @@ export default function SettingsPage(props: PageProps) {
               <UnifiedConfigSection {...props} onlySections={["send"]} />
             )}
             {section === "live" && (
-              <UnifiedConfigSection {...props} onlySections={["live"]} />
+              <>
+                <UnifiedConfigSection {...props} onlySections={["live"]} />
+                {/* ADR-002 §5.4 策略中心：与「直播监听」同 tab（后端 schema 驱动，
+                    仅需在此白名单登记分区名，无手写表单）。 */}
+                <UnifiedConfigSection {...props} onlySections={["live_orchestration"]} />
+              </>
             )}
             {section === "capture" && (
               <UnifiedConfigSection {...props} onlySections={["capture"]} />

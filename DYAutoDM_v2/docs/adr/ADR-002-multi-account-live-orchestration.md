@@ -104,6 +104,13 @@
 的 `SECTIONS` + 前端 `UnifiedConfigSection.tsx` 自动生成表单，见 `12_业务域`/skill §十二），
 **不要另造一套配置入口** —— 新增参数只加一项，前端零改动。
 
+> 🔴 **规格修正（2026-09-22 v0.44.41 实施时实测发现，原文「前端零改动」不成立）**：
+> `UnifiedConfigSection` 本身确为 schema 驱动（加字段即渲染），**但它的调用方
+> `settings-page.tsx` 对每个 tab 用的是显式白名单** `onlySections={["live"]}`
+> —— 新分区不在任何白名单里 ⇒ 后端加了字段，**UI 里看不到**。
+> ⇒ 正确表述是：**新增字段零前端改动；新增分区需在目标 tab 的 `onlySections` 数组登记分区名（一行）**。
+> 本次已按此接线（`live_orchestration` 登记进「直播监听」tab，仍不另造入口）。
+
 | 项 | 决策 |
 |---|---|
 | 模式 | 匿名 / 凭证，**用户可选**（每任务粒度） |
@@ -174,6 +181,7 @@
    - 发送轮转策略（按目标 / 按时间窗 / 按房间，默认按目标）
    - 脱敏处理策略（四选一，默认「跳过」）
    - 沉淀池：全局作用域 + 长冷却（默认 90 天，可配置含「永久」档）
+   ⇒ ✅ **已实施（2026-09-22，v0.44.41，提交 `47368b2`）** —— 见 §7 实施记录
 4. **(A)** 落地并实机验证两账号各自房间。
 5. **(B)** 落地（含去重/单发送账号规则）+ 实机验证「无重复私信」。
 6. 文档/探针/ADR 状态收口。
@@ -187,3 +195,49 @@
 - [ ] (B) 场景：同房间两账号，同一句弹幕**只产生 1 条私信**（DB 落库计数 = 1）。
 - [ ] `[弹幕]` 每行带账号字段；探针按账号分别统计（不再互相计入）。
 - [ ] 单账号回归：全部既有引擎测试绿，行为与改造前逐字一致。
+
+---
+
+## 7. 实施记录
+
+### 7.1 §5.4 策略中心（2026-09-22，v0.44.41，提交 `47368b2`）
+
+**落地形态**：新增配置分区 `live_orchestration`（`backend/services/app_config_schema.py`），
+走既有统一配置中心 —— 零新入口、零新 API、零 db 变更。
+
+| # | 字段 | type | 默认 | 约束 | 语义 |
+|---|---|---|---|---|---|
+| 1 | `connection_mode` | select | `credential` | credential / anonymous | 凭证 1 账号 1 任务；匿名多房间但身份脱敏 |
+| 2 | `anonymous_max_rooms` | int | `4` | 1~10 | 仅匿名模式生效 |
+| 3 | `rotation_strategy` | select | `per_target` | per_target / per_time_window / per_room | 仅 (B) 同房间多账号时生效 |
+| 4 | `desensitized_strategy` | select | `skip` | skip / observe_only / prompt / reduce_anonymous | 全局默认行为 |
+| 5 | `sink_global_scope` | bool | `true` | — | 跨账号去重（防同一用户被双发）· risk |
+| 6 | `sink_cooldown_days` | float | `90.0` | 0~3650 | 直播场景长冷却 · risk |
+| 7 | `sink_permanent` | bool | `false` | — | 「永久」档（默认不选，保留可逆性）· risk |
+
+**验收记录（全部实跑）**：
+
+| 判据 | 方式 | 结果 |
+|---|---|---|
+| 单元零回归 | `unittest discover` | **Ran 618, OK**（610 基线 + 8 新契约测试）|
+| D-07 失败态自证 | 分区改名注入 | 该 8 项**全红**（5 fail + 3 err）；恢复后 md5 逐字节一致 |
+| 版本门禁 | `check_version_sync.py 0.44.41` | 五处齐平 ✓ |
+| 契约门禁 | `check_contracts.py` | G0~G5 全 PASS |
+| 部署态 API | `GET /api/settings` | `live_orchestration` **7 字段全返回**，默认值符 ADR |
+| 保存往返 | `POST /api/settings`（正确 body 形状） | 非默认值真落盘、独立回读一致 |
+| 越界/非法选项 | 提交 `anonymous_max_rooms=99` + `rotation_strategy=evil` | **均被拒**，保持原值 |
+| 重置 | `POST /api/settings/reset` | 7 项**全回默认** |
+| 前端类型 | `tsc -b` | 0 错误 |
+| 构建/部署 | `build_all.py` | 主 exe 构建==部署 md5 `50f554953ad9`；sidecar 三份一致 |
+| 实机启动 | `/api/version` | `0.44.41`，`frozen=true` |
+
+**已知边界（诚实标注）**：
+- 🔴 **消费点未接线**：本 ADR 只落**配置面**。运行时**尚不消费**这些参数 ——
+  「匿名模式并发上限」「轮转分配」「沉淀池跨账号去重」的实际行为在 **§5.5** 落地。
+  分区 label 已标「**待接线**」，避免「改了以为生效」的假成功。
+- `connection_mode`/`sink_global_scope` 等的**可选值集合**即 §5.5 的实现契约；
+  §5.5 落地时须回头核对本表（字段名/枚举值）与实现一致。
+
+**同批修正**：ADR-002 §3.5 的「前端零改动」表述经实测**不成立**，已就地修正
+（新增分区需在目标 tab 的 `onlySections` 登记分区名，一行；新增字段才真零改动）。
+
