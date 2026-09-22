@@ -1,6 +1,6 @@
 {
   "name": "dyautodm-v2",
-  "version": "0.44.51",
+  "version": "0.44.52",
   "private": true,
   "description": "\u6296\u97f3\u76f4\u64ad\u95f4\u81ea\u52a8\u79c1\u4fe1\u63a7\u5236\u53f0 - Tauri + FastAPI \u91cd\u6784\u7248",
   "scripts": {

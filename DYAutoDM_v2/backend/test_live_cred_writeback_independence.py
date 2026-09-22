@@ -189,8 +189,11 @@ class TestSyncThrottleNotAdvancedOnTransientFailure(unittest.TestCase):
     """I6：回写节流只在「已定论」后推进 —— 租约争用不得让自愈静默等满 30 分钟。"""
 
     def _src(self):
-        return open(os.path.join(_HERE, "daemon/browser_daemon.py"),
+        src = open(os.path.join(_HERE, "daemon/browser_daemon.py"),
                     encoding="utf-8").read()
+        src_login = open(os.path.join(_HERE, "daemon/bcc_login.py"),
+                         encoding="utf-8").read()
+        return src + "\n" + src_login
 
     def test_throttle_stamp_not_set_before_attempt(self):
         src = self._src()
