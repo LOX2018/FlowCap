@@ -124,6 +124,7 @@ def cfg(name: str, account: str = ""):
         if v is not None:
             return v
     except Exception:
+        logger.debug(f'[SILENT-00] services.dm_dispatch: lazy config fallback failed')
         pass
     return globals()["_FALLBACK_" + name]
 
@@ -726,6 +727,7 @@ class UidSink:
                  time.time()))
             conn.commit()
         except Exception:
+            logger.debug(f'[SILENT-00] services.dm_dispatch: mark_seen upsert failed')
             pass
 
     def stats(self, account: str = "") -> dict:
@@ -811,6 +813,7 @@ class ConvPool:
             if row and row["peer_id"]:
                 return str(row["peer_id"])
         except Exception:
+            logger.debug(f'[SILENT-00] services.dm_dispatch: conv_db peer_id query failed')
             pass
         return None
 

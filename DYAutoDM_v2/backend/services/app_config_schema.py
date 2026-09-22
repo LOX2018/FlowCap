@@ -51,6 +51,25 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "apply": "restart_backend",
                 "hint": "默认关闭（每次开软件抓包等于白白暴露）；私信页应纯读库",
             },
+            # P3 策略中心：timeout 默认值（热生效，消费端按需读 app_config.get("general", "timeout_xxx")）
+            "timeout_bcc_http": {
+                "label": "BCC HTTP 请求超时（秒）",
+                "type": "float", "default": 15.0, "env": "DY_TIMEOUT_BCC_HTTP",
+                "apply": "hot",
+                "hint": "BCC 容器 HTTP 接口调用超时，覆盖约 18 处 hardcoded timeout=15",
+            },
+            "timeout_fast_probe": {
+                "label": "端口快速探活超时（秒）",
+                "type": "float", "default": 0.3, "env": "DY_TIMEOUT_FAST_PROBE",
+                "apply": "hot",
+                "hint": "socket 端口是否已开的快速检测超时，覆盖约 13 处 hardcoded timeout=0.3",
+            },
+            "timeout_http_req": {
+                "label": "通用 HTTP 请求超时（秒）",
+                "type": "float", "default": 30.0, "env": "DY_TIMEOUT_HTTP_REQ",
+                "apply": "hot",
+                "hint": "后端对外 HTTP API 调用的通用超时，覆盖约 23 处 hardcoded timeout=30",
+            },
         },
     },
 

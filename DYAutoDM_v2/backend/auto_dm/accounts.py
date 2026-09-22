@@ -41,6 +41,7 @@ def _member_accounts_dir():
         if d:
             return d
     except Exception:
+        logger.debug(f'[SILENT-00] auto_dm.accounts: member_ctx.accounts_root failed')
         pass
     return None
 
@@ -92,6 +93,7 @@ def _load_index():
                 try:
                     os.replace(bad_path, good_path)
                 except Exception:
+                    logger.debug(f'[SILENT-00] auto_dm.accounts: os.replace bad->good path failed')
                     pass
                 # 清理旧的双重前缀目录
                 try:
@@ -101,6 +103,7 @@ def _load_index():
                         # 安全删除（原为裸 shutil.rmtree）。
                         _rmtree_account_dir(bad_dir)
                 except Exception:
+                    logger.debug(f'[SILENT-00] auto_dm.accounts: _rmtree_account_dir migration failed')
                     pass
             idx["accounts"][name] = clean_rel
             fixed = True
@@ -179,6 +182,7 @@ def name_of_env_path(env_path):
         if parent and parent != "accounts":
             return parent
     except Exception:
+        logger.debug(f'[SILENT-00] auto_dm.accounts: name_of_env_path os ops failed')
         pass
     return None
 
@@ -295,6 +299,7 @@ def bcc_mark_user_stopped(stopped: bool = True) -> None:
             if os.path.exists(_fp):
                 os.remove(_fp)
     except Exception:
+        logger.debug(f'[SILENT-00] auto_dm.accounts: bcc_mark_user_stopped write/remove failed')
         pass
 
 def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
@@ -382,6 +387,7 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
                     if _mk:
                         _menv["DY_MEMBER_KEY"] = _mk
             except Exception:
+                logger.debug(f'[SILENT-00] auto_dm.accounts: member_ctx set env vars failed')
                 pass
             kwargs["env"] = _menv
             if platform.system() == "Windows":
@@ -416,6 +422,7 @@ def _port_open(port, timeout=0.5):
         try:
             s.close()
         except Exception:
+            logger.debug(f'[SILENT-00] auto_dm.accounts: s.close() failed')
             pass
 
 
@@ -995,6 +1002,7 @@ def clear_credentials(force=False):
             if clear_credentials_of(env_path):
                 cleared += 1
     except Exception:
+        logger.debug(f'[SILENT-00] auto_dm.accounts: clear_credentials list_accounts iter failed')
         pass
     logger.info(f"[账号] 软件退出：已清空 {cleared} 个账号的登录凭证（日志/配置/账号结构保留）")
     return cleared
@@ -1031,6 +1039,7 @@ def remove_account(name):
         if os.path.isdir(os.path.dirname(env_path)):
             _rmtree_account_dir(os.path.dirname(env_path))
     except Exception:
+        logger.debug(f'[SILENT-00] auto_dm.accounts: _rmtree_account_dir delete_account failed')
         pass
     # current/monitor/sender 若指向被删账号则清空
     for k in ("current", "monitor", "sender"):
@@ -1530,6 +1539,7 @@ def _probe(env_path, timeout):
                                 time.time(), False,
                                 "imapi 写校验被拒（凭证落盘门禁）——请重新扫码")
                     except Exception:
+                        logger.debug(f'[SILENT-00] auto_dm.accounts: _im_write_cache SIGN_REJECTED failed')
                         pass
                     return "SIGN_REJECTED"
                 # 2026-09-21 v0.44.17：写校验通过 → 同步写探针缓存（鲜值），
@@ -1540,6 +1550,7 @@ def _probe(env_path, timeout):
                             time.time(), True,
                             f"imapi 写校验通过（cmd 609 建会话被接受，uid={uid}）")
                 except Exception:
+                    logger.debug(f'[SILENT-00] auto_dm.accounts: _im_write_cache OK failed')
                     pass
                 return uid
             except Exception as e:

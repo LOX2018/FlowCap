@@ -121,6 +121,7 @@ def app_version() -> str:
             if isinstance(val, str) and re.fullmatch(r"\d+\.\d+\.\d+", val.strip()):
                 return val.strip()
     except Exception:
+        logger.debug(f'[SILENT-00] services.probe: app_version build_vars failed')
         pass
     # 源码态：项目根 package.json
     for rel in ("package.json", os.path.join("..", "package.json"),
@@ -134,6 +135,7 @@ def app_version() -> str:
                 if m:
                     return m.group(1)
         except Exception:
+            logger.debug(f'[SILENT-00] services.probe: app_version package.json read failed')
             continue
     return "unknown"
 
@@ -210,6 +212,7 @@ def _parse_ts(s: str) -> float | None:
         try:
             return datetime.strptime(s, fmt).timestamp()
         except Exception:
+            logger.debug(f'[SILENT-00] services.probe: _parse_ts strptime failed')
             continue
     return None
 
@@ -248,6 +251,7 @@ def _log_candidates(since_ts: float) -> list[Path]:
             try:
                 mt = p.stat().st_mtime
             except Exception:
+                logger.debug(f'[SILENT-00] services.probe: log_candidates per-file stat failed')
                 continue
             if mt >= since_ts:
                 out.append((mt, p))
@@ -317,6 +321,7 @@ def latest_capture_facts(account: str, lookback_sec: float = 86400.0,
                                 and facts.get("with_browser") != 1):
                             facts.update(_new)
         except Exception:  # noqa: BLE001
+            logger.debug(f'[SILENT-00] services.probe: latest_capture_facts log parse failed')
             continue
     return facts
 
@@ -348,6 +353,7 @@ def _kv_set(key: str, value: Any) -> None:
         from services.kv_store import kv_set
         kv_set(key, value)
     except Exception:
+        logger.debug(f'[SILENT-00] services.probe: _kv_set store failed')
         pass
 
 
@@ -881,6 +887,7 @@ def probe_live_danmaku(account: str) -> dict:
                     samples.append(f"uid={d.group('uid')} sec_uid={'空' if not d.group('sec').strip() else '有'}")
                 src = p
         except Exception:
+            logger.debug(f'[SILENT-00] services.probe: nickname_probe log parse failed')
             continue
 
     reasons: list[str] = []
@@ -961,6 +968,7 @@ def probe_ai_lead_capture(account: str) -> dict:
                                                or "留资" in line or "决策链" in line):
                         ai_lines += 1
         except Exception:
+            logger.debug(f'[SILENT-00] services.probe: ai_reply_probe log parse failed')
             continue
 
     reasons: list[str] = []
@@ -1058,6 +1066,7 @@ def list_accounts_for_probe() -> list[str]:
             if a not in accts:
                 accts.append(a)
     except Exception:
+        logger.debug(f'[SILENT-00] services.probe: target_accounts db query failed')
         pass
     if accts:
         return accts
@@ -1236,6 +1245,7 @@ class _PatrolTimer:
             try:
                 self._timer.cancel()
             except Exception:
+                logger.debug(f'[SILENT-00] services.probe: _arm timer cancel failed')
                 pass
         self._timer = threading.Timer(delay, self._tick)
         self._timer.daemon = True
@@ -1266,6 +1276,7 @@ class _PatrolTimer:
             try:
                 self._timer.cancel()
             except Exception:
+                logger.debug(f'[SILENT-00] services.probe: stop timer cancel failed')
                 pass
         self.next_at = None
         return {"ok": True, "stopped": True}

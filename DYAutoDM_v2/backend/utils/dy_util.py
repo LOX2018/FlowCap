@@ -21,7 +21,7 @@ def trans_cookies(cookies_str):
     for i in cookies_str.split("; "):
         try:
             cookies[i.split('=')[0]] = '='.join(i.split('=')[1:])
-        except:
+        except Exception:
             continue
     # cookies = {i.split('=')[0]: '='.join(i.split('=')[1:]) for i in cookies_str.split('; ')}
     return cookies

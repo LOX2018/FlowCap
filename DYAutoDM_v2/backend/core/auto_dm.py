@@ -167,6 +167,7 @@ class AutoDM:
             if member_ctx.env_exists(env_path) and os.path.exists(ep):
                 return int(os.path.getmtime(ep))
         except Exception:
+            logger.debug(f'[SILENT-00] core.auto_dm: auto_dm mtime get failed')
             pass
         return -1
 
@@ -566,6 +567,7 @@ class AutoDM:
                 _m_name = getattr(config, "acct", None) or _cn()
                 setattr(self.monitor_auth, "account_name", _m_name)
             except Exception:
+                logger.debug(f'[SILENT-00] core.auto_dm: set monitor_auth account_name failed')
                 pass
             # 2026-09-20：目标账号 = 私信发给谁用的账号（AI 生成时解析 Agent 绑定）
             self.target_acct = (getattr(config, "acct", None)
@@ -607,6 +609,7 @@ class AutoDM:
                     try:
                         _up.get_uid(_m_name)
                     except Exception:  # noqa: BLE001
+                        logger.debug(f'[SILENT-00] core.auto_dm: uid_probe.get_uid failed')
                         pass
                     from auto_dm.accounts import uid_identity_verdict as _uiv
                     return _uiv(_m_name, self.monitor_auth, False)
@@ -652,6 +655,7 @@ class AutoDM:
                     if _s_name and self.auth is not None:
                         setattr(self.auth, "account_name", _s_name)
                 except Exception:
+                    logger.debug(f'[SILENT-00] core.auto_dm: set sender auth account_name failed')
                     pass
             if _send_ok and not getattr(self.auth, "cookie", None):
                 logger.warning(f"[AUTH-019] " + "[auth] 发送账号未获取到登录 cookie —— "
@@ -899,6 +903,7 @@ class AutoDM:
                     count = len(records)
                     sent = sum(1 for r in records if getattr(r, "status", None) == RecordStatus.SENT)
                 except Exception:
+                    logger.debug(f'[SILENT-00] core.auto_dm: dispatch.records_list() failed')
                     pass
             finish_task(tid, status=status, result_count=count,
                         records=[r if isinstance(r, dict) else _rec_to_dict(r) for r in records])
@@ -1032,11 +1037,13 @@ class AutoDM:
             try:
                 self.live._should_stop = True
             except Exception:
+                logger.debug(f'[SILENT-00] core.auto_dm: rescan close live._should_stop failed')
                 pass
             if getattr(self.live, "ws", None):
                 try:
                     self.live.ws.close()
                 except Exception:
+                    logger.debug(f'[SILENT-00] core.auto_dm: rescan close live.ws.close failed')
                     pass
             self.live.stop_heartbeat()
             self.live = None
@@ -1072,6 +1079,7 @@ class AutoDM:
                 try:
                     _up.get_uid(account_name)         # 统一调度重探（受 TTL/锁门控）
                 except Exception:                     # noqa: BLE001
+                    logger.debug(f'[SILENT-00] core.auto_dm: rescan uid_probe.get_uid failed')
                     pass
                 _li_ok, _li_reason, _li_label, _li_detail = _uiv(
                     account_name, auth, force=False)
