@@ -423,6 +423,12 @@ class DispatchCenter:
                 logger.warning(f"[SEND-005] " + f"[调度] pick_dm_message 异常: {e}")
                 content = ""
 
+        # 2026-09-22（M-9）：AI 文案和词库均未启用时，兜底回退弹幕原文。
+        # live_hook 传入了 target["comment"]，但 _do_send 从未读取它作为 content。
+        # => 空串 -> submit_by_uid 拒绝 -> SEND-006（调度透传缺口，两账号均复现）。
+        if not content:
+            content = str(target.get("comment") or "").strip()
+
         try:
             # 2026-09-07：视频采集 / 直播监听的私信统一走 dm_dispatch 调度。
             # 这两个来源目标**绝大多数是陌生人首发**，必须进入

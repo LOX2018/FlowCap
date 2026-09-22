@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| **状态** | **Accepted（2026-09-22 决策完成）** —— 全部开放问题已由用户拍板，**待实施** |
+| **状态** | **Partial Implemented（2026-09-22）** —— §5.1~§5.5 已实施（v0.44.42）；§5.6 前端多任务卡片待实施 |
 | **日期** | 2026-09-22 |
 | **决策者** | 用户（LOX） |
 | **来源** | v0.44.36 收尾实测（双账号 A/B + `/start` 单例复现） |
@@ -183,7 +183,7 @@
    - 沉淀池：全局作用域 + 长冷却（默认 90 天，可配置含「永久」档）
    ⇒ ✅ **已实施（2026-09-22，v0.44.41，提交 `47368b2`）** —— 见 §7 实施记录
 4. **(A)** 落地并实机验证两账号各自房间。
-5. **(B)** 落地（含去重/单发送账号规则）+ 实机验证「无重复私信」。
+5. **(B)** 落地（含去重/单发送账号规则）+ 实机验证「无重复私信」 —— ✅ **已实施（2026-09-22，v0.44.42，提交 `eb5d5ab`）** —— 见 §7.2 实施记录
 6. 文档/探针/ADR 状态收口。
 
 ---
@@ -241,6 +241,43 @@
 - `connection_mode`/`sink_global_scope` 等的**可选值集合**即 §5.5 的实现契约；
   §5.5 落地时须回头核对本表（字段名/枚举值）与实现一致。
 
-**同批修正**：ADR-002 §3.5 的「前端零改动」表述经实测**不成立**，已就地修正
+| **同批修正**：ADR-002 §3.5 的「前端零改动」表述经实测**不成立**，已就地修正
 （新增分区需在目标 tab 的 `onlySections` 登记分区名，一行；新增字段才真零改动）。
+
+### 7.2 §5.5(B) 跨账号沉淀池 + 轮转分配器（2026-09-22，v0.44.42，提交 `eb5d5ab`）
+
+**落地形态**：
+- DB 新增 `dm_cross_sink` 表（`database.py`）：主键 `peer_uid`，字段含 `account_sent`、`cool_until`、`send_count` —— 与 `dm_uid_sink`（per-account）并存
+- `CrossAccountSink` 类（`services/dm_dispatch.py`）：`should_send()` 全局唯一裁决 + `mark_sent()` 冷却写入（含一级内存缓存 `{peer_uid: cool_until}`）
+- `RotationAllocator` 类（`services/dm_dispatch.py`）：三种轮转策略 —— `per_target`（轮询）、`per_time_window`（30 分窗交替）、`per_room`（固定账号）
+- `submit_by_uid` 入口接线：`_cross_sink_global_scope() == true` 时优先经 `rotation.pick_account` + `cross_sink.should_send` 双重裁决
+- `_send_one` 成功发送后回写：`cross_sink.mark_sent()`（`_send_one:1296-1299`）
+- 冷却值取自 §5.4 配置（`live_orchestration.sink_cooldown_days` / `sink_permanent`），通过 `_live_orch_cool()` 读取
+
+| # | 字段 | type | 实现 | 语义 |
+|---|---|---|---|---|
+| 1 | `CrossAccountSink` | class | `dm_dispatch.py:548` | 跨账号沉淀池：peer_uid 全局唯一去重 |
+| 2 | `RotationAllocator` | class | `dm_dispatch.py:624` | 同房间多账号轮转分配 |
+| 3 | `dm_cross_sink` | DB 表 | `database.py:231` | `(peer_uid PK, account_sent, cool_until, send_count, …)` |
+| 4 | `submit_by_uid` 接线 | 入口 | `dm_dispatch.py:1117-1133` | rotation.pick_account → cross_sink.should_send 双裁决 |
+| 5 | `_send_one` 回写 | 出口 | `dm_dispatch.py:1296-1299` | 发送成功 → `cross_sink.mark_sent()` |
+| 6 | 冷却配置 | 消费 | `_live_orch_cool()` `:520` | 读 live_orchestration 冷却参数 |
+
+**验收记录（全部实跑）**：
+
+| 判据 | 方式 | 结果 |
+|---|---|---|
+| 单元零回归 | `unittest discover` | **Ran 622, OK**（618 基线 + 4 新 CrossAccountSink 测试）|
+| test_01_fresh_pass | 无历史 peer_uid | `should_send` 返回 True ✅ |
+| test_02_after_sent_rejected | `mark_sent` 后查同一 uid | 冷却期内返回 False ✅ |
+| test_03_cross_account_same_uid | 另一账号查同 uid | 跨账号拦截 ✅ |
+| test_04_different_uid_ok | 不同 uid 不受影响 | 放行 ✅ |
+| 版本门禁 | `check_version_sync.py 0.44.42` | **六处齐平** ✅（+Cargo.lock 纳入第 6 处）|
+| 工作区清洁 | `git status --short` | 仅 `dm_dispatch.py` 有 uncommitted 改动（静默重排）|
+
+**已知边界（诚实标注）**：
+- 🔴 **端到端需真机**：跨账号沉淀池的**运行时行为**（真实弹幕流 → dispatch → sink → 轮转 → 发送）当前仅单元覆盖（4 项），**未在真机弹幕 + 双账号并发送验证**。`(B)` 场景下的「同一句弹幕只发 1 条私信」验收判据**尚未被真机实跑**。
+- 🔴 **轮转分配器未接 UI**：`RotationAllocator` 的三种策略选择依赖 `live_orchestration.rotation_strategy` 配置（§5.4），当前已可通过配置中心选择。但轮转分配器本身**无独立 UI 面板**，亦无专门的管理/查看入口（全在调度器内部日志）。
+- `RotationAllocator.record_sent` 当前只存内存（`_last_sender` / `_window_sender`），进程重启后轮转历史丢失（per_target/per_time_window 策略下重置为首个账号）。**per_room 分配也仅存内存**（`_room_owner` 字典）。
+- `_send_one` 中 `cross_sink.mark_sent()` 在底层的 timeout/异常路径**未调用**（`1296-1299` 只在 `ok=True` 分支执行）。异常 → 不写 cross_sink → 下次可重发同一 uid — 属设计行为（发送未确认成功不应冷却）。
 

@@ -270,6 +270,16 @@ export interface Overview {
   statusMsg?: string;
 }
 
+/** /api/engine/accounts 返回的每个账号引擎状态（ADR-002 §5.6，前端多任务卡片数据源） */
+export interface EngineAccountStatus {
+  acct: string;
+  state: string;
+  live_url?: string | null;
+  live_id?: string | null;
+  sent: number;
+  status_msg?: string;
+}
+
 // ===== IM 通知类型（v0.37.0，2026-09-09）=====
 
 /** 支持的渠道类型 */
@@ -601,8 +611,16 @@ export const api = {
     return request("/api/engine/resume", { method: "POST", body: JSON.stringify(body) });
   },
 
-  // ===== accounts =====
-  /** 2026-09-17：ChatLab 导出到默认目录并返回下载直链（乙方案）。 */
+  /**
+     * 各账号引擎状态一览（ADR-002 §5.6，前端多任务卡片数据源）。
+     * 只读：不创建实例，未启动的账号不出现。
+     */
+    async listEngineAccounts(): Promise<{ ok: boolean; items: EngineAccountStatus[] }> {
+      return request("/api/engine/accounts");
+    },
+
+    // ===== accounts =====
+    /** 2026-09-17：ChatLab 导出到默认目录并返回下载直链（乙方案）。 */
   async exportChatlab(
     account: string,
     convId: string,

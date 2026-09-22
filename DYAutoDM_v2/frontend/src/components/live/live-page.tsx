@@ -28,11 +28,7 @@ import { Input } from "@/components/ui/input";
 
 import { Badge } from "@/components/ui/badge";
 
-import { Card, CardContent } from "@/components/ui/card";
-
 import { StatusDot } from "@/components/ui/status-dot";
-
-import { EmptyState } from "@/components/ui/empty-state";
 
 import {
   Section, Tone, Blank, SegmentedTabs, Toolbar, KeyValue,
@@ -45,6 +41,7 @@ import {
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
+import EngineCards from "./engine-cards";
 
 /** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
 const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
@@ -253,11 +250,6 @@ export default function LivePage(props: PageProps) {
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, []);
-
-  // 账号在线判定：后端账号对象运行时带 loggedIn 字段（RealAcct 未声明，此处安全读取）
-  const isAcctOnline = (a: RealAcct): boolean =>
-    (a as RealAcct & { loggedIn?: boolean }).loggedIn === true ||
-    ["online", "ok", "logged_in", "logged-in"].includes((a.status || "").toLowerCase());
 
   const heatChart = (data: number[], w = 640, h = 120) => {
     if (!data || !data.length) {
@@ -474,138 +466,12 @@ export default function LivePage(props: PageProps) {
       />
 
       {viewMode === "grid" ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2" data-od-id="live-grid">
-          {realAccts.slice(0, 2).map((acct) => (
-            <Card key={acct.name} className="overflow-hidden">
-              <div className="flex items-center gap-2.5 border-b border-[var(--color-border)]
-                              bg-[var(--color-surface-raised)] px-4 py-3">
-                <Avatar name={acct.name} h={hue(acct.name.length)} />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[0.88rem] font-semibold text-[var(--color-text)]">
-                    {acct.name}
-                  </div>
-                  <div className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
-                    UID: {acct.uid || "—"}
-                  </div>
-                </div>
-                <Tone tone={isAcctOnline(acct) ? "ok" : "danger"}>
-                  {isAcctOnline(acct) ? "在线" : "离线"}
-                </Tone>
-              </div>
-
-              <div className="space-y-1.5 border-b border-[var(--color-border)] px-4 py-2.5">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-[0.75rem] text-[var(--color-text-muted)]">直播间</span>
-                  <span className="truncate font-mono text-[0.75rem] font-semibold
-                                   text-[var(--color-text)]">
-                    {ls?.roomTitle || ls?.liveUrl || "未解析"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-[0.75rem] text-[var(--color-text-muted)]">在线人数</span>
-                  <span className="font-mono text-[0.75rem] text-[var(--color-text)]">
-                    {online ? online.toLocaleString() : "—"}
-                  </span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 px-4 py-2.5">
-                <div className="rounded-[var(--radius-sm)] border border-[var(--color-border)]
-                                bg-[var(--color-surface)] px-2.5 py-2">
-                  <div className="text-[0.68rem] text-[var(--color-text-muted)]">弹幕</div>
-                  <div className="font-mono text-[1.1rem] tabular-nums text-[var(--color-text)]">
-                    {rows.length.toLocaleString()}
-                  </div>
-                </div>
-                <div className="rounded-[var(--radius-sm)] border border-[var(--color-border)]
-                                bg-[var(--color-surface)] px-2.5 py-2">
-                  <div className="text-[0.68rem] text-[var(--color-text-muted)]">已私信</div>
-                  <div className="font-mono text-[1.1rem] tabular-nums text-[var(--color-text)]">
-                    {sentCount}
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-t border-[var(--color-border)] px-4 py-2.5">
-                <div className="mb-1.5 flex items-center justify-between gap-3">
-                  <span className="text-[0.75rem] font-semibold text-[var(--color-text)]">
-                    房间热度
-                  </span>
-                  <span className="font-mono text-[0.75rem] text-[var(--color-accent)]">
-                    {online ? online.toLocaleString() : 0} 人
-                  </span>
-                </div>
-                <div className="h-[60px]">{heatChart(heat.length ? heat : [0], 400, 60)}</div>
-              </div>
-
-              <div className="max-h-[120px] overflow-auto border-t border-[var(--color-border)]
-                              px-4 py-2.5">
-                {feed.slice(0, 5).map((f) => (
-                  <div
-                    key={f.id}
-                    className="flex items-baseline gap-2.5 rounded-[var(--radius-sm)] px-2 py-[3px]
-                               transition-colors hover:bg-[var(--color-surface-raised)]"
-                  >
-                    <span className="w-[52px] shrink-0 font-mono text-[0.62rem] tabular-nums
-                                     text-[var(--color-text-muted)]">
-                      {f.t}
-                    </span>
-                    <span className="w-[34px] shrink-0 font-mono text-[0.62rem]
-                                     tracking-[0.04em] text-[var(--color-text-secondary)]">
-                      {KIND_NAME[f.k] || f.k}
-                    </span>
-                    <span className="min-w-0 truncate text-[0.68rem] text-[var(--color-text-secondary)]">
-                      <b className="font-semibold text-[var(--color-text)]">{f.n}</b> {f.x}
-                    </span>
-                  </div>
-                ))}
-                {feed.length === 0 && (
-                  <div className="py-2.5 text-center text-[0.68rem] text-[var(--color-text-muted)]">
-                    暂无实时信息
-                  </div>
-                )}
-              </div>
-
-              <div className="flex gap-1.5 border-t border-[var(--color-border)] px-4 py-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => {
-                    setViewMode("single");
-                    setActiveAcct(acct.name);
-                    push("已切换到 " + acct.name);
-                  }}
-                >
-                  进入监听
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => push("已导出 " + acct.name + " 数据")}
-                >
-                  导出
-                </Button>
-              </div>
-            </Card>
-          ))}
-          {realAccts.length === 0 && (
-            <Card className="md:col-span-2">
-              <CardContent className="p-0">
-                <EmptyState
-                  icon={<Users className="h-6 w-6" />}
-                  title="暂无已授权账号"
-                  description="请到「账号管理」添加账号并完成扫码授权。"
-                />
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      ) : (
-        <>
-          <Section
-            className="mb-3.5"
-            data-od-id="live-acct-select"
+              <EngineCards push={push} />
+            ) : (
+              <>
+                <Section
+                  className="mb-3.5"
+                  data-od-id="live-acct-select"
             title="当前监听账号"
             description="多账号时需手动选择一个；引擎启动前会校验凭证有效性"
             actions={
