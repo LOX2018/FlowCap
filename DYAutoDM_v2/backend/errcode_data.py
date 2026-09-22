@@ -803,19 +803,35 @@ CODE_DESIGN = {
         "design": "凭证的职责是「部分直播间昵称加密时的解密权」。账号无解密权时，"
                   "直播帧只下发脱敏数据（uid=111111 + 昵称 `威***` + sec_uid 空），"
                   "**与完全不带 cookie 的真匿名逐字相同**。",
-        "contract": "① 判据落在真实业务通路（主站 user/profile/self/ 是否承认登录态）；"
-                    "② 无解密权必须显式告知用户并给出唯一动作（重新扫码）；"
-                    "③ 不得因为「有 cookie」就宣称具备解密权。",
+        "contract": "解密权是**合取**判据（2026-09-22 H-3 返工。此前只用 ① 且以"
+                    "「无解密权」上报，把「会话活性被拒」误等于「身份漂移/无解密权」）："
+                    "① 会话被服务端承认 —— 判据 = 主站 user/profile/self/（status_code=0 + sec_uid）；"
+                    "② 身份未漂移 —— 判据 = 探活 uid ∈ 该账号历史 conv_id（AUTH-050）；"
+                    "③ 二者覆盖**两类不同失效**，结论互不代替（live_session_state 自身边界）；"
+                    "④ 任一条取不到证据（None）不得据此降级（诚实三态）；"
+                    "⑤ 不得因为「有 cookie」就宣称具备解密权；"
+                    "⑥ 权威出口 = accounts.uid_identity_verdict() 四元组 (state, reason, label, detail)，"
+                    "reason ∈ {ok, not_logged_in, uid_drift, no_credential, unknown}。",
         "deviation": "实测：同一房间、同一时刻，张老师 cookie → uid=111111/sec_uid 空；"
                      "尚进 cookie → uid=63676672247/sec_uid=MS4wLjABAAAA…；"
-                     "无 cookie → uid=111111（与张老师完全一致）。",
-        "chain": "账号 .env cookie → 主站 profile/self(status_code=8 用户未登录) → "
-                 "直播 WS 帧 User.id=111111 / sec_uid 空 / desensitized_nickname 有值",
-        "root": "账号会话未被服务端承认（cookie 存在但登录态无效），"
-                "或账号本身处于「只读态」（另一独立证据：imapi cmd609 建会话被拒）。",
+                     "无 cookie → uid=111111（与张老师完全一致）。"
+                     "另一类失效样本（2026-09-14/17 实测）：探活 uid 与历史 conv_id 不符（AUTH-050），"
+                     "该账号同样无解密权，但成因与「会话被拒」不同。",
+        "chain": "账号 .env cookie →① 主站 profile/self（status_code=8 用户未登录）"
+                 "或 ② query/user 探活 uid ∉ 历史 conv_id → "
+                 "uid_identity_verdict 合取判定 → AutoDM._live_session_ok 三态 → "
+                 "LiveChatHook.session_ok → 直播 WS 帧 User.id=111111 / sec_uid 空 / "
+                 "desensitized_nickname 有值",
+        "root": "两类根因，**必须分别判定、分别上报**："
+                "（a）账号会话未被服务端承认（cookie 存在但登录态无效），"
+                "或账号处于「只读态」（独立证据：imapi cmd609 建会话被拒）；"
+                "（b）身份漂移 —— 探活 uid 不在该账号历史 conv_id 中（AUTH-050），"
+                "常由 profile 残留他人登录态 / 凭证回写污染导致。",
         "verify": "① 弹幕日志 uid=111111 且 LIVE-006 计数上升；"
                   "② python scripts/diag/diag_live_cred_ab.py 三组对照；"
-                  "③ probe_live_identity 返回 ok=False 且 detail 带 status_code=8。",
+                  "③ uid_identity_verdict 返回 False 且 reason ∈ "
+                  "{not_logged_in（detail 带 status_code=8）, uid_drift（detail 带 AUTH-050）}；"
+                  "④ 健康样本（会话被承认 + 身份一致）→ 返回 True/ok（两侧都要验）。",
     },
     "LIVE-036": {
         "design": "登录态探测是「能力判定」的输入，探测自身失败不等于能力缺失。",
@@ -824,7 +840,9 @@ CODE_DESIGN = {
         "deviation": "网络/风控导致 profile/self 请求异常。",
         "chain": "probe_live_identity → requests.get(profile/self) → except → (False, 原因)",
         "root": "外网异常或响应形状变化；判定真值应由下一次探测刷新。",
-        "verify": "detail 含「结论未知」即表示未定论；此时 AutoDM 不置 session_ok=False。",
+        "verify": "detail 含「结论未知」即表示未定论；此时 AutoDM 不置 session_ok=False。"
+                  "（H-3 后：uid_identity_verdict 返回 (None, 'unknown', …) 亦属此态，"
+                  "消费方按既有行为继续，不得据此降级。）",
     },
     "LIVE-037": {
         "design": "带凭证取直播间信息；若服务端把该会话当未登录，则回落匿名路径。",

@@ -12,7 +12,7 @@
 |---|---|
 | **前置条件** P | ① 输入为合法直播间 URL（含短链）；② 解析需带 cookie 跟随重定向（否则被风控页拦）；③ 监听需 `live_id` + 有效 `auth` |
 | **后置条件** Q | ① 解析成功返回 `room_id`（且有缓存，相同 URL 命中缓存）；② 主引擎失败时可降级到备用路径（URL 片段 / 浏览器兜底），但**必须记录降级**；③ 弹幕以 `WebcastChatMessage` 的发送者直接推送，不经二次加工 |
-| **不变式** I | Ⅰ1 **reflow 两步换发为主线**（借鉴 DouyinLiveRecorder），备用路径仅为降级；Ⅰ2 监听**只消费消息自带的 nickname**，绝不补全（见 C-01 Ⅰ3）；Ⅰ3 弹幕处理必须**线程安全**（旧版同步 websocket-client 的直接调用已改为 `submit`） |
+| **不变式** I | Ⅰ1 **reflow 两步换发为主线**（借鉴 DouyinLiveRecorder），备用路径仅为降级；Ⅰ2 监听**只消费消息自带的 nickname**，绝不补全（见 C-01 Ⅰ3）；Ⅰ3 弹幕处理必须**线程安全**（旧版同步 websocket-client 的直接调用已改为 `submit`）；Ⅰ4 **解密权是合取判据**（2026-09-22 H-3 返工）：有解密权 ⟺ ① 会话被服务端承认（`user/profile/self/`，`status_code=0` + `sec_uid`）**且** ② 身份未漂移（探活 uid ∈ 该账号历史 `conv_id`，AUTH-050）；二者覆盖**两类不同失效、互不代替**；任一侧取不到证据 → 三态 `None`（诚实降级，不据此降级）。权威出口 `auto_dm.accounts.uid_identity_verdict()` |
 
 ## 3. 签名现状（R8 核对，2026-09-21）
 
@@ -52,4 +52,11 @@ py314 -m unittest test_live            # 解析/换发单测
 ## 7. 已知缺口
 
 - `reflow/info` 签名版本待实测确认（见 §3）。
-- 直播昵称解密的权限问题（ENG-018/019）见 `artifacts/交接卡_...直播昵称解密权_v0.44.22.md`。
+- ~~直播昵称解密的权限问题（ENG-018/019）见 `artifacts/交接卡_...直播昵称解密权_v0.44.22.md`。~~
+  **2026-09-22 更新（H-3 返工已落地）**：解密权判据已收敛为**合取**并写入 §2·Ⅰ4 与
+  `LIVE-035` 六段契约（`backend/errcode_data.py`）。
+  - 权威出口 = `auto_dm.accounts.uid_identity_verdict()`，返回
+    `(state, reason, label, detail)`；`reason ∈ {ok, not_logged_in, uid_drift, no_credential, unknown}`。
+  - 守卫测试 = `backend/test_live_identity_verdict.py`（19 项，两侧样本都验 + 回退变红）。
+  - ⚠️ 原交接卡已于 2026-09-22 清除，勿再引用该路径（其开放事项已抽到
+    `工作记忆/00_交接卡待办台账.md`）。

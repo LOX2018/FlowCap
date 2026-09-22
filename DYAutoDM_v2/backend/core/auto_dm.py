@@ -549,31 +549,59 @@ class AutoDM:
                 # 而直播流连接本身支持匿名查看（用户明确要求解耦）。
                 # 此处降级：monitor_auth 置 None，由 LiveChatHook 走匿名 cookie 建连。
 
-            # 2026-09-21（ENG-018）：探测**直播昵称解密权**（= 服务端是否承认登录态）。
+            # 2026-09-21（ENG-018）→ 2026-09-22（H-3 返工）：探测**直播昵称解密权**。
             # 判据不能只看「有 cookie」——实测张老师 cookie 70 个字段齐全（sessionid/
             # sid_tt/ttwid/uid_tt 全在），服务端仍判其「未登录」⇒ 直播帧下发脱敏数据
             # （uid=111111 + 昵称 `威***` + sec_uid 空），与**完全不带 cookie 的真匿名**
             # 现象逐字相同 ⇒「有 cookie」是代理信号，判据为真、能力为零。
-            # 三态（§〇·己·2）：True=有解密权 / False=已确认无解密权 / None=取不到证据。
+            #
+            # **H-3 返工（2026-09-22）**：解密权是**合取**判据 —— 必须同时满足
+            #   ① 会话被服务端承认（profile/self）
+            #   ② 身份未漂移（探活 uid ∈ 历史 conv_id，AUTH-050）
+            # 旧实现只用 ① 却以「无解密权」上报，把「会话活性被拒」等同于
+            # 「身份漂移 / 无解密权」，文案指向错误动作（用户实测症状：重扫了仍无解密）。
+            # 权威判据收敛到 `accounts.uid_identity_verdict()`（它零新增打网：
+            # 身份侧读 `uid_probe` 的既有出口，会话侧复用既有缓存）。
+            # 三态（§〇·己·2）：True=有解密权 / False=已确认无 / None=取不到证据。
             # 该值一路传给 LiveChatHook（它只消费、不自创判据）。
             self._live_session_ok = None
             self._live_ident_detail = ""
+            self._live_ident_reason = ""
+            self._live_ident_label = ""
             try:
-                from auto_dm.accounts import probe_live_identity as _probe_li
-                _li_ok, _live_ident_detail = await asyncio.to_thread(
-                    _probe_li, _m_name, self.monitor_auth, False)
-                # 探测异常时 detail 带「结论未知」⇒ 不据此降级（诚实三态）
-                self._live_session_ok = (None if "结论未知" in (_live_ident_detail or "")
-                                         else bool(_li_ok))
-                self._live_ident_detail = _live_ident_detail
+                def _probe_and_verdict():
+                    # 身份侧判据需要「本进程对该账号的 uid 判定」做输入；此处
+                    # 触发一次**走统一调度**的探活（缓存命中则零网络；未命中才
+                    # 真正打网，且受 300s TTL + 同账号串行锁门控）——不绕过亦不新增频次。
+                    # 不这样做，身份侧在会话首启时恒为「取不到证据」，
+                    # H-3 要求的「两侧都验」就落不了地。
+                    from services import uid_probe as _up
+                    try:
+                        _up.get_uid(_m_name)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    from auto_dm.accounts import uid_identity_verdict as _uiv
+                    return _uiv(_m_name, self.monitor_auth, False)
+                _li_ok, _li_reason, _li_label, _li_detail = await asyncio.to_thread(
+                    _probe_and_verdict)
+                self._live_session_ok = _li_ok          # 三态，不做布尔折叠
+                self._live_ident_reason = _li_reason
+                self._live_ident_label = _li_label
+                self._live_ident_detail = _li_detail
             except Exception as _e:  # noqa: BLE001
                 logger.debug(f"[live-identity] 直播解密权探测跳过: {_e}")
             if self._live_session_ok is True:
-                logger.info("[live-identity] 监测账号具备直播昵称解密权（会话被服务端承认）")
+                logger.info(f"[live-identity] 监测账号{self._live_ident_label}"
+                            f" —— {self._live_ident_detail}")
             elif self._live_session_ok is False:
                 logger.warning(
-                    f"[LIVE-035] [live-identity] 监测账号**无直播昵称解密权** —— "
-                    f"弹幕昵称将被脱敏（uid=111111）。原因：{_live_ident_detail}")
+                    f"[LIVE-035] [live-identity] 监测账号**{self._live_ident_label}** —— "
+                    f"弹幕昵称将被脱敏（uid=111111）。原因：{self._live_ident_detail}")
+            else:
+                # 取不到证据（None）：既不判有、也不判无 —— 诚实降级并留痕
+                logger.warning(
+                    f"[LIVE-036] [live-identity] 监测账号解密权{self._live_ident_label}"
+                    f" —— 按既有行为继续（不据此降级）。原因：{self._live_ident_detail}")
 
             # 2) 构造发送账号 auth（与监测同一 env 时复用）
             #    ENG-017：发送线凭证缺失**不阻断监听线** —— 只关掉发送能力。
@@ -666,8 +694,12 @@ class AutoDM:
             self.status_msg = f"监听中 {self.live_id}"
             # 2026-09-21（ENG-018）：无解密权必须**在 UI 上可见**，否则用户只看得到
             # 「监听中」而弹幕昵称全是脱敏值，无从判断是代码坏了还是账号没权限。
+            # 2026-09-22（H-3）：文案改用判据产出的**原因标签**，让用户知道该修哪一条
+            # （会话活性被拒 → 重新扫码；身份漂移 → 该账号凭证已错位，也需重扫/换号）。
             if getattr(self, "_live_session_ok", None) is False:
-                self.status_msg = (f"监听中 {self.live_id}（昵称脱敏·账号无解密权，"
+                _why = (getattr(self, "_live_ident_label", "")
+                        or "无直播昵称解密权")
+                self.status_msg = (f"监听中 {self.live_id}（昵称脱敏·{_why}，"
                                    f"请重新扫码）")
             self.room_title = room_title or ""
             # 2026-09-08：任务启动 IM 汇报
@@ -992,22 +1024,34 @@ class AutoDM:
         # 3)+4) 按账号角色重建
         if is_monitor or (not is_sender):
             self.monitor_auth = auth
-            # 2026-09-21（ENG-018）：重扫后必须**重新判定**解密权 —— 否则会带着
-            # 旧的三态值继续监听（用户实测症状：重扫了仍不解密、日志无任何线索）。
+            # 2026-09-21（ENG-018）→ 2026-09-22（H-3 返工）：重扫后必须**重新判定**
+            # 解密权 —— 否则会带着旧的三态值继续监听（用户实测症状：重扫了仍未解密、
+            # 日志无任何线索）。重扫 = 换凭证 ⇒ **两个判据的旧结论都必须作废**：
+            #   ① 会话活性缓存（profile/self 的登录态）
+            #   ② 身份判断据（探活 uid vs 历史 conv_id；AUTH-050）
+            # 否则会出现「凭证已刷新、身份侧仍拿旧结论」的不一致窗口。
             try:
                 from auto_dm.accounts import (
-                    probe_live_identity as _probe_li,
+                    uid_identity_verdict as _uiv,
                     invalidate_live_identity_cache as _inval_li,
                 )
+                from services import uid_probe as _up
                 _inval_li(account_name)
-                _li_ok, _li_detail = _probe_li(account_name, auth, force=True)
-                self._live_session_ok = (None if "结论未知" in (_li_detail or "")
-                                         else bool(_li_ok))
+                _up.invalidate(account_name)          # 作废 uid 缓存 + 三态结论
+                try:
+                    _up.get_uid(account_name)         # 统一调度重探（受 TTL/锁门控）
+                except Exception:                     # noqa: BLE001
+                    pass
+                _li_ok, _li_reason, _li_label, _li_detail = _uiv(
+                    account_name, auth, force=False)
+                self._live_session_ok = _li_ok        # 三态，不折叠
+                self._live_ident_reason = _li_reason
+                self._live_ident_label = _li_label
                 self._live_ident_detail = _li_detail
-                logger.info(f"[重扫重建] 直播昵称解密权判定："
-                            f"{'有' if self._live_session_ok else '无'} —— {_li_detail}")
+                logger.info(f"[重扫重建] 直播昵称解密权判定：{_li_label} —— {_li_detail}")
             except Exception as _e:  # noqa: BLE001
                 self._live_session_ok = None
+                self._live_ident_label = ""
                 logger.warning(f"[重扫重建] 解密权复测失败（结论未知，不据此降级）: {_e}")
             self.live = LiveChatHook(self.live_id, self.monitor_auth, self.dispatch,
                                      controller=self, session_ok=self._live_session_ok)

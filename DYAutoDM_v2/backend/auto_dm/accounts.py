@@ -1245,6 +1245,83 @@ def invalidate_live_identity_cache(name: str = "") -> None:
             _live_identity_cache.clear()
 
 
+# ---------------------------------------------------------------------------
+# 账号级「直播昵称解密权」权威判据（H-3 / ENG-018 返工，2026-09-22）
+# ---------------------------------------------------------------------------
+# 设计契约（用户 2026-09-21 定调 + 2026-09-22 返工）：
+#   凭证的职责是「部分直播间昵称加密时的**解密权**」。要收得到真实
+#   uid/nickname/sec_uid，必须**同时**满足两个独立条件：
+#     ① 会话被服务端承认  —— 判据 = 主站 `user/profile/self/`（live_session_state）
+#     ② 身份未漂移        —— 判据 = 探活 uid ∈ 该账号历史 conv_id（AUTH-050）
+#   ⇒ 二者是**合取**，不是替代：任一条为「已确认失败」即无解密权；
+#      任一条取不到证据时，**不得**据它降级（诚实三态）。
+#
+# 为什么必须显式上报这一条（而非照抄「以 ② 为主」）：
+#   两个判据覆盖**两类不同失效**——`live_session_state` 自己写明「身份漂移
+#   用 query/user + 历史 conv_id 判；二者结论互不代替」。若把 ② 当 ① 的替代，
+#   或把 ① 当 ② 的替代，都会把「会话活性被拒」与「身份漂移」互相误判 ——
+#   正是 H-3 要修的缺陷本身（旧实现用 ③ 名义上报、实为判 ①）。故按**合取**实现。
+LIVE_IDENTITY_VERDICT_TTL = 300.0
+
+_VERDICT_LABEL = {
+    "not_logged_in": "无解密权（服务端不承认该会话）",
+    "uid_drift": "无解密权（身份漂移：探活 uid 不在历史会话中）",
+    "no_credential": "无解密权（无凭证）",
+    "unknown": "取不到证据（诚实降级，不据此降级）",
+    "ok": "具备直播昵称解密权",
+}
+
+
+def uid_identity_verdict(name: str, auth=None, force: bool = False,
+                         ttl: Optional[float] = None) -> Tuple[Optional[bool], str, str, str]:
+    """账号级解密权**权威三态判据**（合取，零新增风控面）。
+
+    返回 `(state, reason, label, detail)`：
+
+    ===============  ==================  ============================================
+    state            reason             含义
+    ===============  ==================  ============================================
+    ``True``         ``ok``              有解密权：会话被承认 **且** 身份未漂移
+    ``False``        ``not_logged_in``   已确认无解密权：服务端不承认该会话
+    ``False``        ``uid_drift``       已确认无解密权：身份漂移（AUTH-050）
+    ``False``        ``no_credential``   已确认无解密权：无凭证
+    ``None``         ``unknown``         取不到证据 → 调用方**必须**诚实降级
+    ===============  ==================  ============================================
+
+    ⚠️ `None` 与被确证的 `False` 语义相反，调用方不得把二者混同（§〇·己·2）。
+    `reason` 是机器可判定的键（供分支与测试），`label` 是给人看的中文结论。
+
+    风控面：身份侧读数来自 `services.uid_probe.uid_verdict()`（即 `get_uid()`
+    的出口记录），**不额外打网、不绕过 300s TTL 与同账号串行锁**；
+    会话侧复用 `live_session_state()` 的既有缓存。
+    """
+    # ① 会话活性（服务端是否承认登录态）
+    sess_ok, sess_detail = live_session_state(name, auth=auth, force=force, ttl=ttl)
+    if sess_ok is False:
+        _rs = "no_credential" if ("无 cookie" in (sess_detail or "")) else "not_logged_in"
+        return False, _rs, _VERDICT_LABEL[_rs], f"[会话活性] {sess_detail}"
+
+    # ② 身份漂移（探活 uid 是否仍在历史 conv_id 中）
+    from services.uid_probe import uid_verdict as _uidv
+    id_ok, id_detail = _uidv(name, ttl=(LIVE_IDENTITY_VERDICT_TTL if ttl is None else ttl))
+    if id_ok is False:
+        return False, "uid_drift", _VERDICT_LABEL["uid_drift"], f"[身份一致性] {id_detail}"
+    if id_ok is None:
+        # 身份侧无证据：若会话侧亦无证据 → 整体 unknown；
+        # 若会话侧已确认被承认 → 仍不得据此判「有解密权」（诚实降级）。
+        _why = (f"会话侧：{'已确认被承认' if sess_ok else '取不到证据'}；"
+                f"身份侧：{id_detail}")
+        return None, "unknown", _VERDICT_LABEL["unknown"], _why
+
+    # 到这里：身份未漂移（True）
+    if sess_ok is True:
+        return True, "ok", _VERDICT_LABEL["ok"], (
+            f"[会话活性] {sess_detail}；[身份一致性] {id_detail}")
+    return None, "unknown", _VERDICT_LABEL["unknown"], (
+        f"会话侧取不到证据：{sess_detail}；[身份一致性] {id_detail}")
+
+
+
 def account_status(name=None, force=False, timeout=10):
     """返回账号状态字典：包含签名存在性与探活结果。
 

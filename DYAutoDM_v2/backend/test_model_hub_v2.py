@@ -10,11 +10,28 @@ os.makedirs(_ROOT, exist_ok=True)
 os.environ["DY_APP_ROOT"] = _ROOT
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-for m in [k for k in list(sys.modules) if k == "database" or k.startswith("services.")]:
-    del sys.modules[m]
+# ── 测试隔离（2026-09-22 修复；与 test_config_isolation 同款手法）──────────────
+# 背景：`unittest discover` 把全部 test_*.py 导入**同一进程**，而每个测试文件都在
+# 模块顶部改 `os.environ["DY_APP_ROOT"]`，`database` 在**导入时**据此固化 DB 路径。
+# 若本模块复用了先前测试模块建立的 `database` 模块/连接（或其缓存），
+# 本用例会去读写**别人**的库 → 「单独跑全绿、整体跑红」。
+# 实测症状（本机全量 536 项）：本模块 3 项失败，报 `caps=['llm']` 缺 `vision`
+# 与 `providers` 计数 2≠1 —— 即读到了别的库留下的残留状态。
+# ⇒ 每次 setUp 前：① 清 `database` + `services.*` 模块；② 重新导入（此时
+#    DB 路径按本模块的 `_ROOT` 重新固化）；③ 重置连接。
+def _reimport():
+    for _m in [k for k in list(sys.modules) if k == "database" or k.startswith("services.")]:
+        del sys.modules[_m]
+    import database as _db
+    from services import model_hub as _hub
+    return _hub, _db
 
-from services import model_hub as hub
-from database import set_kv_json, set_kv, get_kv, get_db
+
+hub, _db = _reimport()
+set_kv_json = _db.set_kv_json
+set_kv = _db.set_kv
+get_kv = _db.get_kv
+get_db = _db.get_db
 
 
 def _wipe():
@@ -26,6 +43,13 @@ def _wipe():
 
 class TestModelHubV2(unittest.TestCase):
     def setUp(self):
+        # 每用例都从「绑定本模块隔离根的干净 database」开始（防跨模块串库）
+        global hub, set_kv_json, set_kv, get_kv, get_db
+        hub, _db = _reimport()
+        set_kv_json = _db.set_kv_json
+        set_kv = _db.set_kv
+        get_kv = _db.get_kv
+        get_db = _db.get_db
         _wipe()
         # 标记已迁移 → _load 不再触发 ai_reply 默认配置迁入
         set_kv("model_hub.migrated", True)

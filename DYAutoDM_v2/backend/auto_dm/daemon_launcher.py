@@ -8,6 +8,7 @@ backend 启动、账号登录成功、首次引擎校验均可调用，端口已
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -78,7 +79,26 @@ def _resolve_sidecar_binary(name: str) -> str | None:
 
 
 
-def _spawn_sidecar(binary: str, args: list) -> subprocess.Popen:
+def _spawn_sidecar(binary: str, args: list, *,
+                   no_window: bool = True,
+                   own_process_group: bool = False) -> subprocess.Popen:
+    """唯一 sidecar 启动入口（ADR-001，2026-09-22 收敛）。
+
+    收敛理由（ADR-001 §3，实测依据见其 §2）：
+      · 原有两个同名实现（本文件 / `main.py`），**行为不一致** ——
+        本文件用 `CREATE_NO_WINDOW`（不弹窗、同进程组），
+        `main.py` 用 `CREATE_NEW_PROCESS_GROUP`（独立进程组、**无** NO_WINDOW）。
+      · ADR-001 §2·Q1 实测证明进程组语义**无消费方**：生命周期清扫由
+        `daemon_registry` 按登记 pid 显式完成（`main.py::_kill_spawned_daemons`
+        + `atexit`），不依赖 OS 进程组级联 ⇒ 收敛**预期零功能影响**。
+      · §2·Q2 实测：缺失 `CREATE_NO_WINDOW` 在 Tauri 宿主（无 console）下
+        可能新建 console 窗口 —— 与用户反复抱怨的「窗口快闪」机理吻合。
+
+    参数：
+      no_window=True（默认）：Windows 下加 `CREATE_NO_WINDOW`，避免弹 console 窗口。
+      own_process_group=False（默认）：不建独立进程组。生命周期已由
+        daemon_registry 显式负责；保留该参数仅为将来若确需「守护独立于 backend 存活」。
+    """
     # 会员体系（v0.37.0）：子进程继承会员空间与主密钥（环境变量透传，不落盘）
     env = {k: v for k, v in os.environ.items()
            if k.startswith("DY_") or k in ("PYTHONPATH", "SYSTEMROOT", "TEMP", "TMP",
@@ -93,13 +113,21 @@ def _spawn_sidecar(binary: str, args: list) -> subprocess.Popen:
                 env["DY_MEMBER_KEY"] = mk
     except Exception:
         pass
-    proc = subprocess.Popen(
-        [binary, *args],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    kwargs: dict = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "env": env,
+    }
+    if platform.system() == "Windows":
+        flags = 0
+        if no_window:
+            flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if own_process_group:
+            flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        kwargs["creationflags"] = flags
+    elif own_process_group:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen([binary, *args], **kwargs)
     # 登记 pid：backend 退出时清扫，避免孤儿进程占端口
     if _dreg is not None:
         _dreg.register(proc.pid)

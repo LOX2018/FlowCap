@@ -141,35 +141,14 @@ def _wait_for_port(port: int, timeout: int = 30) -> bool:
     return False
 
 
-def _spawn_sidecar(binary: str, args: list[str]) -> subprocess.Popen:
-    """spawn sidecar 子进程（独立进程组，不阻塞 backend）。"""
-    kwargs: dict = {
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if platform.system() == "Windows":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[assignment]
-    else:
-        kwargs["start_new_session"] = True  # type: ignore[assignment]
-    # 会员体系（v0.37.0）：子进程继承会员空间与主密钥
-    env = {k: v for k, v in os.environ.items()
-           if k.startswith("DY_") or k in ("PYTHONPATH", "SYSTEMROOT", "TEMP", "TMP",
-                                           "COMPUTERNAME", "USERPROFILE", "APPDATA",
-                                           "LOCALAPPDATA", "PROGRAMDATA", "WINDIR")}
-    try:
-        from services import member_ctx as _mctx
-        if _mctx.current():
-            env["DY_MEMBER"] = _mctx.current_member_id() or ""
-            mk = _mctx.master_key()
-            if mk:
-                env["DY_MEMBER_KEY"] = mk
-    except Exception:
-        pass
-    kwargs["env"] = env
-    proc = subprocess.Popen([binary] + args, **kwargs)
-    # 登记 pid：退出时统一清扫，避免孤儿（见 _kill_spawned_daemons）
-    _dreg.register(proc.pid)
-    return proc
+# ── ADR-001（2026-09-22 实施）：sidecar 启动入口**唯一实现**在 daemon_launcher ──
+# 此前本文件与 `auto_dm/daemon_launcher.py` 各有一份同名 `_spawn_sidecar`，行为不一致
+# （本文件 `CREATE_NEW_PROCESS_GROUP` 且**无** `CREATE_NO_WINDOW`；对方反之）。
+# ADR-001 §2 实测证明：进程组语义**无消费方**（生命周期清扫由 daemon_registry 按登记
+# pid 显式完成，见 `_kill_spawned_daemons` + atexit），故收敛到唯一实现并补上缺失的
+# `CREATE_NO_WINDOW`（防 Tauri 宿主无 console 时弹窗 —— 「窗口快闪」机理之一）。
+# 判据（ADR-001 §5）：`grep -c` 该函数定义名于 backend/ → 期望 1（仅 daemon_launcher）。
+from auto_dm.daemon_launcher import _spawn_sidecar  # noqa: E402  (ADR-001 唯一实现)
 
 
 def _prealign_on_startup() -> None:

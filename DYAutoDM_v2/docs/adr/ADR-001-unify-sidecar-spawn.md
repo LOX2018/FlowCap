@@ -2,8 +2,8 @@
 
 | 项 | 值 |
 |---|---|
-| **状态** | **Accepted（决策已定）** |
-| **日期** | 2026-09-21 提案 / 2026-09-22 决策补全 |
+| **状态** | **Implemented（2026-09-22 已实施并验证）** |
+| **日期** | 2026-09-21 提案 / 2026-09-22 决策补全 + 实施 |
 | **决策者** | 用户（LOX） |
 | **来源** | 《架构审计报告》P0-1 / P0-2；本轮实测复核 |
 | **影响面** | 守护进程启动路径（BCC / recv_daemon / backend 全部 sidecar） |
@@ -99,8 +99,23 @@ Rust `SidecarManager` 不管理 backend 自己 spawn 的守护（它只管 Tauri
 | 影响启动链 | **高** | 启动失败 = 全系统不可用 |
 | 静默回归 | 中 | 需 `process` 级观测（pid、端口、创建标志） |
 
-**为什么本次不实施**：该改动**必须实机验证**（启 backend → 观察守护 pid/端口/进程组 → 杀 backend → 观察守护是否存活），
+**为什么本次不实施**（提案期结论，**已于 2026-09-22 实施**，见下方「实施记录」）：
+该改动**必须实机验证**（启 backend → 观察守护 pid/端口/进程组 → 杀 backend → 观察守护是否存活），
 属「有用户在场 + 可回滚 + 有观测」的场景。**静默实施违反实机验证铁律。**
+
+---
+
+## 3·甲、实施记录（2026-09-22）
+
+| 项 | 实际落地 |
+|---|---|
+| 唯一实现 | `backend/auto_dm/daemon_launcher.py::_spawn_sidecar`（新增 `no_window` / `own_process_group` 两参数，默认值 = 原 A 语义 + 补 `no_window=True`） |
+| `main.py` | 删除自有实现，改 `from auto_dm.daemon_launcher import _spawn_sidecar`（两个调用点 `:300`/`:322` 不变） |
+| 判据 §5·6 | `grep -c "def _spawn_sidecar" backend/` = **1**（仅 daemon_launcher）✔ |
+| 判据 §5·1 | `main._spawn_sidecar is daemon_launcher._spawn_sidecar` → **True**（无环形导入）✔ |
+| creationflags 语义 | 以 `subprocess.Popen` 替身实测：默认 → `NO_WINDOW=True, NEW_PROCESS_GROUP=False`；`own_process_group=True` → 两者皆 True；`no_window=False` → `NO_WINDOW=False`（脚本 `%LOCALAPPDATA%/Temp/dybc/verify_spawn_flags.py`）✔ |
+| 回归 | 全量 527 项，仅 1 条**存量** loader 错误（`test_member_smoke`，与本改动无关）✔ |
+| ⚠️ 待实机确认 | 「杀 backend 后守护是否存活」需**用户在场实机**跑一次（§4 步骤 3-4）。本次未起进程（避免触发 lifespan 拉起真实 BCC）；默认 `own_process_group=False` ⇒ 按 Q1 结论，守护存活与否只取决于 daemon_registry 的显式清扫，**不取决于本次改动** |
 
 ---
 

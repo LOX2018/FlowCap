@@ -43,12 +43,23 @@ KNOWN = load_known_gaps()
 
 
 def classify(check_name: str, offenders: list[str]) -> tuple[list[str], list[str]]:
-    """把违规分成 (新增违规, 已知缺口)。target 用 basename:path 归一化匹配。"""
+    """把违规分成 (新增违规, 已知缺口)。
+
+    匹配口径（2026-09-22 修正，`_match_rule` 同步写在 .known-gaps.json）：
+    **逐端点精确相等** —— offender 形如
+    `backend/dy_apis/client_collection.py:/aweme/v1/web/aweme/favorite/`，
+    必须与某条 known_gap 的 (check, target) **完全一致** 才判为已知。
+
+    ⚠️ **不要退回前缀匹配**。旧实现是
+    `off.startswith(g[1].split("/aweme")[0])` —— 它只看「文件路径前缀」，
+    于是同一文件被登记 1 处缺口后，该文件**所有**受保护端点全部落入 known。
+    实测反证（2026-09-22）：人为新增一个该文件从未登记的端点 → 返回
+    (新增违规=0, known=1) ⇒ 门禁**不会失败**，与 docstring 承诺的
+    「只对【新增】违规失败」直接矛盾（静默豁免新缺口）。
+    """
     new, known = [], []
     for off in offenders:
-        # off 形如 "backend/dy_apis/client_video.py:/aweme/v1/web/tab/feed/"
-        matched = any(off.startswith(g[1].split("/aweme")[0]) and
-                      g[0] == check_name for g in KNOWN)
+        matched = any(off == g[1] and g[0] == check_name for g in KNOWN)
         (known if matched else new).append(off)
     return new, known
 

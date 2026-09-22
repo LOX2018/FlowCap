@@ -207,6 +207,25 @@ def _uid_consistent_with_history(account: str, uid) -> bool:
         return True
 
 
+# ---------------------------------------------------------------------------
+# 上一次 uid 判定的**三态结论**（2026-09-22，H-3/ENG-018 返工）
+# ---------------------------------------------------------------------------
+# 为什么需要它：`get_uid()` 返回 None 时，调用方**无法区分**两种完全不同的
+# 语义 ——「探活失败/退避期（取不到证据）」与「已探到但与该账号历史 conv_id
+# 不一致（AUTH-050，已确认身份漂移）」。而这两者对「直播昵称解密权」的结论
+# 截然相反：前者应诚实降级（None，不据此降级），后者必须判**无解密权**。
+# 直接调 `_do_probe` 去拿裸 uid 会**绕过本模块的统一调度**（300s TTL +
+# 同账号串行锁），属风控频次铁律禁止的做法。
+# ⇒ 故在 `get_uid` 的每条出口写入本表，另开只读出口 `uid_verdict()` 供消费方
+#   取三态；**零新增网络请求、零绕过调度**。
+_last_verdict: Dict[str, Tuple[float, Optional[bool], str]] = {}
+
+
+def _record_verdict(name: str, state: Optional[bool], detail: str) -> None:
+    with _registry_lock:
+        _last_verdict[name] = (time.time(), state, detail)
+
+
 def _do_probe(name: str) -> Optional[int]:
     """真正发一次 query/user（本模块内唯一的网络出口）。"""
     try:
@@ -255,6 +274,7 @@ def get_uid(name: str, force: bool = False,
     if not force:
         cached = _valid(name, ttl)
         if cached is not None:
+            _record_verdict(name, True, f"缓存命中 uid={cached}（{cfg('UID_TTL_OK'):.0f}s TTL 内）")
             return cached
         # 缓存里是 None（失败退避期内）→ 直接返回 None，不再打网
         with _registry_lock:
@@ -262,17 +282,23 @@ def get_uid(name: str, force: bool = False,
         if hit and not hit[1]:
             ttl_fail = ttl if ttl is not None else cfg("UID_TTL_FAIL")
             if (time.time() - hit[0]) < ttl_fail:
+                _record_verdict(name, None,
+                                "探活失败退避期内（取不到证据，不据此降级）")
                 return None
 
     lk = _lock_for(name)
     if not lk.acquire(timeout=cfg("LOCK_WAIT")):
         # 拿不到锁（极端并发）：退化为读缓存，绝不无限等待
-        return _valid(name, ttl)
+        uid = _valid(name, ttl)
+        _record_verdict(name, (True if uid else None),
+                        "并发锁等待超时，退回缓存读数（证据不完整）")
+        return uid
     try:
         # 双检：等锁期间可能已被别的线程刷新
         if not force:
             cached = _valid(name, ttl)
             if cached is not None:
+                _record_verdict(name, True, f"并发刷新后缓存命中 uid={cached}")
                 return cached
         uid = _do_probe(name)
         # 2026-09-07 事实更正 + 加固：**不存在"两套 uid"**，探活 uid 必须
@@ -285,16 +311,56 @@ def get_uid(name: str, force: bool = False,
         if uid and not _uid_consistent_with_history(name, uid):
             logger.warning(f"[AUTH-050] " + f"[uid-probe] 账号「{name}」探活 uid={uid} 与该账号历史会话"
                 f"不一致 —— 判为陈旧/不可信，不缓存（真实 uid 以 conv_id 为准）")
+            # 三态标记：这是**已确认的身份漂移**（探到了，但与历史 conv_id 不符），
+            # 与「探活失败（取不到证据）」语义相反 —— 消费方（直播解密权）据此判无权限。
+            _record_verdict(name, False,
+                            f"AUTH-050 身份漂移：探活 uid={uid} 不在历史 conv_id 中")
             return None
         with _registry_lock:
             _cache[name] = (time.time(), uid)
         if uid:
             logger.info(f"[uid-probe] 账号「{name}」uid={uid}（已缓存 {cfg('UID_TTL_OK'):.0f}s）")
+            _record_verdict(name, True, f"探活 uid={uid} 与历史 conv_id 一致")
         else:
             logger.warning(f"[AUTH-051] " + f"[uid-probe] 账号「{name}」探活失败（{cfg('UID_TTL_FAIL'):.0f}s 内不再重试）")
+            _record_verdict(name, None, "AUTH-051 探活失败（取不到证据，不据此降级）")
         return uid
     finally:
         lk.release()
+
+
+def uid_verdict(name: str, ttl: Optional[float] = None) -> Tuple[Optional[bool], str]:
+    """只读出口：最近一次 uid 判定的**三态结论**（零网络请求）。
+
+    True  = 已确认：探活 uid 与该账号历史 conv_id 一致（身份未漂移）
+    False = 已确认：AUTH-050 身份漂移（探到了但不在历史 conv_id 中）
+    None  = 取不到证据（没探过 / 探活失败 / 退避期内 / 并发锁超时）
+
+    ⚠️ 口径同 `live_session_state`：**None 既不等于 True 也不等于 False**，
+    消费方必须诚实降级（不得把「没证据」当成「漂移」或「正常」）。
+
+    数据来源 = `get_uid()` 的出口记录（`_last_verdict`），即**走统一调度**的
+    那次判定，不额外打网、不绕过 300s TTL 与同账号串行锁。
+    `ttl` 给出时，超过该秒数的结论视为过期 → 返回 (None, ...)。
+    """
+    with _registry_lock:
+        hit = _last_verdict.get(name)
+    if not hit:
+        return None, "本进程尚未对该账号做过 uid 判定（取不到证据）"
+    ts, state, detail = hit
+    if ttl is not None and (time.time() - ts) >= ttl:
+        return None, (f"上一次 uid 判定已过期（{round(time.time() - ts, 1)}s > {ttl}s）"
+                      f"—— 取不到证据")
+    return state, detail
+
+
+def invalidate_verdict(name: str = "") -> None:
+    """作废 uid 三态结论（凭证刷新/重扫后调用，与 `invalidate` 配套）。"""
+    with _registry_lock:
+        if name:
+            _last_verdict.pop(name, None)
+        else:
+            _last_verdict.clear()
 
 
 def _session_uid_of(account: str) -> str:
