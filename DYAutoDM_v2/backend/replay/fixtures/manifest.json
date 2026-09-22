@@ -1,0 +1,21 @@
+{
+  "init_packet": {
+    "account_uid": "316276709526638",
+    "desc": "get_message_by_init 首包（cmd2043 包裹，44 会话骨架）",
+    "expected": {
+      "convs": 44,
+      "convs_with_msgs": 10,
+      "roles_me": 18,
+      "roles_them": 1,
+      "short_id_coverage": 44,
+      "total_msgs": 19,
+      "unique_conv_id": 44
+    },
+    "file": "init_packet/init_packet.bin",
+    "previous_sha256": "68b7d8376d20d259b48d89f3fd2b3feb9f773d15ba500b45def325b9e19cafa7",
+    "provenance": "2026-09-06 13:41 实拉；2026-09-20 测试根删除时由 _backup_dyautodm_test_20260920_171030 保留",
+    "recorded_at": "2026-09-22 14:38:24",
+    "sha256": "68b7d8376d20d259b48d89f3fd2b3feb9f773d15ba500b45def325b9e19cafa7",
+    "size": 127711
+  }
+}

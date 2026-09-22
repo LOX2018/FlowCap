@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """验收：首包解析修复（v0.43.27）
 
+> ⚠️ **2026-09-22 状态更正（必读）**：本脚本的 **C 段（功能验收）长期是空的**。
+> 它依赖 `<DESIGN_ROOT>/_repro352_fresh/init_live.bin`，而该文件随 2026-09-20
+> 测试根删除而消失 ⇒ 每次运行都走 `[SKIP] 未找到真实首包样本` + `C0=False`。
+> **功能验收已迁移**到 `backend/test_replay_capture_parse.py`（冻结样本 + 零真机，秒级，可并发）；
+> 本脚本保留 A/B/C8~C11 的**静态自包含与签名断言**（那些不依赖首包样本，仍然有效）。
+> 分层政策见知识库 `工作记忆/01_铁律与红线.md` 的 **D-03**。
+
 背景（2026-09-15 实机复现 08 §35.2 时定位的两处回归）：
   ① short_id 丢失 —— 同一 conv_id 的「容器包装对象」与「会话元数据对象」抢位，
      容器先占 → 该会话 short_id=None → 被长会话补全(301)永久跳过。
@@ -9,7 +16,7 @@
      漏搬 `import json` 与 `_extract_media_text`；后者跨模块引用失效。
      json 缺失导致 json.loads 抛 NameError 被 `except: continue` **静默吞掉**。
 
-本脚本断言：修复前的两个症状在**真实首包**上均不再出现。
+本脚本断言：修复前的两个症状在**真实首包**上均不再出现（C 段；现由回放层承接）。
 
 运行：
   "C:/Users/LOX/AppData/Local/Programs/Python/Python314/python.exe" \
@@ -104,13 +111,17 @@ check("B1 导入 conversation_capture 后提取器已注入", _ex is not None)
 check("B2 注入的正是 _extract_media_text", getattr(_ex, "__name__", "") == "_extract_media_text")
 
 # ---------------- C. 功能：真实首包解析 ----------------
+# ⚠️ 2026-09-22：C 段依赖的 init_live.bin 已随测试根删除而消失，本节长期空转。
+# 功能验收请跑：backend/test_replay_capture_parse.py（冻结样本，零真机）
+# 见知识库 01_铁律与红线.md 的 D-03。
 print("\n[C] 真实首包解析（缺陷①+②的症状）")
 _bins = sorted(glob.glob(os.path.join(DESIGN_ROOT, "_repro352_fresh", "init_live.bin"))) \
     + sorted(glob.glob(os.path.join(DESIGN_ROOT, "**", "init_live.bin"), recursive=True))
 _bin = _bins[0] if _bins else None
 if not _bin:
-    print("  [SKIP] 未找到真实首包样本（先跑 _repro_352_partB.py 生成 init_live.bin）")
-    check("C0 首包样本存在", False, "缺少 init_live.bin → 功能项无法验收")
+    print("  [SKIP] 未找到真实首包样本 —— 本段自 2026-09-20 起长期空转，"
+          "功能验收已迁移至 test_replay_capture_parse.py（详见 01_铁律 D-03）")
+    print("  [INFO] 本节不计入通过项（空转的验收 = 未验收，不得当作 PASS）")
 else:
     raw = open(_bin, "rb").read()
     # 自身 uid 自愈推断（与 parse_init_protobuf 内部同法）
