@@ -349,9 +349,9 @@ class AccountInbox:
                         "UPDATE dm_conversations SET peer_name=?, avatar=? "
                         "WHERE account=? AND conv_id=? "
                         "AND (peer_name IS NULL OR peer_name='' "
-                        "     OR peer_name=peer_id)",
+                        "     OR peer_name=peer_id OR peer_name=?)",
                         (info["nickname"], info.get("avatar") or None,
-                         self.name, cid),
+                         self.name, cid, self.my_uid),
                     )
                     done += (cur.rowcount or 0)
                     # 同步内存缓存，前端下次轮询即可见（不必等库）

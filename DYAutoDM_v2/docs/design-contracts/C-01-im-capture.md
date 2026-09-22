@@ -1,5 +1,7 @@
 # 设计契约 · C-01 IM 私信捕获（conversation_capture）
 
+> 🔴 **校准横幅（2026-09-22 M-10）**：本文 §2 前置条件 P② 与不变式 I③ 原写「BCC 被动 hook `im/user/info`」，但 2026-09-15 实测抖音改版后前端**不再发**该端点。**现行为读 IndexedDB `<uid>_user`** → 数字 uid 比对（实测 44/44）。见 `backend/kernel/truth.py` `NICKNAME_SOURCE`。
+>
 > 依《体系体检报告》§6.1②③ 与《架构审计报告》§九-6：把「接口定性」从**注释**变成**可执行契约**。
 > 本文件是该模块的**唯一语义契约**（SSOT）。代码改动若与本文冲突，须先改本文（走变更控制）。
 
@@ -14,9 +16,9 @@
 
 | 类型 | 内容 |
 |---|---|
-| **前置条件** P | ① 目标账号的常驻浏览器已启动且已登录；② BCC 被动 hook 已挂载 `im/user/info` 等前端自发端点；③ `conversation_id` 来自被动捕获，不做后端推导 |
+| **前置条件** P | ① 目标账号的常驻浏览器已启动且已登录；② IndexedDB `<uid>_user` 读取就绪（BCC 被动 hook 仅作为 DOM 回退）；③ `conversation_id` 来自被动捕获，不做后端推导 |
 | **后置条件** Q | ① 每条捕获记录落库且可追溯来源；② `sender_nickname` 仅采用消息自带字段（缺失即为空，**不补全**）；③ 捕获覆盖率进探针（`message_integrity`） |
-| **不变式** I | Ⅰ1 **零主动请求**：本模块不得调用任何 `im/user/info` 之外的批量查询；Ⅰ2 `msg_type=7 且 msg_id IS NULL` 属脏数据，必须过滤；Ⅰ3 昵称唯一来源 = BCC 被动 hook，绝不走 `bulk_user_info` / `get_im_user_info` 等主动路径；Ⅰ4 方向判定只能用 `sender UID`（空 → `me`），**不得**用字段位置猜 |
+| **不变式** I | Ⅰ1 **零主动请求**：本模块不得调用任何 `im/user/info` 之外的批量查询；Ⅰ2 `msg_type=7 且 msg_id IS NULL` 属脏数据，必须过滤；Ⅰ3 昵称唯一来源 = IndexedDB `<uid>_user`（见 `backend/kernel/truth.py` `NICKNAME_SOURCE`），绝不走 `bulk_user_info` / `get_im_user_info` 等主动路径；Ⅰ4 方向判定只能用 `sender UID`（空 → `me`），**不得**用字段位置猜 |
 
 ## 3. 规范契约（字段命名 · Canonical Contract Law）
 

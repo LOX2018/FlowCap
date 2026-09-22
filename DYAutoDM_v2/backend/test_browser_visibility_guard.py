@@ -22,6 +22,9 @@ BE = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2\backend"
 sys.path.insert(0, BE)
 
 BROWSER_DAEMON = os.path.join(BE, "daemon", "browser_daemon.py")
+BCC_LOGIN = os.path.join(BE, "daemon", "bcc_login.py")
+BCC_CAPTURE = os.path.join(BE, "daemon", "bcc_capture.py")
+BCC_AUDIT = os.path.join(BE, "daemon", "bcc_audit.py")
 JS = os.path.join(BE, "daemon", "browser_daemon_js.py")
 GATE = os.path.join(BE, "services", "browser_gate.py")
 API_ACC = os.path.join(BE, "api", "accounts.py")
@@ -33,18 +36,27 @@ def _read(p):
         return f.read()
 
 
+def _read_all(*paths):
+    """Read multiple files and return their concatenated content."""
+    parts = []
+    for p in paths:
+        parts.append(_read(p))
+    return "\n".join(parts)
+
+
 class TestA_VisibilityRebuild(unittest.TestCase):
     """A：纯无头下不得走「只改窗口状态」的假成功路径。"""
 
     @classmethod
     def setUpClass(cls):
-        cls.src = _read(BROWSER_DAEMON)
+        cls.src = _read_all(BROWSER_DAEMON, BCC_AUDIT)
 
     def test_01_window_mode_requires_headed(self):
-        """window 快路径的前提必须包含「当前非无头」。"""
+        """window 快路径的前提必须包含「当前非无头」。
         # 2026-09-20：正则原为 `\((.*?)\)\s*\n`，会被表达式内的
         # `("exe", "camoufox")` 里的 `)` 提前截断（非贪婪 + 换行边界）
         # → 断言失效。改为锚定「赋值起始」到「行首右括号结束」的整段。
+        """
         m = re.search(
             r"_can_window_mode\s*=\s*\((.*?)^\s*\)",
             self.src, re.S | re.M)
@@ -69,7 +81,7 @@ class TestB_HonestDegradation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.src = _read(BROWSER_DAEMON)
+        cls.src = _read_all(BROWSER_DAEMON, BCC_AUDIT)
 
     def test_01_has_os_window_check(self):
         self.assertIn("async def _window_really_visible(self)", self.src)
@@ -257,7 +269,7 @@ class TestH_NoEnvironmentFlapping(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.src = _read(BROWSER_DAEMON)
+        cls.src = _read_all(BROWSER_DAEMON, BCC_LOGIN, BCC_AUDIT)
 
     def test_01_selfheal_inherits_visibility(self):
         """自愈重建必须继承当前可见性意图（不再一律无头）。"""
@@ -559,8 +571,14 @@ class TestN_CamoufoxBackendParity(unittest.TestCase):
                               "daemon", "browser_daemon.py")
         self.p2 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "daemon", "bcc_routes.py")
+        self.p3 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "daemon", "bcc_login.py")
+        self.p4 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "daemon", "bcc_audit.py")
         self.src = open(self.p, encoding="utf-8").read()
         self.src2 = open(self.p2, encoding="utf-8").read() if os.path.isfile(self.p2) else ""
+        self.src3 = open(self.p3, encoding="utf-8").read() if os.path.isfile(self.p3) else ""
+        self.src4 = open(self.p4, encoding="utf-8").read() if os.path.isfile(self.p4) else ""
 
     def test_no_bare_exe_backend_check(self):
         """不得再有只认 "exe" 的裸判断（会漏掉 camoufox）。"""
@@ -583,9 +601,16 @@ class TestN_CamoufoxBackendParity(unittest.TestCase):
             "任何 `_backend` 判断必须同时覆盖 exe 与 camoufox，全部缺失")
 
     def test_context_close_dispatches_to_camoufox_helper(self):
-        """关闭 Camoufox context 必须走 close_camoufox_context（__aexit__）。"""
+        """关闭 Camoufox context 必须走 close_camoufox_context（__aexit__）。
+
+        browser_daemon.py (2) + bcc_login.py (2) + bcc_audit.py (2) + bcc_routes.py (4) = 10
+        """
+        total = (self.src.count("close_camoufox_context") +
+                 self.src3.count("close_camoufox_context") +
+                 self.src4.count("close_camoufox_context") +
+                 self.src2.count("close_camoufox_context"))
         self.assertGreaterEqual(
-            self.src.count("close_camoufox_context"), 5,
+            total, 5,
             "Camoufox 关闭点未全部走统一 helper")
 
     def test_helper_uses_aexit(self):
@@ -611,14 +636,17 @@ class TestO_WindowVisibleCrossKernel(unittest.TestCase):
     def setUp(self):
         self.p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "daemon", "browser_daemon.py")
+        self.p2 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "daemon", "bcc_audit.py")
         self.src = open(self.p, encoding="utf-8").read()
+        self.src2 = open(self.p2, encoding="utf-8").read() if os.path.isfile(self.p2) else ""
 
     def test_accepts_mozilla_window_class(self):
-        self.assertIn("MozillaWindowClass", self.src,
+        self.assertIn("MozillaWindowClass", self.src2,
                       "未支持 Firefox 窗口类名 → Camoufox 有头窗口会被判不可见")
 
     def test_keeps_chromium_window_class(self):
-        self.assertIn("Chrome_WidgetWin", self.src, "不得丢弃 Chromium 支持")
+        self.assertIn("Chrome_WidgetWin", self.src2, "不得丢弃 Chromium 支持")
 
     def test_pid_fallback_when_browser_is_none(self):
         """_browser 为 None（Camoufox/AsyncCamoufox）时必须有 PID 兜底。
@@ -627,9 +655,9 @@ class TestO_WindowVisibleCrossKernel(unittest.TestCase):
         **注释**里 → 断言「假绿」（把注释当实现，典型的形式主义门禁）。现改为
         断言**真机制**：进程名不作过滤依据，改按 cmdline 稳定片段匹配。
         """
-        i = self.src.find("async def _window_really_visible")
+        i = self.src2.find("async def _window_really_visible")
         self.assertGreater(i, 0)
-        seg = self.src[i:i + 9000]
+        seg = self.src2[i:i + 9000]
         self.assertIn("_profile_dir", seg,
                       "缺少按 profile 路径匹配进程的兜底 → Camoufox 下 pids 恒空")
         self.assertIn("psutil", seg,
@@ -643,23 +671,23 @@ class TestO_WindowVisibleCrossKernel(unittest.TestCase):
         实测：真实内核进程名不是 camoufox.exe（本机是 firefox.exe），
         `$_.Name -eq "camoufox.exe"` 使查询恒空 → pids 空 → 误判不可见 → BCC-053。
         """
-        i = self.src.find("async def _window_really_visible")
-        seg = self.src[i:i + 9000]
+        i = self.src2.find("async def _window_really_visible")
+        seg = self.src2[i:i + 9000]
         self.assertNotIn('$_.Name -eq', seg,
                          "不得按固定进程名过滤（进程名会漂移，须按 cmdline 匹配）")
 
     def test_fallback_failure_is_loud(self):
         """兜底拿不到 PID 必须响亮告警，不得静默 return False。"""
-        i = self.src.find("async def _window_really_visible")
-        seg = self.src[i:i + 9000]
+        i = self.src2.find("async def _window_really_visible")
+        seg = self.src2[i:i + 9000]
         self.assertIn("未能解析到", seg,
                       "兜底未命中必须留下可诊断的 WARNING（静默失败正是本案真因）")
         self.assertIn("logger.warning", seg)
 
     def test_no_wmic_dependency(self):
         """不得依赖 wmic（本机已移除，实测 FileNotFoundError）。"""
-        i = self.src.find("async def _window_really_visible")
-        seg = self.src[i:i + 4000]
+        i = self.src2.find("async def _window_really_visible")
+        seg = self.src2[i:i + 4000]
         self.assertNotIn('"wmic"', seg,
                          "wmic 在本机不可用；用 PowerShell Get-CimInstance")
         self.assertIn("powershell", seg.lower())
@@ -675,7 +703,7 @@ class TestP_SwitchTimingAndProfileRelease(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.src = _read(BROWSER_DAEMON)
+        cls.src = _read_all(BCC_AUDIT, BROWSER_DAEMON)
 
     def test_polling_replaces_single_check(self):
         self.assertIn("async def _wait_window_visible(self, target: bool) -> bool | None:",
@@ -693,12 +721,12 @@ class TestP_SwitchTimingAndProfileRelease(unittest.TestCase):
         i = self.src.find("async def _do_switch_background")
         j = self.src.find("async def _wait_profile_released")
         seg = self.src[i:j]
-        self.assertIn("无法确认", seg, "必须有「证据取不到」的诚实降级分支")
+        self.assertIn("**无法确认**", seg, "必须有「证据取不到」的诚实降级分支")
         self.assertIn("elif _vis is False:", seg,
                       "回退为无头只能出现在「确认不可见」的严格分支里")
         # 诚实降级分支（else）内不得出现状态回退
-        k = seg.find("else:  # None")
-        self.assertGreater(k, 0, "缺少 None 分支")
+        k = seg.find("else:")
+        self.assertGreater(k, 0, "缺少 else 分支")
         self.assertNotIn("self._headless = True", seg[k:k + 400],
                          "诚实降级分支不得擅自回退状态")
 

@@ -163,13 +163,10 @@ def db_evidence() -> str:
 
 
 # 昵称是否「真实」：非空、不等于 peer_id、且不是纯数字占位
+# 收敛至 verdicts 判据（M-10 F7）：单一来源
 def _is_real_nickname(peer_name: Any, peer_id: Any) -> bool:
-    s = str(peer_name or "").strip()
-    if not s:
-        return False
-    if peer_id is not None and s == str(peer_id):
-        return False
-    return not s.isdigit()
+    from services.verdicts import is_placeholder_name
+    return not is_placeholder_name(peer_name, peer_id=peer_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

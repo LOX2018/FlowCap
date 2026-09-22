@@ -148,8 +148,9 @@ def missing_nickname_convs(account: str, limit: int, db=None) -> list[dict]:
 
 
 def _is_uid_placeholder(name: str) -> bool:
-    """数字 UID 占位判定（纯数字且长度 ≥6，如 3887506227210423）。"""
-    return name.isdigit() and len(name) >= 6
+    """数字 UID 占位判定，委托至 verdicts 判据（M-10 F7）。"""
+    from services.verdicts import is_uid_placeholder
+    return is_uid_placeholder(name)
 
 
 def parse_user_info(body: Any) -> dict[str, dict]:

@@ -98,7 +98,7 @@ if protected:
         lines = py.read_text(encoding="utf-8", errors="replace").splitlines()
         for i, line in enumerate(lines):
             for path in protected:
-                if not re.search(r'api\s*=\s*["\'`]' + re.escape(path), line):
+                if not re.search(r'api\s*=\s*f?["\'`]' + re.escape(path), line):
                     continue
                 window = "\n".join(lines[i:i + 60])
                 if "signed_url(" not in window:

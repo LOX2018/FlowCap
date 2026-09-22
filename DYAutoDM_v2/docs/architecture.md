@@ -1,14 +1,14 @@
 # 架构说明
 
-> 🔴 **校准横幅（2026-09-15）**：本文写于 2026-09-11（v0.41.1 时期），**部分结论已被实机推翻**。
+> 🔴 **校准横幅（2026-09-22 M-10）**：本文写于 2026-09-11（v0.41.1 时期），**部分结论已被实机推翻**。
 > 阅读前先看下表，**不要按本文实现**：
 >
-> | 本文所述 | 当前实际（2026-09-15, v0.43.28） |
-> |---|---|
-> | 「昵称唯一来源是 BCC 被动 hook（截前端自发 `im/user/info`）」 | ❌ **该方案已废**：抖音改版后前端**不再发** `im/user/info`（滚动全程 `hook=0`）。**现行为读 IndexedDB `<uid>_user`** → 数字 uid 比对（实测 44/44）。见 `工作记忆/10_更新会话整合方案.md` |
-> | 「页面→文案、BCC→行为」等分层描述 | ✅ 仍有效 |
+> | 本文所述 | 当前实际（2026-09-22, v0.44.50） | 单一来源 |
+> |---|---|---|
+> | 「昵称唯一来源是 BCC 被动 hook（截前端自发 `im/user/info`）」 | ❌ **该方案已废**：抖音改版后前端**不再发** `im/user/info`（滚动全程 `hook=0`）。**现行为读 IndexedDB `<uid>_user`** → 数字 uid 比对（实测 44/44）。见 `backend/kernel/truth.py` `NICKNAME_SOURCE` | `NICKNAME_SOURCE` |
+> | 「页面→文案、BCC→行为」等分层描述 | ✅ 仍有效 | — |
 >
-> 权威文档：`D:\文档\Biancheng   CK\DY v3\工作记忆\`（本分支专属知识库）。
+> 权威文档：`backend/kernel/truth.py`（昵称来源 SSOT）。
 
 > 配套文档：业务链路与功能域见 [`项目说明.md`](../项目说明.md)；
 > 完整架构与业务全解见 [`架构与业务逻辑全解.md`](架构与业务逻辑全解.md)。
@@ -163,7 +163,7 @@ IDLE → STARTING → RUNNING ⇄ PAUSED
 5. **PyInstaller onefile 下 `from main import app` 不可靠**：改为启动即 `bind_adm(app.state.adm)` 显式绑定引擎实例给通知模块。
 6. **私信 IM 私有网关**（`imapi.douyin.com`）靠 protobuf body 内 ticket / ts_sign / sdk_cert 签名鉴权，**不叠加** `www.douyin.com` 的 `bd-ticket-guard-*` 头。
 7. **消息方向只能用 sender UID 判断**，不可用 `aweType` / 类型推断；sender 空 = me（自动欢迎语）。
-8. **昵称唯一来源是 BCC 被动 hook**（复用账号常驻浏览器截前端自发 `im/user/info`），**绝不**做后端批量查昵称（风控红线）。
+8. **昵称唯一来源是 IndexedDB `<uid>_user`**（见 `backend/kernel/truth.py` `NICKNAME_SOURCE`），BCC 被动 hook 仅为 DOM 回退（原有方案已废，抖音改版后前端不再发 `im/user/info`），**绝不**做后端批量查昵称（风控红线）。
 
 ---
 

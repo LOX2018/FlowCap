@@ -21,6 +21,7 @@ from auto_dm import origin_image_resolver as _origin_image_resolver
 # 2026-09-17：IM 视频（CENC 解密 + 下载）——同样顶层 import，保证 PyInstaller 能追踪
 from services import im_video as _im_video
 from services import merged_forward as _mf
+from services.verdicts import is_placeholder_name
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -338,7 +339,7 @@ async def list_conversations(account: str):
         nickname_by_peer = {}
         for r in rows:
             pn = r["peer_name"]
-            if pn and pn != r["peer_id"] and not str(pn).isdigit():
+            if not is_placeholder_name(pn, peer_id=r["peer_id"]):
                 nickname_by_peer[str(r["peer_id"])] = pn
         for r in rows:
             cid = r["conv_id"]
@@ -364,7 +365,7 @@ async def list_conversations(account: str):
                 "messages": [],
             })
         unread_total = sum((c.get("unread") or 0) for c in convs)
-        named = sum(1 for c in convs if c["name"] and not str(c["name"]).isdigit())
+        named = sum(1 for c in convs if not is_placeholder_name(c["name"]))
         # 变化检测：仅当总数/关联数/未读合计变化时才打印（避免每 5s 轮询刷屏）
         _key = (len(convs), named, unread_total)
         if _last_summary.get(account) != _key:
