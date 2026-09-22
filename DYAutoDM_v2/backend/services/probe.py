@@ -802,10 +802,18 @@ def probe_send_delivery(account: str) -> dict:
 # 探针 5：live_danmaku（直播弹幕 / 昵称解密权）
 # ─────────────────────────────────────────────────────────────────────────────
 _RE_DANMAKU = re.compile(r"\[弹幕\]\s*(?P<nick>.+?)\(uid=(?P<uid>\d+)\s+sec_uid=(?P<sec>[^)]*)\)")
-# 弹幕行的**账号归因**标记：直播引擎每次启动都写一行「使用前端指定账号「X」作为监测账号」，
-# 且实测恒**先于**该会话的首条弹幕（6/6 文件）。同一文件可先后出现多个监测账号
-# （实测：一个会话里先起张老师、1 分钟后改起尚进）⇒ 必须按**最近一条**标记归因，
-# 不能「文件里出现过某账号就全算它」。
+# 弹幕行**行内账号字段**（ADR-002 §5.1 前置，v0.44.38 起）：`[弹幕][账号=X] 昵称(uid=… sec_uid=…)`
+# —— 兼容「匿名」等任意非 `]` 值。
+_RE_DANMAKU_ACCT = re.compile(r"\[弹幕\]\[账号=(?P<acct>[^\]]*)\]")
+# 弹幕行的**账号归因**标记（**历史日志回落路径**）：直播引擎每次启动都写一行
+# 「使用前端指定账号「X」作为监测账号」，且实测恒**先于**该会话的首条弹幕（6/6 文件）。
+# 同一文件可先后出现多个监测账号（实测：一个会话里先起张老师、1 分钟后改起尚进）。
+#
+# ⚠️ 该回落路径**在真并发下不可靠**（ADR-002 多账号同时监听时两实例交错写同一 logs/，
+# 实测形态 `A标记 → B标记 → A弹幕` ⇒ 「最近一条」会把 A 的弹幕记到 B）。故：
+#   ① 新日志一律带行内字段（唯一可靠归因，见 core/live_hook.py）；
+#   ② 本标记仅用于**读旧日志**；若某文件既有行内字段又有弹幕行，
+#      一律以行内字段为准（见下方解析顺序）。
 _RE_MONITOR = re.compile(r"使用前端指定账号「(?P<acct>[^」]+)」作为监测账号")
 
 
@@ -853,10 +861,17 @@ def probe_live_danmaku(account: str) -> dict:
                 d = _RE_DANMAKU.search(line)
                 if not d:
                     continue
-                if cur_monitor is None:
+                # 归因优先级（ADR-002 §5.1）：
+                #   ① 行内账号字段 —— 唯一在**真并发**下可靠的归因（本行自证）；
+                #   ② 无行内字段时回落「最近一条监测账号标记」—— 只对**历史日志**
+                #      有效；并发下会误判，故仅作兼容，不用于新日志。
+                da = _RE_DANMAKU_ACCT.search(line)
+                line_acct = da.group("acct") if da else None
+                owner = line_acct if line_acct is not None else cur_monitor
+                if owner is None:
                     unattributed += 1
                     continue
-                if cur_monitor != account:
+                if owner != account:
                     continue
                 total += 1
                 is_des = (d.group("uid") == "111111" and not d.group("sec").strip())

@@ -57,6 +57,16 @@ class LiveChatHook(DouyinLive):
         # 账号侧解密权结论（人可读摘要，由 AutoDM 传入）。仅用于 LIVE-006 日志
         # **如实显示本会话的账号侧判据**，避免在无证据时把脱敏归因成「凭证异常」。
         self._live_verdict_hint: str = verdict_hint or ""
+        # 账号归因（ADR-002 §5.1 前置）：`[弹幕]` 行必须带账号字段，否则多账号并发下
+        # 两实例交错写同一 logs/ 时无法归因（探针侧的「最近标记」推断会误判）。
+        # 优先取 auth_ 上已有的 account_name（AutoDM 在启动时已 setattr），
+        # 兜底用控制器上的目标账号，再兜底空串（调用处渲染为「匿名」）。
+        self._account: str = (
+            str(getattr(auth_, "account_name", "") or "")
+            or str(getattr(controller, "target_acct", "") or "")
+            or str(getattr(getattr(controller, "_acct", None), "__str__", lambda: "")()
+                   if getattr(controller, "_acct", None) else "")
+        )
         # 开播状态（由 AutoDM 在启动前查询并写入）
         self.room_status: Optional[Any] = None
         # 诊断计数：本会话遇到的加密昵称 / 其中 sec_uid 缺失的数量
@@ -415,8 +425,15 @@ class LiveChatHook(DouyinLive):
                             "comment": getattr(m, "content", None),
                         }
                         self._push_feed("danmaku", nickname, target.get("comment"))
+                        # 🔴 账号归因必须落在**行内**（ADR-002 §5.1 前置，2026-09-22）。
+                        # 为何不能在探针侧靠「最近一条『使用前端指定账号…』标记」推断：
+                        # 多账号并发（ADR-002）下两个引擎实例**交错写同一 logs/**，
+                        # 实测形态为 `A标记 → B标记 → A弹幕` —— 按「最近一条标记」
+                        # 会把 A 的弹幕记到 B 名下。行内字段是唯一在真并发下可靠的归因。
                         logger.info(
-                            f"[弹幕] {nickname}(uid={user_id} sec_uid={sec_uid}): {target['comment']}"
+                            f"[弹幕][账号={self._account or '匿名'}] "
+                            f"{nickname}(uid={user_id} sec_uid={sec_uid}): "
+                            f"{target['comment']}"
                         )
                         if self._is_encrypted_nickname(nickname):
                             self._enc_count += 1

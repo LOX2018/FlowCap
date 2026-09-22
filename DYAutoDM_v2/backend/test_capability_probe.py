@@ -430,6 +430,94 @@ class TestAggregation(unittest.TestCase):
         finally:
             os.remove(p)
 
+    def _isolate_marker_logs(self) -> str:
+        """清掉隔离 logs 里**同类标记**的历史 .log，返回日志目录。
+
+        为什么必须自净化（实测）：本用例的断言是「accA 恰好 1 条」，而探针按
+        **文件 mtime** 收集整个 `logs/` 目录。若前一次运行（或同套件的另一轮）
+        留下含 `账号=accA` 的同名/异名日志文件，计数会变成 2 条 —— 表现为
+        「单跑绿、全量红」的**间歇性**失败（实测复现过一次）。故断言前先把
+        含本用例标记的历史文件清掉，让判据只依赖本次写入。
+        """
+        d = os.path.join(_ROOT, "logs")
+        os.makedirs(d, exist_ok=True)
+        for f in os.listdir(d):
+            if not f.endswith(".log"):
+                continue
+            fp = os.path.join(d, f)
+            try:
+                txt = open(fp, "r", encoding="utf-8", errors="replace").read()
+            except Exception:
+                continue
+            if "账号=accA" in txt or "账号=accB" in txt:
+                try:
+                    os.remove(fp)
+                except Exception:
+                    pass
+        return d
+
+    def test_live_danmaku_inline_account_field_is_authoritative(self):
+        """🔴 ADR-002 §5.1 前置回归：**行内账号字段**归因，压过「最近标记」推断。
+
+        真并发形态（ADR-002 多账号同时监听，两实例交错写同一 logs/）：
+
+            使用前端指定账号「accA」作为监测账号     ← A 起
+            使用前端指定账号「accB」作为监测账号     ← B 起（1 分钟后）
+            [弹幕][账号=accA] 小***(uid=111111 sec_uid=): A 的弹幕
+            [弹幕][账号=accB] 豫***(uid=111111 sec_uid=): B 的弹幕
+
+        按旧「最近一条标记」实现：两条弹幕都会归到 **accB** ⇒ accA 读到 0 条
+        （假失效）、accB 读到 2 条（含他人弹幕）。行内字段必须纠正这一点。
+        """
+        import time
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        lines = [
+            f"{stamp}.000 | INFO | x - [auth] 使用前端指定账号「accA」作为监测账号",
+            f"{stamp}.010 | INFO | x - [auth] 使用前端指定账号「accB」作为监测账号",
+            f"{stamp}.020 | INFO | x - [弹幕][账号=accA] 甲***(uid=111111 sec_uid=): A 的",
+            f"{stamp}.030 | INFO | x - [弹幕][账号=accB] 乙***(uid=111111 sec_uid=): B 的",
+        ]
+        d = self._isolate_marker_logs()
+        p = os.path.join(d, "run_live_inline.log")
+        open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+        try:
+            ra = self.P.run_probe("live_danmaku", "accA")
+            rb = self.P.run_probe("live_danmaku", "accB")
+            self.assertEqual(ra["metrics"]["danmaku_lines"], 1,
+                             "accA 应恰好读到自己的 1 条（行内字段归因）")
+            self.assertEqual(rb["metrics"]["danmaku_lines"], 1,
+                             "accB 应恰好读到自己的 1 条，不得吞掉 accA 的")
+        finally:
+            os.remove(p)
+
+    def test_live_danmaku_legacy_log_without_field_still_works(self):
+        """历史日志（无行内字段）仍靠「最近标记」归因 —— 兼容路径不得被删掉。"""
+        import time
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        lines = [
+            f"{stamp}.000 | INFO | x - [auth] 使用前端指定账号「legacy」作为监测账号",
+            f"{stamp}.001 | INFO | x - [弹幕] 豫***(uid=1 sec_uid=ABC): 老日志",
+        ]
+        d = os.path.join(_ROOT, "logs")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "run_live_legacy.log")
+        open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+        try:
+            r = self.P.run_probe("live_danmaku", "legacy")
+            self.assertEqual(r["metrics"]["danmaku_lines"], 1,
+                             "旧日志（无行内字段）必须仍能归因")
+            self.assertEqual(r["state"], "healthy")
+        finally:
+            os.remove(p)
+
+    def test_danmaku_log_line_carries_account_field(self):
+        """源码契约：`[弹幕]` 行必须带行内账号字段（ADR-002 §5.1 前置）。"""
+        _proj = os.path.dirname(os.path.abspath(__file__))   # backend/
+        src = open(os.path.join(_proj, "core", "live_hook.py"),
+                   encoding="utf-8", errors="replace").read()
+        self.assertIn("[弹幕][账号=", src,
+                      "live_hook 的弹幕日志行未带账号字段 —— 多账号并发下读数不可归因")
+
     def test_live_danmaku_no_activity_is_unknown(self):
         """窗口内无弹幕 → unknown（未监听 ≠ 失效），绝不冒充 healthy。"""
         # 清空隔离 logs，避免受其它测试写入的弹幕行影响
