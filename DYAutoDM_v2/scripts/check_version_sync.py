@@ -11,7 +11,7 @@ _build_version.py」四处，**漏了 `frontend/package.json`**——
     前端 0.43.37 ≠ 后端 0.43.40 → 版本门禁拒绝**所有** /api 请求
     → 界面 "Failed to fetch"，且日志刷 `前后端版本不一致`。
 
-本脚本把"五处版本必须齐平"固化为可执行门禁，改版本后跑一次即可，
+本脚本把"六处版本必须齐平"固化为可执行门禁，改版本后跑一次即可，
 **不再依赖记忆**。
 
 用法：
@@ -34,6 +34,7 @@ TARGETS = [
     ("src-tauri/Cargo.toml", "cargo", "Rust crate 版本"),
     ("backend/_build_version.py", "py", "sidecar 内嵌版本（后端 /api/version）"),
     ("package.json", "json", "根 package.json（非前端源，但保持齐平避免混淆）"),
+    ("src-tauri/Cargo.lock", "cargo_lock", "Rust Cargo.lock（dyautodm-v2 段，构建时自动改写）"),
 ]
 
 
@@ -43,6 +44,9 @@ def _extract(path: Path, kind: str) -> str:
         return str((json.loads(txt) or {}).get("version") or "")
     if kind == "cargo":
         m = re.search(r'^version\s*=\s*"([^"]+)"', txt, re.M)
+        return m.group(1) if m else ""
+    if kind == "cargo_lock":
+        m = re.search(r'name = "dyautodm-v2"\nversion = "([^"]+)"', txt)
         return m.group(1) if m else ""
     if kind == "py":
         m = re.search(r'BUILD_VERSION\s*=\s*"([^"]+)"', txt)
@@ -93,7 +97,7 @@ def main() -> int:
         for b in bad:
             print("   -", b)
         return 1
-    print(f"✓ 五处版本齐平: {sorted(vals)[0]}")
+    print(f"✓ 六处版本齐平: {sorted(vals)[0]}")
     return 0
 
 

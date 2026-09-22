@@ -105,6 +105,19 @@ class TestNoDupDictKeys(unittest.TestCase):
             self.fail("发现字典重复键（Python last-wins，前者被静默丢弃）：\n"
                       + "\n".join(offenders))
 
+    def test_all_codes_lookup_never_crashes(self):
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from errcode import all_codes, lookup
+        codes = all_codes()
+        for item in codes:
+            c = item['code']
+            r = lookup(c)
+            self.assertIsNotNone(r, f"lookup('{c}') 返回 None")
+            self.assertIn('meaning', r, f"{c} missing meaning")
+        # 还验证全量遍历不抛异常
+        self.assertGreater(len(codes), 300, f"error code count too low: {len(codes)}")
+
     def test_automation_authoritative_values(self):
         """automation 节关键字段的权威值必须与 automation_engine.py 的 clamp 一致。
 

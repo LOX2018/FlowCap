@@ -21,7 +21,7 @@
 - 工具按钮必须挂在 App 的 TopBar `topRight`（用户点得到），面板挂 App 根部（全局唯一）；
 - 工具自身的 CSS 类前缀 `ei-` 必须在生成选择器时被过滤（不能把 `ei-hover` 写进选择器）。
 
-> 行为级验证（真浏览器驱动、真的点击不触发）见 `scripts/verify_element_inspector.py`；
+> 行为级验证（真浏览器驱动、真的点击不触发）见 `scripts/verify_element_inspector.py`（该文件已退役：vb_chromium 废弃，无法在当前浏览器上跑通）；
 > 本文件是**廉价回归网**，防的是「后来人改坏了这几行」。
 """
 from __future__ import annotations
