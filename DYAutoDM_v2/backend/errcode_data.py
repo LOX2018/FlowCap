@@ -376,6 +376,8 @@ ERRCODES = {
     "ENG-009": {"meaning": "history] 更新历史任务失败:", "file": "core/auto_dm.py", "line": 672},
     "ENG-013": {"meaning": "引擎] 热更被拒：引擎未运行（state=）", "file": "core/auto_dm.py", "line": 0},
     "ENG-014": {"meaning": "引擎] 热更失败：dispatch 未初始化", "file": "core/auto_dm.py", "line": 0},
+    "ENG-021": {"meaning": "engine] live_url 解析失败或结果非纯房间号 → 显式启动失败（不再用整段 URL 兜底）", "file": "core/auto_dm.py", "line": 511},
+    "ENG-022": {"meaning": "live] get_live_info 响应未下发 ttwid（设备级建连 cookie 缺失），置空交服务端裁决", "file": "dy_apis/client_live.py", "line": 91},
     "IMG-001": {"meaning": "图床][] 上传失败（降级内联）:", "file": "auto_dm/image_host.py", "line": 184},
     "IMG-002": {"meaning": "origin_image] 写本地失败 :", "file": "auto_dm/origin_image_resolver.py", "line": 326},
     "IMG-003": {"meaning": "origin_image] 图床上传模块导入/调用失败:", "file": "auto_dm/origin_image_resolver.py", "line": 339},
@@ -692,6 +694,34 @@ CODE_DESIGN = {
 "② 实机：启动直播监听，日志中『私信收尾』必须晚于『[live-ws] 连接已建立』；" \
 "③ curl :8000/api/tasks/current 的 engine_state 应为 running；" \
 "④ 前端徽章显示『直播引擎监听中』且暂停/继续/停止按钮可用。" ,
+    },
+    "ENG-021": {
+        "design": "「启动监听」的第一步是把用户给的直播间链接/ID 解析成真实房间号（web_rid）；"
+                  "解析必须成功才能进房。抖音「直播页」有两类同源域名：live.douyin.com/<id> "
+                  "与 www.douyin.com/**/live/<id>（实测两者 room_id 逐字一致）。",
+        "contract": "解析结果必须匹配 \\d{5,}；不匹配或解析异常 ⇒ **显式失败**"
+                    "（status_msg + state=STOPPED + return），绝不用整段 URL 兜底。",
+        "deviation": "用户常规链接 www.douyin.com/follow/live/<id> 不被识别 ⇒ 原实现静默把整段 URL "
+                     "当作 live_id ⇒ 进房 URL 变成 live.douyin.com/https://…（实测 HTTP 404）⇒ 秒停「已停止」。",
+        "chain": "用户粘贴链接 → AutoDM.start() → resolve_live_id() →（原）except 静默兜底 → "
+                 "进房 URL 拼接 → get_live_info 404 → 引擎 STOPPED",
+        "root": "快速路径正则只覆盖 live.douyin.com/<id>，漏了同源的 www.douyin.com/**/live/<id>；"
+                "且解析失败走静默兜底而非显式失败（把「输入不合法」伪装成「网络/风控问题」）。",
+        "verify": "用 www.douyin.com/follow/live/<id>?anchor_id=… 启动 → live_id 应为纯房间号且无 404；"
+                  "resolve_live_id() 真值表 5/5 绿；日志不出现 [ENG-021] 时表示解析成功。",
+    },
+    "ENG-022": {
+        "design": "get_live_info 取直播间信息需用设备级 cookie（ttwid）建连；ttwid 属**可选**响应头，"
+                  "其缺失应由服务端裁决，不得让整条进房链崩掉。",
+        "contract": "取 ttwid 必须**容错**（(res.cookies.get_dict() or {}).get('ttwid') or ""）；"
+                    "缺失时置空继续，与匿名路径的 `or ""` 同构。",
+        "deviation": "res.cookies.get_dict()['ttwid'] 硬下标 ⇒ 服务端未下发时抛 KeyError，"
+                     "且在页面解析**之前**抛出 ⇒ 被上层捕获成「带凭证进房异常」→ 回落匿名 → 也失败 → 进房全断。",
+        "chain": "start_ws → _room_info_with_credential → get_live_info → "
+                 "res.cookies.get_dict()['ttwid'] → KeyError → except → 回落匿名 → 失败 → STOPPED",
+        "root": "把「可选 cookie 缺失」升级为「整条链异常」；根因是硬下标，不是业务不可用。",
+        "verify": "服务端不下发 ttwid 时（可用错误房间号/被拦域名构造）不再出现 KeyError；"
+                  "调用方能以空 ttwid 继续建连，或明确回落匿名并留痕。",
     },
     "ENG-017": {
         "design": "直播流连接应**独立于账号凭证**：抖音直播支持匿名观看，凭证的真正职责是" \
