@@ -72,10 +72,13 @@ def _auth_for(account: str):
         env_path = acct_core.env_path_of(account)
         if not env_path:
             raise HTTPException(404, f"账号 {account} 未登记")
+        # P3：凭证收敛——静态字段检查委托 verify_credential(lightweight=True)
+        from auto_dm.accounts import verify_credential
+        _vc = verify_credential(account, lightweight=True)
+        if not _vc["ok"]:
+            raise HTTPException(503, f"账号 {account} 凭证不完整（{_vc['wp']['detail']}），请先扫码登录")
         from dy_apis.login_api import DYLoginApi
         auth = DYLoginApi._load_auth_from_env(env_path)
-        if not auth or not getattr(auth, "cookie", None):
-            raise HTTPException(503, f"账号 {account} 凭证为空（未登录或 .env 缺字段）")
         return auth
     except HTTPException:
         raise

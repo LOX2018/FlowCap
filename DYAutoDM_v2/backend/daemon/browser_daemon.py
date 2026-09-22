@@ -2275,8 +2275,9 @@ class BrowserContainer:
                 # P1-C：force_probe=True —— 本门禁写入 .env 前必须真探活，
                 # 绝不能吃进程级探活缓存（否则可能把陈旧登录态当有效写入）
                 new_uid = DouyinAPI.get_my_uid(probe_auth, force_probe=True)
-            except Exception:
-                new_uid = None
+            except Exception as _uid_e:
+                            logger.warning(f"[BCC-015] " + f"[bcc] 探活 uid 异常: {_uid_e}")
+                            new_uid = None
             BrowserContainer._uid_probe_cache = (now_ts, new_uid)
         if not new_uid:
             logger.warning(f"[BCC-015] " + f"[bcc] 拒绝写入 .env：新 cookie 探活失败（无 uid），"

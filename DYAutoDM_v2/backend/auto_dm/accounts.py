@@ -733,6 +733,92 @@ def verify_account(name=None, timeout=8, dm_loopback=False, auto_fix=True):
     return result
 
 
+def verify_credential(
+    name: str,
+    *,
+    lightweight: bool = False,
+    force_probe: bool = False,
+    timeout: float = 8,
+    auto_fix: bool = True,
+) -> dict:
+    """账号凭证有效性判据——项目唯一**凭证有效性**决策入口。
+
+    lightweight=True 时：
+        - 仅调用 credentials_complete 判静态字段齐全性
+        - 零网络、零探活、零 IM 写校验
+        - 用于 crawl/platform/enrich_auth 等「只需知道凭证字段齐全」的路径
+
+    lightweight=False（默认）时：
+        - 同当前 verify_account 的完整双引擎校验
+        - 含 wp 探活 + dm 写探针 + 身份漂移检测 + auto_fix
+
+    返回 {ok, wp:{level,label,detail}, dm:{level,label,detail},
+           uid, has_ticket, has_cookie, has_signature, has_web_protect,
+           auto_fix_triggered}
+    """
+    name = name or current_name()
+    if not name:
+        return {"ok": False,
+                "wp": {"level": "fail", "label": "未指定账号", "detail": "name 为空"},
+                "dm": {"level": "skip", "label": "跳过", "detail": "未指定账号"},
+                "uid": None,
+                "has_ticket": False, "has_cookie": False,
+                "has_signature": False, "has_web_protect": False,
+                "auto_fix_triggered": False}
+    env_path = env_path_of(name)
+    if not env_path:
+        return {"ok": False,
+                "wp": {"level": "fail", "label": "账号不存在", "detail": f"账号 {name} 未登记"},
+                "dm": {"level": "skip", "label": "跳过", "detail": "账号不存在"},
+                "uid": None,
+                "has_ticket": False, "has_cookie": False,
+                "has_signature": False, "has_web_protect": False,
+                "auto_fix_triggered": False}
+
+    # ── lightweight：仅静态字段检查，零网络 ──
+    if lightweight:
+        _complete, _reason = credentials_complete(env_path)
+        _status = _read_status(env_path)
+        _has_ticket = bool(_status.get("has_ticket"))
+        _has_cookie = bool(_status.get("has_cookie"))
+        _has_webp = bool(_status.get("has_web_protect"))
+        _has_sig = _has_ticket and _has_webp and bool(_status.get("has_private_key"))
+        _wp_level = "ok" if _complete else "fail"
+        _wp_label = "凭证齐全" if _complete else "凭证不完整"
+        _wp_detail = _reason if not _complete else "静态字段检查通过"
+        return {
+            "ok": _complete,
+            "wp": {"level": _wp_level, "label": _wp_label, "detail": _wp_detail},
+            "dm": {"level": "skip", "label": "跳过（lightweight）",
+                   "detail": "lightweight 模式跳过 IM 写校验"},
+            "uid": None,
+            "has_ticket": _has_ticket,
+            "has_cookie": _has_cookie,
+            "has_signature": _has_sig,
+            "has_web_protect": _has_webp,
+            "auto_fix_triggered": False,
+        }
+
+    # ── 完整双引擎校验 ──
+    try:
+        _v = verify_account(name, timeout=timeout, dm_loopback=True, auto_fix=auto_fix)
+    except Exception as _e:
+        _v = {"ok": False,
+              "wp": {"level": "error", "label": "校验异常", "detail": str(_e)},
+              "dm": {"level": "error", "label": "校验异常", "detail": str(_e)},
+              "uid": None, "auto_fix_triggered": False}
+    _status = _read_status(env_path)
+    _has_ticket = bool(_status.get("has_ticket"))
+    _has_cookie = bool(_status.get("has_cookie"))
+    _has_webp = bool(_status.get("has_web_protect"))
+    _has_sig = _has_ticket and _has_webp and bool(_status.get("has_private_key"))
+    _v["has_ticket"] = _has_ticket
+    _v["has_cookie"] = _has_cookie
+    _v["has_signature"] = _has_sig
+    _v["has_web_protect"] = _has_webp
+    return _v
+
+
 def profile_dir_of(env_path):
     """根据账号 .env 路径推导该账号独占的浏览器 profile 目录（指纹封存隔离）。
 
@@ -748,7 +834,6 @@ def profile_dir_of(env_path):
         return os.path.join(parent, "profile")
     # 默认账号 / 其他：退回项目根下的独立目录
     return os.path.join(_ROOT, "vb_profile_default")
-
 
 def monitor_name():
     """监测账号（用于直播间监听弹幕，需管理器权限才能看到完整昵称）。
@@ -987,6 +1072,9 @@ def _read_status(env_path):
 
 def credentials_complete(env_path):
     """单 profile 铁律前置校验：判定该账号凭证是否【全部齐全】。
+
+    🔴 P3：凭证收敛唯一入口为 verify_credential，本函数不再直接被外部模块调用。
+    外部代码应统一使用 verify_credential(lightweight=True) 替代。
 
     齐全 = .env 存在 且 同时具备：
       - cookie（DY_COOKIES，非空）

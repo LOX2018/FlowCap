@@ -81,10 +81,12 @@ def _load_auth(account: str):
     env_path = acc.env_path_of(account)
     if not env_path:
         raise HTTPException(400, f"账号 {account} 不存在")
+    # P3：凭证收敛——无需显式判 cookie，委托 verify_credential(lightweight=True) 做完整静态检查
+    from auto_dm.accounts import verify_credential
+    _vc = verify_credential(account, lightweight=True)
+    if not _vc["ok"]:
+        raise HTTPException(400, f"账号 {account} 凭证不完整（{_vc['wp']['detail']}），请先在账号管理页扫码登录")
     auth = DYLoginApi._load_auth_from_env(env_path)
-    cookie = getattr(auth, "cookie", None) or {}
-    if not auth.cookie_str and not cookie.get("s_v_web_id"):
-        raise HTTPException(400, f"账号 {account} 凭证不完整，请先在账号管理页扫码登录")
     return auth
 
 

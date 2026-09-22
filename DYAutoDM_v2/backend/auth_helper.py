@@ -66,13 +66,11 @@ def enrich_auth(auth, cookies_dy="", headless=False,
     # 仅在确实需要扫码时调用（force=True 或 .env 缺四件套），避免无谓重启容器
     # context——BCC scan_login 会先关闭自身 context 让 DYLoginApi 独占扫码再重开。
     _needs_scan = bool(force)
+    # P3：凭证收敛——静态字段检查委托 verify_credential(lightweight=True)
     if not _needs_scan:
-        try:
-            _probe = DYLoginApi._load_auth_from_env(env_path)
-            if not (_probe and _probe.ticket and _probe.ts_sign
-                    and _probe.client_cert and _probe.private_key):
-                _needs_scan = True
-        except Exception:
+        from auto_dm.accounts import verify_credential as _vc
+        _vcr = _vc(account_name or "", lightweight=True)
+        if not _vcr["ok"]:
             _needs_scan = True
     if account_name and _needs_scan:
         try:
