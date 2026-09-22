@@ -1,3 +1,16 @@
+# ⚠️ 2026-09-22 已退役（DEPRECATED · RETIRED）—— 保留全文仅供追溯，请勿运行。
+#
+# 退役理由（H-8 普查实测）：38 项断言中 **8 项红**，性质经逐条核验为两类：
+#   · 7 项断言随 v0.43.93 重构**整体过期**（force_rescan 彻底移除 / 只读展示 / restart 端点形态变化）
+#   · 1 项为**脚本自身缺陷**：_StubDispatch.apply_runtime 未接收 gen_dm_message 形参 →
+#     TypeError，与 scripts/diag/verify_ai_live_wiring.py 的同契约断言（PASS）自相矛盾
+# ⇒ 「恒红」使其丧失判据价值；继续保留会掩盖真实回归。
+#
+# 承接者：直播配置/热更契约现由 backend/scripts/verify_ai_live_wiring.py（37/37 全 PASS，
+#         L1 契约 / L2 调度 / L3 判定 / L4 错误码 / L5 前端源码一致性）覆盖。
+# 备份：仓库外 `C:	emp\_retired_verify_live_restart_hotswap.py.bak.<时间戳>`
+# 注：本文件未被 .gitignore 忽略，删除后可从 git 历史 `git log --follow` 回捞。
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 """v0.43.34 验收：「直播页配置收敛 + 重启标签热更」——源码级 + 实机桩验证。
 
