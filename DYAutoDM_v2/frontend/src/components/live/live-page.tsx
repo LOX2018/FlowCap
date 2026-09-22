@@ -8,9 +8,11 @@ import {
   Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X,
 } from "lucide-react";
 
-import { PageProps, ReusePayload, RoomConfig } from "../../api/client";
+import { PageProps, ReusePayload, RoomConfig, LiveRoom } from "../../api/client";
 
 import RoomConfigPage from "./RoomConfigPage";
+
+import RoomManagePage from "./RoomManagePage";
 
 import { Avatar, hue, KIND_NAME } from "../../components/ui";
 
@@ -68,6 +70,8 @@ export default function LivePage(props: PageProps) {
   // 直播策略弹窗开关（2026-09-19 用户定调：**不要** tab 切换栏 / 子 tab 页面；
   // 策略编辑以弹窗提供，入口在「直播间」板块的策略下拉旁）
   const [cfgMgr, setCfgMgr] = useState(false);
+  /** 「直播间管理」（房间层，ADR-003）：身份 + 策略引用 + 脱敏开关 */
+  const [roomMgr, setRoomMgr] = useState(false);
   // 申请连麦进行中（防重复点击）
   const [linkMicBusy, setLinkMicBusy] = useState(false);
   // 任务中心「复用」载荷（标记已应用，避免容器回读覆盖用户刚改的字段）
@@ -412,6 +416,18 @@ export default function LivePage(props: PageProps) {
           if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
         }}
       />
+      <RoomManagePage
+        open={roomMgr}
+        onClose={() => setRoomMgr(false)}
+        push={push}
+        onChanged={loadRoomCfgs}
+        onPick={(r: LiveRoom) => {
+          // 「选用」＝把房间号回填到直播页输入框（房间层只提供身份，不需选策略）
+          if (r.room_id) setRoom(r.room_id);
+          if (r.strategy_id) setSelCfgId(r.strategy_id);
+          push(`已选用直播间「${r.name || r.room_id}」`);
+        }}
+      />
 
       <PageHeader
         title="直播监听"
@@ -628,7 +644,7 @@ export default function LivePage(props: PageProps) {
             className="mb-3.5"
             data-od-id="live-input"
             title="直播间"
-            description="选择已保存的直播策略即可；策略内容与「重启」在「管理策略」中维护"
+            description="选策略决定「怎么发」；直播间与绑定关系在「直播间管理」里维护"
             actions={
               <>
                 <Select value={selCfgId} onValueChange={pickRoomCfg}>
@@ -660,6 +676,15 @@ export default function LivePage(props: PageProps) {
                   onClick={() => setCfgMgr(true)}
                 >
                   <Settings2 className="h-3.5 w-3.5" />管理策略
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="live-room-registry"
+                  title="管理直播间登记（链接解析 / 备注 / 绑定策略 / 脱敏开关）"
+                  onClick={() => setRoomMgr(true)}
+                >
+                  <Settings2 className="h-3.5 w-3.5" />直播间管理
                 </Button>
               </>
             }

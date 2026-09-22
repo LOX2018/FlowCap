@@ -834,6 +834,51 @@ export const api = {
     });
   },
 
+  // ===== 直播间登记表（房间层，ADR-003，kv live_rooms）=====
+  // 身份 + 策略引用 + 脱敏开关；**与策略层分离**（写这里不会污染 live_room_configs）
+
+  async listLiveRooms(): Promise<{ ok: boolean; items: LiveRoom[] }> {
+    return request("/api/live/rooms");
+  },
+
+  async saveLiveRoom(room: Partial<LiveRoom> & { id?: string }): Promise<{
+    ok: boolean;
+    room?: LiveRoom;
+    error?: string;
+  }> {
+    return request("/api/live/rooms", {
+      method: "POST",
+      body: JSON.stringify(room),
+    });
+  },
+
+  async deleteLiveRoom(rid: string): Promise<{
+    ok: boolean;
+    deleted?: string;
+    error?: string;
+  }> {
+    return request(`/api/live/rooms/${encodeURIComponent(rid)}`, {
+      method: "DELETE",
+    });
+  },
+
+  /** 一次性迁移存量「房间形」旧策略记录 → live_rooms（默认干跑）。 */
+  async migrateLiveRooms(dryRun = true): Promise<{
+    ok: boolean;
+    dry_run?: boolean;
+    found?: string[];
+    plan?: Record<string, unknown>[];
+    migrated_rooms?: string[];
+    created_strategies?: string[];
+    removed_config_keys?: string[];
+    error?: string;
+  }> {
+    return request("/api/live/rooms/migrate", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: dryRun, apply: !dryRun }),
+    });
+  },
+
   // ===== 直播配置标签（参数唯一可写入口；规范前缀 config-tags，兼容 room-configs） =====
 
   async listRoomConfigs(): Promise<{ ok: boolean; items: RoomConfig[] }> {
@@ -850,6 +895,9 @@ export const api = {
   async deleteRoomConfig(roomId: string): Promise<{
     ok: boolean;
     deleted?: string;
+    /** 本次删除**自动解绑**的直播间数量（ADR-003 §3.4，删除策略的引用完整性） */
+    unbound?: number;
+    warning?: string;
     error?: string;
   }> {
     return request(`/api/live/config-tags/${encodeURIComponent(roomId)}`, {
@@ -1900,6 +1948,34 @@ export interface RoomConfig {
   acct?: string | null;
   auto_link_mic?: boolean;
   link_mic_mode?: "audio" | "video";
+  updated_at?: number;
+}
+
+/**
+ * 直播间登记（**房间层**，ADR-003，kv `live_rooms`）。
+ *
+ * 与 `RoomConfig`（策略层）**物理分离**：本记录存**身份 + 策略引用 + 脱敏开关**，
+ * 不含任何发送参数。删除策略时后端自动把引用它的房间 `strategy_id` 置空。
+ */
+export interface LiveRoom {
+  /** 房间记录 id（形如 `lr_<epoch_ms>`） */
+  id: string;
+  /** 直播间号（真实 web_rid） */
+  room_id: string;
+  /** 直播间链接 */
+  live_url: string;
+  /** 备注（用户填） */
+  name: string;
+  /** 引用的策略 id（live_room_configs 的键）；空 = 未绑定 */
+  strategy_id: string;
+  /**
+   * 该房间是否允许「检测到脱敏仍继续监听（**仅统计**）」。
+   *
+   * 语义（ADR-003 §3.3，一级概念两级粒度）：全局脱敏策略 = 默认行为；
+   * 本字段 = 该房间的覆盖开关。**不是**「能拿到昵称」——
+   * 解密权取决于房间归属（自营有 / 他人默认脱敏，与凭证无关）。
+   */
+  allow_desensitized: boolean;
   updated_at?: number;
 }
 

@@ -685,6 +685,9 @@ app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 app.include_router(live.router, prefix="/api/live", tags=["live"])
 app.include_router(live_config_api.router, prefix="/api/live/room-configs", tags=["live"])
 app.include_router(live_config_api.router, prefix="/api/live/config-tags", tags=["live"])
+# 直播间登记表（房间层，ADR-003）：身份 + 策略引用 + 脱敏开关，与策略层分离
+from api import live_rooms as live_rooms_api
+app.include_router(live_rooms_api.router, prefix="/api/live/rooms", tags=["live"])
 from api import linkmic as linkmic_api
 app.include_router(linkmic_api.router, prefix="/api/live/linkmic", tags=["live"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])

@@ -17,6 +17,18 @@
 - **身份**（监听哪个房间）由「直播间」板块的输入框给出，**不进策略**；
   本模块只负责策略本体（**零身份字段**）。
 
+## ⚠️ 该定调已被 ADR-003 部分逆转（2026-09-22，**勿再引用旧断言**）
+
+用户 2026-09-22 决定引入**房间登记层**（`api/live_rooms.py`，kv ``live_rooms``），
+但坚持**房间与策略分离** —— 本模块（策略层）**仍然零身份字段**，身份改由房间层承载：
+
+- 「没有『目标直播间』体系」**不再成立**：现有「直播间管理」页（房间登记表）；
+- 但本模块的契约**未变**（仍是纯策略）⇒ 上面对身份字段的处置**继续有效**；
+- **新增**：策略可被房间 ``strategy_id`` **引用** ⇒ `delete_strategy` 必须
+  自动解绑引用房间并回 ``unbound: N``（见下）。规格见
+  ``docs/adr/ADR-003-live-room-registry.md``。
+
+
 ## 策略字段（唯一真源）
 
 ``max_target`` 每场私信上限 / ``interval`` 私信间隔(秒) / ``delay`` 延迟抖动 ``"40,80"`` /
@@ -184,10 +196,18 @@ async def save_strategy(body: StrategyBody) -> dict:
 
 @router.delete("/{sid}")
 async def delete_strategy(sid: str) -> dict:
-    """删除策略。
+    """删除策略，并**自动解绑引用它的房间**（ADR-003 §3.4）。
 
-    2026-09-19 用户定调：**没有「目标直播间」体系**（不要子 tab / 不要该页），
-    策略是自足的（只含发送参数，不含身份）。故删除无任何跨模块解绑副作用。
+    ## 设计契约变更记录（2026-09-22，勿回退）
+
+    2026-09-19 曾定调「没有『目标直播间』体系，策略自足，删除无跨模块副作用」。
+    **该前提已被 ADR-003 部分逆转**：现存在 `live_rooms`（房间层）引用
+    `live_room_configs`（策略层）。引用一旦存在，「删除无副作用」不再成立 ——
+    不处理就会留下**悬空引用**（房间指向不存在的策略），同族先例是
+    「删除 Agent 必须自动解绑引用账号」。
+
+    ⇒ 删除策略时把所有引用它的房间 ``strategy_id`` 置空，并在响应里返回
+    ``unbound: N``（**禁止静默**）。
     """
     data = _load_all()
     key = str(sid)
@@ -195,8 +215,18 @@ async def delete_strategy(sid: str) -> dict:
         return {"ok": False, "error": "未找到该直播策略"}
     del data[key]
     _save_all(data)
-    logger.info(f"[live-strategy] 已删除策略 {key}")
-    return {"ok": True, "deleted": key}
+
+    unbound = 0
+    try:
+        from api.live_rooms import unbind_strategy
+        unbound = unbind_strategy(key)
+    except Exception as e:  # 解绑失败必须显式暴露，不得静默留悬空引用
+        logger.warning(f"[LIVE-023] " + f"[live-strategy] 解绑引用房间失败 {key}: {e}")
+        return {"ok": True, "deleted": key, "unbound": 0,
+                "warning": f"策略已删除，但解绑引用房间失败: {e}"}
+
+    logger.info(f"[live-strategy] 已删除策略 {key}（自动解绑房间 {unbound} 个）")
+    return {"ok": True, "deleted": key, "unbound": unbound}
 
 
 def resolve_live_url(room_id: str | None) -> str:

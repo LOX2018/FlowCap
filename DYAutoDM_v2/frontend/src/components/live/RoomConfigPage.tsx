@@ -14,6 +14,20 @@
  *     （前三个属「身份」，归「直播间」板块输入框；最后一项属已废弃策略，全仓移除）
  *
  * 数据源：/api/live/config-tags（SQLite kv "live_room_configs"）
+ *
+ * ## ⚠️ 定调更新（2026-09-22，ADR-003，**勿再引用上面的旧断言**）
+ *
+ * 上面「身份字段全部归『直播间』板块输入框、策略是自足的」是在**没有房间登记层**
+ * 的前提下成立的。2026-09-22 用户决定引入**直播间登记表**（房间层），因此：
+ *
+ *   - 「没有『目标直播间』体系」**不再成立**：现由「**直播间管理**」按钮
+ *     （`RoomManagePage.tsx` → kv `live_rooms`）承载**身份 + 策略引用 + 脱敏开关**；
+ *   - **本页契约未变**：仍是**纯策略编辑器**（零身份字段）—— 这是「房间与策略分离」
+ *     的核心，别把身份字段加回这里；
+ *   - **新增联动**：策略可被房间 `strategy_id` 引用 ⇒ 删除策略时后端
+ *     **自动解绑**引用它的房间（响应 `unbound: N`），前端必须如实提示解绑数量。
+ *
+ * 规格：`docs/adr/ADR-003-live-room-registry.md`
  */
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
@@ -150,7 +164,13 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
       .deleteRoomConfig(sid)
       .then((r) => {
         if (r.ok) {
-          push(`已删除直播策略 ${sid}`);
+          // ADR-003 §3.4：删除策略会自动解绑引用它的房间，必须**如实**提示解绑数量
+          const unbound = (r as { unbound?: number }).unbound || 0;
+          push(
+            `已删除直播策略 ${sid}` +
+              (unbound ? `（自动解绑 ${unbound} 个引用它的直播间）` : ""),
+            unbound ? 8000 : undefined,
+          );
           onChanged?.();
           load();
         } else push("删除失败: " + (r.error || ""));
