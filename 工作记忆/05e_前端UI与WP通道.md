@@ -625,3 +625,40 @@ db 文件 → 并发写直接抛 `database is locked`（默认 5s 且不重试�
 
 ---
 
+## 25. 生命周期与远端调试挂点（REG-01 定式落地，2026-09-23 v0.44.53）
+
+### 25.1 生命周期**必须挂 app.router，不能挂 router**
+
+`app.include_router(router)` 不仅注册路由 handler，还会**合并 router 的默认 lifespan**。
+因此 `@router.on_event("startup")` 形式的处理器会**被执行两遍**（本项目实测 startup 计数 3），
+第二个 BCC 容器抢同一 profile → `BCC-058` → `_state["container"]` 被坏容器覆盖。
+
+**定式**：路由可以 `include`，**生命周期不行** —— 改为挂到 app：
+
+```python
+app.router.add_event_handler("startup", startup)
+app.router.add_event_handler("shutdown", shutdown)
+```
+
+**判据**：启动后日志里 startup 计数 = **1**；`/status` = `alive:true`。
+（机械门禁 `test_bcc_startup_single_fire.py` 3 例，含负控。）
+
+### 25.2 入口模块身份归一（同进程双份模块）
+
+`browser_daemon.py`（及 `recv_daemon.py` / `main.py`）以 `__main__` 运行、
+又被同进程按包名 import（如 `daemon/bcc_routes.py` 反向 `from daemon.browser_daemon import _state`）
+⇒ 同一源码两份实例，`_state` 分叉、`logger` sink 被第二份删掉（日志 0 字节）。
+
+**定式**：入口顶部加 `sys.modules.setdefault("<规范包名>", sys.modules[__name__])`。
+详见 `09_环境与构建.md` §十。
+
+### 25.3 远端调试挂点（改前端 UI 时用）
+
+部署态主窗可带 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`
+（见 `09` §九/§附），据此用 CDP 读真实 DOM 验证 UI 渲染，而非只看源码。
+
+> 完整案例：`工作记忆/cases/2026-09-23_P3-5重构双回归_模块身份分叉+startup双跑_v0.44.53.md`
+
+
+---
+

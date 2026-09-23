@@ -27,7 +27,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 配置类/DB 类测试必须隔离 DB（否则污染源码目录真实库，且单独跑绿整体跑红）
 import test_config_isolation as iso  # noqa: E402
 
-_ROOT = iso._ROOT
+_ROOT = os.path.join(iso._ROOT, f"cap_probe_{os.getpid()}")
+os.makedirs(_ROOT, exist_ok=True)
+# 2026-09-23（HC-10 / M-12）：本模块**不再与其它测试模块共用同一隔离根**。
+# 背景：原用 `iso._ROOT`（= `%TEMP%/dyautodm_cfgtest_root`）全局共享，任何两个
+# 进程同时跑 discover 都会争同一 SQLite 文件 → `database is locked`（实测）。
+# 改为**按进程号取子目录** ⇒ 单进程内各模块互不干扰、且两个进程也不互相锁。
 
 
 def setUpModule():
@@ -58,7 +63,11 @@ def _reset_db():
     importlib.reload(database)
     database.reset_connection()
     conn = database.get_db()          # 首次调用会执行建表脚本
-    for tbl in ("dm_conversations", "dm_messages", "kv_store"):
+    # 2026-09-23（M-12）：`ai_leads` 原**不在清理清单** ⇒ 上一个 TestAggregation 用例
+    # 种下的 (account,conv_id,contact_type,contact_value) 残留，下一次 INSERT 撞
+    # `UNIQUE(account,conv_id,contact_type,contact_value)` → IntegrityError。
+    # 与 dm_* 同法逐表清空（表可能尚未建 ⇒ 逐表 try 容错）。
+    for tbl in ("dm_conversations", "dm_messages", "kv_store", "ai_leads"):
         try:
             conn.execute(f"DELETE FROM {tbl}")
         except Exception:

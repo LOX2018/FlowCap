@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from typing import Any
 
@@ -192,6 +193,40 @@ def _norm_msg(m: dict, conv_id: str, peer_uid: str, my_uid: str) -> dict:
     }
 
 
+def _maybe_record_ws(body: str, my_uid: str) -> None:
+    """一次性落盘探针（H-7 样本②）—— 默认**关闭**，仅当环境变量显式设置时生效。
+
+    为什么需要：WS 帧（尤其 `B64:` 二进制）当前**只记 debug 日志、无落盘出口**，
+    无法作为回放样本入库。
+
+    用法（录完即撤环境变量，**不常驻**）：
+        DY_REPLAY_RECORD_WS=<目录>   # 目录不存在则自动创建
+    落盘为 `ws_frames.jsonl`（**追加**，每行一条：{ts, my_uid, kind, raw}）。
+    `kind ∈ {b64, json, other}`：json 帧记录其解析结果 `text`，B64/其它记录原文。
+    写盘失败**绝不影响**接收（宽 try 包裹）。
+    """
+    try:
+        d = os.environ.get("DY_REPLAY_RECORD_WS", "").strip()
+        if not d:
+            return
+        os.makedirs(d, exist_ok=True)
+        rec: dict = {"ts": time.time(), "my_uid": str(my_uid)}
+        if body.startswith("B64:"):
+            rec.update({"kind": "b64", "raw": body[4:]})
+        elif body == "<binary>":
+            rec.update({"kind": "binary_placeholder", "raw": ""})
+        else:
+            rec.update({"kind": "json", "raw": body})
+            try:
+                rec["parsed"] = json.loads(body)
+            except Exception:
+                rec["kind"] = "other"
+        with open(os.path.join(d, "ws_frames.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as _e:  # noqa: BLE001
+        logger.debug(f"[wp_recv] WS 落盘探针失败（不影响接收）: {_e}")
+
+
 def parse_ws_frame(body: str, my_uid: str) -> list[dict]:
     """解析 WS 推送帧（实时新私信）。
 
@@ -199,6 +234,7 @@ def parse_ws_frame(body: str, my_uid: str) -> list[dict]:
     策略：先按 JSON 解析，取不到就原样丢弃（记 debug 日志供后续排查），
     绝不猜测 protobuf schema。
     """
+    _maybe_record_ws(body, my_uid)   # H-7 样本②（默认关闭；放在最前，连跳过帧也留证）
     out: list[dict] = []
     # 2026-09-06 全局治理：页面 hook 现已上抛二进制帧（B64: 前缀 base64）。
     # 抖音 IM 二进制帧是 protobuf 且 schema 未逆向，当前仍不解析（绝不猜测），

@@ -693,15 +693,29 @@ class TestConversationSeq(unittest.TestCase):
     """
     def setUp(self):
         self.conn = _mkdb()
-        sys.modules.setdefault("database", __import__("database"))
-        self._orig = sys.modules["database"].get_db
-        sys.modules["database"].get_db = lambda: self.conn
+        self._db = sys.modules.setdefault("database", __import__("database"))
+        self._orig = self._db.get_db
+        self._db.get_db = lambda: self.conn
+        # 2026-09-23（HC-10 / M-12）：**强制重导 api.messages**。
+        # 机理：`api/messages.py` 在**模块导入期**执行 `from database import get_db`，
+        # 把 get_db 固化进自己的模块命名空间。若它已被别的测试模块**先行导入**
+        # （实测污染源：test_engine_contract_p1 / test_replay_gates 运行期 import 过），
+        # 则本处「改 database.get_db」**传导不到它** ⇒ 它仍读真实库 ⇒ detail=[]。
+        # 定式：打桩 database.get_db 之后，必须让「导入期固化 get_db」的消费者**重新绑定**。
+        # （`services.chat_render` 是在函数内惰性 `from database import get_db`，无需处理。）
+        self._saved_msgs = sys.modules.pop("api.messages", None)
+        import api.messages  # noqa: F401  ← 重导后绑定到打桩版 get_db
 
     def tearDown(self):
         # 2026-09-18 审查修复（A16）：恢复 get_db 后**不要** del sys.modules["database"]。
         # unittest discover 下所有 test_*.py 共享一个进程，删模块会让已 import database 的
         # 模块（如 api.messages）持有陈旧绑定 → 后续用例串库/随执行顺序而变。
-        sys.modules["database"].get_db = self._orig
+        self._db.get_db = self._orig
+        # 2026-09-23（M-12）：把我们重导出来的 api.messages 换回**原对象**，避免把
+        # 「已绑定打桩 get_db 的副本」泄漏给后续测试（那会引发反向的顺序相关失败）。
+        sys.modules.pop("api.messages", None)
+        if self._saved_msgs is not None:
+            sys.modules["api.messages"] = self._saved_msgs
 
     def test_seq_continuous_from_1(self):
         from api.messages import get_conversation

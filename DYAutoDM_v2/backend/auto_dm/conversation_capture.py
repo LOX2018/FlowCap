@@ -757,6 +757,35 @@ def _build_301_body(cid, short_id, cursor=0, count=50, direction=1):
     return bytes(inner)
 
 
+def _maybe_record_301(raw: bytes, cid, page_no: int) -> None:
+    """一次性落盘探针（H-7 样本①）—— 默认**关闭**，仅当环境变量显式设置时生效。
+
+    为什么需要：`cmd 301` 由本函数用 `requests` **直发**（不经浏览器）⇒ BCC 的
+    WP hook 截不到它的原始响应字节，无法作为回放样本入库。
+
+    用法（录完即撤环境变量，**不常驻**）：
+        DY_REPLAY_RECORD_301=<目录>   # 目录不存在则自动创建
+    命名：`{cid 脱敏后的 safe}_{page_no}.bin`（同时落 `.meta.json` 便于人工核对）。
+    写盘失败**绝不影响**业务（宽 try 包裹，只记 warning）。
+    """
+    try:
+        d = os.environ.get("DY_REPLAY_RECORD_301", "").strip()
+        if not d:
+            return
+        os.makedirs(d, exist_ok=True)
+        safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(cid))[:48] or "unknown"
+        base = os.path.join(d, f"{safe}_{int(page_no):03d}")
+        with open(base + ".bin", "wb") as fh:
+            fh.write(raw)
+        with open(base + ".meta.json", "w", encoding="utf-8") as fh:
+            json.dump({"cid": str(cid), "page": int(page_no),
+                       "bytes": len(raw), "ts": time.time(),
+                       "provenance": "fetch_conversation_history 直发响应原始字节"},
+                      fh, ensure_ascii=False, indent=2)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning(f"[CAP-030] [capture][301] 落盘探针失败（不影响拉取）: {_e}")
+
+
 def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
                                max_pages=40):
     """拉指定会话的**完整**历史消息（cmd 301，自动翻页）。
@@ -805,6 +834,8 @@ def fetch_conversation_history(auth, cid, short_id, count=50, timeout=20,
                 logger.warning(f"[CAP-004] " + f"[capture][301] HTTP {resp.status_code} "
                                f"len={len(resp.content)} cid={cid} page={page_no}")
                 break
+
+            _maybe_record_301(resp.content, cid, page_no)   # H-7 样本①（默认关闭）
 
             msgs, page = _extract_301_page(resp.content)
             if total is None:
