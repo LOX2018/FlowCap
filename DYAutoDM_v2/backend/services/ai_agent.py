@@ -102,7 +102,7 @@ def ensure_default_dispatch_agent() -> dict:
     with _lock:
         data = _kv_get(_KV_AGENTS, {}) or {}
         if _DISPATCH_ID in data:
-            return _KV_AGENTS, data[_DISPATCH_ID]  # 已存在
+            return get_agent(_DISPATCH_ID)  # 已存在
         data[_DISPATCH_ID] = {
             "name": "调度 Agent（IM Bot 默认）",
             "kind": "dispatch",
@@ -128,7 +128,7 @@ def ensure_default_dispatch_agent() -> dict:
             "updated_at": time.time(),
         }
         _kv_set(_KV_AGENTS, data)
-        return _KV_AGENTS, data[_DISPATCH_ID]
+        return get_agent(_DISPATCH_ID)
 
 
 _DISPATCH_ID = "ag_dispatch_default"
