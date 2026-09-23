@@ -106,8 +106,35 @@ class EnvAuditBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.on_event("startup")
-async def _startup() -> None:
+# ════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-09-23【生命周期必须挂 app，不能挂 router】—— 防「startup 跑两次」
+#
+# 事故（本次实证，v0.44.53 阻断级）：本模块曾用 **APIRouter 的 on_event 装饰器**
+# 定义 BCC 生命周期，而 `browser_daemon.py` 用 `include_router` 挂载它
+# ⇒ **同一个 handler 被跑两遍**，导致：
+#     · 两个 `BrowserContainer` 先后抢同一 profile（第二个撞 camofox 启动失败
+#       BCC-058「Failed to launch the browser process」）
+#     · `_state["container"]` 被**后建的坏容器**覆盖 → `/status` 恒 alive:false
+#     · keepalive 线程 ×2 + 每轮重建 → 用户所见「Camoufox 正在运行、反复激活」
+#
+# 上游机理（FastAPI 0.141.1，`fastapi/routing.py`，已读源码坐实）：
+#   `include_router()` 对传入 router 做**两件**与生命周期相关的事：
+#     ① `for handler in router.on_startup: self.add_event_handler("startup", handler)`
+#     ② `self.lifespan_context = _merge_lifespan_context(self.lifespan_context,
+#                                                        router.lifespan_context)`
+#   而 `APIRouter.__init__` 里 `lifespan_context = _DefaultLifespan(self)`，
+#   其 `__aenter__` 正是 `await self._router._startup()` —— 于是 ① 注册的 handler
+#   与 ② 合并进来的 router 默认 lifespan **各自跑一次** ⇒ `_startup()` ×2。
+#   （重构前 handler 直接写 `@app.on_event(...)`，不经过 include_router，故只跑一次。）
+#
+# 定式：**路由可以 include，生命周期不行**。`on_startup/on_shutdown` 一律
+# 用 `app.add_event_handler(...)` 挂在**最终应用对象**上（见 browser_daemon.py），
+# 本模块只导出普通 async 函数 `startup()` / `shutdown()`。
+#
+# 回归守卫：`backend/test_bcc_startup_single_fire.py`
+# （真跑一次 lifespan，断言 container.start() 恰好 1 次；注入双跑必须变红）
+# ════════════════════════════════════════════════════════════════════════════
+async def startup() -> None:
     from daemon.browser_daemon import _state, BrowserContainer
     from loguru import logger
     import threading
@@ -163,8 +190,7 @@ async def _startup() -> None:
     threading.Thread(target=_prewarm, daemon=True).start()
 
 
-@router.on_event("shutdown")
-async def _shutdown() -> None:
+async def shutdown() -> None:
     from daemon.browser_daemon import _state
 
     if _state["keepalive_stop"]:

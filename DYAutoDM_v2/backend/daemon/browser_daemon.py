@@ -50,6 +50,34 @@ from daemon.bcc_capture import BccCaptureMixin
 from daemon.bcc_audit import BccAuditMixin
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-09-23【模块身份归一 —— 防「同进程双份模块」】
+#
+# 本文件被 PyInstaller 以 **`__main__`** 身份启动，而 `daemon/bcc_routes.py`
+# （P3-5 Step 2 路由抽取后新增）用 `from daemon.browser_daemon import _state`
+# 读全局状态 ⇒ 同一份源码在**同一进程内被加载两次**：
+#     ① `sys.modules["__main__"]`              ← main() 往里写 account/port 的那份
+#     ② `sys.modules["daemon.browser_daemon"]` ← bcc_routes 的 import 触发的那份
+#
+# 实测后果（2026-09-23，v0.44.52 阻断级）：
+#   · startup 事件读到**空** `_state`（account="" / port=0）
+#     → `BrowserContainer(account="")` → `env_path` 为空
+#     → `BCC-051`「凭证文件不可用」→ **浏览器容器永远起不来**
+#     （/status 恒 alive:false；BCC 日志只留这一条错误）
+#   · 第二份模块重新执行本文件的模块级 `logger.remove()`
+#     → **删掉 main() 刚加的文件 sink** → BCC 当天日志恒 0 字节
+#       （文件已创建、却一行不写；这正是本案最难定位的表象）
+#
+# 定式：凡「以 __main__ 运行、又被同进程按包名 import」的入口，都必须在
+# **任何反向 import 发生之前**把自身登记为规范模块名。先到先得，故用 setdefault：
+#   · 以包名正常 import（`python -m daemon.browser_daemon` 等）→ 已是自己，不动它；
+#   · 以 __main__ 启动 → 补上规范名，消除第二份实例。
+# 事故复现与修复验证见 `backend/test_bcc_module_identity_guard.py`
+# （注入 DIFF 形态必须变红；修复后为 SAME）。
+# ════════════════════════════════════════════════════════════════════════════
+sys.modules.setdefault("daemon.browser_daemon", sys.modules[__name__])
+
+
 # 2026-09-13：标记「本进程是浏览器守护」——供 services.browser_gate 豁免
 # 自身启动告警（否则 BCC 拉自己的容器会误报 BCC-042 环境分叉）。
 os.environ.setdefault("DY_BROWSER_DAEMON", "1")
@@ -1280,6 +1308,20 @@ async def _bcc_token_guard(request, call_next):
 # 注册 bcc_routes 路由（2026-09-22 路由抽取 P3-5 Step 2）
 from daemon.bcc_routes import router as _bcc_router
 app.include_router(_bcc_router)
+
+# 🔴 2026-09-23【生命周期挂 app，不挂 router —— 防 startup 跑两次】
+# 详见 daemon/bcc_routes.py 顶部「生命周期必须挂 app」注释块：
+# `include_router` 既把 router.on_startup 的 handler `add_event_handler` 到本 app，
+# 又把 router 的**默认 lifespan** 合并进来，而后者同样会跑 router._startup()
+# ⇒ `@router.on_event("startup")` 的 handler 会被调用两次。
+# 故生命周期一律在此显式挂到 app 上（只注册一次，且与 include_router 无关）。
+try:
+    from daemon.bcc_routes import startup as _bcc_startup, shutdown as _bcc_shutdown
+    app.router.add_event_handler("startup", _bcc_startup)
+    app.router.add_event_handler("shutdown", _bcc_shutdown)
+except Exception as _e_life:  # pragma: no cover - 导入失败必须立刻可见
+    logger.error(f"[BCC-028] [bcc] 生命周期 handler 挂载失败: {_e_life}")
+    raise
 
 # ContainerBusy 异常处理器（APIRouter 不支持 exception_handler，必须挂在 app 上）
 @app.exception_handler(ContainerBusy)

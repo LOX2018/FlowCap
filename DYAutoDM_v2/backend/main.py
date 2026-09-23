@@ -49,6 +49,31 @@ from api import ai as ai_api
 from api import crawl as crawl_api
 from core.auto_dm import AutoDM
 
+# ════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-09-23【模块身份归一 —— 防「同进程双份模块」】
+#
+# 与 daemon/browser_daemon.py 同一类缺陷（该处已实证：BCC 容器永远起不来）。
+#
+# 本文件被 PyInstaller 以 __main__ 身份启动，而 api/accounts.py:62 与
+# api/notify.py:432/505 在**请求处理期**执行 `from main import app`
+# ⇒ 同一份源码在同进程内被加载两次，`__main__` 与 `main` 各持**一个 app**：
+#     · __main__.app  ← 真正跑 lifespan、state.adm / state.engines 都在这份
+#     · main.app      ← 反向 import 触发的新实例，**没有任何 state**
+#
+# 实测后果（本次已复现）：api/accounts._get_adm() → `from main import app`
+# 拿到第二份 app → app.state 无 adm → 返回 None → **「引擎实例不可用」**。
+# api/notify.py 的注释早已记录过该形态（故其自建 bind_adm 显式注入绕开），
+# 但 _get_adm() 的**回退路径**（无注入时）仍会踩中；且这是结构性隐患，
+# 不修则每新增一处 `from main import ...` 都可能再犯。
+#
+# 定式：凡「以 __main__ 运行、又被同进程按包名 import」的入口，都必须在
+# **任何反向 import 发生之前**把自身登记为规范模块名（先到先得，setdefault）。
+# 回归守卫见 backend/test_bcc_module_identity_guard.py
+# （test_main_entry_declares_canonical_module_alias）。
+# ════════════════════════════════════════════════════════════════════════════
+sys.modules.setdefault("main", sys.modules[__name__])
+
+
 # 2026-09-06 全局治理（D：系统死代理隔离）：
 # Windows 注册表系统代理（ProxyEnable=1，如 v2rayN 写入的 127.0.0.1:10808）
 # 会被 Python requests 自动继承（urllib.getproxies_registry）。代理软件核心
