@@ -1,0 +1,498 @@
+{
+  "generated_at": "2026-09-23T15:40:49Z",
+  "summary": {
+    "total": 11,
+    "unchanged": 5,
+    "updated": 5,
+    "new": 1,
+    "failed": 0
+  },
+  "updated": [
+    {
+      "id": "douyin_spider",
+      "repo": "cv-cat/DouYin_Spider",
+      "previous": {
+        "name": "cv-cat/DouYin_Spider",
+        "repo": "cv-cat/DouYin_Spider",
+        "pushed_at": "2026-09-13T04:52:52Z",
+        "head_sha": "63ef397e0692dba13cd6da5cd784918a0eb6a314",
+        "checked_at": "2026-09-17 20:33:07"
+      },
+      "current": {
+        "id": "douyin_spider",
+        "repo": "cv-cat/DouYin_Spider",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-09-19T17:36:53Z",
+        "default_branch": "master",
+        "stars": 3143,
+        "updated_at": "2026-09-23T06:28:50Z",
+        "head_sha": "4479ea784bf3e63e75fcbe4ca985f84678d46b27",
+        "commit_date": "2026-09-19T17:36:53Z",
+        "recent_commits": [
+          {
+            "sha": "4479ea784b",
+            "date": "2026-09-19T17:36:53Z",
+            "msg": "Merge pull request #91 from cv-cat/feat/send-live-comment"
+          },
+          {
+            "sha": "df52357d56",
+            "date": "2026-09-19T17:33:06Z",
+            "msg": "fix: align work comment publishing"
+          },
+          {
+            "sha": "251075ec31",
+            "date": "2026-09-19T17:26:19Z",
+            "msg": "feat: align live room comment sending"
+          },
+          {
+            "sha": "1712dad4f5",
+            "date": "2026-09-19T06:48:07Z",
+            "msg": "Merge pull request #90 from cv-cat/feat/live-pk-rank-ws"
+          },
+          {
+            "sha": "41ed6c52eb",
+            "date": "2026-09-19T06:36:13Z",
+            "msg": "feat: add live PK rank APIs and WebSocket events"
+          }
+        ]
+      }
+    },
+    {
+      "id": "astrbot",
+      "repo": "AstrBotDevs/AstrBot",
+      "previous": {
+        "name": "AstrBotDevs/AstrBot",
+        "repo": "AstrBotDevs/AstrBot",
+        "pushed_at": "2026-09-17T12:24:24Z",
+        "head_sha": "2704b4c0d35d0057307ccbd2ce1e08278b76a758",
+        "checked_at": "2026-09-17 20:33:18"
+      },
+      "current": {
+        "id": "astrbot",
+        "repo": "AstrBotDevs/AstrBot",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-09-23T07:34:04Z",
+        "default_branch": "master",
+        "stars": 40888,
+        "updated_at": "2026-09-23T07:38:02Z",
+        "head_sha": "95e98b8aed75d56713666eff39e31bafffd95426",
+        "commit_date": "2026-09-21T08:27:08Z",
+        "recent_commits": [
+          {
+            "sha": "95e98b8aed",
+            "date": "2026-09-21T08:27:08Z",
+            "msg": "fix: read WebUI versions from the served asset directory (#10156)"
+          },
+          {
+            "sha": "3ada8aa0ae",
+            "date": "2026-09-21T08:22:39Z",
+            "msg": "fix: separate reset and new conversation semantics (#10118)"
+          },
+          {
+            "sha": "8b5e24ba2e",
+            "date": "2026-09-21T07:08:19Z",
+            "msg": "fix: respect session plugin filters in cron agents (#10163)"
+          },
+          {
+            "sha": "96d9504b6c",
+            "date": "2026-09-21T04:40:26Z",
+            "msg": "docs: explain HTTP proxy address when AstrBot runs in Docker (#10162)"
+          },
+          {
+            "sha": "6914bc3aa6",
+            "date": "2026-09-20T03:46:12Z",
+            "msg": "fix: move local network policy notice into system prompts (#10134)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "openbrowser",
+      "repo": "lyu0805/OpenBrowser",
+      "previous": {
+        "name": "lyu0805/OpenBrowser",
+        "repo": "lyu0805/OpenBrowser",
+        "pushed_at": "2026-09-17T08:26:56Z",
+        "head_sha": "a3bc93d12eee81e07effdaf09c0910b08e0ea506",
+        "checked_at": "2026-09-17 20:33:29"
+      },
+      "current": {
+        "id": "openbrowser",
+        "repo": "lyu0805/OpenBrowser",
+        "ok": true,
+        "error": null,
+        "pushed_at": null,
+        "default_branch": "main",
+        "stars": null,
+        "updated_at": null,
+        "head_sha": null,
+        "commit_date": null
+      }
+    },
+    {
+      "id": "satelite_proxy",
+      "repo": "zn0wii/satelite-proxy",
+      "previous": {
+        "name": "zn0wii/satelite-proxy",
+        "repo": "zn0wii/satelite-proxy",
+        "pushed_at": "2026-09-16T11:52:44Z",
+        "head_sha": "4e7b39d5c25d904eba8d178746e71d4925bf7654",
+        "checked_at": "2026-09-17 20:33:33"
+      },
+      "current": {
+        "id": "satelite_proxy",
+        "repo": "zn0wii/satelite-proxy",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-09-23T01:04:01Z",
+        "default_branch": "main",
+        "stars": 762,
+        "updated_at": "2026-09-23T07:20:30Z",
+        "head_sha": "a32b2a032a0c8386b26a284269426401af6d7942",
+        "commit_date": "2026-09-23T01:03:04Z",
+        "recent_commits": [
+          {
+            "sha": "a32b2a032a",
+            "date": "2026-09-23T01:03:04Z",
+            "msg": "feat(tray): saturn_classic style + stacked picker layout"
+          },
+          {
+            "sha": "78e8111d75",
+            "date": "2026-09-23T01:02:54Z",
+            "msg": "feat(windows): dedicated per-DPI title-bar icon replaces mushy default"
+          },
+          {
+            "sha": "39a0002afd",
+            "date": "2026-09-22T16:32:13Z",
+            "msg": "feat(icons): neon face-saturn app icon from ChatGPT artwork"
+          },
+          {
+            "sha": "62b5b2cc05",
+            "date": "2026-09-22T09:54:58Z",
+            "msg": "chore(release): bump version to v1.0.40"
+          },
+          {
+            "sha": "01969835d7",
+            "date": "2026-09-22T09:54:34Z",
+            "msg": "feat(icons): face-saturn app icon from facenew artwork"
+          }
+        ]
+      }
+    },
+    {
+      "id": "patchright",
+      "repo": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+      "previous": {
+        "name": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+        "repo": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+        "pushed_at": "2026-09-13T12:47:35Z",
+        "head_sha": "d7e29fd57ea709705d67f325d92fe4cf7accbbdf",
+        "checked_at": "2026-09-17 20:33:45"
+      },
+      "current": {
+        "id": "patchright",
+        "repo": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-09-20T11:55:03Z",
+        "default_branch": "main",
+        "stars": 1527,
+        "updated_at": "2026-09-23T03:19:15Z",
+        "head_sha": "c4064f5833c811d99772aabefee8984c51322ace",
+        "commit_date": "2026-09-20T11:54:16Z",
+        "recent_commits": [
+          {
+            "sha": "c4064f5833",
+            "date": "2026-09-20T11:54:16Z",
+            "msg": "Fix Release"
+          },
+          {
+            "sha": "d7e29fd57e",
+            "date": "2026-09-13T12:47:35Z",
+            "msg": "Remove ColaProxy Sponsor"
+          },
+          {
+            "sha": "631524547d",
+            "date": "2026-09-09T13:51:21Z",
+            "msg": "Update Nodemaven Sponsor"
+          },
+          {
+            "sha": "dc3e22efaf",
+            "date": "2026-08-29T14:29:14Z",
+            "msg": "Adjust Workflow to New Distribution Channel"
+          },
+          {
+            "sha": "388ad2cead",
+            "date": "2026-08-19T17:20:12Z",
+            "msg": "Update Nodemaven Banner"
+          }
+        ]
+      }
+    }
+  ],
+  "new": [
+    {
+      "id": "malogbot",
+      "repo": "hxxxi-malog/MalogBot",
+      "current": {
+        "id": "malogbot",
+        "repo": "hxxxi-malog/MalogBot",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-06-02T12:37:38Z",
+        "default_branch": "main",
+        "stars": 16,
+        "updated_at": "2026-09-12T03:25:50Z",
+        "head_sha": "22b2aac4b15b3004aa9072e47b03aaacb67a594c",
+        "commit_date": "2026-05-21T13:58:52Z",
+        "recent_commits": [
+          {
+            "sha": "22b2aac4b1",
+            "date": "2026-05-21T13:58:52Z",
+            "msg": "feat: 添加 CHANGELOG.md，记录 MalogBot 2.0.0 版本更新内容"
+          },
+          {
+            "sha": "9e1a9e56a3",
+            "date": "2026-05-21T13:58:43Z",
+            "msg": "feat: 更新 README.md，添加 MalogBot v2.0 新特性和环境要求，优化安装步骤"
+          },
+          {
+            "sha": "f9b517360d",
+            "date": "2026-05-21T13:58:29Z",
+            "msg": "feat: 更新 MalogBot 至 v2.0，增强部署脚本和 Docker 配置，添加前端构建支持"
+          },
+          {
+            "sha": "25169179b0",
+            "date": "2026-05-21T13:58:15Z",
+            "msg": "feat: 更新 MalogBot 环境配置，添加 RAG 查询优化和上下文压缩设置"
+          },
+          {
+            "sha": "6a893e21bf",
+            "date": "2026-05-21T13:35:47Z",
+            "msg": "feat: 支持恢复进行中的研究任务，优化研究状态管理"
+          }
+        ]
+      }
+    }
+  ],
+  "unchanged": [
+    {
+      "id": "douyin_live",
+      "repo": "saermart/DouyinLiveWebFetcher",
+      "current": {
+        "id": "douyin_live",
+        "repo": "saermart/DouyinLiveWebFetcher",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-09-08T07:59:04Z",
+        "default_branch": "main",
+        "stars": 1830,
+        "updated_at": "2026-09-21T15:45:21Z",
+        "head_sha": "40a904bdb0561a5a9c958a95634a29681cc4fbf4",
+        "commit_date": "2026-09-08T07:58:58Z",
+        "recent_commits": [
+          {
+            "sha": "40a904bdb0",
+            "date": "2026-09-08T07:58:58Z",
+            "msg": "Update README.MD"
+          },
+          {
+            "sha": "20a64a0c54",
+            "date": "2026-08-26T08:26:39Z",
+            "msg": "Update README.MD"
+          },
+          {
+            "sha": "81df2dc9e0",
+            "date": "2026-08-26T08:24:23Z",
+            "msg": "Update README.MD"
+          },
+          {
+            "sha": "22e0222926",
+            "date": "2026-08-26T08:13:55Z",
+            "msg": "编译dylive-v1.0.0"
+          },
+          {
+            "sha": "360cd3795b",
+            "date": "2025-09-27T08:14:38Z",
+            "msg": "测试成功"
+          }
+        ]
+      }
+    },
+    {
+      "id": "douyin_live_recorder",
+      "repo": "ihmily/DouyinLiveRecorder",
+      "current": {
+        "id": "douyin_live_recorder",
+        "repo": "ihmily/DouyinLiveRecorder",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-04-01T14:45:17Z",
+        "default_branch": "main",
+        "stars": 10942,
+        "updated_at": "2026-09-23T06:55:34Z",
+        "head_sha": "add187f8d8c7ff7d231fcbee45cbb4f1ed247d3a",
+        "commit_date": "2025-11-03T11:55:52Z",
+        "recent_commits": [
+          {
+            "sha": "add187f8d8",
+            "date": "2025-11-03T11:55:52Z",
+            "msg": "feat: basic support for running with uv (#1265)"
+          },
+          {
+            "sha": "0333cb4a01",
+            "date": "2025-10-25T07:17:50Z",
+            "msg": "optimize douyin live error catch"
+          },
+          {
+            "sha": "73857755a7",
+            "date": "2025-10-24T10:59:45Z",
+            "msg": "fix tiktok parse"
+          },
+          {
+            "sha": "fec734ae74",
+            "date": "2025-10-24T08:04:08Z",
+            "msg": "docs: update readme"
+          },
+          {
+            "sha": "853d03ea14",
+            "date": "2025-10-24T02:53:21Z",
+            "msg": "fix: update bigo match"
+          }
+        ]
+      }
+    },
+    {
+      "id": "douyin_auto_reply",
+      "repo": "xyc667/douyin-auto-reply-assistant",
+      "current": {
+        "id": "douyin_auto_reply",
+        "repo": "xyc667/douyin-auto-reply-assistant",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-06-29T09:37:29Z",
+        "default_branch": "main",
+        "stars": 12,
+        "updated_at": "2026-09-09T19:31:26Z",
+        "head_sha": "27302d02dbe7f7e1538104a9c39efbec564a0529",
+        "commit_date": "2026-06-29T09:37:29Z",
+        "recent_commits": [
+          {
+            "sha": "27302d02db",
+            "date": "2026-06-29T09:37:29Z",
+            "msg": "Sync blank starter templates for credentials and accounts"
+          },
+          {
+            "sha": "a29ef4a71b",
+            "date": "2026-06-29T09:37:27Z",
+            "msg": "Sync blank starter templates for credentials and accounts"
+          },
+          {
+            "sha": "be2c91bad4",
+            "date": "2026-06-29T09:37:20Z",
+            "msg": "Sync blank starter templates for credentials and accounts"
+          },
+          {
+            "sha": "feb458eafd",
+            "date": "2026-06-29T09:37:18Z",
+            "msg": "Sync blank starter templates for credentials and accounts"
+          },
+          {
+            "sha": "04b775dbfa",
+            "date": "2026-06-29T09:37:15Z",
+            "msg": "Sync blank starter templates for credentials and accounts"
+          }
+        ]
+      }
+    },
+    {
+      "id": "douyin_chat_export",
+      "repo": "TeamBreakerr/douyin-chat-export",
+      "current": {
+        "id": "douyin_chat_export",
+        "repo": "TeamBreakerr/douyin-chat-export",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-09-17T08:24:36Z",
+        "default_branch": "main",
+        "stars": 277,
+        "updated_at": "2026-09-22T17:54:40Z",
+        "head_sha": "2b3ed23ac47884069619f53a2c68350e093ac86c",
+        "commit_date": "2026-09-17T08:24:34Z",
+        "recent_commits": [
+          {
+            "sha": "2b3ed23ac4",
+            "date": "2026-09-17T08:24:34Z",
+            "msg": "fix: ChatLab 数据源端点改挂 /api/v1（ChatLab 客户端强制补该前缀）"
+          },
+          {
+            "sha": "b3c11fdc6a",
+            "date": "2026-09-17T08:23:10Z",
+            "msg": "feat: ChatLab 远程数据源（Pull 协议）只读端点"
+          },
+          {
+            "sha": "ab64dc7b91",
+            "date": "2026-09-17T03:36:27Z",
+            "msg": "ci: publish release notes after versioned images"
+          },
+          {
+            "sha": "75fe0178f2",
+            "date": "2026-09-12T08:22:38Z",
+            "msg": "Merge pull request #39 from TeamBreakerr/pr-39"
+          },
+          {
+            "sha": "37ab820202",
+            "date": "2026-09-12T07:33:26Z",
+            "msg": "fix: resolve pagination merge conflict"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fingerprint_chromium",
+      "repo": "adryfish/fingerprint-chromium",
+      "current": {
+        "id": "fingerprint_chromium",
+        "repo": "adryfish/fingerprint-chromium",
+        "ok": true,
+        "error": null,
+        "pushed_at": "2026-06-21T04:22:01Z",
+        "default_branch": "main",
+        "stars": 3065,
+        "updated_at": "2026-09-23T01:47:08Z",
+        "head_sha": "3f61b0dfa665e883da8824b1450601fc529dd006",
+        "commit_date": "2026-06-21T04:16:58Z",
+        "recent_commits": [
+          {
+            "sha": "3f61b0dfa6",
+            "date": "2026-06-21T04:16:58Z",
+            "msg": "Update to Chromium 148.0.7778.215"
+          },
+          {
+            "sha": "c065c95fe7",
+            "date": "2026-04-13T04:15:11Z",
+            "msg": "Update to Chromium 144.0.7559.132"
+          },
+          {
+            "sha": "4d457db2b3",
+            "date": "2025-12-23T03:29:13Z",
+            "msg": "Update to Chromium 142.0.7444.175"
+          },
+          {
+            "sha": "4ce57cdb7f",
+            "date": "2025-09-14T13:14:08Z",
+            "msg": "Update to Chromium 139.0.7258.154"
+          },
+          {
+            "sha": "067858a953",
+            "date": "2025-08-20T07:22:37Z",
+            "msg": "Update to Chromium 138.0.7204.183"
+          }
+        ]
+      }
+    }
+  ],
+  "failed": []
+}
