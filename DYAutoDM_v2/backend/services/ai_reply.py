@@ -1482,7 +1482,7 @@ WORKER = AutoReplyWorker()
 # ---------------------------------------------------------------------------
 
 def generate_dm_for_live(account: str, peer_name: str, comment: str,
-                         cfg: dict) -> tuple[str, str]:
+                         cfg: dict, uid: str = "") -> tuple[str, str]:
     """为「直播监听 / 视频采集」来源生成一条开场私信文案（同步，供 to_thread 调用）。
 
     设计契约（用户 2026-09-19 口径 + 9.29 §AI 接入点收敛）：
@@ -1534,7 +1534,7 @@ def generate_dm_for_live(account: str, peer_name: str, comment: str,
 
         raw = AIClient(cfg).chat_failover(
             text_in, consumer_id="ai_main",
-            user_id=f"live:{account}:{peer_name or ''}",
+            user_id=f"live:{account}:{uid or peer_name or 'unknown'}",
             system_prompt=prompt)
         if not raw:
             logger.info(f"[ai] 直播文案 AI 返回空，回落兜底（账号={account}）")

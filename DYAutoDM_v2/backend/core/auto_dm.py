@@ -557,7 +557,7 @@ class AutoDM:
                 text, source = await asyncio.to_thread(
                     ai_reply.generate_dm_for_live,
                     account=account, peer_name=nick or uid,
-                    comment=ctx, cfg=cfg,
+                    comment=ctx, cfg=cfg, uid=uid,
                 )
                 text = str(text or "").strip()
                 if not text:
@@ -830,6 +830,16 @@ class AutoDM:
             # 3) 构造 DispatchCenter（词库随机抽取由 self.pick_dm_message 提供）
             #    ENG-017：发送不可用时 enable_send=False —— 调度器仍接收并入库
             #    弹幕记录（前端可见「已捕获未发」），但不触发实际发送。
+            # 2026-09-24（T1 复读弹幕修复）：AI 不可用 且 词库无启用文案 → 只听不发。
+            #    复用 ENG-017 的 enable_send=False 机制，绝不新发明。调度器仍入库弹幕
+            #    记录（前端可见「已捕获未发」），但 _do_send 因 enable_send=False 不真发，
+            #    避免把弹幕原文当私信发出（修复 dispatch.py:429 兜底复读缺陷）。
+            if _send_ok and self.gen_dm_message is None and self.pick_dm_message is None:
+                _send_ok = False
+                self.status_msg = ("监听中（只听不发·AI未启用且词库无启用文案，"
+                                   "禁止私信——避免复读弹幕原文）")
+                logger.warning("[T1-FIX] AI 未启用 + 词库无启用文案 → 只听不发"
+                               f"（live_id={self.live_id}）")
             self.dispatch = DispatchCenter(
                 auth=self.auth,
                 max_target=self.limit,
