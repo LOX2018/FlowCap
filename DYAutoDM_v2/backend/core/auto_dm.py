@@ -88,6 +88,72 @@ def check_room_live(auth: Any, live_id: str):
         return True, None, "", None
 
 
+# ---------------------------------------------------------------------------
+# 直播监听 AI 私信文案「是否生效」可观测状态（2026-09-23，P1-2）
+#
+# 背景（用户反馈）：直播策略配了私信文本、也开了 AI 回复，但实际仍发固定文本，
+# UI 上完全看不出 AI 没生效 —— 因为 `AutoDM._make_gen_dm_message` 的三道否决
+# （enabled 假 / strict_level==kb_only / scopes 不含 live）都是静默 `return None`，
+# 发送链路随即回落词库，失败信息只落在日志里（甚至不落日志）。
+#
+# 修法（用户 2026-09-23 拍板：**保守默认值 + UI 强提示**）：
+#   ① 不擅自放宽默认值（新建 Agent 的 scopes 仍缺省 ["dm"]，不把 AI 默认接到发送侧）；
+#   ② 把「AI 未生效 + 具体原因」写成**可查询状态**，供 /api/ai/live_dm_state 与前端展示。
+#
+# 设计不变式（改动不得违反）：
+#   - 只新增观测出口，**判定结果与回落行为逐字不变**（返回 None 的分支一个不动）；
+#   - 状态写入是「尽力而为」：任何异常都不得影响发送链路；
+#   - 状态为模块级（进程内单例语义，与 AutoDM 单例一致），多账号场景保留**最后一次**判定
+#     并把 account/agent 一并记录，避免张冠李戴；端点另支持按 account 实时重判（同一真源）。
+# ---------------------------------------------------------------------------
+
+#: reason_code → 面向用户的原因文案（端点/前端直接展示，不再二次翻译）
+LIVE_AI_REASON_TEXT = {
+    "ok": "已生效",
+    "no_account": "未生效（原因：缺少监听账号上下文，无法解析 Agent 配置）",
+    "ai_disabled": "未生效（原因：AI 未启用）",
+    "kb_only": "未生效（原因：档位为 kb_only，AI 不参与文案生成）",
+    "scope_missing": "未生效（原因：Agent 作用域未勾选直播监听）",
+    "error": "未生效（原因：判定异常，已回落词库）",
+}
+
+#: 模块级状态快照（最后一次接线判定的结果，供只读端点查询）
+LIVE_AI_STATE: dict = {
+    "active": False,
+    "reason_code": "no_account",
+    "reason": LIVE_AI_REASON_TEXT["no_account"],
+    "account": "",
+    "agent_id": "",
+    "enabled": None,
+    "strict_level": "",
+    "scopes": [],
+    "checked_at": 0.0,
+    "checked_count": 0,
+}
+
+
+def _record_live_ai_state(verdict: dict) -> None:
+    """把一次接线判定写入模块级状态（JSON 安全、不带整份 cfg）。
+
+    入参 `verdict` 允许携带内部键 `cfg`（判定用的完整配置），本函数**不落盘**它，
+    避免把 system_prompt / 密钥等随状态一起外泄或塞进 JSON。
+    """
+    try:
+        snap = {k: v for k, v in dict(verdict or {}).items() if k != "cfg"}
+        snap["checked_at"] = time.time()
+        snap["checked_count"] = int(LIVE_AI_STATE.get("checked_count") or 0) + 1
+        LIVE_AI_STATE.clear()
+        LIVE_AI_STATE.update(snap)
+    except Exception:      # 观测写入绝不影响发送链路
+        pass
+
+
+def get_live_ai_state() -> dict:
+    """返回直播 AI 文案生效状态的**副本**（只读端点数据源）。"""
+    return dict(LIVE_AI_STATE)
+
+
+
 class AutoDM:
     """引擎主控（单例，挂在 app.state.adm）
 
@@ -343,6 +409,78 @@ class AutoDM:
 
         return _pick
 
+    def evaluate_live_ai(self, account: str = "", agent_id: str = "") -> dict:
+        """判定「直播监听的私信文案是否走 AI」+ 未生效原因（**判定唯一真源**）。
+
+        2026-09-23（P1-2 可观测性）：把原 `_make_gen_dm_message` 里内联的三道否决
+        抽成可复用判定，供 ①发送侧接线 ②只读端点 共用同一份逻辑 —— 杜绝
+        「UI 显示已生效、实际仍回落词库」的第二处判定漂移。
+
+        返回 dict：
+            active        bool  是否生效
+            reason_code   str   ok / no_account / ai_disabled / kb_only /
+                                scope_missing / error
+            reason        str   直接可展示的原因文案
+            account/agent_id/enabled/strict_level/scopes  判定依据（排障用）
+            cfg           dict  判定用的完整配置（**内部键**：端点对外输出前须剔除）
+
+        契约：
+          - 本方法**不抛异常**：判定环节异常一律收敛为 `reason_code="error"`，
+            由调用方决定是否补记 SEND-039（保留既有错误码语义）；
+          - 只做读取与判定，**不写任何配置、不改任何默认值**（保守默认值口径）。
+        """
+        # agent_id 预演分支允许不带账号（端点「若绑定该 Agent 会不会生效」）
+        acct = account or (self.target_acct or getattr(self, "_acct", None) or "")
+        out: dict = {
+            "active": False, "reason_code": "", "reason": "",
+            "account": acct, "agent_id": agent_id or "",
+            "enabled": None, "strict_level": "", "scopes": [],
+        }
+        if not acct and not agent_id:
+            out["reason_code"] = "no_account"
+            out["reason"] = LIVE_AI_REASON_TEXT["no_account"]
+            return out
+        try:
+            from services import ai_agent, ai_reply
+
+            base = ai_reply.get_config()
+            if agent_id:
+                # 端点「按指定 Agent 预演」：与发送侧同款解析（resolve_config_for）
+                aid = agent_id
+                cfg = ai_agent.resolve_config_for(agent_id, base) or {}
+            else:
+                aid = ai_agent.agent_of(acct) or ""
+                # 未绑定 Agent 时 resolve_config 原样返回全局配置（零回归语义），
+                # 因此这里不能用「未绑定」当否决条件 —— 由下方 scopes 判定。
+                cfg = ai_agent.resolve_config(acct, base) or {}
+        except Exception as e:      # 判定异常 → 收敛，不打断调用方
+            out["reason_code"] = "error"
+            out["reason"] = f"{LIVE_AI_REASON_TEXT['error']}（{type(e).__name__}: {e}）"
+            return out
+
+        out["agent_id"] = aid
+        out["enabled"] = bool(cfg.get("enabled"))
+        out["strict_level"] = str(cfg.get("strict_level", "rag"))
+        out["scopes"] = list(cfg.get("scopes") or [])
+        out["cfg"] = cfg
+
+        if not cfg.get("enabled"):
+            out["reason_code"] = "ai_disabled"
+            out["reason"] = LIVE_AI_REASON_TEXT["ai_disabled"]
+            return out
+        if out["strict_level"] == "kb_only":
+            out["reason_code"] = "kb_only"
+            out["reason"] = LIVE_AI_REASON_TEXT["kb_only"]
+            return out
+        if "live" not in out["scopes"]:
+            out["reason_code"] = "scope_missing"
+            out["reason"] = LIVE_AI_REASON_TEXT["scope_missing"]
+            return out
+        out["active"] = True
+        out["reason_code"] = "ok"
+        out["reason"] = LIVE_AI_REASON_TEXT["ok"]
+        return out
+
     def _make_gen_dm_message(self):
         """构造「AI 生成私信文案」回调（直播监听 / 视频采集来源）。
 
@@ -366,30 +504,46 @@ class AutoDM:
 
         线程安全：`_do_send` 在 asyncio 事件循环内调用本回调，回调内只用
         `asyncio.to_thread` 包装（禁止在事件循环内做阻塞网络请求）。
-        """
-        try:
-            from services import ai_agent, ai_reply
 
-            base = ai_reply.get_config()
-            account = (self.target_acct or getattr(self, "_acct", None) or "")
-            if not account:
-                return None
-            aid = ai_agent.agent_of(account) or ""
-            # 未绑定 Agent 时 resolve_config 原样返回全局配置（零回归语义），
-            # 因此这里不能用「未绑定」当否决条件 —— 由下方 scopes 判定。
-            cfg = ai_agent.resolve_config(account, base)
-            if not cfg.get("enabled"):
-                return None
-            if str(cfg.get("strict_level", "rag")) == "kb_only":
-                return None
-            if "live" not in (cfg.get("scopes") or []):
-                return None
-            logger.info(f"[live-ai] 私信文案已接入 AI 生成（账号={account} "
-                        f"agent={aid or '未绑定/用全局'} 档位={cfg.get('strict_level')} "
-                        f"scopes={cfg.get('scopes')}）")
-        except Exception as e:
+        2026-09-23（P1-2 可观测性）：判定主体下沉到 `evaluate_live_ai`（唯一真源），
+        本方法改为「取判定结果 → 记录可查询状态 → 按结果接线/回落」。
+        **判定结论与回落行为逐字不变**（返回 None 的分支一个不改）。
+        """
+        account = (self.target_acct or getattr(self, "_acct", None) or "")
+        # 2026-09-23（P1-2）：接线判定下沉到 evaluate_live_ai（唯一真源），
+        # 并把「未生效 + 具体原因」写入模块级可查询状态（原实现只 return None，
+        # UI 完全无感 —— 用户看到的就是「开了 AI 却发固定文本」）。
+        try:
+            verdict = self.evaluate_live_ai()
+        except Exception as e:      # 兜底：判定本身炸了也不能打断发送链路
             logger.warning(f"[SEND-039] " + f"[调度] AI 文案接线判定失败，回落词库: {e}")
+            _record_live_ai_state({
+                "active": False, "reason_code": "error",
+                "reason": f"{LIVE_AI_REASON_TEXT['error']}（{type(e).__name__}: {e}）",
+                "account": (self.target_acct or getattr(self, "_acct", None) or ""),
+            })
             return None
+
+        _record_live_ai_state(verdict)
+
+        if verdict.get("reason_code") == "error":
+            # 保留既有错误码语义：判定环节异常仍记 SEND-039（errcode 契约未变）
+            logger.warning(f"[SEND-039] " + f"[调度] AI 文案接线判定失败，回落词库: "
+                                            f"{verdict.get('reason')}")
+        if not verdict.get("active"):
+            # 原实现此处静默无日志；改为显式 INFO，便于服务端排障（行为不变）
+            logger.info(f"[live-ai] 私信文案未接入 AI 生成（账号={account} "
+                        f"agent={verdict.get('agent_id') or '未绑定/用全局'} "
+                        f"档位={verdict.get('strict_level')} "
+                        f"scopes={verdict.get('scopes')} "
+                        f"原因={verdict.get('reason')}）")
+            return None
+
+        cfg = verdict.get("cfg") or {}
+        aid = verdict.get("agent_id") or ""
+        logger.info(f"[live-ai] 私信文案已接入 AI 生成（账号={account} "
+                    f"agent={aid or '未绑定/用全局'} 档位={cfg.get('strict_level')} "
+                    f"scopes={cfg.get('scopes')}）")
 
         async def _gen(target: dict) -> str:
             """按目标生成一条私信文案；任何失败都返回空串（调用方回落词库）。"""

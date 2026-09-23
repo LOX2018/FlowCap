@@ -175,6 +175,27 @@ _KV_BL = "ai_reply_blacklist"
 _KV_MARKER = "ai_reply_last_msg_id"
 _KV_ASK_COUNT = "ai_reply_lead_ask"      # {account:conv_id: count}
 
+# ---------------------------------------------------------------------------
+# 上下文消息类型白名单（P1-1，2026-09-23）
+# ---------------------------------------------------------------------------
+# 权威映射来源：backend/api/messages.py 的 _front_type（约 156-166 行，**只读参考**）：
+#     "7"     -> text      （抖音 WS 实时路径落库的文本消息）
+#     "5"     -> sticker
+#     "17"    -> voice
+#     "27"    -> image
+#     "8"     -> video
+#     "50001" -> read_receipt
+#   另（同函数 fallback）：msg_type 为 None/空 -> "text"；未知值原样透传。
+#
+# 实库取证（隔离环境会员库
+# C:\temp\dyautodm_design\members\m17db0f8209156f26\data\dyautodm.db，
+# dm_messages 共 779 条）：text=687、'7'=88、'1'=2、'50010'=1、'27'=1。
+#   ⇒ 旧 SQL 硬筛 msg_type='text'，与 WS 实时路径的 '7' 永不相等
+#     ⇒ history 恒为空 ⇒ AI 每次只见当前一句。
+#   ⇒ 本白名单**只收已确认文本语义**的 'text' 与 '7'；'1'/'50010' 语义未经
+#     确认，一律排除。白名单优于排除式：宁可少收，不可收进语义不明的数据。
+_HISTORY_TEXT_TYPES: tuple = ("text", "7")
+
 
 def get_config() -> dict:
     cfg = dict(_DEFAULT_CONFIG)
@@ -1004,6 +1025,10 @@ class AutoReplyWorker:
     """
 
     POLL_INTERVAL = 5.0
+    # 上下文条数的**兜底**上限：仅当配置 max_history 缺失/非法时生效。
+    # 正式取值走 _history_limit() —— 读配置 max_history
+    # （_DEFAULT_CONFIG 里默认 10；该键此前从未被任何代码读取，属悬空契约，
+    #   P1-1 一并接线）。
     HISTORY_LIMIT = 6
 
     def __init__(self):
@@ -1233,7 +1258,7 @@ class AutoReplyWorker:
         _probe(before_id, "PROMPT", "built", level=level,
                prompt_len=len(prompt), kb_items=len(kb_items),
                **_LAST_PROMPT_STATS)
-        history = self._build_history(account, conv_id, before_id)
+        history = self._build_history(account, conv_id, before_id, cfg)
         raw = client.chat_failover(text, consumer_id="ai_main",
                                    user_id=f"{account}:{conv_id}",
                                    system_prompt=prompt, history_extra=history)
@@ -1316,14 +1341,48 @@ class AutoReplyWorker:
 
     # -- 上下文 / 发送 -----------------------------------------------------
 
-    def _build_history(self, account: str, conv_id: str, before_id: int) -> list:
+    @classmethod
+    def _history_limit(cls, cfg: dict | None = None) -> int:
+        """上下文条数上限：读配置 max_history，缺失/非法时回落 HISTORY_LIMIT。
+
+        P1-1：_DEFAULT_CONFIG["max_history"] 此前是悬空契约（无人读取），
+        这里把它接进 _build_history；cfg 为 None 时自行 get_config()。
+        上界 50 只是防御（防止误配把整段会话灌进 prompt）。
+        """
+        if not isinstance(cfg, dict):
+            try:
+                cfg = get_config()
+            except Exception:  # noqa: BLE001
+                cfg = {}
         try:
-            rows = database.get_db().execute(
+            n = int(cfg.get("max_history", cls.HISTORY_LIMIT) or cls.HISTORY_LIMIT)
+        except (TypeError, ValueError):
+            n = cls.HISTORY_LIMIT
+        return max(1, min(n, 50))
+
+    def _build_history(self, account: str, conv_id: str, before_id: int,
+                       cfg: dict | None = None) -> list:
+        """取当前消息之前的会话上下文（按 id 升序，role 归一化）。
+
+        P1-1（2026-09-23）：msg_type 由「硬筛 'text'」改为**白名单**
+        _HISTORY_TEXT_TYPES = ('text', '7')。原因见该常量上方注释：
+        WS 实时路径落库的是数字字符串 '7'，与 'text' 永不相等，导致
+        history 恒为空。白名单只收已确认的文本语义，'1'/'50010' 等
+        语义未确认取值一律排除。
+        """
+        try:
+            limit = self._history_limit(cfg)
+            ph = ",".join(["?"] * len(_HISTORY_TEXT_TYPES))
+            sql = (
                 "SELECT role, text FROM dm_messages "
-                "WHERE account=? AND conv_id=? AND id<? AND msg_type='text' "
+                "WHERE account=? AND conv_id=? AND id<? "
+                f"  AND msg_type IN ({ph}) "
                 "  AND TRIM(COALESCE(text,''))<>'' "
-                "ORDER BY id DESC LIMIT ?",
-                (account, conv_id, before_id, int(self.HISTORY_LIMIT)),
+                "ORDER BY id DESC LIMIT ?"
+            )
+            rows = database.get_db().execute(
+                sql,
+                (account, conv_id, before_id, *_HISTORY_TEXT_TYPES, limit),
             ).fetchall()
             return [{"role": "assistant" if r["role"] == "me" else "user",
                      "content": r["text"]}

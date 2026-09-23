@@ -46,6 +46,41 @@ import EngineCards from "./engine-cards";
 /** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
 const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
 
+// ── 直播私信文案的 AI 生效状态（2026-09-23，P1-2 可观测性）────────────────
+// 背景：Agent 的 scopes 默认不含 live（保守默认值，不把 AI 默认接到发送侧），
+// 于是「开了 AI 回复却仍发固定文本」在 UI 上完全无感。后端已把「未生效 + 具体
+// 原因」做成只读端点，这里负责**强提示**，由用户自己去决定是否勾选「直播监听」。
+type LiveAiDmState = {
+  ok?: boolean;
+  /** ok=已生效 / inactive=未生效 / unknown=尚未判定 */
+  status?: "ok" | "inactive" | "unknown";
+  active?: boolean;
+  /** 直接可展示：「已生效」/「未生效（原因：xxx）」 */
+  reason?: string;
+  reason_code?: string;
+  account?: string;
+  agent_id?: string;
+  enabled?: boolean | null;
+  strict_level?: string;
+  scopes?: string[];
+  source?: string;
+};
+
+/**
+ * 拉取「AI 私信文案是否真的生效」。
+ * 2026-09-24 收尾：已改走 api.client 的统一 request() 封装（见下方实现），
+ * 不再直连 fetch —— 直连会缺 X-Member-Token 头被会员门禁拦成 401。
+ */
+async function fetchLiveAiDmState(
+  acct: string,
+  api: { aiLiveDmState(p?: { account?: string }): Promise<unknown> },
+): Promise<LiveAiDmState> {
+  // 2026-09-24（P1-2 收尾）：改走 api.client 的统一 request() 封装。
+  // 原直连 fetch 缺 X-Member-Token / X-App-Version 头，会被会员门禁拦成 401。
+  return (await api.aiLiveDmState({ account: acct })) as LiveAiDmState;
+}
+
+
 export default function LivePage(props: PageProps) {
   const { push, ready, goMsg, api, reviewPayload, reusePayload } = props;
   const [viewMode, setViewMode] = useState<"single" | "grid">("single");
@@ -89,6 +124,8 @@ export default function LivePage(props: PageProps) {
     queryFn: async () => (await api.getStream()) as LiveStream,
     enabled: !!ready,
   });
+
+
 
   const realAccts: RealAcct[] = useMemo(() => (Array.isArray(accounts) ? accounts : []), [accounts]);
   // 账号选择默认：只有一个账号时自动选中它（无需手动选）；多个账号时由用户手动选择，
@@ -163,6 +200,20 @@ export default function LivePage(props: PageProps) {
     () => roomCfgs.find((c) => sidOf(c) === selCfgId) || null,
     [roomCfgs, selCfgId],
   );
+
+  // ── AI 私信文案生效状态（P1-2：把「AI 未生效」显式暴露给用户）──────────
+  // 用「实际用于监听的那个账号」实时重判（后端按同一真源判定，不改任何配置）；
+  // 5s 轮询 —— 用户在设置页勾上「直播监听」作用域后，本页立刻显示「已生效」。
+  const aiDmAcct = activeAcct || selCfg?.acct || "";
+  const { data: aiDmState } = useQuery({
+    queryKey: ["live-ai-dm-state", aiDmAcct],
+    queryFn: async () => (await fetchLiveAiDmState(aiDmAcct, api)) as LiveAiDmState,
+    enabled: !!ready && !!aiDmAcct,
+    refetchInterval: 5000,
+  });
+  const aiDmActive = aiDmState?.status === "ok" && aiDmState?.active === true;
+  const aiDmUnknown = !aiDmAcct || aiDmState?.status === "unknown";
+  const aiDmReason = String(aiDmState?.reason || "尚未判定");
 
   // 任务容器回读：切换页面后回到直播监听页，用 /api/tasks/current 还原当前任务
   useEffect(() => {
@@ -757,6 +808,25 @@ export default function LivePage(props: PageProps) {
               </Button>
             }
           >
+            {/* P1-2：AI 私信文案是否真的生效 —— 未生效必须让用户看得见 */}
+            <div
+              data-od-id="live-ai-dm-state"
+              className={`flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[var(--radius-sm)]
+                          border px-2.5 py-1.5 text-[0.78rem] ${
+                            aiDmActive
+                              ? "border-[var(--color-border)] bg-[var(--color-surface)]"
+                              : "border-amber-500/40 bg-amber-500/10"
+                          }`}
+            >
+              <Tone tone={aiDmActive ? "ok" : aiDmUnknown ? "mute" : "warn"}>
+                {aiDmActive ? "AI 文案：已生效" : `AI 文案：${aiDmReason}`}
+              </Tone>
+              <span className="min-w-0 flex-1 break-all text-[var(--color-text-secondary)]">
+                {aiDmActive
+                  ? "私信文案由 AI 生成（生成失败时才回落词库）"
+                  : "当前仍发送下方词库里的固定文本。需要 AI 写文案：设置页 Agent 作用域勾选「直播监听」"}
+              </span>
+            </div>
             {selCfg ? (
               <div className="flex flex-col gap-3">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-3">

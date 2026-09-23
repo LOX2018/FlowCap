@@ -112,6 +112,173 @@ def _jaccard(a: str, b: str) -> float:
         return 0.0
     return len(sa & sb) / len(sa | sb)
 
+# ---------------------------------------------------------------------------
+# 语义级（可选的第 2 级漏斗）
+#
+# 2026-09-23 修补（用户反馈「命中率差」）：命中库原本只有「精确/包含 → 字符集
+# Jaccard」。中文同义句字符重合度天然低（「多少钱」vs「价格多少」字符 Jaccard
+# 极低），故接入 ai_reply 已有的 embedding 链路做语义相似度。
+#
+# ⚠️ 向后兼容红线（改动前先看这里）：
+#   1. 语义级**仅在 AI 配置 sem_enabled=True 时才可能是活的**；本项目当前实测
+#      配置为 sem_enabled=False ⇒ 默认路径与修复前**逐路径相同**，零行为变更。
+#   2. 语义级插在「①精确/包含」与「③Jaccard」之间 —— 它只会**新增**命中，
+#      不会取消任何既有命中（Jaccard 分支代码一字未改）。
+#   3. embedding 不可用（未启用/无 base_url/请求失败/模型不一致/无缓存且算不出）
+#      → 一律 return None，原样落 ③ Jaccard。
+#   4. 缓存命名空间独立于专业知识库：reply_kb_semv_* / reply_kb_sem_model，
+#      与 ai_reply 的 ai_reply_semv_* / ai_reply_sem_model 不互相污染。
+# ---------------------------------------------------------------------------
+
+_KV_SEM_PREFIX = "reply_kb_semv_"      # + item_id -> 向量 JSON
+_KV_SEM_MDL = "reply_kb_sem_model"     # 生成该批缓存时用的 embedding 模型
+
+
+def _cosine_reply(a, b) -> float:
+    """余弦相似度（本地实现，不依赖 numpy）。"""
+    try:
+        dot = na = nb = 0.0
+        for x, y in zip(a, b):
+            dot += x * y
+            na += x * x
+            nb += y * y
+        if na <= 0 or nb <= 0:
+            return 0.0
+        return dot / (na ** 0.5 * nb ** 0.5)
+    except Exception:
+        return 0.0
+
+
+def _sem_ready(cfg: dict) -> bool:
+    """语义级是否允许运行：必须 sem_enabled=True 且有 base_url。
+
+    默认配置 sem_enabled=False ⇒ 永远 False ⇒ find_match 行为零变化。
+    """
+    try:
+        return bool(cfg.get("sem_enabled")) and bool(cfg.get("sem_base_url"))
+    except Exception:
+        return False
+
+
+def _ai_get_config() -> dict:
+    """读 AI 配置（失败返回空 dict ⇒ 语义级自动失活）。"""
+    try:
+        from services.ai_reply import get_config
+        c = get_config()
+        return c if isinstance(c, dict) else {}
+    except Exception:
+        return {}
+
+
+def _item_vectors(items: list, cfg: dict, timeout: float = 8.0,
+                  force: bool = False) -> tuple:
+    """命中库条目的问句向量：优先吃缓存，缓存不全则现场算一批并写回。
+
+    返回 (model, {item_id: vec})；语义级未启用或 embedding 失败返回 (None, {})。
+    只向量化 question（照 ai_reply 实测结论：混入 answer 会稀释语义）。
+    """
+    if not items or not _sem_ready(cfg):
+        return None, {}
+    q_texts, keys = [], []
+    for it in items:
+        q = (it.get("question") or "").strip()
+        if q:
+            q_texts.append(q)
+            keys.append(it.get("id"))
+    if not q_texts:
+        return None, {}
+
+    # ① 缓存齐 → 零网络直返（不现场校验模型，见下方 rebuild 注释）
+    if not force:
+        cached = {}
+        for k in keys:
+            v = _kv_get(_KV_SEM_PREFIX + str(k), None)
+            if isinstance(v, list) and v:
+                cached[k] = v
+        if len(cached) == len(keys):
+            return (_kv_get(_KV_SEM_MDL, "") or ""), cached
+
+    # ② 缓存不全 → 走 ai_reply 的语义避障链算一批
+    try:
+        from services.ai_reply import _embed_failover
+        vecs, model = _embed_failover(q_texts, timeout=timeout)
+    except Exception:
+        return None, {}
+    if vecs is None or len(vecs) != len(q_texts):
+        return None, {}
+    out = {}
+    for k, v in zip(keys, vecs):
+        out[k] = v
+    try:
+        for k, v in out.items():
+            _kv_set(_KV_SEM_PREFIX + str(k), v)
+        if model:
+            _kv_set(_KV_SEM_MDL, model)
+    except Exception:
+        pass
+    return model, out
+
+
+def find_match_semantic_reply(text: str, items: list, cfg: dict,
+                              threshold: Optional[float] = None,
+                              timeout: float = 8.0) -> Optional[tuple]:
+    """语义级匹配：问句向量化 → 与条目向量逐条余弦 → 最高分 ≥ 阈值。
+
+    返回 (item, score)；语义级不可用或未过阈值返回 None（调用方落 Jaccard）。
+    """
+    if not text or not items or not _sem_ready(cfg):
+        return None
+    try:
+        from services.ai_reply import _embed_failover
+    except Exception:
+        return None
+    model, vectors = _item_vectors(items, cfg, timeout=timeout)
+    if not vectors:
+        return None
+    qvecs, used_model = _embed_failover([text], timeout=timeout)
+    if not qvecs:
+        return None
+    # 向量空间一致性：缓存是别的 embedding 模型生成的 → 余弦不可比，
+    # 直接跳过语义级（落 Jaccard），防跨模型混算出假命中。
+    if model and used_model and model != used_model:
+        return None
+    th = float(threshold if threshold is not None
+               else cfg.get("sem_threshold", 0.40))
+    qv = qvecs[0]
+    best, best_score = None, 0.0
+    for it in items:
+        v = vectors.get(it.get("id"))
+        if not v:
+            continue
+        s = _cosine_reply(qv, v)
+        if s > best_score:
+            best, best_score = it, s
+    if best is not None and best_score >= th:
+        return best, best_score
+    return None
+
+
+def rebuild_semantic_cache(cfg: Optional[dict] = None,
+                           timeout: float = 20.0) -> dict:
+    """为全部命中库条目**强制**重算向量缓存（换模型/批量导入后调用）。
+
+    返回 {ok, embedded, total, model}。语义级未启用或 embedding 失败 → ok=False
+    （此时 find_match 自动回落 Jaccard，不影响命中能力）。
+    """
+    cfg = cfg or _ai_get_config()
+    if not _sem_ready(cfg):
+        return {"ok": False, "embedded": 0, "total": 0,
+                "error": "语义级未启用（sem_enabled=False 或缺 sem_base_url）"}
+    items = [it for it in list_items() if it.get("enabled", True)]
+    if not items:
+        return {"ok": True, "embedded": 0, "total": 0}
+    model, vectors = _item_vectors(items, cfg, timeout=timeout, force=True)
+    if not vectors:
+        return {"ok": False, "embedded": 0, "total": len(items),
+                "error": "embedding 调用失败（检查语义链路配置/网络）"}
+    return {"ok": True, "embedded": len(vectors), "total": len(items),
+            "model": model or ""}
+
 
 def find_match(text: str, threshold: float = 0.85,
                account: str = "") -> Optional[str]:
@@ -132,7 +299,17 @@ def find_match(text: str, threshold: float = 0.85,
         if q and (q in qtext or qtext in q):
             _bump_hits(it.get("id"))
             return it.get("answer", "")
-    # ② Jaccard 词级重叠（中文按字符集）+ 时间衰减加权
+    # ② 语义级（可选；sem_enabled=True 才活，默认关闭 ⇒ 与修复前完全一致）
+    try:
+        _cfg = _ai_get_config()
+        sem_hit = find_match_semantic_reply(qtext, items, _cfg)
+        if sem_hit:
+            _it, _score = sem_hit
+            _bump_hits(_it.get("id"))
+            return _it.get("answer", "")
+    except Exception:
+        pass  # 语义级任何异常一律吞掉，绝不影响下面的 Jaccard 兜底
+    # ③ Jaccard 词级重叠（中文按字符集）+ 时间衰减加权（与修复前逐字相同）
     now = time.time()
     best, best_score = None, 0.0
     best_raw = 0.0
@@ -198,12 +375,87 @@ LEARN_PROMPT = """你是私信话术整理员。下面是从抖音私信成功�
 """
 
 
+def _is_valid_text(text: str, mtype) -> bool:
+    """消息是否能作为「文本」参与抽对（跳过系统提示/图片/你已确认）。
+
+    照搬修复前的过滤条件，一字未改：
+    - msg_type 实际取值：'text' / 'image' / '27'（系统引导）——只收 text
+    - "[...]" 前缀（[图片] 等）、"你已确认…" 系统提示跳过
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    is_text = (mtype in (1, 0, None, "text", "") or str(mtype) == "text")
+    if not is_text or t.startswith("[") or t.startswith("你已确认"):
+        return False
+    return True
+
+
+def _extract_pairs_legacy(msgs) -> list:
+    """修复前的抽对实现（留档，仅供验证脚本做前后对比，业务不调用）。
+
+    缺陷：一旦锚定了第一条 them，后面插进来多少条不相关的 them 都不管，
+    拿「其后第一条 me」就配成一对 ⟹ 「牛头不对马尾」的直接来源。
+    """
+    pairs = []
+    q = None
+    for role, text, mtype in msgs:
+        t = (text or "").strip()
+        is_text = (mtype in (1, 0, None, "text", "") or str(mtype) == "text")
+        if not is_text or t.startswith("[") or t.startswith("你已确认"):
+            continue
+        if role == "them" and q is None:
+            q = t
+        elif role == "me" and q:
+            pairs.append((q, t))
+            q = None
+    return pairs
+
+
+def _extract_pairs(msgs) -> list:
+    """2026-09-23 修补：抽对加「不得跨越另一条 them」约束。
+
+    规则：一条 them 与其配对的 me 之间，不得出现第二条 them；出现 ⟹ 前一条
+    them 未被回答（或已被后续提问覆盖），丢弃它并把锚点重新落到新的 them 上。
+    过滤条件（系统提示 / [图片] / 你已确认）与修复前完全一致。
+
+    入参：[(role, text, msg_type), ...]（按时间正序）
+    返回：[(question, answer), ...]
+    """
+    pairs = []
+    q = None
+    for role, text, mtype in msgs:
+        if not _is_valid_text(text, mtype):
+            continue
+        t = (text or "").strip()
+        if role == "them":
+            # 关键修复点：**无条件重新锚定**。只要中间又冒出一条 them，
+            # 前一条 them 与其后 me 不构成问答对 —— 旧实现这里写的是
+            # `if role == "them" and q is None`，才让隔着 5 条 them 的
+            # 两条消息被硬配成一对。
+            q = t
+            continue
+        if role == "me" and q:
+            pairs.append((q, t))
+            q = None
+    return pairs
+
+
 def learn_from_history(account: str = "", limit: int = 200) -> dict:
     """扫描 dm_messages 成功会话，提取问答对 → LLM 提纯 → 入库。
 
-    成功会话判定：会话内存在 role='me' 回复，且对方在回复后仍有跟进
-    （说明回复有效，未被拉黑/无视）。每会话取最早的 them 问句 + 紧随的 me 回复。
-    返回 {scanned, extracted, added}。
+    会话内按「them 不得跨越另一条 them」约束抽问答对（详见 `_extract_pairs`）。
+
+    返回 dict：
+        ok        是否真的完成了 LLM 提纯并写入
+        reason    失败原因码（ok=True 时为 ""）
+        scanned / extracted / added / purified
+
+    ⚠️ 2026-09-23 修补（用户反馈数据「牛头不对马尾」却看不出问题）：
+    旧的 LLM 提纯失败时是**静默降级** —— 直接把原样截断的原文
+    （question 截 60 字 / answer 截 200 字）写库，前端只看到 added>0，
+    根本不知道这批数据没经过 LLM。现改为：**提纯失败即不写库**，
+    并把原因码回给调用方（由 api 层透传给前端提示）。
     """
     conn = database.get_db()
     # 候选会话：既有 them 又有 me 的会话（有来往 = 有成功回复）
@@ -221,51 +473,69 @@ def learn_from_history(account: str = "", limit: int = 200) -> dict:
             "SELECT role, text, msg_type FROM dm_messages "
             "WHERE account=? AND conv_id=? AND TRIM(COALESCE(text,''))<>'' "
             "ORDER BY id ASC LIMIT 40", (acct, conv)).fetchall()
-        # 找第一个有效 them 文本（跳过系统/图片）及其后最近的 me 回复
-        q = None
-        for role, text, mtype in msgs:
-            t = (text or "").strip()
-            # msg_type 实际取值：'text' / 'image' / '27'（系统引导）——只收 text；
-            # 系统提示（"你已确认聊天…"）、[图片] 等前缀消息跳过
-            is_text = (mtype in (1, 0, None, "text", "") or str(mtype) == "text")
-            if not is_text or t.startswith("[") or t.startswith("你已确认"):
-                continue
-            if role == "them" and q is None:
-                q = t
-            elif role == "me" and q:
-                # 简化判定：有问有答即收录（有效性由人工在库里删改把关）
-                pairs.append((q, t))
-                q = None
+        pairs.extend(_extract_pairs(msgs))
         if len(pairs) >= 60:
             break
 
     if not pairs:
-        return {"scanned": len(rows), "extracted": 0, "added": 0}
+        return {"ok": True, "reason": "no_pairs", "scanned": len(rows),
+                "extracted": 0, "added": 0, "purified": False,
+                "message": "未提取到合规问答对（库未变更）"}
 
-    # LLM 提纯（失败则原样入库，人工可删）
+    # LLM 提纯：失败即中止，**不再**静默降级为原样截断入库
     learned: list[dict] = []
+    purified = False
+    reason = ""
     try:
         from services.ai_reply import AIClient, get_config
-        client = AIClient(get_config())
-        blob = "\n".join(f"客户: {q}\n我方: {a}" for q, a in pairs[:40])
-        raw = client.chat_failover(
-            blob, consumer_id="ai_main", user_id="kb-learn",
-            system_prompt=LEARN_PROMPT)
-        m = re.search(r"\[.*\]", raw or "", re.S)
-        if m:
-            learned = json.loads(m.group(0))
-    except Exception:
-        learned = []
-    if not learned:
-        learned = [{"question": q[:60], "answer": a[:200]} for q, a in pairs[:20]]
+        cfg = get_config()
+        if not cfg.get("base_url"):
+            reason = "llm_not_configured"      # 没配 base_url，压根没法提纯
+        else:
+            client = AIClient(cfg)
+            blob = "\n".join(f"客户: {q}\n我方: {a}" for q, a in pairs[:40])
+            raw = client.chat_failover(
+                blob, consumer_id="ai_main", user_id="kb-learn",
+                system_prompt=LEARN_PROMPT)
+            if not raw or not str(raw).strip():
+                # chat_failover 全链失败（坏 key / 断网 / HTTP 错 / 空回复
+                # / 思考泄漏被丢弃）都表现为返回 None
+                reason = "llm_unavailable"
+            else:
+                m = re.search(r"\[.*\]", str(raw), re.S)
+                if not m:
+                    reason = "llm_no_json"     # 回了文字但不是 JSON 数组
+                else:
+                    try:
+                        parsed = json.loads(m.group(0))
+                    except Exception:
+                        reason = "llm_json_bad"  # JSON 解析失败
+                    else:
+                        if isinstance(parsed, list) and parsed:
+                            learned = parsed
+                            purified = True
+                        else:
+                            reason = "llm_empty_array"
+    except Exception as e:
+        reason = "llm_exception:" + str(e)[:60]
+
+    if not purified:
+        return {"ok": False, "reason": reason or "llm_unavailable",
+                "scanned": len(rows), "extracted": len(pairs), "added": 0,
+                "purified": False,
+                "message": "LLM 提纯失败，本次未写入任何条目（库未变更）"}
 
     # 查重后入库（问法近似的不重复加）
     existing = {(it.get("question") or "").strip() for it in list_items()}
     added = 0
     for it in learned:
+        if not isinstance(it, dict):
+            continue
         q = (it.get("question") or "").strip()
         if q and q not in existing:
             add_item(q, (it.get("answer") or "").strip(), source="auto")
             existing.add(q)
             added += 1
-    return {"scanned": len(rows), "extracted": len(pairs), "added": added}
+    return {"ok": True, "reason": "", "scanned": len(rows),
+            "extracted": len(pairs), "added": added, "purified": True,
+            "message": f"LLM 提纯成功，新增 {added} 条"}

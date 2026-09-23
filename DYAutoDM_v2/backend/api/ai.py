@@ -864,6 +864,86 @@ async def freellm_models():
 # 运行控制 / 状态
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 直播监听「AI 私信文案是否生效」只读状态（2026-09-23，P1-2）
+#
+# 背景（用户反馈）：直播策略配了私信文本、也开了 AI 回复，但实际仍发固定文本。
+# 根因在判定层而不是调度顺序：core/auto_dm.py 的接线判定有三道否决
+# （enabled 假 / strict_level==kb_only / scopes 不含 live），任一道命中就
+# 静默 return None → 调度器回落词库，UI 完全无感。
+#
+# 修法（用户 2026-09-23 拍板：**保守默认值 + UI 强提示**）
+#   ① 不擅自放宽默认值 —— 新建 Agent 的 scopes 缺省仍是 ["dm"]，
+#      绝不把 AI 默认接到发送侧（那是风控风险）；
+#   ② 把「AI 未生效 + 具体原因」做成可查询状态，前端强提示由用户自己决定是否勾选。
+#
+# 端点：GET /api/ai/live_dm_state
+#   只读、不写任何配置、不改任何默认值（保守默认值口径的铁律）。
+#   判定与发送侧**同一真源** `AutoDM.evaluate_live_ai`（杜绝第二处判定漂移）。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/live_dm_state")
+async def live_dm_state(account: str = "", agent_id: str = ""):
+    """直播监听的「AI 私信文案」是否生效 + 未生效原因（只读查询）。
+
+    返回字段（前端直接展示，不做二次翻译）：
+        active       bool  是否生效
+        reason       str   「已生效」/「未生效（原因：xxx）」
+        reason_code  str   ok / no_account / ai_disabled / kb_only /
+                           scope_missing / error
+        account / agent_id / enabled / strict_level / scopes  判定依据
+        source       str   runtime（引擎已判定过）/ recomputed（按入参实时重判）
+        checked_at / checked_count / stale
+
+    语义：
+      - 不带 account → 回读**引擎最近一次真实接线判定**的快照（core.auto_dm
+        模块级状态）；一次都没判定过 → `status="unknown"`，前端显示「尚未判定」。
+      - 带 account → 用同一真源**实时重判**（不改任何配置），用于「改完 Agent
+        作用域立刻看结论」，不必重启引擎。
+      - 带 agent_id → 预演「若绑定该 Agent，直播 AI 文案是否会生效」
+        （resolve_config_for，与发送侧同款解析）。
+      - 绝不支持写操作；本端点不构成第二处判定逻辑。
+    """
+    try:
+        from core import auto_dm as _adm
+    except Exception as e:      # 引擎模块不可用时也要能回答（降级，不 500）
+        return {"ok": False, "status": "unknown", "active": False,
+                "reason": f"未生效（原因：判定不可用：{type(e).__name__}: {e}）",
+                "reason_code": "error", "source": "unavailable"}
+
+    acct = (account or "").strip()
+    aid = (agent_id or "").strip()
+
+    # 分支一：实时重判（按入参，用同一真源；不改任何配置/默认值）
+    if acct or aid:
+        try:
+            inst = _adm.AutoDM.__new__(_adm.AutoDM)     # 不跑 __init__（零副作用）
+            inst.target_acct = acct
+            inst._acct = None
+            v = inst.evaluate_live_ai(account=acct, agent_id=aid) or {}
+        except Exception as e:
+            return {"ok": False, "status": "unknown", "active": False,
+                    "reason": f"未生效（原因：判定异常：{type(e).__name__}: {e}）",
+                    "reason_code": "error", "source": "error"}
+        out = {k: v for k, v in v.items() if k != "cfg"}   # cfg 含密钥/prompt，不外泄
+        out.update({"ok": True, "status": "ok" if v.get("active") else "inactive",
+                    "source": "recomputed"})
+        return out
+
+    # 分支二：回读引擎最近一次真实判定（发送链路实际结论）
+    snap = dict(_adm.get_live_ai_state() or {})
+    if not snap.get("checked_count"):
+        return {"ok": True, "status": "unknown", "active": False,
+                "reason": "尚未判定（引擎本次启动后还没有做过 AI 接线判定）",
+                "reason_code": "", "source": "runtime", "checked_count": 0,
+                "checked_at": 0}
+    snap.update({"ok": True,
+                 "status": "ok" if snap.get("active") else "inactive",
+                 "source": "runtime"})
+    return snap
+
+
 @router.get("/status")
 async def get_status():
     st = dict(ai_reply.WORKER.status)

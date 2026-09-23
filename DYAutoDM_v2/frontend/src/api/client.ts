@@ -1692,6 +1692,20 @@ export const api = {
   async aiStatus(): Promise<Record<string, unknown>> {
     return request("/api/ai/status");
   },
+  // 2026-09-24（P1-2）：直播私信文案的 AI 生效状态（只读）。
+  // 必须走统一 request() 封装：直连 fetch 会丢 X-Member-Token 头，
+  // 被 v0.37.0 起的会员门禁拦成 401。
+  async aiLiveDmState(params?: { account?: string; agent_id?: string }): Promise<{
+    ok: boolean; active: boolean; reason?: string; reason_label?: string;
+    source?: string; account?: string; agent_id?: string;
+  }> {
+    const q = params?.account || params?.agent_id
+      ? `?${new URLSearchParams(
+          Object.entries(params).filter(([, v]) => v) as [string, string][]
+        ).toString()}`
+      : "";
+    return request(`/api/ai/live_dm_state${q}`);
+  },
   async aiStart(): Promise<{ ok: boolean; running: boolean }> {
     return request("/api/ai/start", { method: "POST" });
   },
