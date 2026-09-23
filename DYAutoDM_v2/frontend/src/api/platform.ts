@@ -123,6 +123,14 @@ export interface MixItem {
   item_total: number;
   play_vv: number;
   update_time: number;
+  /**
+   * 是否短剧合集（1=短剧，0=普通合集）。
+   *
+   * 🔴 P1-7（2026-09-23）：普通合集与短剧走**两个不同的上游接口**
+   * （`mix_id` vs `series_id`）。后端 `collection/series` 可自动回退，
+   * 但若上游返回了该字段，前端**透传**能让分流一次到位、少打一次无效请求。
+   */
+  is_serial_mix?: number | boolean;
 }
 
 export interface NoticeItem {
@@ -233,10 +241,27 @@ export const platformApi = {
     post<{ ok: boolean; items: MixItem[]; has_more: boolean; cursor: number | string | null }>(
       "/api/platform/collection/mixes", { account, count, cursor }),
 
-  /** 合集内的作品。对应 `/collection/series`。 */
-  collectionSeries: (account: string, series_id: string, count = 20, cursor = "0") =>
-    post<{ ok: boolean; items: AwemeItem[]; has_more: boolean }>(
-      "/api/platform/collection/series", { account, series_id, count, cursor }),
+  /**
+   * 合集内的作品。对应 `/collection/series`。
+   *
+   * 🔴 P1-7（2026-09-23）：`mix_id` 才是普通合集的正确参数 —— 短剧（`is_serial_mix=1`）
+   * 才用 `series_id`。旧实现把 `pickedMix.id`（= **mix_id**）塞进 `series_id` 字段，
+   * 后端又只调短剧接口 → 服务端 `status_code: 5 参数不合法` → 合集**恒空**。
+   * 现同时传 `mix_id`（语义正确）与 `series_id`（兼容旧后端把 id 放在该槽的形态），
+   * 并透传 `is_serial_mix`（上游有则一次分流到位；无则后端按 sc 回退）。
+   */
+  collectionSeries: (
+    account: string, mix_id: string, count = 20, cursor = "0",
+    isSerialMix?: number | boolean,
+  ) =>
+    post<{
+      ok: boolean; items: AwemeItem[]; has_more: boolean;
+      /** 实际命中的上游接口（mix=普通合集 / series=短剧），排障用 */
+      via?: "mix" | "series"; status_code?: number | null;
+    }>("/api/platform/collection/series", {
+      account, mix_id, series_id: mix_id, count, cursor,
+      is_serial_mix: isSerialMix === undefined ? null : (isSerialMix ? 1 : 0),
+    }),
 
   /** 粉丝 / 关注列表。对应 `/relation/list`（kind: follower | following）。 */
   relationList: (

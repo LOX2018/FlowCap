@@ -45,6 +45,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 
 from fastapi import APIRouter
@@ -60,6 +61,10 @@ _STRATEGY_KV = "live_room_configs"
 
 # 允许写入的房间字段白名单（**含身份字段** —— 这与 live_config._FIELDS 相反，
 # 因为身份本来就属于房间层；策略层才排身份）。
+# 🔴 本集合**是写入侧真源**（P4 死代码整改 2026-09-23）：`save_room` 落库前
+# 用 `{k: v for k, v in upd.items() if k in _FIELDS}` 过滤，因此从本集合里
+# 删掉某字段 = 该字段不再可写。此前它定义了却无人消费（删掉也不影响任何行为），
+# 是典型「看着像门禁、实际是装饰」的死代码。
 _FIELDS = {
     "id", "room_id", "live_url", "name", "strategy_id", "allow_desensitized",
 }
@@ -74,8 +79,54 @@ def _save_all(data: dict) -> None:
     set_kv_json(_KV_KEY, data)
 
 
-def new_room_id() -> str:
-    return f"lr_{int(time.time() * 1000)}"
+def _strategy_exists(sid: str) -> bool:
+    """引用完整性（P2-8）：策略库里是否真有这个键。空串 = 「未绑定」，视为合法。"""
+    s = str(sid or "").strip()
+    if not s:
+        return True
+    try:
+        cfgs = get_kv_json(_STRATEGY_KV, {}) or {}
+    except Exception:  # noqa: BLE001 —— 读策略库失败不阻断写房间（仅跳过校验）
+        return True
+    return isinstance(cfgs, dict) and s in cfgs
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-23 修补（P0-2a，实测复现）：id 用裸 epoch 毫秒 → 同毫秒静默覆盖
+# ---------------------------------------------------------------------------
+# 旧实现 `f"lr_{int(time.time()*1000)}"`。同一毫秒内新建两个房间（或迁移多条
+# 旧记录）→ 两个 id 完全相同 → 保存路径是 upsert（`data[key] = upd`）→
+# **静默覆盖**，用户丢数据。实测：冻结时钟下两房 → 同 id `lr_1790160000123`
+# → list_rooms 只剩 1 条；迁移 5 条旧房 → 响应谎报 migrated_rooms=5 而库内只剩 1。
+#
+# 修法（保持 `lr_<ms>` / `lc_<ms>` 形态不变，老数据零迁移）：
+#   ① 进程内加锁 + 单调递增：`cand = max(now_ms, last+1)`（同毫秒第二次起 +1）；
+#   ② 落库前再对**目标 dict 现有键**查重，命中则继续 +1
+#      （覆盖「别的 sidecar 同毫秒刚写进来」的跨进程场景）。
+_id_lock = threading.Lock()
+_last_id_ms = 0
+
+
+def _next_id_ms() -> int:
+    """单调递增的毫秒级 id 尾巴（进程内加锁；跨进程由调用方查重兜底）。"""
+    global _last_id_ms
+    now_ms = int(time.time() * 1000)
+    with _id_lock:
+        cand = max(now_ms, _last_id_ms + 1)
+        _last_id_ms = cand
+        return cand
+
+
+def new_room_id(existing: dict | None = None) -> str:
+    """生成房间 id（形如 ``lr_<epoch_ms>``）；**保证不与 existing 的键碰撞**。
+
+    existing：目标 kv 的当前 dict（用于跨进程/跨调用查重）。省略则只保证
+    进程内单调递增。
+    """
+    while True:
+        rid = f"lr_{_next_id_ms()}"
+        if not existing or rid not in existing:
+            return rid
 
 
 def _normalize_room(rec: dict, key: str) -> dict:
@@ -197,7 +248,12 @@ def migrate_from_room_configs(dry_run: bool = True) -> dict:
         body = dict(cfgs.get(key) or {})
         sid = ""
         if p["has_params"]:
-            sid = f"lc_{int(time.time() * 1000)}"
+            # P0-2a：承接策略 id 同样要单调递增 + 查重（同毫秒迁移多条会撞）
+            from api.live_config import new_strategy_id  # 懒导入：避免与 live_config 循环
+            while True:
+                sid = new_strategy_id(cfgs)
+                if sid not in cfgs:
+                    break
             strat = {"id": sid, "updated_at": int(time.time())}
             if body.get("name"):
                 strat["name"] = str(body.get("name"))
@@ -209,7 +265,7 @@ def migrate_from_room_configs(dry_run: bool = True) -> dict:
                     strat[k] = body[k]
             cfgs[sid] = strat
             created_strategies.append(sid)
-        new_key = new_room_id()
+        new_key = new_room_id(rooms)
         rooms[new_key] = {
             "id": new_key,
             "room_id": p["room_id"],
@@ -278,28 +334,62 @@ async def get_room(rid: str) -> dict:
 
 @router.post("")
 async def save_room(body: RoomBody) -> dict:
-    """新建 / 更新一条房间登记（按 id upsert；id 为空则生成新 id）。"""
+    """新建 / 更新一条房间登记（按 id upsert；id 为空则生成新 id）。
+
+    ## 字段显式清空语义（P2-7 修补，2026-09-23 实测复现）
+
+    旧写法 `str(body.x or "").strip() or str(old.get("x") or "")` 让**显式传来的
+    空串**被当成「未提交」→ 回落旧值 ⇒ 解绑（把 strategy_id 清空）**永远失败**：
+    实测置空后仍是 `lc_shared`，UI「未绑定」改不回去。
+
+    现按字段分两类，判据 = 「本次请求到底带没带这个字段」（pydantic
+    `model_fields_set`；`Field(default=None)` 的布尔开关同理由 None 承载）：
+
+      - **可清空**：`strategy_id` / `name` / `live_url` —— 带了这个字段就采信
+        （含空串 = 显式清空）；没带才回落旧值。
+      - **不可清空**：`room_id`（身份锚点，清掉就没有房间号了）—— 空串仍回落旧值，
+        否则会破坏「房间必须有身份」的前置契约。
+    """
     rid_key = str(body.id or "").strip()
     data = _load_all()
-    key = rid_key or new_room_id()
+    key = rid_key or new_room_id(data)
     old = data.get(key) or {}
+    sent = body.model_fields_set
 
-    room_id = str(body.room_id or "").strip() or str(old.get("room_id") or "")
-    if not room_id and not str(body.live_url or "").strip():
+    def pick(field: str, *, clearable: bool) -> str:
+        """按「是否随请求提交」决定：采信本次值 / 回落旧值。"""
+        if field in sent:
+            cur = str(getattr(body, field) or "").strip()
+            if cur or clearable:
+                return cur
+        return str(old.get(field) or "").strip()
+
+    room_id = pick("room_id", clearable=False)
+    live_url = pick("live_url", clearable=True)
+    if not room_id and not live_url:
         return {"ok": False, "error": "请填写直播间链接或房间号（失焦自动解析）"}
 
+    strategy_id = pick("strategy_id", clearable=True)
+    # P2-8：写入侧也要维护引用完整性（此前只单向维护：删策略时解绑房间）
+    if strategy_id and not _strategy_exists(strategy_id):
+        return {"ok": False, "error": f"直播策略 {strategy_id} 不存在（禁止写入悬空引用）"}
+
     upd = {
-        "id": key,
         "room_id": room_id,
-        "live_url": str(body.live_url or "").strip() or str(old.get("live_url") or ""),
-        "name": str(body.name or "").strip() or str(old.get("name") or ""),
-        "strategy_id": str(body.strategy_id or "").strip() or str(old.get("strategy_id") or ""),
+        "live_url": live_url,
+        "name": pick("name", clearable=True),
+        "strategy_id": strategy_id,
         "allow_desensitized": bool(
             old.get("allow_desensitized") if body.allow_desensitized is None
             else body.allow_desensitized
         ),
-        "updated_at": int(time.time()),
     }
+    # P4：白名单真消费 —— 客户端可控字段越界一律丢弃（此前 _FIELDS 无人读）。
+    # `id` / `updated_at` 是**服务端托管**字段（id 以键名为准、updated_at 由时钟
+    # 生成），不受客户端白名单管辖，必须始终写入（否则 list_rooms 的排序失效）。
+    upd = {k: v for k, v in upd.items() if k in _FIELDS}
+    upd["id"] = key
+    upd["updated_at"] = int(time.time())
     data[key] = upd
     _save_all(data)
     logger.info(f"[live-rooms] 已保存房间 {key} room_id={room_id} strategy={upd['strategy_id']}")

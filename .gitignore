@@ -60,6 +60,27 @@ _commit_msg.txt
 # V1 (DY_Spider_base) 已彻底清理废弃，永不重新跟踪
 DY_Spider_base/
 
+# ── 2026-09-23 F-6 修补（CI 卫生：源码树零构建产物 / 零一次性脚本）─────
+# 实测：`git check-ignore` 对根目录 `_fix_visibility_test.py` 无输出
+# （= 未被忽略）⇒ `git add .` 会把一次性调试脚本提交进仓库。
+# `_*.py` 的「一次性脚本」约定此前只写在 `DYAutoDM_v2/.gitignore`（其作用域
+# **不覆盖仓库根**），故根级新脚本一直裸奔。此处补根级同名规则。
+# 注：`_export_git.py` / `_push_user_profile.py` / `_jscheck.js` 已入库，
+# gitignore 不影响已跟踪文件 ⇒ 三者照旧入库，本规则只拦**新产生**的脚本。
+/_*.py
+
+# ── 2026-09-23 F-7 修补（坏 gitlink → 本地对照库改为一律不入库）─────────
+# `_ext_repos/DouYin_Spider_git` 曾被误以 gitlink 形式写入索引
+# （`git ls-tree HEAD` → `160000 commit 1712dad...`），但仓库**无 .gitmodules**
+# ⇒ `git submodule status` 报 `fatal: no submodule mapping found`（rc=128）、
+# 他人 clone 得到空目录、且 open-code-review 每轮报
+# `cannot read file _ext_repos/DouYin_Spider_git at ref HEAD: exit status 128`
+# 污染统计。
+# 处置（择②）：它只是**本地对照参考库**（同目录下另有 DouYin_Spider-master /
+# DouYin_Spider_latest / douyin-jiliu-src 三个对照库，均未按 submodule 管理），
+# 不是本项目依赖 ⇒ **从索引移除 + 忽略**，不新建 .gitmodules。
+_ext_repos/DouYin_Spider_git/
+
 # 2026-08-31 追加：运行数据库（含真实私信/昵称，绝不入库）
 data/*.db
 data/*.db-shm

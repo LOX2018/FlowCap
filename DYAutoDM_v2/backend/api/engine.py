@@ -12,8 +12,34 @@
 | `acct` 为空且有**多个**任务在跑 | **409**（歧义必须显式失败，不猜账号） |
 | 同账号重复 `/start` | **409**「该账号已在监听」（**不再是静默 `already:true`**） |
 
-⚠️ 旧实现的静默假成功（实测：张老师 RUNNING 时对小助理 `/start` 返回
-`{"ok":true,"already":true}`，实际什么都没发生）违反项目规则「拿不到资源必须显式失败」。
+## 请求契约（唯一真源，2026-09-23 定稿）
+
+| 端点 | 账号维度 | 说明 |
+|---|---|---|
+| `POST /start` | **body**（`TaskConfig.acct`） | start 本来就有 body（任务配置），账号是配置的一部分 |
+| `POST /pause`\|`/resume`\|`/stop`\|`/stop-soft` | **query `?acct=<账号>`** | 这四个端点**没有** body，账号只能走 query |
+
+🔴 **Canonical Contract Law（只允许一个契约）**：四个控制端点的账号**只认 query `acct`**，
+不接受 JSON body（body 里的 `account`/`acct` 一律被忽略）。前端 `client.ts` 的
+`stopEngine/stopSoftEngine/pauseEngine/resumeEngine` 必须构造 `?acct=`。
+
+### 为什么选 query 而不是 body 模型（取舍留痕）
+
+1. **ADR-002 §5.3 + 既有回归测试已按 `acct` 关键字参数定稿**：
+   `test_engine_multi_account.py` 直接以 `pause_engine(req, acct="")` / `stop_engine(req, acct="张老师")`
+   调用端点。选 query 时端点签名仍是 `(request, acct: str = Query(""))`，
+   这些既有回归测试**逐字不变**即继续有效（选 body 模型会全部改写，且丢掉一层既有防线）。
+2. **语义**：这四个端点**没有资源 payload**（只是「对某个账号的引擎下命令」），
+   账号是**寻址维度**而非请求体内容 —— 与同仓 `?account=` 系列（conversations/linkmic）一致。
+3. **避免「空 body 也必须能工作」的坑**：body 模型会引入「客户端不发 body / 发 `{}`」
+   的兼容分支，而 query 在「不发 acct」时天然得到 `""`（= 单任务回落/歧义 409 语义）。
+
+⚠️ **直接 Python 调用（非 HTTP）时的已知陷阱（本次 P1-2 的真因）**：
+`acct: str = Query("")` 的默认值是 **FastAPI FieldInfo 对象**而不是 `""`。
+若像旧 `notify._execute` 那样 `stop_engine(_fake_request(adm))` 不带 acct 直接调函数，
+`acct` 收到的就是这个 FieldInfo，`str()` 后变成 `"annotation=str required=False … alias=acct"`，
+`_resolve_adm` 于是拿它当账号去查 → 404（实测报文）。
+⇒ **所有内部直调必须显式传 `acct=`**（见 `_resolve_adm` 的防御性兜底 + 契约测试）。
 """
 import asyncio
 
@@ -33,7 +59,34 @@ def _registry(request: Request) -> EngineRegistry | None:
     return getattr(request.app.state, "engines", None)
 
 
-def _resolve_adm(request: Request, acct: str | None, *, for_start: bool = False,
+def _norm_acct(acct: object) -> str:
+    """入参 → 账号字符串（唯一归一入口）。
+
+    防御（2026-09-23，P1-2 实测根因）：端点签名 `acct: str = Query("")` 在被
+    **直接 Python 调用**且未显式传 `acct=` 时，默认值是 FastAPI 的 **FieldInfo**
+    对象而不是 `""`。裸 `str()` 会得到
+    `"annotation=str required=False … alias=acct"` 并被当作账号去查 → 404。
+    故这里只接受真正的 `str`，其余（FieldInfo/None/其它）一律视为「未指定」。
+    """
+    return acct.strip() if isinstance(acct, str) else ""
+
+
+def _key_of(reg: EngineRegistry | None, adm: AutoDM, acct: str | None) -> str:
+    """锁键 = 目标实例在 registry 里的键（与 ``_resolve_adm`` 的返回值**同源**）。
+
+    🔴 2026-09-23 修复（P1-1 附 high-1）：旧写法 `key = cfg.acct or ANONYMOUS_KEY`
+    在 acct 为空时按「匿名」加锁，而 `_resolve_adm` 可能返回「唯一 busy 的那个
+    账号实例」→ 锁与实例分叉，并发 /start 可同时通过 check-then-act。
+    现按实例反查键：锁保护的实例 == 操作的实例。
+    """
+    if reg is not None:
+        for k, e in reg.items():
+            if e is adm:
+                return k
+    return _norm_acct(acct) or ANONYMOUS_KEY
+
+
+def _resolve_adm(request: Request, acct: str | None, *,
                  create: bool = True) -> AutoDM:
     """按账号取引擎实例。
 
@@ -44,7 +97,7 @@ def _resolve_adm(request: Request, acct: str | None, *, for_start: bool = False,
     reg = _registry(request)
     if reg is None:                       # 未挂 registry（旧调用方/测试替身）
         return request.app.state.adm
-    a = str(acct or "").strip()
+    a = _norm_acct(acct)
     if a:
         eng = reg.get(a) if create else reg.get_or_none(a)
         if eng is None:
@@ -54,8 +107,13 @@ def _resolve_adm(request: Request, acct: str | None, *, for_start: bool = False,
         return eng
     busy = reg.busy_keys()
     if len(busy) == 1:
-        return reg.get(busy[0]) if create else (reg.get_or_none(busy[0])
-                                               or request.app.state.adm)
+        # 单任务回落只作用于「那个实例」本身；取不到就显式 404，
+        # **绝不**回落 `app.state.adm`（它是「最近启动」的兼容别名，并发下可能是
+        # 另一个账号 → 会停错任务，违反 ADR-002 §5.3「不猜账号」）。
+        eng = reg.get(busy[0]) if create else reg.get_or_none(busy[0])
+        if eng is None:
+            raise HTTPException(404, "当前没有进行中的直播任务")
+        return eng
     if len(busy) > 1:
         raise HTTPException(
             409,
@@ -76,10 +134,14 @@ def _account_of(adm: AutoDM) -> str:
 
 
 @router.post("/start")
-async def start_engine(request: Request, config: TaskConfig):
+async def start_engine(request: Request, config: TaskConfig, acct: str = Query("")):
     """启动自动私信引擎（**按账号**）。
 
     优化（#51）：改为后台任务立即返回，消除前端 2.4s 同步等待。
+
+    账号维度：规范契约是 **body**（`TaskConfig.acct`，因为 start 本来就有任务配置）。
+    为与四个控制端点**同一个契约法**兼容，额外接受 `?acct=` 作为**兜底别名**：
+    仅当 body 未给 `acct` 且 query 给了 `acct` 时采用 query（query 不覆盖已显式给出的 body 值）。
     """
     # 把前端别名归一到规范字段
     cfg = config.resolved()
@@ -88,9 +150,17 @@ async def start_engine(request: Request, config: TaskConfig):
         logger.warning(f"[ENG-010] " + "[engine] 启动被拒：live_url 为空")
         raise HTTPException(400, "live_url 不能为空（需提供直播间链接或房间号）")
 
+    # 账号：body 优先，query 兜底（见 docstring）
+    _q_acct = _norm_acct(acct)
+    if _q_acct and not str(cfg.acct or "").strip():
+        cfg.acct = _q_acct
+
     reg = _registry(request)
     adm: AutoDM = _resolve_adm(request, cfg.acct)
-    key = str(cfg.acct or "").strip() or ANONYMOUS_KEY
+    # 🔴 锁键必须与 `_resolve_adm` 返回的**实例**同源（high-1 修复）：
+    # 旧写法 `cfg.acct or ANONYMOUS_KEY` 在 acct 空时按匿名加锁，而实际操作的
+    # 可能是「唯一 busy 的账号实例」→ 锁与实例分叉，check-then-act 竞态失守。
+    key = _key_of(reg, adm, cfg.acct)
 
     # 已在运行/启动中 → **显式 409**（ADR-002 §5.3；旧实现静默 ok:true = 假成功）
     #
@@ -152,6 +222,12 @@ async def start_engine(request: Request, config: TaskConfig):
 
 @router.post("/pause")
 async def pause_engine(request: Request, acct: str = Query("")):
+    """暂停发送（监听仍在）。
+
+    账号契约（唯一真源）：**query `?acct=<账号>`**（本端点无 body）。
+    不传 = 单任务回落 / 多任务 409（ADR-002 §5.3）。
+    内部直调必须显式 `acct=`；直接调用不传时默认值是 FieldInfo，由 `_resolve_adm` 兜底归一。
+    """
     adm: AutoDM = _resolve_adm(request, acct, create=False)
     logger.info(f"[engine] 引擎暂停 acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.pause()
@@ -160,6 +236,7 @@ async def pause_engine(request: Request, acct: str = Query("")):
 
 @router.post("/resume")
 async def resume_engine(request: Request, acct: str = Query("")):
+    """恢复发送。账号契约见 `pause_engine`（query `?acct=`）。"""
     adm: AutoDM = _resolve_adm(request, acct, create=False)
     logger.info(f"[engine] 引擎恢复 acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.resume()
@@ -168,7 +245,11 @@ async def resume_engine(request: Request, acct: str = Query("")):
 
 @router.post("/stop")
 async def stop_engine(request: Request, acct: str = Query("")):
-    """硬停止：立即清队列"""
+    """硬停止：立即清队列。账号契约见 `pause_engine`（query `?acct=`）。
+
+    ⚠️ 内部直调 `stop_engine(req)` **必须**写成 `stop_engine(req, acct=...)`；
+    漏传会让 `acct` 落到 FieldInfo 默认值（P1-2 实测 404 的真因）。
+    """
     adm: AutoDM = _resolve_adm(request, acct, create=False)
     logger.warning(f"[ENG-012] " + f"[engine] 引擎硬停止（清空队列）acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.stop(hard=True)
@@ -177,7 +258,7 @@ async def stop_engine(request: Request, acct: str = Query("")):
 
 @router.post("/stop-soft")
 async def stop_soft(request: Request, acct: str = Query("")):
-    """软停止：停止监听，存量队列发完"""
+    """软停止：停止监听，存量队列发完。账号契约见 `pause_engine`（query `?acct=`）。"""
     adm: AutoDM = _resolve_adm(request, acct, create=False)
     logger.info(f"[engine] 引擎软停止（存量队列发完）acct={_account_of(adm) or ANONYMOUS_KEY}")
     await adm.stop(hard=False)

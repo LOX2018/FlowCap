@@ -118,9 +118,8 @@ class TestInitPacketReplay(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if "init_packet" not in loader.list_fixtures():
-            raise unittest.SkipTest("尚未录制 init_packet 样本")
-        cls.entry = loader.describe("init_packet")
+        # P3-1：夹具缺失 = hard fail（不再 SkipTest 静默通过）
+        cls.entry = loader.require_fixture("init_packet")
         cls.raw = loader.load_fixture("init_packet")
         cls.uid = cls.entry.get("account_uid") or _self_uid(cls.raw)
         cls.got = _measure(cls.raw, cls.uid)
@@ -163,11 +162,9 @@ class TestSensitivity(unittest.TestCase):
     """证明断言是敏感的（不是恒真装饰）——必须真跑一次。"""
 
     def test_truncated_input_changes_reading(self):
-        if "init_packet" not in loader.list_fixtures():
-            self.skipTest("尚未录制 init_packet 样本")
+        # 夹具缺失已在 setUpClass hard fail；此处 expected 缺失也当失败（判据无来源）
         expected = loader.describe("init_packet").get("expected") or {}
-        if not expected:
-            self.skipTest("清单无 expected 块")
+        self.assertTrue(expected, "清单缺 expected 块 ⇒ 判据无来源（hard fail）")
         raw = loader.load_fixture("init_packet")
         truncated = raw[:512]
         got = _measure(truncated, _self_uid(truncated))

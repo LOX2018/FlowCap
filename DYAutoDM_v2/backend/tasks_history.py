@@ -7,9 +7,46 @@
 """
 import json
 import os
+import sqlite3
+import threading
 import time
 
 from loguru import logger
+
+# ---------------------------------------------------------------------------
+# 2026-09-23 修补（P0-2b，实测复现）：任务主键同毫秒碰撞 → 静默丢行
+# ---------------------------------------------------------------------------
+# 旧实现 `tid = int(time.time()*1000)` 直接当 tasks 表**主键**。多账号在同一
+# 毫秒同时 start_task（多账号并发是常态）→ 两个 tid 完全相同 → INSERT 抛
+# `UNIQUE constraint failed: tasks.id`；而 core/auto_dm.py 的调用点是
+# `except Exception → logger.warning("[ENG-003] 记录历史任务失败")`，异常被吞
+# → 任务中心**静默少一行**，用户以为任务没跑（实测：冻结时钟连开两任务，
+# 表内只剩 1 行）。
+#
+# 修法（保持 int 主键不变，零迁移）：
+#   ① 进程内加锁 + 单调递增：candidate = max(now_ms, last+1)，同毫秒第二次起 +1；
+#   ② 跨进程兜底（多 sidecar 并发写同一 db 文件）：取库内 MAX(id) 再抬一档；
+#   ③ INSERT 仍可能因极端竞争失败 → 捕获 IntegrityError 后重算重试一次。
+_task_id_lock = threading.Lock()
+_last_task_id = 0
+
+
+def _next_task_id(conn) -> int:
+    """分配一个单调递增、且大于库内现有最大 id 的任务主键（int）。"""
+    global _last_task_id
+    now_ms = int(time.time() * 1000)
+    with _task_id_lock:
+        cand = max(now_ms, _last_task_id + 1)
+        try:
+            # 跨进程兜底：本进程内存看不见别的 sidecar 刚写进去的 id
+            row = conn.execute("SELECT MAX(id) AS m FROM tasks").fetchone()
+            db_max = int(row["m"]) if row and row["m"] is not None else 0
+        except Exception:  # noqa: BLE001 —— 兜底查询失败不阻断主流程
+            db_max = 0
+        if cand <= db_max:
+            cand = db_max + 1
+        _last_task_id = cand
+        return cand
 
 
 def start_task(acct: str, live_id: str, config: dict | None = None, records: list | None = None) -> int:
@@ -17,21 +54,36 @@ def start_task(acct: str, live_id: str, config: dict | None = None, records: lis
 
     同时写入当前进程 pid，用于区分「本进程正在运行」与「上次进程退出未收尾
     残留的悬空 running」——后者由 fix_stuck_tasks 按 pid 比对兜底修正。
+
+    id 生成见 `_next_task_id`（P0-2b：同毫秒不再碰撞、不再静默丢行）。
     """
     from database import get_db
-    tid = int(time.time() * 1000)
     conn = get_db()
-    conn.execute(
-        "INSERT INTO tasks(id,acct,live_id,start_ts,end_ts,status,result_count,"
-        "config,records,created_at,pid) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        (tid, acct or "", live_id or "", time.strftime("%Y-%m-%d %H:%M:%S"),
-         "", "running", len(records or []),
-         json.dumps(config or {}, ensure_ascii=False),
-         json.dumps(records or [], ensure_ascii=False),
-         tid / 1000.0, os.getpid()),
-    )
-    conn.commit()
-    logger.info(f"[history] 记录历史任务: 账号={acct} live={live_id} id={tid} pid={os.getpid()}")
+    acct_s = acct or ""
+    live_s = live_id or ""
+    start_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    result_count = len(records or [])
+    cfg_json = json.dumps(config or {}, ensure_ascii=False)
+    rec_json = json.dumps(records or [], ensure_ascii=False)
+    pid = os.getpid()
+    tid = 0
+    for attempt in (0, 1):
+        tid = _next_task_id(conn)
+        try:
+            conn.execute(
+                "INSERT INTO tasks(id,acct,live_id,start_ts,end_ts,status,result_count,"
+                "config,records,created_at,pid) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (tid, acct_s, live_s, start_ts, "", "running", result_count,
+                 cfg_json, rec_json, tid / 1000.0, pid),
+            )
+            conn.commit()
+            break
+        except sqlite3.IntegrityError:
+            # 极端并发下仍撞上（例如另一 sidecar 刚插了同一 id）→ 重算再试一次
+            if attempt:
+                raise
+            logger.warning(f"[history] 任务主键 {tid} 冲突，重算后重试")
+    logger.info(f"[history] 记录历史任务: 账号={acct} live={live_id} id={tid} pid={pid}")
     return tid
 
 

@@ -235,13 +235,38 @@ class CommentsMixin:
 
     @staticmethod
     def publish_comment(auth, aweme_id: str, content: str = '', reply_id="", **kwargs):
-        """
-        发布评论
-        :param auth: DouyinAuth object.
-        :param aweme_id: 视频ID.
-        :param content: 评论内容.
-        :param reply_id: 回复评论ID.
-        :return: JSON.
+        """发布作品评论 / 回复（`/aweme/v1/web/comment/publish`，POST form）。
+
+        ## 对齐上游（2026-09-23，T2/A2）
+
+        逐字段对齐上游 `cv-cat/DouYin_Spider` commit `df52357`
+        (`fix: align work comment publishing`, 2026-09-20 01:33)：
+
+        - `text_extra`：由裸 list `[]` 改为 **`JSON.stringify` 语义**（字符串）。
+          本项目 `requests.post(..., data=data)` 走
+          `urllib.parse.urlencode`，**空 list 会被整键丢弃**（[实测]），而
+          `params.with_a_bogus(data)` 里的 `splice_url` 会把它拼成
+          `text_extra=%5B%5D` ⇒ **签名输入 ≠ 上线字节**，是确定性缺陷。
+          上游做法：`kwargs.get('text_extra', [])`，已是 str 则原样，否则
+          `json.dumps(..., ensure_ascii=False, separators=(',', ':'))`。
+          不传时默认 `[]` → `json.dumps` 得 `'[]'`，**与改造前语义等价**（零回归）。
+        - `comment_send_celltime` / `comment_video_celltime`：**去随机、默认 0**。
+          旧版 `random.randint(1000, 20000)` 是旧脚本遗留，服务端会把评论当成
+          「播放器内操作」→ 偶发业务失败（上游注释原文）。
+        - 新增 `reply_to_reply_id`（二级回复的回复对象）。
+        - 新增 `one_level_comment_rank`(默认 -1) / `paste_edit_method`
+          (默认 `'non_paste'`)，与上游逐字一致。
+
+        ## 明确**不**照抄的上游半句（本项目能力缺口，硬约束）
+
+        上游 `df52357` 同时新增了 `ticket_matches_session()` 与 `dtrait_*`
+        两处**硬门禁**（不满足即 `raise RuntimeError`）。本项目 `DouyinAuth`
+        这两组能力**均不存在**（[实测] `hasattr` 全 False，`.env.enc` 亦无
+        `DY_DTRAIT_*` 键）⇒ 照抄会让本方法**每次必抛**（静态可证）。
+        本项目既定定调是「能力缺失时降级」（见 `builder/header.py:34-38`），
+        故此处维持**不硬抛**：若将来移植该门禁，须先补 auth 能力来源。
+
+        ⚠️ 写接口（触风控红线）：本项目当前无生产调用方；真实投递验证 pending。
         """
         api = "/aweme/v1/web/comment/publish"
         headers = HeaderBuilder().build(HeaderType.FORM)
@@ -283,13 +308,26 @@ class CommentsMixin:
         params.add_param("msToken", auth.msToken)
         data = {
             "aweme_id": aweme_id,
-            "comment_send_celltime": random.randint(1000, 20000),
-            "comment_video_celltime": random.randint(1000, 20000),
         }
         if reply_id != "":
             data["reply_id"] = reply_id
+        reply_to_reply_id = kwargs.get('reply_to_reply_id', '')
+        if reply_to_reply_id != "":
+            data["reply_to_reply_id"] = reply_to_reply_id
+        # 上游 df52357：PC Web 发送函数默认传 0；随机值会让服务端把评论当成
+        # 播放器内操作，导致发布接口偶发业务失败。
+        data["comment_send_celltime"] = kwargs.get('comment_send_celltime', 0)
+        data["comment_video_celltime"] = kwargs.get('comment_video_celltime', 0)
+        data["one_level_comment_rank"] = kwargs.get('one_level_comment_rank', -1)
+        data["paste_edit_method"] = kwargs.get('paste_edit_method', "non_paste")
         data["text"] = content
-        data["text_extra"] = []
+        # 上游 df52357：前端发送 JSON.stringify(textExtra)。不能把 list 直接交给
+        # requests —— data= 走 urlencode 时空 list 会被整键丢弃，非空 list 的 dict
+        # 会被拆成子项，两种都与参与 a_bogus 的 body 对不上。
+        text_extra = kwargs.get('text_extra', [])
+        data["text_extra"] = (text_extra if isinstance(text_extra, str) else
+                              json.dumps(text_extra, ensure_ascii=False,
+                                         separators=(',', ':')))
         params.with_a_bogus(data)
         params.add_param("verifyFp", auth.cookie['s_v_web_id'])
         params.add_param("fp", auth.cookie['s_v_web_id'])

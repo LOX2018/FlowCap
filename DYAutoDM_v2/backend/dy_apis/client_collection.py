@@ -119,6 +119,11 @@ class CollectionMixin:
 
         Args:
             mix_id: 合集 id（来自 `get_mix_list_collection` 的 `mix_infos[].mix_id`）
+
+        🔴 **接线状态（2026-09-23，P1-7）**：本方法 2026-09-21 已实现，但当次**只加了
+        方法没接路由** —— `api/platform.py:collection_series` 仍只调 `get_series_aweme`
+        （文档声称的「已分流」是漂移）。现已真接线（`collection_series` 优先走本方法，
+        `status_code != 0` 才回退短剧接口）。
         """
         api = "/aweme/v1/web/mix/aweme/"
         headers = HeaderBuilder().build(HeaderType.GET)
@@ -154,8 +159,13 @@ class CollectionMixin:
 
         ⚠️ 2026-09-21 澄清：本接口**只适用于短剧**（`is_serial_mix = 1`）。
         普通合集请用 `get_mix_aweme`（参数 `mix_id`）—— 传错会得到
-        `status_code: 5 / 参数不合法`。前端 `/collection/series` 端点已按
-        `is_serial_mix` 分流到两个接口。
+        `status_code: 5 / 参数不合法`。
+
+        ⚠️ **文档漂移修正（2026-09-23，P1-7）**：本 docstring 原写
+        「前端 `/collection/series` 端点已按 `is_serial_mix` 分流到两个接口」——
+        那是**当时并不成立**的声明：`api/platform.py:collection_series` 实际只调
+        本方法（用前端传来的 `mix_id` 打 `series_id`），分流从未落地。
+        现已真的落地（见 `collection_series` 的 `_try`/回退逻辑），此句方可成立。
         """
         api = "/aweme/v1/web/series/aweme/"
         headers = HeaderBuilder().build(HeaderType.GET)

@@ -53,6 +53,10 @@ class TestSaveRoom(unittest.TestCase):
     def test_save_and_list_fields_complete(self):
         import asyncio
 
+        # P2-8（2026-09-23）：写入侧现在校验引用完整性，故先建被引用的策略。
+        # 修前本用例直接用不存在的 "lc_1"，恰好演示了「可写悬空引用」这个缺陷本身。
+        asyncio.run(live_config.save_strategy(live_config.StrategyBody(
+            id="lc_1", name="被引用策略")))
         r = asyncio.run(live_rooms.save_room(live_rooms.RoomBody(
             room_id="992931212705",
             live_url="https://live.douyin.com/992931212705",
@@ -94,6 +98,9 @@ class TestSaveRoom(unittest.TestCase):
         """更新不该把未提交的字段清空（防「改备注顺手清掉策略绑定」）。"""
         import asyncio
 
+        # P2-8：先建被引用的策略（写入侧现在拒绝悬空引用）
+        asyncio.run(live_config.save_strategy(live_config.StrategyBody(
+            id="lc_keep", name="保留策略")))
         first = asyncio.run(live_rooms.save_room(live_rooms.RoomBody(
             room_id="111", strategy_id="lc_keep", allow_desensitized=True)))
         rid = first["room"]["id"]

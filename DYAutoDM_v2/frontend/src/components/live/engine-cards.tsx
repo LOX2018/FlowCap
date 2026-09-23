@@ -53,6 +53,24 @@ function canStop(s: string) {
   return ["starting", "running", "paused", "stopping"].includes(s);
 }
 
+/**
+ * 「开始」按钮能否真的工作（🔴 P1-3）。
+ *
+ * 后端 `/api/engine/start` 要求 `live_url` 非空，否则 **400**
+ * （`api/engine.py`：`if not cfg.live_url or not cfg.live_url.strip(): raise HTTPException(400, ...)`）；
+ * 而 `request()` 对非 2xx **抛错** → 按钮表现为「点了报异常」。
+ *
+ * 旧实现只传 `acct`、**从不带 live_url**（该文件也从未读过 `item.live_url`）
+ * ⇒ 多任务卡片上的「开始」按钮**永远不可用**（实测真因）。
+ *
+ * 现判据：卡片必须握有可复用的直播间地址（`live_url` 优先，回落 `live_id`
+ * —— 后端 `TaskConfig.live_url` 接受房间号）才允许点；否则按钮禁用并给出原因，
+ * 绝不发出一个注定 400 的请求（「拿不到资源必须显式失败」，而不是假成功）。
+ */
+function startUrlOf(item: { live_url?: string | null; live_id?: string | null }): string {
+  return String(item.live_url || item.live_id || "").trim();
+}
+
 /* ── Props ── */
 
 interface EngineCardsProps {
@@ -136,6 +154,7 @@ export default function EngineCards({ push }: EngineCardsProps) {
         const meta = stateMeta(item.state);
         const busy = loading[item.acct + ":start"] || loading[item.acct + ":pause"]
           || loading[item.acct + ":resume"] || loading[item.acct + ":stop"];
+        const startUrl = startUrlOf(item);
         return (
           <Card key={item.acct || "__anon__"} className="overflow-hidden">
             {/* ── 头部：账号名 + 状态徽章 ── */}
@@ -189,8 +208,17 @@ export default function EngineCards({ push }: EngineCardsProps) {
                   variant="secondary"
                   size="sm"
                   className="flex-1"
-                  disabled={!!busy}
-                  onClick={() => act(item.acct, "start", () => api.start({ acct: item.acct }))}
+                  disabled={!!busy || !startUrl}
+                  title={
+                    startUrl
+                      ? `按卡片记录的直播间重开引擎：${startUrl}`
+                      : "该卡片没有可复用的直播间地址（后端 /accounts 未返回 live_url/live_id）—— 请到「直播监听」页重新配置并启动"
+                  }
+                  onClick={() => {
+                    if (!startUrl) return;   // 双重保险：不发注定 400 的请求
+                    void act(item.acct, "start", () =>
+                      api.start({ acct: item.acct, live_url: startUrl }));
+                  }}
                 >
                   {loading[item.acct + ":start"] ? (
                     <span className="inline-block h-3 w-3 animate-spin rounded-full border-2

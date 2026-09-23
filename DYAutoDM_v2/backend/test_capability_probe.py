@@ -362,7 +362,12 @@ class TestAggregation(unittest.TestCase):
                 self.assertIn(k, r, f"{cap} 缺字段 {k}")
             self.assertIn(r["state"], ("healthy", "degraded", "failed", "unknown"),
                           f"{cap} 不得返回二态以外/未知状态")
-            self.assertNotEqual(r["state"], "healthy") if not r["evidence"] else None
+            # 2026-09-23（审计 P3-3）：原为
+            #   self.assertNotEqual(r["state"], "healthy") if not r["evidence"] else None
+            # —— 条件表达式**结果被丢弃**，断言永不执行（AST 实测）。现写成真断言。
+            if not r["evidence"]:
+                self.assertNotEqual(r["state"], "healthy",
+                                    f"{cap} 无证据不得报 healthy")
 
     def test_send_delivery_needs_delivery_proof(self):
         """发送域：只有 role='me' 落库、无投递验证标记 → 不得报 healthy。"""

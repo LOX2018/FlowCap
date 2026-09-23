@@ -358,8 +358,6 @@ async def _execute(intent: str, params: dict[str, Any]) -> Any:
     （``params['account']``）。存在多个任务而用户未指定账号时 → **显式回话失败**，
     绝不替用户猜一个账号（否则会启停错任务）。单任务/无任务时与旧行为逐字一致。
     """
-    from fastapi import Request
-
     from core.auto_dm import AutoDM
 
     # 取引擎实例：优先按用户给的账号解析（ADR-002 §5.2）
@@ -391,12 +389,38 @@ async def _execute(intent: str, params: dict[str, Any]) -> Any:
         from models.task import TaskConfig
 
         cfg = _build_task_config(params, adm)
-        return await start_engine(_fake_request(adm), cfg)
+        acct = str(params.get("account") or params.get("acct") or "").strip()
+        # 🔴 2026-09-23 修复（P1-2）：内部直调必须走 **关键字参数** 且显式给 acct。
+        # 旧写法 `start_engine(_fake_request(adm), cfg)` 有两个缺陷：
+        #   ① 未注入 engines → 端点内 `_resolve_adm` 只能退回 app.state.adm，
+        #      按账号解析名存实亡（多账号下会启错任务）；
+        #   ② 端点现在是 `(request, config, acct=Query(""))`，`_fake_request(adm)`
+        #      只覆盖了 request —— 账号信息只能靠 body 的 cfg.acct，而规则解析出的
+        #      account 未必落进 cfg（_build_task_config 只认 params["account"]）。
+        # 现显式把 **解析用的账号** 与 **编排层 registry** 都传进去。
+        req = _fake_request(adm, _BOUND_ENGINES)
+        if acct and not str(getattr(cfg, "acct", "") or "").strip():
+            try:
+                cfg.acct = acct
+            except Exception:  # noqa: BLE001 —— pydantic 模型不可变时退回 query
+                pass
+        return await start_engine(req, cfg, acct=acct)
 
     if intent == "stop_task":
         from api.engine import stop_engine
 
-        return await stop_engine(_fake_request(adm))
+        acct = str(params.get("account") or params.get("acct") or "").strip()
+        # 🔴 2026-09-23 修复（P1-2，实测复现）：端点签名已改为
+        # `stop_engine(request, acct: str = Query(""))`。旧写法
+        # `stop_engine(_fake_request(adm))` 把 **Request 对象** 塞给了第一个位置参数？
+        # —— 不，位置参数仍是 request；真因是 **acct 漏传**，落到 FastAPI 的
+        # `Query("")` 默认值（一个 FieldInfo 实例）。`_resolve_adm` 里
+        # `str(acct or "").strip()` 把它变成
+        # 「annotation=str required=False … alias=acct」并当账号去查 →
+        # 实测 404「账号『annotation=str required=False … alias=acct』没有进行中的直播任务」。
+        # 修法：显式传 `acct=`（用户没给账号时传空字符串 → 端点按
+        # 「单任务回落 / 多任务 409」规则解析），并注入 registry 让按账号解析真正生效。
+        return await stop_engine(_fake_request(adm, _BOUND_ENGINES), acct=acct)
 
     if intent == "create_task":
         from api.tasks import save_config as save_task_config

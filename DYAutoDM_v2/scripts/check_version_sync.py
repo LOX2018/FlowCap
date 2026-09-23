@@ -14,6 +14,23 @@ _build_version.py」四处，**漏了 `frontend/package.json`**——
 本脚本把"六处版本必须齐平"固化为可执行门禁，改版本后跑一次即可，
 **不再依赖记忆**。
 
+L-10 补记（2026-09-23，验证轮）
+-------------------------------
+第六处 `src-tauri/Cargo.lock`（`[[package]] name = "dyautodm-v2"` 段的 version）
+由 `48ae837`（v0.44.44）加入 TARGETS，**故「门禁未覆盖 Cargo.lock」的审计结论
+在本版 HEAD（0.44.53）上已过期**。本轮补做当时缺失的**破坏性验证**：
+
+    break :  0.44.53 -> 0.99.99  ⇒ 门禁 ✗（`版本不一致: ['0.44.53','0.99.99']`，exit 1）
+    restore:  备份还原            ⇒ 门禁 ✓（`六处版本齐平: 0.44.53`，exit 0）
+
+⇒ 第六处**是活的检查项**（不是只打印不判定）。已顺带把总结行的
+「六处」改为按 TARGETS 长度动态生成，避免以后增删目标时文案说谎。
+
+另注（F-5 盲区为何在此**不需要**新条目）：`backend/main.py` 的
+`FastAPI(version=...)` 过去写死 `"0.43.83"`（漂移 10 个小版本且门禁不管）。
+本轮 F-5 已把它改为引用 `APP_VERSION`（= `_build_version.py` 的编译期常量，
+**正是本门禁已检查的第 4 处**）⇒ 该盲区**结构性**关闭，无需重复登记。
+
 用法：
     python scripts/check_version_sync.py            # 校验，不一致 exit 1
     python scripts/check_version_sync.py 0.43.40    # 校验并断言等于指定版本
@@ -97,7 +114,7 @@ def main() -> int:
         for b in bad:
             print("   -", b)
         return 1
-    print(f"✓ 六处版本齐平: {sorted(vals)[0]}")
+    print(f"✓ {len(TARGETS)} 处版本齐平: {sorted(vals)[0]}")
     return 0
 
 

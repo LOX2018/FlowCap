@@ -474,16 +474,15 @@ class DispatchCenter:
                 f"[进度] 已发送 {self.count}/{self.max_target}"
                 f"（目标「{target.get('nickname')}」文案前20字={content[:20]!r}）"
             )
-            # M-5：只有直发回落路径（非 dm_dispatch 入池）才是实际投递
-            if not _routed:
-                _acct = getattr(self.auth, "account_name", "") or ""
-                if _acct:
-                    try:
-                        from services.delivery_verify import mark_delivery_verified as _mk
-                        _mk(_acct, str(target.get("user_id", "") or ""),
-                            msg_id_hint="", status_code=0, check_code=0)
-                    except Exception as _e:
-                        logger.debug(f"[delivery-verify] _do_send 调用跳过: {_e}")
+            # 2026-09-23（审计 P0-1）：**删除此处的「盲标记」**。
+            # 原实现在 `if not _routed`（本进程直发回落）分支无条件调
+            # mark_delivery_verified(msg_id_hint="", status_code=0, check_code=0)
+            # —— 两个判定守卫（status_code != 0 / check_code == 8610）在生产
+            # 永不可能触发，于是「调用方自称 ok」就成了唯一写入前提，
+            # 探针据 marker 报 healthy ⇒ 判别力被击穿（P0-1）。
+            # 现在标记只在**持有服务端响应**的写入点产生：
+            #   · 调度器路径 → recv_daemon /send(_by_uid)
+            #   · 本进程直发路径 → core/sender.send_by_uid（拿到 delivery_verdict 后写）
             if self.count >= self.max_target:
                 self.reached_limit = True
                 logger.info(f"[完成] 达到目标数量 {self.max_target}，停止私信")

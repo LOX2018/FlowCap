@@ -52,21 +52,32 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "hint": "默认关闭（每次开软件抓包等于白白暴露）；私信页应纯读库",
             },
             # P3 策略中心：timeout 默认值（热生效，消费端按需读 app_config.get("general", "timeout_xxx")）
+            # 🔴 2026-09-23 修补（P2-9，实测复现）：三个 timeout_* 原声明 `apply:"hot"`
+            #    却**缺 min/max** —— 而 app_config._coerce 对 int/float 只在声明了
+            #    min/max 时才做范围校验 ⇒ 这三项可被写成任意值（含 0、负数、1e9），
+            #    「范围保护」形同虚设。现补齐边界（SSOT 一致：无论消费方是否自 clamp，
+            #    schema 声明都必须有边界）。取值依据 = 语义下限防止「立即超时/永不超时」：
+            #      · BCC HTTP：0.5s 起（低于此连本机容器都来不及应答），120s 封顶；
+            #      · 端口快速探活：0.05s 起（本机 socket 探测），10s 封顶；
+            #      · 通用 HTTP：1s 起，300s 封顶。
             "timeout_bcc_http": {
                 "label": "BCC HTTP 请求超时（秒）",
-                "type": "float", "default": 15.0, "env": "DY_TIMEOUT_BCC_HTTP",
+                "type": "float", "default": 15.0, "min": 0.5, "max": 120.0,
+                "env": "DY_TIMEOUT_BCC_HTTP",
                 "apply": "hot",
                 "hint": "BCC 容器 HTTP 接口调用超时，覆盖约 18 处 hardcoded timeout=15",
             },
             "timeout_fast_probe": {
                 "label": "端口快速探活超时（秒）",
-                "type": "float", "default": 0.3, "env": "DY_TIMEOUT_FAST_PROBE",
+                "type": "float", "default": 0.3, "min": 0.05, "max": 10.0,
+                "env": "DY_TIMEOUT_FAST_PROBE",
                 "apply": "hot",
                 "hint": "socket 端口是否已开的快速检测超时，覆盖约 13 处 hardcoded timeout=0.3",
             },
             "timeout_http_req": {
                 "label": "通用 HTTP 请求超时（秒）",
-                "type": "float", "default": 30.0, "env": "DY_TIMEOUT_HTTP_REQ",
+                "type": "float", "default": 30.0, "min": 1.0, "max": 300.0,
+                "env": "DY_TIMEOUT_HTTP_REQ",
                 "apply": "hot",
                 "hint": "后端对外 HTTP API 调用的通用超时，覆盖约 23 处 hardcoded timeout=30",
             },

@@ -124,6 +124,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // 这样会员鉴权保持完整，不引入「媒体端点无鉴权」的安全面变化。
 // 调用点统一走 `@/lib/authed-media`，不要在组件里手写。
 
+// ===== 引擎控制端点的账号寻址（唯一契约：query `?acct=`）=====
+// 🔴 P1-1 修复（2026-09-23）：四个控制端点（stop/stop-soft/pause/resume）的账号
+// 走 **query string**，不是 JSON body。理由与取舍见下方 api.stopEngine 的注释。
+function engineControlPath(path: string, account?: string): string {
+  const a = (account || "").trim();
+  return a ? `${path}?acct=${encodeURIComponent(a)}` : path;
+}
+
 /** 该地址是否为「需要带令牌获取」的本机后端 API 资源。 */
 export function isLocalApiUrl(src?: string): boolean {
   if (!src) return false;
@@ -268,6 +276,15 @@ export interface Overview {
   recvDaemon?: { alive: boolean };
   engineState?: string;
   statusMsg?: string;
+  /**
+   * 当前引擎实例的账号（后端 `/api/overview` 归属的 `app.state.adm`）。
+   *
+   * 🔴 P1-1 修复（2026-09-23）：任务中心的控制按钮需要**显式账号**才能在多任务
+   * 并发下停对任务（ADR-002 §5.3）。此前 Overview 类型没有 acct 字段，调用点
+   * `api.stopEngine()` 只能不带账号 → 多任务时 409。
+   * 兼容旧后端：字段缺失时按空串处理（走「单任务回落 / 歧义 409」旧语义）。
+   */
+  acct?: string;
 }
 
 /** /api/engine/accounts 返回的每个账号引擎状态（ADR-002 §5.6，前端多任务卡片数据源） */
@@ -581,34 +598,39 @@ export const api = {
   },
 
   /**
-   * 按账号控制引擎：`{"ok":true,"state":"..."}` 。
+   * 按账号控制引擎：`{"ok":true,"state":"...","acct":"..."}` 。
    *
-   * - ``account`` 指定账号（空串 = 由后端按「单任务回落 / 多任务歧义 409」规则解析）。
+   * ## 账号契约（唯一真源，2026-09-23 定稿）
+   *
+   * 后端 `api/engine.py` 的四个控制端点签名是 `(request, acct: str = Query(""))` ——
+   * 账号走 **query string `?acct=`**，**不是 JSON body**。
+   *
+   * 🔴 修复（P1-1，实测）：旧实现把账号塞进 JSON body（`body.account`），
+   * 而后端只读 query，于是账号**永远丢失** → 多任务并发时被 409
+   * 「存在多个进行中的直播任务…请显式指定 acct」拦死，单任务时又静默作用到
+   * 错误的账号（违反 ADR-002 §5.3「不猜账号、停对任务」）。
+   * 独立最小复现：`body.account` → 409；`?acct=张老师` → 200。
+   *
+   * - ``account`` 指定账号（省略 = 交由后端按「单任务回落 / 多任务歧义 409」规则解析）。
    * - ADR-002（v0.44.39+）必须走这条，不直接用 `stop()` / `pause()` / `resume()` ——
    *   后者没有 `account` 参数，在并发下会回落「最近一个实例」而停错任务。
+   * - ⚠️ **不要再改回 body**：契约两侧同源（本文件 + `api/engine.py`），
+   *   `frontend` 侧一致性由契约测试守着（`test_engine_contract_p1.py`）。
    */
   async stopEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
-    const body: Record<string, unknown> = {};
-    if (account) body.account = account;
-    return request("/api/engine/stop", { method: "POST", body: JSON.stringify(body) });
+    return request(engineControlPath("/api/engine/stop", account), { method: "POST" });
   },
 
   async stopSoftEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
-    const body: Record<string, unknown> = {};
-    if (account) body.account = account;
-    return request("/api/engine/stop-soft", { method: "POST", body: JSON.stringify(body) });
+    return request(engineControlPath("/api/engine/stop-soft", account), { method: "POST" });
   },
 
   async pauseEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
-    const body: Record<string, unknown> = {};
-    if (account) body.account = account;
-    return request("/api/engine/pause", { method: "POST", body: JSON.stringify(body) });
+    return request(engineControlPath("/api/engine/pause", account), { method: "POST" });
   },
 
   async resumeEngine(account?: string): Promise<{ ok: boolean; state?: string; acct?: string }> {
-    const body: Record<string, unknown> = {};
-    if (account) body.account = account;
-    return request("/api/engine/resume", { method: "POST", body: JSON.stringify(body) });
+    return request(engineControlPath("/api/engine/resume", account), { method: "POST" });
   },
 
   /**

@@ -227,9 +227,31 @@ class MixListReq(BaseModel):
 
 
 class SeriesAwemeReq(BaseModel):
-    """★ 本分支新增（照源项目）：合集内作品。"""
+    """★ 本分支新增（照源项目）：合集内作品。
+
+    ## 两种合集（2026-09-23，P1-7 修复）
+
+    抖音的「合集」在接口层是**两种不同实体**（详见
+    `工作记忆/14_业务域_内容采集.md`）：
+
+    | 实体 | 接口 | 参数 | 判据 |
+    |---|---|---|---|
+    | **普通合集**（作者自建作品集） | `/aweme/v1/web/mix/aweme/` | `mix_id` | `is_serial_mix = 0` |
+    | **短剧**（付费连载） | `/aweme/v1/web/series/aweme/` | `series_id` | `is_serial_mix = 1` |
+
+    用 `series_id` 去打普通合集 → 服务端 `status_code: 5「参数不合法」` →
+    前端**恒看到空列表**（实测根因）。
+
+    ⇒ 请求体兼容三种给法（都归一到 `series_id` 这个槽，但 `platform.py` 会分流）：
+      · `series_id` —— 前端 `platform-page.tsx` 直接传 `pickedMix.id`（= mix_id）；
+      · `mix_id`  —— 语义显式版；
+      · `is_serial_mix` —— **可选**显式判据（1=短剧走 series，0=普通合集走 mix）；
+        未给时后端按 `status_code==5` 自动回退（见 `collection_series`）。
+    """
     account: str
-    series_id: str
+    series_id: str = ""
+    mix_id: str = ""
+    is_serial_mix: int | None = None
     cursor: str = "0"
     count: int = 20
 
@@ -849,6 +871,10 @@ async def collection_mixes(req: MixListReq) -> dict[str, Any]:
             "item_total": stat.get("total") or m.get("item_total"),
             "play_vv": stat.get("play_vv") or m.get("play_vv"),
             "update_time": m.get("update_time") or m.get("create_time"),
+            # 🔴 P1-7（2026-09-23）：把短剧判据透传给前端 —— 前端据此决定
+            # 进「合集」时用 mix_id 还是 series_id（两条不同上游接口）。
+            # 上游若无该字段则不下发（None），由 `/collection/series` 的 sc 回退兜底。
+            "is_serial_mix": m.get("is_serial_mix"),
         })
     return {"ok": True, "items": out,
             "has_more": bool((raw or {}).get("has_more")),
@@ -857,25 +883,100 @@ async def collection_mixes(req: MixListReq) -> dict[str, Any]:
 
 @router.post("/collection/series")
 async def collection_series(req: SeriesAwemeReq) -> dict[str, Any]:
-    """合集内的作品列表。对应基座 `get_series_aweme`。"""
-    if not req.series_id:
-        raise HTTPException(400, "缺少 series_id")
+    """合集内作品 —— **按 `is_serial_mix` 分流**到两个上游接口。
+
+    ## 🔴 P1-7 修复（2026-09-23，实测根因）
+
+    旧实现**只**调 `get_series_aweme(req.series_id)`（短剧专用接口，参数 `series_id`），
+    而前端 `platform.ts:collectionSeries` 传的是 `pickedMix!.id` = **`mix_id`**
+    （来自 `collection/mixes` 的 `mix_infos[].mix_id`）→ 用 `series_id` 的位置去打
+    普通合集 → 服务端 `status_code: 5「参数不合法」/ aweme_list: null`
+    → 前端**永远看到「该合集暂无作品」**。
+
+    正确姿势（README/`工作记忆/14`/C-02 §Ⅰ2 已有记载，代码当时没落地）：
+
+    | 实体 | 上游接口 | 参数 |
+    |---|---|---|
+    | `is_serial_mix = 0`（**普通合集**，绝大多数） | `get_mix_aweme` | `mix_id` |
+    | `is_serial_mix = 1`（短剧） | `get_series_aweme` | `series_id` |
+
+    ## 分流判据（三态，不得把「取不到」折成「不是」）
+
+    1. `req.is_serial_mix` **显式给出** → 直接按它走（前端可传，最稳）；
+    2. 未给出 → **先按普通合集走**（预判：绝大多数是普通合集；`collection/mixes`
+       这个来源本身就是收藏的普通合集，没有短剧字段）；
+    3. 上一步拿到 `status_code == 5`（参数不合法，即"这不是我要的那种合集"）
+       → **自动回退**试另一条接口；两条都失败则如实返回空 + `detail`（不静默）。
+    """
+    # 归一 id 槽：三个字段任一有值都可用（前端历史实现把 mix_id 放在 series_id 里）
+    sid = (req.series_id or "").strip()
+    mid = (req.mix_id or "").strip()
+    primary = mid or sid
+    if not primary:
+        raise HTTPException(400, "缺少 series_id/mix_id（合集 id）")
+    # 短剧槽与普通合集槽是否指向不同的 id（双给时以 mix_id 为普通合集 id）
+    series_slot = sid
+    mix_slot = mid or (sid if req.is_serial_mix != 1 else "")
+
     auth = _auth_for(req.account)
     api = _api()
-    try:
-        raw = await asyncio.to_thread(
-            api.get_series_aweme, auth, req.series_id, req.cursor, str(req.count))
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[PLT-032] " + f"合集内作品获取失败: {type(e).__name__}")
-        raise HTTPException(502, f"合集内作品获取失败: {type(e).__name__}")
-    items = []
-    if isinstance(raw, dict):
+
+    async def _try(kind: str, ident: str) -> dict[str, Any]:
+        """调一条上游接口并归一成 {items, has_more, sc, detail}。"""
+        if kind == "mix":
+            raw = await asyncio.to_thread(
+                api.get_mix_aweme, auth, ident, req.cursor, str(req.count))
+        else:
+            raw = await asyncio.to_thread(
+                api.get_series_aweme, auth, ident, req.cursor, str(req.count))
+        raw = raw if isinstance(raw, dict) else {}
+        items = []
         for k in ("aweme_list", "series_aweme_list", "aweme_list_collection"):
-            if isinstance(raw.get(k), list):
+            if isinstance(raw.get(k), list) and raw[k]:
                 items = raw[k]
                 break
+        return {"items": items, "has_more": bool(raw.get("has_more")),
+                "sc": raw.get("status_code"), "msg": raw.get("status_msg") or "",
+                "via": kind, "ident": ident}
+
+    # 顺序：显式判据优先；否则「普通合集 → 短剧」回退
+    if req.is_serial_mix == 1:
+        order = [("series", series_slot or primary), ("mix", mix_slot or primary)]
+    elif req.is_serial_mix == 0:
+        order = [("mix", mix_slot or primary), ("series", series_slot or primary)]
+    else:
+        order = [("mix", mix_slot or primary), ("series", series_slot or primary)]
+
+    out: dict[str, Any] | None = None
+    tried: list[str] = []
+    for kind, ident in order:
+        if not ident:
+            continue
+        try:
+            out = await _try(kind, ident)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[PLT-032] " + f"合集内作品获取失败({kind}): {type(e).__name__}")
+            out = None
+            tried.append(f"{kind}:err:{type(e).__name__}")
+            continue
+        tried.append(f"{kind}:sc={out['sc']}")
+        # sc==0 且有作品 → 命中；sc==0 但空列表 → 这是**真·空合集**，不再试另一条
+        if out["sc"] == 0:
+            break
+        # sc!=0（实测普通合集被 series 接口打回 sc=5）→ 继续试另一条
+        logger.info(f"[PLT-032] 合集取作品 {kind} id={ident[:12]}… sc={out['sc']} "
+                    f"msg={out['msg']} → 回退另一接口")
+
+    if out is None:
+        raise HTTPException(502, "合集内作品获取失败：两条上游接口均不可用")
+
+    items = out["items"]
+    if not items and out["sc"] != 0:
+        # 两条都失败：如实告知（不得假装"空合集"）
+        logger.warning(f"[PLT-032] 合集内作品两条接口均未成功 tried={tried}")
     return {"ok": True, "items": [_pick_aweme(w) for w in items],
-            "has_more": bool((raw or {}).get("has_more"))}
+            "has_more": out["has_more"], "via": out["via"],
+            "status_code": out["sc"]}
 
 
 # ===========================================================================

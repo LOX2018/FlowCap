@@ -71,28 +71,39 @@ class EngineRegistry:
     def keys(self) -> list[str]:
         return list(self._engines.keys())
 
-    def all_running_keys(self) -> list[str]:
-        out = []
-        for k, e in self._engines.items():
-            try:
-                if getattr(e, "is_running", False) if isinstance(
-                        getattr(e, "is_running", None), bool) else e.is_running():
-                    out.append(k)
-            except Exception:
-                continue
-        return out
-
     def items(self) -> list[tuple[str, "object"]]:
         return list(self._engines.items())
 
     def busy_keys(self) -> list[str]:
-        """有任务在跑（非 IDLE）的账号键 —— 供「未指定 acct」时判定是否歧义。"""
+        """有任务**在跑**（非终态）的账号键 —— 供「未指定 acct」时判定是否歧义。
+
+        🔴 2026-09-23 修复（P1-6）：旧判据是「state 不在 ("idle","","none") 即为忙」
+        —— 于是 `stopped` / `error` 也被算成忙。实测：两个引擎都已 STOPPED 时
+        `busy_keys()` 返回 `['小助理','张老师']`，随后**不带 acct 的 /start** 被判
+        409「存在多个进行中的直播任务」，用户明明没有任何任务在跑 → 永远启动不了。
+
+        正确判据 = **在跑**，即与 `AutoDM.is_running` 同源的四态白名单：
+        `starting / running / paused / stopping`（paused/stopping 仍占用任务）。
+        终态 `idle / stopped / error` 一律不算忙。
+
+        ⚠️ 白名单而非黑名单：未知状态（未来新增枚举）**不**算忙 —— 宁可让
+        「无 acct 的 /start」走单任务/匿名回落，也不能把空闲误判成并发冲突。
+        """
+        _RUNNING = {"starting", "running", "paused", "stopping"}
         out = []
         for k, e in self._engines.items():
             try:
+                if getattr(e, "is_running", None):
+                    # 真 AutoDM 是 property（bool）；替身/旧实现可能是方法
+                    if callable(e.is_running):
+                        if e.is_running():
+                            out.append(k)
+                    else:
+                        out.append(k)
+                    continue
                 st = getattr(e, "state", None)
                 v = getattr(st, "value", None) or (str(st) if st is not None else "")
-                if str(v).lower() not in ("idle", "", "none"):
+                if str(v).strip().lower() in _RUNNING:
                     out.append(k)
             except Exception:
                 continue
@@ -112,7 +123,29 @@ class EngineRegistry:
         return result
 
     def drop(self, account: Optional[str]) -> None:
-        """移除某账号实例（仅供测试/显式清理；正常路径不调用）。"""
+        """移除某账号实例（**显式清理路径**：账号被删除 / 测试隔离）。
+
+        ## stop() 后实例处置（2026-09-23 明确，P1-6 的另一半）
+
+        🔴 **决策：stop() 后实例**保留在表里**，不自动摘除**；「不忙」由
+        `busy_keys()` 的终态白名单保证（见其 docstring），而不是靠删实例。
+
+        为什么保留（而非 stop 即 drop）：
+        1. **前端多任务卡片的设计就是要「停过的引擎仍可一键重开」** ——
+           `engine-cards.tsx` 的 `canStart()` 明确接受 `stopped`，卡片从
+           `/api/engine/accounts`（本表快照）读 `live_url`/`live_id` 作为重开入参。
+           若 stop 即摘除，卡片消失、`live_url` 丢失，重开必须回直播页手填链接。
+        2. **软停止是异步的** —— `AutoDM.stop(hard=False)` 会
+           `create_task(_wait_dispatch_done())` 等存量私信发完，期间实例是
+           `stopping`（仍活）。在 stop 返回时摘除会让正在收尾的任务失去可寻址
+           入口（用户无法再查询/再停它）→ 违反「停不下来要说出来」。
+        3. 代价可控：`AutoDM.stop()` 已关闭 WS/调度，实例只剩字段快照，不占运行时资源。
+
+        ⇒ 因此本表的语义是「**account → 该账号的引擎（含已停止的）**」，而不是
+        「account → 正在跑的引擎」。凡是需要「在跑的那些」的调用方**必须**用
+        `busy_keys()`，**不得**用 `keys()`/`items()` 代替 —— 后者含终态实例。
+        `drop()` 留给显式清理（账号删除）与测试隔离。
+        """
         self._engines.pop(self._key(account), None)
 
     # ── 内部 ────────────────────────────────────────────────────────────

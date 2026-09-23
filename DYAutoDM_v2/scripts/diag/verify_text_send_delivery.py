@@ -51,80 +51,23 @@ def _bootstrap() -> str:
 
 
 def _fields(raw: bytes) -> dict:
-    out: dict = {}
-    i, n = 0, len(raw)
-    while i < n:
-        j, key, shift = i, 0, 0
-        while j < n:
-            b = raw[j]
-            key |= (b & 0x7F) << shift
-            j += 1
-            if not (b & 0x80):
-                break
-            shift += 7
-        if j > i + 10:
-            break
-        f_no, wt = key >> 3, key & 7
-        if wt == 0:
-            val, shift = 0, 0
-            while j < n:
-                b = raw[j]
-                val |= (b & 0x7F) << shift
-                j += 1
-                if not (b & 0x80):
-                    break
-                shift += 7
-            out.setdefault(f_no, []).append(val)
-            i = j
-        elif wt == 2:
-            ln, shift = 0, 0
-            while j < n:
-                b = raw[j]
-                ln |= (b & 0x7F) << shift
-                j += 1
-                if not (b & 0x80):
-                    break
-                shift += 7
-            out.setdefault(f_no, []).append(raw[j:j + ln])
-            i = j + ln
-        elif wt == 5:
-            out.setdefault(f_no, []).append(int.from_bytes(raw[j:j + 4], "little"))
-            i = j + 4
-        elif wt == 1:
-            out.setdefault(f_no, []).append(int.from_bytes(raw[j:j + 8], "little"))
-            i = j + 8
-        else:
-            break
-    return out
+    """（已收敛）宽容 protobuf 字段遍历 —— 唯一实现在 services/send_response.py。
 
-
-def _s(p: dict, no: int):
-    v = (p.get(no) or [None])[0]
-    return v.decode("utf-8", "replace") if isinstance(v, bytes) else v
+    保留本函数据名以免破坏外部引用；实际委托给唯一实现（SSOT）。
+    """
+    from services.send_response import _fields as _f  # noqa: PLC0415
+    return _f(raw)
 
 
 def parse_send_response(raw: bytes) -> dict:
-    """解析 message/send 响应（body field 6 → 100）。
+    """（已收敛）解析 message/send 响应 —— 唯一实现在 services/send_response.py。
 
-    字段见 zhinjs/douyin-im `SendMessageResponseBody`：
-    1 server_message_id / 3 status / 4 client_message_id / 5 check_code / 6 check_message
+    2026-09-23 审计 P0-1：同一协议此前在本脚本与生产链路各写一遍；
+    现生产链路（dy_apis/client_im.py）与本脚本**共用**同一实现，
+    避免判定口径漂移（Duplicate Implementation）。
     """
-    top = _fields(raw)
-    res = {"cmd": _s(top, 1) if 1 in top else (top.get(1) or [None])[0],
-           "error_desc": _s(top, 3), "message": _s(top, 4), "body100": None}
-    body = (top.get(6) or [None])[0]
-    if not body:
-        return res
-    payload = (_fields(body).get(100) or [None])[0]
-    if payload is None:
-        return res
-    p = _fields(payload)
-    res["body100"] = {"server_message_id": (p.get(1) or [None])[0],
-                      "status": (p.get(3) or [None])[0],
-                      "client_message_id": _s(p, 4),
-                      "check_code": (p.get(5) or [None])[0],
-                      "check_message": _s(p, 6)}
-    return res
+    from services.send_response import parse_send_response as _p  # noqa: PLC0415
+    return _p(raw)
 
 
 def main(argv=None) -> int:

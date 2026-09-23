@@ -32,6 +32,16 @@ src-tauri/binaries/
 
 # Frontend
 frontend/dist/
+# ── 2026-09-23 F-6 修补（CI 卫生：源码树零构建产物）─────────────────
+# 实测：`git add .` 会把下面三项加进暂存区（`git check-ignore` 对它们**无输出**
+# = 未被忽略），违反「源码树不得含构建产物」：
+#   · frontend/dist-prototype/      —— 原型页面的 vite 构建输出（800K 级）
+#   · frontend/_proto/              —— 原型专用源码桩（framer-motion-stub.tsx）
+#   · frontend/vite.prototype.config.ts —— 跑原型的**一次性** vite 配置
+# 全部为「原型预览」临时资产，用完即弃；不入库。
+frontend/dist-prototype/
+frontend/_proto/
+frontend/vite.prototype.config.ts
 frontend/node_modules/
 *.tsbuildinfo
 frontend/*.tsbuildinfo

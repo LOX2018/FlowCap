@@ -1195,14 +1195,13 @@ class DmDispatcher:
             ok = bool(data.get("ok"))
             if ok:
                 task.status = "done"
-                # M-5：投递验证钩子（仅确认投递后有有效 server_message_id 时才写入）
-                try:
-                    from services.delivery_verify import mark_delivery_verified as _mk
-                    _mk(task.account, task.conv_id or str(task.peer_uid),
-                        msg_id_hint="",
-                        status_code=0, check_code=0)
-                except Exception as _e:
-                    logger.debug(f"[delivery-verify] _send_one 调用跳过: {_e}")
+                # 2026-09-23（审计 P0-1）：**删除此处的「盲标记」**。
+                # 原实现无条件调 mark_delivery_verified(msg_id_hint="",
+                # status_code=0, check_code=0) —— 两个守卫恒不触发，
+                # 「recv_daemon 回 ok:true」成了唯一写入前提，而 recv_daemon
+                # 的 ok 又只来自 `message == 'OK'`（同一文件自注：可能「返回 OK
+                # 但未实际投递」）⇒ 假成功闭环。现在标记由 recv_daemon 在
+                # 持有服务端响应的那一侧写入（见 daemon/recv_daemon.py）。
                 # 额度已在入池时预占（note_stranger_sent），成功不重复记
                 # uid 直发（采集/监听）成功 → 写入沉淀池，防止日后重复打扰
                 if task.is_stranger_first and not task.conv_id:

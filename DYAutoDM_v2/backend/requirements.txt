@@ -28,7 +28,27 @@ retry>=0.9.2
 pywin32>=306  # Windows API（打包 Windows 用）
 
 # 浏览器自动化
-playwright>=1.47.0
+# ── 2026-09-23 T3-b 修补（依赖上界缺失 → 干净机解析即撞内核）──────────
+# 原为 `playwright>=1.47.0`（**无上界**）⇒ 在一台干净机上
+# `pip install -r requirements.txt` 今天会解析出 **1.63.0**，
+# 而 `camoufox 0.5.6` 硬性要求 `playwright (<1.63)`
+# （读码：camoufox-0.5.6.dist-info/METADATA `Requires-Dist: playwright (<1.63)`；
+# 实测：`uv pip install --dry-run camoufox==0.5.6 playwright==1.63.0`
+# → No solution found / unsatisfiable）。
+# Camoufox 是本项目**唯一生效内核**（backend/auto_dm/config.py
+# DY_BROWSER_KERNEL="camoufox"；无 Chromium 回退）⇒ 必须钉上界。
+# 本机实测已装版本：playwright 1.62.0 / patchright 1.62.3 / camoufox 0.5.6。
+# 证据：artifacts/UP_L3_浏览器依赖升级评估_20260923.md
+playwright>=1.62,<1.63
+# patchright 是 playwright 的 patch 分支，**版本号镜像 Playwright**。
+# 它此前**未在 requirements 中声明**（只在开发机恰好装着 1.62.3）⇒
+# 干净机重建环境会缺包。实测本机为 1.62.3，与 playwright 1.62.x 同线。
+# 依 UP-L3 结论：playwright 线锁 1.62.x 期间 **patchright 亦不单独越线**
+# （避免留下「patchright 1.63 + playwright 1.62」的双驱动不一致态）。
+patchright>=1.62,<1.63
+# camoufox = 本项目唯一生效浏览器内核，此前**未声明**。0.5.6 实测生效；
+# 上界 <0.6 防内核行为跨小版本漂移（内核更换需走实机验收，不走依赖升级）。
+camoufox>=0.5.6,<0.6
 
 # 工具
 python-multipart>=0.0.9

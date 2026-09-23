@@ -244,7 +244,9 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
             time.sleep(1)
             continue
         try:
-            ok, detail = DouyinAPI.send_msg(auth, conversation_id, short_id, ticket, content)
+            _ok3 = DouyinAPI.send_msg(auth, conversation_id, short_id, ticket, content)
+            ok, detail = _ok3[0], _ok3[1]
+            _verdict = _ok3[2] if len(_ok3) > 2 else None
         except Exception as e:
             logger.warning(f"[SEND-016] " + f"send_msg 失败(第{attempt}次) uid={user_id}: {e}")
             if attempt == max_retry:
@@ -253,6 +255,16 @@ def send_by_uid(auth: Any, user_id: Any, content: str, max_retry: int = 2) -> Tu
             continue
         if ok:
             logger.info(f"[私信] 发送结果: 目标「{user_id}」=成功 文案前20字={content[:20]!r}")
+            # 2026-09-23（审计 P0-1）：**投递验证标记只在持有服务端证据处写入**。
+            # 这条直发路径拿到了 delivery_verdict（server_message_id/check_code），
+            # 故在此写标记；调度器路径由 recv_daemon /send(_by_uid) 写，
+            # dispatch/dm_dispatch 侧的「盲标记」已删除（它们拿不到证据）。
+            try:
+                from services.delivery_verify import mark_delivery_verified as _mk
+                _mk(auth.account_name or "", str(conversation_id or ""),
+                    verdict=_verdict, source="sender_direct")
+            except Exception as _e:  # noqa: BLE001
+                logger.debug(f"[delivery-verify] sender 直发写标记跳过: {_e}")
             return True, "ok"
         logger.warning(f"[SEND-017] " + f"send_msg 返回 {detail!r}(第{attempt}次) uid={user_id}")
         if attempt == max_retry:

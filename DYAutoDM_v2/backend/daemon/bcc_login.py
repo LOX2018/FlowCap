@@ -18,10 +18,8 @@ from typing import Any
 from loguru import logger
 
 from daemon.bcc_lease import (
-    ContainerBusy,
-    _lease_acquire, _lease_current, _lease_release,
     _lease_status,
-    _scan_exclusive_get, _scan_exclusive_set,
+    _scan_exclusive_set,
     LEASE_PRIO_TTL_LIMIT,
 )
 
@@ -82,8 +80,10 @@ class BccLoginMixin:
         probe_auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cks.items())
         probe_auth.uid = None
         now_ts = time.time()
-        cached = getattr(BrowserContainer_instance_hack if False else type(self), "_uid_probe_cache", None)  # noqa
-        # Actually use class-level cache from the class itself
+        # 2026-09-23（审计 P4 死代码）：原为
+        #   getattr(BrowserContainer_instance_hack if False else type(self), "_uid_probe_cache", None)
+        # 引用**不存在**的名 `BrowserContainer_instance_hack`，仅靠 `if False` 短路才不 NameError；
+        # 下一行才是正解。死分支会误导读者以为这是有效属性，故删除、只保留真正那一行。
         cls = type(self)
         cached = getattr(cls, "_uid_probe_cache", None)
         new_uid = None
@@ -226,10 +226,23 @@ class BccLoginMixin:
             return {"ok": False, "msg": "账号 .env 未登记"}
 
         async def _do():
+            # 2026-09-23（审计 P0-3）：本处原**再**取一次租约：
+            #     _sl_lease = _lease_acquire("scan_login", "exclusive", 0, ttl=…)
+            # 但外层 `self._exec(_do)` 已经以 `holder="bcc-internal"`(prio=2,ttl=30)
+            # 持有租约，而 `_lease_acquire` 对「不同 holder」一律拒绝（不做真抢占）
+            # ⇒ 实测返回 `{'ok': False, 'busy': 'bcc-internal'}` ⇒ `_sl_lid=None`
+            # ⇒ **scan_login 的 P0 独占租约从未建立**（与 2ce728a 同源：拆分引入的
+            # 跨模块边界事故）。
+            #
+            # 修法（三者择一）：把两个租约**串成同一件事** —— 不再内层重取，改为由
+            # 外层 `_exec` **以 P0（prio=0，用户显式，ttl=LEASE_PRIO_TTL_LIMIT[0]）
+            # 取唯一的那把租约**，`_do` 在其保护下执行。为什么这满足原意图：
+            #   · 「P0 独占」的语义取自 prio=0 的 TTL 上限（600s，覆盖扫码整轮），
+            #     外层按该 prio 持租后，低优先级调用方（业务 prio=1 / 内部 prio=2）
+            #     对同一把租约同样被拒，独占语义不变；
+            #   · `_lease_acquire` 对「同 holder 重入」会复用，故内层再取本就多余，
+            #     删除它只是去掉冗余，**不是**「去掉租约」（否则才是把 P0 独占变成无租约）。
             _scan_exclusive_set("scan_login")
-            _sl_lease = _lease_acquire("scan_login", "exclusive", 0,
-                                      ttl=LEASE_PRIO_TTL_LIMIT[0])
-            _sl_lid = _sl_lease.get("lease_id")
             try:
                 try:
                     if self._backend in ("exe", "camoufox") and self._context is not None:
@@ -287,12 +300,13 @@ class BccLoginMixin:
                 return {"ok": ok, "uid": _uid}
             finally:
                 _scan_exclusive_set(None)
-                try:
-                    _lease_release(_sl_lid)
-                except Exception:
-                    pass
 
-        return await self._exec(_do)
+        # 2026-09-23（审计 P0-3）：`_do` 不再内层重取租约 —— 由本调用**以 P0 取
+        # 唯一那把租约**（prio=0 用户显式，ttl=600s 覆盖扫码整轮），租约在 _do
+        # 全周期内有效，_exec 在 finally 统一释放。holder="scan_login" 与日志/语义一致。
+        return await self._exec(
+            _do, holder="scan_login", purpose="exclusive", prio=0,
+            ttl=LEASE_PRIO_TTL_LIMIT[0])
 
     def _load_uid_from_env(self) -> Any:
         """从 .env 读当前 uid（保活用）。"""

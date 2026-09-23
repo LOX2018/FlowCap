@@ -476,12 +476,36 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
             logger.info(f"[bcc] {self.account} 内核=Camoufox → 跳过 JS 注入"
                         f"（C++ 层指纹注入，注入反而留下可检痕迹）")
         else:
-            try:
-                await self._context.clear_init_scripts()
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"[bcc] clear_init_scripts 不可用（不影响本次注入）: {e}")
-            await self._context.add_init_script(CAP_USERINFO_HOOK_JS)
-            await self._context.add_init_script(CAP_WP_MESSAGE_HOOK_JS)  # 2026-09-05 WP
+            # ════════════════════════════════════════════════════════════════
+            # 2026-09-23 T5-a 修复（L3 浏览器依赖升级评估附带发现）
+            #
+            # 原实现：`await self._context.clear_init_scripts()` —— 但
+            # patchright 1.62.3/1.63.0 的 BrowserContext **不存在该方法**
+            # （实测 hasattr(ctx, 'clear_init_scripts') == False），
+            # 调用必抛 AttributeError 并被 `except: logger.debug` **静默吞掉**
+            # ⇒ 「先清空再注入」恒为 no-op，「每个 context 恰好一套」的意图
+            #   从未生效（重复注入时内层 hook 被外层覆盖，WP 通道静默失效）。
+            #
+            # 正解：`add_init_script` 返回 **Disposable**（AsyncContextManager），
+            # 其 `dispose()` 即该 patchright 版本唯一的「移除已注入脚本」途径。
+            # 故自持 disposables 清单：注入前 dispose 上一批，保证恰好一套。
+            # ════════════════════════════════════════════════════════════════
+            _prev = getattr(self, "_init_script_disposables", None) or []
+            for _d in _prev:
+                try:
+                    await _d.dispose()
+                except Exception as _de:  # noqa: BLE001
+                    logger.warning(f"[bcc] 清理旧 init script 失败（不静默）: {_de}")
+            self._init_script_disposables = []
+            for _js in (CAP_USERINFO_HOOK_JS, CAP_WP_MESSAGE_HOOK_JS):
+                _disp = await self._context.add_init_script(_js)
+                # 断言：必须拿到可 dispose 的句柄；否则「清理」无从谈起 ——
+                # 这里绝不静默吞掉（正是该缺陷的成因）。
+                if not hasattr(_disp, "dispose"):
+                    raise RuntimeError(
+                        f"[bcc] add_init_script 未返回可 dispose 的句柄：{_disp!r}"
+                        f"（patchright 版本变更？清理机制需重新确认）")
+                self._init_script_disposables.append(_disp)
         # 直接打开 chat 页（前端才会自发调 im/user/info）
         try:
             await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=20000)

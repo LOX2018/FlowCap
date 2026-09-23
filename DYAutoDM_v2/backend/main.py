@@ -633,13 +633,51 @@ def _read_version_file() -> str:
     return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# 版本一致性（2026-09-13 用户提出：前后端版本必须匹配，防「前端新/后端旧」）
+#
+# 判据：backend 版本由构建时注入的**编译期常量** `_build_version.py`
+# （build_sidecar.py 写入；兜底 env DY_APP_VERSION / version.json）——
+# 这是后端版本的**唯一来源**，被三处消费：
+#   · FastAPI/OpenAPI 的 `version`（下方 `app = FastAPI(version=APP_VERSION)`）
+#   · `/api/version` 探针与 `X-App-Version-Backend` 响应头
+#   · 版本一致性守卫 `_version_guard` 的比对基准
+#
+# 历史（2026-09-23 F-5 修补）：此处曾写死 `version="0.43.83"`（而当时产品已是
+# 0.44.53，差 10 个小版本），紧随其后的注释却声称「与产品版本同源（手动同步）」
+# ⇒ **断言与代码矛盾**；且 `scripts/check_version_sync.py` 的六处版本源**不含**
+# 这一处 ⇒ 漂移进入门禁盲区（旧的 0.43.83 静默存活）。
+# 现改为直接引用 `APP_VERSION`，本文件不再出现任何硬编码版本号字面量。
+# ---------------------------------------------------------------------------
+def _build_version() -> str:
+    """后端自身版本：优先编译期常量（_build_version.py，随 sidecar 打包）。
+
+    其次 env DY_APP_VERSION，最后兜底读 version.json / 返回 unknown。
+    注：Frozen 后 __file__ 在解压目录，外部 version.json 读不到，
+    故必须以【编译期常量】为主，才能保证版本一定跟着 sidecar 走。
+    """
+    try:
+        from _build_version import BUILD_VERSION as _bv
+        if _bv:
+            return str(_bv)
+    except Exception:
+        pass
+    return (os.environ.get("DY_APP_VERSION") or "").strip() or _read_version_file()
+
+
+APP_VERSION = _build_version()
+
+
 app = FastAPI(
     title="DYAutoDM API",
     # 2026-09-17 修补（审查 P2-1）：原写死 "0.1.0"，与产品实际版本
     # （tauri.conf / package.json / frontend/package.json / Cargo.toml）脱节，
     # 会误导排障（OpenAPI 文档显示的版本号是错的）。
-    # 现与产品版本同源（手动同步；如需自动校验见版本一致性门禁）。
-    version="0.43.83",
+    # 2026-09-23 修补（F-5）：上一版改成了写死 "0.43.83"——**换了个字面量，
+    # 问题没解决**（写死值再次漂移 10 个小版本、且不在版本门禁覆盖内）。
+    # 现取 `APP_VERSION`：与 sidecar 编译期常量同源 ⇒ 结构性无法漂移，
+    # 也无需人工"手动同步"。
+    version=APP_VERSION,
     description="抖音直播间自动私信控制台 - 后端 API",
     lifespan=lifespan,
 )
@@ -821,33 +859,23 @@ logger.add(
 
 
 # ---------------------------------------------------------------------------
-# 版本一致性（2026-09-13 用户提出：前后端版本必须匹配，防「前端新/后端旧」）
+# 版本一致性守卫 `_version_guard`（2026-09-13 用户提出：前后端版本必须匹配，
+# 防「前端新 / 后端旧」）
 #
 # 背景：sidecar 与桌面端是分别构建、分别部署的产物。此前【无任何版本校验】，
-# 实践中出现过 sidecar 目录被旧进程占用、部署未生效，导致"代码已改但跑的
-# 还是旧逻辑"的排查黑洞（当日 v0.42.6→v0.42.8 期间一度在跑旧 sidecar）。
+# 实践中出现过 sidecar 目录被旧进程占用、部署未生效，导致「代码已改但跑的
+# 还是旧逻辑」的排查黑洞（当日 v0.42.6→v0.42.8 期间一度在跑旧 sidecar）。
 #
-# 判据：backend 版本由构建时注入的 env（PY_BUILD_VERSION，由 build_sidecar.py
-# 写入），兜底读源码根 version.json；前端把自身版本经请求头 X-App-Version 带上。
+# 判据：后端版本**唯一来源** = 本文件上方的 `APP_VERSION`
+# （编译期常量 _build_version.py，由 build_sidecar.py 写入；兜底 env
+# DY_APP_VERSION / version.json）。前端把自身版本经请求头 X-App-Version 带上，
 # 二者不一致即响应头回 X-Version-Mismatch=1，前端据此显式告警（不静默）。
+#
+# 2026-09-23 F-5 修补：此处原**另有一份** `_build_version()/APP_VERSION`
+# 定义，与上方 `FastAPI(version="0.43.83")` 的硬编码字面量并存 ⇒ 同一文件
+# 存在两套版本概念（硬编码值可静默漂移、且不在版本门禁覆盖内）。
+# 现合并为单一来源（上方 APP_VERSION 定义），本处只留指针，防止再次分裂。
 # ---------------------------------------------------------------------------
-def _build_version() -> str:
-    """后端自身版本：优先编译期常量（_build_version.py，随 sidecar 打包）。
-
-    其次 env DY_APP_VERSION，最后兜底读 version.json / 返回 unknown。
-    注：Frozen 后 __file__ 在解压目录，外部 version.json 读不到，
-    故必须以【编译期常量】为主，才能保证版本一定跟着 sidecar 走。
-    """
-    try:
-        from _build_version import BUILD_VERSION as _bv
-        if _bv:
-            return str(_bv)
-    except Exception:
-        pass
-    return (os.environ.get("DY_APP_VERSION") or "").strip() or _read_version_file()
-
-
-APP_VERSION = _build_version()
 
 
 @app.middleware("http")

@@ -1,0 +1,45 @@
+fix(engine): 前端 API 传 account 维度 + 调用名对齐（ADR-002 §5.3，v0.44.40）
+
+[Design-Intent Regression]
+Original design assumption: 前端 client.ts 的 start/pause/resume/stop 方法不
+  传 account 维度（H-9 §5.3 后端改造只动了后端，前端没跟上），导致真机调
+  /api/engine/start 时 body 里无 acct 字段 → 全部请求按匿名实例解析，多账号
+  并发编排层形同虚设。
+The design contract this fix restores: ADR-002 §5.3 —— 前端按账号取/建实例，
+  与后端 EngineRegistry 对齐；tasks-page / live-page 的调用名与新 API 方法
+  名（*Engine 后缀）一致。
+Expected behavior: 真机双账号同时 start 各自进入独立实例；同账号重复 start
+  返 409；未知账号 stop 返 404；多任务不传 acct 返 409。
+
+[Standard-Contract Adherence]
+后端 TaskConfig 规范字段 = acct（非 account）；前端 client.ts 的
+  stopEngine/pauseEngine/resumeEngine/stopSoftEngine 方法名带 Engine 后缀
+  与 start 统一。
+
+[Problem-Analysis Chain]
+Source: 0.44.40 真机跑 _h9_verify_a.py 发现前端 start 请求体里 acct 为空，
+       双账号并发编排层未生效。
+Propagation: client.ts start() 不传 account → 后端 TaskConfig 解析 acct="" 
+       → EngineRegistry 归入匿名实例。
+Terminal: /api/engine/accounts 里 items 全部 acct=""（双账号各一条却都显示
+       匿名），409/404 歧义路径不可达。
+
+[Live Verification]
+- 前端 tsc -b → 0 错误（修 tasks-page/live-page 旧调用名）
+- 全量 unittest backend → 610 项 OK
+- 0.44.40 部署 + 真机跑 _h9_verify_a.py：
+  * 双账号独立实例 → 日志同时新建 尚进工伤小助理/四川工伤张老师 两个引擎
+  * 重复 start → 409 该账号已在监听（state=starting）✅
+  * 未知账号 stop → 404 ✅
+  * 多任务不带 acct /pause → 409 歧义 ✅
+  * 双账号 RUNNING 判定：房间 992931212705 实测未开播（room_status=4），
+    引擎按 ENG-005 设计停在 starting 等待轮询，非缺陷
+- 部署 4 处 md5 一致（backend/browser-daemon/recv-daemon + _internal）
+
+[Knowledge Archival]
+- ADR-002 状态：§5.1（日志归因）已实施，§5.2 编排层已实施，§5.3 API 维度
+  已实施（前端对齐补齐），§5.4 策略中心 / §5.5 跨账号沉淀池 / §5.6 多任务
+  卡片 待实施
+- 验收脚本：artifacts/_h9_verify_a.py（v2，修 acct 字段名）
+- 版本 6 处：package.json / frontend/package.json / src-tauri/tauri.conf.json /
+  src-tauri/Cargo.toml / src-tauri/Cargo.lock / backend/_build_version.py

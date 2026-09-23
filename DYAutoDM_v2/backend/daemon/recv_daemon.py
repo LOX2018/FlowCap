@@ -32,6 +32,30 @@ from fastapi import FastAPI, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
+# ════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-09-23【模块身份归一 —— 防「同进程双份模块」】（审计 P0-4）
+#
+# 本文件被 PyInstaller 以 **`__main__`** 身份启动
+# （`build/dyautodm-recv-daemon/*.spec` → Analysis(['…/daemon/recv_daemon.py'])），
+# 同时又被**按包名 import**：
+#     · `test_send_gate_config.py:26`        `import daemon.recv_daemon as rd`
+#     · `daemon/verify_handledispatch.py:111` `import daemon.recv_daemon as rd`
+# ⇒ 同一份源码在同一进程内可被加载两次，`sys.modules` 两个键并存：
+#     ① `sys.modules["__main__"]`              ← main() 往里写 accounts/port 的那份
+#     ② `sys.modules["daemon.recv_daemon"]`    ← 反向 import 触发的那份
+# 模块级可变状态（`_state` / `_send_gate_last` / `_last_send_at` …）会**各自分叉**：
+# 入口侧写入的账号/端口，反向着读到的是**空** `_state`（账户 `[]`、端口 `0`）。
+#
+# 定式（与 `daemon/browser_daemon.py:78`、`main.py:74` 完全同源，见 2026-09-23
+# 阻断级事故 REG-01 / 提交 `2ce728a`）：凡「以 __main__ 运行、又被同进程按包名
+# import」的入口，都必须在**任何反向 import 发生之前**把自身登记为规范模块名。
+# 先到先得，故用 `setdefault`：
+#   · 以包名正常 import（`import daemon.recv_daemon`）→ 已是自己，不动它；
+#   · 以 __main__ 启动 → 补上规范名，消除第二份实例。
+# 行为探针与负控见 `backend/test_entry_module_identity_guard.py`。
+# ════════════════════════════════════════════════════════════════════════════
+sys.modules.setdefault("daemon.recv_daemon", sys.modules[__name__])
+
 # 2026-09-06 全局治理（D：系统死代理隔离，同 main.py）：
 # 独立 exe 进程同样被 Windows 注册表系统代理毒害（requests 继承
 # getproxies_registry）。本进程 requests 全链路不用代理（DY_PROXY 只进浏览器），
@@ -506,8 +530,18 @@ class AccountInbox:
                     pass
             elif peer_id and not c.peer_id:
                 c.peer_id = peer_id
-                if peer_name:
+                # P2-6（审计 2026-09-23）：本处昵称占位判据原为**内联** `if peer_name:`
+                # （只判空，漏判「数字 UID / 等于对端 uid」），与唯一实现
+                # `services.verdicts.is_placeholder_name` 不一致 —— docstring 声称
+                # 「收敛 5/5」实为 4/5。此处改为**引用唯一实现**：
+                # 仅当新值不是占位时才采纳为昵称；占位值退回对端 uid。
+                # 与 `services/nickname_fallback.missing_nickname_convs` 同源判据
+                # （数字 peer_name 可能是发送方 uid，peer_id 才是真对端）。
+                from services.verdicts import is_placeholder_name as _is_ph
+                _nick_ok = bool(peer_name) and not _is_ph(peer_name, peer_id=peer_id)
+                if _nick_ok:
                     c.peer_name = peer_name
+                _write_name = peer_name if _nick_ok else peer_id
                 try:
                     conn = self._db()
                     # 保护已由 capture_all 关联的昵称 / 已有对端 UID：
@@ -519,7 +553,7 @@ class AccountInbox:
                         "  (SELECT CASE WHEN peer_name IS NOT NULL AND peer_name != '' "
                         "THEN peer_name ELSE ? END), ?) "
                         "WHERE account=? AND conv_id=?",
-                        (peer_id, peer_name or peer_id, peer_name or peer_id,
+                        (peer_id, _write_name, _write_name,
                          self.name, conv_id),
                     )
                     conn.commit()
@@ -1405,12 +1439,17 @@ class SendBody(BaseModel):
     account: str
     conv_id: str
     text: str
+    # 2026-09-23（审计 P0-1）：调用方若自行取过服务端消息号可回传，
+    # 使投递验证标记在 3.11/3.12 等无宽容解析器的解释器下同样可写。
+    # ⚠️ 绝不能把「返回 ok」本身当证据 —— 这里必须是**真的** server_message_id。
+    server_message_id: str = ""
 
 
 class SendByUidBody(BaseModel):
     account: str
     peer_uid: str | int
     text: str
+    server_message_id: str = ""
 
 
 class SendImageBody(BaseModel):
@@ -1519,6 +1558,25 @@ def _load_send_auth(account: str, env_path: str):
     return auth
 
 
+def _mark_send_delivery(body, conv_id: str, verdict: dict | None,
+                        http_ok: bool = True) -> None:
+    """写投递验证标记（**唯一合法的写入点族**：持有服务端响应的那一侧）。
+
+    证据优先级：① 调用方回传的 `body.server_message_id`（跨解释器可用）；
+    ② 本进程对响应字节的宽容解析 `delivery_verdict`（3.13+ 真实 prod 可用）。
+    两者皆无 ⇒ **不写标记**（宁可探针报 degraded，也不制造假证据）。
+    """
+    try:
+        from services.delivery_verify import mark_delivery_verified as _mk
+        hint = str(getattr(body, "server_message_id", "") or "").strip()
+        if hint:
+            _mk(body.account, conv_id, server_message_id=hint, source="recv_daemon")
+        else:
+            _mk(body.account, conv_id, verdict=verdict, source="recv_daemon")
+    except Exception as _e:  # noqa: BLE001
+        logger.debug(f"[delivery-verify] 写标记跳过（不影响发送）: {_e}")
+
+
 @app.post("/send")
 async def send(body: SendBody) -> dict:
     """用该账号的 send_msg 回复（统一发送闸门内，P1-A）。"""
@@ -1565,14 +1623,19 @@ async def send(body: SendBody) -> dict:
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
             auth, int(peer_id)
         )
-        ok, detail = DouyinAPI.send_msg(
+        _res = DouyinAPI.send_msg(
             auth, conversation_id, conversation_short_id, ticket, body.text
         )
+        ok = _res[0] if isinstance(_res, tuple) else bool(_res)
+        detail = (_res[1] if isinstance(_res, tuple) and len(_res) > 1 else "")
+        _verdict = _res[2] if isinstance(_res, tuple) and len(_res) > 2 else None
         if ok:
             # 2026-09-17 修补（审查 P2-12 配套）：写入 `local:` 占位 msg_id，
             # 供 WS 回声到达时回填真实 server_message_id（避免同一条消息双写）。
             ib.add_message(body.conv_id, "me", body.text, peer_id=peer_id,
                            msg_id=f"local:{uuid.uuid4().hex[:16]}")
+            # 2026-09-23（审计 P0-1）：**此处才持有服务端投递证据** ⇒ 写投递验证标记。
+            _mark_send_delivery(body, conversation_id, _verdict)
             logger.info(f"[recv][{body.account}] 已回复会话 {body.conv_id[:8]}…: {body.text}")
             return {"ok": True}
         logger.warning(f"[RECV-017] " + f"[recv][{body.account}] 回复失败原因: {detail}")
@@ -1617,15 +1680,20 @@ async def send_by_uid(body: SendByUidBody) -> dict:
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
             auth, peer_id
         )
-        ok, detail = DouyinAPI.send_msg(
+        _res = DouyinAPI.send_msg(
             auth, conversation_id, conversation_short_id, ticket, body.text
         )
+        ok = _res[0] if isinstance(_res, tuple) else bool(_res)
+        detail = (_res[1] if isinstance(_res, tuple) and len(_res) > 1 else "")
+        _verdict = _res[2] if isinstance(_res, tuple) and len(_res) > 2 else None
         if ok:
             # conv_id 骨架：0:1:my_uid:peer_uid（方向判定 / 落库与 WS 侧同构）
             conv_id = f"0:1:{ib.my_uid}:{peer_id}" if ib.my_uid else f"0:1::{peer_id}"
             ib.add_message(conv_id, "me", body.text, peer_id=str(peer_id),
                            # 2026-09-17 修补（审查 P2-12 配套）：local: 占位
                            msg_id=f"local:{uuid.uuid4().hex[:16]}")
+            # 2026-09-23（审计 P0-1）：持有服务端投递证据 ⇒ 写投递验证标记
+            _mark_send_delivery(body, conv_id, _verdict)
             logger.info(f"[recv][{body.account}] 已直发 uid={peer_id}: {body.text[:40]}")
             return {"ok": True, "conv_id": conv_id}
         logger.warning(f"[RECV-020] " + f"[recv][{body.account}] 直发 uid={peer_id} 失败: {detail}")

@@ -734,24 +734,38 @@ def probe_send_delivery(account: str) -> dict:
     """发送投递探针。
 
     设计契约（`02_效果定义与探针.md` §2.2）：**禁止用「接口返回 200」「UI 弹窗」当投递判据**
-    （曾发生「回 OK 但从未投递」）。本探针只认三类**本地硬证据**：
+    （曾发生「回 OK 但从未投递」）。本探针只认**本地硬证据**：
       ① `role='me'` 落库行；② 带 `skey` 的实发要素（图片/语音等）；
-      ③ 主动写入的 `[投递验证]` 文本（本项目实测投递用的显式标记）。
+      ③ `[投递验证]` 标记行 —— 且该标记**必须自带服务端消息号**
+         （`extra.server_message_id` 非空），否则视为无证据。
     并按唯一索引口径查 (conv_id,msg_id) 重复行（幂等性）。
 
-    ⚠️ 诚实边界：`role='me'` 行只证明「本地落库」，**不等于服务端确认投递**。
-    故无校验证据时最多报 degraded，不得报 healthy。
+    ⚠️ 诚实边界（2026-09-23 审计 P0-1 后强化）：
+      - `role='me'` 行只证明「本地落库」，**不等于服务端确认投递**；
+      - 标记行由**持有服务端响应的那一侧**写入（recv_daemon / sender 直发），
+        判定口径 = `services/send_response.py delivery_verdict()`：需
+        `server_message_id` 非空非 0 且 `check_code != 8610`；
+      - 故无标记时最多报 degraded，不得报 healthy。
     """
     reasons: list[str] = []
     evidence: list[str] = []
     rows = _db_query(
         "SELECT COUNT(*) AS n, "
-        "SUM(CASE WHEN extra LIKE '%skey%' THEN 1 ELSE 0 END) AS sk, "
-        "SUM(CASE WHEN text LIKE '%投递验证%' THEN 1 ELSE 0 END) AS ver "
+        "SUM(CASE WHEN extra LIKE '%skey%' THEN 1 ELSE 0 END) AS sk "
         "FROM dm_messages WHERE account=? AND role='me'", (account,))
     n = int(rows[0]["n"] or 0) if rows else 0
     sk = int(rows[0]["sk"] or 0) if rows else 0
-    ver = int(rows[0]["ver"] or 0) if rows else 0
+
+    # ── 投递验证标记：只认「带服务端消息号」的那些（P0-1 判别力恢复） ──
+    mrows = _db_query(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN IFNULL(json_extract(extra,'$.server_message_id'),'') <> '' "
+        "         THEN 1 ELSE 0 END) AS with_sid "
+        "FROM dm_messages WHERE account=? AND role='me' "
+        "AND (text LIKE '%投递验证%' OR msg_type='delivery_marker')", (account,))
+    mark_total = int(mrows[0]["total"] or 0) if mrows else 0
+    ver = int(mrows[0]["with_sid"] or 0) if mrows else 0
+    mark_no_sid = max(0, mark_total - ver)
 
     dup = _db_query(
         "SELECT COUNT(*) AS n FROM (SELECT conv_id, msg_id FROM dm_messages "
@@ -759,43 +773,52 @@ def probe_send_delivery(account: str) -> dict:
         "GROUP BY conv_id, msg_id HAVING COUNT(*)>1)", (account,))
     dup_n = int(dup[0]["n"] or 0) if dup else 0
 
-    if n == 0:
+    # 真实消息行数（扣掉标记行；否则标记会虚增「已发送」计数）
+    n_real = max(0, n - mark_total)
+
+    if n_real == 0:
         state = "unknown"
-        reasons.append("库内无 role='me' 记录（该账号从未发送或数据被清）→ 无法判定")
+        reasons.append(f"库内无 role='me' 真实消息（标记行 {mark_total} 条）→ 无法判定")
     elif dup_n > 0:
         state = "failed"
         reasons.append(f"存在 {dup_n} 组 (conv_id,msg_id) 重复发送行 —— 幂等性失守")
     elif ver == 0:
-        # 只有落库、无「投递验证」直接证据 —— 不得报 healthy（契约：不采信中间步骤）
+        # 只有落库、无「带消息号的投递验证」直接证据 —— 不得报 healthy
         state = "degraded"
-        reasons.append(f"有 {n} 条 role='me' 落库，但**无投递验证直接证据**"
-                       f"（`[投递验证]` 标记 {ver} 条）"
+        if mark_no_sid:
+            reasons.append(f"有 {mark_no_sid} 条投递验证标记**不带服务端消息号** ⇒ 不算证据"
+                           f"（P0-1 修复前正是这种『盲标记』把探针刷成 healthy）")
+        reasons.append(f"有 {n_real} 条 role='me' 落库，但**无投递验证直接证据**"
+                       f"（带消息号的标记 {ver} 条）"
                        f"→ 只证明「本地落库」，不能证明服务端已投递；"
                        f"skey {sk} 条只是「实发要素」，不作为投递证据")
     else:
         state = "healthy"
-        reasons.append(f"发送 {n} 条，含投递验证直接证据 {ver} 条，且无重复行")
+        reasons.append(f"发送 {n_real} 条，含投递验证直接证据 {ver} 条"
+                       f"（每条第③类证据均自带 `server_message_id`），且无重复行")
     if n:
-        evidence.append(f"role='me' 落库 {n} 条；`[投递验证]` {ver} 条；带 skey {sk} 条")
+        evidence.append(f"role='me' 落库 {n} 条（其中真实消息 {n_real} / 标记 {mark_total}）；"
+                        f"带消息号的投递验证 {ver} 条；带 skey {sk} 条")
         evidence.append(f"(conv_id,msg_id) 重复组 {dup_n}；库文件 {db_evidence()}")
-        evidence.append("判据口径：仅以 DB 落库 + 显式投递验证标记为准，"
+        evidence.append("判据口径：仅以 DB 真实消息行 + 带 server_message_id 的投递验证标记为准，"
                         "**不采信**接口 200 / UI 弹窗 / skey 存在性")
 
-    snapshot = {"score": round(ver / n, 4) if n else 0.0}
+    snapshot = {"score": round(ver / n_real, 4) if n_real else 0.0}
     base = _baseline_compare("send_delivery", account, snapshot)
-    if state == "healthy" and not evidence:
-        state = "unknown"
-        reasons.append("无证据不得报 healthy")
+    if state == "healthy" and ver == 0:
+        state = "degraded"
+        reasons.append("无带消息号的投递证据，不得报 healthy（不制造假证据）")
     return {
         "capability": "send_delivery",
         "state": state,
         "coverage": None,
-        "coverage_note": "真实投递率需「对端收到」的独立证据；本探针以落库+校验标记近似",
+        "coverage_note": "真实投递率需「对端收到」的独立证据；本探针以落库+服务端消息号标记近似",
         "confidence": "A" if (ver or sk) else "D",
         "measured_at": _iso(),
         "evidence": evidence,
-        "metrics": {"sent_db_rows": n, "with_skey": sk, "delivery_verified": ver,
-                    "dup_groups": dup_n},
+        "metrics": {"sent_db_rows": n, "real_msg_rows": n_real, "with_skey": sk,
+                    "delivery_verified": ver, "marker_rows": mark_total,
+                    "marker_without_msgid": mark_no_sid, "dup_groups": dup_n},
         "baseline_delta": base,
         "reasons": reasons,
     }

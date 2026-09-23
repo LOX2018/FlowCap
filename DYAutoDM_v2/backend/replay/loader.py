@@ -89,3 +89,39 @@ def load_fixture(name: str, verify: bool = True) -> bytes:
 
 def sha256_of(blob: bytes) -> str:
     return hashlib.sha256(blob).hexdigest()
+
+
+class FixtureUnavailable(AssertionError):
+    """夹具缺失/不可用 —— **hard fail**（不再是 SkipTest 静默通过）。
+
+    P3-1（2026-09-23 假绿修复）：夹具缺失此前用 `unittest.SkipTest`，
+    而 loader 缺 manifest 返回 `{}` ⇒ 套件**仍 exit 0**（"没跑" 被当成 "通过"）。
+    回放层的存在意义就是让回归可跑；夹具缺失是**交付缺陷**，必须红。
+    """
+
+
+def require_fixture(name: str) -> dict:
+    """断言夹具存在且完整；缺失/篡改一律 **hard fail**（raise，不 skip）。
+
+    用法（测试模块 setUpClass/setUpModule 顶部）::
+
+        entry = return require_fixture("dm_read_fixture")
+    """
+    try:
+        names = list_fixtures()
+    except Exception as e:  # noqa: BLE001
+        raise FixtureUnavailable(
+            f"回放夹具清单不可读（fixtures/manifest.json 缺失或损坏）："
+            f"{type(e).__name__}: {e}") from e
+    if name not in names:
+        raise FixtureUnavailable(
+            f"回放夹具 {name!r} 缺失（清单现有：{names}）。"
+            f"夹具缺失 = 功能未验收，必须 hard fail，不得 SkipTest 静默通过。"
+            f"请用 `python -m replay.recorder` 录制后重跑。")
+    entry = describe(name)
+    # 完整性：sha256/size 必须齐备（防「登记了但无冻结指纹」的空壳条目）
+    if not entry.get("sha256") or entry.get("size") is None:
+        raise FixtureUnavailable(f"夹具 {name!r} 清单条目缺 sha256/size：{entry}")
+    # 真跑一次加载 + 校验（篡改/截断即在此 red）
+    load_fixture(name)
+    return entry

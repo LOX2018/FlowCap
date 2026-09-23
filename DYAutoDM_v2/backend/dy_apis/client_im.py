@@ -405,13 +405,39 @@ class ImMixin:
             logger.error(f"[AUTH-028] " + f'私信发送响应 protobuf 解析失败: {e} | raw[:120]={resp.content[:120]!r}')
             return False, f'响应用户解析失败: {e}'
         resp_json = protobuf_to_dict(responseProto)
-        success = resp_json.get('message') == 'OK'
-        if success:
-            logger.info(f'私信发送成功 conversation_id={conversation_id}')
-            return True, 'ok'
-        detail = DouyinAPI._classify_send_fail(resp_json)
-        logger.error(f"[AUTH-029] " + f'私信发送失败 conversation_id={conversation_id} resp_json={resp_json}')
-        return False, detail
+        # 2026-09-23（审计 P0-1）：投递判定改用**唯一解析器**（宽容字节解析）。
+        # 旧实现 `message == 'OK'` 不足以证明投递 —— 本文件 _classify_send_fail
+        # 自己就写着「发送被静默拦截（返回 OK 但未实际投递）」。真正的证据在
+        # 响应体 body.field6→field100 的 server_message_id / check_code，
+        # 而 static/Response_pb2.Response.body 未定义 field 100 ⇒ 必须走宽容解析。
+        try:
+            from services.send_response import delivery_verdict as _drv
+            _v = _drv(resp.content, http_ok=True)
+        except Exception as _e:  # noqa: BLE001
+            logger.warning(f"[AUTH-031] " + f"[私信] 投递判定降级（解析器不可用）: {_e}")
+            _v = {"delivered": bool(resp_json.get('message') == 'OK'),
+                  "server_message_id": "", "status": None, "check_code": None,
+                  "state": "unknown", "reason": "解析器不可用，退回 message==OK"}
+        if _v.get("delivered"):
+            logger.info(f"私信发送成功 conversation_id={conversation_id} "
+                        f"server_message_id={_v.get('server_message_id')} "
+                        f"check_code={_v.get('check_code')}")
+            return True, "ok", _v
+        # —— 无投递证据：给出**可归因**的失败原因（不再笼统「发送失败」） ——
+        detail = str(_v.get("reason") or "")
+        if _v.get("state") == "review":
+            logger.warning(f"[AUTH-029] " + f"[私信] {detail} conversation_id={conversation_id}")
+        elif resp_json.get('message') == 'OK':
+            # 只回 OK 却无消息号 —— 历史上被误当成功的那一类
+            logger.error(f"[AUTH-032] " + f"[私信] 返回 OK 但服务端无 server_message_id "
+                         f"⇒ 判定**未投递**（疑似内容违规/被截断）conversation_id={conversation_id}")
+        else:
+            detail = DouyinAPI._classify_send_fail(resp_json)
+            logger.error(f"[AUTH-029] " + f"私信发送失败 conversation_id={conversation_id} "
+                         f"resp_json={resp_json}")
+        # ⚠️ 兼容契约：旧调用方按 (bool, str) 解包 ⇒ 第二项必须是**可读原因串**，
+        #    结构化判定挂在第三项（旧调用方忽略）。
+        return False, (detail or "发送未确认投递"), _v
 
     @staticmethod
     def _classify_send_fail(resp_json: dict) -> str:
@@ -425,7 +451,8 @@ class ImMixin:
         combined = " ".join([raw_msg, err, status]).upper()
         # 顺序敏感：先命中具体场景，再兜底
         if raw_msg == "OK":
-            return "发送被静默拦截（返回 OK 但未实际投递，疑似内容违规/被截断）"
+            return ("发送被静默拦截（返回 OK 但未实际投递，疑似内容违规/被截断）"
+                    "—— 判定见 services/send_response.py delivery_verdict()")
         if any(k in combined for k in ("MUTUAL", "FOLLOW_EACH", "NEED_FOLLOW", "INTERACT")):
             return "对方需与你互关后才能收到私信"
         if any(k in combined for k in ("PRIVILEGE", "PERMISSION", "PRIVACY")):

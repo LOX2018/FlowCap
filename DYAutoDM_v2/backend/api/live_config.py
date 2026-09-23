@@ -60,6 +60,7 @@ key=``live_room_configs``（沿用旧 key，**老数据零迁移**，多余字�
 - POST   ``/{sid}/apply``      写进 kv ``config``（供引擎下次启动读取）
 """
 import re
+import threading
 import time
 
 from fastapi import APIRouter, Request
@@ -80,6 +81,10 @@ _FIELDS = {
 
 # 策略 id 允许的字符（中文 / 字母 / 数字 / 下划线 / 连字符），上限 40 字符
 _KEY_RE = re.compile(r"^[\w\u4e00-\u9fff\-]{1,40}$")
+
+# P0-2a：策略 id 生成用的进程内锁 + 单调递增尾巴（见 new_strategy_id）
+_id_lock = threading.Lock()
+_last_id_ms = 0
 
 
 def _load_all() -> dict:
@@ -124,8 +129,22 @@ def normalize_strategy_key(raw: str) -> str:
     return s if _KEY_RE.match(s) else ""
 
 
-def new_strategy_id() -> str:
-    return f"lc_{int(time.time() * 1000)}"
+def new_strategy_id(existing: dict | None = None) -> str:
+    """生成策略 id（形如 ``lc_<epoch_ms>``）；**保证不与 existing 的键碰撞**。
+
+    P0-2a（2026-09-23 实测）：旧实现裸用 `int(time.time()*1000)`，同毫秒新建两条
+    策略/迁移 5 条旧记录 → 同 id → upsert 静默覆盖。现进程内加锁单调递增，
+    并对目标 dict 查重（跨进程兜底）。
+    """
+    global _last_id_ms
+    while True:
+        now_ms = int(time.time() * 1000)
+        with _id_lock:
+            cand = max(now_ms, _last_id_ms + 1)
+            _last_id_ms = cand
+        sid = f"lc_{cand}"
+        if not existing or sid not in existing:
+            return sid
 
 
 class StrategyBody(BaseModel):
@@ -171,8 +190,9 @@ async def save_strategy(body: StrategyBody) -> dict:
     """新建 / 更新一条策略（按 id upsert；id 为空则生成新 id）。"""
     if body.id and not normalize_strategy_key(body.id):
         return {"ok": False, "error": "策略 id 无效（≤40 字，可用中英文/数字/下划线/连字符）"}
-    sid = normalize_strategy_key(body.id) or new_strategy_id()
+    sid = normalize_strategy_key(body.id)
     data = _load_all()
+    sid = sid or new_strategy_id(data)
     old = data.get(sid) or {}
     upd = {"id": sid, "updated_at": int(time.time())}
     if body.name and body.name.strip():
@@ -213,17 +233,31 @@ async def delete_strategy(sid: str) -> dict:
     key = str(sid)
     if key not in data:
         return {"ok": False, "error": "未找到该直播策略"}
-    del data[key]
-    _save_all(data)
 
-    unbound = 0
+    # ── P2-10 修补（2026-09-23 实测复现）───────────────────────────────────
+    # 旧顺序：**先持久化删除**，再尝试解绑；
+    # 解绑抛异常时仍 `ok=True + warning` ⇒ 策略没了、房间还指着它 = **悬空引用**，
+    # 而前端只判 `ok` ⇒ 用户看不到任何异常（实测响应 ok=True、库内房间仍指 lc_ref）。
+    # 现改为「先解绑策略引用，再落盘删除」，且失败时明确 ok=False：
+    #   ① 解绑失败 → 不删策略，返回 ok=False（保证「有引用就有策略」，可重试）；
+    #   ② 解绑成功 → 再删策略；删除本身失败则同样 ok=False。
     try:
         from api.live_rooms import unbind_strategy
         unbound = unbind_strategy(key)
-    except Exception as e:  # 解绑失败必须显式暴露，不得静默留悬空引用
-        logger.warning(f"[LIVE-023] " + f"[live-strategy] 解绑引用房间失败 {key}: {e}")
-        return {"ok": True, "deleted": key, "unbound": 0,
-                "warning": f"策略已删除，但解绑引用房间失败: {e}"}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-023] [live-strategy] 解绑引用房间失败 {key}，"
+                       f"为不留悬空引用**将不删除该策略**: {e}")
+        return {"ok": False, "deleted": "", "unbound": 0,
+                "error": f"解绑引用房间失败，已中止删除以避免悬空引用: {e}"}
+
+    try:
+        data = _load_all()
+        data.pop(key, None)
+        _save_all(data)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-023] [live-strategy] 删除策略落盘失败 {key}: {e}")
+        return {"ok": False, "deleted": "", "unbound": unbound,
+                "error": f"删除策略落盘失败: {e}"}
 
     logger.info(f"[live-strategy] 已删除策略 {key}（自动解绑房间 {unbound} 个）")
     return {"ok": True, "deleted": key, "unbound": unbound}

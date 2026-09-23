@@ -46,6 +46,7 @@ _dbfile = None
 _saved_get_db = None
 _tmpdir = None
 _was_imported = False
+_entry = None
 
 # ⚠️ 三条硬约束（都是实测踩出来的，勿动）：
 #  ① **绝不**调用 `Sandbox.activate()` —— 它改写进程级 `DY_APP_ROOT`，而 discover 把所有
@@ -64,12 +65,15 @@ _was_imported = False
 
 
 def setUpModule():
-    global _dbfile, _saved_get_db, _tmpdir, _was_imported
-    if FIXTURE not in loader.list_fixtures():
-        raise unittest.SkipTest(f"尚未录制 {FIXTURE} 夹具")
+    global _dbfile, _saved_get_db, _tmpdir, _was_imported, _entry
+    # P3-1：夹具缺失 = hard fail（不再 SkipTest 静默通过）
+    _entry = loader.require_fixture(FIXTURE)
     _tmpdir = tempfile.mkdtemp(prefix="dybc_convread_")
     _dbfile = os.path.join(_tmpdir, "replay_fixture.db")
-    shutil.copyfile(loader.fixture_path(FIXTURE), _dbfile)
+    # P3-2：必须走 load_fixture（sha256 冻结校验）——不得用 shutil.copyfile
+    #       绕过门禁（实测截断样本经 copyfile 零告警通过；load_fixture 会 raise）。
+    with open(_dbfile, "wb") as _f:
+        _f.write(loader.load_fixture(FIXTURE))
 
     _was_imported = "api.messages" in sys.modules
     import api.messages as M                     # noqa: E402
@@ -81,7 +85,7 @@ def setUpModule():
     got = con.execute("PRAGMA database_list").fetchone()[2]
     if os.path.normcase(os.path.abspath(got)) != os.path.normcase(os.path.abspath(_dbfile)):
         M.get_db = _saved_get_db
-        raise unittest.SkipTest(f"无法接管 api.messages.get_db（实际指向 {got}）")
+        raise RuntimeError(f"无法接管 api.messages.get_db（实际指向 {got}）")
 
 
 def tearDownModule():
@@ -211,6 +215,40 @@ class TestConversationReadContract(unittest.TestCase):
         res = _call("no_such_account_xyz")
         self.assertTrue(res.get("ok"))
         self.assertEqual(res.get("conversations"), [])
+
+
+class TestManifestExpectedIsLive(unittest.TestCase):
+    """P3-9：manifest 的 `expected` 必须被**消费者**读取并与现算真值互证。
+
+    原缺陷：`expected` 是死元数据（唯一消费者用 SQL 现算期望，从不读 manifest）
+    ⇒ 两份判据各自演化，manifest 里写的数字谁也没验过。现断言两路一致。
+    """
+
+    def test_manifest_expected_matches_sql_truth(self):
+        expected = (_entry or {}).get("expected") or {}
+        self.assertTrue(expected, "manifest 缺 expected 块（判据无来源）")
+        truth = {
+            "accounts": _sql("SELECT COUNT(DISTINCT account) FROM dm_conversations")[0][0],
+            "conversations": _sql("SELECT COUNT(*) FROM dm_conversations")[0][0],
+            "messages": _sql("SELECT COUNT(*) FROM dm_messages")[0][0],
+            "kv_store_rows": _sql("SELECT COUNT(*) FROM kv_store")[0][0],
+            "roles_me": _sql("SELECT COUNT(*) FROM dm_messages WHERE role='me'")[0][0],
+            "roles_them": _sql("SELECT COUNT(*) FROM dm_messages WHERE role='them'")[0][0],
+            "convs_with_msgs": _sql(
+                "SELECT COUNT(DISTINCT conv_id) FROM dm_messages "
+                "WHERE msg_type<>'50001'")[0][0],
+            "empty_convs": _sql(
+                "SELECT COUNT(*) FROM dm_conversations c WHERE c.conv_id NOT IN "
+                "(SELECT DISTINCT conv_id FROM dm_messages WHERE msg_type<>'50001')")[0][0],
+        }
+        for k, want in expected.items():
+            if k not in truth:
+                continue
+            with self.subTest(metric=k):
+                self.assertEqual(
+                    truth[k], want,
+                    f"manifest.expected[{k}]={want} 与夹具现算真值 {truth[k]} 不符 "
+                    f"⇒ expected 已与夹具漂移（重录夹具必须同步 expected）")
 
 
 class TestSensitivity(unittest.TestCase):

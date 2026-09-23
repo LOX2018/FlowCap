@@ -596,12 +596,39 @@ class LiveMixin:
         return safe_json(res)
 
     @staticmethod
-    def sendMsgInRoom(auth, room_id: str, content: str = ''):
+    def sendMsgInRoom(auth, room_id: str, content: str = '', **kwargs):
+        """发送直播间弹幕（`/webcast/room/chat/`，GET）。
+
+        ## 对齐上游（2026-09-23，T1/A1）
+
+        逐字段对齐上游 `cv-cat/DouYin_Spider` commit `251075e`
+        (`feat: align live room comment sending`, 2026-09-20 01:26)：
+
+        - `Origin` 由**主站** `douyin_url` 改为**直播域** `live_url`。直播前端
+          的 `Origin` 与 bd-ticket 证书都必须按 `live.douyin.com` 生成；沿用
+          主站 `Origin` 会得到空响应或业务失败（上游注释原文）。
+        - 新增 `**kwargs`：`referer` / `web_rid` / `enter_from` / `type`，以及
+          7 个可选 query（`episode_info_str`/`flow_time`/`team_id`/`camera_id`/
+          `emoji_id`/`rtf_content`/`paste_edit_method`，为空则不发送）。
+        - `enter_from` 默认由 `'web_others_homepage'` 改为 `'link_share'`
+          （上游取值，PC Web 直播实录）。
+        - `room_id` / `type` 一律 `str()`。
+        - `with_bd(api, auth, origin=DouyinAPI.live_url)`：⚠️ 本项目
+          `builder/header.py: with_bd` **签名收 `origin` 但函数体从不使用它**
+          （无 `ecdh_key(aid, origin)`），故此参数在当前实现下是**空操作**——
+          照抄以保持上游形态一致，**不得**据此认为「证书已按直播域生成」
+          （真正的差异在未移植的 `ecdh_key`，见 UP-L1 A2-6）。
+
+        房间参数名仍是 `room_id`（值来自前端 `room_id_str`）；`web_rid` kwarg
+        **只用于拼 referer**，不落进 query。
+
+        ⚠️ 写接口（触风控红线）：本项目当前无生产调用方；真实投递验证 pending。
+        """
         api = "/webcast/room/chat/"
         headers = HeaderBuilder().build(HeaderType.GET)
-        refer = f"https://live.douyin.com/{room_id}"
-        headers.set_header("Origin", DouyinAPI.douyin_url)
-        headers.with_bd(api, auth)
+        refer = kwargs.get('referer') or f"{DouyinAPI.live_url}/{kwargs.get('web_rid', room_id)}"
+        headers.set_header("Origin", DouyinAPI.live_url)
+        headers.with_bd(api, auth, origin=DouyinAPI.live_url)
         headers.with_csrf(auth.cookie_str)
         headers.set_referer(refer)
         params = Params()
@@ -610,7 +637,7 @@ class LiveMixin:
         params.add_param("live_id", '1')
         params.add_param("device_platform", 'web')
         params.add_param("language", 'zh-CN')
-        params.add_param("enter_from", 'web_others_homepage')
+        params.add_param("enter_from", kwargs.get('enter_from', 'link_share'))
         params.add_param("cookie_enabled", 'true')
         params.add_param("screen_width", '2560')
         params.add_param("screen_height", '1440')
@@ -618,9 +645,14 @@ class LiveMixin:
         params.add_param("browser_platform", 'Win32')
         params.add_param("browser_name", 'Edge')
         params.add_param("browser_version", '130.0.0.0')
-        params.add_param("room_id", room_id)
+        params.add_param("room_id", str(room_id))
         params.add_param("content", content)
-        params.add_param("type", '0')
+        params.add_param("type", str(kwargs.get('type', '0')))
+        for key in ('episode_info_str', 'flow_time', 'team_id', 'camera_id',
+                    'emoji_id', 'rtf_content', 'paste_edit_method'):
+            value = kwargs.get(key)
+            if value not in (None, ''):
+                params.add_param(key, value)
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus(host=LIVE_HOST)
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),

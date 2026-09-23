@@ -113,6 +113,14 @@ export default function TasksPage(props: PageProps) {
           ? "已暂停"
           : "运行中";
 
+  // 🔴 P1-1 修复（2026-09-23）：任务中心的引擎控制必须**显式带账号**。
+  // 后端四个控制端点的账号走 `?acct=`（见 client.ts 契约注释），不传则退化为
+  // 「单任务回落 / 多任务 409」。本页在多任务并发下必须点名账号，否则按钮必 409。
+  // 取值优先级：overview.acct（后端 /api/overview 的引擎归属）→ 历史行里的运行中账号。
+  const runningAcct =
+    (ov.acct || "").trim() ||
+    (history.find((h) => h.status === "running")?.acct || "").trim();
+
   return (
     <PageContainer>
       <PageHeader
@@ -219,7 +227,7 @@ export default function TasksPage(props: PageProps) {
                           title="立即终止仍在发送的存量私信"
                           onClick={() =>
                             api
-                              .stopEngine()
+                              .stopEngine(runningAcct || undefined)
                               .then(() => push("已硬停止，存量私信终止发送"))
                               .catch((e: unknown) => push("异常: " + errMsg(e)))
                           }
@@ -232,7 +240,7 @@ export default function TasksPage(props: PageProps) {
                           size="sm"
                           onClick={() =>
                             api
-                              .resumeEngine()
+                              .resumeEngine(runningAcct || undefined)
                               .then(() => push("已继续"))
                               .catch((e: unknown) => push("异常: " + errMsg(e)))
                           }
@@ -245,7 +253,7 @@ export default function TasksPage(props: PageProps) {
                           size="sm"
                           onClick={() =>
                             api
-                              .pauseEngine()
+                              .pauseEngine(runningAcct || undefined)
                               .then(() => push("已暂停"))
                               .catch((e: unknown) => push("异常: " + errMsg(e)))
                           }
@@ -258,7 +266,7 @@ export default function TasksPage(props: PageProps) {
                         size="sm"
                         onClick={() =>
                           api
-                            .stopEngine()
+                            .stopEngine(runningAcct || undefined)
                             .then(() => push("已停止"))
                             .catch((e: unknown) => push("异常: " + errMsg(e)))
                         }

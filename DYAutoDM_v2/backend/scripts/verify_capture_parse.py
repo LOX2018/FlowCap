@@ -43,12 +43,22 @@ BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BACKEND)
 os.chdir(BACKEND)
 
-PASS, FAIL = [], []
+PASS, FAIL, SKIP = [], [], []
 
 
 def check(name, cond, detail=""):
     (PASS if cond else FAIL).append(name)
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}{('  — ' + detail) if detail else ''}")
+
+
+def skip(name, detail=""):
+    """登记一个**未执行**的验收项 —— 空转 ≠ 通过（P3-6）。
+
+    旧实现下 C 段整体 skip 后仍打印「6/6 通过」且 `sys.exit(0)`，
+    把"没跑"当成"通过"。现跳过项单独计数，并强制 exit≠0。
+    """
+    SKIP.append(name)
+    print(f"  [SKIP] {name}{('  — ' + detail) if detail else ''}")
 
 
 print("=" * 68)
@@ -119,9 +129,10 @@ _bins = sorted(glob.glob(os.path.join(DESIGN_ROOT, "_repro352_fresh", "init_live
     + sorted(glob.glob(os.path.join(DESIGN_ROOT, "**", "init_live.bin"), recursive=True))
 _bin = _bins[0] if _bins else None
 if not _bin:
-    print("  [SKIP] 未找到真实首包样本 —— 本段自 2026-09-20 起长期空转，"
-          "功能验收已迁移至 test_replay_capture_parse.py（详见 01_铁律 D-03）")
-    print("  [INFO] 本节不计入通过项（空转的验收 = 未验收，不得当作 PASS）")
+    # 空转的验收 = 未验收（P3-6：不再当作 PASS，且不打印「N/N 通过」）
+    skip("C 段：真实首包解析（缺陷①+②的症状）",
+         "未找到真实首包样本 —— 自 2026-09-20 起长期空转；"
+         "功能验收已迁移至 test_replay_capture_parse.py（01_铁律 D-03）")
 else:
     raw = open(_bin, "rb").read()
     # 自身 uid 自愈推断（与 parse_init_protobuf 内部同法）
@@ -197,11 +208,23 @@ else:
           "轮间隔 > 批间隔")
 
 # ---------------- 汇总 ----------------
+# P3-6：空转项（skip）不再被吞 —— 与 FAIL 一样使退出码 ≠0，且不再打印「N/N 通过」。
 print("\n" + "=" * 68)
-print(f"结果: {len(PASS)}/{len(PASS) + len(FAIL)} 通过")
+_total = len(PASS) + len(FAIL) + len(SKIP)
+if SKIP:
+    # 不得打印「N/N 通过」：有未执行项时通过率不完整，如实分列
+    print(f"结果: 通过 {len(PASS)}/{_total}，失败 {len(FAIL)}，"
+          f"**未执行（skip）{len(SKIP)}** —— 未执行 ≠ 通过")
+else:
+    print(f"结果: {len(PASS)}/{_total} 通过")
 if FAIL:
     print("失败项:")
     for f in FAIL:
         print("   -", f)
+if SKIP:
+    print("未执行项（空转的验收 = 未验收，不得当作 PASS）:")
+    for s in SKIP:
+        print("   -", s)
 print("=" * 68)
-sys.exit(1 if FAIL else 0)
+# P3-6：有 skip 也 exit≠0（旧实现只在 FAIL 时退 1，skip 被无视 → 假绿）
+sys.exit(0 if (not FAIL and not SKIP) else 1)

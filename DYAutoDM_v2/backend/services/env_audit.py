@@ -212,6 +212,74 @@ async () => {
 """
 
 # ---------------------------------------------------------------------------
+# T5-b（2026-09-23）：两世界可见性探针
+#
+# ## 为什么需要
+#
+# `browser_daemon` 的 CAP_*_HOOK_JS 经 `add_init_script` 注入后，读取侧
+# （`page.evaluate("() => window.__CAP_WP_MESSAGE__ ...")`）在**默认世界**执行。
+# 若注入落在**另一个 JS 世界**（patchright 的隔离世界），页面主世界看得到、
+# 默认世界却读不到 —— 表现为「注入成功却读到空」，且**不报错**（假成功）。
+#
+# 本探针同时验两件事：
+#   ① 页面**主世界**能看到 hook 建的 `window.__CAP_*` 键（注入确实执行了）；
+#   ② **默认世界**（读取侧）也能读到同一键（跨世界可见）。
+# 二者不一致即判 red（这是「注入成功却读到空」复发时的唯一机械信号）。
+#
+# 注：patchright 的 `add_init_script` 走 `install_inject_route`
+# （document 请求 `patchrightInitScript=True` 回退），设计上就是注入**主世界**；
+# 此探针是把该设计前提钉成可验证判据，防回归。
+# ---------------------------------------------------------------------------
+TWO_WORLD_PROBE_JS = r"""
+() => {
+  // 在**页面主世界**读取 hook 是否真的建了键（不依赖读取侧世界）。
+  const keys = ['__CAP_USERINFO__', '__CAP_WP_MESSAGE__'];
+  const out = {};
+  for (const k of keys) {
+    try { out[k] = !!(window[k]); } catch (e) { out[k] = false; }
+  }
+  out.isMainWorld = (window === window.top);
+  return out;
+}
+"""
+
+
+def compare_two_world_visibility(main_world: dict, default_world: dict) -> dict:
+    """比对「页面主世界」与「默认（读取）世界」对 CAP_* 键的可见性。
+
+    参数：
+      main_world    —— 在页面主世界取到的 {__CAP_USERINFO__: bool, ...}
+                       （即 TWO_WORLD_PROBE_JS 的输出）
+      default_world —— 在读取侧默认世界取到的同一组键的可见性
+
+    判定（全部走机械判据，返回 leaks）：
+      · 主世界**没有**任何 CAP_* 键 → 注入根本没执行（BCC-070 fatal）
+      · 主世界有、默认世界无 → **跨世界不可见**（正是「注入成功却读到空」，BCC-070 fatal）
+      · 两世界一致 → ok
+    """
+    keys = ("__CAP_USERINFO__", "__CAP_WP_MESSAGE__")
+    leaks: list[dict] = []
+
+    def _add(code, severity, detail):
+        leaks.append({"code": code, "severity": severity, "detail": detail})
+
+    main_visible = [k for k in keys if (main_world or {}).get(k)]
+    default_visible = [k for k in keys if (default_world or {}).get(k)]
+
+    if not main_visible:
+        _add("BCC-070", "fatal",
+             "页面主世界看不到任何 CAP_* hook 键 —— init script 未生效"
+             "（注入失败或未执行）")
+    for k in main_visible:
+        if k not in default_visible:
+            _add("BCC-070", "fatal",
+                 f"{k} 在页面主世界可见、但默认（读取）世界不可见 —— "
+                 f"跨世界不可见，读取侧将永远读到空（注入落进了隔离世界）")
+    fatal = [x for x in leaks if x["severity"] == "fatal"]
+    return {"ok": len(fatal) == 0, "leaks": leaks,
+            "main_visible": main_visible, "default_visible": default_visible}
+
+# ---------------------------------------------------------------------------
 # Python 侧比对：浏览器真值(js_view) vs 项目档案(expected)
 # 返回 leaks: [{code, severity, detail}]; all_ok: bool
 # ---------------------------------------------------------------------------

@@ -411,6 +411,12 @@ async def get_conversation(account: str, conv_id: str):
             "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
             "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
             "AND NOT (msg_type = '7' AND msg_id IS NULL) "
+            # 2026-09-23（审计 P0-1）：排除投递验证标记，禁止其泄漏进用户聊天框。
+            # 标记行（msg_type='delivery_marker' / msg_id 前缀 'verify:' / text 前缀
+            # '[投递验证]'）是探针证据，不是用户消息 —— 三条判据取并集，任一条命中即排除。
+            "AND msg_type <> 'delivery_marker' "
+            "AND text NOT LIKE '[投递验证]%' "
+            "AND IFNULL(msg_id,'') NOT LIKE 'verify:%' "
             # 2026-09-06 过滤抖音「未发过消息的陌生会话」系统占位提示
             # （用户实测：对方回复你或互关之前，可发送一条文字消息...）；
             # 此前 sender 来自陌生人被当真实消息入库污染聊天记录
