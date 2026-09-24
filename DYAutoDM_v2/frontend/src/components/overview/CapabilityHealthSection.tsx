@@ -51,6 +51,7 @@ interface PatrolStatus {
 
 /** 能力名 → 中文（对齐 02_效果定义与探针.md §2 的业务域口径） */
 const CAP_NAME: Record<string, string> = {
+  kernel_availability: "指纹内核",
   conversation_capture: "会话捕获",
   send_delivery: "私信发送",
   credential_identity: "凭证身份",

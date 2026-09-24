@@ -1031,6 +1031,99 @@ def probe_ai_lead_capture(account: str) -> dict:
     }
 
 
+def probe_kernel_availability(account: str) -> dict:
+    r"""能力探针：指纹内核（Camoufox）是否可用 —— 与账号无关的**全局**能力。
+
+    ## 为什么必须有（真实事故，2026-09-24）
+
+    `%LOCALAPPDATA%\camoufox\...\Cache` 被上游 `pkgman` 自毁清空（`INSTALL_DIR`
+    非空但 `.0.5_FLAG` 缺失 → `shutil.rmtree`），随后 `should_use_vb` 抛
+    `[BCC-070]`，BCC 容器**彻底起不来**，且以 3.05s 一轮重建风暴表现
+    （实测 136 次 BCC-006 / 138 次 BCC-070）。此前除「起不来」没有任何先兆 ——
+    本探针让缺失在巡检里先被报出来。
+
+    ## 零风控（模块级硬边界）
+
+    只读本地安装目录 + 本地包元数据；**不联网、不触发下载、不起浏览器**
+    （`installed_verstr()` 只读 version.json，不会 fetch）。
+
+    ## 判据
+
+    | state | 条件 |
+    |---|---|
+    | healthy | 启用 Camoufox 且 `installed_verstr()` 成功 |
+    | failed  | 启用 Camoufox 但内核不可用（BCC-070 的成因） |
+    | unknown | 未启用 Camoufox（走 Chromium 分支）→ 不可判定为缺陷 |
+    """
+    try:
+        from auto_dm import config as _cfg
+        from vbrowser_camoufox import camoufox_enabled
+    except Exception as e:  # noqa: BLE001
+        return {
+            "capability": "kernel_availability", "state": "unknown", "coverage": None,
+            "confidence": "D", "measured_at": _iso(), "evidence": [],
+            "metrics": {}, "baseline_delta": None,
+            "reasons": [f"无法加载内核判定模块（{type(e).__name__}）：{e}"],
+        }
+
+    if not camoufox_enabled(_cfg):
+        return {
+            "capability": "kernel_availability", "state": "unknown", "coverage": None,
+            "confidence": "A", "measured_at": _iso(),
+            "evidence": ["DY_BROWSER_KERNEL 未启用 camoufox（走 Chromium 回退分支）"],
+            "metrics": {"camoufox_enabled": False}, "baseline_delta": None,
+            "reasons": ["未启用 Camoufox → 本条不适用（非缺陷，不报 failed）"],
+        }
+
+    evidence: list[str] = []
+    try:
+        from camoufox.pkgman import installed_verstr, launch_path
+        ver = (installed_verstr() or "").strip()
+        try:
+            exe = str(launch_path())
+        except Exception:  # noqa: BLE001
+            exe = ""
+        flag = ""
+        try:
+            import camoufox.pkgman as _pk
+            flag = str(getattr(_pk, "INSTALL_DIR", "") or "")
+        except Exception:  # noqa: BLE001
+            flag = ""
+        evidence.append(f"installed_verstr = {ver}")
+        if exe:
+            evidence.append(f"launch_path = {exe}（存在={os.path.isfile(exe)}）")
+        return {
+            "capability": "kernel_availability", "state": "healthy", "coverage": 1.0,
+            "confidence": "A", "measured_at": _iso(), "evidence": evidence,
+            "metrics": {"camoufox_enabled": True, "kernel_version": ver,
+                        "install_dir": flag, "exe_exists": bool(exe and os.path.isfile(exe))},
+            "baseline_delta": None,
+            "reasons": ["Camoufox 内核可用（installed_verstr 成功解析）"],
+        }
+    except Exception as e:  # noqa: BLE001
+        # BCC-070 的确切成因（内核本体缺失）—— 明确 failure，给出修复指引
+        evidence.append(f"内核解析异常：{type(e).__name__}: {e}")
+        try:
+            import camoufox.pkgman as _pk
+            _d = getattr(_pk, "INSTALL_DIR", None)
+            if _d:
+                evidence.append(f"安装目录 = {_d}（存在={os.path.isdir(str(_d))}）")
+                if os.path.isdir(str(_d)):
+                    evidence.append(
+                        "顶层条目 = " + repr(sorted(os.listdir(str(_d)))[:6]))
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "capability": "kernel_availability", "state": "failed", "coverage": 0.0,
+            "confidence": "A", "measured_at": _iso(), "evidence": evidence,
+            "metrics": {"camoufox_enabled": True, "error": f"{type(e).__name__}: {e}"},
+            "baseline_delta": None,
+            "reasons": ["Camoufox 已启用但内核不可用 → BCC 容器无法启动（BCC-070）；"
+                        "修复：执行 `camoufox fetch`（必要时带 GITHUB_TOKEN，并先清掉"
+                        "目录内名为 nul 的残留文件）"],
+        }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 注册表与统一入口
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1041,11 +1134,17 @@ REGISTRY: dict[str, Callable[[str], dict]] = {
     "send_delivery": probe_send_delivery,
     "live_danmaku": probe_live_danmaku,
     "ai_lead_capture": probe_ai_lead_capture,
+    "kernel_availability": probe_kernel_availability,
 }
 
 # 顺序 = 建议关注优先级（对齐 02_效果定义与探针.md §2 的五大业务域）
 CAPABILITY_ORDER = ["conversation_capture", "send_delivery", "credential_identity",
                     "live_danmaku", "ai_lead_capture", "message_integrity"]
+
+# 非业务域**前置项**：不属 02 §2 的六大业务域，但缺失时会拖垮全部业务域，
+# 故并入巡检默认集合（CAPABILITY_ORDER 是冻结契约，不为它新增成员 ——
+#  test_capability_probe.test_registry_and_order 将其钉在文档 §2 口径上）。
+PREP_CAPABILITIES = ["kernel_availability"]
 
 _STATE_RANK = {"failed": 0, "unknown": 1, "degraded": 2, "healthy": 3}
 
@@ -1211,6 +1310,26 @@ def run_patrol_once() -> dict:
             except Exception as _ce:
                 contract_detail = f"check_contracts exec fail: {_ce}"
 
+            # ── 指纹内核可用性（2026-09-24）──
+            # 与 D4 契约检查**同法**折进巡检：内核不是 02 §2 的六大业务域
+            # （CAPABILITY_ORDER 是冻结契约，不为它新增成员），但它缺失会让
+            # BCC 容器彻底起不来（BCC-070 + 3s 一轮重建风暴），且除「起不来」
+            # 外此前没有任何先兆 —— 故作为**前置项**在巡检里独立报出。
+            prep_checks: dict = {}
+            for _cap in PREP_CAPABILITIES:
+                try:
+                    _pr = run_probe(_cap, "")
+                    prep_checks[_cap] = {
+                        "ok": _pr.get("state") == "healthy",
+                        "state": _pr.get("state"),
+                        "detail": "；".join(_pr.get("reasons") or [])[:200],
+                    }
+                except Exception as _pe:  # noqa: BLE001
+                    prep_checks[_cap] = {"ok": False, "state": "unknown",
+                                         "detail": f"{_cap} probe exec fail: {_pe}"}
+            kernel_check = prep_checks.get(
+                "kernel_availability", {"ok": True, "state": "healthy", "detail": "n/a"})
+
             # ── 报告 ──
             result_detail = {
                 "at": _iso(t0),
@@ -1221,9 +1340,13 @@ def run_patrol_once() -> dict:
                 "attention": summary.get("attention") or [],
                 "app_version": res.get("app_version"),
                 "contract_check": {"ok": contract_ok, "detail": contract_detail},
+                "kernel_check": kernel_check,
+                "prep_checks": prep_checks,
             }
             if not contract_ok:
                 result_detail["attention"] = list(result_detail["attention"]) + [f"契约漂移检测告警: {contract_detail}"]
+            if not kernel_check.get("ok"):
+                result_detail["attention"] = list(result_detail["attention"]) + [f"指纹内核不可用: {kernel_check.get('detail')}"]
             result = result_detail
     except Exception as e:  # noqa: BLE001
         err = f"{e}"

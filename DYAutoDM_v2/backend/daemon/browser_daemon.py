@@ -402,7 +402,23 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
         # （close()+stop() 异步，chromium 进程未退净即启动新 context 的竞态）。
         # 所有 _launch 调用点统一走这里，无需各处手动处理。
         await self._wait_profile_released()
-        _vb, _vb_mode = should_use_vb(_cfg)
+        # ══════════ 内核不可用 = 致命态，纳入熔断（2026-09-24 v0.44.63）══════════
+        # 实机事故：Camoufox 内核缓存被上游 pkgman 自毁清空（INSTALL_DIR 非空但
+        # `.0.5_FLAG` 缺失 → shutil.rmtree），should_use_vb 抛 BCC-070。原实现把
+        # 它当普通异常：_ensure_alive 每 3.05s 重建一次，实测 136 次 BCC-006/
+        # BCC-070 刷屏（15:01~15:07），且每次重建在抖音侧都是一次「全新环境」。
+        # 该条件不可自愈（内核缺失重启一万次也一样）→ 必须熔断，落实迭代止损律。
+        try:
+            _vb, _vb_mode = should_use_vb(_cfg)
+        except Exception as _e_kernel:
+            _ek = str(_e_kernel)
+            if "BCC-070" in _ek or "BCC-058" in _ek:
+                self._fatal_until = time.time() + 1800   # 30 分钟
+                logger.error(
+                    f"[BCC-070] [bcc] {self.account} 指纹内核不可用，已熔断 30 分钟"
+                    f"（不再自动重启，避免 3s 一轮重建风暴 / 风控暴露）: {_ek}")
+                raise
+            raise
         # 常驻浏览器容器默认无头请求（vbrowser 层转为真有头+最小化）：捕获链路
         # （capture_userinfo_map 被动 hook 截前端自发 im/user/info）经实机验证
         # 有头/无头均 44/44；但 2026-09-13 实证纯 headless 会被抖音识别触发登录态
@@ -535,14 +551,17 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
         # 2026-09-13：致命态熔断（凭证不可用等不可自愈错误）——
         # 原逻辑会每 3~4 秒重启一次，用户看到窗口「快闪」。
         # 熔断期内只告警不重启，避免重启风暴与风控暴露。
+        # 2026-09-24 v0.44.63：**指纹内核缺失（BCC-070/058）也归此类** ——
+        # 它同样不可自愈，由 _launch 捕获后置 _fatal_until（实测 136 次重建风暴）。
         _ft = getattr(self, "_fatal_until", 0.0)
         if _ft and time.time() < _ft:
             remain = int(_ft - time.time())
             logger.warning(f"[BCC-043] " + f"[bcc] {self.account} 处于致命态熔断中（剩余 {remain // 60} 分钟），"
-                f"不再自动重启容器；请先解决凭证/索引问题（见启动日志 BCC-043）")
+                f"不再自动重启容器；请先解决凭证/索引/内核问题（见启动日志 BCC-043）")
             raise RuntimeError(
-                f"[bcc] 容器处于致命态熔断（{remain // 60} 分钟）：凭证不可用，"
-                f"请从应用界面启动或重新登记账号")
+                f"[bcc] 容器处于致命态熔断（{remain // 60} 分钟）：凭证不可用 / "
+                f"指纹内核缺失；请从应用界面启动、重新登记账号，"
+                f"或执行 `camoufox fetch` 重装内核")
         # 切换中/冷却期保护：等后台 _launch 完成，绝不在此期间判失活重启
         if self._switching or time.time() < self._switch_cool_until:
             remain = int(self._switch_cool_until - time.time())
