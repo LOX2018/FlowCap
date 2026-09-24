@@ -198,7 +198,7 @@ async def shutdown() -> None:
             if c._backend in ("exe", "camoufox") and c._context is not None:
                 if c._backend == "camoufox":
                     from vbrowser_camoufox import close_camoufox_context
-                    await close_camoufox_context(c._context)
+                    await close_camoufox_context(c._context, getattr(c, "_profile_dir", None))
                 else:
                     await c._context.close()
             if c._pw is not None:
@@ -667,7 +667,7 @@ async def quit_() -> dict:
         try:
             if c._backend == "camoufox":
                 from vbrowser_camoufox import close_camoufox_context
-                await close_camoufox_context(c._context)
+                await close_camoufox_context(c._context, getattr(c, "_profile_dir", None))
             else:
                 await c._context.close()
         except Exception:

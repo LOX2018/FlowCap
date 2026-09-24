@@ -248,7 +248,7 @@ class BccLoginMixin:
                     if self._backend in ("exe", "camoufox") and self._context is not None:
                         if self._backend == "camoufox":
                             from vbrowser_camoufox import close_camoufox_context
-                            await close_camoufox_context(self._context)
+                            await close_camoufox_context(self._context, getattr(self, "_profile_dir", None))
                         else:
                             await self._context.close()
                     if self._pw is not None:

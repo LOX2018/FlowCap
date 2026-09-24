@@ -535,6 +535,10 @@ ERRCODES = {
     "BCC-071": {"meaning": "[bcc] 新 cookie 的会话未被服务端承认（profile/self status_code≠0），不写入 .env", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-072": {"meaning": "[bcc] 保活回写连续两次会话未获承认，会话需人工重新登录", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-073": {"meaning": "[bcc] 页面级登录态探针取不到证据（独立 tab 亦不可用/超时）—— 结论未知，不得据以判定页面失效或跳过凭证回写（ENG-020）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-074": {"meaning": "[bcc] 关闭 Camoufox context 后仍残留进程占用 profile，开始强制清扫（实测 __aexit__ 后 60s 仍不退净）", "file": "vbrowser_camoufox.py", "line": 0},
+    "BCC-075": {"meaning": "[bcc] 清扫后仍有进程占用 profile（可能被系统保护），需人工结束", "file": "vbrowser_camoufox.py", "line": 0},
+    "BCC-076": {"meaning": "[bcc] profile 等待超时未退净 → 主动清扫残留进程（原为「继续启动（可能仍冲突）」盲进）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-077": {"meaning": "[bcc] 清扫后 profile 仍被占用 → 拒绝带冲突启动（避免必撞 BCC-058 并触发重建风暴）", "file": "daemon/browser_daemon.py", "line": 0},
 }
 
 # ════════════════════════════════════════════════════════════════════════════

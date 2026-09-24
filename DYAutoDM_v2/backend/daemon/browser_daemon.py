@@ -610,7 +610,7 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
                 if self._backend in ("exe", "camoufox") and self._context is not None:
                     if self._backend == "camoufox":
                         from vbrowser_camoufox import close_camoufox_context
-                        await close_camoufox_context(self._context)
+                        await close_camoufox_context(self._context, getattr(self, "_profile_dir", None))
                     else:
                         await self._context.close()
                 if self._pw is not None:
@@ -721,10 +721,50 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
                     if _st is None:
                         break
                     await asyncio.sleep(0.3)
+                # ══════════ 2026-09-25 v0.44.65：超时不再「盲进」══════════
+                #
+                # 原实现：超时后打一行 warning 就 `return` 放行 → 新实例撞上
+                # 没退净的旧进程 → BCC-058「Failed to launch the browser
+                # process」→ _ensure_alive 再重建 → 又撞 → 每轮一次完整冷启动
+                # （用户所见「反复激活」，且抖音侧每次都是全新环境 = 风控暴露）。
+                #
+                # 实测根因（drain.py）：Camoufox 的 __aexit__ 后进程 60s 仍不
+                # 退净，而这里只等 10s。「等」永远等不来，必须**主动清扫**。
+                #
+                # 清扫后**重新判定**：净了才放行；仍被占则显式抛错（让上层
+                # 走既有自愈/熔断，而不是带着必败的启动去撞）。
+                # ══════════════════════════════════════════════════════════
                 if _st is not False:
                     logger.warning(
-                        f"[bcc] {self.account} profile 仍被旧进程占用 "
-                        f"{timeout:.0f}s 未退净，继续启动（可能仍冲突）")
+                        f"[BCC-076] [bcc] {self.account} profile 仍被旧进程占用 "
+                        f"{timeout:.0f}s 未退净 → 主动清扫残留进程（不再盲进）")
+                    try:
+                        from vbrowser_camoufox import _reap_camoufox_processes
+                        _reaped = _reap_camoufox_processes(self._profile_dir)
+                        logger.info(
+                            f"[bcc] {self.account} 残留清扫完成，回收 {_reaped} 个进程")
+                    except Exception as _e_reap:  # noqa: BLE001
+                        logger.warning(
+                            f"[bcc] {self.account} 残留清扫失败: {_e_reap}")
+                    # 清扫后重新判定（给 5s 收割窗口）
+                    _deadline2 = time.time() + 5.0
+                    while time.time() < _deadline2:
+                        _st2 = _owner_alive()
+                        if _st2 is False:
+                            logger.info(
+                                f"[bcc] {self.account} 清扫后 profile 已释放，可安全启动")
+                            return
+                        if _st2 is None:
+                            break
+                        await asyncio.sleep(0.3)
+                    _st_final = _owner_alive()
+                    if _st_final is True:
+                        raise RuntimeError(
+                            f"[BCC-077] [bcc] {self.account} profile 仍被占用，"
+                            f"清扫后仍未释放 —— 拒绝带冲突启动（否则必撞 "
+                            f"BCC-058 并触发重建风暴）。请稍后重试，"
+                            f"或手动结束占用该 profile 的 camoufox 进程："
+                            f"{self._profile_dir}")
                     return
             # _st is None（psutil 不可用）→ 落到下方锁文件轮询兜底
         lock_files = [os.path.join(self._profile_dir, n)

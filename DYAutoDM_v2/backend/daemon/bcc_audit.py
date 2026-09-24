@@ -23,9 +23,37 @@ class BccAuditMixin:
     """窗口可见性和环境审计混入。"""
 
     async def set_visible(self, visible: bool, url: str = "") -> dict:
-        """切换容器可见性：把无头容器重启为有头可见（或反向）。"""
+        """切换容器可见性：把无头容器重启为有头可见（或反向）。
+
+        ## 2026-09-25 v0.44.65：切换中的**幂等去重**（消「反复激活」）
+
+        实测现象：点一次「打开指纹浏览器」后，后台 _launch 冷启动需 1~3 分钟；
+        期间前端轮询/用户再点会**再次进入本函数**，原实现不看 `_switching`
+        → 又销毁一次 context、又排一次 _do_switch_background
+        → 多轮完整冷启动叠加 = 用户所见「反复激活 / 反复弹窗」，
+          且**每轮在抖音侧都是一次全新环境**（风控暴露面）。
+
+        现在：切换进行中且目标态一致 → 直接返回「已在切换中」，不重复排程。
+
+        ## 修复3 的范围说明（诚实标注，勿扩大解读）
+
+        理想态是「不重建 context，只改窗口状态」（零冷启动）。但**实测否决**：
+        `_set_window_state_sync` 走 CDP `Browser.setWindowBounds`，而 Camoufox
+        是 Firefox 内核走 juggler、非 CDP —— 实机返回 False（无头下无真实窗口
+        可操作）。故本次**不改**为纯窗口操作，只做去重 + 修复1/2 消除根因残留。
+        待内核侧提供有头可用的窗口操作通道后再推进零重建方案。
+        """
         async with self._lock:
             target = not bool(visible)
+            # ── 切换中去重：同目标态的直接返回，绝不重复排程 ──
+            if self._switching and self._headless == target:
+                logger.info(
+                    f"[bcc] {self.account} 可见性切换仍在进行中"
+                    f"（headless->{target}），本次请求已去重，不重复冷启动"
+                    f"（已切换 {time.time() - (self._switch_started_at or time.time()):.0f}s）")
+                return {"ok": True, "headless": target, "changed": False,
+                        "switching": True, "deduped": True,
+                        "msg": "正在切换可见性中（已去重，未重复启动）"}
             if self._headless == target and self._context is not None:
                 alive = False
                 try:
@@ -96,7 +124,7 @@ class BccAuditMixin:
                 if self._backend in ("exe", "camoufox") and self._context is not None:
                     if self._backend == "camoufox":
                         from vbrowser_camoufox import close_camoufox_context
-                        await close_camoufox_context(self._context)
+                        await close_camoufox_context(self._context, getattr(self, "_profile_dir", None))
                     else:
                         await self._context.close()
                 if self._pw is not None:

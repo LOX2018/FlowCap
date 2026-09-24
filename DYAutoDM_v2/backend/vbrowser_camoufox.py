@@ -174,7 +174,104 @@ async def launch_camoufox_async(*, headless: bool = False,
     return None, None, context, "camoufox"
 
 
-async def close_camoufox_context(context) -> None:
+def _reap_camoufox_processes(user_data_dir: str | None = None,
+                             grace_sec: float = 3.0,
+                             force_sec: float = 12.0) -> int:
+    """强制清扫仍占用该 profile 的 Camoufox 进程（残留根因修复，2026-09-25）。
+
+    ## 为什么需要本函数（实机实测，非推测）
+
+    实测（drain.py，生产路径 launch_camoufox_sync）：
+        before_alive = 0       启动前干净
+        launched     = 2       启动后 2 个进程
+        调 close_camoufox_context() 后等 60s → 仍是 2（**未退净**）
+
+    即：Camoufox 的 ctx_mgr.__aexit__() **不能保证**浏览器进程退出。
+    而上层 _wait_profile_released() 只等 10s 就放行 → 新实例撞上旧进程
+    → `Failed to launch the browser process`（BCC-058）。这就是
+    「先开 A 失败、紧接着开 B 也失败、过一会儿又正常」的时序竞态真因。
+
+    策略（优雅优先，逐级升级）：
+      1) 先给 grace_sec 秒让进程自行退出（terminate）；
+      2) 仍在则 kill；
+      3) 返回被清扫的进程数。
+
+    只杀**命令行命中本 profile 路径**的进程（含 -contentproc 子进程），
+    绝不按进程名盲杀 —— 否则会误伤其它账号/用户手动打开的窗口。
+    """
+    if not user_data_dir:
+        return 0
+    # ── 安全边界（2026-09-25 补，实测教训）──────────────────────────────
+    # 曾因 needle 过短/过通用（探针里 _profile_dir="GUARD"），命中了
+    # 命令行含 "guard" 的**无关进程**（含测试宿主自身）→ 误杀。
+    # 判据：profile 路径必须是绝对路径且长度足够，否则宁可不扫。
+    # 「不能可靠识别目标」时拒绝行动，是本函数的第一 invariant。
+    _ud_norm = str(user_data_dir).replace("\\", "/")
+    if len(_ud_norm) < 20 or (":" not in _ud_norm and not _ud_norm.startswith("/")):
+        logger.warning(
+            f"[camoufox] profile 路径过短或非绝对路径，拒绝清扫（防误杀无关进程）: "
+            f"{user_data_dir!r}")
+        return 0
+    try:
+        import psutil
+    except Exception:
+        logger.debug("[camoufox] psutil 不可用，跳过残留清扫")
+        return 0
+    needle = _ud_norm.lower()
+    _self_pid = os.getpid()
+
+    def _victims():
+        out = []
+        try:
+            for _p in psutil.process_iter(["pid", "cmdline"]):
+                try:
+                    # 绝不杀自己（误杀宿主 = 比残留严重一个量级）
+                    if int(_p.info.get("pid") or 0) == _self_pid:
+                        continue
+                    _cl = " ".join(_p.info.get("cmdline") or [])
+                    if needle in _cl.replace("\\", "/").lower():
+                        out.append(_p)
+                except Exception:
+                    continue
+        except Exception:
+            return []
+        return out
+
+    try:
+        pending = _victims()
+        if not pending:
+            return 0
+        logger.warning(
+            f"[BCC-074] [camoufox] 关闭后仍残留 {len(pending)} 个进程占用 profile，"
+            f"开始清扫（grace={grace_sec}s）: {needle[-60:]}")
+        for p in pending:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        psutil.wait_procs(pending, timeout=grace_sec)
+        still = [p for p in _victims()]
+        if still:
+            for p in still:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+            psutil.wait_procs(still, timeout=force_sec)
+        left = len(_victims())
+        if left:
+            logger.error(
+                f"[BCC-075] [camoufox] 清扫后仍有 {left} 个进程占用 profile"
+                f"（可能被系统保护，需人工处理）: {needle[-60:]}")
+        else:
+            logger.info("[camoufox] profile 占用进程已清扫干净，可安全重建 context")
+        return len(pending) - left
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[camoufox] 残留清扫异常（不阻塞关闭流程）: {e}")
+        return 0
+
+
+async def close_camoufox_context(context, user_data_dir: str | None = None) -> None:
     """统一关闭 Camoufox context（含其 AsyncCamoufox 上下文管理器）。
 
     ## 为什么必须单独一个函数（2026-09-20 实测事故）
@@ -191,37 +288,60 @@ async def close_camoufox_context(context) -> None:
       且带 `_camoufox_is_async=True` → 用 await __aexit__。
     - sync 启动（CLI/camoufox_capture 路径）：ctx_mgr 只有 __exit__，
       直接调同步退出（此时不处于事件循环）。
+
+    ## 2026-09-25 补：关闭后必须清扫残留进程
+
+    实测 __aexit__ 后进程 60s 仍不退净（见 _reap_camoufox_processes 文档）。
+    原实现在各分支 `return` **提前返回**，清扫会被跳过 —— 现改为统一走
+    finally 清扫。user_data_dir 缺省时从 context 反推，调用方可显式传入。
     """
     if context is None:
         return
     mgr = getattr(context, "__dict__", {}).get("_camoufox_ctx_mgr")
     is_async = bool(getattr(context, "__dict__", {}).get("_camoufox_is_async"))
+    # 清扫目标：仅用显式传入的 profile 目录（从 context 无法可靠反推，
+    # 宁可不扫也不能扫错 —— 按路径精确匹配是安全边界）。
+    _ud = user_data_dir
     try:
         if mgr is not None:
             if is_async or hasattr(mgr, "__aexit__"):
                 aexit = getattr(mgr, "__aexit__", None)
                 if aexit is not None:
                     await aexit(None, None, None)
-                    return
-            exit_ = getattr(mgr, "__exit__", None)
-            if exit_ is not None:
-                exit_(None, None, None)
-                return
-        # 兜底：普通 context
-        await context.close()
+                else:
+                    await context.close()
+            elif hasattr(mgr, "__exit__"):
+                mgr.__exit__(None, None, None)
+            else:
+                await context.close()
+        else:
+            # 兜底：普通 context
+            await context.close()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[camoufox] 关闭 context 异常（忽略以继续清理）: {e}")
+    finally:
+        # 关闭动作无论成败、无论走哪个分支，都必须清扫残留（根因修复）
+        if _ud:
+            _reap_camoufox_processes(_ud)
 
 
-def close_camoufox_context_sync(context) -> None:
-    """同步版关闭（供 CLI/脚本路径使用，不得在 asyncio 循环内调用）。"""
+def close_camoufox_context_sync(context, user_data_dir: str | None = None) -> None:
+    """同步版关闭（供 CLI/脚本路径使用，不得在 asyncio 循环内调用）。
+
+    2026-09-25：与异步版同构，关闭后统一清扫残留进程（见
+    _reap_camoufox_processes 文档）。
+    """
     if context is None:
         return
     mgr = getattr(context, "__dict__", {}).get("_camoufox_ctx_mgr")
+    _ud = user_data_dir
     try:
         if mgr is not None and hasattr(mgr, "__exit__"):
             mgr.__exit__(None, None, None)
-            return
-        context.close()
+        else:
+            context.close()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[camoufox] 同步关闭 context 异常（忽略）: {e}")
+    finally:
+        if _ud:
+            _reap_camoufox_processes(_ud)
