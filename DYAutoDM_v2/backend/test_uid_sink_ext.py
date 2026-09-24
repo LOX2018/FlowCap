@@ -25,7 +25,16 @@ import unittest
 #      `test_config_isolation` 守护；本模块只负责 T3 逻辑。
 #   验证方式（人工，非门禁）：`cd backend && python -c "...database._db_path()..."` 后
 #   确认 `git status` 无 `DYAutoDM_v2/data/`。 
-_ROOT = os.path.join(tempfile.gettempdir(), "uid_sink_ext_test")
+# 🔴 每次运行独立根（2026-09-24 实测修复）——
+#   原实现用**固定**临时目录，导致沙箱 DB **跨运行持久**（实测该库 mtime 跨小时
+#   残留，且 `acct__delays_send/w1` 行留着上次的 `window_end_ts`）。而 `mark_seen`
+#   是 `INSERT OR IGNORE`（冲突不覆盖）+ **仅高价值(hv=1)才刷新窗口**的 CASE，
+#   于是 `test_window_delays_send` 重跑时沿用旧窗口值：
+#     · 旧值未过期 → 断言本该通过，却因「窗口未写入」中间断言语义漂移而假失败；
+#     · 旧值已过期 → `should_send` 放行 → `assertFalse(ok)` 直接失败（本次复现）。
+#   ⇒ 单跑必失败、全量偶发（取决于上一次跑留下的时间戳），是**测试自身缺陷**。
+#   每次 mkdtemp 同时消除「同进程内与其它模块抢 DY_APP_ROOT」的顺序相关假失败。
+_ROOT = tempfile.mkdtemp(prefix="uid_sink_ext_test_")
 os.makedirs(_ROOT, exist_ok=True)          # ← 必须先建（见上方模块级说明 1）
 os.environ["DY_APP_ROOT"] = _ROOT
 os.environ["DY_MEMBER"] = ""
@@ -66,7 +75,16 @@ class T3UidSinkExtTest(unittest.TestCase):
     def setUp(self):
         # 每个用例用独立账号，避免相互干扰
         self.acct = "acct_" + self._testMethodName[-12:]
-        database.get_db()
+        database.reset_connection()
+        conn = database.get_db()
+        # 显式清零本账号残留（2026-09-24）——
+        #   组合运行时 `member_ctx` 的**盘上会话回退**会把 get_db() 重定向到
+        #   带上次跑残留的**固定**库文件（`acct__delays_send/w1` 留着旧
+        #   `window_end_ts`）；而 `mark_seen` 是 `INSERT OR IGNORE` + 仅高价值
+        #   才刷新窗口 ⇒ 残留旧值会让窗口断言依赖历史运行。
+        #   这里与「DB 到底是哪个文件」解耦：无论解析到哪，起点都确定干净。
+        conn.execute("DELETE FROM dm_uid_sink WHERE account=?", (self.acct,))
+        conn.commit()
         dd.cfg = _seq_cfg()          # 默认：窗口/阈值关闭（零回归态）
         self.sink = dd.UidSink()
 
