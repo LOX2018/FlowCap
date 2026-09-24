@@ -539,6 +539,7 @@ ERRCODES = {
     "BCC-075": {"meaning": "[bcc] 清扫后仍有进程占用 profile（可能被系统保护），需人工结束", "file": "vbrowser_camoufox.py", "line": 0},
     "BCC-076": {"meaning": "[bcc] profile 等待超时未退净 → 主动清扫残留进程（原为「继续启动（可能仍冲突）」盲进）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-077": {"meaning": "[bcc] 清扫后 profile 仍被占用 → 拒绝带冲突启动（避免必撞 BCC-058 并触发重建风暴）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-078": {"meaning": "[bcc] 守护运行在 Windows Session 0（服务会话，无桌面），**有头模式不可用**（camoufox 必以 0xC0000005 崩溃）；无头常驻不受影响。需从应用界面双击拉起（Session >= 1）", "file": "daemon/browser_daemon.py", "line": 0},
 }
 
 # ════════════════════════════════════════════════════════════════════════════

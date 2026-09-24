@@ -402,6 +402,37 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
         # （close()+stop() 异步，chromium 进程未退净即启动新 context 的竞态）。
         # 所有 _launch 调用点统一走这里，无需各处手动处理。
         await self._wait_profile_released()
+        # ══════════ Session 0（无桌面会话）门禁（2026-09-25 v0.44.66）══════════
+        #
+        # 实机事故：BCC 若被拉起在 Windows **Session 0**（服务会话，无桌面），
+        # 一切「有头」请求必然崩溃 —— camoufox.exe 退出码 0xC0000005
+        # (STATUS_ACCESS_VIOLATION)，因为该会话根本没有窗口工作站可创建窗口。
+        # 实测对照（2026-09-25）：
+        #   · 张老师 BCC pid=17176 session=1 → 有头正常
+        #   · 小助理 BCC pid=2680  session=0 → 有头必崩（同一 backend 拉起）
+        # 症状极具迷惑性：表现为「某账号唤醒异常」，实为**会话归属错误**；
+        # 而常驻无头功能完全不受影响，故极易被误判为账号/凭证/内核问题。
+        #
+        # 判据：只在**有头**时拦截。无头不需要窗口，Session 0 下正常工作，
+        # 不得误伤（recv-daemon 等纯后台进程同理）。
+        # 处置：明确报错 + 熔断，绝不静默崩溃 —— 可观测、可归因优先。
+        if headless is False:
+            _sid = _probe_session_id()
+            if _sid == 0:
+                _msg = (
+                    f"账号「{self.account}」的浏览器守护运行在 Windows "
+                    f"Session 0（服务会话，无桌面），**有头模式不可用** —— "
+                    f"该会话无法创建窗口，camoufox 会以 0xC0000005 崩溃。"
+                    f"常见成因：后端/守护被终端、计划任务或服务方式拉起，"
+                    f"继承了非交互会话。请**从应用界面（双击启动）**拉起，"
+                    f"使其运行在用户桌面会话（Session >= 1）。"
+                    f"（无头常驻不受影响，可继续运行）")
+                logger.error(f"[BCC-078] " + f"[bcc] {_msg}（已熔断，不再自动重启）")
+                try:
+                    self._fatal_until = time.time() + 1800   # 30 分钟
+                except Exception:
+                    pass
+                raise RuntimeError(f"[bcc] {_msg}")
         # ══════════ 内核不可用 = 致命态，纳入熔断（2026-09-24 v0.44.63）══════════
         # 实机事故：Camoufox 内核缓存被上游 pkgman 自毁清空（INSTALL_DIR 非空但
         # `.0.5_FLAG` 缺失 → shutil.rmtree），should_use_vb 抛 BCC-070。原实现把
@@ -1552,6 +1583,27 @@ def _detect_existing_bcc(account, port):
                     return "profile 被占用（%s 存在 %s）" % (_prof, _n)
     except Exception:
         pass
+    return None
+
+
+def _probe_session_id():
+    """返回本进程所在的 Windows 会话 ID；取不到或非 Windows 返回 None。
+
+    Session 0 = 服务会话（无桌面，不能创建窗口）；>= 1 = 用户桌面会话。
+    用于 BCC 有头门禁（BCC-078）：无桌面环境下有头必然崩溃，
+    与其让用户看到一个无法归因的 0xC0000005，不如显式拒绝并说明成因。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        _sid = wintypes.DWORD()
+        _ok = ctypes.windll.kernel32.ProcessIdToSessionId(
+            ctypes.windll.kernel32.GetCurrentProcessId(),
+            ctypes.byref(_sid))
+        if _ok:
+            return int(_sid.value)
+    except Exception:
+        return None
     return None
 
 
