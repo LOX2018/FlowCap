@@ -60,18 +60,31 @@ def check_room_live(auth: Any, live_id: str):
     2026-09-21（ENG-017）：auth 为 None 时走**匿名进房**（自建请求），
     不得把 None 直接传给 `DouyinAPI.get_live_info`（其内部 `auth_.cookie`
     会 AttributeError）。开播状态本来就从页面解析得到，与登录态无关。
+
+    🔴 2026-09-24（ENG-023，本会话实测复现 3/3）：**开播判定必须走匿名**。
+    带凭证查询在**降权账号**（服务端判未登录，如 `profile/self status_code=8`）
+    下会返回错误的 `room_status='4'`（判下播），而**同一时刻同一房间**
+    匿名查询返回正确的 `2`。实测对照（3 次稳定复现）：
+        live_id=38596030289 带凭证 status='4' | 匿名 status=2
+    ⇒ 后果：引擎被 `check_room_live` 判「未开播」⇒ 陷入 `ENG-005` 30s 轮询，
+    永远不进入监听（房间确实在播，用户看到的是「等待开播」）。
+    本函数注释早已声明「开播状态...与登录态无关」，故按声明落地：
+    **只取匿名结果**（带凭证仅作信息补充，不参与 is_live 判定）。
     """
     try:
-        from dy_apis.douyin_api import DouyinAPI
-        if auth is not None and getattr(auth, "cookie", None):
+        # ① 权威来源：匿名进房（与登录态无关，不受账号降权污染）
+        from core.live_hook import LiveChatHook
+        _probe = LiveChatHook.__new__(LiveChatHook)
+        _probe.live_id = live_id
+        _probe.auth_ = None
+        info = _probe._anon_live_info()
+        # ② 匿名拿不到时才回退带凭证（保底，不改变主判据）
+        if (not info or not isinstance(info, dict)) and auth is not None \
+                and getattr(auth, "cookie", None):
+            from dy_apis.douyin_api import DouyinAPI
+            logger.warning("[ENG-023] [直播间状态] 匿名进房无结果，回退带凭证查询"
+                           "（结果可能受账号降权影响，仅作保底）")
             info = DouyinAPI.get_live_info(auth, live_id)
-        else:
-            # 匿名路径：复用 LiveChatHook 的匿名进房实现（同一份解析逻辑）
-            from core.live_hook import LiveChatHook
-            _probe = LiveChatHook.__new__(LiveChatHook)
-            _probe.live_id = live_id
-            _probe.auth_ = None
-            info = _probe._anon_live_info()
         if not info or not isinstance(info, dict):
             logger.warning(f"[ENG-001] " + "[直播间状态] get_live_info 返回空，保守视为已开播以免误阻断监听")
             return True, None, "", None
