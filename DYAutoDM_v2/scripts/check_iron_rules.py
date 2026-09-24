@@ -84,12 +84,25 @@ def r1_source_has_no_data() -> None:
 
 # ── R2: 数据根只放数据，不放源码 ───────────────────────────────────────────
 def r2_data_root_no_source() -> None:
+    """数据根只放数据 —— 但**部署产物目录**除外。
+
+    2026-09-25 修正：首版把 `_internal/`（PyInstaller 解压目录，sidecar
+    运行必需）判为违规，命中 231 个 .py。若照此清理会**删掉部署运行时**，
+    应用直接不可用。故排除部署产物目录，只查数据根**顶层**的散落脚本。
+    """
     if not os.path.isdir(DATA_ROOT):
         check(True, "R2", f"数据根不存在，跳过（{DATA_ROOT}）")
         return
-    src = walk(DATA_ROOT, (".py", ".ts", ".tsx"))
-    # 允许部署附带的探针/工具脚本？不允许 —— 数据根纪律是硬条款
-    check(not src, "R2", f"数据根无源码文件（命中 {len(src)} 个"
+    # 部署产物目录（PyInstaller _internal / 解压运行时）—— 非源码，排除
+    DEPLOY_DIRS = {"_internal", "binaries", "resources"}
+    src = []
+    for f in walk(DATA_ROOT, (".py", ".ts", ".tsx")):
+        rel = os.path.relpath(f, DATA_ROOT)
+        top = rel.split(os.sep)[0]
+        if top in DEPLOY_DIRS:
+            continue
+        src.append(f)
+    check(not src, "R2", f"数据根顶层无散落源码（命中 {len(src)} 个"
                          f"{': ' + src[0] if src else ''}）")
 
 
@@ -186,55 +199,25 @@ def r6_no_browser_kill() -> None:
 
 
 # ── R7: 昵称源 SSOT，不得用已推翻的批量查询 ────────────────────────────────
-_BANNED_NICK = ("bulk_user_info", "get_im_user_info", "bulk_user_info_by_uid",
-                "bulk_user_info_via_browser")
-
-# 2026-09-25 修正：本分支已于 2026-09-14 经用户授权**解禁**昵称主动查询
-# （见 api/platform.py:372 原文："本分支按用户 2026-09-14 授权「全解除」已解禁"）。
-# 故 R7 **不再禁止**这些符号本身，只禁止「昵称链路实际调用它们」——
-# 把已作废的铁律机械化为门禁，会造出一个错误拦路虎（比没有门禁更坏）。
-
-
-def r7_nickname_ssot() -> None:
-    """昵称链路：只禁**实际调用**，不禁注释/docstring/函数定义。
-
-    首版（2026-09-25）两处误判，均已修：
-      ① errcode_data.py 是错误码说明文字表（符号名是描述对象，非调用）
-      ② api/platform.py 的历史留痕写在 docstring 里（非 # 注释），
-         原判据只跳过 # 行 → 误报
-    """
-    hits = []
-    for f in walk(BACKEND, (".py",)):
-        if os.path.basename(f) == "errcode_data.py":
-            continue
-        try:
-            with open(f, encoding="utf-8", errors="replace") as fh:
-                txt = fh.read()
-        except Exception:
-            continue
-        for i, line in enumerate(txt.splitlines(), 1):
-            s = line.strip()
-            # 跳过注释行
-            if s.startswith("#"):
-                continue
-            # 跳过函数/类定义行（定义 ≠ 调用）
-            if s.startswith(("def ", "async def ", "class ")):
-                continue
-            # 跳过纯文档字符串行（历史留痕常写在这里）
-            if s.startswith(('"""', "'''", 'r"""', "r'''")) or s.endswith('"""'):
-                continue
-            for b in _BANNED_NICK:
-                # 必须是「调用」形态：符号后紧跟 (
-                if re.search(r"\b" + re.escape(b) + r"\s*\(", line):
-                    hits.append(f"{os.path.basename(f)}:{i}:{b}")
-                    break
-    check(not hits, "R7", f"昵称链路无实际调用已推翻批量查询（命中 {len(hits)}"
-                          f"{': ' + hits[0] if hits else ''}）")
+# ══════════ R7 已删除（2026-09-25 用户裁定）══════════════════════════════
+#
+# 原 R7「昵称链路禁批量查询」依据的是**已作废条目**：
+#   本分支已于 2026-09-14 经用户授权解禁主动昵称查询
+#   （api/platform.py:372 原文："本分支按用户 2026-09-14 授权「全解除」已解禁"）。
+#   用户 2026-09-25 再次确认："已解禁"。
+#
+# 处置：**删除规则**，不做「挂起」也不降级警告。
+# 判据：把已作废的铁律机械化为门禁 = 造一个错误拦路虎，比没有门禁更坏。
+#       作废条目应进知识库 `01_铁律与红线.md` §附「作废条目」留档，不进门禁。
+#
+# 残留符号说明（勿再当违规）：/bcc/user_info → c.bulk_user_info() 是在用链路
+#   platform-page.tsx:402 → platformApi.userInfo → /bcc/user_info
+# ═══════════════════════════════════════════════════════════════════════
 
 
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
-         r5_no_plaintext_credential, r6_no_browser_kill, r7_nickname_ssot]
+         r5_no_plaintext_credential, r6_no_browser_kill]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -249,7 +232,7 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
 # 两条冲突，**未裁定前不得阻断**（门禁误伤比缺门禁更坏）。
 # 裁定后：若维持"绝不调用"→ 从 PENDING 移除并下线该端点；
 #         若确认"已解禁"   → 删除本规则。
-PENDING = {"R7"}
+PENDING: set[str] = set()
 
 # 磁盘卫生类（不影响提交内容）→ 仅警告
 WARN_ONLY = {"R2", "R3"}
@@ -317,9 +300,7 @@ def selftest() -> int:
     #   R6 taskkill 杀浏览器
     with open(os.path.join(fake_backend, "killer.py"), "w", encoding="utf-8") as f:
         f.write('os.system("taskkill /im camoufox.exe /f")\n')
-    #   R7 已推翻的批量查询
-    with open(os.path.join(fake_backend, "nick.py"), "w", encoding="utf-8") as f:
-        f.write("from x import bulk_user_info\nr = bulk_user_info()\n")
+    # （R7 已于 2026-09-25 用户裁定删除，自检不再造该样本）
     #   R2 数据根出现源码
     fake_data = os.path.join(tmp, "data")
     os.makedirs(fake_data, exist_ok=True)
@@ -330,7 +311,7 @@ def selftest() -> int:
     SRC_ROOT, BACKEND, DATA_ROOT = fake_src, fake_backend, fake_data
     RESULTS.clear()
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R7"}
+    failed_expect = {"R1", "R2", "R3", "R5", "R6"}
     for r in RULES:
         try:
             r()
