@@ -22,8 +22,28 @@ _SWITCH_COOLDOWN_SEC = 180
 class BccAuditMixin:
     """窗口可见性和环境审计混入。"""
 
-    async def set_visible(self, visible: bool, url: str = "") -> dict:
+    async def set_visible(self, visible: bool, url: str = "",
+                          intent: str = "verify") -> dict:
         """切换容器可见性：把无头容器重启为有头可见（或反向）。
+
+        ## 2026-09-25 v0.44.67【观测态契约落地】—— 用户指出的语义歧义
+
+        同一端点原本承载两种语义完全不同的调用方：
+          · 引擎校验（探活/自愈，intent=verify）：临时拉起验凭证，
+            验完**可以**自动转无头；
+          · 用户双击（/open-browser，intent=observe）：**观测态**，
+            是给人看的窗口，**禁止任何自动关闭/自动转无头**，
+            只能由用户手动结束。
+
+        项目早有该契约（api/accounts.py:632：「有头是观测态，不是运行态」），
+        但**只在打开前做了门禁，打开后没有任何标记** ⇒ 自愈/探活路径
+        无从区分，可能顺手把用户眼前的窗口关掉。这就是「观测窗口被杀」的
+        机制性成因。本次把契约**收口到状态**：`_observe_mode`。
+
+        intent 取值：
+          "observe" = 用户观测（双击/查看登录态）→ 置 _observe_mode=True
+          "verify"  = 引擎校验/自愈            → 置 _observe_mode=False
+        未传时默认 "verify"（保守：不擅自把自动路径变成受保护态）。
 
         ## 2026-09-25 v0.44.65：切换中的**幂等去重**（消「反复激活」）
 
@@ -43,6 +63,22 @@ class BccAuditMixin:
         可操作）。故本次**不改**为纯窗口操作，只做去重 + 修复1/2 消除根因残留。
         待内核侧提供有头可用的窗口操作通道后再推进零重建方案。
         """
+        # ── 观测态标记（2026-09-25 v0.44.67 契约收口）──────────────────
+        # 请求语义落到状态：之后所有自动关闭/自动转无头路径据此判定。
+        _intent = str(intent or "verify").strip().lower()
+        _observe = (_intent == "observe")
+        prev_observe = getattr(self, "_observe_mode", False)
+        self._observe_mode = _observe
+        if _observe:
+            logger.info(
+                f"[bcc] {self.account} 进入【观测态】(intent=observe) —— "
+                f"禁止自动关闭/自动转无头，仅用户手动结束；"
+                f"凭证仍会照常观测回写（不中断）")
+        elif prev_observe:
+            logger.info(
+                f"[bcc] {self.account} 退出【观测态】(intent={_intent}) —— "
+                f"恢复自动关闭/自动转无头")
+
         async with self._lock:
             target = not bool(visible)
             # ── 切换中去重：同目标态的直接返回，绝不重复排程 ──
@@ -143,10 +179,27 @@ class BccAuditMixin:
             asyncio.get_event_loop().create_task(
                 self._do_switch_background(target, url, headless=target))
             mode_str = "有头可见" if visible else "纯无头"
-            return {"ok": True, "headless": target, "changed": True,
+            # ══════════ 2026-09-25 v0.44.67【假阳性根治】════════════════
+            # 原实现把「已受理请求」冒充「已达成」：这里立即返回 ok:True +
+            # "正在切换为有头可见，窗口就绪后自动完成"，而真正的重建在后台
+            # _do_switch_background 里跑，**失败只写日志，前端永远收不到**。
+            # 实测事故：用户看到弹窗「成功」但屏幕上没有窗口（后台重建
+            # 实际以 BCC-058 失败）。
+            #
+            # 修法：返回语义必须自证其然 ——
+            #   ok        = 请求已受理（不是"已达成"）
+            #   accepted  = True  显式标记"受理态"
+            #   switching = True  明确告知"仍在切换"
+            #   settled   = False 可见性**尚未达成**
+            #   msg       不再出现任何"已显示/已完成"字样
+            # 调用方（/open-browser）须据 settled/switching 展示「进行中」，
+            # 并以 /status 轮询真实结果，不得直接宣称成功。
+            return {"ok": True, "accepted": True, "settled": False,
+                    "headless": target, "changed": True,
                     "switching": True,
-                    "msg": f"正在切换为{mode_str}，"
-                           f"窗口就绪后自动完成（冷启动约 1~3 分钟）"}
+                    "observe": _observe,
+                    "msg": f"已受理：正在切换为{mode_str}（后台冷启动约 1~3 分钟）"
+                           f"—— 尚未完成，请以实际窗口或 /status 为准"}
 
     # 可见窗口出现前的轮询参数
     _VISIBLE_POLL_EVERY = 3.0

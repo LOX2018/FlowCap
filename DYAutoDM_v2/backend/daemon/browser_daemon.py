@@ -601,6 +601,18 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
                 f"[bcc] {self.account} {phase}({max(remain, 0)}s)，"
                 f"等待 context 重建完成（跳过失活判定，防重启死循环）")
             return
+        # ══════════ 2026-09-25 v0.44.67【观测态保护】═══════════════════════
+        # 用户双击打开的是**观测窗口**（intent=observe），由人看着。
+        # 探活失败时绝不重建/关闭 —— 那会销毁用户眼前的窗口，
+        # 并在抖音侧记一次全新环境访问（风控面）。
+        # 契约来源：api/accounts.py:632「有头是观测态，不是运行态」。
+        # 凭证**照常观测回写**（不中断），只是不动窗口。
+        if getattr(self, "_observe_mode", False):
+            logger.warning(
+                f"[BCC-080] [bcc] {self.account} 处于【用户观测态】—— "
+                f"探活失败也**不重建/不关闭**（窗口是用户在看的，"
+                f"重建会销毁它并记一次全新环境）。请用户手动结束观测后处理")
+            return
         try:
             if self._context is None or not self._context.pages:
                 raise RuntimeError("context 已关闭")

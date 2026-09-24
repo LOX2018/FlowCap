@@ -540,6 +540,8 @@ ERRCODES = {
     "BCC-076": {"meaning": "[bcc] profile 等待超时未退净 → 主动清扫残留进程（原为「继续启动（可能仍冲突）」盲进）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-077": {"meaning": "[bcc] 清扫后 profile 仍被占用 → 拒绝带冲突启动（避免必撞 BCC-058 并触发重建风暴）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-078": {"meaning": "[bcc] 守护运行在 Windows Session 0（服务会话，无桌面），**有头模式不可用**（camoufox 必以 0xC0000005 崩溃）；无头常驻不受影响。需从应用界面双击拉起（Session >= 1）", "file": "daemon/browser_daemon.py", "line": 0},
+    "BCC-079": {"meaning": "[bcc] /show 收到未知 intent（只允许 observe/verify），按 verify 处理 —— 观测态必须显式声明，不得靠缺省", "file": "daemon/bcc_routes.py", "line": 0},
+    "BCC-080": {"meaning": "[bcc] 处于【用户观测态】(intent=observe)：探活失败也**不重建/不关闭** —— 窗口是用户在看的，重建会销毁它并在抖音侧记一次全新环境；凭证仍照常观测回写，仅不动窗口", "file": "daemon/browser_daemon.py", "line": 0},
 }
 
 # ════════════════════════════════════════════════════════════════════════════

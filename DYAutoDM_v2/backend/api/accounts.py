@@ -699,8 +699,10 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
             return ScanLoginResponse(ok=False, msg=f"拉起浏览器容器失败: {e}")
 
     # 2) 就地切为有头可见（不另起实例、不停守护）
+    #    2026-09-25 v0.44.67：显式声明 intent=observe（用户观测态）。
+    #    这是**人**在看窗口，不是引擎校验 —— 置位后禁止自动关闭/自动转无头。
     try:
-        data = json.dumps({"visible": True}).encode()
+        data = json.dumps({"visible": True, "intent": "observe"}).encode()
         req = urllib.request.Request(
             f"http://127.0.0.1:{bport}/show", data=data,
             headers={"Content-Type": "application/json"}, method="POST")
@@ -711,10 +713,29 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
     except Exception as e:  # noqa: BLE001
         logger.error(f"[BCC-031] " + f"[open-browser] 账号 {name} 切换可见模式失败: {e}")
         return ScanLoginResponse(ok=False, msg=f"切换可见模式失败: {e}")
+
+    # ══════════ 2026-09-25 v0.44.67【假阳性根治】══════════════════════════
+    # 原实现：/out 返回 ok 就宣称「已显示该账号浏览器窗口」——
+    # 但 /show 是**异步受理**，后台重建可能失败（实测 BCC-058），
+    # 于是用户看到「成功」弹窗而屏幕上没有窗口。
+    #
+    # 现在据返回态如实表述：
+    #   settled=True  → 已达成可见（窗口确实在）
+    #   settled=False → 仅受理/切换中，明确告知"尚未就绪，请稍候"
+    # 绝不把「受理」说成「已显示」。
     changed = out.get("changed")
-    hint = "（容器已切为可见，登录态即当前真实态）" if changed else "（容器已是可见模式）"
+    settled = out.get("settled")
+    switching = out.get("switching")
+    if settled is True:
+        hint = "（窗口已就绪）"
+    elif switching or changed:
+        hint = ("（已受理，正在切换为有头窗口 —— 冷启动约 1~3 分钟，"
+                "**尚未就绪**；请稍候并以实际窗口为准）")
+    else:
+        hint = "（容器已是可见模式）"
     return ScanLoginResponse(
-        ok=True, msg=f"已显示该账号浏览器窗口 · {name}{hint}（凭证保活未中断）")
+        ok=True, msg=f"已请求显示该账号浏览器窗口 · {name}{hint}"
+                     f"（凭证保活未中断）")
 
 
 @router.post("/{name}/scan")

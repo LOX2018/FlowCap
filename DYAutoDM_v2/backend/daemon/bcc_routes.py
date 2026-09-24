@@ -632,6 +632,12 @@ async def show(req: Request, visible: bool = True, url: str = "") -> dict:
     c = _state.get("container")
     if not c:
         return {"ok": False, "msg": "容器未启动（请先拉起 BCC）"}
+
+    # ── intent：区分「用户观测」与「引擎校验」（2026-09-25 v0.44.67）────
+    # 两语义共用本端点，必须显式声明发起方；缺省 verify（保守，不擅自保护）。
+    # 详见 BccAuditMixin.set_visible 的契约说明。
+    intent = "verify"
+
     # 2026-09-12 修复：FastAPI 把 visible 当 **query 参数**（非 body），
     # 前端用 JSON body 传参时会被静默忽略 → 永远按默认 True 执行，
     # 「切回无头」失效（实测：POST body {"visible": false} 返回 headless=false）。
@@ -645,6 +651,8 @@ async def show(req: Request, visible: bool = True, url: str = "") -> dict:
                     visible = bool(_b["visible"])
                 if _b.get("url"):
                     url = str(_b["url"])
+                if "intent" in _b:
+                    intent = str(_b["intent"]).strip().lower() or "verify"
     except Exception as e:  # noqa: BLE001
         # 2026-09-17 修补（OCR 审查 HIGH）：原为 `except Exception: pass` ——
         # 与上方注释描述的 bug **完全同类**：body 畸形/被中间件消费时，
@@ -652,7 +660,14 @@ async def show(req: Request, visible: bool = True, url: str = "") -> dict:
         # 且**无任何日志**（排查时完全看不到线索）。现至少记录告警。
         logger.warning(f"[BCC-061] [show] 解析 body 失败，将按 query 参数"
                        f"（visible={visible}）处理: {type(e).__name__}: {e}")
-    return await c.set_visible(bool(visible), url or "")
+
+    if intent not in ("observe", "verify"):
+        logger.warning(
+            f"[BCC-079] [show] 未知 intent={intent!r}，按 verify 处理"
+            f"（只允许 observe/verify）")
+        intent = "verify"
+
+    return await c.set_visible(bool(visible), url or "", intent=intent)
 
 
 @router.post("/quit")
