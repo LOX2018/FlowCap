@@ -39,6 +39,7 @@ from services.kv_store import kv_get as _kv_get, kv_set as _kv_set
 
 _KV_TAGS = "config_tags"        # {tag_id: {name, created_at, updated_at}}
 _KV_BIND = "config_tag_bind"    # {account: tag_id}
+_KV_BIND_SECTION = "config_tag_bind_section"  # {account: {section: tag_id}} —— 板块级绑定（2026-09-24 B-4）
 
 # 标签能指引的分区
 MANAGED_SECTIONS = ("send", "live", "capture")
@@ -98,19 +99,44 @@ def get_tag(tag_id: str) -> Optional[dict]:
             "updated_at": t.get("updated_at", 0)}
 
 
-def save_tag(tag_id: str, name: str) -> dict:
-    """新建或更新标签元数据（不存参数）。"""
+def save_tag(tag_id: str, name: str, biz_line: str = "",
+             scene: str = "", sections: list | None = None) -> dict:
+    """新建或更新标签元数据（不存参数）。
+
+    2026-09-24（B-4）：新增**业务维度**字段 —— 旧标签只有 {id,name}，
+    建出来的全是「高频/保守」这类风控档位，不是业务标签。
+      - biz_line : 行业线（如 工伤 / 车险 / 电商）
+      - scene    : 场景（如 四川 / 华东 / 直播间引流）
+      - sections : 该标签**适用板块**（send/live/capture 子集；
+                   空 = 沿用全部 MANAGED_SECTIONS —— 旧数据零回归）
+    三个字段都可缺省，未传时行为与改造前逐字一致。
+    """
     with _lock:
         data = _kv_get(_KV_TAGS, {}) or {}
         tid = tag_id or _new_id()
         now = time.time()
+        prev = data.get(tid, {}) or {}
         data[tid] = {
             "name": name,
-            "created_at": data.get(tid, {}).get("created_at") or now,
+            "biz_line": biz_line if biz_line is not None else prev.get("biz_line", ""),
+            "scene": scene if scene is not None else prev.get("scene", ""),
+            "sections": (list(sections) if sections is not None
+                          else prev.get("sections") or list(MANAGED_SECTIONS)),
+            "created_at": prev.get("created_at") or now,
             "updated_at": now,
         }
         _kv_set(_KV_TAGS, data)
     return get_tag(tid)
+
+
+def tag_sections(tag_id: str) -> tuple:
+    """该标签适用的板块；未配置或旧数据 → 全部 MANAGED_SECTIONS（零回归）。"""
+    t = get_tag(tag_id) or {}
+    secs = t.get("sections")
+    if not secs:
+        return tuple(MANAGED_SECTIONS)
+    out = tuple(s for s in secs if s in MANAGED_SECTIONS)
+    return out or tuple(MANAGED_SECTIONS)
 
 
 def delete_tag(tag_id: str) -> dict:
@@ -159,9 +185,55 @@ def tag_of(account: str) -> Optional[str]:
 # 解析（消费方唯一入口）
 # ---------------------------------------------------------------------------
 
-def scope_of(account: str) -> Optional[str]:
-    """返回该账号应读取的参数 scope；未绑定标签返回 None（= 读全局）。"""
+def scope_of(account: str, section: str = "") -> Optional[str]:
+    """返回该账号应读取的参数 scope；未绑定标签返回 None（= 读全局）。
+
+    2026-09-24（B-4）：支持**按板块**取 scope。
+      - 传 section：优先取该板块的专用绑定，无则回落到整账号绑定
+      - 不传 section：整账号绑定（与改造前逐字一致，零回归）
+    """
+    if section:
+        per_sec = _kv_get(_KV_BIND_SECTION, {}) or {}
+        sec_map = per_sec.get(account) or {}
+        tid = sec_map.get(section)
+        if tid and (get_tag(tid) or {}).get("name"):
+            return tid
     return tag_of(account)
+
+
+def bind_section(account: str, section: str, tag_id: str) -> dict:
+    """绑定某账号的**单个板块**到指定标签（tag_id 为空 = 解绑该板块）。"""
+    if section not in MANAGED_SECTIONS:
+        return {"ok": False, "error": f"板块 {section} 不受标签管理"}
+    with _lock:
+        per_sec = _kv_get(_KV_BIND_SECTION, {}) or {}
+        sec_map = per_sec.get(account) or {}
+        if tag_id:
+            sec_map[section] = tag_id
+        else:
+            sec_map.pop(section, None)
+        if sec_map:
+            per_sec[account] = sec_map
+        else:
+            per_sec.pop(account, None)
+        _kv_set(_KV_BIND_SECTION, per_sec)
+    return {"ok": True, "bindings_section": per_sec}
+
+
+def bindings_section() -> dict:
+    """全部板块级绑定 {account: {section: tag_id}}。"""
+    return _kv_get(_KV_BIND_SECTION, {}) or {}
+
+
+def effective_bindings(account: str) -> dict:
+    """该账号的**最终生效**绑定（供 UI 聚合展示）：板块优先，回落整账号。"""
+    whole = tag_of(account) or ""
+    sec_map = (_kv_get(_KV_BIND_SECTION, {}) or {}).get(account) or {}
+    out = {}
+    for s_ in MANAGED_SECTIONS:
+        tid = sec_map.get(s_) or whole
+        out[s_] = tid if tid and (get_tag(tid) or {}).get("name") else ""
+    return {"account": account, "whole": whole, "sections": out}
 
 
 def resolve(account: str, section: str, base: dict) -> dict:
