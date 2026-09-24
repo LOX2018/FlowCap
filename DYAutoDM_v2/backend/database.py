@@ -223,6 +223,12 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         first_seen_ts REAL NOT NULL,     -- 首次沉淀时间
         sent_ts REAL,                    -- 已发送时间（NULL=仅沉淀未发）
         send_count INTEGER DEFAULT 0,    -- 已发送次数（正常应 <=1）
+        -- ADR-007 / C-06（2026-09-24）高价值筛查 + 沉淀窗口 + 按人聚合：
+        keyword_score INTEGER DEFAULT 0,      -- 关键词权重累加（过滤器用）
+        is_high_value INTEGER DEFAULT 0,      -- 是否高价值（关键词/LLM 判定）
+        high_value_reason TEXT DEFAULT '',    -- 判定理由摘要（LLM 写入）
+        window_end_ts REAL,                   -- 聚合窗口到期时间（NULL=未设窗口）
+        aggregate_text TEXT DEFAULT '',       -- 窗口内累积弹幕文本（发送后保留审计）
         PRIMARY KEY (account, peer_uid)
     );
     -- 多账号跨账号沉淀池（2026-09-22，ADR-002 §5.5(B)）：
@@ -238,6 +244,11 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         send_count INTEGER DEFAULT 0     -- 累计发送次数
     );
     CREATE INDEX IF NOT EXISTS idx_uid_sink_ts ON dm_uid_sink(sent_ts DESC);
+    -- ⚠️ 注意：**不要**在此 executescript 里给新列建索引 ——
+    -- 对「已存在的旧库」`CREATE TABLE IF NOT EXISTS` 是 no-op，新列要等
+    -- `_migrate_schema` 的 ALTER 才出现；此处建 `window_end_ts` 索引会
+    -- 直接 `no such column`（实测踩到，test_uid_sink_ext 首轮 13 ERROR）。
+    -- 窗口索引统一在 `_migrate_schema` 的 ALTER 之后创建。
     """)
     conn.commit()
 
@@ -279,6 +290,25 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN pid INTEGER DEFAULT 0")
     except Exception:
         pass  # 列已存在
+    # ── dm_uid_sink 扩列（ADR-007 / C-06，2026-09-24）────────────────
+    # 高价值筛查 + 沉淀窗口 + 按人聚合。逐列 ADD COLUMN，幂等。
+    # 回滚：保留列、把新配置恢复默认即退化为原行为（旧代码无视新列）。
+    for _ddl in (
+        "ALTER TABLE dm_uid_sink ADD COLUMN keyword_score INTEGER DEFAULT 0",
+        "ALTER TABLE dm_uid_sink ADD COLUMN is_high_value INTEGER DEFAULT 0",
+        "ALTER TABLE dm_uid_sink ADD COLUMN high_value_reason TEXT DEFAULT ''",
+        "ALTER TABLE dm_uid_sink ADD COLUMN window_end_ts REAL",
+        "ALTER TABLE dm_uid_sink ADD COLUMN aggregate_text TEXT DEFAULT ''",
+    ):
+        try:
+            conn.execute(_ddl)
+        except Exception:
+            pass  # 列已存在
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uid_sink_window "
+                     "ON dm_uid_sink(window_end_ts)")
+    except Exception:
+        pass
     # dm_messages: 新增 msg_id（抖音消息唯一 ID，protobuf field 3）
     # 并建唯一索引，让 INSERT OR IGNORE 真正生效，杜绝重复落库。
     try:

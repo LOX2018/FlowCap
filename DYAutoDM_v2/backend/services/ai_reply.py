@@ -1552,6 +1552,47 @@ def generate_dm_for_live(account: str, peer_name: str, comment: str,
         return "", ""
 
 
+def judge_high_value(text: str, account: str = "") -> dict:
+    """ADR-007 / C-06 Phase 4：LLM 精判弹幕/评论是否高价值。
+
+    返回 `{"high_value": bool, "reason": str}`；任何失败返回 `{"high_value": None}`
+    （调用方据此**保持关键词判定**，不阻塞、不降级为假）。
+
+    设计契约（C-06 I5 / Q4）：
+      - 仅供 `high_value_llm_enabled=true` 时调用；失败绝不抛异常；
+      - 判定是**过滤器增强**，不是发送触发器。
+    """
+    try:
+        if not str(text or "").strip():
+            return {"high_value": None, "reason": ""}
+        cfg = get_config()
+        if not cfg.get("base_url"):
+            return {"high_value": None, "reason": "llm_not_configured"}
+        prompt = (
+            "你是工伤法律咨询的线索质检员。判断下面这条直播间弹幕/评论是否"
+            "「高价值工伤咨询线索」——即：发信人很可能本人或近亲遭遇工伤，"
+            "且**有寻求赔偿/鉴定/律师帮助的真实意图**。\n"
+            "只回一个 JSON：{\"high_value\": true/false, \"reason\": \"≤20字理由\"}。\n"
+            "无关闲聊、同行打广告、纯情绪宣泄、无工伤要素 → false。"
+        )
+        raw = AIClient(cfg).chat_failover(
+            str(text)[:500], consumer_id="ai_main",
+            user_id="hv:" + (account or "unknown"), system_prompt=prompt)
+        if not raw:
+            return {"high_value": None, "reason": "llm_empty"}
+        m = re.search(r"\{.*\}", str(raw), re.S)
+        if not m:
+            return {"high_value": None, "reason": "llm_no_json"}
+        data = json.loads(m.group(0))
+        hv = data.get("high_value")
+        if not isinstance(hv, bool):
+            return {"high_value": None, "reason": "llm_bad_type"}
+        return {"high_value": hv, "reason": str(data.get("reason") or "")[:60]}
+    except Exception as e:
+        logger.debug(f'[SILENT-00] services.ai_reply: judge_high_value failed: {e}')
+        return {"high_value": None, "reason": "llm_exception"}
+
+
 def list_leads(limit: int = 200) -> list:
     rows = database.get_db().execute(
         "SELECT * FROM ai_leads ORDER BY created_at DESC LIMIT ?",

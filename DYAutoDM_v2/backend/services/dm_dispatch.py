@@ -95,6 +95,12 @@ _LAZY_MAP = {
     "WEIGHT_FORGIVE_AFTER": ("send", "weight_forgive_after"),
     "UID_SINK_COOLDOWN": ("send", "uid_sink_cooldown"),
     "UID_SINK_STRICT": ("send", "uid_sink_strict"),
+    # ADR-007 / C-06（2026-09-24）沉淀池增强
+    "UID_SINK_WINDOW": ("send", "uid_sink_window_seconds"),
+    "HIGH_VALUE_WINDOW": ("send", "high_value_window_seconds"),
+    "HIGH_VALUE_THRESHOLD": ("send", "high_value_score_threshold"),
+    "HIGH_VALUE_LLM": ("send", "high_value_llm_enabled"),
+    "AGGREGATE_MAX_CHARS": ("send", "aggregate_max_chars"),
 }
 
 
@@ -632,6 +638,17 @@ _FALLBACK_UID_SINK_COOLDOWN = float(
 # 冷却期内是否直接丢弃（True=丢弃；False=放行但记录次数，便于排查）
 _FALLBACK_UID_SINK_STRICT = os.environ.get("DY_UID_SINK_STRICT", "1") not in (
     "0", "false", "False")
+# ADR-007 / C-06（2026-09-24）沉淀池增强的兜底常量（配置中心优先）
+_FALLBACK_UID_SINK_WINDOW = float(
+    os.environ.get("DY_UID_SINK_WINDOW", "0"))                # 聚合窗口（0=关闭）
+_FALLBACK_HIGH_VALUE_WINDOW = float(
+    os.environ.get("DY_HIGH_VALUE_WINDOW", "60"))             # 高价值加速窗口 1 分钟
+_FALLBACK_HIGH_VALUE_THRESHOLD = int(
+    os.environ.get("DY_HIGH_VALUE_THRESHOLD", "0"))           # 关键词阈值（0=关闭筛查）
+_FALLBACK_HIGH_VALUE_LLM = os.environ.get("DY_HIGH_VALUE_LLM", "0") not in (
+    "0", "false", "False")                                   # LLM 精判默认关
+_FALLBACK_AGGREGATE_MAX_CHARS = int(
+    os.environ.get("DY_AGGREGATE_MAX_CHARS", "2000"))         # 聚合文本上界
 
 
 class UidSink:
@@ -668,25 +685,57 @@ class UidSink:
                 logger.debug(f"[uid-sink] 载入失败（降级为纯内存去重）: {e}")
                 self._loaded = True
 
+    def _read_row(self, account: str, uid: str) -> dict | None:
+        """读该 UID 的沉淀行（仅窗口/高价值开启时调用，避免零回归期的 DB 查）。"""
+        try:
+            from database import get_db
+            conn = get_db()
+            r = conn.execute(
+                "SELECT keyword_score, is_high_value, window_end_ts, aggregate_text "
+                "FROM dm_uid_sink WHERE account=? AND peer_uid=?",
+                (account, uid)).fetchone()
+            return dict(r) if r is not None else None
+        except Exception:
+            return None
+
     def should_send(self, account: str, peer_uid: str) -> tuple:
         """该 UID 是否应发送。返回 (ok, reason)。
 
-        判定：
+        判定顺序（ADR-007 / C-06 Q3）：
           1. 冷却期内已发送过 → 拒绝（默认 7 天）；
-          2. 否则放行（并沉淀"已见过"）。
+          2. **聚合窗口未到期**（now < window_end_ts）→ 拒绝「仍在聚合窗口」（D2）；
+          3. **高价值筛查**：阈值 > 0 且 is_high_value=假 → 严格模式拒绝（D1）；
+          4. 否则放行。
+
+        零回归：窗口/阈值**默认 0（关闭）** ⇒ 不做任何 DB 查，行为与改造前逐字一致。
         """
         if not account or not peer_uid:
             return False, "账号或 UID 为空"
-        key = (account, str(peer_uid).strip())
+        uid = str(peer_uid).strip()
+        key = (account, uid)
         self._ensure_loaded(account)
         now = time.time()
         with self._lock:
             last = self._cache.get(key)
+        # ① 冷却（已发送过）
         if last and (now - last) < cfg("UID_SINK_COOLDOWN"):
             left = int(cfg("UID_SINK_COOLDOWN") - (now - last))
             if cfg("UID_SINK_STRICT"):
                 return False, (f"UID 已发送过，冷却期内（剩余 {left // 86400} 天）")
             return True, f"（非严格模式放行，{left // 86400} 天前发过）"
+        # ②/③ 窗口 + 高价值（关闭时零 DB 查 ⇒ 零回归）
+        window = float(cfg("UID_SINK_WINDOW") or 0)
+        threshold = int(cfg("HIGH_VALUE_THRESHOLD") or 0)
+        if window > 0 or threshold > 0:
+            row = self._read_row(account, uid)
+            if row is not None:
+                wend = row.get("window_end_ts")
+                if window > 0 and wend and now < float(wend):
+                    return False, (f"仍在聚合窗口（剩余 {int(float(wend) - now)}s）")
+                if threshold > 0 and not int(row.get("is_high_value") or 0):
+                    if cfg("UID_SINK_STRICT"):
+                        return False, ("非高价值目标（关键词分 "
+                                       f"{int(row.get('keyword_score') or 0)} < 阈值 {threshold}）")
         return True, ""
 
     def mark_sent(self, account: str, peer_uid: str, nickname: str = "",
@@ -714,21 +763,108 @@ class UidSink:
             logger.warning(f"[SEND-025] " + f"[uid-sink] 落库失败（仅内存生效）: {e}")
 
     def mark_seen(self, account: str, peer_uid: str, nickname: str = "",
-                  source: str = "") -> None:
-        """仅沉淀（未发送）：同 UID 多次弹幕只记一次，不占用发送额度。"""
+                  source: str = "", text: str = "") -> None:
+        """仅沉淀（未发送）：同 UID 多次弹幕**聚合累积**，不占用发送额度。
+
+        ADR-007 / C-06 Q1（Phase 2/3/5）：
+          - 首次：INSERT；`first_seen_ts=now`；`keyword_score=score_text(text)`；
+            `is_high_value=(阈值>0 且 分数>=阈值)`；
+            `window_end_ts = now + (高价值加速窗口 | 普通窗口)`（D2-C 固定窗口）；
+          - 再次：`aggregate_text` 拼接（截断 `aggregate_max_chars`）、
+            `keyword_score=MAX(...)`、`is_high_value=MAX(...)`；
+            若已判为高价值则把窗口**缩短**至 `first_seen_ts + 加速窗口`（热度加速）。
+          - `window<=0` 时不设窗口；`text` 为空时退化为原行为（只插 first_seen_ts）—— **零回归**。
+        """
+        uid = str(peer_uid).strip()
+        if not account or not uid:
+            return
+        now = time.time()
+        window = float(cfg("UID_SINK_WINDOW") or 0)
+        hv_win = float(cfg("HIGH_VALUE_WINDOW") or 0)
+        max_chars = int(cfg("AGGREGATE_MAX_CHARS") or 2000)
+        threshold = int(cfg("HIGH_VALUE_THRESHOLD") or 0)
+        score = 0
+        if text:
+            try:
+                from services import high_value_keywords as _hv
+                score = int(_hv.score_text(text))
+            except Exception:
+                score = 0
+        hv = 1 if (threshold > 0 and score >= threshold) else 0
+        # 窗口：高价值用加速窗口（D2-C），否则普通窗口
+        span = (hv_win if (hv and hv_win > 0) else window)
+        wend = (now + span) if (window > 0 and span > 0) else None
         try:
             from database import get_db
             conn = get_db()
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO dm_uid_sink("
-                "account,peer_uid,nickname,source,first_seen_ts) "
-                "VALUES(?,?,?,?,?)",
-                (account, str(peer_uid).strip(), nickname or "", source or "",
-                 time.time()))
+                "account,peer_uid,nickname,source,first_seen_ts,"
+                "keyword_score,is_high_value,window_end_ts,aggregate_text) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (account, uid, nickname or "", source or "", now,
+                 score, hv, wend, (text or "")[:max_chars] if text else ""))
+            is_new = (getattr(cur, "rowcount", 0) or 0) > 0
+            if text:
+                # 聚合累积 + 分数/标记取较大 + 高价值热度加速（缩短窗口）
+                conn.execute(
+                    "UPDATE dm_uid_sink SET "
+                    "aggregate_text=substr(COALESCE(aggregate_text,'') || ' ' || ?, 1, ?), "
+                    "keyword_score=MAX(keyword_score, ?), "
+                    "is_high_value=MAX(is_high_value, ?), "
+                    "window_end_ts=CASE WHEN ? AND window_end_ts IS NOT NULL "
+                    "  THEN MIN(window_end_ts, first_seen_ts + ?) "
+                    "  ELSE window_end_ts END "
+                    "WHERE account=? AND peer_uid=?",
+                    (text, max_chars, score, hv, hv, hv_win, account, uid))
             conn.commit()
         except Exception:
-            logger.debug(f'[SILENT-00] services.dm_dispatch: mark_seen upsert failed')
+            logger.debug('[SILENT-00] services.dm_dispatch: mark_seen upsert failed')
+            return
+        # Phase 4：LLM 精判（异步，不阻塞；仅新行 + 开关开启 + 有关键词候选）
+        if (is_new and text and cfg("HIGH_VALUE_LLM")):
+            self._refine_high_value_async(account, uid, text)
+
+    def _refine_high_value_async(self, account: str, uid: str, text: str) -> None:
+        """异步 LLM 精判并存回 `is_high_value` / `high_value_reason`（C-06 Q4）。
+
+        失败（LLM 不可用等）→ 保持关键词判定不变（不写 false）；日志 `[AI-004]`。
+        """
+        def _work():
+            try:
+                from services import ai_reply
+                r = ai_reply.judge_high_value(text, account=account)
+                hv = r.get("high_value")
+                if hv is None:
+                    return                       # 无结论 → 保持关键词判定
+                from database import get_db
+                conn = get_db()
+                conn.execute(
+                    "UPDATE dm_uid_sink SET is_high_value=?, high_value_reason=? "
+                    "WHERE account=? AND peer_uid=?",
+                    (1 if hv else 0, str(r.get("reason") or "")[:200],
+                     account, uid))
+                conn.commit()
+            except Exception as e:
+                logger.debug(f"[AI-004] [uid-sink] LLM 精判写回失败: {e}")
+        try:
+            threading.Thread(target=_work, daemon=True,
+                             name=f"hv-refine-{uid[:8]}").start()
+        except Exception:
             pass
+
+    def get_aggregate(self, account: str, peer_uid: str) -> str:
+        """读该 UID 的聚合文本快照（Phase 5；生成上下文用，调用方自行深拷贝使用）。"""
+        row = self._read_row(account, str(peer_uid).strip())
+        return str((row or {}).get("aggregate_text") or "")
+
+    def window_remaining(self, account: str, peer_uid: str) -> float:
+        """距窗口到期的剩余秒数（无窗口/已到期 → 0）。供 UI/排障只读。"""
+        row = self._read_row(account, str(peer_uid).strip())
+        wend = (row or {}).get("window_end_ts")
+        if not wend:
+            return 0.0
+        return max(0.0, float(wend) - time.time())
 
     def stats(self, account: str = "") -> dict:
         try:

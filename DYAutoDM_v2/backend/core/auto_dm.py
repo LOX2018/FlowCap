@@ -554,6 +554,21 @@ class AutoDM:
                 comment = str((target or {}).get("comment") or "").strip()
                 # 语境：把弹幕/评论作为「对方说的话」，让第一步有内容可回应
                 ctx = comment or nick or "（直播间新观众）"
+                # ADR-007 / C-06 Phase 5（按人聚合）：**窗口开启时**用该 UID 在
+                # 窗口内的全部弹幕快照作上下文（生成完即弃，不写回 DB）。
+                # 窗口关闭（默认 0）时保持原行为 ⇒ 零回归。
+                if uid:
+                    try:
+                        from services import dm_dispatch as _dd
+                        if float(_dd.cfg("UID_SINK_WINDOW") or 0) > 0:
+                            _agg = _dd.get_dispatcher().uid_sink.get_aggregate(account, uid)
+                            if _agg.strip():
+                                ctx = _agg.strip()
+                                logger.info(
+                                    f"[agg-sink] 使用聚合上下文（uid={uid} "
+                                    f"快照长度={len(ctx)}）")
+                    except Exception:
+                        logger.debug('[SILENT-00] core.auto_dm: aggregate ctx failed')
                 text, source = await asyncio.to_thread(
                     ai_reply.generate_dm_for_live,
                     account=account, peer_name=nick or uid,

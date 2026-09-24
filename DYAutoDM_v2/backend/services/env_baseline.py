@@ -158,3 +158,241 @@ def compare_baseline(account: str) -> dict:
     except Exception as e:  # noqa: BLE001
         out["reason"] = f"error: {type(e).__name__}"
         return out
+
+
+# ===========================================================================
+# T5-b（2026-09-24）：两世界可见性探针 —— 防「注入成功却读到空」复发
+# ===========================================================================
+#
+# ## 事故形态（要防的复发）
+# `browser_daemon` 的 CAP_*_HOOK_JS 经 `context.add_init_script` 注入，截获前端
+# 自发的 `im/user/info` 响应，写进 `window.__CAP_USERINFO__` /
+# `window.__CAP_WP_MESSAGE__`（`daemon/browser_daemon_js.py:48-108`）。
+# patchright 的 `add_init_script` 走 Route 注入，落点是**页面主世界**；而其
+# `evaluate()` 默认 `isolated_context=True` = 在**隔离世界**求值（读取侧现状：
+# `bcc_capture.py:212-213`、`browser_daemon.py` 读 hook 处均未传该 kwarg）。
+# 一旦注入落进与读取侧不同的世界 → **主世界看得到、读取侧永远读到空**，且
+# **不报错**（假成功）——即「注入成功却读到空」。
+#
+# ## 为什么单验一侧不够（本探针的判据）
+# 只验「注入是否执行」（主世界可见）会漏掉本事故；只验「读取侧非空」会把
+# 「页面还没加载」误判成故障。⇒ **两条必须同时成立**：
+#   ① 主世界能看到 hook 键（注入确实执行）；
+#   ② 默认（读取）世界也能读到同一键（跨世界可见）。
+# 二者不一致 = red。这是复发时唯一的机械信号（L3 报告 §四.4 门禁条款）。
+#
+# ## 三态（沿用本模块「未知/降级」纪律，绝不静默通过）
+#   pass    —— 两个世界都可见（探针已执行且达标）
+#   fail    —— 探针已执行且判定不达标（注入未生效 / 跨世界不可见）
+#   unknown —— **未能判定**（未执行 / 无浏览器（离线）/ 后端不适用 / 读取
+#              异常 / 返回结构不符）。unknown **永远不等于通过**；调用方不得
+#              据此放行。`visibility_gate()` 在无页面时默认即 unknown。
+#
+# ## 离线替身（诚实标注）
+# 真实浏览器在本环境不可用（任务亦禁跑真机）⇒ 本模块只提供**页面无关**的探针
+# 入口 `probe_two_world_visibility(page)`：传入任何具备 `evaluate()` 的对象即可。
+# 离线验证用**桩对象模拟两世界**（`backend/test_two_world_visibility_gate.py`
+# 的 `TwoWorldPageStub`：以是否传 `isolated_context=False` 区分主世界 vs 默认
+# 世界）。
+# ⚠️ **真机未验证**：对真实 patchright 页面的行为**未在本环境实测**；离线只
+# 证明了「判据能对（正控 PASS / 负控 FAIL / 缺证据走 unknown）」。
+# ---------------------------------------------------------------------------
+
+VISIBILITY_KEYS: tuple[str, ...] = ("__CAP_USERINFO__", "__CAP_WP_MESSAGE__")
+
+# 探针 JS：在**任意世界**求值，回报该世界里 hook 键是否存在。
+# 同一段 JS 分别在主世界与默认（隔离）世界各跑一次，差值即两世界可见性差异。
+VISIBILITY_PROBE_JS = r"""
+() => {
+  const keys = ['__CAP_USERINFO__', '__CAP_WP_MESSAGE__'];
+  const seen = {};
+  for (const k of keys) {
+    try { seen[k] = !!window[k]; } catch (e) { seen[k] = false; }
+  }
+  return { keys: seen };
+}
+"""
+
+VIS_STATUS_PASS = "pass"
+VIS_STATUS_FAIL = "fail"
+VIS_STATUS_UNKNOWN = "unknown"
+
+# 两世界可见性基线的 kv 键前缀（与出口 IP 基线 `env_baseline_` 分键，互不污染）
+_VIS_KEY_PREFIX = "env_baseline_vis_"
+
+
+def _vis_key(account: str) -> str:
+    return _VIS_KEY_PREFIX + str(account or "").strip()
+
+
+def _vis_result(status: str, reason: str, *, leaks=None, main_visible=None,
+                default_visible=None, detail: str = "") -> dict:
+    return {
+        "status": status,
+        "reason": reason,
+        "ok": status == VIS_STATUS_PASS,
+        "checked": status != VIS_STATUS_UNKNOWN,
+        "leaks": list(leaks or []),
+        "main_visible": list(main_visible or []),
+        "default_visible": list(default_visible or []),
+        "detail": detail,
+    }
+
+
+def classify_two_world_visibility(main_visible=None, default_visible=None, *,
+                                  executed: bool = True,
+                                  applicable: bool = True) -> dict:
+    """纯判据：把两世界的可见性映射成 pass/fail/unknown 三态（离线可测）。
+
+    main_visible / default_visible —— {CAP 键: bool}（可只含相关键）。
+    只吃数据、不碰浏览器，故可同时服务于真实探针与门禁回归。
+    """
+    if not applicable:
+        return _vis_result(
+            VIS_STATUS_UNKNOWN, "not_applicable",
+            detail="当前内核/后端不适用 JS 注入路径（如 Camoufox 跳过 add_init_script）")
+    if not executed:
+        return _vis_result(
+            VIS_STATUS_UNKNOWN, "not_executed",
+            detail="探针未执行（无页面对象 / 离线）—— 不得据此判通过")
+
+    main_on = [k for k in VISIBILITY_KEYS if (main_visible or {}).get(k)]
+    default_on = [k for k in VISIBILITY_KEYS if (default_visible or {}).get(k)]
+    leaks: list[dict] = []
+
+    if not main_on:
+        leaks.append({"code": "BCC-070", "severity": "fatal",
+                      "detail": "页面主世界看不到任何 CAP_* hook 键 —— "
+                                "init script 未生效（注入失败 / 未执行）"})
+    for k in main_on:
+        if k not in default_on:
+            leaks.append({"code": "BCC-070", "severity": "fatal",
+                          "detail": f"{k} 在主世界可见、默认（读取）世界不可见 —— "
+                                    f"跨世界不可见，读取侧将永远读到空"})
+    for k in default_on:
+        if k not in main_on:
+            leaks.append({"code": "BCC-070", "severity": "fatal",
+                          "detail": f"{k} 在默认（读取）世界可见、主世界不可见 —— "
+                                    f"两世界不一致"})
+
+    if leaks:
+        return _vis_result(VIS_STATUS_FAIL, "two_world_invisible", leaks=leaks,
+                           main_visible=main_on, default_visible=default_on)
+    return _vis_result(VIS_STATUS_PASS, "consistent",
+                       main_visible=main_on, default_visible=default_on)
+
+
+def _extract_visibility(raw) -> dict | None:
+    """把探针原始返回值规整为 {CAP 键: bool}；结构不符 → None（判 unknown）。"""
+    if not isinstance(raw, dict):
+        return None
+    inner = raw.get("keys")
+    if isinstance(inner, dict):
+        return {k: bool(inner.get(k)) for k in VISIBILITY_KEYS}
+    if any(k in raw for k in VISIBILITY_KEYS):
+        return {k: bool(raw.get(k)) for k in VISIBILITY_KEYS}
+    return None
+
+
+def _evaluate_world(page, js: str, *, main_world: bool):
+    """在指定 JS 世界里求值。返回 (raw, read_mode)。"""
+    if main_world:
+        try:
+            # patchright 专有 kwarg：isolated_context=False = 主执行世界
+            return page.evaluate(js, isolated_context=False), "main(isolated_context=False)"
+        except TypeError:
+            # 原生 playwright 无该 kwarg（单世界，evaluate 本就在主世界）
+            return page.evaluate(js), "default(fallback:isolated_context 不支持)"
+    return page.evaluate(js), "default"
+
+
+def probe_two_world_visibility(page, *, applicable: bool = True) -> dict:
+    """对给定页面跑两世界可见性探针（页面无关：只要有 evaluate()）。
+
+    page=None / 不可用 → unknown（**绝不**降级成 pass）。
+    """
+    if not applicable:
+        return classify_two_world_visibility(applicable=False)
+    if page is None or not hasattr(page, "evaluate"):
+        return classify_two_world_visibility(executed=False)
+
+    try:
+        main_raw, main_mode = _evaluate_world(page, VISIBILITY_PROBE_JS, main_world=True)
+    except Exception as e:  # noqa: BLE001
+        return _vis_result(VIS_STATUS_UNKNOWN, "probe_error",
+                           detail=f"主世界读取异常: {type(e).__name__}: {e}")
+    try:
+        default_raw, _ = _evaluate_world(page, VISIBILITY_PROBE_JS, main_world=False)
+    except Exception as e:  # noqa: BLE001
+        return _vis_result(VIS_STATUS_UNKNOWN, "probe_error",
+                           detail=f"默认世界读取异常: {type(e).__name__}: {e}")
+
+    main_map = _extract_visibility(main_raw)
+    default_map = _extract_visibility(default_raw)
+    if main_map is None or default_map is None:
+        return _vis_result(VIS_STATUS_UNKNOWN, "bad_probe_output",
+                           detail="探针返回值结构不符（期望 {keys:{CAP 键: bool}}）")
+
+    res = classify_two_world_visibility(main_map, default_map)
+    res["main_read_mode"] = main_mode
+    return res
+
+
+def get_visibility_baseline(account: str) -> dict | None:
+    """读账号两世界可见性基线。无基线或异常 → None（≠ 通过）。"""
+    try:
+        data = kv_get(_vis_key(account))
+        if isinstance(data, dict) and data.get("status") in (VIS_STATUS_PASS, VIS_STATUS_FAIL):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def record_visibility_baseline(account: str, result: dict) -> dict | None:
+    """记录两世界可见性基线。
+
+    仅 pass/fail 可落盘；unknown **不落**（无数据不得被当通过）。任何异常 → None。
+    """
+    if not account or not isinstance(result, dict):
+        return None
+    if result.get("status") not in (VIS_STATUS_PASS, VIS_STATUS_FAIL):
+        return None
+    rec = {
+        "status": result["status"],
+        "reason": str(result.get("reason") or ""),
+        "main_visible": list(result.get("main_visible") or []),
+        "default_visible": list(result.get("default_visible") or []),
+        "main_read_mode": str(result.get("main_read_mode") or ""),
+        "recorded_at": time.time(),
+        "source": "visibility_probe",
+    }
+    try:
+        kv_set(_vis_key(account), rec)
+    except Exception:
+        return None
+    return rec
+
+
+def visibility_gate(account: str = "", page=None, *, applicable: bool = True) -> dict:
+    """门禁入口：探针 +（可选）落基线，返回三态结果。
+
+    调用方纪律：`status == "pass"` 才放行；`fail` 记 BCC-070 告警；`unknown`
+    只降级记录，**不得**当成通过（这正是要防的「静默通过」）。
+    """
+    res = probe_two_world_visibility(page, applicable=applicable)
+    if account and res.get("status") in (VIS_STATUS_PASS, VIS_STATUS_FAIL):
+        record_visibility_baseline(account, res)
+    return res
+
+
+def latest_visibility(account: str) -> dict:
+    """读最近一次两世界可见性读数。无基线 → unknown/no_baseline（绝不 pass）。"""
+    rec = get_visibility_baseline(account)
+    if not rec:
+        return _vis_result(VIS_STATUS_UNKNOWN, "no_baseline")
+    out = _vis_result(rec.get("status"), rec.get("reason") or "recorded",
+                      main_visible=rec.get("main_visible"),
+                      default_visible=rec.get("default_visible"))
+    out["recorded_at"] = rec.get("recorded_at")
+    return out

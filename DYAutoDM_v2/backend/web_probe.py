@@ -129,6 +129,17 @@ async def run_probe(dispatch, room_url, headless=False, interval=3.0, should_sto
                 recs = scan(page)
                 for r in recs:
                     if r.get("nickname"):
+                        # ADR-007 / C-06（2026-09-24）：采集来源同样先沉淀
+                        # （与直播共用同一张 dm_uid_sink，source="crawl"）。
+                        try:
+                            from services.dm_dispatch import get_dispatcher as _gd
+                            _gd().uid_sink.mark_seen(
+                                r.get("account") or r.get("acct") or "",
+                                r.get("user_id") or r.get("uid") or "",
+                                r.get("nickname") or "", "crawl",
+                                r.get("comment") or "")
+                        except Exception:
+                            logger.debug('[SILENT-00] web_probe: mark_seen failed')
                         dispatch.submit(r)
             except Exception as e:
                 logger.warning(f"[BCC-045] " + f"[web_probe] 扫描异常: {e}")

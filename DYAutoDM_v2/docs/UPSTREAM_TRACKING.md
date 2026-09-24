@@ -52,7 +52,7 @@ python scripts/track_upstream.py --update
 |---|---|
 | **TeamBreakerr/douyin-chat-export** | 同类问题的第三方实现。其 commit message 记录了抖音前端的**每次改版应对**（虚拟滚动、short_id、field14、headless 跑法）——排查抖音侧问题时**第一个看它** |
 | **adryfish/fingerprint-chromium** | 指纹内核。升版会改模块路径（`/ts_sign`、`/s_sdk_sign_data_key/web_protect`）与 JS 特征 |
-| **Kaliiiiiiiiii-Vinyzu/patchright-python** | 反检测分支。实测其下 `add_init_script` **静默失效**（见知识库 08 §31.3），升版需复验 |
+| **Kaliiiiiiiiii-Vinyzu/patchright-python** | 反检测分支。⚠️ **2026-09-24 订正**：原记「实测其下 `add_init_script` **静默失效**（见知识库 08 §31.3），升版需复验」为**编号+结论双漂移**（`31.3` 实为 `工作记忆/05f_源项目对照与租约.md`，原意是窗口最小化节流；patchright 仅次要嫌疑）。本机复测（`artifacts/UP_L3_浏览器依赖升级评估_20260923.md` §四）1.62.3/1.63.0 下**均正常生效**，真因是**读取侧世界不匹配**。升版无收益（且 camoufox 硬钉 `<1.63`） |
 | **cv-cat/DouYin_Spider** | 签名/接口基座。抖音改签名算法时**必须先跟这里** |
 | **lyu0805/OpenBrowser** | 指纹/字体层对策（近期持续在改字体探测出口），与我们的环境门阀相关 |
 

@@ -460,6 +460,17 @@ class LiveChatHook(DouyinLive):
                                         f"            验证法：换一个**已知有解密权**的账号进同一房间，"
                                         f"若同样脱敏即属此类。")
                         if target.get("nickname"):
+                            # ADR-007 / C-06（2026-09-24）：先「沉淀」再提交。
+                            # 沉淀记录该 UID 的聚合弹幕/关键词分/窗口，供发送闸门
+                            # 的窗口延迟与高价值过滤使用（能力默认休眠：窗口/阈值=0）。
+                            try:
+                                from services.dm_dispatch import get_dispatcher as _gd
+                                _gd().uid_sink.mark_seen(
+                                    self._account or "", user_id or "",
+                                    nickname or "", "live",
+                                    target.get("comment") or "")
+                            except Exception:
+                                logger.debug('[SILENT-00] core.live_hook: mark_seen failed')
                             self.dispatch.submit(target)
                     elif item.method == "WebcastMemberMessage":
                         m = Live_pb2.MemberMessage()

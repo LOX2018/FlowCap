@@ -45,7 +45,8 @@
 ## 6. 验证方式
 
 ```bash
-py314 -m unittest test_live            # 解析/换发单测
+py314 -m unittest test_live_identity_verdict      # 身份/解密权合取判据（§2·Ⅰ4，守卫 19 项）
+py314 -m unittest test_live_session_decrypt_authority   # 会话权威/解密权
 # 在线验证：给一个真实直播间 URL，确认返回 room_id（Live-Instance Verification）
 ```
 

@@ -328,6 +328,41 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "bool", "default": True, "env": "DY_UID_SINK_STRICT",
                 "apply": "hot", "risk": True, "hint": "关则仅提示不拦截",
             },
+            # ── ADR-007 / C-06（2026-09-24）沉淀池增强 ──────────────
+            # ⚠️ 默认值 = **关闭**（0），非 ADR 建议的 300/10。
+            # 理由：窗口默认开会**静默延迟**发送、阈值默认开（strict 下）会
+            #   **过滤掉大部分目标** ⇒ 属「静默改变核心发送行为」，违反用户
+            #   「显式配置」原则。故能力就绪但**休眠**，由用户在配置中心显式开启。
+            "uid_sink_window_seconds": {
+                "label": "沉淀窗口时长（秒）",
+                "type": "float", "default": 0.0, "min": 0, "max": 86400,
+                "env": "DY_UID_SINK_WINDOW", "apply": "hot",
+                "hint": "先收 N 秒再统一发送（0=即见即发，退回原行为）",
+            },
+            "high_value_window_seconds": {
+                "label": "高价值加速窗口（秒）",
+                "type": "float", "default": 60.0, "min": 0, "max": 86400,
+                "env": "DY_HIGH_VALUE_WINDOW", "apply": "hot",
+                "hint": "高价值用户的缩短窗口（ADR-007 D2 热度加速）",
+            },
+            "high_value_score_threshold": {
+                "label": "高价值关键词阈值",
+                "type": "int", "default": 0, "min": 0, "max": 1000,
+                "env": "DY_HIGH_VALUE_THRESHOLD", "apply": "hot",
+                "hint": "关键词权重和 ≥ 该值判为高价值（0=关闭筛查，全部放行）",
+            },
+            "high_value_llm_enabled": {
+                "label": "高价值 LLM 精判",
+                "type": "bool", "default": False,
+                "env": "DY_HIGH_VALUE_LLM", "apply": "hot",
+                "hint": "开则对关键词候选做 LLM 精判；AI 不可用时自动退化为纯关键词（不阻塞）",
+            },
+            "aggregate_max_chars": {
+                "label": "聚合文本上限（字符）",
+                "type": "int", "default": 2000, "min": 100, "max": 20000,
+                "env": "DY_AGGREGATE_MAX_CHARS", "apply": "hot",
+                "hint": "aggregate_text 累积截断上界，防单行无限膨胀",
+            },
         },
     },
 

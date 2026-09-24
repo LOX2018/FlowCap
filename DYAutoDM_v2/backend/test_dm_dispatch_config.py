@@ -4,7 +4,7 @@
 1. 零回归：默认值与接线前逐字一致（含类型）
 2. 热生效：改配置后 cfg() 与直接读常量名都拿到新值
 3. 回落：配置中心异常时用兜底常量，绝不崩
-4. 覆盖完整：11 个参数一个都不能漏接线
+4. 覆盖完整：16 个参数一个都不能漏接线
 
 跑法：cd backend && python test_dm_dispatch_config.py
 """
@@ -23,6 +23,9 @@ import services.dm_dispatch as dd  # noqa: E402
 from services import app_config as ac  # noqa: E402
 
 # 接线前实测基线（2026-09-08，见提交记录）
+# 2026-09-24 扩展：+5 项（ADR-007 / C-06 沉淀池增强）。
+#   ⚠️ 本表是**硬编码副本**（M-10 同类债）：新增参数必须手动登记，否则
+#      `test_all_params_wired` 会红 —— 这正是它存在的意义（强制显式接线）。
 BASELINE = {
     "QUEUE_MAX": 200,
     "POOL_STRICT": True,
@@ -35,6 +38,12 @@ BASELINE = {
     "WEIGHT_FORGIVE_AFTER": 86400.0,
     "UID_SINK_COOLDOWN": 604800.0,
     "UID_SINK_STRICT": True,
+    # ADR-007 / C-06（2026-09-24）—— 窗口/阈值默认 0 = 能力休眠，零回归
+    "UID_SINK_WINDOW": 0.0,
+    "HIGH_VALUE_WINDOW": 60.0,
+    "HIGH_VALUE_THRESHOLD": 0,
+    "HIGH_VALUE_LLM": False,
+    "AGGREGATE_MAX_CHARS": 2000,
 }
 
 

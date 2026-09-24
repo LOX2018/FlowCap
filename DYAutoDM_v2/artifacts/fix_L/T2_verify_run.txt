@@ -1,0 +1,57 @@
+[32m2026-09-24 10:19:10.253[0m | [1mINFO    [0m | [36mdatabase[0m:[36mget_db[0m:[36m149[0m - [1m[db] SQLite 已初始化: C:\temp\dyautodm_design\members\m17db0f8209156f26\data\dyautodm.db[0m
+=== 生效配置（持久化态）===
+  merchant_name : 唐律工伤团队
+  strict_level  : rag
+  scopes        : ['dm', 'live', 'crawl']
+  enabled       : False
+  system_prompt 字数: 416
+  model / base_url : glm-5.2 / http://127.0.0.1:31415/v1
+
+🔒 内存覆盖 enabled=True（不写库、不触发发送、不改任何持久化配置）
+
+=== 判定链预检（evaluate_live_ai 口径，内存态）===
+  enabled      -> True
+  strict_level -> rag (kb_only 会拒绝)
+  scopes 含 live -> True
+
+--- 弹幕: 我在工地摔了，腰椎骨折，能定几级？
+    source : AI
+    text   : 兄弟/姐们，先问你一声，现在身体恢复得怎么样了
+    复读?  : False
+
+--- 弹幕: 手指断了算几级工伤，我是四川的
+    source : AI
+    text   : 测试工友你好
+    复读?  : False
+
+--- 弹幕: 陈旧性骨折还能认工伤吗，厂里不认
+    source : AI
+    text   : 先别急，**陈旧性骨折是有可能认工伤的**，但关键看你是什么时候受的伤、有没有及时去医院检查
+    复读?  : False
+
+=== 汇总 ===
+  source=AI          : 3/3   (期望 3)
+  回落兜底(source=兜底): 0/3   (期望 0)
+  复读弹幕原文        : 0/3   (期望 0)
+  含人格或业务特征     : 3/3   (期望 3)
+  判定: PASS
+[
+  {
+    "comment": "我在工地摔了，腰椎骨折，能定几级？",
+    "source": "AI",
+    "text": "兄弟/姐们，先问你一声，现在身体恢复得怎么样了",
+    "echo": false
+  },
+  {
+    "comment": "手指断了算几级工伤，我是四川的",
+    "source": "AI",
+    "text": "测试工友你好",
+    "echo": false
+  },
+  {
+    "comment": "陈旧性骨折还能认工伤吗，厂里不认",
+    "source": "AI",
+    "text": "先别急，**陈旧性骨折是有可能认工伤的**，但关键看你是什么时候受的伤、有没有及时去医院检查",
+    "echo": false
+  }
+]

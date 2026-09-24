@@ -140,3 +140,6 @@ DYAutoDM_v2/accounts/
 # 3) 知识库/Docs 的 .bak.<时间戳> 备份（我自己脚本生成的，不入库）
 *.bak.[0-9]*
 *.bak2.[0-9]*
+# 4) 构建基线（L-9：build_and_deploy.py 记录「上次成功构建的 HEAD sha」，
+#    属本地构建状态，不入版本库）
+DYAutoDM_v2/artifacts/.last_built_sha
