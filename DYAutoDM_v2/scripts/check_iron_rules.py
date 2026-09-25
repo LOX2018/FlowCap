@@ -149,7 +149,7 @@ def r4_version_sync() -> None:
         check(False, "R4", f"版本源缺失: {missing}")
         return
     uniq = set(vers.values())
-    check(len(uniq) == 1, "R4", f"五处版本齐平 = {sorted(uniq)} ({vers.get('tauri.conf.json')})")
+    check(len(uniq) == 1, "R4", f"六处版本齐平 = {sorted(uniq)} ({vers.get('tauri.conf.json')})")
 
 
 # ── R5: 源码不得含明文凭证 ─────────────────────────────────────────────────
