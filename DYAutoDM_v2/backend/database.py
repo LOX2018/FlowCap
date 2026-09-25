@@ -451,15 +451,23 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                     for msg in d.get("messages", []) or []:
                         # 2026-09-06 全局并发治理：迁移路径也改 OR IGNORE
                         # （此前裸 INSERT，重复运行迁移会重复灌入消息）
+                        # ADR-012：迁移路径也经**单一出口**（补 kind、未知类型降级）
+                        from services.message_schema import MessageRecord
+                        _rec = MessageRecord.build(
+                            text=msg.get("text", ""),
+                            msg_type=msg.get("msg_type", "text"),
+                            extra=msg.get("extra") or {},
+                            role=msg.get("role", "them"))
                         conn.execute(
                             "INSERT OR IGNORE INTO dm_messages("
                             "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
                             " VALUES(?,?,?,?,?,?,?,?)",
-                            (acct, conv_id, msg.get("role", "them"), msg.get("text", ""),
-                             msg.get("msg_type", "text"),
-                             json.dumps(msg.get("extra", {}), ensure_ascii=False),
-                             msg.get("ts", 0),
-                             str(msg.get("msg_id")) if msg.get("msg_id") else None),
+                            _rec.tuple(
+                                acct, conv_id,
+                                ts=msg.get("ts", 0),
+                                msg_id=(str(msg.get("msg_id"))
+                                        if msg.get("msg_id") else None),
+                                role=msg.get("role", "them")),
                         )
                         m_migrated += 1
                 if m_migrated:

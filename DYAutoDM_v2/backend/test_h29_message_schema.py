@@ -110,18 +110,52 @@ class TestWriteExit(unittest.TestCase):
         self.assertEqual(got[3], "t")
         self.assertEqual(got[5], r.extra_json())
 
-    def test_g6_wp_recv_uses_exit(self):
-        src = open(os.path.join(_BACKEND, "daemon", "wp_recv.py"), encoding="utf-8").read()
-        self.assertIn("MessageRecord.build", src)
-        self.assertIn("rec.extra_json()", src)
+    def test_g6_all_seven_write_points_converged(self):
+        """G6：7 处写入点**全部**经单一出口（不得再裸写列名元组）。"""
+        import re
+        targets = {
+            "auto_dm/conversation_capture.py": [
+                (b"_rec_of(m, _extra).tuple", 2),     # 首包 + 补全，共两处
+            ],
+            "daemon/recv_daemon.py": [
+                (b"_msg_tuple(m, ib.name, conv_id)", 2),   # init 同步两处
+                (b"_ws_tuple(self.name, conv_id", 1),       # WS 实时
+            ],
+            "daemon/wp_recv.py": [
+                (b"rec.extra_json()", 1),
+            ],
+            "database.py": [
+                (b"_rec.tuple(", 1),                        # 迁移路径
+            ],
+        }
+        for rel, pats in targets.items():
+            src = open(os.path.join(_BACKEND, rel), "rb").read()
+            for pat, want in pats:
+                self.assertEqual(src.count(pat), want,
+                                 f"{rel} 出口调用 {pat!r} 命中 {src.count(pat)}，期望 {want}")
 
-    def test_g6b_capture_uses_exit(self):
-        src = open(os.path.join(_BACKEND, "auto_dm", "conversation_capture.py"),
-                   encoding="utf-8").read()
-        self.assertIn("MessageRecord.build", src)
-        self.assertIn("_rec_of(m, _extra).tuple", src)
-        # 负控：不得再出现裸写 m["text"] 的插入元组
-        self.assertNotIn('m["role"], m["text"], "text", _extra', src)
+    def test_g6b_no_raw_column_tuple_left(self):
+        """负控：不得再有「手写列名元组」形态的插入。
+
+        ⚠️ 模式必须锚定**裸元组起始**（缩进后紧跟 `(`），否则会误命中
+        已修好的 `_ws_tuple(self.name, conv_id, …)` 那一行本身（实测踩到）。
+        """
+        import re
+        checks = {
+            # ⚠️ 锚定「行首缩进后紧跟 ( 」才算裸元组；否则会命中
+            # `_ws_tuple(self.name, …)` 的参数列表（该函数名本身以 ( 结尾）。
+            "daemon/recv_daemon.py":
+                rb'(?m)^\s*\(\s*self\.name, conv_id, role, text, msg_type,',
+            "database.py":
+                rb'(?m)^\s*\(\s*acct, conv_id, msg\.get\("role", "them"\),',
+            "auto_dm/conversation_capture.py":
+                rb'(?m)^\s*\(\s*name, cid, m\["role"\], m\["text"\], "text", _extra',
+        }
+        for rel, pat in checks.items():
+            src = open(os.path.join(_BACKEND, rel), "rb").read()
+            hits = re.findall(pat, src)
+            self.assertEqual(len(hits), 0,
+                             f"{rel} 仍存在裸写列名元组 {len(hits)} 处")
 
 
 class TestLiveData(unittest.TestCase):

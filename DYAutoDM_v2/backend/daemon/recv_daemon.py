@@ -769,9 +769,9 @@ class AccountInbox:
                     "INSERT OR IGNORE INTO dm_messages("
                     "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
                     " VALUES(?,?,?,?,?,?,?,?)",
-                    (self.name, conv_id, role, text, msg_type,
-                     json.dumps(extra or {}, ensure_ascii=False), ts,
-                     str(msg_id) if msg_id else None),
+                    _ws_tuple(self.name, conv_id, role, text, msg_type, extra, ts, msg_id)
+
+
                 )
                 conn.execute(
                     "UPDATE dm_conversations SET last_ts=?,unread=unread+? "
@@ -1125,6 +1125,44 @@ class RecvChannel(threading.Thread):
         if n_new:
             logger.info(f"[recv][{self.name}] 同步帧新增 {n_new} 个会话（已静默入库）")
 
+def _msg_tuple(m: dict, account: str, conv_id: str) -> tuple:
+    """ADR-012 层 2：init 同步路径的**单一写入出口**（八列同序元组）。
+
+    `extra` 由 `_msg_extra_json` 产出后再经 Schema SSOT 补 `kind`
+    （未登记类型自动降级，绝不污染 text）。
+    """
+    from services.message_schema import MessageRecord
+    import json as _json
+    try:
+        ex = _json.loads(_msg_extra_json(m) or "{}")
+        if not isinstance(ex, dict):
+            ex = {}
+    except Exception:
+        ex = {}
+    rec = MessageRecord.build(text=m.get("text", ""),
+                              msg_type=m.get("msg_type") or "text",
+                              extra=ex, role=m.get("role"))
+    return rec.tuple(account, conv_id,
+                     ts=m.get("ts", 0),
+                     msg_id=str(m.get("msg_id")) if m.get("msg_id") else None,
+                     role=m.get("role") or "them")
+
+
+def _ws_tuple(account: str, conv_id: str, role: str, text: str,
+              msg_type, extra, ts, msg_id) -> tuple:
+    """ADR-012 层 2：WS 实时路径（t==27 等）的**单一写入出口**。
+
+    与 `_msg_tuple` 同理：经 Schema SSOT 归一化后再产出八列同序元组。
+    """
+    from services.message_schema import MessageRecord
+    ex = extra if isinstance(extra, dict) else {}
+    rec = MessageRecord.build(text=text or "", msg_type=msg_type or "text",
+                              extra=dict(ex), role=role)
+    return rec.tuple(account, conv_id, ts=ts or 0,
+                     msg_id=str(msg_id) if msg_id else None,
+                     role=role or "them")
+
+
 def _msg_extra_json(m: dict) -> str:
     """把 parse_init_protobuf 单条消息的 extra 要素序列化为 JSON 字符串。
 
@@ -1460,9 +1498,9 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                                 "INSERT OR IGNORE INTO dm_messages("
                                 "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
                                 " VALUES(?,?,?,?,?,?,?,?)",
-                                (ib.name, conv_id, m["role"], m["text"], "text",
-                                 _msg_extra_json(m),
-                                 m["ts"], str(m.get("msg_id")) if m.get("msg_id") else None),
+                                _msg_tuple(m, ib.name, conv_id)
+
+
                             )
                             n_msg += 1
                         except Exception:
@@ -1487,9 +1525,9 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                             "INSERT OR IGNORE INTO dm_messages("
                             "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
                             " VALUES(?,?,?,?,?,?,?,?)",
-                            (ib.name, conv_id, m["role"], m["text"], "text",
-                             _msg_extra_json(m),
-                             m["ts"], str(m.get("msg_id")) if m.get("msg_id") else None),
+                            _msg_tuple(m, ib.name, conv_id)
+
+
                         )
                         n_msg += 1
                     except Exception:
