@@ -30,6 +30,7 @@ import re
 import threading
 import time
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -199,6 +200,9 @@ _DEFAULT_CONFIG = {
     # 上下文预算口径（D1：按模型窗口比例）。预算 = context_window * pct
     "context_window": 65536,      # 主模型上下文窗口（tokens）；部署侧按真实模型调整
     "context_budget_pct": 0.6,
+    # 并发处理池大小（ADR-008 决策 3）：同会话严格串行、跨会话并行。
+    # 8 = 可同时接待 8 个会话（端点实测 10 并发无压力）；>1 才启用并行。
+    "reply_concurrency": 8,
     "fallback_pool": [
         "嗯嗯稍等哈，我问下马上回你",
         "这个我得确认一下哈，稍等",
@@ -1141,6 +1145,15 @@ class AutoReplyWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        # ADR-008 决策 3：per-session 串行 + 跨会话并行。
+        # `_pool` 每次 start 重建（尺寸随 reply_concurrency 配置）；
+        # `_sess_locks` 保证同一 account:conv_id 严格串行；
+        # `_inflight` 在途会话集合 —— _tick 对已在处理的会话**先推进水位**
+        # 再跳过，避免下一轮重复捞取（避免同会话双写）。
+        self._pool: ThreadPoolExecutor | None = None
+        self._sess_locks: dict = {}
+        self._sess_locks_guard = threading.Lock()
+        self._inflight: set = set()
         self.status = {
             "running": False,
             "last_tick": 0.0,
@@ -1151,10 +1164,51 @@ class AutoReplyWorker:
             "last_reply": "",
         }
 
+    def _sess_lock(self, key: str):
+        """取该会话的互斥锁（同会话串行、跨会话互不阻塞）。"""
+        with self._sess_locks_guard:
+            lk = self._sess_locks.get(key)
+            if lk is None:
+                lk = threading.Lock()
+                self._sess_locks[key] = lk
+            return lk
+
+    def _handle_session(self, r, cfg: dict):
+        """线程池回调：持会话锁处理单条消息，结束后摘除在途标记。
+
+        同会话串行（锁）保证客户看到的顺序 = 发言顺序、上下文不串；
+        不同会话由线程池并行。
+        """
+        key = "%s:%s" % (r["account"], r["conv_id"])
+        try:
+            with self._sess_lock(key):
+                self._handle(r, cfg)
+            self.status["processed"] += 1
+        except Exception as e:
+            self.status["errors"] += 1
+            try:
+                _probe(r["id"], "TICK", "error", err=str(e)[:160])
+            except Exception:
+                pass
+            logger.warning(f"[AI-018] " + f"[ai] 单条处理异常: {e}")
+        finally:
+            with self._sess_locks_guard:
+                self._inflight.discard(key)
+
     def start(self):
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        try:
+            _n = int((get_config() or {}).get("reply_concurrency") or 1)
+        except (TypeError, ValueError):
+            _n = 1
+        _n = max(1, min(_n, 32))
+        self._pool = (ThreadPoolExecutor(max_workers=_n,
+                                        thread_name_prefix="ai-reply")
+                      if _n > 1 else None)
+        with self._sess_locks_guard:
+            self._inflight.clear()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="ai-autoreply")
         self._thread.start()
@@ -1163,6 +1217,12 @@ class AutoReplyWorker:
 
     def stop(self):
         self._stop.set()
+        if self._pool is not None:
+            try:
+                self._pool.shutdown(wait=True, cancel_futures=True)
+            except Exception:  # noqa: BLE001
+                pass
+            self._pool = None
         self.status["running"] = False
         logger.info("[ai] 获客自动回复监听已停止")
 
@@ -1215,16 +1275,24 @@ class AutoReplyWorker:
                        msg_type=r["msg_type"], last_id=last_id)
             except Exception:
                 pass
-            try:
-                self._handle(r, cfg)
-                self.status["processed"] += 1
-            except Exception as e:
-                self.status["errors"] += 1
+            # ADR-008 决策 3：跨会话并行、同会话串行。
+            # 已在处理中的会话**先推进水位再跳过**（避免下轮重复捞取）；
+            # 否则提交线程池，由 _handle_session 持会话锁处理。
+            _skey = "%s:%s" % (r["account"], r["conv_id"])
+            with self._sess_locks_guard:
+                if _skey in self._inflight:
+                    continue
+                self._inflight.add(_skey)
+            if self._pool is None:
+                self._handle_session(r, cfg)
+            else:
                 try:
-                    _probe(r["id"], "TICK", "error", err=str(e)[:160])
-                except Exception:
-                    pass
-                logger.warning(f"[AI-018] " + f"[ai] 单条处理异常: {e}")
+                    self._pool.submit(self._handle_session, r, cfg)
+                except Exception as e:  # 池已关闭等
+                    with self._sess_locks_guard:
+                        self._inflight.discard(_skey)
+                    self.status["errors"] += 1
+                    logger.warning(f"[AI-018] " + f"[ai] 提交并发池失败: {e}")
         self.status["last_tick"] = time.time()
 
     # -- 单条处理 ----------------------------------------------------------
