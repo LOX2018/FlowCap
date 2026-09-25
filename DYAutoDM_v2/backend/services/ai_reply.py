@@ -154,7 +154,11 @@ _DEFAULT_CONFIG = {
     "sem_threshold": 0.40,                        # 实测：同义聚簇 0.44~0.59，跨意图 <0.21
     "min_delay": 8,
     "max_delay": 20,
-    "max_history": 10,
+    # 0 = 全文注入（ADR-008 决策 1，推荐默认）；>0 = 仅最近 N 条（旧行为兼容）
+    "max_history": 0,
+    # 上下文预算口径（D1：按模型窗口比例）。预算 = context_window * pct
+    "context_window": 65536,      # 主模型上下文窗口（tokens）；部署侧按真实模型调整
+    "context_budget_pct": 0.6,
     "fallback_pool": [
         "嗯嗯稍等哈，我问下马上回你",
         "这个我得确认一下哈，稍等",
@@ -627,6 +631,60 @@ def _looks_like_reasoning(text: str) -> bool:
     return bool(_REASONING_PATTERN.match(text or ""))
 
 
+def _est_tokens(text: str) -> int:
+    """粗估 token 数（无分词器时的保守估算，供上下文预算使用）。
+
+    CJK 按 1 字 ~= 1 token；其余按 4 字符 ~= 1 token；空串为 0。
+    """
+    s = text or ""
+    if not s:
+        return 0
+    cjk = 0
+    for ch in s:
+        if "\u4e00" <= ch <= "\u9fff":   # 基本汉字区
+            cjk += 1
+    return cjk + (len(s) - cjk) // 4 + 1
+
+
+def _context_budget(cfg: dict) -> int:
+    """历史上下文 token 预算（ADR-008 决策 1 / D1：按模型窗口比例）。"""
+    try:
+        win = int(cfg.get("context_window") or 65536)
+    except (TypeError, ValueError):
+        win = 65536
+    try:
+        pct = float(cfg.get("context_budget_pct") or 0.6)
+    except (TypeError, ValueError):
+        pct = 0.6
+    if win <= 0:
+        win = 65536
+    if not (0.1 <= pct <= 0.9):
+        pct = 0.6
+    return max(1000, int(win * pct))
+
+
+def _fit_history(history: list, budget: int) -> list:
+    """按 token 预算裁剪历史：从最新往旧累加，**保证单条消息完整**（D2）。
+
+    返回仍为时间升序。最新一条即使超预算也保留 —— 宁可真喂最大信息，
+    也不把当前对话喂成空。budget<=0 视为不限。
+    """
+    if not history:
+        return []
+    if budget <= 0:
+        return list(history)
+    kept: list = []          # 逆序累加（新 -> 旧）
+    used = 0
+    for msg in reversed(history):
+        t = _est_tokens(str(msg.get("content") or ""))
+        if kept and used + t > budget:
+            break
+        kept.append(msg)
+        used += t
+    kept.reverse()
+    return kept
+
+
 # ---------------------------------------------------------------------------
 # 模型提供商预设（前端下拉框数据源；用户自主选择，不默认绑定任何一家）
 # provider_type: openai | anthropic —— 端点协议
@@ -700,7 +758,9 @@ class AIClient:
         messages: list = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.extend(history[-int(cfg.get("max_history", 10)):])
+        # ADR-008 决策 1：历史交由 token 预算裁剪（保消息完整），
+        # 不再按 max_history 硬截条数（0=全文注入）。
+        messages.extend(_fit_history(history, _context_budget(cfg)))
         messages.append({"role": "user", "content": message})
         protocol = str(cfg.get("api_protocol", "openai")).lower()
         try:
@@ -1355,10 +1415,11 @@ class AutoReplyWorker:
             except Exception:  # noqa: BLE001
                 cfg = {}
         try:
-            n = int(cfg.get("max_history", cls.HISTORY_LIMIT) or cls.HISTORY_LIMIT)
+            n = int(cfg.get("max_history", cls.HISTORY_LIMIT) or 0)
         except (TypeError, ValueError):
-            n = cls.HISTORY_LIMIT
-        return max(1, min(n, 50))
+            n = 0
+        # 0 = 全文注入（ADR-008 决策 1，推荐默认）；>0 = 仅最近 N 条（兼容）
+        return max(0, min(n, 50))
 
     def _build_history(self, account: str, conv_id: str, before_id: int,
                        cfg: dict | None = None) -> list:
@@ -1378,15 +1439,18 @@ class AutoReplyWorker:
                 "WHERE account=? AND conv_id=? AND id<? "
                 f"  AND msg_type IN ({ph}) "
                 "  AND TRIM(COALESCE(text,''))<>'' "
-                "ORDER BY COALESCE(ts,0) DESC, id DESC LIMIT ?"
+                "ORDER BY COALESCE(ts,0) DESC, id DESC"
             )
-            rows = database.get_db().execute(
-                sql,
-                (account, conv_id, before_id, *_HISTORY_TEXT_TYPES, limit),
-            ).fetchall()
-            return [{"role": "assistant" if r["role"] == "me" else "user",
+            params = [account, conv_id, before_id, *_HISTORY_TEXT_TYPES]
+            if limit > 0:                    # 0 = 全文注入（不截条数）
+                sql += " LIMIT ?"
+                params.append(limit)
+            rows = database.get_db().execute(sql, tuple(params)).fetchall()
+            hist = [{"role": "assistant" if r["role"] == "me" else "user",
                      "content": r["text"]}
                     for r in reversed(rows)]
+            # ADR-008 决策 1：条数不截，改由 token 预算兜底（保消息完整）。
+            return _fit_history(hist, _context_budget(cfg))
         except Exception as e:
             logger.debug(f"[ai] 组装上下文失败: {e}")
             return []
