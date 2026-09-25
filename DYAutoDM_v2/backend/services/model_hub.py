@@ -526,6 +526,14 @@ def save_route(kind: str, model_ids: list[str]) -> dict:
         bad = [x for x in ids if x not in mid_set]
         if bad:
             return {"ok": False, "error": f"模型不存在: {','.join(bad[:3])}"}
+        if kind == "llm":
+            _auto = [m["id"] for m in data["models"]
+                     if str(m.get("model") or "").strip().lower() == "auto"]
+            if _auto and (set(_auto) & set(ids)):
+                return {"ok": False, "error": (
+                    "llm 链不允许使用 auto：auto 是随机路由，实测同一批并发请求"
+                    "命中 4 个模型、约 40% 输出不可用（AI-050）。请指定具体模型，"
+                    "例如 agnes-2.5-flash。")}
         data["routes"][kind]["models"] = ids
         _save(data)
         return {"ok": True, "route": dict(data["routes"][kind])}
@@ -548,6 +556,10 @@ def set_fallback(model_id: str) -> dict:
             if not ({"llm", "vision"} <= set(m.get("caps") or [])):
                 return {"ok": False,
                         "error": "兜底模型必须同时支持 LLM 和视觉（多模态）"}
+            if str(m.get("model") or "").strip().lower() == "auto":
+                return {"ok": False, "error": (
+                    "兜底模型不允许使用 auto：auto 为随机路由（AI-050），"
+                    "会在主模型失败时随机命中不可用模型。请改用具体多模态模型。")}
         data["fallback"]["model_id"] = model_id
         _save(data)
         return {"ok": True, "fallback": dict(data["fallback"])}

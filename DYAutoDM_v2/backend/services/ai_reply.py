@@ -1378,7 +1378,7 @@ class AutoReplyWorker:
                 "WHERE account=? AND conv_id=? AND id<? "
                 f"  AND msg_type IN ({ph}) "
                 "  AND TRIM(COALESCE(text,''))<>'' "
-                "ORDER BY id DESC LIMIT ?"
+                "ORDER BY COALESCE(ts,0) DESC, id DESC LIMIT ?"
             )
             rows = database.get_db().execute(
                 sql,
