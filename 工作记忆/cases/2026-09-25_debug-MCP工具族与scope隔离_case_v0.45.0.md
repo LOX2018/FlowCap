@@ -168,17 +168,74 @@ mcp_servers:
 
 ---
 
-## 8. 未做（诚实标注）
+## 8. 打包部署 + 打包态验证（2026-09-25 17:20~17:35 完成）
 
-1. **打包态验证**：当前仅**源码态**验证。打包后 `PYTHONPATH` 需指向 `_internal` 或项目根，
-   且 `tools_debug.py` 的函数体内延迟导入需确认被 PyInstaller 收集。
-2. **ADR-010 的 V10 实机端到端**：需**真实业务异常**来产生 → 观察 `debug_why` 结论
-   与 `POST /api/probe/run` 是否一致（当前只有构造态负控 + 真实数据读数）。
-3. **前端 MCP 设置页**：独立事项，可延后。
+**构建**：`scripts/build_all.py`（默认 debug）→ 退出码 **0**，耗时 ~8.3 min，部署至 `C:\temp\dyautodm_design`。
+部署三道门禁全过：① 主程序资源版本=0.45.0 ② sidecar 编译期常量=0.45.0 ③ md5 三层一致 + 无占用 + 旧版 `0.44.67` 已清。
+产物：`DYAutoDM_v2_0.45.0-debug.exe` + 三份 sidecar（17:25）。
+
+### 8.1 🔴 打包态真验证：抓出**项目自带扫描器的盲区**
+
+打包前的权威判定 `scan_lazy_imports.py --against-artifact` 报「真缺失 4 个」，但**其中并没有
+`mcp.tools_debug`** —— 而真实答案是：
+
+| 模块 | 旧产物(04:44) | **新产物(17:25)** |
+|---|---|---|
+| `mcp.tools_debug`（本次新增） | 0 | **✅ 1** |
+| `daemon.wp_protocol`（H-24 修复） | 0 | **✅ 1**（browser-daemon 产物） |
+| `mcp.server/tools/registry/config/audit` | 1 | ✅ 1 |
+
+**为什么扫描器看不见它**：`scan_lazy_imports.py:60` **有意跳过相对导入**（`if node.level:`，注释「包内必被打包」）——
+而 `tools.py` 用的正是 `from .tools_debug import register_debug_all`。该推理**本身正确**
+（实测确实被打包），但正因如此：**「scan 差集为空」不构成「新模块会被收录」的证据**。
+
+⇒ **判据（可复用）**：新增模块的打包验证，唯一权威 = **查真实产物 PYZ**：
+```bash
+python scripts/diag/list_archive_modules.py src-tauri/binaries/dyautodm-backend-*.exe | grep <模块>
+```
+另：`mcp` **不在** `build_sidecar.py` 的 hidden-import 清单里，却已进产物 —— 属
+「顶层可静态分析」路径，**无需**补声明（切勿照抄「见延迟导入就加 hidden-import」）。
+
+### 8.2 旁证：秒级 modulegraph 定点诊断（省掉 5 分钟试错）
+
+用项目自带 `_diag_modulegraph.py` 的同一套路（PyInstaller 内部同一分析器）对 `main.py` 建图，
+**9 命中 / 4 缺失**，且缺失的 4 个各归其位、**全部假阳性**：
+- `daemon.browser_daemon` / `daemon.wp_protocol` → 属 **browser-daemon** 入口（其产物中确为 1）
+- `dy_apis.image_sender` → 属 **recv-daemon** 入口（其产物中确为 1）
+- `services.automation_engine` → **死代码**（仅 `verify_automation.py` 与测试引用，无运行时引用）
+
+⇒ 符合技能纪律「先扫描/最小复现，再全量构建」，**没有**用「改一行→等 5 分钟→发现还缺」的方式试错。
+
+### 8.3 打包态实机冒烟（干净目录）
+
+`C:\temp\dyautodm_mcp_smoke`（空目录，杜绝完整业务栈）：
+
+| 判据 | 结果 |
+|---|---|
+| `/api/version` | `{"backend":"0.45.0","pid":1700,"frozen":true}` ✅ |
+| 日志 `MCP-005`（挂载失败） | **0 条** ✅ |
+| `/api/mcp/tools` | **HTTP 401**（路由已挂载，被会员中间件拦截；挂载失败会是 **404**）✅ |
+| `/api/mcp` | HTTP 401（同上）✅ |
+| 守护被 spawn | **无**（干净目录无账号，符合预期）✅ |
+| 收尾 | 按 `/api/version` 的真实 pid 杀，端口释放、无孤儿进程 ✅ |
+
+**未取得的一手证据（诚实标注）**：部署态 `mcp_dyautodm_debug_*` 工具的 **实际调用结果**。
+两条路都够不着：① `/api/mcp/tools` 需会员令牌（制造不了）② 独立 HTTP 面（:39144）
+默认 `enabled=False` 且启动期不自动起，起它要经 `/api/mcp/restart`（同样要会员令牌）。
+**替代判据**：模块在产物内（8.1）+ 路由在部署态挂载成功（401 非 404）+ 源码态多轮真实验证（§5）。
 
 ---
 
-## 9. 可复用判据（教训）
+## 9. 未做（诚实标注）
+
+1. **ADR-010 的 V10 实机端到端**：需**真实业务异常**来产生 → 观察 `debug_why` 结论
+   与 `POST /api/probe/run` 是否一致（当前只有构造态负控 + 真实数据读数）。
+2. **前端 MCP 设置页**：独立事项，可延后。
+3. **部署态工具调用结果**：见 §8.3 末（被会员令牌挡住；模块存在性已用产物验证替代）。
+
+---
+
+## 10. 可复用判据（教训）
 
 1. **「代码在位」≠「能力可用」** —— 新增能力必须同时过**发现性 / 可达性 / 默认状态**三关，
    并写成可复跑的验收判据（H-24 与本案同型，已两次）。
