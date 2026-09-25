@@ -24,6 +24,7 @@ import {
   // 2026-09-18 审查修复（#54）：`MessageSquare` 原先在下方**重复 import**
   // 同一个模块（lucide-react 被 import 两次）；合并到这一处。
   Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users, MessageSquare,
+  Plug,
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
@@ -33,13 +34,14 @@ import NotifySection from "./NotifySection";
 import TagSection from "./TagSection";
 import AiEngineSection from "./AiEngineSection";
 import NicknameFallbackSection from "./NicknameFallbackSection";
+import McpSection from "./McpSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type SectionKey =
   | "general" | "send" | "live" | "capture" | "dm"
-  | "ai" | "agent" | "tag" | "notify";
+  | "ai" | "agent" | "tag" | "notify" | "mcp";
 
 const TABS: {
   key: SectionKey;
@@ -56,6 +58,9 @@ const TABS: {
   { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", icon: <Users className="h-3.5 w-3.5" /> },
   { key: "tag", label: "配置标签", hint: "发送策略：怎么发", icon: <Tags className="h-3.5 w-3.5" /> },
   { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", icon: <Bell className="h-3.5 w-3.5" /> },
+  // 2026-09-25：补 MCP 入口。此前后端 7 个端点已完整，但前端零引用
+  // ⇒ 用户「看不到入口、也不知道令牌」= 能力在位但不可得。
+  { key: "mcp", label: "MCP 服务", hint: "AI 客户端接入（stdio 免令牌 / 本机 HTTP 需令牌）", icon: <Plug className="h-3.5 w-3.5" /> },
 ];
 
 export default function SettingsPage(props: PageProps) {
@@ -134,6 +139,7 @@ export default function SettingsPage(props: PageProps) {
             {section === "agent" && <AgentSection {...props} />}
             {section === "tag" && <TagSection {...props} />}
             {section === "notify" && <NotifySection {...props} />}
+            {section === "mcp" && <McpSection push={props.push} />}
           </CardContent>
         </Card>
       </div>

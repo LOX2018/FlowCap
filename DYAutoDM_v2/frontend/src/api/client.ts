@@ -1986,7 +1986,101 @@ export const api = {
   }> {
     return request(`/api/crawl/history?limit=${limit}`);
   },
+
+  // ===== MCP 服务（dyautodm-mcp，2026-09-25）=====
+  // 【为什么要这块】MCP 的配置面/令牌面此前**只存在于后端** —— 前端 9 个 tab
+  // 里没有任何入口，导致：① 用户不知道有 MCP；② 拿不到 HTTP 模式所需的令牌
+  // ⇒ 能力「在位但不可得」。本组方法把既有的 7 个后端端点接到 UI 上。
+  //
+  // 【两种模式的心智模型（必须让用户看清，否则会误判「没令牌就用不了」）】
+  //   · stdio（Hermes / Codex / Claude Code）：**不需要令牌**。进程边界即鉴权，
+  //     Hermes 侧配置 `--scope=debug` 即可用，与 token 无关。
+  //   · 本机 HTTP（127.0.0.1）：**需要 Bearer 令牌**，由下方「显示令牌」取得。
+  async getMcpConfig(): Promise<{ ok: boolean; data: McpStatus; message?: string }> {
+    return request("/api/mcp");
+  },
+
+  async saveMcpConfig(body: Partial<McpConfigBody>): Promise<{ ok: boolean; data?: McpStatus; message?: string }> {
+    return request("/api/mcp/config", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  /** 【本机 UI 显式动作】取回明文令牌供复制 —— 唯一返回明文的端点。 */
+  async revealMcpToken(): Promise<{ ok: boolean; token?: string; token_epoch?: number; message?: string }> {
+    return request("/api/mcp/token/reveal", { method: "POST" });
+  },
+
+  /** 轮换令牌：世代号 +1 ⇒ 所有旧令牌**立即**失效（已配置的客户端需同步更新）。 */
+  async rotateMcpToken(): Promise<{ ok: boolean; data?: McpStatus; message?: string }> {
+    return request("/api/mcp/token/rotate", { method: "POST" });
+  },
+
+  /** 按当前配置启动/重启本机 HTTP 服务（配置里改了端口/开关要调它才生效）。 */
+  async restartMcp(): Promise<{ ok: boolean; data?: McpStatus; message?: string }> {
+    return request("/api/mcp/restart", { method: "POST" });
+  },
+
+  async getMcpTools(): Promise<{ ok: boolean; tools: McpTool[]; message?: string }> {
+    return request("/api/mcp/tools");
+  },
+
+  async getMcpAudit(limit = 50): Promise<{ ok: boolean; entries?: McpAuditEntry[]; stats?: Record<string, McpAuditStat>; message?: string }> {
+    return request(`/api/mcp/audit?limit=${limit}`);
+  },
 };
+
+/** MCP 运行态 + 配置（`GET /api/mcp` 的 data 字段，与后端 `_status()` 逐字段对齐）。 */
+export interface McpStatus {
+  enabled: boolean;
+  preferred_port: number;
+  allow_write_actions: boolean;
+  require_confirmation: boolean;
+  log_retention: number;
+  /** 是否已生成令牌（布尔，不泄露值） */
+  token_set: boolean;
+  /** 脱敏展示：前 4 后 4 */
+  token_masked: string;
+  /** 世代号：轮换即 +1，旧令牌立即失效 */
+  token_epoch: number;
+  /** 本机 HTTP 服务是否在跑 */
+  running: boolean;
+  bound_port: number | null;
+  /** 当前 scope 下可见工具数 */
+  tools: number;
+  pending_confirmations: number;
+  listen_host: string;
+}
+
+/** 可写配置字段（`POST /api/mcp/config` 的 body）。 */
+export interface McpConfigBody {
+  enabled: boolean;
+  preferred_port: number;
+  allow_write_actions: boolean;
+  require_confirmation: boolean;
+  log_retention: number;
+}
+
+export interface McpTool {
+  name: string;
+  /** "read" | "write"（后端 READ/WRITE 常量小写） */
+  level: string;
+  summary: string;
+  params: Record<string, string>;
+}
+
+export interface McpAuditEntry {
+  ts: string;
+  tool: string;
+  ok: boolean;
+  code: string;
+  elapsed_ms: number;
+  summary: Record<string, unknown>;
+}
+
+export interface McpAuditStat {
+  calls: number;
+  fails: number;
+  ms: number;
+}
 
 // ===== 页面组件统一 Props 类型（1:1 对应旧版 app.js 传给页面的 props）=====
 
