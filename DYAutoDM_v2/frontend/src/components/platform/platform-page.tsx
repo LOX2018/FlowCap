@@ -179,7 +179,27 @@ export default function PlatformPage(props: PageProps) {
         ? await platformApi.digg(account, awemeId, "1")
         : await platformApi.collect(account, awemeId, "1");
       const ok = r?.ok === true;
-      props.push(ok ? `${label}成功` : `${label}未返回成功（平台侧可能已限流）`);
+      // ★ 2026-09-26：按后端透传的**平台原始语义**给文案，不再一律
+      //   「平台侧可能已限流」（实测是 status_code=8「用户未登录」——
+      //   纯 HTTP 通道不具备写权限，需浏览器容器态凭证，与限流无关）。
+      let msg: string;
+      if (ok) {
+        msg = `${label}成功`;
+      } else if (kind === "digg" && "status_code" in (r as object)) {
+        const d = r as { status_code?: number | null; status_msg?: string };
+        if (d.status_code === 8 || /未登录/.test(d.status_msg || "")) {
+          msg = `${label}未生效：当前通道不可写（平台返回「用户未登录」）。`
+              + `互动写操作需浏览器容器态凭证，请先在「账号」页启动凭证守护并确认登录态。`;
+        } else if (d.status_code === 0) {
+          msg = `${label}成功`;
+        } else {
+          msg = `${label}未生效：平台返回 ${d.status_code ?? "未知"}`
+              + `${d.status_msg ? `（${d.status_msg}）` : ""}`;
+        }
+      } else {
+        msg = `${label}未返回成功（平台侧可能已限流）`;
+      }
+      props.push(msg, ok ? 3000 : 6000);
       return ok;
     } catch (e) {
       props.push(`${label}失败：${String((e as Error)?.message || e).slice(0, 120)}`, 6000);
@@ -310,11 +330,14 @@ export default function PlatformPage(props: PageProps) {
 
         <TabsContent value="liked">
           {likedQ.isSuccess && !likedQ.data?.items?.length ? (
-            // 2026-09-15：实测 /aweme/favorite 平台侧返回空响应（0 字节，非 JSON）。
-            // 属平台侧限制，明确告知而非只显示空白。
+            // ★ 2026-09-26：优先展示后端给出的**真实原因**（unavailable.reason），
+            //   无原因时才是「真的没有点赞作品」。
             <EmptyState
-              title="未取到点赞列表"
-              description="点赞/喜欢列表接口在平台侧常返回空响应（非本项目缺陷）。可改用「推荐流」「搜索」或他人主页查看内容。"
+              title={(likedQ.data as { unavailable?: boolean })?.unavailable
+                ? "暂时取不到点赞列表" : "暂无点赞作品"}
+              description={
+                (likedQ.data as { unavailable?: boolean; reason?: string })?.reason
+                || "该账号还没有点赞过的作品（接口已正常返回）。"}
             />
           ) : renderQ(likedQ, "video")}
         </TabsContent>
@@ -333,8 +356,12 @@ export default function PlatformPage(props: PageProps) {
                             onRetry={favoriteQ.refetch} />
               ) : (favoriteQ.data?.items?.length
                 ? <Grid items={favoriteQ.data.items} kind="video" onOpenAweme={openAweme} />
-                : <EmptyState title="暂无收藏"
-                    description="该账号没有收藏作品，或平台侧临时返回空（稍后重试）。" />)}
+                : <EmptyState
+                    title={(favoriteQ.data as { unavailable?: boolean })?.unavailable
+                      ? "暂时取不到收藏" : "暂无收藏"}
+                    description={
+                      (favoriteQ.data as { unavailable?: boolean; reason?: string })?.reason
+                      || "该账号还没有收藏作品。"} />)}
           </div>
         </TabsContent>
 

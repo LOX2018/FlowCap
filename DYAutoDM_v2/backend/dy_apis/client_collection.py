@@ -71,9 +71,19 @@ class CollectionMixin:
          .add_param("max_cursor", str(max_cursor)).add_param("count", str(num)))
         params.with_web_id(auth, "https://www.douyin.com/")
         params.with_a_bogus()
-        resp = requests.post(f'{DouyinAPI.domain_for(api)}{api}',
+        # ★ 2026-09-26 修复（内容板块「收藏夹内作品」恒空 —— 根因：Argus 网关 403）
+        #   `/aweme/v1/web/aweme/listcollection/` 在 secsdk webSign 保护清单内
+        #   （utils/secsdk_web_sign.PROTECTED_PATHS_GET / _POST）。原实现把
+        #   `params.get()` 交给 requests 的 `params=` —— 缺 uifid 与 secsdk 签名
+        #   ⇒ 服务端恒返 **HTTP 403 "Blocked by ArgusSecurityPlugin Uifid Not
+        #   Found"**（实测 46 字节非 JSON），safe_json 降级 `{}` ⇒ 恒空。
+        #   ⇒ 改走 `signed_url`（带 uifid + secsdk 签名），实测 403 → 200。
+        #   注意：必须发 signed_url 的返回值本身，不能再把 params 交给 requests
+        #   （requests 会二次编码，与签名输入对不上 → 依旧 403）。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.post(url,
                              headers=headers.get(), cookies=auth.cookie,
-                             params=params.get(), verify=tls_verify(), timeout=15)
+                             verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
     @staticmethod
@@ -96,9 +106,19 @@ class CollectionMixin:
          .add_param("cursor", str(cursor)))
         params.with_web_id(auth, "https://www.douyin.com/")
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+        # ★ 2026-09-26 修复（内容板块「合集」恒空 —— 根因：Argus 网关 403）
+        #   `/aweme/v1/web/mix/listcollection/` 在 secsdk webSign 保护清单内
+        #   （utils/secsdk_web_sign.PROTECTED_PATHS_GET）。原实现把 `params.get()`
+        #   交给 requests 的 `params=` —— 缺 uifid 与 secsdk 签名 ⇒ 服务端恒返
+        #   **HTTP 403 "Blocked by ArgusSecurityPlugin Uifid Not Found"**，
+        #   safe_json 降级 `{}` ⇒ 前端「合集」tab 永远空白，且拿不到 mix_id，
+        #   连带的「合集内作品」也一并失效。
+        #   ⇒ 改走 `signed_url`（带 uifid + secsdk 签名），实测 403 → 200
+        #   （该账号 mix_infos 实测真实为 0，非拦截所致）。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url,
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify(), timeout=15)
+                            verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
     @staticmethod
@@ -217,9 +237,14 @@ class CollectionMixin:
          .add_param("cursor", str(cursor)))
         params.with_web_id(auth, "https://www.douyin.com/")
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+        # ★ 2026-09-26 修复（C-02 secsdk 签名接线）：`/aweme/v1/web/aweme/favorite/`
+        #   在 secsdk webSign 保护清单内（PROTECTED_PATHS_GET）。原实现把 `params.get()`
+        #   交给 requests 的 `params=` —— 缺 uifid 与 secsdk 签名 ⇒ 服务端恒返 403。
+        #   改走 `signed_url`（带 uifid + secsdk 签名），与同文件其余 favorite 调用点一致。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url,
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify(), timeout=15)
+                            verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
     @staticmethod
@@ -272,7 +297,18 @@ class CollectionMixin:
         params.with_a_bogus()
         params.add_param("verifyFp", auth.cookie['s_v_web_id'])
         params.add_param("fp", auth.cookie['s_v_web_id'])
-        res = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
+        # ★ 2026-09-26 修复（内容板块「收藏夹」恒空 —— 根因：Argus 网关 403）：
+        #   `/aweme/v1/web/collects/list/` 在 secsdk webSign 保护清单内
+        #   （utils/secsdk_web_sign.PROTECTED_PATHS_GET）。原实现把 `params.get()`
+        #   交给 requests 的 `params=` —— 缺 uifid 与 secsdk 签名 ⇒ 服务端恒返
+        #   **HTTP 403 "Blocked by ArgusSecurityPlugin Uifid Not Found"**，
+        #   safe_json 降级为 `{}` ⇒ 前端「收藏夹」永远 0 条。
+        #   ⇒ 改走 `signed_url`（带 uifid + secsdk 签名），实测 403 → 200。
+        #   注：实测该账号确实未建收藏夹文件夹（collects_list 真为 0），
+        #   修复后返回的是**真实的 0** 而非被拦截的 0——区别在于 status_code
+        #   已为 0 且响应体非空，前端不再误判为「接口不可用」。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        res = requests.get(url, headers=headers.get(),
                            cookies=auth.cookie, verify=tls_verify())
         return safe_json(res)
 

@@ -67,6 +67,14 @@ class DouyinAPI(UserMixin, VideoMixin, CommentsMixin, CollectionMixin, Relations
     UID_PROBE_TTL_OK = 300
     UID_PROBE_TTL_FAIL = 60
     _uid_probe_cache: dict = {}   # class attr: {sessionid_key: (ts, uid_or_None)}
+    # ★ 2026-09-26 新增：sec_uid 缓存（与 uid 缓存同范式）。
+    #   动机：`api/platform.py` 的 `/liked`、`/favorite` 每次调用都要
+    #   `get_my_sec_uid()`，而它每次都发一次 `profile/self` 请求。高频调用后
+    #   该接口会返回 status_code=8「用户未登录」（服务端降权）。缓存后
+    #   30 分钟内零请求，从根上消除这个自伤。见 client_user.get_my_sec_uid。
+    SEC_UID_CACHE_TTL_OK = 1800   # 成功值：sec_uid 不随请求变化，可长缓存
+    SEC_UID_CACHE_TTL_FAIL = 60   # 失败值：短暂记忆，避免雪崩式重试
+    _sec_uid_cache: dict = {}     # {sessionid_key: (ts, sec_uid_or_empty)}
 
 
 # ── 组装完成 → 把最终类注入各域模块的全局名（使 109 处 `DouyinAPI.xxx` 生效）──

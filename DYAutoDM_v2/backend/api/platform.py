@@ -561,7 +561,17 @@ async def favorite(req: LikedReq) -> dict[str, Any]:
         try:
             sec = await asyncio.to_thread(api.get_my_sec_uid, auth)
         except Exception as e:  # noqa: BLE001
-            raise HTTPException(502, f"获取自身 sec_uid 失败: {type(e).__name__}")
+            # ★ 2026-09-26 修复（该 tab 直接 502「请求失败」——**错误语义**）：
+            #   取不到本人 sec_uid 时原实现抛 **502**，前端只能弹「请求失败」，
+            #   用户无法分辨「功能坏了」还是「登录态问题」。
+            #   实测根因：`profile/self` 在高频访问后返回 status_code=8
+            #   「用户未登录」（同期 feed 仍 200/6 条 ⇒ cookie 有效，属服务端
+            #   对该凭证的**降权**，非账号失效）。
+            #   ⇒ 改为 **200 + unavailable**（与下方「平台侧空响应」同一降级范式），
+            #   并透传真实原因，由 UI 给出可行动的提示。
+            logger.warning(f"[PLT-007] " + f"取自身 sec_uid 失败: {type(e).__name__}")
+            return {"ok": True, "items": [], "has_more": False, "unavailable": True,
+                    "reason": f"未能确认本人身份（{type(e).__name__}）：平台暂未提供本人 sec_uid，多为短时高频访问触发限制，稍后重试即可"}
     try:
         raw = await asyncio.to_thread(
             api.get_user_favorite, auth, sec, "0", str(max(1, min(req.num, 50))))
@@ -621,7 +631,17 @@ async def liked(req: LikedReq) -> dict[str, Any]:
         try:
             sec = await asyncio.to_thread(api.get_my_sec_uid, auth)
         except Exception as e:  # noqa: BLE001
-            raise HTTPException(502, f"获取自身 sec_uid 失败: {type(e).__name__}")
+            # ★ 2026-09-26 修复（该 tab 直接 502「请求失败」——**错误语义**）：
+            #   取不到本人 sec_uid 时原实现抛 **502**，前端只能弹「请求失败」，
+            #   用户无法分辨「功能坏了」还是「登录态问题」。
+            #   实测根因：`profile/self` 在高频访问后返回 status_code=8
+            #   「用户未登录」（同期 feed 仍 200/6 条 ⇒ cookie 有效，属服务端
+            #   对该凭证的**降权**，非账号失效）。
+            #   ⇒ 改为 **200 + unavailable**（与下方「平台侧空响应」同一降级范式），
+            #   并透传真实原因，由 UI 给出可行动的提示。
+            logger.warning(f"[PLT-006] " + f"取自身 sec_uid 失败: {type(e).__name__}")
+            return {"ok": True, "items": [], "has_more": False, "unavailable": True,
+                    "reason": f"未能确认本人身份（{type(e).__name__}）：平台暂未提供本人 sec_uid，多为短时高频访问触发限制，稍后重试即可"}
     try:
         raw = await asyncio.to_thread(api.get_user_favorite, auth, sec, "0", str(max(1, min(req.num, 50))))
     except Exception as e:  # noqa: BLE001
@@ -755,12 +775,6 @@ class CollectReq(BaseModel):
     action: str = "1"             # 1=收藏 0=取消
 
 
-class FollowReq(BaseModel):
-    account: str
-    user_id: str
-    sec_id: str = ""
-    action: str = "1"             # 1=关注 0=取消
-
 
 @router.post("/action/digg")
 async def action_digg(req: DiggReq) -> dict[str, Any]:
@@ -768,8 +782,31 @@ async def action_digg(req: DiggReq) -> dict[str, Any]:
 
     ⚠️ 写操作：前端必须由用户显式点击触发，不得自动批量执行。
     """
+    # ★ 2026-09-26 修复（「点赞」点了没反应且只说“未返回成功” —— 语义吞没）：
+    #   基座 `digg()` 把平台响应坍缩成一个裸 `bool`，而实测服务端对
+    #   `/aweme/v1/web/commit/item/digg/` 恒返 **HTTP 200 + status_code=8
+    #   「用户未登录」**（www 与 www-hj 双域名 A/B 实测一致；该接口不在
+    #   secsdk 保护清单内 ⇒ 不是漏签名，而是**写操作需要浏览器容器态凭证**
+    #   （bd-ticket-guard / REE，见 docs/reverse_interface_spec.md §2.2/§2.3）。
+    #   原实现返回 `{ok: false}`，前端只能显示「点赞未返回成功（平台侧可能
+    #   已限流）」——**误导**：既非限流、也非失败，是**当前通道不具备写权限**。
+    #   ⇒ 改为优先取原始响应（digg_raw），透传 status_code / status_msg；
+    #   基座无 raw 方法时回落到 bool 并如实标注 unverifiable。
     auth = _auth_for(req.account)
     api = _api()
+    raw: dict[str, Any] | None = None
+    try:
+        fn = getattr(api, "digg_raw", None)
+        if callable(fn):
+            raw = await asyncio.to_thread(fn, auth, req.aweme_id, req.action)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[PLT-010] " + f"点赞原始响应获取失败: {type(e).__name__}")
+        raw = None
+    if isinstance(raw, dict):
+        sc = raw.get("status_code")
+        ok = (sc == 0) or (raw.get("is_digg") == 0)
+        return {"ok": bool(ok), "action": req.action, "status_code": sc,
+                "status_msg": raw.get("status_msg") or "", "raw": True}
     try:
         # 基座真实方法：digg(auth, aweme_id, digg_type) -> bool
         #   digg_type: '1'=点赞 '0'=取消
@@ -777,7 +814,9 @@ async def action_digg(req: DiggReq) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[PLT-010] " + f"点赞失败: {type(e).__name__}")
         raise HTTPException(502, f"点赞失败: {type(e).__name__}")
-    return {"ok": bool(ok), "action": req.action}
+    # 无原始响应 ⇒ 成功不可证实，如实标注（不假装成功，也不谎称限流）
+    return {"ok": bool(ok), "action": req.action, "status_code": None,
+            "unverifiable": True}
 
 
 @router.post("/action/collect")
@@ -793,27 +832,14 @@ async def action_collect(req: CollectReq) -> dict[str, Any]:
     return {"ok": True, "raw_status": (raw or {}).get("status_code") if isinstance(raw, dict) else None}
 
 
-@router.post("/action/follow")
-async def action_follow(req: FollowReq) -> dict[str, Any]:
-    """关注 / 取关。"""
-    auth = _auth_for(req.account)
-    api = _api()
-    # 实测：基座（dy_apis/douyin_api.py）**没有关注写方法**
-    #   —— 只有 get_user_follower_list / get_user_following_list（读）。
-    #   故此处**显式返回 501**，绝不假装成功（"流程走完 != 结果正确"）。
-    fn = getattr(api, "commit_follow", None) or getattr(api, "follow_user", None)
-    if fn is None:
-        logger.info(f"[PLT-012] " + "关注写操作未实现：基座无 follow 方法")
-        raise HTTPException(501, "关注写操作尚未实现：基座未提供 follow 方法"
-                                 "（如需启用，需先在 dy_apis 补 commit/follow/user 链路）")
-    try:
-        raw = await asyncio.to_thread(fn, auth, req.user_id, req.sec_id, req.action)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[PLT-012] " + f"关注失败: {type(e).__name__}")
-        raise HTTPException(502, f"关注失败: {type(e).__name__}")
-    return {"ok": True, "raw_status": (raw or {}).get("status_code") if isinstance(raw, dict) else None}
-
-
+# ⛔ 2026-09-26 移除：`POST /action/follow`（关注/取关）。
+#   判据（实测）：基座 `dy_apis` **无任何关注写方法**
+#   （`commit_follow` / `follow_user` 均不存在，只有 follower/following
+#   两个**读**接口）⇒ 该端点恒返 501，**功能实际不可用**；前端
+#   `platform.ts` 虽有定义，但**页面上无一处调用**。
+#   按「修不好就去掉」原则移除，避免保留一个永远 501 的假入口。
+#   若将来在 dy_apis 补齐 `/aweme/v1/web/commit/follow/user/` 链路，
+#   再连同前端入口一起加回（勿只加一半 —— 历史教训：有方法无路由）。
 # ===========================================================================
 # 合集群（★ 本分支新增，照源项目 better-douyin）
 # ===========================================================================

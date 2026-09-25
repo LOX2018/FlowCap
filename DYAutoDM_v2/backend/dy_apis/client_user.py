@@ -151,10 +151,23 @@ class UserMixin:
         params.add_param("msToken",
                          auth.msToken)
         params.with_a_bogus()
-        response = requests.get('https://www.douyin.com/aweme/v1/web/aweme/favorite/', params=params.get(),
-                                headers=headers.get(), cookies=auth.cookie,
+        # ★ 2026-09-26 修复（内容板块「点赞/收藏」恒空 —— 根因：Argus 网关 403）：
+        #   `/aweme/v1/web/aweme/favorite/` 在 secsdk webSign 保护清单内
+        #   （utils/secsdk_web_sign.PROTECTED_PATHS_GET）。原实现把
+        #   `params.get()` 交给 requests 的 `params=` —— 既无 uifid、也无
+        #   `x-secsdk-web-signature`，服务端恒返 **HTTP 403（46 字节非 JSON）
+        #   "Blocked by ArgusSecurityPlugin Uifid Not Found"**；裸
+        #   `response.json()` 再抛 JSONDecodeError，被上层降级成「空列表」，
+        #   表现为内容板块「点赞」永远空白。
+        #   实测对照：同账号 `/user/following/list/`（不受保护路径）sc=0 返回
+        #   20 条 —— 证明凭证有效，是签名方式问题而非账号风控。
+        #   ⇒ 改走 `signed_url`（带 uifid + secsdk 签名），实测 403 → 200 且
+        #     aweme_list = 7。同时裸 json() 改 safe_json（空响应体不再抛异常）。
+        api_path = "/aweme/v1/web/aweme/favorite/"
+        url = params.signed_url(f'{DouyinAPI.domain_for(api_path)}{api_path}', auth)
+        response = requests.get(url, headers=headers.get(), cookies=auth.cookie,
                                 verify=tls_verify())
-        return response.json()
+        return safe_json(response)
 
     @staticmethod
     def get_my_uid(auth, **kwargs) -> int:
@@ -306,61 +319,116 @@ class UserMixin:
         if fb:
             return str(fb)
 
+        # ★ 2026-09-26 新增（内容板块「点赞/收藏」依赖本方法，实测暴露两个缺陷）：
+        #   ① **无缓存**：`api/platform.py` 的 `/liked` 与 `/favorite` 各调一次，
+        #      切一次 tab 就是 2 次请求；本次排查期间高频调用后，`profile/self`
+        #      从 status_code=0 劣化为 **status_code=8「用户未登录」**（feed 仍
+        #      正常 ⇒ cookie 有效，是服务端对该凭证的**降权/限流**，非代码缺陷）。
+        #      ⇒ 进程内缓存 sec_uid（成功值长期有效，失败也短暂记忆避免雪崩）。
+        #   ② **瞬时 sc=8 直接判死**：无重试。现改为最多 2 次、间隔 1.5s 退避。
+        #   两者都是**真实健壮性缺陷**，与上面那条「不再 IndexError」同族。
+        _cache_key = None
+        try:
+            _ck = getattr(auth, "cookie", None) or {}
+            _cache_key = str(_ck.get("sessionid") or _ck.get("sessionid_ss")
+                             or _ck.get("uid_tt") or id(auth))
+        except Exception:  # noqa: BLE001
+            _cache_key = None
+        if _cache_key:
+            _hit = DouyinAPI._sec_uid_cache.get(_cache_key)
+            if _hit:
+                _ts, _val = _hit
+                # sec_uid 不随请求变化，缓存 30 分钟（远小于凭证寿命）
+                if time.time() - _ts < 1800 and _val:
+                    return _val
+                # 上次失败：60s 内不重试，避免雪崩式请求
+                if not _val and time.time() - _ts < 60:
+                    raise RuntimeError(
+                        "sec_uid 提取失败（60s 内已失败过，暂不重试）："
+                        "profile/self 返回 status_code=8「用户未登录」，"
+                        "通常是短时高频请求被服务端降权；请稍后再试")
+
         # ══ 主路径（★ 2026-09-15 实测确定，照源项目接口）══
         # `/aweme/v1/web/user/profile/self/`（源项目逆向情报中确有此接口）
         # 实测：HTTP 200 / 17954 字节 / 返回 `user.sec_uid` + `user.uid` + `user.nickname`，
         #       uid 与 `get_my_uid`（query/user）实测值一致（316276709526638）⇒ 可信。
         # 相比 HTML 正则：结构化、稳定、一次请求即可。
-        try:
-            api_path = "/aweme/v1/web/user/profile/self/"
-            params = Params()
-            (params.add_param("device_platform", "webapp")
-             .add_param("aid", "6383")
-             .add_param("channel", "channel_pc_web")
-             .add_param("pc_client_type", "1")
-             .add_param("version_code", "170400")
-             .add_param("version_name", "17.4.0")
-             .add_param("cookie_enabled", "true")
-             .add_param("browser_language", "zh-CN")
-             .add_param("browser_platform", "Win32")
-             .add_param("browser_name", get_profile()["browser_name"])
-             .add_param("browser_version", get_profile()["browser_version"])
-             .add_param("browser_online", "true")
-             .add_param("engine_name", "Blink")
-             .add_param("os_name", "Windows")
-             .add_param("os_version", "10")
-             .add_param("platform", "PC")
-             .add_param("publish_video_strategy_type", "2"))
-            params.with_web_id(auth, "https://www.douyin.com/user/self")
-            params.with_a_bogus()
-            hh = HeaderBuilder().build(HeaderType.GET)
-            hh.set_referer("https://www.douyin.com/user/self")
-            rr = requests.get(f"{DouyinAPI.domain_for(api_path)}{api_path}",
-                              headers=hh.get(), cookies=auth.cookie,
-                              params=params.get(), verify=tls_verify(),
-                              timeout=kwargs.get("timeout", 15))
-            if rr.status_code == 200:
-                js = rr.json()
-                u = (js or {}).get("user") or {}
-                sec = u.get("sec_uid") or ""
-                if sec and sec.startswith("MS4wLjABAAAA"):
-                    # 顺带把 uid/nickname 回写 auth（消费方可能依赖）
-                    try:
-                        if u.get("uid") and not getattr(auth, "uid", None):
-                            auth.uid = int(u["uid"])
-                        if u.get("nickname"):
-                            auth.nickname = u["nickname"]
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return str(sec)
-                # 2026-09-17 修补（loguru 双参吞详情）：错误码与详情合成单串
-                logger.warning(f"[SEC-UID-001] profile/self 返回异常："
-                               f"status_code={js.get('status_code')}")
-            else:
-                logger.warning(f"[SEC-UID-002] profile/self HTTP {rr.status_code}")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[SEC-UID-003] profile/self 取 sec_uid 失败，"
-                           f"回落到 HTML：{type(e).__name__}")
+        def _fetch_once() -> str:
+            """单次尝试（原主路径体；2026-09-26 抽出以便退避重试）。"""
+            try:
+                api_path = "/aweme/v1/web/user/profile/self/"
+                params = Params()
+                (params.add_param("device_platform", "webapp")
+                 .add_param("aid", "6383")
+                 .add_param("channel", "channel_pc_web")
+                 .add_param("pc_client_type", "1")
+                 .add_param("version_code", "170400")
+                 .add_param("version_name", "17.4.0")
+                 .add_param("cookie_enabled", "true")
+                 .add_param("browser_language", "zh-CN")
+                 .add_param("browser_platform", "Win32")
+                 .add_param("browser_name", get_profile()["browser_name"])
+                 .add_param("browser_version", get_profile()["browser_version"])
+                 .add_param("browser_online", "true")
+                 .add_param("engine_name", "Blink")
+                 .add_param("os_name", "Windows")
+                 .add_param("os_version", "10")
+                 .add_param("platform", "PC")
+                 .add_param("publish_video_strategy_type", "2"))
+                params.with_web_id(auth, "https://www.douyin.com/user/self")
+                params.with_a_bogus()
+                hh = HeaderBuilder().build(HeaderType.GET)
+                hh.set_referer("https://www.douyin.com/user/self")
+                rr = requests.get(f"{DouyinAPI.domain_for(api_path)}{api_path}",
+                                  headers=hh.get(), cookies=auth.cookie,
+                                  params=params.get(), verify=tls_verify(),
+                                  timeout=kwargs.get("timeout", 15))
+                if rr.status_code == 200:
+                    js = rr.json()
+                    u = (js or {}).get("user") or {}
+                    sec = u.get("sec_uid") or ""
+                    if sec and sec.startswith("MS4wLjABAAAA"):
+                        # 顺带把 uid/nickname 回写 auth（消费方可能依赖）
+                        try:
+                            if u.get("uid") and not getattr(auth, "uid", None):
+                                auth.uid = int(u["uid"])
+                            if u.get("nickname"):
+                                auth.nickname = u["nickname"]
+                        except Exception:  # noqa: BLE001
+                            pass
+                        # 成功 → 写缓存（30 分钟内不再请求，从根上减少调用次数）
+                        if _cache_key:
+                            DouyinAPI._sec_uid_cache[_cache_key] = (time.time(), str(sec))
+                        return str(sec)
+                    # 2026-09-17 修补（loguru 双参吞详情）：错误码与详情合成单串
+                    logger.warning(f"[SEC-UID-001] profile/self 返回异常："
+                                   f"status_code={js.get('status_code')}")
+                else:
+                    logger.warning(f"[SEC-UID-002] profile/self HTTP {rr.status_code}")
+            except Exception as _fe:  # noqa: BLE001
+                logger.warning(f"[SEC-UID-003] profile/self 取 sec_uid 失败，"
+                               f"回落到 HTML：{type(_fe).__name__}")
+            return ""
+
+        # ★ 退避重试（2026-09-26）：最多 2 次、间隔 1.5s，吸收瞬时
+        #   status_code=8「用户未登录」（实测高频调用后服务端降权所致，
+        #   feed 同期仍 200 ⇒ cookie 有效）。原实现一次失败即回落 HTML，
+        #   而新版页面 HTML 中已无 secUid（实测出现次数 0）⇒ 必然抛错。
+        for _attempt in range(2):
+            if _attempt:
+                time.sleep(1.5)
+            try:
+                _got = _fetch_once()
+            except Exception as _e:  # noqa: BLE001
+                logger.warning(f"[SEC-UID-003] profile/self 取 sec_uid 失败，"
+                               f"回落到 HTML：{type(_e).__name__}")
+                _got = ""
+            if _got:
+                return _got
+        # 两次均未拿到 → 记入失败缓存（60s 内不再打，避免雪崩）
+        if _cache_key:
+            DouyinAPI._sec_uid_cache[_cache_key] = (time.time(), "")
+
 
         # ══ 回落：旧 HTML 正则路径（保留兼容，但不再直接 [0] 索引）══
         headers = HeaderBuilder().build(HeaderType.GET)
@@ -473,8 +541,18 @@ class UserMixin:
         params.add_param("msToken",
                          auth.msToken)
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify())
+        # ★ 2026-09-26 修复（内容板块「用户作品」恒空 —— 根因同 favorite）：
+        #   `/aweme/v1/web/aweme/post/` 在 secsdk webSign 保护清单内
+        #   （utils/secsdk_web_sign.PROTECTED_PATHS_GET）。原实现把
+        #   `params.get()` 交给 requests 的 `params=` —— 缺 uifid 与
+        #   secsdk 签名 ⇒ 服务端恒返 **HTTP 403 "Blocked by ArgusSecurityPlugin
+        #   Uifid Not Found"**；safe_json 降级为 `{}` → 上层 `get_user_all_work_info`
+        #   因无 `aweme_list` 键立即 break ⇒ 恒返回空列表，表现为「用户作品」空白。
+        #   ⇒ 改走 `signed_url`，实测 403 → 200 且 aweme_list = 20。
+        api_path = "/aweme/v1/web/aweme/post/"
+        url = params.signed_url(f'{DouyinAPI.domain_for(api_path)}{api_path}', auth)
+        resp = requests.get(url, headers=headers.get(), cookies=auth.cookie,
+                            verify=tls_verify())
         # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
         return safe_json(resp)
 

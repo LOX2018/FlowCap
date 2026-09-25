@@ -277,3 +277,55 @@ class RelationsMixin:
             return False
         return resp_json.get('is_digg') == 0
 
+    @staticmethod
+    def digg_raw(auth, aweme_id: str, digg_type: str = '1', **kwargs) -> dict:
+        """点赞 —— **返回平台原始响应**（不坍缩为 bool）。
+
+        ## 为什么新增（2026-09-26，内容板块「点赞」修复）
+
+        `digg()` 把响应坍缩成裸 `bool`。实测服务端对本接口恒返
+        **HTTP 200 + `status_code=8「用户未登录」`**（www 与 www-hj 双域名
+        A/B 一致）；该接口**不在** secsdk 保护清单内（`needs_secsdk_sign`
+        实测 False）⇒ 不是漏签名，而是**写操作需要浏览器容器态凭证**
+        （bd-ticket-guard / REE，见 `docs/reverse_interface_spec.md` §2.2/§2.3）。
+
+        坍缩后上层只能看到 `False`，无法区分「已点赞成功/未登录/被风控」⇒
+        前端给出误导性文案（"平台侧可能已限流"）。本方法原样返回 dict，
+        由调用方（`api/platform.py:action_digg`）透传 `status_code/status_msg`。
+
+        :return: 平台原始 dict（解析失败时返回 `{}`，绝不抛）
+        """
+        api = '/aweme/v1/web/commit/item/digg/'
+        url = f'{DouyinAPI.douyin_url}{api}'
+        refer = f'{DouyinAPI.douyin_url}/discover?modal_id={aweme_id}'
+        headers = HeaderBuilder.build(HeaderType.FORM)
+        headers.set_header("Host", DouyinAPI.douyin_url.split("https://")[-1])
+        headers.with_bd(api, auth)
+        headers.with_csrf(auth.cookie_str)
+        headers.set_header("origin", DouyinAPI.douyin_url)
+        headers.set_header("referer", refer)
+        params = Params()
+        params.with_platform()
+        params.with_ms_token()
+        params.with_web_id(auth, refer)
+        params.add_param('verifyFp', auth.cookie['s_v_web_id'])
+        params.add_param('fp', auth.cookie['s_v_web_id'])
+        params.with_a_bogus()
+        data = {
+            'aweme_id': aweme_id,
+            'item_type': '0',
+            'type': digg_type,
+        }
+        try:
+            resp = requests.post(url, params=params.get(), headers=headers.get(),
+                                 cookies=auth.cookie, data=data,
+                                 verify=tls_verify())
+        except Exception as e:  # noqa: BLE001 —— 网络层失败也如实返回空 dict
+            logger.warning(f"[DIGG-RAW-001] " + f"点赞请求异常: {type(e).__name__}")
+            return {"status_code": None, "status_msg": f"请求异常: {type(e).__name__}",
+                    "transport_error": True}
+        j = safe_json(resp)
+        return j if isinstance(j, dict) else {"status_code": None,
+                                              "status_msg": "响应非 JSON",
+                                              "http_status": resp.status_code}
+

@@ -279,11 +279,19 @@ export const platformApi = {
 
   // ---- 写操作（须由用户显式点击触发，不做自动批量） ----
   digg: (account: string, aweme_id: string, action: "1" | "0" = "1") =>
-    post<{ ok: boolean; action: string }>("/api/platform/action/digg", { account, aweme_id, action }),
+    // ★ 2026-09-26：后端已透传平台原始语义（status_code / status_msg）。
+    //   实测 `commit/item/digg` 恒返 status_code=8「用户未登录」——纯 HTTP
+    //   通道不具备写权限（需浏览器容器态凭证）。前端据此给出**准确**文案，
+    //   不再笼统说「平台侧可能已限流」。
+    post<{ ok: boolean; action: string; status_code?: number | null;
+           status_msg?: string; raw?: boolean; unverifiable?: boolean }>(
+      "/api/platform/action/digg", { account, aweme_id, action }),
 
   collect: (account: string, aweme_id: string, action: "1" | "0" = "1") =>
     post<{ ok: boolean }>("/api/platform/action/collect", { account, aweme_id, action }),
 
-  follow: (account: string, user_id: string, sec_id = "", action: "1" | "0" = "1") =>
-    post<{ ok: boolean }>("/api/platform/action/follow", { account, user_id, sec_id, action }),
+  // ⛔ 2026-09-26 移除 `follow()`：后端 `/api/platform/action/follow` 已移除。
+  //   判据：基座无关注写方法（commit_follow / follow_user 均不存在），端点恒
+  //   501；且本前端**无任何组件调用它** ⇒ 是个永远失败的假入口。
+  //   将来基座补齐 `commit/follow/user/` 链路时，端点与此处一并加回。
 };

@@ -1,7 +1,7 @@
 {
   "_doc": "契约门禁的『已知缺口』基线。仅记录【已核实存在、但尚未修复】的偏离，附理由与验证方法。门禁只对【新增】违规失败；本文件中的项会以 KNOWN 提示，不阻断提交。任何一项修复后必须从本文件删除（否则门禁会因『已消除的缺口仍在基线』而失败）。",
   "_version": "1.2.0",
-  "_updated": "2026-09-23",
+  "_updated": "2026-09-26",
   "_match_rule": "逐端点精确匹配：条目 (check, target) 必须与实测 offender 字符串**完全相等**。2026-09-22 修正——旧实现用 off.startswith(target.split('/aweme')[0]) 做**前缀匹配**，同一文件一旦登记 1 处，该文件**所有**受保护端点全部落入 known ⇒ 新增缺口被静默豁免，且运维读数（5 处）与文件条目（2 条）不可归因。新增缺口一律逐端点登记，禁止再按文件级前缀豁免。",
   "known_gaps": [
     {
@@ -11,46 +11,6 @@
       "status": "open-conflict",
       "verify_how": "取一次真实 webcast/www 请求对照：同一 cookie 下分别发【带签名】与【不带签名】两次，比对 status_code。带签成功→清单正确、代码需补签；不带签也成功→清单过宽、secsdk_web_sign 的保护表需按实测收窄。",
       "risk": "风险等级低：该端点不在核心业务链（评论截流已有替代路径）。若上游策略收紧，表现为静默 403（非崩溃）。"
-    },
-    {
-      "check": "G2 C-02 secsdk 签名接线",
-      "target": "backend/dy_apis/client_collection.py:/aweme/v1/web/aweme/listcollection/",
-      "reason": "实现（utils/secsdk_web_sign.py）完整且 5/5 抓包回归通过，但接线只覆盖 get_mix_aweme 一处；其余调用点仍走 params.get()。",
-      "status": "work-in-progress",
-      "verify_how": "为每个端点补 signed_url() 后，用【带/不带签名】对照实测确认修复；再删本项。",
-      "risk": "风险等级中：属他人未提交在制品（client_collection.py 为 M 状态），不得由本会话擅改。上游策略漂移时将静默 403。"
-    },
-    {
-      "check": "G2 C-02 secsdk 签名接线",
-      "target": "backend/dy_apis/client_collection.py:/aweme/v1/web/mix/listcollection/",
-      "reason": "同 client_collection.py 其余调用点：实现已具备，接线未覆盖。",
-      "status": "work-in-progress",
-      "verify_how": "补 signed_url() + 带/不带签名对照实测；再删本项。",
-      "risk": "风险等级中：上游策略漂移时将静默 403。"
-    },
-    {
-      "check": "G2 C-02 secsdk 签名接线",
-      "target": "backend/dy_apis/client_collection.py:/aweme/v1/web/aweme/favorite/",
-      "reason": "内容页播放链路（收藏列表）调用点，属同一批未接线端点；旧基线按文件前缀豁免，掩盖了它（这正是 prefix 匹配的失效实例）。",
-      "status": "work-in-progress",
-      "verify_how": "补 signed_url() + 带/不带签名对照实测；再删本项。",
-      "risk": "风险等级中：该端点已在用（内容页收藏），策略收紧时表现为收藏列表拉取失败。"
-    },
-    {
-      "check": "G2 C-02 secsdk 签名接线",
-      "target": "backend/dy_apis/client_collection.py:/aweme/v1/web/collects/list/",
-      "reason": "同 client_collection.py 其余调用点：实现已具备，接线未覆盖。",
-      "status": "work-in-progress",
-      "verify_how": "补 signed_url() + 带/不带签名对照实测；再删本项。",
-      "risk": "风险等级中：上游策略漂移时将静默 403。"
-    },
-    {
-      "check": "G2 C-02 secsdk 签名接线",
-      "target": "backend/dy_apis/client_user.py:/aweme/v1/web/aweme/post/",
-      "reason": "调用点（client_user.py:430 api = f\"/aweme/v1/web/aweme/post/\"）在 PROTECTED_PATHS_GET 清单内，但该处未接 signed_url()。非本轮引入：实测 21fdbf4（窗口起点）该行已存在，且 21fdbf4..b455192 窗口内该文件 0 次改动；.known-gaps.json 从 2 条精确化到 5 条（逐端点匹配改造）时漏登本端点，导致门禁长期红。",
-      "status": "work-in-progress",
-      "verify_how": "补 signed_url() + 带/不带签名对照实测；再删本项。",
-      "risk": "风险等级中：上游策略漂移时将静默 403（非崩溃）。"
     },
     {
       "check": "G2 C-02 secsdk 签名接线",
