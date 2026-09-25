@@ -112,3 +112,5 @@ DYAutoDM_v2/accounts/
 # 3) 知识库/Docs 的 .bak.<时间戳> 备份（我自己脚本生成的，不入库）
 *.bak.[0-9]*
 *.bak2.[0-9]*
+# 台账写时备份（脚本生成，不入库；SSOT 仅保留最新版）
+artifacts/_ledger_bak_*.md
