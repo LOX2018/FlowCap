@@ -345,12 +345,17 @@ def process_events(account: str, events: list[dict]) -> int:
                 # 导致同一条消息重复入库（前端看到两条一样的）。
                 # 修正：client_msg_id 写入 msg_id 列，让 WS/WP 双通道同一条
                 # 消息命中同一个唯一索引 → 真正去重。
+                # ADR-012：写入经**单一出口**归一化（kind 标注 + 未知类型降级）
+                from services.message_schema import MessageRecord
+                rec = MessageRecord.build(
+                    text=m["text"], msg_type=m["msg_type"], extra=extra,
+                    role=m["role"])
                 conn.execute(
                     "INSERT OR IGNORE INTO dm_messages("
                     "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
                     " VALUES(?,?,?,?,?,?,?,?)",
-                    (account, m["conv_id"], m["role"], m["text"],
-                     m["msg_type"], json.dumps(extra, ensure_ascii=False), m["ts"],
+                    (account, m["conv_id"], m["role"], rec.text,
+                     rec.msg_type, rec.extra_json(), m["ts"],
                      m.get("msg_id") or m["client_msg_id"] or None),
                 )
                 conn.execute(

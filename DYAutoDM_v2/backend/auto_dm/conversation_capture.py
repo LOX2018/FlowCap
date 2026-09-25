@@ -103,13 +103,36 @@ def _inline_max_kb() -> int:
         return 32
 
 
+def _rec_of(m: dict, extra):
+    """ADR-012 层 2：`capture_all` 的写入出口 —— 所有落库经 Schema SSOT 归一化。
+
+    `extra` 可能是 dict 或已序列化 str（历史调用两种都有）⇒ 统一接纳。
+    """
+    from services.message_schema import MessageRecord
+    import json as _json
+    if isinstance(extra, str):
+        try:
+            extra = _json.loads(extra) if extra.strip() else {}
+        except Exception:
+            extra = {}
+    return MessageRecord.build(
+        text=m.get("text", ""),
+        msg_type=m.get("msg_type") or "text",
+        extra=extra or {},
+        role=m.get("role"),
+    )
+
+
 def _thumb_semantic_label() -> str:
     """图片抽象的纯语义标签（2026-09-25 H-25 统一落库契约）。
 
     `text` 只保留「对方发过一张图」这一语义，字节与 URL 一律走 `extra`
-    （避免污染 AI prompt / ChatLab 导出 / 审计视图）。
+    （`thumb` / `skey` / `origin_url`），由读侧派生下发。
+
+    ADR-012：标签取值收敛到 Schema SSOT，避免此处与注册表双写。
     """
-    return "[图片]"
+    from services.message_schema import LABEL_MEDIA
+    return LABEL_MEDIA
 
 
 def _norm_inline_pic(s: str) -> str:
@@ -1984,16 +2007,16 @@ def capture_all(name, with_browser=True):
                                 "INSERT OR IGNORE INTO dm_messages("
                                 "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
                                 "VALUES(?,?,?,?,?,?,?,?)",
-                                (name, cid, m["role"], m["text"], "text", _extra,
-                                 m["ts"], m.get("msg_id")),
+                                _rec_of(m, _extra).tuple(name, cid)
+
                             )
                     else:
                         conn.execute(
                             "INSERT OR IGNORE INTO dm_messages("
                             "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
                             "VALUES(?,?,?,?,?,?,?,?)",
-                            (name, cid, m["role"], m["text"], "text", _extra,
-                             m["ts"], m.get("msg_id")),
+                            _rec_of(m, _extra).tuple(name, cid)
+
                         )
                     n_msg += 1
                 except Exception:

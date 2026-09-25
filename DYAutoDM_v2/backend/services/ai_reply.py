@@ -1646,6 +1646,16 @@ class AutoReplyWorker:
             rows = database.get_db().execute(sql, tuple(params)).fetchall()
             hist: list = []
             for r in reversed(rows):
+                # ADR-012：读侧白名单**升维到 kind**（应用层过滤）。
+                # 存量行无 extra.kind，且系统文案的 msg_type 恰是 'text'
+                # （在 SQL 白名单内）⇒ 只能在应用层用 Schema SSOT 判定。
+                # 这样未知/系统类型天然被挡住，无需再补黑名单。
+                try:
+                    from services.message_schema import readable as _readable
+                    if not _readable(r["text"], r["msg_type"], r["extra"]):
+                        continue
+                except Exception:  # 判据不可用时不得静默放行 → 保守放行但记
+                    logger.debug("[ai] kind 判定失败，回退按 msg_type")
                 role = "assistant" if r["role"] == "me" else "user"
                 if str(r["msg_type"]) == "27":
                     # ADR-008 决策 2：图片还原为会话消息（有描述才注入）。
