@@ -238,9 +238,13 @@ _KV_IMG_DESC = "ai_img_desc"
 #     "50001" -> read_receipt
 #   另（同函数 fallback）：msg_type 为 None/空 -> "text"；未知值原样透传。
 #
-# 实库取证（隔离环境会员库
-# C:\temp\dyautodm_design\members\m17db0f8209156f26\data\dyautodm.db，
-# dm_messages 共 779 条）：text=687、'7'=88、'1'=2、'50010'=1、'27'=1。
+# 2026-09-25（H-25 脏数据治理）：噪音前缀 —— 写入侧占位/探针标记，非真实
+# 会话内容，**不得进入 AI 上下文**。实测该账号白名单内混入 58 条：
+#   [投递验证]48（探针证据，正确形态是 msg_type='delivery_marker'）
+#   [系统提示]7 / [系统消息]5（抖音系统通知，由 capture 按 biz 映射生成）
+#   [未知类型N]/[未知媒体]（解析噪音）
+# 注：`[分享视频] 视频ID x`（带 ID）是**真实分享**，不排除；空 `[分享视频]`
+# 由写入侧 _is_noise_text 拦截。与 api/messages.py 读侧口径保持一致。
 #   ⇒ 旧 SQL 硬筛 msg_type='text'，与 WS 实时路径的 '7' 永不相等
 #     ⇒ history 恒为空 ⇒ AI 每次只见当前一句。
 #   ⇒ 本白名单**只收已确认文本语义**的 'text' 与 '7'；'1'/'50010' 语义未经
@@ -249,6 +253,34 @@ _KV_IMG_DESC = "ai_img_desc"
 # 再由 _build_history 按「是否拿到视觉描述」二次筛选 —— 有描述才注入为
 # [客户发来图片] <描述>；拿不到描述则等同旧行为（不注入，零回归）。
 _HISTORY_TEXT_TYPES: tuple = ("text", "7", "27")
+
+# 噪音前缀排除（H-25）：写入侧占位/探针标记，非真实会话内容，不得进入 AI 上下文。
+_HISTORY_NOISE_SQL = (
+    " AND text NOT LIKE '[投递验证]%'"
+    " AND text NOT LIKE '[系统提示]%'"
+    " AND text NOT LIKE '[系统消息]%'"
+    " AND text NOT LIKE '[未知类型%'"
+    " AND text NOT LIKE '[未知媒体]%'"
+)
+
+
+def _sanitize_history_text(text: str) -> str:
+    """剥离内联 base64（H-25 最严重项：25 条 / 10.3 万字符原样进 prompt）。
+
+    实测该账号 `msg_type='text'` 且 text 形如
+    `[图片] data:image/webp;base64,UklGR...`（单条最长 6577 字符）——
+    `_build_history` 原先只对 `msg_type=='27'` 走图片描述分支，这些
+    text 型 base64 会被**原样注入**，模型读到的是无意义串（≈34k tokens）。
+    视觉描述链路（ADR-008 决策 2）只覆盖 '27'，故此处按「宁可少收」降级为
+    `[图片]` 占位 —— 保留「对方发过一张图」的语义，绝不把 base64 送进模型。
+    """
+    if not text:
+        return text
+    if "data:image" in text:
+        head = text.split("data:image", 1)[0].strip()
+        return head or "[图片]"
+    return text
+
 
 
 def get_config() -> dict:
@@ -1588,12 +1620,13 @@ class AutoReplyWorker:
         """
         try:
             limit = self._history_limit(cfg)
-            ph = ",".join(["?"] * len(_HISTORY_TEXT_TYPES))
+            ph = ",".join(["?", ] * len(_HISTORY_TEXT_TYPES))
             sql = (
                 "SELECT id, role, text, msg_type, extra FROM dm_messages "
                 "WHERE account=? AND conv_id=? AND id<? "
                 f"  AND msg_type IN ({ph}) "
                 "  AND TRIM(COALESCE(text,''))<>'' "
+                + _HISTORY_NOISE_SQL + " "          # H-25：噪音前缀不进 prompt
                 "ORDER BY COALESCE(ts,0) DESC, id DESC"
             )
             params = [account, conv_id, before_id, *_HISTORY_TEXT_TYPES]
@@ -1618,7 +1651,8 @@ class AutoReplyWorker:
                     hist.append({"role": role,
                                  "content": f"[客户发来图片] {desc}"})
                     continue
-                hist.append({"role": role, "content": r["text"]})
+                hist.append({"role": role,
+                             "content": _sanitize_history_text(r["text"])})
             # ADR-008 决策 1：条数不截，改由 token 预算兜底（保消息完整）。
             return _fit_history(hist, _context_budget(cfg))
         except Exception as e:

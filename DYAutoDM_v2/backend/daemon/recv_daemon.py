@@ -281,39 +281,26 @@ class AccountInbox:
                                   batch: list[str] | None = None) -> str | None:
         """my_uid 未就绪时，从 conv_id 集合推断本号 uid，再取对端。
 
-        原理（与 capture_all 的 `_auth_uid` 同源，见 conversation_capture.py）：
-        本账号所有 conv_id 形如 `0:1:uid_a:uid_b`，其中**本号 uid 出现在几乎
-        每一条里** → 取出现频次 ≥90% 的那个即本号，另一个即对端。
+        2026-09-25 H-25 收敛：统计推断**不再在本处自写**，统一调
+        `services.conv_identity`（会话身份解析唯一真相源，该模块设计契约
+        明令「全项目只允许一处实现」）。本处原先的 Counter 统计与
+        `conv_identity.infer_my_uid_from_conv_ids` 完全同义，属重复实现。
 
         为什么需要：`_refresh_my_uid()` 依赖凭证加载，recv_daemon 刚启动或
-        凭证异常时会返回 None（实测本次 10 个骨架全都因此解析不出 peer，
-        富化静默全跳过）。退化推断保证**不依赖凭证也能工作**。
+        凭证异常时会返回 None（实测 10 个骨架全都因此解析不出 peer，富化静默
+        全跳过）。退化推断保证**不依赖凭证也能工作**。
         """
-        pool = list(batch or []) + [conv_id]
-        from collections import Counter
-        cnt: Counter = Counter()
-        n = 0
-        for cid in pool:
-            p = str(cid or "").split(":")
-            if len(p) != 4:
-                continue
-            cnt[p[2]] += 1
-            cnt[p[3]] += 1
-            n += 1
-        if not n:
+        try:
+            from services.conv_identity import (
+                infer_my_uid_from_conv_ids as _infer,
+                peer_uid as _peer_uid,
+            )
+        except Exception:
             return None
-        cands = [(u, k) for u, k in cnt.items() if k >= n * 0.9]
-        my = max(cands, key=lambda x: x[1])[0] if cands else None
+        my = _infer(list(batch or []) + [conv_id])
         if not my:
             return None
-        p = str(conv_id or "").split(":")
-        if len(p) != 4:
-            return None
-        if p[2] == my:
-            return p[3]
-        if p[3] == my:
-            return p[2]
-        return None
+        return _peer_uid(conv_id, my)
 
     def _enrich_nicknames_once(self) -> None:
         """批量把待富化骨架的昵称从 IndexedDB 回填（一次浏览器读取搞定一批）。"""
@@ -327,6 +314,22 @@ class AccountInbox:
         if not self.my_uid:
             try:
                 self._refresh_my_uid()
+            except Exception:
+                pass
+        # 2026-09-25 H-25：凭证仍不可用时，用「会话池统计推断」补本号 uid
+        # （权威来源 = services.conv_identity 契约）。否则下方 _extract_peer_uid
+        # 无 my_uid 可传，会退化为弱判据返回 uid_b —— 而实测 uid_b 恰是本号自己，
+        # 正是「本号昵称/头像被回填到全部会话」的根因。
+        if not self.my_uid:
+            try:
+                from services.conv_identity import (
+                    infer_my_uid_from_conv_ids as _infer_my,
+                )
+                _mu = _infer_my(batch)
+                if _mu:
+                    self.my_uid = _mu
+                    logger.info(
+                        f"[recv][{self.name}] 本号 uid 由会话池统计推断补全: {_mu}")
             except Exception:
                 pass
         try:
@@ -353,6 +356,14 @@ class AccountInbox:
                 _uid = (_v or {}).get("uid") or _u
                 if _uid:
                     by_uid[str(_uid)] = _v or {}
+            # 2026-09-25 H-25：本号昵称 —— 取 IndexedDB 里本号 uid 的那条。
+            # 用于把「已被污染成本号昵称」的行纳入可覆盖集合（否则存量污染
+            # 永远逃过这一道自愈，因为旧 WHERE 只认 NULL/''/peer_id/本号 uid）。
+            _self_nick = ""
+            if self.my_uid:
+                _self_nick = str(
+                    (by_uid.get(str(self.my_uid)) or {}).get("nickname") or ""
+                ).strip()
             conn = self._db()
             done = 0
             for cid in batch:
@@ -365,17 +376,25 @@ class AccountInbox:
                         # 共同项即本号 uid（与 capture_all 的 _auth_uid 同法）。
                         # 取待办集合里出现频次最高且达 90% 的那个 uid。
                         peer = self._infer_peer_by_common_uid(cid, batch)
+                    # 2026-09-25 H-25 自证门禁：对端 uid 必须存在且 ≠ 本号 uid。
+                    # 这是「昵称/头像绝不用本号身份冒充对端」的最后一道防线
+                    # （根因即 uid_b 恰为本号自己 → 回填成本账号）。命中即跳过。
+                    if not peer or (self.my_uid and str(peer) == str(self.my_uid)):
+                        continue
                     info = by_uid.get(str(peer))
                     if not info or not info.get("nickname"):
                         continue
-                    # 只在昵称仍为空/缺失时写：不覆盖已关联的正确值
+                    # 2026-09-25 H-25 加固：覆盖集合 = 占位值（NULL/''/peer_id）
+                    # + 本号 uid + **本账号昵称**（污染态，可自愈）。真昵称绝不覆盖。
                     cur = conn.execute(
                         "UPDATE dm_conversations SET peer_name=?, avatar=? "
                         "WHERE account=? AND conv_id=? "
                         "AND (peer_name IS NULL OR peer_name='' "
-                        "     OR peer_name=peer_id OR peer_name=?)",
+                        "     OR peer_name=peer_id OR peer_name=? "
+                        "     OR (?<>'' AND peer_name=?))",
                         (info["nickname"], info.get("avatar") or None,
-                         self.name, cid, self.my_uid),
+                         self.name, cid, self.my_uid,
+                         _self_nick, _self_nick),
                     )
                     done += (cur.rowcount or 0)
                     # 同步内存缓存，前端下次轮询即可见（不必等库）
@@ -452,19 +471,36 @@ class AccountInbox:
             f"（凭证未就绪或探活失败？），请检查账号登录状态")
 
     def _extract_peer_uid(self, conv_id: str) -> str | None:
-        """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除自己）。"""
-        if not conv_id:
+        """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除自己）。
+
+        2026-09-25 H-25 根因修复：委托 `services.conv_identity.peer_uid`
+        （唯一真相源），并**删除「my_uid 未就绪则 return uid_b」的兜底**。
+
+        为什么必须删（实测根因，136 个会话被污染成本账号昵称/头像）：
+          实库 conv_id 形态为 `0:1:<对端uid>:<本号uid>`（本号段在 idx=3，
+          136/136 实测）。旧兜底在 my_uid 缺失时返回 **uid_b = 本号自己**
+          ⇒ `_enrich_nicknames_once` 用本号 uid 去 IndexedDB 取到**本号昵称/
+          头像**并回填 → 会话被污染。且该兜底**永不返回 None**，使更正确的
+          `_infer_peer_by_common_uid`（按 90% 覆盖率推断本号、再取对端）
+          被整体绕过，两道防线一起失效。
+
+        conv_identity.peer_uid 的行为（本处即契约）：
+          - a==b → None（自发自收系统会话）
+          - my 已知：a==my 返回 b；b==my 返回 a；都不是 my → None（数据异常不猜）
+          - my 未知：返回 b（弱保证；调用方若需强判据应先经
+            `_infer_peer_by_common_uid` 推断 my_uid，见 `_enrich_nicknames_once`）
+        """
+        try:
+            from services.conv_identity import peer_uid as _peer_uid
+        except Exception:
             return None
-        parts = conv_id.split(":")
-        if len(parts) >= 4:
-            uid_a, uid_b = parts[2], parts[3]
-            if self.my_uid and uid_a == self.my_uid:
-                return uid_b
-            if self.my_uid and uid_b == self.my_uid:
-                return uid_a
-            # 无 my_uid 兜底：取与 my_uid 不同的那个
-            return uid_b
-        return None
+        # 2026-09-25 H-25：my_uid 未知时**不猜**。conv_identity.peer_uid 在 my
+        # 未知时有「返回 b」的弱语义，而实库 conv_id 形态 `0:1:<对端>:<本号>`
+        # 使那个 b **恰是本号自己**（与 2026-09-07 D 方案同因）。调用方应先经
+        # `_infer_peer_by_common_uid` / `_refresh_my_uid` 拿到 my_uid 再调用本方法。
+        if not self.my_uid:
+            return None
+        return _peer_uid(conv_id, self.my_uid)
 
     def _db(self):
         from database import get_db

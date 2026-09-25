@@ -39,7 +39,8 @@ def _norm(v: Any) -> str:
 
 def is_placeholder(value: Any, peer_id: Any = None,
                    min_digits: int = UID_MIN_DIGITS,
-                   min_len: int = 1) -> bool:
+                   min_len: int = 1,
+                   self_name: Any = None) -> bool:
     """**唯一占位判据**（其余函数都是它的薄封装，不得再各写一套）。
 
     Args:
@@ -47,6 +48,9 @@ def is_placeholder(value: Any, peer_id: Any = None,
         peer_id: 可选对端 UID；若 value == str(peer_id) 则视为占位。
         min_digits: 纯数字视为占位的长度门槛（默认取自 `kernel.truth`）。
         min_len: 有效值最小长度（默认 1，即非空即过）。
+        self_name: 可选**本账号昵称**；若 value == 本号昵称则视为污染
+            （2026-09-25 H-25：conv_id 解析退化时用本号身份冒充对端，会把
+            本账号昵称/头像回填到全部会话 —— 实测 136 个会话被污染）。
 
     Returns:
         True 表示该值是占位（应当用真实昵称替换 / 应尝试回填）。
@@ -60,10 +64,13 @@ def is_placeholder(value: Any, peer_id: Any = None,
         return True
     if peer_id is not None and s == _norm(peer_id):
         return True
+    if self_name is not None and s == _norm(self_name):
+        return True
     return False
 
 
-def is_placeholder_name(name: Any, min_len: int = 1, peer_id: Any = None) -> bool:
+def is_placeholder_name(name: Any, min_len: int = 1, peer_id: Any = None,
+                        self_name: Any = None) -> bool:
     """昵称占位判定（薄封装 → `is_placeholder`；签名/对外行为保持不变）。
 
     收敛自 5 处不同实现（见 M-10 F7）：
@@ -72,7 +79,8 @@ def is_placeholder_name(name: Any, min_len: int = 1, peer_id: Any = None) -> boo
       - api/messages.py peer_name 过滤
       - recv_daemon.py（昵称占位判据第 5 处内联，**尚未接线**，父会话负责）
     """
-    return is_placeholder(name, peer_id=peer_id, min_len=min_len)
+    return is_placeholder(name, peer_id=peer_id, min_len=min_len,
+                          self_name=self_name)
 
 
 def is_uid_placeholder(uid: Any, peer_id: Any = None) -> bool:

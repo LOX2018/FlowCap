@@ -223,22 +223,37 @@ def _enrich_with_db_nicknames(account: str, convs: list[dict]) -> list[dict]:
         if not rows:
             return convs
         # peer_id -> (nickname, avatar) 映射
-        db_map = {str(r["peer_id"]): (r["peer_name"], r["avatar"]) for r in rows}
+        # 2026-09-25 H-25：污染行（peer_id == 本号 uid）的 peer_name/avatar 实为
+        # **本号自己的身份**（根因见 recv_daemon._extract_peer_uid），绝不可复用给
+        # 别的会话 —— 从映射中排除，切断存量污染在读侧的二次扩散。
+        _self = ""
+        try:
+            from services.conv_identity import my_uid as _my_uid
+            _self = str(_my_uid(account) or "")
+        except Exception:
+            _self = ""
+        db_map = {str(r["peer_id"]): (r["peer_name"], r["avatar"])
+                  for r in rows
+                  if not (_self and str(r["peer_id"]) == _self)}
 
         def _extract_peer_uid(cid: str):
-            """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除 my_uid）。"""
-            if not cid:
+            """从 conv_id 0:1:uid_a:uid_b 提取对端 UID（排除 my_uid）。
+
+            2026-09-25 H-25：委托 `services.conv_identity.peer_uid`（唯一真相源）。
+            删除原「无 my_uid 兜底取 uid_b」——该兜底在 my_uid 缺失时返回的
+            uid_b 恰是**本号自己**（conv_id 实为 `0:1:<对端>:<本号>`），会把
+            本号昵称/头像当作对端信息复用给别的会话（与 recv_daemon 同根因）。
+            my_uid 未知时不猜（返回 b 的弱语义由 conv_identity 统一承担，
+            调用方 `_enrich_with_db_nicknames` 仅用其结果查库，不写身份字段）。
+            """
+            try:
+                from services.conv_identity import peer_uid as _peer_uid
+            except Exception:
                 return None
-            parts = cid.split(":")
-            if len(parts) >= 4:
-                uid_a, uid_b = parts[2], parts[3]
-                if my_uid and uid_a == my_uid:
-                    return uid_b
-                if my_uid and uid_b == my_uid:
-                    return uid_a
-                # 无 my_uid 兜底：取与 my_uid 不同的那个；都不等则取 uid_b
-                return uid_b
-            return None
+            # my_uid 未知时不猜（conv_identity 会弱返回 b，而 b 常是本号自己）
+            if not my_uid:
+                return None
+            return _peer_uid(cid, my_uid)
 
         for c in convs:
             cid = c.get("conv_id")
@@ -424,6 +439,12 @@ async def get_conversation(account: str, conv_id: str):
             "AND text NOT LIKE '%请礼貌发言%' "
             "AND text NOT LIKE '%自觉遵守%' "
             "AND text NOT LIKE '[未知媒体]%' "
+            # 2026-09-25（H-25）：系统提示/系统消息/未知类型是**抖音系统通知或
+            # 解析噪音**，不是聊天内容 —— 实测该账号混入 18 条，会被当会话内容
+            # 显示。与 AI 读侧 `_HISTORY_NOISE_SQL` 口径一致（同一语义不得两处漂移）。
+            "AND text NOT LIKE '[系统提示]%' "
+            "AND text NOT LIKE '[系统消息]%' "
+            "AND text NOT LIKE '[未知类型%' "
             # 2026-09-16：只滤「空分享」（裸 [分享视频]，WS 解析噪音无 ID）；
             # 带 ID 的 "[分享视频] 视频ID x" 是真实视频分享（08 §16.4 实测），
             # 应正常展示。此前 NOT LIKE '[分享视频]%' 把真实分享也滤掉了
