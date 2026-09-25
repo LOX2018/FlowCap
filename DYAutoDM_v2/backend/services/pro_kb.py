@@ -505,11 +505,25 @@ def sem_cache_invalidate(item_id=None) -> None:
 
 
 def current_sem_model() -> str:
-    """当前语义链路实际使用的模型名（用于缓存一致性校验）。"""
+    """当前语义链路实际使用的模型名（用于缓存一致性校验）。
+
+    AI-055（2026-09-25）：改为**只读链路配置**，不再真发一次 embedding 探测。
+    旧实现调用 `_embed_failover([" probe "])` —— 只为问模型名就多发一次
+    网络往返（实测 663~1919ms），每次 RAG 组装都白烧一次，拖慢回复。
+    与固定链路首候选比对完全等价（本函数只用于缓存一致性校验）。
+    """
     try:
         from services import ai_reply as _ai
-        _v, mdl = _ai._embed_failover([" probe "], consumer_id="ai_sem")
-        return mdl or ""
+    except Exception:
+        return ""
+    try:
+        chain = _ai.resolve_chain_hub("ai_sem")
+        if chain and chain.get("candidates"):
+            return chain["candidates"][0].get("model") or ""
+    except Exception:
+        pass
+    try:
+        return str(_ai.get_config().get("sem_model") or "")
     except Exception:
         return ""
 

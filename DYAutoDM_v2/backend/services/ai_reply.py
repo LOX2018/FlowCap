@@ -341,18 +341,24 @@ _DEFAULT_AGENT_PROMPT = """你是「{merchant}」的抖音私信客服。唯一�
 - 回复 5-30 字，口语化像真人，一次只回一句，不排队比句式。
 - 不出现价格数字承诺、不承诺时间效果。"""
 
+# AI-058（2026-09-25）：移除「客户消息：{text}」。客户消息已作为 user 消息
+# 由 AIClient.chat 追加（权威位置），在 system 里再重复一次是冗余，且会让
+# 模型误以为 system 段内也有一条「客户消息」而重复回应。
 _RAG_SUFFIX = """
 
 《资料》（你唯一的事实来源，全部来自知识库）：
-{kb}
-
-客户消息：{text}"""
+{kb}"""
 
 
 _LAST_PROMPT_STATS = {"kb_mode": "none", "pro_kb_chars": 0}
 
 
-def build_system_prompt(cfg: dict, kb_items: list, text: str) -> str:
+def build_system_prompt(cfg: dict, text: str) -> str:
+    """组装 system 提示词。
+
+    AI-059（2026-09-25）：原第三参数 kb_items 是死参数（函数体内从未读取，
+    专业知识库走 pro_kb 语义检索）。已移除，消除"传了就会生效"的误导。
+    """
     global _LAST_PROMPT_STATS
     _LAST_PROMPT_STATS = {"kb_mode": "none", "pro_kb_chars": 0}
     merchant = cfg.get("merchant_name") or "本店"
@@ -380,11 +386,21 @@ def build_system_prompt(cfg: dict, kb_items: list, text: str) -> str:
             # 撑爆模型上下文 → AI 返回空 → 全部降级兜底话术。
             # 新流程：客户问题 → 语义 TopK(5) → 仅注入最相关条目（≤6000 字）。
             # embedding 不可用 → 降级为「时间衰减排序取前 5」，绝不阻塞。
-            try:
-                hits = pro_kb.semantic_topk(text, pro, k=5, threshold=0.0,
-                                            max_chars=6000)
-            except Exception:
-                hits = None
+            hits = None
+            # AI-054（2026-09-25）：尊重语义总开关。此前 pro_kb RAG 无条件走
+            # 语义检索 —— sem_enabled=False 时仍出网，与 reply_kb 语义级（受该
+            # 开关控制）语义不一致，同一开关两套行为属契约漂移。
+            if cfg.get("sem_enabled"):
+                try:
+                    # AI-056：threshold=0.0 等于不筛相关性。实测同一专业库：
+                    # 0.0 -> 注入 3 条（含「无关主题/天气」）；0.30 -> 2 条；
+                    # 0.40 -> 1 条（无关条目被滤除）；0.60 -> 0 条。
+                    # 取 0.40（与 sem_threshold 既有默认一致）。全部被滤除时
+                    # hits 为空 -> 落 fallback_decay，兜底不丢。
+                    hits = pro_kb.semantic_topk(text, pro, k=5, threshold=0.40,
+                                                max_chars=6000)
+                except Exception:
+                    hits = None
             if hits:
                 picked = hits
                 kb_mode = "semantic"
@@ -1428,7 +1444,7 @@ class AutoReplyWorker:
             kb_items = ai_agent.resolve_knowledge(account, kb_items)
         except Exception:
             pass
-        prompt = build_system_prompt(cfg, kb_items, text)
+        prompt = build_system_prompt(cfg, text)
         _probe(before_id, "PROMPT", "built", level=level,
                prompt_len=len(prompt), kb_items=len(kb_items),
                **_LAST_PROMPT_STATS)
@@ -1480,11 +1496,10 @@ class AutoReplyWorker:
             extra = {}
         skey = extra.get("skey") or ""
         origin_url = extra.get("origin_url") or ""
-        # 老数据 extra 为空时，从 text 里的 URL 兜底（skey 缺失则解不了）
-        if not origin_url:
-            m = re.match(r"\[图片\]\s+(\S+)", row["text"] or "")
-            if m:
-                origin_url = m.group(1)
+        # AI-060（2026-09-25）：原「从 text 兜底取 URL」已删除。
+        # 实测本项目真实数据 text 恒为 '[图片]'（URL 只在 extra.origin_url），
+        # 该正则 r"\[图片\]\s+(\S+)" 永不匹配 —— 死代码，且会让排障者误以为
+        # 存在第二条恢复路径。缺 origin_url 一律走下方显式失败分支。
         if not skey or not origin_url:
             logger.info("[ai] 图片消息缺 skey/origin_url，无法解密")
             try:
@@ -1745,7 +1760,7 @@ def generate_dm_for_live(account: str, peer_name: str, comment: str,
             kb_items = ai_agent.resolve_knowledge(account, kb_items)
         except Exception:
             pass
-        prompt = build_system_prompt(cfg, kb_items, text_in)
+        prompt = build_system_prompt(cfg, text_in)
         # 直播首触没有对话历史：明确告知模型，避免它编造上下文
         prompt = (prompt + "\n\n【场景】这是你主动向直播间观众发起的第一条私信。"
                   "请紧扣对方在公屏说的话开场，不要假装此前有过对话。"
