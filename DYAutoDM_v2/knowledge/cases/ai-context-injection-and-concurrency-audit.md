@@ -305,13 +305,14 @@ WHERE m.id>? AND m.role='them' ...  ORDER BY m.id ASC LIMIT 20
 2. **WS 不重推历史**（代码注释引「知识库 08 §12.2-5 已证」）。掉线期消息靠 `_catchup_after_reconnect()`（`recv_daemon.py:896`）用 **HTTP 2043 首包**补 —— 绕回首包路径。
 3. **我方回复自己落库**，不等 WS 回声：`/send` 成功后 `ib.add_message(..., 'me', ..., msg_id=f"local:{uuid4}")`（`recv_daemon.py:1635`），WS 回声到达再回填真实 `server_message_id`（`recv_daemon.py:711`）。
 
-#### 🔴 红色发现：WP 通道是「事实上的死通道」（现象确证，原因未定论）
+#### 🔴 红色发现：WP 通道是「事实上的死通道」（**根因已确证**，2026-09-25）
 
 - 生产库 `json_extract(extra,'$.source')='wp'` = **0 条**；`client_msg_id`（WP 独有指纹）= **0 条**
-- 12 份运行日志中 WP 仅有「启动 WP 通道轮询」痕迹，**零条**「WP 通道新增 N 条」（该 INFO 仅在 `n_new>0` 时打，`wp_recv.py:363`）
-- 而 `main.py:519` 注释声称「与 WS 通道并存、应用层去重」——**名不符实**
-
-**未定论项**（三种可能未排除，需查 BCC `/wp_messages` 实际返回）：hook 未截获 / 解析失败（失败日志为 `debug` 级，可能被日志级别滤掉）/ 被 WS 应用层去重拦截（`(account,conv_id,ts,text)` ±2s 窗）。
+- 生产根日志（`C:\temp\dyautodm_design\logs\`，09-14~09-25 全期）「取回 WP 私信事件」= **0 次**、「WP 通道新增」= **0 次**；`[wp_recv]` 仅 6 条「启动轮询」行
+- **根因**：`daemon/browser_daemon.py:522` —— `if self._backend == "camoufox": 跳过全部 init script`。WP 通道**完全依赖** `CAP_WP_MESSAGE_HOOK_JS` 这个 init script；2026-09-20 v0.44.0 接入 Camoufox（提交 `6c9b09e`）时为规避抖音风控弹窗而禁用全部 JS 注入 ⇒ **通道整体失效**。昵称 hook 同样被禁，但另有 `CAP_IDB_USERINFO_JS` + `exec_js` 的 B 计划（实测 92 个昵称正常），**WP 没有替代路径** ⇒ 定向失效。
+- **断点铁证**：`capture_wp_messages()` 内 `if evs: logger.info("取回 WP 私信事件 N 条")` 位于解析之前、读回之后，该行全期 0 次 ⇒ 事件数组从源头恒空 ⇒ 逻辑上排除「解析失败」与「被 WS 去重拦截」。
+- **停用时长** ≈ 5 天（09-20 12:41 首现「跳过 JS 注入」→ 09-25，该行全期 113 次）。代码注释**自陈**「Camoufox 模式下 WP 私信通道的 JS 劫持不可用」⇒ 已知副作用未登记、未补偿。
+- **完整案例**：`工作记忆/cases/2026-09-25_WP通道静默无效根因确证_Camoufox禁JS注入_case_v0.44.72.md`
 
 **架构含义**：这是技术债中最坏的一类——**静默无效**：代码在跑、注释声称有双保险、实际零产出。
 
