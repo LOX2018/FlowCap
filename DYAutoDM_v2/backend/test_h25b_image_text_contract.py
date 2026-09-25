@@ -124,8 +124,22 @@ class TestContractLiveData(unittest.TestCase):
         root = os.environ.get("DY_APP_ROOT", "")
         cls.db = ""
         # 本 ADR 的契约目标库：由账号「四川工伤张老师」定位 conv_id → member 库。
-        # 不依赖「选库启发式」，避免别测试的脏库干扰（实测全量下启发式误选）。
-        if root and os.path.isdir(os.path.join(root, "members")):
+        #
+        # ⚠️ 顺序脆弱性实测（2026-09-25）：全量跑时 `test_config_isolation` 会把
+        # `DY_APP_ROOT` 改写到 `%TEMP%/dyautodm_cfgtest_root` 且不保证在本类
+        # setUpClass 时已还原 ⇒ 只读环境变量会选到空库（实测 picked=''）。
+        # 修法：**候选根 = 环境变量 ∪ 项目设计根常量**，按账号名定位，
+        # 与环境变量当前值无关 ⇒ 顺序无关。
+        roots = []
+        ev = os.environ.get("DY_APP_ROOT", "")
+        if ev:
+            roots.append(ev)
+        for cand in (r"C:\temp\dyautodm_design", r"C:\temp\dyautodm_test"):
+            if cand not in roots:
+                roots.append(cand)
+        for root in roots:
+            if not (root and os.path.isdir(os.path.join(root, "members"))):
+                continue
             for name in os.listdir(os.path.join(root, "members")):
                 p = os.path.join(root, "members", name, "data", "dyautodm.db")
                 if not os.path.isfile(p):
@@ -141,6 +155,8 @@ class TestContractLiveData(unittest.TestCase):
                 if hit:
                     cls.db = p
                     break
+            if cls.db:
+                break
 
     def _conn(self):
         if not self.db:
