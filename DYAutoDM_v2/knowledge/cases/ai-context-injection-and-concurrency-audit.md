@@ -306,21 +306,26 @@ model='auto'  max_tokens=200  has_image_url=True   status=200  6720ms
 
 ---
 
-## 6. 处置清单（登记台账，未改代码）
+## 6. 处置清单（**已全部实现**，v0.44.68~0.44.72）
 
-| ID | 项 | 类型 | 优先级 |
-|---|---|---|---|
-| AI-050 | `auto` 首候选在并发下漂移（4 模型 / 40% 不可用） | 配置 + 契约 | 🔴 开并发前**必须先修** |
-| AI-051 | 上下文排序改 `ORDER BY COALESCE(ts,0) DESC, id DESC` | 缺陷修复 | 🔴 |
-| AI-052 | 图片描述落 KV + 白名单纳入 `'27'` + 组装时还原为会话消息 | 架构变更 | 🔴 需 ADR |
-| AI-053 | per-session 串行 + 跨会话并行（借 AstrBot 语义） | 架构变更 | 🔴 需 ADR |
-| AI-054 | `sem_enabled` 对 `pro_kb` 形同虚设（契约漂移） | 契约收口 | 🟡 |
-| AI-055 | `semantic_topk` 每次多烧一次 embedding 往返（`current_sem_model` 探针） | 性能 | 🟡 |
-| AI-056 | RAG `threshold=0.0` 等于不筛相关性 | 质量 | 🟡 |
-| AI-057 | `_history_limit`（有 clamp）与 `chat()`（无 clamp）双处上限离散 | 契约收口 | 🟡 |
-| AI-058 | `_RAG_SUFFIX` 把当前客户消息重复写进 system | 冗余 | 🟢 |
-| AI-059 | `build_system_prompt(cfg, kb_items, text)` 的 `kb_items` 是死参数 | 卫生 | 🟢 |
-| AI-060 | `_describe_image` 的 text-URL 兜底正则对真实数据永不匹配 | 死代码 | 🟢 |
+> **状态更新（2026-09-25）**：本清单 11 项已**全部闭环**。原始登记为「登记台账，未改代码」，
+> 用户裁定「先做低风险两项，再按 ADR 实施」后已按 ADR-008 §4 顺序全部落地并升版。
+
+| ID | 项 | 类型 | 优先级 | 状态 |
+|---|---|---|---|---|
+| AI-050 | `auto` 首候选在并发下漂移（4 模型 / 40% 不可用） | 配置 + 契约 | 🔴 | ✅ v0.44.68（llm 链改 agnes-2.5-flash→deepseek-v4.1-flash + 机械门禁） |
+| AI-051 | 上下文排序改 `ORDER BY COALESCE(ts,0) DESC, id DESC` | 缺陷修复 | 🔴 | ✅ v0.44.68 |
+| AI-052 | 图片描述落 KV + 白名单纳入 `'27'` + 组装时还原为会话消息 | 架构变更 | 🔴 | ✅ v0.44.70（独立 KV + 负缓存 + 不重复调视觉） |
+| AI-053 | per-session 串行 + 跨会话并行（借 AstrBot 语义） | 架构变更 | 🔴 | ✅ v0.44.71（线程池 + 会话锁 + 在途跳过） |
+| AI-054 | `sem_enabled` 对 `pro_kb` 形同虚设（契约漂移） | 契约收口 | 🟡 | ✅ v0.44.72（统一为语义总开关） |
+| AI-055 | `semantic_topk` 每次多烧一次 embedding 往返（`current_sem_model` 探针） | 性能 | 🟡 | ✅ v0.44.72（改只读链路配置，实测零往返） |
+| AI-056 | RAG `threshold=0.0` 等于不筛相关性 | 质量 | 🟡 | ✅ v0.44.72（改 0.40；实测滤除「无关主题」条目） |
+| AI-057 | `_history_limit`（有 clamp）与 `chat()`（无 clamp）双处上限离散 | 契约收口 | 🟡 | ✅ v0.44.69（单一口径：0=全文 / >0=N 条） |
+| AI-058 | `_RAG_SUFFIX` 把当前客户消息重复写进 system | 冗余 | 🟢 | ✅ v0.44.72 |
+| AI-059 | `build_system_prompt(cfg, kb_items, text)` 的 `kb_items` 是死参数 | 卫生 | 🟢 | ✅ v0.44.72（签名收口） |
+| AI-060 | `_describe_image` 的 text-URL 兜底正则对真实数据永不匹配 | 死代码 | 🟢 | ✅ v0.44.72（删除） |
+
+**伴随项**：全文注入 + token 预算（ADR-008 决策 1）✅ v0.44.69 —— 即对「全文注入」质疑的正面回答。
 
 ---
 
