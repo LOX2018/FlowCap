@@ -269,6 +269,54 @@ model='auto'  max_tokens=200  has_image_url=True   status=200  6720ms
 
 ---
 
+### 3.7 AI 上下文的**数据来源通道**取证（2026-09-25，用户提问驱动）
+
+**问题**：AI 读的聊天记录，是「本地通过更新会话拉到的库」，还是「WS + WP 读到的」？
+**答案**：**AI 只读本地 SQLite，不读 WS/WP**。WS 与 WP 都是**写入方**，不是读取方。
+
+#### 读取路径（纯本地表，零网络）
+
+```sql
+-- services/ai_reply.py:1593  _build_history()
+SELECT id, role, text, msg_type, extra FROM dm_messages
+WHERE account=? AND conv_id=? AND id<?
+  AND msg_type IN ('text','7','27')      -- _HISTORY_TEXT_TYPES (ai_reply.py:251)
+  AND TRIM(COALESCE(text,''))<>''
+ORDER BY COALESCE(ts,0) DESC, id DESC
+
+-- services/ai_reply.py:1264  _tick()  触发侧同样是本地水位轮询
+SELECT COALESCE(MAX(id),0) FROM dm_messages         -- 水位存 KV(_KV_MARKER)
+WHERE m.id>? AND m.role='them' ...  ORDER BY m.id ASC LIMIT 20
+```
+
+#### 写入路径（三条通道 → 一张表）
+
+| 通道 | 代码落点 | 库内指纹 | 实库占比 |
+|---|---|---|---|
+| **首包 cmd2043 + cmd301**（「更新会话」/凭证校验触发 `capture_all`） | `auto_dm/conversation_capture.py:1945` 硬编码 `"text"` | `msg_type='text'` | **754 条 / 84.0%** |
+| **WS 长连接**（frontier-im，`recv_daemon`） | `daemon/recv_daemon.py:1036` 传 `msg_type=str(msg_type)` | `msg_type='7'`（WS 帧数字 7） | **110 条 / 12.2%** |
+| **WP 页面 hook** | `daemon/wp_recv.py:343`，`extra.source='wp'` | `extra.source='wp'` + `client_msg_id` | **0 条 / 0.0%** 🔴 |
+| 其他（`delivery_marker` 29 / `1` 3 / `50010` 1 / `27` 1） | `services/delivery_verify.py:114` 等 | — | 34 条 / 3.8% |
+
+#### 三条铁证
+
+1. **通道指纹可判别**：`'7'` 仅 WS 产生（`recv_daemon.add_message` 原样透传 WS 帧 msg_type）；`'text'` 仅首包/capture_all 产生（硬编码）。实库 role×通道交叉：
+   `me` → 首包 553 / WS 75；`them` → 首包 201 / WS 35。
+2. **WS 不重推历史**（代码注释引「知识库 08 §12.2-5 已证」）。掉线期消息靠 `_catchup_after_reconnect()`（`recv_daemon.py:896`）用 **HTTP 2043 首包**补 —— 绕回首包路径。
+3. **我方回复自己落库**，不等 WS 回声：`/send` 成功后 `ib.add_message(..., 'me', ..., msg_id=f"local:{uuid4}")`（`recv_daemon.py:1635`），WS 回声到达再回填真实 `server_message_id`（`recv_daemon.py:711`）。
+
+#### 🔴 红色发现：WP 通道是「事实上的死通道」（现象确证，原因未定论）
+
+- 生产库 `json_extract(extra,'$.source')='wp'` = **0 条**；`client_msg_id`（WP 独有指纹）= **0 条**
+- 12 份运行日志中 WP 仅有「启动 WP 通道轮询」痕迹，**零条**「WP 通道新增 N 条」（该 INFO 仅在 `n_new>0` 时打，`wp_recv.py:363`）
+- 而 `main.py:519` 注释声称「与 WS 通道并存、应用层去重」——**名不符实**
+
+**未定论项**（三种可能未排除，需查 BCC `/wp_messages` 实际返回）：hook 未截获 / 解析失败（失败日志为 `debug` 级，可能被日志级别滤掉）/ 被 WS 应用层去重拦截（`(account,conv_id,ts,text)` ±2s 窗）。
+
+**架构含义**：这是技术债中最坏的一类——**静默无效**：代码在跑、注释声称有双保险、实际零产出。
+
+---
+
 ## 4. 上游情报核查（按"上游情报优先"规则）
 
 **已嵌入上游 `AstrBotDevs/AstrBot`（40,981★，`pushed_at` 2026-09-25 —— 当日仍活跃）自带完整答案**：
