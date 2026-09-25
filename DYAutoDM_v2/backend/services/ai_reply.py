@@ -265,19 +265,29 @@ _HISTORY_NOISE_SQL = (
 
 
 def _sanitize_history_text(text: str) -> str:
-    """剥离内联 base64（H-25 最严重项：25 条 / 10.3 万字符原样进 prompt）。
+    """收敛图片文本为纯语义标签（2026-09-25 H-25 统一落库契约）。
 
-    实测该账号 `msg_type='text'` 且 text 形如
-    `[图片] data:image/webp;base64,UklGR...`（单条最长 6577 字符）——
-    `_build_history` 原先只对 `msg_type=='27'` 走图片描述分支，这些
-    text 型 base64 会被**原样注入**，模型读到的是无意义串（≈34k tokens）。
-    视觉描述链路（ADR-008 决策 2）只覆盖 '27'，故此处按「宁可少收」降级为
-    `[图片]` 占位 —— 保留「对方发过一张图」的语义，绝不把 base64 送进模型。
+    契约（写侧已收口）：`text` **只**承载语义标签，缩略图字节走
+    `extra['thumb']`、原图要素走 `extra.skey/origin_url`，读侧由后端
+    `/conversation` 派生下发 `image_url` / `thumb_url`。
+
+    本函数现为**契约级兜底**（存量数据专用）：历史行里残留的
+    `[图片] data:image/...`（25 条 / 10.3 万字符 / 单条最长 6577）与
+    `[图片] https://...` 一律折叠为 `[图片]` —— 保留「对方发过一张图」
+    的语义，绝不把 base64 或加密 URL 送进模型。
+
+    ❗ 这不再是「读侧补丁掩盖写侧缺陷」：写侧已按契约收口（见
+    conversation_capture._thumb_semantic_label / _extract_thumb_data_uri），
+    本函数只负责存量行的兼容收敛。
     """
     if not text:
         return text
-    if "data:image" in text:
-        head = text.split("data:image", 1)[0].strip()
+    t = text.strip()
+    if t.startswith("[图片]"):
+        # 有语义标签即折叠为纯标签（无论其后跟 base64 / URL / 无内容）
+        return "[图片]"
+    if "data:image" in t:
+        head = t.split("data:image", 1)[0].strip()
         return head or "[图片]"
     return text
 

@@ -259,6 +259,7 @@ export default function MessagesPage(props: PageProps) {
         text: m.text || "",
         mt: m.time || nowHM(),
         image_url: m.image_url || undefined,  // 2026-09-02：后端解密后的真原图
+        thumb_url: m.thumb_url || undefined,  // 2026-09-25（H-25）：契约内缩略图
         // 2026-09-05：来源通道，后端已兜底 'ws'，这里再兜一层
         source: (m.source === "wp" ? "wp" : "ws") as "ws" | "wp",
         // 2026-09-17：语音转写文本 + 引用回复（均由后端透传，前端只渲染）

@@ -12,6 +12,10 @@ export interface Msg {
    *  前端 <img src={image_url}> 可直接渲染,无需再去抖音网页。
    */
   image_url?: string;
+  /** 2026-09-25（H-25）：契约内缩略图（后端 `extra.thumb` → 数据URI/短链）。
+   *  与 image_url 的关系：image_url＝解密后的真原图（优先），
+   *  thumb_url＝即时可渲染的缩略图（image_url 缺省或加载失败时的兜底）。 */
+  thumb_url?: string;
   /** 2026-09-05：消息来源通道。ws=私信守护(默认) / wp=抖音网页版 chat 页 */
   source?: "ws" | "wp";
   /** 2026-09-17：语音转写文本（后端 extra.transcription 透传）。
@@ -80,6 +84,10 @@ export interface RawMessage {
   msg_id?: string;
   /** 2026-09-02：后端解密后的真原图 URL（本地或图床），有则前端优先用它。 */
   image_url?: string;
+  /** 2026-09-25（H-25 统一落库契约）：契约内缩略图（后端 `extra.thumb` 派生）。
+   *  修复前缩略图字节嵌在 `text` 里（`[图片] data:image/webp;base64,...`），
+   *  会污染 AI prompt / ChatLab 导出 / 审计视图；现改为结构化字段下发。 */
+  thumb_url?: string;
   /** 2026-09-05：后端 /conversation 透传的来源通道 */
   source?: string;
   /** 2026-09-17：语音转写文本（后端 extra 透传） */
@@ -371,7 +379,11 @@ export function sanitizeDataUri(u: string): string {
 /**
  * 解析媒体消息文本 -> 缩略图 + 原图双 URL。
  *
- * 后端 `_extract_media_text` 输出形态（按行）：
+ * 2026-09-25（H-25 统一落库契约）：后端**已不再**把缩略图字节或远程 URL
+ * 写进 `text` —— `text` 只含语义标签 `[图片]`；字节走 `extra.thumb`，
+ * 由 `/conversation` 派生为 `thumb_url` 下发（本函数保留以兼容**存量**行）。
+ *
+ * 历史（存量行）后端 `_extract_media_text` 输出形态（按行）：
  *   [图片] data:image/webp;base64,<inline_pic>   ← 有内嵌缩略图时
  *   [原图] https://...                            ← 可选，原图远程地址
  * 或（无 inline_pic 的大图）：

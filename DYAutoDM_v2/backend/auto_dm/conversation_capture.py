@@ -103,6 +103,15 @@ def _inline_max_kb() -> int:
         return 32
 
 
+def _thumb_semantic_label() -> str:
+    """图片抽象的纯语义标签（2026-09-25 H-25 统一落库契约）。
+
+    `text` 只保留「对方发过一张图」这一语义，字节与 URL 一律走 `extra`
+    （避免污染 AI prompt / ChatLab 导出 / 审计视图）。
+    """
+    return "[图片]"
+
+
 def _norm_inline_pic(s: str) -> str:
     """把 inline_pic 的 base64 规范化（去空白 + 补 padding）。
 
@@ -243,6 +252,33 @@ def _share_card_text(obj: dict):
     return f"[分享{_ty}] {_body}".rstrip()
 
 
+def _extract_thumb_data_uri(obj: dict) -> str:
+    """图片缩略图的数据 URI（`data:image/webp;base64,...`）；无则返回 ''。
+
+    2026-09-25（H-25 统一落库契约）：缩略图字节**不得进 `text`** ——
+    `text` 是语义字段（进 AI prompt / 导出 / 审计），塞 base64 会污染
+    （实测 25 条 / 10.3 万字符 ≈ 34k tokens）。改为由调用方写入
+    `extra['thumb']`，读侧再由后端派生下发（前端拿 `thumb_url`）。
+    超阈值大图仍走图床换短链（沿用 2026-08-31 实测结论，不变）。
+    """
+    inline = _norm_inline_pic(obj.get("inline_pic") or "")
+    if not inline:
+        return ""
+    src = f"data:image/webp;base64,{inline}"
+    max_kb = _inline_max_kb()
+    size_kb = len(inline) * 3 // 4 // 1024  # base64 → 原始字节估算
+    if max_kb and size_kb > max_kb:
+        try:
+            from auto_dm import image_host
+
+            hosted = image_host.upload_base64(inline)
+            if hosted:
+                src = hosted
+        except Exception:
+            pass
+    return src
+
+
 def _extract_media_text(obj: dict):
     """从富媒体消息体里提取可读文本 + 媒体 URL。
 
@@ -280,7 +316,8 @@ def _extract_media_text(obj: dict):
 
         origin = _first("origin_url_list", "large_url_list", "url_list")
         thumb = _first("thumb_url_list", "medium_url_list")
-        # 1) 内嵌缩略图（最高优先级：可直接渲染）
+        # 1) 内嵌缩略图：2026-09-25 已抽到 `_extract_thumb_data_uri` 取用
+        #    （字节不再进 text，由写侧塞入 extra['thumb']）。
         inline = _norm_inline_pic(obj.get("inline_pic") or "")
         if inline:
             # 2026-08-31 实测修正：**小图直接内联 base64，不上图床**。
@@ -288,31 +325,12 @@ def _extract_media_text(obj: dict):
             # 却换来零网络请求、瞬时渲染；而图床每张要多花 0.35~2.5s 下载，
             # 且境外图床还会超时 —— 为省 3KB 付出百毫秒延迟是**本末倒置**。
             # 只有超过阈值的大图才走图床，避免单条消息过大拖慢列表查询。
-            thumb_src = f"data:image/webp;base64,{inline}"
-            max_kb = _inline_max_kb()
-            size_kb = len(inline) * 3 // 4 // 1024  # base64 → 原始字节估算
-            if max_kb and size_kb > max_kb:
-                # 大图：上传图床换短链接；失败则仍内联（保证可渲染）
-                try:
-                    from auto_dm import image_host
-
-                    hosted = image_host.upload_base64(inline)
-                    if hosted:
-                        thumb_src = hosted
-                except Exception:
-                    pass
-            body = f"[图片] {thumb_src}"
-            if origin:
-                body += f"\n[原图] {origin}"
-            return body
-        # 无 inline_pic：用远程缩略图 URL 兜底（前端会降级为可点击链接）
-        if thumb:
-            body = f"[图片] {thumb}"
-            if origin:
-                body += f"\n[原图] {origin}"
-            return body
-        if origin:
-            return f"[图片] {origin}"
+            # 2026-09-25（H-25 统一落库契约）：内联 base64 不再进 text。
+            return _thumb_semantic_label()
+        # 无 inline_pic：远程 URL 同样不进 text（仅由 extra.origin_url 承载）；
+        # 线上实测该 URL 是加密体（需 skey 解密），本就不能直接渲染。
+        if thumb or origin:
+            return _thumb_semantic_label()
     # ── 2026-09-17（对照上游 douyinMessage.getWatchTogether / sharePreview）──
     # 「一起看视频」邀请卡片：aweType=9000、msg_type=0，但不是普通系统提示。
     # 上游返回 {title, subtitle, cover}，前端单独渲染成卡片。
@@ -606,6 +624,7 @@ def parse_init_protobuf(raw, my_uid):
             # → 前端只能降级显示「前往抖音查看」。cmd 301 路径早有该提取
             # （_parse_message_text 返回 skey/origin_url），首包路径漏了，此处补齐。
             _skey, _origin = None, None
+            _obj3 = None
             _voice_uri, _voice_skey = None, None
             _v_tkey = _v_skey = _v_url = _v_poster = _v_vid = None
             _v_dur = None
@@ -661,12 +680,23 @@ def parse_init_protobuf(raw, my_uid):
             _reply18 = _parse_message_reply(sb2)
             # 2026-09-17：撤回/可见性标志（f11/f12）—— 字段级判据，替代「猜文案」。
             _recall11, _visible12 = _parse_message_flags(sb2)
+            # 2026-09-25（H-25 统一落库契约）：图片 text 只留语义标签，
+            # 缩略图字节改由 extra.thumb 承载（读侧派生下发，不污染 AI prompt）。
+            _txt0 = txt[0] or ""
+            _is_img = _txt0.startswith("[图片]")
+            _thumb = ""
+            if _is_img and isinstance(_obj3, dict):
+                try:
+                    _thumb = _extract_thumb_data_uri(_obj3)
+                except Exception:
+                    _thumb = ""
             messages.append({
                 "role": role,
-                "text": txt[0],
+                "text": _thumb_semantic_label() if _is_img else _txt0,
                 "ts": _msg_ts if _msg_ts else time.time(),
                 "msg_id": _parse_message_id(sb2),
                 "skey": _skey,
+                "thumb": _thumb or None,
                 "origin_url": _origin,
                 "sender_sec_uid": _sec14,
                 "created_at_us": _order4,
@@ -998,13 +1028,25 @@ def _parse_301_messages(msgs, my_uid):
                 _v_skey = _vf.get("skey") or None
         except Exception:
             _v_uri, _v_skey = None, None
+        # 2026-09-25（H-25 统一落库契约）：图片 text 只留语义标签；缩略图进 extra。
+        _txt = text or ""
+        _is_img = _txt.startswith("[图片]")
+        _thumb = ""
+        if _is_img and isinstance(_content_obj, dict):
+            try:
+                _thumb = _extract_thumb_data_uri(_content_obj)
+            except Exception:
+                _thumb = ""
+        if _is_img:
+            _txt = _thumb_semantic_label()
         out.append({
             "role": role,
-            "text": text,
+            "text": _txt,
             "ts": (int(ts) / 1000.0) if ts else time.time(),
             "msg_id": str(m.get("3")) if m.get("3") else None,
             "skey": skey,
             "origin_url": origin_url,
+            "thumb": _thumb or None,
             "sender_sec_uid": _sec14,
             "created_at_us": _order4,
             "reply": _reply18,
@@ -1856,6 +1898,11 @@ def capture_all(name, with_browser=True):
                     if _sk and _ou:
                         _ex["skey"] = _sk
                         _ex["origin_url"] = _ou
+                    # 2026-09-25（H-25 统一落库契约）：缩略图字节落 extra，
+                    # text 不再承载 base64（见 _thumb_semantic_label 说明）。
+                    _th = m.get("thumb")
+                    if _th:
+                        _ex["thumb"] = _th
                     if m.get("sender_sec_uid"):
                         _ex["sender_sec_uid"] = m["sender_sec_uid"]
                     if m.get("created_at_us"):
@@ -1894,7 +1941,7 @@ def capture_all(name, with_browser=True):
                         m.get("sender_sec_uid") or m.get("created_at_us")
                         or (isinstance(m.get("reply"), dict) and m["reply"])
                         or m.get("voice_uri") or m.get("is_recalled")
-                        or m.get("video_tkey")
+                        or m.get("video_tkey") or m.get("thumb")
                     )
                     if _extra != "{}" and _need_patch:
                         # 与 skey 路径同因同解：旧行已存在时 INSERT OR IGNORE 会被

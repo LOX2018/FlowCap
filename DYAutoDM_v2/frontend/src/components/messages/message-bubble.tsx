@@ -99,6 +99,18 @@ export function MsgBubble({
     const media = parseMedia(m.text);
     const isSticker = media.isSticker;
 
+    // 2026-09-25（H-25 统一落库契约）：缩略图字节已从 `text` 移到
+    // `extra.thumb`，由后端派生为 `thumb_url` 下发。text 现在只含 `[图片]`，
+    // 故须用 thumb_url 补齐 media.thumb —— 否则新数据会「有图但渲染不出」。
+    // 说明：`m.image_url`（解密真原图）优先级仍最高，其 fallbackSrc 即本值。
+    if (m.thumb_url && !media.thumb) {
+      media.thumb = m.thumb_url;
+      media.inline =
+        /^data:image\//.test(m.thumb_url) ||
+        /^https?:\/\/(i\.ibb\.co|tucdn\.wpon\.cn)\//.test(m.thumb_url) ||
+        Boolean(isSticker);
+    }
+
     // 2026-09-02：情况 0 —— 后端已经把 (skey, origin_url) 解密出真原图,
     // 通过 image_url 字段直接给到前端(<img src> 可用)。
     // 这是用户最关心的「能看到原图」路径,优先级最高:

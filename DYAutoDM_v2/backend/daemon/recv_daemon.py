@@ -1125,6 +1125,44 @@ class RecvChannel(threading.Thread):
         if n_new:
             logger.info(f"[recv][{self.name}] 同步帧新增 {n_new} 个会话（已静默入库）")
 
+def _msg_extra_json(m: dict) -> str:
+    """把 parse_init_protobuf 单条消息的 extra 要素序列化为 JSON 字符串。
+
+    2026-09-25（H-25 统一落库契约，顺带修一处真缺陷）：
+    本文件的 init 同步路径原先把 extra **硬编码为 "{}"** —— 与同文件
+    `_extract` 的 t==27 分支、以及 conversation_capture 的三条写路径不一致，
+    导致该路径写入的图片消息 **skey/origin_url/thumb 全部丢失**（注释
+    亦自陈「首包路径 extra 全空」）。现统一由本函数产出，键位与
+    conversation_capture.capture_all 完全同构。
+    """
+    ex = {}
+    if m.get("skey") and m.get("origin_url"):
+        ex["skey"] = m["skey"]
+        ex["origin_url"] = m["origin_url"]
+    if m.get("thumb"):
+        ex["thumb"] = m["thumb"]
+    if m.get("sender_sec_uid"):
+        ex["sender_sec_uid"] = m["sender_sec_uid"]
+    if m.get("created_at_us"):
+        ex["created_at_us"] = int(m["created_at_us"])
+    if isinstance(m.get("reply"), dict) and m["reply"]:
+        ex["reply"] = m["reply"]
+    if m.get("voice_uri"):
+        ex["voice_uri"] = m["voice_uri"]
+    if m.get("voice_skey"):
+        ex["voice_skey"] = m["voice_skey"]
+    if m.get("is_recalled"):
+        ex["is_recalled"] = int(m["is_recalled"])
+    if m.get("visible") is not None:
+        ex["visible"] = int(m["visible"])
+    try:
+        import json as _json
+
+        return _json.dumps(ex, ensure_ascii=False) if ex else "{}"
+    except Exception:
+        return "{}"
+
+
     @staticmethod
     def _extract(content_json: dict, msg_type: Any) -> tuple[str | None, dict]:
         """把 content JSON 按消息类型转成可读文本。返回 (text, extra)。"""
@@ -1197,11 +1235,21 @@ class RecvChannel(threading.Thread):
                 if _origin:
                     extra = {"skey": res["skey"],
                              "origin_url": _origin.replace("\\u0026", "&")}
-            if u:
-                return f"[图片] {u}", extra
-            u = _pick(content_json.get("origin_url"), "url_list")
-            if u:
-                return f"[图片] {u}", extra
+            # 2026-09-25（H-25 统一落库契约）：远程 URL 与内联 base64
+            # **都不进 text**（text 只留语义标签）；缩略图字节改走 extra.thumb，
+            # 读侧由后端派生下发。线上实测 origin_url 是加密体（需 skey 解密），
+            # 本就不能直接渲染，故移出 text 零展示损失。
+            try:
+                from auto_dm.conversation_capture import (
+                    _extract_thumb_data_uri as _th_ex,
+                )
+
+                _th = _th_ex(content_json)
+            except Exception:
+                _th = ""
+            if _th:
+                extra = dict(extra or {})
+                extra["thumb"] = _th
             return "[图片]", extra
         elif t == 8:
             return f"[分享视频] 视频ID {content_json.get('itemId', '')}", {}
@@ -1412,7 +1460,8 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                                 "INSERT OR IGNORE INTO dm_messages("
                                 "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
                                 " VALUES(?,?,?,?,?,?,?,?)",
-                                (ib.name, conv_id, m["role"], m["text"], "text", "{}",
+                                (ib.name, conv_id, m["role"], m["text"], "text",
+                                 _msg_extra_json(m),
                                  m["ts"], str(m.get("msg_id")) if m.get("msg_id") else None),
                             )
                             n_msg += 1
@@ -1438,7 +1487,8 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                             "INSERT OR IGNORE INTO dm_messages("
                             "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
                             " VALUES(?,?,?,?,?,?,?,?)",
-                            (ib.name, conv_id, m["role"], m["text"], "text", "{}",
+                            (ib.name, conv_id, m["role"], m["text"], "text",
+                             _msg_extra_json(m),
                              m["ts"], str(m.get("msg_id")) if m.get("msg_id") else None),
                         )
                         n_msg += 1

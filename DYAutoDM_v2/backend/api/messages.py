@@ -475,6 +475,9 @@ async def get_conversation(account: str, conv_id: str):
                 ex = {}
             skey = ex.get("skey")
             origin_url = ex.get("origin_url")
+            # 2026-09-25（H-25 统一落库契约）：缩略图（内联 base64 / 图床短链）
+            # 由 extra.thumb 派生下发 —— text 已不再承载字节，前端优先用它渲染。
+            thumb_url = ex.get("thumb") or None
             if skey and origin_url and _origin_image_resolver is not None:
                 try:
                     res = _origin_image_resolver.resolve(
@@ -518,6 +521,10 @@ async def get_conversation(account: str, conv_id: str):
                 "time": _fmt_ts(m["ts"]),  # 2026-09-05:改为完整时间,前端做日期分割线
                 "msg_id": msg_id,
                 "image_url": image_url,  # 前端 <img src> 直接用,None 则降级到缩略图
+                # 2026-09-25（H-25）：契约内缩略图（extra.thumb → 数据URI/短链）。
+                # 修复前它嵌在 text 里（`[图片] data:image/webp;base64,...`），
+                # 污染 AI prompt / 导出 / 审计；现改为结构化下发。
+                "thumb_url": thumb_url,
                 # 2026-09-05 新增：消息来源通道。
                 # wp_recv 落库时写 extra.source="wp"；WS 通道无该字段 → 兜底 "ws"。
                 "source": ex.get("source") or "ws",
