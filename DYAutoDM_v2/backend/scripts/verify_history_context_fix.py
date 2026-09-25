@@ -43,6 +43,10 @@ SOURCE_REPO = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
 DESIGN_ROOT = r"C:\temp\dyautodm_design"
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# ADR-008 决策 2：图片（'27'）只有在拿到视觉描述时才注入历史。
+# 本验收脚本无视觉模型，故 27 条目的期望仍是「不注入」（与旧行为一致）。
+_NO_VISION = True
+
 if os.path.abspath(DESIGN_ROOT).startswith(os.path.abspath(SOURCE_REPO) + os.sep):
     raise SystemExit("拒绝运行：临时数据根落在源码树内")
 
@@ -86,7 +90,7 @@ CONV_MIXED = "0:1:10001:30003"
 ROWS_MIXED = [
     ("them", "补拉的历史文本", "text"),     # 收（白名单）
     ("them", "WS 实时文本", "7"),           # 收（白名单）
-    ("them", "[图片]", "27"),               # 排除（image）
+    ("them", "[图片]", "27"),               # 需视觉描述才注入（ADR-008 决策2）
     ("them", "", "7"),                      # 排除（空文本）
     ("them", "", "text"),                   # 排除（空文本）
     ("them", "语义未确认A", "1"),           # 排除（语义未确认）
@@ -245,7 +249,23 @@ def main():
               f"{len(h2)} 条 {[h['content'] for h in h2]}")
 
         wl = tuple(getattr(ai_reply, "_HISTORY_TEXT_TYPES", ()) or ())
-        check("B7 _HISTORY_TEXT_TYPES == ('text','7')", wl == ("text", "7"), f"{wl}")
+        check("B7 _HISTORY_TEXT_TYPES 含 text/7/27（ADR-008 决策2）",
+              set(wl) == {"text", "7", "27"}, f"{wl}")
+        # B8-B9：ADR-008 决策 2 —— 图片描述缓存与图片消息还原
+        desc_help_ok = all(hasattr(ai_reply, n) for n in
+                           ("_img_desc_get", "_img_desc_mark", "_img_desc_known"))
+        check("B8 图片描述缓存 helper 已定义", desc_help_ok, "")
+        _kv = {}
+        ai_reply._kv_get = lambda k, d: _kv.get(k, d)
+        ai_reply._kv_set = lambda k, v: _kv.__setitem__(k, v)
+        ai_reply._img_desc_mark(12345, "")
+        check("B9a 负缓存写入 + 命中（数据级不可解不重试）",
+              ai_reply._img_desc_get(12345) is None
+              and ai_reply._img_desc_known(12345) is True, f"{_kv}")
+        ai_reply._img_desc_mark(67890, "客户发来的 CT 报告，显示腰椎间盘突出")
+        check("B9b 正常描述写入 + 读回",
+              ai_reply._img_desc_get(67890) == "客户发来的 CT 报告，显示腰椎间盘突出",
+              f"{_kv}")
     except Exception as e:  # noqa: BLE001
         check("B1 修复后纯WS会话返回 >0 条（GREEN）", False, f"异常 {e!r}")
     finally:

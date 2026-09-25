@@ -113,6 +113,46 @@ def _kv_set(key: str, value) -> None:
     conn.commit()
 
 
+# -- 图片描述缓存（ADR-008 决策 2）--------------------------------------
+
+_IMG_DESC_MAX = 2000          # 缓存条数上限（超出按 at 淘汰最旧）
+
+
+def _img_desc_get(msg_id) -> Optional[str]:
+    """取图片视觉描述；无缓存或负缓存返回 None。"""
+    d = _kv_get(_KV_IMG_DESC, {})
+    if not isinstance(d, dict):
+        return None
+    v = d.get(str(msg_id))
+    if isinstance(v, dict):
+        return str(v.get("desc") or "") or None
+    return str(v) if v else None
+
+
+def _img_desc_known(msg_id) -> bool:
+    """该图是否已有缓存记录（含负缓存 ""）—— 负缓存不再重试。"""
+    d = _kv_get(_KV_IMG_DESC, {})
+    return isinstance(d, dict) and str(msg_id) in d
+
+
+def _img_desc_mark(msg_id, desc: str, model: str = "") -> None:
+    """写描述缓存。desc 为空串 = 负缓存（数据级不可解，不再重试）。
+
+    只记录**数据级**失败（缺 skey/origin_url、解密失败）；网络级失败
+    （限流/超时）不写负缓存，留待下轮重试。
+    """
+    d = _kv_get(_KV_IMG_DESC, {})
+    if not isinstance(d, dict):
+        d = {}
+    d[str(msg_id)] = {"desc": str(desc or "")[:2000], "model": model,
+                      "at": time.time()}
+    if len(d) > _IMG_DESC_MAX:
+        for k in sorted(d, key=lambda x: (d[x] or {}).get("at") or 0
+                        )[: len(d) - _IMG_DESC_MAX]:
+            d.pop(k, None)
+    _kv_set(_KV_IMG_DESC, d)
+
+
 # ---------------------------------------------------------------------------
 # 配置（kv_store: ai_reply_config）
 # ---------------------------------------------------------------------------
@@ -178,6 +218,9 @@ _KV_KB = "ai_reply_knowledge_base"
 _KV_BL = "ai_reply_blacklist"
 _KV_MARKER = "ai_reply_last_msg_id"
 _KV_ASK_COUNT = "ai_reply_lead_ask"      # {account:conv_id: count}
+# ADR-008 决策 2：图片视觉描述缓存 {msg_id: {desc, model, at}}。
+# 存独立 KV 而非 dm_messages 新列 —— 不改原始取证数据（用户 D3 裁决）。
+_KV_IMG_DESC = "ai_img_desc"
 
 # ---------------------------------------------------------------------------
 # 上下文消息类型白名单（P1-1，2026-09-23）
@@ -198,7 +241,10 @@ _KV_ASK_COUNT = "ai_reply_lead_ask"      # {account:conv_id: count}
 #     ⇒ history 恒为空 ⇒ AI 每次只见当前一句。
 #   ⇒ 本白名单**只收已确认文本语义**的 'text' 与 '7'；'1'/'50010' 语义未经
 #     确认，一律排除。白名单优于排除式：宁可少收，不可收进语义不明的数据。
-_HISTORY_TEXT_TYPES: tuple = ("text", "7")
+# 2026-09-25（ADR-008 决策 2）：纳入 '27'（图片）。SQL 层先收进来，
+# 再由 _build_history 按「是否拿到视觉描述」二次筛选 —— 有描述才注入为
+# [客户发来图片] <描述>；拿不到描述则等同旧行为（不注入，零回归）。
+_HISTORY_TEXT_TYPES: tuple = ("text", "7", "27")
 
 
 def get_config() -> dict:
@@ -1346,7 +1392,18 @@ class AutoReplyWorker:
     # -- 图片 → 视觉模型 ---------------------------------------------------
 
     def _describe_image(self, account: str, row, cfg: dict) -> Optional[str]:
-        """解密图片 → base64 → 视觉模型描述。失败返回 None（不瞎猜）。"""
+        """解密图片 → base64 → 视觉模型描述。失败返回 None（不瞎猜）。
+
+        ADR-008 决策 2：缓存优先 —— 命中缓存直接返回（历史重放零成本）；
+        负缓存（数据级不可解）不再重试。缓存读刻意放在 vision_enabled
+        门之前，使「曾描述过的图片」在视觉关闭后仍可被历史引用。
+        """
+        mid = str(row["id"])
+        cached = _img_desc_get(mid)
+        if cached:
+            return cached
+        if _img_desc_known(mid):
+            return None
         if not cfg.get("vision_enabled"):
             return None
         try:
@@ -1362,6 +1419,10 @@ class AutoReplyWorker:
                 origin_url = m.group(1)
         if not skey or not origin_url:
             logger.info("[ai] 图片消息缺 skey/origin_url，无法解密")
+            try:
+                _img_desc_mark(mid, "")      # 数据级不可解 → 负缓存
+            except Exception:
+                pass
             return None
         try:
             from auto_dm import origin_image_resolver
@@ -1373,6 +1434,10 @@ class AutoReplyWorker:
             return None
         if not res.get("ok"):
             logger.warning(f"[AI-021] " + f"[ai] 图片解密未成功: {res.get('error')}")
+            try:
+                _img_desc_mark(mid, "")      # 解密态失败 → 负缓存
+            except Exception:
+                pass
             return None
         # 本地文件 → base64（kind=local / inline_base64 都可能）
         img_bytes: Optional[bytes] = None
@@ -1396,8 +1461,15 @@ class AutoReplyWorker:
         if not img_bytes:
             return None
         client = AIClient(cfg)
-        return client.describe_image_failover(
+        desc = client.describe_image_failover(
             base64.b64encode(img_bytes).decode(), mime)
+        if desc:
+            # 视觉成功 → 落缓存，供后续每轮历史重放（ADR-008 决策 2）
+            try:
+                _img_desc_mark(mid, desc)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[ai] 图片描述缓存写入失败: {e}")
+        return desc
 
     # -- 上下文 / 发送 -----------------------------------------------------
 
@@ -1435,7 +1507,7 @@ class AutoReplyWorker:
             limit = self._history_limit(cfg)
             ph = ",".join(["?"] * len(_HISTORY_TEXT_TYPES))
             sql = (
-                "SELECT role, text FROM dm_messages "
+                "SELECT id, role, text, msg_type, extra FROM dm_messages "
                 "WHERE account=? AND conv_id=? AND id<? "
                 f"  AND msg_type IN ({ph}) "
                 "  AND TRIM(COALESCE(text,''))<>'' "
@@ -1446,9 +1518,24 @@ class AutoReplyWorker:
                 sql += " LIMIT ?"
                 params.append(limit)
             rows = database.get_db().execute(sql, tuple(params)).fetchall()
-            hist = [{"role": "assistant" if r["role"] == "me" else "user",
-                     "content": r["text"]}
-                    for r in reversed(rows)]
+            hist: list = []
+            for r in reversed(rows):
+                role = "assistant" if r["role"] == "me" else "user"
+                if str(r["msg_type"]) == "27":
+                    # ADR-008 决策 2：图片还原为会话消息（有描述才注入）。
+                    # 已缓存 → 零成本；无缓存 → 尝试补描述（受 vision_enabled
+                    # 门控）；仍无 → 跳过（等同旧行为，零回归）。
+                    desc = None
+                    try:
+                        desc = self._describe_image(account, r, cfg)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(f"[ai] 历史图片补描述失败: {e}")
+                    if not desc:
+                        continue
+                    hist.append({"role": role,
+                                 "content": f"[客户发来图片] {desc}"})
+                    continue
+                hist.append({"role": role, "content": r["text"]})
             # ADR-008 决策 1：条数不截，改由 token 预算兜底（保消息完整）。
             return _fit_history(hist, _context_budget(cfg))
         except Exception as e:
