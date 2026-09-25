@@ -118,6 +118,37 @@ def is_noise_text(text: str) -> bool:
 
 # ---------------------------------------------------------------- 单一写入出口
 
+def _coerce_extra(extra) -> dict:
+    """extra 归一化为 dict（ADR-012 补，2026-09-26 实测缺陷）。
+
+    DB 读路径给的是 **JSON 字符串**；写路径给的是 dict。两者都必须支持。
+    非法 JSON / 非容器类型 → 退化为空 dict（**绝不抛异常**：迁移脚本一次
+    崩溃就会让整库标注中断，实测 360 行因此未被标注）。
+    """
+    if extra is None or extra == "":
+        return {}
+    if isinstance(extra, dict):
+        return dict(extra)
+    if isinstance(extra, (bytes, bytearray)):
+        try:
+            extra = bytes(extra).decode("utf-8", "replace")
+        except Exception:                                   # noqa: BLE001
+            return {}
+    if isinstance(extra, str):
+        s = extra.strip()
+        if not s:
+            return {}
+        try:
+            v = json.loads(s)
+        except Exception:                                   # noqa: BLE001
+            return {}
+        return dict(v) if isinstance(v, dict) else {}
+    try:
+        return dict(extra)
+    except Exception:                                       # noqa: BLE001
+        return {}
+
+
 class MessageRecord:
     """消息落库的**唯一**产出器（ADR-012 层 2）。
 
@@ -140,9 +171,16 @@ class MessageRecord:
 
     @staticmethod
     def build(*, text: str, msg_type: str | None = None,
-              extra: dict | None = None, role: str | None = None) -> "MessageRecord":
-        """按注册表归一化一条消息；未知类型强制安全降级。"""
-        ex: dict = dict(extra or {})
+              extra: dict | str | None = None,
+              role: str | None = None) -> "MessageRecord":
+        """按注册表归一化一条消息；未知类型强制安全降级。
+
+        ⚠️ ADR-012 补（2026-09-26 实测）：`extra` 必须同时接受 **dict 与
+        JSON 字符串**。DB 读路径（存量迁移 / 读侧）天然给的是字符串，
+        原签名只收 dict ⇒ `dict("{"sender_sec_uid": ...}")` 直接抛
+        ValueError。此处统一解析，非法 JSON 退化为空 dict（不崩）。
+        """
+        ex: dict = _coerce_extra(extra)
         raw_text = "" if text is None else str(text)
         mt = "" if msg_type is None else str(msg_type)
 

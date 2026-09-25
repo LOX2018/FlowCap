@@ -165,7 +165,14 @@ _DEFAULT_CONFIG = {
     "api_protocol": "openai",    # openai(/chat/completions) | anthropic(/v1/messages)
     "base_url": "http://127.0.0.1:31415/v1",   # 默认本机 FreeLLM（OpenAI 兼容）
     "model": "glm-5.2",
-    "max_tokens": 1000,
+    # ADR-013 / AI-061（2026-09-26 实测修正）：
+    # 原 1000 对推理模型**必然不够** —— 实测 deepseek-v4.1-flash 在复杂
+    # 推理题下 mt=1000/2000/4000 **全部 finish_reason=length 被截断**
+    # （reasoning 先吃掉额度）。故默认提到 4000，并对识别出的推理模型
+    # 再上浮（见 _eff_max_tokens）。
+    "max_tokens": 4000,
+    # 推理模型额外系数：识别为推理模型时 max_tokens *= 该值（1.0 = 不放大）
+    "reasoner_max_tokens_factor": 1.5,
     "temperature": 0.7,
     # ---- 视觉模型（独立，OpenAI 兼容 /chat/completions）----
     "vision_enabled": False,
@@ -198,7 +205,12 @@ _DEFAULT_CONFIG = {
     # 0 = 全文注入（ADR-008 决策 1，推荐默认）；>0 = 仅最近 N 条（旧行为兼容）
     "max_history": 0,
     # 上下文预算口径（D1：按模型窗口比例）。预算 = context_window * pct
-    "context_window": 65536,      # 主模型上下文窗口（tokens）；部署侧按真实模型调整
+    # ⚠️ ADR-013 / AI-062（2026-09-26）：models 元数据**不含窗口字段**
+    # （实测仅 id/provider_id/model/caps/source）⇒ 系统无法自动获取真实窗口。
+    # 按用户的「显式配置原则」：**0 = 未配置**（不拍脑袋定值）。
+    # 未配置时 _context_budget 走保守下限 8192 + 告警（猜大 = 超窗被拒；猜小安全）。
+    # 部署时请按模型真实窗口填入（如 agnes-2.5-flash / deepseek-v4.1-flash）。
+    "context_window": 0,
     "context_budget_pct": 0.6,
     # 并发处理池大小（ADR-008 决策 3）：同会话严格串行、跨会话并行。
     # 8 = 可同时接待 8 个会话（端点实测 10 并发无压力）；>1 才启用并行。
@@ -755,17 +767,31 @@ def _est_tokens(text: str) -> int:
 
 
 def _context_budget(cfg: dict) -> int:
-    """历史上下文 token 预算（ADR-008 决策 1 / D1：按模型窗口比例）。"""
+    """历史上下文 token 预算（ADR-008 决策 1 / D1：按模型窗口比例）。
+
+    ⚠️ ADR-013（2026-09-26）：`context_window` **必须显式配置**。
+    系统无法从 provider 取得真实窗口（models 元数据仅
+    id/provider_id/model/caps/source，无窗口字段），此前我用 65536 兜底
+    属「拍脑袋定值」，违反用户的「显式配置原则」。
+    故：未配置（0/空）→ 走**保守下限** 8192 并**告警一次**（不静默猜大值，
+    猜大 = 超窗被 provider 拒；猜小 = 少喂上下文，安全方向）。
+    """
+    raw = cfg.get("context_window")
+    win = 0
     try:
-        win = int(cfg.get("context_window") or 65536)
+        win = int(raw or 0)
     except (TypeError, ValueError):
-        win = 65536
+        win = 0
+    if win <= 0:
+        logger.warning(
+            "[AI-062] context_window 未配置（=0）→ 按保守下限 8192 计算上下文预算。"
+            "请在 AI 配置里填入模型真实窗口（系统无法从 provider 自动获取，"
+            "models 元数据不含窗口字段），否则会少喂历史上下文。")
+        win = 8192
     try:
         pct = float(cfg.get("context_budget_pct") or 0.6)
     except (TypeError, ValueError):
         pct = 0.6
-    if win <= 0:
-        win = 65536
     if not (0.1 <= pct <= 0.9):
         pct = 0.6
     return max(1000, int(win * pct))
@@ -887,6 +913,78 @@ class AIClient:
                 del h[:-40]
         return reply
 
+def _is_reasoner(model_name: str) -> bool:
+    """是否推理模型（会先吐 reasoning 再吐正文，token 消耗显著更高）。
+
+    实测依据（2026-09-26）：`deepseek-v4.1-flash` 在复杂推理题下
+    reasoning 吃掉 365~1009 tokens，直接挤压正文额度。
+    """
+    n = str(model_name or "").lower()
+    return any(k in n for k in ("r1", "reasoner", "reasoning", "think",
+                                "deepseek-v4", "glm-5", "o1", "o3"))
+
+
+def _eff_max_tokens(cfg: dict) -> int:
+    """有效 max_tokens：推理模型按配置系数上浮（ADR-013 / AI-061）。"""
+    base = cfg.get("max_tokens", 4000)
+    try:
+        base = int(base)
+    except (TypeError, ValueError):
+        base = 4000
+    if base <= 0:
+        base = 4000
+    if _is_reasoner(cfg.get("model", "")):
+        try:
+            f = float(cfg.get("reasoner_max_tokens_factor") or 1.0)
+        except (TypeError, ValueError):
+            f = 1.0
+        if f > 1.0:
+            base = int(base * f)
+    return base
+
+
+def _extract_reply(result: dict) -> Optional[str]:
+    """从 chat 响应里安全取出可发送给客户的正文（**两处协议共用**）。
+
+    ADR-013 / AI-061：此前**全仓零处处理 `finish_reason`** —— 实测
+    `deepseek-v4.1-flash` 在复杂推理题下 `max_tokens`=1000/2000/4000
+    **全部 `finish_reason=length`（被截断）**，而截断的半截话被当成
+    正常回复直接发给客户 —— 这比走兜底更危险（客户收到不完整答案）。
+
+    判据（任一命中即判失败 -> 走兜底，绝不外发）：
+      1. `finish_reason == "length"` => token 用尽被截断
+      2. content 空（含推理模型 reasoning 占用情形）
+      3. 内容像思考过程（_looks_like_reasoning）
+    """
+    ch = (result.get("choices") or [{}])[0] if isinstance(result, dict) else {}
+    finish = str(ch.get("finish_reason") or "").strip().lower()
+    msg = ch.get("message") or {}
+    reply = (msg.get("content") or "").strip()
+    rc = str(msg.get("reasoning_content") or "").strip()
+
+    # (1) 被截断 —— 最高优先级：半截话绝不能发给客户
+    if finish == "length":
+        logger.warning(
+            f"[AI-061] AI 回复被 max_tokens 截断（finish_reason=length，"
+            f"content={len(reply)} reasoning={len(rc)}）-> 判失败走兜底")
+        return None
+
+    # (2) content 空 -> 用 reasoning 尾部兜底（历史行为），仍空则失败
+    if not reply and rc:
+        logger.info("[ai] content 为空，尝试 reasoning_content 兜底")
+        reply = rc[-200:]
+    if not reply:
+        logger.warning(f"[ai] AI 返回为空: {str(result)[:200]}")
+        return None
+
+    # (3) 思考过程泄漏
+    if _looks_like_reasoning(reply):
+        logger.warning(f"[ai] 思考过程泄漏检测命中，丢弃: {reply[:60]}")
+        return None
+    return reply
+
+
+
     def _chat_openai(self, cfg: dict, messages: list) -> Optional[str]:
         """OpenAI 兼容 /chat/completions（FreeLLM/DeepSeek/GLM/Qwen 等通用）。"""
         headers = {"Content-Type": "application/json"}
@@ -898,7 +996,7 @@ class AIClient:
             json={
                 "model": cfg.get("model", ""),
                 "messages": messages,
-                "max_tokens": int(cfg.get("max_tokens", 1000)),
+                "max_tokens": _eff_max_tokens(cfg),
                 "temperature": float(cfg.get("temperature", 0.7)),
             },
             timeout=60,
@@ -906,25 +1004,8 @@ class AIClient:
         if resp.status_code != 200:
             logger.warning(f"[AI-009] " + f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
             return None
-        result = resp.json()
-        msg = (result.get("choices") or [{}])[0].get("message") or {}
-        reply = (msg.get("content") or "").strip()
-        if not reply and msg.get("reasoning_content"):
-            # 推理模型（glm-5.2/deepseek-r1 等）：content 可能被思考占用，
-            # 从 reasoning_content 提取正文兜底；仍取不到则视为失败
-            rc = str(msg.get("reasoning_content") or "")
-            logger.info("[ai] content 为空，尝试 reasoning_content 兜底")
-            reply = rc.strip()[-200:] if rc else ""
-        if not reply:
-            logger.warning(f"[ai] AI 返回为空: {str(result)[:200]}")
-            return None
-        # 思考过程泄漏检测（含中英文）：推理模型 max_tokens 不足或跑偏时
-        # content 会是分析文本（"1. **分析请求**…" / "The user has already…"），
-        # 此类文本绝不能发给客户 —— 丢弃走兜底话术。
-        if _looks_like_reasoning(reply):
-            logger.warning(f"[ai] 思考过程泄漏检测命中，丢弃: {reply[:60]}")
-            return None
-        return reply
+        # ADR-013 / AI-061：统一走安全提取出口（含 finish_reason 截断判定）
+        return _extract_reply(resp.json())
 
     def _chat_anthropic(self, cfg: dict, messages: list) -> Optional[str]:
         """Anthropic 兼容 /v1/messages（MiniMax anthropic 端点、Claude 官方）。"""
@@ -939,7 +1020,7 @@ class AIClient:
             json={
                 "model": cfg.get("model", ""),
                 "messages": messages,
-                "max_tokens": int(cfg.get("max_tokens", 1000)),
+                "max_tokens": _eff_max_tokens(cfg),
                 "temperature": float(cfg.get("temperature", 0.7)),
             },
             timeout=30,
@@ -948,6 +1029,17 @@ class AIClient:
             logger.warning(f"[AI-012] " + f"[ai] AI API {resp.status_code}: {resp.text[:200]}")
             return None
         result = resp.json()
+        # ADR-013 / AI-061：Anthropic 协议同样走安全提取出口。
+        # Anthropic 在 token 用尽时报 stop_reason="max_tokens"（等价 length）
+        # —— 此前同样未处理，截断内容会被直接发给客户。
+        try:
+            if str(result.get("stop_reason") or "").strip().lower() == "max_tokens":
+                logger.warning(
+                    "[AI-061] Anthropic 回复被 max_tokens 截断"
+                    "（stop_reason=max_tokens）-> 判失败走兜底")
+                return None
+        except Exception:
+            pass
         reply = ""
         content = result.get("content", [])
         if isinstance(content, list):
@@ -957,6 +1049,9 @@ class AIClient:
                     break
         if not reply:
             logger.warning(f"[AI-013] " + f"[ai] AI 返回为空: {str(result)[:200]}")
+            return None
+        if _looks_like_reasoning(reply):
+            logger.warning(f"[ai] 思考过程泄漏检测命中，丢弃: {reply[:60]}")
             return None
         return reply
 
