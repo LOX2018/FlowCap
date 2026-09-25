@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from loguru import logger
+
 from .registry import READ, WRITE, Tool, register
 
 
@@ -413,4 +415,11 @@ def register_all() -> int:
     ]
     for t in tools:
         register(t)
+    # ADR-010：debug 工具族。scopes=("debug",) ⇒ 默认 full 面**不可见**
+    #（既有 22 个逐字不变，零回归）。注册失败不影响既有工具。
+    try:
+        from .tools_debug import register_debug_all
+        register_debug_all()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[mcp] debug 工具族注册失败（不影响既有工具）: {e}")
     return len(tools)

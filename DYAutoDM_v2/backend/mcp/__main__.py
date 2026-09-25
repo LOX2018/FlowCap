@@ -136,10 +136,34 @@ def serve_stdio() -> int:
     return 0
 
 
+def _arg(argv: list[str], name: str):
+    """取 `--name value` 或 `--name=value` 的值；缺失返回 None。"""
+    for _i, _a in enumerate(argv):
+        if _a == name:
+            try:
+                return argv[_i + 1]
+            except Exception:  # noqa: BLE001
+                return None
+        if _a.startswith(name + "="):
+            return _a.split("=", 1)[1]
+    return None
+
+
 def _main(argv: list[str]) -> int:
     from .tools import register_all
 
     cmd = argv[0] if argv else "serve"
+    # ADR-010：作用域（默认 full = 既有全量工具面，逐字不变）。
+    # S5：未知 scope 一律拒绝启动 —— 绝不静默回落全量，否则隔离形同虚设。
+    _scope = _arg(argv, "--scope")
+    if _scope:
+        try:
+            from .registry import set_active_scope
+            sc = set_active_scope(_scope)
+        except ValueError as e:  # noqa: BLE001
+            _log(f"[mcp] 启动失败：{e}")
+            return 2
+        _log(f"[mcp] 作用域={chr(44).join(sc)}")
     if cmd in ("serve", "stdio"):
         return serve_stdio()
 
@@ -156,9 +180,10 @@ def _main(argv: list[str]) -> int:
         return 0
 
     if cmd in ("-h", "--help", "help"):
-        print("用法: python -m backend.mcp [serve|http [--port N]]")
+        print("用法: python -m backend.mcp [serve|http [--port N]] [--scope S]")
         print("  serve  默认；MCP JSON-RPC over stdio")
         print("  http   本机 HTTP 服务（仅 127.0.0.1）")
+        print("  --scope  工具作用域：full（默认，全量）| debug | full,debug")
         return 0
 
     _log(f"未知子命令: {cmd}（仅暴露 serve / http —— 对齐蓝本单入口设计）")
