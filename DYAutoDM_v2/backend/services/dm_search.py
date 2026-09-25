@@ -52,11 +52,16 @@ def _media_clause(media_type: str) -> tuple[str, list]:
     """
     _v_json = "json_extract(NULLIF(extra,''),'$.video')"
     _is_video = (
-        "msg_type IN ('8','video')"
+        # ADR-012 / R8-6（方案 B）：只认注册的 "8"。
+        # 'video' 从未被任何写入点使用（防御性猜测），按单一名字原则移除。
+        "msg_type = '8'"
         f" OR {_v_json} IS NOT NULL"
         " OR json_extract(NULLIF(extra,''),'$.video_url') IS NOT NULL"
     )
-    _is_image = f"msg_type IN ('27','image') AND NOT ({_is_video})"
+    # ADR-012 / R8-2（方案 B）：图片 msg_type 单一名字 = "27"。
+    # 原 `IN ('27','image')` 是对「同一语义两个名字」的容忍，属补丁式写法；
+    # 发送侧已统一写 "27"，历史库实测 0 条 'image'，故此处的别名一并移除。
+    _is_image = f"msg_type = '27' AND NOT ({_is_video})"
     if media_type == "image":
         return f"({_is_image})", []
     if media_type == "video":

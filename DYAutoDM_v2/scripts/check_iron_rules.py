@@ -29,6 +29,19 @@
 | R5 | §1.1 明文凭证 | 源码不得出现明文凭证字段（token/skey 等赋值） |
 | R6 | §2 停止走 /quit，不得 kill 浏览器 | 源码不得出现 kill 浏览器进程的调用 |
 | R7 | §1.2 昵称源 SSOT | 昵称链路不得调用已推翻的批量查询符号 |
+| **R8** | **数据契约（ADR-012）** | **委托 `audit_data_contract.py` 六项**（见下） |
+
+### R8 为何存在（用户 2026-09-26 指出）
+
+> 「这个项目我至少经历过 4 次全盘审计，都没有发现数据库治理的问题」
+
+复盘 3 份历史审计报告，维度全是**代码结构**（入口分裂 / 分层依赖 / 大组件 /
+**逐条 diff**）。最后一类最致命：它是**增量审**，`schema` 从没改过 ⇒ 天然不在视野。
+**「没变化的危险」永远不会被增量审计发现。** 故 R8 必须是**存量扫描**维度。
+
+R8 六条子判据（详见 `scripts/audit_data_contract.py`）：
+R8-1 写入出口收敛 / R8-2 类型注册表完整 / R8-3 text 不得承载 base64·URL /
+R8-4 语义标签取自 SSOT / R8-5 未知类型降级 / **R8-6 同一语义不得多名字**。
 
 退出码：0 = 全通过；1 = 有未通过项。
 """
@@ -215,9 +228,28 @@ def r6_no_browser_kill() -> None:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+# ── R8: 数据契约（ADR-012）—— 委托 audit_data_contract.py 六项 ──────────
+# 委托而非重写：避免同一判据两套实现漂移（SSOT）。
+def r8_data_contract():
+    import importlib.util
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "audit_data_contract.py")
+    if not os.path.isfile(p):
+        check(False, "R8", f"缺数据契约审计脚本（{p}）")
+        return
+    spec = importlib.util.spec_from_file_location("_adc", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for code, fn in mod.CHECKS:
+        ok, desc, evidence = fn()
+        extra = f"（{evidence[0]}）" if (evidence and not ok) else ""
+        check(ok, code, f"{desc}{extra}")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
-         r5_no_plaintext_credential, r6_no_browser_kill]
+         r5_no_plaintext_credential, r6_no_browser_kill,
+         r8_data_contract]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。

@@ -1288,7 +1288,9 @@ def _msg_extra_json(m: dict) -> str:
             if _th:
                 extra = dict(extra or {})
                 extra["thumb"] = _th
-            return "[图片]", extra
+            # ADR-012 / R8-4：语义标签取自 Schema SSOT（禁硬编码字面量）
+            from services.message_schema import LABEL_MEDIA
+            return LABEL_MEDIA, extra
         elif t == 8:
             return f"[分享视频] 视频ID {content_json.get('itemId', '')}", {}
         elif t == 50001:
@@ -1904,8 +1906,12 @@ async def send_image(body: SendImageBody) -> dict:
             # 注意：图片 text 恒为「[图片]」，回填条件里带了 text 比对，
             # 同会话短时间内连发多张图时可能误回填到第一条占位行 —— 因此
             # 图片改用 **oid 参与占位**，保证一图一坑（oid 由抖音返回，唯一）。
-            ib.add_message(body.conv_id, "me", "[图片]", peer_id=peer_id,
-                           msg_type="image", extra=extra,
+            # ADR-012 / R8-2（方案 B，用户 2026-09-26 决策）：
+            # msg_type 统一用注册表里的 "27"，不再使用历史别名 "image"
+            # —— 同一语义只保留一个名字（历史库实测 0 条 'image'，无需迁移）。
+            from services.message_schema import LABEL_MEDIA as _LABEL_MEDIA
+            ib.add_message(body.conv_id, "me", _LABEL_MEDIA, peer_id=peer_id,
+                           msg_type="27", extra=extra,
                            msg_id=f"local:img:{info.get('oid') or uuid.uuid4().hex[:16]}")
             logger.info(f"[recv][{body.account}] 图片已发送会话 {body.conv_id[:8]}… "
                         f"oid={info.get('oid', '')[:40]}")
