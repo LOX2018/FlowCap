@@ -3,11 +3,17 @@
 
 2026-09-05 新增。与 WS 通道（recv_daemon / frontier-im 长连接）并存。
 
-链路：
-    chat 页前端自发请求 / WS 推送
-        ↓ CAP_WP_MESSAGE_HOOK_JS 被动 hook（browser_daemon 注入）
-    window.__CAP_WP_MESSAGE__.events
+链路（2026-09-25 v0.44.73 起，取数层由 JS 注入改为**协议层**）：
+    ① **协议层（首选；Camoufox 下唯一可用）**：
+       BCC 的 `daemon/wp_protocol.py` 经 patchright
+       `context.on("response")` / `page.on("websocket")+framereceived`
+       **被动**读取 chat 页自发产生的 im 相关 HTTP 响应与 WS 帧
         ↓ 本模块轮询 BCC /wp_messages 取回（读后清空）
+    ② **JS hook（兜底；仅协议层挂载失败时）**：
+       CAP_WP_MESSAGE_HOOK_JS 注入页面改写 fetch/XHR/WebSocket。
+       ⚠️ 该路径在 Camoufox 模式下**恒为空**（init script 被跳过）——
+       2026-09-20 v0.44.0 至 v0.44.73 期间 WP 通道即因此静默失效
+       （生产库 source='wp' 0 行；案例见 knowledge/cases）。
     解析（JSON / protobuf 兜底）
         ↓ 落库 dm_messages（extra.source='wp'）
     前端私信中心展示

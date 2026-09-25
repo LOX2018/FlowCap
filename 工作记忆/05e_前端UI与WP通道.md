@@ -657,6 +657,44 @@ app.router.add_event_handler("shutdown", shutdown)
 部署态主窗可带 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`
 （见 `09` §九/§附），据此用 CDP 读真实 DOM 验证 UI 渲染，而非只看源码。
 
+### 24.15 🔴 WP 通道取数层替换：JS 注入 → 协议层（v0.44.73，2026-09-25）
+
+> **本条订正 §24 全节的 doc-rot**：§24.1~§24.14 记录的是「WP 通道经
+> `CAP_WP_MESSAGE_HOOK_JS` 注入页面截获」的实现。该实现自 **2026-09-20 v0.44.0**
+> 起**整体失效**，但本节此前未记载 —— 读者会误以为 WP 通道可用。
+
+**失效事实（实测）**：`browser_daemon.py:522` 在 Camoufox 模式下
+`跳过全部 init script`（为规避抖音「安全风险…已阻止此次访问」弹窗，提交 `6c9b09e`）。
+WP 通道**完全依赖**该 init script，且**没有 B 计划** ⇒ 通道整体死亡：
+生产库 `source='wp'` **0 行**、日志「取回 WP 私信事件」**0 次**、
+「跳过 JS 注入」**113 次**（2026-09-20 12:41 ~ 09-25），停用 ≈ 5 天。
+（对照：昵称 hook 同样被跳过，但另有 `CAP_IDB_USERINFO_JS` + `exec_js` 兜底，
+故昵称存活 —— 属**定向失效**。）
+
+**修复（方案 C）**：新增 `daemon/wp_protocol.py`，改用 patchright **协议层**取数：
+
+| 侧 | 原实现 | 现实现 |
+|---|---|---|
+| HTTP | JS 改写 `window.fetch` / `XMLHttpRequest` | `context.on("response")` + `resp.text()/body()` |
+| WS | JS 改写 `WebSocket` | `page.on("websocket")` → `ws.on("framereceived")` |
+
+**契约不变**：`capture_wp_messages()` 返回 `[{kind,url,body,ts}]` 逐字段未变 ⇒
+`wp_recv.process_events` **零改动**。URL 过滤判据与旧 `IMAPI_RE` 逐项对齐；
+二进制 → `'B64:'`；上限 500 条 / 400000 B 对齐旧 hook。
+
+**🔴 新踩坑（Firefox/juggler）**：`framereceived` 交付的 **WS 文本帧是 latin-1
+误解码形态** —— 实测 `'在吗：中文测试'` 收到
+`'å\x9c¨å\x90\x97ï¼\x9aä¸\xadæ\x96\x87æµ\x8bè¯\x95'`；而**同一份数据走 HTTP 响应**
+（`resp.text()`）完全正常。修法 `fix_ws_text()`（三重守卫，已正确中文不会被二次破坏）。
+
+**架构含义**：这是「**传输层替换**」而非功能新增 —— 页面侧零注入 ⇒
+反检测面**优于**旧实现，且顺带消除 `capture_wp_messages` 每 3s 的
+「导航到 /chat」副作用（ENG-020）。
+
+**案例**：`cases/2026-09-25_WP通道静默无效根因确证_Camoufox禁JS注入_case_v0.44.72.md`
+
+---
+
 > 完整案例：`工作记忆/cases/2026-09-23_P3-5重构双回归_模块身份分叉+startup双跑_v0.44.53.md`
 
 

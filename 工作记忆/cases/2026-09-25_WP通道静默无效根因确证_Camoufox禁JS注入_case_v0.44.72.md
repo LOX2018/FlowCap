@@ -4,7 +4,7 @@
 - **日期**：2026-09-25
 - **触发**：用户提问「AI 回复读取的聊天记录是本地更新会话拉到的库，还是 WS+WP 读到的」
 - **结论等级**：**根因已确证（代码注释自陈 + 日志零反例 + 端到端不可能性证明）**
-- **修复状态**：**未修复**（方案已出，待用户拍板；见 §6）
+- **修复状态**：**✅ 已修复（v0.44.73，方案 C）** —— 协议层监听替代 JS 注入；见 §6.1/§6.2
 
 ---
 
@@ -182,11 +182,63 @@ $ grep -rh "取回 WP 私信事件" <生产根>/logs/*.log | wc -l
 | **B. 切换内核为 exe** | 让 `_backend != camoufox`，恢复 JS 注入 | 一行配置开关；WP 链路代码原样可用 | 重新暴露抖音风控弹窗风险 —— **而禁用注入正是为规避它**（2026-09-20 的实测动机）⇒ 属**倒退**，不推荐 |
 | **C. 恢复能力（推荐）** | 按**代码注释自己指出的方向**实现：改用 patchright **协议层**监听（`context.on("response")` 截 `imapi.douyin.com` HTTP；`context.on("websocket")` + `frame_received` 收 WS 帧），**零 JS 注入、零页面痕迹** | 既保住 Camoufox 反检测优势，又恢复第二条通道；**技术上已验证可行**（patchright 源码含 `_network.py` / `_browser_context.py` WebSocket 支持） | 中等工作量（新监听模块 + 与现有 `extra.source='wp'` 语义对齐 + 回归） |
 
-**可行性预验证（已做）**：`patchright` / `playwright` 均可导入；`BrowserContext.on` 存在；
-其源码模块含 WebSocket 事件支持（`_network.py`、`_browser_context.py`、`_generated.py`）。
-⇒ 方案 C 有技术基础，但**尚未实现**（代码库中搜 `page.on("response")` / `frameworkreceived` 均无命中 —— 属**新建**）。
+**方案选定（用户 2026-09-25 拍板）**：**C —— 恢复能力**。
 
-**诚实标注**：本案例**未实现任何修复**，仅完成根因确证与方案论证。选择权在用户。
+### 6.1 实施记录（v0.44.73，提交见 §10）
+
+**新增模块** `daemon/wp_protocol.py`（SoC：传输层替换，不动解析层）：
+
+- `WpProtocolListener.attach()` —— 挂 `context.on("response")`（HTTP 侧）+
+  `page.on("websocket")` → `ws.on("framereceived")`（WS 侧）；对同一 context 幂等；
+  新开 page（如导航 tab）自动补挂。
+- `drain()` —— 读后清空，返回契约 **与旧 JS hook 逐字段一致**
+  （`[{kind, url, body, ts}]`）⇒ 消费方 `wp_recv.process_events` **零改动**。
+- URL 过滤判据与旧 `IMAPI_RE` **逐项对齐**（8 个路径特征 + 关键字兜底），
+  确保「换传输层不换过滤口径」。
+- 二进制帧/响应 → `'B64:' + base64`（与旧 hook 的 `B64:` 前缀约定一致）。
+- 缓冲区上限 500 / 单条 body 截断 400000（对齐旧 JS hook 的 `arr.length>500`
+  与 `slice(0,400000)`）。
+
+**接线** `daemon/browser_daemon.py` 三处：
+
+| 位置 | 改动 |
+|---|---|
+| `__init__` | 新增 `self._wp_proto = None` |
+| `_launch`（**两条分支之后、`goto(chat)` 之前**） | 挂载协议层监听。放在 `goto` 前是因为首屏自发的 `get_message_by_init`（cmd 2043）会漏——与旧 hook「add_init_script 必须在 goto 前」同一踩坑 |
+| `capture_wp_messages` | ① 协议层优先（不再导航，消除 ENG-020 的 25s 导航成本）；② **仅当协议层挂载失败时**回退 legacy JS hook（保留兼容，不删除） |
+
+**🔴 实施中发现并修复的真实缺陷（活体验证抓到，非静态推断）**：
+
+**Firefox/juggler 把 WS 文本帧按 latin-1 交付**。实测：服务端发
+`'在吗：中文测试'`，`framereceived` 收到的 `payload` 是 `str` 但内容为
+`'å\x9c¨å\x90\x97ï¼\x9aä¸\xadæ\x96\x87æµ\x8bè¯\x95'`（UTF-8 字节被逐字节当
+latin-1 码点）；而**同一份数据走 HTTP 响应**（`resp.text()`）完全正常 ⇒
+差异只在 WS 文本帧这一条路径上。
+**修法** `fix_ws_text()`：仅当「含非 ASCII」**且**「latin-1→utf-8 还原成功」
+**且**「还原后无 U+FFFD」时才采纳。三重守卫使**已正确解码的中文**
+（`encode('latin-1')` 抛 `UnicodeEncodeError`）**绝不会被二次破坏** —— 有负控门禁。
+
+### 6.2 验证证据（全部真实执行）
+
+| 层 | 证据 |
+|---|---|
+| **机制最小复现** | 本机 Camoufox（项目自身 `launch_camoufox_async`）下：`context.on('response')` 命中且**响应体可读**（89 B 真实 JSON）；`page.on('websocket')+framereceived` **收到帧** |
+| **端到端活体验证** | 真实 Camoufox + 本地仿真 IM 端点（HTTP `POST /v1/get_message_by_init` + WS `/message`）→ 协议层取回 → **真实 `wp_recv.parse_http_init` / `parse_ws_frame`** 解析：① HTTP ✅ 文本 `'你好，请问工伤赔偿怎么算'` 正确；② WS ✅ 文本 `'在吗'` **编码正确**；③ 读后清空 ✅ |
+| **机械门禁** | `test_wp_protocol.py` **23/23 OK**（含负控：非 IM URL 绝不命中；已正确中文不被二次破坏；回调异常不外抛） |
+| **全量回归** | `unittest discover` → **853 tests OK**（改动前 830 → 新增 23） |
+| **版本门禁** | `check_version_sync.py 0.44.73` → **6 处齐平**（含 `src-tauri/Cargo.lock`） |
+| **铁律门禁** | `check_iron_rules.py` → **6/6 PASS** |
+
+**诚实标注（未做）**：
+- **未做真实抖音端到端**（需登录态 BCC + 真实客户来消息）。本版验证覆盖到
+  「协议层 → 解析器」全链，**未覆盖**「真实 imapi 响应经协议层并落库」
+  —— 判据：出现首条 `source='wp'` 落库行 + 日志「取回 WP 私信事件 N 条（协议层）」。
+- **未打包部署**（按用户习惯等发话）。
+
+### 6.3 风控边界（未变）
+
+纯**被动**读取浏览器自身已发生的请求/帧；**绝不**主动发起请求、**绝不**遍历/批量
+查询用户信息。与旧 hook 同一风控姿态，且**零 JS 注入** ⇒ 反检测面**优于**旧实现。
 
 ---
 
@@ -236,7 +288,14 @@ grep -n -A3 'if self._backend == "camoufox"' DYAutoDM_v2/backend/daemon/browser_
 
 ## 10. 版本与归档
 
-- **本次未改产品代码** ⇒ **不触发版本递增**（`+0.01` 仅适用「debug-test fix」；本案例为**诊断归档 + 台账登记**）
+- **版本**：v0.44.72 → **v0.44.73**（debug-test fix，`+0.01`；六处版本源齐平 ✓）
+  - 为什么不沿用文件名的 `v0.44.72`：本案例原为**纯诊断归档**（未改代码）；
+    用户 2026-09-25 拍板方案 C 后**追加了产品修复**，故按铁律升版。
+    文件名保留 `v0.44.72` 以记录**根因确证时的基线**（改名会破坏既有引用）。
 - **归档**：本文件
-- **台账**：`工作记忆/00_交接卡待办台账.md` **H-24** 已更新为「根因确证 + 方案待拍板」
+- **台账**：`工作记忆/00_交接卡待办台账.md` **H-24**
+  （原「根因确证 + 方案待拍板」→「方案 C 已实施，待实机验证 + 部署」）
+- **知识库同步**：`05e_前端UI与WP通道.md` §24.15（新增，订正 WP 通道 doc-rot）
+- **门禁证据**：`test_wp_protocol.py` 23/23；全量 `853 tests OK`；
+  `check_version_sync.py 0.44.73` 6 处齐平；`check_iron_rules.py` 6/6
 - **关联案例**：`DYAutoDM_v2/knowledge/cases/ai-context-injection-and-concurrency-audit.md` §3.7

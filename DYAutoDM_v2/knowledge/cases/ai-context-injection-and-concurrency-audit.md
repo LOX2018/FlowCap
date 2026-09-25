@@ -305,7 +305,7 @@ WHERE m.id>? AND m.role='them' ...  ORDER BY m.id ASC LIMIT 20
 2. **WS 不重推历史**（代码注释引「知识库 08 §12.2-5 已证」）。掉线期消息靠 `_catchup_after_reconnect()`（`recv_daemon.py:896`）用 **HTTP 2043 首包**补 —— 绕回首包路径。
 3. **我方回复自己落库**，不等 WS 回声：`/send` 成功后 `ib.add_message(..., 'me', ..., msg_id=f"local:{uuid4}")`（`recv_daemon.py:1635`），WS 回声到达再回填真实 `server_message_id`（`recv_daemon.py:711`）。
 
-#### 🔴 红色发现：WP 通道是「事实上的死通道」（**根因已确证**，2026-09-25）
+#### 🔴 红色发现：WP 通道是「事实上的死通道」（**根因已确证 + 已修复**，2026-09-25）
 
 - 生产库 `json_extract(extra,'$.source')='wp'` = **0 条**；`client_msg_id`（WP 独有指纹）= **0 条**
 - 生产根日志（`C:\temp\dyautodm_design\logs\`，09-14~09-25 全期）「取回 WP 私信事件」= **0 次**、「WP 通道新增」= **0 次**；`[wp_recv]` 仅 6 条「启动轮询」行

@@ -333,6 +333,21 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
         # （context 重建）后 +1，用于让「上下文相关缓存」在重建后立即失效
         # （昵称缓存历史上是永不失效的僵尸值，见 capture_userinfo_via_browser）。
         self._context_generation: int = 0
+        # ════════════════════════════════════════════════════════════════════
+        # 2026-09-25（v0.44.73，方案 C）：WP 通道**协议层**监听器。
+        #
+        # 替代 CAP_WP_MESSAGE_HOOK_JS —— 该 init script 在 Camoufox 模式下
+        # 被 `_launch` 整体跳过（`:522`，为规避抖音风控弹窗），导致 WP 通道
+        # 自 2026-09-20 v0.44.0 起**静默失效**（生产库 source='wp' 0 行、
+        # 日志「取回 WP 私信事件」0 次、「跳过 JS 注入」113 次）。
+        #
+        # 本监听器走 patchright 协议层（context.response / page.websocket），
+        # **零 JS 注入、零页面痕迹** ⇒ 保住 Camoufox 反检测优势的同时恢复通道。
+        # 实测依据：本机 Camoufox 下 response 可读体、websocket 可收帧（最小复现）。
+        #
+        # 契约不变：只负责「取回原始事件」，解析/落库仍由 wp_recv 负责。
+        # ════════════════════════════════════════════════════════════════════
+        self._wp_proto = None
         # 2026-09-14 v0.43.11：预热进行中标记。capture_userinfo_map 据此决定
         # 是否「稍等一下预热」（预热不占租约，只占 _lock，见 _exec internal）。
         self._prewarm_running: bool = False
@@ -517,7 +532,11 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
         # 抵消它的反检测优势**。故该模式下跳过全部 init script。
         #
         # 影响（如实记录）：Camoufox 模式下 WP 私信通道的 JS 劫持不可用，
-        # 需改用 Playwright 原生 WebSocket 事件（非页面注入，无痕迹）。
+        #   需改用 Playwright 原生 WebSocket 事件（非页面注入，无痕迹）。
+        #   ✅ 2026-09-25（v0.44.73）**已按此方向落地**：`daemon/wp_protocol.py`
+        #   经 patchright `context.on("response")` / `page.on("websocket")+
+        #   framereceived` 被动取数，**零 JS 注入** —— 故本分支跳过 init script
+        #   不再影响 WP 通道（挂载点见下方 `goto(chat)` 之前）。
         # ════════════════════════════════════════════════════════════════════
         if self._backend == "camoufox":
             logger.info(f"[bcc] {self.account} 内核=Camoufox → 跳过 JS 注入"
@@ -553,6 +572,31 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
                         f"[bcc] add_init_script 未返回可 dispose 的句柄：{_disp!r}"
                         f"（patchright 版本变更？清理机制需重新确认）")
                 self._init_script_disposables.append(_disp)
+        # ════════════════════════════════════════════════════════════════════
+        # 2026-09-25（v0.44.73，方案 C）WP 通道协议层监听 —— **两条分支都要挂**。
+        #
+        # 为什么必须在 `goto(chat)` **之前**：初始 `get_message_by_init`（cmd 2043）
+        # 是 chat 页首屏自发的，挂晚了就漏掉首包（与原 JS hook 的「add_init_script
+        # 必须在 goto 前」同一踩坑）。
+        #
+        # 为什么 Camoufox 分支也要挂：JS 注入被跳过的**只有 init script**；
+        # patchright 的 response/websocket 事件是**协议层**的，不依赖页面脚本，
+        # 故在 Camoufox 下同样有效 —— 这正是本方案的存在理由。
+        # ════════════════════════════════════════════════════════════════════
+        try:
+            from daemon.wp_protocol import WpProtocolListener
+            if self._wp_proto is not None:
+                try:
+                    await self._wp_proto.detach()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._wp_proto = WpProtocolListener()
+            await self._wp_proto.attach(self._context, self._page)
+        except Exception as e:  # noqa: BLE001
+            # 失败不阻塞启动（与 _launch 内其他非关键路径一致），但**绝不静默**：
+            # 该通道静默失效过一次（本方案的起因），故失败必须留痕。
+            logger.warning(f"[WP-062] " + f"[bcc] WP 协议层监听到位失败（不阻塞）: {e}")
+            self._wp_proto = None
         # 直接打开 chat 页（前端才会自发调 im/user/info）
         try:
             await self._page.goto("https://www.douyin.com/chat?isPopup=1", wait_until="domcontentloaded", timeout=20000)
@@ -1255,21 +1299,44 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
 
 
     async def capture_wp_messages(self) -> list[dict]:
-        """读取 BCC hook 截到的 WP 通道私信事件（读后清空）。
+        """读取 WP 通道私信事件（读后清空）。
 
-        2026-09-05 新增。CAP_WP_MESSAGE_HOOK_JS 已被动把 HTTP 响应 / WS 帧
-        raw 推入 window.__CAP_WP_MESSAGE__.events，这里取回并清空，
-        由后端 wp_recv 统一解析（页面内不做解析，保持 hook 极简）。
+        返回 [{kind: 'http'|'ws', url, body, ts}, ...]（契约自 2026-09-05 起未变）。
 
-        返回 [{kind: 'http'|'ws', url, body, ts}, ...]。
+        **两条取数路径（v0.44.73 起）**：
+          ① **协议层（首选）**：`WpProtocolListener` 经 patchright
+             `context.on("response")` / `page.on("websocket")` 被动截获 ——
+             **零 JS 注入**，故在 Camoufox（跳过 init script）下同样有效。
+          ② **legacy JS hook（兜底）**：`CAP_WP_MESSAGE_HOOK_JS` 写入的
+             `window.__CAP_WP_MESSAGE__.events`。仅在协议层监听器**挂载失败**
+             （`self._wp_proto is None`）时走此路径 —— 因为正常态下协议层已覆盖
+             同一份数据，而该路径需把页面导航到 /chat，是有副作用的旧cost
+             （ENG-020：观测动作不该改变被观测对象的位置）。
+
+        为什么不再无条件走 ②：Camoufox 模式下 ② 恒为空（init script 被跳过），
+        却每 3s 付一次「导航到 /chat」的代价 ⇒ 纯浪费 + 副作用。
         """
         async def _do():
+            # ── ① 协议层（首选；Camoufox 下唯一可用路径）────────────────────
+            proto = getattr(self, "_wp_proto", None)
+            if proto is not None:
+                try:
+                    evs = proto.drain()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[BCC-012] " + f"[bcc] 读 wp 协议层事件失败: {e}")
+                    return []
+                evs = evs or []
+                if evs:
+                    logger.info(f"[bcc] 取回 WP 私信事件 {len(evs)} 条"
+                                f"（协议层；stats={proto.stats}）")
+                return evs
+
+            # ── ② legacy JS hook（仅监听器不可用时）─────────────────────────
             page = self._page
             if "/chat" not in (page.url or ""):
                 # 🔴 2026-09-21（ENG-020）：改用独立导航 tab —— 原实现把主 page
                 # goto 到 /chat，既挂满 25s 超时（主 page 停在重 SPA 页时），
                 # 又让「页面在哪」变成随机事件，令页面级探针与 WP 通道互相踩。
-                # hook 是 context 级 add_init_script，独立 tab 同样生效。
                 page = await self._ensure_nav_tab() or page
             try:
                 evs = await page.evaluate(
@@ -1282,7 +1349,7 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
                 return []
             evs = evs or []
             if evs:
-                logger.info(f"[bcc] 取回 WP 私信事件 {len(evs)} 条")
+                logger.info(f"[bcc] 取回 WP 私信事件 {len(evs)} 条（JS hook 兜底）")
             return evs
         return await self._exec(_do)
 

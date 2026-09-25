@@ -508,8 +508,22 @@ async def lifespan(app: FastAPI):
             _auto_start_daemons()
     except Exception as _e:
         logger.warning(f"[SYS-019] " + f"[startup] 会员态判断失败，按未登录处理: {_e}")
-    # WP 通道私信接收循环（抖音网页版 chat 页 hook）
+    # WP 通道私信接收循环（抖音网页版 chat 页被动截获）
     # 2026-09-05 新增。与 WS 通道（recv_daemon）并存、应用层去重。
+    #
+    # 🔴 2026-09-25（v0.44.73）重要订正 —— 本注释原写「与 WS 通道并存」，
+    #   但在 2026-09-20 v0.44.0（提交 6c9b09e）至 v0.44.73 期间，该通道
+    #   **事实上是死的**：其唯一的取数来源 `CAP_WP_MESSAGE_HOOK_JS` 是
+    #   `add_init_script` 注入，而 Camoufox 模式下 `_launch` **跳过全部 init
+    #   script**（为规避抖音风控弹窗）⇒ 事件数组恒空 ⇒ 生产库 `source='wp'`
+    #   0 行、「取回 WP 私信事件」日志 0 次（「跳过 JS 注入」113 次）。
+    #   昵称 hook 同样被跳过，但另有 `CAP_IDB_USERINFO_JS` + `exec_js` 兜底，
+    #   故昵称存活、WP 死亡 —— 属**定向失效**（案例：
+    #   `工作记忆/cases/2026-09-25_WP通道静默无效根因确证_Camoufox禁JS注入_case_v0.44.72.md`）。
+    #
+    #   现由 `daemon/wp_protocol.py`（patchright 协议层：context.response /
+    #   page.websocket）承载取数，**零 JS 注入**，与 Camoufox 的反检测优势不冲突。
+    #   「并存 + 去重」的语义自本版起才真正成立。
     #
     # 🔴 2026-09-21 根治（ENG-020）：原实现「只对第一个账号轮询」，其依据是
     #   2026-09-05 当时的「BCC 是单例（所有账号共享一个浏览器）」——

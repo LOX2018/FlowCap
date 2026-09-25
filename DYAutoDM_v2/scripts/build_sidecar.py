@@ -243,6 +243,14 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
         for _m in ("browser_daemon_js", "daemon.browser_daemon_js"):
             cmd += ["--hidden-import", _m]
 
+    # 2026-09-25（v0.44.73）：WP 通道协议层监听器（daemon/wp_protocol.py）。
+    # 它在 `_launch` 内以**函数体内延迟导入**加载（`from daemon.wp_protocol import ...`），
+    # PyInstaller 静态分析扫不到 ⇒ 漏打后打包态 `ModuleNotFoundError`。
+    # 与上面 browser_daemon_js 同一类坑，故同样显式声明两种导入形态。
+    if entry == "daemon/browser_daemon.py":
+        for _m in ("wp_protocol", "daemon.wp_protocol"):
+            cmd += ["--hidden-import", _m]
+
     # 2026-09-20：Camoufox 依赖链的原生扩展必须以 --collect-all 带齐。
     # 仅 --hidden-import 只会打入 .py，**漏掉 .pyd**（orjson.cp314-win_amd64.pyd），
     # 表现为运行时 `No module named 'orjson.orjson'`（源码态正常、打包态必挂）。
