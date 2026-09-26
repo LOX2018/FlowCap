@@ -221,7 +221,16 @@ class Notifier:
                         r = await ch.send(target, text)
                 else:
                     r = await ch.send(target, text)
-                if not r.ok:
+                # 成功路径也必须留痕：否则「图片是否真的发出」只能靠外部工具验证
+                # （实测教训 2026-09-26：emit 成功时零日志，无法从日志确认投递）。
+                if r.ok:
+                    mid = (r.raw or {}).get("body", {}).get("message_id", "")
+                    logger.info(
+                        f"[notify] {cid} 推送成功 -> {str(target)[:12]}…"
+                        f"{' 图片' if image_path else ' 文本'}"
+                        f"{f' message_id={mid}' if mid else ''}"
+                    )
+                else:
                     logger.warning(f"[NTY-012] " + f"[notify] {cid} 推送失败 -> {target[:12]}…: {r.error}")
 
     def _cfg_of(self, cid: str) -> dict[str, Any]:
