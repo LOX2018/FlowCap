@@ -143,7 +143,23 @@ class SearchMixin:
         # 抖音限流/风控时返回**空响应体**（非 JSON）→ 直接解析抛 JSONDecodeError，
         # 被上层当作「接口不可用」。同族的 client_relations/client_comments
         # 均已用 safe_json 优雅降级，此处漏改（降级策略不一致）。
-        return safe_json(resp)
+        # ★ 2026-09-27 修复（M-20 收口 · 「禁止假成功」）：`safe_json` 把
+        #   Argus 403（46B `Blocked by ArgusSecurityPlugin Uifid Not Found`）
+        #   与非 JSON 错误页一律降级成 `{}` —— 上层因此**无法区分**
+        #   「这个关键词真的没有作品」与「被风控拦截」，前端只能显示空列表
+        #   假装没结果（项目铁律禁止）。此处按同文件 `search_live` 同款范式
+        #   把传输层事实**如实带出**（键名 `_transport`，全文件一致）。
+        #   ⚠️ 本函数是 `search_some_general_work` 的**数据源**：若不在此上抛，
+        #   后者的接收逻辑形同虚设（实测踩到：门禁 G1 报红）。
+        resp_json = safe_json(resp)
+        try:
+            _status, _nbytes = resp.status_code, len(resp.content or b"")
+        except Exception:  # noqa: BLE001
+            _status, _nbytes = 0, 0
+        if _status != 200 or not isinstance(resp_json, dict) or not resp_json:
+            if isinstance(resp_json, dict):
+                resp_json["_transport"] = {"status": _status, "bytes": _nbytes}
+        return resp_json
 
 
     @staticmethod
@@ -249,7 +265,16 @@ class SearchMixin:
                 ai = item.get("aweme_info")
                 aweme_list.append(ai if isinstance(ai, dict) else item)
 
-        return {"status_code": status_code, "aweme_list": aweme_list, "raw": raw_objs}
+        # ★ 2026-09-27 修复（M-20 收口 · 「禁止假成功」）：本端点响应是 chunked 流，
+        #   被 Argus 拦截时 `buf` 只有 46 字节错误页 ⇒ 分块解析全部失败 ⇒
+        #   `aweme_list=[]` 且 `status_code=0` —— 上层**无从区分**「真没搜到」与
+        #   「被风控拦截」。此处按同文件 `search_general_work` 同款范式如实带出
+        #   传输层事实（键名 `_transport`，保持全文件一致）。
+        _transport = None
+        if resp.status_code != 200 or not raw_objs:
+            _transport = {"status": resp.status_code, "bytes": len(buf)}
+        return {"status_code": status_code, "aweme_list": aweme_list,
+                "raw": raw_objs, "_transport": _transport}
 
     @staticmethod
     def search_some_general_work(auth, query: str, num: int, sort_type: str, publish_time: str, filter_duration="", search_range="", content_type="", **kwargs) -> list:
@@ -267,12 +292,17 @@ class SearchMixin:
         """
         offset = "0"
         work_list = []
+        last_transport = None  # ★ M-20：非 None = 被风控/限流拦截（须上抛，禁假成功）
         while True:
             res_json = DouyinAPI.search_general_work(auth, query, sort_type, publish_time, offset,
                                                      filter_duration, search_range, content_type)
             # 2026-09-17 修补（OCR 审查 HIGH）：平台限流/风控时 `search_general_work`
             # 返回 {} 或缺少 "data"/"has_more"（safe_json 的降级结果）→ 直接下标
             # 会抛 KeyError。先做键守卫，缺失即停止翻页（而非崩溃）。
+            if isinstance(res_json, dict) and res_json.get("_transport"):
+                # ★ M-20：`search_general_work` 在非 200/空响应时把传输层事实挂在
+                #   `_transport` 上；此处**必须**接住，否则该事实在本层被吞掉。
+                last_transport = res_json["_transport"]
             if not isinstance(res_json, dict) or not res_json.get("data"):
                 logger.warning(f"[SEARCH-001] 搜索结果缺 data 字段（疑限流/风控），"
                                f"停止翻页: keys={list(res_json)[:6] if isinstance(res_json, dict) else type(res_json).__name__}")
@@ -284,7 +314,12 @@ class SearchMixin:
             offset = str(int(offset) + len(res_json["data"]))
         if len(work_list) > num:
             work_list = work_list[:num]
-        return work_list
+        # ★ 2026-09-27 修复（M-20 收口 · 「禁止假成功」）：原返回裸 list ⇒
+        #   传输层事实（`_transport`）无处承载，上层**只能**把「被风控拦截」
+        #   读成「该关键词没有作品」，前端显示空列表**假装没结果**。
+        #   改用 `LiveSearchResult`（list 子类）承载，且**返回类型契约不变**
+        #   （仍是 list：`for x in r` / `len(r)` / `r[:n]` 零改动）。
+        return LiveSearchResult(work_list, last_transport)
 
     @staticmethod
     def search_live(auth, query: str, offset: str = '0', num: str = '25', **kwargs):
@@ -410,6 +445,17 @@ class SearchMixin:
         # __dict__**，直接 `lst.last_transport = ...` 会抛 AttributeError
         # （实测复现）。此处在返回前统一包装，且切片后的结果也仍用本类构造。
         return LiveSearchResult(live_list, transport)
+
+    @staticmethod
+    def take_search_transport(result) -> dict | None:
+        """★ M-20：统一取传输层事实（兼容两种承载形态）。
+
+        - `LiveSearchResult`（list 子类）→ 读 `.last_transport`
+        - `dict`（`search_stream` 归一化返回体）→ 读 `["_transport"]`
+        """
+        if isinstance(result, dict):
+            return result.get("_transport") or None
+        return getattr(result, "last_transport", None) if result is not None else None
 
     @staticmethod
     def take_live_transport(live_list) -> dict | None:

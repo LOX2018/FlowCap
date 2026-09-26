@@ -12,7 +12,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User, MessageSquare,
-  Users, BookOpen,
+  Users, BookOpen, AlertTriangle,
 } from "lucide-react";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -228,14 +228,39 @@ export default function PlatformPage(props: PageProps) {
   }
 
   const renderQ = (
-    q: { isPending: boolean; isError: boolean; error: unknown; data?: { items: unknown[] }; refetch: () => void },
+    q: { isPending: boolean; isError: boolean; error: unknown;
+         data?: { items: unknown[]; blocked?: boolean; blocked_reason?: string | null };
+         refetch: () => void },
     kind: "video" | "user",
   ) => {
     if (q.isPending) return <LoadingState />;
     if (q.isError) {
       return <ErrorState message={String((q.error as Error)?.message || "请求失败")} onRetry={q.refetch} />;
     }
-    return <Grid items={(q.data?.items || []) as (AwemeItem | UserItem)[]} kind={kind}
+    const items = (q.data?.items || []) as (AwemeItem | UserItem)[];
+    // ★ 2026-09-27（M-20 · 铁律「禁假成功」）：被风控拦截 ≠ 真的没搜到。
+    //   此前一律渲染空 Grid ⇒ 用户以为「没这个关键词的作品」，
+    //   实际是被 Argus 拦了。现**优先**如实呈现被拦截事实。
+    if (q.data?.blocked) {
+      return (
+        <div className="flex items-start gap-2 rounded-[var(--radius-sm)]
+                        border border-[var(--color-danger)] px-3 py-2.5
+                        text-sm text-[var(--color-danger)]"
+             data-od-id="platform-search-blocked">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="space-y-1">
+            <div className="font-medium">搜索被平台风控拦截</div>
+            <div className="text-xs opacity-90">
+              {q.data.blocked_reason || "被风控拦截，请稍后重试。"}
+            </div>
+            <div className="text-xs opacity-75">
+              这不是「没有结果」——请降低频率、稍后再试，或在浏览器完成验证。
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return <Grid items={items} kind={kind}
                  onOpenAweme={kind === "video" ? openAweme : undefined} />;
   };
 

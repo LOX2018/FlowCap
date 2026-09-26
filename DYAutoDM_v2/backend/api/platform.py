@@ -611,16 +611,33 @@ async def search(req: SearchReq) -> dict[str, Any]:
         # ★ 2026-09-15：视频搜索改用**源项目方案** `/general/search/stream/`（实测 10 条、
         #   真实作者可读）；失败则回落到原 `search_some_general_work`（老接口），保证可用。
         works = None
+        stream = None  # ★ M-20：供传输层事实读取（except 分支下保持 None）
         try:
             stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
             works = (stream or {}).get("aweme_list") or []
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
             works = None
+        # ★ 2026-09-27 修复（M-20 收口 · 「禁止假成功」）：此前 `works` 为空时
+        #   一律回 200 + `items: []` —— 前端**无从区分**「这个关键词真没作品」与
+        #   「被 Argus 风控拦截」，只能显示空列表**假装没结果**（项目铁律禁止）。
+        #   现按同族已修范式把传输层事实如实上抛：`blocked=True` + 原因文案。
+        transport = api.take_search_transport(stream)
         if not works:
-            works = await asyncio.to_thread(api.search_some_general_work, auth, req.query, num, "0", "0")
+            fb = await asyncio.to_thread(api.search_some_general_work, auth, req.query, num, "0", "0")
+            works = fb or []
+            # 回落接口也带传输层事实（取更可信的那一个：先流的、再回落的）
+            transport = transport or api.take_search_transport(fb)
+        blocked = bool(transport)
+        # 文案组装用 .format（不用嵌套引号 f-string，避免转义歧义）
+        _reason = None
+        if blocked:
+            _reason = "被风控拦截（HTTP {}，响应 {} 字节）".format(
+                transport.get("status"), transport.get("bytes"))
         return {"ok": True, "kind": "video",
-                "items": [_pick_aweme(w) for w in (works or [])]}
+                "items": [_pick_aweme(w) for w in (works or [])],
+                "blocked": blocked,
+                "blocked_reason": _reason}
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[PLT-004] " + f"搜索失败: {type(e).__name__}")
         raise HTTPException(502, f"搜索失败: {type(e).__name__}")
