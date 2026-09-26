@@ -28,11 +28,15 @@ AstrBot 各平台适配器（weixin_oc / wecom / dingtalk / lark / qqofficial）
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
+import random
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -188,7 +192,11 @@ class WeixinOCChannel(BaseChannel):
             "Content-Type": "application/json",
             "AuthorizationType": "ilink_bot_token",
             "Authorization": f"Bearer {self.token}",
-            "X-WECHAT-UIN": str(int(time.time())),
+            # X-WECHAT-UIN 必须是 base64(random 32bit)——实测 str(time()) 会被服务端判 ret=-1。
+            # 依据：AstrBot weixin_oc_client.py::_build_base_headers（上游权威实现）。
+            "X-WECHAT-UIN": base64.b64encode(
+                str(random.getrandbits(32)).encode("utf-8")
+            ).decode("utf-8"),
         }
         async with s.post(
             f"{self.base_url}/ilink/bot/sendmessage", json=payload, headers=headers
@@ -198,13 +206,205 @@ class WeixinOCChannel(BaseChannel):
             return ChannelResult(
                 False, self.name, f"HTTP {resp.status}: {body}", {"body": body}
             )
-        # iLink 成功时 ret==0（AstrBot _is_successful_api_payload 同逻辑）
-        ret = body.get("ret", -1)
-        if ret not in (0, None):
+        # iLink 成功判据（依据 AstrBot `_is_successful_api_payload`，上游权威实现）：
+        #   成功响应【不含 ret 字段】（形如 {"message_id": ...}），故 ret/errcode 默认值必须为 0。
+        #   早期实现用 body.get("ret", -1) ⇒ 把"无 ret 的成功响应"误判为 ret=-1 失败，
+        #   表现为"消息其实已发出，但通道报失败"（实测 2026-09-26）。
+        ret = int(body.get("ret", 0) or 0)
+        errcode = int(body.get("errcode", 0) or 0)
+        if ret != 0 or errcode != 0:
             return ChannelResult(
                 False,
                 self.name,
-                f"iLink err ret={ret} {body.get('errmsg', '')}",
+                f"iLink err ret={ret} errcode={errcode} {body.get('errmsg', '')}",
+                {"body": body},
+            )
+        return ChannelResult(True, self.name, raw={"body": body})
+
+    # ---------- 图片推送（iLink CDN 三步：getuploadurl → 加密上传 → sendmessage）----------
+    # 协议依据：AstrBot weixin_oc_adapter.py::_prepare_media_item
+    #           + weixin_oc_client.py::upload_to_cdn（上游权威实现）
+    IMAGE_ITEM_TYPE = 2      # item_list 里的图片类型
+    IMAGE_UPLOAD_TYPE = 1    # getuploadurl 的 media_type
+    CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
+
+    @staticmethod
+    def _pkcs7_pad(data: bytes, block: int = 16) -> bytes:
+        pad = block - (len(data) % block)
+        return data + bytes([pad]) * pad
+
+    @staticmethod
+    def _aes_padded_size(n: int, block: int = 16) -> int:
+        return n + (block - (n % block) or block)
+
+    def _headers(self) -> dict[str, str]:
+        """iLink 公共请求头（含 X-WECHAT-UIN：base64(random32)，与上游一致）。"""
+        return {
+            "Content-Type": "application/json",
+            "AuthorizationType": "ilink_bot_token",
+            "Authorization": f"Bearer {self.token}",
+            "X-WECHAT-UIN": base64.b64encode(
+                str(random.getrandbits(32)).encode("utf-8")
+            ).decode("utf-8"),
+        }
+
+    async def _upload_media(self, target: str, raw: bytes) -> Optional[dict[str, Any]]:
+        """上传字节到 iLink CDN → 返回可直接放进 item_list 的 image_item，失败返回 None。
+
+        三步（上游一致）：① getuploadurl（拿 upload_full_url/upload_param + aeskey 协商）
+                          ② POST CDN 密文（响应头 x-encrypted-param 即下载凭证）
+        """
+        import uuid
+        from urllib.parse import quote
+
+        try:
+            from Crypto.Cipher import AES  # pycryptodome，AstrBot 同款依赖
+        except ImportError:
+            logger.error("[NTY-008] [notify:weixin_oc] 缺少 pycryptodome，无法推送图片")
+            return None
+
+        raw_size = len(raw)
+        raw_md5 = hashlib.md5(raw).hexdigest()
+        file_key = uuid.uuid4().hex
+        aes_key_hex = uuid.uuid4().bytes.hex()
+        ct_size = self._aes_padded_size(raw_size)
+
+        s = await self._http()
+        # ① 申请上传地址
+        try:
+            async with s.post(
+                f"{self.base_url}/ilink/bot/getuploadurl",
+                json={
+                    "filekey": file_key,
+                    "media_type": self.IMAGE_UPLOAD_TYPE,
+                    "to_user_id": str(target),
+                    "rawsize": raw_size,
+                    "rawfilemd5": raw_md5,
+                    "filesize": ct_size,
+                    "no_need_thumb": True,
+                    "aeskey": aes_key_hex,
+                    "base_info": {"channel_version": "dyautodm"},
+                },
+                headers=self._headers(),
+            ) as resp:
+                body = await resp.json(content_type=None)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[NTY-008] [notify:weixin_oc] getuploadurl 异常: {e}")
+            return None
+        if resp.status != 200:
+            logger.warning(f"[NTY-008] getuploadurl HTTP {resp.status}: {body}")
+            return None
+        upload_param = str(body.get("upload_param", "")).strip()
+        upload_full_url = str(body.get("upload_full_url", "")).strip()
+        if not upload_param and not upload_full_url:
+            logger.warning(f"[NTY-008] getuploadurl 未返回上传地址: {body}")
+            return None
+
+        # ② 加密上传（AES-128-ECB + PKCS7）
+        cdn_url = upload_full_url or (
+            f"{self.CDN_BASE_URL}/upload?encrypted_query_param={quote(upload_param)}"
+            f"&filekey={quote(file_key)}"
+        )
+        ciphertext = AES.new(bytes.fromhex(aes_key_hex), AES.MODE_ECB).encrypt(
+            self._pkcs7_pad(raw)
+        )
+        try:
+            async with s.post(
+                cdn_url,
+                data=ciphertext,
+                headers={"Content-Type": "application/octet-stream"},
+            ) as resp:
+                detail = await resp.text()
+                eqp = resp.headers.get("x-encrypted-param")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[NTY-008] [notify:weixin_oc] CDN 上传异常: {e}")
+            return None
+        if resp.status != 200 or not eqp:
+            logger.warning(f"[NTY-008] CDN 上传失败 HTTP {resp.status}: {detail[:200]}")
+            return None
+
+        return {
+            "type": self.IMAGE_ITEM_TYPE,
+            "image_item": {
+                "media": {
+                    "encrypt_query_param": eqp,
+                    "aes_key": base64.b64encode(aes_key_hex.encode("utf-8")).decode(
+                        "utf-8"
+                    ),
+                    "encrypt_type": 1,
+                },
+                "mid_size": ct_size,
+            },
+        }
+
+    async def send_image(
+        self, target: str, image_path: str, caption: str = ""
+    ) -> ChannelResult:
+        """推送本地图片文件到指定 iLink 用户（target 需已有 context_token）。
+
+        `caption` 非空 → 先单独发一条文本，再发图片。**不可混排在同一个 item_list**
+        （实测 2026-09-26：text+image 混排会被服务端判 ret=-2 "invalid arguments"，
+        纯 image item_list 才成功）。
+
+        注意：context_token 具时效性（实测同一 token 约数分钟后失效并返回
+        ret=-2 "prepare failed"）——故调用前应确保最近收到过对方消息。
+        """
+        if not self.enabled:
+            return ChannelResult(False, self.name, "渠道未启用")
+        if not target:
+            return ChannelResult(False, self.name, "缺少目标（target）")
+        ctx = self._ctx.get(str(target), "")
+        if not ctx:
+            return ChannelResult(
+                False, self.name, "缺少 context_token：iLink 需对方先发一条消息后才能回推"
+            )
+        try:
+            raw = Path(image_path).read_bytes()
+        except Exception as e:  # noqa: BLE001
+            return ChannelResult(False, self.name, f"读取图片失败: {e}")
+
+        # caption 先单独发（不混排——见 docstring 的实测依据）
+        if caption:
+            cap = await self.send(target, caption)
+            if not cap.ok:
+                logger.warning(f"[NTY-008] [notify:weixin_oc] caption 发送失败: {cap.error}")
+
+        item = await self._upload_media(target, raw)
+        if item is None:
+            return ChannelResult(False, self.name, "图片上传 CDN 失败")
+
+        import uuid
+
+        s = await self._http()
+        payload = {
+            "base_info": {"channel_version": "dyautodm"},
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": str(target),
+                "client_id": uuid.uuid4().hex,
+                "message_type": 2,
+                "message_state": 2,
+                "context_token": ctx,
+                "item_list": [item],
+            },
+        }
+        async with s.post(
+            f"{self.base_url}/ilink/bot/sendmessage",
+            json=payload,
+            headers=self._headers(),
+        ) as resp:
+            body = await resp.json(content_type=None)
+        if resp.status != 200:
+            return ChannelResult(
+                False, self.name, f"HTTP {resp.status}: {body}", {"body": body}
+            )
+        ret = int(body.get("ret", 0) or 0)
+        errcode = int(body.get("errcode", 0) or 0)
+        if ret != 0 or errcode != 0:
+            return ChannelResult(
+                False,
+                self.name,
+                f"iLink err ret={ret} errcode={errcode} {body.get('errmsg', '')}",
                 {"body": body},
             )
         return ChannelResult(True, self.name, raw={"body": body})

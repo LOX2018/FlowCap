@@ -112,11 +112,15 @@ class Notifier:
         dedup_key: str = "",
         throttle_sec: int = 0,
         targets: dict[str, str] | None = None,
+        image_path: str = "",
     ) -> None:
         """业务侧调用入口（同步，不阻塞）。
 
         targets: {channel_id: target} —— 指定各渠道的接收目标；
                  为空则用渠道配置里的 default_target。
+        image_path: 可选本地图片路径。支持图片的渠道（如 weixin_oc）会**连带推送图片**，
+                 不支持图片的渠道自动退化为只发文本（向后兼容）。典型用法：
+                 抖音扫码登录出码后，把二维码 PNG 推给用户（用户不在电脑旁也能扫码）。
         """
         if not self.enabled or not self.channels:
             return
@@ -142,6 +146,7 @@ class Notifier:
                 "body": body,
                 "level": level,
                 "targets": targets or {},
+                "image_path": image_path,
             }
         )
 
@@ -185,6 +190,7 @@ class Notifier:
         body: str,
         level: str,
         targets: dict[str, str],
+        image_path: str = "",
     ) -> None:
         lvl = LEVELS.get(level, 10)
         text = f"【DYAutoDM·{title}】\n{body}"
@@ -201,7 +207,20 @@ class Notifier:
             for target in dests:
                 if not target:
                     continue
-                r: ChannelResult = await ch.send(target, text)
+                # 图片优先：渠道实现了 send_image 且提供了图片路径时，走图片推送
+                # （send_image 内部会把 caption 作为独立文本先行发出）；
+                # 否则退化为纯文本，保证不支持图片的渠道行为不变。
+                sender = getattr(ch, "send_image", None)
+                if image_path and callable(sender):
+                    try:
+                        r: ChannelResult = await sender(target, image_path, text)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            f"[NTY-013] [notify] {cid} 图片推送异常，退化为文本: {e}"
+                        )
+                        r = await ch.send(target, text)
+                else:
+                    r = await ch.send(target, text)
                 if not r.ok:
                     logger.warning(f"[NTY-012] " + f"[notify] {cid} 推送失败 -> {target[:12]}…: {r.error}")
 

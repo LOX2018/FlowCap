@@ -375,3 +375,123 @@ tab 选择器   : .C6OZQwMA（扫码登录/验证码登录/密码登录）
 | 既有扫码 API | `api/accounts.py:742` | `POST /{name}/scan` + `_do_scan` |
 | 登录界面锚点 | `scratch/probe_login_urls.py` | `input[name="normal-input"]` 等 |
 | 接口方案不通 | `scratch/probe_pure_mstoken.py` | 9938B JS 挑战壳页；项目无 ttwid 生成器 |
+
+---
+
+## 8. 实施补充：双路径分工 · RPA 短信登录缺陷修复 · 凭证写入协议（2026-09-26 实测归档）
+
+> **本节定位**：§1~§7 是**设计期**（待评审）的意图与契约。本节归档**实施期**在本机实机跑通后**最终落地**的决策，
+> 是对 §3.1.甲（RPA 形态）、§3.3（技术判据）、§5（风险）的**实测收口**，不推翻既有内容。
+> 状态：**已实施并验证**（v0.45.14 → v0.45.18）。凡「依据」列，均给出源码行号/函数名或实测输出。
+
+### 8.1 决策 1：API 路径与 RPA 路径的**能力边界最终确定**
+
+**决策内容**：
+
+| 登录方式 | 归属路径 | 状态 |
+|---|---|---|
+| 扫码登录 | **API 路径**（上游 vendor，`auto_dm/login_api_vendor.py`）| ✅ 保留可用 |
+| 短信（验证码）登录 | **只走 RPA 路径**（`auto_dm/login_remote.py`）| ✅ RPA |
+| 短信登录（API 路径）| 上游 `send_sms_code` / `phone_login` | ❌ **显式禁用** |
+
+- API 路径**只保留扫码登录**：实测 `get_qrcode` 返回 `error_code=0`，`bootstrap` 2.2s / 33 项 cookie 成功。
+- 适配层 `VendorLoginApi` 类文档新增「**能力边界**」表（可用/不可用 + 原因 + 替代）；
+  `send_sms_code` / `phone_login` **抛出显式 `NotImplementedError`（错误码 AUTH-072）**，
+  错误信息同时含「**根因（820 字节 dtrait）**」与「**可操作替代（走 RPA）**」——契约原则：**用错路径要立刻知道，禁止静默失败**。
+
+**依据**（读源码 + 实测，非推断）：
+- 上游 `builder/auth.py` 的 `dtrait_profile` **默认为 None**；`dy_apis/login_api.py` 的登录流程中 `dtrait_profile` **零次出现**。
+- `auth.dtrait_blob = getenv("DY_DTRAIT_BLOB")` ⇒ 在项目 `.env` 下**得到 None**。
+- `builder/auth.py` 在 `if not blob:` 分支走 **strict → raise**，并有 `assert len(dtrait) == 820` **硬断言**。
+  ⇒ 上游短信登录**硬要求 `x-tt-session-dtrait` 恰好 820 字节**；该 blob 由混淆 SDK `@byted/uc-secure-dtrait-core` 生成、
+  **需真机浏览器捕获**，上游 `.env.example` **也未提供 fixture**。
+- 适配层源码：`login_api_vendor.py:100`（能力边界表）、`:122-125`（`SMS_UNSUPPORTED_REASON` 文案）、
+  `:199-205`（两个 `raise NotImplementedError`）。
+
+**影响面**：`auto_dm/login_api_vendor.py`（新增能力边界文档 + 两个显式禁用方法）；
+消费方须按「扫码→API、短信→RPA」分流，代码层面调用 API 短信方法会**立刻抛错**而非静默失败。涉及提交 `8dba9b1`（v0.45.16）。
+
+### 8.2 决策 2：RPA 短信登录的**三个真缺陷修复**（均落到代码行为层）
+
+> 三个缺陷的共同根因：原设计假设「任何 profile 状态下都能直接找到手机号表单并完成短信登录」。
+> 实测证明该假设在**已记住账号**的 profile 上不成立，且启动时序与探活判据各有独立缺陷。
+
+| # | 缺陷 | 实测现象 / DOM 证据 | 修法（落地行为）|
+|---|---|---|---|
+| **A** | **「一键登录」界面** | profile 记住账号时弹窗为「一键登录」面板，**而非手机号表单**：DOM 实测 `<div id="douyin_login_comp_btn_id">一键登录</div>` + `<p>登录其他账号</p>`；此时表单锚点 `input[name="normal-input"]` 与「验证码登录」tab **都不存在** ⇒ 短信流程 **100% 失败**（P2 实测：切 tab False / 填号 False / 发码 False）| 新增 `handle_one_click_login()`：检测到「一键登录」即点「**登录其他账号**」切进表单。源码 `login_remote.py:267` |
+| **B** | **启动时序竞态（BCC-058）** | `close_camoufox_context()` 后进程**需时间退净**，新实例立刻启动即撞旧进程 ⇒ `launch_persistent_context: Target page, context or browser has been closed`，**实测 4 分钟后自愈** | 新增 `reap_profile_processes(profile)`，**复用项目既有** `vbrowser_camoufox._reap_camoufox_processes`（勿自造），在 `prepare_qr_login` / `do_sms_login` **启动前**调用。源码 `login_remote.py:149` |
+| **C** | **探活判据误用 UI（判据不硬）** | profile 有 **66 cookie + 8/8 登录标识 + UI 显示已登录**，但官方接口 `GET https://www.douyin.com/passport/account/info/v2/` 返回 `{"error_code":13,"description":"会话过期，请重新登录","user_id":0}` | **改用官方接口判据**（UI 状态**不可作判据**——Live-Instance Verification 铁律）|
+
+**依据**：`79c7311` 提交链路分析（`[Problem-Analysis Chain]` Source(1)(2)）+ `da3146b`（锁查找漏子目录 / `close` 完全失效）；
+源码锚点见上表。**复用的既有能力**（未自造）：`close_camoufox_context` / `_reap_camoufox_processes`
+（`vbrowser_camoufox.py:274` / `:177`）、`auth_helper.save_cookie_to_env`（`:187`）。
+
+**影响面**：`auto_dm/login_remote.py`（新增 `handle_one_click_login` / `reap_profile_processes`；探活改官方接口；
+`close_handle` 改复用 `close_camoufox_context`；`heal_stale_profile_lock` 改**递归**查找）。涉及提交 `da3146b`（0.45.17）、`79c7311`（0.45.18）。
+
+### 8.3 决策 3：凭证写入协议（**复用既有能力，禁止自造**）
+
+**决策内容**：
+- **写入入口**：`auth_helper.save_cookie_to_env(cookie_str, env_path)` → `services/member_ctx.write_env_file(..., merge=True)`。
+- **只写加密 `.env.enc`**：明文 `.env` 已于 **2026-09-21 废弃**，**即使存在也不被读取**。
+- `merge=True` **保留其余 7 字段**：`DY_KEYS` / `DY_PRIVATE_KEY` / `DY_TICKET` / `DY_TS_SIGN` / `DY_WEB_PROTECT` / `DY_CLIENT_CERT` / `DY_PROXY_MODE`。
+- **写前必须备份旧凭证**：本次实际备份为 `.env.enc.bak.20260926_145722`。
+
+**依据**：`auth_helper.save_cookie_to_env`（`auth_helper.py:187`）→ `member_ctx.write_env_file`；
+写盘位置与 merge 语义由既有函数实现（**未新增写盘逻辑**）。
+
+**影响面**：所有凭证落盘路径统一收敛到上述入口；任何「自己 open(...).write」形态均为**契约违规**（禁止）。
+
+### 8.4 决策 4：AUTH-050「身份漂移」判据的**精确定义**（本次查清，重要澄清）
+
+**判据**：探活 uid ∈ 该账号**历史 `conv_id`** 才算身份一致；否则判漂移。
+
+> 🔴 **关键澄清（搞错会误判漂移）**：`conv_id` 格式为 `0:1:<对方uid>:<账号自身uid>`
+> ⇒ **`field[3]` 才是账号自己的 uid**（`field[2]` 是**对话对方**的 uid）。
+
+**本次实例**：
+- 账号自身 uid = `316276709526638`；
+- 失效凭证探活 uid = `867973938286267`（**不在历史中**）⇒ **确认漂移**，与抖音官方「会话过期」判定**一致**（决策 2-C）。
+
+**依据**：`services/uid_probe.py:183 _uid_consistent_with_history` ——「判据：该 uid 必须出现在该账号**至少一条**历史
+`conv_id` 中」，其实现 `if s in (cid or "").split(":")`（`:202-203`）；无历史会话（新账号）返回 True（不冤枉）；
+DB 不可用也返回 True（降级放行）。实测依据：正确 uid 在该账号**全部**历史会话中出现（如 278/278 条），陈旧/错误 uid 出现 0 次。
+
+**影响面**：`services/uid_probe.py` + `auto_dm/accounts.py`（AUTH-050 文案与判定）；消费方（如直播昵称解密权）
+**必须**依此判据，**不得**用 UI 或 cookie 数量替代。涉及提交 `79c7311`（0.45.18）。
+
+### 8.5 决策 5：启动门禁的**完整判据链**（最终形态）
+
+**决策内容**：浏览器启动前必须依次通过：
+
+```
+① heal_stale_profile_lock(profile)   ← 【递归】查找锁文件
+② reap_profile_processes(profile)    ← 清扫残留进程
+③ launch_async(...)                  ← 仅在前两步之后
+```
+
+> 🔴 **递归查找的必要性**：Camoufox **真实 profile 在 `<profile>/_camoufox/` 子目录**，
+> **只查根目录会漏判**（`da3146b` 修的就是这个：`heal_stale_profile_lock` 改为 `find_lock_files` 递归）。
+
+**依据**：`login_remote.py:110 heal_stale_profile_lock`（`retries=3`，递归查找 + 无同名进程时安全删除）、
+`:149 reap_profile_processes`（启动前清扫，复用 `_reap_camoufox_processes`，含安全边界：只杀命令行命中本 profile
+**绝对路径**的进程，路径过短拒绝执行）；
+§3.1.甲 E1 实测「陈旧锁残留 → 下次启动卡 180s，清锁后立刻恢复」为核心动因。
+
+**影响面**：`auto_dm/login_remote.py` 的**所有**启动路径（`prepare_qr_login` / `do_sms_login`）必须走本判据链，
+**跳过任一步**都会复现 180s 卡死或 `TargetClosedError`。涉及提交 `da3146b`（0.45.17）、`79c7311`（0.45.18）。
+
+---
+
+## 9. 本轮相关提交（2026-09-26）
+
+| commit | 版本 | 一句话说明 |
+|---|---|---|
+| `9202c11` | v0.45.14 | IM 远程登录更新凭证 —— RPA/DOM 方案 + 修单 profile 铁律契约漂移 |
+| `49c3168` | v0.45.15 | vendor 上游登录模块 + 适配层（ADR-017 API 备用路径）|
+| `8dba9b1` | v0.45.16 | API 路径能力边界显式化 —— **扫码可用 / 短信禁用（AUTH-072）** |
+| `da3146b` | v0.45.17 | 修 RPA 两个真 Bug —— **锁查找漏子目录 + 关闭浏览器完全失效** |
+| `79c7311` | v0.45.18 | 修 RPA 短信登录三个真 Bug —— **一键登录 / 残留竞态 / 探活判据** |
+
+> 分支：`design/better-douyin`。**本轮所有结论均基于真机运行证据**（Live-Instance Verification）；
+> **UI 状态不可作判据**（见决策 2-C）。

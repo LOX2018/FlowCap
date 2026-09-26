@@ -564,25 +564,85 @@ async def click_login(page) -> dict:
 
 
 async def detect_login_result(handle: dict, timeout_s: int = 20,
-                              interval_s: int = 2) -> dict:
-    """判定登录是否成功（**唯一硬判据 = cookie 出现真实登录标识**）。
+                              interval_s: int = 2,
+                              verify_server: bool = True) -> dict:
+    """判定登录是否成功（**必须服务端确认**，不能只看 cookie 存在）。
 
-    判据（与 poll_qr_scanned 一致，避免两套逻辑漂移）：
-      sessionid / sid_tt 出现 ⇒ 已登录
+    ## ⚠️ 2026-09-26 修正（实测假阳性事故 —— 原判据不可靠）
+    原判据只有一条：`cookie 出现 sessionid / sid_tt ⇒ 已登录`。
+    实测（张老师扫码流程）该判据**严重假阳性**：
+      · 浏览器启动时会**自动带上上一会话的 cookie**（profile 复用），
+        其中本就含有 sessionid ⇒ 未做任何登录动作也判 "ok=True"；
+      · 实测未扫码即报 `ok=True, cookies=75`，而抖音官方 passport 接口
+        同时返回 `{"error_code":13,"description":"会话过期，请重新登录"}`
+        ⇒ 结论完全相反（违反 Live-Instance Verification）。
+    ## 现判据（两级，缺一不可）
+      ① 本地：cookie 出现登录标识（必要条件，不充分）
+      ② 服务端：`passport/account/info/v2` 返回 `user_id>0` 且 `error_code` 为空
+    ② 未通过即判失败 —— 因为「cookie 存在」不能证明「会话有效」。
+
+    `verify_server=False` 仅供离线单测使用，生产路径**必须**为 True。
     """
     context = handle.get("context")
     if context is None:
         return {"ok": False, "reason": "handle 无效"}
     t0 = time.time()
+    last_reason = ""
     while time.time() - t0 < timeout_s:
         try:
             cookies = {c["name"]: c["value"] for c in await context.cookies()}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "reason": f"读 cookie 失败: {e}"}
+        # ① 本地必要条件
         if cookies.get("sessionid") or cookies.get("sid_tt"):
-            return {"ok": True, "cookies": cookies, "reason": ""}
+            if not verify_server:
+                return {"ok": True, "cookies": cookies, "reason": "（未做服务端确认）"}
+            # ② 服务端权威判据
+            sv = await _probe_session_valid_by_cookies(cookies)
+            if sv.get("ok"):
+                return {"ok": True, "cookies": cookies,
+                        "uid": sv.get("uid"), "reason": ""}
+            last_reason = f"本地有 cookie 但服务端未确认: {sv.get('reason')}"
+            logger.warning("[login_remote] {}", last_reason)
         await asyncio.sleep(interval_s)
-    return {"ok": False, "reason": f"等 {timeout_s}s 未见登录 cookie"}
+    return {"ok": False,
+            "reason": last_reason or f"等 {timeout_s}s 未见有效登录（含服务端确认）"}
+
+
+async def _probe_session_valid_by_cookies(cookies: dict) -> dict:
+    """用抖音官方 passport 接口判定会话是否真的有效。
+
+    为什么必须用它（2026-09-26 实测）：
+      · 本地 cookie 齐全（8/8 登录标识）+ UI 显示已登录，
+        但官方返回 `{"error_code":13,"description":"会话过期，请重新登录"}`
+      · `query/user` 接口**不能**替代：它容忍陈旧会话，会返回历史 uid
+        （配置里「查询自身 uid 的接口是 query/user」这一事实本身没错，
+         但它**不用于**判定会话是否有效）。
+    """
+    import httpx
+    try:
+        if not cookies:
+            return {"ok": False, "reason": "无 cookie"}
+        cs = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        hdrs = {
+            "Cookie": cs,
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/131.0.0.0 Safari/537.36"),
+            "Referer": "https://www.douyin.com/",
+        }
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as cli:
+            r = await cli.get("https://www.douyin.com/passport/account/info/v2/",
+                              headers=hdrs)
+        d = (r.json().get("data") or {})
+        uid = d.get("user_id") or 0
+        ec = d.get("error_code")
+        if int(uid or 0) > 0 and not ec:
+            return {"ok": True, "uid": uid, "reason": ""}
+        return {"ok": False,
+                "reason": f"error_code={ec} {d.get('description', '')!r}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"探活异常 {type(e).__name__}: {str(e)[:120]}"}
 
 
 async def fill_phone(page, phone: str) -> bool:
@@ -663,6 +723,24 @@ async def prepare_qr_login(env_path: str, out_png: str, headless: bool = True,
         res = await grab_login_qrcode(page, out_png)
         res["handle"] = handle
         res["heal"] = heal
+        # 出码成功 → 通过 IM 通道把二维码推给用户（用户不在电脑旁也能扫码）。
+        # 用途：远程更新抖音凭证（ADR-017）。推送失败绝不影响出码结果本身。
+        if res.get("ok") and res.get("png"):
+            try:
+                from notify.notifier import notifier as _notifier
+
+                _notifier.emit(
+                    "login_qrcode",
+                    "抖音扫码登录",
+                    f"账号「{os.path.basename(os.path.dirname(os.path.abspath(env_path)))}」"
+                    f"需要扫码登录，二维码见下图（约 60 秒内有效，请尽快扫描）。",
+                    level="critical",
+                    dedup_key=f"login_qrcode:{out_png}",
+                    image_path=res["png"],
+                )
+                logger.info("[login_remote] 二维码已提交 IM 推送: {}", res["png"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[login_remote] 二维码 IM 推送失败（不影响出码）: {}", e)
         return res
     except Exception as e:  # noqa: BLE001
         logger.error("[login_remote] 二维码流程异常: {}", e)
