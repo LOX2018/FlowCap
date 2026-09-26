@@ -97,7 +97,12 @@ class BaseChannel(ABC):
 
     async def send(self, target: str, text: str, retries: int = 2) -> ChannelResult:
         """带重试的发送入口。**永不抛异常** —— 失败以 ChannelResult 返回，
-        避免通知失败把主业务（私信调度/引擎）拖挂。"""
+        避免通知失败把主业务（私信调度/引擎）拖挂。
+
+        ⚠️ 不可重试的错误会**立即返回**，不做重试等待（2026-09-26 实测）：
+        iLink 的 `ret=-2`（ctx 配额用尽 / item_list 非法）属**确定性失败**，
+        重试不会成功，只会白等 `1.5 + 3.0 = 4.5s`（实测含网络约 6s）。
+        """
         if not self.enabled:
             return ChannelResult(False, self.name, "渠道未启用")
         if not target:
@@ -109,6 +114,11 @@ class BaseChannel(ABC):
                 if r.ok:
                     return r
                 last = r.error
+                if self._is_terminal_error(r):
+                    logger.warning(
+                        f"[NTY-014] [notify:{self.name}] 确定性失败，跳过重试: {last}"
+                    )
+                    return r
             except Exception as e:  # noqa: BLE001
                 last = f"{type(e).__name__}: {e}"
                 logger.warning(f"[NTY-006] " + f"[notify:{self.name}] 发送异常({i}/{retries}): {last}")
@@ -116,6 +126,15 @@ class BaseChannel(ABC):
                 await asyncio.sleep(1.5 * (i + 1))
         logger.error(f"[NTY-007] " + f"[notify:{self.name}] 发送最终失败: {last}")
         return ChannelResult(False, self.name, last)
+
+    def _is_terminal_error(self, r: "ChannelResult") -> bool:
+        """该失败是否**重试无意义**（确定性错误）。
+
+        默认实现：不判定（保持既有行为）。渠道可覆写。
+        判据来源：iLink `ret=-2` 无论重试多少次都失败（配额用尽/参数非法），
+        与网络瞬时故障（值得重试）性质不同。
+        """
+        return False
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -247,6 +266,20 @@ class WeixinOCChannel(BaseChannel):
                 str(random.getrandbits(32)).encode("utf-8")
             ).decode("utf-8"),
         }
+
+    def _is_terminal_error(self, r: ChannelResult) -> bool:
+        """iLink 的哪些失败重试无意义（2026-09-26 实测）。
+
+        · `ret=-2 "prepare failed"`   → context_token 配额用尽（等多久都不恢复）
+        · `ret=-2 "invalid arguments"`→ item_list 组合非法（如 text+image 混排）
+        · `ret=-2` 其它 / `errcode=-14`(SESSION_TIMEOUT) → 同样确定性，需重新登录
+        ⇒ 这些都必须**立即返回**：上游 SESSION_TIMEOUT_ERRCODE=-14 亦属此列。
+        反面：网络异常（异常分支）仍应重试 —— 那些走不到本方法。
+        """
+        if r.ok:
+            return False
+        err = str(r.error or "")
+        return "ret=-2" in err or "ret=-14" in err or "SESSION_TIMEOUT" in err.upper()
 
     async def _upload_media(self, target: str, raw: bytes) -> Optional[dict[str, Any]]:
         """上传字节到 iLink CDN → 返回可直接放进 item_list 的 image_item，失败返回 None。
