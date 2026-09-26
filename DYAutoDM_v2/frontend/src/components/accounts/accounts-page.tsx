@@ -323,8 +323,19 @@ export default function AccountsPage(props: PageProps) {
       .openFingerprintBrowser(name)
       .then((d) => {
         if (d && d.ok) {
-          push(d.msg || `已打开指纹浏览器 · ${name}`);
-          api.addLog("SUCCESS", `已打开指纹浏览器 · ${name}`).catch(() => {});
+          // ── H-20（2026-09-26）假阳性根治（呈现层闭环）────────────────
+          // ok 只代表「已受理」；settled===true 才代表「窗口已就绪」。
+          // 绝不用「已打开」这类**完成态**措辞，级别也不得无条件 SUCCESS。
+          const notSettled = d.settled === false;
+          push(d.msg || `已请求显示窗口 · ${name}`);
+          api
+            .addLog(
+              notSettled ? "INFO" : "SUCCESS",
+              notSettled
+                ? `已受理（尚未就绪，请以实际窗口为准）· ${name}`
+                : `窗口已就绪 · ${name}`,
+            )
+            .catch(() => {});
           // 守护被停止后乐观更新卡片状态（稍后轮询也会自动刷新）
           qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
             (old || []).map((x) =>

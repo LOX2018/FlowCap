@@ -733,9 +733,13 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
                 "**尚未就绪**；请稍候并以实际窗口为准）")
     else:
         hint = "（容器已是可见模式）"
+    # H-20：把达成态**结构化**透出（此前只在 msg 文案里，前端读不到）。
     return ScanLoginResponse(
-        ok=True, msg=f"已请求显示该账号浏览器窗口 · {name}{hint}"
-                     f"（凭证保活未中断）")
+        ok=True,
+        settled=(settled is True),
+        switching=bool(switching or changed) and settled is not True,
+        msg=f"已请求显示该账号浏览器窗口 · {name}{hint}"
+            f"（凭证保活未中断）")
 
 
 @router.post("/{name}/scan")
@@ -834,7 +838,11 @@ async def hide_fingerprint_browser(name: str) -> ScanLoginResponse:
             headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=60) as resp:
             out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
-        return ScanLoginResponse(ok=bool(out.get("ok")), msg=f"已恢复无头模式 · {name}")
+        # hide 是**同步**切换（返回即已切回），故 settled 取决于 BCC 受理结果。
+        return ScanLoginResponse(ok=bool(out.get("ok")),
+                                 settled=bool(out.get("ok")),
+                                 switching=False,
+                                 msg=f"已恢复无头模式 · {name}")
     except Exception as e:  # noqa: BLE001
         logger.error(f"[BCC-032] " + f"[hide-browser] 账号 {name} 恢复无头失败: {e}")
         return ScanLoginResponse(ok=False, msg=f"恢复无头失败: {e}")

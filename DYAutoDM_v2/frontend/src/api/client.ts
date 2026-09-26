@@ -779,14 +779,29 @@ export const api = {
    * 现在窗口就是 BCC 自己——登录态真实，且保活/凭证回写全程不中断。
    * 看完可用 hideFingerprintBrowser 恢复无头省资源。
    */
-  async openFingerprintBrowser(name: string): Promise<{ ok: boolean; msg: string }> {
+  async openFingerprintBrowser(
+    name: string,
+  ): Promise<{
+    ok: boolean;
+    msg: string;
+    /** H-20：True=窗口已就绪；False=仅受理/切换中（冷启动 1~3 分钟）；null=不适用 */
+    settled?: boolean | null;
+    switching?: boolean | null;
+  }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/open-browser`, {
       method: "POST",
     });
   },
 
   /** 恢复该账号 BCC 容器为纯无头（与 openFingerprintBrowser 配对） */
-  async hideFingerprintBrowser(name: string): Promise<{ ok: boolean; msg: string }> {
+  async hideFingerprintBrowser(
+    name: string,
+  ): Promise<{
+    ok: boolean;
+    msg: string;
+    settled?: boolean | null;
+    switching?: boolean | null;
+  }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/hide-browser`, {
       method: "POST",
     });
