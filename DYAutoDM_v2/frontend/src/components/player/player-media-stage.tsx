@@ -18,6 +18,8 @@ import {
 } from "./player-utils";
 import { pickKernel, type VideoKernel } from "./player-kernel";
 import { getPosition, clearPosition, setMeta } from "./player-cache";
+import { useAuthedMediaUrl } from "@/lib/authed-media";
+import { Loader2 } from "lucide-react";
 
 interface Props {
   media: PlayerMedia | null;
@@ -46,6 +48,25 @@ export function PlayerMediaStage({
   const [imgIdx, setImgIdx] = useState(0);
   const [failed, setFailed] = useState(false);
 
+  // ── 受保护媒体地址解析（★ 2026-09-26 根因修复）──────────────────────────
+  // 判据（实测）：`<video src>` / `<img src>` **无法携带 `X-Member-Token`**，
+  // 而后端媒体端点（`/api/platform/media/stream?...`、`/api/messages/video/...`）
+  // 受会员门禁保护 —— 裸地址直连**必然 401**，表现为「后端链路明明 206 可拉，
+  // 播放器却一直失败」。
+  // 既有成熟方案 `useAuthedMediaUrl`（IM 消息视频已用）：本地 API 地址带令牌
+  // fetch 成 Blob 再交给 `<video>`；外部地址（图床/data:）原样返回，零开销。
+  // 在此处统一接入 ⇒ 所有经本舞台播放的受保护媒体自动生效，无需各调用方改造。
+  // 时序契约：undefined=加载中（保持占位，不置 error）；null=取失败（走重试/降级）；
+  //          string=可用（blob: 或外部原地址）。
+  const resolvedUrl = useAuthedMediaUrl(media?.type === "video" ? media?.url : undefined);
+  const stageMedia = useMemo<PlayerMedia | null>(() => {
+    if (!media) return null;
+    if (media.type !== "video") return media;
+    if (resolvedUrl === undefined) return null;      // 仍在取 Blob → 先不挂载（占位）
+    if (resolvedUrl === null) return { ...media, url: "" };  // 取失败 → 触发失败分支
+    return { ...media, url: resolvedUrl };
+  }, [media, resolvedUrl]);
+
   const set = (evt: string) => {
     setStatus((cur) => {
       const nx = nextStatus(cur, evt);
@@ -55,14 +76,14 @@ export function PlayerMediaStage({
   };
 
   // 内核选择（媒体变化时）——UI 只依赖接口，新增内核无需改本组件
-  const kernelName = useMemo(() => (media ? pickKernel(media).name : ""), [media]);
+  const kernelName = useMemo(() => (stageMedia ? pickKernel(stageMedia).name : ""), [stageMedia]);
 
   // ── 视频：挂载内核 / 超时重试（照源项目 PLAYER_VIDEO_* 常量）──
   useEffect(() => {
     const v = videoRef.current;
     setFailed(false);
-    if (!v || media?.type !== "video" || !media.url) {
-      if (media?.type === "images" || media?.type === "live_photo") set("canplay");
+    if (!v || stageMedia?.type !== "video" || !stageMedia.url) {
+      if (stageMedia?.type === "images" || stageMedia?.type === "live_photo") set("canplay");
       return;
     }
     retryRef.current = 0;
@@ -72,12 +93,12 @@ export function PlayerMediaStage({
     (async () => {
       try {
         kernelRef.current?.detach();
-        const k = pickKernel(media);
+        const k = pickKernel(stageMedia);
         kernelRef.current = k;
-        await k.attach(v, media);
+        await k.attach(v, stageMedia);
         if (cancelled) return;
         // 续播（照 YCVideoPlayer "记录播放位置"）
-        const pos = getPosition(media.aweme_id || "");
+        const pos = getPosition(stageMedia.aweme_id || "");
         if (pos > 0 && Number.isFinite(v.duration) && pos < v.duration - 2) {
           try { v.currentTime = pos; } catch { /* ignore */ }
         }
@@ -112,7 +133,7 @@ export function PlayerMediaStage({
       if (timerRef.current) window.clearTimeout(timerRef.current);
       kernelRef.current?.detach();
     };
-  }, [media?.url, media?.type, kernelName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stageMedia?.url, stageMedia?.type, kernelName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 倍速
   useEffect(() => {
@@ -127,44 +148,53 @@ export function PlayerMediaStage({
   // 元数据缓存
   useEffect(() => {
     const v = videoRef.current;
-    if (!v || !media?.aweme_id) return;
+    if (!v || !stageMedia?.aweme_id) return;
     const onLoaded = () => {
-      setMeta(media.aweme_id!, {
+      setMeta(stageMedia.aweme_id!, {
         duration: Number.isFinite(v.duration) ? v.duration : undefined,
-        cover: media.cover,
+        cover: stageMedia.cover,
       });
     };
     v.addEventListener("loadedmetadata", onLoaded);
     return () => v.removeEventListener("loadedmetadata", onLoaded);
-  }, [media?.aweme_id, media?.cover]);
+  }, [stageMedia?.aweme_id, stageMedia?.cover]);
 
   // 图集轮播（照源项目 IMAGE_DURATION_SECONDS=1.5s）
   useEffect(() => {
-    if (media?.type !== "images" || !media.images?.length) return;
+    if (stageMedia?.type !== "images" || !stageMedia.images?.length) return;
     setImgIdx(0);
-    if (media.images.length < 2) return;
+    if (stageMedia.images.length < 2) return;
     const t = window.setInterval(
-      () => setImgIdx((i) => (i + 1) % media.images!.length),
+      () => setImgIdx((i) => (i + 1) % stageMedia.images!.length),
       IMAGE_DURATION_SECONDS * 1000,
     );
     return () => window.clearInterval(t);
-  }, [media?.type, media?.images?.length]);
+  }, [stageMedia?.type, stageMedia?.images?.length]);
 
   // ── 渲染 ──
-  if (!media) {
+  if (!stageMedia) {
+    // ★ 2026-09-26：区分「媒体为空」与「受保护地址正在取 Blob」——
+    //   本地 API 地址首帧 resolvedUrl===undefined（仍在 fetch），此时显示
+    //   加载态而非「无媒体」，避免加载中误报为空。
+    const loadingAuth = media?.type === "video" && !!media.url && resolvedUrl === undefined;
     return (
-      <div className={`flex items-center justify-center bg-black/60 text-xs text-white/50 ${className}`}>
-        无媒体
+      <div className={`flex items-center justify-center gap-2 bg-black/60 text-xs text-white/50 ${className}`}>
+        {loadingAuth ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            加载中…
+          </>
+        ) : "无媒体"}
       </div>
     );
   }
 
-  if (media.type === "video") {
-    if (!media.url || failed) {
+  if (stageMedia.type === "video") {
+    if (!stageMedia.url || failed) {
       return (
         <div className={`flex flex-col items-center justify-center gap-2 bg-black/60 text-xs text-white/60 ${className}`}>
           <span>{failed ? "视频加载失败" : "无可播放地址"}</span>
-          {media.cover && <img src={media.cover} alt="" className="max-h-24 opacity-40" />}
+          {stageMedia.cover && <img src={stageMedia.cover} alt="" className="max-h-24 opacity-40" />}
         </div>
       );
     }
@@ -175,7 +205,7 @@ export function PlayerMediaStage({
         <video
           ref={videoRef}
           className="h-full w-full bg-black object-contain"
-          poster={media.cover}
+          poster={stageMedia.cover}
           controls={false}
           muted={muted}
           playsInline
@@ -187,7 +217,7 @@ export function PlayerMediaStage({
           onPlaying={() => set("canplay")}
           onError={() => { set("error"); setFailed(true); }}
           onEnded={() => {
-            clearPosition(media.aweme_id || "");
+            clearPosition(stageMedia.aweme_id || "");
             onEnded?.();
           }}
           onTimeUpdate={(e) => {
@@ -206,19 +236,19 @@ export function PlayerMediaStage({
     );
   }
 
-  if (media.type === "images" && media.images?.length) {
+  if (stageMedia.type === "images" && stageMedia.images?.length) {
     return (
       <div className={`relative flex items-center justify-center bg-black/60 ${className}`}>
-        <img src={media.images[imgIdx]} alt="" className="max-h-full max-w-full object-contain" />
+        <img src={stageMedia.images[imgIdx]} alt="" className="max-h-full max-w-full object-contain" />
         <div className="absolute bottom-2 right-2 rounded bg-black/60 px-2 py-0.5 text-[0.65rem] text-white">
-          {imgIdx + 1} / {media.images.length}
+          {imgIdx + 1} / {stageMedia.images.length}
         </div>
       </div>
     );
   }
 
-  if (media.type === "live_photo" && media.live_photos?.length) {
-    const lp = media.live_photos[imgIdx % media.live_photos.length];
+  if (stageMedia.type === "live_photo" && stageMedia.live_photos?.length) {
+    const lp = stageMedia.live_photos[imgIdx % stageMedia.live_photos.length];
     return (
       <video
         className={`bg-black object-contain ${className}`}
@@ -234,7 +264,7 @@ export function PlayerMediaStage({
 
   return (
     <div className={`flex items-center justify-center bg-black/60 text-xs text-white/50 ${className}`}>
-      不支持的媒体类型：{media.type}
+      不支持的媒体类型：{stageMedia.type}
     </div>
   );
 }
