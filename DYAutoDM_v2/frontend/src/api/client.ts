@@ -854,8 +854,39 @@ export const api = {
     });
   },
 
-  async scanStatus(name: string): Promise<{ name: string; done: boolean; loggedIn: boolean }> {
+  async scanStatus(name: string): Promise<{
+    name: string;
+    done: boolean;
+    loggedIn: boolean;
+    qrPng?: string;
+    stage?: string;
+    needCode?: boolean;
+    path?: string;
+    rejected?: string;
+    error?: string;
+  }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/scan-status`);
+  },
+
+  /** F4：启动短信验证码登录（ADR-017 / H-30）。 */
+  async smsLogin(name: string, phone: string): Promise<{ ok: boolean; msg: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/sms-login`, {
+      method: "POST",
+      body: JSON.stringify({ phone }),
+    });
+  },
+
+  /** F4：提交短信验证码（R1-c 本机 Web 前端输入通道）。 */
+  async submitSmsCode(name: string, code: string): Promise<{ ok: boolean; msg: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/sms-code`, {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+  },
+
+  /** RPA 二维码是**本地绝对路径**，需经后端受保护端点取字节（不能直拼 file://）。 */
+  qrImageUrl(pngPath: string): string {
+    return `/api/accounts/qr-image?path=${encodeURIComponent(pngPath)}`;
   },
 
   async setRole(name: string, role: string): Promise<{ ok: boolean; name: string; role: string }> {

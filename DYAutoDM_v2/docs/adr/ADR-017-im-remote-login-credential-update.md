@@ -399,7 +399,36 @@ tab 选择器   : .C6OZQwMA（扫码登录/验证码登录/密码登录）
   `send_sms_code` / `phone_login` **抛出显式 `NotImplementedError`（错误码 AUTH-072）**，
   错误信息同时含「**根因（820 字节 dtrait）**」与「**可操作替代（走 RPA）**」——契约原则：**用错路径要立刻知道，禁止静默失败**。
 
-**依据**（读源码 + 实测，非推断）：
+### 8.1·乙 依据订正（2026-09-26 上游情报复核 —— **结论不变，依据更换**）
+
+> **为什么要订正**：§8.1 判定「短信 API 路径禁用」时，依据之一是
+> 「`x-tt-session-dtrait`（820 字节）需真机浏览器生成，**上游无 fixture ⇒ 无法生成**」。
+> 经 GitHub 上游复核，**该依据已过期**（见下），但**结论不变**（换了一条更硬的依据）。
+
+**上游情报**（`mkuko52/douyin_spider`，2026-09-26 复核，4★）：
+
+| 能力 | 上游现状 | 说明 |
+|---|---|---|
+| `x-tt-session-dtrait` | ✅ **已还原** | `utils/dtrait.py` RSA-2048 + AES-128-CBC 组装 + `node/signer_server.mjs` 现场采集 |
+| `a_bogus`（真浏览器） | ✅ **实测 `message:success`** | playwright 真实页面生成，Python 独占 HTTP 出口，单次 ~1.6s |
+| `a_bogus`（纯离线 nv8） | ❌ 服务端 `2156` | 离线自产不通，必须真浏览器 |
+| **业务层** | ⚠️ **被 `bd_ticket_guard` 请求级签名拦住（`2156`）** | 参数层已通（与抓包逐位一致），服务端仍拒 |
+
+**⇒ 结论维持「短信 API 路径禁用」，但依据改为**：
+不再是因为「dtrait 生成不了」，而是 **即使 dtrait 与 a_bogus 全部还原，
+业务层仍被 `bd_ticket_guard` 拦在 `2156`** —— 协议复现路径存在**服务端侧硬阻塞**。
+
+**这对 RPA 路线的意义（正面印证）**：真浏览器天然携带 dtrait 与 bd_ticket_guard 所需的
+全部运行时状态，**不需要逆向任何签名** ⇒ **RPA 是正确路线，不是权宜之计**。
+
+> ⚠️ **该上游不可采用**：`license = None`（仓库根无 LICENSE 文件），
+> README 明示「仅供学习与安全研究、**请勿再分发或商用**」。
+> 按 OSS 选型判据（协议宽松为第一条）**出局**；
+> 本次**只取其情报结论**，未引入其任何代码。
+
+**依据**：`GET /repos/mkuko52/douyin_spider`（`license=null`、`archived=false`、
+`pushed_at=2026-09-26`）+ 其 `signing/send_code/README.md` 与 `分析报告.md`。
+
 - 上游 `builder/auth.py` 的 `dtrait_profile` **默认为 None**；`dy_apis/login_api.py` 的登录流程中 `dtrait_profile` **零次出现**。
 - `auth.dtrait_blob = getenv("DY_DTRAIT_BLOB")` ⇒ 在项目 `.env` 下**得到 None**。
 - `builder/auth.py` 在 `if not blob:` 分支走 **strict → raise**，并有 `assert len(dtrait) == 820` **硬断言**。

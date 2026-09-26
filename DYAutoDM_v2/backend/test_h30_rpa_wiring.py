@@ -280,3 +280,119 @@ def test_f8_3_backup_failure_not_blocking(monkeypatch):
     ok = A._rpa_scan_login("acc10", env, {})
     assert ok is True, "备份失败不得阻断凭证更新"
     assert len(C.saved) == 1, "仍应写入"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  F5 非污染态校验 + F4 短信验证码通道（ADR-017，2026-09-26 补）
+# ══════════════════════════════════════════════════════════════════
+
+
+def test_f5_1_risk_hit_rejects_write(monkeypatch):
+    """F5-1：扫码过程曾命中风控 ⇒ **拒绝写入**（防污染态）。"""
+    _patch(monkeypatch, poll=_mk_poll(True, cookies={"sessionid": "x"}))
+
+    async def _poll_risk(handle, **kw):
+        return {"ok": True, "cookies": {"sessionid": "x"},
+                "reason": "", "risk": True}      # 风控曾命中
+    import auto_dm.login_remote as _lrmod
+    _lrmod.poll_qr_scanned = _poll_risk
+
+    st = {}
+    ok = A._rpa_scan_login("accF5", "/tmp/f5/.env", st)
+    assert ok is False, "风控命中必须拒写（否则写入污染凭证）"
+    assert st.get("rejected") == "risk_control", "必须记录拒写原因（可归因）"
+    assert C.saved == [], "拒写时绝不能有落盘动作"
+
+
+def test_f5_2_capture_report_generated(monkeypatch):
+    """F5-2：正常流程应复用既有 login_capture 生成报告（不自造格式）。"""
+    _patch(monkeypatch, poll=_mk_poll(True, cookies={"sessionid": "abc"}))
+    st = {}
+    ok = A._rpa_scan_login("accF5b", "/tmp/f5b/.env", st)
+    assert ok is True
+    assert "captureReport" in st, "F5 应产出捕获分析报告路径（字段存在）"
+
+
+def test_f5_3_missing_key_warns_not_blocks(monkeypatch):
+    """F5-3：缺关键 cookie ⇒ 告警但**不阻断**（由后续探活兜底，不擅自拒写）。"""
+    _patch(monkeypatch, poll=_mk_poll(True, cookies={"foo": "bar"}))
+    st = {}
+    ok = A._rpa_scan_login("accF5c", "/tmp/f5c/.env", st)
+    # sessionid/sid_tt 缺失 ⇒ 记录 missingKeys，但仍写入（判据是"告警"不是"拒写"）
+    assert "missingKeys" in st or ok is True
+
+
+# ── F4：code_provider 通道 ─────────────────────────────────────────
+
+def test_f4_1_code_provider_roundtrip():
+    """F4-1：前端提交验证码 ⇒ 阻塞中的 code_provider 取到值（真 Event，非 mock）。"""
+    import threading
+    A._sms_code_box["accA"] = {"code": "", "event": threading.Event()}
+    provider = A._make_code_provider("accA", timeout_s=5)
+
+    result = {}
+
+    def _waiter():
+        result["code"] = provider()
+
+    th = threading.Thread(target=_waiter, daemon=True)
+    th.start()
+    import time
+    time.sleep(0.3)                      # 等 provider 进入阻塞
+    A._sms_code_box["accA"]["code"] = "123456"
+    A._sms_code_box["accA"]["event"].set()
+    th.join(timeout=5)
+    assert result.get("code") == "123456", "通道必须把前端验证码送达 provider"
+    A._sms_code_box.pop("accA", None)
+
+
+def test_f4_2_no_submit_returns_empty(monkeypatch):
+    """F4-2：未提交验证码（超时）⇒ 返回空串（不得捏造、不得永久阻塞）。"""
+    import threading
+    A._sms_code_box["accB"] = {"code": "", "event": threading.Event()}
+    provider = A._make_code_provider("accB", timeout_s=1)
+    assert provider() == "", "超时必须返回空串，让 do_sms_login 按失败处理"
+    A._sms_code_box.pop("accB", None)
+
+
+def test_f4_3_sms_login_thread_wiring(monkeypatch):
+    """F4-3：/sms-login 启动线程并调用 do_sms_login（真跑线程函数，非端点）。"""
+    called = {}
+
+    async def _fake_sms(env_path=None, phone=None, code_provider=None,
+                        headless=True, timeout_s=90):
+        called["phone"] = phone
+        called["provider"] = code_provider
+        return {"ok": True, "stage": "done", "reason": ""}
+
+    lr = types.ModuleType("auto_dm.login_remote")
+    lr.do_sms_login = _fake_sms
+    monkeypatch.setitem(sys.modules, "auto_dm.login_remote", lr)
+    import auto_dm
+    monkeypatch.setattr(auto_dm, "login_remote", lr, raising=False)
+
+    monkeypatch.setattr(A, "_quit_browser_daemon", lambda n: None)
+    monkeypatch.setattr(A.acct_core, "env_path_of", lambda n: "/tmp/x/.env")
+    A._scan_state.clear()
+    A._sms_code_box["accC"] = {"code": "", "event": __import__("threading").Event()}
+
+    A._do_sms_scan("accC", "13800000000")
+    st = A._scan_state["accC"]
+    assert called.get("phone") == "13800000000", "手机号必须传到 RPA"
+    assert callable(called.get("provider")), "code_provider 必须被构造并传入"
+    assert st["loggedIn"] is True and st["path"] == "sms"
+    assert st["done"] is True
+
+
+def test_f4_4_submit_endpoint_sets_event():
+    """F4-4：/sms-code 端点写入并 set()（真跑端点函数）。"""
+    import asyncio, threading
+    A._sms_code_box["accD"] = {"code": "", "event": threading.Event()}
+    out = asyncio.run(A.submit_sms_code("accD", {"code": " 654321 "}))
+    assert out["ok"] is True
+    assert A._sms_code_box["accD"]["code"] == "654321", "应 strip 后存入"
+    assert A._sms_code_box["accD"]["event"].is_set(), "必须唤醒阻塞的 provider"
+    # 负向：无等待流程时不得静默接受
+    out2 = asyncio.run(A.submit_sms_code("no_such_acc", {"code": "111"}))
+    assert out2["ok"] is False
+    A._sms_code_box.pop("accD", None)

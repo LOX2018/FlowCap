@@ -231,6 +231,42 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
             return False
         from auth_helper import save_cookie_to_env
 
+        # ── F5 非污染态校验（ADR-017）────────────────────────────────
+        # 判据取自**既有实测结论**，不自创：
+        #   · `dy_apis/login_api.py::_cookie_is_polluted` 已于 2026-08-17 **明确废弃**
+        #     基于 cookie 格式的污染判定（实测会误伤合法凭证，一律放行）——
+        #     ⇒ **不得**再按 cookie 格式判污染，污染由【页面风控监测】兜底。
+        #   · 故本处判据 = ①F6 页面风控曾命中 ⇒ **拒写**；②关键 cookie 缺失 ⇒ 告警。
+        #   · 同时复用既有 `login_capture`（snapshot_old_env + analyze_login_capture）
+        #     生成旧→新差异报告（可追溯），**不自造报告格式**。
+        try:
+            from login_capture import snapshot_old_env, analyze_login_capture
+            from builder.auth import DouyinAuth
+
+            _auth = DouyinAuth()
+            _auth.perepare_auth(cookie_str)      # 复用既有构造，不自造
+            _old = snapshot_old_env(env_path)
+            _report, _rpt_path = analyze_login_capture(_auth, _old, env_path)
+            st["captureReport"] = _rpt_path or ""
+            logger.info(f"[scan] 账号 {name} F5 捕获分析报告: {_rpt_path}")
+
+            # 判据②：关键 cookie 缺失（sessionid/sid_tt 决定会话是否"活"）
+            _ck = _auth.cookie or {}
+            _missing = [k for k in ("sessionid", "sid_tt") if not _ck.get(k)]
+            if _missing:
+                logger.warning(f"[ACC-031] [scan] 账号 {name} 凭证缺关键字段 {_missing}，"
+                               f"会话可能无效（仍写入，由后续探活兜底）")
+                st["missingKeys"] = _missing
+        except Exception as _e_f5:  # noqa: BLE001
+            logger.warning(f"[ACC-032] [scan] 账号 {name} F5 捕获分析失败（不阻断）: {_e_f5}")
+
+        # 判据①：F6 页面风控曾命中 ⇒ **拒写**（污染态，写入=污染凭证）
+        if waited.get("risk"):
+            logger.error(f"[ACC-033] [scan] 账号 {name} 扫码过程曾命中风控页，"
+                         f"**拒绝写入**凭证（防污染态）")
+            st["rejected"] = "risk_control"
+            return False
+
         # ── F8 失败回滚（ADR-017）：**写前先备份**，失败可还原 ──────────
         # 复用既有备份语义（`services/db_transfer._backup_file`：copy2 →
         # `<path>.bak.<时间戳>`），**不自造**。备份的是 `<env_path>.enc`
@@ -873,6 +909,160 @@ async def scan_login(name: str) -> ScanLoginResponse:
     return ScanLoginResponse(ok=True, msg=f"已弹出指纹浏览器，请扫码登录账号 {name}")
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  F4：短信验证码登录（RPA）—— 状态机 + code_provider 通道（2026-09-26）
+# ══════════════════════════════════════════════════════════════════════
+#
+#  【通道设计（D1 = R1-c 本机 Web 前端输入）】
+#  `do_sms_login` 只接受一个 `code_provider()` 回调，**不接触明文渠道**（SoC）。
+#  本层用 `threading.Event` + `_sms_code_box[name]` 做一次性传递：
+#     前端 POST /sms-code  →  写入 box + set()  →  阻塞中的 code_provider 取到并返回
+#  超时（默认 300s）未提交 ⇒ code_provider 返回 "" ⇒ do_sms_login 按失败处理。
+
+_sms_code_box: dict[str, dict] = {}      # name -> {"code": str, "event": Event}
+
+
+def _make_code_provider(name: str, timeout_s: int = 300):
+    """构造 code_provider：阻塞等待前端提交验证码。"""
+    def _provider() -> str:
+        box = _sms_code_box.get(name)
+        if not box:
+            return ""
+        ev = box["event"]
+        _scan_state.setdefault(name, {})
+        _scan_state[name]["stage"] = "waiting_code"
+        _scan_state[name]["needCode"] = True
+        logger.info(f"[scan] 账号 {name} 等待前端提交短信验证码（{timeout_s}s）")
+        got = ev.wait(timeout=timeout_s)
+        _scan_state[name]["needCode"] = False
+        if not got:
+            logger.warning(f"[ACC-034] [scan] 账号 {name} 等待验证码超时（{timeout_s}s）")
+            return ""
+        code = (box.get("code") or "").strip()
+        logger.info(f"[scan] 账号 {name} 已收到验证码（长度 {len(code)}）")
+        _scan_state[name]["stage"] = "code_received"
+        return code
+    return _provider
+
+
+def _do_sms_scan(name: str, phone: str):
+    """后台线程：RPA 短信验证码登录（ADR-017 / H-30 F4）。"""
+    st = _scan_state.setdefault(name, {})
+    st.update({"running": True, "done": False, "loggedIn": False,
+               "error": "", "path": "sms", "stage": "starting",
+               "needCode": False})
+    _own = None
+    try:
+        from services.browser_gate import ProfileOwnership as _Own
+        _own = _Own(name, "sms_login")
+        _own.__enter__()
+    except Exception as _e_own:  # noqa: BLE001
+        logger.warning(f"[ACC-035] [scan] 账号 {name} 未取得 profile 所有权锁: {_e_own}")
+        _own = None
+    try:
+        _quit_browser_daemon(name)
+        env_path = acct_core.env_path_of(name)
+        from auto_dm import login_remote as _lr
+        st["stage"] = "sending_code"
+        out = asyncio.run(_lr.do_sms_login(
+            env_path=env_path, phone=phone,
+            code_provider=_make_code_provider(name),
+            headless=True, timeout_s=90))
+        st["stage"] = out.get("stage", "")
+        st["loggedIn"] = bool(out.get("ok"))
+        if not out.get("ok"):
+            st["error"] = out.get("reason", "") or "短信登录未成功"
+            logger.warning(f"[ACC-036] [scan] 账号 {name} 短信登录失败"
+                           f"（stage={out.get('stage')}）: {st['error']}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[ACC-037] [scan] 账号 {name} 短信登录异常: {e}")
+        st["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        st["running"] = False
+        st["done"] = True
+        st["needCode"] = False
+        _sms_code_box.pop(name, None)
+        # 守护回拉（与 /scan 一致：在锁内把 BCC 拉回）
+        try:
+            from auto_dm.daemon_launcher import ensure_daemons_for
+            ensure_daemons_for(name, wait=False)
+        except Exception as _e_rd:  # noqa: BLE001
+            logger.debug(f"[scan] 账号 {name} 守护回拉跳过: {_e_rd}")
+        if _own is not None:
+            _own.__exit__(None, None, None)
+
+
+@router.get("/qr-image")
+async def qr_image(path: str):
+    """下发 RPA 登录二维码 PNG（本地绝对路径 → 字节）。
+
+    🔴 安全：二维码落在临时目录（绝对路径），**不能**在前端直拼 `file://`
+    （受浏览器限制且不走鉴权）。本端点做三重校验后才下发：
+      ① 必须以 `rpa_scan_` 前缀的临时目录为根（**白名单**，防任意文件读取）
+      ② 解析后仍在该根内（防 `..` 目录穿越）
+      ③ 必须是 `.png` 且真实存在
+    """
+    import tempfile
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    root = os.path.realpath(tempfile.gettempdir())
+    try:
+        real = os.path.realpath(path)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="非法路径")
+    # ①② 白名单 + 目录穿越防护
+    if not real.startswith(root + os.sep) and real != root:
+        raise HTTPException(status_code=403, detail="路径不在允许的临时目录内")
+    base = os.path.basename(real)
+    if not base.lower().endswith(".png"):
+        raise HTTPException(status_code=400, detail="仅支持 PNG")
+    # ③ 必须是本流程自己产出的目录（rpa_scan_ 前缀）
+    parent = os.path.basename(os.path.dirname(real))
+    if not parent.startswith("rpa_scan_"):
+        raise HTTPException(status_code=403, detail="非二维码临时目录")
+    if not os.path.isfile(real):
+        raise HTTPException(status_code=404, detail="二维码不存在或已过期")
+    return FileResponse(real, media_type="image/png", filename=base)
+
+
+@router.post("/{name}/sms-code")
+async def submit_sms_code(name: str, body: dict):
+    """F4 通道（R1-c）：前端提交短信验证码 → 唤醒阻塞中的 code_provider。"""
+    code = str((body or {}).get("code", "")).strip()
+    box = _sms_code_box.get(name)
+    if not box:
+        return {"ok": False, "msg": f"账号 {name} 当前没有在等待验证码"}
+    if not code:
+        return {"ok": False, "msg": "验证码为空"}
+    box["code"] = code
+    box["event"].set()
+    logger.info(f"[scan] 账号 {name} 验证码已提交（前端 → 后端通道）")
+    return {"ok": True, "msg": "验证码已提交"}
+
+
+@router.post("/{name}/sms-login")
+async def sms_login(name: str, body: dict) -> ScanLoginResponse:
+    """F4：启动短信验证码登录（后台线程），立即返回。
+
+    流程：发码 → 前端轮询 /scan-status（needCode=true 时展示输入框）
+    → 用户提交 POST /sms-code → RPA 填码登录。
+    """
+    phone = str((body or {}).get("phone", "")).strip()
+    if not phone:
+        return ScanLoginResponse(ok=False, msg="缺少手机号")
+    env_path = acct_core.env_path_of(name)
+    if not os.path.exists(os.path.dirname(env_path)):
+        return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
+    prev = _scan_state.get(name)
+    if prev and prev.get("running"):
+        return ScanLoginResponse(ok=True, msg=f"账号 {name} 已有登录流程在跑")
+    # 一次性通道（新流程即重置，避免旧验证码串台）
+    _sms_code_box[name] = {"code": "", "event": threading.Event()}
+    threading.Thread(target=_do_sms_scan, args=(name, phone), daemon=True).start()
+    return ScanLoginResponse(ok=True, msg=f"已启动短信登录，请查收验证码并输入")
+
+
 @router.get("/{name}/scan-status")
 async def scan_status(name: str):
     """扫码状态查询（替代间接推断）"""
@@ -889,6 +1079,13 @@ async def scan_status(name: str):
         "decoded": st.get("decoded", False),
         # 实际生效的登录路径（"rpa" / "legacy"）—— 便于排障归因，不做控制。
         "path": st.get("path", ""),
+        # 2026-09-26 · F4 短信登录状态机：前端据此决定 UI。
+        #   stage: starting / sending_code / waiting_code / code_received / …
+        #   needCode=True ⇒ 展示验证码输入框并 POST /sms-code
+        "stage": st.get("stage", ""),
+        "needCode": st.get("needCode", False),
+        "rejected": st.get("rejected", ""),
+        "captureReport": st.get("captureReport", ""),
     }
 
 
