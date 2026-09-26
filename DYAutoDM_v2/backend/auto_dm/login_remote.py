@@ -760,6 +760,46 @@ async def prepare_qr_login(env_path: str, out_png: str, headless: bool = True,
                 "reason": f"{type(e).__name__}: {e}", "handle": None, "heal": heal}
 
 
+def risk_keywords() -> tuple:
+    """风控页判据关键词 —— **复用既有 SSOT，禁止在此另立一份**。
+
+    2026-09-26（ADR-017 F6）：`login_remote.py` 原先对风控**完全无检测**
+    （grep「安全风险/风控」零命中）。正确做法不是新造一份关键词表，
+    而是复用 `dy_apis/login_api.py::RiskControlError.KEYWORDS`（既有 SSOT），
+    保证两条登录路径（API 路径 / RPA 路径）**同一判据**，不会各判各的。
+    """
+    try:
+        from dy_apis.login_api import RiskControlError
+        return tuple(RiskControlError.KEYWORDS)
+    except Exception:  # noqa: BLE001
+        # 导入失败时**显式降级为空**并告警 —— 绝不静默编造一份关键词。
+        logger.warning("[login_remote] 风控 SSOT 导入失败，F6 检测降级为不命中")
+        return ()
+
+
+async def detect_risk_control(page) -> dict:
+    """F6：检测当前页是否为抖音风控/验证码页（RPA 路径）。
+
+    **策略沿用既有**（`login_api.py:470` 2026-08-17 修订，实测有效）：
+      · 命中 ⇒ **绝不关闭浏览器、绝不立即 raise**（用户要在里面手动过验证）
+      · 只告警一次（防刷屏）
+      · 调用方继续轮询；用户处理完页面离开风控页即自动恢复
+
+    返回 {'hit': bool, 'url': str}
+    """
+    kws = risk_keywords()
+    if not kws or page is None:
+        return {"hit": False, "url": ""}
+    try:
+        url = await page.evaluate("location.href")
+        html = await page.evaluate(
+            "document.documentElement.outerHTML.slice(0, 4000)")
+    except Exception:  # noqa: BLE001
+        return {"hit": False, "url": ""}
+    hit = any(k in ((url or "") + (html or "")) for k in kws)
+    return {"hit": hit, "url": url or ""}
+
+
 async def poll_qr_scanned(handle: dict, timeout_s: int = 240,
                           interval_s: int = 3) -> dict:
     """轮询「用户是否已扫码登录成功」。
@@ -767,21 +807,47 @@ async def poll_qr_scanned(handle: dict, timeout_s: int = 240,
     判据（任一）：
       ① cookie 中出现真实登录标识（sessionid / sid_tt）
       ② 页面离开登录弹窗（URL 变化 / 登录框消失）
+
+    ⚠️ 2026-09-26（ADR-017 F6）：循环中**实时检测风控页**（见 `detect_risk_control`）。
+       命中只告警一次并把 `risk` 标记写入返回，由调用方决定是否继续等。
     """
     context = handle.get("context")
     if context is None:
         return {"ok": False, "reason": "handle 无效"}
     t0 = time.time()
+    _risk_notified = False          # F6：风控告警只打一次，防刷屏
+    _risk_seen = False
     while time.time() - t0 < timeout_s:
+        # ── F6 风控实时检测（ADR-017）──────────────────────────────
+        # 用 context.pages[0] 取当前页（handle 未携带 page，避免改能力层契约）。
+        # 命中 ⇒ **不关浏览器、不中断**，只告警一次并继续等用户手动过验证
+        # （策略沿用 login_api.py:470 既有实测结论）。
+        try:
+            _pg = context.pages[0] if context.pages else None
+        except Exception:  # noqa: BLE001
+            _pg = None
+        if _pg is not None:
+            rk = await detect_risk_control(_pg)
+            if rk.get("hit"):
+                _risk_seen = True
+                if not _risk_notified:
+                    logger.warning(
+                        "[AUTH-080] [风控] RPA 路径检测到验证码/风控页（{}）。"
+                        "【浏览器保持打开】，请在其中手动完成验证；"
+                        "完成后页面离开风控页，本流程将自动继续。", rk.get("url"))
+                    _risk_notified = True
         try:
             cookies = {c["name"]: c["value"] for c in await context.cookies()}
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "reason": f"读取 cookie 失败: {e}"}
+            return {"ok": False, "reason": f"读取 cookie 失败: {e}",
+                    "risk": _risk_seen}
         if cookies.get("sessionid") or cookies.get("sid_tt"):
             logger.info("[login_remote] 检测到真实登录态（已扫码）")
-            return {"ok": True, "cookies": cookies, "reason": ""}
+            return {"ok": True, "cookies": cookies, "reason": "",
+                    "risk": _risk_seen}
         await asyncio.sleep(interval_s)
-    return {"ok": False, "reason": f"等待扫码超时（{timeout_s}s）"}
+    return {"ok": False, "reason": f"等待扫码超时（{timeout_s}s）",
+            "risk": _risk_seen}
 
 
 async def do_sms_login(env_path: str, phone: str, code_provider,

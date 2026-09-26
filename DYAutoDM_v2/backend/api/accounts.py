@@ -230,6 +230,23 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
             logger.warning(f"[ACC-027] [scan] 账号 {name} RPA 拿到的 cookie 为空，回落老路径")
             return False
         from auth_helper import save_cookie_to_env
+
+        # ── F8 失败回滚（ADR-017）：**写前先备份**，失败可还原 ──────────
+        # 复用既有备份语义（`services/db_transfer._backup_file`：copy2 →
+        # `<path>.bak.<时间戳>`），**不自造**。备份的是 `<env_path>.enc`
+        # （明文 .env 已于 2026-09-21 废弃，即使存在也不被读取）。
+        # 备份失败**不阻断**写入（不能因为备份不了就永远不更新凭证），只告警。
+        _bak = ""
+        try:
+            from services.db_transfer import _backup_file
+            _enc = f"{env_path}.enc"
+            if os.path.exists(_enc):
+                _bak = _backup_file(_enc)
+                st["backup"] = _bak
+                logger.info(f"[scan] 账号 {name} 凭证已备份（F8 可回滚）: {_bak}")
+        except Exception as _e_bak:  # noqa: BLE001
+            logger.warning(f"[ACC-030] [scan] 账号 {name} 凭证备份失败（不阻断写入）: {_e_bak}")
+
         save_cookie_to_env(cookie_str, env_path)
         logger.info(f"[scan] 账号 {name} RPA 凭证已落盘（{len(cookies)} 项 cookie）")
         return True

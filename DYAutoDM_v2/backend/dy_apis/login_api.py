@@ -175,6 +175,21 @@ class RiskControlError(Exception):
     手动处理验证码/滑块，期间程序持续监测验证码处理进度与凭证污染状态。
     """
 
+    # ★ 2026-09-26（ADR-017 F6 SSOT / Canonical Contract Law）：
+    #   风控页判据关键词**原先在本文件内联两处**（原 L493、L1161），字面量完全相同
+    #   —— 同名同义两处拷贝 = 必然漂移。现抽为**模块级唯一常量**，两处改为引用；
+    #   `auto_dm/login_remote.py` 的 F6 检测也复用本常量（跨模块同一判据）。
+    #   新增关键词**只允许改这里**。
+    KEYWORDS: tuple = (
+        "verify.zijieapi.com", "verifycenter", "captcha", "滑块", "安全验证",
+        "异常请求", "验证中心", "人机验证", "账号存在风险",
+    )
+
+    @classmethod
+    def hit(cls, text: str) -> bool:
+        """给定页面文本（URL + HTML 片段）是否命中风控判据。"""
+        return any(k in (text or "") for k in cls.KEYWORDS)
+
 
 def _cookie_is_polluted(cookies):
     """检测 cookie 是否被抖音风控验证页污染。
@@ -489,9 +504,7 @@ class DYLoginApi:
                 except Exception:
                     _page_url = ""
                     _page_html = ""
-                _risk_hit = any(k in (_page_url + _page_html) for k in (
-                    "verify.zijieapi.com", "verifycenter", "captcha", "滑块", "安全验证",
-                    "异常请求", "验证中心", "人机验证", "账号存在风险"))
+                _risk_hit = RiskControlError.hit(_page_url + _page_html)
                 if _risk_hit:
                     if not _risk_notified:
                         logger.warning(f"[AUTH-033] " + f"[风控] 检测到验证码/风控验证页（{_page_url}）。"
@@ -1157,9 +1170,7 @@ class DYLoginApi:
             except Exception:
                 _page_url = ""
                 _page_html = ""
-            _risk_hit = any(k in (_page_url + _page_html) for k in (
-                "verify.zijieapi.com", "verifycenter", "captcha", "滑块", "安全验证",
-                "异常请求", "验证中心", "人机验证", "账号存在风险"))
+            _risk_hit = RiskControlError.hit(_page_url + _page_html)
             if _risk_hit:
                 if not _risk_notified:
                     logger.warning(f"[AUTH-049] " + f"[风控] 检测到验证码/风控验证页（{_page_url}）。【指纹浏览器保持打开】，"

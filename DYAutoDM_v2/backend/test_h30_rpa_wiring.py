@@ -163,3 +163,120 @@ def test_g6b_do_scan_rpa_ok_skips_enrich(monkeypatch):
     assert st["path"] == "rpa"
     assert st["loggedIn"] is True
     assert C.enrich == 0, "RPA 成功时不得重复弹老路径浏览器（零回归）"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  F6 零风控检测 + F8 失败回滚（ADR-017，2026-09-26 补）
+# ══════════════════════════════════════════════════════════════════
+
+
+def test_f6_1_ssot_keywords_shared():
+    """F6-1：风控关键词必须是**同一份 SSOT**（不得两处各写一份）。"""
+    from dy_apis.login_api import RiskControlError
+    from auto_dm.login_remote import risk_keywords
+    assert tuple(risk_keywords()) == tuple(RiskControlError.KEYWORDS), \
+        "RPA 路径必须复用 login_api 的 SSOT 关键词（禁另立一份）"
+    assert "verifycenter" in risk_keywords()
+
+
+def test_f6_2_hit_detection():
+    """F6-2：命中判据真实有效（正向 + 非风控页不误报）。"""
+    from dy_apis.login_api import RiskControlError
+    assert RiskControlError.hit("https://verify.zijieapi.com/x") is True
+    assert RiskControlError.hit("<div>安全验证</div>") is True
+    assert RiskControlError.hit("https://www.douyin.com/") is False
+    assert RiskControlError.hit("") is False
+
+
+class _Pg:
+    def __init__(self, url, html=""):
+        self._u, self._h = url, html
+
+    async def evaluate(self, expr):
+        if "location.href" in expr:
+            return self._u
+        return self._h
+
+
+def test_f6_3_detect_risk_page(monkeypatch):
+    """F6-3：detect_risk_control 真跑 async（风控页命中 / 正常页不命中）。"""
+    import asyncio
+    from auto_dm import login_remote as lr
+    assert asyncio.run(lr.detect_risk_control(
+        _Pg("https://verify.zijieapi.com/captcha")))["hit"] is True
+    assert asyncio.run(lr.detect_risk_control(
+        _Pg("https://www.douyin.com/")))["hit"] is False
+    assert asyncio.run(lr.detect_risk_control(None))["hit"] is False
+
+
+def test_f6_4_poll_reports_risk(monkeypatch):
+    """F6-4：扫码轮询中风控命中 ⇒ 返回 risk=True 且**不中断**（继续等用户验证）。"""
+    import asyncio
+    from auto_dm import login_remote as lr
+
+    class _Ctx:
+        pages = [_Pg("https://verify.zijieapi.com/captcha")]
+
+        async def cookies(self):
+            return []          # 尚未登录
+
+    async def _no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(lr.asyncio, "sleep", _no_sleep)
+    out = asyncio.run(lr.poll_qr_scanned({"context": _Ctx()},
+                                         timeout_s=1, interval_s=0))
+    assert out.get("risk") is True, "风控命中必须上报（否则调用方无从得知）"
+    assert out.get("ok") is False, "未登录应仍为未成功（不得因风控误判成功）"
+
+
+def test_f8_1_backup_before_write(monkeypatch):
+    """F8-1：写凭证前**必须**先备份 .env.enc（失败可回滚）。"""
+    import tempfile
+    from pathlib import Path
+    d = tempfile.mkdtemp(prefix="f8_")
+    env = os.path.join(d, ".env")
+    Path(env + ".enc").write_text("OLD", encoding="utf-8")
+
+    _patch(monkeypatch, poll=_mk_poll(True, cookies={"sessionid": "new"}))
+    st = {}
+    ok = A._rpa_scan_login("acc8", env, st)
+    assert ok is True
+    assert st.get("backup"), "F8：必须记录备份路径"
+    assert os.path.exists(st["backup"]), "备份文件必须真实存在（不是空头承诺）"
+    assert Path(st["backup"]).read_text(encoding="utf-8") == "OLD", \
+        "备份内容必须是**写前**的旧凭证（否则回滚无意义）"
+
+
+def test_f8_2_no_enc_no_block(monkeypatch):
+    """F8-2：无 .env.enc（全新账号）⇒ 不备份但也**不阻断**写入。"""
+    import tempfile
+    d = tempfile.mkdtemp(prefix="f8b_")
+    env = os.path.join(d, ".env")
+    _patch(monkeypatch, poll=_mk_poll(True, cookies={"sessionid": "new"}))
+    st = {}
+    ok = A._rpa_scan_login("acc9", env, st)
+    assert ok is True, "全新账号无旧凭证时不得阻断"
+    assert st.get("backup", "") == "", "无旧文件则无备份（不伪造）"
+    assert len(C.saved) == 1, "仍应正常写入新凭证"
+
+
+def test_f8_3_backup_failure_not_blocking(monkeypatch):
+    """F8-3：备份失败 ⇒ 只告警，不阻断写入（不能因备份不了就永不更新凭证）。"""
+    import tempfile
+    from pathlib import Path
+    d = tempfile.mkdtemp(prefix="f8c_")
+    env = os.path.join(d, ".env")
+    Path(env + ".enc").write_text("OLD", encoding="utf-8")
+
+    def _boom(p):
+        raise OSError("磁盘满")
+
+    monkeypatch.setitem(sys.modules, "services.db_transfer",
+                        types.ModuleType("services.db_transfer"))
+    sys.modules["services.db_transfer"]._backup_file = _boom
+
+    _patch(monkeypatch, poll=_mk_poll(True, cookies={"sessionid": "new"}))
+    ok = A._rpa_scan_login("acc10", env, {})
+    assert ok is True, "备份失败不得阻断凭证更新"
+    assert len(C.saved) == 1, "仍应写入"
