@@ -206,6 +206,16 @@ class InboundManager:
                     logged = await _ilink_qr_login(cid, _req, cfg)
                     if logged:
                         token = logged
+                        # 🔴 P1-② 修复（H-22 审计 · 实跑复现）：重登成功的新 token
+                        # 原先只赋给**闭包局部变量** `token`，而随后 `ch.send()`
+                        # （见下方）走 `WeixinOCChannel._do_send`，用的是**实例字段**
+                        # `ch.token` —— 仍是过期前的旧值 ⇒ 会话恢复后对入站消息的
+                        # 回复**仍用旧 token 失败**（同会话两路径 token 分裂）。
+                        # 登录成功后必须把新 token 同步回实例，两条路径才一致。
+                        try:
+                            ch.token = token
+                        except Exception:  # noqa: BLE001
+                            pass
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # noqa: BLE001

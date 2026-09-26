@@ -118,22 +118,30 @@ def _kv_set(key: str, value) -> None:
 
 _IMG_DESC_MAX = 2000          # 缓存条数上限（超出按 at 淘汰最旧）
 
+# 🔴 P1-① 修复（H-22 审计 · 多线程实测：4 线程×25 次写仅存 32 条）：
+# `_img_desc_get/_known/_mark` 对**整个 dict** 做读-改-写；ADR-008 决策 3 开启
+# `reply_concurrency` 线程池后，不同会话会并发调用 `_describe_image` ⇒
+# 无锁的 last-write-wins 会**静默丢弃**彼此的缓存条目（实测丢失率 >60%）。
+_IMG_DESC_LOCK = threading.Lock()
+
 
 def _img_desc_get(msg_id) -> Optional[str]:
     """取图片视觉描述；无缓存或负缓存返回 None。"""
-    d = _kv_get(_KV_IMG_DESC, {})
-    if not isinstance(d, dict):
-        return None
-    v = d.get(str(msg_id))
-    if isinstance(v, dict):
-        return str(v.get("desc") or "") or None
-    return str(v) if v else None
+    with _IMG_DESC_LOCK:
+        d = _kv_get(_KV_IMG_DESC, {})
+        if not isinstance(d, dict):
+            return None
+        v = d.get(str(msg_id))
+        if isinstance(v, dict):
+            return str(v.get("desc") or "") or None
+        return str(v) if v else None
 
 
 def _img_desc_known(msg_id) -> bool:
     """该图是否已有缓存记录（含负缓存 ""）—— 负缓存不再重试。"""
-    d = _kv_get(_KV_IMG_DESC, {})
-    return isinstance(d, dict) and str(msg_id) in d
+    with _IMG_DESC_LOCK:
+        d = _kv_get(_KV_IMG_DESC, {})
+        return isinstance(d, dict) and str(msg_id) in d
 
 
 def _img_desc_mark(msg_id, desc: str, model: str = "") -> None:
@@ -142,16 +150,17 @@ def _img_desc_mark(msg_id, desc: str, model: str = "") -> None:
     只记录**数据级**失败（缺 skey/origin_url、解密失败）；网络级失败
     （限流/超时）不写负缓存，留待下轮重试。
     """
-    d = _kv_get(_KV_IMG_DESC, {})
-    if not isinstance(d, dict):
-        d = {}
-    d[str(msg_id)] = {"desc": str(desc or "")[:2000], "model": model,
-                      "at": time.time()}
-    if len(d) > _IMG_DESC_MAX:
-        for k in sorted(d, key=lambda x: (d[x] or {}).get("at") or 0
-                        )[: len(d) - _IMG_DESC_MAX]:
-            d.pop(k, None)
-    _kv_set(_KV_IMG_DESC, d)
+    with _IMG_DESC_LOCK:
+        d = _kv_get(_KV_IMG_DESC, {})
+        if not isinstance(d, dict):
+            d = {}
+        d[str(msg_id)] = {"desc": str(desc or "")[:2000], "model": model,
+                          "at": time.time()}
+        if len(d) > _IMG_DESC_MAX:
+            for k in sorted(d, key=lambda x: (d[x] or {}).get("at") or 0
+                            )[: len(d) - _IMG_DESC_MAX]:
+                d.pop(k, None)
+        _kv_set(_KV_IMG_DESC, d)
 
 
 # ---------------------------------------------------------------------------

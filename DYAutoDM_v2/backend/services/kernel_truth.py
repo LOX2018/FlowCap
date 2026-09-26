@@ -64,9 +64,19 @@ from typing import Any
 _KEY = "kernel_truth:{account}"
 
 # 真值新鲜度上限：超过则视为过期（内核指纹可能已被 BrowserForge 重新生成）。
-# 取值依据：Camoufox 每次 `Camoufox(...)` 启动会生成一份新指纹；
-# 保活心跳周期 300s（daemon/bcc_login.py），故 30 分钟足够覆盖正常重启窗口。
-_MAX_AGE_SEC = 1800
+#
+# 🔴 P1-③ 修复（H-22 审计 idx19 · 调用链实证）：原值 1800(30min) 的**取值依据有误** ——
+# 注释以「保活心跳周期 300s」推定 30 分钟足够，但**真正触发真值写盘的不是心跳**，
+# 而是 `daemon/bcc_login.py:513` 的 **3600s 门限**（`_last_env_audit_at`）：
+#   `if _now2 - self._last_env_audit_at >= 3600: ... env_audit_snapshot()`
+# 而 `record_kernel_truth` 的唯一入口是 `bcc_audit.env_audit_snapshot`（:397），
+# 容器启动路径**不写快照** ⇒ 每次写盘后有约 30~60 分钟区间 TTL 已过、真值却未刷新，
+# `get_kernel_truth()` 判 stale 返回 None ⇒ `fingerprint_profile` **静默回落项目预设**，
+# 即本文件要根除的「档案≠内核两层脱节」每小时复现约一半时间。
+# 修法：TTL 取采样门限的 2 倍（7200s），保证「采样周期内恒为 fresh」；
+# 且真值落盘时 `record_kernel_truth` 总会带上新 `ts`，超过 2×门限仍未刷新才判 stale
+# （那时说明保活巡检本身可能已停，判 stale 是正确的）。
+_MAX_AGE_SEC = 7200
 
 
 def _key(account: str) -> str:

@@ -425,10 +425,11 @@ class UserMixin:
                 _got = ""
             if _got:
                 return _got
-        # 两次均未拿到 → 记入失败缓存（60s 内不再打，避免雪崩）
-        if _cache_key:
-            DouyinAPI._sec_uid_cache[_cache_key] = (time.time(), "")
-
+        # ⚠️ 此处**不得**写失败缓存（P1-④ 修复，H-22 审计 idx11 · 实跑复现）：
+        # 下方 HTML 回退「保留兼容」仍可能成功；若在这里先写 `(ts, "")`，回退一旦
+        # 取到合法 sec_uid，缓存里却留着**污染的空值** ⇒ 60s 内下一次调用会被读侧
+        # （见 L345-349）判为「已失败」直接 raise，尽管上一次其实解析成功。
+        # 故失败缓存统一挪到「HTML 回退也确定失败、即将 raise」之前（见文件末）。
 
         # ══ 回落：旧 HTML 正则路径（保留兼容，但不再直接 [0] 索引）══
         headers = HeaderBuilder().build(HeaderType.GET)
@@ -459,6 +460,9 @@ class UserMixin:
                 if m and len(m) > 20:
                     return m
 
+        # 至此处两条路径均确定失败 ⇒ 才写失败缓存（60s 内不再打，避免雪崩）
+        if _cache_key:
+            DouyinAPI._sec_uid_cache[_cache_key] = (time.time(), "")
         raise RuntimeError(
             "sec_uid 提取失败：HTTP {} / 响应 {} 字节 / 命中风控页={}"
             .format(response.status_code, len(text),
