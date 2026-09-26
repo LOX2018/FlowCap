@@ -25,6 +25,14 @@ from services import ai_agent, ai_reply  # noqa: E402
 
 def reset_all():
     import database
+    # 2026-09-27 M-17：本模块在**导入时**设 DY_APP_ROOT（模块级），而
+    # database.get_db() 是**进程级单例** —— 全量跑时它已被排在前面的测试
+    # 按别的 DY_APP_ROOT 初始化过，`_db_path()` 的缓存不会自己失效。
+    # 后果：resolve_config 读到上一个库里的 agent 绑定 ⇒
+    # test_no_binding_returns_base 之类「应零回归」的用例假失败。
+    # 正解是复用 database.reset_connection()（它按 _db_path() 重建连接），
+    # 而不是自造一套清理逻辑。
+    database.reset_connection()
     conn = database.get_db()
     for k in ("ai_agents", "ai_account_agent", "ai_reply_config",
               "ai_reply_knowledge_base", "ai_reply_blacklist"):
