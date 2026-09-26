@@ -91,14 +91,38 @@ def _import_upstream():
 class VendorLoginApi:
     """上游登录接口的薄包装（API 备用路径的使用入口）。
 
+    ## ⚠️ 能力边界（2026-09-26 实测判定 —— 务必先读）
+    | 能力 | 状态 | 说明 |
+    |---|---|---|
+    | `bootstrap()`    | ✅ 可用 | 2.0s，33 项 cookie，P-256 密钥自生成 |
+    | `get_qrcode()`   | ✅ 可用 | 0.17s，`error_code=0` |
+    | `check_qrcode()` | ✅ 可用 | 实测返回 `status=new`，`error_code=0` |
+    | **短信登录**      | ❌ **不可用** | 见下 |
+
+    **短信登录为何不可用**：上游 `send_sms_code()` / `phone_login()` 传
+    `strict_dtrait=True`，硬性要求 `x-tt-session-dtrait` **恰好 820 字节**
+    （`builder/auth.py:2441` 的长度断言）。该头的设备特征 blob 由混淆 SDK
+    `@byted/uc-secure-dtrait-core` 采集，上游仓库**未提供 fixture**，
+    须从真机浏览器捕获（`.env` 的 `DY_DTRAIT_BLOB` / `DY_SESSION_DTRAIT`）。
+
+    **⇒ 短信登录请走 RPA 路径**（`auto_dm/login_remote.py`）：
+    真浏览器天然生成全部指纹，**不需要 dtrait**。
+    本项目既有的 `dy_apis.login_api.login_grab_ticket` 同理（零 dtrait 依赖，已核实）。
+
     用法::
 
         api = VendorLoginApi()
         auth = api.bootstrap()               # 准备匿名会话
-        qr   = api.get_qrcode(auth)          # {token, url, base64, raw}
-        # 用户扫码…
-        st   = api.check_qrcode(auth, qr["token"])   # 轮询状态
+        qr   = api.get_qrcode(auth)          # {token, url, png_b64, raw}
+        # 用户手机扫码…
+        st   = api.check_qrcode(auth, qr["token"])   # status: new/scanned/confirmed
     """
+
+    # 短信路径的显式禁用（契约：不静默失败）
+    SMS_UNSUPPORTED_REASON = (
+        "[AUTH-072] API 路径的短信登录不可用：上游 strict_dtrait=True 要求 "
+        "x-tt-session-dtrait 恰好 820 字节，需真机捕获的设备指纹素材（本项目暂无）。"
+        "短信登录请改用 RPA 路径 auto_dm.login_remote（真浏览器无需 dtrait）。")
 
     def __init__(self) -> None:
         self._api = None
@@ -171,7 +195,16 @@ class VendorLoginApi:
             "raw": res,
         }
 
-    # ── ④ 落凭证（写 .env）────────────────────────────────────────
+    # ── ④ 短信登录（**显式禁用** —— 见类文档「能力边界」）──────────
+    def send_sms_code(self, auth, phone: str):
+        """❌ 不可用（缺 820 字节 dtrait 素材）。短信登录请走 RPA 路径。"""
+        raise NotImplementedError(self.SMS_UNSUPPORTED_REASON)
+
+    def phone_login(self, auth, phone: str, code: str):
+        """❌ 不可用（同上）。"""
+        raise NotImplementedError(self.SMS_UNSUPPORTED_REASON)
+
+    # ── ⑤ 落凭证（写 .env）────────────────────────────────────────
     def save_credential(self, auth) -> str:
         """把登录凭证写入上游的 .env（vendor 目录内）。返回路径。"""
         old_cwd = os.getcwd()
