@@ -95,7 +95,13 @@ def set_active_scope(scope) -> tuple:
         items = tuple(x.strip().lower()
                       for x in str(scope).split(",") if x.strip())
     if not items:
-        items = ("full",)
+        # 2026-09-26（H-22 审计 idx14）：**显式提供**但解析为空（如 `--scope " "` /
+        # `--scope ","`）必须**拒绝**，绝不静默回落全量 —— 否则操作者的受限意图被
+        # 无声推翻，ADR-010 S5「绝不静默回落全量（否则隔离形同虚设）」形同虚设。
+        # 注：None / "" 已在上面走「未提供」分支，不落到此处。
+        raise ValueError(
+            f"scope 解析后为空（原值 {scope!r}）：请提供合法取值 {SCOPES}，"
+            f"或省略 --scope 以使用默认 full。")
     bad = [x for x in items if x not in SCOPES]
     if bad:
         raise ValueError(f"未知 scope: {bad!r}；可用: {SCOPES}")

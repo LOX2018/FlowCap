@@ -52,27 +52,119 @@ def vendor_available() -> bool:
 
 
 def _ensure_path() -> None:
-    """注入 sys.path（幂等）。**不 chdir** —— chdir 是全局副作用，危险。
+    """注入 sys.path（幂等，**且保证 VENDOR_DIR 在最前**）。**不 chdir** —— chdir 是全局副作用，危险。
 
-    上游用相对路径读 `.env` 的位置，由我们在调用处通过 `cwd` 参数或
-    显式传参解决（见 `bootstrap`）。
+    ⚠️ 只在「**确认本进程没有加载项目同名包**」后才可调用（见 `_import_upstream`）——
+    否则把 vendor 插到 `sys.path[0]` 会**遮蔽项目包**，污染宿主进程。
+
+    2026-09-26（H-22 审计 idx3）：原实现只在 `VENDOR_DIR not in sys.path` 时插入 ——
+    若调用方已把该目录放进 path 但**不在最前**（或把项目路径排在更前），
+    就会解析到**项目**同名包 ⇒ 必须把这个目录移到最前。
     """
     global _loaded
     with _lock:
-        if _loaded:
-            return
         if not vendor_available():
             raise RuntimeError(
                 f"[AUTH-070] 上游 vendor 目录缺失或结构不符: {VENDOR_DIR}。"
                 f"请确认 vendor/douyin_spider_upstream 已就位（见 vendor/README.md）。")
-        if VENDOR_DIR not in sys.path:
-            sys.path.insert(0, VENDOR_DIR)
+        if _loaded and sys.path and sys.path[0] == VENDOR_DIR:
+            return
+        if VENDOR_DIR in sys.path:
+            sys.path.remove(VENDOR_DIR)
+        sys.path.insert(0, VENDOR_DIR)
         _loaded = True
 
 
+# vendor 与 backend **同名**的顶层包（交集）。任一解析到项目包，
+# 上游 login_api.py 的顶层绝对导入（`from builder.auth import ...` 等）就会
+# 命中项目实现 ⇒ 静默半坏。故必须**逐个**校验，不能只查 dy_apis。
+_SHARED_TOP_PKGS = ("dy_apis", "builder", "utils", "dy_live", "static")
+
+
+def _loaded_origin(name: str) -> str:
+    """`name` **已加载**时的来源路径（未加载 → 空串）。"""
+    m = sys.modules.get(name)
+    if m is None:
+        return ""
+    f = str(getattr(m, "__file__", "") or "")
+    if f:
+        return f
+    locs = list(getattr(m, "__path__", None) or [])
+    return str(locs[0]) if locs else ""
+
+
+def _resolvable_origin(name: str) -> str:
+    """`name` **将解析到**的位置（已加载 → 取其来源；否则按 sys.path 查）。"""
+    o = _loaded_origin(name)
+    if o:
+        return o
+    try:
+        import importlib.util as _ilu
+        spec = _ilu.find_spec(name)
+    except Exception:
+        return ""
+    if spec is None:
+        return ""
+    locs = list(getattr(spec, "submodule_search_locations", None) or [])
+    if locs:
+        return str(locs[0])
+    return str(getattr(spec, "origin", "") or "")
+
+
+def _is_project(origin: str) -> bool:
+    return bool(origin) and not os.path.abspath(origin).startswith(VENDOR_DIR)
+
+
+def _collision_error(bad: list[tuple[str, str, str]]) -> RuntimeError:
+    _desc = "；".join(f"`{n}` {st}项目包（{o}）" for n, o, st in bad)
+    return RuntimeError(
+        f"[AUTH-073] API 备用路径在本进程不可用：{_desc}。上游 vendor 的顶层绝对"
+        "导入会命中项目实现（`dy_apis.login_api.DYLoginApi` 无 bootstrap_auth/"
+        "get_qrcode/check_qrcode）。同进程无法隔离（vendor 与 backend 有 5 个"
+        f"同名顶层包：{'/'.join(_SHARED_TOP_PKGS)}）。请改用 RPA 路径"
+        "（auto_dm/login_remote.py），或在**干净子进程**中调用本适配层。")
+
+
 def _import_upstream():
-    """惰性导入上游 DYLoginApi。缺依赖时给出**可操作**的报错。"""
+    """惰性导入上游 DYLoginApi。缺依赖时给出**可操作**的报错。
+
+    ⚠️ **命名空间碰撞前置检查（2026-09-26 H-22 审计 idx3）**
+    上游用**顶层绝对导入**（`from dy_apis.login_api import DYLoginApi`、
+    `from builder.auth import ...`、`from utils.http_client import ...`），
+    而 vendor 与 backend 有 **5 个同名顶层包**（`dy_apis` / `builder` / `utils` /
+    `dy_live` / `static`）。只要其中任一来自**项目**包（应用进程必然如此，
+    全仓大量模块级导入这些包），上游导入就会命中**项目实现** ——
+    而项目 `dy_apis.login_api.DYLoginApi` 没有 `bootstrap_auth` / `get_qrcode` /
+    `check_qrcode` ⇒ 调用即 `AttributeError`（**静默半坏**，极难排查）。
+
+    同进程**无干净解**：清 `sys.modules` 会破坏项目自身（项目正在用这些包）；
+    唯一正确形态是**子进程隔离**（独立解释器 + clean `sys.path`）。
+
+    处置顺序（**关键：判定必须在 `_ensure_path` 之前**）：
+      ① 若任一共享包**已加载**且来自项目 ⇒ 立刻报 AUTH-073（**不 mutate sys.path**）；
+      ② 若任一共享包**在当前 `sys.path` 下会解析到项目** ⇒ 同样报 AUTH-073。
+         **必须先判后插** —— 否则把 vendor 插到 `sys.path[0]` 会反过来**遮蔽项目包**、
+         劫持宿主进程后续所有 `import builder/utils/...`（实测踩到：判定滞后时
+         `__import__` 已把 vendor 包灌进 `sys.modules`）。
+      ③ 只有确认「本进程不含项目同名包」后，才 `_ensure_path()` 并导入上游。
+    """
+    # ① 已加载的项目同名包 —— 立即失败，且**不触碰** sys.path
+    _loaded_bad = [(n, _loaded_origin(n), "已加载")
+                   for n in _SHARED_TOP_PKGS
+                   if _is_project(_loaded_origin(n))]
+    if _loaded_bad:
+        raise _collision_error(_loaded_bad)
+
+    # ② 当前 sys.path 下会解析到项目 ⇒ 也必须拒绝（**判定先于任何 mutate**）
+    _resolved_bad = [(n, _resolvable_origin(n), "可解析到")
+                     for n in _SHARED_TOP_PKGS
+                     if _is_project(_resolvable_origin(n))]
+    if _resolved_bad:
+        raise _collision_error(_resolved_bad)
+
+    # ③ 确认干净后，才允许改 sys.path 并导入
     _ensure_path()
+
     try:
         from dy_apis.login_api import DYLoginApi  # type: ignore
     except ImportError as e:
