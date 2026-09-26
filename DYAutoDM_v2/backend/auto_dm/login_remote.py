@@ -82,10 +82,69 @@ BTN_LOGIN = "登录"
 # 陈旧锁文件名（Firefox 系）
 _LOCK_FILES = ("parent.lock", ".parentlock")
 
+# ★ 2026-09-26 实测修正（ADR-017 M4）：Camoufox 的实际 profile 在**子目录**里。
+#   真实路径: <profile>/_camoufox/parent.lock
+#   当初只查 <profile>/ 根目录 ⇒ 漏判 ⇒ 启动卡 180s（F2 实测踩到）。
+#   ⇒ 采用**递归**查找（限深度），兼容不同内核的目录布局。
+_LOCK_MAX_DEPTH = 3
 
-# ══════════════════════════════════════════════════════════════════════
-#  E1 陈旧 profile 锁自愈（RPA 可靠性的核心，实测踩过 180s 超时）
-# ══════════════════════════════════════════════════════════════════════
+
+def find_lock_files(profile_dir: str, max_depth: int = _LOCK_MAX_DEPTH) -> list:
+    """递归找 profile 下所有 Firefox 系锁文件（含子目录）。
+
+    返回绝对路径列表。深度受限，避免在巨型 profile 里深挖。
+    """
+    import os as _os
+    hits = []
+    base_depth = profile_dir.rstrip("\\/").count(_os.sep)
+    for root, dirs, files in _os.walk(profile_dir):
+        cur_depth = root.count(_os.sep) - base_depth
+        if cur_depth >= max_depth:
+            dirs[:] = []          # 不再深入
+        for fn in files:
+            if fn in _LOCK_FILES:
+                hits.append(_os.path.join(root, fn))
+    return hits
+
+
+def heal_stale_profile_lock(profile_dir: str, retries: int = 3) -> dict:
+    """检测并清除**陈旧** profile 锁（E1）。
+
+    判据（保守）：**仅当** `camoufox/firefox` 进程数为 0 时，才删除锁文件。
+    只要有进程存活就**绝不删除**（避免破坏正在运行的实例）。
+
+    ⚠️ 锁文件可能位于**子目录**（如 `<profile>/_camoufox/parent.lock`）——
+    故递归查找，不只看根目录（2026-09-26 实测教训）。
+
+    返回 {'healed': bool, 'removed': [相对路径], 'procs': int, 'checked': int}
+    """
+    out = {"healed": False, "removed": [], "procs": -1, "checked": 0}
+    locks = find_lock_files(profile_dir)
+    out["checked"] = len(locks)
+    if not locks:
+        logger.debug("[login_remote] profile 无锁文件，无需自愈")
+        return out
+    # 有锁 → 看是否有进程；无进程 ⇒ 陈旧锁
+    procs = count_browser_processes()
+    out["procs"] = procs
+    if procs != 0:
+        logger.debug("[login_remote] profile 有 {} 个锁文件但存活进程 {} 个，"
+                     "判定为在用，不清理", len(locks), procs)
+        return out
+    for fp in locks:
+        for _ in range(retries):
+            try:
+                os.remove(fp)
+                rel = os.path.relpath(fp, profile_dir)
+                out["removed"].append(rel)
+                out["healed"] = True
+                logger.info("[login_remote] E1 陈旧锁已清除: {}", rel)
+                break
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[login_remote] 删锁 {} 失败（重试）: {}", fp, e)
+                time.sleep(0.5)
+    return out
+
 
 def count_browser_processes() -> int:
     """统计本机 camoufox/firefox 进程数（用于判断锁是否陈旧）。
@@ -103,40 +162,8 @@ def count_browser_processes() -> int:
         return 1
 
 
-def heal_stale_profile_lock(profile_dir: str, retries: int = 3) -> dict:
-    """检测并清除**陈旧** profile 锁（E1）。
 
-    判据（保守）：**仅当** `camoufox/firefox` 进程数为 0 时，才删除锁文件。
-    只要有进程存活就**绝不删除**（避免破坏正在运行的实例）。
 
-    返回 {'healed': bool, 'removed': [文件名], 'procs': int, 'checked': int}
-    """
-    out = {"healed": False, "removed": [], "procs": -1, "checked": 0}
-    for fn in _LOCK_FILES:
-        fp = os.path.join(profile_dir, fn)
-        if not os.path.exists(fp):
-            continue
-        out["checked"] += 1
-        # 有锁 → 看是否有进程；无进程 ⇒ 陈旧锁
-        procs = count_browser_processes()
-        out["procs"] = procs
-        if procs == 0:
-            for _ in range(retries):
-                try:
-                    os.remove(fp)
-                    out["removed"].append(fn)
-                    out["healed"] = True
-                    logger.info("[login_remote] E1 陈旧锁已清除: {}", fn)
-                    break
-                except Exception as e:  # noqa: BLE001
-                    logger.debug("[login_remote] 删锁 {} 失败（重试）: {}", fn, e)
-                    time.sleep(0.5)
-        else:
-            logger.debug("[login_remote] profile 存在锁 {} 但存活进程 {} 个，"
-                         "判定为在用，不清理", fn, procs)
-    if out["checked"] == 0:
-        logger.debug("[login_remote] profile 无锁文件，无需自愈")
-    return out
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -325,6 +352,153 @@ async def click_by_text(page, text: str) -> bool:
         return False
 
 
+# ── 「获取验证码」按钮：启用态判据（2026-09-26 实测）─────────────────────
+#   禁用：color = rgba(22, 24, 35, 0.34)（34% 灰）
+#   启用：color = rgb(254, 44, 85)（抖音红）
+# ⇒ 必须**等启用再点**，否则点了也不发短信（静默失败）。
+_JS_SEND_BTN_STATE = r"""
+(() => {
+  const all = Array.from(document.querySelectorAll('#douyin-login-new-id *'));
+  // 兼容两种文本：未发送时「获取验证码」；已发送后「55s后重新发送」
+  const m = all.filter(e => {
+    const t = (e.innerText||'').trim();
+    return t === '获取验证码' || /^\d+\s*s?\s*后重新发送$/.test(t);
+  });
+  if (!m.length) return {found: false, phase: 'unknown'};
+  const el = m[m.length - 1];
+  const cs = getComputedStyle(el);
+  const r = el.getBoundingClientRect();
+  const text = (el.innerText||'').trim();
+  const counting = /后重新发送/.test(text);          // 倒计时中 = 已发送成功
+  const color = cs.color;
+  const enabled = !counting
+                  && !/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0?\.\d+/.test(color)
+                  && cs.cursor === 'pointer';
+  return {found: true, text, phase: counting ? 'cooldown' : 'idle',
+          color, cursor: cs.cursor, enabled,
+          rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+          cx: Math.round(r.x + r.width / 2), cy: Math.round(r.y + r.height / 2)};
+})()
+"""
+
+
+async def wait_send_code_enabled(page, timeout_s: float = 12.0) -> dict:
+    """等「获取验证码」变为启用态（填了合法手机号之后）。
+
+    返回 {'ok', 'state', 'reason'}
+    """
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        st = await page.evaluate(_JS_SEND_BTN_STATE)
+        if not st.get("found"):
+            return {"ok": False, "state": st, "reason": "未找到「获取验证码」"}
+        if st.get("enabled"):
+            return {"ok": True, "state": st, "reason": ""}
+        await asyncio.sleep(0.5)
+    return {"ok": False, "state": st, "reason": f"等 {timeout_s}s 按钮仍未启用（color={st.get('color')}）"}
+
+
+async def click_send_code(page, timeout_s: float = 12.0) -> dict:
+    """点「获取验证码」（**必须先等按钮启用** —— 禁用态点击是静默失败的）。
+
+    返回 {'ok', 'state', 'reason', 'outcome', 'server_msg'}
+      outcome ∈ {'sent', 'rate_limited', 'unknown'}
+    """
+    w = await wait_send_code_enabled(page, timeout_s)
+    if not w["ok"]:
+        logger.error("[login_remote] 获取验证码按钮不可点: {}", w["reason"])
+        return {**w, "outcome": "unknown", "server_msg": ""}
+    st = w["state"]
+    # 用**真实鼠标**点（JS .click() 在 Semi Design 上不可靠，M3 已实测）
+    try:
+        await page.mouse.move(st["cx"], st["cy"])
+        await asyncio.sleep(0.12)
+        await page.mouse.down(); await asyncio.sleep(0.06); await page.mouse.up()
+        logger.info("[login_remote] 已点「获取验证码」(color={})", st["color"])
+    except Exception as e:  # noqa: BLE001
+        logger.error("[login_remote] 点获取验证码异常: {}", e)
+        return {"ok": False, "state": st, "reason": f"{type(e).__name__}: {e}",
+                "outcome": "unknown", "server_msg": ""}
+
+    # ── 识别服务端反馈（2026-09-26 实测：有频率限制）────────────────
+    # 成功：按钮变「NNs后重新发送」倒计时
+    # 限频：面板出现「验证码发送太频繁，请稍后再试」
+    outcome, msg = "unknown", ""
+    t0 = time.time()
+    while time.time() - t0 < 6.0:
+        await asyncio.sleep(0.6)
+        s = await page.evaluate(_JS_SEND_BTN_STATE)
+        if s.get("phase") == "cooldown":
+            outcome = "sent"
+            break
+        tip = await page.evaluate(
+            "(() => { const p = document.querySelector('#douyin-login-new-id');"
+            " return p ? (p.innerText||'').replace(/\\s+/g,' ') : ''; })()")
+        tip = tip or ""
+        if "太频繁" in tip or "稍后再试" in tip:
+            outcome, msg = "rate_limited", "验证码发送太频繁，请稍后再试"
+            break
+    logger.info("[login_remote] 获取验证码结果: outcome={} msg={}", outcome, msg[:40])
+    return {"ok": outcome == "sent", "state": st, "reason": msg,
+            "outcome": outcome, "server_msg": msg}
+
+
+async def click_login(page) -> dict:
+    """点「登录」按钮（真实鼠标）。"""
+    box = await page.evaluate(r"""
+    (() => {
+      const all = Array.from(document.querySelectorAll('#douyin-login-new-id *'));
+      const m = all.filter(e => (e.innerText||'').trim() === '登录');
+      if (!m.length) return null;
+      // 取最大的那个（按钮本体，非文字节点）
+      let best = m[0], bestArea = 0;
+      for (const el of m) {
+        const r = el.getBoundingClientRect();
+        const a = r.width * r.height;
+        if (a > bestArea) { bestArea = a; best = el; }
+      }
+      const r = best.getBoundingClientRect();
+      const cs = getComputedStyle(best);
+      return {rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+              cx: Math.round(r.x + r.width/2), cy: Math.round(r.y + r.height/2),
+              cls: (best.className||'').toString().slice(0,60), color: cs.color};
+    })()
+    """)
+    if not box:
+        return {"ok": False, "reason": "未找到「登录」按钮"}
+    try:
+        await page.mouse.move(box["cx"], box["cy"])
+        await asyncio.sleep(0.12)
+        await page.mouse.down(); await asyncio.sleep(0.06); await page.mouse.up()
+        logger.info("[login_remote] 已点「登录」(cls={})", box["cls"])
+        await asyncio.sleep(2.5)
+        return {"ok": True, "box": box, "reason": ""}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+
+
+async def detect_login_result(handle: dict, timeout_s: int = 20,
+                              interval_s: int = 2) -> dict:
+    """判定登录是否成功（**唯一硬判据 = cookie 出现真实登录标识**）。
+
+    判据（与 poll_qr_scanned 一致，避免两套逻辑漂移）：
+      sessionid / sid_tt 出现 ⇒ 已登录
+    """
+    context = handle.get("context")
+    if context is None:
+        return {"ok": False, "reason": "handle 无效"}
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            cookies = {c["name"]: c["value"] for c in await context.cookies()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "reason": f"读 cookie 失败: {e}"}
+        if cookies.get("sessionid") or cookies.get("sid_tt"):
+            return {"ok": True, "cookies": cookies, "reason": ""}
+        await asyncio.sleep(interval_s)
+    return {"ok": False, "reason": f"等 {timeout_s}s 未见登录 cookie"}
+
+
 async def fill_phone(page, phone: str) -> bool:
     """填手机号（逐字真实按键，避免 fill 的 JS 直赋值特征）。"""
     loc = page.locator(SEL_PHONE_INPUT).first
@@ -435,16 +609,150 @@ async def poll_qr_scanned(handle: dict, timeout_s: int = 240,
     return {"ok": False, "reason": f"等待扫码超时（{timeout_s}s）"}
 
 
+async def do_sms_login(env_path: str, phone: str, code_provider,
+                       headless: bool = True, timeout_s: int = 90) -> dict:
+    """短信验证码登录**端到端编排**（RPA）。
+
+    ## 流程（每一步都有真机实测判据，见各函数 docstring）
+    ```
+    ① prepare_sms_login  → 启动浏览器 + 打开登录页 + 填手机号
+    ② click_send_code    → 等按钮启用 → 真鼠标点击 → 识别 sent/rate_limited
+    ③ code_provider()    → 取验证码（**由调用方提供**，本模块不接触明文渠道）
+    ④ fill_code          → 逐字键入验证码
+    ⑤ click_login        → 点登录
+    ⑥ detect_login_result→ 硬判据：cookie 出现 sessionid / sid_tt
+    ```
+
+    ## 参数
+    - `code_provider`: 无参可调用对象（sync/async 均可），返回验证码字符串。
+      **本模块只负责调用它**，不关心验证码从哪来（IM 回执 / Web 前端 / 人工）。
+      这样把「验证码获取渠道」与「RPA 操作」解耦（SoC）。
+    - 返回 {'ok', 'stage', 'reason', 'handle', 'outcome', ...}
+      - 失败时 `stage` 指出卡在哪一步（便于定位与告知用户）
+      - **成功时 handle 不关闭**（调用方需落凭证后自行 close_handle）
+    """
+    from auto_dm import accounts as _acc
+    from auto_dm import config as _cfg
+    from auto_dm.vbrowser import launch_async, should_use_vb
+
+    profile = _acc.profile_dir_of(env_path)
+    os.makedirs(profile, exist_ok=True)
+    heal = heal_stale_profile_lock(profile)
+    _vb, mode = should_use_vb(_cfg)
+    acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
+    pw, browser, context, backend = await launch_async(
+        mode, _cfg, headless=headless, force=False,
+        account=acc_name, user_data_dir=profile)
+    handle = {"pw": pw, "browser": browser, "context": context,
+              "backend": backend, "env_path": env_path, "profile": profile}
+
+    def _fail(stage, reason):
+        logger.error("[login_remote] 短信登录失败于 {}: {}", stage, reason)
+        return {"ok": False, "stage": stage, "reason": reason,
+                "handle": handle, "heal": heal}
+
+    try:
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.set_viewport_size({"width": 1600, "height": 1000})
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded",
+                        timeout=max(30, timeout_s) * 1000)
+        await asyncio.sleep(5)
+
+        # ① 填手机号
+        if not await fill_phone(page, phone):
+            return _fail("fill_phone", f"手机号填入失败（{SEL_PHONE_INPUT}）")
+        await asyncio.sleep(1.5)
+
+        # ② 点获取验证码
+        send = await click_send_code(page)
+        if send.get("outcome") == "rate_limited":
+            return _fail("send_code", "验证码发送太频繁，请稍后再试")
+        if not send.get("ok"):
+            return _fail("send_code", f"获取验证码失败：{send.get('reason')}")
+
+        # ③ 取验证码（渠道由调用方决定）
+        import inspect
+        code = code_provider()
+        if inspect.isawaitable(code):
+            code = await code
+        code = (code or "").strip()
+        if not code:
+            return _fail("get_code", "调用方未提供验证码")
+        if not code.isdigit() or len(code) != 6:
+            return _fail("get_code", f"验证码格式非法（应为 6 位数字，实得 {len(code)} 位）")
+
+        # ④ 填验证码
+        if not await fill_code(page, code):   # 注意：fill_code 内部不打印验证码
+            return _fail("fill_code", f"验证码填入失败（{SEL_CODE_INPUT}）")
+        await asyncio.sleep(1.0)
+
+        # ⑤ 点登录
+        lg = await click_login(page)
+        if not lg.get("ok"):
+            return _fail("click_login", f"点登录失败：{lg.get('reason')}")
+
+        # ⑥ 硬判据
+        det = await detect_login_result(handle, timeout_s=25)
+        if not det.get("ok"):
+            return _fail("verify", det.get("reason", "未检测到登录态"))
+        logger.info("[login_remote] ✅ 短信登录成功（cookie 已含登录标识）")
+        return {"ok": True, "stage": "done", "reason": "", "handle": handle,
+                "heal": heal, "cookies": det.get("cookies")}
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        logger.error("[login_remote] 短信登录异常: {}", e)
+        traceback.print_exc()
+        return _fail("exception", f"{type(e).__name__}: {e}")
+
+
 async def close_handle(handle: Optional[dict]) -> None:
-    """收尾：关闭浏览器 + 停止 playwright（幂等）。"""
+    """收尾：关闭 Camoufox 浏览器（幂等）。
+
+    ⚠️ 2026-09-26 修正（ADR-017 M4 实测踩坑 —— **原先的实现是错的**）
+    ------------------------------------------------------------------
+    原实现写成 `if backend == "exe": await browser.close()`，**双重失效**：
+      ① `launch_async` 对 Camoufox 返回的 mode 是 `"camoufox"`（非 `"exe"`），
+         条件不成立 ⇒ `browser.close()` 根本不执行；
+      ② 该分支返回的是 `(None, None, context, mode)` —— `browser` 本就是 None。
+    后果（实机实测）：关闭后进程仍是 7 个、锁文件残留、紧接第二次启动
+    撞上 profile 占用 ⇒ `launch_persistent_context Timeout 180000ms`。
+
+    正确做法：**复用项目既有工具**（不要自己造关闭逻辑）——
+      `vbrowser_camoufox.close_camoufox_context(context, user_data_dir)`，
+    它内部会走 `ctx_mgr.__aexit__()` **并清扫残留进程**
+    （因为实测 `__aexit__` 后进程 60s 仍不退净，见该函数文档）。
+    """
     if not handle:
         return
-    browser, pw, backend = handle.get("browser"), handle.get("pw"), handle.get("backend")
+    context = handle.get("context")
+    ui = handle.get("backend")
+    # 兼容两种 launch_async 返回形状：
+    #   Camoufox: (None, None, context, "camoufox")
+    #   兼容旧调用方可能传 (pw, browser, context, mode)
+    pw = handle.get("pw")
+    browser = handle.get("browser")
+    user_data_dir = handle.get("profile")
+
+    # ① 首选：项目既有的统一关闭（含残留清扫）
     try:
-        if backend == "exe" and browser is not None:
+        from vbrowser_camoufox import close_camoufox_context
+        if context is not None:
+            await close_camoufox_context(context, user_data_dir=user_data_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[login_remote] close_camoufox_context 失败，尝试逐项兜底: {}", e)
+        # ② 兜底：直接关 context
+        try:
+            if context is not None:
+                await context.close()
+        except Exception as e2:  # noqa: BLE001
+            logger.debug("[login_remote] context.close() 亦失败: {}", e2)
+
+    # ③ 其他模式（非 camoufox）的兼容清理
+    try:
+        if ui != "camoufox" and browser is not None:
             await browser.close()
     except Exception as e:  # noqa: BLE001
-        logger.debug("[login_remote] 关闭浏览器异常: {}", e)
+        logger.debug("[login_remote] browser.close() 异常: {}", e)
     try:
         if pw is not None:
             await pw.stop()
