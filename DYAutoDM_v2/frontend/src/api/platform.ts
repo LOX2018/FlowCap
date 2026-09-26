@@ -196,7 +196,8 @@ export const platformApi = {
       "/api/platform/relation/list", { account, user_id, sec_id, kind, count }),
 
   notices: (account: string, count = 10, group = "700") =>
-    post<{ ok: boolean; items: NoticeItem[]; unread: number | null }>(
+    post<{ ok: boolean; items: NoticeItem[]; unread: number | null;
+           unavailable?: boolean; reason?: string }>(
       "/api/platform/notice/list", { account, count, group }),
 
   comments: (account: string, url: string, limit = 20) =>

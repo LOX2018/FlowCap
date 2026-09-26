@@ -91,6 +91,65 @@ def _api():
     return DouyinAPI
 
 
+# ===========================================================================
+# 登录态失灵的统一判据（★ 2026-09-26 新增）
+# ===========================================================================
+# ## 为什么需要它（实测根因，2026-09-26）
+#
+# 「点赞 / 收藏 / 站内通知」三个 tab 同时不可用，实测根因**同一个**：
+#   服务端对**所有本人相关端点**返回
+#   `HTTP 200 + {"status_code": 8, "status_msg": "用户未登录"}` ——
+#   而 `feed` / `search` 仍 200 正常 ⇒ 差别在于**这两类端点不校验登录态**。
+#
+# 铁证（本机实测）：cookie `sid_guard` = `…%7C<exp>%7C51`，
+#   `exp = 1790251779` → **2026-09-24 20:09:39（已过期）**；
+#   `login_time = 1790251777226`（37.9 小时前登录）。
+#   旁证：`has_biz_token=false` / `IsDouyinActive=false`。
+#
+# ## 为什么必须区分「过期」与「高频限制」（旧文案的缺陷）
+#
+# 旧实现把 sc=8 一律解释成「短时高频访问触发限制，**稍后重试即可**」——
+# 这在**凭证真过期**时是**误导**：用户等再久也不会好，正解是**重新扫码**。
+# 而 `notice/list` 更糟：**静默返回空列表**，用户以为「本来就没通知」。
+#
+# ## 判据来源（复用，不新造）
+#
+# 复用项目既有唯一凭证有效性入口 `auto_dm.accounts.verify_credential`：
+#   · `dm.level == "fail"` 且 detail 含 `609` / `只读` → 该账号 web 会话被
+#     服务端判「只读」（读可用、写不可用）→ **需重新扫码**；
+#   · `wp.level == "fail"` 且 label 含「身份漂移(USB-050)」→ 凭证陈旧。
+# 这保证与「账号管理」页的结论**同源**，不会出现两处判断打架。
+#
+# 返回 `(reason, action_hint)`：reason 给人看的一句话，action_hint 是**可行动**指引。
+def _login_state_reason(account: str) -> tuple[str, str]:
+    """判定该账号当前为何取不到「本人」数据。返回 (reason, action_hint)。"""
+    try:
+        from auto_dm.accounts import verify_credential
+        v = verify_credential(account, lightweight=False)
+        wp = (v.get("wp") or {})
+        dm = (v.get("dm") or {})
+        dm_detail = str(dm.get("detail") or "")
+        wp_label = str(wp.get("label") or "")
+        if dm.get("level") == "fail" and ("609" in dm_detail or "只读" in dm_detail):
+            return ("该账号的网页登录态已被服务端判为「只读」（读可用、写不可用）",
+                    "请在「账号管理」对该账号执行【重新扫码】重建登录态")
+        if wp.get("level") == "fail" and ("漂移" in wp_label or "030" in wp_label):
+            return ("该账号凭证已陈旧（探活身份与历史会话不一致）",
+                    "请在「账号管理」对该账号执行【重新扫码】重建登录态")
+        if dm.get("level") == "fail":
+            return (f"该账号凭证校验未通过：{dm_detail[:80] or wp_label or '原因未知'}",
+                    "请在「账号管理」对该账号执行【重新扫码】重建登录态")
+    except Exception as e:  # noqa: BLE001 —— 判据本身失败不阻断：回落到通用文案
+        logger.debug(f"[PLT-000] 登录态判据不可用: {type(e).__name__}")
+    return ("未能确认本人登录态（服务端返回「用户未登录」）",
+            "请确认该账号在「账号管理」显示为可用；若已过期，重新扫码登录")
+
+
+def _is_not_logged_in(raw: Any) -> bool:
+    """响应是否为服务端「用户未登录」（status_code=8）。"""
+    return isinstance(raw, dict) and raw.get("status_code") == 8
+
+
 
 def _trim_video(video: dict) -> dict:
     """裁剪 video 子树：只保留前 2 档 bit_rate（播放所需的 play_addr），
@@ -570,15 +629,26 @@ async def favorite(req: LikedReq) -> dict[str, Any]:
             #   ⇒ 改为 **200 + unavailable**（与下方「平台侧空响应」同一降级范式），
             #   并透传真实原因，由 UI 给出可行动的提示。
             logger.warning(f"[PLT-007] " + f"取自身 sec_uid 失败: {type(e).__name__}")
+            _why, _hint = _login_state_reason(req.account)
             return {"ok": True, "items": [], "has_more": False, "unavailable": True,
-                    "reason": f"未能确认本人身份（{type(e).__name__}）：平台暂未提供本人 sec_uid，多为短时高频访问触发限制，稍后重试即可"}
+                    "reason": f"{_why}。{_hint}"}
     try:
         raw = await asyncio.to_thread(
             api.get_user_favorite, auth, sec, "0", str(max(1, min(req.num, 50))))
     except Exception as e:  # noqa: BLE001
         # 与 /liked 同样的处置：平台侧偶发空响应体 → 空列表 + 标记，不弹误导性错误
         logger.warning(f"[PLT-007] " + f"收藏列表获取失败（平台侧常返空）: {type(e).__name__}")
-        return {"ok": True, "items": [], "has_more": False, "unavailable": True}
+        _why, _hint = _login_state_reason(req.account)
+        return {"ok": True, "items": [], "has_more": False, "unavailable": True,
+                "reason": f"平台侧暂不可用（{type(e).__name__}）。{_hint}"}
+    # ★ 2026-09-26 修复：与 /liked 同源缺陷 —— `get_user_favorite` 不抛异常、
+    #   直接返回 `{"status_code": 8, "status_msg": "用户未登录"}`，原实现不看 sc
+    #   ⇒ 空列表「暂无收藏」掩盖了「登录过期」。必须显式识别。
+    if _is_not_logged_in(raw):
+        _why, _hint = _login_state_reason(req.account)
+        logger.warning("[PLT-007] 收藏列表：服务端返回 status_code=8（用户未登录）")
+        return {"ok": True, "items": [], "has_more": False, "unavailable": True,
+                "reason": f"{_why}。{_hint}"}
     if not isinstance(raw, dict):
         return {"ok": True, "items": [], "has_more": False, "unavailable": True}
     return {
@@ -639,9 +709,16 @@ async def liked(req: LikedReq) -> dict[str, Any]:
             #   对该凭证的**降权**，非账号失效）。
             #   ⇒ 改为 **200 + unavailable**（与下方「平台侧空响应」同一降级范式），
             #   并透传真实原因，由 UI 给出可行动的提示。
+            # ★ 2026-09-26 修复（错误语义 v2）：原先把 sc=8「用户未登录」
+            #   一律解释成「短时高频访问触发限制，**稍后重试即可**」——
+            #   本机实测证伪：真实根因是 **cookie 硬过期**
+            #   （`sid_guard` exp=1790251779 → 2026-09-24 20:09 已过期），
+            #   此类情况**永远不会自愈**，正解是**重新扫码**。
+            #   ⇒ 改为调用统一判据 `_login_state_reason()` 给出「原因 + 可行动指引」。
             logger.warning(f"[PLT-006] " + f"取自身 sec_uid 失败: {type(e).__name__}")
+            _why, _hint = _login_state_reason(req.account)
             return {"ok": True, "items": [], "has_more": False, "unavailable": True,
-                    "reason": f"未能确认本人身份（{type(e).__name__}）：平台暂未提供本人 sec_uid，多为短时高频访问触发限制，稍后重试即可"}
+                    "reason": f"{_why}。{_hint}"}
     try:
         raw = await asyncio.to_thread(api.get_user_favorite, auth, sec, "0", str(max(1, min(req.num, 50))))
     except Exception as e:  # noqa: BLE001
@@ -655,6 +732,15 @@ async def liked(req: LikedReq) -> dict[str, Any]:
         return {"ok": True, "items": [], "has_more": False,
                 "unavailable": True,
                 "reason": f"平台侧暂不可用（{type(e).__name__}）"}
+    # ★ 2026-09-26 修复：`get_user_favorite` **不抛异常**、而是直接返回
+    #   `{"status_code": 8, "status_msg": "用户未登录"}` —— 原实现不看 sc，
+    #   于是 `aweme_list` 取不到 → 返回**空列表**，前端显示「暂无点赞作品」，
+    #   把「登录过期」伪装成「本来就没点赞」。必须显式识别。
+    if _is_not_logged_in(raw):
+        _why, _hint = _login_state_reason(req.account)
+        logger.warning(f"[PLT-006] 点赞列表：服务端返回 status_code=8（用户未登录）")
+        return {"ok": True, "items": [], "has_more": False, "unavailable": True,
+                "reason": f"{_why}。{_hint}"}
     items = raw.get("aweme_list") if isinstance(raw, dict) else []
     return {"ok": True, "items": [_pick_aweme(w) for w in (items or [])],
             "has_more": bool(raw.get("has_more")) if isinstance(raw, dict) else False}
@@ -695,6 +781,15 @@ async def notice_list(req: NoticeReq) -> dict[str, Any]:
     # ★ 2026-09-14 实测修正：新版接口把数据放在 **`notice_list_v2`**，
     #   `notice_list` 恒为空数组。原实现只读 `notice_list` ⇒ 实测恒 0 条。
     #   取法：优先 v2，为空再回落到旧键（兼容两端）。
+    # ★ 2026-09-26 修复：服务端对本人端点返回 `{"status_code": 8,
+    #   "status_msg": "用户未登录"}`（本机实测：cookie `sid_guard` 已过期）。
+    #   原实现不看 sc ⇒ `notice_list_v2` 取不到 ⇒ 返回**空列表**，
+    #   前端显示「暂无通知」，把「登录过期」伪装成「本来就没通知」。
+    if _is_not_logged_in(raw):
+        _why, _hint = _login_state_reason(req.account)
+        logger.warning("[PLT-008] 站内通知：服务端返回 status_code=8（用户未登录）")
+        return {"ok": True, "items": [], "has_more": False, "unread": None,
+                "unavailable": True, "reason": f"{_why}。{_hint}"}
     items = None
     if isinstance(raw, dict):
         items = raw.get("notice_list_v2")

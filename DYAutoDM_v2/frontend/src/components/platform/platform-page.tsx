@@ -468,6 +468,16 @@ export default function PlatformPage(props: PageProps) {
         <TabsContent value="notices">
           {noticesQ.isPending ? <LoadingState /> :
             noticesQ.isError ? <ErrorState message={String((noticesQ.error as Error)?.message)} onRetry={noticesQ.refetch} /> :
+            // ★ 2026-09-26 修复：服务端返回 sc=8「用户未登录」（本机实测：
+            //   cookie sid_guard 已过期）时，原实现直接落到「暂无通知」，
+            //   把「登录过期」伪装成「本来就没通知」——用户无从察觉需重新扫码。
+            //   与「点赞 / 收藏」tab 同一降级范式：显式说明真实原因。
+            (noticesQ.data as { unavailable?: boolean; reason?: string })?.unavailable ? (
+              <EmptyState
+                title="暂时取不到站内通知"
+                description={(noticesQ.data as { reason?: string })?.reason
+                  || "未能确认本人登录态，请到「账号管理」检查该账号是否需要重新扫码。"} />
+            ) :
             (noticesQ.data?.items?.length ? (
               <div className="space-y-2">
                 {noticesQ.data.items.map((n: NoticeItem) => (
