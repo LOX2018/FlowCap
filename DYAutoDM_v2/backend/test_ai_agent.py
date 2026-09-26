@@ -25,13 +25,17 @@ from services import ai_agent, ai_reply  # noqa: E402
 
 def reset_all():
     import database
-    # 2026-09-27 M-17：本模块在**导入时**设 DY_APP_ROOT（模块级），而
-    # database.get_db() 是**进程级单例** —— 全量跑时它已被排在前面的测试
-    # 按别的 DY_APP_ROOT 初始化过，`_db_path()` 的缓存不会自己失效。
-    # 后果：resolve_config 读到上一个库里的 agent 绑定 ⇒
-    # test_no_binding_returns_base 之类「应零回归」的用例假失败。
-    # 正解是复用 database.reset_connection()（它按 _db_path() 重建连接），
-    # 而不是自造一套清理逻辑。
+    # 2026-09-27 M-17 复核（**真因已实测定位**）：
+    #   unittest discover 是**单进程**，多个测试模块在**模块级**抢同一个
+    #   `DY_APP_ROOT` —— **后导入者覆盖**。实测：导入 test_ai_agent 后该值为
+    #   `dyautodm_agent_test`；再导入 test_capability_probe 后变成
+    #   `dyautodm_cfgtest_root`。而 `_db_path()` 是**运行时**读该变量 ⇒
+    #   本模块用例实际连到**别人**的库：`reset_all()` 清的是 A 库、
+    #   断言读的是 B 库 ⇒ 残留数据导致「应零回归」用例假失败。
+    #   （仅调 `reset_connection()` 不够 —— 它按**当时**的 env 重建连接。）
+    # 正解：复用本项目**既有范式**（见 test_capability_probe.py:44/48/59）——
+    #   每次进 setUp/tearDown 都把根**钉回本模块自己的隔离根**，再重建连接。
+    os.environ["DY_APP_ROOT"] = _tmp
     database.reset_connection()
     conn = database.get_db()
     for k in ("ai_agents", "ai_account_agent", "ai_reply_config",
