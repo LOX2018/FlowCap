@@ -1,0 +1,42 @@
+{
+  "passed": 6,
+  "failed": 0,
+  "results": [
+    {
+      "code": "R8-1",
+      "ok": true,
+      "desc": "dm_messages 写入出口收敛（5 文件）",
+      "evidence": []
+    },
+    {
+      "code": "R8-2",
+      "ok": true,
+      "desc": "类型注册表覆盖（已登记 9 种）",
+      "evidence": []
+    },
+    {
+      "code": "R8-3",
+      "ok": true,
+      "desc": "text 不得承载 base64/图片 URL 载荷",
+      "evidence": []
+    },
+    {
+      "code": "R8-4",
+      "ok": true,
+      "desc": "语义标签须取自 Schema SSOT（禁硬编码）",
+      "evidence": []
+    },
+    {
+      "code": "R8-5",
+      "ok": true,
+      "desc": "前向兼容（未知类型降级 + 门禁在位）",
+      "evidence": []
+    },
+    {
+      "code": "R8-6",
+      "ok": true,
+      "desc": "同一语义不得多名字（禁 msg_type 多值并列）",
+      "evidence": []
+    }
+  ]
+}
