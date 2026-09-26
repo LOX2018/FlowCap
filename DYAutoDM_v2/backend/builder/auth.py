@@ -41,15 +41,27 @@ class DouyinAuth:
         else:
             logger.debug("[auth] perepare_auth 收到空 cookie，保留现有 cookie 不变"
                          "（仅刷新签名四件套）")
-        if web_protect_ != "":
+        # 2026-09-26 修补（ADR-017 M1 实测）：原守卫为 `!= ""`，**挡不住 None**。
+        # 实测触发链：未登录账号下 security-sdk 尚未生成 web_protect 时，
+        #   login_api.dyGenerateInitData 读到 localStorage 返回 None →
+        #   perepare_auth('', None, None) → `if None != ""` 为真 → json.loads(None)
+        #   → TypeError: the JSON object must be str, bytes or bytearray, not NoneType
+        # 修法：守卫改为「非空字符串」语义（同时挡 None/空串），保持原有效路径行为不变。
+        #   注：仅当传入为**非空字符串**时才解析；None/"" 一律跳过（保留既有 ticket 等字段）。
+        if web_protect_ and isinstance(web_protect_, str):
             web_protect_ = json.loads(json.loads(web_protect_)['data'])
             self.ticket = web_protect_['ticket']
             self.ts_sign = web_protect_['ts_sign']
             self.client_cert = web_protect_['client_cert']
-        if keys_ != "":
+        elif web_protect_ is None:
+            logger.debug("[auth] perepare_auth 收到 web_protect_=None（SDK 未就绪/未登录），"
+                         "跳过签名四件套刷新（保留既有值）")
+        if keys_ and isinstance(keys_, str):
             keys_ = json.loads(json.loads(keys_)['data'])
             self.private_key = keys_['ec_privateKey']
             self.ree_public_key = base64.b64encode(self.private_key.encode()).decode()
+        elif keys_ is None:
+            logger.debug("[auth] perepare_auth 收到 keys_=None（SDK 未就绪/未登录），跳过私钥刷新")
 
 
     @property

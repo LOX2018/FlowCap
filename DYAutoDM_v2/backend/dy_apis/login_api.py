@@ -195,6 +195,41 @@ def _cookie_is_polluted(cookies):
     return False, []
 
 
+def is_web_protect_valid(s):
+    """校验 web_protect / s_sdk_crypt_sdk 值是否为**有效载荷**。
+
+    2026-09-26（ADR-017 M1）从 `login_grab_ticket` 内的嵌套 `_web_protect_valid`
+    **提升为模块级共享函数**（SSOT）—— 原先只有扫码链路校验，而
+    `dyGenerateInitData` 拿不到有效值时会把 `None` 传给 `perepare_auth` 导致崩溃。
+
+    判据（与原实现逐条一致，行为不变）：
+      ① 必须是非空字符串
+      ② 去空白后以 `{` 或 `[` 开头（JSON 形状）
+      ③ 可被 json.loads 解析
+      ④ 序列化后含密钥/签名相关关键词（webcast/sign/key/ticket/token/salt/app_id）
+         —— 空壳通常缺少这些
+
+    ⚠️ 注意：**未登录**时 security-sdk 也可能生成**空壳**（项目既有注释：
+    「web_protect/keys 在首页加载时即由 security-sdk 生成（未登录也会生成空壳）」）
+    ⇒ 本函数返回 True 仅代表"形态有效"，**不代表已登录**；登录态须另判
+    （sessionid/sid_tt 等真实登录 cookie）。
+    """
+    if not s or not isinstance(s, str):
+        return False
+    s = s.strip()
+    if not (s.startswith("{") or s.startswith("[")):
+        return False
+    try:
+        obj = json.loads(s)
+    except Exception:
+        return False
+    blob = json.dumps(obj)
+    for key in ("webcast", "sign", "key", "ticket", "token", "salt", "app_id"):
+        if key in blob:
+            return True
+    return False
+
+
 class DYLoginApi:
 
     def __init__(self):
@@ -202,24 +237,52 @@ class DYLoginApi:
         self.home_url = 'https://www.douyin.com/'
 
     # 生成初始cookies
-    async def dyGenerateInitData(self, headless=True, cookie_str="",
+    async def dyGenerateInitData(self, headless=True, cookie_str="", env_path=None,
                                   landing_url="https://www.douyin.com/chat?isPopup=1"):
+        """生成初始鉴权数据（访客态）—— 用于二维码 / 验证码登录前置。
+
+        env_path: 目标账号 `.env` 路径。**必传**（2026-09-26 修订）：
+            本函数需启动指纹浏览器读取 `ttwid`/`msToken`/`web_protect`，
+            按【单 profile 铁律】必须传入该账号**独占的固定 profile 目录**
+            （`accounts.profile_dir_of(env_path)`），禁止临时目录 ——
+            临时 profile 会被抖音识别为新设备直接触发风控。
+
+        【2026-09-26 缺陷修复记录】
+        症状：调用本函数 100% 抛错
+            `[BCC-058] Camoufox 内核启动失败：未指定固定 profile 目录。`
+        根因：2026-08-17 `vbrowser.py:825` 修订单 profile 铁律
+            （「force=True 仅表示不复用登录态，仍使用同一固定 profile 目录」），
+            本函数未同步修订（仍以 `force=True` + 不传 `user_data_dir` 启动）
+            ⇒ 被门禁拦截 ⇒ 契约漂移。
+        修法：照同文件 `login_grab_ticket:276` 的既有正确范式，
+            由 env_path 推导 `profile_dir_of(env_path)` 与账号名（账号级 DY_PROXY）。
+        注：2026-09-17 那次 OCR 修补只解决了 `NameError`（env_path 未绑定），
+            未触及 profile 铁律，故缺陷残留至今。
+
+        env_path 未传时的兼容行为：保持原语义（不绑定账号），但因单 profile
+            铁律已禁止无 profile 启动，此时**直接抛错**并给出可行动指引，
+            不再静默降级（遵守「诚实的失败」原则）。
+        """
         # 禁止回退原生 Playwright：统一走指纹浏览器内核（should_use_vb 不可用时直接抛错）
+        import os as _os
         from auto_dm import config as _cfg
         from auto_dm.vbrowser import should_use_vb, launch_async
+        from auto_dm import accounts as _accounts
 
         _vb, _vb_mode = should_use_vb(_cfg)
-        # 2026-09-13 环境门阀：传 account 让账号级 DY_PROXY 生效（无则按三级优先级）
-        #
-        # 2026-09-17 修补（OCR 审查 CRITICAL）：原为
-        #   _acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path))) if env_path else None
-        # 但本函数**根本没有 env_path**（签名只有 headless/cookie_str/landing_url），
-        # 也无局部绑定 → 每次都抛 NameError，dyGenerateInitData 100% 失败。
-        # 该函数走 launch_async(force=True) 临时 profile，本就不绑定账号 env，
-        # 故 account 直接置 None（不启用账号级 DY_PROXY，退回三级优先级）。
-        _acc_name = None
+        # 2026-09-26 修订：按单 profile 铁律显式推导固定 profile + 账号名。
+        # 2026-09-13 环境门阀：传 account 让账号级 DY_PROXY 生效（无则按三级优先级）。
+        if not env_path:
+            raise RuntimeError(
+                "[AUTH-060] dyGenerateInitData 需要 env_path 以确定账号独占 profile"
+                "（单 profile 铁律：禁止临时目录，临时 profile 会被抖音识别为新设备触发风控）。"
+                "请传入目标账号的 .env 路径，如 accounts.<name>.env_path_of(name)。")
+        _acc_profile = _accounts.profile_dir_of(env_path)
+        _acc_name = _os.path.basename(_os.path.dirname(_os.path.abspath(env_path)))
+        _os.makedirs(_acc_profile, exist_ok=True)
         _pw, _browser, context, _backend = await launch_async(
-            _vb_mode, _cfg, headless=headless, force=True, account=_acc_name)
+            _vb_mode, _cfg, headless=headless, force=False, account=_acc_name,
+            user_data_dir=_acc_profile)
         try:
             if cookie_str:
                 await context.add_cookies([
@@ -247,16 +310,38 @@ class DYLoginApi:
             _read_page = msg_page if (msg_page is not None and not msg_page.is_closed()) else page
             keys_str = None
             web_protect_str = None
-            for _ in range(6):
-                await asyncio.sleep(4)
-                await _read_page.mouse.wheel(0, 600)
+            # 2026-09-26（ADR-017 M1）修补：原实现只读 6×4=24s 且**不校验**就读到的
+            # 值直接下发；未登录/SDK 未就绪时读到 None ⇒ 传 None 给 perepare_auth ⇒ 崩
+            # （TypeError: json object must be str... not NoneType）。
+            # 现改为：轮询直到**形态有效**（is_web_protect_valid），最长 _wait_s 秒；
+            # 仍拿不到则**如实告警并跳过**，不把 None 往下传。
+            _wait_s = 40
+            _t0 = time.time()
+            while time.time() - _t0 < _wait_s:
+                await asyncio.sleep(2)
+                try:
+                    await _read_page.mouse.wheel(0, 600)
+                except Exception:
+                    pass
                 keys_str = await _read_page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-                web_protect_str = await _read_page.evaluate('localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
-                if keys_str and web_protect_str:
+                web_protect_str = await _read_page.evaluate(
+                    'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+                if is_web_protect_valid(keys_str) and is_web_protect_valid(web_protect_str):
                     break
+            _wp_ok = is_web_protect_valid(web_protect_str)
+            _ks_ok = is_web_protect_valid(keys_str)
+            # ★ 不把 None 往下传：形态无效时传空串（perepare_auth 会安全跳过并保留既有值）
+            _wp_pass = web_protect_str if _wp_ok else ""
+            _ks_pass = keys_str if _ks_ok else ""
+            if not (_wp_ok and _ks_ok):
+                logger.warning(
+                    "[AUTH-062] dyGenerateInitData 等待 {:.0f}s 仍未取到有效 security-sdk 载荷"
+                    "（web_protect 有效={} / keys 有效={}）—— 通常因该账号**当前未登录**。"
+                    "将跳过签名四件套刷新（不写入 None），登录相关调用可能因此缺少签名。",
+                    time.time() - _t0, _wp_ok, _ks_ok)
             cookies = {cookie['name']: cookie['value'] for cookie in await context.cookies()}
             auth = DouyinAuth()
-            auth.perepare_auth('', web_protect_str, keys_str)
+            auth.perepare_auth('', _wp_pass, _ks_pass)
             auth.cookie = cookies
             auth.cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
             return auth
@@ -1383,39 +1468,124 @@ class DYLoginApi:
         img = qr.make_image(fill_color="black", back_color="white")
         img.show()
 
-    async def qrcodeMain(self):
-        auth = await self.dyGenerateInitData()
+    async def qrcodeMain(self, env_path=None, on_qrcode=None, poll_interval=3,
+                         timeout=300):
+        """扫码登录主流程（**可远程驱动版**，2026-09-26 改造）。
+
+        与原版的差别（原版为本地调试骨架）：
+          · 原版 `while True` 无退出条件 + `generateQrcode` 本地弹窗显示二维码；
+          · 本版**将二维码信息回调出去**（on_qrcode），由调用方决定如何呈现
+            （如截图推送 IM），并**带超时退出**，返回结构化结果。
+
+        参数:
+          env_path: 目标账号 .env 路径（单 profile 铁律要求，见 dyGenerateInitData）
+          on_qrcode: 回调 `fn(dict) -> None`，收到 {'token','qrcode_index_url'} 时调用；
+                     调用方可据此渲染/推送二维码。为 None 时仅记录日志。
+          poll_interval: 轮询间隔秒
+          timeout: 总超时秒（超时返回 status='timeout'）
+
+        返回（dict）:
+          {'status': 'ok'|'no_qrcode'|'timeout', 'token': …, 'qrcode_index_url': …,
+           'last': <最后一次轮询响应摘要>, 'auth': <DouyinAuth>}
+
+        注：本版**不写 .env** —— 凭证持久化由调用方在确认成功后走既有
+            `persistenceLoginInfo` / `login_capture` 链路（职责分离）。
+        """
+        import time as _t
+        auth = await self.dyGenerateInitData(env_path=env_path)
         qrCodeDict = self.dyGenerateQRcode(auth)
         # 2026-09-17 修补（OCR 审查 HIGH）：原为深层下标 `['data']['token']`，
         # 空响应/风控降级（safe_json → {}）时抛 KeyError/TypeError 且无提示。
         _qd = (qrCodeDict or {}).get('data') or {}
         if not isinstance(_qd, dict) or not _qd.get('token'):
             logger.error("[auth] 生成二维码失败（响应为空或缺少 data.token）")
-            return
+            return {'status': 'no_qrcode', 'token': None, 'qrcode_index_url': None,
+                    'last': None, 'auth': auth}
         token = _qd['token']
-        verify_url = _qd['qrcode_index_url']
-        qrcode_thread = Thread(target=self.generateQrcode, args=(verify_url,))
-        qrcode_thread.start()
-        while True:
+        verify_url = _qd.get('qrcode_index_url')
+        logger.info("[auth] 二维码已生成（token 长度={}，url 前缀={}）",
+                    len(str(token)), str(verify_url)[:40])
+        if on_qrcode is not None:
+            try:
+                on_qrcode({'token': token, 'qrcode_index_url': verify_url})
+            except Exception as _e_cb:  # noqa: BLE001
+                logger.warning("[auth] 二维码回调异常（不影响轮询）: {}", _e_cb)
+        # 带超时的轮询（原版 while True 无退出条件）
+        _deadline = _t.time() + timeout
+        last = None
+        while _t.time() < _deadline:
             checkLoginInfo = self.dyCheckQrCodeLogin(auth, token)
+            last = checkLoginInfo
             # 2026-09-17 安全修补（审查 P0-1）：原为 print(checkLoginInfo)，
             # 会把含登录态的响应整体打到 stdout（stdout 常落日志/终端录制）。
-            logger.debug("[auth] 扫码登录轮询状态: {}",
-                         _safe_repr(checkLoginInfo))
-            await asyncio.sleep(10)
+            logger.debug("[auth] 扫码登录轮询状态: {}", _safe_repr(checkLoginInfo))
+            # 登录成功的判据：响应中出现已登录标志（redirect_url / data.status==2 等）
+            _cd = (checkLoginInfo or {}).get('data') or {}
+            if isinstance(_cd, dict) and (
+                    _cd.get('redirect_url') or _cd.get('status') in (2, '2')
+                    or (checkLoginInfo or {}).get('redirect_url')):
+                logger.info("[auth] 扫码登录成功（轮询命中已登录标志）")
+                return {'status': 'ok', 'token': token,
+                        'qrcode_index_url': verify_url, 'last': last, 'auth': auth}
+            await asyncio.sleep(poll_interval)
+        logger.warning("[auth] 扫码登录轮询超时（{}s）", timeout)
+        return {'status': 'timeout', 'token': token,
+                'qrcode_index_url': verify_url, 'last': last, 'auth': auth}
 
 
-    async def phoneMain(self):
-        auth = await self.dyGenerateInitData()
-        phone_num = "15251991681"
+    async def phoneMain(self, env_path=None, phone_num=None, code_provider=None,
+                        code_timeout=180):
+        """验证码登录主流程（**可远程驱动版**，2026-09-26 改造）。
+
+        与原版的差别（原版为本地调试骨架）：
+          · 原版硬编码手机号 `15251991681` + `input()` 阻塞等验证码；
+          · 本版**手机号由参数传入**，验证码由 `code_provider` 回调获取
+            （调用方可从安全通道取，如本机 Web 前端 / 遮罩输入），
+            **不在对话或日志中出现验证码**。
+
+        参数:
+          env_path: 目标账号 .env 路径（单 profile 铁律要求）
+          phone_num: 手机号（**必传**；不再硬编码）
+          code_provider: 回调 `fn() -> str`，返回用户输入的 6 位验证码。
+                         超时/异常由调用方处理；本函数只消费。
+          code_timeout: 等待验证码的保留超时（供调用方参考，本函数不强制中断）
+
+        返回（dict）:
+          {'status': 'ok'|'send_failed'|'no_code'|'login_failed',
+           'send': <发送响应摘要>, 'redirect_url': <脱敏>, 'auth': <DouyinAuth>}
+
+        注：本版**不写 .env** —— 凭证持久化由调用方走既有链路（职责分离）。
+        """
+        if not phone_num:
+            raise RuntimeError(
+                "[AUTH-061] phoneMain 需要 phone_num（原硬编码手机号已移除，"
+                "按「显式配置原则」应由调用方传入）。")
+        auth = await self.dyGenerateInitData(env_path=env_path)
         sendCodeRes = self.dyGeneratePhoneVerificationCode(phone_num, auth)
         # 2026-09-17 安全修补（审查 P0-1）：以下原为 print(...)，会把验证码响应、
         # 登录响应、跳转 URL 打到 stdout。
         logger.debug("[auth] 验证码发送结果: {}", _safe_repr(sendCodeRes))
-        code = input("请输入验证码：")
+        _sd = (sendCodeRes or {}).get('data') or {}
+        # 发送失败判据：无 data 或显式错误码
+        if not _sd:
+            logger.error("[auth] 验证码发送失败（响应为空）")
+            return {'status': 'send_failed', 'send': _safe_repr(sendCodeRes),
+                    'redirect_url': None, 'auth': auth}
+        if code_provider is None:
+            logger.error("[auth] 未提供 code_provider，无法获取验证码（拒绝 input() 阻塞）")
+            return {'status': 'no_code', 'send': _safe_repr(sendCodeRes),
+                    'redirect_url': None, 'auth': auth}
+        code = code_provider()
+        if not code:
+            return {'status': 'no_code', 'send': _safe_repr(sendCodeRes),
+                    'redirect_url': None, 'auth': auth}
         loginRes, auth = self.dyPhoneVerificationCodeLogin(auth, phone_num, code)
         logger.debug("[auth] 登录结果: {}", _safe_repr(loginRes))
-        redirect_url = loginRes['redirect_url']
+        redirect_url = (loginRes or {}).get('redirect_url')
+        if not redirect_url:
+            logger.error("[auth] 验证码登录失败（无 redirect_url）")
+            return {'status': 'login_failed', 'send': _safe_repr(sendCodeRes),
+                    'redirect_url': None, 'auth': auth}
         logger.debug("[auth] 跳转 URL: {}", _mask_url_query(redirect_url))
         headers = {
             "accept": "application/json, text/plain, */*",
