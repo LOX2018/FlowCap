@@ -50,3 +50,30 @@ iLink（腾讯官方个人微信 Bot API）实测存在**外发额度上限**：
 - 把说明烘焙进二维码 PNG（最省额度但需改图生成逻辑，且与"账号名"动态耦合，放弃）。
 - 接受 text+image 混排（实测被 `ret=-2 invalid arguments` 拒，不可行）。
 - 不记账、靠服务端 ret=-2 反馈（静默失败，体验差，否决）。
+
+---
+
+## 5. L-14 · iLink `ret=-14` 会话过期完整恢复（2026-09-26 落地，v0.45.25）
+
+**问题**：iLink 长轮询 `getupdates` 在会话过期时返回 `ret=-14`（官方 `wechatbot.dev/zh/protocol`
+「消息收发循环」明确定义；AstrBot PR #8196 / issue #6901 同口径）。原实现只 `sleep(5); continue`，
+等于**对过期 token 持续打流量 + 永不恢复**（违反 issue #6901「不应空轮询」）。
+
+**决策**：在 `_run_ilink` 内把轮询重构为双层循环（外层 token 生命周期 / 内层 getupdates），
+并新增两个独立可测函数：
+
+| 项 | 决策 | 理由 |
+|---|---|---|
+| 判定 | `_is_session_expired()` 只认 `ret==-14`（int/-14 str），**区别于 L-13 的 `ret=-2`** | -14 是会话级失效须重登；-2 是额度/参数错误可普通重试，误判会误清登录态 |
+| 检测点 | 内层循环首轮响应 `ret==-14` → 调 `_handle_session_expired()` 后 `break` 外层 | 不再用过期 token 续轮询 |
+| ①通知 | **先**发 critical（此时 bot_token 仍完好，绕过 L-13 preflight 的 ctx 拦截） | 后清 token 则通知自身被拦截（假成功族教训） |
+| ②持久化 | `save_config_file` 清空 `token`/`sync_buf`/`context_tokens`/`context_sent_counts` | 重启仍清空，不自动续轮询过期会话 |
+| ③重置 | 调用方置 `token=""` `sync_buf=""` 后 break | 内存态同步清空，避免残留引用 |
+| ④状态标记 | KV `notify.ilink.session_expired`（`need_rescan=True`） | 设置页展示「需重新扫码」 |
+| ⑥自动重推 | break → 外层「无 token → `_ilink_qr_login` 重推二维码」 | 契合 H-30 远程登录；满足 issue #6901「不应 crash」 |
+
+**验证**：`artifacts/verify_l14_session_expired.py`（13 PASS/0 FAIL，临时根隔离）——
+① `_is_session_expired` 对 -14 真 / 对 -2·无ret·其它ret 假；② 注入 -14 后 config 落盘
+token/sync_buf/ctx 已清空；③ 注入 -14 后 poll_calls==1（不再续轮询）且自动重推二维码拿到新 token。
+
+**完成标准达成**：✅ 停止续轮询 ✅ 持久化清空 ✅ 用户侧 critical 通知 ✅ 扫码后自动恢复。

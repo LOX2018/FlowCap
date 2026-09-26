@@ -196,73 +196,97 @@ class InboundManager:
                                   json=kw.get("payload", {}), headers=headers) as r:
                     return await r.json(content_type=None)
 
-        # ---- 无 token 时自动扫码登录（免手填门槛的核心）----
-        if not token:
-            try:
-                logged = await _ilink_qr_login(cid, _req, cfg)
-                if logged:
-                    token = logged
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[IB-003] [inbound] {cid} iLink 扫码登录失败: {e}")
-                return
-        if not token:
-            return
-
-        logger.info(f"[inbound] {cid} iLink getupdates 长轮询启动")
-        # 长轮询客户端超时：官方规范 §4.2 —— 响应会带 `longpolling_timeout_ms`
-        # （官方示例 35000），**下次轮询应优先使用该值**；无该字段时回退默认值。
-        # 2026-09-26 按官方规范改为动态（原硬编码 40s）。
-        poll_timeout_ms = 40000
+        # ---- iLink getupdates 长轮询（L-14：含 ret=-14 会话过期完整恢复）----
+        # 外层：token 生命周期。无 token → 自动扫码登录；会话过期（-14）→ 清 token
+        #   后自动重走扫码分支重推二维码（契合 H-30 远程登录主题，满足 issue #6901
+        #   「超时不应 crash / 不应空轮询」）。内层：正常 getupdates 长轮询。
         while True:
-            try:
-                data = await _req(
-                    "POST", "/ilink/bot/getupdates",
-                    payload={"base_info": {"channel_version": _ilink_sdk_version()},
-                             "get_updates_buf": sync_buf},
-                    timeout_s=max(5, int(poll_timeout_ms / 1000) + 5),
-                )
-                if str(data.get("ret", "0")) not in ("0", "None") and data.get("ret") != 0:
-                    # 会话过期等错误 → 提示重新扫码
-                    # 2026-09-17 修补（审查 P2-15）：响应体整包入日志会泄露
-                    # appid/secret/token，改用脱敏 repr。
-                    logger.warning(f"[IB-004] [inbound] {cid} getupdates 错误: "
-                                   f"{_safe(data)}")
+            if not token:
+                try:
+                    logged = await _ilink_qr_login(cid, _req, cfg)
+                    if logged:
+                        token = logged
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[IB-003] [inbound] {cid} iLink 扫码登录失败: {e}")
+                    return
+            if not token:
+                return
+
+            logger.info(f"[inbound] {cid} iLink getupdates 长轮询启动")
+            # 长轮询客户端超时：官方规范 §4.2 —— 响应会带 `longpolling_timeout_ms`
+            # （官方示例 35000），**下次轮询应优先使用该值**；无该字段时回退默认值。
+            # 2026-09-26 按官方规范改为动态（原硬编码 40s）。
+            poll_timeout_ms = 40000
+            while True:
+                try:
+                    data = await _req(
+                        "POST", "/ilink/bot/getupdates",
+                        payload={"base_info": {"channel_version": _ilink_sdk_version()},
+                                 "get_updates_buf": sync_buf},
+                        timeout_s=max(5, int(poll_timeout_ms / 1000) + 5),
+                    )
+                    # ── L-14（iLink ret=-14 会话过期完整恢复）────────────────
+                    # 官方 `wechatbot.dev/zh/protocol`「消息收发循环」明确
+                    # `ret: -14 = 会话过期`；AstrBot PR #8196 处理：清登录态+会话态
+                    # +持久化清空账户上下文+重置陈旧错误态+轮询错误后短退避。
+                    # 此处严格区分于 L-13 的 `ret=-2`（额度/参数错误，普通重试）：
+                    #   -14 是会话级失效，必须重新登录，不可继续轮询过期 token。
+                    # 顺序：①先发 critical 通知（token 仍完好，绕过 L-13 preflight）
+                    #   ②持久化清空 token/sync_buf/context_tokens（重启仍清空）
+                    #   ③break 内层 → 外层自动重走扫码登录分支重推二维码
+                    #   （不再用过期 token 持续打流量）。
+                    if _is_session_expired(data):
+                        logger.warning(
+                            f"[IB-EXPIRED] [inbound] {cid} iLink 会话过期"
+                            f"(ret={data.get('ret')})，清除会话态并请用户重新扫码"
+                        )
+                        await _handle_session_expired(cid, cfg)
+                        token = ""
+                        sync_buf = ""
+                        await asyncio.sleep(1)
+                        break  # → 外层：无 token 自动重推二维码
+                    if str(data.get("ret", "0")) not in ("0", "None") and data.get("ret") != 0:
+                        # 其它错误（非 -14）→ 维持原语义：5s 后重试，不清除会话
+                        # 2026-09-17 修补（审查 P2-15）：响应体整包入日志会泄露
+                        # appid/secret/token，改用脱敏 repr。
+                        logger.warning(f"[IB-004] [inbound] {cid} getupdates 错误: "
+                                       f"{_safe(data)}")
+                        await asyncio.sleep(5)
+                        continue
+                    new_buf = data.get("get_updates_buf")
+                    # 官方规范 §4.2：若响应带 longpolling_timeout_ms，下次轮询优先用它
+                    _lpt = data.get("longpolling_timeout_ms")
+                    if isinstance(_lpt, (int, float)) and _lpt > 0:
+                        poll_timeout_ms = int(_lpt)
+                    if new_buf:
+                        sync_buf = str(new_buf)
+                        _save_sync_buf(cid, cfg, sync_buf)
+                    msgs = data.get("msgs") or []
+                    for msg in msgs:
+                        if not isinstance(msg, dict):
+                            continue
+                        sender = str(msg.get("from_user_id", "")).strip()
+                        if not sender:
+                            continue
+                        ctx = str(msg.get("context_token", "")).strip()
+                        if ctx and hasattr(ch, "remember_context"):
+                            ch.remember_context(sender, ctx)
+                        text = _ilink_text(msg)
+                        reply = await self._dispatch(cid, sender, text,
+                                                     {"context_token": ctx},
+                                                     channel_kind="weixin_oc")
+                        if reply and ctx:
+                            try:
+                                await ch.send(sender, reply)
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(f"[IB-005] [inbound] {cid} 回复失败: {e}")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[IB-006] [inbound] {cid} 轮询异常: {e}")
                     await asyncio.sleep(5)
-                    continue
-                new_buf = data.get("get_updates_buf")
-                # 官方规范 §4.2：若响应带 longpolling_timeout_ms，下次轮询优先用它
-                _lpt = data.get("longpolling_timeout_ms")
-                if isinstance(_lpt, (int, float)) and _lpt > 0:
-                    poll_timeout_ms = int(_lpt)
-                if new_buf:
-                    sync_buf = str(new_buf)
-                    _save_sync_buf(cid, cfg, sync_buf)
-                msgs = data.get("msgs") or []
-                for msg in msgs:
-                    if not isinstance(msg, dict):
-                        continue
-                    sender = str(msg.get("from_user_id", "")).strip()
-                    if not sender:
-                        continue
-                    ctx = str(msg.get("context_token", "")).strip()
-                    if ctx and hasattr(ch, "remember_context"):
-                        ch.remember_context(sender, ctx)
-                    text = _ilink_text(msg)
-                    reply = await self._dispatch(cid, sender, text,
-                                                 {"context_token": ctx},
-                                                 channel_kind="weixin_oc")
-                    if reply and ctx:
-                        try:
-                            await ch.send(sender, reply)
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning(f"[IB-005] [inbound] {cid} 回复失败: {e}")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[IB-006] [inbound] {cid} 轮询异常: {e}")
-                await asyncio.sleep(5)
 
     # ==================================================================
     # QQ 官方机器人：botpy WebSocket（C2C + 群@）
@@ -358,6 +382,90 @@ def _ilink_text(msg: dict[str, Any]) -> str:
         except (TypeError, ValueError):
             continue
     return "".join(parts).strip()
+
+
+def _is_session_expired(data: dict[str, Any]) -> bool:
+    """判定 iLink getupdates 响应是否为「会话过期」(官方 ret=-14)。
+
+    依据：官方 `wechatbot.dev/zh/protocol`「消息收发循环」明确
+    `ret: -14 = 会话过期`；AstrBot PR #8196 / issue #6901 亦以 -14 为会话级失效。
+    与 L-13 的 `ret=-2`（额度/参数错误，可普通重试）严格区分：
+    此处只认 -14（字符串或整型），避免把额度错误误判为「需重新登录」。
+    """
+    if not isinstance(data, dict):
+        return False
+    ret = data.get("ret")
+    if ret is None:
+        return False
+    # iLink 成功响应**不含 ret 字段**（channels.py 同口径），故 None 必为假。
+    if isinstance(ret, int):
+        return ret == -14
+    if isinstance(ret, str):
+        s = ret.strip().lstrip("-")  # 容忍 "-14" / "-14.0"
+        return s == "14" and str(ret).strip().startswith("-")
+    return False
+
+
+async def _handle_session_expired(cid: str, cfg: dict[str, Any]) -> None:
+    """iLink ret=-14 会话过期的完整恢复（L-14）。
+
+    顺序（满足官方「清除 context_token」+ 上游 PR #8196「持久化清空 + 重置态」）：
+      ① 先发 critical 通知（此时 bot_token 仍完好，绕过 L-13 preflight 的 ctx 拦截）
+         —— 通知用户「iLink 会话已过期，请重新扫码」，并触发设置页重推二维码；
+      ② 持久化清空 token / sync_buf / context_tokens（重启仍保持清空，不自动续轮询）；
+      ③ 清内存态（由调用方置 token=\"\"、sync_buf=\"\" 后 break 外层）；
+      ④ 标记 KV `notify.ilink.session_expired` 供设置页展示「需重新扫码」状态。
+    不在此 crash / 不停轮询：调用方据此自动回到「无 token → 扫码登录」分支，
+    满足 issue #6901「超时不应 crash 退出、也不应空轮询」。
+    """
+    # ① critical 通知（经 notifier 跨渠道推送；稍后内存态仍有效，可送达）
+    try:
+        from .notifier import notifier
+
+        notifier.emit(
+            "ilink_session_expired",
+            "iLink 会话已过期",
+            "iLink（个人微信 Bot）会话已过期，请到设置页重新扫码登录以恢复收消息。",
+            level="critical",
+            dedup_key=f"ilink_session_expired:{cid}",
+            throttle_sec=300,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[IB-EXPIRED] [inbound] {cid} 过期通知发送失败（不阻断恢复）: {e}")
+
+    # ② 持久化清空会话态（token/sync_buf/context_tokens）
+    try:
+        from api.notify import load_config, save_config_file
+
+        cfg_full = load_config()
+        for item in cfg_full.get("channels", []) or []:
+            if str(item.get("id") or item.get("kind")) == cid:
+                # 清 bot_token 与游标；context_tokens 一并清空（官方口径：过期即清 ctx）
+                item.pop("token", None)
+                item.pop("sync_buf", None)
+                item.pop("context_tokens", None)
+                item.pop("context_sent_counts", None)
+                # 内存态 cfg 同步，避免后续本循环残留引用
+                cfg.pop("token", None)
+                cfg.pop("sync_buf", None)
+                cfg.pop("context_tokens", None)
+                cfg.pop("context_sent_counts", None)
+                break
+        save_config_file(cfg_full)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[IB-EXPIRED] [inbound] {cid} 会话态持久化清空失败: {e}")
+
+    # ④ 设置页状态标记（供前端展示「需重新扫码」）
+    try:
+        from database import set_kv_json
+
+        set_kv_json("notify.ilink.session_expired", {
+            "channel_id": cid,
+            "expired_at": int(time.time()),
+            "need_rescan": True,
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[IB-EXPIRED] [inbound] 状态标记写入失败（不致命）: {e}")
 
 
 def _save_sync_buf(cid: str, cfg: dict[str, Any], buf: str) -> None:
