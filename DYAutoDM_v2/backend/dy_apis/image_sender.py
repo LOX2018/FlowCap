@@ -33,6 +33,7 @@ from loguru import logger
 
 import static.Request_pb2 as RequestProto
 from builder.header import HeaderBuilder
+from utils.fingerprint import get_profile
 from builder.proto import ProtoBuilder
 from utils.dy_util import (
     generate_a_bogus,
@@ -149,6 +150,11 @@ def _aws4_post_authorization(secret_key, canonical_query, amz_date, session_toke
 # ----------------------------------------------------------------------------
 def get_upload_config(auth) -> dict:
     """① 拉取 IM 上传 STS 凭证。返回 {ak, sk, st, space_name, expire_at}。"""
+    # ★ 2026-09-26（ADR-016 D4 参数层收口 / H-22 审计外发现）：本请求参数原先
+    #   硬编码**整套 Chrome 139 身份**（browser_name/version/engine/os）+ 固定
+    #   cpu/屏幕，与内核（Camoufox ⇒ Gecko）矛盾 ⇒ 同一请求内自相矛盾。
+    #   统一跟随档案（零新映射、零硬编码）。
+    _prof = get_profile()
     params = {
         "device_platform": "webapp",
         "aid": "6383",
@@ -158,22 +164,22 @@ def get_upload_config(auth) -> dict:
         "pc_libra_divert": "Windows",
         "support_h265": "1",
         "support_dash": "1",
-        "cpu_core_num": "8",
+        "cpu_core_num": _prof["cpu_core_num"],
         "version_code": "170400",
         "version_name": "17.4.0",
         "cookie_enabled": "true",
-        "screen_width": "1440",
-        "screen_height": "900",
+        "screen_width": _prof["screen_width"],
+        "screen_height": _prof["screen_height"],
         "browser_language": "zh-CN",
-        "browser_platform": "Win32",
-        "browser_name": "Chrome",
-        "browser_version": "139.0.0.0",
+        "browser_platform": _prof["platform"],
+        "browser_name": _prof["browser_name"],
+        "browser_version": _prof["browser_version"],
         "browser_online": "true",
-        "engine_name": "Blink",
-        "engine_version": "139.0.0.0",
-        "os_name": "Windows",
-        "os_version": "10.0.0",
-        "device_memory": "8",
+        "engine_name": _prof["engine_name"],
+        "engine_version": _prof["engine_version"],
+        "os_name": _prof["os_name"],
+        "os_version": _prof["os_version"],
+        "device_memory": _prof["device_memory"],
         "platform": "PC",
         "downlink": "10",
         "effective_type": "4g",

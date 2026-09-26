@@ -497,7 +497,7 @@ class ImMixin:
          .add_param("browser_name", get_profile()["browser_name"])
          .add_param("browser_version", get_profile()["browser_version"])
          .add_param("browser_online", "true")
-         .add_param("engine_name", "Blink")
+         .add_param("engine_name", get_profile()["engine_name"])
          .add_param("os_name", "Windows")
          .add_param("os_version", "10")
          .add_param("platform", "PC")

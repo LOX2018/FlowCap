@@ -24,7 +24,9 @@ class Params:
             'browser_name': get_profile()["browser_name"],
             'browser_version': get_profile()["browser_version"],
             'browser_online': 'true',
-            'engine_name': 'Blink',
+            # ★ 2026-09-26（ADR-016 D4 参数层收口 / H-22 审计外发现）：
+            #   原硬编码 'Blink'，但真实内核 Camoufox⇒Gecko ⇒ 逻辑不可能值。统一走档案。
+            'engine_name': get_profile()["engine_name"],
             'engine_version': get_profile()["engine_version"],
             'os_name': 'Windows',
             'os_version': '10',

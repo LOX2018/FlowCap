@@ -161,17 +161,30 @@ utils.fingerprint.fingerprint_profile()
 
 ### D4. 消除所有 Chrome 硬编码残留
 
-**规则**：以下四处必须统一走 D1 的内核感知入口：
+**规则**：以下必须统一走 D1 的内核感知入口（`get_profile()` 字典 / `_truth_source`）：
 
-| 文件 | 现状 |
-|---|---|
-| `utils/fingerprint.py` | `brand="Chrome"` + Chrome UA/CH |
-| `dy_apis/client_live.py:377` | 硬编码 `Chrome/146.0.0.0` |
-| `utils/ab_pure.py:58` | 硬编码 `Chrome/150.0.0.0` |
-| `utils/strdata_pure.py:10` | 模板 `vendor:"Google Inc."` 与 `product:"Gecko"` **自相矛盾** |
+| 层 | 文件 | 现状（修复前） |
+|---|---|---|
+| 内核档案 | `utils/fingerprint.py` | `brand="Chrome"` + Chrome UA/CH（已按内核分支） |
+| 签名器 | `utils/ab_pure.py:58` | 硬编码 `Chrome/150.0.0.0` |
+| 指纹模板 | `utils/strdata_pure.py:10` | 模板 `vendor:"Google Inc."` 与 `product:"Gecko"` **自相矛盾** |
+| 请求参数 | `builder/params.py:27` | `engine_name='Blink'`（硬编码，与档案 Gecko 矛盾） |
+| 请求参数 | `dy_apis/*.py`（11 文件 / ~35 处） | `add_param("engine_name","Blink")` / 版本字面量 `121.0.0.0`·`130.0.0.0`·`138.0.0.0` |
+| 私信图片 | `dy_apis/image_sender.py` | **整套 Chrome 139 身份块**（browser_name/version/engine/os）+ cpu/screen 字面量 |
+| 会话探测 | `auto_dm/login_remote.py:631` | 硬编码 `Chrome/131.0.0.0` UA 探活（与内核矛盾，可能误判会话失效） |
+
+> **D4·A 参数层收口（2026-09-26 H-22 审计外发现）**：
+> ADR-016 原 D1–D4 只覆盖 UA / sec-ch-ua / 内核真值，**参数层（`Params().with_platform()`
+> 注入的 `engine_name` / `browser_version` 等）是盲区**。实测出站参数
+> `browser_name='Firefox'` + `engine_name='Blink'` + `engine_version='152.0'` ——
+> **Firefox 不可能使用 Blink**（逻辑不可能值）。档案侧 `fingerprint.py` 已正确产出
+> `engine_name='Gecko'`，是**调用点硬编码覆盖了档案**。
+> **处置**：全量改为 `_prof[...]`（含 `image_sender` 整套身份块、`login_remote` 探活 UA）。
+> **防复发门禁**：`scripts/check_fingerprint_consistency.py` 的 A9a/A9b/A9c
+> （参数层 brand⇔engine 配对、version⇔engine_version 同源、无活跃硬编码；含负控）。
 
 **理由**：Canonical Contract Law —— 同一语义（浏览器身份）出现多个来源，
-必然漂移（当前已漂移出 146/148/150 三个版本号）。
+必然漂移（当前已漂移出 121/130/131/138/139/146/148/150 多个版本号）。
 
 ### D5. 保留 Chromium 回退路径
 

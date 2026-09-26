@@ -55,6 +55,7 @@ def main() -> int:
         from utils.ab_pure import ABogusPureSigner
         from utils.strdata_pure import build_fingerprint
         from builder.header import HeaderBuilder
+        from builder.params import Params
     except Exception as e:  # noqa: BLE001
         print(f"✗ 无法导入被测模块: {type(e).__name__}: {e}")
         return 1
@@ -204,6 +205,52 @@ def main() -> int:
     _check("A7", kv != _FALLBACK_VERSION,
            f"内核版本={kv}（兜底常量={_FALLBACK_VERSION}）"
            + ("" if kv != _FALLBACK_VERSION else " ← 退回兜底，内核 exe 定位失败"))
+
+    # ── A9 参数层身份自洽 + 无活跃硬编码（2026-09-26 H-22 审计外发现）─────
+    # 判据分两半：
+    #   ① **数值自洽**：同一请求的参数里 `browser_name` 与 `engine_name` 必须配对
+    #      （Firefox⇒Gecko / Chrome⇒Blink），且 `engine_version` 与 `browser_version`
+    #      同源。实测缺陷形态：browser_name='Firefox' + engine_name='Blink'
+    #      —— **逻辑不可能值**（Firefox 不用 Blink）。档案侧已正确，是调用点硬编码覆盖。
+    #   ② **无活跃硬编码**：全仓不得再出现 `engine_name`/`browser_name` 的硬编码字面量
+    #      （档案本体 `utils/fingerprint.py` 与测试 fixture 除外）。
+    try:
+        _pp = Params().with_platform().get()
+        _bn, _en = _pp.get("browser_name"), _pp.get("engine_name")
+        _bvv, _evv = _pp.get("browser_version"), _pp.get("engine_version")
+        _pair_ok = ((_bn == "Firefox" and _en == "Gecko")
+                    or (_bn == "Chrome" and _en == "Blink"))
+        _check("A9a", _pair_ok,
+               f"参数层 brand/engine 须配对；实际 browser_name={_bn!r} engine_name={_en!r}"
+               + ("" if _pair_ok else "  ← 逻辑不可能值（如 Firefox 用 Blink）"))
+        _check("A9b", _bvv == _evv,
+               f"engine_version 应与 browser_version 同源；实际 "
+               f"browser_version={_bvv!r} engine_version={_evv!r}")
+    except Exception as e:  # noqa: BLE001
+        _check("A9a", False, f"构造参数失败: {type(e).__name__}: {e}")
+        _check("A9b", False, "同上（参数构造失败）")
+
+    # 活跃硬编码扫描（避开档案本体与测试）
+    _id_pat = re.compile(
+        r'(engine_name|browser_name)[\"\']?\s*[:,]\s*[\"\'](Blink|Chrome|Firefox|Edge|Gecko)[\"\']')
+    _id_hits: list[str] = []
+    for p in BACKEND.rglob("*.py"):
+        srel = str(p.relative_to(BACKEND)).replace("\\", "/")
+        if any(x in srel for x in ("_internal", "build/")):
+            continue
+        if srel == "utils/fingerprint.py" or p.name.startswith("test_"):
+            continue          # 档案本体（合法归属）/ 测试 fixture
+        try:
+            _lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            continue
+        for i, ln in enumerate(_lines, 1):
+            if ln.lstrip().startswith("#"):
+                continue
+            if _id_pat.search(ln):
+                _id_hits.append(f"{srel}:{i}")
+    _check("A9c", not _id_hits,
+           "活跃硬编码 brand/engine: " + ("; ".join(_id_hits[:6]) if _id_hits else "无"))
 
     # ── 输出 ───────────────────────────────────────────────────────────
     print("=" * 68)

@@ -53,6 +53,7 @@ import time
 from typing import Callable, Optional
 
 from loguru import logger
+from utils.fingerprint import get_profile
 
 # 登录页入口（实测可靠，绕开 A/B 差异）
 LOGIN_URL = "https://www.douyin.com/?modal_id=login"
@@ -626,9 +627,12 @@ async def _probe_session_valid_by_cookies(cookies: dict) -> dict:
         cs = "; ".join(f"{k}={v}" for k, v in cookies.items())
         hdrs = {
             "Cookie": cs,
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/131.0.0.0 Safari/537.36"),
+            # ★ 2026-09-26（ADR-016 D4 参数层收口 / H-22 审计外发现）：
+            #   原硬编码 Chrome/131 UA，而真实内核是 Camoufox(Firefox 152)
+            #   ⇒ 服务端看到「UID 来自 Firefox 会话、探活却自称 Chrome」的身份矛盾，
+            #   可能据此误判**会话失效**（正是 H-27「凭证频繁失效」的同族形态）。
+            #   统一走档案 UA（与全部出站请求同一身份，零硬编码）。
+            "User-Agent": get_profile()["user_agent"],
             "Referer": "https://www.douyin.com/",
         }
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as cli:
