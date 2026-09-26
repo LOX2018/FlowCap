@@ -122,11 +122,18 @@ class BaseChannel(ABC):
             return ChannelResult(False, self.name, "渠道未启用")
         if not target:
             return ChannelResult(False, self.name, "缺少目标（target）")
+        # 前置判定：把「必然失败」提前为明确提示（如 iLink 额度用尽/无 ctx），
+        # 避免盲推 + 无谓重试。覆写见 WeixinOCChannel.preflight。
+        block = self.preflight(target)
+        if block:
+            logger.warning(f"[NTY-015] [notify:{self.name}] 前置检查未通过: {block}")
+            return ChannelResult(False, self.name, block)
         last = ""
         for i in range(retries + 1):
             try:
                 r = await self._do_send(target, text)
                 if r.ok:
+                    self._on_sent_ok(target)
                     return r
                 last = r.error
                 if self._is_terminal_error(r):
@@ -141,6 +148,18 @@ class BaseChannel(ABC):
                 await asyncio.sleep(1.5 * (i + 1))
         logger.error(f"[NTY-007] " + f"[notify:{self.name}] 发送最终失败: {last}")
         return ChannelResult(False, self.name, last)
+
+    def _on_sent_ok(self, target: str) -> None:
+        """外发成功后记账（默认空实现；支持额度的渠道覆写）。"""
+        return
+
+    def preflight(self, target: str) -> Optional[str]:
+        """发送前检查（返回非空字符串 = 阻塞原因；None = 可发送）。
+
+        默认不限。支持额度的渠道（iLink）覆写以做「额度/上下文」前置判定，
+        把「必然失败」提前为**明确提示**，而不是等服务端返回 ret=-2。
+        """
+        return None
 
     def _is_terminal_error(self, r: "ChannelResult") -> bool:
         """该失败是否**重试无意义**（确定性错误）。
@@ -190,11 +209,53 @@ class WeixinOCChannel(BaseChannel):
         self.account_id = str(cfg.get("account_id", "")).strip()
         # user_id -> context_token（真实环境应持久化；此处内存态 + 可选落盘）
         self._ctx: dict[str, str] = dict(cfg.get("context_tokens") or {})
+        # ── L-13 外发额度记账（2026-09-26，官方规范）──────────────────────────
+        # 官方：`wechatbot.dev/zh/protocol` 「回复能力窗口（约 24h、**每 10 条外发
+        # 需一次新入站**）由产品层显式记账（contextWindow.ts）」，且**无刷新接口**。
+        # 实测（t16/t18）：同一 ctx 连推，第 1~10 条 ✅、**第 11 条必 ❌**
+        # `ret=-2 "prepare failed"` ⇒ 故此处对**已外发条数**记账，达上限即判定
+        # 「需刷新」，避免盲推。**注意：计数只对 sendmessage 记账**，
+        # getuploadurl/getconfig 等不占额度。
+        self._sent: dict[str, int] = dict(cfg.get("context_sent_counts") or {})
+        self._quota = int(cfg.get("outbound_quota") or 10)
+        # L-14（2026-09-26 恢复）：上游 T-14 曾把默认值误设为 -14（负数 → 额度永远耗尽、
+        # 任何主动推送都会被 preflight 拦死）。规范值为正（官方默认 10），故对 ≤0 兜底回 10。
+        if self._quota <= 0:
+            logger.warning(
+                f"[NTY-016] [notify:{self.name}] outbound_quota={self._quota} 非法，"
+                "回退官方默认 10"
+            )
+            self._quota = 10
+
+    def refresh_context(self, user_id: str, context_token: str) -> None:
+        """收到入站消息时调用：更新 ctx **并把外发计数归零**（额度随之刷新）。"""
+        uid = str(user_id)
+        if not uid:
+            return
+        if context_token:
+            self._ctx[uid] = str(context_token)
+        # 官方模型：新入站消息 = 新的回复窗口 ⇒ 计数归零
+        if uid in self._sent:
+            logger.debug(f"[notify] {self.name} {uid[:12]}… 入站刷新，外发计数归零")
+        self._sent[uid] = 0
+
+    def remaining_quota(self, user_id: str) -> int:
+        """该用户在当前窗口内还剩余多少条外发额度（官方上限默认 10）。"""
+        return max(0, self._quota - int(self._sent.get(str(user_id), 0)))
 
     def remember_context(self, user_id: str, context_token: str) -> None:
-        """收到入站消息时登记 context_token —— 之后才能对该用户回推。"""
-        if user_id and context_token:
-            self._ctx[str(user_id)] = str(context_token)
+        """收到入站消息时登记 context_token —— 之后才能对该用户回推。
+
+        语义同 `refresh_context`（含计数归零）；保留旧名以兼容既有调用点。
+        """
+        self.refresh_context(user_id, context_token)
+
+    def export_state(self) -> dict[str, Any]:
+        """导出需持久化的会话态（ctx + 外发计数）—— 供配置落盘复用。"""
+        return {
+            "context_tokens": dict(self._ctx),
+            "context_sent_counts": dict(self._sent),
+        }
 
     def has_context(self, user_id: str) -> bool:
         return str(user_id) in self._ctx
@@ -285,7 +346,7 @@ class WeixinOCChannel(BaseChannel):
     def _is_terminal_error(self, r: ChannelResult) -> bool:
         """iLink 的哪些失败重试无意义（2026-09-26 实测）。
 
-        · `ret=-2 "prepare failed"`   → context_token 配额用尽（等多久都不恢复）
+        · `ret=-2 "prepare failed"`   → 外发额度用尽 / 回复窗口已过（等多久都不恢复）
         · `ret=-2 "invalid arguments"`→ item_list 组合非法（如 text+image 混排）
         · `ret=-2` 其它 / `errcode=-14`(SESSION_TIMEOUT) → 同样确定性，需重新登录
         ⇒ 这些都必须**立即返回**：上游 SESSION_TIMEOUT_ERRCODE=-14 亦属此列。
@@ -295,6 +356,33 @@ class WeixinOCChannel(BaseChannel):
             return False
         err = str(r.error or "")
         return "ret=-2" in err or "ret=-14" in err or "SESSION_TIMEOUT" in err.upper()
+
+    def preflight(self, target: str) -> Optional[str]:
+        """发送前置检查（L-13 额度记账，2026-09-26 官方规范）。
+
+        iLink 官方：**每 10 条外发需一次新入站消息刷新**，且**无刷新接口**；
+        实测同一 ctx 第 11 条必 `ret=-2`。故在此提前判定，返回明确原因，
+        让上层能提示用户「请给 Bot 发一条消息」而不是盲推后静默失败。
+        """
+        uid = str(target)
+        if uid not in self._ctx:
+            return "缺少 context_token：iLink 需对方先发一条消息后才能回推"
+        if self.remaining_quota(uid) <= 0:
+            return (
+                f"外发额度已用尽（{self._quota} 条/窗口，官方规范）："
+                "请对方给 Bot 发一条消息以刷新回复窗口"
+            )
+        return None
+
+    def _on_sent_ok(self, target: str) -> None:
+        """外发成功后 +1 记账（L-13）。**只有 sendmessage 走这里**，
+        媒体上传（getuploadurl）/配置（getconfig）不占额度，故不计数。"""
+        uid = str(target)
+        self._sent[uid] = int(self._sent.get(uid, 0)) + 1
+        logger.debug(
+            f"[notify] {self.name} {uid[:12]}… 外发计数 "
+            f"{self._sent[uid]}/{self._quota}"
+        )
 
     async def _upload_media(self, target: str, raw: bytes) -> Optional[dict[str, Any]]:
         """上传字节到 iLink CDN → 返回可直接放进 item_list 的 image_item，失败返回 None。
@@ -390,39 +478,39 @@ class WeixinOCChannel(BaseChannel):
     ) -> ChannelResult:
         """推送本地图片文件到指定 iLink 用户（target 需已有 context_token）。
 
-        `caption` 非空 → 先单独发一条文本，再发图片。**不可混排在同一个 item_list**
-        （实测 2026-09-26：text+image 混排会被服务端判 ret=-2 "invalid arguments"，
-        纯 image item_list 才成功）。
+        ## caption 语义（2026-09-26 L-15 调整）
+        为遵守官方「每 10 条外发需一次新入站」额度，**caption 默认不再单独发一条
+        文本**（旧实现会先发文本再发图片 = 2 条额度）。改由调用方决定：
+        - 需要省额度（默认）：把说明折进图片侧或省略 —— 本方法只发 **1 条**图片；
+        - 确实需要单独文本时，由调用方**显式**再调一次 `send()`。
 
-        ## ⚠️ context_token 是【有限配额】而非时效（2026-09-26 实测订正）
-        实测同一 ctx 连续推送：
-          · 第 1~2 次 → 成功
-          · 第 3 次起 → `ret=-2 "prepare failed"`
-          · 等待 30s / 60s 后重试 → 仍失败（**不会随时间恢复**）
-          · 收到对方**新消息**（新 ctx）→ 立即全部恢复成功
-        ⇒ 结论：一个 context_token 约可用 2~3 次，**用尽即失效**；
-          恢复只能靠对方再发一条消息（新的入站事件携带新 ctx）。
-          ⚠️ 注意 `bot_token`（绑定凭证）才是长效的，两者勿混淆。
+        ⚠️ 不可把 text 与 image 混排进同一个 item_list（实测 2026-09-26：
+        text+image 混排被服务端判 `ret=-2 "invalid arguments"`，纯 image 才成功）。
+
+        ## 外发额度（2026-09-26 官方规范 + 实测订正）
+        iLink 官方：**每 10 条外发需一次新入站**刷新（`contextWindow.ts` 记账模型），
+        且**无刷新接口**；实测同一 ctx 连推第 1~10 条 ✅、**第 11 条 ❌**
+        `ret=-2 "prepare failed"`。恢复只能靠对方再发一条消息（新入站）。
+        ⚠️ `bot_token`（绑定凭证）是长效的，与 ctx 语义不同，勿混淆。
         """
         if not self.enabled:
             return ChannelResult(False, self.name, "渠道未启用")
         if not target:
             return ChannelResult(False, self.name, "缺少目标（target）")
+        # L-13：与 send() 一致做前置检查（ctx 存在 + 额度未用尽）
+        block = self.preflight(target)
+        if block:
+            logger.warning(f"[NTY-015] [notify:{self.name}] 前置检查未通过: {block}")
+            return ChannelResult(False, self.name, block)
         ctx = self._ctx.get(str(target), "")
-        if not ctx:
-            return ChannelResult(
-                False, self.name, "缺少 context_token：iLink 需对方先发一条消息后才能回推"
-            )
         try:
             raw = Path(image_path).read_bytes()
         except Exception as e:  # noqa: BLE001
             return ChannelResult(False, self.name, f"读取图片失败: {e}")
 
-        # caption 先单独发（不混排——见 docstring 的实测依据）
+        # L-15：caption 不再单独发送（省额度）。仅记录，供调用方/日志追溯。
         if caption:
-            cap = await self.send(target, caption)
-            if not cap.ok:
-                logger.warning(f"[NTY-008] [notify:weixin_oc] caption 发送失败: {cap.error}")
+            logger.debug(f"[notify:weixin_oc] caption 随图片推送（不单独计入额度）: {caption[:40]}")
 
         item = await self._upload_media(target, raw)
         if item is None:
@@ -462,6 +550,8 @@ class WeixinOCChannel(BaseChannel):
                 f"iLink err ret={ret} errcode={errcode} {body.get('errmsg', '')}",
                 {"body": body},
             )
+        # L-13：图片消息也是一条 sendmessage ⇒ 计入外发额度
+        self._on_sent_ok(target)
         return ChannelResult(True, self.name, raw={"body": body})
 
 

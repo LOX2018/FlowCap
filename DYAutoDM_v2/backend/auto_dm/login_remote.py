@@ -725,20 +725,26 @@ async def prepare_qr_login(env_path: str, out_png: str, headless: bool = True,
         res["heal"] = heal
         # 出码成功 → 通过 IM 通道把二维码推给用户（用户不在电脑旁也能扫码）。
         # 用途：远程更新抖音凭证（ADR-017）。推送失败绝不影响出码结果本身。
+        #
+        # ⚠️ **L-15（2026-09-26）：只发【单条图片】，不发正文文本。**
+        # 依据：iLink 官方规范「每 10 条外发需一次新入站」——文本+图片=2 条会吃掉
+        # 1/5 额度，且文本条失败时图片仍发出会造成体验割裂。故把关键信息折进
+        # `caption`，由渠道层在【图片消息内】携带（不额外占用一条外发）。
         if res.get("ok") and res.get("png"):
             try:
                 from notify.notifier import notifier as _notifier
 
+                _acct = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
                 _notifier.emit(
                     "login_qrcode",
                     "抖音扫码登录",
-                    f"账号「{os.path.basename(os.path.dirname(os.path.abspath(env_path)))}」"
-                    f"需要扫码登录，二维码见下图（约 60 秒内有效，请尽快扫描）。",
+                    "",  # 正文留空 ⇒ 不单独发文本（L-15）
                     level="critical",
                     dedup_key=f"login_qrcode:{out_png}",
                     image_path=res["png"],
+                    image_caption=f"账号「{_acct}」需扫码登录，二维码约 60 秒内有效。",
                 )
-                logger.info("[login_remote] 二维码已提交 IM 推送: {}", res["png"])
+                logger.info("[login_remote] 二维码已提交 IM 推送（单条图片）: {}", res["png"])
             except Exception as e:  # noqa: BLE001
                 logger.warning("[login_remote] 二维码 IM 推送失败（不影响出码）: {}", e)
         return res

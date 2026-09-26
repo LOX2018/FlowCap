@@ -113,6 +113,7 @@ class Notifier:
         throttle_sec: int = 0,
         targets: dict[str, str] | None = None,
         image_path: str = "",
+        image_caption: str = "",
     ) -> None:
         """业务侧调用入口（同步，不阻塞）。
 
@@ -121,6 +122,11 @@ class Notifier:
         image_path: 可选本地图片路径。支持图片的渠道（如 weixin_oc）会**连带推送图片**，
                  不支持图片的渠道自动退化为只发文本（向后兼容）。典型用法：
                  抖音扫码登录出码后，把二维码 PNG 推给用户（用户不在电脑旁也能扫码）。
+        image_caption: 可选图片说明。**仅在 image_path 非空时生效**，随图片消息一起
+                 发出（不额外占一条外发额度）。
+                 ⚠️ L-15（2026-09-26）：iLink 官方规范「每 10 条外发需一次新入站」，
+                 `body` 与图片是**两条**外发 ⇒ 需要省额度时把 `body` 留空、
+                 把说明放进 `image_caption`，即「单条图片」推送。
         """
         if not self.enabled or not self.channels:
             return
@@ -147,6 +153,7 @@ class Notifier:
                 "level": level,
                 "targets": targets or {},
                 "image_path": image_path,
+                "image_caption": image_caption,
             }
         )
 
@@ -191,9 +198,12 @@ class Notifier:
         level: str,
         targets: dict[str, str],
         image_path: str = "",
+        image_caption: str = "",
     ) -> None:
         lvl = LEVELS.get(level, 10)
-        text = f"【DYAutoDM·{title}】\n{body}"
+        # ⚠️ L-15：body 为空且带图片时，**只发图片一条**（不拼标题前缀，避免多占额度）。
+        # 说明文本改由 image_caption 随图片消息携带。
+        text = f"【DYAutoDM·{title}】\n{body}" if (body or not image_path) else ""
         for cid, ch in list(self.channels.items()):
             if not ch.enabled:
                 continue
@@ -207,13 +217,15 @@ class Notifier:
             for target in dests:
                 if not target:
                     continue
-                # 图片优先：渠道实现了 send_image 且提供了图片路径时，走图片推送
-                # （send_image 内部会把 caption 作为独立文本先行发出）；
+                # 图片优先：渠道实现了 send_image 且提供了图片路径时，走图片推送；
                 # 否则退化为纯文本，保证不支持图片的渠道行为不变。
+                # L-15：caption 优先用 image_caption；为空时回退 text 的正文部分
+                #      （text 为空串 ⇒ 单条纯图片，不额外占额度）。
+                cap = image_caption or text
                 sender = getattr(ch, "send_image", None)
                 if image_path and callable(sender):
                     try:
-                        r: ChannelResult = await sender(target, image_path, text)
+                        r: ChannelResult = await sender(target, image_path, cap)
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
                             f"[NTY-013] [notify] {cid} 图片推送异常，退化为文本: {e}"
