@@ -23,6 +23,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import random
 import time
 from typing import Any, Callable, Optional
 
@@ -34,6 +36,19 @@ from loguru import logger
 # iLink / QQ 的响应体与异常文本常回显请求参数（appid / secret / bot_token /
 # qrcode / baseurl），原实现直接 `{data}` / `repr(e)` 整包入日志，等同泄露通道。
 # 统一走这里：敏感键值掩码 + 整体截断。
+def _ilink_sdk_version() -> str:
+    """iLink `base_info.channel_version` —— 官方规范要求填 **SDK 版本号**。
+
+    依据 `wechatbot.dev/zh/protocol` §3.2（官方示例 0.1.0/1.0.0/1.0.2）。
+    取本项目构建版本，异常回退 "0.0.0"。
+    """
+    try:
+        from _build_version import BUILD_VERSION  # type: ignore
+        return str(BUILD_VERSION)
+    except Exception:  # noqa: BLE001
+        return "0.0.0"
+
+
 _SENSITIVE_KEYS = (
     "token", "secret", "appid", "app_id", "password", "cookie",
     "authorization", "qrcode", "session", "key", "ticket",
@@ -159,7 +174,17 @@ class InboundManager:
             if token:
                 headers["AuthorizationType"] = "ilink_bot_token"
                 headers["Authorization"] = f"Bearer {token}"
-                headers["X-WECHAT-UIN"] = str(int(time.time()))
+                # X-WECHAT-UIN：官方规范 = base64(String(random_uint32))，**每次请求重新生成**。
+                # 依据：wechatbot.dev/zh/protocol §3.3 + 官方 SDK api.ts::randomUin()。
+                # 2026-09-26 修正：原用 str(int(time.time()))（时间戳且未 base64）—— 与规范不符，
+                # 上游实测该值错误会被服务端判 ret=-1（channels.py 已在 v0.45.19 修正，此处同步）。
+                headers["X-WECHAT-UIN"] = base64.b64encode(
+                    str(random.getrandbits(32)).encode("utf-8")
+                ).decode("utf-8")
+            # iLink-App-ClientVersion：官方规范标注为**必需**（现有实现固定传 1），
+            # 适用于扫码状态轮询（get_qrcode_status）。依据同 §2.2。
+            if endpoint.endswith("get_qrcode_status"):
+                headers["iLink-App-ClientVersion"] = "1"
             timeout = aiohttp.ClientTimeout(
                 total=kw.pop("timeout_s", 40) or 40)
             async with aiohttp.ClientSession(timeout=timeout) as s:
@@ -186,13 +211,17 @@ class InboundManager:
             return
 
         logger.info(f"[inbound] {cid} iLink getupdates 长轮询启动")
+        # 长轮询客户端超时：官方规范 §4.2 —— 响应会带 `longpolling_timeout_ms`
+        # （官方示例 35000），**下次轮询应优先使用该值**；无该字段时回退默认值。
+        # 2026-09-26 按官方规范改为动态（原硬编码 40s）。
+        poll_timeout_ms = 40000
         while True:
             try:
                 data = await _req(
                     "POST", "/ilink/bot/getupdates",
-                    payload={"base_info": {"channel_version": "dyautodm"},
+                    payload={"base_info": {"channel_version": _ilink_sdk_version()},
                              "get_updates_buf": sync_buf},
-                    timeout_s=40,
+                    timeout_s=max(5, int(poll_timeout_ms / 1000) + 5),
                 )
                 if str(data.get("ret", "0")) not in ("0", "None") and data.get("ret") != 0:
                     # 会话过期等错误 → 提示重新扫码
@@ -203,6 +232,10 @@ class InboundManager:
                     await asyncio.sleep(5)
                     continue
                 new_buf = data.get("get_updates_buf")
+                # 官方规范 §4.2：若响应带 longpolling_timeout_ms，下次轮询优先用它
+                _lpt = data.get("longpolling_timeout_ms")
+                if isinstance(_lpt, (int, float)) and _lpt > 0:
+                    poll_timeout_ms = int(_lpt)
                 if new_buf:
                     sync_buf = str(new_buf)
                     _save_sync_buf(cid, cfg, sync_buf)

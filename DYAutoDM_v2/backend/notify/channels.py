@@ -40,6 +40,21 @@ from typing import Any, Optional
 
 from loguru import logger
 
+def _channel_version() -> str:
+    """iLink `base_info.channel_version` —— 官方规范要求填**SDK 版本号**。
+
+    依据：`wechatbot.dev/zh/protocol` §3.2 ——「把 channel_version 设为实际 SDK
+    版本号，便于排查兼容问题」；腾讯官方 `@tencent-weixin/openclaw-weixin v1.0.2`
+    的 `BASE_INFO = { channel_version: '1.0.0' }` 亦如此（常见值 0.1.0/1.0.0/1.0.2）。
+    本项目取自身构建版本（`_build_version.BUILD_VERSION`），异常时回退 "0.0.0"。
+    """
+    try:
+        from _build_version import BUILD_VERSION  # type: ignore
+        return str(BUILD_VERSION)
+    except Exception:  # noqa: BLE001
+        return "0.0.0"
+
+
 __all__ = [
     "ChannelResult",
     "ChannelError",
@@ -131,7 +146,7 @@ class BaseChannel(ABC):
         """该失败是否**重试无意义**（确定性错误）。
 
         默认实现：不判定（保持既有行为）。渠道可覆写。
-        判据来源：iLink `ret=-2` 无论重试多少次都失败（配额用尽/参数非法），
+        判据来源：iLink `ret=-2` 属【确定性失败】（会话上下文不可用/参数非法），
         与网络瞬时故障（值得重试）性质不同。
         """
         return False
@@ -196,7 +211,7 @@ class WeixinOCChannel(BaseChannel):
             )
         s = await self._http()
         payload = {
-            "base_info": {"channel_version": "dyautodm"},
+            "base_info": {"channel_version": _channel_version()},
             "msg": {
                 "from_user_id": "",
                 "to_user_id": str(target),
@@ -316,7 +331,7 @@ class WeixinOCChannel(BaseChannel):
                     "filesize": ct_size,
                     "no_need_thumb": True,
                     "aeskey": aes_key_hex,
-                    "base_info": {"channel_version": "dyautodm"},
+                    "base_info": {"channel_version": _channel_version()},
                 },
                 headers=self._headers(),
             ) as resp:
@@ -417,7 +432,7 @@ class WeixinOCChannel(BaseChannel):
 
         s = await self._http()
         payload = {
-            "base_info": {"channel_version": "dyautodm"},
+            "base_info": {"channel_version": _channel_version()},
             "msg": {
                 "from_user_id": "",
                 "to_user_id": str(target),
