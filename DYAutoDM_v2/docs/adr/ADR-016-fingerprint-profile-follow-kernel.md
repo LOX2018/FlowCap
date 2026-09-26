@@ -132,6 +132,33 @@ import camoufox.pkgman         → ModuleNotFoundError   ← backend 的 Python 
 当前 `GEO_PRESETS` × `GPU_PRESETS` × `_CORES_POOL` **三者独立随机** → 必然产出
 物理上不合理的组合（如 4070 显卡配 720p 屏幕）。
 
+**实现（D3-A：档案跟随内核真值）**：
+
+```
+BCC 保活心跳 / 启动
+  → env_audit_snapshot()（既有探针，已能取回 screen/cores/webgl/platform/tz/UA）
+  → services.kernel_truth.record_kernel_truth(account, js_view)
+  → kv_store 持久化（复用既有 KV，不新造存储层）
+                             ↓
+utils.fingerprint.fingerprint_profile()
+  → _kernel_truth_of(account)：有真值用真值；无则降级 preset 并**留痕**
+```
+
+**为什么不是"把预设注入内核"（反向方案）**：
+
+| | D3-A 档案跟随真值（采纳） | 反向：预设注入内核 |
+|---|---|---|
+| 指纹来源 | BrowserForge（上游数据集，数千组合） | 项目预设（**5×4×11 = 220 种**） |
+| 官方立场 | ✅ 受支持的组合 | ❌ 官方警告的 "randomly assign" |
+| 多账号撞车 | 概率低 | **必然撞车** |
+
+**降级纪律（不可静默）**：真值可能读不到（BCC 未启动 / 首次冷启 / 记录 >30min 过期）。
+此时**必须**留痕：档案写入 `_truth_source` 字段（`'kernel'` | `'preset'`），
+门禁 A8 据此区分「真值跟随」与「降级路径」——避免"档案=真值"的假设悄悄失效。
+
+**新增模块**：`services/kernel_truth.py`（`record_/get_/clear_kernel_truth`）。
+⚠️ 打包需登记 `--hidden-import services.kernel_truth`（函数体内 import，静态分析扫不到）。
+
 ### D4. 消除所有 Chrome 硬编码残留
 
 **规则**：以下四处必须统一走 D1 的内核感知入口：

@@ -1,11 +1,12 @@
 # 凭证 3 小时失效 —— Camoufox(Firefox) 内核 与 Chromium 档案层 不一致
 
 - **案例编号**：CASE-2026-09-26-CRED-KERNEL-MISMATCH
-- **版本**：v0.45.10（诊断时版本；修复见后续）
+- **版本**：v0.45.10（诊断）→ **v0.45.12（D1-D4 修复闭环）**
 - **严重级别**：**fatal**（影响全项目功能可用性 —— 凭证是所有业务链路的前置条件）
-- **状态**：🔬 **诊断完成，待架构决策**
+- **状态**：✅ **修复闭环（ADR-016 D1-D4 全部落地，门禁 9/9 PASS）**
 - **涉及模块**：`utils/fingerprint.py`（HTTP 层档案）、`vbrowser_camoufox.py`（内核选择）、
-  `daemon/browser_daemon.py`（BCC）、`utils/strdata_pure.py`（出站头构造）
+  `daemon/browser_daemon.py`（BCC）、`utils/strdata_pure.py`（出站头构造）、
+  **`services/kernel_truth.py`（新增：内核真值档案，D3-A）**
 
 ---
 
@@ -148,9 +149,67 @@ vbrowser_camoufox.py::camoufox_enabled()
 
 ---
 
+## 七、修复实施（v0.45.11 - v0.45.12）
+
+### 7.1 四项决策与落地
+
+| # | 决策 | 问题 | 实现 |
+|---|---|---|---|
+| **D1** | 浏览器身份由**内核推导** | `fingerprint.py` 硬编码 Chrome 品牌/UA，内核实为 Firefox | `_kernel_is_gecko()` + 档案双分支 |
+| **D1·甲** | 内核定位**不依赖 Python 包** | `_chrome_exe_path()` 依赖 camoufox 包 → 源码环境无包 → 退兜底 148 | 文件系统扫描 `%LOCALAPPDATA%\camoufox\...`（实测版本 148→152）✅ |
+| **D2** | Gecko **不发 Client Hints** | Gecko 下仍发 `sec-ch-ua`（Firefox 从不发） | `sec_ch_ua=""` + `header.py` 条件发送 |
+| **D3-A** | 档案**跟随内核真值** | 两层独立随机，硬件对不上 | 新增 `services/kernel_truth.py` + BCC 探针落盘 |
+| **D4** | 消除**全部硬编码残留** | 全仓 **7 处**各自写死 UA（Chrome 120/131/146/148/150/151 + Firefox 117） | 统一 `utils.fingerprint.user_agent()` 入口 |
+
+### 7.2 D3-A 的关键取证（**这是本案例最有价值的判断**）
+
+**问题**：D3 有两种相反方向 —— (A) 档案跟随内核 / (B) 档案注入内核。
+
+**决定性证据**（camoufox 官方文档 `python/usage.md`）：
+
+> Do NOT randomly assign values to these properties. WAFs hash your WebGL
+> fingerprint and compare it against a dataset. **Randomly assigning values
+> will lead to detection as an unknown device.**
+
+**实测事实**：
+- 项目预设 = 5 屏幕 × 4 GPU × 11 核数 = **220 种组合**
+- Camoufox 用 **BrowserForge**（上游维护的数据集，组合数高数百倍）
+- Camoufox 自带 `clamp_screen_to_display()` 修正越界屏幕（源码 `fingerprints.py:414`）
+
+⇒ **项目自造预设正是官方警告的 "randomly assign"**；BrowserForge 才是"受支持的组合"。
+⇒ **选 D3-A**：档案跟随真值（而非把预设注入内核，那等于把 220 种组合塞给一个数千组合的库）。
+
+**实测验证**（BCC 真实探针 → 落盘 → 档案读取）：
+
+```
+浏览器真值: screen 5120x1440, cores 8, webgl Mozilla/GTX980
+     ↓ services.kernel_truth.record_kernel_truth()
+档案: _truth_source=kernel, screen_width=5120, cpu_core_num=8
+```
+
+**对照修复前**：档案 `1280x720/12核` vs 真值 `2560x1440/8核` —— 完全不一致。
+
+### 7.3 新增机械门禁
+
+`scripts/check_fingerprint_consistency.py` —— **9 条判据（A1-A8）**，把这个
+"单层看不出来、必须交叉比对"的缺陷类型固化成**可重复执行**的门禁。
+
+**它已两次证明价值**：
+1. 首次运行抓出我遗漏的 **6 处**硬编码（`link_resolve`/`vbrowser`/`api/platform`/`downloader`）
+2. 新增 A8 后验证真值跟随路径（kernel vs preset 双路径都验）
+
+### 7.4 ⚠️ 残留项（已知，未修）
+
+- **Camoufox 屏幕几何可疑**：真值 `screen 5120x1440` 但 `outer 1884x1392`
+  （外窗远小于屏幕宽）—— Camoufox 的 clamp 只处理"超出"未处理"远小于"。
+  **影响**：`screen.width` 与窗口尺寸的比例在真实设备中不常见。
+- **`navigator.userAgentData` 为 null**（Gecko 正常行为，非缺陷）。
+
+---
+
 ## 六、关联
 
-- **ADR**：待补（本案例应先出 ADR 再动手）
+- **ADR**：`docs/adr/ADR-016-fingerprint-profile-follow-kernel.md`（D1-D4 决策记录）
 - **项目内建检测器**：`services/env_audit.py`（错误码 `BCC-064`/`BCC-065`/`BCC-068`/`BCC-069`）
 - **开源对照**：
   - `abrahamjuliot/creepjs`（⭐2440，MIT）—— 跨信号矛盾检测
