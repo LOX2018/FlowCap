@@ -74,6 +74,51 @@ def _nested_defs_under_module_funcs(tree: ast.Module) -> dict[str, list[str]]:
     return out
 
 
+def _first_arg_is_self(fn) -> bool:
+    """Python 3.8+：位置参数（含 posonly）首个是否为 `self`。"""
+    a = fn.args
+    if a.posonlyargs:
+        return a.posonlyargs[0].arg == "self"
+    if a.args:
+        return a.args[0].arg == "self"
+    return False
+
+
+def _scan_orphan_methods(root: str) -> list[tuple[str, str, str, int]]:
+    """全仓扫描「孤儿类方法」：**模块级函数**的**直接子节点**里的首参 self def。
+
+    只用**直接子节点**（不进嵌套 class/函数），故：
+      ✅ 抓 AI-063 形态（类方法被解析为模块级函数的嵌套函数）
+      ⚪ 不抓 `def outer(): class Fake: def m(self)` —— 那是合法局部类
+    返回 (相对路径, 外层函数名, 内层函数名, 行号)。
+    """
+    import pathlib
+    hits: list[tuple[str, str, str, int]] = []
+    for p in pathlib.Path(root).rglob("*.py"):
+        if "__pycache__" in str(p):
+            continue
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for n in tree.body:                      # 仅顶层节点
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for x in n.body:                 # 仅直接子节点
+                    if isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                            and _first_arg_is_self(x):
+                        rel = p.relative_to(root).as_posix()
+                        hits.append((rel, n.name, x.name, x.lineno))
+    return hits
+
+
+#: 白名单：(相对路径, 外层函数, 内层函数, 行号) —— monkeypatch 替身需 `self` 形参。
+#: 每条必须写明理由；不得为「让门禁变绿」而加项（同 .known-gaps.json 纪律）。
+_ALLOWED_ORPHANS = [
+    ("test_upstream_p3.py", "_rendered_texts", "spy", 334),
+    # ↑ `ImageDraw.ImageDraw.text` 的 monkeypatch 替身，第一个形参按原签名即 `self`。
+]
+
+
 class TestAiClientMethodStructure(unittest.TestCase):
 
     def test_g1_g2_aiclient_has_all_methods_as_class_methods(self):
@@ -131,6 +176,41 @@ class TestAiClientMethodStructure(unittest.TestCase):
         from services.ai_reply import AIClient
         missing = [m for m in _REQUIRED_METHODS if not hasattr(AIClient, m)]
         self.assertFalse(missing, f"运行时 AIClient 缺方法: {missing}")
+
+    # ── G6/G7：全仓泛化 —— 防「孤儿类方法」同类缺陷在任何文件复发 ──────────
+    # 判据：**模块级函数**的**直接子节点**若是「首参为 self」的 def，则该 def
+    # 几乎必然是**误嵌的类方法**（合法用途只有 monkeypatch 替身，见白名单）。
+    # 与 AI-063 同型：语法合法、无报错、类方法静默丢失。
+    def test_g6_no_orphan_class_methods_repo_wide(self):
+        """全仓扫描：不得存在「模块级函数直接内嵌首参 self 的 def」。"""
+        offenders = _scan_orphan_methods(_BACKEND)
+        allow = {(p, outer, inner) for p, outer, inner, _ in _ALLOWED_ORPHANS}
+        new = [o for o in offenders if o[:3] not in allow]
+        self.assertFalse(
+            new,
+            "发现孤儿类方法（疑误嵌进模块级函数，AI-063 同型缺陷）：\n  "
+            + "\n  ".join(f"{p}:{ln} {outer}() 内嵌 {inner}()" for p, outer, inner, ln in new))
+
+    def test_g7_orphan_detector_catches_ai063_form(self):
+        """G7 负控：注入 AI-063 旧形态 → 检测器必须命中（证非空转）。"""
+        src = ("class AIClient:\n"
+               "    def chat(self):\n"
+               "        return reply\n"
+               "\n"
+               "def _extract_reply(x):\n"
+               "    return x\n"
+               "\n"
+               "    def _chat_openai(self, cfg, messages):\n"
+               "        return None\n")
+        tree = ast.parse(src)
+        found = []
+        for n in tree.body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for x in n.body:
+                    if isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                            and _first_arg_is_self(x):
+                        found.append((n.name, x.name))
+        self.assertIn(("_extract_reply", "_chat_openai"), found)
 
 
 if __name__ == "__main__":
