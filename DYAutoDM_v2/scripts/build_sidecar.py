@@ -659,6 +659,33 @@ def main() -> None:
     # 回退：不带 --onedir 参数即恢复 onefile。
     mode = "onedir" if "--onedir" in sys.argv else "onefile"
 
+    # ════════════════════════════════════════════════════════════════════
+    # 前置环境门禁（2026-09-26 实测教训）：
+    #   本脚本用 `sys.executable` 选解释器 —— 若从**别的** Python 环境调用
+    #   （实测：Hermes 会话默认用 hermes-agent venv），会以
+    #   `No module named PyInstaller` 失败，且**三份 sidecar 各报一次**，
+    #   错误被埋在 200 行命令行参数里，极难定位。
+    #   本机真实 Python 路径见 README.md（Store 别名不可用）：
+    #     C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe
+    #   ⇒ 启动即校验，给出**可执行的下一步**，而不是让 PyInstaller 失败三次。
+    # ════════════════════════════════════════════════════════════════════
+    try:
+        import PyInstaller  # noqa: F401
+    except ImportError:
+        _py = sys.executable
+        print("=" * 72)
+        print("  ❌ 构建环境错误：当前 Python 未安装 PyInstaller")
+        print(f"     当前解释器: {_py}")
+        print("     本机正确环境（README.md §环境）:")
+        print(r"       C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe")
+        print("     正确调用方式:")
+        print('       "C:/Users/LOX/AppData/Local/Programs/Python/Python314/python.exe" '
+              "scripts/build_sidecar.py --onedir --debug")
+        print("     说明：本脚本用 sys.executable 选解释器；从 Hermes/其他 venv 直跑")
+        print("           会选错环境。请用上面的项目 Python 调用。")
+        print("=" * 72)
+        raise SystemExit(2)
+
     # ── 醒目横幅（用户要求：不能被 PyInstaller 刷屏淹没）──
     _kind_cn = "DEBUG 测试版（非正式发布）" if build_kind == "debug" else "RELEASE 正式版"
     print("=" * 72)

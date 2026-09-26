@@ -304,7 +304,17 @@ def compare_with_profile(account: str, js_view: dict) -> dict:
     # ⚠️ 错误码用 BCC-068（「浏览器环境与项目档案不一致」），**不用 BCC-066**
     # （其语义是「原生函数被篡改」，写错就是 DSSCC 语义漂移）。
     # ⚠️ UA / 内核版本比对**已由下方 E9 覆盖**，此处绝不重复判定（否则同一缺陷刷两条告警）。
-    exp_os = (p.get("_platform_arg") or "").lower()
+    #
+    # ★ 2026-09-26 修复（ADR-016 D3-A 实机验证时抓出的**检测器误报**）：
+    #   原判据把 `_platform_arg`（= "windows"，是**给内核的启动参数**
+    #   `--fingerprint-platform=windows` 的枚举值）当成 `navigator.platform` 的期望值，
+    #   但 `navigator.platform` 在 Windows 上的**真实值是 "Win32"**
+    #   ⇒ 恒报 `期望 windows / 实际 Win32`（**假阳性**，每次审计固定刷一条）。
+    #   实测证据：这是**同一台真实机器**的 Camoufox 自报值，且内核 webdriver=false、
+    #   tamperedCount=0（无篡改）—— 说明浏览器没错，是**期望值取错源**。
+    #   修法：建立「内核平台枚值 → navigator.platform 真值」的**显式映射**。
+    _PLATFORM_REAL = {"windows": "win32", "macos": "macintel", "linux": "linux x86_64"}
+    exp_os = _PLATFORM_REAL.get((p.get("_platform_arg") or "").lower(), "")
     exp_brand = p.get("_brand_arg") or "Chrome"
     exp_ver = (p.get("browser_version") or "").split(".")[0]
     kernel_v = (kernel_version() or "").split(".")[0]
