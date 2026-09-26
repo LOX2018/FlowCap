@@ -49,6 +49,7 @@ import {
 import { AccountReview } from "./AccountReview";
 import { ProxyDrawer } from "./ProxyDrawer";
 import { AccountDrawer } from "./AccountDrawer";
+import { LoginDialog } from "./LoginDialog";
 
 
 export default function AccountsPage(props: PageProps) {
@@ -168,6 +169,28 @@ export default function AccountsPage(props: PageProps) {
         }
       })
       .catch((e: unknown) => push("重新获取凭证异常: " + errMsg(e)));
+  };
+
+  // F4：短信验证码登录（ADR-017 / H-30）—— 手机号由用户输入，验证码在弹层里填
+  const startSmsLogin = (name: string) => {
+    const phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
+    if (!phone) return;
+    if (!/^\d{6,20}$/.test(phone)) {
+      push("手机号格式不正确（应为 6~20 位数字）");
+      return;
+    }
+    api
+      .smsLogin(name, phone)
+      .then((r) => {
+        if (r && r.ok) {
+          push("已启动短信登录 · " + name + "，请在弹窗中输入收到的验证码");
+          setEditAcct(null);
+          setScanning({ name, seq: Date.now() });
+        } else {
+          push("短信登录启动失败: " + ((r as { msg?: string })?.msg || ""));
+        }
+      })
+      .catch((e: unknown) => push("短信登录异常: " + errMsg(e)));
   };
 
   const toggleBatch = (id: string) => {
@@ -645,6 +668,18 @@ export default function AccountsPage(props: PageProps) {
                     >
                       <Pencil className="h-3.5 w-3.5" />刷新凭证
                     </Button>
+                    {/* F4：短信验证码登录（ADR-017 / H-30）—— 扫码之外的第二条路径 */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startSmsLogin(a.name);
+                      }}
+                      title="用短信验证码登录（无需扫码，验证码在弹窗中输入）"
+                    >
+                      短信登录
+                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1041,6 +1076,18 @@ export default function AccountsPage(props: PageProps) {
             setForm={setAddForm}
             onSave={addAccount}
             onClose={() => setAddOpen(false)}
+          />
+        )}
+        {scanning && (
+          <LoginDialog
+            name={scanning.name}
+            status={scanData}
+            onClose={() => setScanning(null)}
+            onToast={push}
+            onDone={() => {
+              setScanning(null);
+              refetch();
+            }}
           />
         )}
         {editAcct && (
