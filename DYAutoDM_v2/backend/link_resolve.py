@@ -153,8 +153,17 @@ def _xbogus_sign(query_string, ua):
         return ""
 
 
-def _reflow_resolve(room_id, sec_user_id, auth=None, ua="Mozilla/5.0"):
-    """调 webcast.amemv.com reflow/info，返回 (web_rid, anchor_sec_uid) 或 (None, None)。"""
+def _reflow_resolve(room_id, sec_user_id, auth=None, ua=None):
+    """调 webcast.amemv.com reflow/info，返回 (web_rid, anchor_sec_uid) 或 (None, None)。
+
+    ★ 2026-09-26（ADR-016 D4 / H-22 审计 idx13 订正）：`ua` 默认值原为硬编码
+    `"Mozilla/5.0"`，而本文件既定的统一方向是「出站 UA 一律走档案 `_ua()`
+    （内核感知）」。该 ua **同时进入 X-Bogus 签名 payload 与请求头**，默认值
+    硬编码 ⇒ 本函数对外仍暴露与档案不一致的浏览器身份，恰是 ADR-016 要根除的
+    「同一账号不同链路不同身份」。唯一调用点亦未覆盖该默认值。
+    现改为 `None` 再回落到 `_ua()`：显式传入仍可覆盖，缺省则与全文件一致。
+    """
+    ua = ua or _ua()
     params = _build_reflow_params(room_id, sec_user_id,
                                   ms_token=getattr(auth, "msToken", "") or "" if auth else "")
     query = "&".join(f"{k}={v}" for k, v in params.items())

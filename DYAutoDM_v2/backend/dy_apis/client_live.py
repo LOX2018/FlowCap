@@ -373,10 +373,15 @@ class LiveMixin:
         params.add_param("browser_language", "en")
         params.add_param("browser_platform", "Win32")
         params.add_param("browser_name", "Mozilla")
-        # ★ 2026-09-26（ADR-016 D4）：原**硬编码旧版 Chrome UA**，
-        #   与档案（内核感知）不同步 —— 同文件上方 249/250 行已在用 get_profile，
-        #   仅此处漏改 ⇒ 同一请求内 browser_version 与其余字段自相矛盾。
-        params.add_param("browser_version", get_profile()["ua"])
+        # ★ 2026-09-26（ADR-016 D4 / H-22 审计 idx10 订正）：
+        #   本字段名是 `browser_version`，语义为**短版本号**（如 "152.0"）——
+        #   全仓 REST 参数 30+ 处一律取 profile["browser_version"]。
+        #   上一轮误把「硬编码旧 Chrome UA」换成 profile["ua"]（**完整 UA 串**），
+        #   与同文件上方 250 行及全仓取值形态不一致，反成新的自相矛盾。
+        #   注：`builder/proto.py` 的 IM protobuf 分支确以「UA 去掉 Mozilla/」充当
+        #   browser_version（客户端 navigator.appVersion 语义），那是**独立约定**，
+        #   REST 参数不适用。此处按 REST 约定回短版本号。
+        params.add_param("browser_version", get_profile()["browser_version"])
         params.add_param("browser_online", "true")
         params.add_param("tz_name", "Asia/Shanghai")
         params.add_param("msToken", auth.msToken)

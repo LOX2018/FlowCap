@@ -58,14 +58,22 @@ export function PlayerMediaStage({
   // 在此处统一接入 ⇒ 所有经本舞台播放的受保护媒体自动生效，无需各调用方改造。
   // 时序契约：undefined=加载中（保持占位，不置 error）；null=取失败（走重试/降级）；
   //          string=可用（blob: 或外部原地址）。
-  const resolvedUrl = useAuthedMediaUrl(media?.type === "video" ? media?.url : undefined);
+  // ★ 2026-09-26（H-22 审计 idx22 订正）：取流失败（resolvedUrl===null）原本被折叠为
+  //   `url: ""` → 落到「无可播放地址」分支，**该分支无任何重试入口**；叠加
+  //   useAuthedMediaUrl 的 30s 负缓存（authed-media.ts FAIL_TTL_MS），令牌瞬时过期或
+  //   后端暂不可用时，用户必须**重开播放器**才能恢复 —— 与同项目既有降级范式不符
+  //   （AuthedVideo 有重试按钮、AuthedImg 有 onError 降级）。
+  //   现改走「重试」范式：失败时展示中文原因 + 重试按钮，点击后切换 `bust` 强制
+  //   换 key 重取（新 key 触发 useEffect 重新 load → 命中负缓存则等待其失效后成功）。
+  const [bust, setBust] = useState(0);
+  const resolvedUrl = useAuthedMediaUrl(media?.type === "video" ? media?.url : undefined, bust);
   const stageMedia = useMemo<PlayerMedia | null>(() => {
     if (!media) return null;
     if (media.type !== "video") return media;
     if (resolvedUrl === undefined) return null;      // 仍在取 Blob → 先不挂载（占位）
     if (resolvedUrl === null) return { ...media, url: "" };  // 取失败 → 触发失败分支
     return { ...media, url: resolvedUrl };
-  }, [media, resolvedUrl]);
+  }, [media, resolvedUrl, bust]);
 
   const set = (evt: string) => {
     setStatus((cur) => {
@@ -193,8 +201,19 @@ export function PlayerMediaStage({
     if (!stageMedia.url || failed) {
       return (
         <div className={`flex flex-col items-center justify-center gap-2 bg-black/60 text-xs text-white/60 ${className}`}>
-          <span>{failed ? "视频加载失败" : "无可播放地址"}</span>
+          <span>{failed ? "视频加载失败" : "视频已解密但取流失败"}</span>
           {stageMedia.cover && <img src={stageMedia.cover} alt="" className="max-h-24 opacity-40" />}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => {
+              setFailed(false);
+              retryRef.current = 0;
+              setBust((n) => n + 1);
+            }}
+          >
+            重试
+          </button>
         </div>
       );
     }

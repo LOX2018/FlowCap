@@ -73,8 +73,10 @@ async function load(src: string): Promise<string | null> {
  *
  * @returns `undefined` = 正在加载（调用方应显示占位）；`null` = 取失败；
  *          `string` = 可用地址（本地 blob: 或外部原地址）。
+ * @param bust 手动重试计数（2026-09-26 H-22 idx22）：`>0` 时**先清该 src 的负缓存在读**，
+ *             使「点击重试」立即重取，而非被 `FAIL_TTL_MS`（30s）挡在门外。
  */
-export function useAuthedMediaUrl(src?: string): string | null | undefined {
+export function useAuthedMediaUrl(src?: string, bust = 0): string | null | undefined {
   const local = isLocalApiUrl(src);
   // 外部地址（图床 / data URI）无需任何处理：同步即可用，零闪烁
   const initial = (): string | null | undefined => {
@@ -102,6 +104,15 @@ export function useAuthedMediaUrl(src?: string): string | null | undefined {
       return;
     }
     let alive = true;
+    // 手动重试（H-22 idx22）：先清该 src 的负缓存，保证「点击重试」不被 30s TTL 挡住。
+    if (bust > 0) {
+      failCache.delete(src);
+      const stale = urlCache.get(src);
+      if (stale) {
+        try { URL.revokeObjectURL(stale); } catch { /* ignore */ }
+        urlCache.delete(src);
+      }
+    }
     setState(urlCache.get(src) ?? undefined);
     void load(src).then((u) => {
       if (alive) setState(u);
@@ -112,7 +123,7 @@ export function useAuthedMediaUrl(src?: string): string | null | undefined {
       // 由浏览器统一回收；进程内媒体数量有上限（会话消息分页加载）。
       alive = false;
     };
-  }, [src, local]);
+  }, [src, local, bust]);
 
   return state;
 }

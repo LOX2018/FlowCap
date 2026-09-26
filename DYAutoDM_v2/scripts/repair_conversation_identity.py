@@ -125,8 +125,16 @@ def main() -> int:
                      or (self_avatar and old_av == self_avatar))
         if not new_name:
             if self_masq:
+                # ★ 2026-09-26（H-22 审计 idx24 订正）：退化分支原本**无条件**把
+                # new_av 置 `""`，而写库 L180-186 的 WHERE 只约束 peer_name 形态、
+                # **不约束 avatar** ⇒ 当「只有昵称属本号身份」而 avatar 是**合法对端
+                # 头像**（av_polluted=False）时，会把该有效头像一并擦成 NULL ——
+                # 项目为此专门算出的 `av_polluted` 判据在此被弃用，属判据不一致。
+                # 现按 av_polluted 保护：仅当头像确属污染（空/本号头像）才清空，
+                # 否则原样保留对端头像。
+                _na = "" if av_polluted else old_av
                 plan.append((rid, cid, old_name, str(r["peer_id"] or ""),
-                             old_av, "", "本号身份冒充且无真值→退化裸uid"))
+                             old_av, _na, "本号身份冒充且无真值→退化裸uid"))
             else:
                 skipped["IDB无该对端昵称"] = skipped.get("IDB无该对端昵称", 0) + 1
             continue
