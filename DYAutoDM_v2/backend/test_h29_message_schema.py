@@ -252,5 +252,37 @@ class TestNegativeControl(unittest.TestCase):
         self.assertTrue(ms.kind_of(key)[1])
 
 
+class TestDedupKeyUsesIdentity(unittest.TestCase):
+    """M-16 防复发门禁（2026-09-27）。
+
+    背景：消息去重键原为 `(conv_id, text[:50])` —— 键选了**内容字段**。
+    H-25 统一落库契约把图片消息 text 归一为「[图片]」后，同会话多张图前 50 字符
+    完全相同 ⇒ 后发的图被当重复**静默丢弃**（实测 3 张只留 1 张，史实丢 9 条）。
+
+    判据：去重键必须选**标识类字段**（msg_id）；内容字段只能作 fallback。
+    """
+
+    SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "auto_dm", "conversation_capture.py")
+
+    def test_dedup_key_prefers_identity_field(self):
+        """去重键必须优先用 msg_id，不得只按文本去重。"""
+        src = open(self.SRC, encoding="utf-8").read()
+        self.assertIn(
+            "_mid_for_key", src,
+            "去重键未使用消息标识字段（msg_id）—— 会被契约变更引爆（M-16 复发）")
+        self.assertIn(
+            "key = (mcid, _mid_for_key)",
+            src,
+            "去重键未优先用 _mid_for_key —— 内容字段不得单独构成去重键")
+
+    def test_dedup_fallback_has_no_undefined_var(self):
+        """fallback 分支不得引用不存在的变量（曾引入 _ts_for_key 未定义）。"""
+        src = open(self.SRC, encoding="utf-8").read()
+        self.assertNotIn(
+            "_ts_for_key", src,
+            "fallback 引用了未定义变量 _ts_for_key（运行期 NameError）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
