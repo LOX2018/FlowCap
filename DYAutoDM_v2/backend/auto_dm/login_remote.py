@@ -118,7 +118,7 @@ def heal_stale_profile_lock(profile_dir: str, retries: int = 3) -> dict:
 
     返回 {'healed': bool, 'removed': [相对路径], 'procs': int, 'checked': int}
     """
-    out = {"healed": False, "removed": [], "procs": -1, "checked": 0}
+    out = {"healed": False, "removed": [], "procs": -1, "checked": 0, "reaped": 0}
     locks = find_lock_files(profile_dir)
     out["checked"] = len(locks)
     if not locks:
@@ -144,6 +144,35 @@ def heal_stale_profile_lock(profile_dir: str, retries: int = 3) -> dict:
                 logger.debug("[login_remote] 删锁 {} 失败（重试）: {}", fp, e)
                 time.sleep(0.5)
     return out
+
+
+def reap_profile_processes(profile_dir: str) -> int:
+    """启动前清扫仍占用该 profile 的 Camoufox 残留进程（复用项目既有能力）。
+
+    ## 为什么必须做（2026-09-26 实测，非推测）
+    实测复现：`v_close.py` 连续启动/关闭两次后，**紧接着**启动新实例
+    （同一 profile 或空 profile 均然）报
+        `BrowserType.launch_persistent_context: Target page, context or
+         browser has been closed`（BCC-058），而 **4 分钟后自动恢复**。
+    这正是 `vbrowser_camoufox._reap_camoufox_processes` 文档记录的时序竞态：
+    `close_camoufox_context()` 后进程【需时间退净】，新实例撞上旧进程即失败。
+
+    ## 为什么调项目既有函数而不是自己写
+    `_reap_camoufox_processes` 已含**安全边界**：只杀命令行命中本 profile
+    绝对路径的进程（含 -contentproc 子进程），绝不按进程名盲杀；且路径过短
+    时拒绝执行（防误杀无关进程，含测试宿主自身）。
+
+    返回清扫的进程数；任何异常都不阻塞启动流程。
+    """
+    try:
+        from vbrowser_camoufox import _reap_camoufox_processes
+        n = _reap_camoufox_processes(profile_dir)
+        if n:
+            logger.info("[login_remote] 启动前清扫残留进程 {} 个: {}", n, profile_dir)
+        return n
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[login_remote] 残留清扫失败（不阻塞启动）: {}", e)
+        return 0
 
 
 def count_browser_processes() -> int:
@@ -233,6 +262,63 @@ _JS_CLICK_TEXT = r"""
   return false;
 })
 """
+
+
+async def handle_one_click_login(page, timeout_s: float = 6.0) -> dict:
+    """处理「一键登录」界面：若出现则点「登录其他账号」进入表单。
+
+    ## 为什么需要（2026-09-26 P6 实测发现，非推测）
+    profile 里抖音**记住了上次账号**时，点「登录」弹出的**不是手机号表单**，
+    而是「一键登录」面板（DOM 实测）::
+
+        <p class="B_Nj1uaz">尚进工伤小助理</p>          ← 显示记住的账号昵称
+        <div id="douyin_login_comp_btn_id">一键登录</div>  ← 主按钮
+        <div class="cq1UKYpd"><p>登录其他账号</p></div>     ← ★ 进入表单的入口
+
+    此时 `input[name="normal-input"]`、「验证码登录」tab **都不存在** ⇒
+    直接找表单锚点必然失败（P2 实测：切 tab False / 填号 False / 发码 False）。
+
+    判据：出现「一键登录」文本 ⇒ 点击「登录其他账号」⇒ 表单才会渲染。
+    返回 {'one_click': bool, 'switched': bool}。
+    """
+    out = {"one_click": False, "switched": False}
+    try:
+        # 等「一键登录」或表单任一出现
+        import asyncio as _a
+        t0 = _a.get_event_loop().time()
+        while _a.get_event_loop().time() - t0 < timeout_s:
+            st = await page.evaluate(r"""
+(() => {
+  const el = document.querySelector('#douyin_login_comp_btn_id');
+  const one = !!(el && (el.innerText||'').includes('一键登录'));
+  const form = !!document.querySelector('input[name="normal-input"]');
+  const other = Array.from(document.querySelectorAll('p,span,div,a'))
+      .some(e => (e.innerText||'').trim() === '登录其他账号');
+  return {one, form, other};
+})()
+""")
+            if st.get("form"):
+                logger.debug("[login_remote] 已是表单界面，无需处理一键登录")
+                return out
+            if st.get("one"):
+                out["one_click"] = True
+                break
+            await _a.sleep(0.4)
+
+        if not out["one_click"]:
+            logger.debug("[login_remote] 未检测到「一键登录」界面")
+            return out
+
+        logger.info("[login_remote] 检测到「一键登录」界面，点「登录其他账号」进入表单")
+        if await click_by_text(page, "登录其他账号"):
+            out["switched"] = True
+            await _a.sleep(1.5)
+            logger.info("[login_remote] 已切换到账号密码/验证码表单")
+        else:
+            logger.warning("[login_remote] 「登录其他账号」点击失败")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[login_remote] 一键登录处理异常（不阻塞）: {}", e)
+    return out
 
 
 async def grab_login_qrcode(page, out_png: str, shots_dir: Optional[str] = None,
@@ -554,8 +640,9 @@ async def prepare_qr_login(env_path: str, out_png: str, headless: bool = True,
 
     profile = _acc.profile_dir_of(env_path)
     os.makedirs(profile, exist_ok=True)
-    # E1：启动前自愈陈旧锁
+    # E1：启动前自愈陈旧锁 + 清扫残留进程（时序竞态的真因，见函数文档）
     heal = heal_stale_profile_lock(profile)
+    heal["reaped"] = reap_profile_processes(profile)
 
     _vb, mode = should_use_vb(_cfg)
     acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
@@ -638,6 +725,7 @@ async def do_sms_login(env_path: str, phone: str, code_provider,
     profile = _acc.profile_dir_of(env_path)
     os.makedirs(profile, exist_ok=True)
     heal = heal_stale_profile_lock(profile)
+    heal["reaped"] = reap_profile_processes(profile)
     _vb, mode = should_use_vb(_cfg)
     acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
     pw, browser, context, backend = await launch_async(
