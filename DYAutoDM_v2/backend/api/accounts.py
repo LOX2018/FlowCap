@@ -174,6 +174,78 @@ def _build_last_run(name: str) -> dict:
         return _last_run_runtime()
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  RPA 扫码登录（ADR-017 / H-30 接线层）—— 2026-09-26
+# ══════════════════════════════════════════════════════════════════════
+#
+#  【为什么有这一层】
+#  `auto_dm/login_remote.py` 自 v0.45.14~v0.45.18 实施了完整的 RPA 登录能力
+#  （二维码抓取 + cv2 解码 + 一键登录处理 + 残留进程清扫 + 官方接口探活），
+#  但实测**全仓零调用** —— 是"孤儿模块"，能力未到达产品。
+#  本层把它接到 `/{name}/scan`，并保留**能力协商**：RPA 不可用/失败 ⇒ 回落老
+#  `enrich_auth(force=True)` 路径（老路径一行不改，零回归风险）。
+#
+#  【SoC 边界】
+#  本层只做：编排（async→sync 桥接）+ 状态回写 + 失败回落。
+#  浏览器操作全部委托 `login_remote`；凭证落盘全部委托 `auth_helper.save_cookie_to_env`
+#  （**不自造**写盘逻辑 —— ADR-017 §8.3）。
+
+def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
+    """RPA 扫码登录。成功返回 True（凭证已落盘）；否则 False（调用方回落老路径）。
+
+    失败**不抛异常** —— 由调用方决定回落，保证老路径始终可用。
+    """
+    import tempfile
+    from auto_dm import login_remote as _lr
+
+    png = ""
+    handle = None
+    try:
+        out_dir = tempfile.mkdtemp(prefix="rpa_scan_")
+        png = os.path.join(out_dir, "login_qr.png")
+
+        # ① 出码（浏览器保持打开，供用户扫码）
+        prep = asyncio.run(_lr.prepare_qr_login(env_path=env_path, out_png=png,
+                                                headless=True, timeout_s=90))
+        if not prep.get("ok"):
+            logger.warning(f"[ACC-025] [scan] 账号 {name} RPA 出码失败，回落老路径: "
+                           f"{prep.get('reason')}")
+            return False
+        handle = prep.get("handle")
+        st["qrPng"] = prep.get("png") or png
+        st["decoded"] = bool(prep.get("decoded"))
+        logger.info(f"[scan] 账号 {name} RPA 二维码已就绪: {st['qrPng']}")
+
+        # ② 等扫码（硬判据：cookie 出现 sessionid / sid_tt）
+        waited = asyncio.run(_lr.poll_qr_scanned(handle, timeout_s=240, interval_s=3))
+        if not waited.get("ok"):
+            logger.warning(f"[ACC-026] [scan] 账号 {name} 等待扫码未成功，回落老路径: "
+                           f"{waited.get('reason')}")
+            return False
+
+        # ③ 凭证落盘（复用既有入口，merge=True 保留其余字段）
+        cookies = waited.get("cookies") or {}
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        if not cookie_str:
+            logger.warning(f"[ACC-027] [scan] 账号 {name} RPA 拿到的 cookie 为空，回落老路径")
+            return False
+        from auth_helper import save_cookie_to_env
+        save_cookie_to_env(cookie_str, env_path)
+        logger.info(f"[scan] 账号 {name} RPA 凭证已落盘（{len(cookies)} 项 cookie）")
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ACC-028] [scan] 账号 {name} RPA 路径异常，回落老路径: "
+                       f"{type(e).__name__}: {e}")
+        return False
+    finally:
+        # 无论成败都必须收尾，否则 profile 被长期占用（ADR-017 §8.5 启动门禁）
+        try:
+            if handle:
+                asyncio.run(_lr.close_handle(handle))
+        except Exception as _e_close:  # noqa: BLE001
+            logger.debug(f"[scan] 账号 {name} RPA 收尾跳过: {_e_close}")
+
+
 def _do_scan(name: str):
     """后台线程：弹指纹浏览器让用户扫码，完成后写回对应账号 .env。"""
     st = _scan_state.setdefault(name, {})
@@ -198,10 +270,26 @@ def _do_scan(name: str):
         # 否则 force=True 清空 vb_profile_default 时会因 Chromium 占用而失败
         # （WinError 32），导致后续浏览器崩溃落到 about:blank。
         _quit_browser_daemon(name)
-        from auth_helper import enrich_auth
         env_path = acct_core.env_path_of(name)
-        auth, _ = enrich_auth(None, force=True, env_path=env_path)
-        st["loggedIn"] = bool(getattr(auth, "cookie", None))
+
+        # ── 能力协商（2026-09-26 · ADR-017 / H-30 接线）────────────────
+        # 先走 RPA 路径（真浏览器 + 二维码可推送 + 硬判据探活）；
+        # 不可用或失败 ⇒ **回落老 enrich_auth 路径**（老逻辑一行未改）。
+        # 这样即便 RPA 在冻结态/无 GUI 环境不可用，产品能力也不退化。
+        _rpa_ok = False
+        try:
+            _rpa_ok = _rpa_scan_login(name, env_path, st)
+            st["path"] = "rpa" if _rpa_ok else "legacy"
+        except Exception as _e_rpa:  # noqa: BLE001
+            logger.warning(f"[ACC-029] [scan] 账号 {name} RPA 协商异常，回落老路径: {_e_rpa}")
+            st["path"] = "legacy"
+
+        if _rpa_ok:
+            st["loggedIn"] = True
+        else:
+            from auth_helper import enrich_auth
+            auth, _ = enrich_auth(None, force=True, env_path=env_path)
+            st["loggedIn"] = bool(getattr(auth, "cookie", None))
         st["done"] = True
     except Exception as e:
         logger.error(f"[ACC-001] " + f"[scan] 账号 {name} 扫码异常: {e}")
@@ -778,6 +866,12 @@ async def scan_status(name: str):
         "done": st.get("done", False),
         "loggedIn": st.get("loggedIn", False),
         "error": st.get("error", ""),
+        # 2026-09-26 · ADR-017 / H-30 接线：RPA 路径会产出二维码 PNG 绝对路径，
+        # 供前端展示（老 enrich_auth 路径无图 ⇒ 为空串，前端按此判有无）。
+        "qrPng": st.get("qrPng", ""),
+        "decoded": st.get("decoded", False),
+        # 实际生效的登录路径（"rpa" / "legacy"）—— 便于排障归因，不做控制。
+        "path": st.get("path", ""),
     }
 
 
