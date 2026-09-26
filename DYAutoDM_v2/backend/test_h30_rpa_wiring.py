@@ -373,6 +373,12 @@ def test_f4_3_sms_login_thread_wiring(monkeypatch):
 
     monkeypatch.setattr(A, "_quit_browser_daemon", lambda n: None)
     monkeypatch.setattr(A.acct_core, "env_path_of", lambda n: "/tmp/x/.env")
+    # 🔴 隔离：_do_sms_scan 的 finally 会**真实调用** ensure_daemons_for 拉起守护。
+    #    测试不得有真实外部副作用（tests/ 隔离铁律）—— 实测教训：未隔离时跑本测试
+    #    会给 acc6/acc7 真的拉起 recv/browser 守护并常驻，进而**阻塞后续部署**
+    #    （部署脚本检测到部署目录被占用而拒绝，exit 9）。
+    import auto_dm.daemon_launcher as _dl
+    monkeypatch.setattr(_dl, "ensure_daemons_for", lambda *a, **k: None)
     A._scan_state.clear()
     A._sms_code_box["accC"] = {"code": "", "event": __import__("threading").Event()}
 
