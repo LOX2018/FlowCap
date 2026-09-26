@@ -1561,7 +1561,17 @@ class DYLoginApi:
                 "[AUTH-061] phoneMain 需要 phone_num（原硬编码手机号已移除，"
                 "按「显式配置原则」应由调用方传入）。")
         auth = await self.dyGenerateInitData(env_path=env_path)
-        sendCodeRes = self.dyGeneratePhoneVerificationCode(phone_num, auth)
+        # P2-⑥（H-22 审计 idx12）：`dyGeneratePhoneVerificationCode`（:1315）与
+        # `dyPhoneVerificationCodeLogin`（:1378）内部**无条件 raise NotImplementedError**
+        # （依赖的 generateSecretPhoneNum/generateSecretCode 全仓不存在）⇒
+        # 原实现在此调用必定抛出，下面声明的 `send_failed`/`ok` 状态契约
+        # **永不可达**，会误导调用方把它当可用链路接线。
+        # 现提前 fail-closed，给出可行动的明确错误。
+        raise NotImplementedError(
+            "[AUTH-062] phoneMain 的短信验证码链路**不可用**：底层 "
+            "generateSecretPhoneNum / generateSecretCode 未实现 "
+            "（历史实验代码，无仓库内成功路径）。请改用扫码登录分支；"
+            "如需启用请先补齐上述两个函数。")
         # 2026-09-17 安全修补（审查 P0-1）：以下原为 print(...)，会把验证码响应、
         # 登录响应、跳转 URL 打到 stdout。
         logger.debug("[auth] 验证码发送结果: {}", _safe_repr(sendCodeRes))

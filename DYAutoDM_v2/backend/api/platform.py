@@ -121,11 +121,18 @@ def _api():
 # 这保证与「账号管理」页的结论**同源**，不会出现两处判断打架。
 #
 # 返回 `(reason, action_hint)`：reason 给人看的一句话，action_hint 是**可行动**指引。
-def _login_state_reason(account: str) -> tuple[str, str]:
-    """判定该账号当前为何取不到「本人」数据。返回 (reason, action_hint)。"""
+async def _login_state_reason(account: str) -> tuple[str, str]:
+    """判定该账号当前为何取不到「本人」数据。返回 (reason, action_hint)。
+
+    P2-③（H-22 审计 idx9 · 调用链实证）：`verify_credential(lightweight=False)`
+    是**同步阻塞**的全量双引擎校验（WP 探活 + DM 写探针 + 身份漂移检测，`timeout=8`，
+    且 `auto_fix=True` 可能触发浏览器重捕获的**写副作用**）。本文件其余同类调用
+    一律 `await asyncio.to_thread(...)`，唯此函数直接同步调用 ⇒ 每个降级请求
+    阻塞事件循环最长 ~8s。故改为 async 并把阻塞体放入线程池。
+    """
     try:
         from auto_dm.accounts import verify_credential
-        v = verify_credential(account, lightweight=False)
+        v = await asyncio.to_thread(verify_credential, account, lightweight=False)
         wp = (v.get("wp") or {})
         dm = (v.get("dm") or {})
         dm_detail = str(dm.get("detail") or "")
@@ -629,7 +636,7 @@ async def favorite(req: LikedReq) -> dict[str, Any]:
             #   ⇒ 改为 **200 + unavailable**（与下方「平台侧空响应」同一降级范式），
             #   并透传真实原因，由 UI 给出可行动的提示。
             logger.warning(f"[PLT-007] " + f"取自身 sec_uid 失败: {type(e).__name__}")
-            _why, _hint = _login_state_reason(req.account)
+            _why, _hint = await _login_state_reason(req.account)
             return {"ok": True, "items": [], "has_more": False, "unavailable": True,
                     "reason": f"{_why}。{_hint}"}
     try:
@@ -638,14 +645,14 @@ async def favorite(req: LikedReq) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         # 与 /liked 同样的处置：平台侧偶发空响应体 → 空列表 + 标记，不弹误导性错误
         logger.warning(f"[PLT-007] " + f"收藏列表获取失败（平台侧常返空）: {type(e).__name__}")
-        _why, _hint = _login_state_reason(req.account)
+        _why, _hint = await _login_state_reason(req.account)
         return {"ok": True, "items": [], "has_more": False, "unavailable": True,
                 "reason": f"平台侧暂不可用（{type(e).__name__}）。{_hint}"}
     # ★ 2026-09-26 修复：与 /liked 同源缺陷 —— `get_user_favorite` 不抛异常、
     #   直接返回 `{"status_code": 8, "status_msg": "用户未登录"}`，原实现不看 sc
     #   ⇒ 空列表「暂无收藏」掩盖了「登录过期」。必须显式识别。
     if _is_not_logged_in(raw):
-        _why, _hint = _login_state_reason(req.account)
+        _why, _hint = await _login_state_reason(req.account)
         logger.warning("[PLT-007] 收藏列表：服务端返回 status_code=8（用户未登录）")
         return {"ok": True, "items": [], "has_more": False, "unavailable": True,
                 "reason": f"{_why}。{_hint}"}
@@ -716,7 +723,7 @@ async def liked(req: LikedReq) -> dict[str, Any]:
             #   此类情况**永远不会自愈**，正解是**重新扫码**。
             #   ⇒ 改为调用统一判据 `_login_state_reason()` 给出「原因 + 可行动指引」。
             logger.warning(f"[PLT-006] " + f"取自身 sec_uid 失败: {type(e).__name__}")
-            _why, _hint = _login_state_reason(req.account)
+            _why, _hint = await _login_state_reason(req.account)
             return {"ok": True, "items": [], "has_more": False, "unavailable": True,
                     "reason": f"{_why}。{_hint}"}
     try:
@@ -737,7 +744,7 @@ async def liked(req: LikedReq) -> dict[str, Any]:
     #   于是 `aweme_list` 取不到 → 返回**空列表**，前端显示「暂无点赞作品」，
     #   把「登录过期」伪装成「本来就没点赞」。必须显式识别。
     if _is_not_logged_in(raw):
-        _why, _hint = _login_state_reason(req.account)
+        _why, _hint = await _login_state_reason(req.account)
         logger.warning(f"[PLT-006] 点赞列表：服务端返回 status_code=8（用户未登录）")
         return {"ok": True, "items": [], "has_more": False, "unavailable": True,
                 "reason": f"{_why}。{_hint}"}
@@ -786,7 +793,7 @@ async def notice_list(req: NoticeReq) -> dict[str, Any]:
     #   原实现不看 sc ⇒ `notice_list_v2` 取不到 ⇒ 返回**空列表**，
     #   前端显示「暂无通知」，把「登录过期」伪装成「本来就没通知」。
     if _is_not_logged_in(raw):
-        _why, _hint = _login_state_reason(req.account)
+        _why, _hint = await _login_state_reason(req.account)
         logger.warning("[PLT-008] 站内通知：服务端返回 status_code=8（用户未登录）")
         return {"ok": True, "items": [], "has_more": False, "unread": None,
                 "unavailable": True, "reason": f"{_why}。{_hint}"}

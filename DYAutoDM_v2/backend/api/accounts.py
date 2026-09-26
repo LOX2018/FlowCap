@@ -726,7 +726,12 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
     changed = out.get("changed")
     settled = out.get("settled")
     switching = out.get("switching")
-    if settled is True:
+    # P2-②（H-22 审计 idx6）：BCC 旧版本返回可能**缺 settled 键**，
+    # 此时按「尚未达成」处理并诚实告知，而非默认当成功。
+    if settled is not True and settled is not False:
+        hint = ("（BCC 未返回达成态 `settled`，无法确认是否已就绪；"
+                "请以实际窗口为准）")
+    elif settled is True:
         hint = "（窗口已就绪）"
     elif switching or changed:
         hint = ("（已受理，正在切换为有头窗口 —— 冷启动约 1~3 分钟，"
@@ -838,11 +843,25 @@ async def hide_fingerprint_browser(name: str) -> ScanLoginResponse:
             headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=60) as resp:
             out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
-        # hide 是**同步**切换（返回即已切回），故 settled 取决于 BCC 受理结果。
+        # P2-②（H-22 审计 idx7 · 实跑复现）：hide **不是**同步切换。
+        # 当容器处于有头可见态时，hide 与 show 走**同一条异步后台重建路径**
+        # （bcc_audit.py 的 `_switching=True` 分支），返回
+        # `{ok:True, settled:False, switching:True, changed:True}` —— 窗口重建
+        # 可能失败（BCC-058）。原实现把「BCC 已受理」当成「已切回」
+        # （`settled=bool(ok)` / `switching=False`），重新引入本项目刚修完的**假阳性**。
+        # 现按 BCC 真实返回如实透出：已达成才报 settled，否则如实说「切换中/未就绪」。
+        _settled = out.get("settled")
+        _switching = bool(out.get("switching") or out.get("changed"))
+        if _settled is True:
+            _hint = "（已切回无头）"
+        elif _switching:
+            _hint = "（已受理，正在切回无头 —— 尚未就绪；请稍候以实际状态为准）"
+        else:
+            _hint = "（已受理，尚未确认达成；请以实际状态为准）"
         return ScanLoginResponse(ok=bool(out.get("ok")),
-                                 settled=bool(out.get("ok")),
-                                 switching=False,
-                                 msg=f"已恢复无头模式 · {name}")
+                                 settled=(_settled is True),
+                                 switching=bool(_switching and _settled is not True),
+                                 msg=f"已请求恢复无头模式 · {name}{_hint}")
     except Exception as e:  # noqa: BLE001
         logger.error(f"[BCC-032] " + f"[hide-browser] 账号 {name} 恢复无头失败: {e}")
         return ScanLoginResponse(ok=False, msg=f"恢复无头失败: {e}")

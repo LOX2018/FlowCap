@@ -531,25 +531,33 @@ class WeixinOCChannel(BaseChannel):
                 "item_list": [item],
             },
         }
-        async with s.post(
-            f"{self.base_url}/ilink/bot/sendmessage",
-            json=payload,
-            headers=self._headers(),
-        ) as resp:
-            body = await resp.json(content_type=None)
-        if resp.status != 200:
-            return ChannelResult(
-                False, self.name, f"HTTP {resp.status}: {body}", {"body": body}
-            )
-        ret = int(body.get("ret", 0) or 0)
-        errcode = int(body.get("errcode", 0) or 0)
-        if ret != 0 or errcode != 0:
-            return ChannelResult(
-                False,
-                self.name,
-                f"iLink err ret={ret} errcode={errcode} {body.get('errmsg', '')}",
-                {"body": body},
-            )
+        # P2-⑤（H-22 审计 idx15）：本 POST 原先**无 try/except**，
+        # 且 `resp.status` 在 `async with` 退出后才解引用 ⇒ 网络异常或响应体非 JSON
+        # 时 `await resp.json()` 直接抛异常冒出本方法，与同文件 `send()`/
+        # `_upload_media` 的「失败返回 ChannelResult、不抛异常」约定不一致。
+        try:
+            async with s.post(
+                f"{self.base_url}/ilink/bot/sendmessage",
+                json=payload,
+                headers=self._headers(),
+            ) as resp:
+                body = await resp.json(content_type=None)
+            if resp.status != 200:
+                return ChannelResult(
+                    False, self.name, f"HTTP {resp.status}: {body}", {"body": body}
+                )
+            ret = int(body.get("ret", 0) or 0)
+            errcode = int(body.get("errcode", 0) or 0)
+            if ret != 0 or errcode != 0:
+                return ChannelResult(
+                    False,
+                    self.name,
+                    f"iLink err ret={ret} errcode={errcode} {body.get('errmsg', '')}",
+                    {"body": body},
+                )
+        except Exception as e:  # noqa: BLE001
+            return ChannelResult(False, self.name,
+                                 f"sendmessage 异常: {type(e).__name__}: {e}")
         # L-13：图片消息也是一条 sendmessage ⇒ 计入外发额度
         self._on_sent_ok(target)
         return ChannelResult(True, self.name, raw={"body": body})

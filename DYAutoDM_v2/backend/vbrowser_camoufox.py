@@ -32,6 +32,7 @@ add_init_script 注入劫持 fetch/XHR/WebSocket）下，于**交互时刻**（�
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Optional
 
@@ -322,7 +323,12 @@ async def close_camoufox_context(context, user_data_dir: str | None = None) -> N
     finally:
         # 关闭动作无论成败、无论走哪个分支，都必须清扫残留（根因修复）
         if _ud:
-            _reap_camoufox_processes(_ud)
+            # P2-④（H-22 审计 idx21 · 实测事件循环停摆 3.14s）：
+            # `_reap_camoufox_processes` 是**同步阻塞**函数（psutil.wait_procs
+            # 默认 3s + 12s）⇒ 直接在 async 的 finally 里调用会**卡死整个事件循环**
+            # （FastAPI/daemon 全停）。5 个生产调用点都 await 本协程 ⇒ 必现。
+            # 故放线程池执行，保持「清理完成再返回」的语义但不阻塞事件循环。
+            await asyncio.to_thread(_reap_camoufox_processes, _ud)
 
 
 def close_camoufox_context_sync(context, user_data_dir: str | None = None) -> None:

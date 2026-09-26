@@ -87,8 +87,12 @@ class BccAuditMixin:
                     f"[bcc] {self.account} 可见性切换仍在进行中"
                     f"（headless->{target}），本次请求已去重，不重复冷启动"
                     f"（已切换 {time.time() - (self._switch_started_at or time.time()):.0f}s）")
+                # P2-①（H-22 审计 idx6）：显式补 `settled: False`。
+                # 本处是**去重路径** —— 上一轮切换仍在进行 ⇒ 可见性尚未达成。
+                # 原实现缺该键，调用方只能靠 `.get("settled")` 得到 None，
+                # 与「已达成」不可区分（accounts.py 曾据此把 settled 判成恒假）。
                 return {"ok": True, "headless": target, "changed": False,
-                        "switching": True, "deduped": True,
+                        "switching": True, "deduped": True, "settled": False,
                         "msg": "正在切换可见性中（已去重，未重复启动）"}
             if self._headless == target and self._context is not None:
                 alive = False
@@ -111,7 +115,11 @@ class BccAuditMixin:
                                 url, wait_until="domcontentloaded", timeout=20000)
                         except Exception as e:
                             logger.warning(f"[BCC-038] [bcc] {self.account} 导航失败: {e}")
-                    return {"ok": True, "headless": target, "changed": False}
+                    # P2-①（H-22 审计 idx6）：显式补 `settled: True`。
+                    # 本处为**同步已达成态**：目标可见性已满足且上下文档可用，
+                    # 返回即已就绪（无后台重建）⇒ 调用方应展示「窗口已就绪」。
+                    return {"ok": True, "headless": target, "changed": False,
+                            "settled": True}
             logger.info(
                 f"[bcc] {self.account} 切换浏览器可见性: "
                 f"headless={self._headless} -> {target}")
@@ -145,8 +153,10 @@ class BccAuditMixin:
                             except Exception as e:
                                 logger.warning(
                                     f"[BCC-038] [bcc] {self.account} 导航失败: {e}")
+                        # P2-①（H-22 审计 idx6）：窗口模式**同步**切换成功
+                        # ⇒ 返回即已达成，补 `settled: True`（原缺键）。
                         return {"ok": True, "headless": target, "changed": True,
-                                "switching": False, "mode": "window",
+                                "switching": False, "mode": "window", "settled": True,
                                 "msg": f"已切换为{'有头可见' if visible else '窗口最小化'}"}
                     logger.info(
                         f"[bcc] {self.account} 窗口状态设置失败，"
