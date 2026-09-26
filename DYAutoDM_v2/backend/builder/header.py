@@ -155,9 +155,17 @@ class HeaderBuilder:
         header.set_header('user-agent', HeaderBuilder.ua)
         header.set_header('cache-control', 'no-cache')
         header.set_header('pragma', 'no-cache')
-        header.set_header('sec-ch-ua', HeaderBuilder.sec_ch_ua)
-        header.set_header('sec-ch-ua-mobile', '?0')
-        header.set_header('sec-ch-ua-platform', HeaderBuilder.sec_ch_ua_platform)
+        # ★ 2026-09-26（ADR-016 D2）：**Client Hints 按内核条件发送**。
+        #
+        # 判据：`sec_ch_ua` 为空 ⇒ 当前内核是 Gecko（Firefox/Camoufox），
+        # 而 **Firefox 不实现 Client Hints**（`navigator.userAgentData === null`）。
+        # 若此时仍发 sec-ch-ua，等于「头端声明 Chrome ⊗ 浏览器自报 Firefox」——
+        # 比完全不伪装更易被交叉校验识别（本次凭证 3 小时失效的根因之一）。
+        # ⇒ Gecko 内核下**不发**这一组头。
+        if HeaderBuilder.sec_ch_ua:
+            header.set_header('sec-ch-ua', HeaderBuilder.sec_ch_ua)
+            header.set_header('sec-ch-ua-mobile', '?0')
+            header.set_header('sec-ch-ua-platform', HeaderBuilder.sec_ch_ua_platform)
         header.set_header('sec-fetch-dest', 'empty')
         header.set_header('sec-fetch-mode', 'cors')
         header.set_header('sec-fetch-site', 'same-origin')
@@ -183,9 +191,6 @@ class HeaderBuilder:
                 'cookie': '',
                 'pragma': 'no-cache',
                 'priority': 'u=0, i',
-                'sec-ch-ua': HeaderBuilder.sec_ch_ua,
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': HeaderBuilder.sec_ch_ua_platform,
                 'sec-fetch-dest': 'document',
                 'sec-fetch-mode': 'navigate',
                 'sec-fetch-site': 'none',
@@ -193,5 +198,10 @@ class HeaderBuilder:
                 'upgrade-insecure-requests': '1',
                 'user-agent': HeaderBuilder.ua
             }
+            # ★ 2026-09-26（ADR-016 D2）：同 build() —— Gecko 内核不发 Client Hints
+            if HeaderBuilder.sec_ch_ua:
+                h['sec-ch-ua'] = HeaderBuilder.sec_ch_ua
+                h['sec-ch-ua-mobile'] = '?0'
+                h['sec-ch-ua-platform'] = HeaderBuilder.sec_ch_ua_platform
             header.headers.update(h)
         return header

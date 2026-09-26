@@ -60,6 +60,21 @@ def build_fingerprint(account: str | None = None):
     fp = json.loads(FINGERPRINT_TEMPLATE)
     fp["navigator"]["hardwareConcurrency"] = int(prof["cpu_core_num"])
     fp["navigator"]["deviceMemory"] = prof["device_memory"]
+    # ★ 2026-09-26（ADR-016 D4）：模板里的浏览器身份字段**原先写死**，
+    #   与档案（内核感知）矛盾 —— 模板含 `vendor:"Google Inc."`（Chrome 特征）
+    #   却又含 `product:"Gecko"`（Firefox 特征），**模板自身就自相矛盾**；
+    #   且当内核是 Camoufox(Firefox) 时，`vendor:"Google Inc."` 与 152 内核不符。
+    #   ⇒ 改为按档案回填（Firefox 的 vendor 为空串，Chrome 为 "Google Inc."）。
+    _nav = fp["navigator"]
+    if prof.get("engine_name") == "Gecko":
+        _nav["vendor"] = ""                      # Firefox 的 navigator.vendor 恒为 ""
+        _nav["appVersion"] = "5.0 (Windows)"
+        _nav["productSub"] = "20100101"          # Gecko 的 productSub
+        _nav["oscpu"] = "Windows NT 10.0; Win64; x64"   # Firefox 独有字段
+    else:
+        _nav["vendor"] = "Google Inc."
+        _nav["productSub"] = "20030107"
+        _nav["oscpu"] = "undefined"
     fp["screen"].update({
         "innerWidth": g[0], "innerHeight": g[1], "outerWidth": g[2], "outerHeight": g[3],
         "availWidth": g[4], "availHeight": g[5], "sizeWidth": g[6], "sizeHeight": g[7],

@@ -211,8 +211,9 @@ def probe_egress_ip_direct(timeout=12, retries=2, mode=None, node=None):
            "isp": "", "timezone": "", "is_proxy": None, "is_datacenter": None,
            "mode": "", "via": "", "error": ""}
     # 浏览器式请求头：ipapi.is 等端点会拒绝 python-urllib 默认 UA
-    _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-           "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+    # ★ ADR-016 D4：统一走档案（内核感知），禁止写死版本
+    from utils.fingerprint import user_agent as _ua_fn
+    _UA = _ua_fn()
     _HDR = {"User-Agent": _UA, "Accept": "application/json,text/plain,*/*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
     try:

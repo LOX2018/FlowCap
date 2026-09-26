@@ -56,7 +56,29 @@ ALPHABET_S4 = "Dkdpgh2ZmsQB80/MfvV36XI1R45-WUAlEixNLwoqYTOPuzKFjJnry79HbGcaStCe"
 
 CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
-FIREFOX_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0"
+# ★ 2026-09-26（ADR-016 D4）：Firefox UA **不再写死版本**。
+# 原为常量 "…rv:109.0…Firefox/117.0"，与档案层（跟随内核，实测 152.0）不同步
+# ⇒ 同一语义（浏览器身份）出现 117 / 148 / 152 三个版本号，违反 Canonical Contract。
+# 现改为**从档案取**（`utils.fingerprint.get_profile()["ua"]`，内核感知）；
+# 仅在档案不可用时用下方 `_FIREFOX_UA_FALLBACK` 兜底。
+_FIREFOX_UA_FALLBACK = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) "
+                        "Gecko/20100101 Firefox/152.0")
+
+
+def _firefox_ua() -> str:
+    """Firefox UA —— 取档案（跟随内核），失败才用兜底常量。"""
+    try:
+        from utils.fingerprint import get_profile
+        ua = (get_profile() or {}).get("ua") or ""
+        if "Firefox" in ua:
+            return ua
+    except Exception:
+        pass
+    return _FIREFOX_UA_FALLBACK
+
+
+# 兼容旧引用（模块级常量语义不变，但改为动态取值）
+FIREFOX_UA = _FIREFOX_UA_FALLBACK
 
 GEO_VALUES = (2560, 1297, 2560, 1392, 2560, 1400, 2560, 1440)
 GEO_PLATFORM = "Win32"
@@ -218,7 +240,7 @@ def env_flags_byte(stack_is_node, ua):
 class ABogusPureSigner:
     def __init__(self, fixed=True, ua=None):
         self.fixed = fixed
-        self.ua = ua or (FIREFOX_UA if fixed else get_profile()["ua"])
+        self.ua = ua or (_firefox_ua() if fixed else get_profile()["ua"])
         self.counter = DUMP_COUNTER_INIT
         self.geo = GEO_VALUES if fixed else get_profile()["geo"]
         self.offset_name = DUMP_BROWSER_NAME if fixed else browser_name(self.ua)

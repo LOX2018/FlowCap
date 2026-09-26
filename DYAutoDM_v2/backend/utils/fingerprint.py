@@ -60,13 +60,112 @@ _kernel_ver_cache: str | None = None
 _kernel_ver_resolved = False
 
 
+def _camoufox_install_exe() -> str:
+    """**不依赖 camoufox Python 包**，直接从文件系统定位 Camoufox 内核 exe。
+
+    ## 为什么需要它（★ 2026-09-26 实测根因，ADR-016 D1·甲）
+
+    原 `_chrome_exe_path()` 首选 `from camoufox.pkgman import launch_path`。
+    但本项目有**两套 Python 环境**：
+      · 打包 exe（`_internal/camoufox/` 已含包）—— BCC 实际运行处
+      · 开发/源码环境（backend 的 Python）—— **无 camoufox 包**
+    实测（源码环境）：
+
+        camoufox_enabled(配置) = True
+        import camoufox.pkgman  → ModuleNotFoundError
+          ⇒ _chrome_exe_path() 返回 ""
+          ⇒ kernel_version() 退回兜底 "148.0.0.0"（**Chrome 版本**）
+          ⇒ 档案声称 Chrome 148，而浏览器实际是 Firefox 152
+
+    ⇒ 同一账号「HTTP 层说 Chrome / JS 层说 Firefox」= 跨信号矛盾
+      （抖音据此判定伪装环境 → 频繁作废登录态 → 凭证 ~3 小时失效）。
+
+    ## 定位策略：扫官方安装目录，**不 import**
+
+    实测真实位置：
+
+        %LOCALAPPDATA%\\camoufox\\camoufox\\Cache\\browsers\\official\\
+            <version>-<hash>\\camoufox.exe
+        例：152.0.4-beta.30-ea52a02f/camoufox.exe
+
+    多个版本目录时取**版本号最大**者（与 camoufox 包自身的选取语义一致）。
+    """
+    try:
+        from platformdirs import user_cache_dir
+        base = os.path.join(str(user_cache_dir("camoufox")), "camoufox",
+                            "Cache", "browsers", "official")
+    except Exception:
+        base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "camoufox",
+                            "camoufox", "Cache", "browsers", "official")
+    if not os.path.isdir(base):
+        return ""
+    best = None
+    try:
+        for name in os.listdir(base):
+            exe = os.path.join(base, name, "camoufox.exe")
+            if not os.path.isfile(exe):
+                continue
+            m = _re.match(r"^(\d+)\.(\d+)\.(\d+)", name)
+            key = tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+            if best is None or key > best[0]:
+                best = (key, exe)
+    except Exception:
+        return ""
+    return best[1] if best else ""
+
+
+def _kernel_is_gecko() -> bool:
+    """当前内核是否为 **Gecko（Firefox/Camoufox）** —— 决定档案的浏览器身份。
+
+    ## 判据（按可靠性排序，★ 2026-09-26 ADR-016 D1）
+
+    1. **内核 exe 文件名**：`camoufox.exe` ⇒ Gecko；`chrome.exe` ⇒ Blink。
+       这是**最强判据** —— 直接看实际要启动的二进制。
+    2. **显式配置** `camoufox_enabled()`：配置是「显式选择」的真源
+       （用户要求环境由配置决定，不靠探测）。
+    3. 都取不到 ⇒ 保守返回 False（Blink 原行为），**不猜 Gecko**。
+
+    ## 为什么不能只看配置（实测教训）
+
+    源码环境 `camoufox.pkgman` 不可用时，配置说 camoufox 而 exe 定位失败
+    —— 此时若只用配置，会产出 Firefox UA 却启动不了 Gecko，
+    变成**另一种**矛盾。故**以实际 exe 为准**，配置仅作兜底。
+    """
+    try:
+        exe = _chrome_exe_path()
+        if exe:
+            base = os.path.basename(exe).lower()
+            if "camoufox" in base:
+                return True
+            if "chrome" in base or "chromium" in base:
+                return False
+    except Exception:
+        pass
+    # 兜底：显式配置（camoufox 包/内核暂不可定位时仍尊重用户选择）
+    try:
+        from auto_dm import config as _c
+        from vbrowser_camoufox import camoufox_enabled as _ce
+        return bool(_ce(_c))
+    except Exception:
+        return False
+
+
 def _chrome_exe_path() -> str:
-    """取指纹内核可执行文件路径（Camoufox 优先；保留 Chromium 历史回退）。"""
-    # ════════════════════════════════════════════════════════════════════
-    # 2026-09-20【Camoufox 为唯一内核】：先按 Camoufox 解析真实启动 exe。
-    # 原实现只认 vb_chromium，删掉内核后会静默退到 _FALLBACK_VERSION
-    # → HTTP 层声明的 Chrome 版本与浏览器实际版本脱钩（本次要根除的矛盾）。
-    # ════════════════════════════════════════════════════════════════════
+    """取指纹内核可执行文件路径（Camoufox 优先；保留 Chromium 历史回退）。
+
+    ★ 2026-09-26（ADR-016 D1·甲）：**文件系统扫描优先**，不再把
+      `camoufox.pkgman` 的可用性当作定位前提 —— 源码环境无该包时，
+      原实现会静默退到兜底常量，造成「HTTP 说 Chrome / 浏览器说 Firefox」。
+      包可用性只用于**交叉验证**，不作为唯一来源。
+    """
+    # ① 首选：文件系统扫描（不依赖任何 Python 包）
+    try:
+        p = _camoufox_install_exe()
+        if p:
+            return p
+    except Exception:
+        pass
+    # ② 交叉验证 / 兜底：camoufox 包可用时用其官方解析（打包 exe 环境走这里）
     try:
         import os as _os
         from auto_dm import config as _c
@@ -192,20 +291,50 @@ def _build_profile(account: str | None):
     geo = rnd.choice(GEO_PRESETS)
     gpu = rnd.choice(GPU_PRESETS)
 
-    ver_full = kernel_version()          # 例：148.0.7778.215
-    maj = _major(ver_full)               # 例：148
+    ver_full = kernel_version()          # 例：148.0.7778.215 / 152.0.4-beta.30
+    maj = _major(ver_full)               # 例：148 / 152
     v4 = f"{maj}.0.0.0"                  # UA/CH 里惯例用 NNN.0.0.0
 
-    return {
-        "ua": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-               f"(KHTML, like Gecko) Chrome/{v4} Safari/537.36"),
-        "sec_ch_ua": (f'"Not;A=Brand";v="8", "Chromium";v="{maj}", '
-                      f'"Google Chrome";v="{maj}"'),
-        "sec_ch_ua_platform": '"Windows"',
-        "browser_name": "Chrome",
-        "browser_version": v4,
-        "engine_name": "Blink",
-        "engine_version": v4,
+    # ★ 2026-09-26（ADR-016 D1）：**浏览器身份由内核推导**，不再硬编码 Chrome。
+    #
+    # 实测根因：内核已是 Camoufox（Firefox 152，C++ 层指纹注入），
+    # 而本函数仍产出 Chrome 148 的 UA/sec-ch-ua ⇒
+    #   HTTP 层说 Chrome ⊗ JS 层说 Firefox = 跨信号矛盾
+    #   ⇒ 抖音判为伪装环境 → 频繁作废登录态 → 凭证 ~3 小时失效。
+    #
+    # 判据来源：内核 exe 的品牌（camoufox.exe ⇒ Gecko；chrome.exe ⇒ Blink）。
+    # 兜底：camoufox_enabled(配置)==True 也算 Gecko（配置是显式选择的真源）。
+    is_gecko = _kernel_is_gecko()
+
+    if is_gecko:
+        # ── Gecko (Firefox/Camoufox) ──────────────────────────────────────
+        # UA 的 Gecko 形态：版本用 `rv:MAJ.0`；且 **Firefox 不发 Client Hints**。
+        prof = {
+            "ua": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:%s.0) "
+                   "Gecko/20100101 Firefox/%s.0" % (maj, maj)),
+            # 空串 = 调用方**不发**该头（见 builder/header.py 的判定）
+            "sec_ch_ua": "",
+            "sec_ch_ua_platform": "",
+            "browser_name": "Firefox",
+            "browser_version": f"{maj}.0",
+            "engine_name": "Gecko",
+            "engine_version": f"{maj}.0",
+        }
+    else:
+        # ── Blink (Chromium) —— 原行为，保持回退可用 ─────────────────────
+        prof = {
+            "ua": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   f"(KHTML, like Gecko) Chrome/{v4} Safari/537.36"),
+            "sec_ch_ua": (f'"Not;A=Brand";v="8", "Chromium";v="{maj}", '
+                          f'"Google Chrome";v="{maj}"'),
+            "sec_ch_ua_platform": '"Windows"',
+            "browser_name": "Chrome",
+            "browser_version": v4,
+            "engine_name": "Blink",
+            "engine_version": v4,
+        }
+
+    prof.update({
         "os_name": "Windows",
         "os_version": "10",
         "platform": "Win32",
@@ -218,8 +347,10 @@ def _build_profile(account: str | None):
         "screen_height": str(geo[7]),
         # 诊断用（不参与出站契约）
         "_kernel_version": ver_full,
+        "_kernel_gecko": is_gecko,
         "_seed": seed,
-    }
+    })
+    return prof
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +411,26 @@ def viewport_for(account: str | None = None) -> dict:
 # 故**保留后者、删除本处重复定义**（`launch_args` 仍作为等价入口保留）。
 
 
+def user_agent(account: str | None = None) -> str:
+    """**出站 UA 的唯一入口**（内核感知）—— 全项目一律用它，禁止再写死。
+
+    ## 为什么要有它（★ 2026-09-26 ADR-016 D4）
+
+    实测全仓曾有 **7 处**各自写死的 UA（Chrome 120/131/146/148/150/151 六个版本
+    + 一处 Firefox 117）—— 同一语义（浏览器身份）多个来源，必然漂移
+    （Canonical Contract Law 违规的教科书形态）。
+
+    后果：同一账号在不同链路向抖音暴露**不同浏览器身份** ⇒ 交叉校验命中。
+
+    ⇒ 统一入口：任何需要 UA 的地方调用本函数。
+    """
+    try:
+        return fingerprint_profile(account)["ua"]
+    except Exception:
+        return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                f"(KHTML, like Gecko) Chrome/{_FALLBACK_VERSION} Safari/537.36")
+
+
 def fingerprint_profile(account: str | None = None) -> dict:
     """**账号级指纹真源** —— 浏览器层与 HTTP 层都从这里取值。
 
@@ -311,26 +462,55 @@ def fingerprint_profile(account: str | None = None) -> dict:
     maj = _major(ver_full)
     v4 = f"{maj}.0.0.0"
 
-    # Chromium 内核 UA 无品牌后缀；显式声明 Chrome 品牌更贴近真实用户环境。
-    # ⚠️ 注意：--fingerprint-brand=Chrome 会给 UA 加 Google Chrome 标识，
-    #    与 sec-ch-ua 里的 "Google Chrome" 自洽（此前内核 UA 无品牌但
-    #    sec-ch-ua 却声明 Google Chrome，属另一处不自洽）。
-    brand = "Chrome"
+    # ★ 2026-09-26（ADR-016 D1）：**浏览器身份由内核推导**，不再硬编码 Chrome。
+    #
+    # 实测根因：内核已是 Camoufox（Firefox 152，C++ 层指纹注入），
+    # 而本函数仍产出 Chrome 148 的 UA/sec-ch-ua ⇒
+    #   HTTP 层说 Chrome ⊗ JS 层说 Firefox = 跨信号矛盾
+    #   ⇒ 抖音判为伪装环境 → 频繁作废登录态 → 凭证 ~3 小时失效。
+    #
+    # 判据：`_kernel_is_gecko()`（内核 exe 文件名优先，显式配置兜底）。
+    is_gecko = _kernel_is_gecko()
+
+    if is_gecko:
+        # ── Gecko (Firefox/Camoufox) ──────────────────────────────────────
+        # · UA 用 Gecko 形态（`rv:MAJ.0` + `Firefox/MAJ.0`）
+        # · **Firefox 不实现 Client Hints** ⇒ sec-ch-ua 系列留空（调用方不发）
+        # · `--fingerprint-brand=Firefox`：Camoufox 的 camoufox.cfg 支持
+        brand = "Firefox"
+        _identity = {
+            "ua": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:%s.0) "
+                   "Gecko/20100101 Firefox/%s.0" % (maj, maj)),
+            "sec_ch_ua": "",
+            "sec_ch_ua_platform": "",
+            "browser_name": "Firefox",
+            "browser_version": f"{maj}.0",
+            "engine_name": "Gecko",
+            "engine_version": f"{maj}.0",
+        }
+    else:
+        # ── Blink (Chromium) —— 原行为，保持回退可用 ─────────────────────
+        # Chromium 内核 UA 无品牌后缀；显式声明 Chrome 品牌更贴近真实用户环境。
+        brand = "Chrome"
+        _identity = {
+            "ua": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   f"(KHTML, like Gecko) Chrome/{v4} Safari/537.36"),
+            "sec_ch_ua": (f'"Not;A=Brand";v="8", "Chromium";v="{maj}", '
+                          f'"Google Chrome";v="{maj}"'),
+            "sec_ch_ua_platform": '"Windows"',
+            "browser_name": "Chrome",
+            "browser_version": v4,
+            "engine_name": "Blink",
+            "engine_version": v4,
+        }
 
     prof = {
         "account": account or "default",
         "_seed": seed,
         "_kernel_version": ver_full,
+        "_kernel_gecko": is_gecko,
         # —— HTTP 层用（出站头/查询参数）——
-        "ua": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-               f"(KHTML, like Gecko) Chrome/{v4} Safari/537.36"),
-        "sec_ch_ua": (f'"Not;A=Brand";v="8", "Chromium";v="{maj}", '
-                      f'"Google Chrome";v="{maj}"'),
-        "sec_ch_ua_platform": '"Windows"',
-        "browser_name": "Chrome",
-        "browser_version": v4,
-        "engine_name": "Blink",
-        "engine_version": v4,
+        **_identity,
         "os_name": "Windows",
         "os_version": "10",
         "cpu_core_num": str(cores),

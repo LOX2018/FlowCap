@@ -40,8 +40,8 @@ MAX_RETRY = 3               # 照源项目 retry.rs 的重试语义
 
 _session = requests.Session()
 _session.headers.update({
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"),
+    # ★ ADR-016 D4：统一走档案（内核感知），禁止写死
+    "User-Agent": __import__("utils.fingerprint", fromlist=["user_agent"]).user_agent(),
     "Referer": "https://www.douyin.com/",
 })
 

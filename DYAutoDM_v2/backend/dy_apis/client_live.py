@@ -368,13 +368,15 @@ class LiveMixin:
         params.add_param("internal_ext", "")
         params.add_param("device_platform", "web")
         params.add_param("cookie_enabled", "true")
-        params.add_param("screen_width", "2560")
-        params.add_param("screen_height", "1440")
+        params.add_param("screen_width", get_profile()["screen_width"])
+        params.add_param("screen_height", get_profile()["screen_height"])
         params.add_param("browser_language", "en")
         params.add_param("browser_platform", "Win32")
         params.add_param("browser_name", "Mozilla")
-        params.add_param("browser_version",
-                         "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+        # ★ 2026-09-26（ADR-016 D4）：原**硬编码旧版 Chrome UA**，
+        #   与档案（内核感知）不同步 —— 同文件上方 249/250 行已在用 get_profile，
+        #   仅此处漏改 ⇒ 同一请求内 browser_version 与其余字段自相矛盾。
+        params.add_param("browser_version", get_profile()["ua"])
         params.add_param("browser_online", "true")
         params.add_param("tz_name", "Asia/Shanghai")
         params.add_param("msToken", auth.msToken)

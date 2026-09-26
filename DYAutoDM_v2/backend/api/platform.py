@@ -1428,8 +1428,8 @@ async def media_stream(u: str, exp: int, sig: str, aid: str = "", request: Reque
                         media_type=ctype, headers=hdrs)
 
     fwd_headers = {
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+        # ★ ADR-016 D4：统一走档案（内核感知），禁止写死
+        "User-Agent": _login_state_reason.__globals__["_ua"]() if False else __import__("utils.fingerprint", fromlist=["user_agent"]).user_agent(),
         "Referer": "https://www.douyin.com/",
         "Accept": "*/*",
     }

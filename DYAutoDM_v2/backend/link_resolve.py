@@ -27,6 +27,22 @@ import requests
 from urllib.parse import urlparse, parse_qs
 from loguru import logger
 
+
+def _ua() -> str:
+    """出站 UA —— 统一走档案（内核感知）。
+
+    ★ 2026-09-26（ADR-016 D4）：本文件原**两处写死旧版 Chrome UA**，
+    与档案（内核感知，实测 Firefox 152）矛盾 ⇒ 抖音可见同一账号
+    在不同链路暴露不同浏览器身份。现统一入口。
+    """
+    try:
+        from utils.fingerprint import user_agent
+        return user_agent()
+    except Exception:
+        # fallback：档案不可用时的保底 UA（正常路径不会走到）
+        return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 _LIVE_RE = re.compile(r"live\.douyin\.com/([^?/\s\"']+)")
 # 2026-09-22（T-01 / ENG-021）：抖音「直播页」还有一类**非 live.douyin.com 域名**的
 # 分享/关注链接，形如 https://www.douyin.com/follow/live/<web_rid>?anchor_id=…。
@@ -93,8 +109,8 @@ def _follow_redirects(url, cookies=None, timeout=15):
     """跟随重定向拿到最终 URL（处理 v.douyin.com 短链）。带登录态 cookie 时
     抖音才会把短链重定向到含 sec_user_id 的 reflow 链接，否则容易被风控页拦截。"""
     headers = {
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+        # ★ ADR-016 D4：统一走档案（内核感知），禁止写死
+        "User-Agent": _ua(),
         "Referer": "https://www.douyin.com/",
     }
     # 非合法 http(s) 链接（如 GUI 把直播间号与链接字段拼接出的畸形串）直接返回，不请求
@@ -216,9 +232,7 @@ def resolve_via_reflow(raw, auth=None):
         try:
             resp = requests.get(
                 f"https://www.douyin.com/user/{sec_user_id}",
-                headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                        "Chrome/120.0.0.0 Safari/537.36"),
+                headers={"User-Agent": _ua(),
                          "Referer": "https://www.douyin.com/"},
                 cookies=cookies, timeout=15, verify=tls_verify())
             room_id = _extract_room_id_from_html(resp.text)

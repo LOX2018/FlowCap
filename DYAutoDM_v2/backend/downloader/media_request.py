@@ -288,11 +288,8 @@ def resolve_playable(url: str, *, timeout: float = 10.0,
         from utils.tls_policy import tls_verify
 
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.douyin.com/",
+            # ★ ADR-016 D4：统一走档案（内核感知），禁止写死版本
+            "User-Agent": __import__("utils.fingerprint", fromlist=["user_agent"]).user_agent(),
             "Accept": "*/*",
         }
         # ★ 探测方法必须是 **GET + Range**，不能用 HEAD（2026-09-21 实测修正）：
