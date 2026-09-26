@@ -3,22 +3,5 @@
   "_version": "1.2.0",
   "_updated": "2026-09-26",
   "_match_rule": "逐端点精确匹配：条目 (check, target) 必须与实测 offender 字符串**完全相等**。2026-09-22 修正——旧实现用 off.startswith(target.split('/aweme')[0]) 做**前缀匹配**，同一文件一旦登记 1 处，该文件**所有**受保护端点全部落入 known ⇒ 新增缺口被静默豁免，且运维读数（5 处）与文件条目（2 条）不可归因。新增缺口一律逐端点登记，禁止再按文件级前缀豁免。",
-  "known_gaps": [
-    {
-      "check": "G2 C-02 secsdk 签名接线",
-      "target": "backend/dy_apis/client_video.py:/aweme/v1/web/tab/feed/",
-      "reason": "该调用点 docstring 声称实测 HTTP 200 / 659465 字节成功，与 secsdk 保护清单（tab/feed 属受保护 GET）矛盾。二者必有一误：要么清单过宽、要么该次实测处于特殊 cookie/msToken 状态。",
-      "status": "open-conflict",
-      "verify_how": "取一次真实 webcast/www 请求对照：同一 cookie 下分别发【带签名】与【不带签名】两次，比对 status_code。带签成功→清单正确、代码需补签；不带签也成功→清单过宽、secsdk_web_sign 的保护表需按实测收窄。",
-      "risk": "风险等级低：该端点不在核心业务链（评论截流已有替代路径）。若上游策略收紧，表现为静默 403（非崩溃）。"
-    },
-    {
-      "check": "G2 C-02 secsdk 签名接线",
-      "target": "backend/dy_apis/client_video.py:/aweme/v1/web/aweme/detail/",
-      "reason": "调用点（client_video.py:53 api = f\"/aweme/v1/web/aweme/detail/\"）在 PROTECTED_PATHS_GET 清单内，但该处未接 signed_url()。非本轮引入：实测 21fdbf4 该行已存在，窗口内该文件 0 次改动；同 client_user.py 漏登原因（逐端点匹配改造时漏登记）。",
-      "status": "work-in-progress",
-      "verify_how": "补 signed_url() + 带/不带签名对照实测；再删本项。",
-      "risk": "风险等级中：作品详情为内容页核心链路，上游策略收紧时表现为详情拉取失败（非崩溃）。"
-    }
-  ]
+  "known_gaps": []
 }

@@ -1140,10 +1140,15 @@ async def media_resolve(req: MediaResolveReq) -> dict[str, Any]:
     · **列表类接口**（`/feed`、`/user/works`、`/search`、`/collection/items`、`/liked`）
       返回的作品对象**自带播放地址**：实测 125 键、含 `video.play_addr`、45 个 URL。
     · **作品详情接口**（`get_work_info`，即 `/aweme/v1/web/aweme/detail/`）
-      实测 **HTTP 200 但响应体 0 字节**（平台侧行为，与写操作族同源）。
-    ⇒ 因此**推荐前端直接把列表返回的作品对象原样回传**（`raw`），
-      避免再发一次必然失败的详情请求（少一次请求也更安全）。
-      `aweme_id` / `url` 路径保留作 fallback，若平台侧恢复则可用。
+      ⚠️ **2026-09-26 订正（原表述为误归因）**：旧注释写「实测 HTTP 200 但响应体
+      0 字节（平台侧行为）」—— **该结论已被 A/B 实测推翻**。真实原因是**缺 secsdk
+      签名**：不带签名时被 Argus 网关拦下返 **403**（46B），上游把非 200 体当空读，
+      于是误记为「200 空体」。**实测对照**（真实作品 id=7680508646496750890）：
+        不带签名 → 403 `Blocked by ArgusSecurityPlugin Uifid Not Found`
+        带签名   → **200 + 124,004 字节 + `aweme_detail` 非空**
+      ⇒ `get_work_info` 已补 `signed_url`（M-2 闭环），`aweme_id`/`url` 路径**可用**。
+    仍**推荐**前端直接回传列表作品对象（少一次请求、也少一次风控面），
+    但不再是因为「详情必然失败」—— 那是错的。
     """
     from downloader import media_request as MR
 

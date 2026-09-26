@@ -90,8 +90,19 @@ class VideoMixin:
         params.with_a_bogus()
         params.add_param("verifyFp", auth.cookie['s_v_web_id'])
         params.add_param("fp", auth.cookie['s_v_web_id'])
-        resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify())
+        # ★ 2026-09-26 修复（C-02 secsdk 签名接线 / M-2）：
+        #   `/aweme/v1/web/aweme/detail/` 在 secsdk webSign 保护清单内
+        #   （`utils.secsdk_web_sign.PROTECTED_PATHS_GET`）。原实现把 `params.get()`
+        #   交给 requests 的 `params=` —— 缺 uifid 与 secsdk 签名 ⇒ 被 Argus 网关拦下。
+        #   **A/B 实机实测**（真实作品 id=7680508646496750890，2026-09-26）：
+        #     不带签名 → HTTP **403**（46B `Blocked by ArgusSecurityPlugin Uifid Not Found`）
+        #     带签名   → HTTP **200** + **124,004 字节** + `aweme_detail` **非空**
+        #   ⇒ 改走 `signed_url`（带 uifid + secsdk 签名）。
+        #   注意：必须发 `signed_url` 的返回值本身，**不能再把 params 交给 requests**
+        #   （否则 requests 会二次编码，与签名输入不一致 → 依旧 403）。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url, headers=headers.get(), cookies=auth.cookie,
+                            verify=tls_verify())
         # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
         resp_json = safe_json(resp)
         return resp_json
@@ -262,8 +273,18 @@ class VideoMixin:
          .add_param("refresh_index", str(refresh_index)))
         params.with_web_id(auth, "https://www.douyin.com/")
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+        # ★ 2026-09-26（M-2 收尾）：`/aweme/v1/web/tab/feed/` 在 secsdk 保护清单内
+        #   （`PROTECTED_PATHS_GET`）。**A/B 实机实测**（真实账号，2026-09-26）：
+        #     不带签名 → HTTP **200** / 229,138 字节
+        #     带签名   → HTTP **200** / 211,847 字节
+        #   ⇒ 两者**均成功** —— 说明清单对本端点**过宽**（G2 门禁原告警
+        #   与实测矛盾，已裁决）。但**签名严格占优**（两者皆 200，
+        #   签名不引入新失败面、且对齐上游清单），按用户
+        #   「保守策略为主」取保守侧 ⇒ 补签名。
+        #   注意：必须发 `signed_url` 的返回值本身（不再传 params）。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url,
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify(), timeout=15)
+                            verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
