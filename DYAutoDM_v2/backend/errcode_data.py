@@ -30,6 +30,9 @@ DOMAIN_INFO = {
     "SYS": ["系统与启动", "daemon 拉起 / 路由挂载 / 配置", "BCC frozen exe 必须带 DY_APP_ROOT；并行拉起 ~15s"],
     "PROBE": ["能力探针", "M1 探针缺失 / 三态判定 / 覆盖率与基线 / 探针假健康", "探针只读本地事实（DB+本项目日志），零网络零浏览器；报 healthy 必须带 evidence；三态禁止二态"],
     "TSK": ["任务历史", "历史任务读写 / 导出", "读失败多为文件占用，重试即可"],
+    "SCHED": ["定时任务中心(ADR-018 F4)", "调度启停 / 任务执行 / 外发闸门",
+              "默认休眠（enabled=False）—— 自动外发是本项目最大风控敞口；"
+              "SCHED-001=总开关未开拒启动属**预期默认态**非故障"],
     "MISC": ["未分类", "", "按消息里的 [tag] 定位模块"],
 }
 
@@ -521,6 +524,18 @@ ERRCODES = {
     "TSK-002": {"meaning": "tasks] 读取任务容器失败:", "file": "api/tasks.py", "line": 65},
     "TSK-003": {"meaning": "tasks] 配置落盘失败（不影响本次保存）:", "file": "api/tasks.py", "line": 173},
     "TSK-004": {"meaning": "tasks] 导出失败:", "file": "api/tasks.py", "line": 256},
+    "SCHED-001": {"meaning": "task_scheduler] 总开关未开启，拒绝启动（默认休眠·ADR-018 D1）:", "file": "services/task_scheduler.py", "line": 383},
+    "SCHED-002": {"meaning": "task_scheduler] 调度中心已启动:", "file": "services/task_scheduler.py", "line": 404},
+    "SCHED-003": {"meaning": "tasks] 读取调度中心状态失败:", "file": "api/tasks.py", "line": 0},
+    "SCHED-004": {"meaning": "task_scheduler] 任务执行异常:", "file": "services/task_scheduler.py", "line": 296},
+    "SCHED-005": {"meaning": "task_scheduler] 任务执行超时:", "file": "services/task_scheduler.py", "line": 290},
+    "SCHED-006": {"meaning": "task_scheduler] 任务外层异常:", "file": "services/task_scheduler.py", "line": 347},
+    "SCHED-007": {"meaning": "task_scheduler] 轮询异常:", "file": "services/task_scheduler.py", "line": 354},
+    "SCHED-008": {"meaning": "tasks] 启动调度中心失败:", "file": "api/tasks.py", "line": 0},
+    "SCHED-009": {"meaning": "tasks] 停止调度中心失败:", "file": "api/tasks.py", "line": 0},
+    "SCHED-010": {"meaning": "tasks] 保存定时任务失败:", "file": "api/tasks.py", "line": 0},
+    "SCHED-011": {"meaning": "tasks] 删除定时任务失败:", "file": "api/tasks.py", "line": 0},
+    "SCHED-012": {"meaning": "tasks] 手动执行任务失败:", "file": "api/tasks.py", "line": 0},
     "HUB-001": {"meaning": "model_hub] kv 读取失败:", "file": "services/model_hub.py", "line": 0},
     "HUB-002": {"meaning": "model_hub] kv 写入失败:", "file": "services/model_hub.py", "line": 0},
     "HUB-003": {"meaning": "model_hub] v1 配置迁移失败（不影响运行）:", "file": "services/model_hub.py", "line": 0},

@@ -544,6 +544,21 @@ export interface ConfigTagSummary {
   updated_at: number;
 }
 
+/** 受标签管理的板块（对应后端 config_tag.MANAGED_SECTIONS，顺序一致）。 */
+export const TAG_MANAGED_SECTIONS = [
+  "send",
+  "live",
+  "capture",
+] as const;
+export type TagManagedSection = (typeof TAG_MANAGED_SECTIONS)[number];
+
+/** 板块中文名（UI 展示用，唯一处定义）。 */
+export const TAG_SECTION_LABELS: Record<TagManagedSection, string> = {
+  send: "私信发送",
+  live: "直播监听",
+  capture: "捕获与存储",
+};
+
 export interface ConfigTag {
   id: string;
   name: string;
@@ -963,6 +978,31 @@ export const api = {
     });
   },
 
+  // ===== F5 搜索发现（ADR-018，只读） =====
+
+  /**
+   * 按关键词**只读**搜索直播间（后端 `/api/live/rooms/discover`）。
+   *
+   * 只做搜索，**上架另走** `saveLiveRoom`（既有 save_room），
+   * 因此不存在第二套存储。
+   *
+   * `blocked=true` 表示被平台风控拦截（Argus 网关非 200）
+   * —— 与「真的没搜到」是**两回事**，UI 必须分别呈现（禁止假成功）。
+   */
+  async discoverLiveRooms(query: string, account?: string, num = 20): Promise<{
+    ok: boolean;
+    query?: string;
+    items?: DiscoveredRoom[];
+    blocked?: boolean;
+    transport?: { status?: number; bytes?: number } | null;
+    error?: string;
+  }> {
+    return request("/api/live/rooms/discover", {
+      method: "POST",
+      body: JSON.stringify({ query, account: account || "", num }),
+    });
+  },
+
   /** 一次性迁移存量「房间形」旧策略记录 → live_rooms（默认干跑）。 */
   async migrateLiveRooms(dryRun = true): Promise<{
     ok: boolean;
@@ -1322,6 +1362,55 @@ export const api = {
     return request("/api/tasks/history/clear", { method: "POST" });
   },
 
+  // ===== 定时任务中心（ADR-018 F4）=====
+  // 🔴 注意：本组**不提供**「开启自动外发」的接口。
+  //    自动外发开关只由后端环境变量控制（ADR-018 D1：默认休眠），
+  //    前端若提供一键开启，就会成为绕过休眠的暗门 —— 刻意不做。
+  async getScheduler(): Promise<{
+    ok: boolean;
+    state?: Record<string, unknown>;
+    tasks?: unknown[];
+    error?: string;
+  }> {
+    return request("/api/tasks/scheduler");
+  },
+  async schedulerStart(): Promise<{ ok: boolean; reason?: string; error?: string }> {
+    return request("/api/tasks/scheduler/start", { method: "POST" });
+  },
+  async schedulerStop(): Promise<{ ok: boolean; error?: string }> {
+    return request("/api/tasks/scheduler/stop", { method: "POST" });
+  },
+  async schedulerSaveTask(body: {
+    id?: string;
+    name?: string;
+    kind?: string;
+    account?: string;
+    params?: Record<string, unknown>;
+    interval?: number;
+    enabled?: boolean;
+  }): Promise<{ ok: boolean; task?: unknown; error?: string }> {
+    return request("/api/tasks/scheduler/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async schedulerDeleteTask(taskId: string): Promise<{ ok: boolean; error?: string }> {
+    return request(`/api/tasks/scheduler/tasks/${encodeURIComponent(taskId)}`, {
+      method: "DELETE",
+    });
+  },
+  async schedulerRunTask(taskId: string): Promise<{
+    ok: boolean;
+    skipped?: boolean;
+    reason?: string;
+    error?: string;
+  }> {
+    return request(`/api/tasks/scheduler/tasks/${encodeURIComponent(taskId)}/run`, {
+      method: "POST",
+    });
+  },
+
   // ===== settings =====
   async getConfig(): Promise<{ ok: boolean; config: Record<string, unknown> }> {
     return request("/api/settings");
@@ -1422,6 +1511,8 @@ export const api = {
     ok: boolean;
     tags: ConfigTagSummary[];
     bindings: Record<string, string>;
+    /** 板块级绑定 {account: {section: tag_id}}（B-4 第二层，2026-09-27 接线） */
+    bindings_section?: Record<string, Record<string, string>>;
   }> {
     return request("/api/settings/tags");
   },
@@ -1455,6 +1546,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ account, tag_id: tagId }),
     });
+  },
+
+  /** 板块级绑定（B-4 第二层）：把某账号的**单个板块**绑到标签 */
+  async bindTagSection(
+    account: string,
+    section: TagManagedSection,
+    tagId: string,
+  ): Promise<{ ok: boolean; bindings_section: Record<string, Record<string, string>> }> {
+    return request("/api/settings/tags/bind/section", {
+      method: "POST",
+      body: JSON.stringify({ account, section, tag_id: tagId }),
+    });
+  },
+
+  /** 读全部板块级绑定 {account: {section: tag_id}} */
+  async listTagSectionBindings(): Promise<{
+    ok: boolean;
+    bindings_section: Record<string, Record<string, string>>;
+    tags: ConfigTagSummary[];
+  }> {
+    return request("/api/settings/tags/bind/section");
   },
 
   /** 保存某标签的参数（实际写入 app_config 的 scope 存储） */
@@ -2094,6 +2206,28 @@ export interface McpStatus {
   tools: number;
   pending_confirmations: number;
   listen_host: string;
+}
+
+/**
+ * F5 搜索发现：平台搜索返回的一条直播间（**只读**，来自 `/discover`）。
+ *
+ * ⚠️ D7 昵称红线：`nickname` **只**取搜索结果自带的值，前端与后端都**不得**
+ * 为补齐昵称再去回调 `bulk_user_info` / `get_im_user_info`。取不到就显示「—」。
+ */
+export interface DiscoveredRoom {
+  /** 直播间号（web_rid） */
+  room_id: string;
+  /** 直播间标题 */
+  title: string;
+  /** 主播昵称（**仅搜索结果自带**，可能为空） */
+  nickname: string;
+  sec_uid: string;
+  /** 在线人数 */
+  online_count: number;
+  /** 封面 URL（可能为空） */
+  cover: string;
+  /** 后端拼好的可点链接（有 room_id 时非空） */
+  live_url: string;
 }
 
 /** 可写配置字段（`POST /api/mcp/config` 的 body）。 */

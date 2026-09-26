@@ -42,15 +42,41 @@
 - POST   ``""``             新建 / 更新（按 id upsert；id 为空则生成）
 - DELETE ``/{rid}``         删除房间（只删房间记录，**不动策略**）
 - POST   ``/migrate``       一次性迁移：存量「房间形」旧策略记录 → live_rooms（带干跑）
+- POST   ``/discover``      ★ ADR-018 F5：按关键词**只读搜索**直播间（不上架）
+
+## F5「搜索发现」（ADR-018 §F5，2026-09-27）
+
+流程拆成**两段**，刻意不合并：
+
+  1. ``/discover`` —— **只读**，只做「关键词 → 平台搜索 → 规范化列表」；
+  2. 上架 —— 复用**既有** ``POST ""``（``save_room``），不另造一套存储。
+
+### D6（签名，硬性）
+
+调用链 ``/discover`` → ``DouyinAPI.search_some_live`` → ``DouyinAPI.search_live``，
+``search_live`` 已改走 ``params.signed_url(...)``（``dy_apis/client_search.py``）。
+
+### D7（昵称红线）
+
+只取搜索结果**自带**的 ``nickname``，**绝不**回调 ``bulk_user_info`` /
+``get_im_user_info`` 之类补查接口。取不到就返回空串，由前端显示「—」。
+
+### 「禁止假成功」（项目铁律）
+
+平台风控（Argus 403 / 空响应体）时**不得**返回空列表假装「没搜到」——
+响应带 ``blocked=True`` + ``transport`` 传输层事实，前端据此显示「被风控拦截」。
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel
+
+from typing import Any
 
 from database import get_kv_json, set_kv_json
 
@@ -159,6 +185,139 @@ class MigrateBody(BaseModel):
 
     dry_run: bool = True
     apply: bool = False     # 兼容别名：apply=True 也等于真写
+
+
+class DiscoverReq(BaseModel):
+    """F5 搜索发现入参（**只读**，不写任何 kv）。"""
+
+    account: str = ""       # 留空 = 取当前选中账号
+    query: str
+    num: int = 20
+
+
+def _auth_for(account: str):
+    """加载账号凭证 → auth（与 ``api/platform._auth_for`` 同源，2026-09-27 抽此薄封装）。
+
+    ## 为什么不用 auth_helper.get_current_auth
+
+    它会一路退到 ``enrich_auth`` → ``DYLoginApi.get_login_auth``，**可能弹浏览器扫码**。
+    ``/discover`` 是只读搜索：拿到就用，拿不到就如实报「请先在账号管理登录」，
+    不该在后台偷偷开浏览器（那正是主侧定义的主动风控动作）。
+    """
+    try:
+        from auto_dm import accounts as acct_core
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"账号模块不可用: {type(e).__name__}") from e
+
+    name = (account or "").strip() or (acct_core.current_name() or "")
+    if not name:
+        raise HTTPException(400, "尚未选择账号，请先在「账号管理」选择并完成登录。")
+    try:
+        env_path = acct_core.env_path_of(name)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"加载账号 {name} 凭证失败: {type(e).__name__}") from e
+    if not env_path:
+        raise HTTPException(404, f"账号 {name} 未登记")
+
+    # P3：凭证收敛——静态字段检查委托 verify_credential(lightweight=True)
+    try:
+        from auto_dm.accounts import verify_credential
+        _vc = verify_credential(name, lightweight=True)
+        if not _vc["ok"]:
+            raise HTTPException(
+                503,
+                f"账号 {name} 凭证不完整（{_vc['wp']['detail']}），请重新扫码登录后再搜索。",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-ROOMS-001] 凭证校验异常（不阻断）: {type(e).__name__}: {e}")
+
+    try:
+        from dy_apis.login_api import DYLoginApi
+        return DYLoginApi._load_auth_from_env(env_path)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"加载账号 {name} 凭证失败: {type(e).__name__}") from e
+
+
+def _first(*vals):
+    """返回第一个「非空」标量（0/False 也算有值，只排 None/空串/空容器）。"""
+    for v in vals:
+        if v in (None, "", [], {}, ()):
+            continue
+        return v
+    return ""
+
+
+def _pick_cover(d: dict) -> str:
+    """从直播搜索结果里取封面 URL（尽力而为，取不到返回空串）。"""
+    for key in ("cover", "cover_url", "room_cover", "image"):
+        v = d.get(key)
+        if isinstance(v, str) and v.startswith("http"):
+            return v
+        if isinstance(v, dict):
+            urls = v.get("url_list") or []
+            if urls and isinstance(urls[0], str):
+                return urls[0]
+    return ""
+
+
+def _pick_live(item: dict) -> dict:
+    """把平台原始直播条目压成前端够用的形状（**D7：昵称只用结果自带**）。
+
+    三种布局都兼容（上游字段命名曾多次漂移，稳妥起见逐个兜底）：
+      · 扁平      ``{room_id, title, nickname, user_count, cover}``
+      · 包 author ``{room_id, title, author:{nickname}, stats:{user_count}}``
+      · 包 room   ``{room:{id_str,title,...}, anchor:{nickname}}``
+    """
+    if not isinstance(item, dict):
+        return {}
+    lo = {str(k).lower(): v for k, v in item.items()}
+
+    def get(*names):
+        for n in names:
+            if n in lo and lo[n] not in (None, "", [], {}):
+                return lo[n]
+        return None
+
+    # ---- 房间号：上游字段命名漂移，逐个兜底 ----
+    room_id = str(_first(get("room_id", "roomid"), get("id_str"), get("id")) or "")
+    if not room_id:
+        room = get("room")
+        if isinstance(room, dict):
+            rlo = {str(k).lower(): v for k, v in room.items()}
+            room_id = str(rlo.get("id_str") or rlo.get("id") or rlo.get("room_id") or "")
+
+    author = get("author", "user", "anchor")
+    author = author if isinstance(author, dict) else {}
+    alo = {str(k).lower(): v for k, v in author.items()} if author else {}
+
+    stats = get("stats", "statistics", "room_stats")
+    stats = stats if isinstance(stats, dict) else {}
+    slo = {str(k).lower(): v for k, v in stats.items()} if stats else {}
+
+    online = _first(slo.get("user_count"), get("user_count", "user_count_str"),
+                    slo.get("total_user"), get("total_user"), 0)
+    try:
+        online = int(online)
+    except (TypeError, ValueError):
+        online = 0
+
+    return {
+        "room_id": room_id,
+        "title": str(_first(get("title", "name", "room_title")) or ""),
+        # D7 红线：只用搜索结果自带的昵称，绝不回调补查接口
+        "nickname": str(_first(alo.get("nickname"), get("nickname", "nick_name")) or ""),
+        "sec_uid": str(_first(alo.get("sec_uid"), get("sec_uid")) or ""),
+        "online_count": online,
+        "cover": _pick_cover(item),
+        # 上架时直接可塞进 RoomBody 的现成值
+        "live_url": f"https://live.douyin.com/{room_id}" if room_id else "",
+    }
 
 
 def _find_room_shaped_configs() -> list[tuple[str, dict]]:
@@ -414,3 +573,76 @@ async def migrate(body: MigrateBody | None = None) -> dict:
     """一次性迁移存量「房间形」旧策略记录 → ``live_rooms``（默认干跑）。"""
     b = body or MigrateBody()
     return migrate_from_room_configs(dry_run=not (b.apply or not b.dry_run))
+
+
+# ⚠️ 路由次序：``/{rid}`` 必须排在 ``/discover`` 之后注册，否则 FastAPI 会把
+#    GET 路径里的 "discover" 当成房间 id。此处 /discover 是 POST，无冲突，
+#    但仍置于文件末尾以明示「它不与 /{rid} 争抢」这一不变量。
+
+@router.post("/discover")
+async def discover_live(req: DiscoverReq) -> dict:
+    """ADR-018 F5 —— 按关键词**只读搜索**直播间（**不写任何 kv**）。
+
+    ## 职责边界（刻意窄）
+
+    只做「关键词 → ``search_some_live`` → 规范化列表」。**上架不在此处**：
+    前端拿到条目后自行调既有 ``POST /api/live/rooms``（``save_room``）落库，
+    从而不出现第二套存储 / 第二份写路径。
+
+    ## 返回字段
+
+      ok / items[] / blocked / transport / query
+
+      items[] 每项：``room_id`` / ``title`` / ``nickname`` / ``sec_uid`` /
+      ``online_count`` / ``cover`` / ``live_url``
+
+    ## 「禁止假成功」（项目铁律）
+
+    Argus 403 / 空响应体时返回 ``blocked=True`` + ``transport``，
+    **绝不**用空 items 假装「这个关键词没有直播间」。
+    """
+    query = str(req.query or "").strip()
+    if not query:
+        # 空关键词属于「输入问题」，不是「搜索结果为空」——两者必须可区分
+        raise HTTPException(400, "请输入搜索关键词")
+
+    auth = _auth_for(req.account)
+    num = max(1, min(int(req.num or 20), 50))
+
+    try:
+        from dy_apis.douyin_api import DouyinAPI
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"平台接口层不可用: {type(e).__name__}") from e
+
+    # DouyinAPI 是同步 requests 实现 ⇒ 一律 asyncio.to_thread，避免阻塞事件循环
+    # （与 api/crawl.py、api/platform.py 一致）。
+    try:
+        raw = await asyncio.to_thread(DouyinAPI.search_some_live, auth, query, num)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-ROOMS-002] 直播搜索异常: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"搜索失败: {type(e).__name__}")
+
+    transport = DouyinAPI.take_live_transport(raw) or None
+    items_raw = list(raw or [])
+    items = [_pick_live(x) for x in items_raw]
+    # 没有房间号 = 无法上架，也没有展示价值，直接丢掉（而非返回一条残缺行）
+    items = [x for x in items if x.get("room_id")]
+
+    resp: dict[str, Any] = {
+        "ok": True,
+        "query": query,
+        "items": items,
+        "blocked": False,
+        "transport": transport,
+    }
+    # 风控判据：传输层非 200，或 200 但一条都没解析出来且带传输层事实
+    if transport:
+        status = int(transport.get("status") or 0)
+        if status != 200:
+            resp["blocked"] = True
+            resp["error"] = (
+                "被风控拦截（Argus 网关返回 HTTP "
+                f"{status}，{transport.get('bytes')} 字节）——请稍后重试或重新扫码登录"
+            )
+            logger.warning(f"[LIVE-ROOMS-003] 直播搜索被风控拦截: {transport}")
+    return resp

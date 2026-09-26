@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone, Blank, Toolbar } from "@/components/page/kit";
 import { type OverviewExt, type ExportStatsResp, type Api, Th, Td, errMsg } from "./tasks-shared";
+import SchedulerSection from "./SchedulerSection";
 
 export default function TasksPage(props: PageProps) {
   const { push, overview, ready, goReuse } = props;
@@ -415,6 +416,10 @@ export default function TasksPage(props: PageProps) {
           </table>
         </div>
       </Section>
+
+      {/* 定时任务中心（ADR-018 F4）—— 置于页尾：日常主要用上面的运行/历史任务，
+          调度中心是低频且默认休眠的功能，不抢主视线 */}
+      <SchedulerSection {...props} />
     </PageContainer>
   );
 }

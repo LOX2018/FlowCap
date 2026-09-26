@@ -23,6 +23,10 @@ import { PageProps } from "../../api/client";
 import { Avatar, KIND_NAME } from "../../components/ui";
 import AiRuntimeSection from "@/components/overview/AiRuntimeSection";
 import CapabilityHealthSection from "@/components/overview/CapabilityHealthSection";
+// ADR-018 F2：新增三张数据卡（全部只读既有端点，零新采集）
+import AccountsHealthSection from "@/components/overview/AccountsHealthSection";
+import LiveStatusSection from "@/components/overview/LiveStatusSection";
+import TaskHistorySection from "@/components/overview/TaskHistorySection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -321,6 +325,12 @@ export default function OverviewPage(props: PageProps) {
             {/* 能力健康（M1 能力探针）—— 同为「产品级运行状态」，2026-09-21 P1 收尾。
                 只读本地事实（DB + 本项目日志），零网络零浏览器。 */}
             <CapabilityHealthSection {...props} />
+
+            {/* ── ADR-018 F2：以下三张数据卡与既有 Section 同层（产品级运行状态）。
+                 共同约束：只读既有端点（GET），零新采集；空/失败态如实表达。 ── */}
+            <AccountsHealthSection {...props} />
+            <LiveStatusSection {...props} />
+            <TaskHistorySection {...props} />
           </div>
         </div>
       )}

@@ -35,6 +35,8 @@ import TagSection from "./TagSection";
 import AiEngineSection from "./AiEngineSection";
 import NicknameFallbackSection from "./NicknameFallbackSection";
 import McpSection from "./McpSection";
+// ADR-018 F6：日夜主题切换的唯一可写入口（主题引擎本身早已存在，缺的是入口）
+import AppearanceSection from "./AppearanceSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -104,7 +106,13 @@ export default function SettingsPage(props: PageProps) {
         <Card className="min-w-0 flex-1">
           <CardContent className="p-3.5">
             {section === "general" && (
-              <UnifiedConfigSection {...props} onlySections={["general"]} />
+              <>
+                {/* 后端 schema 驱动的通用配置（非业务） */}
+                <UnifiedConfigSection {...props} onlySections={["general"]} />
+                {/* ADR-018 F6：外观（日夜主题）。纯前端偏好，存 localStorage，
+                    不经后端 schema，故单独成卡、不塞进 UnifiedConfigSection。 */}
+                <AppearanceSection />
+              </>
             )}
             {section === "send" && (
               <UnifiedConfigSection {...props} onlySections={["send"]} />

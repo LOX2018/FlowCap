@@ -152,6 +152,24 @@ export interface CommentItem {
   user_sec_uid: string;
 }
 
+export interface CommentFullItem {
+  cid: string;
+  text: string;
+  digg_count: number;
+  create_time: number;
+  reply_comment_total: number;
+  /** 是否含楼中楼（有 total 或已取到回复） */
+  has_inner: boolean;
+  /** 楼中楼（同结构，不再嵌套） */
+  reply_comment: {
+    cid: string; text: string; digg_count: number;
+    create_time: number; user_nickname: string; user_uid: string;
+  }[];
+  user_nickname: string;
+  user_uid: string;
+  user_sec_uid: string;
+}
+
 export const platformApi = {
   feed: (account: string, count = 20) =>
     post<{ ok: boolean; items: AwemeItem[]; has_more: boolean }>(
@@ -277,6 +295,26 @@ export const platformApi = {
   awemeComments: (account: string, url: string, limit = 20) =>
     post<{ ok: boolean; items: CommentItem[]; has_more: boolean }>(
       "/api/platform/comments", { account, url, limit }),
+
+  /** ★ 2026-09-27（ADR-018 F3）：作品评论采集（一级 + 楼中楼）——**只读**。
+   *  与播放器**同时**展示：播放器一打开就并发取评论，不是切 Tab 才加载。
+   *  `blocked=true` ⇒ 平台风控拦截（后端如实标注，不返回占位空列表）。 */
+  commentsFull: (
+    account: string, aweme_id: string, url = "", limit = 50,
+    with_inner = true, inner_limit = 5,
+  ) =>
+    post<{
+      ok: boolean; items: CommentFullItem[]; total: number;
+      has_more: boolean; blocked?: boolean; reason?: string;
+    }>("/api/platform/comments/full", {
+      account, aweme_id, url, limit, with_inner, inner_limit }),
+
+  /** ★ 2026-09-27（ADR-018 F3）：评论行「发私信」——**仅手动点击触发**。
+   *  后端转调既有 `dm_dispatch.submit_by_uid`（复用限流/去重/投递验证）。
+   *  ⚠️ `ok=true` 只是**入队受理**，不是投递成功；前端不得显示「已发送」。 */
+  commentDm: (account: string, uid: string, text: string, nickname = "") =>
+    post<{ ok: boolean; accepted: boolean; error: string; task_id: string }>(
+      "/api/platform/comments/dm", { account, uid, text, nickname }),
 
   // ---- 写操作（须由用户显式点击触发，不做自动批量） ----
   digg: (account: string, aweme_id: string, action: "1" | "0" = "1") =>

@@ -87,7 +87,10 @@ async def list_tags():
     from services import config_tag
 
     return {"ok": True, "tags": config_tag.list_tags(),
-            "bindings": config_tag.get_bindings()}
+            "bindings": config_tag.get_bindings(),
+            # 板块级绑定（B-4 第二层，2026-09-27 接线）：前端一次取全，
+            # 省掉一次往返。空 dict = 无人用过板块级绑定（默认态）。
+            "bindings_section": config_tag.bindings_section()}
 
 
 @router.post("/tags")
@@ -126,6 +129,43 @@ async def get_tag_bindings():
     from services import config_tag
 
     return {"ok": True, "bindings": config_tag.get_bindings(),
+            "tags": config_tag.list_tags()}
+
+
+class TagBindSectionBody(BaseModel):
+    """板块级绑定（B-4 第二层，2026-09-27 接线）。
+
+    section ∈ MANAGED_SECTIONS（send / live / capture）；tag_id 空 = 解绑该板块。
+    """
+
+    account: str
+    section: str
+    tag_id: str = ""
+
+
+@router.post("/tags/bind/section")
+async def bind_tag_section(body: TagBindSectionBody):
+    """绑定某账号的**单个板块**到标签（tag_id 空 = 解绑该板块）。
+
+    默认态（无任何板块级绑定）下，所有消费方仍读数与改造前逐字一致。
+    """
+
+    from services import config_tag
+
+    if body.tag_id and not config_tag.get_tag(body.tag_id):
+        raise HTTPException(404, "标签不存在")
+    r = config_tag.bind_section(body.account, body.section, body.tag_id)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "板块绑定失败")
+    return r
+
+
+@router.get("/tags/bind/section")
+async def get_tag_section_bindings():
+    from services import config_tag
+
+    return {"ok": True,
+            "bindings_section": config_tag.bindings_section(),
             "tags": config_tag.list_tags()}
 
 

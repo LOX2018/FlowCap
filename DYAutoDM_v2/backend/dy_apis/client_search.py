@@ -39,6 +39,26 @@ from dy_apis._common import *  # noqa: F401,F403
 DouyinAPI = None  # type: ignore[assignment]
 
 
+class LiveSearchResult(list):
+    """``search_some_live`` 的返回值：直播列表 + **传输层事实**。
+
+    为什么不是裸 ``list``（2026-09-27 实测复现）：内置 ``list`` 没有 ``__dict__``，
+    ``lst.last_transport = x`` 直接抛 ``AttributeError``。若用 ``try/except`` 吞掉
+    这个异常，风控事实就**静默丢失** —— 上层只能收到空列表，前端显示「没搜到」，
+    正是项目铁律禁止的**假成功**。
+
+    本类是 ``list`` 的子类，故 ``for x in result`` / ``len(result)`` /
+    ``result[:n]`` 等既有用法**零改动**（`search_some_live` 的返回契约不变）。
+
+    ``last_transport`` 为 ``None`` 表示传输层正常（HTTP 200 且响应可解析）；
+    非 ``None`` 时形如 ``{"status": 403, "bytes": 46}``。
+    """
+
+    def __init__(self, items=None, transport=None):
+        super().__init__(items or [])
+        self.last_transport = transport
+
+
 class SearchMixin:
     """搜索与流域接口（来自 DouyinAPI）。"""
 
@@ -298,9 +318,36 @@ class SearchMixin:
         params.with_web_id(auth, refer)
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify())
-        return safe_json(resp)
+        # ★ 2026-09-27 修复（ADR-018 D6 / F5 接线前置）：本端点原实现把
+        #   `params.get()` 交给 requests 的 `params=` —— 缺 uifid 与 secsdk
+        #   webSign ⇒ 被 Argus 网关拦下（HTTP 403 + 46B
+        #   `Blocked by ArgusSecurityPlugin Uifid Not Found`，同族 M-2 实测结论）。
+        #
+        #   ⚠️ 本路径 `/aweme/v1/web/live/search/` **不在** PROTECTED_PATHS_GET，
+        #   因此 `test_m2_secsdk_send_side.S1` 的保护清单门禁**抓不到**它；
+        #   且该清单是 GET/POST 共用的白名单，不应为其而改动清单本身。
+        #   ⇒ 按 D6 决策，此处**无条件**改走 `signed_url`（与 client_video /
+        #   client_user / client_collection 里需要签名的 GET 同构）。
+        #
+        #   必须发 `signed_url` 的返回值本身（**不能再把 params 交给 requests**），
+        #   否则 requests 会二次编码，与签名输入不一致 → 依旧 403。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url, headers=headers.get(), cookies=auth.cookie,
+                            verify=tls_verify())
+        resp_json = safe_json(resp)
+        # 2026-09-27 修补（ADR-018 F5 · 「禁止假成功」）：`safe_json` 把
+        # Argus 403（46B `Blocked by ArgusSecurityPlugin Uifid Not Found`）
+        # 与非 JSON 错误页一律降级成 `{}` —— 上层因此**无法区分**
+        # 「真的没有这个关键词的直播间」与「被风控拦截」，前端只能显示空列表
+        # 假装没结果（项目铁律禁止）。此处把传输层事实**如实带出**。
+        try:
+            _status, _nbytes = resp.status_code, len(resp.content or b"")
+        except Exception:  # noqa: BLE001
+            _status, _nbytes = 0, 0
+        if _status != 200 or not isinstance(resp_json, dict) or not resp_json:
+            if isinstance(resp_json, dict):
+                resp_json["_transport"] = {"status": _status, "bytes": _nbytes}
+        return resp_json
 
     @staticmethod
     def search_some_live(auth, query: str, num: int, **kwargs) -> list:
@@ -314,14 +361,37 @@ class SearchMixin:
         offset = "0"
         count = "25"
         live_list = []
-        while True:
+        # 2026-09-27 修补（ADR-018 F5 接线）：原实现裸下标 `res_json["data"]` /
+        # `res_json["has_more"]` —— safe_json 在限流/风控（Argus 403 空响应体）
+        # 时降级返回 `{}`，直接下标抛 KeyError，被上层 features._safe 吞成
+        # 「未知错误」，用户看不到「被风控拦截」。此处补与
+        # `search_some_general_work` 同款的键守卫 + 轮数上限（平台恒返
+        # has_more=1 且 data 为空时不得死循环）。
+        MAX_ROUNDS = 20
+        transport = None
+        for _round in range(MAX_ROUNDS):
             res_json = DouyinAPI.search_live(auth, query, offset, count)
-            lives = res_json["data"]
-            live_list.extend(lives)
-            if res_json["has_more"] != 1 or len(live_list) >= num:
+            if isinstance(res_json, dict) and res_json.get("_transport"):
+                # 风控/限流：把传输层事实带出，供上层如实告知用户（禁止显示空列表）
+                transport = res_json["_transport"]
+            if not isinstance(res_json, dict) or not res_json.get("data"):
+                logger.warning(f"[SEARCH-002] 直播搜索缺 data（疑限流/风控），停止翻页: "
+                               f"keys={list(res_json)[:6] if isinstance(res_json, dict) else type(res_json).__name__}")
+                break
+            live_list.extend(res_json["data"])
+            if res_json.get("has_more") != 1 or len(live_list) >= num:
                 break
             offset = str(int(offset) + int(count))
         if len(live_list) > num:
             live_list = live_list[:num]
-        return live_list
+        # 2026-09-27：把传输层事实带出给上层（「禁止假成功」的载体）。
+        # ⚠️ 必须用 `LiveSearchResult` 而非裸 `list`：内置 `list` **没有
+        # __dict__**，直接 `lst.last_transport = ...` 会抛 AttributeError
+        # （实测复现）。此处在返回前统一包装，且切片后的结果也仍用本类构造。
+        return LiveSearchResult(live_list, transport)
+
+    @staticmethod
+    def take_live_transport(live_list) -> dict | None:
+        """取回 ``search_some_live`` 结果上的传输层事实（无则 None）。"""
+        return getattr(live_list, "last_transport", None) if live_list is not None else None
 

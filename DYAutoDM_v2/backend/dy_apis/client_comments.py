@@ -99,8 +99,17 @@ class CommentsMixin:
         params.add_param("fp", auth.cookie['s_v_web_id'])
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify())
+        # ★ 2026-09-27 修复（ADR-018 F3 / D6）：`/aweme/v1/web/comment/list/`
+        #   原实现把 `params.get()` 交给 requests 的 `params=` —— 缺 uifid 与
+        #   secsdk 签名 ⇒ 被 Argus 网关拦下返 **HTTP 403（46B，非 JSON）
+        #   "Blocked by ArgusSecurityPlugin Uifid Not Found"**，safe_json 降级
+        #   `{}` ⇒ 评论恒空（与 M-2 已闭环的 listcollection 同一根因）。
+        #   ⇒ 改走 `signed_url()`（带 uifid + `x-secsdk-web-signature`）。
+        #   注意：必须发 `signed_url()` 的返回值本身，**不能再把 params 交给
+        #   requests**（requests 会二次编码，与签名输入对不上 → 依旧 403）。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url, headers=headers.get(), cookies=auth.cookie,
+                            verify=tls_verify())
         # 2026-09-17 修补（OCR 审查 HIGH —— 裸 json.loads 未走 safe_json）：
         # 抖音限流/风控时返回**空响应体**，`json.loads(resp.text)` 抛
         # JSONDecodeError 并被上层当 502。项目约定用 safe_json 优雅降级。
@@ -186,8 +195,13 @@ class CommentsMixin:
         params.add_param("fp", auth.cookie['s_v_web_id'])
         params.add_param("msToken", auth.msToken)
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify())
+        # ★ 2026-09-27 修复（ADR-018 F3 / D6）：`/aweme/v1/web/comment/list/reply/`
+        #   与一级评论同源同因 —— 不签名即被 Argus 403（46B 非 JSON）⇒ 楼中楼恒空。
+        #   改走 `signed_url()`，且**不再把 params 交给 requests**（二次编码会让
+        #   签名失效）。`domain_for` 照 `client.py` 的 www-hj 双域名策略选域。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url, headers=headers.get(), cookies=auth.cookie,
+                            verify=tls_verify())
         # 2026-09-17 修补（OCR 审查 HIGH）：裸 json.loads → safe_json。
         resp_json = safe_json(resp)
         return resp_json

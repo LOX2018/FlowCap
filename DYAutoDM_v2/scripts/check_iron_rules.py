@@ -30,6 +30,30 @@
 | R6 | §2 停止走 /quit，不得 kill 浏览器 | 源码不得出现 kill 浏览器进程的调用 |
 | R7 | §1.2 昵称源 SSOT | 昵称链路不得调用已推翻的批量查询符号 |
 | **R8** | **数据契约（ADR-012）** | **委托 `audit_data_contract.py` 六项**（见下） |
+| **R9** | **H-22 §6·1 建议 A / D-02 审计红线** | **委托 `audit_redline_count.py` 的 count()**（见下） |
+
+### R9 为何存在（2026-09-26 全库审计 §6·1 建议 A）
+
+> 「裁判脚本本身只是被摆在那里，因为没有自动 check 而失去了意义」
+
+`audit_redline_count.py` 判据正确（THRESHOLD=20、口径合规），但从未挂进任何
+自动化 —— 计数一路涨到 **30/20** 才在一次偶然的人肉执行中被发现。
+**没有「谁来跑 / 挂在哪」的门禁 = 没有门禁。**
+
+R9 是**唯一 execution point**：判据仍住在 `audit_redline_count.py`（SSOT），
+本规则只做委托 + 降级 + 可见化，不重写阈判据、不加参数。
+挂载点：`.git/hooks/pre-commit → check_iron_rules.py → R9`。
+
+### R9 为何是 WARN_ONLY（阻断 vs 警告的取舍）
+
+红线突破**不是提交内容的违规**，而是「流程节点到了」的信号 —— 本次提交本身
+可能是完全干净的。若因此阻断，开发者唯二的出路是 `--no-verify` 或临时改阈值，
+**两者都直接摧毁门禁**（铁律：会被绕过的门禁比没有门禁更坏）。故：
+  - 记 1 条 FAIL 进 RESULTS ⇒ 每次 commit 都能看见，不可能再「静默突破」；
+  - 归入 WARN_ONLY ⇒ 不阻断提交，改由流程（启动全库审计 + 功能冻结）处置。
+
+同时 R9 **永不静默通过**：未触发时也会打印 count/threshold/remaining，
+向开发者持续暴露「距红线还有几个」。
 
 ### R8 为何存在（用户 2026-09-26 指出）
 
@@ -246,10 +270,55 @@ def r8_data_contract():
         check(ok, code, f"{desc}{extra}")
 
 
+# ── R9: 审计红线计数（D-02）—— 委托 audit_redline_count.py ──────────────
+# 判据住在 audit_redline_count.count()（SSOT：THRESHOLD=20 / DEFAULT_SINCE）。
+# 本函数只做三件事：委托、可见化、诚实降级。**不重写判据、不加参数。**
+def _load_redline_module():
+    """加载 audit_redline_count 模块（SSOT 判据）。抽出成函数只为自检可注入。"""
+    import importlib.util
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "audit_redline_count.py")
+    if not os.path.isfile(p):
+        raise FileNotFoundError(p)
+    spec = importlib.util.spec_from_file_location("_arc", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def r9_audit_redline():
+    try:
+        mod = _load_redline_module()
+    except Exception as e:  # noqa: BLE001
+        # 诚实降级：门禁的前提（判据脚本）缺失/损坏时，不许假装通过。
+        check(False, "R9", f"审计红线计数不可执行 → 无法判定"
+                           f"（{type(e).__name__}: {e}）")
+        return
+    try:
+        r = mod.count(mod.DEFAULT_SINCE)
+    except Exception as e:  # noqa: BLE001
+        # git 不可用 / 仓库损坏 / since sha 失效 —— 一律诚实报「无法判定」，
+        # 不让异常炸掉整个门禁，也不让它 PASS 冒充正常。
+        check(False, "R9", f"红线计数失败（git 不可用？）→ 无法判定"
+                           f"（{type(e).__name__}: {e}）")
+        return
+
+    n, thr, rem = r.get("count"), r.get("threshold"), r.get("remaining")
+    if r.get("triggered"):
+        check(False, "R9",
+              f"🔴 审计红线已触发: {n}/{thr}（since {r.get('since')}）"
+              f" → 应启动全库审计 + 功能冻结（本次提交本身仍允许）")
+    else:
+        # 可见化：未触发也要让人知道还剩几个，杜绝「没人看 = 没人知道」。
+        check(True, "R9",
+              f"🟢 审计红线未触发: {n}/{thr}，距红线还差 {rem} 个节点"
+              f"（since {r.get('since')}）")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
-         r8_data_contract]
+         r8_data_contract, r9_audit_redline]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -267,7 +336,7 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
 PENDING: set[str] = set()
 
 # 磁盘卫生类（不影响提交内容）→ 仅警告
-WARN_ONLY = {"R2", "R3"}
+WARN_ONLY = {"R2", "R3", "R9"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
 
 
 def run() -> int:
@@ -343,7 +412,27 @@ def selftest() -> int:
     SRC_ROOT, BACKEND, DATA_ROOT = fake_src, fake_backend, fake_data
     RESULTS.clear()
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6"}
+    # ── R9 负控：注入「红线已触发」形态，断言 R9 真的变红 ───────────────
+    # R9 不依赖 SRC_ROOT/BACKEND/DATA_ROOT（它读的是 git log），所以现有
+    # 「换临时目录」的造违规手段对它无效，必须单独注入。
+    # 做法：monkeypatch 模块加载 seam `_load_redline_module`，返回一个替身
+    # 模块，其 count() 返回 triggered=True 的字典（形态与真实 count() 一致）。
+    # 选这个 seam 而不是 patch count()，是为了让**加载失败降级分支**也留在
+    # 被测路径上，而不是被绕过。
+    class _FakeRedlineModule:
+        DEFAULT_SINCE = "deadbeef"
+        THRESHOLD = 20
+
+        @staticmethod
+        def count(since):
+            return {"since": since, "threshold": 20, "count": 30,
+                    "remaining": 0, "triggered": True,
+                    "counted": [], "skipped_sample": [], "skipped_total": 0}
+
+    saved_loader = globals()["_load_redline_module"]
+    globals()["_load_redline_module"] = lambda: _FakeRedlineModule
+
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9"}
     for r in RULES:
         try:
             r()
@@ -351,16 +440,43 @@ def selftest() -> int:
             check(False, "???", f"{r.__name__} 异常: {e}")
 
     got_failed = {rid for ok, rid, _ in RESULTS if not ok}
+    globals()["_load_redline_module"] = saved_loader   # 无论如何都要还原
     SRC_ROOT, BACKEND, DATA_ROOT, _ = saved
     RESULTS.clear()
 
+    # ── R9 正控：注入「未触发」形态，断言 R9 真的 PASS ───────────────────
+    # 只有负控的门禁是自证不了的：一个「永远 False」的判据也能过负控。
+    # 双向都验才算证明 R9 判据**跟着数据走**，不是写死的红灯。
+    class _CleanRedlineModule(_FakeRedlineModule):
+        @staticmethod
+        def count(since):
+            return {"since": since, "threshold": 20, "count": 3,
+                    "remaining": 17, "triggered": False,
+                    "counted": [], "skipped_sample": [], "skipped_total": 0}
+
+    saved_loader2 = globals()["_load_redline_module"]
+    globals()["_load_redline_module"] = lambda: _CleanRedlineModule
+    try:
+        r9_audit_redline()
+        r9_clean = all(ok for ok, rid, _ in RESULTS if rid == "R9")
+    except Exception as e:  # noqa: BLE001
+        r9_clean = False
+        print(f"  R9 正控异常: {type(e).__name__}: {e}")
+    finally:
+        globals()["_load_redline_module"] = saved_loader2
+        RESULTS.clear()
+
     missing = failed_expect - got_failed
-    ok = not missing
+    ok = not missing and r9_clean
     print("-" * 70)
     print(f"  期望报红: {sorted(failed_expect)}")
     print(f"  实际报红: {sorted(got_failed)}")
+    print(f"  R9 正控（未触发形态应 PASS）: {'通过' if r9_clean else '未通过'}")
     if missing:
         print(f"\n✗ 自检失败：以下规则在违规样本下**没有变红** = 形同虚设: {sorted(missing)}")
+        return 1
+    if not r9_clean:
+        print("\n✗ 自检失败：R9 在「未触发」形态下没有 PASS = 判据写死，非数据驱动")
         return 1
     print("\n✓ 自检通过：所有可判定规则在违规时均会报红（非空架子）")
     return 0

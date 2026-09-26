@@ -23,8 +23,8 @@
  * 界面文案必须照此写，禁止暗示能取到昵称。
  */
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
-import { api, LiveRoom, RoomConfig } from "../../api/client";
+import { X, Search, Loader2, AlertTriangle } from "lucide-react";
+import { api, LiveRoom, RoomConfig, DiscoveredRoom } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -63,6 +63,15 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
   /** 无解密权房间的统计开关提示（避免用户误以为能取昵称） */
   const [showDesensHint, setShowDesensHint] = useState(false);
 
+  // ---- F5 搜索发现（ADR-018）：只读搜索 → 逐条上架（上架复用 saveLiveRoom）----
+  const [q, setQ] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [found, setFound] = useState<DiscoveredRoom[] | null>(null);
+  /** 被平台风控拦截（与「真的没搜到」两个状态，禁止混为一谈） */
+  const [blocked, setBlocked] = useState<string>("");
+  /** 正在上架的房间号（防重复点击） */
+  const [shelving, setShelving] = useState<string>("");
+
   const touch = (patch: Partial<LiveRoom>) => {
     setDraft((d) => ({ ...d, ...patch }));
     setDirty(true);
@@ -87,6 +96,10 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
       setDraft({ ...EMPTY_DRAFT });
       setEditing(null);
       setDirty(false);
+      // F5：重开弹窗时清掉上一次的搜索结果 / 风控提示，避免串味
+      setQ("");
+      setFound(null);
+      setBlocked("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -162,6 +175,66 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
     return c?.name || sid;
   };
 
+  /** F5：按关键词**只读**搜索直播间（后端 /discover，不写库） */
+  const doSearch = () => {
+    const kw = q.trim();
+    if (!kw) {
+      push("请输入搜索关键词");
+      return;
+    }
+    setSearching(true);
+    setBlocked("");
+    setFound(null);
+    api
+      .discoverLiveRooms(kw, undefined, 20)
+      .then((r) => {
+        if (!r.ok) {
+          push("搜索失败: " + (r.error || "未知错误"));
+          return;
+        }
+        // 🔴 禁止假成功：被风控拦截 ≠ 没搜到。前者必须明确告知用户。
+        if (r.blocked) {
+          setBlocked(r.error || "被风控拦截，请稍后重试");
+          setFound([]);
+          return;
+        }
+        const list = r.items || [];
+        setFound(list);
+        push(list.length ? `搜索到 ${list.length} 个直播间` : `未搜索到与「${kw}」相关的直播间`);
+      })
+      .catch((e: unknown) => push("搜索异常: " + errMsg(e)))
+      .finally(() => setSearching(false));
+  };
+
+  /**
+   * F5：把搜索到的一条**上架**（写进 live_rooms）。
+   *
+   * 复用既有 `api.saveLiveRoom`（后端 save_room）——不另造存储、不另开写路径。
+   * 上架后自动带上房间号与链接（昵称取搜索结果自带的那个，无则留空）。
+   */
+  const shelve = (d: DiscoveredRoom) => {
+    if (!d.room_id || shelving === d.room_id) return;
+    setShelving(d.room_id);
+    api
+      .saveLiveRoom({
+        room_id: d.room_id,
+        live_url: d.live_url || `https://live.douyin.com/${d.room_id}`,
+        // D7：只用搜索结果自带的昵称，绝不为了补全而回调补查接口
+        name: d.nickname || d.title || d.room_id,
+      })
+      .then((r) => {
+        if (r.ok) {
+          push(`已上架直播间「${r.room?.name || d.room_id}」（房间 ${d.room_id}）`);
+          onChanged?.();
+          load();
+        } else {
+          push("上架失败: " + (r.error || "未知错误"));
+        }
+      })
+      .catch((e: unknown) => push("上架异常: " + errMsg(e)))
+      .finally(() => setShelving(""));
+  };
+
   /** 一次性迁移：干跑 → 用户确认 → 应用（ADR-003 §3.5，迁移必须可复现且留日志） */
   const migrate = (dryRun: boolean) => {
     api
@@ -217,6 +290,122 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
         </div>
 
         <div className="p-4">
+          {/* ── F5 搜索发现（ADR-018）：关键词 → 只读搜索 → 逐条上架 ── */}
+          <div
+            className="mb-4 rounded-[var(--radius-sm)] border border-[var(--color-border)]
+                       bg-[var(--color-surface-raised)] px-3 py-3"
+            data-od-id="room-discover"
+          >
+            <div className="mb-2 flex items-center gap-2 text-[0.78rem] font-semibold
+                            text-[var(--color-text)]">
+              <Search className="h-3.5 w-3.5" />
+              <span>搜索发现</span>
+              <span className="font-normal text-[var(--color-text-muted)]">
+                （按关键词搜索直播间，选中后再上架）
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") doSearch();
+                }}
+                placeholder="输入关键词，如「工伤咨询」"
+                data-od-id="room-discover-input"
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={doSearch}
+                disabled={searching}
+                data-od-id="room-discover-go"
+              >
+                {searching ? (
+                  <>
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    搜索中
+                  </>
+                ) : (
+                  "搜索"
+                )}
+              </Button>
+            </div>
+
+            {/* 失败态：被风控拦截 —— **如实呈现**，不得显示空列表假装没结果 */}
+            {blocked && (
+              <div
+                className="mt-2.5 flex items-start gap-2 rounded-[var(--radius-sm)]
+                           border border-[var(--color-danger)] px-2.5 py-2
+                           text-[0.74rem] text-[var(--color-danger)]"
+                data-od-id="room-discover-blocked"
+              >
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{blocked}</span>
+              </div>
+            )}
+
+            {/* 空态：仅当确实搜过、且没被风控、且确实 0 条时才显示 */}
+            {found !== null && !blocked && found.length === 0 && (
+              <Blank>未搜索到与「{q.trim()}」相关的直播间。</Blank>
+            )}
+
+            {/* 结果列表：每行一个「上架」按钮 → 复用既有 save_room 落库 */}
+            {found !== null && found.length > 0 && (
+              <div className="mt-2.5 max-h-[240px] overflow-auto">
+                {found.map((d) => {
+                  const already = items.some(
+                    (x) => String(x.room_id || "") === String(d.room_id || ""),
+                  );
+                  return (
+                    <div
+                      key={d.room_id}
+                      data-od-id={"room-discover-row-" + d.room_id}
+                      className="flex flex-wrap items-center gap-2 border-b
+                                 border-[var(--color-border)] px-2 py-2"
+                    >
+                      {d.cover ? (
+                        <img
+                          src={d.cover}
+                          alt=""
+                          className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] object-cover"
+                        />
+                      ) : (
+                        <div
+                          className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)]
+                                     bg-[var(--color-surface)]"
+                        />
+                      )}
+                      <div className="min-w-[180px] flex-1">
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>
+                          {d.nickname || "（无昵称）"}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--color-text-muted)" }}
+                        >
+                          房间 {d.room_id}
+                          {d.online_count ? ` · 在线 ${d.online_count}` : ""}
+                          {d.title ? ` · ${d.title}` : ""}
+                        </div>
+                      </div>
+                      <Button
+                        variant={already ? "secondary" : "default"}
+                        size="sm"
+                        disabled={already || shelving === d.room_id}
+                        onClick={() => shelve(d)}
+                        title={already ? "该直播间已在下方列表中" : "上架到已登记直播间"}
+                        data-od-id={"room-discover-shelve-" + d.room_id}
+                      >
+                        {already ? "已上架" : shelving === d.room_id ? "上架中…" : "上架"}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* 已登记房间列表 */}
           <div style={{ marginBottom: 14 }}>
             <div className="mb-2 flex items-center gap-2 text-[0.78rem] font-semibold

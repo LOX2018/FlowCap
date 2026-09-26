@@ -348,6 +348,29 @@ class CommentsReq(BaseModel):
     limit: int = 20
 
 
+# ★ 2026-09-27（ADR-018 F3）：内容页「评论采集」与「评论行发私信」
+class CommentsFullReq(BaseModel):
+    """评论采集（含楼中楼）——**只读**，不做任何写操作。"""
+    account: str
+    aweme_id: str
+    url: str = ""                 # 可选：作品 URL；缺省时按 aweme_id 拼 www 链接
+    limit: int = 50               # 一级评论上限（防热门作品全量过久）
+    with_inner: bool = True       # 是否拉楼中楼（每条一级评论额外一次请求）
+    inner_limit: int = 5          # 单条一级评论最多保留多少条楼中楼
+
+
+class CommentDmReq(BaseModel):
+    """评论行「发私信」——**仅手动触发**，不在任何自动链路里被调用。
+
+    D1（用户拍板）：自动外发默认休眠 `enabled=False`；本端点只服务前端
+    「用户点按钮」，且不自带任何自动批量/定时语义。
+    """
+    account: str
+    uid: str                      # 评论者 uid（**仅取评论自带**，绝不补查）
+    text: str
+    nickname: str = ""            # 仅用于日志/回显，不参与发送
+
+
 # ---------------------------------------------------------------------------
 # 路由
 # ---------------------------------------------------------------------------
@@ -859,6 +882,185 @@ async def comments(req: CommentsReq) -> dict[str, Any]:
         })
     return {"ok": True, "items": out,
             "has_more": bool(raw.get("has_more")) if isinstance(raw, dict) else False}
+
+
+# ---------------------------------------------------------------------------
+# ★ 2026-09-27（ADR-018 F3）：内容页「评论采集 + 与播放同时展示」
+# ---------------------------------------------------------------------------
+#
+# ## 与既有 `POST /api/platform/comments` 的关系
+#
+# 既有端点只取**一级**、且只看 `url`。F3 要求「评论采集 + 楼中楼 + 评论行发私信」，
+# 故新增只读端点 `/comments/full`（**不改动**既有 `/comments` 的契约，避免回归）。
+#
+# ## 风控红线（D7）
+#
+# 昵称**只取评论响应自带**的 `user.nickname`；**绝不回调任何批量用户补查**
+# 方法（那几个是已登记的死代码，属风控红线）。
+#
+# ## D6 签名
+#
+# 采集走 `DouyinAPI.get_work_all_comment` → `get_work_all_out_comment` →
+# `get_work_out_comment`（一级）/ `get_work_all_inner_comment` →
+# `get_work_inner_comment`（楼中楼）。这两个**实际发请求**的方法已于本次
+# 改走 `params.signed_url()`（见 `dy_apis/client_comments.py`），否则
+# Argus 网关恒返 403（46B `Blocked by ArgusSecurityPlugin Uifid Not Found`）。
+
+_ARGUS_BLOCKED = "被风控拦截"
+
+
+def _map_comment_full(c: dict, inner_limit: int = 5) -> dict:
+    """规范化一条一级评论（昵称**只取自带**，不补查）。"""
+    u = c.get("user") or {}
+    replies_raw = c.get("reply_comment") or []
+    replies = []
+    for r in (replies_raw or [])[: max(0, inner_limit)]:
+        if not isinstance(r, dict):
+            continue
+        ru = r.get("user") or {}
+        replies.append({
+            "cid": str(r.get("cid") or ""),
+            "text": (r.get("text") or "")[:500],
+            "digg_count": r.get("digg_count") or 0,
+            "create_time": r.get("create_time") or 0,
+            "user_nickname": ru.get("nickname") or "",   # 自带，不补查
+            "user_uid": str(ru.get("uid") or ""),
+        })
+    return {
+        "cid": str(c.get("cid") or ""),
+        "text": (c.get("text") or "")[:500],
+        "digg_count": c.get("digg_count") or 0,
+        "create_time": c.get("create_time") or 0,
+        "reply_comment_total": c.get("reply_comment_total") or 0,
+        "has_inner": bool(c.get("reply_comment_total") or 0) or bool(replies),
+        "reply_comment": replies,
+        "user_nickname": u.get("nickname") or "",       # 自带，不补查
+        "user_uid": str(u.get("uid") or ""),
+        "user_sec_uid": u.get("sec_uid") or "",
+    }
+
+
+@router.post("/comments/full")
+async def comments_full(req: CommentsFullReq) -> dict[str, Any]:
+    """作品评论采集（一级 + 可选楼中楼）——**只读**，与播放器同时展示。
+
+    返回字段（每条一级评论）：
+      cid / text / digg_count / create_time / reply_comment_total /
+      has_inner（是否含楼中楼）/ reply_comment[]（楼中楼，同结构，无嵌套）/
+      user_nickname / user_uid / user_sec_uid
+
+    失败态如实呈现：
+      · `blocked=True`  → 平台侧风控拦截（Argus 等），文案在 `reason`
+      · `ok=False`      → 取不到，原因在 `reason`（不返回占位空列表冒充成功）
+    """
+    aweme_id = (req.aweme_id or "").strip()
+    if not aweme_id:
+        raise HTTPException(400, "缺少作品 ID")
+    auth = _auth_for(req.account)
+    api = _api()
+
+    url = (req.url or "").strip() or f"https://www.douyin.com/video/{aweme_id}"
+    limit = max(1, min(int(req.limit or 50), 200))
+    inner_limit = max(0, min(int(req.inner_limit or 5), 20))
+
+    def _fetch() -> list[dict]:
+        """拉取评论。带 `has_inner` 的一级评论按需补楼中楼。
+
+        一级用**带上限的翻页**（不用 `get_work_all_out_comment` 全量，
+        热门作品会无限翻页）；楼中楼复用 `get_work_all_inner_comment`。
+        """
+        out: list[dict] = []
+        cursor = "0"
+        for _ in range(40):                      # 硬上限 40 页，防止死循环
+            res = api.get_work_out_comment(auth, url, cursor)
+            if not isinstance(res, dict):
+                break
+            batch = res.get("comments")
+            if not batch:
+                break
+            out.extend([b for b in batch if isinstance(b, dict)])
+            if len(out) >= limit or res.get("has_more") != 1:
+                break
+            cursor = str(res.get("cursor") or len(out))
+        out = out[:limit]
+        if req.with_inner:
+            for c in out:
+                c["reply_comment"] = []
+                try:
+                    if int(c.get("reply_comment_total") or 0) > 0:
+                        inner = api.get_work_all_inner_comment(auth, c)
+                        c["reply_comment"] = [
+                            i for i in (inner or []) if isinstance(i, dict)
+                        ][:inner_limit]
+                except Exception as e:  # noqa: BLE001 —— 单条楼中楼失败不拖垮整批
+                    logger.warning(f"[PLT-012] " + f"楼中楼采集失败 cid="
+                                   f"{c.get('cid')}: {type(e).__name__}")
+        return out
+
+    try:
+        raw = await asyncio.to_thread(_fetch)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[PLT-013] " + f"评论采集失败 account={req.account} "
+                                       f"aweme={aweme_id}: {type(e).__name__}")
+        raise HTTPException(502, f"评论采集失败: {type(e).__name__}") from e
+
+    # 如实呈现：一条都没拿到 ⇒ 区分「真没评论」与「被风控拦截」。
+    # 判据：`get_work_out_comment` 走 signed_url 后仍拿不到，且响应被
+    # safe_json 降级成空 dict（Argus 403 的 46B 非 JSON 体即此形态）。
+    if not raw:
+        probe: Any = None
+        try:
+            probe = await asyncio.to_thread(
+                api.get_work_out_comment, auth, url, "0")
+        except Exception:  # noqa: BLE001
+            probe = None
+        empty_probe = (not isinstance(probe, dict)) or (
+            not probe.get("comments") and probe.get("status_code") is None)
+        if empty_probe:
+            logger.warning(f"[PLT-014] 评论采集空响应（疑似风控拦截）"
+                           f"account={req.account} aweme={aweme_id}")
+            return {"ok": True, "items": [], "total": 0, "has_more": False,
+                    "blocked": True, "reason": _ARGUS_BLOCKED}
+    items = [_map_comment_full(c, inner_limit) for c in raw]
+    return {"ok": True, "items": items, "total": len(items),
+            "has_more": len(raw) >= limit, "blocked": False}
+
+
+@router.post("/comments/dm")
+async def comment_dm(req: CommentDmReq) -> dict[str, Any]:
+    """评论行「发私信」——**仅前端手动点击触发**，转调既有 `dm_dispatch`。
+
+    ## 不自造轮子（D1 / D4）
+    发送逻辑、限流、去重、投递验证**全部复用**既有入口
+    `services.dm_dispatch.get_dispatcher().submit_by_uid()`（陌生人首发语义，
+    与「视频采集」同通道）；本端点**不**自己发、也**不**自带任何自动批量语义。
+
+    ## 无回执不认成功
+    `submit_by_uid` 返回的是「入队受理」结果，不是投递成功。此处如实把
+    `accepted` 与 `error` 透传，由前端按 `accepted` 显示；**不**把受理
+    包装成「已发送」。
+    """
+    uid = (req.uid or "").strip()
+    text = (req.text or "").strip()
+    if not uid or not text:
+        raise HTTPException(400, "缺少目标 uid 或私信文案")
+
+    try:
+        from services.dm_dispatch import get_dispatcher as _get_dispatcher
+        disp = _get_dispatcher()
+        r = await asyncio.to_thread(disp.submit_by_uid, req.account, uid, text,
+                                    "manual")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[PLT-015] " + f"评论转私信异常 account={req.account} "
+                                       f"uid={uid}: {type(e).__name__}")
+        raise HTTPException(502, f"私信提交异常: {type(e).__name__}") from e
+
+    ok = bool(getattr(r, "accepted", False))
+    err = str(getattr(r, "error", "") or "")
+    logger.info(f"[PLT-016] 评论转私信 account={req.account} uid={uid} "
+                f"nickname={req.nickname} accepted={ok} error={err[:80]}")
+    return {"ok": ok, "accepted": ok, "error": err,
+            "task_id": str(getattr(r, "task_id", "") or "")}
 
 
 # ---------------------------------------------------------------------------

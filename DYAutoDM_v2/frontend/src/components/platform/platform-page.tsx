@@ -25,6 +25,8 @@ import { EmptyState, LoadingState, ErrorState } from "@/components/ui/empty-stat
 import { platformApi, type AwemeItem, type UserItem, type NoticeItem } from "@/api/platform";
 // 采集 = 内容浏览的「高级模式」（用户 2026-09-15 决策：采集页合并进内容浏览）
 import { CrawlPanel } from "./crawl-panel";
+// ★ 2026-09-27（ADR-018 F3）：播放 + 评论同时展示；评论行可手动发私信
+import { CommentPanel } from "./comment-panel";
 import { fmtNum, fmtAgo } from "@/lib/utils";
 import type { PageProps } from "@/api/client";
 import { FullscreenPlayer } from "@/components/player";
@@ -526,7 +528,8 @@ export default function PlatformPage(props: PageProps) {
       {playerOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
              onClick={() => setPlayerOpen(false)}>
-          <div className="flex h-[70vh] w-full max-w-3xl flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--color-surface)]"
+          {/* ★ 2026-09-27（F3）：播放器 + 评论同屏，容器加宽到 max-w-5xl */}
+          <div className="flex h-[70vh] w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--color-surface)]"
                onClick={(e) => e.stopPropagation()}>
             {playerErr ? (
               <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-text-muted)]">
@@ -554,6 +557,20 @@ export default function PlatformPage(props: PageProps) {
               />
             )}
           </div>
+          {/* ★ 2026-09-27（ADR-018 F3）：评论与播放**同屏同时**展示。
+              加宽浮层（max-w-3xl → max-w-5xl）为评论留出右侧栏；
+              CommentPanel 挂载即取评论（useQuery），与播放器取址并发，
+              不是切 Tab 才加载。 */}
+          <aside
+            className="ml-4 hidden h-[70vh] w-[22rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--color-surface)] p-3 md:flex"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <CommentPanel
+              account={account}
+              awemeId={selectedAweme}
+              push={props.push}
+            />
+          </aside>
         </div>
       )}
     </PageContainer>

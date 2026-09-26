@@ -333,3 +333,95 @@ async def export_stats(request: Request):
     except Exception as e:
         logger.warning(f"[TSK-004] " + f"[tasks] 导出失败: {e}")
         return {"ok": False, "error": str(e)}
+
+# ===========================================================================
+# 定时任务中心（ADR-018 F4）
+#
+# 🔴 风控口径（ADR-018 D1 · 用户 2026-09-27 拍板）：**默认休眠**。
+#    调度中心总开关与自动外发开关出厂均为 False，未显式开启时：
+#      · start() 拒绝启动（fail-closed）
+#      · 所有任务一律不执行
+#    原因：定时自动向陌生人批量发私信是本项目迄今最大风控敞口。
+#    本路由层**不提供**"绕过闸门强制执行"的接口 —— 那会成为绕过休眠的暗门。
+# ===========================================================================
+
+from pydantic import BaseModel
+
+
+class SchedulerTaskBody(BaseModel):
+    id: str = ""
+    name: str = ""
+    kind: str = "keyword_process"
+    account: str = ""
+    params: dict = {}
+    interval: float = 3600.0
+    enabled: bool = True
+
+
+@router.get("/scheduler")
+async def scheduler_state() -> dict:
+    """定时任务中心状态（含**当前是否休眠**，如实上报，不粉饰）。"""
+    try:
+        from services import task_scheduler as ts
+        return {"ok": True, "state": ts.get_state(), "tasks": ts.list_tasks()}
+    except Exception as e:
+        logger.warning(f"[SCHED-003] [tasks] 读取调度中心状态失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/scheduler/start")
+async def scheduler_start() -> dict:
+    """启动调度中心。**总开关未开则拒绝**（fail-closed，ADR-018 D1）。"""
+    try:
+        from services import task_scheduler as ts
+        return ts.start()
+    except Exception as e:
+        logger.warning(f"[SCHED-008] [tasks] 启动调度中心失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/scheduler/stop")
+async def scheduler_stop() -> dict:
+    try:
+        from services import task_scheduler as ts
+        return ts.stop()
+    except Exception as e:
+        logger.warning(f"[SCHED-009] [tasks] 停止调度中心失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/scheduler/tasks")
+async def scheduler_save_task(body: SchedulerTaskBody) -> dict:
+    """新增/更新一个定时任务（**不改任何开关**，开关只由环境变量控制）。"""
+    try:
+        from services import task_scheduler as ts
+        tid = body.id or f"task_{int(time.time() * 1000)}"
+        t = ts.Task(id=tid, name=body.name or tid, kind=body.kind,
+                    account=body.account, params=body.params,
+                    interval=body.interval, enabled=body.enabled)
+        return ts.add_task(t)
+    except Exception as e:
+        logger.warning(f"[SCHED-010] [tasks] 保存定时任务失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@router.delete("/scheduler/tasks/{task_id}")
+async def scheduler_delete_task(task_id: str) -> dict:
+    try:
+        from services import task_scheduler as ts
+        return ts.remove_task(task_id)
+    except Exception as e:
+        logger.warning(f"[SCHED-011] [tasks] 删除定时任务失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/scheduler/tasks/{task_id}/run")
+async def scheduler_run_task(task_id: str) -> dict:
+    """手动立即执行一个任务 —— **仍受全部闸门约束**（不提供绕过通道）。"""
+    try:
+        from services import task_scheduler as ts
+        return ts.run_task_now(task_id)
+    except Exception as e:
+        logger.warning(f"[SCHED-012] [tasks] 手动执行任务失败: {e}")
+        return {"ok": False, "error": str(e)}
+

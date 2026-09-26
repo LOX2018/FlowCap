@@ -16,8 +16,25 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type { ConfigTagSummary } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
+import {
+  TAG_MANAGED_SECTIONS,
+  TAG_SECTION_LABELS,
+  type TagManagedSection,
+} from "../../api/client";
 import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
 import { errMsg } from "./settings-shared";
+
+/** 绑定下拉统一样式（整账号 / 板块级共用，避免两处各写一份）。 */
+const selectStyle: React.CSSProperties = {
+  flex: 1,
+  background: "var(--color-surface-raised)",
+  border: "1px solid var(--color-border)",
+  borderRadius: 4,
+  padding: "4px 6px",
+  fontSize: 12,
+  color: "var(--color-text)",
+  outline: "none",
+};
 
 export default function TagSection(props: PageProps) {
   const { api, ready, push } = props;
@@ -39,6 +56,7 @@ export default function TagSection(props: PageProps) {
 
   const tags = q.data?.tags || [];
   const bindings = q.data?.bindings || {};
+  const secBindings = q.data?.bindings_section || {};
   const sel = tags.find((t: ConfigTagSummary) => t.id === selId) || null;
 
   const acctList: string[] = (() => {
@@ -78,6 +96,16 @@ export default function TagSection(props: PageProps) {
       api.bindTag(v.account, v.tagId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["config-tags"] }),
     onError: (e) => push(`绑定失败：${errMsg(e)}`),
+  });
+
+  const bindSecMut = useMutation({
+    mutationFn: (v: {
+      account: string;
+      section: TagManagedSection;
+      tagId: string;
+    }) => api.bindTagSection(v.account, v.section, v.tagId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["config-tags"] }),
+    onError: (e) => push(`板块绑定失败：${errMsg(e)}`),
   });
 
   if (q.isLoading) {
@@ -194,7 +222,10 @@ export default function TagSection(props: PageProps) {
 
       {/* ③ 账号绑定 */}
       <SetCard>
-        <SetCardHead title="账号绑定" description={`${acctList.length} 个账号`} />
+        <SetCardHead
+          title="账号绑定"
+          description={`${acctList.length} 个账号 · 整账号为回落值，板块级优先`}
+        />
         <SetCardBody>
           {acctList.length === 0 && (
             <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>暂无账号</div>
@@ -204,13 +235,14 @@ export default function TagSection(props: PageProps) {
             const boundName = tags.find(
               (t: ConfigTagSummary) => t.id === bound,
             )?.name;
+            const secMap: Record<string, string> = secBindings[name] || {};
             return (
               <div
                 key={name}
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 10,
+                  flexDirection: "column",
+                  gap: 6,
                   padding: "8px 10px",
                   background: "var(--color-surface-solid)",
                   borderRadius: 8,
@@ -218,39 +250,105 @@ export default function TagSection(props: PageProps) {
                   marginBottom: 8,
                 }}
               >
-                <span style={{ flex: "0 0 160px", fontSize: 12.5 }}>{name}</span>
-                <select
-                  value={bound}
-                  onChange={(e) =>
-                    bindMut.mutate({ account: name, tagId: e.target.value })
-                  }
+                {/* 整账号绑定：未绑板块时的回落值（原有行为，保持不变） */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ flex: "0 0 160px", fontSize: 12.5 }}>{name}</span>
+                  <select
+                    value={bound}
+                    onChange={(e) =>
+                      bindMut.mutate({ account: name, tagId: e.target.value })
+                    }
+                    style={selectStyle}
+                  >
+                    <option value="">（未绑定 · 使用全局配置）</option>
+                    {tags.map((t: ConfigTagSummary) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                  <span
+                    style={{
+                      flex: "0 0 auto",
+                      fontSize: 11,
+                      color: boundName ? "var(--color-accent)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    {boundName || "全局"}
+                  </span>
+                </div>
+
+                {/* 板块级绑定（B-4 第二层）：每个板块可单独指派标签，留空 = 回落整账号 */}
+                <div
                   style={{
-                    flex: 1,
-                    background: "var(--color-surface-raised)",
-                    border: "1px solid var(--color-border)",
-                    borderRadius: 4,
-                    padding: "4px 6px",
-                    fontSize: 12,
-                    color: "var(--color-text)",
-                    outline: "none",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
+                    marginLeft: 4,
+                    paddingLeft: 8,
+                    borderLeft: "1px solid var(--color-border)",
                   }}
                 >
-                  <option value="">（未绑定 · 使用全局配置）</option>
-                  {tags.map((t: ConfigTagSummary) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-                <span
-                  style={{
-                    flex: "0 0 auto",
-                    fontSize: 11,
-                    color: boundName ? "var(--color-accent)" : "var(--color-text-muted)",
-                  }}
-                >
-                  {boundName || "全局"}
-                </span>
+                  {TAG_MANAGED_SECTIONS.map((sec) => {
+                    const v = secMap[sec] || "";
+                    const nv = tags.find(
+                      (t: ConfigTagSummary) => t.id === v,
+                    )?.name;
+                    const eff = v || bound;
+                    const effName = tags.find(
+                      (t: ConfigTagSummary) => t.id === eff,
+                    )?.name;
+                    return (
+                      <label
+                        key={sec}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 5,
+                          fontSize: 11.5,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <span
+                          style={{
+                            flex: "0 0 auto",
+                            color: v
+                              ? "var(--color-accent)"
+                              : "var(--color-text-muted)",
+                          }}
+                        >
+                          {TAG_SECTION_LABELS[sec]}
+                        </span>
+                        <select
+                          value={v}
+                          onChange={(e) =>
+                            bindSecMut.mutate({
+                              account: name,
+                              section: sec,
+                              tagId: e.target.value,
+                            })
+                          }
+                          style={{ ...selectStyle, flex: "0 0 auto", fontSize: 11 }}
+                        >
+                          <option value="">（跟随整账号）</option>
+                          {tags.map((t: ConfigTagSummary) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                            </option>
+                          ))}
+                        </select>
+                        {/* 生效值：板块未绑时显示整账号回落，一眼看清实际会用哪套参数 */}
+                        <span
+                          style={{
+                            color: nv ? "var(--color-accent)" : "var(--color-text-muted)",
+                          }}
+                        >
+                          {nv ? nv : effName ? `跟随：${effName}` : "全局"}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
             );
           })}

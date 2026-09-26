@@ -37,6 +37,8 @@ import { StatusDot } from "./components/ui/status-dot";
 import { memberApi, getMemberToken } from "./api/client";
 // 元素选择模式（调试工具：点击页面元素复制其结构位置，不触发功能）
 import { ElementInspectorButton } from "./lib/element-inspector";
+// ADR-018 F6：顶栏日夜主题快捷切换（主入口仍在配置中心 → 通用配置 → 外观）
+import { ThemeToggleButton } from "./components/layout/theme-toggle";
 
 // TabId 唯一真源在 components/layout/sidebar（含导航分组）
 // 旧 `type TabId = (typeof TABS)[number][0]` 已废弃 —— TABS 缺 kb/notify 两项。
@@ -509,6 +511,8 @@ export default function App() {
         memberName={memberName}
         topRight={
           <>
+            {/* ADR-018 F6：主题快捷切换（与设置页「外观」卡同源，同一 setTheme） */}
+            <ThemeToggleButton />
             {gwPendingCount > 0 && (
               <button
                 onClick={() => setTab("notify")}
