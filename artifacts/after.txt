@@ -1,0 +1,4 @@
+ERROR: test_h30_rpa_wiring (unittest.loader._FailedTest.test_h30_rpa_wiring)
+FAIL: test_knowledge_no_binding (test_ai_agent.TestZeroRegression.test_knowledge_no_binding)
+FAIL: test_no_binding_returns_base (test_ai_agent.TestZeroRegression.test_no_binding_returns_base)
+FAIL: test_no_printf_style_loguru (test_no_loguru_printf_style.TestLoguruStyle.test_no_printf_style_loguru)
