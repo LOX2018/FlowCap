@@ -124,6 +124,7 @@ def check_room_live(auth: Any, live_id: str):
 LIVE_AI_REASON_TEXT = {
     "ok": "已生效",
     "no_account": "未生效（原因：缺少监听账号上下文，无法解析 Agent 配置）",
+    "no_agent": "未生效（原因：该账号未绑定任何 Agent，请先在设置页为账号绑定 Agent）",
     "ai_disabled": "未生效（原因：AI 未启用）",
     "kb_only": "未生效（原因：档位为 kb_only，AI 不参与文案生成）",
     "scope_missing": "未生效（原因：Agent 作用域未勾选直播监听）",
@@ -431,7 +432,7 @@ class AutoDM:
 
         返回 dict：
             active        bool  是否生效
-            reason_code   str   ok / no_account / ai_disabled / kb_only /
+            reason_code   str   ok / no_account / no_agent / ai_disabled / kb_only /
                                 scope_missing / error
             reason        str   直接可展示的原因文案
             account/agent_id/enabled/strict_level/scopes  判定依据（排障用）
@@ -463,8 +464,20 @@ class AutoDM:
                 cfg = ai_agent.resolve_config_for(agent_id, base) or {}
             else:
                 aid = ai_agent.agent_of(acct) or ""
-                # 未绑定 Agent 时 resolve_config 原样返回全局配置（零回归语义），
-                # 因此这里不能用「未绑定」当否决条件 —— 由下方 scopes 判定。
+                # ── H-16 零 Agent 门禁（2026-09-26 用户口径：未绑定是错误状态）────
+                # 原实现注释写「未绑定 → 原样返回全局配置（零回归），故不能用
+                # 『未绑定』当否决条件」—— 该结论已被用户显式推翻（superseded）：
+                # 账号未绑定 Agent 属**错误状态**，静默回落全局配置会让「零 Agent」
+                # 长期潜伏而 UI 全无感知。故在此**显式否决**并给出可操作原因。
+                # ⚠️ 权衡：本判定同时作用于**发送侧接线**（同一真源）—— 未绑定账号
+                # 由「用全局配置生成」改为「回落词库」，属**有意的行为变更**（非回归），
+                # 因为「用谁的 Agent」本就不该由全局配置兜底。`resolve_config` 自身的
+                # 「未绑定→零回归」契约**保持不变**（其它调用方不受影响），否决只在
+                # 「AI 接线判定」这一层收口。
+                if not aid:
+                    out["reason_code"] = "no_agent"
+                    out["reason"] = LIVE_AI_REASON_TEXT["no_agent"]
+                    return out
                 cfg = ai_agent.resolve_config(acct, base) or {}
         except Exception as e:      # 判定异常 → 收敛，不打断调用方
             out["reason_code"] = "error"

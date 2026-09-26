@@ -180,10 +180,15 @@ class TestAutoDMWiringDecision(unittest.TestCase):
         m._acct = None
         return m._make_gen_dm_message()
 
-    def test_unbound_agent_uses_global_config(self):
-        """未绑定 Agent 时用**全局配置**（resolve_config 既有「零回归」语义）：
-        「是否接线」由 scopes 决定，而不是由「有没有绑定」决定。"""
-        self.assertTrue(callable(self._make("账号A", None, {"scopes": ["live"]})))
+    def test_unbound_agent_not_wired_no_agent(self):
+        """H-16（2026-09-26 用户口径变更，**旧契约已被显式推翻**）：
+        账号未绑定 Agent 属**错误状态**，不得静默回落全局配置接线。
+        即使全局配置 scopes 含 live，也必须返回 None（回落词库），
+        并由 evaluate_live_ai 给出 reason_code=no_agent。
+
+        注：`resolve_config` 自身的「未绑定→零回归」契约**不变**（见 test_ai_agent
+        TestZeroRegression）；否决只在「AI 接线判定」这一层收口。"""
+        self.assertIsNone(self._make("账号A", None, {"scopes": ["live"]}))
 
     def test_unbound_agent_without_live_scope_not_wired(self):
         self.assertIsNone(self._make("账号A", None, {"scopes": ["dm"]}))

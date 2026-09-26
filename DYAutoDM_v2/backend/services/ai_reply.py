@@ -913,78 +913,6 @@ class AIClient:
                 del h[:-40]
         return reply
 
-def _is_reasoner(model_name: str) -> bool:
-    """是否推理模型（会先吐 reasoning 再吐正文，token 消耗显著更高）。
-
-    实测依据（2026-09-26）：`deepseek-v4.1-flash` 在复杂推理题下
-    reasoning 吃掉 365~1009 tokens，直接挤压正文额度。
-    """
-    n = str(model_name or "").lower()
-    return any(k in n for k in ("r1", "reasoner", "reasoning", "think",
-                                "deepseek-v4", "glm-5", "o1", "o3"))
-
-
-def _eff_max_tokens(cfg: dict) -> int:
-    """有效 max_tokens：推理模型按配置系数上浮（ADR-013 / AI-061）。"""
-    base = cfg.get("max_tokens", 4000)
-    try:
-        base = int(base)
-    except (TypeError, ValueError):
-        base = 4000
-    if base <= 0:
-        base = 4000
-    if _is_reasoner(cfg.get("model", "")):
-        try:
-            f = float(cfg.get("reasoner_max_tokens_factor") or 1.0)
-        except (TypeError, ValueError):
-            f = 1.0
-        if f > 1.0:
-            base = int(base * f)
-    return base
-
-
-def _extract_reply(result: dict) -> Optional[str]:
-    """从 chat 响应里安全取出可发送给客户的正文（**两处协议共用**）。
-
-    ADR-013 / AI-061：此前**全仓零处处理 `finish_reason`** —— 实测
-    `deepseek-v4.1-flash` 在复杂推理题下 `max_tokens`=1000/2000/4000
-    **全部 `finish_reason=length`（被截断）**，而截断的半截话被当成
-    正常回复直接发给客户 —— 这比走兜底更危险（客户收到不完整答案）。
-
-    判据（任一命中即判失败 -> 走兜底，绝不外发）：
-      1. `finish_reason == "length"` => token 用尽被截断
-      2. content 空（含推理模型 reasoning 占用情形）
-      3. 内容像思考过程（_looks_like_reasoning）
-    """
-    ch = (result.get("choices") or [{}])[0] if isinstance(result, dict) else {}
-    finish = str(ch.get("finish_reason") or "").strip().lower()
-    msg = ch.get("message") or {}
-    reply = (msg.get("content") or "").strip()
-    rc = str(msg.get("reasoning_content") or "").strip()
-
-    # (1) 被截断 —— 最高优先级：半截话绝不能发给客户
-    if finish == "length":
-        logger.warning(
-            f"[AI-061] AI 回复被 max_tokens 截断（finish_reason=length，"
-            f"content={len(reply)} reasoning={len(rc)}）-> 判失败走兜底")
-        return None
-
-    # (2) content 空 -> 用 reasoning 尾部兜底（历史行为），仍空则失败
-    if not reply and rc:
-        logger.info("[ai] content 为空，尝试 reasoning_content 兜底")
-        reply = rc[-200:]
-    if not reply:
-        logger.warning(f"[ai] AI 返回为空: {str(result)[:200]}")
-        return None
-
-    # (3) 思考过程泄漏
-    if _looks_like_reasoning(reply):
-        logger.warning(f"[ai] 思考过程泄漏检测命中，丢弃: {reply[:60]}")
-        return None
-    return reply
-
-
-
     def _chat_openai(self, cfg: dict, messages: list) -> Optional[str]:
         """OpenAI 兼容 /chat/completions（FreeLLM/DeepSeek/GLM/Qwen 等通用）。"""
         headers = {"Content-Type": "application/json"}
@@ -1163,6 +1091,77 @@ def _extract_reply(result: dict) -> Optional[str]:
         if reply:
             return True, reply[:80]
         return False, "AI 连接失败：请检查 API Key / Base URL / 模型名"
+
+
+def _is_reasoner(model_name: str) -> bool:
+    """是否推理模型（会先吐 reasoning 再吐正文，token 消耗显著更高）。
+
+    实测依据（2026-09-26）：`deepseek-v4.1-flash` 在复杂推理题下
+    reasoning 吃掉 365~1009 tokens，直接挤压正文额度。
+    """
+    n = str(model_name or "").lower()
+    return any(k in n for k in ("r1", "reasoner", "reasoning", "think",
+                                "deepseek-v4", "glm-5", "o1", "o3"))
+
+
+def _eff_max_tokens(cfg: dict) -> int:
+    """有效 max_tokens：推理模型按配置系数上浮（ADR-013 / AI-061）。"""
+    base = cfg.get("max_tokens", 4000)
+    try:
+        base = int(base)
+    except (TypeError, ValueError):
+        base = 4000
+    if base <= 0:
+        base = 4000
+    if _is_reasoner(cfg.get("model", "")):
+        try:
+            f = float(cfg.get("reasoner_max_tokens_factor") or 1.0)
+        except (TypeError, ValueError):
+            f = 1.0
+        if f > 1.0:
+            base = int(base * f)
+    return base
+
+
+def _extract_reply(result: dict) -> Optional[str]:
+    """从 chat 响应里安全取出可发送给客户的正文（**两处协议共用**）。
+
+    ADR-013 / AI-061：此前**全仓零处处理 `finish_reason`** —— 实测
+    `deepseek-v4.1-flash` 在复杂推理题下 `max_tokens`=1000/2000/4000
+    **全部 `finish_reason=length`（被截断）**，而截断的半截话被当成
+    正常回复直接发给客户 —— 这比走兜底更危险（客户收到不完整答案）。
+
+    判据（任一命中即判失败 -> 走兜底，绝不外发）：
+      1. `finish_reason == "length"` => token 用尽被截断
+      2. content 空（含推理模型 reasoning 占用情形）
+      3. 内容像思考过程（_looks_like_reasoning）
+    """
+    ch = (result.get("choices") or [{}])[0] if isinstance(result, dict) else {}
+    finish = str(ch.get("finish_reason") or "").strip().lower()
+    msg = ch.get("message") or {}
+    reply = (msg.get("content") or "").strip()
+    rc = str(msg.get("reasoning_content") or "").strip()
+
+    # (1) 被截断 —— 最高优先级：半截话绝不能发给客户
+    if finish == "length":
+        logger.warning(
+            f"[AI-061] AI 回复被 max_tokens 截断（finish_reason=length，"
+            f"content={len(reply)} reasoning={len(rc)}）-> 判失败走兜底")
+        return None
+
+    # (2) content 空 -> 用 reasoning 尾部兜底（历史行为），仍空则失败
+    if not reply and rc:
+        logger.info("[ai] content 为空，尝试 reasoning_content 兜底")
+        reply = rc[-200:]
+    if not reply:
+        logger.warning(f"[ai] AI 返回为空: {str(result)[:200]}")
+        return None
+
+    # (3) 思考过程泄漏
+    if _looks_like_reasoning(reply):
+        logger.warning(f"[ai] 思考过程泄漏检测命中，丢弃: {reply[:60]}")
+        return None
+    return reply
 
 
 # ---------------------------------------------------------------------------

@@ -99,6 +99,21 @@ def main() -> int:
         chk(v.get("reason_code") == "no_account",
             "无账号上下文 → reason_code=no_account", f"got={v.get('reason_code')}")
 
+        # ── H-16 零 Agent 门禁（2026-09-26）：已授权账号 ∩ 未绑定 Agent → no_agent ──
+        # 正控：agent_of 返回空（未绑定）→ 必须显式 no_agent，**不得**静默回落全局配置
+        v = _mk(account="未绑定账号X", aid="").evaluate_live_ai()
+        chk(v.get("active") is False and v.get("reason_code") == "no_agent",
+            "未绑定 Agent → active=False 且 reason_code=no_agent（H-16 零 Agent 门禁）",
+            f"got={v.get('active')}/{v.get('reason_code')}")
+        chk("未绑定" in str(v.get("reason")) and "绑定 Agent" in str(v.get("reason")),
+            "未绑定原因含可操作提示（去设置页绑定 Agent）", f"got={v.get('reason')!r}")
+        # 负控：一旦绑定（agent_of 返回非空）→ 不得再报 no_agent（防门禁过宽）
+        v = _mk(account="已绑定账号Y", aid="ag_v", extra={"scopes": ["dm", "live"]}).evaluate_live_ai()
+        chk(v.get("reason_code") != "no_agent",
+            "已绑定 Agent → 不再报 no_agent（门禁非无脑全拒）", f"got={v.get('reason_code')}")
+        chk(v.get("active") is True and v.get("reason_code") == "ok",
+            "已绑定 + scopes 含 live → 已生效", f"got={v.get('reason_code')}")
+
         # 判定异常必须收敛为 error，且**不抛出**（否则会打断发送链路）
         ai_agent.agent_of = lambda a: (_ for _ in ()).throw(RuntimeError("kv down"))
         m = adm.AutoDM.__new__(adm.AutoDM)

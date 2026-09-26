@@ -890,7 +890,7 @@ async def live_dm_state(account: str = "", agent_id: str = ""):
     返回字段（前端直接展示，不做二次翻译）：
         active       bool  是否生效
         reason       str   「已生效」/「未生效（原因：xxx）」
-        reason_code  str   ok / no_account / ai_disabled / kb_only /
+        reason_code  str   ok / no_account / no_agent / ai_disabled / kb_only /
                            scope_missing / error
         account / agent_id / enabled / strict_level / scopes  判定依据
         source       str   runtime（引擎已判定过）/ recomputed（按入参实时重判）
