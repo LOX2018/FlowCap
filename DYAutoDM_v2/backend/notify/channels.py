@@ -346,8 +346,15 @@ class WeixinOCChannel(BaseChannel):
         （实测 2026-09-26：text+image 混排会被服务端判 ret=-2 "invalid arguments"，
         纯 image item_list 才成功）。
 
-        注意：context_token 具时效性（实测同一 token 约数分钟后失效并返回
-        ret=-2 "prepare failed"）——故调用前应确保最近收到过对方消息。
+        ## ⚠️ context_token 是【有限配额】而非时效（2026-09-26 实测订正）
+        实测同一 ctx 连续推送：
+          · 第 1~2 次 → 成功
+          · 第 3 次起 → `ret=-2 "prepare failed"`
+          · 等待 30s / 60s 后重试 → 仍失败（**不会随时间恢复**）
+          · 收到对方**新消息**（新 ctx）→ 立即全部恢复成功
+        ⇒ 结论：一个 context_token 约可用 2~3 次，**用尽即失效**；
+          恢复只能靠对方再发一条消息（新的入站事件携带新 ctx）。
+          ⚠️ 注意 `bot_token`（绑定凭证）才是长效的，两者勿混淆。
         """
         if not self.enabled:
             return ChannelResult(False, self.name, "渠道未启用")
