@@ -619,7 +619,14 @@ def parse_init_protobuf(raw, my_uid):
             txt = _parse_message_text(sb2)
             if txt is None:
                 continue
-            key = (mcid, txt[0][:50])
+            # 2026-09-27 修复：去重键原先用 (mcid, text[:50])，
+            # 而 H-25 统一落库契约（a10ac1f）后所有图片消息 text 均为
+            # "[图片]" ⇒ 同会话多张图前 50 字符相同，**后发的图被当重复丢弃**
+            # （实测第 87 例：3 张图只留 1 张，静默丢 2 条）。
+            # 改为优先用消息自带 msg_id 作键（与 _merge_history 的 seen_ids 一致）；
+            # msg_id 缺失时才回退文本键，且文本键补 ts 以区分同文案不同时刻。
+            _mid_for_key = _parse_message_id(sb2)
+            key = (mcid, _mid_for_key) if _mid_for_key else (mcid, txt[0][:50])
             if key in seen_msg:
                 continue
             seen_msg.add(key)

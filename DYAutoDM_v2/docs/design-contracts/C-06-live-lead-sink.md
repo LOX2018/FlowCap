@@ -82,12 +82,17 @@
 | 指标 | 预算 | 依据 |
 |---|---|---|
 | `mark_seen` 写库延迟 | ≤ 5ms（单次 INSERT/UPDATE） | SQLite WAL + 30s busy_timeout |
-| `should_send` 内存判定 | ≤ 1ms（纯缓存读，零 DB 查） | 内存一级缓存 `_cache` 优先 |
+| `should_send` 内存判定 | ≤ 1ms（**非**零 DB 查：窗口/阈值/冷却参数经 `cfg()` 实时取配置，稳态每次 2 次 `kv_store` 读；实测 P50 0.073ms，仍 ≤ 1ms 预算） | 内存一级缓存 `_cache` 优先判定；`cfg()` 不引入缓存系刻意选择（风控参数须实时生效，见「显式配置原则」） |
 | `aggregate_text` 单次追加 | ≤ 10ms（文本拼接 ≤ 2000 字符） | `aggregate_max_chars` 截断 |
-| 窗口到期扫描 | ≤ 50ms（每 30s 扫一次，命中 ≤ 1000 行） | `idx_uid_sink_ts` 覆盖 `window_end_ts`（Phase 1 新增索引） |
 | LLM 精判 | 异步，不阻塞 `should_send` | 高价值候选暂由关键词判定；LLM 异步回调更新 |
 | 内存缓存 | ≤ 10MB（100k UID × ~100 字节/条） | `_cache: Dict[(str,str), float]` |
 | `dm_uid_sink` 行数上限 | 无硬上限；建议定期归档 `sent_ts < now - 30天` 的行 | 归档策略待实施时定 |
+
+> **§5 说明（2026-09-27 M-15 修订）**：原「窗口到期扫描 ≤50ms（每 30s 扫一次，命中 ≤1000 行）」一行已**删除**——该能力**从未实现**：
+> 索引 `idx_uid_sink_window`（`backend/database.py:308`）虽已建，但全仓无任何消费者（无到期扫描任务/无 `scan_expired` 类实现），
+> 窗口到期实际由 `should_send` 在判定时**惰性比较** `now >= window_end_ts` 完成，不存在周期性扫描。
+> 该行曾给一个不存在的能力写了性能预算，属契约失真，故删除而非保留；功能缺口另记于台账 §一·乙 T3「窗口到期扫描定时任务未做」。
+> 若后续立项实现扫描器，须同时补回本预算行。
 
 ## 6. 验证方式（可机械判定）
 

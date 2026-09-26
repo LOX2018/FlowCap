@@ -54,10 +54,10 @@
     "expected": {
       "convs": 44,
       "convs_with_msgs": 10,
-      "roles_me": 18,
-      "roles_them": 1,
+      "roles_me": 23,
+      "roles_them": 5,
       "short_id_coverage": 44,
-      "total_msgs": 19,
+      "total_msgs": 28,
       "unique_conv_id": 44
     },
     "file": "init_packet/init_packet.bin",
@@ -65,6 +65,7 @@
     "provenance": "2026-09-06 13:41 实拉；2026-09-20 测试根删除时由 _backup_dyautodm_test_20260920_171030 保留",
     "recorded_at": "2026-09-22 14:38:24",
     "sha256": "68b7d8376d20d259b48d89f3fd2b3feb9f773d15ba500b45def325b9e19cafa7",
-    "size": 127711
+    "size": 127711,
+    "note": "2026-09-27 订正：total_msgs/roles_me/roles_them = 28/23/5（原 19/18/1）。根因：conversation_capture 的消息去重键原为 (conv_id, text[:50])，H-25 统一落库契约（a10ac1f, v0.45.3）后所有图片消息 text 均为 '[图片]'，同会话多张图前 50 字符相同 ⇒ 后发图片被静默当重复丢弃（实测 3 张图只留 1 张）。该缺陷自 a10ac1f 起潜伏，本次修复改按 msg_id 去重（与 _merge_history 的 seen_ids 一致），恢复 28 条真实消息（零重复 msg_id、零 None，已复核）。样本 sha256 未变。"
   }
 }

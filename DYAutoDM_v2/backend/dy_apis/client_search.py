@@ -126,8 +126,19 @@ class SearchMixin:
         params.add_param("msToken", auth.msToken)
         # 综合搜索风控(antispam_check)只认新算法签名：纯算 a_bogus（Python 原生执行 bdms VMP）
         params.add_param('a_bogus', generate_a_bogus_pure(api, splice_url(params.get())))
-        resp = requests.get(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify())
+        # ★ 2026-09-27 修复（M-14 收口 / 接 ADR-018 D6 接线）:
+        #   `/aweme/v1/web/general/search/single/` 原实现把 `params.get()` 交给
+        #   requests 的 `params=` —— 缺 uifid 与 secsdk webSign ⇒ 被 Argus 网关
+        #   拦下（HTTP 403 + 46B `Blocked by ArgusSecurityPlugin Uifid Not
+        #   Found`，同族 M-2 / client_comments 实测结论）⇒ safe_json 降级 `{}`
+        #   ⇒ 综合搜索恒空（假成功）。
+        #   ⇒ 改走 `signed_url`（带 uifid + `x-secsdk-web-signature`），同
+        #   client_comments 的已验写法。
+        #   必须发 `signed_url` 的返回值本身（**不能再把 params 交给 requests**），
+        #   否则 requests 二次编码 → 与签名输入不一致 → 依旧 403（M-2 S2 判据）。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url, headers=headers.get(), cookies=auth.cookie,
+                            verify=tls_verify())
         # 2026-09-17 修补（OCR 审查 HIGH）：原为裸 `json.loads(resp.text)`。
         # 抖音限流/风控时返回**空响应体**（非 JSON）→ 直接解析抛 JSONDecodeError，
         # 被上层当作「接口不可用」。同族的 client_relations/client_comments
@@ -182,9 +193,19 @@ class SearchMixin:
          .add_param("search_channel", search_channel))
         params.with_web_id(auth, "https://www.douyin.com/")
         params.with_a_bogus()
-        resp = requests.get(f'{DouyinAPI.domain_for(api)}{api}',
+        # ★ 2026-09-27 修复（M-14 收口 / 接 ADR-018 D6 接线）：
+        #   `/aweme/v1/web/general/search/stream/` 原实现同样把 `params.get()`
+        #   交给 requests 的 `params=`（缺 uifid + secsdk webSign）⇒ Argus
+        #   **HTTP 403（46B 非 JSON）**。本端点响应是 chunked 流，403 时
+        #   `buf` 只有 46 字节的 `Blocked by ArgusSecurityPlugin Uifid Not
+        #   Found`，chunked 解析全部失败 ⇒ `aweme_list=[]` 且 `status_code=0`
+        #   —— 上层看到「空列表」当作「没搜到」（项目铁律禁止的假成功）。
+        #   ⇒ 改走 `signed_url`；**不能再把 params 交给 requests**（二次编码
+        #   会让签名失效 → 依旧 403）。
+        url = params.signed_url(f'{DouyinAPI.domain_for(api)}{api}', auth)
+        resp = requests.get(url,
                             headers=headers.get(), cookies=auth.cookie,
-                            params=params.get(), verify=tls_verify(),
+                            verify=tls_verify(),
                             timeout=kwargs.get("timeout", 30))
         # 关键：用 **bytes** 解析。chunked 的长度前缀是**字节数**，
         # 而 len(str) 是字符数 —— 响应含中文时两者不等，用 str 会整体错位。

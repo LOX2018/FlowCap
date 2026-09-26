@@ -50,6 +50,37 @@ def _protected() -> list[str]:
     return list(PROTECTED_PATHS_GET)
 
 
+# ── 以下为 M-14（2026-09-27）S1 判据扩窗增量 ────────────────────────────────
+# 为什么必须单独扩（而不是改 PROTECTED_PATHS_GET 本身）：
+#   `PROTECTED_PATHS_GET` 的语义是「**SDK 的 webSign 策略配置**里确实存在的路径」
+#   （见 utils/secsdk_web_sign.py 模块 docstring），它是 SECSSDK 事实的 SSOT，
+#   被 `is_protected()` / `Params.needs_secsdk_sign()` 用于**运行期**决定是否加签。
+#   往里塞本项目自决的端点会污染这份事实 SSOT（让「SDK 事实」与「我方决策」
+#   混为一谈，后续无法区分）。
+#
+#   而本文件是**门禁**：它的职责是「本项目**决定必须签名**的端点，其发送侧
+#   真的签了没有」。故在门禁侧单独维护增量清单——事实 SSOT 与门禁判据分离。
+#
+# M-14 实测依据（同族 M-2 / client_comments 的 Argus 结论）：
+#   `/aweme/v1/web/general/search/single/`、`/aweme/v1/web/general/search/stream/`、
+#   `/aweme/v1/web/live/search/` 未经 secsdk 签名发出时，Argus 网关恒返
+#   **HTTP 403（46B `Blocked by ArgusSecurityPlugin Uifid Not Found`）**。
+MUST_SIGN_PATHS = (
+    "/aweme/v1/web/general/search/single/",
+    "/aweme/v1/web/general/search/stream/",
+    "/aweme/v1/web/live/search/",
+)
+
+
+def _gated_paths() -> list[str]:
+    """S1 判据实际保护的路径集合 = SDK 事实清单 ∪ 本项目门禁增量清单。"""
+    paths = list(_protected())
+    for p in MUST_SIGN_PATHS:
+        if p not in paths:
+            paths.append(p)
+    return paths
+
+
 def _scan_signed_offenders(root: str) -> list[str]:
     """全仓扫描：受保护端点已用 signed_url，但同一次 request 又传了 params=。
 
@@ -79,8 +110,8 @@ class TestM2SecsdkSendSide(unittest.TestCase):
     def test_s1_protected_endpoints_are_signed(self):
         """S1：每个受保护端点的实现窗口内必须出现 signed_url。"""
         import pathlib
-        prot = _protected()
-        self.assertTrue(prot, "PROTECTED_PATHS_GET 为空 —— 保护清单丢失")
+        prot = _gated_paths()
+        self.assertTrue(prot, "保护清单为空 —— S1 判据失效（SSOT 与增量清单均丢失）")
         offenders = []
         from utils.secsdk_web_sign import is_protected  # noqa: F401
         for py in pathlib.Path(_BACKEND).rglob("*.py"):
