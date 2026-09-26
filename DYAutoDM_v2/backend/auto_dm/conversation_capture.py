@@ -2007,7 +2007,12 @@ def capture_all(name, with_browser=True):
                                 "INSERT OR IGNORE INTO dm_messages("
                                 "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
                                 "VALUES(?,?,?,?,?,?,?,?)",
-                                _rec_of(m, _extra).tuple(name, cid)
+                                _rec_of(m, _extra).tuple(
+                                    name, cid,
+                                    ts=m.get("ts") or 0,
+                                    msg_id=(str(m.get("msg_id")) if m.get("msg_id") else None),
+                                    role=m.get("role") or "them",
+                                )
 
                             )
                     else:
@@ -2015,7 +2020,12 @@ def capture_all(name, with_browser=True):
                             "INSERT OR IGNORE INTO dm_messages("
                             "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
                             "VALUES(?,?,?,?,?,?,?,?)",
-                            _rec_of(m, _extra).tuple(name, cid)
+                            _rec_of(m, _extra).tuple(
+                                    name, cid,
+                                    ts=m.get("ts") or 0,
+                                    msg_id=(str(m.get("msg_id")) if m.get("msg_id") else None),
+                                    role=m.get("role") or "them",
+                                )
 
                         )
                     n_msg += 1

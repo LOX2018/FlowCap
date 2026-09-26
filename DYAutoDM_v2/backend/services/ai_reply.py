@@ -1416,8 +1416,6 @@ class AutoReplyWorker:
             (last_id,),
         ).fetchall()
         for r in rows:
-            last_id = max(last_id, r["id"])
-            _kv_set(_KV_MARKER, last_id)
             # [PROBE-1] 水位/捞取：记录进入决策链的消息
             try:
                 _probe(r["id"], "TICK", "pick",
@@ -1428,13 +1426,21 @@ class AutoReplyWorker:
             except Exception:
                 pass
             # ADR-008 决策 3：跨会话并行、同会话串行。
-            # 已在处理中的会话**先推进水位再跳过**（避免下轮重复捞取）；
-            # 否则提交线程池，由 _handle_session 持会话锁处理。
             _skey = "%s:%s" % (r["account"], r["conv_id"])
             with self._sess_locks_guard:
                 if _skey in self._inflight:
-                    continue
+                    # 🔴 AI-018 竞态修复（2026-09-26 H-22 审计 · 实跑复现）：
+                    # 会话在途 ⇒ **中断本轮，绝不越过它推进水位**。
+                    # 原实现「先推进水位再 continue」会让本行之后的所有消息
+                    # （m.id > 水位）下轮不再被捞出 ⇒ **永久丢消息**
+                    # （实跑：同会话 id 5&6 同 tick，5 提交后 6 静默丢失）。
+                    # 中断后水位停在已处理行，下轮从水位重捞 ⇒ 行 6 必被取回；
+                    # 且本轮未提交其后行，故不会重复处理（避免重复回复）。
+                    break
                 self._inflight.add(_skey)
+            # 仅对**真正提交处理**的行推进水位 ⇒ 维持不变式「水位之前必已处理」
+            last_id = max(last_id, r["id"])
+            _kv_set(_KV_MARKER, last_id)
             if self._pool is None:
                 self._handle_session(r, cfg)
             else:

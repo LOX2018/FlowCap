@@ -1125,82 +1125,6 @@ class RecvChannel(threading.Thread):
         if n_new:
             logger.info(f"[recv][{self.name}] 同步帧新增 {n_new} 个会话（已静默入库）")
 
-def _msg_tuple(m: dict, account: str, conv_id: str) -> tuple:
-    """ADR-012 层 2：init 同步路径的**单一写入出口**（八列同序元组）。
-
-    `extra` 由 `_msg_extra_json` 产出后再经 Schema SSOT 补 `kind`
-    （未登记类型自动降级，绝不污染 text）。
-    """
-    from services.message_schema import MessageRecord
-    import json as _json
-    try:
-        ex = _json.loads(_msg_extra_json(m) or "{}")
-        if not isinstance(ex, dict):
-            ex = {}
-    except Exception:
-        ex = {}
-    rec = MessageRecord.build(text=m.get("text", ""),
-                              msg_type=m.get("msg_type") or "text",
-                              extra=ex, role=m.get("role"))
-    return rec.tuple(account, conv_id,
-                     ts=m.get("ts", 0),
-                     msg_id=str(m.get("msg_id")) if m.get("msg_id") else None,
-                     role=m.get("role") or "them")
-
-
-def _ws_tuple(account: str, conv_id: str, role: str, text: str,
-              msg_type, extra, ts, msg_id) -> tuple:
-    """ADR-012 层 2：WS 实时路径（t==27 等）的**单一写入出口**。
-
-    与 `_msg_tuple` 同理：经 Schema SSOT 归一化后再产出八列同序元组。
-    """
-    from services.message_schema import MessageRecord
-    ex = extra if isinstance(extra, dict) else {}
-    rec = MessageRecord.build(text=text or "", msg_type=msg_type or "text",
-                              extra=dict(ex), role=role)
-    return rec.tuple(account, conv_id, ts=ts or 0,
-                     msg_id=str(msg_id) if msg_id else None,
-                     role=role or "them")
-
-
-def _msg_extra_json(m: dict) -> str:
-    """把 parse_init_protobuf 单条消息的 extra 要素序列化为 JSON 字符串。
-
-    2026-09-25（H-25 统一落库契约，顺带修一处真缺陷）：
-    本文件的 init 同步路径原先把 extra **硬编码为 "{}"** —— 与同文件
-    `_extract` 的 t==27 分支、以及 conversation_capture 的三条写路径不一致，
-    导致该路径写入的图片消息 **skey/origin_url/thumb 全部丢失**（注释
-    亦自陈「首包路径 extra 全空」）。现统一由本函数产出，键位与
-    conversation_capture.capture_all 完全同构。
-    """
-    ex = {}
-    if m.get("skey") and m.get("origin_url"):
-        ex["skey"] = m["skey"]
-        ex["origin_url"] = m["origin_url"]
-    if m.get("thumb"):
-        ex["thumb"] = m["thumb"]
-    if m.get("sender_sec_uid"):
-        ex["sender_sec_uid"] = m["sender_sec_uid"]
-    if m.get("created_at_us"):
-        ex["created_at_us"] = int(m["created_at_us"])
-    if isinstance(m.get("reply"), dict) and m["reply"]:
-        ex["reply"] = m["reply"]
-    if m.get("voice_uri"):
-        ex["voice_uri"] = m["voice_uri"]
-    if m.get("voice_skey"):
-        ex["voice_skey"] = m["voice_skey"]
-    if m.get("is_recalled"):
-        ex["is_recalled"] = int(m["is_recalled"])
-    if m.get("visible") is not None:
-        ex["visible"] = int(m["visible"])
-    try:
-        import json as _json
-
-        return _json.dumps(ex, ensure_ascii=False) if ex else "{}"
-    except Exception:
-        return "{}"
-
-
     @staticmethod
     def _extract(content_json: dict, msg_type: Any) -> tuple[str | None, dict]:
         """把 content JSON 按消息类型转成可读文本。返回 (text, extra)。"""
@@ -1296,6 +1220,83 @@ def _msg_extra_json(m: dict) -> str:
         elif t == 50001:
             return f"[对方已读 标号 {content_json.get('read_index', '')}]", {}
         return f"[未知类型{t}] {json.dumps(content_json, ensure_ascii=False)[:200]}", {}
+
+def _msg_tuple(m: dict, account: str, conv_id: str) -> tuple:
+    """ADR-012 层 2：init 同步路径的**单一写入出口**（八列同序元组）。
+
+    `extra` 由 `_msg_extra_json` 产出后再经 Schema SSOT 补 `kind`
+    （未登记类型自动降级，绝不污染 text）。
+    """
+    from services.message_schema import MessageRecord
+    import json as _json
+    try:
+        ex = _json.loads(_msg_extra_json(m) or "{}")
+        if not isinstance(ex, dict):
+            ex = {}
+    except Exception:
+        ex = {}
+    rec = MessageRecord.build(text=m.get("text", ""),
+                              msg_type=m.get("msg_type") or "text",
+                              extra=ex, role=m.get("role"))
+    return rec.tuple(account, conv_id,
+                     ts=m.get("ts", 0),
+                     msg_id=str(m.get("msg_id")) if m.get("msg_id") else None,
+                     role=m.get("role") or "them")
+
+
+def _ws_tuple(account: str, conv_id: str, role: str, text: str,
+              msg_type, extra, ts, msg_id) -> tuple:
+    """ADR-012 层 2：WS 实时路径（t==27 等）的**单一写入出口**。
+
+    与 `_msg_tuple` 同理：经 Schema SSOT 归一化后再产出八列同序元组。
+    """
+    from services.message_schema import MessageRecord
+    ex = extra if isinstance(extra, dict) else {}
+    rec = MessageRecord.build(text=text or "", msg_type=msg_type or "text",
+                              extra=dict(ex), role=role)
+    return rec.tuple(account, conv_id, ts=ts or 0,
+                     msg_id=str(msg_id) if msg_id else None,
+                     role=role or "them")
+
+
+def _msg_extra_json(m: dict) -> str:
+    """把 parse_init_protobuf 单条消息的 extra 要素序列化为 JSON 字符串。
+
+    2026-09-25（H-25 统一落库契约，顺带修一处真缺陷）：
+    本文件的 init 同步路径原先把 extra **硬编码为 "{}"** —— 与同文件
+    `_extract` 的 t==27 分支、以及 conversation_capture 的三条写路径不一致，
+    导致该路径写入的图片消息 **skey/origin_url/thumb 全部丢失**（注释
+    亦自陈「首包路径 extra 全空」）。现统一由本函数产出，键位与
+    conversation_capture.capture_all 完全同构。
+    """
+    ex = {}
+    if m.get("skey") and m.get("origin_url"):
+        ex["skey"] = m["skey"]
+        ex["origin_url"] = m["origin_url"]
+    if m.get("thumb"):
+        ex["thumb"] = m["thumb"]
+    if m.get("sender_sec_uid"):
+        ex["sender_sec_uid"] = m["sender_sec_uid"]
+    if m.get("created_at_us"):
+        ex["created_at_us"] = int(m["created_at_us"])
+    if isinstance(m.get("reply"), dict) and m["reply"]:
+        ex["reply"] = m["reply"]
+    if m.get("voice_uri"):
+        ex["voice_uri"] = m["voice_uri"]
+    if m.get("voice_skey"):
+        ex["voice_skey"] = m["voice_skey"]
+    if m.get("is_recalled"):
+        ex["is_recalled"] = int(m["is_recalled"])
+    if m.get("visible") is not None:
+        ex["visible"] = int(m["visible"])
+    try:
+        import json as _json
+
+        return _json.dumps(ex, ensure_ascii=False) if ex else "{}"
+    except Exception:
+        return "{}"
+
+
 
 
 # ----------------------------------------------------------------------------

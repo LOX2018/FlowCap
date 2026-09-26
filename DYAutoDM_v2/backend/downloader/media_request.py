@@ -291,6 +291,11 @@ def resolve_playable(url: str, *, timeout: float = 10.0,
             # ★ ADR-016 D4：统一走档案（内核感知），禁止写死版本
             "User-Agent": __import__("utils.fingerprint", fromlist=["user_agent"]).user_agent(),
             "Accept": "*/*",
+            # 🔴 审计 idx5 回归修复（2026-09-26）：抖音 CDN **按 Referer 白名单放行**，
+            # 缺该头必 403（同日案例 v0.45.9 §四 实测：仅 UA → 403；UA + Referer → 200/206）。
+            # 此头在 ADR-016「统一 UA」提交 f54f554 中被顺带删除 ⇒ 属功能回归，
+            # 与 resolve_playable/流代理的一致性契约（本仓其它 CDN 请求均带 Referer）一并恢复。
+            "Referer": "https://www.douyin.com/",
         }
         # ★ 探测方法必须是 **GET + Range**，不能用 HEAD（2026-09-21 实测修正）：
         # 抖音 CDN 对 HEAD 与 GET 的签名校验**不一致** —— HEAD 返回 200 而
