@@ -379,13 +379,26 @@ class BccAuditMixin:
         return hit["n"] > 0
 
     async def env_audit_snapshot(self, internal: bool = False) -> dict:
-        """采集浏览器环境真值并对照项目档案做泄漏检测。"""
+        """采集浏览器环境真值并对照项目档案做泄漏检测。
+
+        ★ 2026-09-26（ADR-016 D3-A）：同时把真值**落盘为内核真值档案**
+        （`services.kernel_truth`），供 HTTP 层（`utils/fingerprint`）取用
+        —— 这是「档案跟随真实内核」的数据来源。复用同一次探针，零额外开销。
+        """
         from services.env_audit import ENV_AUDIT_JS, compare_with_profile
 
         async def _do():
             if self._page is None:
                 raise RuntimeError("page 未就绪")
             view = await self._page.evaluate(ENV_AUDIT_JS)
+            # —— 落盘真值（失败不影响本函数主职责）——
+            try:
+                from services.kernel_truth import record_kernel_truth
+                rec = record_kernel_truth(self.account, view or {})
+                if rec:
+                    logger.debug(f"[bcc] 内核真值已记录 account={self.account}")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[bcc] 内核真值记录跳过: {type(e).__name__}")
             return compare_with_profile(self.account, view or {})
 
         return await self._exec(_do, holder="env_audit", internal=internal)

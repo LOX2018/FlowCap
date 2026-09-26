@@ -44,6 +44,8 @@ def _check(code: str, ok: bool, detail: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--account", default=os.environ.get("DY_FP_ACCOUNT") or "",
+                    help="被测账号（默认取第一个已配置账号；用于验证真值跟随）")
     args = ap.parse_args()
 
     os.environ.setdefault("DY_APP_ROOT", os.environ.get("DY_APP_ROOT", ""))
@@ -57,7 +59,26 @@ def main() -> int:
         print(f"✗ 无法导入被测模块: {type(e).__name__}: {e}")
         return 1
 
-    prof = fingerprint_profile("__probe__")
+    # 解析被测账号：显式 --account 优先；否则自动取第一个已配置账号
+    # （真值跟随验证需要一个**真实**账号 —— 凭空账号永远无真值记录）
+    acct = args.account
+    if not acct:
+        try:
+            import sys as _sys
+            _bk = str(BACKEND)
+            if _bk not in _sys.path:
+                _sys.path.insert(0, _bk)
+            from auto_dm import accounts as _acc
+            # list_accounts() 返回 [(账号名, env路径), ...]
+            _rows = _acc.list_accounts() or []
+            _names = [r[0] if isinstance(r, (tuple, list)) else getattr(r, "name", None)
+                      for r in _rows]
+            _names = [n for n in _names if n]
+            acct = _names[0] if _names else "__probe__"
+        except Exception:
+            acct = "__probe__"
+
+    prof = fingerprint_profile(acct)
     ua = prof.get("ua", "")
     is_gecko = bool(prof.get("_kernel_gecko"))
 
@@ -153,7 +174,32 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         _check("A6", False, f"构造 strdata 指纹失败: {type(e).__name__}: {e}")
 
-    # ── A7 内核版本必须真读（不得退兜底）──────────────────────────────
+    # ── A8 档案必须跟随内核真值（D3-A）─────────────────────────────────
+    # 判据：`_truth_source == 'kernel'`（BCC 已落盘真值）。
+    # 若为 'preset' ⇒ 两层又是「独立随机」，D3-A 失效 ⇒ 告警（不阻断，因为
+    # 冷启/BCC 未运行时确无真值，属**已知降级路径**）。
+    _ts = prof.get("_truth_source")
+    if _ts == "kernel":
+        try:
+            from services.kernel_truth import get_kernel_truth
+            _rec, _reason = get_kernel_truth(acct)
+            if _rec:
+                _s = _rec.get("screen") or {}
+                ok = (int(prof.get("screen_width") or 0) == int(_s.get("w") or 0)
+                      and int(prof.get("screen_height") or 0) == int(_s.get("h") or 0)
+                      and int(prof.get("cpu_core_num") or 0) == int(_rec.get("hardwareConcurrency") or 0))
+                _check("A8", ok,
+                       f"档案须等于内核真值；档案={prof.get('screen_width')}x{prof.get('screen_height')}"
+                       f"/{prof.get('cpu_core_num')}核 真值={_s.get('w')}x{_s.get('h')}"
+                       f"/{_rec.get('hardwareConcurrency')}核")
+            else:
+                _check("A8", True, f"真值记录不可读({_reason}) —— 本探针账号无记录，跳过比对")
+        except Exception as e:  # noqa: BLE001
+            _check("A8", True, f"真值模块不可用({type(e).__name__})，跳过")
+    else:
+        _check("A8", True,
+               f"⚠ 降级路径：_truth_source={_ts!r}（BCC 未落盘真值 ⇒ 档案用预设，"
+               f"**两层可能不一致**；启动 BCC 后自动转为 kernel）")
     kv = kernel_version()
     _check("A7", kv != _FALLBACK_VERSION,
            f"内核版本={kv}（兜底常量={_FALLBACK_VERSION}）"
@@ -163,6 +209,7 @@ def main() -> int:
     print("=" * 68)
     print("  指纹层间一致性门禁 —— ADR-016（D1~D4）")
     print("=" * 68)
+    print(f"  被测账号: {acct}   真值来源: {prof.get('_truth_source')}")
     print(f"  内核判定: {'Gecko (Firefox/Camoufox)' if is_gecko else 'Blink (Chromium)'}")
     print(f"  内核版本: {kv}")
     print(f"  档案 UA : {ua}")

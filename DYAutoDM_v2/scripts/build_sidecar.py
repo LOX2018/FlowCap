@@ -185,6 +185,11 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "api.member",
             "services.member_store",
             "services.member_ctx",
+            # 2026-09-26（ADR-016 D3-A）：内核真值档案。
+            # services/kernel_truth 由 daemon/bcc_audit.py 与 utils/fingerprint.py
+            # 在**函数体内** import（避免启动期循环依赖），静态分析扫不到；
+            # 缺失时打包后「档案跟随内核真值」静默失效（回落成 preset，且不报错）。
+            "services.kernel_truth",
             "cryptography",
             "cryptography.fernet",
             # 2026-09-13：patchright（反检测版 Playwright，接管 CDP 协议层泄漏）。

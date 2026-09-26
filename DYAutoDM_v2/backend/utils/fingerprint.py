@@ -431,6 +431,31 @@ def user_agent(account: str | None = None) -> str:
                 f"(KHTML, like Gecko) Chrome/{_FALLBACK_VERSION} Safari/537.36")
 
 
+def _kernel_truth_of(account: str | None):
+    """取内核真值（BCC 探针落盘）。返回 `(rec | None, reason)`。
+
+    ★ 2026-09-26（ADR-016 D3-A）：档案跟随真实内核的数据来源。
+
+    ## 降级纪律
+
+    真值可能读不到（BCC 未启动 / 首次冷启 / 记录过期），此时**必须留痕** ——
+    否则「档案=真值」的假设会悄悄失效（本次缺陷的形态之一就是"静默降级"）。
+    故返回 reason，并记 debug 日志；`check_fingerprint_consistency.py` 可据此告警。
+    """
+    try:
+        from services.kernel_truth import get_kernel_truth
+        rec, reason = get_kernel_truth(account or "default")
+        if not rec:
+            import logging as _lg
+            _lg.getLogger(__name__).debug(
+                "[fp] 内核真值不可用(%s) → 回落预设（档案可能与浏览器不一致）", reason)
+        return rec, reason
+    except Exception as e:  # noqa: BLE001
+        import logging as _lg
+        _lg.getLogger(__name__).debug("[fp] 内核真值读取异常: %s", type(e).__name__)
+        return None, "error"
+
+
 def fingerprint_profile(account: str | None = None) -> dict:
     """**账号级指纹真源** —— 浏览器层与 HTTP 层都从这里取值。
 
@@ -453,10 +478,41 @@ def fingerprint_profile(account: str | None = None) -> dict:
     seed = _seed_of(account)
     rnd = _rnd.Random(seed) if seed is not None else _rnd.Random()
 
-    geo = rnd.choice(GEO_PRESETS)
-    cores = rnd.choice(_CORES_POOL)
-    platform = rnd.choice(_PLATFORM_CHOICES)
-    timezone = rnd.choice(_TZ_BY_PLATFORM)
+    # ★ 2026-09-26（ADR-016 D3-A）：**优先取内核真值**（BCC 探针落盘）。
+    #
+    # 实测事实：Camoufox 用 BrowserForge 生成指纹（上游维护、组合自洽、
+    # 自带越界修正），而本函数原先用项目自造的 GEO/GPU/CORES 预设**独立随机**
+    # ⇒ 两层必然对不上（实测：档案 1280x720 vs 真实 2560x1440；档案 12 核 vs 真实 8 核）。
+    #
+    # 依据（Camoufox 官方警告）：
+    #   "Do NOT randomly assign values to these properties. WAFs hash your WebGL
+    #    fingerprint and compare it against a dataset. Randomly assigning values
+    #    will lead to detection as an unknown device."
+    # ⇒ 跟随 BrowserForge 的受支持组合，而非自造随机值。
+    _kt, _kt_reason = _kernel_truth_of(account)
+
+    if _kt:
+        _s = _kt.get("screen") or {}
+        # BrowserForge 给的屏幕几何：内/外/可用/物理
+        geo = (
+            int(_s.get("innerW") or 0), int(_s.get("innerH") or 0),
+            int(_s.get("outerW") or 0), int(_s.get("outerH") or 0),
+            int(_s.get("aw") or 0), int(_s.get("ah") or 0),
+            int(_s.get("w") or 0), int(_s.get("h") or 0),
+        )
+        cores = int(_kt.get("hardwareConcurrency") or rnd.choice(_CORES_POOL))
+        platform = "windows"
+        timezone = _kt.get("timezone") or _TZ_BY_PLATFORM[0]
+        _wg = _kt.get("webgl") or {}
+        gpu = (_wg.get("vendor") or "", _wg.get("renderer") or "")
+        _truth_source = "kernel"
+    else:
+        geo = rnd.choice(GEO_PRESETS)
+        cores = rnd.choice(_CORES_POOL)
+        platform = rnd.choice(_PLATFORM_CHOICES)
+        timezone = rnd.choice(_TZ_BY_PLATFORM)
+        gpu = rnd.choice(GPU_PRESETS)
+        _truth_source = "preset"
 
     ver_full = kernel_version()
     maj = _major(ver_full)
@@ -509,12 +565,14 @@ def fingerprint_profile(account: str | None = None) -> dict:
         "_seed": seed,
         "_kernel_version": ver_full,
         "_kernel_gecko": is_gecko,
+        "_truth_source": _truth_source,   # ★ D3-A：'kernel' = 来自浏览器真值；'preset' = 降级
         # —— HTTP 层用（出站头/查询参数）——
         **_identity,
         "os_name": "Windows",
         "os_version": "10",
         "cpu_core_num": str(cores),
-        "device_memory": "8",
+        # ★ D3-A：deviceMemory 跟随真值（原写死 "8"，浏览器实报可能不同/为 null）
+        "device_memory": str((_kt or {}).get("deviceMemory") or 8) if _kt else "8",
         "screen_width": str(geo[6]),
         "screen_height": str(geo[7]),
         # ⚠️ 兼容键：`utils/strdata_pure.build_fingerprint()` 需要 8 元素元组形式的
