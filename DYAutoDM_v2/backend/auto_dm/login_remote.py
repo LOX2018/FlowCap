@@ -359,7 +359,7 @@ async def grab_login_qrcode(page, out_png: str, shots_dir: Optional[str] = None,
             waited = time.time() - t0
             break
         await asyncio.sleep(0.5)
-    logger.debug("[login_remote] 二维码渲染等待 {:.1f}s", waited)
+    logger.debug(f"[login_remote] 二维码渲染等待 {waited:.1f}s")
 
     # ── ② 按优先级试锚点 ────────────────────────────────────────────
     for sel in _QR_ANCHORS:
