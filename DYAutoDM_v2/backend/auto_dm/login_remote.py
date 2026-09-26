@@ -60,6 +60,20 @@ LOGIN_URL = "https://www.douyin.com/?modal_id=login"
 # ── DOM 锚点（全部实测得来，勿凭猜修改）─────────────────────────────────
 SEL_CODE_INPUT = 'input[name="button-input"]'      # 验证码框（maxLength=6）
 SEL_PHONE_INPUT = 'input[name="normal-input"]'     # 手机号框（maxLength=50）
+SEL_LOGIN_PANEL = "#douyin-login-new-id"           # 登录面板（实测 id）
+SEL_SCAN_COMP = "#douyin_login_comp_scan_code"     # 扫码组件整块
+SEL_QR_CONTAINER = "#animate_qrcode_container"     # 二维码【动画外框】（内部才是码）
+
+# 二维码锚点优先级（2026-09-26 实测，见 ADR-017 调研记录 §7）
+#   · img 直取 = 最优（178×178 精确，解码成功）
+#   · 扫码组件整块 = 兜底（248×226，也能解）
+#   · svg = ❌ 是 40×40 装饰图标，勿用；容器本体 = ❌ 空白外框，勿用
+_SEL_QR_IMG = f"{SEL_QR_CONTAINER} img"
+_QR_ANCHORS = (
+    _SEL_QR_IMG,
+    SEL_SCAN_COMP,
+)
+
 TAB_SCAN = "扫码登录"
 TAB_PHONE = "验证码登录"
 BTN_SEND_CODE = "获取验证码"
@@ -194,16 +208,67 @@ _JS_CLICK_TEXT = r"""
 """
 
 
-async def grab_login_qrcode(page, out_png: str, shots_dir: Optional[str] = None) -> dict:
-    """在**已打开的登录页**上抓取二维码（DOM 截图 + cv2 校验）。
+async def grab_login_qrcode(page, out_png: str, shots_dir: Optional[str] = None,
+                            wait_render_s: float = 30.0) -> dict:
+    """在**已打开的登录页**上抓取二维码（稳定锚点 + cv2 校验）。
 
-    前置：调用方已 goto LOGIN_URL 并点开「扫码登录」tab。
-    返回 {'ok': bool, 'png': path, 'decoded': str|None, 'box': dict|None, 'reason': str}
+    前置：调用方已 goto LOGIN_URL。
+
+    ## 锚点选择（2026-09-26 实测，见 docs/adr/ADR-017-调研记录 §7）
+    | 锚点 | 实测结果 |
+    |---|---|
+    | `#animate_qrcode_container img` | ⭐ **最优**：178×178 精确，暗像素 33.9%，解码成功 |
+    | `#douyin_login_comp_scan_code`   | 兜底：248×226 整块，暗像素 19.4%，解码成功 |
+    | `#animate_qrcode_container svg`  | ❌ 40×40 装饰小图标，非二维码（暗像素 65% 假特征）|
+    | `#animate_qrcode_container` 本体 | ❌ 是**动画外框**，截出几乎全白（暗像素 3.3%）|
+
+    ## ⚠️ 必须等渲染完成
+    实测：goto 后立刻截图 → 容器内**尚无 img** → 截到空白。
+    须轮询直到 `img` 出现在容器内（实测约 1.5s，保守给 30s 上限）。
+
+    返回 {'ok','png','decoded','box','reason','waited_s'}
     """
     shots_dir = shots_dir or os.path.join(os.path.dirname(out_png), "_qr_cands")
     os.makedirs(shots_dir, exist_ok=True)
+
+    # ── ① 等二维码渲染（轮询容器内 img/canvas 出现）──────────────────
+    t0 = time.time()
+    waited = 0.0
+    while time.time() - t0 < wait_render_s:
+        try:
+            n = await page.locator(_SEL_QR_IMG).count()
+        except Exception:  # noqa: BLE001
+            n = 0
+        if n > 0:
+            # 再等半秒让图片解码完成（img 出现 ≠ 位图已就绪）
+            await asyncio.sleep(0.5)
+            waited = time.time() - t0
+            break
+        await asyncio.sleep(0.5)
+    logger.debug("[login_remote] 二维码渲染等待 {:.1f}s", waited)
+
+    # ── ② 按优先级试锚点 ────────────────────────────────────────────
+    for sel in _QR_ANCHORS:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() == 0:
+                continue
+            fp = os.path.join(shots_dir, "anch.png")
+            await loc.screenshot(path=fp)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[login_remote] 锚点 {} 截图失败: {}", sel, e)
+            continue
+        ok, data = decode_qr_file(fp)
+        if ok:
+            _crop_to_code(fp, out_png)
+            logger.info("[login_remote] 二维码已抓取并解码（锚点 {}，{} 字节，等渲染 {:.1f}s）",
+                        sel, os.path.getsize(out_png), waited)
+            return {"ok": True, "png": out_png, "decoded": data,
+                    "box": {"selector": sel}, "reason": "", "waited_s": round(waited, 1)}
+
+    # ── ③ 兜底：枚举方形元素（旧法，慢但通用）──────────────────────
+    logger.debug("[login_remote] 稳定锚点均未解出，回退枚举")
     cands = await page.evaluate(_JS_ENUM_SQUARE)
-    logger.debug("[login_remote] 二维码候选容器 {} 个", len(cands))
     for i, c in enumerate(cands):
         fp = os.path.join(shots_dir, f"cand_{i}.png")
         try:
@@ -214,31 +279,37 @@ async def grab_login_qrcode(page, out_png: str, shots_dir: Optional[str] = None)
             continue
         ok, data = decode_qr_file(fp)
         if ok:
-            # 裁出二维码本体（用 cv2 四点坐标，比容器更精确）
-            try:
-                import cv2
-                img = cv2.imread(fp)
-                _d, pts, _ = cv2.QRCodeDetector().detectAndDecode(img)
-                if pts is not None:
-                    xs = [p[0] for p in pts[0]]
-                    ys = [p[1] for p in pts[0]]
-                    pad = 12
-                    x0 = max(0, int(min(xs)) - pad)
-                    y0 = max(0, int(min(ys)) - pad)
-                    x1 = min(img.shape[1], int(max(xs)) + pad)
-                    y1 = min(img.shape[0], int(max(ys)) + pad)
-                    cv2.imwrite(out_png, img[y0:y1, x0:x1])
-                else:
-                    import shutil
-                    shutil.copy(fp, out_png)
-            except Exception:  # noqa: BLE001
-                import shutil
-                shutil.copy(fp, out_png)
-            logger.info("[login_remote] 二维码已抓取并解码成功（{} 字节）",
+            _crop_to_code(fp, out_png)
+            logger.info("[login_remote] 二维码已抓取并解码成功（枚举兜底，{} 字节）",
                         os.path.getsize(out_png))
-            return {"ok": True, "png": out_png, "decoded": data, "box": c, "reason": ""}
+            return {"ok": True, "png": out_png, "decoded": data, "box": c,
+                    "reason": "", "waited_s": round(waited, 1)}
     return {"ok": False, "png": None, "decoded": None, "box": None,
-            "reason": f"枚举 {len(cands)} 个候选容器均未解出二维码"}
+            "reason": f"稳定锚点+枚举({len(cands)})均未解出二维码", "waited_s": round(waited, 1)}
+
+
+def _crop_to_code(src_png: str, out_png: str) -> None:
+    """用 cv2 四点坐标把二维码本体裁出来（比容器截图更干净）；失败则原样复制。"""
+    import shutil
+    try:
+        import cv2
+        img = cv2.imread(src_png)
+        if img is None:
+            raise ValueError("read fail")
+        _d, pts, _ = cv2.QRCodeDetector().detectAndDecode(img)
+        if pts is not None:
+            xs = [p[0] for p in pts[0]]
+            ys = [p[1] for p in pts[0]]
+            pad = 14
+            x0 = max(0, int(min(xs)) - pad)
+            y0 = max(0, int(min(ys)) - pad)
+            x1 = min(img.shape[1], int(max(xs)) + pad)
+            y1 = min(img.shape[0], int(max(ys)) + pad)
+            cv2.imwrite(out_png, img[y0:y1, x0:x1])
+            return
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 裁切失败，原样复制: {}", e)
+    shutil.copy(src_png, out_png)
 
 
 # ══════════════════════════════════════════════════════════════════════

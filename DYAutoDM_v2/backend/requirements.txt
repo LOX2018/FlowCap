@@ -64,3 +64,10 @@ qq-botpy>=1.2.1
 
 # 打包（可移到 dev 依赖）
 pyinstaller>=6.10.0
+
+# ── 2026-09-26 ADR-017：上游登录模块（vendor/douyin_spider_upstream）必需 ──
+# 抖音接口统一走 curl_cffi（冒充 Chrome 的 TLS/HTTP2 指纹）；
+# 纯 requests 的 TLS 指纹会被识别。仅 API 备用路径需要，RPA 主路径无关。
+# 注意：装到项目 Python（Python314）。**不要用裸 `uv pip install`**
+# —— 它会解析到 Hermes 自己的 venv（`hermes-agent\venv`），装错地方。
+curl_cffi>=0.16.0

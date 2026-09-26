@@ -114,3 +114,9 @@ DYAutoDM_v2/accounts/
 *.bak2.[0-9]*
 # 台账写时备份（脚本生成，不入库；SSOT 仅保留最新版）
 artifacts/_ledger_bak_*.md
+
+# ── vendored 上游代码（ADR-017 API 备用路径）────────────────────────────
+# 只提交源码，不提交上游的 .git（省 1.8M，且避免嵌套仓库）
+# 上游整包放 vendor/ 下，**不要跑 git submodule**（见 vendor/README.md）
+DYAutoDM_v2/vendor/**/.git/
+DYAutoDM_v2/vendor/**/.git
