@@ -92,63 +92,110 @@ def classify(check_name: str, offenders: list[str]) -> tuple[list[str], list[str
 contracts = sorted(p for p in DC.glob("C-*.md"))
 check("G0 契约文件 ≥5", len(contracts) >= 5, f"实测 {len(contracts)} 份")
 
-# ── G1: C-01 被动捕获 —— 捕获模块不得**发起**主动批量查询 ──────────
-# 2026-09-27 体检修复（假绿 P0-1）：原实现是 `forbidden 字面量 in txt` 的
-#   源码字符串匹配，用 `getattr(_a, 'bulk' + '_user_info_by_uid')(...)` 之类的
-#   别名/间接调用发起**真实主动批量查询**（风控红线）时**不报红** ⇒ 判据形同虚设。
-#   现改为**行为断言**：真 import 捕获模块，静态找「出站请求符号」+ 运行时
-#   断言其未被**直接调用**（含别名）。判据 = 「出站调用点计数 == 0」，
-#   匹配对象是**调用表达式**（AST Call），不是文本子串 ⇒ 别名/拼接无法绕过。
+# ── G1: C-01 被动捕获 —— 「主动请求数 恒 0」（**运行时行为断言**）────────
+# 2026-09-27 体检修复（假绿 P0-1）后二轮强化：
+#   v1 原实现 = `forbidden 字面量 in txt`（源码子串）→ 别名 `getattr(a,'bulk'+'_x')`
+#   可绕过 ⇒ 假绿。
+#   v2（本轮）＝ AST 调用点静态分析 —— 仍属**静态**：动态取函数名
+#   （从配置/字符串拼函数名再 getattr 调用）它拦不住，且不覆盖「出站目标是不是
+#   抖音域」这一真正红线（契约 §5 L41「主动请求数**恒 0**」）。
+#   v3（现版）＝ **真运行时行为断言**：装一个 in-process `requests` 拦截器，
+#   **真调**捕获模块的昵称捕获路径，断言（a）发起的所有出站 URL **全部**是本地
+#   BCC 网关（127.0.0.1/localhost），（b）**零**个指向抖音业务域
+#   （douyin.com / amemv.com / snssdk.com …）。判据对象从「源码里有没有某符号」
+#   升级为「**运行时到底往哪发**」⇒ 别名、拼接、动态取名、间接调用全部无处遁形。
 CAP = BE / "auto_dm" / "conversation_capture.py"
 
 
-def _capture_outbound_calls(src: str) -> list[str]:
-    """AST 静态扫描：捕获模块里对「主动查询 API」的**调用点**（含别名/属性访问）。
-
-    判据对象是 `ast.Call` 的最终函数名 —— `getattr(x, 'bulk'+'_user_info_by_uid')(...)`
-    经常量折叠后仍是 Call(func=Name('_fn')) 且赋值自 getattr 字符串，故再加一条
-    **getattr 字符串常量**扫描（AST 层的 `getattr(obj, 'bulk_...')`）。
-    """
-    import ast
-
-    banned = {"bulk_user_info", "get_im_user_info",
-              "bulk_user_info_by_uid", "bulk_user_info_via_browser"}
-    hits: list[str] = []
+def _is_local_url(u: str) -> bool:
+    """出站 URL 是否指向本地 BCC 网关（允许的被动链路载体）。"""
     try:
-        tree = ast.parse(src)
-    except SyntaxError as e:                                # noqa: BLE001
-        return [f"SyntaxError: {e}"]
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            fn = node.func
-            name = fn.id if isinstance(fn, ast.Name) else (
-                fn.attr if isinstance(fn, ast.Attribute) else "")
-            if name in banned:
-                hits.append(f"call:{name}@L{node.lineno}")
-        # getattr(obj, 'bulk_user_info_by_uid') → 常量字符串折叠
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
-                and node.func.id == "getattr" and len(node.args) >= 2:
-            arg = node.args[1]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                folded = arg.value
-                if folded in banned:
-                    hits.append(f"getattr:{folded}@L{node.lineno}")
-            # 拼接 getattr(x, 'bulk' + '_user_info_by_uid')
-            if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
-                parts = [n.value for n in (arg.left, arg.right)
-                         if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-                if "".join(parts) in banned:
-                    hits.append(f"getattr-concat:{''.join(parts)}@L{node.lineno}")
-    return hits
+        from urllib.parse import urlparse
+        host = (urlparse(str(u)).hostname or "").lower()
+    except Exception:                                       # noqa: BLE001
+        host = str(u).lower()
+    return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
 
-if CAP.exists():
-    _src1 = CAP.read_text(encoding="utf-8", errors="replace")
-    _hits1 = _capture_outbound_calls(_src1)
-    check("G1 C-01 捕获零主动查询", not _hits1,
-          f"出站调用点 {_hits1}" if _hits1 else "0 出站调用点")
-else:
+# 抖音业务域（主动查询的判定目标）。命中即风控红线。
+_DOUYIN_HOSTS = ("douyin.com", "amemv.com", "snssdk.com", "douyinpic.com",
+                 "zjcdn.com", "byteimg.com")
+
+
+def _probe_capture_outbound() -> dict:
+    """运行时拦截：真调捕获模块的昵称捕获路径，记录所有出站 URL。
+
+    做法：把 `requests.post/get/request` 换成记录器（返回一个 `ok=0` 的哑响应，
+    使被测函数走「降级/空返回」分支而**不真正联网**），再真调
+    `capture_userinfo_via_browser`。返回 {urls, douyin, local, err}。
+
+    这是**行为断言**：判据读的是运行时实际出站的 URL，与源码如何书写无关
+    ⇒ 别名 / 拼接 / 动态取名 / 间接调用都无法绕过。
+    """
+    out = {"urls": [], "douyin": [], "local": [], "err": ""}
+    try:
+        import requests
+        sys.path.insert(0, str(BE))
+        from auto_dm import conversation_capture as _cc  # type: ignore
+    except Exception as e:                                  # noqa: BLE001
+        out["err"] = f"import 失败: {e}"
+        return out
+
+    class _DummyResp:
+        status_code = 599
+        content = b""
+        text = ""
+        def json(self):                                     # noqa: D401
+            return {}
+        def raise_for_status(self):
+            raise RuntimeError("probe-stub")
+
+    def _recorder(method):
+        def _call(url, *a, **k):
+            u = str(url)
+            out["urls"].append(u)
+            (out["local"] if _is_local_url(u) else out["douyin"]).append(u)
+            return _DummyResp()
+        return _call
+
+    saved = {m: getattr(requests, m, None) for m in ("post", "get", "request")}
+    for m in saved:
+        if saved[m] is not None:
+            setattr(requests, m, _recorder(m))
+    try:
+        # 真调昵称捕获路径（C-01 风控红线的核心路径）。清缓存避免命中早退。
+        try:
+            _cc._userinfo_cache.clear()
+        except Exception:                                   # noqa: BLE001
+            pass
+        try:
+            _cc.capture_userinfo_via_browser("__gate_probe__", wait=1)
+        except Exception as e:                              # noqa: BLE001
+            out["err"] = f"调用异常(已记录已发出的URL): {type(e).__name__}: {e}"
+    finally:
+        for m, fn in saved.items():
+            if fn is not None:
+                setattr(requests, m, fn)
+    return out
+
+
+if not CAP.exists():
     check("G1 C-01 捕获零主动查询", False, f"模块缺失 {CAP}")
+else:
+    _p1 = _probe_capture_outbound()
+    # 判定：① 有出站记录（证明探针真的跑到了网络出口，非空转）；② 无一指向抖音域。
+    _g1_douyin = [u for u in _p1["douyin"]
+                  if any(h in u.lower() for h in _DOUYIN_HOSTS)]
+    _g1_ok = (not _p1["err"]) and bool(_p1["urls"]) and not _g1_douyin
+    if _p1["err"]:
+        _d1 = f"探针无法执行: {_p1['err']}"
+    elif not _p1["urls"]:
+        _d1 = "探针未捕获到任何出站请求（无法证明零主动查询 ⇒ 按 FAIL 处理）"
+    else:
+        _d1 = (f"出站 {len(_p1['urls'])} 次全部为本地网关"
+               f"（{_p1['local'][:3]}）；抖音主动查询 0 次"
+               if not _g1_douyin else f"⛔ 发现指向抖音域的主动查询: {_g1_douyin}")
+    check("G1 C-01 捕获零主动查询", _g1_ok, _d1)
 
 # ── G2: C-02 secsdk —— 保护清单端点不得直发 params.get() ──────────
 try:
@@ -483,18 +530,22 @@ if "--selftest" in sys.argv:
     print("check_contracts --selftest（负控：注入坏状态，判据应报红）")
     print("=" * 60)
 
-    # ── G1：别名/拼接的主动查询必须被 AST 判据抓到 ──────────────
-    _bad_g1 = (
-        "import x\n"
-        "def f(a):\n"
-        "    _fn = getattr(a, 'bulk' + '_user_info_by_uid')\n"
-        "    return _fn(['1'])\n"
-    )
-    _hits_g1 = _capture_outbound_calls(_bad_g1)
-    _neg("G1 别名/拼接主动查询", bool(_hits_g1), f"抓到 {_hits_g1}")
-    # 正控：干净源码必须 0 命中
-    _neg("G1 干净源码不误报", not _capture_outbound_calls("x = 1\n"),
-         "0 命中")
+    # ── G1：运行时出站拦截必须「本地放行 / 抖音拦截」双向成立 ─────────
+    # 负控：注入一个「主动查抖音」的 URL → 必须被判定为违规（非本地 + 命中抖音域）
+    _bad_url = "https://imapi.douyin.com/v1/message/get_by_conversation"
+    _neg("G1 抖音出站被判违规",
+         (not _is_local_url(_bad_url)
+          and any(h in _bad_url.lower() for h in _DOUYIN_HOSTS)),
+         f"local={_is_local_url(_bad_url)} 命中抖音域=True")
+    # 正控：本地 BCC 网关必须放行（不误拦）
+    _neg("G1 本地网关放行不误报",
+         _is_local_url("http://127.0.0.1:8321/capture_userinfo"),
+         "127.0.0.1 → local")
+    # 探针自证：真调一次捕获路径，必须捕获到出站记录（证明探针非空转）
+    _p = _probe_capture_outbound()
+    _neg("G1 探针真捕获到出站请求",
+         (not _p["err"]) and bool(_p["urls"]) and not _p["douyin"],
+         f"出站 {len(_p['urls'])} 次 / 非本地 {len(_p['douyin'])} 次")
 
     # ── G4：无 sid 的「盲 ok」必须判为「非投递证据」──────────
     try:
