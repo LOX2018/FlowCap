@@ -327,11 +327,19 @@ def _tick() -> None:
     异常不打断循环（照抄 kb_maintain `_tick` 范式）。
     """
     global _running
+    # 🔴 修复 TS-4 的**另一半**（2026-09-28 夜修）：
+    #   旧写法在 `finally` 里无条件 `_running = False`。当 `_tick` 因重入
+    #   （`if _running: return`）**提前返回**时，它自己**从未置位**却仍会
+    #   把标志清掉 ⇒ 正在执行的 `run_task_now`（或另一个 `_tick`）的
+    #   重入保护被**外部抹除** ⇒ 第三个调用者可长驱直入。
+    #   故只有**真正抢到**标志的一方才有权复位（`entered`）。
+    entered = False
     try:
         with _lock:
             if _running:
                 return
             _running = True
+            entered = True
             _state["tick_count"] += 1
         now = time.time()
         due = []
@@ -345,8 +353,17 @@ def _tick() -> None:
         for t in due:
             try:
                 res = _run_one(t)
+                # ── 修复 MC-2（2026-09-28 夜修）：last_run_at 记「执行完成时刻」 ──
+                # 旧写法 `t.last_run_at = now` 记的是**本轮扫描的开始时刻**：
+                # 任务耗时 D > interval 时，它被记成「刚开始就算跑完」，
+                # 于是下轮 `now - last_run_at >= interval` 立刻成立 ⇒ 长任务被
+                # **连续重复调度**（一轮没跑完下一轮又进）；与 run_task_now
+                # 的并发叠加后还会出现「旧线程尚未收尾、新一轮已启动」。
+                # 语义纠正：last_run_at = 上次执行**结束**时刻，
+                # 下次到期时刻自然推后到「结束 + interval」（冷却自结束起算）。
+                finished = time.time()
                 with _lock:
-                    t.last_run_at = now
+                    t.last_run_at = finished
                     t.last_result = res
                     t.run_count += 1
                     if not res.get("ok"):
@@ -368,8 +385,9 @@ def _tick() -> None:
         _ec_err("SCHED-007", f"[task_scheduler] 轮询异常: "
                            f"{traceback.format_exc(limit=3)}")
     finally:
-        with _lock:
-            _running = False
+        if entered:                 # ★ 只有抢到标志的一方才复位，别抹掉别人的
+            with _lock:
+                _running = False
         _schedule()
 
 
@@ -452,18 +470,60 @@ def run_task_now(task_id: str) -> dict:
 
     用途：用户手动触发/验收。总开关未开时**依然拒绝**（fail-closed），
     防止「手动执行」成为绕过休眠的暗门。
+
+    🔴 修复 TS-4 / TS-5（2026-09-28 夜修）：与 `_tick` 同款重入保护。
+
+    历史形态（两处叠加的并发缺陷）：
+      · TS-5：整段函数除最后的状态写回外**完全无锁** —— `_run_one(t)` 与
+        「读 _running / 判重入」之间没有任何互斥，两个调用者可以同时进入；
+      · TS-4：`_tick` 的重入保护（在 `with _lock:` 内检查并置位 `_running`）
+        本身是对的，但 `run_task_now` **根本不看 `_running`** ⇒
+        用户点「立即执行」时，后台 `_tick` 正好在跑同一个任务 ⇒
+        **同一个任务被两个线程并发执行**（对 auto_dm_send = 并发外发）。
+
+    修复：复用模块既有的 `_lock` + `_running`（**不自造新锁**），
+    在锁内完成「判重入 → 置位 → 执行 → 状态写回 → 复位」全段。
+    被重入时 **fail-closed** 返回 `{"ok": False, ...}`，绝不静默执行。
     """
+    global _running
     t = get_task(task_id)
     if t is None:
         return {"ok": False, "error": f"任务不存在: {task_id}"}
-    res = _run_one(t)
     with _lock:
-        t.last_run_at = time.time()
-        t.last_result = res
-        t.run_count += 1
-        if not res.get("ok"):
+        if _running:
+            # fail-closed：不排队、不等待、不重入 —— 明确告知调用方「没跑」
+            return {"ok": False, "rejected": True, "busy": True,
+                    "error": f"任务调度器正忙（已有任务在执行中），"
+                             f"已拒绝本次执行: {task_id}"}
+        _running = True
+    try:
+        res = _run_one(t)
+        # ── 修复 MC-2 + TS-5：状态写回**整段在锁内**，且记「执行完成时刻」 ──
+        # last_run_at 语义 = 上次执行**结束**时刻（与 `_tick` 一致）：
+        # 若记成开始时刻，耗时 > interval 的任务会被下轮误判为已到期。
+        # 四个字段（last_run_at/last_result/run_count/fail_count）必须
+        # **同一个临界区内**写，否则并发下计数会互相覆盖而丢失（TS-5）。
+        finished = time.time()
+        with _lock:
+            t.last_run_at = finished
+            t.last_result = res
+            t.run_count += 1
+            if not res.get("ok"):
+                t.fail_count += 1
+        return res
+    except Exception as e:                              # noqa: BLE001
+        with _lock:
             t.fail_count += 1
-    return res
+            _state["errors"].append(
+                {"at": time.time(), "task": task_id,
+                 "error": f"{type(e).__name__}: {e}"})
+            _state["errors"] = _state["errors"][-20:]
+        _ec_err("SCHED-006", f"[task_scheduler] 手动执行任务 {task_id} 异常: "
+                            f"{type(e).__name__}: {e}")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        with _lock:
+            _running = False
 
 
 __all__ = [

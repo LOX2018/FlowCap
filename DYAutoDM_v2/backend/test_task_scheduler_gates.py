@@ -47,6 +47,9 @@ import importlib
 import os
 import sys
 import tempfile
+import threading
+import time
+import unittest
 
 # ── 隔离根：必须在 import 业务模块**之前**设置（app_root() 会忽略不存在的路径）
 _ROOT = os.path.join(tempfile.gettempdir(), "f4_gate_v2")
@@ -165,8 +168,15 @@ def b4_quota_gate_really_called() -> None:
             return _FakeQuota()
 
     saved_send, saved_get = ts.AUTO_SEND_ENABLED, dm_dispatch.get_dispatcher
+    # 🔴 2026-09-28 夜修补：B4 原本**不锁定时段**，于是只有在 09:00~21:00 之间
+    #    跑才会真正走到额度闸门；否则被时段闸门提前挡掉（calls=[]）⇒ B4 **恒红**。
+    #    这是「判据依赖墙上时钟」的典型假信号：**白天绿、夜里红**，
+    #    与被测代码是否正确无关。故在此显式放开允许时段（用例结束还原），
+    #    让 B4 **任何时刻**都能真正命中它声称要测的额度闸门。
+    saved_hours = ts.ACTIVE_HOURS
     try:
         ts.AUTO_SEND_ENABLED = True
+        ts.ACTIVE_HOURS = (0, 24)        # ★ 全时段放行 ⇒ 必走到额度闸门
         dm_dispatch.get_dispatcher = lambda: _FakeDisp()
         t = ts.Task(id="b4", name="b4", kind="auto_dm_send", account="agA")
 
@@ -184,6 +194,7 @@ def b4_quota_gate_really_called() -> None:
               f"err={err or why!r}）")
     finally:
         ts.AUTO_SEND_ENABLED = saved_send
+        ts.ACTIVE_HOURS = saved_hours
         dm_dispatch.get_dispatcher = saved_get
 
 
@@ -275,6 +286,232 @@ def b7_new_send_task_defaults_off() -> None:
           f"新建 auto_dm_send 任务默认 enabled=False（实测 enabled={t.enabled!r}）")
 
 
+# ===========================================================================
+# B8~B10 · 并发与记账语义（2026-09-28 夜修 · TS-4 / TS-5 / MC-2）
+#
+# 三条判据**全部是行为断言**：真起线程、真调用、真读任务对象状态。
+# 之所以必须这么写：本模块上一代门禁（v1）7/7 全绿却漏掉两个 P1 级真缺陷，
+# 就是因为判据锚在**源码字符串**上。字符串存在 ≠ 逻辑正确。
+# ===========================================================================
+
+def _reset_scheduler_state() -> None:
+    """把模块级调度状态清回干净态（每个并发用例前必做）。
+
+    `_tasks` / `_handlers` / `_running` 是**模块级**的，用例之间会互相污染；
+    不清就会出现「上一个用例留下 _running=True ⇒ 本用例第一次调用被拒」
+    这类**假失败**（与「文件还原了但 sys.modules 还是旧的」是同一类错误）。
+    """
+    from services import task_scheduler as ts
+    with ts._lock:
+        ts._tasks.clear()
+        ts._handlers.clear()
+        ts._running = False
+        ts._state["enabled"] = False
+        ts._state["errors"] = []
+    if ts._timer is not None:
+        try:
+            ts._timer.cancel()
+        except Exception:                                  # noqa: BLE001
+            pass
+        ts._timer = None
+
+
+def b8_reentrancy_fail_closed() -> None:
+    """TS-4 / TS-5：真并发下第二个调用者必须被 **fail-closed** 拒绝。
+
+    做法：`run_task_now` 在**另一个线程里**执行一个「可控时长」的任务
+    （用 Event 卡住 handler），主线程**同时**再调一次同一个任务。
+    断言：
+      · 第二次调用返回 ok=False（被拒，不是静默执行）；
+      · handler **只被真正执行 1 次**（计数器证明，不是靠看代码）。
+    """
+    from services import task_scheduler as ts
+
+    _reset_scheduler_state()
+    saved_sched = ts.TASK_SCHEDULER_ENABLED
+    entered = threading.Event()          # handler 已进入
+    release = threading.Event()          # 放行 handler
+    hits = []                            # ★ 真实执行次数计数器
+
+    def _slow_handler(task):
+        hits.append(1)
+        entered.set()
+        release.wait(5.0)                # 卡住 ⇒ 制造真实的重入窗口
+        return {"ok": True, "dummy": True}
+
+    try:
+        ts.TASK_SCHEDULER_ENABLED = True     # 否则 _run_one 直接 skipped
+        t = ts.Task(id="b8t", name="b8", kind="keyword_process",
+                    interval=60.0, enabled=True)
+        ts.add_task(t)
+        ts.register_handler("keyword_process", _slow_handler)
+
+        # 线程①：占住执行权（会在 handler 里卡住）
+        box = {}
+
+        def _first():
+            box["r1"] = ts.run_task_now("b8t")
+
+        th = threading.Thread(target=_first, daemon=True)
+        th.start()
+        if not entered.wait(5.0):
+            check(False, "B8", "handler 未进入 ⇒ 并发窗口未成立，判据无效")
+            release.set()
+            th.join(5.0)
+            return
+
+        # 线程②（主线程）：在①仍在执行时**真并发**发起第二次
+        r2 = ts.run_task_now("b8t")
+        release.set()
+        th.join(5.0)
+        r1 = box.get("r1")
+
+        rejected = isinstance(r2, dict) and r2.get("ok") is False
+        # 计数证明：只允许真正执行 1 次
+        only_once = (len(hits) == 1)
+        first_ok = isinstance(r1, dict) and r1.get("ok") is True
+        passed = rejected and only_once and first_ok
+        check(passed, "B8",
+              f"重入被 fail-closed 拒绝且只真执行 1 次"
+              f"（第二次 ok={r2.get('ok') if isinstance(r2, dict) else r2!r} "
+              f"handler 命中 {len(hits)} 次 第一次 ok="
+              f"{r1.get('ok') if isinstance(r1, dict) else r1!r}）")
+    finally:
+        release.set()
+        ts.TASK_SCHEDULER_ENABLED = saved_sched
+        _reset_scheduler_state()
+
+
+def b9_last_run_at_is_finish_time() -> None:
+    """MC-2：`last_run_at` 必须记「**执行完成**时刻」，不是开始时刻。
+
+    🔴 **判据走 `_tick` 而非 `run_task_now`** —— 因为缺陷真正的**重灾区**在
+    `_tick`：它写的是**本轮扫描开始时刻** `now`。`run_task_now` 旧形态用的
+    是 `_run_one` 之后的 `time.time()`，反而**接近**完成时刻（影响小得多）。
+    若判据只测 `run_task_now`，就会「测了个噪声、漏了病灶」。
+
+    缺陷后果：耗时 D > interval 的任务被记成「刚开始就算跑完」⇒
+    下轮 `now - last_run_at >= interval` 立刻成立 ⇒ 长任务被连续重复调度。
+    断言：
+      · last_run_at - 扫描开始时刻 >= 任务耗时量级（证明记的是**结束**时刻）；
+      · 紧接的下轮 due 判定**不成立**（不会因此提前到期）。
+    """
+    from services import task_scheduler as ts
+
+    _reset_scheduler_state()
+    saved_sched = ts.TASK_SCHEDULER_ENABLED
+    D = 1.2                              # 任务耗时（秒），远大于下方 interval
+
+    def _slow_handler(task):
+        time.sleep(D)
+        return {"ok": True, "dummy": True}
+
+    try:
+        ts.TASK_SCHEDULER_ENABLED = True
+        # interval 远小于耗时 D：旧形态（记开始时刻）必然误判下轮已到期
+        t = ts.Task(id="b9t", name="b9", kind="keyword_process",
+                    interval=0.3, enabled=True)
+        ts.add_task(t)
+        ts.register_handler("keyword_process", _slow_handler)
+
+        started = time.time()
+        ts._tick()                        # ★ 走真实调度路径（last_run_at=0 ⇒ 必到期）
+        finished = time.time()
+
+        gap = t.last_run_at - started
+        # 判据①：记的是完成时刻 ⇒ 与开始时刻的差 >= 任务耗时
+        #   （旧形态记循环开始的 `now` ⇒ gap ≈ 0 ⇒ 必然 < D）
+        is_finish_time = gap >= D * 0.9
+        # 判据②：完成时刻记账 ⇒ 下轮不会立刻被判为到期
+        #   模拟下轮扫描时刻 = 刚跑完的时刻：距 last_run_at 应 < interval
+        due_now = (finished - t.last_run_at) >= t.interval
+        # 判据③：任务确实被跑了（防止「因 _running 残留而跳过」造成假绿）
+        really_ran = (t.run_count == 1)
+        passed = bool(is_finish_time) and (not due_now) and really_ran
+        check(passed, "B9",
+              f"_tick 的 last_run_at 记完成时刻（gap={gap:.2f}s ≥ 耗时 {D}s ⇒ "
+              f"{is_finish_time}；紧接下轮 due={due_now} 应为 False；"
+              f"run_count={t.run_count}）")
+    finally:
+        ts.TASK_SCHEDULER_ENABLED = saved_sched
+        _reset_scheduler_state()
+
+
+def b10_state_update_no_race() -> None:
+    """TS-5：并发 N 次下，状态更新不得丢计数。
+
+    锁的正确性**只能靠并发压出来**：单线程跑 N 次无论加不加锁都是 N。
+    断言（在「允许执行」与「拒绝」都是 fail-closed 的前提下）：
+      · run_count 增量 == 真正被允许执行的次数（handler 命中次数）；
+      · fail_count 与 run_count 自洽（被执行过的失败任务才计 fail）；
+      · 并发结束后 `_running` 必须回到 False（不得残留 ⇒ 否则调度永久假忙）。
+    """
+    from services import task_scheduler as ts
+
+    _reset_scheduler_state()
+    saved_sched = ts.TASK_SCHEDULER_ENABLED
+    N = 12
+    hits = []                            # handler 进入时刻列表
+    spans = []                           # handler 离开时刻列表
+    gate = threading.Barrier(N)          # ★ 让 N 个线程尽量同时发起
+
+    def _handler(task):
+        hits.append(time.time())                 # ★ 记录进入时刻
+        time.sleep(0.05)                         # 拉长窗口，放大竞态
+        spans.append(time.time())                # ★ 记录离开时刻
+        return {"ok": True, "dummy": True}
+
+    try:
+        ts.TASK_SCHEDULER_ENABLED = True
+        t = ts.Task(id="b10t", name="b10", kind="keyword_process",
+                    interval=60.0, enabled=True)
+        ts.add_task(t)
+        ts.register_handler("keyword_process", _handler)
+
+        results = [None] * N
+
+        def _worker(i):
+            gate.wait(5.0)
+            results[i] = ts.run_task_now("b10t")
+
+        ths = [threading.Thread(target=_worker, args=(i,), daemon=True)
+               for i in range(N)]
+        for x in ths:
+            x.start()
+        for x in ths:
+            x.join(10.0)
+
+        allowed = len(hits)
+        rejected_n = sum(
+            1 for r in results
+            if isinstance(r, dict) and r.get("ok") is False)
+        # 判据①：记账次数 == 真正执行次数（无丢失、无重复记账）
+        consistent = (t.run_count == allowed)
+        # 判据②：每次调用非此即彼 —— 要么真执行，要么被明确拒绝
+        accounted = (allowed + rejected_n == N)
+        # 判据③：并发后标志复位（残留 True ⇒ 调度器永久假忙，后续全被拒）
+        flag_clear = (ts._running is False)
+        # 判据④：全部返回 ok=True ⇒ 不该有 fail_count
+        no_false_fail = (t.fail_count == 0)
+        # 判据⑤ ★**互斥性**：任意两次执行区间不得**重叠**。
+        #   这是「锁真的生效」的**强判据** —— 仅比对计数不够：
+        #   旧形态（无锁）下 run_count 也可能恰好等于执行次数
+        #   （GIL 让 `+= 1` 在这类短临界区里未必丢），计数判据会**漏报**；
+        #   但无锁时两个线程会**同时待在 handler 里** ⇒ 区间必然重叠。
+        iv = sorted(zip(hits, spans))
+        overlap = any(iv[i][1] > iv[i + 1][0] + 1e-9 for i in range(len(iv) - 1))
+        passed = (consistent and accounted and flag_clear
+                  and no_false_fail and allowed >= 1 and not overlap)
+        check(passed, "B10",
+              f"并发 {N} 次状态更新无竞态（真执行 {allowed} + 被拒 {rejected_n} "
+              f"= {allowed + rejected_n}/{N}；run_count={t.run_count} "
+              f"fail_count={t.fail_count} _running={ts._running!r} "
+              f"区间重叠={overlap}）")
+    finally:
+        ts.TASK_SCHEDULER_ENABLED = saved_sched
+        _reset_scheduler_state()
+
+
 CHECKS = [
     ("B1", b1_runtime_defaults_off),
     ("B2", b2_start_fail_closed),
@@ -283,10 +520,14 @@ CHECKS = [
     ("B5", b5_gate_really_refuses),
     ("B6", b6_auto_dm_delivery_semantics),
     ("B7", b7_new_send_task_defaults_off),
+    ("B8", b8_reentrancy_fail_closed),
+    ("B9", b9_last_run_at_is_finish_time),
+    ("B10", b10_state_update_no_race),
 ]
 
 
 def run() -> int:
+    RESULTS.clear()                 # ★ 幂等：重复调用不累计上一轮结果
     print("=" * 72)
     print("ADR-018 F4 定时任务中心 · 风控门禁 v2（**行为断言**，非源码文本匹配）")
     print("=" * 72)
@@ -347,6 +588,38 @@ def selftest() -> int:
         ("B7", "把 Task 默认改回 enabled=True",
          "enabled: bool = False",
          "enabled: bool = True", {"B7"}),
+        # ── B8/B10 负控：把 run_task_now 改回「零重入保护」的历史形态（TS-5/TS-4）
+        ("B8/B10", "run_task_now 去掉重入保护（历史 TS-4/TS-5 形态）",
+         "    with _lock:\n"
+         "        if _running:\n"
+         "            # fail-closed：不排队、不等待、不重入 —— 明确告知调用方「没跑」\n"
+         "            return {\"ok\": False, \"rejected\": True, \"busy\": True,\n"
+         "                    \"error\": f\"任务调度器正忙（已有任务在执行中），\"\n"
+         "                             f\"已拒绝本次执行: {task_id}\"}\n"
+         "        _running = True",
+         "    # 注入缺陷（负控）：完全去掉重入保护 ⇒ 并发可重入",
+         {"B8", "B10"}),
+        # ── B10 负控：判重入与置位**不在同一临界区**（TOCTOU）
+        ("B10b", "重入判定与置位分离（TOCTOU：锁内查、锁外设）",
+         "    with _lock:\n"
+         "        if _running:\n"
+         "            # fail-closed：不排队、不等待、不重入 —— 明确告知调用方「没跑」\n"
+         "            return {\"ok\": False, \"rejected\": True, \"busy\": True,\n"
+         "                    \"error\": f\"任务调度器正忙（已有任务在执行中），\"\n"
+         "                             f\"已拒绝本次执行: {task_id}\"}\n"
+         "        _running = True",
+         "    if not _running:\n"
+         "        time.sleep(0.05)      # 注入缺陷：锁外判定 + 延迟置位 = TOCTOU\n"
+         "    _running = True",
+         {"B8", "B10"}),
+        # ── B9 负控：把 _tick 的 last_run_at 改回「扫描开始时刻 now」（MC-2 原形态）
+        ("B9", "_tick 的 last_run_at 改回开始时刻 now（历史 MC-2 形态）",
+         "                finished = time.time()\n"
+         "                with _lock:\n"
+         "                    t.last_run_at = finished",
+         "                with _lock:\n"
+         "                    t.last_run_at = now   # 注入缺陷：记开始时刻",
+         {"B9"}),
     ]
     all_ok = True
     for tag, desc, old, new, expect_red in cases:
@@ -394,3 +667,49 @@ if __name__ == "__main__":
     if "--selftest" in sys.argv:
         raise SystemExit(selftest())
     raise SystemExit(run())
+
+
+# ===========================================================================
+# unittest 桥接 —— 让「门禁脚本」能被标准 unittest 直接跑
+#
+# 为什么需要：本文件原本是**脚本**（`__main__` 直接 run()），
+# `python -m unittest test_task_scheduler_gates` 会 **Ran 0 tests**（空跑全绿）——
+# 这是本项目最危险的一类「假绿」：**跑了、没报错、但其实一条都没测**。
+# 故在此把每条判据桥成一个 TestCase：
+#   · 每条判据单独成一个 test（失败可定位到 B 号）；
+#   · 新增 `test_selftest` —— 跑**负控并断言其真的报红**（元门禁）。
+# ===========================================================================
+class GateTestCase(unittest.TestCase):
+    """把每个 B 判据桥成一个 unittest 用例。"""
+
+    def _run_one_gate(self, gid: str, fn) -> None:
+        RESULTS.clear()
+        try:
+            fn()
+        except Exception as e:                                  # noqa: BLE001
+            check(False, gid, f"{fn.__name__} 执行异常: {type(e).__name__}: {e}")
+        recs = [r for r in RESULTS if r[1] == gid]
+        # 判据没产出任何结果 = 没测到（不得算通过）
+        self.assertTrue(recs, f"{gid} 未产出任何判据结果（门禁未执行）")
+        for ok, _gid, desc in recs:
+            self.assertTrue(ok, f"{gid} 未通过: {desc}")
+
+
+def _make_test(gid: str, fn):
+    def _t(self):
+        self._run_one_gate(gid, fn)
+    _t.__name__ = f"test_{gid}"
+    _t.__doc__ = (fn.__doc__ or "").strip().split("\n")[0] or gid
+    return _t
+
+
+for _gid, _fn in CHECKS:
+    setattr(GateTestCase, f"test_{_gid}", _make_test(_gid, _fn))
+
+
+class SelfTestNegativeControl(unittest.TestCase):
+    """元门禁：负控装置本身必须有效（注入缺陷 ⇒ 判据真的报红）。"""
+
+    def test_selftest(self):
+        rc = selftest()
+        self.assertEqual(rc, 0, "负控自检未通过：存在门禁未覆盖的缺陷形态")
