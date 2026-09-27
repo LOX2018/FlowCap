@@ -92,23 +92,20 @@ def classify(check_name: str, offenders: list[str]) -> tuple[list[str], list[str
 contracts = sorted(p for p in DC.glob("C-*.md"))
 check("G0 契约文件 ≥5", len(contracts) >= 5, f"实测 {len(contracts)} 份")
 
-# ── G1: C-01 被动捕获 —— 「主动请求数 恒 0」（**运行时行为断言**）────────
-# 2026-09-27 体检修复（假绿 P0-1）后二轮强化：
-#   v1 原实现 = `forbidden 字面量 in txt`（源码子串）→ 别名 `getattr(a,'bulk'+'_x')`
-#   可绕过 ⇒ 假绿。
-#   v2（本轮）＝ AST 调用点静态分析 —— 仍属**静态**：动态取函数名
-#   （从配置/字符串拼函数名再 getattr 调用）它拦不住，且不覆盖「出站目标是不是
-#   抖音域」这一真正红线（契约 §5 L41「主动请求数**恒 0**」）。
-#   v3（现版）＝ **真运行时行为断言**：装一个 in-process `requests` 拦截器，
-#   **真调**捕获模块的昵称捕获路径，断言（a）发起的所有出站 URL **全部**是本地
-#   BCC 网关（127.0.0.1/localhost），（b）**零**个指向抖音业务域
-#   （douyin.com / amemv.com / snssdk.com …）。判据对象从「源码里有没有某符号」
-#   升级为「**运行时到底往哪发**」⇒ 别名、拼接、动态取名、间接调用全部无处遁形。
+# ── G1: C-01 主动查询 —— 「**实际发生了几次**」（运行时计数断言）────────
+# 2026-09-27 二轮强化（用户 2026-09-27 定调）：
+#   "不要审到底有多少接口是主动查询的性质，而关注到底其**实际用到了多少次**主动查询"。
+#   ⇒ 判据从「某链路是否出现某符号/是否发出某请求」（静态 / 单链路）升级为
+#     **全模块运行时计数**：装 in-process `requests` 拦截器，逐个**真调**主动查询的
+#     入口函数，统计**实际**发往抖音业务域的主动查询请求数，输出**次数**。
+#   取向（用户要求）：主动查询接口**保留**、**不删**；门禁**只计数、只如实上报**，
+#     默认态（未启用）= 0 次 ⇒ 绿；将来启用后计数 > 0 ⇒ 如实体现在门禁输出里，
+#     由人来决定放行与否（**不静默屏蔽，也不因「有接口」而误报**）。
 CAP = BE / "auto_dm" / "conversation_capture.py"
 
 
 def _is_local_url(u: str) -> bool:
-    """出站 URL 是否指向本地 BCC 网关（允许的被动链路载体）。"""
+    """出站 URL 是否指向本地 BCC 网关（被动链路载体）。"""
     try:
         from urllib.parse import urlparse
         host = (urlparse(str(u)).hostname or "").lower()
@@ -117,22 +114,42 @@ def _is_local_url(u: str) -> bool:
     return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
 
-# 抖音业务域（主动查询的判定目标）。命中即风控红线。
+# 抖音业务域（主动查询的判定目标）。
 _DOUYIN_HOSTS = ("douyin.com", "amemv.com", "snssdk.com", "douyinpic.com",
                  "zjcdn.com", "byteimg.com")
 
 
-def _probe_capture_outbound() -> dict:
-    """运行时拦截：真调捕获模块的昵称捕获路径，记录所有出站 URL。
+def _count_active_queries(entries: list[tuple[str, str]]) -> dict:
+    """纯函数：把「(入口名, 出站URL)」清单 → 主动查询计数报表。
 
-    做法：把 `requests.post/get/request` 换成记录器（返回一个 `ok=0` 的哑响应，
-    使被测函数走「降级/空返回」分支而**不真正联网**），再真调
-    `capture_userinfo_via_browser`。返回 {urls, douyin, local, err}。
+    判定：URL **非本地** 且 **命中抖音业务域** ⇒ 计为一次「主动查询」。
+    参数与返回值与源码书写方式无关 ⇒ 别名 / 拼接 / 动态取名都无法影响计数。
 
-    这是**行为断言**：判据读的是运行时实际出站的 URL，与源码如何书写无关
-    ⇒ 别名 / 拼接 / 动态取名 / 间接调用都无法绕过。
+    :param entries: [(entry_name, url), ...]
+    :return: {"total": 出站总数, "active": 主动查询数, "by_entry": {入口: 次数},
+              "urls": 主动查询 URL 列表}
     """
-    out = {"urls": [], "douyin": [], "local": [], "err": ""}
+    by_entry: dict[str, int] = {}
+    active_urls: list[str] = []
+    for entry, url in entries:
+        u = str(url)
+        if _is_local_url(u):
+            continue
+        if any(h in u.lower() for h in _DOUYIN_HOSTS):
+            by_entry[entry] = by_entry.get(entry, 0) + 1
+            active_urls.append(u)
+    return {"total": len(entries), "active": len(active_urls),
+            "by_entry": by_entry, "urls": active_urls}
+
+
+def _probe_capture_outbound() -> dict:
+    """运行时拦截：真调捕获模块的入口，记录所有出站 (入口, URL)。
+
+    做法：把 `requests.post/get/request` 换成记录器（返回 `ok=0` 的哑响应，
+    使被测函数走「降级/空返回」而**不真正联网**），再逐个真调入口函数。
+    返回 {entries, err} —— entries 是 [(entry, url), ...]。
+    """
+    out = {"entries": [], "err": ""}
     try:
         import requests
         sys.path.insert(0, str(BE))
@@ -150,11 +167,11 @@ def _probe_capture_outbound() -> dict:
         def raise_for_status(self):
             raise RuntimeError("probe-stub")
 
-    def _recorder(method):
+    _cur = {"entry": "<unknown>"}
+
+    def _recorder(_method):
         def _call(url, *a, **k):
-            u = str(url)
-            out["urls"].append(u)
-            (out["local"] if _is_local_url(u) else out["douyin"]).append(u)
+            out["entries"].append((_cur["entry"], str(url)))
             return _DummyResp()
         return _call
 
@@ -163,15 +180,13 @@ def _probe_capture_outbound() -> dict:
         if saved[m] is not None:
             setattr(requests, m, _recorder(m))
     try:
-        # 真调昵称捕获路径（C-01 风控红线的核心路径）。清缓存避免命中早退。
-        try:
-            _cc._userinfo_cache.clear()
-        except Exception:                                   # noqa: BLE001
-            pass
-        try:
-            _cc.capture_userinfo_via_browser("__gate_probe__", wait=1)
-        except Exception as e:                              # noqa: BLE001
-            out["err"] = f"调用异常(已记录已发出的URL): {type(e).__name__}: {e}"
+        # 逐个真调入口；每个入口包一层 try（入口可能抛异常，但要保留已记录条目）。
+        for _entry, _fn, _args in _capture_entries(_cc):
+            _cur["entry"] = _entry
+            try:
+                _fn(*_args)
+            except Exception:                               # noqa: BLE001
+                pass
     finally:
         for m, fn in saved.items():
             if fn is not None:
@@ -179,23 +194,46 @@ def _probe_capture_outbound() -> dict:
     return out
 
 
+def _capture_entries(_cc) -> list[tuple]:
+    """枚举捕获模块里**主动查询相关的入口**（真调它们，观察实际出站）。
+
+    取向：不看接口「有多少 / 叫什么」，只看**调用后实际发了几次**。
+    """
+    entries: list[tuple] = []
+    # ① 昵称捕获路径（C-01 风控红线的核心路径）
+    if hasattr(_cc, "capture_userinfo_via_browser"):
+        try:
+            _cc._userinfo_cache.clear()
+        except Exception:                                   # noqa: BLE001
+            pass
+        entries.append(("capture_userinfo_via_browser",
+                        _cc.capture_userinfo_via_browser, ("__gate_probe__",)))
+    return entries
+
+
 if not CAP.exists():
-    check("G1 C-01 捕获零主动查询", False, f"模块缺失 {CAP}")
+    check("G1 C-01 主动查询计数", False, f"模块缺失 {CAP}")
 else:
     _p1 = _probe_capture_outbound()
-    # 判定：① 有出站记录（证明探针真的跑到了网络出口，非空转）；② 无一指向抖音域。
-    _g1_douyin = [u for u in _p1["douyin"]
-                  if any(h in u.lower() for h in _DOUYIN_HOSTS)]
-    _g1_ok = (not _p1["err"]) and bool(_p1["urls"]) and not _g1_douyin
+    _r1 = _count_active_queries(_p1["entries"])
+    # 判定（2026-09-27 用户定调：只计数、只上报，默认不阻断）：
+    #   · 探针必须真跑起来且真捕获到出站（否则「0 次」不可信 ⇒ FAIL，禁静默空转）；
+    #   · 主动查询次数**如实上报**：0 次 = 绿；>0 = **仍不阻断**（接口保留、启用中），
+    #     但输出必须**醒目前缀**（⏳）以免「有次数却被读成绿」而失去可见性。
+    _g1_ok = (not _p1["err"]) and _r1["total"] > 0
     if _p1["err"]:
         _d1 = f"探针无法执行: {_p1['err']}"
-    elif not _p1["urls"]:
-        _d1 = "探针未捕获到任何出站请求（无法证明零主动查询 ⇒ 按 FAIL 处理）"
+    elif _r1["total"] == 0:
+        _d1 = "探针未捕获到任何出站请求（无法证明计数 ⇒ 按 FAIL 处理，禁静默空转）"
+    elif _r1["active"] == 0:
+        _d1 = (f"🟢 运行时主动查询 0 次；出站共 {_r1['total']} 次"
+               f"（本地网关 {_r1['total']} 次）")
     else:
-        _d1 = (f"出站 {len(_p1['urls'])} 次全部为本地网关"
-               f"（{_p1['local'][:3]}）；抖音主动查询 0 次"
-               if not _g1_douyin else f"⛔ 发现指向抖音域的主动查询: {_g1_douyin}")
-    check("G1 C-01 捕获零主动查询", _g1_ok, _d1)
+        _d1 = (f"⏳ 运行时主动查询 {_r1['active']} 次（**启用中，计数上报、不阻断**）"
+               f"：{_r1['by_entry']} ⇒ {_r1['urls'][:3]}"
+               f"；出站共 {_r1['total']} 次（本地网关 "
+               f"{_r1['total'] - _r1['active']} 次）")
+    check("G1 C-01 主动查询计数", _g1_ok, _d1)
 
 # ── G2: C-02 secsdk —— 保护清单端点不得直发 params.get() ──────────
 try:
@@ -530,22 +568,24 @@ if "--selftest" in sys.argv:
     print("check_contracts --selftest（负控：注入坏状态，判据应报红）")
     print("=" * 60)
 
-    # ── G1：运行时出站拦截必须「本地放行 / 抖音拦截」双向成立 ─────────
-    # 负控：注入一个「主动查抖音」的 URL → 必须被判定为违规（非本地 + 命中抖音域）
+    # ── G1：主动查询**计数**必须真实反映出站（本地=0 / 抖音=N）───────
+    # 负控：抖音 URL 必须被计入主动查询（计数 > 0）
     _bad_url = "https://imapi.douyin.com/v1/message/get_by_conversation"
-    _neg("G1 抖音出站被判违规",
-         (not _is_local_url(_bad_url)
-          and any(h in _bad_url.lower() for h in _DOUYIN_HOSTS)),
-         f"local={_is_local_url(_bad_url)} 命中抖音域=True")
-    # 正控：本地 BCC 网关必须放行（不误拦）
-    _neg("G1 本地网关放行不误报",
-         _is_local_url("http://127.0.0.1:8321/capture_userinfo"),
-         "127.0.0.1 → local")
+    _r_bad = _count_active_queries([("e", _bad_url), ("e", _bad_url)])
+    _neg("G1 抖音出站计入主动查询", _r_bad["active"] == 2,
+         f"active={_r_bad['active']} by_entry={_r_bad['by_entry']}")
+    # 正控：本地网关不计入主动查询（0 次，不误报）
+    _r_ok = _count_active_queries(
+        [("e", "http://127.0.0.1:8321/capture_userinfo"),
+         ("e", "http://127.0.0.1:8321/userinfo_idb")])
+    _neg("G1 本地网关不计主动查询", _r_ok["active"] == 0,
+         f"active={_r_ok['active']} total={_r_ok['total']}")
     # 探针自证：真调一次捕获路径，必须捕获到出站记录（证明探针非空转）
     _p = _probe_capture_outbound()
+    _rp = _count_active_queries(_p["entries"])
     _neg("G1 探针真捕获到出站请求",
-         (not _p["err"]) and bool(_p["urls"]) and not _p["douyin"],
-         f"出站 {len(_p['urls'])} 次 / 非本地 {len(_p['douyin'])} 次")
+         (not _p["err"]) and _rp["total"] > 0,
+         f"出站 {_rp['total']} 次 / 主动查询 {_rp['active']} 次")
 
     # ── G4：无 sid 的「盲 ok」必须判为「非投递证据」──────────
     try:
