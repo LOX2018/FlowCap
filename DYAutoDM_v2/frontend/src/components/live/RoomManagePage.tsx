@@ -24,7 +24,7 @@
  */
 import { useEffect, useState } from "react";
 import { X, Search, Loader2, AlertTriangle } from "lucide-react";
-import { api, LiveRoom, RoomConfig, DiscoveredRoom } from "../../api/client";
+import { api, LiveRoom, RoomConfig, DiscoveredRoom, ConfigTagSummary } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -49,12 +49,15 @@ const EMPTY_DRAFT: Partial<LiveRoom> = {
   live_url: "",
   name: "",
   strategy_id: "",
+  tag_id: "",
   allow_desensitized: false,
 };
 
 export default function RoomManagePage({ open, onClose, push, onChanged, onPick }: Props) {
   const [items, setItems] = useState<LiveRoom[]>([]);
   const [strategies, setStrategies] = useState<RoomConfig[]>([]);
+  /** 房间级标签候选（ADR-018 F1-D1）。与「策略」并列：策略管怎么发，标签管用哪套参数。 */
+  const [tags, setTags] = useState<ConfigTagSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState<Partial<LiveRoom>>({ ...EMPTY_DRAFT });
   const [editing, setEditing] = useState<string | null>(null);
@@ -81,10 +84,17 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.listLiveRooms(), api.listRoomConfigs()])
-      .then(([rooms, cfgs]) => {
+    Promise.all([
+      api.listLiveRooms(),
+      api.listRoomConfigs(),
+      // 标签加载失败**不阻断**房间列表（标签是增强项，房间管理是主线）：
+      // 用 catch 兜成空数组，而不是让整个 Promise.all 挂掉。
+      api.listTags().catch(() => ({ ok: false, tags: [], bindings: {} })),
+    ])
+      .then(([rooms, cfgs, tg]) => {
         setItems(rooms.items || []);
         setStrategies(cfgs.items || []);
+        setTags((tg as { tags?: ConfigTagSummary[] }).tags || []);
       })
       .catch((e: unknown) => push("加载直播间失败: " + errMsg(e)))
       .finally(() => setLoading(false));
@@ -482,6 +492,9 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
                     {room.strategy_id
                       ? ` · 策略:${strategyName(room.strategy_id)}`
                       : " · 未绑定策略"}
+                    {room.tag_id
+                      ? ` · 标签:${tags.find((t) => t.id === room.tag_id)?.name || room.tag_id}`
+                      : ""}
                   </div>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => { onPick?.(room); onClose(); }}>
@@ -555,6 +568,29 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
                       </SelectItem>
                     );
                   })}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* ★ ADR-018 F1-D1（2026-09-27）：房间级标签绑定。
+                语义与「策略」不同 —— 策略 = 怎么发；标签 = 用哪一套参数集。
+                留空 = 跟随账号/板块级（不是「不生效」）。 */}
+            <div className="flex flex-col gap-1">
+              <label>绑定参数标签</label>
+              <Select
+                value={draft.tag_id || "__none__"}
+                onValueChange={(v) => touch({ tag_id: v === "__none__" ? "" : v })}
+              >
+                <SelectTrigger data-od-id="room-tag">
+                  <SelectValue placeholder="跟随账号/板块" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">跟随账号/板块</SelectItem>
+                  {tags.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name || t.id}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

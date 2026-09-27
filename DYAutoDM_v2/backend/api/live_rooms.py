@@ -93,6 +93,7 @@ _STRATEGY_KV = "live_room_configs"
 # 是典型「看着像门禁、实际是装饰」的死代码。
 _FIELDS = {
     "id", "room_id", "live_url", "name", "strategy_id", "allow_desensitized",
+    "tag_id",   # ★ ADR-018 F1-D1：房间级标签绑定（可清空，见 save_room 分类）
 }
 
 
@@ -103,6 +104,23 @@ def _load_all() -> dict:
 
 def _save_all(data: dict) -> None:
     set_kv_json(_KV_KEY, data)
+
+
+def _tag_exists(tid: str) -> bool:
+    """引用完整性（ADR-018 F1-D1）：标签库里是否真有这个 id。空串 = 「未绑定」，合法。
+
+    与 `_strategy_exists` 同构 —— 存在的理由也一样：悬空引用会让
+    `config_tag.scope_of` 判空后**静默回落**到账号级，用户以为绑了、实际没生效。
+    宁可写入时报错，也不要静默失效。
+    """
+    s = str(tid or "").strip()
+    if not s:
+        return True
+    try:
+        from services import config_tag
+        return bool((config_tag.get_tag(s) or {}).get("name"))
+    except Exception:  # noqa: BLE001 —— 读标签库失败不阻断写房间（仅跳过校验）
+        return True
 
 
 def _strategy_exists(sid: str) -> bool:
@@ -178,6 +196,9 @@ class RoomBody(BaseModel):
     name: str = ""
     strategy_id: str = ""
     allow_desensitized: bool | None = None
+    # ★ 2026-09-27（ADR-018 F1-D1）：**房间级**标签绑定。空 = 未绑（跟随账号/板块级）。
+    #   优先级：房间级 > 板块级 > 整账号级（见 services/config_tag.scope_of）。
+    tag_id: str = ""
 
 
 class MigrateBody(BaseModel):
@@ -533,11 +554,19 @@ async def save_room(body: RoomBody) -> dict:
     if strategy_id and not _strategy_exists(strategy_id):
         return {"ok": False, "error": f"直播策略 {strategy_id} 不存在（禁止写入悬空引用）"}
 
+    # ★ 2026-09-27（ADR-018 F1-D1）：房间级标签绑定。
+    #   可清空（与 strategy_id 同类）：显式传空串 = 解绑，回落到账号/板块级。
+    #   引用完整性同上：禁止写入不存在的标签（否则 scope_of 判空回落，静默失效）。
+    tag_id = pick("tag_id", clearable=True)
+    if tag_id and not _tag_exists(tag_id):
+        return {"ok": False, "error": f"标签 {tag_id} 不存在（禁止写入悬空引用）"}
+
     upd = {
         "room_id": room_id,
         "live_url": live_url,
         "name": pick("name", clearable=True),
         "strategy_id": strategy_id,
+        "tag_id": tag_id,
         "allow_desensitized": bool(
             old.get("allow_desensitized") if body.allow_desensitized is None
             else body.allow_desensitized

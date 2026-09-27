@@ -797,6 +797,10 @@ app.include_router(logs_api.router, prefix="/api/logs", tags=["logs"])
 app.include_router(ai_api.router, prefix="/api/ai", tags=["ai"])
 # 数据采集（关键词搜索视频/用户 + 评论采集 + 评论转私信截流）
 app.include_router(crawl_api.router, prefix="/api/crawl", tags=["crawl"])
+# ★ 2026-09-27（ADR-018 F1-D3）：采集策略层（参数可复用载体，零身份字段）。
+#   挂在 /api/crawl/policies 子路径下，与 crawl 本体同属「采集」域。
+from api import crawl_policy as crawl_policy_api
+app.include_router(crawl_policy_api.router, prefix="/api/crawl/policies", tags=["crawl"])
 # IM 通知与指令（提取自 AstrBot 渠道协议，2026-09-08）
 #   支持 个人微信(iLink)/企业微信/钉钉/飞书/QQ 五渠道推送 +
 #   LLM 自然语言指令解析，用于任务新建、任务监控、私信汇报、凭证失效提醒

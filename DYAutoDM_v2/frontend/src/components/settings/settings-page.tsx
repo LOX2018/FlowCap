@@ -32,6 +32,7 @@ import AgentSection from "./AgentSection";
 import ModelHubSection from "./ModelHubSection";
 import NotifySection from "./NotifySection";
 import TagSection from "./TagSection";
+import CrawlPolicySection from "./CrawlPolicySection";
 import AiEngineSection from "./AiEngineSection";
 import NicknameFallbackSection from "./NicknameFallbackSection";
 import McpSection from "./McpSection";
@@ -43,7 +44,7 @@ import { cn } from "@/lib/utils";
 
 type SectionKey =
   | "general" | "send" | "live" | "capture" | "dm"
-  | "ai" | "agent" | "tag" | "notify" | "mcp";
+  | "ai" | "agent" | "tag" | "notify" | "mcp" | "crawlpolicy";
 
 const TABS: {
   key: SectionKey;
@@ -59,6 +60,9 @@ const TABS: {
   { key: "ai", label: "AI 回复引擎", hint: "模型链路 + 回复内容 / 护栏 / 黑名单", icon: <Bot className="h-3.5 w-3.5" /> },
   { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", icon: <Users className="h-3.5 w-3.5" /> },
   { key: "tag", label: "配置标签", hint: "发送策略：怎么发", icon: <Tags className="h-3.5 w-3.5" /> },
+  // 2026-09-27（ADR-018 F1-D3）：采集策略层。与「配置标签」互补 ——
+  // 标签管「用哪套参数」，本项管「采集参数本身」。
+  { key: "crawlpolicy", label: "采集策略", hint: "可复用的采集参数（只存参数，不自动采集）", icon: <Database className="h-3.5 w-3.5" /> },
   { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", icon: <Bell className="h-3.5 w-3.5" /> },
   // 2026-09-25：补 MCP 入口。此前后端 7 个端点已完整，但前端零引用
   // ⇒ 用户「看不到入口、也不知道令牌」= 能力在位但不可得。
@@ -146,6 +150,7 @@ export default function SettingsPage(props: PageProps) {
             )}
             {section === "agent" && <AgentSection {...props} />}
             {section === "tag" && <TagSection {...props} />}
+            {section === "crawlpolicy" && <CrawlPolicySection {...props} />}
             {section === "notify" && <NotifySection {...props} />}
             {section === "mcp" && <McpSection push={props.push} />}
           </CardContent>

@@ -1502,6 +1502,35 @@ export const api = {
     });
   },
 
+  // ===== 采集策略（ADR-018 F1-D3，2026-09-27）=====
+  /**
+   * 采集策略 = 一组可复用的采集参数（**零身份字段**：不存关键词/aweme_id）。
+   *
+   * 设计对标：直播域的「策略层」（live_room_configs）之于「房间层」（live_rooms）。
+   * 采集域此前是纯即时调用、无参数载体 ⇒ 本层补上该缺口。
+   */
+  async listCrawlPolicies(): Promise<{ ok: boolean; items: CrawlPolicy[]; total: number }> {
+    return request("/api/crawl/policies");
+  },
+
+  async saveCrawlPolicy(body: Partial<CrawlPolicy>): Promise<{ ok: boolean; id: string; item: CrawlPolicy; error?: string }> {
+    return request("/api/crawl/policies", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  async deleteCrawlPolicy(pid: string): Promise<{ ok: boolean; deleted: boolean }> {
+    return request(`/api/crawl/policies/${encodeURIComponent(pid)}`, { method: "DELETE" });
+  },
+
+  /** 解析成可直接喂给 crawl 端点的参数包（**只读，不发采集请求**）。 */
+  async resolveCrawlPolicy(pid: string, account = ""): Promise<{
+    ok: boolean;
+    params: Record<string, unknown>;
+    tag_scope: string | null;
+  }> {
+    const q = account ? `?account=${encodeURIComponent(account)}` : "";
+    return request(`/api/crawl/policies/${encodeURIComponent(pid)}/resolve${q}`, { method: "POST" });
+  },
+
   // ===== 配置标签（v0.38.2）=====
   /**
    * 标签是**指引**，参数仍由 app_config 按 scope 隔离存储，标签不存副本。
@@ -2300,6 +2329,28 @@ export interface RoomConfig {
  * 与 `RoomConfig`（策略层）**物理分离**：本记录存**身份 + 策略引用 + 脱敏开关**，
  * 不含任何发送参数。删除策略时后端自动把引用它的房间 `strategy_id` 置空。
  */
+export interface CrawlPolicy {
+  id: string;
+  name: string;
+  /** 采集类型：video | user | comment */
+  kind: "video" | "user" | "comment";
+  /** 每次上限（后端收敛 1..50） */
+  num: number;
+  /** 排序：0 综合 / 1 最多点赞 / 2 最新 */
+  sort_type: string;
+  /** 发布时段：0 不限 / 1 一天内 / 7 一周内 / 180 半年内 */
+  publish_time: string;
+  /** 时长过滤（秒区间，可空） */
+  filter_duration: string;
+  /** 搜索范围（可空） */
+  search_range: string;
+  /** 内容形式：空不筛 / 0 视频 / 1 图文 */
+  content_type: string;
+  /** 翻页轮数上限（后端收敛 1..100）——防「has_more 恒真且 data 空」死循环 */
+  max_rounds: number;
+  updated_at?: number;
+}
+
 export interface LiveRoom {
   /** 房间记录 id（形如 `lr_<epoch_ms>`） */
   id: string;
@@ -2311,6 +2362,14 @@ export interface LiveRoom {
   name: string;
   /** 引用的策略 id（live_room_configs 的键）；空 = 未绑定 */
   strategy_id: string;
+  /**
+   * 房间级标签绑定（ADR-018 F1-D1，2026-09-27）；空 = 未绑（回落账号/板块级）。
+   *
+   * 优先级：**房间级 > 板块级 > 整账号级**，见后端 `config_tag.scope_of`。
+   * 留空即「跟随外层」，不是「不生效」——这一区分决定了用户能否只给单个
+   * 直播间单独定风控参数而不影响其它房间。
+   */
+  tag_id?: string;
   /**
    * 该房间是否允许「检测到脱敏仍继续监听（**仅统计**）」。
    *

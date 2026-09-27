@@ -185,19 +185,40 @@ def tag_of(account: str) -> Optional[str]:
 # 解析（消费方唯一入口）
 # ---------------------------------------------------------------------------
 
-def scope_of(account: str, section: str = "") -> Optional[str]:
+def scope_of(account: str, section: str = "", room_tag: str = "") -> Optional[str]:
     """返回该账号应读取的参数 scope；未绑定标签返回 None（= 读全局）。
 
-    2026-09-24（B-4）：支持**按板块**取 scope。
-      - 传 section：优先取该板块的专用绑定，无则回落到整账号绑定
-      - 不传 section：整账号绑定（与改造前逐字一致，零回归）
+    ## 优先级链（高 → 低）
+
+      1. **房间级** `room_tag`（ADR-018 F1-D1，2026-09-27 新增）
+      2. **板块级** `<account>.<section>`（2026-09-24 B-4）
+      3. **整账号级** `tag_of(account)`
+      4. 都没有 → `None`（调用方读全局）
+
+    ## 参数语义
+
+      - `section`：传了就参与第 2 级；不传则跳过（与改造前逐字一致，零回归）
+      - `room_tag`：传了就参与第 1 级。**传空串 = 该房间未绑标签** ⇒ 自然回落。
+        调用方（如直播链路）应先从 `live_rooms[room].tag_id` 取出再传入；
+        本函数**不查 live_rooms**（避免 services 层反向依赖 api 层）。
+
+    ## 为什么每级都要 `get_tag(...)["name"]` 校验
+
+    悬空引用（标签已被删）若直接返回 id，调用方会拿到一个取不到参数的
+    scope，表现为「静默失效」—— 宁愿回落，也不要给出一个空 scope。
     """
+    # ① 房间级（最高优先）
+    rt = str(room_tag or "").strip()
+    if rt and (get_tag(rt) or {}).get("name"):
+        return rt
+    # ② 板块级
     if section:
         per_sec = _kv_get(_KV_BIND_SECTION, {}) or {}
         sec_map = per_sec.get(account) or {}
         tid = sec_map.get(section)
         if tid and (get_tag(tid) or {}).get("name"):
             return tid
+    # ③ 整账号级
     return tag_of(account)
 
 
