@@ -62,6 +62,37 @@ def _kv_set(data: dict) -> None:
         logger.warning(f"[HUB-002] " + f"[model_hub] kv 写入失败: {e}")
 
 
+def mask_secret(token: str) -> str:
+    """脱敏展示：只留前 4 后 4（与 mcp/config.py `._mask` 同语义）。
+
+    规则：空串→空串；长度 <= 8 → 全 `*`；否则 前4 + '*'*(len-8) + 后4。
+
+    ⚠️ 仅用于**对外视图**（API 响应 / 日志）。保存与校验路径必须取存储层
+    原文，绝不可把本函数的返回值回写进 kv —— 否则真实密钥会被掩码永久
+    覆盖（T6-b 事故面）。
+    """
+    s = str(token or "")
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return "*" * len(s)
+    return f"{s[:4]}{'*' * (len(s) - 8)}{s[-4:]}"
+
+
+def _public_provider(p: dict) -> dict:
+    """提供商的对外视图：api_key 一律脱敏，另给 `api_key_set` 指示是否已配置。
+
+    前端（ProviderSection.tsx）本就只显示「· 🔑」与 `••••••••` 占位，
+    从不消费明文；`api_key_set` 让它仍能区分「已配置 / 未配置」。
+    返回的是**副本**，绝不改动存储层的 provider dict。
+    """
+    d = dict(p)
+    raw = str(d.get("api_key") or "")
+    d["api_key"] = mask_secret(raw)
+    d["api_key_set"] = bool(raw)
+    return d
+
+
 def _normalize(data: dict) -> dict:
     """确保结构完整、字段合法（防手改 kv 弄崩）。"""
     out = {
@@ -686,7 +717,9 @@ def overview() -> dict:
     with _lock:
         data = _load()
         return {
-            "providers": [dict(p) for p in data["providers"]],
+            # 2026-09-28（T6-b）：providers 走脱敏视图 —— api_key 明文不再透传
+            # 给前端（GET /api/modelhub/overview）。存储层仍是原文，写侧零改动。
+            "providers": [_public_provider(p) for p in data["providers"]],
             "models": [dict(m) for m in data["models"]],
             "routes": {k: dict(v) for k, v in data["routes"].items()},
             "fallback": dict(data["fallback"]),

@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import model_hub
+from services.model_hub import _public_provider
 
 router = APIRouter()
 
@@ -62,13 +63,17 @@ class ConsumerBody(BaseModel):
 
 @router.get("/overview")
 async def overview() -> dict:
+    """全量视图。providers[].api_key 已由 services.model_hub 脱敏
+    （T6-b，2026-09-28），并存 `api_key_set` 指示是否已配置。此处只透传。"""
     return {"ok": True, **model_hub.overview()}
 
 
 @router.post("/providers")
 async def save_provider(body: ProviderBody) -> dict:
+    # rec 是**存储层原文**（含明文 api_key，写侧必须拿到真值）；
+    # 只有 providers/models 汇总走 overview() 的脱敏视图。
     rec = model_hub.save_provider(body.model_dump())
-    return {"ok": True, "provider": rec, **{k: v for k, v in
+    return {"ok": True, "provider": _public_provider(rec), **{k: v for k, v in
             model_hub.overview().items() if k in ("providers", "models")}}
 
 
