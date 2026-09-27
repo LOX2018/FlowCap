@@ -48,7 +48,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: 即 `c9db81e` 是该次审计**显式声明的区间终点**。
 #:
 #: ⚠️ 后续每次全库审计后，本值须同步更新为该次审计声明的区间终点。
-DEFAULT_SINCE = "c9db81e"
+DEFAULT_SINCE = "586381e"
 
 #: 审计红线阈值（D-02，用户 2026-09-26 定）
 THRESHOLD = 20
