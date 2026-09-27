@@ -20,6 +20,7 @@
  */
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { AuthedImg } from "@/components/ui/authed-img";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -116,7 +117,12 @@ export function LoginDialog({
         {st.qrPng ? (
           <div className="flex flex-col items-center gap-2 py-2">
             {/* 本地绝对路径 ⇒ 必须经后端受保护端点取字节 */}
-            <img
+            {/* 2026-09-27 全库审计 FE-1：原为裸 <img src="/api/accounts/qr-image?..."> ——
+                `<img src>` **无法携带 `X-Member-Token`**，而该端点不在 _MEMBER_EXEMPT
+                内 ⇒ 实测必 401 ⇒ 二维码永久破图（登录流程卡死且无提示）。
+                改用项目既有 `AuthedImg`（带令牌 fetch → Blob → objectURL），
+                与 message-bubble / message-viewer 同一套受保护媒体方案。 */}
+            <AuthedImg
               src={`/api/accounts/qr-image?path=${encodeURIComponent(st.qrPng)}`}
               alt="登录二维码"
               className="h-[220px] w-[220px] rounded-[10px] border border-[var(--color-border)] bg-white"
