@@ -582,6 +582,29 @@ async def lifespan(app: FastAPI):
         logger.info("[startup] 知识维护定时器已启动（每 84h 一轮，首次延迟 30 分钟）")
     except Exception as e:
         logger.warning(f"[SYS-024] " + f"[startup] 知识维护定时器启动失败（不影响主流程）: {e}")
+
+    # ── 定时任务中心（ADR-018 F4，2026-09-27 全库审计 TS-1 接线）──────────────────
+    # 🔴 双重 fail-closed（两道独立总开关，均默认 False）：
+    #    ① `register_builtin_handlers()` 只注册 handler，不启动任何定时器；
+    #    ② `start()` 在 `TASK_SCHEDULER_ENABLED=False` 时**直接拒绝**（返回 ok=False）。
+    #    ⇒ 出厂态（不设任何 env）下本段**零副作用**：handler 注册了但无调度、无外发。
+    #
+    # 历史缺口（全库审计 TS-1）：本模块此前**全仓 0 调用点** —— handler 从未注册、
+    # start() 从未被调 ⇒ F4 是「手动可唤醒的空壳」（前端 UI 完整、门禁全绿，
+    # 但能力在位不可达）。本次接线补齐，且**先注册 handler 再尝试 start**：
+    # 这样用户显式打开总开关后，任务才有执行体可用（否则仍是空壳）。
+    try:
+        from services import task_scheduler as _ts
+        _reg = _ts.register_builtin_handlers()
+        _st = _ts.start()
+        if _st.get("ok"):
+            logger.info(f"[startup] 定时任务中心已启动（注册 handler: {_reg}）")
+        else:
+            # 休眠是**预期态**（默认），用 info 而非 warning，避免每次启动都惊动
+            logger.info(f"[startup] 定时任务中心休眠中（{_st.get('reason')}）—— "
+                        f"已注册 handler: {_reg}")
+    except Exception as e:
+        logger.warning(f"[SYS-025] " + f"[startup] 定时任务中心初始化失败（不影响主流程）: {e}")
     # 能力探针定时巡检（v0.44.28，P1 收尾）：默认每 15 分钟跑一轮，
     # 首次延迟 2 分钟。探针**只读本地事实**（零网络零浏览器），可安全常驻。
     # 目的：能力劣化时**先于用户**被报出（此前历史失效全是用户先发现）。

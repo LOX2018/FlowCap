@@ -134,7 +134,13 @@ class Task:
 
     def __init__(self, id: str, name: str, kind: str, account: str = "",
                  params: Optional[dict] = None, interval: float = 3600.0,
-                 enabled: bool = True):
+                 enabled: bool = False):
+        # 🔴 `enabled` 默认 **False**（ADR-018 D1「默认休眠，你要用再开」）。
+        #    历史缺陷（2026-09-27 全库审计 TS-8）：默认值为 True ——
+        #    虽模块级双总开关默认 False 能兜住，但**总开关是粗粒度的**：
+        #    用户一旦按 ADR-018 说明打开调度中心（正常用法），所有历史
+        #    `enabled=True` 的外发任务会**同时复活** ⇒ 违反「逐任务默认休眠」。
+        #    用户已定红线：自动外发是本项目迄今最大风控敞口，宁可保守。
         self.id = id
         self.name = name
         self.kind = kind if kind in TASK_KINDS else "keyword_process"
@@ -243,12 +249,18 @@ def _gate_for_send(task: Task) -> tuple:
         if quota is None:
             # 拿不到配额对象 ⇒ 无法证明可发 ⇒ fail-closed
             return False, "取不到账号配额对象，拒绝外发（fail-closed）"
-        ok, why = quota.can_send()
-        if not ok:
-            return False, f"额度/间隔闸门拒绝: {why}"
-        ok, why = quota.can_stranger_first()
-        if not ok:
-            return False, f"陌生人首发闸门拒绝: {why}"
+        # ⚠️ 返回元数**按各自真实签名**解包，不可一刀切（实测踩到）：
+        #   AccountQuota.can_send(min_interval)  → (ok, reason, 还需等待秒数)
+        #   AccountQuota.can_stranger_first()    → (ok, reason)
+        # 历史缺陷：两者都写成 2 元组解包 ⇒ can_send 处必抛
+        #   `ValueError: too many values to unpack (expected 2, got 3)`
+        # 被下方 except 吞成「闸门检查异常」⇒ 三重闸门**100% 恒拒**（假安全）。
+        _cs = quota.can_send()
+        if not _cs[0]:
+            return False, f"额度/间隔闸门拒绝: {_cs[1]}"
+        _cf = quota.can_stranger_first()
+        if not _cf[0]:
+            return False, f"陌生人首发闸门拒绝: {_cf[1]}"
     except Exception as e:
         return False, f"闸门检查异常，拒绝外发（fail-closed）: {type(e).__name__}: {e}"
     return True, ""
@@ -506,13 +518,48 @@ def register_builtin_handlers() -> dict:
         if not uid or not text:
             return {"ok": False, "error": "缺 uid 或 text，拒绝外发"}
         disp = dm_dispatch.get_dispatcher()
+        if disp is None:
+            return {"ok": False, "delivery_verified": False,
+                    "error": "取不到 dispatcher，拒绝外发（fail-closed）"}
         res = disp.submit_by_uid(task.account, uid, text, "scheduler")
-        # 投递验证：以 SubmitResult 的入池/成功判定为准，无证据不认成功
-        ok = bool(getattr(res, "ok", False) or getattr(res, "accepted", False))
+
+        # ── 投递语义（M-5 + 用户铁律「无回执不认成功」）──────────────────
+        # 🔴 历史缺陷（2026-09-27 全库审计 TS-3）：本处曾写
+        #     ok = getattr(res, "ok", False) or getattr(res, "accepted", False)
+        #     return {"ok": ok, "delivery_verified": ok, ...}
+        #   三重错误：
+        #     ① `SubmitResult` **没有** `.ok` 字段 ⇒ 落到 `.accepted`（**入池**当成功）；
+        #     ② 入池 ≠ 投递 ⇒ 把「已排队」冒充成「投递已验证」= 假成功；
+        #     ③ `.reason` 也不存在 ⇒ detail 恒空（连失败原因都无从得知）。
+        #
+        # 正确的**架构分工**（证据：core/sender.py:258-261 既有注释）：
+        #   投递验证标记**只在持有服务端证据的一侧写入** ——
+        #   `sender_direct`（拿到 delivery_verdict）与 `recv_daemon /send`；
+        #   `dispatch`/`dm_dispatch` 侧的「盲标记」**早已被删除**（它们拿不到证据）。
+        #   本调度器走异步队列（submit_by_uid）⇒ **同样拿不到服务端消息号**
+        #   ⇒ 本层**不可能**产出投递证据。
+        #
+        # 故此处返回**诚实三态**，绝不冒充：
+        #   delivery_verified=True  —— 仅当持有服务端证据（本层不会出现）
+        #   delivery_verified=False —— 明确知道失败
+        #   delivery_verified=None  —— **未验证**（本层的正确返回值）
+        accepted = bool(getattr(res, "accepted", False))
+        err = str(getattr(res, "error", "") or "").strip()
+        if not accepted:
+            return {
+                "ok": False,
+                "delivery_verified": False,
+                "accepted": False,
+                "detail": err or "submit_by_uid 未入池（未接受）",
+                "task_id": str(getattr(res, "task_id", "") or ""),
+            }
         return {
-            "ok": ok,
-            "delivery_verified": ok,
-            "detail": str(getattr(res, "reason", "") or ""),
+            "ok": True,
+            "delivery_verified": None,   # ★ 未验证：证据由持有服务端响应的一侧写入
+            "accepted": True,
+            "detail": ("已入池；投递证据由下游（持有服务端响应的一侧）写入，"
+                       "本层不冒充投递已验证"),
+            "task_id": str(getattr(res, "task_id", "") or ""),
         }
 
     try:
