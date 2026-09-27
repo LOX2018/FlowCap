@@ -3,10 +3,11 @@
 取代原版 WebBridge.getLiveStream / sendDanmaku / doLike 等。
 关键改进：用 WebSocket 推送实时弹幕，替代 2s 轮询。
 """
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
 from loguru import logger
 from models.live import LiveStreamResponse, LiveMessage, DanmakuRequest, DmTemplateRequest
+from database import get_kv_json, set_kv_json
 from config import settings
 
 router = APIRouter()
@@ -102,18 +103,174 @@ async def live_ws(ws: WebSocket):
         pass
 
 
+class DanmakuSendBody(DanmakuRequest):
+    """发送弹幕请求体（向后兼容扩展）。
+
+    ## 为什么不在 models/live.py 里改（2026-09-28 N4）
+
+    `DanmakuRequest` 原本只有 `content` —— 真实发送必需 `account`（取凭证）
+    与 `room_id`（定位直播间），二者只有在这里补齐才能让端点真正接上
+    `dy_apis` 写接口。本文件以**继承扩展**方式补字段：
+
+      · 旧调用方（只发 `{"content": "..."}`）仍能通过校验 ⇒ 向后兼容；
+      · `account` 缺省时**不得**静默成功 —— 由端点按 fail-closed 明确报
+        `ok=False`（见 `send_danmaku`），这是本条修复的核心。
+    """
+
+    account: str | None = None
+    room_id: str | None = None
+
+
+def _auth_for(account: str):
+    """加载指定账号凭证 → dy_auth（与 api/linkmic.py 同范式）。"""
+    try:
+        from auto_dm import accounts as acct_core
+        env_path = acct_core.env_path_of(account)
+        if not env_path:
+            raise HTTPException(404, f"账号 {account} 未登记")
+        import utils.common_util as common_util
+        return common_util.load_env(env_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(503, f"加载账号 {account} 凭证失败: {e}")
+
+
+def _room_id_for(room_id: str | None):
+    """room_id 缺省时从 kv `config.live_id` 补齐（与 linkmic._room_ids 同范式）。"""
+    rid = room_id
+    if not rid:
+        cfg = get_kv_json("config", {}) or {}
+        rid = cfg.get("live_id") or ""
+    if not rid:
+        raise HTTPException(400, "缺少 room_id（请先解析直播间）")
+    return str(rid)
+
+
 @router.post("/danmaku")
-async def send_danmaku(body: DanmakuRequest):
-    """发送弹幕"""
-    # TODO: 迁移 sendDanmaku 逻辑
-    return {"ok": True, "content": body.content}
+async def send_danmaku(body: DanmakuSendBody):
+    """发送直播间弹幕 —— **真实调用 dy_apis**，不再是恒 ok:true 的空壳。
+
+    ## 修复说明（2026-09-28 N4 / 审计项 A-1）
+
+    原实现 `# TODO: 迁移 sendDanmaku 逻辑` + `return {"ok": True, "content": ...}`
+    —— 弹幕**根本没发出去**，前端 `live-page.tsx` 却弹出「弹幕已发送 · xxx」，
+    属用户可见的**假成功端点**。基座 `dy_apis.client_live.LiveMixin.sendMsgInRoom`
+    已于 v0.44.54 对齐上游 `251075e` 且项目内暂无生产调用方，故此处按
+    `api/linkmic.py` 的写接口范式**接真**（而非删除端点）。
+
+    ⚠️ 红线：本函数只在凭证与房间号齐备时才发出真实请求；任一缺失即
+    fail-closed 返回 `ok=False`，**绝不**在无依据时空报成功。
+    """
+    content = (body.content or "").strip()
+    if not content:
+        return {"ok": False, "error": "弹幕内容为空", "reason": "empty_content", "sent": False}
+
+    account = (body.account or "").strip()
+    if not account:
+        # 向后兼容兜底：旧调用方不带 account 时取「当前账号」；
+        # 仍取不到 ⇒ fail-closed（绝不静默 ok:true）。
+        try:
+            from auto_dm.accounts import current_name
+            account = (current_name() or "").strip()
+        except Exception:
+            account = ""
+    if not account:
+        return {"ok": False, "error": "未指定账号且无当前账号（无法加载发送凭证）",
+                "reason": "no_account", "sent": False}
+
+    try:
+        room_id = _room_id_for(body.room_id)
+    except HTTPException as e:
+        return {"ok": False, "error": str(e.detail), "reason": "no_room_id", "sent": False}
+
+    try:
+        auth = _auth_for(account)
+    except HTTPException as e:
+        return {"ok": False, "error": str(e.detail), "reason": "credential_unavailable",
+                "sent": False, "account": account}
+    if auth is None:
+        return {"ok": False, "error": f"账号 {account} 凭证为空",
+                "reason": "credential_empty", "sent": False, "account": account}
+
+    # 真实发送：DouyinAPI 由 LiveMixin 提供 sendMsgInRoom（staticmethod）。
+    # 返回 safe_json(res) → dict，status_code==0 为业务成功。
+    try:
+        from dy_apis.douyin_api import DouyinAPI
+        res = DouyinAPI.sendMsgInRoom(auth, room_id, content)
+    except HTTPException as e:
+        return {"ok": False, "error": str(e.detail), "reason": "request_rejected",
+                "sent": False, "account": account, "roomId": room_id}
+    except Exception as e:
+        logger.warning(f"[LIVE-002] [danmaku] 发送异常 account={account} room={room_id}: {e}")
+        return {"ok": False, "error": f"发送弹幕失败: {e}", "reason": "exception",
+                "sent": False, "account": account, "roomId": room_id}
+
+    data = (res or {}).get("data") or {}
+    code = (res or {}).get("status_code")
+    ok = code == 0
+    logger.info(f"[LIVE-003] [danmaku] account={account} room={room_id} code={code} ok={ok}")
+    if ok:
+        return {"ok": True, "sent": True, "content": content, "account": account,
+                "roomId": room_id, "statusCode": code, "data": data, "error": None}
+    return {"ok": False, "sent": False, "content": content, "account": account,
+            "roomId": room_id, "statusCode": code, "data": data,
+            "error": data.get("message") or data.get("prompts") or f"上游返回 status_code={code}",
+            "reason": "upstream_failed"}
 
 
 @router.post("/dm-template")
 async def set_dm_template(body: DmTemplateRequest):
-    """配置私信模板与发送参数"""
-    # TODO: 写入 config
-    return {"ok": True}
+    """配置私信模板与发送参数 —— **真落盘** kv_store `config`，不再是空壳。
+
+    ## 修复说明（2026-09-28 N4 / 审计项 A-1）
+
+    原实现 `# TODO: 写入 config` + `return {"ok": True}` —— 前端「保存模板」
+    点了永远成功，配置**从不落盘**。落点复用既有 `database.set_kv_json("config", ...)`
+    （与 `POST /resolve`、`POST /api/tasks/save-config` 同一处），并同步
+    `settings` 运行时单例；落盘失败/读回不一致一律 `ok=False`。
+
+    ⚠️ 已知未接项（登记，不在本次范围）：本域**读路径**未接 —— 前端模板
+    回读仍走 `GET /api/tasks/current` 的 `dmPool`（其数据源是
+    `adm.dm_template` / `settings.dm_pool`），不读本端点写的 `dm_template`
+    键。故本次仅保证「写进去且能读回原文」，读路径打通留待后续批次。
+    """
+    pool = [str(t) for t in (body.pool or [])]
+    payload = {
+        "pool": pool,
+        "delay_range": list(body.delay_range or (40, 65)),
+        "interval": float(body.interval or 0),
+        "max_target": int(body.max_target or 0),
+    }
+    # 运行时生效：同步 settings 单例，使 adm/引擎侧立即看到新词库。
+    try:
+        settings.dm_pool = pool
+        settings.delay_range = tuple(payload["delay_range"])
+        settings.interval = payload["interval"]
+        settings.max_target = payload["max_target"]
+    except Exception as e:
+        logger.warning(f"[LIVE-004] [dm-template] 写入运行时 settings 失败: {e}")
+
+    try:
+        data = get_kv_json("config", {}) or {}
+        data["dm_template"] = payload
+        set_kv_json("config", data)
+    except Exception as e:
+        logger.warning(f"[LIVE-005] [dm-template] 配置落盘失败: {e}")
+        return {"ok": False, "error": f"配置落盘失败: {e}", "reason": "persist_failed",
+                "saved": False}
+
+    # 落盘自证：写回后必须能**读回原文**，否则视为失败（防空转）。
+    try:
+        back = get_kv_json("config", {}) or {}
+        if (back.get("dm_template") or {}).get("pool") != pool:
+            return {"ok": False, "error": "配置落盘后读回校验不一致",
+                    "reason": "readback_mismatch", "saved": False}
+    except Exception as e:
+        return {"ok": False, "error": f"配置落盘读回校验失败: {e}",
+                "reason": "readback_failed", "saved": False}
+
+    return {"ok": True, "saved": True, "count": len(pool), "dmTemplate": payload}
 
 
 @router.post("/resolve")
