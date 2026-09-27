@@ -11,6 +11,7 @@
   N1  把 `scope_of` 的房间级判定**去掉** ⇒ G1/G2 必红
   N2  把悬空引用改成「直接返回 id」（不校验）⇒ G3 必红
   N3  把非法枚举改成「静默回落默认值」（不拒）⇒ G6 必红
+  N4  把 `tag_id` 重新塞回 `_normalize_room` 的残留清理名单 ⇒ G9 必红
 
 ## 判据
 
@@ -107,6 +108,14 @@ def main() -> int:
         '                v = _ENUM_DEFAULTS.get(f, "")',
         "test_g6_illegal_enum_rejected_not_silently_rewritten",
         "N3 非法枚举被静默改写"))
+
+    print("N4 · 把 tag_id 塞回 _normalize_room 的残留清理名单 ⇒ G9 必红")
+    results.append(_patch_and_expect_red(
+        os.path.join(_BACKEND, "api", "live_rooms.py"),
+        '    for junk in ("force_rescan", "forceRescan"):',
+        '    for junk in ("force_rescan", "forceRescan", "tag_id"):',
+        "test_g9_read_path_does_not_strip_tag_id",
+        "N4 读取出口吞掉 tag_id"))
 
     print()
     print("=" * 64)

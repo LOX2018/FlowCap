@@ -20,7 +20,8 @@
   G5  采集策略写入后**读得回**（白名单不漏字段）
   G6  非法枚举 **拒绝写入**（不静默改写为默认值）
   G7  策略数值收敛在边界内（num 1..50 / max_rounds 1..100）
-  G8  路由**真的挂载了**（孤儿模块检测：查 app.routes，非查源码文本）
+  G8  路由**真的挂载了**（孤儿模块检测：查 app.openapi，非查源码文本）
+  G9  读取出口（`_normalize_room`）不得吞 `tag_id` + 旧记录补默认值
 """
 from __future__ import annotations
 
@@ -175,6 +176,35 @@ class TestF1D3CrawlPolicy(unittest.TestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["item"]["num"], 50, "num 须收敛到上限 50")
         self.assertEqual(r["item"]["max_rounds"], 1, "max_rounds 须收敛到下限 1")
+
+    def test_g9_read_path_does_not_strip_tag_id(self):
+        """G9：**读取出口**不得吞掉 `tag_id`（ADR-018 F1-D1 实测踩到的静默失效）。
+
+        ## 为什么单独立一条断言
+
+        G1~G8 都过了，真实实例验证却抓到 `tag_id` 丢失 —— 因为那些断言走的是
+        `save_room` / 直调函数，**不经过 `_normalize_room`**。而 `_normalize_room`
+        的历史残留清理名单里恰好有 `tag_id`（旧废弃字段时代留下的），
+        于是：**写进去了，读出来没有**。单测的「自证实盲区」就在这 ——
+        只测写入侧，测不到读取出口。
+
+        ⇒ 本断言必须走**读取出口**（`_normalize_room`），而不是直读 kv。
+        """
+        from api.live_rooms import _normalize_room
+        rec = {"id": "lr_x", "room_id": "123", "name": "房", "tag_id": "t_1",
+               "strategy_id": "lc_1", "force_rescan": True}
+        out = _normalize_room(rec, "lr_x")
+        self.assertEqual(out.get("tag_id"), "t_1",
+                         "读取出口把 tag_id 抹掉了（写入成功、读取丢失 = 静默失效）")
+        # 该清的残留仍需清（不是把整份名单删掉，而是把 tag_id 移出名单）
+        self.assertNotIn("force_rescan", out, "既有残留清理不得失效（防过度修复）")
+
+    def test_g9b_legacy_record_without_tag_id_gets_default(self):
+        """G9b：旧记录（无 tag_id）读取时补空串 —— 前端类型是必填，缺键会 undefined。"""
+        from api.live_rooms import _normalize_room
+        out = _normalize_room({"room_id": "123"}, "lr_old")
+        self.assertIn("tag_id", out, "旧记录未补 tag_id 默认值")
+        self.assertEqual(out["tag_id"], "")
 
     def test_g8_router_is_mounted(self):
         """G8：路由**真的挂载了**（孤儿模块检测 —— 查 OpenAPI schema）。

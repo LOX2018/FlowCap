@@ -174,9 +174,23 @@ def new_room_id(existing: dict | None = None) -> str:
 
 
 def _normalize_room(rec: dict, key: str) -> dict:
-    """读取路径统一出口：补齐缺失键、id 以**键名**为准（键才是真源）。"""
-    c = dict(rec or {})
-    for junk in ("force_rescan", "forceRescan", "tag_id"):
+    """读取路径统一出口：补齐缺失键、id 以**键名**为准（键才是真源）。
+
+    ## 🔴 2026-09-27 教训：`tag_id` 曾是「垃圾键」，现已是**正式字段**
+
+    本函数原有一份「残留清理」名单：``("force_rescan", "forceRescan", "tag_id")``
+    —— 那个 `tag_id` 是**已废弃的旧配置标签 tab** 时代留下的，属于该清的垃圾。
+    ADR-018 F1-D1 把 `tag_id` 重新定义为**房间级标签绑定**（正式字段）后，
+    这行清理就变成了「写入成功、读取被抹掉」的**静默失效**：
+    `save_room` 正常落库，`list_rooms` 却永远回不到 `tag_id`
+    （实测：真实实例验证时抓到，单测直调 save/get 不经过本函数 ⇒ 漏网）。
+
+    ⇒ **判据**：给 kv 记录加字段时，必须同时检查**读取出口**
+    （本函数 + 前端类型），而不只是写入侧白名单 —— 三者缺一即静默失效。
+    """
+    c = dict(rec or "")
+    # ⚠️ 名单里**不得**再出现 `tag_id`（ADR-018 F1-D1 后它是正式字段）。
+    for junk in ("force_rescan", "forceRescan"):
         c.pop(junk, None)
     c["id"] = str(key)
     c.setdefault("room_id", "")
@@ -184,6 +198,8 @@ def _normalize_room(rec: dict, key: str) -> dict:
     c.setdefault("name", "")
     c.setdefault("strategy_id", "")
     c.setdefault("allow_desensitized", False)
+    # 房间级标签绑定（ADR-018 F1-D1）；缺省空串 = 跟随账号/板块级
+    c.setdefault("tag_id", "")
     return c
 
 
