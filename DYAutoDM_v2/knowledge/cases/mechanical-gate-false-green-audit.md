@@ -50,7 +50,7 @@ byte-exact 注入真缺陷，看是否报红）：
 
 | 编号 | 修复 |
 |---|---|
-| G1 | AST 调用点分析 → **运行时 `requests` 出站拦截**（断言出站目标全为本地网关、抖音主动查询 0 次） |
+| G1 | **运行时主动查询计数**（保留全部接口，只计数、如实上报；默认态 0 次=绿，启用后 N>0 显式 ⏳ 上报不阻断） |
 | G4 | 真调 `delivery_verify._resolve_evidence`，断言「盲 ok 非证据」 |
 | G5 | 真 `import link_resolve`：可调用 + 签名≥2参 + `_REFLOW_URL` 指向 reflow/info |
 | G12 | ① 词边界 `\b符号\b`；② 空判据集 → 哨兵违例 = FAIL（抽纯函数 `_g12_offenders`） |
