@@ -254,16 +254,33 @@ def r6_no_browser_kill() -> None:
 
 # ── R8: 数据契约（ADR-012）—— 委托 audit_data_contract.py 六项 ──────────
 # 委托而非重写：避免同一判据两套实现漂移（SSOT）。
-def r8_data_contract():
+def _load_datacontract_module():
+    """加载 audit_data_contract 模块（SSOT 判据）。抽出成函数只为自检可注入。
+
+    2026-09-27 体检修复（P1）：原实现把「定位 + 加载」内联在 r8_data_contract()，
+    而 audit_data_contract 的扫描根 `_BACKEND` **硬编码真仓**，导致 selftest 的
+    临时目录替换对 R8 无效 ⇒ R8 六项在自检中**从未被负控**。抽出本 seam 后，
+    selftest 可用替身模块注入「R8 子项报红」形态（与 R9 的 _load_redline_module 同法）。
+    """
     import importlib.util
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      "audit_data_contract.py")
     if not os.path.isfile(p):
-        check(False, "R8", f"缺数据契约审计脚本（{p}）")
-        return
+        raise FileNotFoundError(p)
     spec = importlib.util.spec_from_file_location("_adc", p)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+def r8_data_contract():
+    try:
+        mod = _load_datacontract_module()
+    except Exception as e:  # noqa: BLE001
+        # 诚实降级：判据脚本缺失/损坏 → 不许假装通过。
+        check(False, "R8", f"数据契约审计脚本不可执行 → 无法判定"
+                           f"（{type(e).__name__}: {e}）")
+        return
     for code, fn in mod.CHECKS:
         ok, desc, evidence = fn()
         extra = f"（{evidence[0]}）" if (evidence and not ok) else ""
@@ -432,7 +449,25 @@ def selftest() -> int:
     saved_loader = globals()["_load_redline_module"]
     globals()["_load_redline_module"] = lambda: _FakeRedlineModule
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9"}
+    # ── R8 负控（2026-09-27 补齐）：注入「某 R8 子项报红」形态 ───────────
+    # R8 委托 audit_data_contract.py，其扫描根硬编码真仓，故同样需要 seam 注入。
+    # 替身模块的 CHECKS 里放一个恒 False 的检查项，断言 R8-* 真的变红。
+    class _FakeDCModuleFail:
+        CHECKS = (
+            ("R8-1", lambda: (False, "写入出口收敛（注入样本）", ["injected"])),
+            ("R8-2", lambda: (True, "类型注册表完整", [])),
+        )
+
+    class _FakeDCModuleClean:
+        CHECKS = (
+            ("R8-1", lambda: (True, "写入出口收敛", [])),
+            ("R8-2", lambda: (True, "类型注册表完整", [])),
+        )
+
+    saved_dc = globals()["_load_datacontract_module"]
+    globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
+
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R8-1"}
     for r in RULES:
         try:
             r()
@@ -441,6 +476,7 @@ def selftest() -> int:
 
     got_failed = {rid for ok, rid, _ in RESULTS if not ok}
     globals()["_load_redline_module"] = saved_loader   # 无论如何都要还原
+    globals()["_load_datacontract_module"] = saved_dc
     SRC_ROOT, BACKEND, DATA_ROOT, _ = saved
     RESULTS.clear()
 
@@ -466,17 +502,35 @@ def selftest() -> int:
         globals()["_load_redline_module"] = saved_loader2
         RESULTS.clear()
 
+    # ── R8 正控：注入「全部 R8 子项通过」形态，断言 R8 不误报 ───────────
+    # 与 R9 同理：只有负控的自证不了（恒 False 的判据也能过负控）。
+    saved_dc2 = globals()["_load_datacontract_module"]
+    globals()["_load_datacontract_module"] = lambda: _FakeDCModuleClean
+    try:
+        r8_data_contract()
+        r8_clean = all(ok for ok, rid, _ in RESULTS if rid.startswith("R8"))
+    except Exception as e:  # noqa: BLE001
+        r8_clean = False
+        print(f"  R8 正控异常: {type(e).__name__}: {e}")
+    finally:
+        globals()["_load_datacontract_module"] = saved_dc2
+        RESULTS.clear()
+
     missing = failed_expect - got_failed
-    ok = not missing and r9_clean
+    ok = not missing and r9_clean and r8_clean
     print("-" * 70)
     print(f"  期望报红: {sorted(failed_expect)}")
     print(f"  实际报红: {sorted(got_failed)}")
     print(f"  R9 正控（未触发形态应 PASS）: {'通过' if r9_clean else '未通过'}")
+    print(f"  R8 正控（子项全通过应 PASS）: {'通过' if r8_clean else '未通过'}")
     if missing:
         print(f"\n✗ 自检失败：以下规则在违规样本下**没有变红** = 形同虚设: {sorted(missing)}")
         return 1
     if not r9_clean:
         print("\n✗ 自检失败：R9 在「未触发」形态下没有 PASS = 判据写死，非数据驱动")
+        return 1
+    if not r8_clean:
+        print("\n✗ 自检失败：R8 在「子项全通过」形态下误报 = 判据不可信")
         return 1
     print("\n✓ 自检通过：所有可判定规则在违规时均会报红（非空架子）")
     return 0

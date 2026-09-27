@@ -12,7 +12,7 @@
 | 编号 | 指标 | 预算 | 契约出处 |
 |---|---|---|---|
 | NFR-06-1 | `UidSink.mark_seen` 写库延迟（单次 INSERT/UPDATE） | ≤ 5ms | C-06-live-lead-sink.md §5 L84 |
-| NFR-06-2 | `UidSink.should_send` 内存判定 | ≤ 1ms（纯缓存读，零 DB 查） | C-06-live-lead-sink.md §5 L85 |
+| NFR-06-2 | `UidSink.should_send` 内存判定 | ≤ 1ms（**非**零 DB 查：稳态每次 2 次 `kv_store` 读） | C-06-live-lead-sink.md §5 L85 |
 | NFR-06-3 | `aggregate_text` 单次追加 | ≤ 10ms（文本拼接 ≤ 2000 字符） | C-06-live-lead-sink.md §5 L86 |
 
 其余 NFR 项依赖真实网络 / 浏览器，**离线测不了** ⇒ 显式列入 `NOT_MEASURABLE`
@@ -258,7 +258,7 @@ def _build_items(n: int):
 
 
 # ---------------------------------------------------------------------------
-# ⑥ 「零 DB 查」旁证：给连接装计数器，实打实读 should_send 发起的 SQL 数
+# ⑥ should_send 发起的 SQL 数**旁证**：给连接装计数器，实打实读
 # ---------------------------------------------------------------------------
 def _count_should_send_queries() -> int:
     """统计**稳态**下一次 should_send 调用实际发起的 SQL 语句数。
@@ -267,8 +267,9 @@ def _count_should_send_queries() -> int:
     AttributeError），改用标准手段 `set_trace_callback` —— 它是 sqlite3 自带的
     语句级探针，比替换方法更贴近真实执行。
 
-    这里测的是「稳态」（已过 `_ensure_loaded` 预热），因为契约「零 DB 查」
-    的前提就是内存一级缓存已建；冷启动那一次载入查询不在能耗预算口径内。
+    口径：契约 C-06 §5 L85 已订正为「**非**零 DB 查：稳态每次 2 次 `kv_store`
+    读」（风控参数经 `cfg()` 实时取配置，刻意不缓存）。故本旁证的数字应与
+    契约的「2 次」**相符**；若实现或契约任一漂移，此旁证即暴露偏差。
     """
     conn = database.get_db()
     sink = dd.UidSink()
@@ -362,7 +363,7 @@ def run_measure(n: int, warmup: int) -> tuple[list[dict], str]:
     _n = _count_should_send_queries()
     rows.append({
         "code": "NFR-06-2b",
-        "name": "should_send 「零 DB 查」旁证（每次调用发起的 SQL 数）",
+        "name": "should_send SQL 数旁证（每次调用发起的 SQL 数，契约称稳态 2 次）",
         "budget_ms": None,
         "ref": "docs/design-contracts/C-06-live-lead-sink.md §5 L85",
         "samples": 1, "warmup": 1,
@@ -532,8 +533,8 @@ def main() -> int:
                         print(f"  {r['code']:<10} {'-':>8} {'-':>8} {'-':>8} "
                               f"{'-':>7}  ℹ 旁证：稳态单次调用发起 "
                               f"{r['db_queries_per_call']} 次 SQL"
-                              f"（契约 §5 L85 称「纯缓存读，零 DB 查」"
-                              f" —— 实测偏离，见报告 §5）")
+                              f"（契约 §5 L85 称「**非**零 DB 查：稳态每次 2 次」"
+                              f" —— 与实测比对见报告 §5）")
                         for s in r.get("observed_sql", [])[:4]:
                             print(f"             SQL> {s[:110]}")
                         continue
