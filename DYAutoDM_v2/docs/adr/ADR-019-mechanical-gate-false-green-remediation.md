@@ -19,13 +19,21 @@
 
 ## 决策
 
-### D1. G1：字符串匹配 → AST 调用点分析
-- **原判据**：`[s for s in ["bulk_user_info(", ...] if s in txt]`（源码子串）。
-- **失效证据**：注入 `getattr(_a, "bulk"+'_user_info_by_uid')(...)` 发起**真实主动
+### D1. G1：字符串匹配 → AST 调用点分析 → **运行时出站拦截**（三段演进）
+- **v1 原判据**：`[s for s in ["bulk_user_info(", ...] if s in txt]`（源码子串）。
+  **失效证据**：注入 `getattr(_a, "bulk"+'_user_info_by_uid')(...)` 发起**真实主动
   批量查询**（风控红线）→ **不报红**。
-- **改法**：`_capture_outbound_calls()` 用 `ast` 解析，识别 `ast.Call` 的最终函数名
-  （含 `Name`/`Attribute`）+ `getattr(obj, '常量')` + `getattr(obj, 'a'+'b')` 拼接折叠。
-  判据对象从「文本子串」升级为「调用表达式」。
+- **v2 中间方案（AST 调用点，已被取代）**：`_capture_outbound_calls()` 用 `ast` 识别
+  `ast.Call` 函数名 + `getattr(obj,'常量')` + `getattr(obj,'a'+'b')` 拼接折叠。
+  **仍不够**：它是**静态**判据 —— 拦不住「函数名由字符串拼出后再动态调用」
+  （如 `getattr(requests, 'post')(host+path)` 而 `host`/`path` 也是拼接），且**不覆盖
+  「出站目标是不是抖音域」这一真正红线**（它只证明「某符号未出现」）。
+- **v3 现方案（运行时行为断言）**：`_probe_capture_outbound()` 装 in-process `requests`
+  拦截器，**真调** `capture_userinfo_via_browser`（C-01 风控红线的核心路径），断言
+  发起的所有出站 URL **全部**是本地 BCC 网关（`127.0.0.1`/`localhost`），且**零**个指向
+  抖音业务域（`douyin.com`/`amemv.com`/`snssdk.com`…）。判据对象 = 「运行时到底往哪发」
+  ⇒ 别名 / 拼接 / 动态取名 / 间接调用全部无处遁形。
+  **实测**：基线下出站 2 次全为本地、抖音 0 次；注入「拼域名 + getattr 动态调用」→ 报红。
 
 ### D2. G4：零区分度字符串 → 行为断言
 - **原判据**：`("role" in txt and "me" in txt) or "回执" in txt`（"me" 是任意子串，
