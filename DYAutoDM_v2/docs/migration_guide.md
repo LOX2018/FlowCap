@@ -67,7 +67,7 @@
 
 | 上表「新位置」 | 当前实际 | 说明 |
 |---|---|---|
-| `backend/services/account_service.py` | **已被 `backend/auto_dm/accounts.py` 取代** | `account_service.py` 现为零调用方的迁移遗留（自身 docstring 已注明），端口 salt 算法在 `auto_dm/accounts.py`，两者**必须对齐否则端口错位** |
+| `backend/services/account_service.py` | **已被 `backend/auto_dm/accounts.py` 取代；2026-09-28 已删除（A-6 孤儿模块清理，git 历史可恢复）** | 原为零调用方的迁移遗留（自身 docstring 已注明），端口 salt 算法在 `auto_dm/accounts.py`；两者曾**必须对齐否则端口错位**，删除后端口实现单一 SSOT = `auto_dm/accounts.py` |
 | `backend/config.py` | **仍在使用**（39 处引用） | pydantic-settings 全局配置（端口段/路径/默认参数），与 `services/app_config.py` 的统一配置中心**并存且分工不同**：前者是进程级设置，后者是用户可改的 5 分区 / 45 字段业务配置 |
 | `backend/api/*`（7 路由） | 现为 **16 个路由模块 / 157 端点** | 迁移后新增 ai / notify / member / model_hub / linkmic / live_config / errcodes 等 |
 

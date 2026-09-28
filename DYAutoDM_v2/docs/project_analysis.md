@@ -80,7 +80,7 @@ DYAutoDM_v2/
 │   │   ├── enums.py        # EngineState, RecordStatus 枚举
 │   │   └── overview.py     # StatusResponse, OverviewResponse
 │   ├── services/           # 服务层
-│   │   └── account_service.py  # 账号管理 + 端口分配
+│   │   └── account_service.py  # 账号管理 + 端口分配（注：2026-09-28 A-6 已删除，本快照保留原貌）
 │   ├── builder/            # 签名/请求构建（原样迁移）
 │   ├── dy_apis/            # 抖音 API 封装（原样迁移）
 │   ├── dy_live/            # 直播 protobuf 解析（原样迁移）
