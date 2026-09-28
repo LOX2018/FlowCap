@@ -43,6 +43,11 @@ class TestEntryUsable(unittest.TestCase):
             {"source": "auto", "question": "能确定上九级吗？", "answer": "你的伤情就是9级水平的"}))
         self.assertFalse(R._entry_usable(
             {"source": "auto", "question": "我这个多少级", "answer": "肯定是十级"}))
+        # 口径式断言（真机库内「目测伤9级」4 条；答句加长时不得漏网）
+        self.assertFalse(R._entry_usable(
+            {"source": "auto", "question": "我腰椎做手术了，目测能定几级", "answer": "目测伤9级"}))
+        self.assertFalse(R._entry_usable(
+            {"source": "auto", "question": "帮我看下", "answer": "根据描述目测大概能到九级的水平，你先准备材料"}))
         # 带豁免语 ⇒ 不算断言（正控，防误伤）
         self.assertTrue(R._entry_usable(
             {"source": "auto", "question": "我这个多少级", "answer": "大致九级，最终以鉴定结论为准"}))
