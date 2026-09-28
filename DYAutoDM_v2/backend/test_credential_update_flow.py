@@ -219,3 +219,63 @@ def test_t5c_docstring_contract_is_implemented():
     assert "状态 A" in src, "契约注释仍在（文档层）"
     assert "uid_identity_verdict" in api and "def update_login" in api, \
         "分流契约必须在 /update-login 有实现落点（此前只存在于注释 = 契约漂移）"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  T6  「可重试」必须配**拉起节流**（否则持续性失效账号 → 无限重启 = 风控信号）
+#      —— 本轮实测回归：放开重试后张老师（AUTH-050 永久失效）被反复拉起 8+ 进程
+# ══════════════════════════════════════════════════════════════════════
+def test_t6_spawn_throttle_caps_retry_storm(monkeypatch):
+    from auto_dm import accounts as A
+
+    A._bcc_lazy_fail.clear()
+    A._bcc_spawn_hist.clear()
+    monkeypatch.setattr(A, "_port_open", lambda *a, **k: False)
+    monkeypatch.setattr(A, "browser_daemon_port", lambda name: 49999)
+    monkeypatch.setattr(A.os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(A, "_BCC_SPAWN_MAX", 4)
+    monkeypatch.setattr(A, "_BCC_SPAWN_WINDOW", 900)
+
+    spawns = {"n": 0}
+
+    class _P:
+        def __init__(self, *a, **k):
+            spawns["n"] += 1
+
+    monkeypatch.setattr(A.subprocess, "Popen", _P)
+
+    rs = [A.ensure_bcc("thrAcc", wait_ready=False) for _ in range(6)]
+    assert spawns["n"] == 4, "滑窗内拉起点数必须被硬上限截断（防重启风暴）"
+    assert rs[4]["ok"] is False and "节流" in rs[4]["msg"]
+
+    # 负控：把上限抬高 ⇒ 同一序列必须**能**继续拉起（证明拦截来自节流而非其它原因）
+    monkeypatch.setattr(A, "_BCC_SPAWN_MAX", 99)
+    A.ensure_bcc("thrAcc", wait_ready=False)
+    assert spawns["n"] == 5, "负控生效：上限抬高后拉起点数应继续增长"
+    A._bcc_lazy_fail.clear()
+    A._bcc_spawn_hist.clear()
+
+
+def test_t6b_launch_async_path_also_throttled():
+    """`browser_daemon` 走 launch_async 直连，不经 ensure_bcc ⇒ 必须**另一处**也拦。"""
+    acc = (ROOT / "backend" / "auto_dm" / "accounts.py").read_text(encoding="utf-8")
+    vb = (ROOT / "backend" / "vbrowser.py").read_text(encoding="utf-8")
+    lr = (ROOT / "backend" / "auto_dm" / "login_remote.py").read_text(encoding="utf-8")
+    assert "_bcc_spawn_hist" in acc and "_BCC_SPAWN_MAX" in acc, "spawn 出口须记账"
+    assert "def bcc_launch_allowed" in lr, "节流须做成可复用判据"
+    assert "bcc_launch_allowed(account)" in vb, \
+        "唯一启动出口必须调用节流判据（否则守护冷启动路径可无限重启）"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  T7  清扫函数**不得杀非 camoufox/firefox 进程**（实测自伤：命令含 profile
+#      路径的 shell 被一起杀掉，终端 exit 15 且无任何错误输出）
+# ══════════════════════════════════════════════════════════════════════
+def test_t7_reaper_requires_browser_process_name():
+    src = (ROOT / "backend" / "vbrowser_camoufox.py").read_text(encoding="utf-8")
+    # 断言锚在 `_victims` 内的过滤行本身（唯一）：
+    assert 'if "camoufox" not in _nm and "firefox" not in _nm' in src, \
+        "必须按进程名前置过滤 —— 否则命令行含 profile 路径的**任意**进程（含调用者自身）会被杀"
+    assert 'psutil.process_iter(["pid", "name", "cmdline"])' in src, \
+        "遍历必须取进程名（否则无法做进程名过滤）"
+

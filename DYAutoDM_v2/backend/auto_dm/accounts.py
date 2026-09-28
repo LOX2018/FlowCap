@@ -267,7 +267,18 @@ _bcc_lazy_lock = threading.Lock()
 #   post: 端口就绪 ⇒ 删除失败态（干净重试）；失败 ⇒ count+1、ts 刷新。
 _bcc_lazy_fail: dict[str, dict] = {}   # name -> {"ts": float, "count": int}
 _BCC_LAZY_FAIL_LIMIT = max(1, int(os.environ.get("DY_BCC_LAZY_FAIL_LIMIT", "3") or 3))
-_BCC_LAZY_FAIL_BACKOFF = max(0.0, float(os.environ.get("DY_BCC_LAZY_FAIL_BACKOFF", "20") or 20))
+_BCC_LAZY_FAIL_BACKOFF = max(0.0, float(os.environ.get("DY_BCC_LAZY_FAIL_BACKOFF", "120") or 120))
+# ── 2026-09-28 修（DSSCC-BCC-002）：**拉起节流**（安全闸，不可省）──────────────
+# 只做「可重试」会打开一个新风险面：对**持续性失效**的账号（身份漂移 / 无凭证 /
+# 内核不可用），任何「可重试」都会退化为**无限重启风暴** —— 本项目最忌的风控信号
+# （历史血案：BCC-025 分支未接熔断 ⇒ 单日 155 次重启，见 knowledge 06/07）。
+# 实测复现：放开重试后，张老师（AUTH-050 身份漂移、永久失效）在数分钟内被
+# 反复拉起 8+ 个 camoufox 进程。
+# 故在**唯一 spawn 出口**加「每账号滑动窗口内的拉起点数」硬上限：把不可逆的
+# 「永久拒绝」换成**有速率上限的可重试** —— 瞬时故障能自愈，永久故障被节流而非风暴。
+_bcc_spawn_hist: dict[str, list] = {}   # name -> [spawn 时间戳]
+_BCC_SPAWN_MAX = max(1, int(os.environ.get("DY_BCC_SPAWN_MAX_PER_WINDOW", "4") or 4))
+_BCC_SPAWN_WINDOW = max(30.0, float(os.environ.get("DY_BCC_SPAWN_WINDOW", "900") or 900))
 
 
 
@@ -379,6 +390,17 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
                                 f"（请同时检查 BCC 日志）")}
             # 退避窗已过 ⇒ 清零，放行重试
             _bcc_lazy_fail.pop(name, None)
+        # ── 拉起节流（DSSCC-BCC-002）：把「永久拒绝」换成「有速率上限的可重试」──
+        # 唯一 spawn 出口，任何路径（用户点按钮 / 自动拉齐 / 保活）都受此约束。
+        _now = time.time()
+        _hist = [t for t in _bcc_spawn_hist.get(name, []) if _now - t < _BCC_SPAWN_WINDOW]
+        _bcc_spawn_hist[name] = _hist
+        if len(_hist) >= _BCC_SPAWN_MAX:
+            return {"ok": False, "port": None,
+                    "msg": (f"BCC 拉起被节流：{int(_BCC_SPAWN_WINDOW)}s 内已拉起 "
+                            f"{len(_hist)} 次（上限 {_BCC_SPAWN_MAX}）—— "
+                            f"持续性失效（如身份漂移/无凭证）需人工处理，"
+                            f"节流防止浏览器反复重启引发风控")}
         # ⚠️ 部署位置铁律（2026-09-13）：sidecar 一律在【应用根目录】，
         # 禁止 <root>/binaries/（仅对被删除的历史部署保留容错）。
         _full = "dyautodm-browser-daemon-x86_64-pc-windows-msvc"
@@ -426,6 +448,7 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
             else:
                 kwargs["start_new_session"] = True
             subprocess.Popen([binary, "--account", name, "--port", str(port)], **kwargs)
+            _bcc_spawn_hist.setdefault(name, []).append(time.time())   # 节流记账
             logger.info(f"[bcc-lazy] 已懒加载 BCC account={name} port={port}")
         except Exception as e:
             _bcc_lazy_fail[name] = {

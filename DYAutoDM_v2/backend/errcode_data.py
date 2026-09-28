@@ -325,6 +325,7 @@ ERRCODES = {
     "BCC-055": {"meaning": "[bcc] 有头观测态下探活失败 —— 不自动重建（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-057": {"meaning": "[bcc] 有头观测态下不触发自动重扫（防销毁用户窗口+新环境访问触发风控）", "file": "daemon/browser_daemon.py", "line": 0},
     "BCC-058": {"meaning": "[vbrowser] Camoufox 内核启动失败，已回退 Chromium", "file": "vbrowser.py", "line": 0},
+    "BCC-081": {"meaning": "[vbrowser] BCC 拉起被节流：滑窗内拉起点数达上限（持续性失效账号防「浏览器反复重启」风控信号）", "file": "vbrowser.py", "line": 0},
     "BCC-070": {"meaning": "[vbrowser] Camoufox 已启用但浏览器内核不可用（camoufox fetch 未安装）", "file": "vbrowser.py", "line": 0},
     "BCC-063": {"meaning": "[bcc] 出口环境漂移：当前出口 IP 与登录基线不一致（登录环境与运行环境不一致，先重扫建立新基线）", "file": "daemon/browser_daemon.py", "line": 0},
 "BCC-064": {"meaning": "[bcc] 环境泄漏监测发现异常（rebrowser/CreepJS/liarjs 检测逻辑内置探针）", "file": "daemon/browser_daemon.py", "line": 0},
@@ -404,7 +405,8 @@ ERRCODES = {
     "LIVE-018": {"meaning": "resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：", "file": "link_resolve.py", "line": 276},
     "LIVE-019": {"meaning": "resolve] 用户  当前未在直播或无法解析房间", "file": "link_resolve.py", "line": 307},
     "LIVE-020": {"meaning": "resolve] 浏览器解析失败:", "file": "link_resolve.py", "line": 309},
-    "LIVE-021": {"meaning": "room-config] 热更失败:", "file": "api/live_config.py", "line": 0},
+    "LIVE-021": {"meaning": "room-config] 热更失败:", "file": "api/live_config.py", "line": 0},
+
     "LIVE-034": {"meaning": "live-ws] 会话态未知（未探测或探测失败），按「有 cookie」继续", "file": "core/live_hook.py", "line": 0},
     "LIVE-035": {"meaning": "live-identity] 监测账号无直播昵称解密权 —— 弹幕昵称将被脱敏（uid=111111）", "file": "auto_dm/accounts.py", "line": 0},
     "LIVE-036": {"meaning": "live-identity] 登录态探测失败（结论未知，不据此降级）", "file": "auto_dm/accounts.py", "line": 0},

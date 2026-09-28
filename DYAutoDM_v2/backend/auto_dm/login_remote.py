@@ -218,6 +218,30 @@ def ensure_profile_released(profile_dir: str) -> dict:
     return out
 
 
+def bcc_launch_allowed(name: str) -> tuple[bool, str]:
+    """**拉起前**检查 BCC 节流（供不含 spawn 的启动路径复用同一判据）。
+
+    背景（DSSCC-BCC-002，实测风控风险）：`browser_daemon` 走的是
+    `vbrowser.launch_async` **直连**路径、**不经** `accounts.ensure_bcc` 的 spawn
+    节流 —— 若只把节流做在 ensure_bcc，则「账号级 BCC 守护」这条路径仍可对
+    持续性失效账号无限冷启动（实测：张老师被反复拉起 8+ 进程）。
+    故把节流做成**可复用判据**，两条启动路径共用同一限额。
+
+    返回 (allowed, reason)。**只读**，不记账（记账在真正 spawn 处）。
+    """
+    try:
+        from auto_dm import accounts as _A
+        import time as _t
+        hist = [t for t in _A._bcc_spawn_hist.get(name, [])
+                if _t.time() - t < _A._BCC_SPAWN_WINDOW]
+        if len(hist) >= _A._BCC_SPAWN_MAX:
+            return False, (f"{int(_A._BCC_SPAWN_WINDOW)}s 内已拉起 {len(hist)} 次"
+                           f"（上限 {_A._BCC_SPAWN_MAX}）")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 节流判据不可用（放行）: {}", e)
+    return True, ""
+
+
 def count_profile_processes(profile_dir: str) -> int:
     """统计**命令行命中该 profile 路径**的 camoufox/firefox 进程数。
 

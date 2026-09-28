@@ -224,10 +224,21 @@ def _reap_camoufox_processes(user_data_dir: str | None = None,
     def _victims():
         out = []
         try:
-            for _p in psutil.process_iter(["pid", "cmdline"]):
+            for _p in psutil.process_iter(["pid", "name", "cmdline"]):
                 try:
                     # 绝不杀自己（误杀宿主 = 比残留严重一个量级）
                     if int(_p.info.get("pid") or 0) == _self_pid:
+                        continue
+                    # ── 2026-09-28 修（DSSCC-BCC-005，实测自伤）──────────────
+                    # 原判据**只看命令行是否含 profile 路径**，与本函数文档
+                    # 「只杀命中该 profile 的 camoufox/firefox 进程」不符：
+                    # 任何**命令行里恰好写了这个路径**的进程都会被列入待杀。
+                    # 实测后果：诊断脚本 / shell 命令中带上该路径（极常见）⇒
+                    # **调用者自身连同其 shell 一起被杀**（终端 exit 15，
+                    # 无任何错误输出，排查成本极高）。
+                    # 现补进程名前置过滤，与 `count_profile_processes` 同一判据。
+                    _nm = (_p.info.get("name") or "").lower()
+                    if "camoufox" not in _nm and "firefox" not in _nm:
                         continue
                     _cl = " ".join(_p.info.get("cmdline") or [])
                     if needle in _cl.replace("\\", "/").lower():

@@ -869,6 +869,23 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
                             _rel.get("reaped", 0), len(_rel.get("removed") or []))
                 except Exception as _e_rel:  # noqa: BLE001
                     logger.debug(f"[vbrowser] 启动前 profile 自愈跳过（不阻塞）: {_e_rel}")
+            # ── 2026-09-28 修（DSSCC-BCC-002 续）：**唯一启动出口也要受节流约束** ──
+            # browser_daemon 的冷启动走本出口（直连），不经 ensure_bcc 的 spawn 节流；
+            # 不在此处加约束 ⇒ 账号级 BCC 守护可对持续性失效账号无限重启
+            # （实测：张老师 AUTH-050 永久失效被反复拉起 8+ camoufox 进程 = 风控信号）。
+            if account:
+                try:
+                    from auto_dm.login_remote import bcc_launch_allowed
+                    _ok, _why = bcc_launch_allowed(account)
+                    if not _ok:
+                        raise RuntimeError(
+                            f"[BCC-081] [vbrowser] 账号「{account}」启动被节流：{_why} —— "
+                            f"持续性失效（如身份漂移/无凭证）请人工处理；"
+                            f"节流用于防止浏览器反复重启引发风控")
+                except RuntimeError:
+                    raise
+                except Exception as _e_th:  # noqa: BLE001
+                    logger.debug(f"[vbrowser] 节流检查跳过（不阻塞）: {_e_th}")
             return await launch_camoufox_async(
                 headless=headless, user_data_dir=user_data_dir,
                 account=account, cfg=cfg)
