@@ -65,7 +65,12 @@ async def replies_delete(item_id: int):
 
 @router.post("/replies/learn")
 async def replies_learn(account: str = "", limit: int = 200):
-    """从聊天记录自动总结学习话术 → 入命中库。"""
+    """从聊天记录自动学习 → **向量提纯** → 通用候选入待确认区。
+
+    2026-09-28：不再直接写正式库（改前是「LLM 一次性提纯 + 逐条入库」，
+    无通用性判据 → 照搬个案/碎片）。现在：提纯后的通用条目落在
+    `ai_reply_candidates`，由下方 review 端点人工确认后升格。
+    """
     from services import reply_kb
 
     try:
@@ -73,6 +78,35 @@ async def replies_learn(account: str = "", limit: int = 200):
         return {"ok": True, **r, "items": reply_kb.list_items()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ── 学习候选的「待确认区」（向量提纯产物；确认后才入正式库）──────────────
+@router.get("/replies/candidates")
+async def replies_candidates():
+    from services import reply_purify
+    return {"ok": True, "items": reply_purify.list_candidates()}
+
+
+class CandidateConfirmBody(BaseModel):
+    ids: list[int] = []
+    all: bool = False
+
+
+@router.post("/replies/candidates/confirm")
+async def replies_candidates_confirm(body: CandidateConfirmBody):
+    from services import reply_purify
+    return reply_purify.confirm_candidates(ids=body.ids, all_=body.all)
+
+
+class CandidateRejectBody(BaseModel):
+    ids: list[int] = []
+
+
+@router.post("/replies/candidates/reject")
+async def replies_candidates_reject(body: CandidateRejectBody):
+    from services import reply_purify
+    n = reply_purify.reject_candidates(body.ids)
+    return {"ok": True, "rejected": n, "items": reply_purify.list_candidates()}
 
 
 # ---------------------------------------------------------------------------

@@ -19,11 +19,9 @@
 
 from __future__ import annotations
 
-import json
 import math
 import threading
 import time
-import re
 from typing import Optional
 
 import database
@@ -361,22 +359,12 @@ def _bump_hits(item_id) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 自动学习：从 dm_messages 成功会话总结有效话术
+# 自动学习：从 dm_messages 成功会话「向量提纯」出通用知识条目
 # ---------------------------------------------------------------------------
+# 2026-09-28：原 LEARN_PROMPT（一次性「客户问法 → 复用话术」提纯）已**移除**——
+# 它没有通用性判据，是「照搬个案/碎片」的来源。现由 services/reply_purify
+# 的 _ABSTRACT_PROMPT（簇级抽象）承担，本模块不再持有提纯 prompt（SSOT）。
 
-# 提纯 prompt：让 LLM 把"成功问答对"整理成客户口语问法 + 可复用回复
-LEARN_PROMPT = """你是私信话术整理员。下面是从抖音私信成功对话中提取的问答片段。
-请整理成"客户问法案例 → 应复用的回复话术"对：
-- 问法要模仿客户的口语（短句、口语词），去掉个人信息（名字/手机号/地名）
-- 回复话术保留原意和语气，去掉个人信息
-- 同类问法合并，只保留最典型的一条
-- 无效内容（纯表情、仅"嗯/哦"、系统消息）丢弃
-- **只保留包含实质性专业信息的问答**：凡回复只是寒暄/共情/占位（如"理解""稍等""图我看到了""嗯嗯"）、
-  或答非所问、或与工伤业务无关的，一律丢弃
-只输出 JSON 数组：[{"question":"客户问法","answer":"回复话术"}]，不要其他文字。
-
-对话片段：
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -538,69 +526,48 @@ def learn_from_history(account: str = "", limit: int = 200) -> dict:
                 "extracted": 0, "added": 0, "purified": False,
                 "message": "未提取到合规问答对（库未变更）"}
 
-    # LLM 提纯：失败即中止，**不再**静默降级为原样截断入库
-    learned: list[dict] = []
-    purified = False
-    reason = ""
+    # ── 2026-09-28：改为「向量提纯 → 沉淀通用部分」（用户判定 + 实测取证）──
+    # 改前的「LLM 一次性提纯 + 逐条入库」没有通用性判据：同一问法各学一条、
+    # 客户个例被照搬成"通用话术"、被问过一次的观点即入库。契约与取证见
+    # `services/reply_purify` 模块头。
     try:
-        from services.ai_reply import AIClient, get_config
-        cfg = get_config()
-        if not cfg.get("base_url"):
-            reason = "llm_not_configured"      # 没配 base_url，压根没法提纯
-        else:
-            client = AIClient(cfg)
-            blob = "\n".join(f"客户: {q}\n我方: {a}" for q, a in pairs[:40])
-            raw = client.chat_failover(
-                blob, consumer_id="ai_main", user_id="kb-learn",
-                system_prompt=LEARN_PROMPT)
-            if not raw or not str(raw).strip():
-                # chat_failover 全链失败（坏 key / 断网 / HTTP 错 / 空回复
-                # / 思考泄漏被丢弃）都表现为返回 None
-                reason = "llm_unavailable"
-            else:
-                m = re.search(r"\[.*\]", str(raw), re.S)
-                if not m:
-                    reason = "llm_no_json"     # 回了文字但不是 JSON 数组
-                else:
-                    try:
-                        parsed = json.loads(m.group(0))
-                    except Exception:
-                        reason = "llm_json_bad"  # JSON 解析失败
-                    else:
-                        if isinstance(parsed, list) and parsed:
-                            learned = parsed
-                            purified = True
-                        else:
-                            reason = "llm_empty_array"
-    except Exception as e:
-        reason = "llm_exception:" + str(e)[:60]
+        from services.app_config import get as _acget
+    except Exception:  # noqa: BLE001
+        _acget = None
 
-    if not purified:
-        return {"ok": False, "reason": reason or "llm_unavailable",
+    def _got(key, default):
+        try:
+            v = _acget("dm", key) if _acget else None
+            return default if v is None else v
+        except Exception:  # noqa: BLE001
+            return default
+
+    _existing_qs = [(it.get("question") or "").strip() for it in list_items()
+                    if (it.get("question") or "").strip()]
+    _pcfg = {
+        "sim_threshold": float(_got("learn_sim_threshold", 0.80)),
+        "min_cluster_size": int(_got("learn_min_cluster", 2)),
+        "max_case_chars": int(_got("learn_max_case_chars", 30)),
+    }
+    try:
+        from services import reply_purify
+        pr = reply_purify.purify(pairs, existing_questions=_existing_qs, cfg=_pcfg)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": "purify_exception:" + str(e)[:60],
                 "scanned": len(rows), "extracted": len(pairs), "added": 0,
                 "purified": False,
-                "message": "LLM 提纯失败，本次未写入任何条目（库未变更）"}
-
-    # 查重后入库（问法近似的不重复加）
-    existing = {(it.get("question") or "").strip() for it in list_items()}
-    added = 0
-    skipped_junk = 0
-    for it in learned:
-        if not isinstance(it, dict):
-            continue
-        q = (it.get("question") or "").strip()
-        a = (it.get("answer") or "").strip()
-        if not q or q in existing:
-            continue
-        # 2026-09-28：写入侧质量门槛 —— 占位兜底/随口短句不再学进来（防再污染）
-        ok_q, why = learn_quality_ok(q, a)
-        if not ok_q:
-            skipped_junk += 1
-            continue
-        add_item(q, a, source="auto")
-        existing.add(q)
-        added += 1
+                "message": "向量提纯异常，本次未写入任何条目（库未变更）"}
+    if not pr.get("ok"):
+        return {"ok": False, "reason": pr.get("error") or "purify_failed",
+                "scanned": len(rows), "extracted": len(pairs), "added": 0,
+                "purified": False,
+                "message": "向量提纯不可用（embedding 失败），本次未写入任何条目"
+                           "（按契约**不降级照搬**）"}
+    cands = pr.get("candidates") or []
+    staged = reply_purify.stage_candidates(cands, account=account)
     return {"ok": True, "reason": "", "scanned": len(rows),
-            "extracted": len(pairs), "added": added, "skipped_junk": skipped_junk,
-            "purified": True,
-            "message": f"LLM 提纯成功，新增 {added} 条（跳过低质/占位 {skipped_junk} 条）"}
+            "extracted": len(pairs), "added": 0, "staged": staged,
+            "candidates": len(cands), "purified": True,
+            "stats": pr.get("stats", {}),
+            "message": (f"向量提纯完成：{len(pairs)} 对 → {len(cands)} 条通用候选"
+                        f"（已入待确认区 {staged} 条；在 AI 页确认后入正式库）")}

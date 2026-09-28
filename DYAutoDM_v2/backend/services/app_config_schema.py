@@ -113,6 +113,26 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "int", "default": 50, "env": None,
                 "apply": "hot", "hint": "当日累计查询上限，达到后当日不再查询",
             },
+            # ── 对话回复库「向量提纯」参数（2026-09-28）──
+            "learn_min_cluster": {
+                "label": "学习·通用性门槛（最少问法数）",
+                "type": "int", "default": 2, "min": 1, "max": 20, "env": None,
+                "apply": "hot",
+                "hint": ("同一类问题至少被 N 条不同问法命中，才沉淀为通用条目；"
+                         "1 = 不设门槛（不推荐，会重新引入个案照搬）"),
+            },
+            "learn_sim_threshold": {
+                "label": "学习·聚类相似度阈值",
+                "type": "float", "default": 0.80, "min": 0.5, "max": 0.99, "env": None,
+                "apply": "hot",
+                "hint": "问法向量余弦 ≥ 该值即视为同一问题；越高越严格（簇越碎）",
+            },
+            "learn_max_case_chars": {
+                "label": "学习·个案问法长度上限",
+                "type": "int", "default": 30, "min": 10, "max": 200, "env": None,
+                "apply": "hot",
+                "hint": "问法超过该长度视为个案照搬，不参与通用提纯",
+            },
         },
     },
 
