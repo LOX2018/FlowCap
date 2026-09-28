@@ -122,6 +122,37 @@ class TestSendGateConfig(unittest.TestCase):
         finally:
             rd._cfg_per_minute = _orig_per_minute
 
+    # ---- 5. 手动豁免（2026-09-28 用户拍板：由配置控制，不默认定死） ----
+    def test_manual_exempt_default_allows_beyond_minute(self):
+        """默认「手动豁免」：source=manual 连发超过上限**不被拦**；自动源被拦。"""
+        ac.save_section("send", {"per_minute_limit": 1, "min_interval": 8.0,
+                                 "max_wait": 5.0})
+        # 手动：连发 5 条都应放行（豁免分钟窗）
+        for i in range(5):
+            ok, _, r = rd._send_gate_acquire("acc_manual", "manual")
+            self.assertTrue(ok, f"手动第 {i+1} 条应被豁免放行（原因 {r}）")
+        # 同一账号的自动源：分钟窗已被手动的 5 条占满 ⇒ 立即被拦
+        ok, _, reason = rd._send_gate_acquire("acc_manual", "")
+        self.assertFalse(ok, "自动源应被分钟窗拦下（水位被手动抬高）")
+        self.assertEqual(reason, "minute_limit")
+
+    def test_manual_exempt_configurable_off(self):
+        """关闭「手动豁免」→ 手动发送同样受分钟窗约束（由配置控制，非定死）。"""
+        ac.save_section("send", {"per_minute_limit": 1, "min_interval": 8.0,
+                                 "max_wait": 5.0,
+                                 "per_minute_manual_exempt": False})
+        ok1, _, _ = rd._send_gate_acquire("acc_off", "manual")
+        self.assertTrue(ok1)
+        ok2, _, reason = rd._send_gate_acquire("acc_off", "manual")
+        self.assertFalse(ok2, "关闭豁免后手动第 2 条应被拦")
+        self.assertEqual(reason, "minute_limit")
+
+    def test_source_is_manual_helper(self):
+        self.assertTrue(rd._source_is_manual("manual"))
+        self.assertTrue(rd._source_is_manual(" Manual "))
+        self.assertFalse(rd._source_is_manual(""))
+        self.assertFalse(rd._source_is_manual("dispatch"))
+
     # ---- 3. 边界 ----
     def test_out_of_range_keeps_default(self):
         # min_interval=1.0 被 schema 下限(8)拒绝 → 回落默认 8 → 闸门 4.0

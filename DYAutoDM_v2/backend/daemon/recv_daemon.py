@@ -1570,6 +1570,9 @@ class SendBody(BaseModel):
     # 使投递验证标记在 3.11/3.12 等无宽容解析器的解释器下同样可写。
     # ⚠️ 绝不能把「返回 ok」本身当证据 —— 这里必须是**真的** server_message_id。
     server_message_id: str = ""
+    # 2026-09-28：发送来源（"manual" = 用户显式操作）。闸门据此决定是否套用
+    # 手动豁免（见 `send.per_minute_manual_exempt`）。缺省 "" ⇒ 按自动路径严格管控。
+    source: str = ""
 
 
 class SendByUidBody(BaseModel):
@@ -1577,6 +1580,7 @@ class SendByUidBody(BaseModel):
     peer_uid: str | int
     text: str
     server_message_id: str = ""
+    source: str = ""
 
 
 class SendImageBody(BaseModel):
@@ -1592,6 +1596,8 @@ class SendImageBody(BaseModel):
     # 解码后再复核真实字节数（防止 padding/空白绕过）。
     image_b64: str = Field(..., max_length=28_000_000)
     filename: str = "image.jpg"
+    # 2026-09-28：同 SendBody.source（图片目前恒为用户显式发送）。
+    source: str = ""
 
 
 # ============================================================================
@@ -1615,7 +1621,10 @@ class SendImageBody(BaseModel):
 # 且 `api/messages.send_image_dm` 的图片发送**不过调度器**（纯手动路径），
 # 若本层不放宽反而会导致「图片绕过分钟窗」。三端点（/send、/send_by_uid、
 # /send_image）共用 `_send_gate_minute` + 同一把 `_send_gate_lock` ⇒ 汇总计数、
-# 无并发滑窗。（调度器層对手动豁免，但本物理层不豁免，见 `_send_gate_acquire` 文档。）
+# 无并发滑窗。
+# 手动豁免**由配置显式控制**（`send.per_minute_manual_exempt`，默认 True）——
+# 用户 2026-09-28 拍板「调度肯定需要手动开放，并不是直接默认定死」。
+# 豁免 = 不拦手动，但手动**仍计入**分钟窗（抬高后续自动发送水位）。
 #
 # ⚠️ 历史：改前默认 8s 且与调度器各记各的，理论上可叠加出水 —— 已修正。
 # ============================================================================
@@ -1678,12 +1687,38 @@ def _cfg_per_minute() -> float:
     return v
 
 
+def _cfg_per_minute_manual_exempt() -> bool:
+    """手动发送是否豁免**物理层分钟窗**（`send.per_minute_manual_exempt`）。
+
+    2026-09-28 用户拍板：「调度肯定需要手动开放，并不是直接默认定死」——
+    故豁免**由配置显式控制**（默认 True = 放行手动），而非在代码里定死。
+    手动发送**仍计入分钟窗**（抬高后续自动发送的水位），但不被它拦下
+    —— 与调度器层同一条铁律：「门禁不拦用户显式操作」。
+    若账号出现风控升级迹象，可把本项置 False，让手动同受每分钟上限约束。
+    """
+    v = True
+    try:
+        from services.app_config import get
+
+        _v = get("send", "per_minute_manual_exempt")
+        if _v is not None:
+            v = bool(_v)
+    except Exception:
+        pass
+    return v
+
+
 _send_gate_lock = threading.Lock()
 _send_gate_last: dict[str, float] = {}   # account -> 上次放行时间戳
 _send_gate_minute: dict[str, list] = {}  # account -> 近 60s 放行时间戳列表
 
 
-def _send_gate_acquire(account: str) -> tuple[bool, float, str]:
+def _source_is_manual(source: str) -> bool:
+    """是否用户显式操作（`source=="manual"`；大小写/空白容错）。"""
+    return (source or "").strip().lower() == "manual"
+
+
+def _send_gate_acquire(account: str, source: str = "") -> tuple[bool, float, str]:
     """尝试获取该账号的发送令牌。返回 (ok, 等待秒数, 原因码)。
 
     原因码（可归因，供端点回给用户）："" | "minute_limit" | "min_interval" | "timeout"。
@@ -1697,14 +1732,20 @@ def _send_gate_acquire(account: str) -> tuple[bool, float, str]:
     2026-09-28（ADR-021 残留补齐）：新增**每分钟全量发送上限**判定
     （`send.per_minute_limit`）。这是三个发送端点（`/send`、`/send_by_uid`、
     `/send_image`）的**共同物理出口**，任何路径（含不过调度器的图片发送、
-    绕过调度器的直发）都无法绕开分钟窗。**不做手动豁免** —— 用户 2026-09-25
-    一次发 26 条的实测正是本项要防的；且分钟窗本就是用户显式要求的
-    「每分钟 2~3 条」硬约束。上限 >0 时，超限即**快速失败**（不忙等 ——
-    等满 60s 只会堆死事件循环），调用方拿到明确原因码后可提示用户稍后再发。
+    绕过调度器的直发）都无法绕开分钟窗。上限 >0 时，超限即**快速失败**
+    （不忙等 —— 等满 60s 只会堆死事件循环），调用方拿到明确原因码后提示用户。
+
+    2026-09-28（用户拍板「手动需要开放，不默认定死」）：`source=="manual"`
+    时按 `send.per_minute_manual_exempt`（**默认 True**）决定是否豁免本窗口。
+    豁免 = 不被拦，但**仍计入** `_send_gate_minute`（抬高后续自动发送的水位）
+    —— 与调度器层同一条铁律「门禁不拦用户显式操作」；**由配置显式控制**，
+    账号风控升级时置 False 即可让手动同受约束。
     """
     min_interval = _cfg_min_interval()
     max_wait = _cfg_max_wait()
     per_minute = _cfg_per_minute()
+    manual_exempt = (_source_is_manual(source)
+                     and _cfg_per_minute_manual_exempt())
     # 边界：>0 但 <1 的分数值若直接 int() 会得 0 ⇒ 恒拦一切。取整下限 1。
     minute_cap = int(per_minute) if per_minute >= 1 else (1 if per_minute > 0 else 0)
     deadline = time.time() + max_wait
@@ -1712,7 +1753,8 @@ def _send_gate_acquire(account: str) -> tuple[bool, float, str]:
     while True:
         with _send_gate_lock:
             now = time.time()
-            if minute_cap > 0:
+            # 分钟窗（手动豁免时跳过「拦截」判定，但下方记账**照常**）
+            if minute_cap > 0 and not manual_exempt:
                 window = [t for t in _send_gate_minute.get(account, [])
                           if now - t < 60.0]
                 if len(window) >= minute_cap:
@@ -1813,10 +1855,10 @@ async def send(body: SendBody) -> dict:
     if not env_path:
         return {"ok": False, "error": "账号 .env 路径缺失"}
     # 统一发送闸门：三源（手动/AI/直播 dispatch）一配额
-    ok_gate, waited, _reason = _send_gate_acquire(body.account)
+    ok_gate, waited, _reason = _send_gate_acquire(body.account, body.source)
     if not ok_gate:
         logger.warning(f"[RECV-016] " + f"[recv][{body.account}] 发送闸门限流：等待 {waited:.0f}s 仍未放行"
-            f"（原因 {_reason}，最小间隔 {_cfg_min_interval()}s/分钟上限 {_cfg_per_minute():.0f}），快速失败")
+            f"（原因 {_reason}，来源 {body.source or 'auto'}，最小间隔 {_cfg_min_interval()}s/分钟上限 {_cfg_per_minute():.0f}），快速失败")
         return _gate_error(body.account, _reason)
     try:
         auth = _load_send_auth(body.account, env_path)
@@ -1873,9 +1915,9 @@ async def send_by_uid(body: SendByUidBody) -> dict:
         return {"ok": False, "error": f"peer_uid 非数字: {body.peer_uid}"}
 
     # 统一发送闸门：三源一配额（与 /send 同一把锁）
-    ok_gate, waited, _reason = _send_gate_acquire(body.account)
+    ok_gate, waited, _reason = _send_gate_acquire(body.account, body.source)
     if not ok_gate:
-        logger.warning(f"[RECV-019] " + f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行（原因 {_reason}）")
+        logger.warning(f"[RECV-019] " + f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行（原因 {_reason}，来源 {body.source or 'auto'}）")
         return _gate_error(body.account, _reason)
     try:
         auth = _load_send_auth(body.account, env_path)
@@ -1943,9 +1985,9 @@ async def send_image(body: SendImageBody) -> dict:
     if not env_path:
         return {"ok": False, "error": "账号 .env 路径缺失"}
     # 统一发送闸门（图片同样计入配额；且与文本共用分钟窗 —— 2026-09-28）
-    ok_gate, waited, _reason = _send_gate_acquire(body.account)
+    ok_gate, waited, _reason = _send_gate_acquire(body.account, body.source)
     if not ok_gate:
-        logger.warning(f"[RECV-024] " + f"[recv][{body.account}] 图片发送闸门限流：等待 {waited:.0f}s 未放行（原因 {_reason}）")
+        logger.warning(f"[RECV-024] " + f"[recv][{body.account}] 图片发送闸门限流：等待 {waited:.0f}s 未放行（原因 {_reason}，来源 {body.source or 'auto'}）")
         return _gate_error(body.account, _reason)
     try:
         import base64 as _b64

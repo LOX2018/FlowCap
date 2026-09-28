@@ -46,6 +46,10 @@ class SendDmRequest(BaseModel):
     # 发送通道：'ws'=私信守护 HTTP API（默认，稳定）；'wp'=抖音网页版 chat 页 IM SDK
     # 2026-09-05 新增。两通道并存，默认走 ws（更可靠），wp 作为网页通道备用。
     channel: str = "ws"
+    # 2026-09-28：发送来源。本端点由用户在 UI 显式触发 ⇒ 默认 "manual"；
+    # 由 recv_daemon 的物理闸门据此决定是否套用手动豁免（不拦用户显式操作）。
+    # 若把它当作编程式绕过调度器的直发通道，请显式传 source="dispatch" 等（受严格管控）。
+    source: str = "manual"
 
 
 class SendImageRequest(BaseModel):
@@ -54,6 +58,8 @@ class SendImageRequest(BaseModel):
     # 图片二进制 base64（≤20MB 原始大小）
     image_b64: str
     filename: str = "image.jpg"
+    # 2026-09-28：图片目前恒为用户显式发送 ⇒ 默认 "manual"。
+    source: str = "manual"
 
 
 class RequestDmBody(BaseModel):
@@ -1569,6 +1575,7 @@ async def send_image_dm(body: SendImageRequest):
             "conv_id": body.conv_id,
             "image_b64": body.image_b64,
             "filename": body.filename or "image.jpg",
+            "source": body.source,
         })
         return d
     except urllib.error.HTTPError as e:

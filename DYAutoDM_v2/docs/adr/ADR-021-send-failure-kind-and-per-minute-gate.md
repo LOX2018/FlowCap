@@ -58,7 +58,9 @@ parse_error / unknown）+ 唯一判定出口 `failure_kind(resp_json, verdict, h
   `test_dm_dispatch_config.BASELINE` 需同步（已改，否则门禁红）。
 - 未覆盖：图片发送（`image_sender.py`）仍走各账号闸门，未接入账号级分钟窗（后续项）。
 
-## 修订 2026-09-28（v0.45.72）：分钟窗下沉到 recv_daemon 物理闸门
+## 修订 2026-09-28（v0.45.72 → v0.45.74）：分钟窗下沉物理闸门 + 手动豁免配置化
+
+### 一、分钟窗下沉（v0.45.72）
 
 **发现**：D3 的分钟窗只在**调度器策略层**（`dm_dispatch.AccountQuota.can_send`）。
 但 `api/messages.send_image_dm` 的图片发送**不过调度器**（直接转发 `recv_daemon
@@ -71,18 +73,35 @@ parse_error / unknown）+ 唯一判定出口 `failure_kind(resp_json, verdict, h
   同层、共用 `_send_gate_lock` ⇒ **汇总计数、任何路径无法绕过**。
 - 超限**快速失败**（不忙等 —— 等满 60s 会堆死事件循环），返回可归因的
   `error_kind=rate_limited` + `reason_code="minute_limit"` + 可读 `msg`。
-- 上限取**与调度器相同的硬上限**（同配置键 `send.per_minute_limit` 作 SSOT）；
-  与 `min_interval` 兜底的「打 5 折」不同，分钟窗**不放宽**。
+- 上限取**与调度器相同的硬上限**（同配置键 `send.per_minute_limit` 作 SSOT）。
 - 边界：`per_minute` 取整下限 1（>0 但 <1 的分数值不得被 `int()` 成 0 而恒拦一切）。
-- **物理层不做手动豁免**（调度器层仍豁免）——用户 2026-09-25 一次发 26 条的
-  实测正是本项要防的极端风控敞口；分钟窗本就是用户显式要求的「每分钟 2~3 条」。
 - 前端两处发送失败提示改为优先展示 `msg`（可读原因），不再只显示 `rate_limited`。
 
-**验证**：`test_send_gate_config` **10/10**（新增 4 条：第 4 条被拦 + 0=不启用 +
-可归因 + 分数边界）；`test_send_pacing_and_kind` **12/12** 零回归；前端 `npm run build` ✓。
+### 二、手动豁免**配置化**（v0.45.74，用户 2026-09-28 拍板）
 
-**残留**：`send.min_interval` 在调度器层对手动豁免 ⇒ 手动 min_interval 不受约束；
-但**分钟窗（用户显式要求的约束）在物理层强制覆盖手动**，故极端连发已封死。
+**用户原话**：「调度肯定需要手动开放，并不是直接默认定死」。
+
+**改判（原文「物理层不做手动豁免」已废弃）**：v0.45.72 初版把「物理层不豁免手动」
+**硬编码**了 —— 违反用户「显式配置原则」。现改为**由配置显式控制**：
+
+- 新增配置 `send.per_minute_manual_exempt`（**bool，默认 True**）。
+- `source=="manual"` 时：**开**（默认）⇒ 不拦手动，但手动**仍计入**分钟窗
+  （抬高后续自动发送水位）；**关** ⇒ 手动同受每分钟上限约束。
+- 来源经 `body.source` 从 `api/messages`（手动端点默认 `"manual"`）贯穿到
+  `recv_daemon` 三个 body（`SendBody`/`SendByUidBody`/`SendImageBody`）；
+  绕过调度器的编程式直发可显式传 `source="dispatch"`（受严格管控）。
+- 与调度器层**同一条铁律**：「门禁不拦用户显式操作」。
+
+**验证**：`test_send_gate_config` **13/13**（新增 3 条：默认豁免放行手动 + 关闭豁免
+则拦 + `_source_is_manual` 容错）· `test_send_pacing_and_kind` 12/12 +
+`test_dm_dispatch_config` 8/8 零回归 · 前端 `npm run build` ✓。
+
+**并发（VIII-C/D）**：本项实施期间另一会话提交 `057a58f`（v0.45.73，凭证更新路由）
+已升位；其唯一相交文件 `frontend/src/api/client.ts` 改动**互不重叠**（判
+disjoint-intent），本会话在**其新基线上**升位 → **0.45.74**。
+
+**残留**：`send.min_interval` 在调度器层对手动豁免 ⇒ 手动不受最小间隔约束
+（分钟窗的拦截已可配置）。
 
 ## 验证
 
