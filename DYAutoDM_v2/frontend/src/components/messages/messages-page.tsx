@@ -93,7 +93,7 @@ export default function MessagesPage(props: PageProps) {
           if (r && r.ok) {
             push("图片已发送");
           } else {
-            push("图片发送失败: " + ((r && r.error) || ""));
+            push("图片发送失败: " + ((r && (r.msg || r.error)) || ""));
           }
         })
         .catch((err) => push("图片发送异常: " + errMsg(err)));
@@ -403,7 +403,7 @@ export default function MessagesPage(props: PageProps) {
           push("私信已发送");
           setDraft("");
         } else {
-          push("发送失败: " + ((r && r.error) || ""));
+          push("发送失败: " + ((r && (r.msg || r.error)) || ""));
         }
       })
       .catch((e) => push("发送异常: " + errMsg(e)));

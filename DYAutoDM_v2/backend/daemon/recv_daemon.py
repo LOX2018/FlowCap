@@ -1609,10 +1609,19 @@ class SendImageBody(BaseModel):
 #   - 正常路径由调度器把关，本闸门几乎不会触发（不会双重限流）；
 #   - 绕过路径仍有一道物理保险，防失控。
 #
+# 2026-09-28（ADR-021 残留补齐）：本闸门**新增分钟窗**（`send.per_minute_limit`）。
+# 与上面「显著放宽」的最小间隔不同，分钟窗取**与调度器完全相同的硬上限**
+# （同一配置键作 SSOT）—— 因为它是「每分钟 2~3 条」风控要求的**唯一兜底出口**，
+# 且 `api/messages.send_image_dm` 的图片发送**不过调度器**（纯手动路径），
+# 若本层不放宽反而会导致「图片绕过分钟窗」。三端点（/send、/send_by_uid、
+# /send_image）共用 `_send_gate_minute` + 同一把 `_send_gate_lock` ⇒ 汇总计数、
+# 无并发滑窗。（调度器層对手动豁免，但本物理层不豁免，见 `_send_gate_acquire` 文档。）
+#
 # ⚠️ 历史：改前默认 8s 且与调度器各记各的，理论上可叠加出水 —— 已修正。
 # ============================================================================
 _FALLBACK_MIN_INTERVAL = float(os.environ.get("DY_SEND_MIN_INTERVAL", "8") or 8)
 _FALLBACK_MAX_WAIT = float(os.environ.get("DY_SEND_MAX_WAIT", "30") or 30)
+_FALLBACK_PER_MINUTE = float(os.environ.get("DY_SEND_PER_MINUTE", "3") or 0)
 
 
 def _cfg_min_interval() -> float:
@@ -1643,35 +1652,100 @@ def _cfg_max_wait() -> float:
     except Exception:
         pass
     return _FALLBACK_MAX_WAIT
+
+
+def _cfg_per_minute() -> float:
+    """物理闸门的**每分钟全量发送上限**（配置中心优先，失败回落兜底）。
+
+    2026-09-28（ADR-021 残留补齐）：分钟窗原先只存在于调度器策略层
+    （`dm_dispatch.AccountQuota.can_send`），而 `api/messages.send_image_dm`
+    **不过调度器**、是纯手动路径，故图片发送**完全不受分钟窗约束**；
+    `/send`、`/send_by_uid` 的「绕过调度器直发」亦同。
+
+    本闸门是三个发送端点的**共同物理出口**，把分钟窗下沉至此 = 任何路径
+    都无法绕过（与既有 min_interval 同层、同一把 `_send_gate_lock` 串行化）。
+    与调度器策略层并列，同配置键 `send.per_minute_limit` 作 SSOT，硬上限一致。
+    """
+    v = _FALLBACK_PER_MINUTE
+    try:
+        from services.app_config import get
+
+        _v = get("send", "per_minute_limit")
+        if _v is not None:
+            v = float(_v)
+    except Exception:
+        pass
+    return v
+
+
 _send_gate_lock = threading.Lock()
 _send_gate_last: dict[str, float] = {}   # account -> 上次放行时间戳
+_send_gate_minute: dict[str, list] = {}  # account -> 近 60s 放行时间戳列表
 
 
-def _send_gate_acquire(account: str) -> tuple[bool, float]:
-    """尝试获取该账号的发送令牌。返回 (ok, 等待秒数)。
+def _send_gate_acquire(account: str) -> tuple[bool, float, str]:
+    """尝试获取该账号的发送令牌。返回 (ok, 等待秒数, 原因码)。
+
+    原因码（可归因，供端点回给用户）："" | "minute_limit" | "min_interval" | "timeout"。
 
     忙等实现（轮询 0.2s）：发送频率低（秒级间隔），锁内 sleep 可接受；
     且保证「先到先得」的发出顺序，避免两个源同时发同一会话时乱序。
 
     2026-09-08：闸门参数改为**每次调用时**从统一配置中心读取（热生效），
     不再是模块级常量——设置页保存后无需重启本 daemon。
+
+    2026-09-28（ADR-021 残留补齐）：新增**每分钟全量发送上限**判定
+    （`send.per_minute_limit`）。这是三个发送端点（`/send`、`/send_by_uid`、
+    `/send_image`）的**共同物理出口**，任何路径（含不过调度器的图片发送、
+    绕过调度器的直发）都无法绕开分钟窗。**不做手动豁免** —— 用户 2026-09-25
+    一次发 26 条的实测正是本项要防的；且分钟窗本就是用户显式要求的
+    「每分钟 2~3 条」硬约束。上限 >0 时，超限即**快速失败**（不忙等 ——
+    等满 60s 只会堆死事件循环），调用方拿到明确原因码后可提示用户稍后再发。
     """
     min_interval = _cfg_min_interval()
     max_wait = _cfg_max_wait()
+    per_minute = _cfg_per_minute()
+    # 边界：>0 但 <1 的分数值若直接 int() 会得 0 ⇒ 恒拦一切。取整下限 1。
+    minute_cap = int(per_minute) if per_minute >= 1 else (1 if per_minute > 0 else 0)
     deadline = time.time() + max_wait
     waited = 0.0
     while True:
         with _send_gate_lock:
             now = time.time()
+            if minute_cap > 0:
+                window = [t for t in _send_gate_minute.get(account, [])
+                          if now - t < 60.0]
+                if len(window) >= minute_cap:
+                    wait = 60.0 - (now - window[0])
+                    _send_gate_minute[account] = window
+                    return False, max(0.0, wait), "minute_limit"
             last = _send_gate_last.get(account, 0.0)
             remain = min_interval - (now - last)
             if remain <= 0:
                 _send_gate_last[account] = now
-                return True, waited
+                if minute_cap > 0:
+                    window = [t for t in _send_gate_minute.get(account, [])
+                              if now - t < 60.0]
+                    window.append(now)
+                    _send_gate_minute[account] = window
+                return True, waited, ""
         if now >= deadline:
-            return False, waited
+            return False, waited, "min_interval"
         time.sleep(min(0.2, max(remain, 0.05)))
         waited = time.time() - (deadline - max_wait)
+
+
+def _gate_error(account: str, reason: str) -> dict:
+    """按闸门原因码生成**可归因**的失败返回（供三个发送端点共用）。"""
+    pm = _cfg_per_minute()
+    if reason == "minute_limit":
+        return {"ok": False, "error": "rate_limited", "error_kind": "rate_limited",
+                "reason_code": "minute_limit",
+                "msg": (f"已达每分钟发送上限 {int(pm)} 条，"
+                        f"请稍后再试（分钟级限流）")}
+    return {"ok": False, "error": "rate_limited", "error_kind": "rate_limited",
+            "reason_code": reason or "min_interval",
+            "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
 
 
 def _load_send_auth(account: str, env_path: str):
@@ -1739,12 +1813,11 @@ async def send(body: SendBody) -> dict:
     if not env_path:
         return {"ok": False, "error": "账号 .env 路径缺失"}
     # 统一发送闸门：三源（手动/AI/直播 dispatch）一配额
-    ok_gate, waited = _send_gate_acquire(body.account)
+    ok_gate, waited, _reason = _send_gate_acquire(body.account)
     if not ok_gate:
         logger.warning(f"[RECV-016] " + f"[recv][{body.account}] 发送闸门限流：等待 {waited:.0f}s 仍未放行"
-            f"（最小间隔 {_cfg_min_interval()}s），快速失败")
-        return {"ok": False, "error": "rate_limited",
-                "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
+            f"（原因 {_reason}，最小间隔 {_cfg_min_interval()}s/分钟上限 {_cfg_per_minute():.0f}），快速失败")
+        return _gate_error(body.account, _reason)
     try:
         auth = _load_send_auth(body.account, env_path)
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
@@ -1800,11 +1873,10 @@ async def send_by_uid(body: SendByUidBody) -> dict:
         return {"ok": False, "error": f"peer_uid 非数字: {body.peer_uid}"}
 
     # 统一发送闸门：三源一配额（与 /send 同一把锁）
-    ok_gate, waited = _send_gate_acquire(body.account)
+    ok_gate, waited, _reason = _send_gate_acquire(body.account)
     if not ok_gate:
-        logger.warning(f"[RECV-019] " + f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行")
-        return {"ok": False, "error": "rate_limited",
-                "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
+        logger.warning(f"[RECV-019] " + f"[recv][{body.account}] 发送闸门限流(by_uid)：等待 {waited:.0f}s 未放行（原因 {_reason}）")
+        return _gate_error(body.account, _reason)
     try:
         auth = _load_send_auth(body.account, env_path)
         conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(
@@ -1870,11 +1942,11 @@ async def send_image(body: SendImageBody) -> dict:
     env_path = acc.env_path_of(body.account)
     if not env_path:
         return {"ok": False, "error": "账号 .env 路径缺失"}
-    # 统一发送闸门（图片同样计入配额）
-    ok_gate, waited = _send_gate_acquire(body.account)
+    # 统一发送闸门（图片同样计入配额；且与文本共用分钟窗 —— 2026-09-28）
+    ok_gate, waited, _reason = _send_gate_acquire(body.account)
     if not ok_gate:
-        return {"ok": False, "error": "rate_limited",
-                "msg": f"发送过于频繁（≥{_cfg_min_interval():.0f}s/条），请稍后重试"}
+        logger.warning(f"[RECV-024] " + f"[recv][{body.account}] 图片发送闸门限流：等待 {waited:.0f}s 未放行（原因 {_reason}）")
+        return _gate_error(body.account, _reason)
     try:
         import base64 as _b64
 

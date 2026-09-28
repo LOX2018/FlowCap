@@ -122,6 +122,10 @@ export interface ConversationsResp {
 export interface SendDmResp {
   ok: boolean;
   error?: string;
+  /** 2026-09-28：发送失败的可读原因（如分钟级限流的「已达每分钟发送上限 3 条」）。 */
+  msg?: string;
+  /** 机器可读原因码（rate_limited / minute_limit / min_interval…）。 */
+  reason_code?: string;
 }
 export interface RequestDmResp {
   ok: boolean;
@@ -153,7 +157,7 @@ export interface MessagesApi {
     convId: string,
     imageB64: string,
     filename: string,
-  ): Promise<{ ok: boolean; error?: string; info?: Record<string, unknown> }>;
+  ): Promise<{ ok: boolean; error?: string; msg?: string; reason_code?: string; info?: Record<string, unknown> }>;
   requestDm(name: string): Promise<RequestDmResp>;
   refreshConversations(account: string, withBrowser?: boolean): Promise<RefreshConvsResp>;
   /** 2026-09-17：语音转写（BCC 上下文内识别；只处理语音消息） */

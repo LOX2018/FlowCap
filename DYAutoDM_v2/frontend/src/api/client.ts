@@ -1160,7 +1160,7 @@ export const api = {
     convId: string,
     text: string,
     channel: "ws" | "wp" = "ws",
-  ): Promise<{ ok: boolean }> {
+  ): Promise<{ ok: boolean; error?: string; msg?: string; reason_code?: string }> {
     return request("/api/messages/send", {
       method: "POST",
       body: JSON.stringify({ account, conv_id: convId, text, channel }),
@@ -1180,7 +1180,7 @@ export const api = {
     convId: string,
     imageB64: string,
     filename: string,
-  ): Promise<{ ok: boolean; error?: string; info?: Record<string, unknown> }> {
+  ): Promise<{ ok: boolean; error?: string; msg?: string; reason_code?: string; info?: Record<string, unknown> }> {
     return request("/api/messages/send_image", {
       method: "POST",
       body: JSON.stringify({ account, conv_id: convId, image_b64: imageB64, filename }),

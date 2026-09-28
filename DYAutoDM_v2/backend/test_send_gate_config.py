@@ -26,11 +26,14 @@ os.environ["DY_APP_ROOT"] = _TMP
 import daemon.recv_daemon as rd  # noqa: E402
 from services import app_config as ac  # noqa: E402
 
+_orig_per_minute = rd._cfg_per_minute   # 供边界用例临时打桩/还原
+
 
 class TestSendGateConfig(unittest.TestCase):
     def setUp(self):
         ac.reset_section("send")
         rd._send_gate_last.clear()
+        rd._send_gate_minute.clear()
 
     # ---- 1. 零回归 ----
     def test_default_matches_pre_change(self):
@@ -62,14 +65,62 @@ class TestSendGateConfig(unittest.TestCase):
         self.assertEqual(rd._cfg_min_interval(), 4.0)    # 8.0 * 0.5
         self.assertEqual(rd._cfg_max_wait(), 5.0)
 
-        ok1, _ = rd._send_gate_acquire("测试账号")
+        ok1, _, _r1 = rd._send_gate_acquire("测试账号")
         self.assertTrue(ok1, "首次应放行")
+        self.assertEqual(_r1, "")
         t0 = time.time()
-        ok2, waited = rd._send_gate_acquire("测试账号")
+        ok2, waited, _r2 = rd._send_gate_acquire("测试账号")
         cost = time.time() - t0
         # 闸门间隔 4s < max_wait 5s → 等待 4s 后放行（而非失败）
         self.assertTrue(ok2, "闸门间隔(4s)短于 max_wait(5s)，第二次应等待后放行")
         self.assertGreaterEqual(cost, 3.5, f"应等待约 4s，实际 {cost:.1f}s")
+
+    # ---- 4. 分钟窗（2026-09-28 ADR-021 残留补齐） ----
+    def test_minute_limit_blocks_after_n(self):
+        """每分钟上限 3：第 4 次获取必须被拒，且原因码 = minute_limit。"""
+        ac.save_section("send", {"per_minute_limit": 3, "min_interval": 8.0,
+                                 "max_wait": 5.0})
+        for i in range(3):
+            ok, _, _r = rd._send_gate_acquire("acc_min")
+            self.assertTrue(ok, f"第 {i+1} 条应放行")
+        ok, wait, reason = rd._send_gate_acquire("acc_min")
+        self.assertFalse(ok, "第 4 条必须被分钟窗拦下")
+        self.assertEqual(reason, "minute_limit")
+        self.assertGreater(wait, 0.0)
+
+    def test_minute_limit_zero_disabled(self):
+        """per_minute_limit=0 → 不启用分钟窗（零回归）。"""
+        ac.save_section("send", {"per_minute_limit": 0, "min_interval": 8.0,
+                                 "max_wait": 5.0})
+        for i in range(10):
+            ok, _, _r = rd._send_gate_acquire("acc_zero")
+            self.assertTrue(ok, f"per_minute=0 时第 {i+1} 条不应被拦")
+
+    def test_gate_error_is_attributable(self):
+        """失败返回必须带 error_kind=rate_limited + reason_code（可归因）。"""
+        ac.save_section("send", {"per_minute_limit": 1, "min_interval": 8.0,
+                                 "max_wait": 5.0})
+        rd._send_gate_acquire("acc_attr")
+        d = rd._gate_error("acc_attr", "minute_limit")
+        self.assertFalse(d["ok"])
+        self.assertEqual(d["error_kind"], "rate_limited")
+        self.assertEqual(d["reason_code"], "minute_limit")
+        self.assertIn("每分钟", d["msg"])
+
+    def test_fractional_per_minute_floor_one(self):
+        """边界：per_minute=0.5（>0 但 <1）不得被 int() 成 0 而恒拦一切。
+
+        离线路径直接调 `_send_gate_acquire` 验证：前 1 条放行、第 2 条被拦。
+        """
+        rd._cfg_per_minute = lambda: 0.5
+        try:
+            ok1, _, _r = rd._send_gate_acquire("acc_frac")
+            self.assertTrue(ok1, "分数上限应至少放行 1 条")
+            ok2, _, reason = rd._send_gate_acquire("acc_frac")
+            self.assertFalse(ok2)
+            self.assertEqual(reason, "minute_limit")
+        finally:
+            rd._cfg_per_minute = _orig_per_minute
 
     # ---- 3. 边界 ----
     def test_out_of_range_keeps_default(self):
