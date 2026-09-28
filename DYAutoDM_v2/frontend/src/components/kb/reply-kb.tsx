@@ -25,6 +25,11 @@ export function ReplyKb({
   const [a, setA] = useState("");
   const [editId, setEditId] = useState<number | null>(null);
   const [learning, setLearning] = useState(false);
+  // 2026-09-28 修（用户报「编辑按钮点了没反应」）：编辑面板的展开态原本由
+  // `defaultOpen={editId !== null}` 驱动，而 `defaultOpen` **只在首次挂载生效**
+  // ⇒ 点「编辑」后面板不会展开（详见 kit.tsx `Collapse` 的受控模式注释）。
+  // 改为**受控**：编辑态变化时显式展开；用户点标题栏收起则尊重其意图。
+  const [panelOpen, setPanelOpen] = useState(false);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["ai-reply-kb"] });
 
@@ -37,6 +42,7 @@ export function ReplyKb({
         setEditId(null);
         setQ("");
         setA("");
+        setPanelOpen(false);
         invalidate();
       } else push(`保存失败：${d.error}`);
     },
@@ -107,10 +113,12 @@ export function ReplyKb({
       {/* 添加/编辑 */}
       <Collapse
         title={editId ? "编辑话术" : "添加话术"}
-        defaultOpen={editId !== null}
+        open={panelOpen}
+        onOpenChange={setPanelOpen}
+        subtitle={editId ? "正在编辑第 " + editId + " 条（保存后生效）" : undefined}
         right={<Badge variant="outline">{items.length} 条</Badge>}
       >
-        <div className="flex flex-wrap gap-2">
+        <div data-od-id="reply-kb-panel" className="flex flex-wrap gap-2">
           <Input
             className="min-w-[220px] flex-1"
             value={q}
@@ -133,10 +141,12 @@ export function ReplyKb({
           {editId !== null && (
             <Button
               variant="ghost"
+              size="sm"
               onClick={() => {
                 setEditId(null);
                 setQ("");
                 setA("");
+                setPanelOpen(false);
               }}
             >
               取消
@@ -179,10 +189,21 @@ export function ReplyKb({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
+              data-od-id={"reply-kb-edit-" + it.id}
+              onClick={(e) => {
+                e.stopPropagation();
                 setEditId(it.id);
                 setQ(it.question);
                 setA(it.answer);
+                // 关键：显式展开编辑面板（原实现依赖 `defaultOpen` 的首次挂载值，
+                // 点编辑不会展开 —— 用户报「点了没反应」的根因）
+                setPanelOpen(true);
+                // 面板在列表上方，展开后滚动入眼，否则用户看不到「已进入编辑」
+                requestAnimationFrame(() => {
+                  document
+                    .querySelector('[data-od-id="reply-kb-panel"]')
+                    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                });
               }}
             >
               <Pencil className="h-3 w-3" />编辑

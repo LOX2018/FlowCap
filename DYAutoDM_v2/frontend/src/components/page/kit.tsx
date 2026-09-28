@@ -399,11 +399,23 @@ export function Toolbar({
 /**
  * 可折叠卡片。旧实现散落在 notify.tsx / ai.tsx / settings.tsx，各写一遍。
  * 收敛到此处后，三个页面共用同一折叠语义与视觉。
+ *
+ * ## 2026-09-28 修：补**受控模式**（`open` + `onOpenChange`）
+ * 原实现只有 **非受控** `defaultOpen`（`useState(defaultOpen)`），而 `defaultOpen`
+ * **只在首次挂载时生效** ⇒ 任何「外部事件要求展开」的场景都失效。
+ * 实测缺陷（用户报「对话回复库编辑按钮点了没反应」）：
+ * `kb/reply-kb.tsx` 用 `defaultOpen={editId !== null}` 表达「点编辑 → 展开」，
+ * 但该折叠块在页面挂载时就已渲染完毕（首次 editId=null ⇒ open=false），
+ * 之后点「编辑」只改了 `editId`，`defaultOpen` 的**新值被 React 忽略** ⇒
+ * 面板不展开、输入框不出现，用户观感即「点了没反应」。
+ * 现补标准受控语义：传 `open` 即为受控（由调用方驱动），不传则保持原非受控行为。
  */
 export function Collapse({
   title,
   subtitle,
   defaultOpen = false,
+  open: openProp,
+  onOpenChange,
   right,
   footer,
   children,
@@ -411,12 +423,22 @@ export function Collapse({
   title: React.ReactNode;
   subtitle?: React.ReactNode;
   defaultOpen?: boolean;
+  /** 受控展开态；传入即为受控模式（`defaultOpen` 忽略） */
+  open?: boolean;
+  /** 受控模式下的展开态变更回调（用户点标题栏时触发） */
+  onOpenChange?: (open: boolean) => void;
   /** 标题栏右侧附加内容（状态点/徽章等） */
   right?: React.ReactNode;
   footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = React.useState(defaultOpen);
+  const [openState, setOpenState] = React.useState(defaultOpen);
+  const isControlled = openProp !== undefined;
+  const open = isControlled ? !!openProp : openState;
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setOpenState(next);
+    onOpenChange?.(next);
+  };
   return (
     <Card className="mb-2.5 overflow-hidden">
       <button

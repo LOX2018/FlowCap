@@ -16,10 +16,22 @@ export function Card(props: {
   title: React.ReactNode;
   subtitle?: string;
   defaultOpen?: boolean;
+  /** 受控展开态（2026-09-28 补；传入即受控，`defaultOpen` 忽略） */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(!!props.defaultOpen);
+  const [openState, setOpenState] = useState(!!props.defaultOpen);
+  // 2026-09-28：补受控模式 —— 与 page/kit 的 Collapse 同一缺陷同批修。
+  // 原只有非受控 defaultOpen（仅在挂载时生效），使「异步数据到达后要求展开」
+  // （如 AuthorizationCard 的待审批列表）永远不生效。
+  const isControlled = props.open !== undefined;
+  const open = isControlled ? !!props.open : openState;
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setOpenState(next);
+    props.onOpenChange?.(next);
+  };
   return (
     <div
       style={{

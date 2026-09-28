@@ -10,6 +10,7 @@
  *   mode / pending / grants / busy / onMode / onApprove / onReject
  * **纯搬移**——JSX、文案、交互逐字节不变。
  */
+import { useEffect, useState } from "react";
 import { Dot, Pill } from "../ui";
 import { Card } from "./notify-widgets";
 import { ROLE_LABELS, CHANNEL_SHORT } from "./settings-shared";
@@ -27,6 +28,19 @@ interface AuthorizationCardProps {
 
 export function AuthorizationCard(props: AuthorizationCardProps) {
   const { mode: gwMode, pending: pendingList, grants, busy: gwBusy, onMode, onApprove, onReject } = props;
+  // 2026-09-28 修：原用 `defaultOpen={pendingList.length > 0}` 表达「有待审就展开」，
+  // 但待审列表是**异步**拉取的（挂载时为空）⇒ 数据到达后面板不会展开，
+  // 待审项被折叠在下面用户看不见。改为**受控** + 待审出现时自动展开一次
+  // （用户手动收起后不再强行展开，尊重其意图）。
+  const [open, setOpen] = useState(pendingList.length > 0);
+  const [autoExpanded, setAutoExpanded] = useState(false);
+  useEffect(() => {
+    if (pendingList.length > 0 && !autoExpanded && !open) {
+      setOpen(true);
+      setAutoExpanded(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingList.length]);
   // ===== 授权管理（IM 网关，v0.38.5）=====
   return (
   <Card
@@ -44,7 +58,8 @@ export function AuthorizationCard(props: AuthorizationCardProps) {
         {pendingList.length > 0 && <Pill c="warn">{pendingList.length} 待审</Pill>}
       </>
     }
-    defaultOpen={pendingList.length > 0}
+    open={open}
+    onOpenChange={setOpen}
   >
     <div style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 10 }}>
       配对模式（推荐）：所有来源可给 bot 发消息，但未授权者的指令一律拦截并回引导语，
