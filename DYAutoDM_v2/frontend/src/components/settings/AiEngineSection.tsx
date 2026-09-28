@@ -57,6 +57,8 @@ interface AiConfig {
   fallback_image: string;
   forbidden_words: string[];
   max_reply_len: number;
+  /** 2026-09-28（D4）：最短回复长度，低于此值判残句走兜底。 */
+  min_reply_len: number;
 }
 
 /** 回复档位选项（值与后端约定一致，逐字搬迁自 AI 页）。 */
@@ -318,6 +320,13 @@ export default function AiEngineSection(props: PageProps) {
             <Input
               type="number" value={c.max_reply_len ?? 60}
               onChange={(e) => set("max_reply_len", Number(e.target.value))}
+            />
+          </FormField>
+
+          <FormField label="回复最小长度（低于此值判残句，走兜底话术）">
+            <Input
+              type="number" value={c.min_reply_len ?? 5}
+              onChange={(e) => set("min_reply_len", Number(e.target.value))}
             />
           </FormField>
 

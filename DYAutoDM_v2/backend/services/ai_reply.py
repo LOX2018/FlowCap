@@ -236,6 +236,10 @@ _DEFAULT_CONFIG = {
         "作为一个AI", "作为一个ai",
     ],
     "max_reply_len": 60,         # 超长截第一句
+    # 2026-09-28（D4）：最短回复长度（残句防线）—— 实测推理超时降级后
+    # deepseek-v4.1-flash 只回「能认」两字且 finish_reason≠length，
+    # 截断检测抓不到 ⇒ 2 字残句直发客户。低于此值判残句走兜底。
+    "min_reply_len": 5,
 }
 
 _KV_CONFIG = "ai_reply_config"
@@ -760,6 +764,28 @@ def _looks_like_reasoning(text: str) -> bool:
     return bool(_REASONING_PATTERN.match(text or ""))
 
 
+# ---------------------------------------------------------------------------
+# 专业准确性护栏（2026-09-28，D4）：绝对化断言与专业知识相悖 —— 禁止外发。
+# 实测事故：AI 对「陈旧性骨折还能认工伤吗」回「能认」（与专业知识完全相悖）。
+# 这里只拦「把话说死」的形态，正常分析（含「最终以认定结论为准」）不命中。
+# ---------------------------------------------------------------------------
+
+_RE_ASSERTIVE = [
+    # 「陈旧性骨折/旧伤」+ 肯定认定（同一句内）
+    re.compile(r"(陈旧性骨折|陈旧骨折|旧伤)[^。！？!?\n]{0,12}"
+               r"(能认|可以认|算工伤|能认定|可以认定|能评|可以评|能算)"),
+    re.compile(r"(能认|可以认|能认定|可以认定|算工伤)[^。！？!?\n]{0,12}"
+               r"(陈旧性骨折|陈旧骨折|旧伤)"),
+    # 「能评上九级」等：等级断言（评/定/够 + 级）
+    re.compile(r"(能|可以|肯定|必然|就是一?定?)[^。！？!?\n]{0,4}"
+               r"(评|定|够)[^。！？!?\n]{0,3}[一二三四五六七八九十0-9]+\s*级"),
+    # 「肯定是几级」「确定就是几级」
+    re.compile(r"(肯定|必然|绝对|一定|确定|确认|准是)[^。！？!?\n]{0,3}"
+               r"(是|能|可以|就)[^。！？!?\n]{0,3}"
+               r"[一二三四五六七八九十0-9]+\s*级"),
+]
+
+
 def _est_tokens(text: str) -> int:
     """粗估 token 数（无分词器时的保守估算，供上下文预算使用）。
 
@@ -1234,7 +1260,14 @@ def save_lead(account: str, conv_id: str, peer_name: str,
 # ---------------------------------------------------------------------------
 
 def validate_reply(reply: str, cfg: dict) -> Optional[str]:
-    """校验 AI 文本；不通过返回 None（调用方改发兜底话术）。"""
+    """校验 AI 文本；不通过返回 None（调用方改发兜底话术）。
+
+    2026-09-28（D4 内容层）新增**最小长度护栏**（残句防线）：
+    实测 `deepseek-v4.1-flash` 在推理超时降级后只回了「能认」两字 ——
+    该情形 `finish_reason` **不是** `length`（截断检测 `_extract_reply` 抓不到），
+    于是 2 字残句被当正常回复**直发客户**（客户视角＝敷衍/不专业）。
+    低于 `min_reply_len`（默认 5，与 prompt「5-40 字」口径一致）判残句 → 走兜底。
+    """
     if not reply or not reply.strip():
         return None
     reply = reply.strip().strip('"“”')
@@ -1242,6 +1275,22 @@ def validate_reply(reply: str, cfg: dict) -> Optional[str]:
     for w in cfg.get("forbidden_words", []):
         if w and (w.lower() in low or w in reply):
             logger.info(f"[ai] 护栏拦截（命中违禁词「{w}」）: {reply[:40]}")
+            return None
+    min_len = int(cfg.get("min_reply_len", 5))
+    if len(reply) < min_len:
+        logger.info(f"[AI-064] 护栏拦截（回复过短疑似残句「{reply}」"
+                    f"<{min_len} 字）-> 走兜底")
+        return None
+    # 2026-09-28（D4）**专业准确性护栏**：绝对化断言与专业知识相悖，禁止外发。
+    # 实测：AI 对「陈旧性骨折还能认工伤吗」回「能认」—— 与专业知识完全相悖
+    # （陈旧性骨折难以证明本次因果，实务中基本不予评定；等级按功能障碍，
+    #   不得凭伤情断言）。这里只拦「把话说死」的形态；正常分析（含糊型
+    #   「可以申请，最终以认定结论为准」）**不命中**，不会误伤。
+    for pat in _RE_ASSERTIVE:
+        m = pat.search(reply)
+        if m:
+            logger.warning(f"[AI-065] 护栏拦截（绝对化断言「{m.group(0)}」与专业"
+                           f"知识相悖）-> 走兜底: {reply[:40]}")
             return None
     max_len = int(cfg.get("max_reply_len", 60))
     if len(reply) > max_len:
