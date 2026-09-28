@@ -1,0 +1,23 @@
+[口径] 含 test_*/verify_* = 是（--include-tests 开启）；排除 test_/verify_ 文件 0 个，纳入 97 个，实际扫描 293 个 .py
+==========================================================================
+静默兜底机械门禁 —— 「失败必须可见」不靠自觉
+==========================================================================
+  扫描根 : C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2\backend
+  排除   : ['.git', '.pytest_cache', '.venv', '__pycache__', '_bisect', '_internal', 'build', 'dist', 'node_modules', 'target', 'vendor', 'venv'] + test_*.py + verify_*.py
+  本次口径: 含 test_*/verify_* = 是（--include-tests 开启）；排除 test_/verify_ 文件 = 0 个；纳入 = 97 个；实际扫描 = 293 个 .py
+  基数   : 命中 673 处 (历史基线 386，Δ +287)
+           其中与 H6 386 同口径子集 = 490 处 (Δ +104)
+  [对照] 若纳入 test_*/verify_*（--include-tests 口径）: 命中 673 处 (历史基线 386，Δ +287)；同口径子集 = 490 处
+--------------------------------------------------------------------------
+  [FAIL] F1   L1-写库路径 pass-only 静默兜底 = 34 处（另 5 处需人工复核，不阻断）（示例 backend/database.py:324）
+  [FAIL] F2   L1-外发路径 pass-only 静默兜底 = 9 处（示例 backend/vbrowser.py:350）
+  [FAIL] F3   L1 新增 = 5 处（较基线 102 处）：backend/test_capability_probe.py:73:L1-写库:pass-only
+  [PASS] F4   分级口径: L1-写库 74 / L1-外发 33 / L2 88 / L3 478；其中 pass-only: 写库 39 / 外发 9；bare: 写库 0 / 外发 0
+  [PASS] F5   待人工复核 = 50 处（backend/camoufox_capture.py:192）
+--------------------------------------------------------------------------
+  合计: 5 项，通过 2，未通过 3（阻断 3）
+
+⛔ 阻断项（必须修复）：
+  - F1: L1-写库路径 pass-only 静默兜底 = 34 处（另 5 处需人工复核，不阻断）（示例 backend/database.py:324）
+  - F2: L1-外发路径 pass-only 静默兜底 = 9 处（示例 backend/vbrowser.py:350）
+  - F3: L1 新增 = 5 处（较基线 102 处）：backend/test_capability_probe.py:73:L1-写库:pass-only
