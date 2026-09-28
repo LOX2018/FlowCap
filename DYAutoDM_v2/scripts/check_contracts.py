@@ -546,6 +546,22 @@ check("G14 C-01~C-06 单测可运行", not _new14,
       if _known14 else (f"未通过 {_new14}" if _new14
                         else f"{len(_mods14)} 个契约单测模块可运行"))
 
+# ── G15: C-07 §6 符号守护（契约 grep 判据 → live.py 符号存在性）──────
+# 2026-09-28 A-5 新增（照 G12 范式）：
+#   C-07 契约化 backend/api/live.py 三端点（/danmaku 真发 · /dm-template 真落盘
+#   +读回校验 · /ws 空转桩）。本判据解析 C-07 §6 的
+#   `grep -n "<pat>" <path>` 行，对每个符号在目标文件里做**词边界精确匹配**
+#   （`\b<符号>\b` ⇒ 改名即红，如 DouyinAPI.sendMsgInRoom → 别名）。
+#   与 G12 同纪律：**§6 未解析到任何 grep 判据 ⇒ FAIL**（哨兵，禁静默 SKIP）；
+#   违规**不得**登记 .known-gaps.json / INLINE_KNOWN 换取通过（本域 N4 修复后
+#   全部判据本就应命中，无既有缺口）。
+_c07 = DC / "C-07-live-interaction.md"
+_specs15 = _grep_specs(_sec(_c07, 6))
+_off15 = _g12_offenders(_specs15)
+check("G15 C-07 直播交互符号守护", not _off15,
+      f"§6 全部 {len(_specs15)} 条 grep 判据命中（词边界精确匹配）"
+      if not _off15 else f"违规 {_off15}")
+
 # ════════════════════════════════════════════════════════════════
 # --selftest：负控自检装置（2026-09-27 新增，体检报告 §六-5）
 #   目的：证明 G1/G4/G5/G12 四条判据**真的会报红**（不是空架子）。
