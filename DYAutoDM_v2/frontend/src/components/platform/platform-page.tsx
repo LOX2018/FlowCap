@@ -584,8 +584,10 @@ export default function PlatformPage(props: PageProps) {
           </div>
           {/* ★ 2026-09-27（ADR-018 F3）：评论与播放**同屏同时**展示。
               加宽浮层（max-w-3xl → max-w-5xl）为评论留出右侧栏；
-              CommentPanel 挂载即取评论（useQuery），与播放器取址并发，
-              不是切 Tab 才加载。 */}
+              CommentPanel 挂载即取评论，与播放器取址并发，
+              不是切 Tab 才加载。
+              ★ 2026-09-28：评论区改走**采集页同款一级评论**路径
+              （api.crawlComments），不再自己走 comments/full + 串行楼中楼。 */}
           <aside
             className="ml-4 hidden h-[70vh] w-[22rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--color-surface)] p-3 md:flex"
             onClick={(e) => e.stopPropagation()}
@@ -593,6 +595,7 @@ export default function PlatformPage(props: PageProps) {
             <CommentPanel
               account={account}
               awemeId={selectedAweme}
+              api={props.api as never}
               push={props.push}
             />
           </aside>
