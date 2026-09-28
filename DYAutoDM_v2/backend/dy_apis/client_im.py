@@ -385,7 +385,10 @@ class ImMixin:
                              data=requestProto.SerializeToString())
         if resp.status_code != 200:
             logger.error(f"[AUTH-026] " + f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}')
-            return False, f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}'
+            return False, f'私信发送 HTTP {resp.status_code}: {resp.text[:200]}', \
+                {"http_ok": False, "delivered": False, "state": "blocked",
+                 "server_message_id": "", "status": None, "check_code": None,
+                 "reason": f"HTTP {resp.status_code}", "error_kind": "http_error"}
         responseProto = ResponseProto.Response()
         try:
             responseProto.ParseFromString(resp.content)
@@ -417,24 +420,34 @@ class ImMixin:
             logger.warning(f"[AUTH-031] " + f"[私信] 投递判定降级（解析器不可用）: {_e}")
             _v = {"delivered": bool(resp_json.get('message') == 'OK'),
                   "server_message_id": "", "status": None, "check_code": None,
-                  "state": "unknown", "reason": "解析器不可用，退回 message==OK"}
+                  "state": "unknown", "reason": "解析器不可用，退回 message==OK",
+                  "error_kind": "unknown"}
         if _v.get("delivered"):
             logger.info(f"私信发送成功 conversation_id={conversation_id} "
                         f"server_message_id={_v.get('server_message_id')} "
                         f"check_code={_v.get('check_code')}")
             return True, "ok", _v
         # —— 无投递证据：给出**可归因**的失败原因（不再笼统「发送失败」） ——
+        # 2026-09-28：把失败类型**结构化**（error_kind 枚举）挂到 verdict 上，
+        # 全链路透传；消费方（配额/冷静期）只认枚举，不再猜文案。
+        try:
+            from services.send_response import failure_kind as _fk
+            _kind = _fk(resp_json, _v)
+        except Exception:  # noqa: BLE001
+            _kind = "unknown"
+        _v["error_kind"] = _kind
         detail = str(_v.get("reason") or "")
         if _v.get("state") == "review":
             logger.warning(f"[AUTH-029] " + f"[私信] {detail} conversation_id={conversation_id}")
         elif resp_json.get('message') == 'OK':
             # 只回 OK 却无消息号 —— 历史上被误当成功的那一类
             logger.error(f"[AUTH-032] " + f"[私信] 返回 OK 但服务端无 server_message_id "
-                         f"⇒ 判定**未投递**（疑似内容违规/被截断）conversation_id={conversation_id}")
+                         f"⇒ 判定**未投递**（疑似内容违规/被截断）conversation_id={conversation_id} "
+                         f"kind={_kind}")
         else:
             detail = DouyinAPI._classify_send_fail(resp_json)
             logger.error(f"[AUTH-029] " + f"私信发送失败 conversation_id={conversation_id} "
-                         f"resp_json={resp_json}")
+                         f"kind={_kind} resp_json={resp_json}")
         # ⚠️ 兼容契约：旧调用方按 (bool, str) 解包 ⇒ 第二项必须是**可读原因串**，
         #    结构化判定挂在第三项（旧调用方忽略）。
         return False, (detail or "发送未确认投递"), _v

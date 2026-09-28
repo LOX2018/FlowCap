@@ -292,7 +292,9 @@ def find_match(text: str, threshold: float = 0.85,
     qtext = (text or "").lower().strip()
     if not qtext:
         return None
-    items = [it for it in list_items() if it.get("enabled", True)]
+    # 2026-09-28：自动学习的脏条目（占位兜底/随口短句）在匹配侧**失效**（不删数据）
+    items = [it for it in list_items()
+             if it.get("enabled", True) and _entry_usable(it)]
     # ① 精确/包含
     for it in items:
         q = (it.get("question") or "").lower().strip()
@@ -369,10 +371,64 @@ LEARN_PROMPT = """你是私信话术整理员。下面是从抖音私信成功�
 - 回复话术保留原意和语气，去掉个人信息
 - 同类问法合并，只保留最典型的一条
 - 无效内容（纯表情、仅"嗯/哦"、系统消息）丢弃
+- **只保留包含实质性专业信息的问答**：凡回复只是寒暄/共情/占位（如"理解""稍等""图我看到了""嗯嗯"）、
+  或答非所问、或与工伤业务无关的，一律丢弃
 只输出 JSON 数组：[{"question":"客户问法","answer":"回复话术"}]，不要其他文字。
 
 对话片段：
 """
+
+
+# ---------------------------------------------------------------------------
+# 学习质量门槛（2026-09-28）
+# ---------------------------------------------------------------------------
+# 背景（用户反馈「AI 像客服、不专业」的实证根因之一）：
+#   reply_kb.learn_from_history 把**对话里的任意 them→me 对**当话术学习，其中包括
+#   我方的占位兜底（"图我看到了哈，稍等我看看再回你"）和随口的短句回复，
+#   随后 find_match 又给这些 auto 条目**最高优先级（命中即回、零 token）**
+#   ⇒ 满屏"可以的""嗯嗯"式客服腔，且盖过 AI。
+# 修法：设**质量门槛**，同时在①写入侧（不再学进来）②匹配侧（已存在的脏条目
+#   失效但**不删除**，可逆）生效。门槛只针对 source=auto；人工/迁移条目不受限。
+_LEARN_JUNK_PREFIXES = (
+    "图我看到了", "稍等", "收到", "嗯嗯", "好的", "ok", "OK", "在的", "在呢",
+    "我看看", "这边", "行，", "嗯，", "你好", "在忙",
+)
+_LEARN_JUNK_EXACT = frozenset({
+    "嗯", "哦", "好", "好的", "可以", "可以的", "收到", "行", "在", "在的",
+    "谢谢", "好的哈", "ok", "OK", "嗯嗯", "嗯好", "好嘞",
+})
+_LEARN_MIN_ANSWER_LEN = 8      # 回复话术至少 8 字（口语短句过滤）
+_LEARN_MIN_QUESTION_LEN = 3    # 问法至少 3 字
+
+
+def learn_quality_ok(question: str, answer: str) -> tuple:
+    """自动学习条目的质量门槛。返回 (是否合格, 原因)。
+
+    仅用于 source='auto'；人工条目不经此门。
+    """
+    q = (question or "").strip()
+    a = (answer or "").strip()
+    if len(q) < _LEARN_MIN_QUESTION_LEN:
+        return False, "question_too_short"
+    if len(a) < _LEARN_MIN_ANSWER_LEN:
+        return False, "answer_too_short"
+    if a in _LEARN_JUNK_EXACT:
+        return False, "answer_is_placeholder"
+    for p in _LEARN_JUNK_PREFIXES:
+        if a.startswith(p):
+            return False, f"answer_starts_with_placeholder({p})"
+    return True, ""
+
+
+def _entry_usable(it: dict) -> bool:
+    """匹配侧门槛：脏 auto 条目直接**失效**（不删除数据，可逆）。
+
+    人工/迁移条目（source != 'auto'）一律可用 —— 只约束自动学习产物。
+    """
+    if (it.get("source") or "") != "auto":
+        return True
+    ok, _ = learn_quality_ok(it.get("question"), it.get("answer"))
+    return ok
 
 
 def _is_valid_text(text: str, mtype) -> bool:
@@ -528,14 +584,23 @@ def learn_from_history(account: str = "", limit: int = 200) -> dict:
     # 查重后入库（问法近似的不重复加）
     existing = {(it.get("question") or "").strip() for it in list_items()}
     added = 0
+    skipped_junk = 0
     for it in learned:
         if not isinstance(it, dict):
             continue
         q = (it.get("question") or "").strip()
-        if q and q not in existing:
-            add_item(q, (it.get("answer") or "").strip(), source="auto")
-            existing.add(q)
-            added += 1
+        a = (it.get("answer") or "").strip()
+        if not q or q in existing:
+            continue
+        # 2026-09-28：写入侧质量门槛 —— 占位兜底/随口短句不再学进来（防再污染）
+        ok_q, why = learn_quality_ok(q, a)
+        if not ok_q:
+            skipped_junk += 1
+            continue
+        add_item(q, a, source="auto")
+        existing.add(q)
+        added += 1
     return {"ok": True, "reason": "", "scanned": len(rows),
-            "extracted": len(pairs), "added": added, "purified": True,
-            "message": f"LLM 提纯成功，新增 {added} 条"}
+            "extracted": len(pairs), "added": added, "skipped_junk": skipped_junk,
+            "purified": True,
+            "message": f"LLM 提纯成功，新增 {added} 条（跳过低质/占位 {skipped_junk} 条）"}

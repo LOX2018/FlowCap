@@ -89,6 +89,8 @@ _LAZY_MAP = {
     "DEDUP_WINDOW": ("send", "dedup_window"),
     "STRANGER_PER_MINUTE": ("send", "stranger_per_minute"),
     "STRANGER_PER_DAY": ("send", "stranger_per_day"),
+    # 2026-09-28：账号级分钟窗（全量发送，非仅首发）
+    "PER_MINUTE_LIMIT": ("send", "per_minute_limit"),
     "COOLDOWN_ON_FREQUENT": ("send", "cooldown_freq"),
     "COOLDOWN_MAX": ("send", "cooldown_max"),
     "WEIGHT_RECOVER_HALFLIFE": ("send", "weight_recover_halflife"),
@@ -221,6 +223,8 @@ class SendTask:
     # 结果回填
     status: str = "pending"   # pending / sending / done / failed
     error: str = ""
+    # 2026-09-28：结构化失败类型（send_response.KIND_*），供配额/冷静期判定
+    error_kind: str = ""
 
     def __lt__(self, other: "SendTask") -> bool:
         """优先级队列排序：先比优先级，再比入池时间（FIFO 保证顺序）。
@@ -262,6 +266,8 @@ class SubmitResult:
 # 陌生人首发硬限额（抖音平台侧限制，保守取用户给定值）
 _FALLBACK_STRANGER_PER_MINUTE = int(os.environ.get("DY_STRANGER_PER_MINUTE", "2"))
 _FALLBACK_STRANGER_PER_DAY = int(os.environ.get("DY_STRANGER_PER_DAY", "30"))
+# 2026-09-28：账号级「每分钟全量发送」上限（兜底 3；0=不启用）
+_FALLBACK_PER_MINUTE_LIMIT = int(os.environ.get("DY_SEND_PER_MINUTE", "3") or 0)
 # 收到"频繁"回执后的强制冷静期（秒），期间暂停该账号的陌生人首发
 _FALLBACK_COOLDOWN_ON_FREQUENT = float(os.environ.get("DY_DM_COOLDOWN_FREQ", "600"))
 # 冷静期递增：连续触发则翻倍（上限 1 小时），避免刚解封又撞墙
@@ -308,6 +314,9 @@ class AccountQuota:
         # 2026-09-16 v0.43.40：最小间隔仲裁的时间戳（调度器直接裁决用）。
         # 改前该时间戳只在 recv_daemon 进程内维护，调度器感知不到。
         self._last_sent_at = 0.0
+        # 2026-09-28：**每分钟全量发送**滑窗（分钟级管控；改前只有「陌生人首发」
+        # 有分钟窗，熟客/AI 回复不受限 ⇒ 实际频率可超）。手动发送豁免（见 can_send）。
+        self._minute_sends: list = []
 
     # ---------- 日切 ----------
     def _roll_day(self) -> None:
@@ -391,7 +400,8 @@ class AccountQuota:
             return True, ""
 
     # ---------- 全局限流（2026-09-16 v0.43.40：调度器直接仲裁） ----------
-    def can_send(self, min_interval: float = 0.0) -> tuple:
+    def can_send(self, min_interval: float = 0.0,
+                 per_minute: float = 0.0) -> tuple:
         """**唯一仲裁点**：该账号此刻是否允许再发一条（不限首发/熟客）。
 
         2026-09-16 v0.43.40 新增：改前发送频率有**两个互不感知的仲裁点** ——
@@ -399,6 +409,12 @@ class AccountQuota:
         （per-account 最小间隔）。两者各记各的，理论上可叠加出水。
         现把「最小间隔」也纳入本类裁决：发送前调用本方法拿令牌，
         由**调度器**统一裁决，recv_daemon 的闸门降级为物理兜底。
+
+        2026-09-28：新增 `per_minute` —— **每分钟全量发送**上限（分钟级管控）。
+        改前只有 `stranger_per_minute`（仅陌生人首发）有分钟窗，熟客/AI 回复
+        不受任何分钟约束 ⇒ 无法把「每分钟 2~3 条」做成账号级硬约束。
+        `per_minute<=0` 表示不启用（零回归）。**手动发送豁免本窗口** ——
+        门禁不拦用户显式操作（见 §〇·丁，与 BCC 启动冷静期同一条铁律）。
 
         返回 (ok, reason, 还需等待秒数)。
         调用方拿到 ok=True 后**必须**调 note_sent()（预占 `_last_sent_at`），
@@ -410,6 +426,15 @@ class AccountQuota:
             if now < self.cooldown_until:
                 left = self.cooldown_until - now
                 return False, (f"冷静期内（剩余 {int(left)}s）"), left
+            if per_minute > 0:
+                self._minute_sends = [t for t in self._minute_sends
+                                      if now - t < 60.0]
+                if len(self._minute_sends) >= int(per_minute):
+                    oldest = self._minute_sends[0]
+                    wait = 60.0 - (now - oldest)
+                    return False, (f"已达每分钟上限 {int(per_minute)} 次"
+                                   f"（近 1 分钟已发 {len(self._minute_sends)} 条）"), \
+                           max(0.0, wait)
             if min_interval > 0:
                 gap = now - self._last_sent_at
                 if gap < min_interval:
@@ -419,9 +444,13 @@ class AccountQuota:
             return True, "", 0.0
 
     def note_sent(self) -> None:
-        """记一次**实际发送**（预占最小间隔的时间戳）。"""
+        """记一次**实际发送**（预占最小间隔时间戳 + 每分钟窗口）。"""
+        now = time.time()
         with self.lock:
-            self._last_sent_at = time.time()
+            self._last_sent_at = now
+            self._minute_sends.append(now)
+            # 顺带裁剪，避免无限增长（保留近 60s）
+            self._minute_sends = [t for t in self._minute_sends if now - t < 60.0]
 
     def stranger_snapshot(self) -> dict:
         """陌生人首发记账的只读快照（供 /status 观测）。"""
@@ -454,8 +483,16 @@ class AccountQuota:
                 self._stranger_day.pop()
 
     # ---------- 回执处理 ----------
-    def on_result(self, ok: bool, detail: str = "") -> None:
-        """根据发送回执更新统计；遇到"频繁"强制进入冷静期。"""
+    def on_result(self, ok: bool, detail: str = "", kind: str = "") -> None:
+        """根据发送回执更新统计；遇到**频控/风控**类失败强制进入冷静期。
+
+        2026-09-28（契约升级）：冷静期触发从「关键字子串匹配 detail」改为
+        **结构化枚举** `kind`（`services.send_response.KIND_*`）。改前只认
+        (FREQUENT/RATE/TOO_/...)，而抖音风控返回 `{"decision":"KICK"}` 时
+        client_im 生成的文案里**没有**这些词 ⇒ 最该冷静的一类失败反而不冷静。
+        现在：`kind in COOLDOWN_KINDS`（rate_limited / risk_control）即触发；
+        `kind` 缺失（旧调用方/直发路径）才回落到关键字兜底，保证向后兼容。
+        """
         with self.lock:
             self.sent_total += 1
             if ok:
@@ -464,10 +501,21 @@ class AccountQuota:
                 if self.cooldown_level > 0:
                     self.cooldown_level -= 1
                 return
-        d = (detail or "").upper()
-        # 命中"频繁/频控"类回执（与 douyin_api._classify_send_fail 对齐）
-        if any(k in d for k in ("FREQUENT", "RATE", "TOO_", "LIMIT",
-                                "SPAM", "FREQUENCY", "频繁", "频控")):
+        # —— 失败：判定是否应冷静 ——
+        _is_cooldown = False
+        if kind:
+            try:
+                from services.send_response import kind_is_cooldown as _kic
+                _is_cooldown = _kic(kind)
+            except Exception:  # noqa: BLE001
+                _is_cooldown = False
+        if not _is_cooldown:
+            # 兼容兜底：无结构化 kind 时按文案关键字（旧行为，勿删）
+            d = (detail or "").upper()
+            _is_cooldown = any(k in d for k in (
+                "FREQUENT", "RATE", "TOO_", "LIMIT", "SPAM", "FREQUENCY",
+                "KICK", "INVALID_REQUEST", "RISK", "频繁", "频控", "风控"))
+        if _is_cooldown:
             with self.lock:
                 self.freq_hits_f += 1.0       # 浮点计数（供半衰期衰减）
                 self.freq_hits = int(self.freq_hits_f + 0.5)
@@ -477,7 +525,9 @@ class AccountQuota:
                 dur = min(cfg("COOLDOWN_ON_FREQUENT") * (2 ** (self.cooldown_level - 1)),
                           cfg("COOLDOWN_MAX"))
                 self.cooldown_until = time.time() + dur
-                logger.warning(f"[SEND-024] " + f"[dm-dispatch][{self.key}] 回执命中频控 → 权重降至 "
+                logger.warning(
+                    f"[SEND-024] [dm-dispatch][{self.key}] 回执命中频控/风控"
+                    f"(kind={kind or 'legacy'}) → 权重降至 "
                     f"{self._weight_unlocked():.2f}，强制冷静 {dur / 60:.0f} 分钟"
                     f"（第 {self.cooldown_level} 次，半衰期 "
                     f"{cfg('WEIGHT_RECOVER_HALFLIFE') / 3600:.0f}h 后自动恢复）")
@@ -505,9 +555,13 @@ class AccountQuota:
                 "stranger_last_min": len([t for t in self._stranger_minute
                                           if now - t < 60]),
                 "stranger_today": len(self._stranger_day),
+                # 2026-09-28：账号级分钟窗实况（含全部发送源）
+                "minute_sends": len([t for t in self._minute_sends
+                                     if now - t < 60]),
                 # 已持锁，直接算（不能调 effective_stranger_limit，会二次取锁死锁）
                 "limit_per_min": max(1, int(cfg("STRANGER_PER_MINUTE") * self._weight_unlocked())),
                 "limit_per_day": max(1, int(cfg("STRANGER_PER_DAY") * self._weight_unlocked())),
+                "minute_limit": int(cfg("PER_MINUTE_LIMIT") or 0),
                 "cooldown_left_sec": max(0, int(self.cooldown_until - now)),
             }
 
@@ -1291,17 +1345,27 @@ class DmDispatcher:
         # can_send()（含冷静期 + 最小间隔），recv_daemon 闸门降为物理兜底。
         try:
             _mi = 0.0
+            _pm = 0.0
             try:
                 from services.app_config import get as _cfgget
                 _mi = float(_cfgget("send", "min_interval") or 0)
+                _pm = float(_cfgget("send", "per_minute_limit") or 0)
             except Exception:
                 _mi = float(os.environ.get("DY_SEND_MIN_INTERVAL", "8") or 8)
-            ok_send, why, wait_s = quota.can_send(_mi)
+                _pm = float(os.environ.get("DY_SEND_PER_MINUTE", "0") or 0)
+            # 2026-09-28：**手动发送豁免**（门禁不拦用户显式操作 —— 与 BCC 启动
+            # 冷静期同一条铁律）。豁免 = 不做 check，但**仍计入分钟窗**（note_sent
+            # 在下方无条件调用）⇒ 手动不被拦、又能抬高后续自动发送的水位，兼具
+            # 「不拦用户」与「保护账号」。
+            _is_manual = (task.source == "manual")
+            ok_send, why, wait_s = quota.can_send(
+                0.0 if _is_manual else _mi, 0.0 if _is_manual else _pm)
             if not ok_send:
                 # 等待不超过阈值则原地等待后重试一次（避免无谓失败）
                 if 0 < wait_s <= SEND_WAIT_MAX:
                     time.sleep(wait_s)
-                    ok_send, why, wait_s = quota.can_send(_mi)
+                    ok_send, why, wait_s = quota.can_send(
+                        0.0 if _is_manual else _mi, 0.0 if _is_manual else _pm)
                 if not ok_send:
                     task.status = "failed"
                     task.error = f"调度器限流: {why}"
@@ -1309,7 +1373,7 @@ class DmDispatcher:
                         quota.refund_stranger()
                     logger.warning(f"[SEND-037] " + f"[dm-dispatch] 调度器限流 task={task.task_id}: {why}")
                     return
-            quota.note_sent()      # 预占最小间隔时间戳
+            quota.note_sent()      # 记账（含手动）：预占最小间隔 + 计入分钟窗
         except Exception as _e:
             logger.debug(f"[dm-dispatch] can_send 裁决异常（放行由兜底闸门管）: {_e}")
         try:
@@ -1353,13 +1417,15 @@ class DmDispatcher:
             else:
                 task.status = "failed"
                 task.error = data.get("error") or data.get("msg") or f"HTTP{r.status_code}"
+                # 2026-09-28：结构化失败类型（recv_daemon 透传）—— 供冷静期判定
+                task.error_kind = str(data.get("error_kind") or "")
                 # 发送失败 → 归还预占的首发额度（失败的发送不该占额度）
                 if task.is_stranger_first:
                     quota.refund_stranger()
                 logger.warning(f"[SEND-036] " + f"[dm-dispatch] 发送失败 task={task.task_id}: "
-                               f"{task.error}")
+                               f"kind={task.error_kind or 'n/a'} {task.error}")
             # 回执交给配额统计（命中频控 -> 降权 + 冷静期）
-            quota.on_result(ok, task.error)
+            quota.on_result(ok, task.error, task.error_kind)
         except Exception as e:
             task.status = "failed"
             task.error = str(e)

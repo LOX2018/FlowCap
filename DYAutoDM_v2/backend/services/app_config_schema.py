@@ -263,6 +263,15 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "apply": "restart_daemon", "risk": True,
                 "hint": "超时快速失败 rate_limited，不静默堆积",
             },
+            "per_minute_limit": {
+                "label": "全账号 每分钟发送上限",
+                "type": "int", "default": 3, "min": 0, "max": 60,
+                "env": "DY_SEND_PER_MINUTE",
+                "apply": "hot", "risk": True,
+                "hint": ("账号级分钟窗（滑窗，含 AI 回复与直播首发）。0 = 不启用。"
+                         "这是**唯一**能分钟级管控全量发送的闸门；"
+                         "「手动发送」豁免本窗口但照常计入"),
+            },
             "stranger_per_minute": {
                 "label": "陌生人首发 每分钟上限",
                 "type": "int", "default": 2, "min": 0, "max": 60,

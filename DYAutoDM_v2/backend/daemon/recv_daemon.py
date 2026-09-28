@@ -1766,7 +1766,10 @@ async def send(body: SendBody) -> dict:
             logger.info(f"[recv][{body.account}] 已回复会话 {body.conv_id[:8]}…: {body.text}")
             return {"ok": True}
         logger.warning(f"[RECV-017] " + f"[recv][{body.account}] 回复失败原因: {detail}")
-        return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
+        # 2026-09-28：透传结构化失败类型（消费方 dm_dispatch 只认 error_kind，不猜文案）
+        _kind = (_verdict or {}).get("error_kind") or ""
+        return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）",
+                "error_kind": _kind}
     except Exception as e:
         logger.error(f"[RECV-018] " + f"[recv][{body.account}] 回复失败: {e}")
         return {"ok": False, "error": str(e)}
@@ -1824,7 +1827,9 @@ async def send_by_uid(body: SendByUidBody) -> dict:
             logger.info(f"[recv][{body.account}] 已直发 uid={peer_id}: {body.text[:40]}")
             return {"ok": True, "conv_id": conv_id}
         logger.warning(f"[RECV-020] " + f"[recv][{body.account}] 直发 uid={peer_id} 失败: {detail}")
-        return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）"}
+        _kind = (_verdict or {}).get("error_kind") or ""
+        return {"ok": False, "error": detail or "send_msg 返回 False（可能触发私信风控）",
+                "error_kind": _kind}
     except Exception as e:
         logger.error(f"[RECV-021] " + f"[recv][{body.account}] 直发 uid={peer_id} 异常: {e}")
         return {"ok": False, "error": str(e)}
