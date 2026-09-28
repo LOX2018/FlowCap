@@ -122,18 +122,28 @@ def run_task(task: TK.DownloadTask, aweme: dict[str, Any], *, base_dir: str,
     #   后果：调用方若没先 `mgr.add(task)`，任务**实际下载成功但状态永远停在
     #   `queued`**（实测：bytes=4,187,401 已落盘，status 仍报 queued）。
     #   ⇒ 这里显式保证任务在表中（幂等），消除"流程走完但状态不对"。
-    if mgr.get(task.task_id) is None:
-        mgr.add(task)
-    media = MR.extract_media(aweme)
-    task.media_type = media["type"]
-    task.quality = quality
-    mgr.mark(task.task_id, status=TK.RUNNING, media_type=media["type"])
-
-    out_dir = TK.archive_dir(base_dir, nickname=task.nickname,
-                             auto_folder=auto_folder, folder_tpl=folder_tpl)
-    os.makedirs(out_dir, exist_ok=True)
-
+    #
+    # 2026-09-28 A-3 修复（批量下载「单作品失败 ⇒ 整批中断」）：
+    #   原实现把**前置准备**（`extract_media` / `mark(RUNNING)` / `archive_dir`
+    #   / `os.makedirs`）放在 `try:` **之外**。而 `run_batch()` 用
+    #   `list(ex.map(_one, awemes))` 编排：任一 `_one` 抛异常 ⇒
+    #   `ThreadPoolExecutor.map` 在物化时抛出 ⇒ **整批中断**，其余作品全部不下、
+    #   调用方收到异常（实测：注入 1 个取址失败作品 → 整批 error）。
+    #   ⇒ 现把每个作品的**完整处理**（含全部前置准备）纳入同一 `try/except`：
+    #     单作品异常 → 该任务标 FAILED + 写 error + 继续下一个，不影响其余；
+    #     既有失败/取消标记语义（`except` 分支）保持不变。
     try:
+        if mgr.get(task.task_id) is None:
+            mgr.add(task)
+        media = MR.extract_media(aweme)
+        task.media_type = media["type"]
+        task.quality = quality
+        mgr.mark(task.task_id, status=TK.RUNNING, media_type=media["type"])
+
+        out_dir = TK.archive_dir(base_dir, nickname=task.nickname,
+                                 auto_folder=auto_folder, folder_tpl=folder_tpl)
+        os.makedirs(out_dir, exist_ok=True)
+
         files: list[tuple[str, str]] = []      # (url, dest)
 
         if media["type"] == "video":
