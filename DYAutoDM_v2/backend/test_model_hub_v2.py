@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """model_hub v2（提供商/模型/避障链路/兜底/消费方）单元测试（隔离 DB）。"""
+import importlib
 import os
 import sys
 import tempfile
@@ -12,18 +13,31 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── 测试隔离（2026-09-22 修复；与 test_config_isolation 同款手法）──────────────
 # 背景：`unittest discover` 把全部 test_*.py 导入**同一进程**，而每个测试文件都在
-# 模块顶部改 `os.environ["DY_APP_ROOT"]`，`database` 在**导入时**据此固化 DB 路径。
+# 模块顶部改 `os.environ["DY_APP_ROOT"]`。
 # 若本模块复用了先前测试模块建立的 `database` 模块/连接（或其缓存），
 # 本用例会去读写**别人**的库 → 「单独跑全绿、整体跑红」。
 # 实测症状（本机全量 536 项）：本模块 3 项失败，报 `caps=['llm']` 缺 `vision`
 # 与 `providers` 计数 2≠1 —— 即读到了别的库留下的残留状态。
-# ⇒ 每次 setUp 前：① 清 `database` + `services.*` 模块；② 重新导入（此时
-#    DB 路径按本模块的 `_ROOT` 重新固化）；③ 重置连接。
+#
+# #### M-17 修复（2026-09-28）：把 `del sys.modules[...]` 换成 reload
+#
+# 原实现 ① `del sys.modules["database"/"services.*"]` ② 重导入 ③ 重置连接。
+# 但 ① 会制造**重复模块对象**：重导入得到 d1，而此前已 `import database` 的模块
+# （如 `services.ai_agent`）仍持有 d0 ⇒ 两边各写各的连接。本函数的调用点在
+# **模块导入期**（`:30`）⇒ 污染面覆盖整个进程 —— 实测 `test_ai_agent`
+# `TestZeroRegression` 2 项假失败：`reset_all()` 删的是 d1 的 kv，而
+# `ai_agent` 读的是 d0，残留绑定（账号A→ag1 的 knowledge_base）永不被清掉。
+#
+# 正解（对象身份不变）：
+#   · `os.environ["DY_APP_ROOT"] = _ROOT` + `database.reset_connection()`
+#     —— 连接按本模块隔离根重建（等价于旧「重导入」的净化效果，无对象分裂）
+#   · `importlib.reload(model_hub)` —— 重跑模块体清掉模块级缓存
 def _reimport():
-    for _m in [k for k in list(sys.modules) if k == "database" or k.startswith("services.")]:
-        del sys.modules[_m]
     import database as _db
-    from services import model_hub as _hub
+    os.environ["DY_APP_ROOT"] = _ROOT
+    _db.reset_connection()
+    import services.model_hub as _hub
+    importlib.reload(_hub)
     return _hub, _db
 
 

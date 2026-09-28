@@ -11,6 +11,7 @@
 并保证 database 尚未被导入；若已被导入则强制重定位其 DB 路径。
 """
 
+import importlib
 import os
 import sys
 import tempfile
@@ -24,13 +25,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def fresh(section: str | None = None):
-    """返回一个干净隔离的 app_config 模块，并可选重置某 section。"""
-    for m in [k for k in list(sys.modules) if k in ("database",) or k.startswith("services.")]:
-        del sys.modules[m]
-    from services import app_config as ac
+    """返回一个干净隔离的 app_config 模块，并可选重置某 section。
+
+    #### M-17 修复（2026-09-28）：不得 `del sys.modules[...]`
+
+    原实现 `del sys.modules["database"/"services.*"]` 会制造**重复模块对象**：
+    重导入得到新对象，而此前已 `import database` 的模块仍持有旧对象 ⇒ 双方各写
+    各的 SQLite 连接，「测试隔离」形同虚设。本函数的调用点之一是**导入期**
+    （`test_b4_global_switches.py:20`），于是按字母序排在 `test_b4` 之前的
+    `test_ai_agent`（已持有旧 `database`）被污染 —— 实测
+    `TestZeroRegression` 2 项假失败（`resolve_config/resolve_knowledge` 读到的库
+    与 `reset_all()` 清理的库不是同一个）。
+
+    正解：**模块对象身份不变**，只用
+      · `database.reset_connection()` —— 让连接按当前 env 重建
+        （等价于旧「重导入」的净化效果，但无对象分裂）
+      · `importlib.reload(app_config)` —— 重跑模块体清掉模块级缓存
+    并把 env 钉回本模块隔离根（与本模块导入期行为一致）。
+    """
+    import database
+    os.environ["DY_APP_ROOT"] = _ROOT
+    database.reset_connection()
+    import services.app_config as ac
+    importlib.reload(ac)
     if section:
         ac.reset_section(section)
     return ac
+
+
+def setUpModule():
+    """M-17（2026-09-28）：把隔离根**钉回本模块**再跑判据。
+
+    本模块的 `test_database_resolves_under_isolated_root` 断言「`_db_path()`
+    解析结果落在 `_ROOT` 之下」，而 `_db_path()` 是**运行时**读 env ⇒ 该不变量
+    依赖 `DY_APP_ROOT` 的当前值。组合跑时，排在本模块之前的模块会在自己的
+    setUp/helper 里钉各自的根（如 `test_model_hub_key_masking` 钉
+    `dyautodm_t6b_mask_*`）⇒ 本模块判据假失败（实测组合跑 1 项红）。
+    这与 `test_app_root_is_isolated_temp_not_repo` 的「不得断言等于 `_ROOT`」
+    并不冲突：那条断言的是**成员资格**（在临时区、不在源码树），钉根后依然成立。
+    """
+    os.environ["DY_APP_ROOT"] = _ROOT
 
 
 class TestConfigIsolation(unittest.TestCase):

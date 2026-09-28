@@ -118,11 +118,18 @@ def _scan_orphan_methods(root: str) -> list[tuple[str, str, str, int]]:
     return hits
 
 
-#: 白名单：(相对路径, 外层函数, 内层函数, 行号) —— monkeypatch 替身需 `self` 形参。
-#: 每条必须写明理由；不得为「让门禁变绿」而加项（同 .known-gaps.json 纪律）。
+#: 白名单：(相对路径, 外层函数, 内层函数, 行号) —— 有两种合法用途需 `self` 形参：
+#: ① monkeypatch 替身（首个形参按被替身的原签名即 `self`）；
+#: ② TestCase 方法工厂（产出物被 `setattr(TestCase, name, fn)` 装成测试方法）。
+#: **行号仅作文档**（匹配只用前三元组）；每条必须写明理由；不得为「让门禁变绿」而加项
+#: （同 .known-gaps.json 纪律）。新增条目必须能被 test_g6b 的负控覆盖。
 _ALLOWED_ORPHANS = [
     ("test_upstream_p3.py", "_rendered_texts", "spy", 334),
     # ↑ `ImageDraw.ImageDraw.text` 的 monkeypatch 替身，第一个形参按原签名即 `self`。
+    ("test_task_scheduler_gates.py", "_make_test", "_t", 699),
+    # ↑ TestCase 方法工厂：`_t` 经 `setattr(GateTestCase, "test_<gid>", …)` 装成
+    #   测试方法（test_task_scheduler_gates.py:705），首参必须是 `self`（unittest 契约）。
+    #   非 AI-063 型误嵌：它**本来就不属于任何类**，故不存在「类方法静默丢失」。
 ]
 
 
@@ -186,7 +193,13 @@ class TestAiClientMethodStructure(unittest.TestCase):
 
     # ── G6/G7：全仓泛化 —— 防「孤儿类方法」同类缺陷在任何文件复发 ──────────
     # 判据：**模块级函数**的**直接子节点**若是「首参为 self」的 def，则该 def
-    # 几乎必然是**误嵌的类方法**（合法用途只有 monkeypatch 替身，见白名单）。
+    # 几乎必然是**误嵌的类方法**。
+    # 合法用途只有两种（其余一律报红）：
+    #   ① monkeypatch 替身 —— 第一个形参按被替身的原签名即 `self`；
+    #   ② TestCase 方法工厂 —— 产出的函数要被 `setattr(TestCase, name, fn)`
+    #      装成测试方法，首参必须是 `self`（unittest 契约）。
+    # 两者都需先例可查，故设白名单；**不得为「让门禁变绿」而加项**
+    # （同 .known-gaps.json 纪律）。
     # 与 AI-063 同型：语法合法、无报错、类方法静默丢失。
     def test_g6_no_orphan_class_methods_repo_wide(self):
         """全仓扫描：不得存在「模块级函数直接内嵌首参 self 的 def」。"""
@@ -197,6 +210,40 @@ class TestAiClientMethodStructure(unittest.TestCase):
             new,
             "发现孤儿类方法（疑误嵌进模块级函数，AI-063 同型缺陷）：\n  "
             + "\n  ".join(f"{p}:{ln} {outer}() 内嵌 {inner}()" for p, outer, inner, ln in new))
+
+    def test_g6b_whitelist_does_not_blind_the_scan(self):
+        """G6b 负控：白名单只豁免被点名的那一条，同文件其它孤儿仍须报红。
+
+        防「为修一条红而把整类 scan 关掉」——直接对检测器喂合成源码，
+        断言 ①白名单命中的形态被豁免、②**同一文件内**新增的孤儿仍被抓到。
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "daemon"), exist_ok=True)
+            with open(os.path.join(d, "test_task_scheduler_gates.py"), "w",
+                      encoding="utf-8") as f:
+                # ① 白名单内的工厂形态（应被豁免）
+                f.write("def _make_test(gid, fn):\n"
+                        "    def _t(self):\n"
+                        "        return gid\n"
+                        "    return _t\n"
+                        "\n"
+                        # ② 同文件内**新**孤儿（须报红）
+                        "def _another_factory():\n"
+                        "    def _sneaky(self):\n"
+                        "        return 1\n"
+                        "    return _sneaky\n")
+            hits = _scan_orphan_methods(d)
+        triples = {h[:3] for h in hits}
+        self.assertIn(("test_task_scheduler_gates.py", "_make_test", "_t"), triples,
+                      "白名单目标形态未被检测器抓到 ⇒ 白名单条目已失效（应删除或更新）")
+        self.assertIn(("test_task_scheduler_gates.py", "_another_factory", "_sneaky"),
+                      triples, "同文件新增孤儿未被抓到 ⇒ 扫描被白名单弄瞎了")
+        allow = {(p, outer, inner) for p, outer, inner, _ in _ALLOWED_ORPHANS}
+        remaining = sorted(t for t in triples if t not in allow)
+        self.assertEqual(remaining,
+                         [("test_task_scheduler_gates.py", "_another_factory", "_sneaky")],
+                         "白名单豁免面超出预期")
 
     def test_g7_orphan_detector_catches_ai063_form(self):
         """G7 负控：注入 AI-063 旧形态 → 检测器必须命中（证非空转）。"""

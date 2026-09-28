@@ -66,10 +66,15 @@ def _send_response_bytes(server_message_id=None, check_code=None, message="OK") 
 
 
 def _reload_db():
+    """把全局 database 的连接重建到本模块隔离根并清表。
+
+    M-17 修复（2026-09-28）：原实现 `sys.modules.pop("database")` 后重导入 ⇒
+    全局出现第二个 `database` 对象（此后 `from services import X` 绑到新对象，
+    先前导入者仍持旧对象 ⇒ 两边连不同 SQLite 文件）。改为 `reset_connection()`
+    在**同一对象**上重建连接。
+    """
     os.environ["DY_APP_ROOT"] = _ROOT
-    sys.modules.pop("database", None)
     import database
-    importlib.reload(database)
     database.reset_connection()
     conn = database.get_db()
     conn.execute("DELETE FROM dm_messages")
@@ -79,10 +84,10 @@ def _reload_db():
 
 
 def _fresh_probe():
+    """返回绑定到本模块隔离根的 probe 模块（M-17：不再 pop sys.modules）。"""
     os.environ["DY_APP_ROOT"] = _ROOT
-    for k in [k for k in list(sys.modules)
-              if k == "database" or k == "services.probe" or k.startswith("services.")]:
-        sys.modules.pop(k, None)
+    import database
+    database.reset_connection()
     import services.probe as P
     return importlib.reload(P)
 
@@ -140,7 +145,8 @@ class TestMarkerWrite(unittest.TestCase):
 
     def setUp(self):
         self.db = _reload_db()
-        sys.modules.pop("services.delivery_verify", None)
+        # M-17（2026-09-28）：原 `sys.modules.pop(...)` + 重导入会新建模块对象
+        # （与其它已导入者的引用分裂）；reload 保持对象身份、同样清模块级缓存。
         import services.delivery_verify as dv
         self.dv = importlib.reload(dv)
 
@@ -244,28 +250,21 @@ class TestChatRenderExcludesMarker(unittest.TestCase):
 
     def _fetch(self):
         os.environ["DY_APP_ROOT"] = _ROOT
-        # 2026-09-23 修复（HC-10 收尾实测发现，顺序相关的**假失败**）：
-        # 原先在此「pop 所有 api.* / database」后不还原 ⇒ 其它测试模块已
-        # `from api import live_rooms, live_config` 拿到的**旧模块对象**会与
-        # 此后 `sys.modules["api.live_rooms"]` 里的**新对象**脱钩。
-        # 实测：test_delivery_verify 先跑时，test_p2_live_guards 的
-        # mock.patch.object(live_rooms,'unbind_strategy') 打不中新对象 ⇒
-        # delete_strategy 走真解绑分支并谎报 ok=True（假失败，非产品缺陷）。
-        # 定式：临时卸载/重载模块后，**退出时必须逐键还原**。
-        _saved = {k: v for k, v in sys.modules.items()
-                  if k.startswith("api.") or k == "database"}
-        try:
-            for k in list(_saved):
-                sys.modules.pop(k, None)
-            import api.messages as M
-            importlib.reload(M)
-            return asyncio.run(M.get_conversation("acc1", "0:1:me:p1"))
-        finally:
-            for k in [k for k in list(sys.modules)
-                      if k.startswith("api.") or k == "database"]:
-                if k not in _saved:
-                    sys.modules.pop(k, None)
-            sys.modules.update(_saved)
+        # 2026-09-23 修复（HC-10）：原「pop 所有 api.* / database 后不还原」会让
+        # 其它测试模块已 `from api import live_rooms` 拿到的旧对象与 sys.modules
+        # 里的新对象脱钩（实测破坏 test_p2_live_guards 的 mock.patch.object）。
+        # 当时的止血是**退出时逐键还原**。
+        # M-17（2026-09-28）：还原只是止血 —— pop `database` 的**窗口期内**任何
+        # 惰性 import 的 `services.*` 都会绑到临时对象，还原后即成永久分裂。
+        # 真正需要的只是「让 api.messages 重新执行一遍 import 以重绑 get_db」，
+        # `importlib.reload` 保持对象身份即可做到，**无需 pop**。
+        # ⚠️ 必须用 `import_module` 取模块：`import api.messages as M` 走 IMPORT_FROM，
+        # 优先返回 `api` 包上的**属性** —— 别的模块卸载过 `sys.modules['api.messages']`
+        # 后该属性会与 sys.modules 里的对象**脱钩**（实测乱序跑时 reload 报
+        # `module api.messages not in sys.modules`）。`import_module` 只认 sys.modules。
+        M = importlib.import_module("api.messages")
+        importlib.reload(M)
+        return asyncio.run(M.get_conversation("acc1", "0:1:me:p1"))
 
     def test_marker_filtered_out(self):
         got = self._fetch()

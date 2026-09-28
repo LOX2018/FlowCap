@@ -199,6 +199,17 @@ class MessageRecord:
             return MessageRecord(label, mt, ex, "unknown")
 
         ex["kind"] = kind
+        if kind == "user_text" and is_noise_text(raw_text):
+            # H-25：噪音前缀（`[投递验证]`/`[系统提示]`/`[系统消息]`/`[未知类型`/
+            # `[未知媒体]`）是写侧占位/探针标记，**非会话内容**。读侧
+            # `readable()` 对**有 kind** 的行只按白名单放行、不再回看前缀 ⇒
+            # 必须在写侧就记 system_notice，否则有 kind 的行比存量无 kind 行更宽松
+            # （存量行反而被 `is_noise_text` 拦下）。
+            # 亦须与 `scripts/migrate_message_kind.py` 口径一致：后者把同一行判为
+            # system_notice，且遵守「已标注即跳过」的幂等规则 ⇒ 写侧若错标为
+            # user_text，迁移**永不纠正**。
+            ex["kind"] = "system_notice"
+            return MessageRecord(raw_text, mt, ex, "system_notice")
         if kind == "media":
             # ADR-011：缩略图字节必须在 extra.thumb，不得在 text
             if raw_text.startswith("data:image") or "base64," in raw_text[:64] \

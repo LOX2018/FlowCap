@@ -18,7 +18,7 @@
 
 抖音 IM 消息**发送**和**接收**走两条不同的通道：
 
-- **接收（push）**：WebSocket（基座 `dy_apis/douyin_recv_msg.py:36-79` on_message）
+- **接收（push）**：WebSocket（基座 `dy_apis/douyin_recv_msg.py:36-79` on_message；该文件已于 2026-09-28 A-6 作为零引用孤儿删除）
 - **发送（send）**：**HTTPS POST `https://imapi.douyin.com/v1/message/send`**
   （基座 `dy_apis/douyin_api.py:1760-1793` `send_msg`）
 

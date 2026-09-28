@@ -60,12 +60,68 @@ class _NetCounter:
 
 _NET = _NetCounter()
 
+# ── M-17 修复（2026-09-28）：进程级全局的**快照 / 还原** ──────────────────
+# unittest discover 是**单进程**，本模块会改写进程级全局：`DouyinAPI.sendMsgInRoom`
+# 与 `api.live` 的模块属性。不还原则会污染**同进程后续模块**（实测量化，全部由本
+# 模块单独造成）：`test_upstream_write_align_t1_t2` 7F+2E、`test_ai_agent` 2F、
+# `test_p2_live_guards` 1F。故首次打桩前快照，模块级 `tearDownModule` 还原。
+_SEND_SNAPSHOT = None  # (own: bool, raw_attr) —— None 表示当前未打桩
+
+
+def _ensure_send_snapshot():
+    """首次打桩前记录 `DouyinAPI.sendMsgInRoom` 的原始宿主形态。
+
+    `sendMsgInRoom` 实际定义在 `LiveMixin`（client_live.py:606），由 `DouyinAPI`
+    **继承** ⇒ `DouyinAPI.__dict__` 里本没有它。补丁用 `setattr` 写进自己的
+    `__dict__`（遮蔽继承项），故 own=False 时必须 `delattr` 掉遮蔽项还原，
+    **不能** `setattr(None)`（那会留一个值为 None 的遮蔽项，比不还原更糟）。
+    """
+    global _SEND_SNAPSHOT
+    if _SEND_SNAPSHOT is None:
+        import dy_apis.douyin_api as dapi
+        _SEND_SNAPSHOT = (
+            "sendMsgInRoom" in dapi.DouyinAPI.__dict__,
+            dapi.DouyinAPI.__dict__.get("sendMsgInRoom"),
+        )
+    return _SEND_SNAPSHOT
+
+
+def _restore_globals():
+    """还原本模块改写过的全部进程级全局（幂等，可重复调用）。"""
+    global _SEND_SNAPSHOT
+    if _SEND_SNAPSHOT is not None:
+        import dy_apis.douyin_api as dapi
+        own, raw = _SEND_SNAPSHOT
+        if own:
+            setattr(dapi.DouyinAPI, "sendMsgInRoom", raw)
+        elif "sendMsgInRoom" in dapi.DouyinAPI.__dict__:
+            delattr(dapi.DouyinAPI, "sendMsgInRoom")
+        _SEND_SNAPSHOT = None
+    # api.live 模块级桩（`_auth_for` 等）随 reload 复位
+    if "api.live" in sys.modules:
+        importlib.reload(sys.modules["api.live"])
+    os.environ["DY_APP_ROOT"] = _ROOT
+    import database
+    database.reset_connection()
+
+
+def tearDownModule():
+    """M-17：模块结束即还原全局，杜绝跨模块顺序依赖。"""
+    _restore_globals()
+
 
 def _load_live():
-    """导入（或重载）api.live，并把 database 绑定在隔离根上。"""
+    """导入（或重载）api.live，并把 database 绑定在隔离根上。
+
+    M-17 修复（2026-09-28）：原实现 `sys.modules.pop("database"/"api.*")` 会制造
+    **重复模块对象** —— 重导入得到 d1，而此前已 `import database` 的模块（如
+    services.ai_agent）仍持有 d0 ⇒ 双方各写各的连接，「测试隔离」形同虚设
+    （实测 3 项假失败）。改为保留唯一模块对象，仅 `reset_connection()` 让连接按
+    **运行时** env 重建（`_db_path()` 本就是运行时读 env，无需重导入）。
+    """
     os.environ["DY_APP_ROOT"] = _ROOT
-    for m in [k for k in list(sys.modules) if k == "database" or k.startswith("api.")]:
-        sys.modules.pop(m, None)
+    import database
+    database.reset_connection()
     import api.live as L
     importlib.reload(L)
     return L
@@ -77,6 +133,8 @@ def _install_send_stub(L, mode="ok", status_code=0, exc=None):
     mode: ok=业务成功 / fail=status_code≠0 / raise=抛异常 / noauth=凭证缺失
     """
     import dy_apis.douyin_api as dapi
+
+    _ensure_send_snapshot()
 
     def _stub(auth, room_id, content="", **kwargs):
         _NET.calls += 1

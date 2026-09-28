@@ -18,6 +18,7 @@
 同款手法，防止 unittest 单进程复用别人的 DB 固化路径）。
 **绝不写入 C:/temp/dyautodm_design**，也不写源码树 backend/data/。
 """
+import importlib
 import os
 import sys
 import tempfile
@@ -33,12 +34,23 @@ SHORT_KEY = "sk-short"                    # 8 字符，走「全 *」分支
 
 
 def _reimport():
-    """清 database + services.* 并重新导入，保证 DB 路径按本模块 _ROOT 固化。"""
-    for _m in [k for k in list(sys.modules)
-               if k == "database" or k.startswith("services.")]:
-        del sys.modules[_m]
+    """返回绑定到本模块隔离根的 (model_hub, database)。
+
+    M-17 修复（2026-09-28）：原实现 `del sys.modules["database"/"services.*"]`
+    会制造**重复模块对象** —— 此后 `from services import X` 得到新对象并绑定
+    新的 `database`，而先前已导入的模块仍持旧对象 ⇒ 两边连的不是同一个 SQLite
+    文件。实测（全量 1108 项）：本模块 setUp 删掉 `services.reply_kb` 后，
+    `test_reply_kb_generality` 的 `R`（旧对象，写 d_old）与 `audit_legacy_auto`
+    内 `from services import reply_kb`（新对象，读 d_new）分裂 ⇒ 写入丢失、
+    `scanned=0` 假失败。改为对象身份不变：
+      · env 钉回本模块 `_ROOT` + `database.reset_connection()`
+      · `importlib.reload(model_hub)` 清模块级缓存
+    """
     import database as _db
-    from services import model_hub as _hub
+    os.environ["DY_APP_ROOT"] = _ROOT
+    _db.reset_connection()
+    import services.model_hub as _hub
+    importlib.reload(_hub)
     return _hub, _db
 
 

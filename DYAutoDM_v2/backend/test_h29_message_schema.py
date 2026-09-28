@@ -61,6 +61,58 @@ class TestSystemNotice(unittest.TestCase):
             self.assertEqual(r.kind, "system_notice")
             self.assertFalse(ms.readable(r.text, r.msg_type, r.extra))
 
+    def test_g2c_noise_prefix_is_system_notice(self):
+        """G2c：噪音前缀行（H-25）在**写侧**即升格 system_notice，不得标 user_text。
+
+        背景（2026-09-28）：`readable()` 对**有 kind** 的行只按白名单放行、
+        不再回看前缀 ⇒ 若写侧把 `[系统提示]…` 标成 user_text，反而比无 kind 的
+        存量行**更宽松**（存量行走 `is_noise_text` 分支被拦下）。
+        """
+        for t in ("[系统提示] 陌生人消息确认（#1）", "[投递验证] conv_id=x",
+                  "[系统消息] 对方已上线", "[未知媒体] {}", "[未知类型1] {}"):
+            r = ms.MessageRecord.build(text=t, msg_type="text")
+            self.assertEqual(r.kind, "system_notice", f"未升格：{t[:12]}")
+            self.assertFalse(ms.readable(r.text, r.msg_type, r.extra),
+                             f"噪音前缀行仍可读：{t[:12]}")
+
+    def test_g2d_delivery_marker_not_overridden(self):
+        """G2d：msg_type 已登记为 delivery_marker 时，前缀规则不得再改写它。"""
+        r = ms.MessageRecord.build(text="[投递验证] conv_id=x",
+                                   msg_type="delivery_marker")
+        self.assertEqual(r.kind, "delivery_marker")
+
+    def test_g9_write_side_matches_migration_plan(self):
+        """G9：写侧 kind 必须与 `scripts/migrate_message_kind.plan()` 判定一致。
+
+        迁移的幂等规则是「已有 kind 即跳过」⇒ 写侧一旦错标，迁移**永不纠正**。
+        故两侧口径必须同源；本门禁把 `plan()` 当**被测对象**跑同一批样本对拍。
+        """
+        import importlib.util
+        p = os.path.join(os.path.dirname(_BACKEND), "scripts",
+                         "migrate_message_kind.py")
+        spec = importlib.util.spec_from_file_location("_mk_kind_migrate", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        samples = [
+            ("你好", "text"),
+            ("[系统提示] 陌生人消息确认（#1）", "text"),
+            ("[投递验证] conv_id=x", "text"),
+            ("[投递验证] conv_id=x", "delivery_marker"),
+            ("对方回复或关注你之前，只能发送一条文字消息。请礼貌发言，自觉遵守{{0}}", "text"),
+            ("[未知类型9] {}", "99999"),
+            ("你好", "99999"),
+            ("", "text"),
+        ]
+        rows = [{"id": i, "text": t, "msg_type": mt, "extra": ""}
+                for i, (t, mt) in enumerate(samples)]
+        todo = {x["id"]: x["kind"] for x in mod.plan(rows)}
+        self.assertEqual(set(todo), set(range(len(samples))),
+                         "样本应全部未标注（plan 只收未标注行）")
+        for i, (t, mt) in enumerate(samples):
+            made = ms.MessageRecord.build(text=t, msg_type=mt)
+            self.assertEqual(todo[i], made.kind,
+                             f"迁移与写侧判定分叉：{t[:12]!r} / msg_type={mt!r}")
+
 
 class TestNoFalsePositive(unittest.TestCase):
     """G3：正常消息必须放行（否则门禁会误伤业务）。"""
@@ -156,6 +208,30 @@ class TestWriteExit(unittest.TestCase):
             hits = re.findall(pat, src)
             self.assertEqual(len(hits), 0,
                              f"{rel} 仍存在裸写列名元组 {len(hits)} 处")
+
+    def test_g6c_patch_path_extra_carries_kind(self):
+        """G6c：补写路径（`UPDATE dm_messages SET extra=?`）写的 JSON 必须自带 kind。
+
+        背景（2026-09-28 实测）：`capture_all` 的「补写」逻辑有两条
+        `UPDATE dm_messages SET extra=?` —— 它们**直接写原始 `_extra` JSON，
+        不经 `MessageRecord.build`**（ADR-012 层 2 唯一出口）⇒ 该路径写入的行
+        永缺 `extra.kind`。实测生产库 **103 行**未标注全部出自此路径（G7 红）。
+
+        本门禁锁死「写这两条 UPDATE 之前，kind 已并入 `_ex`」这一形态；
+        **行为兜底是 G7**（活体库全行已标注）。
+        """
+        import re
+        src = open(os.path.join(_BACKEND, "auto_dm", "conversation_capture.py"),
+                   encoding="utf-8").read()
+        # ① 补写路径仍是两条 UPDATE（形态变更时本门禁必须被同步审视，不得默默失效）
+        self.assertEqual(src.count("UPDATE dm_messages SET extra=?"), 2,
+                         "补写路径的 UPDATE 数量变了 —— 请同步审视本门禁判据")
+        # ② `_extra` 唯一产出点：产出前必须已把 kind 并入 _ex
+        m = re.search(r"if _ex:\s*(.{0,800}?)_extra = _json\.dumps\(_ex",
+                      src, re.S)
+        self.assertIsNotNone(m, "未找到 `_extra` 产出点（写侧结构已变）")
+        self.assertIn('"kind"', m.group(1),
+                      "补写路径写库前未并入 extra.kind —— ADR-012 唯一出口被绕过（G7 将复发）")
 
 
 class TestLiveData(unittest.TestCase):

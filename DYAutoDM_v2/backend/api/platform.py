@@ -262,7 +262,7 @@ class UsersInfoReq(BaseModel):
     account: str
     uids: list[str] = []            # 数字 UID（会话 peer_uid，首包解析 100% 可靠）
     sec_uids: list[str] = []        # sec_uid（用户主页 URL 尾段）
-    use_bcc: bool = True            # True=BCC 容器内 fetch；False=纯 HTTP 直连
+    use_bcc: bool = False           # False=纯 HTTP 直连（默认）；True=BCC 容器内 fetch（显式 opt-in）
 
 
 class SearchReq(BaseModel):
@@ -461,11 +461,21 @@ async def users_info_batch(req: UsersInfoReq) -> dict[str, Any]:
     主分支铁律原为「`get_im_user_info`/`bulk_user_info` 绝不调用」（昵称风控红线），
     本分支按用户 2026-09-14 授权「全解除」已解禁。
 
-    双通道：
-      ① `use_bcc=True`（默认）→ 经 BCC 容器内 fetch（沿用账号常驻浏览器环境，
-         与源项目的"浏览器内 fetch"同思路，且天然带 origin/credentials）；
-      ② `use_bcc=False` → 纯 HTTP 直连（`dy_apis.get_im_user_info`，照源项目
-         `reqwest` 直连的方式，需自带 msToken/a_bogus 签名）。
+    双通道（**默认已改为无浏览器**，2026-09-28 E1）：
+      ① `use_bcc=False`（**默认**）→ 纯 HTTP 直连（`_im_user_info_by_sec`，
+         2026-09-14 真机实测 `status_code=0`；见本文件 `_im_user_info_by_sec`）；
+      ② `use_bcc=True` → 经 BCC 容器内 fetch（沿用账号常驻浏览器环境）——
+         **显式 opt-in**，仅在需要与 ① 做对照时使用。
+
+    为什么把默认翻过来（E1，2026-09-28）：
+      · 该端点**全仓零调用方**，却以 `use_bcc=True` 作默认 ⇒ 任何未来调用者
+        都会**隐式拉起常驻浏览器容器**（正是 ADR-023 D1「失败即钉死」那类
+        故障的触发口），且对纯 HTTP 等价物已存在的能力毫无必要；
+      · 本仓已确立事实：私信发送主通道（`api/messages.py:1469`）与接收
+        （`daemon/recv_daemon.py:851`）**均不依赖浏览器**，无浏览器请求本身
+        不触发风控 —— 09-13 风控事故的根因是「同一 profile 环境跳变」
+        （`d78f100`），与此无关；
+      · 遵循本项目【显式配置原则】：需要浏览器就显式写明，不作隐式默认。
 
     返回 `{ok, data: {uid|sec_uid: {nickname, avatar, sec_uid, uid}}}`。
     """

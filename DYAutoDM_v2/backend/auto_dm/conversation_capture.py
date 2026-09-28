@@ -1963,7 +1963,15 @@ def capture_all(name, with_browser=True):
                         _ex["is_recalled"] = int(m["is_recalled"])
                     if m.get("visible") is not None:
                         _ex["visible"] = int(m["visible"])
-                    _extra = _json.dumps(_ex, ensure_ascii=False) if _ex else "{}"
+                    if _ex:
+                        # ADR-012 单一出口：本 JSON 会被下面两条 UPDATE **直接写库**
+                        # （「补写」路径不经 MessageRecord.build）⇒ 必须自带 kind，
+                        # 否则该行读侧只能回落 msg_type，且 G7（全行已标注 kind）恒红。
+                        # 实测缺陷（2026-09-28）：生产库 103 行缺 kind 全出自此路径。
+                        _ex["kind"] = _rec_of(m, _ex).kind
+                        _extra = _json.dumps(_ex, ensure_ascii=False)
+                    else:
+                        _extra = "{}"
                     # 需要「补写」的情形：全新字段（f14/f4/f18）可能出现在
                     # 已存在的旧行里 —— 旧行为 extra='{}' 或只有 skey。
                     # 判据：旧行 extra 里**不含本次新键**即补写。

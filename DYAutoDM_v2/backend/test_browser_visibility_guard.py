@@ -18,7 +18,7 @@ import threading
 import time
 import unittest
 
-BE = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2\backend"
+BE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BE)
 
 BROWSER_DAEMON = os.path.join(BE, "daemon", "browser_daemon.py")

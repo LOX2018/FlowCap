@@ -45,22 +45,28 @@ def setUpModule():
 
 
 def _fresh_probe():
-    """返回一个干净隔离的 probe 模块（顺带把 DY_APP_ROOT 钉回本模块隔离根）。"""
+    """返回一个干净隔离的 probe 模块（顺带把 DY_APP_ROOT 钉回本模块隔离根）。
+
+    M-17 修复（2026-09-28）：原实现 `sys.modules.pop("database"/"services.*")`
+    制造**重复模块对象**（重导入得新对象，先前导入者仍持旧对象 ⇒ 两边连不同
+    SQLite 文件）。改为身份不变：env 钉根 + `reset_connection()` + reload。
+    """
     os.environ["DY_APP_ROOT"] = _ROOT
-    for m in [k for k in list(sys.modules) if k in ("database", "services.probe")
-              or k.startswith("services.")]:
-        sys.modules.pop(m, None)
+    import database
+    database.reset_connection()
     import services.probe as P
     return importlib.reload(P)
 
 
 def _reset_db():
-    """重建隔离的 SQLite 库：确保建表 + 清空相关表（不靠删文件，避免连接句柄残留）。"""
+    """重建隔离的 SQLite 库：确保建表 + 清空相关表（不靠删文件，避免连接句柄残留）。
+
+    M-17 修复（2026-09-28）：原实现 `sys.modules.pop("database")` 后重导入 ⇒
+    全局出现第二个 `database` 对象（本模块后续用的是新对象，其它模块仍是旧对象）。
+    改为 `reset_connection()` 让**同一个**对象按当前 env 重建连接。
+    """
     os.environ["DY_APP_ROOT"] = _ROOT
-    for m in [k for k in list(sys.modules) if k == "database"]:
-        sys.modules.pop(m, None)
     import database
-    importlib.reload(database)
     database.reset_connection()
     conn = database.get_db()          # 首次调用会执行建表脚本
     # 2026-09-23（M-12）：`ai_leads` 原**不在清理清单** ⇒ 上一个 TestAggregation 用例
