@@ -1,0 +1,221 @@
+"""「更新凭证」链路 + BCC 拉起可重试 —— 机械门禁（2026-09-28，DSSCC-BCC-001..004）。
+
+覆盖本轮用户实测报障的两个缺陷：
+  · 「BCC 又异常」= 拉起失败被**永久负缓存** + 陈旧锁自愈因**机器级计数/顺序颠倒**全程空转
+  · 「更新凭证怎么默认变成短信更新了」= 无分流契约 + 并列双按钮 + 命名漂移
+
+每条判据都配**负控**（把修复摘掉后该判据必须变红），否则门禁=假绿。
+"""
+from __future__ import annotations
+
+import asyncio
+import pathlib
+import types
+
+import pytest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  T1  BCC 拉起失败必须**可重试**（原实现：一次失败 ⇒ 本进程内永久拒绝）
+# ══════════════════════════════════════════════════════════════════════
+def test_t1_bcc_lazy_fail_is_retryable(monkeypatch):
+    from auto_dm import accounts as A
+
+    A._bcc_lazy_fail.clear()
+    monkeypatch.setattr(A, "_port_open", lambda *a, **k: False)
+    monkeypatch.setattr(A, "browser_daemon_port", lambda name: 41231)
+    monkeypatch.setattr(A.os.path, "isfile", lambda p: True)   # 假装二进制存在
+    monkeypatch.setattr(A, "_BCC_LAZY_FAIL_LIMIT", 2)
+    monkeypatch.setattr(A, "_BCC_LAZY_FAIL_BACKOFF", 9999)
+
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        raise OSError("simulated spawn failure")
+
+    monkeypatch.setattr(A.subprocess, "Popen", _boom)
+
+    A.ensure_bcc("gateAcc", wait_ready=False)
+    A.ensure_bcc("gateAcc", wait_ready=False)
+    r3 = A.ensure_bcc("gateAcc", wait_ready=False)
+    assert calls["n"] == 2, "退避窗内达到上限后应拒绝再拉（防循环）"
+    assert r3["ok"] is False and "退避" in r3["msg"]
+
+    # 负控：退避窗一过 **必须自动放行重试** —— 原实现此处恒返回
+    # 「BCC 此前懒加载失败（端口未就绪）」，永不重试。
+    monkeypatch.setattr(A, "_BCC_LAZY_FAIL_BACKOFF", 0)
+    A.ensure_bcc("gateAcc", wait_ready=False)
+    assert calls["n"] == 3, "退避窗过后必须自动重试（原实现永久拒绝 = 缺陷本体）"
+
+    # 端口就绪 ⇒ 失败态被清空（可干净重试）
+    monkeypatch.setattr(A, "_port_open", lambda *a, **k: True)
+    r = A.ensure_bcc("gateAcc", wait_ready=False)
+    assert r["ok"] is True and "gateAcc" not in A._bcc_lazy_fail
+    A._bcc_lazy_fail.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  T2  陈旧锁自愈必须用 **profile 级** 进程判据（机器级 ⇒ 永不清理）
+# ══════════════════════════════════════════════════════════════════════
+def test_t2_stale_lock_healed_despite_other_accounts_running(monkeypatch, tmp_path):
+    from auto_dm import login_remote as L
+
+    (tmp_path / "_camoufox").mkdir(parents=True)
+    (tmp_path / "_camoufox" / "parent.lock").write_bytes(b"")
+
+    # 机器上**别的账号**在跑（旧判据 count_browser_processes() != 0）
+    monkeypatch.setattr(L, "count_browser_processes", lambda: 16)
+    # 但本 profile 已无进程 ⇒ 陈旧锁
+    monkeypatch.setattr(L, "count_profile_processes", lambda d: 0)
+
+    out = L.heal_stale_profile_lock(str(tmp_path))
+    assert out["healed"] is True, "本 profile 无进程时陈旧锁必须被清除"
+    assert any("parent.lock" in r for r in out["removed"])
+
+    # 负控：本 profile 仍有进程 ⇒ 绝不删锁（不能破坏在跑实例）
+    (tmp_path / "_camoufox" / "parent.lock").write_bytes(b"")
+    monkeypatch.setattr(L, "count_profile_processes", lambda d: 1)
+    out2 = L.heal_stale_profile_lock(str(tmp_path))
+    assert out2["healed"] is False and out2["removed"] == []
+
+    # 负控：无法可靠判定（-1）⇒ 保守不删
+    monkeypatch.setattr(L, "count_profile_processes", lambda d: -1)
+    out3 = L.heal_stale_profile_lock(str(tmp_path))
+    assert out3["healed"] is False
+
+
+def test_t2b_profile_scope_beats_machine_scope(monkeypatch, tmp_path):
+    """负控：把判据换回机器级计数 ⇒ T2 的核心断言必须变红。"""
+    from auto_dm import login_remote as L
+
+    (tmp_path / "_camoufox").mkdir(parents=True)
+    (tmp_path / "_camoufox" / "parent.lock").write_bytes(b"")
+    # 模拟「修复被摘掉」：profile 级判据退化为机器级
+    monkeypatch.setattr(L, "count_profile_processes", lambda d: 16)
+    out = L.heal_stale_profile_lock(str(tmp_path))
+    assert out["healed"] is False, "机器级判据下陈旧锁不会被清 —— 这正是原缺陷"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  T3  「先清扫 → 再判锁」顺序是契约（顺序反了 = 自愈一次都不生效）
+# ══════════════════════════════════════════════════════════════════════
+def test_t3_reap_runs_before_lock_judgement(monkeypatch, tmp_path):
+    from auto_dm import login_remote as L
+
+    order: list[str] = []
+    monkeypatch.setattr(L, "reap_profile_processes",
+                        lambda d: (order.append("reap"), 3)[1])
+    monkeypatch.setattr(L, "heal_stale_profile_lock",
+                        lambda d: (order.append("heal"),
+                                   {"healed": True, "removed": ["_camoufox/parent.lock"],
+                                    "checked": 1, "procs": 0})[1])
+
+    out = L.ensure_profile_released(str(tmp_path))
+    assert order == ["reap", "heal"], "必须先清扫残留进程再判锁（否则锁永远判为『在用』）"
+    assert out["reaped"] == 3 and out["healed"] is True
+
+    # 负控：恢复「先判锁后清扫」⇒ 顺序断言变红
+    order.clear()
+    monkeypatch.setattr(L, "reap_profile_processes", lambda d: (order.append("heal"), 0)[1])
+    monkeypatch.setattr(L, "heal_stale_profile_lock", lambda d: (order.append("reap"),
+                                                                 {"healed": False,
+                                                                  "removed": [],
+                                                                  "checked": 0,
+                                                                  "procs": -1})[1])
+    L.ensure_profile_released(str(tmp_path))
+    assert order == ["heal", "reap"], "负控生效：颠倒顺序时断言确实失败"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  T4  统一入口 /update-login 必须**按账号状态自动分流**
+# ══════════════════════════════════════════════════════════════════════
+def _wire_update_login(monkeypatch, tmp_path):
+    from api import accounts as API
+
+    d = tmp_path / "accX"
+    d.mkdir()
+    (d / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setattr(API.acct_core, "env_path_of", lambda n: str(d / ".env"))
+
+    calls: list[tuple[str, str]] = []
+
+    async def _scan(name):
+        calls.append(("qr", name))
+        return API.ScanLoginResponse(ok=True, msg="qr-ok")
+
+    async def _sms(name, body):
+        calls.append(("sms", name))
+        return API.ScanLoginResponse(ok=True, msg="sms-ok")
+
+    monkeypatch.setattr(API, "scan_login", _scan)
+    monkeypatch.setattr(API, "sms_login", _sms)
+    return API, calls
+
+
+def test_t4_update_login_routes_by_account_state(monkeypatch, tmp_path):
+    API, calls = _wire_update_login(monkeypatch, tmp_path)
+
+    # 状态 B：会话被承认且身份未漂移 ⇒ 只用验证码（ADR-017 §2.3）
+    monkeypatch.setattr(API, "_probe_account_state",
+                        lambda n: {"state": True, "verdict": "ok", "ok": True})
+    r = asyncio.run(API.update_login("accX", {"phone": "13800000000"}))
+    assert calls[-1][0] == "sms" and r.ok
+    assert "短信" in r.msg, "返回必须**如实标注**实际走的路径"
+
+    # 状态 A：身份漂移 ⇒ 走扫码
+    monkeypatch.setattr(API, "_probe_account_state",
+                        lambda n: {"state": False, "verdict": "uid_drift", "ok": False})
+    r = asyncio.run(API.update_login("accX", None))
+    assert calls[-1][0] == "qr" and "扫码" in r.msg
+
+    # 判为短信但缺手机号 ⇒ 如实上报（**不得**静默改走扫码）
+    monkeypatch.setattr(API, "_probe_account_state",
+                        lambda n: {"state": True, "verdict": "ok", "ok": True})
+    before = list(calls)
+    r = asyncio.run(API.update_login("accX", {}))
+    assert r.ok is False and "手机号" in r.msg and calls == before
+
+    # 显式覆盖：mode=qr ⇒ 即便状态 B 也走扫码
+    r = asyncio.run(API.update_login("accX", {"mode": "qr"}))
+    assert calls[-1][0] == "qr"
+
+    # 非法 mode ⇒ 显式失败
+    r = asyncio.run(API.update_login("accX", {"mode": "wechat"}))
+    assert r.ok is False and "mode" in r.msg
+
+    # 负控：状态判据丢弃后（恒 False）⇒ 状态 B 分流断言变红
+    monkeypatch.setattr(API, "_probe_account_state",
+                        lambda n: {"state": False, "verdict": "unknown", "ok": False})
+    asyncio.run(API.update_login("accX", {"phone": "13800000000"}))
+    assert calls[-1][0] == "qr", "负控生效：恒 False 时不会再走短信"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  T5  静态防复发：单写者调用点 / 单入口（不再有并列双按钮与旧顺序）
+# ══════════════════════════════════════════════════════════════════════
+def test_t5_no_wrong_order_callsites_left():
+    src = (ROOT / "backend" / "auto_dm" / "login_remote.py").read_text(encoding="utf-8")
+    assert "heal = heal_stale_profile_lock(profile)" not in src, \
+        "调用点不得再直接调 heal（必须走 ensure_profile_released 的固定顺序）"
+    assert src.count("ensure_profile_released(profile)") >= 2, \
+        "QR 与短信两条起浏览器路径都必须走统一自愈入口"
+
+
+def test_t5b_single_update_entry_in_ui():
+    ui = (ROOT / "frontend" / "src" / "components" / "accounts" / "accounts-page.tsx") \
+        .read_text(encoding="utf-8")
+    assert "startSmsLogin(a.name)" not in ui, "并列的「短信登录」按钮必须已收敛"
+    assert ".updateLogin(" in ui, "必须走统一 /update-login 入口"
+    assert "刷新凭证<" not in ui, "旧命名「刷新凭证」必须已统一为「更新凭证」"
+
+
+def test_t5c_docstring_contract_is_implemented():
+    """契约漂移防复发：ADR 的「状态 A/B 自动分流」必须真有代码落点。"""
+    src = (ROOT / "backend" / "auto_dm" / "login_remote.py").read_text(encoding="utf-8")
+    api = (ROOT / "backend" / "api" / "accounts.py").read_text(encoding="utf-8")
+    assert "状态 A" in src, "契约注释仍在（文档层）"
+    assert "uid_identity_verdict" in api and "def update_login" in api, \
+        "分流契约必须在 /update-login 有实现落点（此前只存在于注释 = 契约漂移）"

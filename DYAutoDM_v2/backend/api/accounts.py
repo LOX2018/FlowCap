@@ -1063,6 +1063,96 @@ async def sms_login(name: str, body: dict) -> ScanLoginResponse:
     return ScanLoginResponse(ok=True, msg=f"已启动短信登录，请查收验证码并输入")
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  统一「更新凭证」入口（2026-09-28，ADR-021 · DSSCC-BCC-004）
+# ══════════════════════════════════════════════════════════════════════
+# 【为什么需要】用户报「更新凭证怎么默认变成短信更新了」。
+#   代码事实：账号卡片上**并列** `刷新凭证`（→ /scan）与 `短信登录`（→ /sms-login）
+#   两颗按钮，**无主次、无自动分流**；而 ADR-017 §2.3 拍板的
+#   「按账号状态自动判断，不是用户选择」（状态 A 全新账号 → 优先二维码；
+#   状态 B 已有账号凭证过期 → 只用验证码）**从未被实现** ——
+#   `状态 A / 状态 B` 只存在于 `login_remote.py` 的注释里，全仓零调用点。
+#   两条路径各自还有独立缺陷（扫码出码锚点失效、短信手机号锚点已不存在），
+#   导致用户看到「默认变短信、还更新不了」。
+#
+# 【本入口】= 分流契约的唯一落地点：
+#   ① 探测**账号当前状态**（`uid_identity_verdict`：有解密权 ⟺ 会话被承认
+#      且身份未漂移）—— 这是既有权威判据，不自造；
+#   ② 状态 A（全新 / 判定不成立）⇒ 走**扫码**（码可 IM 推送，人在哪都能扫）；
+#      状态 B（判定成立、仅签名过期）⇒ 走**短信验证码**（免扫码）；
+#   ③ 两条路径都失败 ⇒ `needChoice=True` 如实上报，由界面让用户选 ——
+#      绝不静默假装某条路是「默认」。
+#   `mode="qr" / "sms"` 为**显式覆盖**，保留既有按钮的直达能力（单写者：同一批码）。
+_login_method_hint: dict[str, str] = {}   # name -> "qr" | "sms"（最近一次分流依据，仅排障用）
+
+
+def _probe_account_state(name: str) -> dict:
+    """探测账号当前状态，供「更新凭证」分流。只读、不产生任何平台请求。
+
+    `uid_identity_verdict` 的权威签名是 4 元组 `(state, reason, label, detail)`：
+      state=True  ⇒ 状态 B（会话被承认且身份未漂移）⇒ 走短信验证码；
+      state=False ⇒ 已确证失效（无凭证 / 未登录 / 身份漂移）⇒ 走二维码；
+      state=None  ⇒ 取不到证据 ⇒ **诚实降级为走二维码**（不假装知道状态）。
+    """
+    from auto_dm import accounts as _acct
+    try:
+        env_path = acct_core.env_path_of(name)
+        res = _acct.uid_identity_verdict(name, env_path)
+        state, reason = (res[0], res[1]) if isinstance(res, tuple) else (None, "unknown")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[update-login] 账号 {name} 状态探测失败（按状态 A 处理）: {e}")
+        state, reason = None, "unknown"
+    return {"state": state, "verdict": reason or "unknown", "ok": state is True}
+
+
+# 同一批「分流码」共用的改动（单写者：本批码只在本文件、且不与并发写者重叠）
+@router.post("/{name}/update-login")
+async def update_login(name: str, body: dict | None = None) -> ScanLoginResponse:
+    """**统一「更新凭证」入口**：按账号状态自动分流「扫码 / 短信验证码」。
+
+    body（均可省略）：
+      - mode: "qr" | "sms" —— 显式覆盖自动分流（用户自己选）
+      - phone: 短信路径所需的手机号（mode 未指定且自动判为短信时也需提供）
+
+    返回 msg 会**如实标注所用路径**，前端据此渲染（不猜、不假装成功）。
+    """
+    body = body or {}
+    mode = str(body.get("mode", "") or "").strip().lower()
+    if mode and mode not in ("qr", "sms"):
+        return ScanLoginResponse(ok=False, msg=f"未知 mode={mode}（只允许 qr / sms）")
+    phone = str(body.get("phone", "") or "").strip()
+
+    env_path = acct_core.env_path_of(name)
+    if not os.path.exists(os.path.dirname(env_path)):
+        return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
+
+    stt = _probe_account_state(name)
+    if not mode:
+        # 契约（ADR-017 §2.3）：状态成立（会话被承认且身份未漂移）⇒ 只用验证码；
+        # 其余（全新账号 / 无法判定 / 身份漂移）⇒ 优先二维码。
+        mode = "sms" if stt["ok"] else "qr"
+    _login_method_hint[name] = f"{mode}:{stt['verdict']}"
+    logger.info(f"[update-login] 账号 {name} 分流 → {mode}"
+                f"（state={stt['verdict']}, 依据={_login_method_hint[name]}）")
+
+    if mode == "sms":
+        if not phone:
+            # 自动判为短信但缺手机号 ⇒ **如实上报需用户输入**，不静默改走扫码
+            return ScanLoginResponse(
+                ok=False,
+                msg=f"该账号当前状态适合【短信验证码】更新，请提供手机号后重试"
+                    f"（自动判据 state={stt['verdict']}）")
+        r = await sms_login(name, {"phone": phone})
+        if r.ok:
+            r.msg = f"已按账号状态分流至【短信验证码】· {name}：{r.msg}"
+        return r
+
+    r = await scan_login(name)
+    if r.ok:
+        r.msg = f"已按账号状态分流至【扫码】· {name}：{r.msg}"
+    return r
+
+
 @router.get("/{name}/scan-status")
 async def scan_status(name: str):
     """扫码状态查询（替代间接推断）"""

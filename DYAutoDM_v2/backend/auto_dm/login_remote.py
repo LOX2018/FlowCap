@@ -125,11 +125,17 @@ def heal_stale_profile_lock(profile_dir: str, retries: int = 3) -> dict:
     if not locks:
         logger.debug("[login_remote] profile 无锁文件，无需自愈")
         return out
-    # 有锁 → 看是否有进程；无进程 ⇒ 陈旧锁
-    procs = count_browser_processes()
+    # 有锁 → 看是否有**本 profile 的**进程；无进程 ⇒ 陈旧锁
+    # 2026-09-28 修：改用 profile 级判据（原 `count_browser_processes()` 是机器级
+    # 总数 —— 别的账号 / 用户手动开的 Camoufox 都算在内 ⇒ 陈旧锁永不被清理）。
+    procs = count_profile_processes(profile_dir)
     out["procs"] = procs
+    if procs < 0:
+        # 「不能可靠识别」⇒ 不下结论、不删锁（保守优先，沿用原语义）
+        logger.debug("[login_remote] 无法判定 profile 占用（procs=-1），保守不清理锁")
+        return out
     if procs != 0:
-        logger.debug("[login_remote] profile 有 {} 个锁文件但存活进程 {} 个，"
+        logger.debug("[login_remote] profile 有 {} 个锁文件且本 profile 存活进程 {} 个，"
                      "判定为在用，不清理", len(locks), procs)
         return out
     for fp in locks:
@@ -176,8 +182,94 @@ def reap_profile_processes(profile_dir: str) -> int:
         return 0
 
 
+def ensure_profile_released(profile_dir: str) -> dict:
+    """启动前把 profile 归位到「可安全启动」状态：**先清扫 → 再判锁 → 才自愈**。
+
+    ## 为什么必须是这个顺序（2026-09-28 实测教训，顺序错了等于没做）
+    原两个调用点把顺序写反了 —— 先按「陈旧锁」判，**之后**才清扫残留进程：
+    判锁那一刻残留进程还在 ⇒ 恒判「在用」⇒ 清扫成功了锁却一次都没被清过
+    （`_camoufox/parent.lock` 从 09:36:14 一直留到 09:41+，最终撞 BCC-058）。
+    正确顺序：**先**把残留进程扫干净，**再**在「进程数=0」的事实上判锁并清理。
+
+    ## 契约
+    pre : profile_dir 为该账号固定 profile（绝对路径）
+    post: 返回 {'reaped', 'healed', 'removed', 'procs', 'checked'}；
+          失败不抛 —— 任何异常都降级为「不清扫」，绝不阻断启动流程本身。
+    """
+    out = {"reaped": 0, "healed": False, "removed": [], "procs": -1, "checked": 0}
+    # ① 先清扫残留（这一步让「进程数=0」成为可判定的事实）
+    try:
+        out["reaped"] = reap_profile_processes(profile_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 残留清扫跳过: {}", e)
+    # ② 再判锁并自愈（此刻若 procs=0，陈旧锁才会真的被删）
+    try:
+        heal = heal_stale_profile_lock(profile_dir)
+        out.update({"healed": heal.get("healed", False),
+                    "removed": heal.get("removed", []),
+                    "checked": heal.get("checked", 0)})
+        # procs 以清扫后的实测为准（heal 内的计数即此刻事实）
+        out["procs"] = heal.get("procs", -1)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 陈旧锁自愈跳过: {}", e)
+    if out["healed"]:
+        logger.info("[login_remote] profile 已自愈（清扫 {} 个残留 + 清除 {} 个陈旧锁）",
+                    out["reaped"], len(out["removed"]))
+    return out
+
+
+def count_profile_processes(profile_dir: str) -> int:
+    """统计**命令行命中该 profile 路径**的 camoufox/firefox 进程数。
+
+    ## 为什么不能用 `count_browser_processes()`
+    实测（2026-09-28，用户报「BCC 又异常」）：`heal_stale_profile_lock` 原用
+    机器级进程总数 —— 只要**任何**账号的 BCC 或用户手动开的 Camoufox 还在跑，
+    总数就 ≠ 0 ⇒ 陈旧锁**永远判为「在用」而不清理**。本案张老师 profile 的
+    `_camoufox/parent.lock` 一直残留（09:36:14），而机器上另有 16 个 camoufox
+    进程 ⇒ 自愈逻辑全程空转，最终以 BCC-058「Failed to launch the browser
+    process」收场。
+
+    ## 判据（与 `_reap_camoufox_processes` 同一安全边界）
+    只统计命令行含**本 profile 绝对路径**的进程；路径过短/非绝对 ⇒ 返回 -1
+    （「不能可靠识别」时**不下结论**，调用方须保守处理，绝不据此删锁）。
+
+    返回：进程数（≥0）；-1 = 无法可靠判定（psutil 不可用 / 路径可疑）。
+    """
+    import os as _os
+    try:
+        _ud_norm = str(profile_dir).replace("\\", "/")
+        if len(_ud_norm) < 20 or (":" not in _ud_norm and not _ud_norm.startswith("/")):
+            logger.debug("[login_remote] profile 路径过短/非绝对，拒绝进程计数: {}", profile_dir)
+            return -1
+        import psutil
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] psutil 不可用，无法判定 profile 占用: {}", e)
+        return -1
+    needle = _ud_norm.lower()
+    n = 0
+    try:
+        for _p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                _nm = (_p.info.get("name") or "").lower()
+                if "camoufox" not in _nm and "firefox" not in _nm:
+                    continue
+                _cl = " ".join(_p.info.get("cmdline") or []).replace("\\", "/").lower()
+                if needle in _cl:
+                    n += 1
+            except Exception:
+                continue
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] profile 进程遍历失败: {}", e)
+        return -1
+    return n
+
+
 def count_browser_processes() -> int:
-    """统计本机 camoufox/firefox 进程数（用于判断锁是否陈旧）。
+    """统计本机 camoufox/firefox 进程数（**仅用于观测/诊断**）。
+
+    ⚠️ 自 2026-09-28 起，**不再用作锁陈旧判据** —— 判锁请用
+    `count_profile_processes()`（profile 级），机器级总数会把别的账号的
+    正常进程误判成本档案在用。
 
     ⚠️ Windows 中文系统 `tasklist` 输出为 **GBK**，用 `text=True` 会 UnicodeDecodeError
     且解码失败会让 stdout 变 None ⇒ 必须 capture bytes 后手动 decode。
@@ -704,9 +796,9 @@ async def prepare_qr_login(env_path: str, out_png: str, headless: bool = True,
 
     profile = _acc.profile_dir_of(env_path)
     os.makedirs(profile, exist_ok=True)
-    # E1：启动前自愈陈旧锁 + 清扫残留进程（时序竞态的真因，见函数文档）
-    heal = heal_stale_profile_lock(profile)
-    heal["reaped"] = reap_profile_processes(profile)
+    # E1：启动前自愈 —— **先清扫残留进程，再判/清陈旧锁**（顺序是契约，见
+    # `ensure_profile_released` 文档：顺序颠倒会让锁的自愈一次都不生效）。
+    heal = ensure_profile_released(profile)
 
     _vb, mode = should_use_vb(_cfg)
     acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
@@ -878,8 +970,8 @@ async def do_sms_login(env_path: str, phone: str, code_provider,
 
     profile = _acc.profile_dir_of(env_path)
     os.makedirs(profile, exist_ok=True)
-    heal = heal_stale_profile_lock(profile)
-    heal["reaped"] = reap_profile_processes(profile)
+    # E1：启动前自愈 —— 先清扫残留进程，再判/清陈旧锁（顺序契约同 QR 路径）。
+    heal = ensure_profile_released(profile)
     _vb, mode = should_use_vb(_cfg)
     acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
     pw, browser, context, backend = await launch_async(

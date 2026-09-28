@@ -891,6 +891,25 @@ export const api = {
     });
   },
 
+  /**
+   * 统一「更新凭证」入口（2026-09-28）：**按账号状态自动分流**「扫码 / 短信验证码」。
+   *
+   * 取代原先并列的两颗按钮（`刷新凭证` + `短信登录`）——那是「无主次、无分流」，
+   * 与 ADR-017 §2.3「自动判断，不让用户选」的拍板契约不符（用户实测反馈
+   * 「更新凭证怎么默认变成短信更新了」）。
+   * - 省略 mode ⇒ 后端按状态自动分流，并在 msg 里**如实标注**实际走的路径；
+   * - mode="qr"/"sms" ⇒ 显式覆盖（用户在弹层里自己选）。
+   */
+  async updateLogin(
+    name: string,
+    body?: { mode?: "qr" | "sms"; phone?: string },
+  ): Promise<{ ok: boolean; msg: string }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/update-login`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    });
+  },
+
   /** F4：提交短信验证码（R1-c 本机 Web 前端输入通道）。 */
   async submitSmsCode(name: string, code: string): Promise<{ ok: boolean; msg: string }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/sms-code`, {

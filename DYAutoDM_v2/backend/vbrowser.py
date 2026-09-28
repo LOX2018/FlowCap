@@ -851,6 +851,24 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
         from vbrowser_camoufox import camoufox_enabled, launch_camoufox_async
         if camoufox_enabled(cfg):
             logger.info("[vbrowser] 内核=Camoufox（Firefox，C++ 层指纹注入，无 JS 注入）")
+            # ── 2026-09-28 修（DSSCC-BCC-003）：陈旧锁自愈须做在**唯一启动出口** ──
+            # 实测：用户报「BCC 又异常」时，张老师 profile 里 `_camoufox/parent.lock`
+            # 残留（09:36:14 起），而 `browser_daemon._wait_profile_released` 只按
+            # **进程**判据放行（_st is False ⇒ 直接 return，**不看锁文件**）⇒ Camoufox
+            # 带陈旧 parent.lock 启动 ⇒ 两个 firefox 抢同一 profile ⇒ BCC-058
+            # 「Failed to launch the browser process」。
+            # 此处处在**所有启动路径的共同出口**：先清扫残留进程再判/清陈旧锁，
+            # 任何调用方（登录 / 查看 / 抓取 / 守护 / 重扫）都自动受益，无需各自重做。
+            if user_data_dir:
+                try:
+                    from auto_dm.login_remote import ensure_profile_released
+                    _rel = ensure_profile_released(user_data_dir)
+                    if _rel.get("reaped") or _rel.get("healed"):
+                        logger.info(
+                            "[vbrowser] 启动前 profile 自愈：清扫 {} 个残留进程 / 清除 {} 个陈旧锁",
+                            _rel.get("reaped", 0), len(_rel.get("removed") or []))
+                except Exception as _e_rel:  # noqa: BLE001
+                    logger.debug(f"[vbrowser] 启动前 profile 自愈跳过（不阻塞）: {_e_rel}")
             return await launch_camoufox_async(
                 headless=headless, user_data_dir=user_data_dir,
                 account=account, cfg=cfg)

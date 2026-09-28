@@ -248,7 +248,26 @@ def recv_daemon_port(name=None):
 from datetime import datetime as _datetime
 _PROCESS_START_TS: "_datetime" = _datetime.now()
 _bcc_lazy_lock = threading.Lock()
-_bcc_lazy_spawned: set[str] = set()
+# ── 2026-09-28 修（DSSCC-BCC-001，用户报「BCC 又异常」）──────────────────
+# 原实现：`_bcc_lazy_spawned: set[str]`，语义是「已拉起过」，
+# 但**只在 Popen 成功后 add，进程死亡 / 拉起失败 / 用户手动处理后均不清理**。
+# ⇒ 一旦首次拉起失败，该账号在**本进程整个生命周期内被永久钉死**：
+#   后续一切路径（用户点「打开浏览器」「刷新凭证」「引擎校验」自动拉齐）
+#   恒返回「BCC 此前懒加载失败（端口未就绪）」，即使残留进程早已清扫、
+#   端口早已空闲。
+# 实测证据（2026-09-28 run_20260928_090932.log）：
+#   09:36 首次拉起失败 → 09:36:36「打开指纹浏览器失败 · 拉起浏览器容器失败
+#   （BCC 此前懒加载失败（端口未就绪）…）」→ 之后该进程再也拉不起 BCC。
+#
+# 现行契约（DbC）：
+#   pre : 端口未监听（函数开头已判定）
+#   inv : `_bcc_lazy_fail[name]` = 上次失败时间戳 + 该退避窗内连续失败次数；
+#         仅当「连续失败 ≥ 上限 **且** 仍在退避窗内」才拒绝拉起；
+#         端口就绪或窗口过后 **自动放行重试**（失败不再不可逆）。
+#   post: 端口就绪 ⇒ 删除失败态（干净重试）；失败 ⇒ count+1、ts 刷新。
+_bcc_lazy_fail: dict[str, dict] = {}   # name -> {"ts": float, "count": int}
+_BCC_LAZY_FAIL_LIMIT = max(1, int(os.environ.get("DY_BCC_LAZY_FAIL_LIMIT", "3") or 3))
+_BCC_LAZY_FAIL_BACKOFF = max(0.0, float(os.environ.get("DY_BCC_LAZY_FAIL_BACKOFF", "20") or 20))
 
 
 
@@ -319,6 +338,7 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
         return {"ok": False, "port": None,
                 "msg": "BCC 已被用户停止（自动拉起已禁用）；请从界面显式启动"}
     if _port_open(port, timeout=0.3):
+        _bcc_lazy_fail.pop(name, None)      # 已在运行 ⇒ 清失败态（可干净重试）
         return {"ok": True, "port": port, "msg": "已在运行"}
     # 2026-09-06 启动冷静期（防「启动时 BCC 快闪唤醒」）：
     # 后端进程启动后 30s 内禁止懒加载 BCC —— 给前端 / 启动期所有路径
@@ -345,7 +365,20 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
     with _bcc_lazy_lock:
         # 双检：等锁期间可能已被并发拉起
         if _port_open(port, timeout=0.3):
+            _bcc_lazy_fail.pop(name, None)      # 端口已就绪 ⇒ 清失败态（可干净重试）
             return {"ok": True, "port": port, "msg": "已在运行"}
+        # 失败退避（取代原「一次失败永久拒绝」的不可逆契约）。
+        # 仅当「连续失败 ≥ 上限」且「仍在退避窗内」才拒绝 —— 窗口一过自动重试。
+        _fs = _bcc_lazy_fail.get(name)
+        if _fs and _fs.get("count", 0) >= _BCC_LAZY_FAIL_LIMIT:
+            _age = time.time() - float(_fs.get("ts") or 0)
+            if _age < _BCC_LAZY_FAIL_BACKOFF:
+                return {"ok": False, "port": None,
+                        "msg": (f"BCC 连续拉起失败 {_fs['count']} 次，"
+                                f"退避 {max(0, int(_BCC_LAZY_FAIL_BACKOFF - _age))}s 后自动重试"
+                                f"（请同时检查 BCC 日志）")}
+            # 退避窗已过 ⇒ 清零，放行重试
+            _bcc_lazy_fail.pop(name, None)
         # ⚠️ 部署位置铁律（2026-09-13）：sidecar 一律在【应用根目录】，
         # 禁止 <root>/binaries/（仅对被删除的历史部署保留容错）。
         _full = "dyautodm-browser-daemon-x86_64-pc-windows-msvc"
@@ -368,10 +401,8 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
         if not binary:
             return {"ok": False, "port": None,
                     "msg": f"BCC 二进制不存在（应在应用根目录 {_ROOT}）"}
-        if name in _bcc_lazy_spawned:
-            # 之前拉过但端口没开 -> 上次失败，不重复拉（防循环）
-            return {"ok": False, "port": None,
-                    "msg": "BCC 此前懒加载失败（端口未就绪），请查看 BCC 日志"}
+        # 注：原此处为「本进程内曾拉起过 ⇒ 永久拒绝再拉」，已被上方的
+        # **退避窗**语义取代（失败可重试，不再不可逆）——见 `_bcc_lazy_fail` 契约。
         try:
             kwargs = {
                 "stdout": subprocess.DEVNULL,
@@ -395,16 +426,24 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
             else:
                 kwargs["start_new_session"] = True
             subprocess.Popen([binary, "--account", name, "--port", str(port)], **kwargs)
-            _bcc_lazy_spawned.add(name)
             logger.info(f"[bcc-lazy] 已懒加载 BCC account={name} port={port}")
         except Exception as e:
+            _bcc_lazy_fail[name] = {
+                "ts": time.time(),
+                "count": int((_bcc_lazy_fail.get(name) or {}).get("count", 0)) + 1,
+            }
             return {"ok": False, "port": None, "msg": f"BCC 拉起失败: {e}"}
     if wait_ready:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if _port_open(port, timeout=0.4):
+                _bcc_lazy_fail.pop(name, None)   # 就绪 ⇒ 清失败态
                 return {"ok": True, "port": port, "msg": "懒加载就绪"}
             time.sleep(0.5)
+        _bcc_lazy_fail[name] = {
+            "ts": time.time(),
+            "count": int((_bcc_lazy_fail.get(name) or {}).get("count", 0)) + 1,
+        }
         return {"ok": False, "port": port, "msg": f"BCC 懒加载后 {timeout}s 端口未就绪"}
     return {"ok": True, "port": port, "msg": "已拉起（未等待就绪）"}
 

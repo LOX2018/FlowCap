@@ -51,12 +51,15 @@ export function LoginDialog({
   onClose,
   onToast,
   onDone,
+  onSwitchMode,
 }: {
   name: string;
   status?: ScanStatus | null;
   onClose: () => void;
   onToast: (msg: string) => void;
   onDone: () => void;
+  /** 2026-09-28：显式换路（后端按状态自动分流，此处只处理「我要另一条路」）。 */
+  onSwitchMode?: (mode: "qr" | "sms") => void;
 }) {
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -157,6 +160,36 @@ export function LoginDialog({
             <Button onClick={() => void submitCode()} disabled={submitting || !code.trim()}>
               {submitting ? "提交中…" : "提交验证码"}
             </Button>
+          </div>
+        )}
+
+        {/* 路径如实标注 + 显式换路（2026-09-28）：
+            后端按账号状态自动分流，这里把**实际走的路径**说出来（不猜、不假装成功），
+            并给一个显式换路的入口 —— 用户要另一条路时不用去猜哪个按钮是「默认」。 */}
+        {onSwitchMode && (
+          <div className="flex items-center justify-between gap-2 rounded-[8px]
+                          bg-[var(--color-surface-raised)] px-3 py-2
+                          text-[0.74rem] text-[var(--color-text-muted)]">
+            <span>
+              {st.path === "sms" ? "当前路径：短信验证码" : "当前路径：扫码"}
+            </span>
+            {st.path === "sms" ? (
+              <button
+                type="button"
+                className="underline hover:text-[var(--color-text)]"
+                onClick={() => onSwitchMode("qr")}
+              >
+                换用扫码
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="underline hover:text-[var(--color-text)]"
+                onClick={() => onSwitchMode("sms")}
+              >
+                换用短信验证码
+              </button>
+            )}
           </div>
         )}
 

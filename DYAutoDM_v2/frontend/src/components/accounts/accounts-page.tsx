@@ -157,41 +157,41 @@ export default function AccountsPage(props: PageProps) {
       push("请填写昵称");
       return;
     }
-    api
-      .scanLogin(name)
-      .then((r) => {
-        if (r && r.ok) {
-          push("已弹出指纹浏览器 · " + name + "，请扫码完成登录（凭证将自动写回）");
-          setEditAcct(null);
-          setScanning({ name, seq: Date.now() });
-        } else {
-          push("重新获取凭证失败: " + ((r as { error?: string })?.error || ""));
-        }
-      })
-      .catch((e: unknown) => push("重新获取凭证异常: " + errMsg(e)));
+    // 统一「更新凭证」入口：后端按账号状态自动分流，msg 如实标注实际路径。
+    const go = (mode?: "qr" | "sms", phone?: string): Promise<void> =>
+      api
+        .updateLogin(name, mode ? { mode, phone } : undefined)
+        .then((r): void => {
+          if (r && r.ok) {
+            push(r.msg || "已发起更新凭证 · " + name);
+            setEditAcct(null);
+            setScanning({ name, seq: Date.now() });
+            return;
+          }
+          const m = (r as { msg?: string })?.msg || "";
+          // 自动分到短信但缺手机号 ⇒ 就地补问，再显式走短信（不静默改走扫码）
+          if (m.includes("手机号")) {
+            const phone2 = window.prompt(m)?.trim();
+            if (!phone2) {
+              push("已取消（未提供手机号）");
+              return;
+            }
+            if (!/^\d{6,20}$/.test(phone2)) {
+              push("手机号格式不正确（应为 6~20 位数字）");
+              return;
+            }
+            void go("sms", phone2);
+            return;
+          }
+          push("更新凭证失败: " + m);
+        })
+        .catch((e: unknown) => push("更新凭证异常: " + errMsg(e)));
+    void go();
   };
 
-  // F4：短信验证码登录（ADR-017 / H-30）—— 手机号由用户输入，验证码在弹层里填
-  const startSmsLogin = (name: string) => {
-    const phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
-    if (!phone) return;
-    if (!/^\d{6,20}$/.test(phone)) {
-      push("手机号格式不正确（应为 6~20 位数字）");
-      return;
-    }
-    api
-      .smsLogin(name, phone)
-      .then((r) => {
-        if (r && r.ok) {
-          push("已启动短信登录 · " + name + "，请在弹窗中输入收到的验证码");
-          setEditAcct(null);
-          setScanning({ name, seq: Date.now() });
-        } else {
-          push("短信登录启动失败: " + ((r as { msg?: string })?.msg || ""));
-        }
-      })
-      .catch((e: unknown) => push("短信登录异常: " + errMsg(e)));
-  };
+  // 2026-09-28：原 `startSmsLogin`（独立「短信登录」按钮的回调）已随按钮收敛删除。
+  // 短信路径现由统一入口 `/update-login` 在**状态 B** 时自动分流；用户若要强制
+  // 换路，在登录弹层里显式选择（见 LoginDialog 的 onSwitchMode）。
 
   const toggleBatch = (id: string) => {
     setBatchSel((s) => {
@@ -664,22 +664,14 @@ export default function AccountsPage(props: PageProps) {
                         e.stopPropagation();
                         openEdit(a);
                       }}
-                      title="编辑账号信息并刷新登录凭证"
+                      title="编辑账号信息并更新登录凭证（后端按账号状态自动分流扫码 / 短信）"
                     >
-                      <Pencil className="h-3.5 w-3.5" />刷新凭证
+                      <Pencil className="h-3.5 w-3.5" />更新凭证
                     </Button>
-                    {/* F4：短信验证码登录（ADR-017 / H-30）—— 扫码之外的第二条路径 */}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startSmsLogin(a.name);
-                      }}
-                      title="用短信验证码登录（无需扫码，验证码在弹窗中输入）"
-                    >
-                      短信登录
-                    </Button>
+                    {/* 2026-09-28 修：原此处并列 `刷新凭证`(→/scan) 与 `短信登录`(→/sms-login)
+                        两颗按钮 —— 无主次、无分流，与 ADR-017 §2.3「按账号状态自动判断，
+                        不是用户选择」的拍板契约不符（用户实测反馈「默认变成短信更新了」）。
+                        现收敛为**单一入口**：后端按状态分流，弹层内提供显式「换用扫码 / 换用短信」。 */}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1084,6 +1076,29 @@ export default function AccountsPage(props: PageProps) {
             status={scanData}
             onClose={() => setScanning(null)}
             onToast={push}
+            onSwitchMode={(mode) => {
+              // 显式换路：mode=sms 时手机号就地补问（与 saveEdit 同一套校验口径）
+              let phone: string | undefined;
+              if (mode === "sms") {
+                phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
+                if (!phone) return;
+                if (!/^\d{6,20}$/.test(phone)) {
+                  push("手机号格式不正确（应为 6~20 位数字）");
+                  return;
+                }
+              }
+              api
+                .updateLogin(scanning.name, { mode, phone })
+                .then((r) => {
+                  if (r && r.ok) {
+                    push(r.msg || "已切换登录路径 · " + scanning.name);
+                    setScanning({ name: scanning.name, seq: Date.now() });
+                  } else {
+                    push("换路失败: " + ((r as { msg?: string })?.msg || ""));
+                  }
+                })
+                .catch((e: unknown) => push("换路异常: " + errMsg(e)));
+            }}
             onDone={() => {
               setScanning(null);
               refetch();
