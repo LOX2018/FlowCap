@@ -67,6 +67,13 @@ class TestJudges(unittest.TestCase):
         self.assertFalse(P.has_professional_substance("可以的"))
         self.assertFalse(P.has_professional_substance("嗯嗯好的呀"))
 
+    def test_greeting(self):
+        for g in ("你好", "您好", "好的", "收到", "你们已互相关注对方",
+                  "测试", "你好，老师，帮忙看下"):
+            self.assertTrue(P.is_greeting(g), g)
+        for q in ("工伤怎么赔", "工伤能定几级", "赔偿包括哪些项目"):
+            self.assertFalse(P.is_greeting(q), q)
+
 
 class TestPurifyPipeline(unittest.TestCase):
     def test_singletons_and_case_dropped(self):
@@ -129,6 +136,39 @@ class TestPurifyPipeline(unittest.TestCase):
                      embed_fn=fake_embed, llm_fn=llm)
         self.assertEqual(len(r["candidates"]), 0)
         self.assertGreaterEqual(r["stats"]["dropped_dedup"], 1)
+
+    def test_same_source_repeat_not_generic(self):
+        """★核心负控：同一客户把同一类问题问 N 遍 → **不算通用**，不得沉淀。
+
+        改前用「原始簇内条数」计，会把这个簇判为达标（bug）。
+        """
+        pairs = [("工伤怎么赔", "十级 7 个月本人工资"),
+                 ("工伤赔偿怎么算", "按等级核算一次性伤残补助金")]
+        llm = fake_llm_factory({"赔": '{"question":"工伤怎么赔偿","answer":"先认定工伤再按等级赔偿。"}'})
+        # 两条问法来自**同一个**会话
+        r = P.purify(pairs, embed_fn=fake_embed, llm_fn=llm,
+                     conv_keys=["conv-A", "conv-A"])
+        self.assertEqual(len(r["candidates"]), 0, r["stats"])
+        self.assertGreaterEqual(r["stats"]["dropped_few_sources"], 1)
+
+    def test_multi_source_is_generic(self):
+        """同一类问题来自 2 个不同会话 → 判为通用，产出候选。"""
+        pairs = [("工伤怎么赔", "十级 7 个月本人工资"),
+                 ("工伤赔偿怎么算", "按等级核算一次性伤残补助金")]
+        llm = fake_llm_factory({"赔": '{"question":"工伤怎么赔偿","answer":"先认定工伤再按等级赔偿。"}'})
+        r = P.purify(pairs, embed_fn=fake_embed, llm_fn=llm,
+                     conv_keys=["conv-A", "conv-B"])
+        self.assertEqual(len(r["candidates"]), 1, r["stats"])
+        self.assertEqual(r["candidates"][0]["sources"], 2)
+
+    def test_greeting_cluster_dropped(self):
+        """寒暄簇即便跨会话重复 → 也不沉淀为知识。"""
+        pairs = [("你好", "您好，请问有什么可以帮您"),
+                 ("你好", "您好，请问有什么可以帮您")]
+        r = P.purify(pairs, embed_fn=fake_embed,
+                     llm_fn=fake_llm_factory({}), conv_keys=["conv-A", "conv-B"])
+        self.assertEqual(len(r["candidates"]), 0)
+        self.assertGreaterEqual(r["stats"]["dropped_greeting_only"], 1)
 
 
 class TestLifecycle(unittest.TestCase):

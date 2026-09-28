@@ -24,12 +24,16 @@
 **净化流水线（顺序不可颠倒）**：
   1. **向量化**：问法 → embedding（唯一向量出口，注入可用）。
   2. **聚类**：余弦 ≥ `sim_threshold` 的问法归为一簇（同一问题的多种说法）。
-  3. **通用性门槛**：只保留 **成员数 ≥ min_cluster_size** 的簇 —— 「被多个客户
-     用不同说法问过」才是通用问题；只出现一次的极可能是个例。
-  4. **剔个案成员**：簇内去掉含具体个案特征（数字/地名/伤情编码/超长）的问法。
-  5. **抽象**：对每簇用 LLM 抽成**通用问法 + 去个案的专业回复**（不是照搬）。
-  6. **专业实质门槛**：回复必须含工伤域实质信息（关键词），否则丢弃。
-  7. **去重**：与库内既有条目做向量去重。
+  3. **粗门槛**：簇内原始条数 < `min_cluster_size` 的簇直接弃（省 LLM 开销）。
+  4. **剔寒暄**：簇内去掉寒暄/客套/无信息问法（「你好」「好的」「测试」…）——
+     即便多人重复也**不是**可沉淀知识。
+  5. **剔个案成员**：簇内去掉含具体个案特征（数字/地名/伤情编码/超长）的问法。
+  6. **通用性门槛（真实判据）**：剩下成员须来自 **≥ `min_sources` 个不同来源
+     （会话/客户）**——「被多个**客户**问过」才是通用问题。**禁止**用原始条数计：
+     同一客户把同句问 N 遍不等于通用（2026-09-28 实测缺陷，见 Ⅱ2）。
+  7. **抽象**：对每簇用 LLM 抽成**通用问法 + 去个案的专业回复**（不是照搬）。
+  8. **专业实质门槛**：回复必须含工伤域实质信息（关键词），否则丢弃。
+  9. **去重**：与库内既有条目做向量去重。
 
 **后置条件 Q**：返回**候选条目**（默认不直接入库，待人工确认）；每一步的丢弃
 计数都回传（可归因，不静默）。
@@ -56,9 +60,19 @@ _KV_CAND = "ai_reply_candidates"       # 候选（待确认）—— 独立命�
 
 # ── 默认参数（可被 app_config.reply_learn 覆盖）──
 DEFAULT_SIM_THRESHOLD = 0.80           # 聚类：同簇余弦下限
-DEFAULT_MIN_CLUSTER = 2                # 通用性门槛：至少被 2 条不同问法命中
+DEFAULT_MIN_CLUSTER = 2                # 簇内「通用（非个案）问法」条数下限
+DEFAULT_MIN_SOURCES = 2                # **真实**通用性门槛：至少来自 2 个不同会话/客户
 DEFAULT_MAX_CASE_CHARS = 30            # 超长问法视为个案照搬
 DEFAULT_AUTO_APPLY = False             # 学习结果默认「待确认」，不自动入库
+
+# 寒暄/客套/无信息问法：即便多人重复也**不是**可沉淀知识（2026-09-28 实测：
+# 「你好」「你们已互相关注对方」「测试」会靠重复凑过纯计数门槛，必须先剔除）。
+_GREETING_RE = re.compile(
+    r"^(你好|您好|哈喽|在吗|在么|在不在|在不在吗|在的|你好呀|你好啊|早上好|"
+    r"下午好|晚上好|谢谢|感谢|多谢|辛苦了|麻烦你了|好的|好|嗯+|嗯嗯|哦+|噢+|"
+    r"收到|知道了|明白|了解了|你已确认.*|你们已互相关注.*|测试.*|正在测试.*|"
+    r"测试稳定性.*|你好，老师.*|你好老师.*)$"
+)
 
 # 个案特征：阿拉伯数字 / 数字+量词（月天年岁元万…）/ 地名 / 伤情手术
 # 注意：**不能**用裸「一/二/三…」——「一般」「一起」会被误判为个案（实测踩过）。
@@ -100,6 +114,19 @@ def is_case_specific(text: str, max_chars: int = DEFAULT_MAX_CASE_CHARS) -> bool
     if len(t) > max_chars:
         return True
     return bool(_CASE_RE.search(t))
+
+
+def is_greeting(text: str) -> bool:
+    """问法是否为寒暄/客套/无信息内容（不可沉淀为知识，即便多人重复）。"""
+    t = (text or "").strip()
+    return bool(t) and bool(_GREETING_RE.match(t))
+
+
+def _norm_question(text: str) -> str:
+    """归一化问法（仅用于「来源计数」去重）：去空白与常见标点，使「工伤怎么赔？」
+    与「工伤怎么赔」计为同一问法（同一客户复述同一问不应算作两个来源）。"""
+    t = (text or "").strip().lower()
+    return re.sub(r"[\s，。！？、,.!?;；:：~～\-—_*\"'“”‘’()（）\[\]【】]+", "", t)
 
 
 def has_professional_substance(answer: str) -> bool:
@@ -172,27 +199,42 @@ def _default_llm(prompt: str) -> Optional[str]:
 def purify(pairs: list, existing_questions: Optional[list] = None,
            cfg: Optional[dict] = None,
            embed_fn: Optional[Callable] = None,
-           llm_fn: Optional[Callable] = None) -> dict:
+           llm_fn: Optional[Callable] = None,
+           conv_keys: Optional[list] = None) -> dict:
     """把原始问答对净化为「通用知识候选」。
 
     :param pairs: [(question, answer), ...]
     :param existing_questions: 库内既有问法（做向量去重）
-    :param cfg: {sim_threshold, min_cluster_size, max_case_chars}
+    :param cfg: {sim_threshold, min_cluster_size, min_sources, max_case_chars}
     :param embed_fn: 注入的向量函数 (texts)->(vecs, model)；默认走 _embed_failover
     :param llm_fn: 注入的 LLM 函数 (prompt)->str|None；默认走 AIClient
-    :return: {ok, candidates:[{question,answer,cluster_size,evidence:[q...]}], stats:{...}}
+    :param conv_keys: 与 pairs 等长的「来源标识」（会话/客户 id）。
+        **通用性必须按不同来源计**：同一客户把同一句问 N 遍不算通用（见 Ⅱ2）。
+        缺省时退化为「归一化问法」计数。
+    :return: {ok, candidates:[{question,answer,cluster_size,sources,evidence:[q...]}], stats:{...}}
     """
     cfg = cfg or {}
     th = float(cfg.get("sim_threshold", DEFAULT_SIM_THRESHOLD))
     min_cluster = int(cfg.get("min_cluster_size", DEFAULT_MIN_CLUSTER))
+    min_sources = int(cfg.get("min_sources", DEFAULT_MIN_SOURCES))
     max_chars = int(cfg.get("max_case_chars", DEFAULT_MAX_CASE_CHARS))
     embed_fn = embed_fn or _default_embed
     llm_fn = llm_fn or _default_llm
 
-    pairs = [((q or "").strip(), (a or "").strip()) for q, a in (pairs or [])]
-    pairs = [(q, a) for q, a in pairs if q and a]
+    _raw = list(pairs or [])
+    if conv_keys is not None and len(conv_keys) != len(_raw):
+        logger.warning("[purify] conv_keys 长度与 pairs 不符，退回「归一化问法」计数")
+        conv_keys = None
+    pairs, keys = [], []
+    for i, (q, a) in enumerate(_raw):
+        qq, aa = (q or "").strip(), (a or "").strip()
+        if not qq or not aa:
+            continue
+        pairs.append((qq, aa))
+        keys.append(str(conv_keys[i]) if conv_keys else "")
     stats = {"input": len(pairs), "embedded": 0, "clusters": 0,
              "kept_clusters": 0, "dropped_case_only": 0,
+             "dropped_greeting_only": 0, "dropped_few_sources": 0,
              "dropped_no_substance": 0, "dropped_llm_fail": 0,
              "dropped_dedup": 0, "out": 0}
     if not pairs:
@@ -224,13 +266,28 @@ def purify(pairs: list, existing_questions: Optional[list] = None,
     candidates = []
     for grp in clusters:
         qs = [questions[i] for i in grp]
-        # ③ 通用性门槛：只保留被多个不同问法命中的簇
+        # ③ 粗门槛：簇太小直接弃（省 LLM 开销）
         if len(grp) < min_cluster:
             continue
-        # ④ 剔个案成员；若剔完不足门槛 → 整簇弃（全是该客户的个例）
-        general_idx = [i for i in grp if not is_case_specific(questions[i], max_chars)]
+        # ④a 剔寒暄/客套：不是知识，即便多人重复也不沉淀
+        non_greet = [i for i in grp if not is_greeting(questions[i])]
+        if len(non_greet) < min_cluster:
+            stats["dropped_greeting_only"] += 1
+            continue
+        # ④b 剔个案成员；若剔完不足门槛 → 整簇弃（全是该客户的个例）
+        general_idx = [i for i in non_greet
+                       if not is_case_specific(questions[i], max_chars)]
         if len(general_idx) < min_cluster:
             stats["dropped_case_only"] += 1
+            continue
+        # ⑤ 通用性门槛（**真实判据**）：必须来自 ≥ min_sources 个不同来源。
+        #    ⚠️ 2026-09-28 实测缺陷：改前用「原始簇内条数」计，同一客户把同句
+        #    问 N 遍即可凑过门槛（实测「测试×3」全部来自 1 个会话却达标）。
+        #    通用 = 「被不同客户问过」，故必须按来源去重后计数。
+        distinct_sources = {(keys[i] or ("q:" + _norm_question(questions[i])))
+                            for i in general_idx}
+        if len(distinct_sources) < min_sources:
+            stats["dropped_few_sources"] += 1
             continue
         stats["kept_clusters"] += 1
         evidence = [questions[i] for i in general_idx][:5]
@@ -271,7 +328,9 @@ def purify(pairs: list, existing_questions: Optional[list] = None,
             except Exception:  # noqa: BLE001
                 pass
         candidates.append({"question": gq, "answer": ga,
-                           "cluster_size": len(grp), "evidence": evidence})
+                           "cluster_size": len(grp),
+                           "sources": len(distinct_sources),
+                           "evidence": evidence})
     stats["out"] = len(candidates)
     return {"ok": True, "candidates": candidates, "stats": stats}
 

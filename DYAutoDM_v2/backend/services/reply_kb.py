@@ -510,6 +510,7 @@ def learn_from_history(account: str = "", limit: int = 200) -> dict:
         "ORDER BY MAX(id) DESC LIMIT ?", (limit,)).fetchall()
 
     pairs = []  # (question, answer)
+    conv_keys = []  # 与 pairs 等长：来源会话 id —— 通用性必须按「不同来源」计
     for acct, conv in rows:
         if account and acct != account:
             continue
@@ -517,7 +518,9 @@ def learn_from_history(account: str = "", limit: int = 200) -> dict:
             "SELECT role, text, msg_type FROM dm_messages "
             "WHERE account=? AND conv_id=? AND TRIM(COALESCE(text,''))<>'' "
             "ORDER BY id ASC LIMIT 40", (acct, conv)).fetchall()
-        pairs.extend(_extract_pairs(msgs))
+        got = _extract_pairs(msgs)
+        pairs.extend(got)
+        conv_keys.extend([str(conv)] * len(got))
         if len(pairs) >= 60:
             break
 
@@ -544,14 +547,23 @@ def learn_from_history(account: str = "", limit: int = 200) -> dict:
 
     _existing_qs = [(it.get("question") or "").strip() for it in list_items()
                     if (it.get("question") or "").strip()]
+    try:
+        from services import reply_purify
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": "purify_import:" + str(e)[:60],
+                "scanned": len(rows), "extracted": len(pairs), "added": 0,
+                "purified": False,
+                "message": "向量提纯模块不可用，本次未写入任何条目（库未变更）"}
     _pcfg = {
         "sim_threshold": float(_got("learn_sim_threshold", 0.80)),
         "min_cluster_size": int(_got("learn_min_cluster", 2)),
+        "min_sources": int(_got("learn_min_sources",
+                                reply_purify.DEFAULT_MIN_SOURCES)),
         "max_case_chars": int(_got("learn_max_case_chars", 30)),
     }
     try:
-        from services import reply_purify
-        pr = reply_purify.purify(pairs, existing_questions=_existing_qs, cfg=_pcfg)
+        pr = reply_purify.purify(pairs, existing_questions=_existing_qs,
+                                 cfg=_pcfg, conv_keys=conv_keys)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "reason": "purify_exception:" + str(e)[:60],
                 "scanned": len(rows), "extracted": len(pairs), "added": 0,

@@ -121,6 +121,13 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "hint": ("同一类问题至少被 N 条不同问法命中，才沉淀为通用条目；"
                          "1 = 不设门槛（不推荐，会重新引入个案照搬）"),
             },
+            "learn_min_sources": {
+                "label": "学习·通用性门槛（最少不同客户数）",
+                "type": "int", "default": 2, "min": 1, "max": 50, "env": None,
+                "apply": "hot",
+                "hint": ("**真实通用判据**：同一类问题必须来自 ≥N 个不同会话/客户才算通用；"
+                         "同一客户把同句问 N 遍不算（防「刷屏凑门槛」）"),
+            },
             "learn_sim_threshold": {
                 "label": "学习·聚类相似度阈值",
                 "type": "float", "default": 0.80, "min": 0.5, "max": 0.99, "env": None,
