@@ -110,19 +110,6 @@ function BootSplash({ onSkip }: { onSkip?: () => void }) {
 
 export default function App() {
   // ===== 会员门禁（v0.37.0）：未登录不渲染任何业务 UI =====
-  // 启动诊断：每次渲染打印门状态（写文件，便于脱离 DevTools 核查）
-  useEffect(() => {
-    try {
-      const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-      if (w) {
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("write_boot_log", {
-            text: `[render] memberName=${memberName} memberChecked=${memberChecked} prealigned=${prealigned} ready=${ready} overviewEverOk=${overviewEverOk}`,
-          }).catch(() => {});
-        });
-      }
-    } catch { /* ignore */ }
-  });
   const [memberName, setMemberName] = useState<string | null>(null);
   const [memberChecked, setMemberChecked] = useState(false);
   // 启动预对齐门（2026-09-08 用户要求）：后端+守护全部就绪才放行登录框，
@@ -267,6 +254,27 @@ export default function App() {
     },
     refetchInterval: 3000,
   });
+
+  // 启动诊断：**门状态变化时**写一行（写文件，便于脱离 DevTools 核查）。
+  // 🔴 2026-09-28 修（DSSCC-UI-007）：原实现**漏了依赖数组**（`});` 结尾）⇒
+  //   React 每次渲染都写一行 —— 实测累积 **281,595 行 / 31 MB**
+  //   （`frontend_boot.log`），既吃磁盘又淹没真实日志。诊断的语义本就是
+  //   「记录门状态**变迁**」，故按依赖数组只在上述状态量变化时写。
+  //   ⚠️ 本 effect 必须**置于全部依赖声明之后**（含 `ready`，它由下方 useQuery
+  //   解构而来）：依赖数组在渲染期求值，写在其上方会因 const 的 TDZ 抛
+  //   `Cannot access 'ready' before initialization`（tsc TS2448 已实证）。
+  useEffect(() => {
+    try {
+      const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      if (w) {
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("write_boot_log", {
+            text: `[render] memberName=${memberName} memberChecked=${memberChecked} prealigned=${prealigned} ready=${ready} overviewEverOk=${overviewEverOk}`,
+          }).catch(() => {});
+        });
+      }
+    } catch { /* ignore */ }
+  }, [memberName, memberChecked, prealigned, ready, overviewEverOk]);
 
   useEffect(() => {
     if (ready && !overviewEverOk) setOverviewEverOk(true);

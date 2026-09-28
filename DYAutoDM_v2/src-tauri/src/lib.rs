@@ -140,8 +140,16 @@ fn list_daemons(state: tauri::State<'_, AppState>) -> Vec<String> {
 }
 
 /// 把前端启动诊断日志写入文件（排查用；写入 exe 同目录 logs/frontend_boot.log）
+///
+/// 🔴 2026-09-28 修（DSSCC-UI-007，单文件轮转）：原实现只 append、**从不轮转** ——
+/// 叠加 App.tsx 诊断 effect 漏依赖数组（每次渲染都写），实测累积 281,595 行 /
+/// 31 MB，既吃磁盘又淹没真实日志。现补**单文件轮转**（与后端 loguru
+/// `rotation="20 MB"` 同一惯例）：写入前若当前文件已达 `BOOT_LOG_MAX_BYTES`，
+/// 先轮转为 `frontend_boot.log.1`（覆盖旧备份），再新建写入。上限 = 2×阈值。
+/// 本函数是**唯一写入口**，所有调用点自动受益；轮转失败为 best-effort（不阻断写入）。
 #[tauri::command]
 fn write_boot_log(text: String) -> Result<(), String> {
+    const BOOT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe
         .parent()
@@ -149,6 +157,16 @@ fn write_boot_log(text: String) -> Result<(), String> {
     let logs = dir.join("logs");
     std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
     let path = logs.join("frontend_boot.log");
+
+    // 单文件轮转：超上限则挪为 .1（覆盖旧备份），使日志占用有界
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() >= BOOT_LOG_MAX_BYTES {
+            let backup = logs.join("frontend_boot.log.1");
+            let _ = std::fs::remove_file(&backup);
+            let _ = std::fs::rename(&path, &backup);
+        }
+    }
+
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
