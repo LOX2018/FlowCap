@@ -109,6 +109,16 @@ async def replies_candidates_reject(body: CandidateRejectBody):
     return {"ok": True, "rejected": n, "items": reply_purify.list_candidates()}
 
 
+@router.post("/replies/audit_auto")
+async def replies_audit_auto():
+    """存量审计（2026-09-28 D5）：把正式库里「个案化/寒暄/等级断言」的 auto 条目
+    移入待确认区（**可逆**，对齐 ADR-022 绝不直接覆盖正式库）。
+    只处理 source=auto；人工条目不动。"""
+    from services import reply_purify
+    r = reply_purify.audit_legacy_auto()
+    return {"ok": True, **r, "candidates": len(reply_purify.list_candidates())}
+
+
 # ---------------------------------------------------------------------------
 # 专业知识库（思维导图结构 v0.39.1）：主题→子分类→正文→总结
 # ---------------------------------------------------------------------------

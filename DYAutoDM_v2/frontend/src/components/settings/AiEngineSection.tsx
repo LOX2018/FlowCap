@@ -59,6 +59,10 @@ interface AiConfig {
   max_reply_len: number;
   /** 2026-09-28（D4）：最短回复长度，低于此值判残句走兜底。 */
   min_reply_len: number;
+  /** 2026-09-28（D5）：命中库语义直答开关（默认关；命中即回会绕过护栏，故从严）。 */
+  reply_sem_enabled?: boolean;
+  /** 命中库语义直答阈值（默认 0.78）。 */
+  reply_sem_threshold?: number;
 }
 
 /** 回复档位选项（值与后端约定一致，逐字搬迁自 AI 页）。 */
@@ -327,6 +331,22 @@ export default function AiEngineSection(props: PageProps) {
             <Input
               type="number" value={c.min_reply_len ?? 5}
               onChange={(e) => set("min_reply_len", Number(e.target.value))}
+            />
+          </FormField>
+
+          <FormField label="命中库语义直答（严格阈值，默认关；开启需先人工确认库内条目干净）">
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox"
+                     checked={!!c.reply_sem_enabled}
+                     onChange={(e) => set("reply_sem_enabled", e.target.checked)} />
+              <span>开启（命中库命中即直接回复，绕过其余护栏；错选=张冠李戴，故阈值从严）</span>
+            </label>
+          </FormField>
+
+          <FormField label="命中库语义阈值（仅上一项开启时生效，默认 0.78）">
+            <Input
+              type="number" step="0.01" value={c.reply_sem_threshold ?? 0.78}
+              onChange={(e) => set("reply_sem_threshold", Number(e.target.value))}
             />
           </FormField>
 

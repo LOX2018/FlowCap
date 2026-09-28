@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from typing import Optional
@@ -148,12 +149,17 @@ def _cosine_reply(a, b) -> float:
 
 
 def _sem_ready(cfg: dict) -> bool:
-    """语义级是否允许运行：必须 sem_enabled=True 且有 base_url。
+    """语义级是否允许运行：总开关 sem_enabled + 命中库专用开关 reply_sem_enabled + base_url。
 
-    默认配置 sem_enabled=False ⇒ 永远 False ⇒ find_match 行为零变化。
+    2026-09-28（D5）：**命中库语义级与知识库 RAG 语义级是两个风险等级**，故拆开关：
+      - 知识库 RAG（pro_kb）：语义只决定「注入哪几条」，错选只是噪声 ⇒ 阈值 0.40 可用。
+      - 命中库（本库）：命中即**直接回复、绕过一切护栏**，错选 = **张冠李戴直发客户**。
+        实采：`陈旧性骨折还能认工伤吗` 在 0.40 下命中「工伤认定书还能销毁吗」（0.502，错）。
+      ⇒ 默认**关闭**（reply_sem_enabled=False），且开启时用**严格阈值** reply_sem_threshold。
     """
     try:
-        return bool(cfg.get("sem_enabled")) and bool(cfg.get("sem_base_url"))
+        return (bool(cfg.get("sem_enabled")) and bool(cfg.get("reply_sem_enabled"))
+                and bool(cfg.get("sem_base_url")))
     except Exception:
         return False
 
@@ -241,7 +247,7 @@ def find_match_semantic_reply(text: str, items: list, cfg: dict,
     if model and used_model and model != used_model:
         return None
     th = float(threshold if threshold is not None
-               else cfg.get("sem_threshold", 0.40))
+               else cfg.get("reply_sem_threshold", 0.78))
     qv = qvecs[0]
     best, best_score = None, 0.0
     for it in items:
@@ -388,6 +394,16 @@ _LEARN_JUNK_EXACT = frozenset({
 _LEARN_MIN_ANSWER_LEN = 8      # 回复话术至少 8 字（口语短句过滤）
 _LEARN_MIN_QUESTION_LEN = 3    # 问法至少 3 字
 
+# 2026-09-28（D5）：auto 条目**等级断言**判据（匹配侧门槛 + 存量审计共用）。
+# 命中库是「命中即回、直接 return」——**绕过出口护栏**，故断言必须在此拦。
+# 边界：含「以鉴定/认定结论为准」等豁免语时不算断言（只针对把话说死的形态）。
+_REPLY_LEVEL_ASSERT_RE = re.compile(
+    r"(?:就是|肯定|确定|必然|绝对|稳|保)[^。！？!?\n]{0,6}?"
+    r"[0-9一二三四五六七八九十]+\s*级")
+_REPLY_HEDGE_RE = re.compile(r"(以.{0,8}(?:为准|结论)|具体.{0,6}(?:看|视)|不一定|不一定能|可能)")
+# 注：**个案判据不在此自造** —— 复用 reply_purify.is_case_specific（单点）。
+# 曾自造含裸「伤」的正则，把「工伤怎么认定」误判个案（测试当场抓住）。
+
 
 def learn_quality_ok(question: str, answer: str) -> tuple:
     """自动学习条目的质量门槛。返回 (是否合格, 原因)。
@@ -409,14 +425,34 @@ def learn_quality_ok(question: str, answer: str) -> tuple:
 
 
 def _entry_usable(it: dict) -> bool:
-    """匹配侧门槛：脏 auto 条目直接**失效**（不删除数据，可逆）。
+    """匹配侧门槛：脏/个案/断言 auto 条目直接**失效**（不删除数据，可逆）。
 
     人工/迁移条目（source != 'auto'）一律可用 —— 只约束自动学习产物。
+
+    2026-09-28（D5 补强）：仅过长度/占位门槛不够。实测「可用」auto 里仍有：
+      · **63%（25/40）问法含个案标记**（数字/地名/伤情）⇒ 命中即回 = 照搬个案；
+      · 寒暄（「好的」）被沉淀成话术；
+      · **等级断言**（「你的伤情就是9级水平的」）⇒ 与专业口径相悖，
+        且命中库是**直接 return**（绕过出口护栏）⇒ 断言原件直发客户。
+    通用性判据复用 `reply_purify`（is_case_specific / is_greeting），保持**单点**。
     """
     if (it.get("source") or "") != "auto":
         return True
     ok, _ = learn_quality_ok(it.get("question"), it.get("answer"))
-    return ok
+    if not ok:
+        return False
+    try:
+        from services import reply_purify as _rp
+        if _rp.is_case_specific(it.get("question") or ""):
+            return False
+        if _rp.is_greeting(it.get("question") or ""):
+            return False
+    except Exception:
+        pass  # 判据不可用时不额外收紧（保守：退回长度门槛）
+    ans = it.get("answer") or ""
+    if _REPLY_LEVEL_ASSERT_RE.search(ans) and not _REPLY_HEDGE_RE.search(ans):
+        return False
+    return True
 
 
 def _is_valid_text(text: str, mtype) -> bool:

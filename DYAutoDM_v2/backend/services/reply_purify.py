@@ -398,3 +398,66 @@ def reject_candidates(ids: list) -> int:
     n = len(staged) - len(keep)
     _kv_set(_KV_CAND, keep)
     return n
+
+
+# ===========================================================================
+# 存量审计（2026-09-28 D5）：把**已在正式库**的脏 auto 条目降级到待确认区
+# ===========================================================================
+
+def audit_legacy_auto() -> dict:
+    """扫描正式库里的 auto 条目，把「个案化/寒暄/等级断言」的移入候选区待确认。
+
+    设计契约（对齐 ADR-022「绝不直接覆盖正式库」）：
+      - **可逆**：条目从正式库移入候选区（同一份数据换命名空间），
+        候选区确认即升格回来，或拒绝即丢弃。
+      - 只处理 source=auto；人工条目不动。
+    返回 {scanned, moved, kept, moved_items:[...]}（moved_items 便于留证/回滚）。
+    """
+    from services import reply_kb
+    items = reply_kb.list_items()
+    keep, moved = [], []
+    for it in items:
+        if (it.get("source") or "") != "auto":
+            keep.append(it)
+            continue
+        reason = ""
+        if not reply_kb.learn_quality_ok(it.get("question"), it.get("answer"))[0]:
+            reason = "quality_gate"
+        else:
+            try:
+                if is_case_specific(it.get("question") or ""):
+                    reason = "case_specific"
+                elif is_greeting(it.get("question") or ""):
+                    reason = "greeting"
+            except Exception:
+                reason = ""
+        ans = it.get("answer") or ""
+        if not reason and reply_kb._REPLY_LEVEL_ASSERT_RE.search(ans) \
+                and not reply_kb._REPLY_HEDGE_RE.search(ans):
+            reason = "level_assertion"
+        if reason:
+            moved.append({
+                "id": int(time.time() * 1000) + len(moved),
+                "question": it.get("question") or "",
+                "answer": it.get("answer") or "",
+                "cluster_size": 0,
+                "evidence": [f"legacy_removed:{reason}"],
+                "account": "", "created_at": time.time(),
+                "orig_id": it.get("id"),
+            })
+        else:
+            keep.append(it)
+    changed = bool(moved)
+    if changed:
+        reply_kb.save_items(keep)
+        staged = list_candidates()
+        # 候选区去重（同问法不重复叠加）
+        have = {(c.get("question") or "").strip() for c in staged}
+        for m in moved:
+            if (m.get("question") or "").strip() not in have:
+                staged.append(m)
+                have.add((m.get("question") or "").strip())
+        _kv_set(_KV_CAND, staged)
+    return {"scanned": len(items), "moved": len(moved), "kept": len(keep),
+            "moved_items": [{"q": m["question"], "a": m["answer"],
+                             "reason": m["evidence"][0]} for m in moved]}

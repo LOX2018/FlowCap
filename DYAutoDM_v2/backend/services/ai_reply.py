@@ -204,11 +204,21 @@ _DEFAULT_CONFIG = {
     # ---- 知识库/兜底 ----
     "knowledge_first": True,
     # ---- 语义检索（三级漏斗第2级；本机 FreeLLM OpenAI 兼容 /embeddings）----
-    "sem_enabled": False,
+    # 2026-09-28（D5 / ADR-025）：默认开启。收益实测明确 —— pro_kb RAG 选条由
+    # 「时间衰减前5（混无关）」变为「语义 TopK（全相关）」，且 prompt 3261→1303 字。
+    # 注意：这里开的只是**知识库 RAG 语义**；命中库语义另有独立开关 reply_sem_enabled
+    # （默认关，因命中即回绕过护栏，错选=张冠李戴）。embedding 不可用时各级自动降级。
+    "sem_enabled": True,
     "sem_base_url": "http://127.0.0.1:31415/v1",
     "sem_api_key": "",
-    "sem_model": "nvidia/nemotron-3-embed-1b",   # 本机 FreeLLM 实测唯一可用 embedding 模型
+    "sem_model": "nvidia/nemotron-3-embed-1b",   # 旧单配置路径的兜底名；实际以 ai_sem 链为准（2026-09-28 实采链模型 = llama-nemotron-embed-vl-1b-v2，2048 维）
     "sem_threshold": 0.40,                        # 实测：同义聚簇 0.44~0.59，跨意图 <0.21
+    # 2026-09-28（D5）：命中库（reply_kb）语义级**独立开关 + 严格阈值**。
+    # 为何不用 sem_enabled/en_threshold：命中库是「命中即直接回复、绕过一切护栏」，
+    # 风险等级远高于知识库 RAG（后者错选只是噪声）。实采阈值 0.40 会张冠李戴
+    # （陈旧性骨折的问题 -> 「工伤认定书还能销毁吗」@0.502）⇒ 默认关闭，开启用 0.78。
+    "reply_sem_enabled": False,
+    "reply_sem_threshold": 0.78,
     "min_delay": 8,
     "max_delay": 20,
     # 0 = 全文注入（ADR-008 决策 1，推荐默认）；>0 = 仅最近 N 条（旧行为兼容）
