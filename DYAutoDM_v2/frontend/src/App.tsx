@@ -225,30 +225,36 @@ export default function App() {
   } | null>(null);
   const cidRef = useRef(0);
 
+  // overview 轮询的日志去重（2026-09-28 · DSSCC-UI-007 第二半）：refetchInterval=3000
+  // ⇒ 每 3s 就写一次；未登录时 401 长期持续 ⇒ **[overview.ERROR] 每 3s 一行**，
+  // 实测 1 分钟 30 行 = 仍是无界增长（原 [render] 风暴的同类）。
+  // 判据：只记**内容变化**（OK 载荷 / 错误文本），相同内容不重复写。
+  const lastOvLogRef = useRef<string>("");
+  const writeOverviewLog = (tag: "OK" | "ERROR", body: string) => {
+    const line = `${tag}:${body}`;
+    if (lastOvLogRef.current === line) return; // 内容未变 ⇒ 不写（去重）
+    lastOvLogRef.current = line;
+    try {
+      const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      if (w) {
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("write_boot_log", { text: `[overview.${tag}] ${body}` }).catch(() => {});
+        });
+      }
+    } catch { /* ignore */ }
+  };
+
   // overview 3s 轮询（替代旧版 setInterval；Tauri 模式首次触发 ensureBackendReady）
   const { data: overview, isSuccess: ready } = useQuery({
     queryKey: ["overview"],
     queryFn: async () => {
       try {
         const r = await api.getOverview();
-        try {
-          const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-          if (w) {
-            import("@tauri-apps/api/core").then(({ invoke }) => {
-              invoke("write_boot_log", { text: "[overview.OK] " + JSON.stringify(r).slice(0, 300) }).catch(() => {});
-            });
-          }
-        } catch { /* ignore */ }
+        // 去重后只记**内容变化**（否则每 3s 写一行 = 无界增长）
+        writeOverviewLog("OK", JSON.stringify(r).slice(0, 300));
         return r;
       } catch (e) {
-        try {
-          const w = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-          if (w) {
-            import("@tauri-apps/api/core").then(({ invoke }) => {
-              invoke("write_boot_log", { text: `[overview.ERROR] ${String(e)}` }).catch(() => {});
-            });
-          }
-        } catch { /* ignore */ }
+        writeOverviewLog("ERROR", String(e));
         throw e;
       }
     },
