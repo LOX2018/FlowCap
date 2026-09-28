@@ -652,10 +652,29 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
         # 契约来源：api/accounts.py:632「有头是观测态，不是运行态」。
         # 凭证**照常观测回写**（不中断），只是不动窗口。
         if getattr(self, "_observe_mode", False):
-            logger.warning(
+            # 2026-09-28 修复（BCC-080 刷屏）：本分支位于**每轮保活探活**路径，
+            # 观测态下探活每 3s 失败一次就记一条 WARNING —— 实测单日 **1195 条**
+            # （占该日 BCC 日志 93%），把 26 条 env_audit 真信号完全淹没。
+            # 语义不变（仍不重建/不关闭），只对**重复陈述**做节流：
+            # 首次必记，随后 60s 静默；静默期结束的首次调用补记汇总（含计数），
+            # 保证「发生过」这条事实**不丢失**（与静默失败的区别：可回捞）。
+            _msg = (
                 f"[BCC-080] [bcc] {self.account} 处于【用户观测态】—— "
                 f"探活失败也**不重建/不关闭**（窗口是用户在看的，"
                 f"重建会销毁它并记一次全新环境）。请用户手动结束观测后处理")
+            try:
+                from utils.log_throttle import should_log as _sl
+                from utils.log_throttle import pending_count as _pc
+                from utils.log_throttle import reset as _lt_reset
+                _acc = str(getattr(self, "account", "") or "")
+                if _sl("BCC-080", _acc, interval=60.0):
+                    _n = _pc("BCC-080", _acc)
+                    _lt_reset("BCC-080", _acc)
+                    _tail = f"（此前 {_n} 次同类已合并）" if _n else ""
+                    logger.warning(_msg + _tail)
+            except Exception:  # noqa: BLE001
+                # 节流原语自身异常不得影响主语义 —— 退回原行为（照常记一条）
+                logger.warning(_msg)
             return
         try:
             if self._context is None or not self._context.pages:
@@ -1316,22 +1335,33 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
         为什么不再无条件走 ②：Camoufox 模式下 ② 恒为空（init script 被跳过），
         却每 3s 付一次「导航到 /chat」的代价 ⇒ 纯浪费 + 副作用。
         """
-        async def _do():
-            # ── ① 协议层（首选；Camoufox 下唯一可用路径）────────────────────
-            proto = getattr(self, "_wp_proto", None)
-            if proto is not None:
-                try:
-                    evs = proto.drain()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"[BCC-012] " + f"[bcc] 读 wp 协议层事件失败: {e}")
-                    return []
-                evs = evs or []
-                if evs:
-                    logger.info(f"[bcc] 取回 WP 私信事件 {len(evs)} 条"
-                                f"（协议层；stats={proto.stats}）")
-                return evs
+        # 2026-09-28 修复（BCC-033 / 疑 H-24 真因）：
+        # 路径①（协议层 `proto.drain()`）是**纯内存读取**，零浏览器交互 ——
+        # 原实现却把它整体包进 `_exec`（租约仲裁 + _lock 串行），于是 WP 轮询
+        # 被迫去抢「整槽位独占租约」。而租约仲裁规则是「已被持有即拒绝，不抢占、
+        # **不看 prio 高低**」（bcc_lease._lease_acquire）⇒ 昵称捕获
+        # （/userinfo_idb，P0 + ttl=300s）一开跑，wp_recv 的 3s 轮询就被
+        # **无差别饿死** 300s（实测 BCC-033 22 次/日，holder=userinfo_idb）。
+        # 正解：不需要浏览器的操作就不该申请浏览器租约 —— ① 直接 drain 返回；
+        #       仅 ②（legacy JS hook，确实要 evaluate 页面）才走 _exec，并按
+        #       「业务自动」P1 声明，与 P2 保活区分。
+        # 这是 H-24「WP 通道自部署以来零落库」的高嫌疑真因：协议层早已落地
+        # （daemon/wp_protocol.py），但它从来抢不到容器。
+        proto = getattr(self, "_wp_proto", None)
+        if proto is not None:
+            try:
+                evs = proto.drain()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[BCC-012] " + f"[bcc] 读 wp 协议层事件失败: {e}")
+                return []
+            evs = evs or []
+            if evs:
+                logger.info(f"[bcc] 取回 WP 私信事件 {len(evs)} 条"
+                            f"（协议层；stats={proto.stats}）")
+            return evs
 
-            # ── ② legacy JS hook（仅监听器不可用时）─────────────────────────
+        # ── ② legacy JS hook（仅协议层监听器不可用时才需要页面）──────────
+        async def _do():
             page = self._page
             if "/chat" not in (page.url or ""):
                 # 🔴 2026-09-21（ENG-020）：改用独立导航 tab —— 原实现把主 page
@@ -1351,7 +1381,10 @@ class BrowserContainer(BccLoginMixin, BccCaptureMixin, BccAuditMixin):
             if evs:
                 logger.info(f"[bcc] 取回 WP 私信事件 {len(evs)} 条（JS hook 兜底）")
             return evs
-        return await self._exec(_do)
+
+        # holder/prio 显式声明（P1 业务自动）：WP 轮询是常驻接收通道，
+        # 语义上不是「锦上添花的后台保活」（P2 默认），必须与 P2 区分开。
+        return await self._exec(_do, holder="wp_recv", prio=1, ttl=30.0)
 
 
     async def resolve_url(self, url: str) -> dict:
