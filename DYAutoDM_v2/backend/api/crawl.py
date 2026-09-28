@@ -200,8 +200,14 @@ async def crawl_search(body: CrawlSearchRequest):
             )
             items = [_map_video(w) for w in (raw or []) if w.get("aweme_info")]
         else:
-            raw = await asyncio.to_thread(DouyinAPI.search_some_user, auth, q, num)
-            items = [_map_user(u) for u in (raw or [])]
+            # 经 features 基座封装层调用（返回 {"ok":bool,"data":...}）。
+            # ok=False 必须按原有 502 语义上抛，绝不把「采集失败」降级成「没有结果」。
+            import features
+            res = await asyncio.to_thread(features.search_user, auth, q, num)
+            if not res.get("ok"):
+                raise HTTPException(502, f"搜索失败: {res.get('error')}")
+            raw = res.get("data") or []
+            items = [_map_user(u) for u in raw]
     except HTTPException:
         raise
     except Exception as e:
@@ -235,7 +241,13 @@ async def crawl_comments(body: CrawlCommentsRequest):
         comments: list[dict] = []
         cursor = "0"
         for _ in range(40):  # 硬上限 40 页 * 每页 ≤20 条
-            res = DouyinAPI.get_work_out_comment(auth, url, cursor)
+            # 经 features 基座封装层调用（返回 {"ok":bool,"data":...}）。
+            # ok=False 时上抛错误（外层转 502），绝不把失败当成「没有评论」。
+            import features
+            r = features.work_comments(auth, url, cursor)
+            if not r.get("ok"):
+                raise RuntimeError(f"评论采集失败: {r.get('error')}")
+            res = r.get("data")
             batch = res.get("comments") if isinstance(res, dict) else None
             if not batch:
                 break
