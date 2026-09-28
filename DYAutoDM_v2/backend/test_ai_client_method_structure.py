@@ -27,11 +27,18 @@ from __future__ import annotations
 import ast
 import os
 import sys
+import tempfile
 import unittest
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _BACKEND)
-os.environ.setdefault("DY_APP_ROOT", r"C:\temp\dyautodm_design")
+# A-8 / M-17 隔离根单一化：模块级 DY_APP_ROOT 必须是**一次性临时目录**，禁止回落
+# 真实 design 数据根或源码树（旧值 r"C:\temp\dyautodm_design" 靠 discover 导入顺序
+# 侥幸避免污染）。先 mkdir 再赋值 —— vbrowser.app_root() 对不存在的根会忽略并回落
+# 仓库相对路径 data/（污染工作树）。范式见 test_uid_sink_ext.py:17-39。
+_ROOT = tempfile.mkdtemp(prefix="ai_client_ms_")
+os.makedirs(_ROOT, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _ROOT
 
 _SRC = os.path.join(_BACKEND, "services", "ai_reply.py")
 

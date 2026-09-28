@@ -29,15 +29,24 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 
+# A-8 / M-17 隔离根单一化：子进程 DY_APP_ROOT 兜底一律用**一次性临时目录**，
+# 禁止回落源码树（旧兜底 _BACKEND）。先 makedirs 再赋值。范式见 test_uid_sink_ext.py:17-39。
+_ROOT = tempfile.mkdtemp(prefix="bcc_startup_fire_")
+os.makedirs(_ROOT, exist_ok=True)
+
 _PROBE = r'''
-import sys, os, time, threading, importlib.util
+import sys, os, time, threading, importlib.util, tempfile
 BACKEND = r"{backend}"
 sys.path.insert(0, BACKEND)
-os.environ.setdefault("DY_APP_ROOT", os.environ.get("DY_APP_ROOT", BACKEND))
+if not os.environ.get("DY_APP_ROOT"):
+    _p = tempfile.mkdtemp(prefix="bcc_startup_probe_")
+    os.makedirs(_p, exist_ok=True)
+    os.environ["DY_APP_ROOT"] = _p
 
 import uvicorn
 uvicorn.run = lambda *a, **k: None       # 防 main() 真起服务
@@ -93,7 +102,7 @@ def _run(inject_double: bool, port: int):
     code = _PROBE.format(backend=_BACKEND, port=port,
                          inject_double="1" if inject_double else "0")
     env = dict(os.environ)
-    env.setdefault("DY_APP_ROOT", _BACKEND)
+    env.setdefault("DY_APP_ROOT", _ROOT)
     return subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True, text=True, cwd=_BACKEND, env=env, timeout=180,

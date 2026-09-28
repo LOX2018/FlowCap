@@ -28,11 +28,16 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 import unittest
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _BACKEND)
-os.environ.setdefault("DY_APP_ROOT", r"C:\temp\dyautodm_design")
+# A-8 / M-17 隔离根单一化：模块级 DY_APP_ROOT 必须是**一次性临时目录**。
+# 先 mkdir 再赋值（vbrowser.app_root() 忽略不存在的根 → 回落仓库 data/）。
+_ROOT = tempfile.mkdtemp(prefix="m2_secsdk_")
+os.makedirs(_ROOT, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _ROOT
 
 def _has_double_encoding(chunk: str) -> bool:
     """该代码块是否「用了 signed_url **且** 又把 params= 交给 requests」。

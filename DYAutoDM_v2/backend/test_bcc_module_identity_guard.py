@@ -29,17 +29,27 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 _ENTRY = os.path.join(_BACKEND, "daemon", "browser_daemon.py")
 
+# A-8 / M-17 隔离根单一化：子进程 DY_APP_ROOT 兜底一律用**一次性临时目录**，
+# 禁止回落源码树（旧兜底 _BACKEND）。先 makedirs 再赋值（vbrowser.app_root()
+# 忽略不存在的根 → 回落仓库 data/）。范式见 test_uid_sink_ext.py:17-39。
+_ROOT = tempfile.mkdtemp(prefix="bcc_module_identity_")
+os.makedirs(_ROOT, exist_ok=True)
+
 _PROBE = r'''
-import sys, os, importlib.util
+import sys, os, importlib.util, tempfile
 BACKEND = r"{backend}"
 ENTRY = r"{entry}"
 sys.path.insert(0, BACKEND)
-os.environ.setdefault("DY_APP_ROOT", os.environ.get("DY_APP_ROOT", BACKEND))
+if not os.environ.get("DY_APP_ROOT"):
+    _p = tempfile.mkdtemp(prefix="bcc_module_identity_probe_")
+    os.makedirs(_p, exist_ok=True)
+    os.environ["DY_APP_ROOT"] = _p
 # 入口文件末尾有 `if __name__ == "__main__": main()` —— 以 __main__ 加载会真跑它。
 # stub uvicorn.run 防真起服务；给合法 argv 防 argparse 退出；--force-duplicate +
 # --allow-any-port 防单例守卫 SystemExit（本机可能真有 BCC 在跑）。
@@ -62,11 +72,14 @@ print("ACCT:" + repr(_s2["account"]))
 
 # 后端入口（main.py）同类探针：请求期 api/accounts.py 会 `from main import app`
 _PROBE_MAIN = r'''
-import sys, os, importlib.util
+import sys, os, importlib.util, tempfile
 BACKEND = r"{backend}"
 ENTRY = r"{entry}"
 sys.path.insert(0, BACKEND)
-os.environ.setdefault("DY_APP_ROOT", os.environ.get("DY_APP_ROOT", BACKEND))
+if not os.environ.get("DY_APP_ROOT"):
+    _p = tempfile.mkdtemp(prefix="bcc_module_identity_probe_")
+    os.makedirs(_p, exist_ok=True)
+    os.environ["DY_APP_ROOT"] = _p
 import uvicorn
 uvicorn.run = lambda *a, **k: None
 sys.argv = ["main.exe", "--port", "19998"]
@@ -98,7 +111,7 @@ class TestBccModuleIdentityGuard(unittest.TestCase):
         """
         code = _PROBE.format(backend=_BACKEND, entry=_ENTRY)
         env = dict(os.environ)
-        env.setdefault("DY_APP_ROOT", _BACKEND)
+        env.setdefault("DY_APP_ROOT", _ROOT)
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, cwd=_BACKEND, env=env, timeout=120,
@@ -150,7 +163,7 @@ class TestBccModuleIdentityGuard(unittest.TestCase):
             self.skipTest(f"入口不存在: {entry}")
         code = _PROBE_MAIN.format(backend=_BACKEND, entry=entry)
         env = dict(os.environ)
-        env.setdefault("DY_APP_ROOT", _BACKEND)
+        env.setdefault("DY_APP_ROOT", _ROOT)
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, cwd=_BACKEND, env=env, timeout=180,

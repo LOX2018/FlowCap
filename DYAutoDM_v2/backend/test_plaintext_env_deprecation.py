@@ -20,8 +20,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
-os.environ.setdefault("DY_APP_ROOT", os.path.abspath(
-    os.path.join(_BACKEND, "..", "..")))
+# A-8 / M-17 隔离根单一化：模块级 DY_APP_ROOT 必须是**一次性临时目录**，禁止回落
+# 源码树/仓库父目录（旧值 = backend/../..）。先 mkdir 再赋值（vbrowser.app_root()
+# 忽略不存在的根 → 回落仓库 data/）。范式见 test_uid_sink_ext.py:17-39。
+_ROOT = tempfile.mkdtemp(prefix="plaintext_env_dep_")
+os.makedirs(_ROOT, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _ROOT
 
 
 def _reload_member_ctx():
