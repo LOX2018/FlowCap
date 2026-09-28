@@ -1,0 +1,229 @@
+{
+ "root": "C:/Users/LOX/AppData/Local/Temp/copyctl",
+ "exists": true,
+ "files": {
+  "%SystemDrive%\\ProgramData\\Microsoft\\Windows\\Caches\\cversions.2.db": {
+   "size": 16384,
+   "mtime_ns": 1790532769475814300,
+   "sha256": "de800ec458c404e412158787a7bc6660fe54a2bc3b6903b31d07a661325056f0"
+  },
+  "%SystemDrive%\\ProgramData\\Microsoft\\Windows\\Caches\\{6AF0698E-D558-4F6E-9B3C-3716689AF493}.2.ver0x0000000000000001.db": {
+   "size": 309024,
+   "mtime_ns": 1790532769477818900,
+   "sha256": "d3f5589696fda02109988072bcc43376efcd31782a9c960e8f6f62b2392dd645"
+  },
+  "%SystemDrive%\\ProgramData\\Microsoft\\Windows\\Caches\\{DDF571F2-BE98-426D-8288-1A9A39C3FDA2}.2.ver0x0000000000000001.db": {
+   "size": 662848,
+   "mtime_ns": 1790532769479815800,
+   "sha256": "c4d9d413858772bce58f3b18c207ff86514b03653cfb2ef0e795c0d7c31a9470"
+  },
+  "data\\dyautodm.db": {
+   "size": 90112,
+   "mtime_ns": 1790532771202135600,
+   "sha256": "8a7c7f264244c56e23205256baba48c77e12e38c0a93c7e56cf87b50d207a107"
+  },
+  "members\\hotswap-probe\\data\\dyautodm.db": {
+   "size": 90112,
+   "mtime_ns": 1790532771826888500,
+   "sha256": "d0df6c3ec0d66b866bc4683c1ed2d3e77e74ffd4c3dbaae4553b7735d813e5f2"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\_tmp_dom_probe_20260926\\profile\\_camoufox\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532782026202600,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\_tmp_dom_probe_20260926\\profile\\_camoufox\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532782028697300,
+   "sha256": "d6959e47d4e0434b72f67c160cdf5299dac63223d4339cd73935092d0b579728"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\_tmp_dom_probe_20260926\\profile\\_camoufox\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532771973293200,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\四川工伤张老师\\profile\\first_party_sets.db": {
+   "size": 49152,
+   "mtime_ns": 1790532886453126700,
+   "sha256": "1f6ab0a93b755a71d94f9def269ad34ee67e6623d81bea4503b0c7dc704220de"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\四川工伤张老师\\profile\\Default\\heavy_ad_intervention_opt_out.db": {
+   "size": 16384,
+   "mtime_ns": 1790532832036772100,
+   "sha256": "5a5f703468585e4cf747dc1baf0457a275d2dd31e84f2de9d18aab3e6d6bf568"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\四川工伤张老师\\profile\\_camoufox\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532832107126400,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\四川工伤张老师\\profile\\_camoufox\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532832110122900,
+   "sha256": "163343d7c5545941a8fb9875ca0145555814a6dc1dace2c4cc9fc5f10c5e60bf"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\四川工伤张老师\\profile\\_camoufox\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532832112881800,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\尚进工伤小助理\\profile\\first_party_sets.db": {
+   "size": 49152,
+   "mtime_ns": 1790532784026207800,
+   "sha256": "1f6ab0a93b755a71d94f9def269ad34ee67e6623d81bea4503b0c7dc704220de"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\尚进工伤小助理\\profile\\Default\\CdmStorage.db": {
+   "size": 163840,
+   "mtime_ns": 1790532784023205700,
+   "sha256": "3344c8b28abdcf08ebfa0ede5a2449e018a3cff541feccfb625c8f1659b728a0"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\尚进工伤小助理\\profile\\Default\\heavy_ad_intervention_opt_out.db": {
+   "size": 16384,
+   "mtime_ns": 1790532783439353300,
+   "sha256": "5a5f703468585e4cf747dc1baf0457a275d2dd31e84f2de9d18aab3e6d6bf568"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\尚进工伤小助理\\profile\\_camoufox\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532784174016500,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\尚进工伤小助理\\profile\\_camoufox\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532784165766800,
+   "sha256": "d2b9bf4cb801aa53110b4be9fe5b3d9079e013685fde51eafbe6e48d632bb92e"
+  },
+  "members\\m17db0f8209156f26\\auto_dm\\accounts\\尚进工伤小助理\\profile\\_camoufox\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532784122044100,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "members\\m17db0f8209156f26\\data\\dyautodm.db": {
+   "size": 1548288,
+   "mtime_ns": 1790532771894705200,
+   "sha256": "bee1c72a6178bbee3c3dce21b8f24ed89ce9ef609fbcdcfbf5e1d9dd1a667042"
+  },
+  "vb_profile_default\\_camoufox\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532770914526000,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "vb_profile_default\\_camoufox\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532770836891200,
+   "sha256": "7cb9a725b721b9e3c69b5b0d7bcfe907430bc5d7373baafc1c0b905ffc618a9e"
+  },
+  "vb_profile_default\\_camoufox\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532770838888200,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "_gpu\\g5\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532905269512800,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "_gpu\\g5\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532905333007800,
+   "sha256": "010e854483a4814df67bc0a5aa2de6ffb83be634cdd787a17c4d44e6e7ba899e"
+  },
+  "_gpu\\g5\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532905272510800,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "_internal\\camoufox\\webgl\\webgl_data.db": {
+   "size": 270336,
+   "mtime_ns": 1790532903633016600,
+   "sha256": "a5e336e70929b56ae969d3c93ea90e6eef98efd11bf561bd2b030a7c180d22a8"
+  },
+  "_matrix\\c1\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532769026950600,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "_matrix\\c1\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532769072329500,
+   "sha256": "501d4addfa68945873cfe2bfd01f27f42a508f489f15b9de170f0d65b900cffd"
+  },
+  "_matrix\\c1\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532769074329500,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "_matrix2\\b1\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532904468216600,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "_matrix2\\b1\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532904452271200,
+   "sha256": "4c0715f3fbf7b6679876de2abf9215a0d4dee77b2affffb27cf469f0db84cb3a"
+  },
+  "_matrix2\\b1\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532904483165600,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "_matrix2\\c1\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532904222954400,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "_matrix2\\c1\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532904226331200,
+   "sha256": "2bd8f16a9cd99fc4dcf2e2af8ddaddab98a5f9d916ef8366167a4aae9cd75f9c"
+  },
+  "_matrix2\\c1\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532904155039800,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "_pwtest\\pr2\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532769221719200,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "_pwtest\\pr2\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532769363588900,
+   "sha256": "d0d32ca1e1c14fec6723e88421b9d1244f129ac194b83244089714ae6aa928d8"
+  },
+  "_pwtest\\pr2\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532769367892800,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "_s1test\\cert9.db": {
+   "size": 229376,
+   "mtime_ns": 1790532768664900100,
+   "sha256": "5cc4c2ba944a5c367b07440013e0dd9ac92ef96b4c9f8dc932a67ca6bffc58cd"
+  },
+  "_s1test\\key4.db": {
+   "size": 294912,
+   "mtime_ns": 1790532768666900600,
+   "sha256": "d6b183053e0e53cfdc3aa4f6867b1ead5b5e9113bbc2dbca6b8cf36f273daeff"
+  },
+  "_s1test\\logins.db": {
+   "size": 360448,
+   "mtime_ns": 1790532768670892600,
+   "sha256": "9bbfc437676a3f382fd64b47fd889b2903af6451c533a536b30da2ed6d7c44b7"
+  },
+  "_tmp_verify_history\\verify_history.db": {
+   "size": 12288,
+   "mtime_ns": 1790532905016314300,
+   "sha256": "b35e216bc709afc2efbb583366cad3b3754e981fc0b1cd8eee7cb1e4e289a845"
+  }
+ },
+ "kv": {
+  "members\\m17db0f8209156f26\\data\\dyautodm.db": {
+   "ai_account_agent": "{\"尚进工伤小助理\": \"ag_88387f9ee4e34dc1\", \"四川工伤张老师\": \"ag_88387f9ee4e34dc1\", \"账号A\": \"ag_not_exist\"}",
+   "ai_agents": "{\"ag_dispatch_default\": {\"name\": \"调度 Agent（IM Bot 默认）\", \"kind\": \"dispatch\", \"config\": {\"enabled\": true, \"kind\": \"dispatch\", \"scopes\": [], \"system_prompt\": \"\", \"permissions\": {\"query_status\": true, \"create_crawl_task\": true, \"create_live_task\": true, \"stop_task\": true, \"update_kb\": true, \"create_agent\": false, \"recapture\": false}}, \"created_at\": 1790184309.0211747, \"updated_at\": 1790184309.0211747}, \"ag_88387f9ee4e34dc1\": {\"name\": \"工伤赔偿留资助手（唐律）\", \"config\": {\"merchant_name\": \"唐律工伤团队\", \"system_prompt\": \"你是「唐律工伤团队」的私人助理，代唐律在抖音私信里接待工伤工友。\\n风格：亲切、专业、不冷场；像熟人一样先关心伤情，再一步步引导留联系方式。\\n节奏（严格分步，不要一口气问完）：\\n1) 先问伤情：确认受伤部位与大致情况（如「是哪个部位受伤的？现在恢复得怎么样？」）。\\n2) 再问地区：确认所在省市与是否已认定工伤（不同地区赔偿标准不同）。\\n3) 初判等级：结合十级/九级等常见等级口径，给出初步判断与依据，但说明最终以鉴定为准。\\n4) 钩子留资：说明可以免费帮忙算一份赔偿清单，请对方留下联系方式——「你联系方式多少，我给你算份赔偿清单，到时候按照清单找公司谈一下」。\\n5) 跟进：若对方犹豫，用「留个联系~方式，唐律下播帮你分析」邀请；若对方要资料，用「这样吧，我给你发点资料，你按照话术上面去和医院沟通」承接。\\n边界：不做法律承诺、不报绝对数额、不谈与工伤无关的话题；始终围绕工伤等级判定、地区差异、取证材料指导、复查沟通四个主题。\", \"strict_level\": \"rag\", \"scopes\": [\"dm\", \"live\", \"crawl\"], \"max_tokens\": 1000, \"temperature\": 0.7, \"enabled\": true}, \"created_at\": 1790216221.273269, \"updated_at\": 1790221517.4486706}, \"agA\": {\"name\": \"A\", \"config\": {\"merchant_name\": \"商家A\"}, \"created_at\": 1790417623.8076842, \"updated_at\": 1790450920.6274064}, \"agB\": {\"name\": \"B\", \"config\": {\"merchant_name\": \"商家B\"}, \"created_at\": 1790417623.8096821, \"updated_at\": 1790450920.6280317}, \"ag2\": {\"name\": \"只改模型\", \"config\": {\"model\": \"qwen\"}, \"created_at\": 1790417623.8207753, \"updated_at\": 1790450920.685146}, \"agS\": {\"name\": \"共享\", \"config\": {\"model\": \"v2\"}, \"created_at\": 1790417623.825778, \"updated_at\": 1790450920.7014723}, \"ag1\": {\"name\": \"A\", \"config\": {\"knowledge_base\": [{\"id\": 1, \"question\": \"价格\", \"answer\": \"100\"}]}, \"created_at\": 1790450920.768835, \"updated_at\": 1790450920.7828991}}",
+   "ai_reply_config": "{\"enabled\": false, \"api_key\": \"freellmapi-c912c8fb302613e59ba18df541eedde5bcf83290c9fb37e0\", \"api_protocol\": \"openai\", \"base_url\": \"http://127.0.0.1:31415/v1\", \"model\": \"glm-5.2\", \"max_tokens\": 1000, \"temperature\": 0.7, \"vision_enabled\": false, \"vision_base_url\": \"http://127.0.0.1:31415/v1\", \"vision_api_key\": \"\", \"vision_model\": \"nemotron-3-nano-omni-reasoning\", \"vision_prompt\": \"客观描述这张图片的内容，重点提取与产品咨询/故障/需求相关的信息，30字以内，不要评论图片质量。\", \"merchant_name\": \"\", \"strict_level\": \"rag\", \"system_prompt\": \"\", \"lead_confirm\": \"好的～稍后这边联系你哈\", \"max_lead_ask\": 2, \"kind\": \"dm\", \"scopes\": [\"dm\", \"live\", \"crawl\"], \"knowledge_first\": true, \"sem_enabled\": false, \"sem_base_url\": \"http://127.0.0.1:31415/v1\", \"sem_api_key\": \"\", \"sem_model\": \"nvidia/nemotron-3-embed-1b\", \"sem_threshold\": 0.4, \"min_delay\": 8, \"max_delay\": 20, \"max_history\": 0, \"context_window\": 65536, \"context_budget_pct\": 0.6, \"fallback_pool\": [\"嗯嗯稍等哈，我问下马上回你\", \"这个我得确认一下哈，稍等\", \"收到，我问好了发你\", \"稍等哈，我看看\"], \"fallback_image\": \"图我看到了哈，稍等我看看再回你\", \"forbidden_words\": [\"微信\", \"vx\", \"VX\", \"weixin\", \"作为一个AI\", \"作为一个ai\"], \"max_reply_len\": 60}"
+  }
+ },
+ "errors": []
+}

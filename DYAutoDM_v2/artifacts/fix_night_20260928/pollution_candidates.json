@@ -1,0 +1,670 @@
+[
+ {
+  "file": "test_ai_agent.py",
+  "hits": [
+   {
+    "line": 21,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _tmp",
+    "value": null
+   },
+   {
+    "line": 38,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _tmp",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_ai_client_method_structure.py",
+  "hits": [
+   {
+    "line": 34,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", r\"C:\\temp\\dyautodm_design\")",
+    "value": "C:\\temp\\dyautodm_design"
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_app_config.py",
+  "hits": [
+   {
+    "line": 19,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _TMP",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_b3_capture_probe.py",
+  "hits": [
+   {
+    "line": 17,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _tmp",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_bcc_kernel_unavailable_breaker.py",
+  "hits": [
+   {
+    "line": 107,
+    "cat": "C",
+    "kind": "setdefault",
+    "expr": "env.setdefault(\"DY_APP_ROOT\", _BACKEND)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_bcc_module_identity_guard.py",
+  "hits": [
+   {
+    "line": 101,
+    "cat": "C",
+    "kind": "setdefault",
+    "expr": "env.setdefault(\"DY_APP_ROOT\", _BACKEND)",
+    "value": null
+   },
+   {
+    "line": 153,
+    "cat": "C",
+    "kind": "setdefault",
+    "expr": "env.setdefault(\"DY_APP_ROOT\", _BACKEND)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_bcc_startup_single_fire.py",
+  "hits": [
+   {
+    "line": 96,
+    "cat": "C",
+    "kind": "setdefault",
+    "expr": "env.setdefault(\"DY_APP_ROOT\", _BACKEND)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_capability_probe.py",
+  "hits": [
+   {
+    "line": 44,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   },
+   {
+    "line": 49,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   },
+   {
+    "line": 59,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_config_isolation.py",
+  "hits": [
+   {
+    "line": 21,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_config_tag.py",
+  "hits": [
+   {
+    "line": 25,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _tmp",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_credential_selflock_recovery.py",
+  "hits": [
+   {
+    "line": 24,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", os.path.abspath(",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_cross_account_sink.py",
+  "hits": [
+   {
+    "line": 10,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _TMP",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_delivery_verify.py",
+  "hits": [
+   {
+    "line": 69,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   },
+   {
+    "line": 82,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   },
+   {
+    "line": 95,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   },
+   {
+    "line": 246,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_dm_dispatch_config.py",
+  "hits": [
+   {
+    "line": 20,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _TMP",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_entry_module_identity_guard.py",
+  "hits": [
+   {
+    "line": 285,
+    "cat": "C",
+    "kind": "setdefault",
+    "expr": "env.setdefault(\"DY_APP_ROOT\", os.path.join(os.environ.get(\"LOCALAPPDATA\", tempfile.gettempdir()), \"Temp\", \"fixF\"))",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_f1_d1_d3.py",
+  "hits": [
+   {
+    "line": 38,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_h30_rpa_wiring.py",
+  "hits": [
+   {
+    "line": 27,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", r\"C:\\temp\\dyautodm_design\")",
+    "value": "C:\\temp\\dyautodm_design"
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_h31_ai_reply_safety.py",
+  "hits": [
+   {
+    "line": 29,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", r\"C:\\temp\\dyautodm_design\")",
+    "value": "C:\\temp\\dyautodm_design"
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_id_uniqueness.py",
+  "hits": [
+   {
+    "line": 38,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", _ROOT)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_live_cred_writeback_independence.py",
+  "hits": [
+   {
+    "line": 25,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", os.path.abspath(",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_m20_search_transport.py",
+  "hits": [
+   {
+    "line": 38,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", r\"C:\\temp\\dyautodm_design\")",
+    "value": "C:\\temp\\dyautodm_design"
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_m2_secsdk_send_side.py",
+  "hits": [
+   {
+    "line": 35,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", r\"C:\\temp\\dyautodm_design\")",
+    "value": "C:\\temp\\dyautodm_design"
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_member_smoke.py",
+  "hits": [
+   {
+    "line": 58,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = self.sandbox",
+    "value": null
+   },
+   {
+    "line": 54,
+    "cat": "C",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = cls._prev_root",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_model_hub_key_masking.py",
+  "hits": [
+   {
+    "line": 28,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_model_hub_v2.py",
+  "hits": [
+   {
+    "line": 10,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_p2_live_guards.py",
+  "hits": [
+   {
+    "line": 37,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", _ROOT)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_plaintext_env_deprecation.py",
+  "hits": [
+   {
+    "line": 23,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", os.path.abspath(",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_replay_capture_parse.py",
+  "hits": [
+   {
+    "line": 41,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", _FALLBACK_ROOT)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_replay_conversation_read.py",
+  "hits": [
+   {
+    "line": 38,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", _FALLBACK_ROOT)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_replay_gates.py",
+  "hits": [
+   {
+    "line": 21,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_send_gate_config.py",
+  "hits": [
+   {
+    "line": 24,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _TMP",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_settings_api.py",
+  "hits": [
+   {
+    "line": 18,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _TMP",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_task_scheduler_gates.py",
+  "hits": [
+   {
+    "line": 54,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "test_uid_sink_ext.py",
+  "hits": [
+   {
+    "line": 39,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "verify_f1_d1_d3_live.py",
+  "hits": [
+   {
+    "line": 30,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_ai_agent_contract.py",
+  "hits": [
+   {
+    "line": 42,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _DESIGN_ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_ai_live_wiring.py",
+  "hits": [
+   {
+    "line": 41,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _DESIGN_ROOT",
+    "value": null
+   },
+   {
+    "line": 40,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", _DESIGN_ROOT)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_api_split.py",
+  "hits": [
+   {
+    "line": 35,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = DESIGN_ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_automation.py",
+  "hits": [
+   {
+    "line": 32,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = DESIGN_ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_capture_parse.py",
+  "hits": [
+   {
+    "line": 40,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", DESIGN_ROOT)",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_history_context_fix.py",
+  "hits": [
+   {
+    "line": 53,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = DESIGN_ROOT          # 隔离测试环境",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_live_ai_observability.py",
+  "hits": [
+   {
+    "line": 40,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _DESIGN_ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_logic_replication.py",
+  "hits": [
+   {
+    "line": 34,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = DESIGN_ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_player.py",
+  "hits": [
+   {
+    "line": 30,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = DESIGN_ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_reply_kb_learning.py",
+  "hits": [
+   {
+    "line": 42,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = VERIFY_ROOT",
+    "value": null
+   }
+  ],
+  "errors": []
+ },
+ {
+  "file": "scripts\\verify_t1_no_copy_send.py",
+  "hits": [
+   {
+    "line": 28,
+    "cat": "A",
+    "kind": "assign",
+    "expr": "os.environ[\"DY_APP_ROOT\"] = _DESIGN_ROOT",
+    "value": null
+   },
+   {
+    "line": 27,
+    "cat": "B",
+    "kind": "setdefault",
+    "expr": "os.environ.setdefault(\"DY_APP_ROOT\", _DESIGN_ROOT)",
+    "value": null
+   }
+  ],
+  "errors": []
+ }
+]
