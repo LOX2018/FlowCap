@@ -234,13 +234,25 @@ _DEFAULT_CONFIG = {
     # 并发处理池大小（ADR-008 决策 3）：同会话严格串行、跨会话并行。
     # 8 = 可同时接待 8 个会话（端点实测 10 并发无压力）；>1 才启用并行。
     "reply_concurrency": 8,
+    # 2026-09-29（用户拍板「话术一定要专业」）：兜底池由「拖延型」改为**专业承接型**。
+    # 原四条（"嗯嗯稍等哈，我问下马上回你" 等）全是拖延话术、零专业信息，
+    # 而它恰在**AI 被护栏拦下 / 模型不可用时**发给真实客户 —— 最需要专业度的
+    # 时刻，客户收到的却是最像小白的话（实测用户原话「显得像一个小白」）。
+    # 新池判据（三条同时满足）：① 表明顾问身份，不平庸寒暄；
+    #   ② **直接对接咨询意图**，引导客户补充可判定的关键信息（部位/诊断/城市/劳动合同）；
+    #   ③ 给客户一个明确预期，而不是空泛的"稍等"。
     "fallback_pool": [
-        "嗯嗯稍等哈，我问下马上回你",
-        "这个我得确认一下哈，稍等",
-        "收到，我问好了发你",
-        "稍等哈，我看看",
+        "您好，我是唐律工伤团队的理赔顾问。请补充：受伤部位、诊断结论、"
+        "是否有劳动合同和社保，我帮您判断能否认定工伤、大概几级。",
+        "您的情况需要看具体材料才能给准话。方便说下伤情诊断和所在城市吗？"
+        "有劳动合同或工资记录的话，认定会顺利很多。",
+        "收到。工伤认定看三点：劳动关系、受伤经过、诊断材料。"
+        "您先说下受伤部位和现在有没有住院，我帮您对一下等级。",
+        "理解您的情况。请您说下：哪里受的伤、什么时候、单位有没有买社保，"
+        "我按劳动能力鉴定的标准帮您估一下。",
     ],
-    "fallback_image": "图我看到了哈，稍等我看看再回你",
+    "fallback_image": "图片收到，我看下材料再给您准话。方便的话补充说明下"
+                      "受伤部位和所在城市，判断会更快。",
     "forbidden_words": [
         "微信", "vx", "VX", "weixin",  # 站外引流敏感词（"加我"单字误杀率高，已用 prompt 铁律约束）
         "作为一个AI", "作为一个ai",
@@ -404,18 +416,28 @@ def save_config(cfg: dict) -> dict:
 # 内置获客 prompt（用户可覆盖：配置里 system_prompt 非空则优先）
 # ---------------------------------------------------------------------------
 
-_DEFAULT_AGENT_PROMPT = """你是「{merchant}」的抖音私信客服。唯一目标：解答客户问题的同时，让有意向的客户留下手机号。
+_DEFAULT_AGENT_PROMPT = """你是「{merchant}」的资深工伤理赔顾问（唐律工伤团队），在抖音私信中接待咨询的工友。
+
+身份与语气（**专业是第一位**）：
+- 你是**办案顾问**，不是客服机器人：说话有依据、有判断，不做无意义的寒暄。
+- 用**工友听得懂的话**讲专业结论，专业术语后紧跟一句人话解释。
+- 直接、利落。**禁止**"嗯嗯""哈""哦哦""收到收到"这类口语填充词。
+- **禁止**用"稍等/我问下/我确认一下"当回复内容 —— 除非确实需要用户补充信息，
+  此时必须**明确说要补什么**（如"请说下受伤部位和诊断结论"）。
 
 工作方式（分阶段推进）：
-1. 解答阶段：只依据《资料》回答，专业、简短、口语化，先建立信任。
-2. 意向阶段：客户表现出兴趣（问价格/效果/怎么办理）→ 自然推进留资。
-3. 留资阶段：用自然话术索要手机号，例如："这边给你申请个专属优惠，你手机号多少？我备注一下"。已被拒绝 {max_ask} 次就不再索要，安心解答。
+1. 解答阶段：只依据《资料》回答。**先给结论，再给依据，最后给下一步该做什么**，先建立信任。
+   工友描述不完整时，主动问清三要素：**受伤部位/经过、诊断结论、劳动关系（合同/社保）**。
+2. 意向阶段：客户表现出兴趣（问赔偿多少/能不能评上级/怎么办理）→ 自然推进留资。
+3. 留资阶段：用自然话术索要手机号，例如"这边安排唐律给您算个准确数字，你手机号多少？我备注一下"。已被拒绝 {max_ask} 次就不再索要，安心解答。
 4. 留资成功（客户已发号码）：只回确认话术，不再多说。
 
 铁律：
-- 《资料》里没有的信息一律不许编；不确定就回"嗯嗯这个我问下稍等哈"。
+- 《资料》里没有的信息一律不许编。不确定时**说清楚不确定的是哪一点**，
+  并给出可核实的路径（如"具体等级要看鉴定结论，可以先看你诊断报告上的伤情描述"），
+  **不得**用"嗯嗯这个我问下稍等哈"之类的空话搪塞。
 - 绝不说"加微信"、绝不提其他平台；只索要手机号。
-- 回复 5-30 字，口语化像真人，一次只回一句，不排队比句式。
+- 回复 15-100 字（**够讲清一个专业判断**），一次只回一句主题，不排队比句式。
 - 不出现价格数字承诺、不承诺时间效果。"""
 
 # AI-058（2026-09-25）：移除「客户消息：{text}」。客户消息已作为 user 消息
@@ -438,7 +460,7 @@ def build_system_prompt(cfg: dict, text: str) -> str:
     """
     global _LAST_PROMPT_STATS
     _LAST_PROMPT_STATS = {"kb_mode": "none", "pro_kb_chars": 0}
-    merchant = cfg.get("merchant_name") or "本店"
+    merchant = (cfg.get("merchant_name") or "").strip() or "唐律工伤团队"
     base = (cfg.get("system_prompt") or "").strip() or _DEFAULT_AGENT_PROMPT
     base = (base.replace("{merchant}", merchant)
                 .replace("{max_ask}", str(cfg.get("max_lead_ask", 2))))
@@ -1314,7 +1336,9 @@ def validate_reply(reply: str, cfg: dict) -> Optional[str]:
         # （65 字 -> 首句「很难」2 字，绕过前面的 min_len 检查直发）。
         # 故截断后必须**复核 post-condition**：最终外发文本仍须 >= min_reply_len。
         if len(reply) < min_len:
-            logger.info(f"[AI-066] 护栏拦截（截断后疑似残句「{reply}」"
+            # 2026-09-29：错误码由 AI-066 改为 AI-068 —— 原值与本轮新增的
+            # 「本机账号互回拦截」(AI-066) 冲突（同码两义，破坏可检索性）。
+            logger.info(f"[AI-068] 护栏拦截（截断后疑似残句「{reply}」"
                         f"<{min_len} 字）-> 走兜底")
             return None
     return reply
@@ -1323,8 +1347,14 @@ def validate_reply(reply: str, cfg: dict) -> Optional[str]:
 def fallback_reply(cfg: dict, kind: str = "text") -> str:
     pool = cfg.get("fallback_pool", [])
     if kind == "image":
-        return cfg.get("fallback_image", "图我看到了哈，稍等我看看再回你")
-    return random.choice(pool) if pool else "稍等哈，我看下"
+        return cfg.get("fallback_image",
+                       "图片收到，我看下材料再给您准话。方便的话补充说明下"
+                       "受伤部位和所在城市，判断会更快。")
+    # 2026-09-29：末位兜底同步改专业（原「稍等哈，我看下」属拖延型，
+    # 与本轮「话术必须专业」的拍板相悖）。
+    return random.choice(pool) if pool else (
+        "您好，我是唐律工伤团队的理赔顾问。请补充受伤部位、诊断结论、"
+        "是否有劳动合同和社保，我帮您判断能否认定工伤、大概几级。")
 
 
 # ---------------------------------------------------------------------------
@@ -1769,6 +1799,40 @@ class AutoReplyWorker:
                    raw=raw[:120])
             if cleaned:
                 return cleaned, "AI"
+            # 2026-09-29（用户拍板「话术一定要专业」）：**短回复先重试，再兜底**。
+            # 背景（实测）：AI 对简短/无意义输入常只吐「我在的」「你好」等 3 字，
+            # 被 min_reply_len 判残句 → 直接换兜底池 ⇒ 客户**从来看不到 AI 的专业输出**
+            # （probe 铁证：trace 13598/13599 AI_RAW='我在的'/'你好' → GUARD=blocked
+            #  → FALLBACK='嗯嗯稍等哈'）。而兜底池正是最不专业的文案，等于
+            # 「AI 偶尔发挥失常 ⇒ 客户收到最差话术」——最坏组合。
+            # 正解：给模型**一次明确的补救机会**（要求完整、专业、含判断），
+            # 仍不合格才回落兜底。重试失败不视为异常，只是多一次调用。
+            _too_short = bool(raw) and len(str(raw).strip()) < int(
+                cfg.get("min_reply_len", 5))
+            if _too_short:
+                try:
+                    _retry_hint = (
+                        "你上一条回复太短，无法向客户传达专业判断。"
+                        "请重新给出**完整、专业、可直接发送**的回复：先给结论，"
+                        "再给依据，最后告诉对方下一步该做什么；"
+                        "15-100 字，不要寒暄，不要用「稍等/我问下」。")
+                    raw2 = client.chat_failover(
+                        text, consumer_id="ai_main",
+                        user_id=f"{account}:{conv_id}",
+                        system_prompt=prompt + "\n\n" + _retry_hint,
+                        history_extra=history)
+                    _probe(before_id, "RETRY", "ok" if raw2 else "empty",
+                           raw=(raw2 or "")[:200])
+                    if raw2:
+                        cleaned2 = validate_reply(raw2, cfg)
+                        _probe(before_id, "GUARD2",
+                               "pass" if cleaned2 else "blocked",
+                               cleaned=(cleaned2 or "")[:120], raw=raw2[:120])
+                        if cleaned2:
+                            logger.info("[ai] 短回复重试成功（首次过短已补救）")
+                            return cleaned2, "AI"
+                except Exception as e:  # 重试失败不算错误，正常回落兜底
+                    _probe(before_id, "RETRY", "error", err=str(e)[:120])
             logger.info(f"[ai] AI 输出被护栏拦截，改发兜底: {raw[:40]}")
         fb = fallback_reply(cfg)
         _probe(before_id, "FALLBACK", "used", level=level, reply=fb[:120])
