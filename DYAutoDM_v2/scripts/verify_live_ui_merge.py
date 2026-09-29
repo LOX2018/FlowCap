@@ -128,6 +128,36 @@ try:
               })()"""),
               "仍存在 AI 文案横幅或标题文案")
 
+        # ── E：卡副标题清理（A1/A2 删除；B1/B2 保留）───────────────────────
+        check("E1 账号卡 description 已删除（'新手教程'式说明）",
+              page.evaluate("""(() => {
+                const p = document.querySelector('[data-od-id="live-acct-select"] '
+                  + '> div:nth-of-type(1) > div.flex.flex-wrap.items-center > div.min-w-0 > p');
+                return !p;
+              })()"""),
+              "账号卡仍存在 description <p>")
+        check("E2 直播间卡 description 已删除",
+              page.evaluate("""(() => {
+                const p = document.querySelector('[data-od-id="live-input"] '
+                  + '> div:nth-of-type(1) > div > div.min-w-0 > p');
+                return !p;
+              })()"""),
+              "直播间卡仍存在 description <p>")
+        check("E3 实时信息流 description 保留（B1 范围图例）",
+              page.evaluate("""(() => {
+                const p = document.querySelector('[data-od-id="live-feed"] '
+                  + '> div:nth-of-type(1) > div > div.min-w-0 > p');
+                return !!p && (p.textContent || '').includes('弹幕');
+              })()"""),
+              "feed 范围图例被误删")
+        check("E4 房间热度 description 保留（B2 动态读数，含「人在线」）",
+              page.evaluate("""(() => {
+                const p = document.querySelector('[data-od-id="heat-chart"] '
+                  + '> div:nth-of-type(1) > div.flex.flex-wrap.items-center > div.min-w-0 > p');
+                return !!p && (p.textContent || '').includes('人在线');
+              })()"""),
+              "heat 在线人数读数被误删")
+
         # ── M4：高价值关键词按钮 + 弹窗 ────────────────────────────────
         check("M4a 「高价值关键词」按钮与「管理策略」并列（同在直播间区）",
               page.evaluate("""(() => {

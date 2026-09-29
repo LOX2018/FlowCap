@@ -589,7 +589,6 @@ export default function LivePage(props: PageProps) {
                   className="mb-3.5"
                   data-od-id="live-acct-select"
             title="当前监听账号"
-            description="多账号时需手动选择一个；引擎启动前会校验凭证有效性"
             actions={
               <>
                 <div className="ml-auto flex flex-wrap items-center justify-end gap-2" data-od-id="live-acct-tabs">
@@ -628,7 +627,6 @@ export default function LivePage(props: PageProps) {
             className="mb-3.5"
             data-od-id="live-input"
             title="直播间"
-            description="选策略决定「怎么发」；直播间与绑定关系在「直播间管理」里维护"
             actions={
               <>
                 <Select value={selCfgId} onValueChange={pickRoomCfg}>
