@@ -869,6 +869,49 @@ async def bl_remove(user_id: str):
 
 
 # ---------------------------------------------------------------------------
+# 高价值关键词权重表（2026-09-29 补齐入口 · 同 H-26 型「有数据层无呈现层」缺口）
+# ---------------------------------------------------------------------------
+# 背景：`services/high_value_keywords.py`（134 行 + 27 个种子词）与消费点
+# `dm_dispatch.py:843` 一直在用，但 **API 与前端零暴露**（全仓 grep 零命中）
+# ⇒ 用户无法调整关键词权重，而该权重直接决定「高价值判定」→ 窗口时长
+# （`high_value_window_seconds`）→ 最终是否被发送闸门拦下。
+# 这是实测「直播捕获目标 100% 发送失败」的下游成因之一。
+# schema 只支持 int/bool/float/str/select，**承载不了 {词:权重} 映射**，
+# 故按黑名单同款范式开独立端点（不塞进 schema）。
+
+@router.get("/high-value-keywords")
+async def hv_keywords_get():
+    """读关键词权重表（缺失时服务层会懒初始化种子词表）。"""
+    from services import high_value_keywords as _hv
+
+    return {"ok": True, "items": _hv.get_keywords()}
+
+
+class HvKeywordsBody(BaseModel):
+    keywords: dict
+
+
+@router.post("/high-value-keywords")
+async def hv_keywords_put(body: HvKeywordsBody):
+    """整表覆盖关键词与权重（值为 int 权重；非法项由服务层丢弃）。"""
+    from services import high_value_keywords as _hv
+
+    out = _hv.put_keywords(body.keywords or {})
+    return {"ok": True, "items": out}
+
+
+@router.delete("/high-value-keywords/reset")
+async def hv_keywords_reset():
+    """恢复为工伤业务域种子词表（默认值）。"""
+    from services import high_value_keywords as _hv
+
+    # 注意：不能只 `invalidate()` —— 那只是清内存缓存，
+    # 下次 get 重读 kv 仍是旧值 ⇒ 假"重置"。必须把种子表写回 kv。
+    out = _hv.put_keywords(dict(_hv.DEFAULT_KEYWORDS))
+    return {"ok": True, "items": out}
+
+
+# ---------------------------------------------------------------------------
 # 模型提供商（前端下拉框数据源）
 # ---------------------------------------------------------------------------
 

@@ -2112,6 +2112,22 @@ export const api = {
     });
   },
 
+  // ===== 高价值关键词权重表（直播/采集发送闸门的过滤依据）=====
+  async aiHighValueKeywords(): Promise<{ ok: boolean; items: Record<string, number> }> {
+    return request("/api/ai/high-value-keywords");
+  },
+  async aiHighValueKeywordsSave(
+    keywords: Record<string, number>,
+  ): Promise<{ ok: boolean; items: Record<string, number> }> {
+    return request("/api/ai/high-value-keywords", {
+      method: "POST",
+      body: JSON.stringify({ keywords }),
+    });
+  },
+  async aiHighValueKeywordsReset(): Promise<{ ok: boolean; items: Record<string, number> }> {
+    return request("/api/ai/high-value-keywords/reset", { method: "DELETE" });
+  },
+
   // ===== 数据采集（关键词搜索 + 评论采集 + 评论转私信截流）=====
   async crawlSearch(body: {
     account: string;

@@ -14,6 +14,7 @@ export function AccountDrawer({
   onClose,
   mode = "add",
   account = null,
+  onBackupLogin,
 }: {
   form: AcctForm;
   setForm: Dispatch<SetStateAction<AcctForm>>;
@@ -21,6 +22,8 @@ export function AccountDrawer({
   onClose: () => void;
   mode?: "add" | "edit";
   account?: FmtAccount | null;
+  /** 显式备用：RPA 自动出二维码 / 短信验证码（仅编辑态提供；默认走手动）。 */
+  onBackupLogin?: (name: string, mode: "qr" | "sms") => void;
 }) {
   const isEdit = mode === "edit";
   return (
@@ -53,7 +56,7 @@ export function AccountDrawer({
               {isEdit ? "编辑账号信息" : "新增授权账号"}
             </div>
             <div className="font-mono text-[0.72rem] text-[var(--color-text-muted)]">
-              {isEdit ? "修改账号信息并刷新登录凭证" : "授权新抖音账号并创建指纹环境"}
+              {isEdit ? "修改账号信息并手动更新登录凭证" : "授权新抖音账号并创建指纹环境"}
             </div>
           </div>
           <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭">
@@ -119,8 +122,8 @@ export function AccountDrawer({
                        text-[var(--color-text-muted)]"
           >
             {isEdit
-              ? "点击「更新凭证」后，系统按该账号当前状态自动分流：全新/身份漂移账号走内置指纹浏览器扫码（二维码可经 IM 推送）；已有登录态仅签名过期走短信验证码（无需扫码）。弹层内可随时换用另一条路径。"
-              : "保存后将自动弹出内置指纹浏览器并展示抖音扫码二维码，扫码完成后凭证自动写回该账号；之后可在账号卡片中配置代理与凭证校验。"}
+              ? "点击「重新获取凭证」默认**打开有头指纹浏览器，由你手动完成扫码/验证码/滑块**，凭证自动写回该账号。若需沿用自动化：下方「扫码备用（自动出二维码）」或「短信备用（自动发验证码）」为显式备用路径。"
+              : "保存后将打开内置指纹浏览器，请在其中手动完成抖音登录，凭证自动写回该账号；之后可在账号卡片中配置代理与凭证校验。"}
           </div>
         </div>
 
@@ -129,8 +132,30 @@ export function AccountDrawer({
           <Button variant="ghost" onClick={onClose}>
             取消
           </Button>
+          {isEdit && onBackupLogin && (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                title="备用路径：自动抓取二维码（可经 IM 推送），适合远程扫码"
+                onClick={() => form.name.trim() && onBackupLogin(form.name.trim(), "qr")}
+                disabled={!form.name.trim()}
+              >
+                扫码备用
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                title="备用路径：自动发短信验证码到绑定手机"
+                onClick={() => form.name.trim() && onBackupLogin(form.name.trim(), "sms")}
+                disabled={!form.name.trim()}
+              >
+                短信备用
+              </Button>
+            </>
+          )}
           <Button onClick={onSave} disabled={!form.name.trim()}>
-            {isEdit ? "重新获取凭证" : "确认新增"}
+            {isEdit ? "手动更新凭证" : "确认新增"}
           </Button>
         </div>
       </motion.div>

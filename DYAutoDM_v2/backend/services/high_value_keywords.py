@@ -63,13 +63,21 @@ _cache: dict | None = None
 
 
 def get_keywords() -> dict:
-    """读关键词权重表；缺失/损坏时懒初始化写入种子词表并返回。"""
+    """读关键词权重表；**键不存在时**懒初始化写种子词表并返回。
+
+    2026-09-29 修正：原判据 `if not isinstance(raw, dict) or not raw` 把
+    **用户主动清空的空表**（`{}`）也当成"缺失"⇒ 重新写回种子词表
+    ⇒ 用户永远无法清空关键词表（有 UI 入口后这是真实诉求：
+    清空 = 不按关键词过滤）。现改为以「**键是否存在**」为判据 ——
+    `kv_get` 返回 None 表示从未初始化，返回 `{}` 表示用户显式清空。
+    """
     global _cache
     with _lock:
         if _cache is not None:
             return dict(_cache)
         raw = kv_get(_KEYS, None)
-        if not isinstance(raw, dict) or not raw:
+        if raw is None or not isinstance(raw, dict):
+            # 从未初始化（键不存在）→ 写种子词表
             raw = dict(DEFAULT_KEYWORDS)
             try:
                 kv_set(_KEYS, raw)

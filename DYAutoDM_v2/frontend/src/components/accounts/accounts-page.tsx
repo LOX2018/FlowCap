@@ -157,41 +157,49 @@ export default function AccountsPage(props: PageProps) {
       push("请填写昵称");
       return;
     }
-    // 统一「更新凭证」入口：后端按账号状态自动分流，msg 如实标注实际路径。
-    const go = (mode?: "qr" | "sms", phone?: string): Promise<void> =>
-      api
-        .updateLogin(name, mode ? { mode, phone } : undefined)
-        .then((r): void => {
-          if (r && r.ok) {
-            push(r.msg || "已发起更新凭证 · " + name);
-            setEditAcct(null);
-            setScanning({ name, seq: Date.now() });
-            return;
-          }
-          const m = (r as { msg?: string })?.msg || "";
-          // 自动分到短信但缺手机号 ⇒ 就地补问，再显式走短信（不静默改走扫码）
-          if (m.includes("手机号")) {
-            const phone2 = window.prompt(m)?.trim();
-            if (!phone2) {
-              push("已取消（未提供手机号）");
-              return;
-            }
-            if (!/^\d{6,20}$/.test(phone2)) {
-              push("手机号格式不正确（应为 6~20 位数字）");
-              return;
-            }
-            void go("sms", phone2);
-            return;
-          }
-          push("更新凭证失败: " + m);
-        })
-        .catch((e: unknown) => push("更新凭证异常: " + errMsg(e)));
-    void go();
+    // 2026-09-29（方案2 · 用户拍板）：默认**手动** —— 打开有头指纹浏览器，
+    // 用户自己在窗口里完成扫码/验证码/滑块，凭证由既有链路自动写回。
+    // 固定的扫码/短信 RPA 模板降级为**显式备用**（抽屉底部「扫码备用 / 短信备用」）。
+    api
+      .updateLogin(name)
+      .then((r): void => {
+        if (r && r.ok) {
+          push(r.msg || "已打开浏览器，请在窗口中完成登录 · " + name);
+          setEditAcct(null);
+          setScanning({ name, seq: Date.now() });
+          return;
+        }
+        push("更新凭证失败: " + (((r as { msg?: string })?.msg) || ""));
+      })
+      .catch((e: unknown) => push("更新凭证异常: " + errMsg(e)));
   };
 
-  // 2026-09-28：原 `startSmsLogin`（独立「短信登录」按钮的回调）已随按钮收敛删除。
-  // 短信路径现由统一入口 `/update-login` 在**状态 B** 时自动分流；用户若要强制
-  // 换路，在登录弹层里显式选择（见 LoginDialog 的 onSwitchMode）。
+  // 显式备用：RPA 自动出二维码 / 短信验证码（原 ADR-017 模板，保留不删）。
+  // 用户默认走手动；只有在这两条备用按钮上才会自动出码/发短信。
+  const runBackupLogin = (name: string, mode: "qr" | "sms") => {
+    let phone: string | undefined;
+    if (mode === "sms") {
+      phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
+      if (!phone) return;
+      if (!/^\d{6,20}$/.test(phone)) {
+        push("手机号格式不正确（应为 6~20 位数字）");
+        return;
+      }
+    }
+    api
+      .updateLogin(name, { mode, phone })
+      .then((r): void => {
+        if (r && r.ok) {
+          push(r.msg || "已发起备用登录 · " + name);
+          setEditAcct(null);
+          setScanning({ name, seq: Date.now() });
+          return;
+        }
+        push((mode === "sms" ? "短信备用" : "扫码备用") + "失败: "
+          + (((r as { msg?: string })?.msg) || ""));
+      })
+      .catch((e: unknown) => push("备用登录异常: " + errMsg(e)));
+  };
 
   const toggleBatch = (id: string) => {
     setBatchSel((s) => {
@@ -664,14 +672,15 @@ export default function AccountsPage(props: PageProps) {
                         e.stopPropagation();
                         openEdit(a);
                       }}
-                      title="编辑账号信息并更新登录凭证（后端按账号状态自动分流扫码 / 短信）"
+                      title="打开有头指纹浏览器手动更新登录凭证（默认手动；抽屉内可选用扫码/短信备用）"
                     >
                       <Pencil className="h-3.5 w-3.5" />更新凭证
                     </Button>
-                    {/* 2026-09-28 修：原此处并列 `刷新凭证`(→/scan) 与 `短信登录`(→/sms-login)
-                        两颗按钮 —— 无主次、无分流，与 ADR-017 §2.3「按账号状态自动判断，
-                        不是用户选择」的拍板契约不符（用户实测反馈「默认变成短信更新了」）。
-                        现收敛为**单一入口**：后端按状态分流，弹层内提供显式「换用扫码 / 换用短信」。 */}
+                    {/* 2026-09-29（方案2 · 用户拍板）：点击「更新凭证」默认**打开有头指纹浏览器
+                        由用户自己登录**（ADR-017 之前的旧行为）；固定的扫码/短信 RPA 模板
+                        降级为**显式备用** —— 在编辑抽屉底部「扫码备用 / 短信备用」才触发。
+                        （历史：2026-09-28 曾收敛为按状态自动分流，用户实测反馈「默认变成
+                        短信更新了」；2026-09-29 进一步回归手动，不再让用户依赖自动选路。） */}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1113,6 +1122,7 @@ export default function AccountsPage(props: PageProps) {
             form={editForm}
             setForm={setEditForm}
             onSave={saveEdit}
+            onBackupLogin={runBackupLogin}
             onClose={() => setEditAcct(null)}
           />
         )}

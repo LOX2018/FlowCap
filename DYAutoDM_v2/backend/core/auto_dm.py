@@ -595,8 +595,22 @@ class AutoDM:
                                     f"快照长度={len(ctx)}）")
                     except Exception:
                         logger.debug('[SILENT-00] core.auto_dm: aggregate ctx failed')
+                # 🔴 2026-09-29 修复（SEND-040 NameError · 直播 AI 文案从未生效）
+                # 原实现直接引用 `ai_reply.generate_dm_for_live`，但 `ai_reply`
+                # 只在本文件另一个方法 `evaluate_live_ai`（第 458 行）内**局部**
+                # 导入 ⇒ 本闭包作用域拿不到该名字 ⇒ **每次调用必抛
+                # `NameError: name 'ai_reply' is not defined`** ⇒ 被下方 except
+                # 吞掉、回落词库，日志只留一行「AI 文案生成失败，回落词库」，
+                # 完全不指向代码缺陷。
+                # 实测铁证（run_20260929_100929.log）：10:21:40 显示
+                # `[live-ai] 私信文案已接入 AI 生成`（接线判定通过），
+                # 而 10:23:56 起 5 次 `SEND-040 ... name 'ai_reply' is not defined`
+                # ⇒ 「判定通过、生成必败」，直播 AI 文案**从未生效过**。
+                # 修法：在本闭包内显式导入（与 evaluate_live_ai 同一来源模块）。
+                from services import ai_reply as _ai_reply
+
                 text, source = await asyncio.to_thread(
-                    ai_reply.generate_dm_for_live,
+                    _ai_reply.generate_dm_for_live,
                     account=account, peer_name=nick or uid,
                     comment=ctx, cfg=cfg, uid=uid,
                 )

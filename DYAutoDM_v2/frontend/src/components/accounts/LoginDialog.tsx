@@ -110,9 +110,11 @@ export function LoginDialog({
         <DialogHeader>
           <DialogTitle>{name} · 登录</DialogTitle>
           <DialogDescription>
-            {st.path === "sms"
-              ? (stageText[st.stage ?? ""] ?? "正在处理…")
-              : "请用抖音 App 扫描下方二维码"}
+            {st.path === "manual"
+              ? "已打开有头指纹浏览器，请在窗口中手动完成登录（扫码/验证码/滑块）；完成后凭证将自动写回。"
+              : st.path === "sms"
+                ? (stageText[st.stage ?? ""] ?? "正在处理…")
+                : "请用抖音 App 扫描下方二维码"}
           </DialogDescription>
         </DialogHeader>
 
@@ -140,7 +142,11 @@ export function LoginDialog({
           !st.needCode && (
             <div className="flex items-center justify-center gap-2 py-6 text-[0.85rem] text-[var(--color-text-muted)]">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {st.path === "sms" ? "正在发送验证码…" : "正在生成二维码…"}
+              {st.path === "sms"
+                ? "正在发送验证码…"
+                : st.path === "manual"
+                  ? "等待你在指纹浏览器中完成登录…"
+                  : "正在生成二维码…"}
             </div>
           )
         )}
@@ -163,15 +169,19 @@ export function LoginDialog({
           </div>
         )}
 
-        {/* 路径如实标注 + 显式换路（2026-09-28）：
-            后端按账号状态自动分流，这里把**实际走的路径**说出来（不猜、不假装成功），
-            并给一个显式换路的入口 —— 用户要另一条路时不用去猜哪个按钮是「默认」。 */}
+        {/* 路径如实标注 + 显式备用（2026-09-29 · 方案2）：
+            默认是**手动**（有头浏览器用户自行登录）；扫码/短信为**显式备用**路径。
+            这里把**实际走的路径**说出来（不猜、不假装成功）。 */}
         {onSwitchMode && (
           <div className="flex items-center justify-between gap-2 rounded-[8px]
                           bg-[var(--color-surface-raised)] px-3 py-2
                           text-[0.74rem] text-[var(--color-text-muted)]">
             <span>
-              {st.path === "sms" ? "当前路径：短信验证码" : "当前路径：扫码"}
+              {st.path === "manual"
+                ? "当前路径：手动（有头浏览器）"
+                : st.path === "sms"
+                  ? "当前路径：短信验证码（备用）"
+                  : "当前路径：扫码（备用）"}
             </span>
             {st.path === "sms" ? (
               <button
@@ -179,7 +189,7 @@ export function LoginDialog({
                 className="underline hover:text-[var(--color-text)]"
                 onClick={() => onSwitchMode("qr")}
               >
-                换用扫码
+                改用扫码备用
               </button>
             ) : (
               <button
@@ -187,7 +197,7 @@ export function LoginDialog({
                 className="underline hover:text-[var(--color-text)]"
                 onClick={() => onSwitchMode("sms")}
               >
-                换用短信验证码
+                改用短信备用
               </button>
             )}
           </div>

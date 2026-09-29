@@ -35,6 +35,7 @@ import TagSection from "./TagSection";
 import CrawlPolicySection from "./CrawlPolicySection";
 import AiEngineSection from "./AiEngineSection";
 import NicknameFallbackSection from "./NicknameFallbackSection";
+import HighValueKeywordsSection from "./HighValueKeywordsSection";
 import McpSection from "./McpSection";
 // ADR-018 F6：日夜主题切换的唯一可写入口（主题引擎本身早已存在，缺的是入口）
 import AppearanceSection from "./AppearanceSection";
@@ -127,6 +128,9 @@ export default function SettingsPage(props: PageProps) {
                 {/* ADR-002 §5.4 策略中心：与「直播监听」同 tab（后端 schema 驱动，
                     仅需在此白名单登记分区名，无手写表单）。 */}
                 <UnifiedConfigSection {...props} onlySections={["live_orchestration"]} />
+                {/* 高价值关键词权重表：独立卡（schema 承载不了 {词:权重} 映射，
+                    2026-09-29 补齐「有数据层无呈现层」缺口）。 */}
+                <HighValueKeywordsSection />
               </>
             )}
             {section === "capture" && (

@@ -142,7 +142,7 @@ def _wire_update_login(monkeypatch, tmp_path):
 
     calls: list[tuple[str, str]] = []
 
-    async def _scan(name):
+    async def _scan(name, body=None):
         calls.append(("qr", name))
         return API.ScanLoginResponse(ok=True, msg="qr-ok")
 
@@ -155,42 +155,50 @@ def _wire_update_login(monkeypatch, tmp_path):
     return API, calls
 
 
-def test_t4_update_login_routes_by_account_state(monkeypatch, tmp_path):
+def test_t4_update_login_defaults_to_manual(monkeypatch, tmp_path):
+    """2026-09-29（方案2 · 用户拍板）：**默认手动**；扫码/短信为显式备用。
+
+    用户原话：「账号、凭证更新换回之前的，用户手动操作，不要使用固定的扫码/短信模板」。
+    故 update_login() 省略 mode ⇒ 走手动 scan_login（不 body）；
+    只有显式 mode=qr / sms 才走 RPA 备用，且**不再**按账号状态自动选路。
+    """
     API, calls = _wire_update_login(monkeypatch, tmp_path)
 
-    # 状态 B：会话被承认且身份未漂移 ⇒ 只用验证码（ADR-017 §2.3）
+    # ① 默认（省略 mode）⇒ 手动；即便账号状态看起来适合短信也**不得**自动选短信
     monkeypatch.setattr(API, "_probe_account_state",
                         lambda n: {"state": True, "verdict": "ok", "ok": True})
+    r = asyncio.run(API.update_login("accX", None))
+    assert calls[-1][0] == "qr", "默认必须走手动 scan_login（不自动选短信）"
+    assert r.ok
+
+    # ② 默认即便显式给了 phone，也不自动选短信（phone 只在 mode=sms 时用）
+    before = list(calls)
     r = asyncio.run(API.update_login("accX", {"phone": "13800000000"}))
+    assert calls[-1][0] == "qr", "给了 phone 但未指定 mode ⇒ 仍走手动"
+
+    # ③ 显式备用 mode=sms ⇒ 走短信（缺手机号时如实上报，不静默改路）
+    before = list(calls)
+    r = asyncio.run(API.update_login("accX", {"mode": "sms"}))
+    assert r.ok is False and "手机号" in r.msg and calls == before
+    r = asyncio.run(API.update_login("accX", {"mode": "sms", "phone": "13800000000"}))
     assert calls[-1][0] == "sms" and r.ok
     assert "短信" in r.msg, "返回必须**如实标注**实际走的路径"
 
-    # 状态 A：身份漂移 ⇒ 走扫码
-    monkeypatch.setattr(API, "_probe_account_state",
-                        lambda n: {"state": False, "verdict": "uid_drift", "ok": False})
-    r = asyncio.run(API.update_login("accX", None))
-    assert calls[-1][0] == "qr" and "扫码" in r.msg
-
-    # 判为短信但缺手机号 ⇒ 如实上报（**不得**静默改走扫码）
-    monkeypatch.setattr(API, "_probe_account_state",
-                        lambda n: {"state": True, "verdict": "ok", "ok": True})
-    before = list(calls)
-    r = asyncio.run(API.update_login("accX", {}))
-    assert r.ok is False and "手机号" in r.msg and calls == before
-
-    # 显式覆盖：mode=qr ⇒ 即便状态 B 也走扫码
+    # ④ 显式备用 mode=qr ⇒ 走扫码；mode=rpa 为同义别名
     r = asyncio.run(API.update_login("accX", {"mode": "qr"}))
     assert calls[-1][0] == "qr"
+    r = asyncio.run(API.update_login("accX", {"mode": "rpa"}))
+    assert calls[-1][0] == "qr"
 
-    # 非法 mode ⇒ 显式失败
+    # ⑤ 非法 mode ⇒ 显式失败
     r = asyncio.run(API.update_login("accX", {"mode": "wechat"}))
     assert r.ok is False and "mode" in r.msg
 
-    # 负控：状态判据丢弃后（恒 False）⇒ 状态 B 分流断言变红
-    monkeypatch.setattr(API, "_probe_account_state",
-                        lambda n: {"state": False, "verdict": "unknown", "ok": False})
-    asyncio.run(API.update_login("accX", {"phone": "13800000000"}))
-    assert calls[-1][0] == "qr", "负控生效：恒 False 时不会再走短信"
+    # ⑥ 负控：把「默认手动」改回「按状态自动选短信」⇒ 断言①变红
+    #    （这里直接以「状态判据恒 True 也不再影响默认」表达 —— 默认与状态判据解耦）
+    calls.clear()
+    asyncio.run(API.update_login("accX", None))
+    assert calls[-1][0] == "qr", "负控生效：状态恒 True 时默认仍必须是手动"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -216,9 +224,11 @@ def test_t5c_docstring_contract_is_implemented():
     """契约漂移防复发：ADR 的「状态 A/B 自动分流」必须真有代码落点。"""
     src = (ROOT / "backend" / "auto_dm" / "login_remote.py").read_text(encoding="utf-8")
     api = (ROOT / "backend" / "api" / "accounts.py").read_text(encoding="utf-8")
-    assert "状态 A" in src, "契约注释仍在（文档层）"
-    assert "uid_identity_verdict" in api and "def update_login" in api, \
-        "分流契约必须在 /update-login 有实现落点（此前只存在于注释 = 契约漂移）"
+    # 2026-09-29 方案2：默认手动；RPA 备用仍在 /update-login 有实现落点。
+    assert "def update_login" in api and "_force_rpa" in api, \
+        "默认手动 + 显式 RPA 备用 必须在 /update-login 有实现落点"
+    assert 'st["path"] = "manual"' in api, \
+        "默认手动路径必须有实现落点（不得只是注释）"
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -1342,6 +1342,42 @@ def blacklist_add(user_id: str) -> None:
         _kv_set(_KV_BL, bl)
 
 
+def _own_account_uids() -> set:
+    """本机全部账号自身的 uid 集合（用于识别「对端是本机另一个账号」）。
+
+    **为什么需要**（2026-09-29 实测）：同机多账号是本项目常规部署形态
+    （日志可见同时拉起两个 BCC）。当账号 A 的 AI 回复落库、经对端守护同步后，
+    在账号 B 视角下会成为 `role=them` 的**正常客户消息** ⇒ B 的 AI 继续回复
+    ⇒ **两个 AI 无限互回**。实测铁证（conv 0:1:316276709526638:3887506227210423，
+    小助理 ↔ 张老师互为对端）：
+        id=13777 张老师 role=me   「嗯嗯稍等哈，我问下马上回你」
+        id=13779 小助理 role=them 「嗯嗯稍等哈，我问下马上回你」
+        id=13790 小助理 role=me   「您好，我是唐律工伤团队的理赔顾问」
+        id=13792 张老师 role=them 「您好，我是唐律工伤团队的理赔顾问」
+
+    现有护栏（黑名单 / UID 沉淀池）**都不识别**这一形态 ⇒ 必然触发。
+
+    复用既有能力（不自造）：`auto_dm.accounts.list_accounts()` 枚举本机账号，
+    `services.conv_identity.my_uid()` 取各账号 uid（零网络、会话池统计推断）。
+    取不到证据（新账号无会话）⇒ 该账号不参与判定（保守放行，不误伤）。
+    """
+    out = set()
+    try:
+        from auto_dm.accounts import list_accounts
+        from services.conv_identity import my_uid as _my_uid
+
+        for name, _env in (list_accounts() or []):
+            try:
+                u = str(_my_uid(str(name)) or "").strip()
+                if u:
+                    out.add(u)
+            except Exception:
+                continue
+    except Exception:
+        return set()
+    return out
+
+
 def blacklist_remove(user_id: str) -> None:
     bl = blacklist_list()
     if user_id in bl:
@@ -1457,10 +1493,29 @@ class AutoReplyWorker:
 
     def _run(self):
         # 启动时刻打水位：只回开启之后的新消息，绝不回历史
+        #
+        # 🔴 2026-09-29 修复（AI-067 · 用户报障「AI 回复了历史消息」）
+        # 原实现：
+        #     if int(_kv_get(_KV_MARKER, 0) or 0) == 0:      # ← 仅当为 0 才打
+        #         _kv_set(_KV_MARKER, row[0] if row else 0)
+        # 缺陷（实测后果）：注释承诺「**启动时刻**打水位」，实现却是「只在 kv
+        # 为 0 时才打」。只要库里留有上次运行的**非 0 旧水位**，本次启动就沿用
+        # 它 ⇒ `id > 旧水位` 把关停期间累积的**全部历史消息**捞出并逐条回复。
+        # 实机铁证（ai_probe.log，2026-09-29 10:19~10:22）：进决策链的 17 条
+        # trace **全部**是 09-25~09-28 的历史消息（13598=09-28 18:46 … 13797），
+        # 间隔整 20s（= POLL_INTERVAL）⇒「绝不回历史」契约被完全违反。
+        #
+        # 正解：**每次启动都无条件把水位推进到当刻 MAX(id)** —— 这才是注释
+        # 本意（"启动时刻打水位"）。历史消息不属于"开启之后的新消息"，
+        # 任何情况下都不该捞。旧值只在**同一进程运行期内**才有意义。
         conn = database.get_db()
         row = conn.execute("SELECT COALESCE(MAX(id),0) FROM dm_messages").fetchone()
-        if int(_kv_get(_KV_MARKER, 0) or 0) == 0:
-            _kv_set(_KV_MARKER, row[0] if row else 0)
+        _boot_id = int((row[0] if row else 0) or 0)
+        _prev = int(_kv_get(_KV_MARKER, 0) or 0)
+        _kv_set(_KV_MARKER, _boot_id)
+        if _prev != _boot_id:
+            logger.info(f"[AI-067] [ai] 启动水位已推进 {_prev} → {_boot_id}"
+                        f"（只回开启之后的新消息；关停期间累积的历史一律不捞）")
         while not self._stop.is_set():
             try:
                 self._tick()
@@ -1566,6 +1621,33 @@ class AutoReplyWorker:
             return
         _probe(row["id"], "BLACKLIST", "pass", account=account,
                peer_id=row["peer_id"], peer_name=peer_name, bl_size=len(bl))
+
+        # ══════════ 2026-09-29【本机账号互回护栏】(AI-066) ═══════════════════
+        # 对端若本机**另一个账号**的 uid ⇒ 跳过回复（拦截 + 告警）。
+        # 为什么必须拦（实测）：同机多账号是常规部署形态，账号 A 的 AI 回复
+        # 落库后经对端守护同步，在账号 B 视角成为 role=them 的正常客户消息
+        # ⇒ B 的 AI 继续回复 ⇒ **两个 AI 无限互回**（无上限自激）。
+        # 实测铁证见 `_own_account_uids` docstring（conv 0:1:316276709638:...）。
+        # 危害：自激循环 + 消耗真实发送配额 + 污染真实客户会话 +
+        #       在抖音侧形成两账号间异常高频往返（风控面）。
+        # 判据来源：本机账号 uid 集合（conv_identity 推断，零网络）。
+        # 取不到证据时（集合为空/peer_id 缺失）⇒ 保守放行，绝不误伤真实客户。
+        try:
+            _own = _own_account_uids()
+            _pid = str(row["peer_id"] or "").strip()
+            if _pid and _pid in _own:
+                _probe(row["id"], "OWN_ACCOUNT", "blocked",
+                       account=account, peer_id=_pid, peer_name=peer_name,
+                       own_count=len(_own))
+                logger.warning(
+                    f"[AI-066] [ai] 跳过回复：对端 {peer_name}({_pid}) "
+                    f"是本机**另一个账号** —— 回复会导致两个账号 AI 互相回复"
+                    f"（自激循环 + 风控面）。如需对聊请人工介入。")
+                return
+            _probe(row["id"], "OWN_ACCOUNT", "pass",
+                   account=account, peer_id=_pid, own_count=len(_own))
+        except Exception as e:  # 护栏自身异常绝不影响主流程（保守放行）
+            _probe(row["id"], "OWN_ACCOUNT", "error", err=str(e)[:120])
 
         # 会话维度防重：同会话同文本 60s 内只处理一次（WS+WP 双通道落库去重）
         with self._lock:

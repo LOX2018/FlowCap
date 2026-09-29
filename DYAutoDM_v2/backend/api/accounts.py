@@ -300,7 +300,11 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
 
 
 def _do_scan(name: str):
-    """后台线程：弹指纹浏览器让用户扫码，完成后写回对应账号 .env。"""
+    """后台线程：打开有头指纹浏览器，由**用户手动**完成登录/验证，凭证写回对应 .env。
+
+    2026-09-29（方案2 · 用户拍板）默认**手动**；ADR-017 的 RPA 扫码/短信模板降级为
+    **显式备用**（仅当 st["_force_rpa"] 置位时走，见 /update-login 的 mode）。
+    """
     st = _scan_state.setdefault(name, {})
     st["running"] = True
     st["done"] = False
@@ -325,21 +329,25 @@ def _do_scan(name: str):
         _quit_browser_daemon(name)
         env_path = acct_core.env_path_of(name)
 
-        # ── 能力协商（2026-09-26 · ADR-017 / H-30 接线）────────────────
-        # 先走 RPA 路径（真浏览器 + 二维码可推送 + 硬判据探活）；
-        # 不可用或失败 ⇒ **回落老 enrich_auth 路径**（老逻辑一行未改）。
-        # 这样即便 RPA 在冻结态/无 GUI 环境不可用，产品能力也不退化。
+        # ── 更新凭证入口（2026-09-29 · 方案2 · 用户拍板）：默认**手动** ──────
+        # 用户原话：「账号、凭证更新换回之前的，用户手动操作，不要使用固定的扫码/短信模板」。
+        # 默认 = ADR-017 之前的旧路径 `enrich_auth(force=True)`：打开**有头**指纹浏览器，
+        # 用户自己在窗口里完成扫码/验证码/滑块；凭证由既有链路（save_credential +
+        # BCC 保活回写）写回 .env。**不**自动点「扫码登录」tab、**不**走短信 RPA 模板。
+        # ADR-017 的 RPA 两条**降级为显式备用**：仅当显式要求（st["_force_rpa"]）才走。
+        st["path"] = "manual"
         _rpa_ok = False
-        try:
-            _rpa_ok = _rpa_scan_login(name, env_path, st)
-            st["path"] = "rpa" if _rpa_ok else "legacy"
-        except Exception as _e_rpa:  # noqa: BLE001
-            logger.warning(f"[ACC-029] [scan] 账号 {name} RPA 协商异常，回落老路径: {_e_rpa}")
-            st["path"] = "legacy"
-
+        if st.pop("_force_rpa", False):
+            try:
+                _rpa_ok = _rpa_scan_login(name, env_path, st)
+            except Exception as _e_rpa:  # noqa: BLE001
+                logger.warning(f"[ACC-029] [scan] 账号 {name} RPA 备用路径异常，回落手动: {_e_rpa}")
         if _rpa_ok:
+            st["path"] = "rpa"
             st["loggedIn"] = True
         else:
+            # 默认手动路径（ADR-017 之前的旧行为，下游逻辑一行未改）
+            st["path"] = "manual"
             from auth_helper import enrich_auth
             auth, _ = enrich_auth(None, force=True, env_path=env_path)
             st["loggedIn"] = bool(getattr(auth, "cookie", None))
@@ -889,24 +897,33 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
 
 
 @router.post("/{name}/scan")
-async def scan_login(name: str) -> ScanLoginResponse:
-    """扫码登录（启动后台扫码，立即返回）。
+async def scan_login(name: str, body: dict | None = None) -> ScanLoginResponse:
+    """更新登录凭证（默认**打开有头指纹浏览器·用户手动操作**）。
 
-    后台线程弹指纹浏览器让用户扫码，前端轮询 /scan-status 获取进度。
+    2026-09-29（方案2）：默认走 ADR-017 之前的手动路径 —— 打开有头指纹浏览器，
+    用户自己在窗口里完成扫码/验证码/滑块，凭证自动写回；**不再默认自动出二维码**。
+    body.mode="rpa" 时改走 ADR-017 的 RPA 备用路径（自动出二维码 PNG，可经 IM 推送）。
+    前端轮询 /scan-status 获取进度。
     """
     env_path = acct_core.env_path_of(name)
     if not os.path.exists(os.path.dirname(env_path)):
         return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
+    mode = str((body or {}).get("mode", "") or "").strip().lower()
+    force_rpa = mode in ("rpa", "qr-rpa")
     # 同一账号已有扫码在跑则直接返回
     prev = _scan_state.get(name)
     if prev and prev.get("running"):
-        return ScanLoginResponse(ok=True, msg=f"账号 {name} 已在扫码中，请完成扫码")
+        return ScanLoginResponse(ok=True, msg=f"账号 {name} 已在更新凭证中，请在指纹浏览器完成登录")
+    _scan_state.setdefault(name, {})["_force_rpa"] = force_rpa
     t = threading.Thread(target=_do_scan, args=(name,), daemon=True)
     t.start()
     err = _wait_scan_error(name)
     if err:
-        return ScanLoginResponse(ok=False, msg=f"扫码登录失败: {err}")
-    return ScanLoginResponse(ok=True, msg=f"已弹出指纹浏览器，请扫码登录账号 {name}")
+        return ScanLoginResponse(ok=False, msg=f"更新凭证失败: {err}")
+    if force_rpa:
+        return ScanLoginResponse(ok=True, msg=f"已启动扫码（RPA 备用路径），请用抖音 App 扫描二维码 · {name}")
+    return ScanLoginResponse(
+        ok=True, msg=f"已打开有头指纹浏览器，请在其中完成登录/验证（凭证将自动写回）· {name}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1108,31 +1125,40 @@ def _probe_account_state(name: str) -> dict:
 # 同一批「分流码」共用的改动（单写者：本批码只在本文件、且不与并发写者重叠）
 @router.post("/{name}/update-login")
 async def update_login(name: str, body: dict | None = None) -> ScanLoginResponse:
-    """**统一「更新凭证」入口**：按账号状态自动分流「扫码 / 短信验证码」。
+    """**统一「更新凭证」入口**：默认**用户手动**，RPA 扫码/短信仅作显式备用。
 
+    2026-09-29（方案2 · 用户拍板）：默认**不再**按账号状态自动分流到固定模板，
+    而是打开有头指纹浏览器由用户自己登录（ADR-017 之前的旧行为）。
     body（均可省略）：
-      - mode: "qr" | "sms" —— 显式覆盖自动分流（用户自己选）
-      - phone: 短信路径所需的手机号（mode 未指定且自动判为短信时也需提供）
+      - mode: 省略 ⇒ 手动（有头浏览器，用户自己登录）；
+              "qr"/"rpa" ⇒ RPA 备用：自动出二维码 PNG（可经 IM 推送）；
+              "sms" ⇒ RPA 备用：短信验证码（需同时给 phone）。
+      - phone: "sms" 备用路径所需手机号
 
     返回 msg 会**如实标注所用路径**，前端据此渲染（不猜、不假装成功）。
     """
     body = body or {}
     mode = str(body.get("mode", "") or "").strip().lower()
+    if mode == "rpa":
+        mode = "qr"
     if mode and mode not in ("qr", "sms"):
-        return ScanLoginResponse(ok=False, msg=f"未知 mode={mode}（只允许 qr / sms）")
+        return ScanLoginResponse(ok=False, msg=f"未知 mode={mode}（只允许 qr / sms，或省略走手动）")
     phone = str(body.get("phone", "") or "").strip()
 
     env_path = acct_core.env_path_of(name)
     if not os.path.exists(os.path.dirname(env_path)):
         return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
 
-    stt = _probe_account_state(name)
     if not mode:
-        # 契约（ADR-017 §2.3）：状态成立（会话被承认且身份未漂移）⇒ 只用验证码；
-        # 其余（全新账号 / 无法判定 / 身份漂移）⇒ 优先二维码。
-        mode = "sms" if stt["ok"] else "qr"
+        # 2026-09-29（方案2）：默认**手动**（打开有头指纹浏览器由用户自己登录）。
+        # 旧 ADR-017 自动分流（状态 B→短信 / 其余→扫码）退居为显式备用，不再自动选路。
+        _login_method_hint[name] = "manual"
+        logger.info(f"[update-login] 账号 {name} → 手动（有头浏览器，用户自行登录）")
+        return await scan_login(name)
+
+    stt = _probe_account_state(name)
     _login_method_hint[name] = f"{mode}:{stt['verdict']}"
-    logger.info(f"[update-login] 账号 {name} 分流 → {mode}"
+    logger.info(f"[update-login] 账号 {name} 显式备用路径 → {mode}"
                 f"（state={stt['verdict']}, 依据={_login_method_hint[name]}）")
 
     if mode == "sms":
@@ -1140,16 +1166,16 @@ async def update_login(name: str, body: dict | None = None) -> ScanLoginResponse
             # 自动判为短信但缺手机号 ⇒ **如实上报需用户输入**，不静默改走扫码
             return ScanLoginResponse(
                 ok=False,
-                msg=f"该账号当前状态适合【短信验证码】更新，请提供手机号后重试"
-                    f"（自动判据 state={stt['verdict']}）")
+                msg=f"短信备用路径需要手机号，请提供后重试"
+                    f"（state={stt['verdict']}）")
         r = await sms_login(name, {"phone": phone})
         if r.ok:
-            r.msg = f"已按账号状态分流至【短信验证码】· {name}：{r.msg}"
+            r.msg = f"已按显式备用路径【短信验证码】· {name}：{r.msg}"
         return r
 
-    r = await scan_login(name)
+    r = await scan_login(name, {"mode": "rpa"})
     if r.ok:
-        r.msg = f"已按账号状态分流至【扫码】· {name}：{r.msg}"
+        r.msg = f"已按显式备用路径【扫码】· {name}：{r.msg}"
     return r
 
 

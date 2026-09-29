@@ -144,31 +144,47 @@ def test_g5_empty_cookies_no_write(monkeypatch):
     assert C.saved == [], "不得写入空凭证"
 
 
-# ── G6: _do_scan 能力协商整体（RPA 失败 ⇒ 真实回落）─────────────────
-def test_g6_do_scan_fallback_calls_enrich(monkeypatch):
+# ── G6（2026-09-29 方案2 改判）：_do_scan **默认手动** ⇒ 直走 enrich_auth ──
+# 用户拍板「账号、凭证更新换回之前的，用户手动操作，不要使用固定的扫码/短信模板」。
+# 故默认**不得**走 RPA 出码；RPA 降级为显式备用。
+def test_g6_do_scan_default_is_manual(monkeypatch):
     _patch(monkeypatch, prep=_mk_prep(False, "no browser"))
     monkeypatch.setattr(A, "_quit_browser_daemon", lambda n: None)
     monkeypatch.setattr(A.acct_core, "env_path_of", lambda n: "/tmp/x/.env")
     A._scan_state.clear()
     A._do_scan("acc6")
     st = A._scan_state["acc6"]
-    assert st["path"] == "legacy", "RPA 失败应标记回落（判据可归因）"
-    assert C.enrich == 1, "必须真实调用老路径 enrich_auth（能力不退化）"
+    assert st["path"] == "manual", "默认必须走手动路径（有头浏览器），不得自动出二维码"
+    assert C.enrich == 1, "默认必须真实调用手动路径 enrich_auth（用户手动登录）"
     assert st["done"] is True
 
 
-# ── G6': 负控 —— RPA 成功时 _do_scan 不得再调老路径 ──────────────────
-def test_g6b_do_scan_rpa_ok_skips_enrich(monkeypatch):
+# ── G6b（2026-09-29 方案2）：显式备用 _force_rpa=True ⇒ 才走 RPA ──────
+def test_g6b_do_scan_explicit_rpa_backup_path(monkeypatch):
     _patch(monkeypatch,
            poll=_mk_poll(True, cookies={"sessionid": "abc"}))
     monkeypatch.setattr(A, "_quit_browser_daemon", lambda n: None)
     monkeypatch.setattr(A.acct_core, "env_path_of", lambda n: "/tmp/x/.env")
     A._scan_state.clear()
+    A._scan_state.setdefault("acc7", {})["_force_rpa"] = True
     A._do_scan("acc7")
     st = A._scan_state["acc7"]
-    assert st["path"] == "rpa"
+    assert st["path"] == "rpa", "显式备用才允许走 RPA 出码"
     assert st["loggedIn"] is True
-    assert C.enrich == 0, "RPA 成功时不得重复弹老路径浏览器（零回归）"
+    assert C.enrich == 0, "RPA 备用成功时不得再弹手动浏览器（零回归）"
+
+
+# ── G6c 负控（2026-09-29 方案2）：把显式备用标志去掉 ⇒ 必须回落手动 ────
+def test_g6c_no_force_flag_means_manual_not_rpa(monkeypatch):
+    """负控：无 _force_rpa 时，即便 RPA 桩全部成功，也**不得**走 rpa。"""
+    _patch(monkeypatch, poll=_mk_poll(True, cookies={"sessionid": "abc"}))
+    monkeypatch.setattr(A, "_quit_browser_daemon", lambda n: None)
+    monkeypatch.setattr(A.acct_core, "env_path_of", lambda n: "/tmp/x/.env")
+    A._scan_state.clear()
+    A._do_scan("acc6d")
+    st = A._scan_state["acc6d"]
+    assert st["path"] == "manual", "未显式要求时 RPA 绝不能被自动选中"
+    assert C.enrich == 1
 
 
 # ══════════════════════════════════════════════════════════════════
