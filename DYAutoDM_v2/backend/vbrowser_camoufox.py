@@ -107,6 +107,13 @@ def launch_camoufox_sync(*, headless: bool = False, user_data_dir: str | None = 
 
     与 launch_sync 保持同构返回，便于上层透明替换。
     """
+    if user_data_dir and not os.path.isabs(user_data_dir):
+        # 方案 3：相对 profile 名 → 可写数据根（必要时从资源根首次种子化）
+        try:
+            from vbrowser import resolve_profile_dir as _rpd
+            user_data_dir = _rpd(user_data_dir)
+        except Exception:  # noqa: BLE001
+            pass
     if not user_data_dir:
         raise RuntimeError(
             "[camoufox] 未指定固定 profile 目录。单 profile 铁律："
@@ -169,6 +176,13 @@ async def launch_camoufox_async(*, headless: bool = False,
     正确做法：改用 `camoufox.async_api.AsyncCamoufox`——它基于
     `playwright.async_api`，与 BCC（FastAPI/asyncio）同构。
     """
+    if user_data_dir and not os.path.isabs(user_data_dir):
+        # 方案 3：相对 profile 名 → 可写数据根（必要时从资源根首次种子化）
+        try:
+            from vbrowser import resolve_profile_dir as _rpd
+            user_data_dir = _rpd(user_data_dir)
+        except Exception:  # noqa: BLE001
+            pass
     if not user_data_dir:
         raise RuntimeError(
             "[camoufox] 未指定固定 profile 目录。单 profile 铁律："

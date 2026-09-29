@@ -689,23 +689,60 @@ def _mask_proxy(proxy_url):
         return "***"
 
 
-def app_root():
-    """应用根目录（持久化数据基准）：
+def _install_dir():
+    """安装目录（只读资源根，frozen 态）：sidecar 与其随附资源被安装到的位置。
 
-    - **最高优先级**：环境变量 `DY_APP_ROOT`。设置后直接返回该路径，
-      用于**源码态指向隔离数据路径**（如 C:\\temp\\dyautodm_design），
-      使账号 .env / data / logs 全部落到隔离目录，
-      不必再把测试库复制回源码仓库（违反隔离铁律且危险）。
-      正常开发/打包均不设此变量，行为与之前完全一致。
-    - 源码态：本文件位于 backend/vbrowser.py，向上两级（backend 的上一级）即项目根
-      DYAutoDM_v2/，随附资源（vb_chromium / vb_profile_* / pw_profile_dm / .env / logs）
-      都放在项目根下，accounts.py 等也以项目根为基准，保持一致；
-    - PyInstaller 打包态（onefile）：优先 exe 所在目录；若 exe 旁没有 vb_chromium
-      但存在 resources/vb_chromium（Tauri bundle.resources 分发位置），则返回
-      exe 旁的 resources/ 子目录，让 NSIS/MSI 安装场景也能找到随附资源。
+    Tauri 安装场景（NSIS currentUser / MSI perMachine）下，sidecar exe 与随附资源
+    （_internal/ · vb_profile_* · pw_profile_dm）都落在安装目录。本函数只返回该
+    **只读**位置；**可写数据**一律走 app_root()。
     """
-    # 隔离测试专用 override（2026-09-01）：源码态把整套资源根切到隔离路径。
-    # 不设时完全不影响既有行为。
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    parent = os.path.dirname(exe_dir)
+    cands = []
+    b_exe = os.path.basename(exe_dir)
+    b_par = os.path.basename(parent)
+    if b_exe.endswith("-msvc") or b_exe.endswith("-gnu"):   # onedir 目录内
+        cands.append(parent)
+    if b_par.lower() in ("binaries", "bin"):
+        cands += [os.path.dirname(parent), exe_dir, parent]
+    cands += [exe_dir, parent]
+    _seen = set()
+    cands = [c for c in cands if not (c in _seen or _seen.add(c))]
+    for c in cands:                                          # 有 _internal 即安装根
+        if os.path.isdir(os.path.join(c, "_internal")):
+            return c
+    for c in cands:
+        if os.path.isdir(os.path.join(c, "resources")):
+            return os.path.join(c, "resources")
+    for c in cands:                                          # 有随附 profile 也算
+        if os.path.isdir(os.path.join(c, "vb_profile_default")):
+            return c
+    return exe_dir
+
+
+def _default_data_root():
+    """默认可写数据根（frozen 态）：%LOCALAPPDATA%\\DYAutoDM。
+
+    与安装位置解耦 —— 安装目录可能是 Program Files（只读，MSI perMachine），
+    因此数据（data/ · accounts/ · members/ · profiles）必须落到**用户可写**目录。
+    """
+    base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+            or os.path.expanduser("~"))
+    return os.path.join(base, "DYAutoDM")
+
+
+def app_root():
+    """应用数据根（**可写**，持久化基准）。
+
+    解析顺序（显式配置优先，不猜本机状态）：
+      1. 环境变量 `DY_APP_ROOT`（存在即用；源码态隔离/测试或安装器显式指定）；
+      2. PyInstaller 打包态：`%LOCALAPPDATA%\\DYAutoDM`（**可写**，与安装位置解耦，
+         使 MSI 装到 Program Files（只读）也能正常工作）；
+      3. 源码态：项目根（本文件上两级）。
+
+    ⚠️ 只读的安装目录（随附资源）走 `resource_root()`；相对资源名（profile 等）
+    走 `resolve_profile_dir()`（首次从资源根种子化到数据根）。
+    """
     _ov = os.environ.get("DY_APP_ROOT", "").strip().strip('"')
     if _ov:
         try:
@@ -715,45 +752,59 @@ def app_root():
         except Exception:
             pass
     if getattr(sys, "frozen", False):
-        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        # 应用根解析：Tauri sidecar 常被放在 <root>/binaries/ 子目录（或类似 bin/），
-        # 而随附资源（vb_chromium / vb_profile_* / .env / logs）在 <root> 下。
-        # 若 exe 父目录名为 binaries/bin，则上溯一级作为应用根。
-        # 2026-09-08 onedir：exe 在 <root>/binaries/<full>/ 下（目录名含 triple，
-        # 非 binaries/bin）→ 须上溯两级；先探测父目录是否 binaries/bin。
-        # ⚠️ 部署位置铁律（2026-09-13 用户要求）：sidecar 一律在【应用根目录】，
-        # 资源（vb_chromium 等）也在根目录；binaries/ 子目录仅为历史容错。
-        # exe 形态：<root>/<full>/<full>.exe（onedir）或 <root>/<full>.exe（onefile）
-        #          或 <root>/binaries/...（旧部署）
-        parent = os.path.dirname(exe_dir)
-        root_candidates = []
-        b_exe = os.path.basename(exe_dir)
-        b_par = os.path.basename(parent)
-        if b_exe.endswith("-msvc") or b_exe.endswith("-gnu"):      # onedir 目录内
-            root_candidates.append(parent)
-        if b_par.lower() in ("binaries", "bin"):                   # 旧部署
-            root_candidates += [os.path.dirname(parent), exe_dir, parent]
-        root_candidates += [exe_dir, parent]
-        # 去重保序
-        _seen = set()
-        root_candidates = [c for c in root_candidates
-                           if not (c in _seen or _seen.add(c))]
-        for cand in root_candidates:
-            # 直接有 vb_chromium（标准：资源与 sidecar 同在应用根）
-            if os.path.isdir(os.path.join(cand, "vb_chromium")):
-                return cand
-        # fallback: Tauri resources/ 子目录（NSIS 安装场景）
-        for cand in root_candidates:
-            res_dir = os.path.join(cand, "resources")
-            if os.path.isdir(os.path.join(res_dir, "vb_chromium")):
-                return res_dir
-        # 再退：上溯到 binaries/bin 的上一级（无 vb_chromium 时）
-        if b_par.lower() in ("binaries", "bin"):
-            return os.path.dirname(parent)
-        # 退化返回 exe 所在目录，让上层报明确的"找不到"错误
-        return exe_dir
+        root = _default_data_root()
+        try:
+            os.makedirs(root, exist_ok=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[BCC-039] [vbrowser] 数据根创建失败({root}): {e}")
+        return root
     # 本文件: <root>/backend/vbrowser.py -> 向上两级(backend 的上一级) = <root>
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def resource_root():
+    """只读资源根（frozen 态 = 安装目录；源码态 = 项目根）。
+
+    用于定位**随附、只读**的资源（内核/内置资源）；可写数据一律 app_root()。
+    """
+    _ov = os.environ.get("DY_RESOURCE_ROOT", "").strip().strip('"')
+    if _ov and os.path.isdir(_ov):
+        return os.path.abspath(_ov)
+    if getattr(sys, "frozen", False):
+        return _install_dir()
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+#: 随附 profile 目录（只读模板）→ 首次运行种子化到可写数据根。
+SEEDED_PROFILES = ("vb_profile_default", "vb_profile_dm", "pw_profile_dm")
+
+
+def resolve_profile_dir(name):
+    """把随附 profile 名解析为**可写绝对路径**（数据根下），必要时从资源根种子化。
+
+    契约：
+      - 绝对路径：原样返回（调用方显式指定）；
+      - 相对名：目标 = `<app_root>/<name>`（可写）。若目标不存在而资源根
+        （安装目录）有同名随附模板，则**首次拷贝**过去（含隐藏/嵌套文件），
+        之后持续复用该可写副本 —— 满足「单 profile 铁律」且不写只读安装目录。
+    """
+    if not name:
+        return name
+    if os.path.isabs(name):
+        return name
+    dst = os.path.join(app_root(), name)
+    if os.path.isdir(dst):
+        return dst
+    src = os.path.join(resource_root(), name)
+    if os.path.isdir(src):
+        try:
+            import shutil
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            logger.info(f"[vbrowser] 随附 profile 首次种子化: {src} -> {dst}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[BCC-039] [vbrowser] profile 种子化失败({src} -> {dst}): {e}")
+    return dst
 
 
 def _resolve_exe(rel_or_abs):
@@ -922,6 +973,11 @@ async def launch_async(mode, cfg, headless=False, user_data_dir=None, force=Fals
                 f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
         # 单 profile 铁律：禁止兜底默认目录，强制调用方显式传入固定 profile。
+        # 2026-09-29（方案 3 · 资源根/数据根分离）：相对名（如 "pw_profile_dm"）
+        # 统一落到**可写数据根**，必要时从只读资源根首次种子化 —— 让安装在只读
+        # 位置（MSI 装 Program Files）也能正常写 profile。
+        if user_data_dir and not os.path.isabs(user_data_dir):
+            user_data_dir = resolve_profile_dir(user_data_dir)
         if not user_data_dir:
             raise RuntimeError(
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"
@@ -1047,6 +1103,11 @@ def launch_sync(mode, cfg, headless=False, user_data_dir=None, account=None):
                 f"请确认 VB_CHROME_EXE 配置正确且 vb_chromium 随附在应用根目录。")
         logger.info(f"[vbrowser] 使用 fingerprint-chromium 内核(exe): {exe}")
         # 单 profile 铁律：禁止兜底默认目录，强制调用方显式传入固定 profile。
+        # 2026-09-29（方案 3 · 资源根/数据根分离）：相对名（如 "pw_profile_dm"）
+        # 统一落到**可写数据根**，必要时从只读资源根首次种子化 —— 让安装在只读
+        # 位置（MSI 装 Program Files）也能正常写 profile。
+        if user_data_dir and not os.path.isabs(user_data_dir):
+            user_data_dir = resolve_profile_dir(user_data_dir)
         if not user_data_dir:
             raise RuntimeError(
                 "[vbrowser] 未指定固定 profile 目录（user_data_dir=None）。"

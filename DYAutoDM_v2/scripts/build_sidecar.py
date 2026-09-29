@@ -130,9 +130,13 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
     ]
     if mode == "onedir":
         cmd.append("--onedir")
-        # 排除内容目录（_internal 是 PyInstaller 6 的默认布局，无需额外参数），
-        # 产物为 BINARIES/<full>/<full>.exe —— sidecar.rs 与 daemon_launcher
-        # 均已支持目录形态探测。
+        # 🔴 2026-09-29（方案 3 · 安装包修复）：内容目录**显式命名**为 "appinternals"
+        # （不带下划线）。原因：Tauri 的 WiX(MSI) 生成器会把以 `_` 开头的目录名
+        # 「规范化」成去掉下划线的名字（实测 `_internal` → `internal`），
+        # 而 PyInstaller 启动器只认 `_internal` ⇒ MSI 装出来的 sidecar 因找不到
+        # `_internal/python314.dll` 直接崩（[PYI-3516]）。改用无下划线名即可两端一致。
+        cmd += ["--contents-directory", "appinternals"]
+        # 产物为 BINARIES/<full>/<full>.exe（目录形态，sidecar.rs/daemon_launcher 已支持）。
     else:
         cmd.append("--onefile")
         out = BINARIES / f"{full}{EXT}"
@@ -492,6 +496,8 @@ def restore_whitelist() -> None:
         print(f"[warn] 还原失败（请手动检查注入区）: {e}")
 
 
+CONTENTS_DIR = "appinternals"
+
 def _dedupe_internal() -> dict:
     """【性能主线】把三份重复的 `_internal` 收敛为一份共享目录。
 
@@ -532,7 +538,7 @@ def _dedupe_internal() -> dict:
     if not present:
         return {"moved": None, "removed": [], "saved_mb": 0}
 
-    shared = BINARIES / "_internal"
+    shared = BINARIES / CONTENTS_DIR
     # 1) 选定共享源：**必须无条件使用本次构建的新 _internal**。
     #
     # 2026-09-20 实测事故（陈旧缓存静默污染）：
@@ -544,8 +550,8 @@ def _dedupe_internal() -> dict:
     #   修复：每轮都从「本次构建产出的目录」里取新 _internal 覆盖 shared。
     fresh = None
     for _d in present:
-        if (_d / "_internal").is_dir():
-            fresh = _d / "_internal"
+        if (_d / CONTENTS_DIR).is_dir():
+            fresh = _d / CONTENTS_DIR
             break
     if fresh is None:
         if not shared.is_dir():
@@ -586,7 +592,7 @@ def _dedupe_internal() -> dict:
         #    ⚠️ _internal 可能是 junction / 目录符号链接（实测构造场景）：
         #    shutil.rmtree 对其处理不当且会被 ignore_errors 静默吞掉 → 残留。
         #    对 reparse point 必须用 os.rmdir（只删链接本身，不跟随删除目标）。
-        inner = d / "_internal"
+        inner = d / CONTENTS_DIR
         if inner.exists() or inner.is_symlink():
             is_link = _is_link_or_junction(inner)
             if not is_link:

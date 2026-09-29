@@ -27,6 +27,7 @@ from loguru import logger
 from typing import Dict, Optional, Tuple
 
 from auto_dm.vbrowser import app_root  # 统一应用根：源码态=项目根，打包态=exe 所在目录
+from auto_dm.vbrowser import resource_root  # 只读资源根（安装目录）；sidecar exe 从其查找
 
 _ROOT = app_root()  # DY_Spider_base（源码态）/ exe 所在目录（打包态，随附资源根）
 
@@ -404,25 +405,36 @@ def ensure_bcc(name=None, wait_ready: bool = True, timeout: float = 45,
         # ⚠️ 部署位置铁律（2026-09-13）：sidecar 一律在【应用根目录】，
         # 禁止 <root>/binaries/（仅对被删除的历史部署保留容错）。
         _full = "dyautodm-browser-daemon-x86_64-pc-windows-msvc"
+        # ⚠️ 2026-09-29（方案 3 · 资源根/数据根分离）：sidecar **可执行文件**属只读
+        # 资源，安装态在【安装目录】(resource_root)；而 app_root() 现在是**可写数据根**
+        # (%LOCALAPPDATA%)。故按「资源根优先 → 数据根兜底」搜索；源码态两者同根，行为不变。
+        try:
+            _RR = resource_root()
+        except Exception:  # noqa: BLE001
+            _RR = _ROOT
+        _search_roots = [_RR] + ([_ROOT] if _ROOT != _RR else [])
         binary = ""
-        for _cand in (
-            # 1) 标准：应用根目录（onedir 目录 → 单文件 → 无 triple 别名）
-            os.path.join(_ROOT, _full, f"{_full}.exe"),
-            os.path.join(_ROOT, f"{_full}.exe"),
-            os.path.join(_ROOT, "dyautodm-browser-daemon.exe"),
-            # 2) 兼容历史 binaries/ 部署（仅容错）
-            os.path.join(_ROOT, "binaries", _full, f"{_full}.exe"),
-            os.path.join(_ROOT, "binaries", f"{_full}.exe"),
-            # 3) 开发态：源码树 src-tauri/binaries
-            os.path.join(_ROOT, "src-tauri", "binaries", _full, f"{_full}.exe"),
-            os.path.join(_ROOT, "src-tauri", "binaries", f"{_full}.exe"),
-        ):
-            if os.path.isfile(_cand):
-                binary = _cand
+        for _base in _search_roots:
+            for _cand in (
+                # 1) 应用根目录（onedir 目录 → 单文件 → 无 triple 别名）
+                os.path.join(_base, _full, f"{_full}.exe"),
+                os.path.join(_base, f"{_full}.exe"),
+                os.path.join(_base, "dyautodm-browser-daemon.exe"),
+                # 2) 兼容历史 binaries/ 部署（仅容错）
+                os.path.join(_base, "binaries", _full, f"{_full}.exe"),
+                os.path.join(_base, "binaries", f"{_full}.exe"),
+                # 3) 开发态：源码树 src-tauri/binaries
+                os.path.join(_base, "src-tauri", "binaries", _full, f"{_full}.exe"),
+                os.path.join(_base, "src-tauri", "binaries", f"{_full}.exe"),
+            ):
+                if os.path.isfile(_cand):
+                    binary = _cand
+                    break
+            if binary:
                 break
         if not binary:
             return {"ok": False, "port": None,
-                    "msg": f"BCC 二进制不存在（应在应用根目录 {_ROOT}）"}
+                    "msg": f"BCC 二进制不存在（应在安装根 {_RR} / 数据根 {_ROOT}）"}
         # 注：原此处为「本进程内曾拉起过 ⇒ 永久拒绝再拉」，已被上方的
         # **退避窗**语义取代（失败可重试，不再不可逆）——见 `_bcc_lazy_fail` 契约。
         try:
@@ -901,8 +913,14 @@ def profile_dir_of(env_path):
             and os.path.basename(os.path.dirname(parent)) == "accounts"):
         # .../accounts/<name>/.env  ->  .../accounts/<name>/profile
         return os.path.join(parent, "profile")
-    # 默认账号 / 其他：退回项目根下的独立目录
-    return os.path.join(_ROOT, "vb_profile_default")
+    # 默认账号 / 其他：退回数据根下的独立目录。
+    # 2026-09-29（方案 3）：走 resolve_profile_dir 而非裸拼路径 —— 安装态首次使用时
+    # 会从只读资源根（安装目录）种子化到可写数据根；源码态两者同根，行为不变。
+    try:
+        from auto_dm.vbrowser import resolve_profile_dir as _rpd
+        return _rpd("vb_profile_default")
+    except Exception:  # noqa: BLE001
+        return os.path.join(_ROOT, "vb_profile_default")
 
 def monitor_name():
     """监测账号（用于直播间监听弹幕，需管理器权限才能看到完整昵称）。

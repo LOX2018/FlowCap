@@ -247,7 +247,10 @@ def main() -> int:
     #   B) 传统形态（旧）：binaries/<full>/ （目录内含 exe + _internal）
     log("\n[校验3] sidecar 构建产物")
     bins = ROOT / "src-tauri" / "binaries"
-    shared_internal = (bins / "_internal").is_dir()
+    # 2026-09-29：contents 目录名优先新值 appinternals（避免 WiX 剥下划线），
+    # 兼容旧产物 _internal。
+    _contents = "appinternals" if (bins / "appinternals").is_dir() else "_internal"
+    shared_internal = (bins / _contents).is_dir()
     layout = "共享 _internal（三 exe 平铺）" if shared_internal else "传统（每份独立目录）"
     log("  形态：%s" % layout)
     for name in SIDECARS:
@@ -317,9 +320,9 @@ def main() -> int:
     # 2026-09-14：共享形态（_internal 一份 + 三 exe 平铺）与传统形态都要支持。
     ok_all = True
     if shared_internal:
-        # 共享依赖：只拷一次
-        src_i = bins / "_internal"
-        dst_i = app_root / "_internal"
+        # 共享依赖：只拷一次（contents 目录名 = appinternals / 兼容 _internal）
+        src_i = bins / _contents
+        dst_i = app_root / _contents
         if dst_i.exists():
             # 2026-09-22 加固：**不得 ignore_errors**（旧写法会静默删一半后仍继续，
             # 制造「半新半旧」）。删除失败即报错并拒绝继续。
