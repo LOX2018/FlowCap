@@ -2057,7 +2057,25 @@ class AutoReplyWorker:
             _probe(before_id, "REPLY_KB", "hit" if hit else "miss",
                    level=level, reply=(hit or "")[:100])
             if hit:
-                return hit, "回复库"
+                # 🔴 2026-09-29（用户拍板「私信的目的就是留资」）：命中库是
+                # **直接 return 的最短路**，此前**完全绕过**留资处置护栏
+                # （库里就有一条 `没有保守治疗 → 有等级，工伤10级`，命中即原件外发
+                #   且不含任何索要）。此处把命中文本**交给同一套留资判据**：
+                # 库内话术若不推进留资，补上索要（保留库内专业内容）。
+                _hit = str(hit).strip()
+                if not _contains_personal_contact(text) and _is_lead_stalled(_hit):
+                    _fixed = append_lead_ask(_hit, cfg)
+                    if _fixed:
+                        logger.info(f"[AI-070] 留资护栏：命中库话术未索要 → 追加: "
+                                    f"{_hit[:24]!r} → {_fixed[:40]!r}")
+                        _hit = _fixed
+                    else:
+                        _lead = lead_fallback_reply(cfg)
+                        logger.info(f"[AI-070] 留资护栏：命中库话术未索要且不可追加"
+                                    f" → 改引导留资: {_hit[:24]!r}")
+                        _hit = _lead
+                    _bump_lead_ask(account, conv_id)
+                return _hit, "回复库"
         except Exception as e:
             _probe(before_id, "REPLY_KB", "error", error=str(e)[:120])
 
@@ -2497,7 +2515,15 @@ def generate_dm_for_live(account: str, peer_name: str, comment: str,
 
                 hit = reply_kb.find_match(text_in, account=account)
                 if hit:
-                    return str(hit).strip(), "回复库"
+                    # 2026-09-29：命中库直回同样要过**直播首触场景护栏**
+                    # （库里碎片含无依据等级结论，命中即原件外发 = 绕过护栏）。
+                    _hit = str(hit).strip()
+                    _v = _live_guard_violation(_hit)
+                    if _v:
+                        logger.info(f"[AI-069] 直播命中库话术违反场景护栏（{_v}）"
+                                    f" -> 改引导型兜底: {_hit[:30]!r}")
+                        return str(live_fallback_reply(cfg) or "").strip(), "兜底"
+                    return _hit, "回复库"
             except Exception:
                 pass
 

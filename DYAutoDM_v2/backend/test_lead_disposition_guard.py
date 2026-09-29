@@ -147,6 +147,47 @@ class TestLeadDispositionGuard(unittest.TestCase):
         self.assertTrue(A._contains_personal_contact("我的号是13812345678"))
         self.assertFalse(A._contains_personal_contact("好"))
 
+    # ── G10 命中库最短路必须过同一护栏（用户第一轮点名的存量条目） ────────
+    def test_g10_reply_kb_shortcut_is_guarded(self):
+        """判据：命中库直回此前**完全绕过**留资护栏；存量里就有
+        `没有保守治疗 → 有等级，工伤10级`（用户第一次反馈点名的正是这条）。
+        契约：命中库话术若不推进留资 ⇒ 必须补索要 / 换引导留资。
+        """
+        hit = "有等级，工伤10级"          # 命中库存量原文（src=auto）
+        self.assertTrue(A._is_lead_stalled(hit), "该存量话术应判未推进留资")
+        fixed = A.append_lead_ask(hit, self.CFG)
+        self.assertIsNotNone(fixed)
+        self.assertIn("10级", fixed, "不得丢掉库内专业内容")
+        self.assertTrue(A._has_lead_ask(fixed), "补齐后必须含索要")
+        # 接线断言（防止有人把命中库分支改回 direct return）
+        src = open(os.path.join(HERE, "services", "ai_reply.py"), encoding="utf-8").read()
+        seg = src.split("hit = reply_kb.find_match(text, account=account)")[-1][:900]
+        self.assertIn("_is_lead_stalled(_hit)", seg, "命中库分支未接留资判据")
+
+    # ── G11 直播命中库同样过场景护栏（防止等级断言原件直发） ──────────────
+    def test_g11_live_reply_kb_passes_scene_guard(self):
+        hit = "有等级，工伤10级"
+        self.assertIsNotNone(A._live_guard_violation(hit),
+                             "直播命中库的等级断言必须被场景护栏拦住")
+        src = open(os.path.join(HERE, "services", "ai_reply.py"), encoding="utf-8").read()
+        seg = src.split("hit = reply_kb.find_match(text_in, account=account)")[-1][:600]
+        self.assertIn("_live_guard_violation(_hit)", seg, "直播命中库分支未接场景护栏")
+
+    # ── G12 用户点名样本端到端（留存「用户反馈原文」作正控） ──────────────
+    def test_g12_user_reported_samples(self):
+        """用户两次反馈点名的原始样本，全部必须被治理。"""
+        # 第一轮（直播首触）：问等级答赔偿 / 直接给等级
+        for s in ("南通十级 7 个月本人工资，保守治疗一般定十级。留个联系方式。",
+                  "单根肋骨骨折十级有依据：GB/T 16180",
+                  "有等级，工伤10级"):
+            if A._live_guard_violation(s) is None and not A._is_lead_stalled(s):
+                self.fail(f"样本既未被场景护栏拦、也未判未推进: {s!r}")
+        # 第二轮（会话内留资）：把线索放走
+        for s in ("好，问问进度。认定书下来第一时间通知我，我帮你算清赔偿清单。",
+                  "我等你人社局问完的消息，认定书到手我就帮你算清单。"):
+            self.assertTrue(A._is_lead_stalled(s) or A._is_deferring(s),
+                            f"放走句未被识别: {s!r}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
