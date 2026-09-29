@@ -536,7 +536,6 @@ export default function LivePage(props: PageProps) {
 
       <PageHeader
         title="直播监听"
-        description="实时弹幕 / 礼物 / 评论采集与私信自动化"
         actions={
           <>
             <SegmentedTabs

@@ -126,7 +126,6 @@ export default function TasksPage(props: PageProps) {
     <PageContainer>
       <PageHeader
         title="任务中心"
-        description="采集 / 监听 / 导出任务与断线重连状态"
         actions={
           ready ? (
             <Button
@@ -302,7 +301,7 @@ export default function TasksPage(props: PageProps) {
       {/* 历史任务 */}
       <Section
         title="历史任务"
-        description="每次启动的独立运行记录；运行中任务可跳转直播监听页，历史任务可跳转查阅模式查看结果（双击行同样进入查阅模式）"
+        description="运行中任务可跳转直播监听页；历史任务可跳转查阅模式看结果（双击行同）"
         actions={
           history.length > 0 ? (
             <Button

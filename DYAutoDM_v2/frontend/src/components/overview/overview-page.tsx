@@ -152,7 +152,6 @@ export default function OverviewPage(props: PageProps) {
     <PageContainer>
       <PageHeader
         title="总览"
-        description="系统运行状态与账号概况"
         actions={
           <SegmentedTabs
             value={viewMode}

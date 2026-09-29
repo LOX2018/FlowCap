@@ -537,7 +537,6 @@ export default function AccountsPage(props: PageProps) {
     <PageContainer>
       <PageHeader
         title="账号管理"
-        description="授权账号凭证监控 · 运行日志 · 指纹浏览器环境"
         actions={
           <>
             <Button variant="ghost" data-od-id="acct-add" onClick={() => setAddOpen(true)}>

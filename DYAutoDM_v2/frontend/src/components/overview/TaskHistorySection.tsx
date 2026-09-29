@@ -104,7 +104,7 @@ export default function TaskHistorySection(props: PageProps) {
   return (
     <Section
       title="任务历史速览"
-      description={`最近 ${MAX_SHOW} 条 · 只读 /api/tasks/history`}
+      description={`最近 ${MAX_SHOW} 条`}
       actions={
         ok && list.length ? (
           <Button size="sm" variant="outline" onClick={refresh} disabled={isFetching}>

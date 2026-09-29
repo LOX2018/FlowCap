@@ -268,7 +268,7 @@ export default function PlatformPage(props: PageProps) {
     <PageContainer>
       <PageHeader
         title="内容浏览"
-        description="对标 better-douyin 的内容面 · 所有请求均由你的操作触发，不做后台轮询"
+        description="所有请求均由你的操作触发，不做后台轮询"
         actions={
           <div className="flex items-center gap-2">
             <Select value={account} onValueChange={setAcctPersist}>

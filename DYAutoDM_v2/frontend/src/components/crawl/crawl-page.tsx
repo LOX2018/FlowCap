@@ -173,7 +173,7 @@ export default function CrawlPage(props: PageProps) {
     <PageContainer>
       <PageHeader
         title="数据采集 · 评论截流"
-        description="关键词搜视频 → 采集评论区 → 评论用户一键私信截流（复用账号凭证被动签名，不批量查询用户）"
+        description="复用账号凭证被动签名，不批量查询用户"
       />
 
       {/* 账号 + 搜索面板 */}

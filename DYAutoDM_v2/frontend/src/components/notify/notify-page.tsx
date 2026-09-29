@@ -178,7 +178,7 @@ export default function NotifyPage({ api, push }: PageProps) {
     <PageContainer maxWidth="860px">
       <PageHeader
         title="IM 通知"
-        description="任务新建 / 任务监控 / 私信汇报 / 凭证失效提醒，推送到微信、企微、钉钉、飞书或 QQ"
+        description="凭证失效提醒会推送到已配置的渠道"
       />
 
       {/* 总开关 */}

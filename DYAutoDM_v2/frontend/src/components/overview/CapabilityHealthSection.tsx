@@ -108,7 +108,7 @@ export default function CapabilityHealthSection(props: PageProps) {
   return (
     <Section
       title="能力健康"
-      description="M1 能力探针：只读本地事实，零网络零浏览器"
+      description="只看本地事实，零网络零浏览器"
       actions={
         <Button size="sm" variant="outline" onClick={runNow} data-od-id="probe-run-now">
           <RefreshCw className="mr-1 h-3.5 w-3.5" />

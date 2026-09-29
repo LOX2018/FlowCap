@@ -95,7 +95,7 @@ export default function AccountsHealthSection(props: PageProps) {
   return (
     <Section
       title="账号凭证健康"
-      description="凭证守护（wp）与私信引擎（dm）双引擎结论 · 只读 /api/accounts"
+      description="凭证守护与私信引擎的双引擎结论"
       actions={
         accounts.length ? (
           <Tone tone={badN ? "danger" : unknownN ? "mute" : okN ? "ok" : "mute"}>

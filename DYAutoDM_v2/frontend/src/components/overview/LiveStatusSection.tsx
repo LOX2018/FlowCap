@@ -76,7 +76,7 @@ export default function LiveStatusSection(props: PageProps) {
   return (
     <Section
       title="直播在线状态"
-      description="直播间实时面：在线人数 / 点赞 / 监听活性 · 只读 /api/live/stream"
+      description="在线人数 / 点赞 / 监听活性"
       actions={<Tone tone={connTone}>{connLabel}</Tone>}
     >
       {isLoading ? (

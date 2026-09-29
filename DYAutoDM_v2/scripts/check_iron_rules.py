@@ -431,12 +431,52 @@ def r12_credential_exposure() -> None:
           f"{': ' + str(stray[0].get('path', '')) if stray else ''}）")
 
 
+# ── R13: 用户可见文案不得含内部开发信息 ─────────────────────────────────────
+# 出处：用户 2026-09-29 全站审计裁定。比「复述控件」更严重的反模式 ——
+# 「把调试信息写进用户界面」：用户不需要知道 /api 路径、wp/dm 进程代号、
+# M1 探针编号、内部参考项目名。它们对用户零信息量，却暴露实现细节。
+# 判据范围：前端组件里会渲染给人看的说明字段（description/subtitle/hint/
+# tip/help/note/placeholder/label）。空态(EmptyState)说明同属用户可见，一并覆盖。
+_UI_COPY_KEY = re.compile(r"\b(description|subtitle|hint|tip|help|note|placeholder|label)=")
+_UI_INTERNAL_PATTERNS = (
+    (re.compile(r"/api/[a-z_]"), "内部接口路径 /api/…"),
+    (re.compile(r"better[-_]douyin", re.I), "参考项目名 better-douyin"),
+    (re.compile(r"M1\s*(?:能力)?探针"), "内部探针编号 M1"),
+    (re.compile(r"（wp）|（dm）|\(wp\)|\(dm\)"), "内部进程代号 wp/dm"),
+)
+
+
+def r13_no_internal_info_in_ui_copy() -> None:
+    """用户可见文案不得出现内部开发信息（接口路径 / 进程代号 / 探针编号 / 参考项目名）。"""
+    fe = os.path.join(SRC_ROOT, "frontend", "src")
+    hits: list[str] = []
+    for f in walk(fe, (".tsx",)):
+        # 排除开发用预览 harness（preview-*.tsx 只被 preview*.html 引用，不进应用产物，
+        # 其中的「对标 better-douyin」等开发参照对开发者有效，不属用户可见文案）。
+        if os.path.basename(f).startswith("preview"):
+            continue
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for i, line in enumerate(fh, 1):
+                    if not _UI_COPY_KEY.search(line):
+                        continue
+                    for pat, why in _UI_INTERNAL_PATTERNS:
+                        if pat.search(line):
+                            hits.append(f"{os.path.basename(f)}:{i} [{why}]")
+                            break
+        except Exception:  # noqa: BLE001
+            continue
+    check(not hits, "R13",
+          f"用户可见文案无内部开发信息（命中 {len(hits)}"
+          f"{': ' + hits[0] if hits else ''}）")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
          r8_data_contract, r9_audit_redline,
          r10_no_cargo_target_in_src, r11_no_legacy_profile_literal,
-         r12_credential_exposure]
+         r12_credential_exposure, r13_no_internal_info_in_ui_copy]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -530,6 +570,11 @@ def selftest() -> int:
     os.makedirs(fake_data, exist_ok=True)
     with open(os.path.join(fake_data, "leak.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
+    #   R13 前端文案含内部开发信息（接口路径 + 进程代号）
+    fake_fe = os.path.join(fake_src, "frontend", "src", "components")
+    os.makedirs(fake_fe, exist_ok=True)
+    with open(os.path.join(fake_fe, "leaky.tsx"), "w", encoding="utf-8") as f:
+        f.write('    <Section title="x" description="只读 /api/accounts · 凭证守护（wp）" />\n')
 
     saved = (SRC_ROOT, BACKEND, DATA_ROOT, RESULTS[:])
     SRC_ROOT, BACKEND, DATA_ROOT = fake_src, fake_backend, fake_data
@@ -586,7 +631,7 @@ def selftest() -> int:
     saved_dc = globals()["_load_datacontract_module"]
     globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1"}
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1", "R13"}
     for r in RULES:
         try:
             r()

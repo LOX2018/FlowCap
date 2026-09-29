@@ -422,7 +422,7 @@ export default function MessagesPage(props: PageProps) {
     <PageContainer>
       <PageHeader
         title="私信中心"
-        description="会话列表 · 聊天记录 · 手动回复（WS 守护 / 网页版双通道发送）"
+        description="手动回复支持 WS 守护 / 网页版双通道发送"
         actions={
           <SegmentedTabs
             value={subPage}
