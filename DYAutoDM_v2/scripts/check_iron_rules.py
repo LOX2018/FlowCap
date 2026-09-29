@@ -471,12 +471,36 @@ def r13_no_internal_info_in_ui_copy() -> None:
           f"{': ' + hits[0] if hits else ''}）")
 
 
+# ── R14: 部署数据根声明文件名一致（防静默漂移）─────────────────────────────
+# 出处：2026-09-29 方案②（部署副本自描述数据根）。`vbrowser._deploy_declared_root()`
+# 读文件名，`scripts/deploy.py` 写文件名 —— 任一拼错即**静默失效**（双击 exe 又落空根、
+# 登录报误导性「用户名或口令错误」）。SSOT = vbrowser.py 的 `_DEPLOY_ROOT_MARKER`。
+def r14_deploy_root_marker_consistent() -> None:
+    vf = os.path.join(BACKEND, "vbrowser.py")
+    df = os.path.join(SRC_ROOT, "scripts", "deploy.py")
+    try:
+        with open(vf, encoding="utf-8", errors="replace") as f:
+            vt = f.read()
+        with open(df, encoding="utf-8", errors="replace") as f:
+            dt = f.read()
+    except Exception as e:  # noqa: BLE001
+        check(False, "R14", f"读取失败: {e}")
+        return
+    m = re.search(r'_DEPLOY_ROOT_MARKER\s*=\s*"([^"]+)"', vt)
+    if not m:
+        check(False, "R14", "vbrowser.py 未定义 _DEPLOY_ROOT_MARKER（SSOT 缺失）")
+        return
+    name = m.group(1)
+    check(name in dt, "R14", f"部署数据根声明文件名与 SSOT 一致（{name}）")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
          r8_data_contract, r9_audit_redline,
          r10_no_cargo_target_in_src, r11_no_legacy_profile_literal,
-         r12_credential_exposure, r13_no_internal_info_in_ui_copy]
+         r12_credential_exposure, r13_no_internal_info_in_ui_copy,
+         r14_deploy_root_marker_consistent]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -575,6 +599,12 @@ def selftest() -> int:
     os.makedirs(fake_fe, exist_ok=True)
     with open(os.path.join(fake_fe, "leaky.tsx"), "w", encoding="utf-8") as f:
         f.write('    <Section title="x" description="只读 /api/accounts · 凭证守护（wp）" />\n')
+    #   R14 声明文件名不一致（vbrowser 的 SSOT 名未出现在 deploy.py）
+    os.makedirs(os.path.join(fake_src, "scripts"), exist_ok=True)
+    with open(os.path.join(fake_backend, "vbrowser.py"), "w", encoding="utf-8") as f:
+        f.write('_DEPLOY_ROOT_MARKER = "dyautodm_app_root.txt"\n')
+    with open(os.path.join(fake_src, "scripts", "deploy.py"), "w", encoding="utf-8") as f:
+        f.write("# 注入样本：故意不含声明文件名\n")
 
     saved = (SRC_ROOT, BACKEND, DATA_ROOT, RESULTS[:])
     SRC_ROOT, BACKEND, DATA_ROOT = fake_src, fake_backend, fake_data
@@ -631,7 +661,7 @@ def selftest() -> int:
     saved_dc = globals()["_load_datacontract_module"]
     globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1", "R13"}
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1", "R13", "R14"}
     for r in RULES:
         try:
             r()

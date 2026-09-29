@@ -731,14 +731,62 @@ def _default_data_root():
     return os.path.join(base, "DYAutoDM")
 
 
+_DEPLOY_ROOT_MARKER = "dyautodm_app_root.txt"
+
+
+def _deploy_declared_root():
+    """读「部署副本自描述的数据根」——由 `scripts/deploy.py` 写入 **exe 同目录**的
+    `dyautodm_app_root.txt`（单行绝对路径）。
+
+    ## 为什么需要（2026-09-29 实测事故）
+    frozen 态在**没有** `DY_APP_ROOT` 时回落到 `%LOCALAPPDATA%\\DYAutoDM` —— 这是
+    **安装版**（MSI/NSIS 装到 Program Files）的正确语义。但 `deploy.py` 产出的
+    **测试副本**是「双击即用」的，启动器不一定注入 `DY_APP_ROOT` ⇒ 会静默落到那个
+    **空**的默认根 ⇒ 会员注册表为空 ⇒ 登录报**误导性的**「用户名或口令错误」
+    （实测：口令哈希完全匹配，用户会以为是密码错了）。
+
+    让副本**自描述**其数据根即可双击可用，且不依赖「进程环境里恰好有变量」
+    （符合显式配置原则：判据来自**副本自身声明**，不探测本机状态）。
+
+    ## 为什么不是「frozen 无 DY_APP_ROOT 就 fail-loud」
+    那会误伤**真正的安装版** —— 它本就该用默认根、也没有该变量。
+    判据因此是「副本是否声明了数据根」，而非「变量是否缺席」。
+    """
+    if not getattr(sys, "frozen", False):
+        return None  # 源码态不适用（数据根 = 项目根）
+    try:
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    except Exception:  # noqa: BLE001
+        return None
+    p = os.path.join(base, _DEPLOY_ROOT_MARKER)
+    try:
+        if not os.path.isfile(p):
+            return None
+        with open(p, encoding="utf-8-sig") as f:  # utf-8-sig 兼容记事本另存的 BOM
+            txt = (f.read() or "").strip().strip('"').strip()
+        if not txt:
+            return None
+        rp = os.path.abspath(txt)
+        # 只接受**已存在**的目录：声明失真（路径被删/写错）时回退默认根，
+        # 绝不据一个失效声明把数据建到别处（宁可回默认，也不静默迁根）。
+        if os.path.isdir(rp):
+            return rp
+        logger.warning(f"[BCC-039] [vbrowser] 副本声明的数据根不存在，回退默认: {rp}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[BCC-039] [vbrowser] 读取副本数据根声明失败（回退默认）: {e}")
+    return None
+
+
 def app_root():
     """应用数据根（**可写**，持久化基准）。
 
     解析顺序（显式配置优先，不猜本机状态）：
-      1. 环境变量 `DY_APP_ROOT`（存在即用；源码态隔离/测试或安装器显式指定）；
-      2. PyInstaller 打包态：`%LOCALAPPDATA%\\DYAutoDM`（**可写**，与安装位置解耦，
-         使 MSI 装到 Program Files（只读）也能正常工作）；
-      3. 源码态：项目根（本文件上两级）。
+      1. 环境变量 `DY_APP_ROOT`（存在即用；源码态隔离/测试或启动器显式指定）；
+      2. **部署副本自声明**：frozen 态下 exe 同目录的 `dyautodm_app_root.txt`
+         （`deploy.py` 写入；让「双击 exe」也落对本分支数据根，见 `_deploy_declared_root`）；
+      3. PyInstaller 打包态且无声明：`%LOCALAPPDATA%\\DYAutoDM`（**安装版**语义 ——
+         与安装位置解耦，使 MSI 装到 Program Files（只读）也能正常工作）；
+      4. 源码态：项目根（本文件上两级）。
 
     ⚠️ 只读的安装目录（随附资源）走 `resource_root()`；相对资源名（profile 等）
     走 `resolve_profile_dir()`（首次从资源根种子化到数据根）。
@@ -751,6 +799,9 @@ def app_root():
             logger.warning(f"[BCC-039] " + f"[vbrowser] DY_APP_ROOT 指向的目录不存在，忽略: {_ov}")
         except Exception:
             pass
+    _decl = _deploy_declared_root()
+    if _decl:
+        return _decl
     if getattr(sys, "frozen", False):
         root = _default_data_root()
         try:

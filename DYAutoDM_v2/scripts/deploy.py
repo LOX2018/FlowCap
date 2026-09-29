@@ -384,9 +384,42 @@ def main() -> int:
         ok_all = ok_all and same
         log("  %s %-46s md5=%s" % ("✅" if same else "❌", full[:46], _md5(dst_exe)[:12]))
 
+    # ── 部署副本「自描述数据根」+ 启动器（2026-09-29 用户拍板方案②）────────────
+    # 背景：副本被「双击 exe」启动时没有 DY_APP_ROOT ⇒ vbrowser.app_root() 回落到
+    #   %LOCALAPPDATA%\DYAutoDM（那个空根）⇒ 会员注册表为空 ⇒ 登录报**误导性**的
+    #   「用户名或口令错误」（实测口令哈希完全匹配）。见 backend/vbrowser.py::_deploy_declared_root。
+    # 处置：① 写 exe 同目录的声明文件（frozen 启动时优先读它 ⇒ 双击即用）；
+    #       ② 写启动器（显式注入 DY_APP_ROOT，开关可复现）。
+    if ok_all:
+        try:
+            _marker = app_root / "dyautodm_app_root.txt"
+            _marker.write_text(str(app_root.resolve()) + "\n", encoding="utf-8")
+            log("  ✅ 数据根声明 → %s（双击 exe 即用本环境）" % _marker.name)
+            _launcher = app_root / "启动.cmd"
+            _exe_name = dst_exe.name
+            _launcher.write_text(
+                (chr(13) + chr(10)).join([
+                    "@echo off",
+                    "rem DYAutoDM 测试副本启动器（由 deploy.py 生成）——显式注入本环境数据根",
+                    "rem 以免未设 DY_APP_ROOT 时落到 LOCALAPPDATA 下的空根",
+                    "chcp 65001 >nul",
+                    'set "DY_APP_ROOT=%~dp0."',
+                    f'start "" "%~dp0{_exe_name}"',
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            log("  ✅ 启动器 → %s（双击即用 · 数据根已显式注入）" % _launcher.name)
+        except Exception as e:  # noqa: BLE001
+            log("  ⚠️ 写数据根声明/启动器失败（不影响主部署，但双击 exe 需自备 DY_APP_ROOT）: %s"
+                % str(e)[:80])
+
     log("\n" + "=" * 74)
     if ok_all:
-        log("[部署] 完成。验收命令（启动应用后执行）：")
+        log("[部署] 完成。启动方式（任选其一）：")
+        log("  · 双击同目录的「启动.cmd」（推荐 —— 已显式注入本环境数据根）")
+        log("  · 或直接双击 %s（同目录的 dyautodm_app_root.txt 会声明数据根）" % dst_exe.name)
+        log("验收命令（启动应用后执行）：")
         log('  curl -s http://127.0.0.1:8000/api/version')
         log('  → 期望返回 {"backend":"%s", ...}' % exp)
     else:

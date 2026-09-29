@@ -1,6 +1,6 @@
 {
   "name": "dyautodm-frontend",
-  "version": "0.45.105",
+  "version": "0.45.106",
   "private": true,
   "type": "module",
   "scripts": {
