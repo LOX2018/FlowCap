@@ -389,11 +389,54 @@ def r11_no_legacy_profile_literal() -> None:
                            f"{': ' + hits[0] if hits else ''}）")
 
 
+# ── R12: 凭证外发审计（数据是否离开受信边界）────────────────────
+def _load_credexposure_module():
+    """加载 check_credential_exposure 模块（SSOT 判据）。抽出成函数只为自检可注入。"""
+    import importlib.util
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "check_credential_exposure.py")
+    if not os.path.isfile(p):
+        raise FileNotFoundError(p)
+    spec = importlib.util.spec_from_file_location("_cce", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def r12_credential_exposure() -> None:
+    """凭证外发审计（ADR-031）—— 回答「数据是否离开受信边界」。
+
+    两档：A DISTRIBUTED（分发路径携带凭证）= 阻断；
+          B STRAY（源码树散落凭证类文件/目录）= 警告。
+    真源：scripts/check_credential_exposure.py。
+    """
+    try:
+        mod = _load_credexposure_module()
+    except Exception as e:  # noqa: BLE001
+        check(False, "R12-A", f"无法加载凭证外发审计模块: {e}")
+        return
+    try:
+        dist = mod.check_distributed(SRC_ROOT)
+    except Exception as e:  # noqa: BLE001
+        dist = [{"src": "?", "detail": f"执行异常: {e}"}]
+    check(not dist, "R12-A",
+          f"无分发路径携带凭证（命中 {len(dist)}"
+          f"{': ' + str(dist[0].get('src', '')) if dist else ''}）")
+    try:
+        stray = mod.check_stray(SRC_ROOT)
+    except Exception as e:  # noqa: BLE001
+        stray = [{"path": f"(异常: {e})"}]
+    check(not stray, "R12-B",
+          f"源码树无凭证类残留（命中 {len(stray)}"
+          f"{': ' + str(stray[0].get('path', '')) if stray else ''}）")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
          r8_data_contract, r9_audit_redline,
-         r10_no_cargo_target_in_src, r11_no_legacy_profile_literal]
+         r10_no_cargo_target_in_src, r11_no_legacy_profile_literal,
+         r12_credential_exposure]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -411,7 +454,7 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
 PENDING: set[str] = set()
 
 # 磁盘卫生类（不影响提交内容）→ 仅警告
-WARN_ONLY = {"R2", "R3", "R9", "R10"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
+WARN_ONLY = {"R2", "R3", "R9", "R10", "R12-B"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
 
 
 def run() -> int:
@@ -527,10 +570,23 @@ def selftest() -> int:
             ("R8-2", lambda: (True, "类型注册表完整", [])),
         )
 
+    # ── R12 负控：注入「分发路径携带凭证」形态 ───────────────────────
+    class _FakeCredModule:
+        @staticmethod
+        def check_distributed(root):
+            return [{"src": "injected:tauri.conf.json", "detail": "注入样本"}]
+
+        @staticmethod
+        def check_stray(root):
+            return []
+
+    saved_cred = globals()["_load_credexposure_module"]
+    globals()["_load_credexposure_module"] = lambda: _FakeCredModule
+
     saved_dc = globals()["_load_datacontract_module"]
     globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R8-1"}
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1"}
     for r in RULES:
         try:
             r()
@@ -540,6 +596,7 @@ def selftest() -> int:
     got_failed = {rid for ok, rid, _ in RESULTS if not ok}
     globals()["_load_redline_module"] = saved_loader   # 无论如何都要还原
     globals()["_load_datacontract_module"] = saved_dc
+    globals()["_load_credexposure_module"] = saved_cred
     SRC_ROOT, BACKEND, DATA_ROOT, _ = saved
     RESULTS.clear()
 
