@@ -332,10 +332,30 @@ def r9_audit_redline():
               f"（since {r.get('since')}）")
 
 
+# ── R10: 源码树不得残留 cargo target（构建缓存已迁出树外）────────────────────
+def r10_no_cargo_target_in_src() -> None:
+    """铁律「源码树零构建产物」：cargo target 必须重定向到树外。
+
+    为何需要它：`src-tauri/target/` 实测单调膨胀（`debug/incremental` 每次重编
+    新增 ~460M 快照且旧份不回收；实测一次构建即 4.0G、历史峰值 42G），根因是
+    「部署路径/源码路径隔离」从未覆盖**编译期缓存**。该缓存已按显式配置
+    （`src-tauri/.cargo/config.toml` 的 `target-dir`）迁出树外；本门禁防止
+    有人绕过脚本直接 `cargo build` / `npx tauri build` 时静默回落树内。
+    """
+    p = os.path.join(SRC_ROOT, "src-tauri", "target")
+    if os.path.isdir(p):
+        n = sum(len(fs) for _, _, fs in os.walk(p))
+        check(False, "R10",
+              f"源码树残留 cargo target（{n} 文件）: {p}")
+    else:
+        check(True, "R10", "源码树无 cargo target（构建缓存已迁出树外）")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
-         r8_data_contract, r9_audit_redline]
+         r8_data_contract, r9_audit_redline,
+         r10_no_cargo_target_in_src]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -353,7 +373,7 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
 PENDING: set[str] = set()
 
 # 磁盘卫生类（不影响提交内容）→ 仅警告
-WARN_ONLY = {"R2", "R3", "R9"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
+WARN_ONLY = {"R2", "R3", "R9", "R10"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
 
 
 def run() -> int:
@@ -409,6 +429,8 @@ def selftest() -> int:
     # 故意制造违规：
     #   R1 源码树出现 members/
     os.makedirs(os.path.join(fake_src, "members"), exist_ok=True)
+    #   R10 源码树出现 cargo target
+    os.makedirs(os.path.join(fake_src, "src-tauri", "target"), exist_ok=True)
     #   R3 backend 出现 .exe
     with open(os.path.join(fake_backend, "evil.exe"), "wb") as f:
         f.write(b"MZ")
@@ -467,7 +489,7 @@ def selftest() -> int:
     saved_dc = globals()["_load_datacontract_module"]
     globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R8-1"}
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R8-1"}
     for r in RULES:
         try:
             r()

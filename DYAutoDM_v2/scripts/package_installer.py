@@ -46,6 +46,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]            # DYAutoDM_v2/
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/ -> build_paths (SSOT)
+from build_paths import target_dir, exe_path, wix_dir, msi_path, nsis_path  # noqa: E402
 TAURI_DIR = ROOT / "src-tauri"
 CONF = TAURI_DIR / "tauri.conf.json"
 PY314 = r"C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe"
@@ -142,7 +144,7 @@ def _verify(msi: Path, expect_ver: str) -> int:
             failures.append(f"ProductVersion 不符：MSI={pv!r} 期望={expect_ver!r}")
 
     # WiX 源布局自证（sidecar 能启动的机械前提）
-    wix_dirs = sorted((TAURI_DIR / "target" / "release" / "wix").glob("**/main.wxs"))
+    wix_dirs = sorted(wix_dir().glob("**/main.wxs"))
     if not wix_dirs:
         _log("  ⚠️ 未找到 main.wxs（若 targets 不含 msi 属正常）")
     else:
@@ -228,12 +230,10 @@ def main() -> int:
 
     # 3) 出包后自证
     if "msi" in targets:
-        msi = (TAURI_DIR / "target" / "release" / "bundle" / "msi"
-               / f"DYAutoDM_{ver}_x64_en-US.msi")
+        msi = msi_path(ver)
         return _verify(msi, ver)
     if "nsis" in targets:
-        exe = (TAURI_DIR / "target" / "release" / "bundle" / "nsis"
-               / f"DYAutoDM_{ver}_x64-setup.exe")
+        exe = nsis_path(ver)
         _log(f"\n产物: {exe}  存在={exe.is_file()}  "
              f"大小={exe.stat().st_size if exe.is_file() else 0:,} B")
         return 0 if exe.is_file() else 1

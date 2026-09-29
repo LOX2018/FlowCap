@@ -3,11 +3,14 @@
 2026-09-01：连续多轮出现「改了代码但界面没变」，故每次打包后
 都要验证产物，而不是想当然地认为构建成功 = 改动生效。
 """
+import sys
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2")
+ROOT = Path(__file__).resolve().parents[1]   # DYAutoDM_v2/ (was hardcoded abs path)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_paths import exe_path  # noqa: E402
 
-exe_p = ROOT / "src-tauri/target/release/dyautodm-v2.exe"
+exe_p = exe_path("release")
 exe = exe_p.read_bytes()
 print(f"exe: {len(exe):,} 字节\n")
 

@@ -38,6 +38,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/ -> build_paths (SSOT)
+from build_paths import target_dir, exe_path, wix_dir, msi_path, nsis_path  # noqa: E402
 TRIPLE = "x86_64-pc-windows-msvc"
 SIDECARS = [
     "dyautodm-backend",
@@ -209,8 +211,9 @@ def main() -> int:
     # 对比 release 的 ~7min，原因是 [profile.release] 开了 lto+codegen-units=1）
     # → 产物落在 target/debug/ 而非 target/release/。
     # 判据用 mtime 而非「优先 debug」：避免 debug 残留旧产物盖过新 release。
-    _rel = ROOT / "src-tauri" / "target" / "release" / "dyautodm-v2.exe"
-    _dbg = ROOT / "src-tauri" / "target" / "debug" / "dyautodm-v2.exe"
+    # 2026-09-29：产物根经 build_paths 解析（构建缓存已迁出源码树）。
+    _rel = exe_path("release")
+    _dbg = exe_path("debug")
     _cands = [p for p in (_rel, _dbg) if p.is_file()]
     if not _cands:
         log("  ❌ 未找到主程序产物（debug/release 均不存在）")

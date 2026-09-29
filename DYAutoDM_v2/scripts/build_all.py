@@ -39,6 +39,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]          # DYAutoDM_v2/
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/
+from build_paths import target_dir  # noqa: E402
 REPO = ROOT.parent                                   # 仓库根
 TAURI_DIR = ROOT / "src-tauri"
 PY314 = r"C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe"
@@ -48,6 +50,11 @@ CARGO_BIN = r"C:\Users\LOX\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin"
 def _env() -> dict:
     e = dict(os.environ)
     e["PATH"] = CARGO_BIN + os.pathsep + e.get("PATH", "")
+    # 2026-09-29 用户拍板：构建缓存**显式**重定向出源码树（源码树零构建产物）。
+    # 与 src-tauri/.cargo/config.toml 的 target-dir 同源（经 build_paths 解析，
+    # 路径字面量只在 config.toml 一处）。实测 target/ 会单调膨胀（incremental
+    # 每次重编新增 ~460M 且旧份不回收；一次构建即 4.0G、历史峰值 42G）。
+    e["CARGO_TARGET_DIR"] = str(target_dir())
     return e
 
 
@@ -110,6 +117,9 @@ def main() -> int:
     ap.add_argument("--app-root", default=r"C:\temp\dyautodm_design",
                     help="部署目标目录")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划")
+    ap.add_argument("--prune-cache", action="store_true",
+                    help="构建+部署完成后回收构建缓存（cargo clean；默认关闭，"
+                         "保留增量编译加速）")
     args = ap.parse_args()
 
     kind = "release" if args.release else "debug"
@@ -120,6 +130,7 @@ def main() -> int:
     print(f"  sidecar ：{'跳过' if args.skip_sidecar else '并行重建 3 份'}")
     print(f"  Rust    ：{'跳过' if args.skip_rust else ('tauri build --debug（快速）' if not args.release else 'tauri build（release）')}")
     print(f"  部署到  ：{'(跳过)' if args.no_deploy else args.app_root}")
+    print(f"  产物根  ：{target_dir()}（源码树外）")
     print("=" * 72)
 
     if args.dry_run:
@@ -160,6 +171,15 @@ def main() -> int:
         if rc != 0:
             print(f"\n❌ 部署失败（exit {rc}）")
             return rc
+
+    # 4) 可选：回收构建缓存（默认关闭；必须在部署之后执行）
+    if args.prune_cache:
+        rc = _run(["cargo", "clean", "--manifest-path", str(TAURI_DIR / "Cargo.toml")],
+                  ROOT, None, "cargo clean（--prune-cache）")
+        if rc != 0:
+            print(f"  ⚠️ cargo clean 返回 {rc}（不影响已完成的构建/部署）")
+        else:
+            print(f"  ✅ 已回收构建缓存：{target_dir()}")
 
     print("\n" + "=" * 72)
     print(f"  ✅ 完成（{kind}）")
