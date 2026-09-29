@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
+import { createPortal } from "react-dom";
+
 import { useQuery } from "@tanstack/react-query";
 
 import { AnimatePresence } from "framer-motion";
 
 import {
-  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X,
+  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X, Tags,
 } from "lucide-react";
 
 import { PageProps, ReusePayload, RoomConfig, LiveRoom } from "../../api/client";
@@ -13,6 +15,8 @@ import { PageProps, ReusePayload, RoomConfig, LiveRoom } from "../../api/client"
 import RoomConfigPage from "./RoomConfigPage";
 
 import RoomManagePage from "./RoomManagePage";
+
+import HighValueKeywordsModal from "./HighValueKeywordsModal";
 
 import { Avatar, hue, KIND_NAME } from "../../components/ui";
 
@@ -37,7 +41,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import {
-  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, AiReplyCard, displayStatus, isIssue,
+  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, displayStatus, isIssue,
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
@@ -107,6 +111,18 @@ export default function LivePage(props: PageProps) {
   const [cfgMgr, setCfgMgr] = useState(false);
   /** 「直播间管理」（房间层，ADR-003）：身份 + 策略引用 + 脱敏开关 */
   const [roomMgr, setRoomMgr] = useState(false);
+  /** 高价值关键词权重表弹窗（2026-09-29：入口从设置页迁入「直播间」区，与策略同场景） */
+  const [kwOpen, setKwOpen] = useState(false);
+  // ── portal 宿主（2026-09-29 融合）────────────────────────────────────────
+  // 把「AI 自动回复开关」与「生效的自动私信配置」两块**跨层级搬进**评论统计卡，
+  // 但**不搬迁其 state / useQuery**：它们仍由本组件持有，只改变渲染位置。
+  // 这样避免把统计卡拆成 props 驱动的展示组件（会牵动大量既有逻辑），
+  // 同时保证数据实时性（每次渲染都重建 portal，children 恒为最新）。
+  // 用「回调 ref + state」而非 useRef：宿主节点挂载/卸载会触发重渲染，
+  // 从而让 portal 在节点出现的那一刻即被渲染（useRef 赋值不触发渲染，
+  // 且切回单账户视图时会因 ref 时机问题造成 portal 永久缺失）。
+  const [kwHost, setKwHost] = useState<HTMLDivElement | null>(null);       // 评论统计卡头部 actions 内
+  const [dmBodyHost, setDmBodyHost] = useState<HTMLDivElement | null>(null); // 评论统计卡正文第二排
   // 申请连麦进行中（防重复点击）
   const [linkMicBusy, setLinkMicBusy] = useState(false);
   // 2026-09-29【防连点】：启动/停止请求进行中锁。
@@ -225,6 +241,29 @@ export default function LivePage(props: PageProps) {
   const aiDmActive = aiDmState?.status === "ok" && aiDmState?.active === true;
   const aiDmUnknown = !aiDmAcct || aiDmState?.status === "unknown";
   const aiDmReason = String(aiDmState?.reason || "尚未判定");
+
+  // ── AI 自动回复开关（2026-09-29：从原顶部「AI 自动回复」卡迁入评论统计卡头部）───
+  // 原 `AiReplyCard` 顶端独立成卡，与「评论统计」信息重复；现把开关与计数一起
+  // 收敛到 comment-stats 卡头部同一排（用户指定融合落点）。
+  const { data: aiStatus, refetch: refetchAi } = useQuery({
+    queryKey: ["ai-status"],
+    queryFn: () => api.aiStatus(),
+    refetchInterval: 5000,
+    enabled: !!ready,
+  });
+  const aiRunning = !!(aiStatus as { running?: boolean } | undefined)?.running;
+  const aiSt = (aiStatus || {}) as {
+    replied?: number; leads_total?: number; processed?: number; errors?: number;
+  };
+  const toggleAiReply = () => {
+    const call = aiRunning ? api.aiStop : api.aiStart;
+    call()
+      .then((r: { ok: boolean }) => {
+        push(r.ok ? (aiRunning ? "AI 自动回复已停止" : "AI 自动回复已启动") : "操作失败");
+        void refetchAi();
+      })
+      .catch((e: unknown) => push("操作异常: " + errMsg(e)));
+  };
 
   // 任务容器回读：切换页面后回到直播监听页，用 /api/tasks/current 还原当前任务
   useEffect(() => {
@@ -445,6 +484,40 @@ export default function LivePage(props: PageProps) {
       .catch(() => setReview(true));
   };
 
+  /**
+   * AI 自动回复开关块（2026-09-29 融合）——状态 + 计数 + 按钮一体，
+   * 经 portal 渲染进评论统计卡头部 actions；`aiReplyHost` 缺席时退回原顶部位置。
+   */
+  const aiReplyActions = (
+    <div className="flex items-center gap-2" data-od-id="live-ai-reply-controls">
+      <Tone tone={aiRunning ? "ok" : "mute"}>{aiRunning ? "AI 运行中" : "AI 已停止"}</Tone>
+      <span className="hidden items-center gap-x-1.5 text-[0.72rem]
+                       text-[var(--color-text-muted)] xl:flex">
+        <span>已回复
+          <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.replied ?? 0}</b>
+        </span>
+        <span>·</span>
+        <span>留资
+          <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.leads_total ?? 0}</b>
+        </span>
+        <span>·</span>
+        <span>错误
+          <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.errors ?? 0}</b>
+        </span>
+      </span>
+      <Button
+        variant={aiRunning ? "danger-outline" : "secondary"}
+        size="sm"
+        data-od-id="ai-reply-toggle"
+        onClick={toggleAiReply}
+      >
+        {aiRunning
+          ? <><Square className="h-3.5 w-3.5" />停止 AI 回复</>
+          : <><Play className="h-3.5 w-3.5" />开启 AI 回复</>}
+      </Button>
+    </div>
+  );
+
   return (
     <PageContainer>
       {alert && (
@@ -553,6 +626,9 @@ export default function LivePage(props: PageProps) {
         }
       />
 
+      {/* 高价值关键词权重表弹窗（2026-09-29：入口从设置页迁来，见「直播间」区按钮） */}
+      <HighValueKeywordsModal open={kwOpen} onClose={() => setKwOpen(false)} />
+
       {viewMode === "grid" ? (
               <EngineCards push={push} />
             ) : (
@@ -564,6 +640,7 @@ export default function LivePage(props: PageProps) {
             description="多账号时需手动选择一个；引擎启动前会校验凭证有效性"
             actions={
               <>
+                <div className="flex flex-wrap items-center justify-end gap-2" data-od-id="live-acct-tabs">
                 {realAccts.length > 0 ? (
                   <SegmentedTabs
                     value={activeAcct || ""}
@@ -583,6 +660,7 @@ export default function LivePage(props: PageProps) {
                     有多个账号，请手动选择一个
                   </span>
                 )}
+                </div>
               </>
             }
           >
@@ -639,6 +717,15 @@ export default function LivePage(props: PageProps) {
                   onClick={() => setRoomMgr(true)}
                 >
                   <Settings2 className="h-3.5 w-3.5" />直播间管理
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-od-id="live-high-value-keywords"
+                  title="编辑高价值关键词权重表（决定高价值窗口，进而影响是否被发送闸门拦下）"
+                  onClick={() => setKwOpen(true)}
+                >
+                  <Tags className="h-3.5 w-3.5" />高价值关键词
                 </Button>
               </>
             }
@@ -845,9 +932,10 @@ export default function LivePage(props: PageProps) {
             </div>
           </Section>
 
-          <AiReplyCard push={push} />
+          {kwHost && createPortal(aiReplyActions, kwHost)}
 
-          <Section
+          {dmBodyHost && createPortal(
+            <Section
             className="mb-3.5"
             data-od-id="live-auto-dm"
             title="生效的自动私信配置"
@@ -958,7 +1046,7 @@ export default function LivePage(props: PageProps) {
                 或点「管理策略」新建一条。
               </Blank>
             )}
-          </Section>
+          </Section>, dmBodyHost)}
 
           <div className="mb-3.5 grid grid-cols-1 gap-3.5 lg:grid-cols-2">
             <Section
@@ -1106,6 +1194,8 @@ export default function LivePage(props: PageProps) {
                 <Button variant="ghost" size="sm" data-od-id="review-open" onClick={openReview}>
                   <Eye className="h-3.5 w-3.5" />进入查阅模式
                 </Button>
+                {/* 2026-09-29 融合：AI 自动回复开关的 portal 落点（卡头右侧，与上述控件同排） */}
+                <div ref={setKwHost} className="flex items-center" data-od-id="comment-stats-actions" />
               </div>
             }
           >
@@ -1153,6 +1243,8 @@ export default function LivePage(props: PageProps) {
                 </span>
               )}
             </div>
+            {/* 2026-09-29 融合：「生效的自动私信配置」的 portal 落点（第二排，表格上方） */}
+            <div ref={setDmBodyHost} className="mb-3" data-od-id="comment-stats-configs" />
             <div className="-mx-4 -mb-4 flex max-h-[clamp(320px,calc(100vh-560px),620px)]
                             flex-col overflow-hidden">
               <div className="min-h-0 flex-1 overflow-auto overscroll-contain">

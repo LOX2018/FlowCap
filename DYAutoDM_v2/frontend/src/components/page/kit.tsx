@@ -60,7 +60,10 @@ export function Section({
           <p className="mt-0.5 text-[0.78rem] text-[var(--color-text-secondary)]">{description}</p>
         ) : null}
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+      {/* ml-auto：头部 flex-wrap 换行时（标题过长 / 动作过多），justify-between 会把
+          独占一行的动作组放回**左端**（实测「账号切换段没靠右」即此因）；
+          ml-auto 保证动作组在任何情况下都贴右，且同排时行为不变。 */}
+      {actions ? <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div> : null}
     </div>
   ) : null;
 

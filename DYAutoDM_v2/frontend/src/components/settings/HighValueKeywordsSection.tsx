@@ -108,7 +108,14 @@ export function checkDraft(rows: DraftRow[]): SaveCheck {
   return { out, issues };
 }
 
-export default function HighValueKeywordsSection() {
+/**
+ * @param embedded 供弹窗内嵌使用：去掉外层 `mt-3` 外边距与圆角（弹窗自身已有壳）。
+ */
+export default function HighValueKeywordsSection({
+  embedded = false,
+}: {
+  embedded?: boolean;
+} = {}) {
   const [items, setItems] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState<DraftRow[]>([]);
   /** 被判为不合格的行（高亮用）；用户一改该行即刻清除。 */
@@ -220,7 +227,7 @@ export default function HighValueKeywordsSection() {
   };
 
   return (
-    <Card className="mt-3">
+    <Card className={embedded ? "" : "mt-3"}>
       <CardContent className="pt-4">
         <div className="mb-2 flex items-center justify-between">
           <div>
