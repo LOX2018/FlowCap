@@ -37,6 +37,9 @@ node_modules/
 *.swp
 .DS_Store
 .codebuddy/
+# 2026-09-30：AI 工具状态目录（与 .codebuddy 同族，属本地工具态，不入库）
+.freebuff/
+.workbuddy/
 
 # 内存快照 / 调试产物
 *.pma
@@ -85,6 +88,11 @@ _ext_repos/DouYin_Spider_git/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+# 2026-09-30：任意深度的 data 库（防子目录位置的 db，如 DYAutoDM_v2/backend/data/，
+# 落入源码树后被 `git add -A` 误提交 —— M-27 实测点）
+**/data/*.db
+**/data/*.db-shm
+**/data/*.db-wal
 
 # 一次性知识库写入脚本（用完即弃）
 工作记忆/_kb*.py
