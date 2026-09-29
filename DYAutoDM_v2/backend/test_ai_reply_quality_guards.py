@@ -71,7 +71,22 @@ class TestAssertiveGuard(unittest.TestCase):
             "陈旧性骨折能不能认定，得看能否证明是本次事故造成的，你有事故证明吗？",
             "能不能评上级，取决于治疗后留下多少功能障碍，最终以鉴定结论为准。",
         ):
-            self.assertEqual(A.validate_reply(r, EMPTY_CFG), r, f"不应拦: {r}")
+            # 🔴 2026-09-29 订正：本用例的不变量是**不被误伤拦截**
+            # （原写法 `assertEqual(got, r)` 额外假定了「逐字原样返回」，
+            #   把两件事混成一条断言 —— 于是正常化处理会被误判为「拦截」）。
+            # 正常化（如剔除 Markdown 强调符）由下面 test_markdown_emphasis_stripped
+            # 单独断言，该行为**不受 live_guard 影响**。
+            self.assertIsNotNone(A.validate_reply(r, EMPTY_CFG), f"不应拦: {r}")
+
+    def test_markdown_emphasis_stripped(self):
+        """2026-09-29：`**` 强调符必须剔除（私信纯文本会原样显示给客户）。
+
+        实测事故（用户截图）：回复里出现「轻微骨裂**大概率评不上等级**」。
+        独立断言 —— 与「是否被拦截」是两件事，故不从上一个用例里推断。
+        """
+        got = A.validate_reply("看的是**证据链**，不是医院那张片子。", EMPTY_CFG)
+        self.assertIsNotNone(got)
+        self.assertNotIn("**", got)
 
 
 class TestTruncationResidualGuard(unittest.TestCase):

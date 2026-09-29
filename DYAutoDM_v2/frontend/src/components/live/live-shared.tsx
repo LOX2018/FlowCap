@@ -74,9 +74,30 @@ export type PillColor = "ok" | "warn" | "danger" | "accent" | "mute";
 export const DM_META: Record<DmStatus, [string, PillColor]> = {
   un: ["未私信", "mute"],
   wait: ["待发送", "warn"],
-  sent: ["已发送", "ok"],
+  // 2026-09-29（用户拍板「拆分已受理 / 已送达」）：本档语义是**受理**
+  // （后端 RecordStatus.SENT = 已入池），真实送达由 Row.deliveryState 覆盖显示。
+  sent: ["已受理", "ok"],
   fail: ["发送失败", "danger"],
 };
+
+/**
+ * 2026-09-29：把「调度状态 + 真实投递证据」合成**界面显示档**。
+ *
+ * 为什么必须分开两者（实测依据）：
+ *   后端 `RecordStatus.SENT` 是在 `submit_by_uid` 返回 `accepted=True`（已入池）
+ *   时置位的 —— 那是**受理**；实测 2026-09-29 当天受理 19 条、平台拒收回执 34 条，
+ *   界面却全部显示绿色「已发送」（用户原话：「投递成功不代表传递送达」）。
+ *
+ * 显示判据（优先级从高到低）：
+ *   1. 有平台拒收证据 ⇒ **被平台拒绝**（红）—— 无论调度状态如何
+ *   2. 有送达证据（回声帧/投递标记）⇒ **已送达**（绿）
+ *   3. 其余沿用调度状态（已受理 / 发送失败 / 待发送 / 未私信）
+ */
+export function displayStatus(r: Row): [string, PillColor] {
+  if (r.deliveryState === "rejected") return ["被平台拒绝", "danger"];
+  if (r.deliveryState === "delivered") return ["已送达", "ok"];
+  return DM_META[r.dmStatus];
+}
 
 /** 解析延迟抖动字符串：'50,120'/'50-120'/'50~120' -> [50,120]；'60' -> [60,60] */
 export function parseDelayRange(raw: string): number[] {
@@ -135,6 +156,14 @@ export interface SendRecord {
   sent_at?: number | null;
   content?: string | null;
   comment: string;
+  /**
+   * 2026-09-29：**真实投递结局**（后端 `api/tasks.py::_records_from_adm` 派生）。
+   *   · `delivered` —— 有回声帧 / 投递标记 ⇒ 服务端确认已达
+   *   · `rejected`  —— 只有平台拒收回执 ⇒ **没送达**
+   *   · `""`        —— 无证据
+   * 注意它与 `status` 是**两个维度**：`status=sent` 只表示「已受理（入池）」。
+   */
+  delivery_state?: "delivered" | "rejected" | "";
 }
 
 export interface TaskConfig {
@@ -192,6 +221,14 @@ export interface Row {
   failKind?: string | null;
   failLabel?: string | null;
   failAdvice?: string | null;
+  /**
+   * 2026-09-29：**真实投递结局**（后端 `services/delivery_verify.delivery_state_of`
+   * 按投递证据派生；不是调度状态）。
+   *   · `delivered` —— 有回声帧 / 投递标记 ⇒ 服务端确认已达
+   *   · `rejected`  —— 只有平台拒收回执 ⇒ **没送达**
+   *   · `""`        —— 无证据（保持既有语义，不臆断）
+   */
+  deliveryState?: "delivered" | "rejected" | "";
 }
 
 // ============================================================================
@@ -438,6 +475,7 @@ export function recordsToRows(src: Record<string, unknown>[]): Row[] {
     failKind: (r.fail_kind as string) || null,
     failLabel: (r.fail_label as string) || null,
     failAdvice: (r.fail_advice as string) || null,
+    deliveryState: (r.delivery_state as "delivered" | "rejected" | "") || "",
   }));
 }
 

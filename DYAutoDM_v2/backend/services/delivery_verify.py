@@ -131,3 +131,152 @@ def mark_delivery_verified(
             f"（不阻断发送）: {e}"
         )
         return False
+
+
+# ===========================================================================
+# 2026-09-29：投递结果**读取侧**（「受理 ≠ 送达」的判定出口）
+# ===========================================================================
+# 背景（用户实测反馈 + 只读取证）：
+#   前端「已发送」取自调度记录 `RecordStatus.SENT`，而它是在
+#   `core/dispatch.py:_do_send` 拿到「调度器已入池（accepted=True）」时就置位
+#   —— 那是**受理**（消息交给了发送链），不是**送达**（服务端确认）。
+#   实测 2026-09-29：受理 19 条，而抖音回执里 34 条是
+#   「对方回复或关注你之前，只能发送一条文字消息」（平台拒收）。
+#   ⇒ 界面却把全部 19 条都显示成绿色「已发送」。
+#
+# 本模块**只增加一个「证据读取」出口**，不改任何写入路径/时序/限流：
+#   送达证据 = 该账号该会话存在 `msg_type='7'` 的**回声帧**
+#            （`recv_daemon` 收到自己发出的消息回执时会以 msg_type='7' 落库）
+#            或存在 `[投递验证]` 标记行（`mark_delivery_verified` 写入）。
+#   平台拒收证据 = 存在平台提示行（「对方回复或关注你之前…」系统通知）。
+# ---------------------------------------------------------------------------
+
+#: 平台对「陌生人只能发一条」的拒收回执前缀（与 message_schema 的
+#: `_RE_SYSTEM_NOTICE` 同源语义；此处只做**读取侧**匹配，不重复定义业务规则）。
+PLATFORM_REJECT_PREFIX = "对方回复或关注你之前"
+
+
+def delivery_state_of(account: str, conv_id: str = "",
+                      uid: str = "") -> str:
+    """返回该目标最近一次投递的**真实结局**（只读，零副作用）。
+
+    取值（供调用方与前端映射，语义即契约）：
+      · ``"delivered"`` —— 有 Echo 帧或投递标记（服务端确认已达）
+      · ``"rejected"``  —— 只有平台拒收回执（**没送达**）
+      · ``""``          —— 无证据（保持既有状态，不臆断）
+
+    匹配口径：优先 conv_id（精确），其次 uid（回声/标记可能落在
+    会话 id 的任一方向上，故用 LIKE 两端匹配）。
+    """
+    if not account:
+        return ""
+    try:
+        from database import get_db
+
+        conn = get_db()
+        acc = account
+        if conv_id:
+            # 回声帧：role=me 且 msg_type='7'（recv_daemon 的 WS 回执指纹）
+            # 标记行：msg_id 以 verify: 开头（mark_delivery_verified 的命名空间）
+            #
+            # 🔴 2026-09-29：定位口径**复用项目 SSOT** `conv_identity.peer_uid`
+            # 解析出的对端 uid，再按 uid 两端 LIKE 匹配 —— 不可用 conv_id 末段
+            # 直接前缀匹配：实库两种方向（`0:1:对端:自己` 与 `0:1:自己:对端`）
+            # **同时存在**，末段可能是自己，两端 LIKE 会把别的会话误判进来
+            # （实机验证脚本 L1 当场抓出：99/186 条与独立真值不一致）。
+            from services.conv_identity import peer_uid as _peer_uid
+
+            _peer = ""
+            try:
+                _peer = str(_peer_uid(conv_id, _my_uid(acc)) or "")
+            except Exception:
+                _peer = ""
+            if _peer:
+                # 🔴 实库两种方向**同时存在**（`0:1:对端:自己` 与 `0:1:自己:对端`，
+                # 实测同一对端两种形态都在），故必须同时命中两种规范形态。
+                # 用 `IN (?, ?)` 精确匹配（而不是两端 `LIKE`）—— conv_id 恰好 4 段，
+                # 精确串排除任何跨会话误伤。
+                _my = _my_uid(acc)
+                forms = []
+                if _my:
+                    forms = [f"0:1:{_peer}:{_my}", f"0:1:{_my}:{_peer}"]
+                else:
+                    forms = [conv_id, _flip_conv(conv_id)]
+                ph = ",".join("?" * len(forms))
+                row = conn.execute(
+                    # 🔴 role='me' 必须限定：`msg_type='7'` 是**双方共用**的消息类型码，
+                    # 对方发来的普通文本也是 '7'（实测把对方留言误当回声帧 ⇒ 假送达）。
+                    "SELECT SUM(CASE WHEN msg_type='7' AND role='me' THEN 1 ELSE 0 END) echo,"
+                    "       SUM(CASE WHEN msg_id LIKE 'verify:%' THEN 1 ELSE 0 END) marker,"
+                    "       SUM(CASE WHEN text LIKE ? THEN 1 ELSE 0 END) rej "
+                    f"FROM dm_messages WHERE account=? AND conv_id IN ({ph})",
+                    (PLATFORM_REJECT_PREFIX + "%", acc, *forms),
+                ).fetchone()
+            else:
+                # 对端解析不出来（my_uid 未知等）⇒ 退回精确 conv_id + 反向形态，
+                # 宁可少匹配也不臆断（与 M-28「不猜」同一条纪律）。
+                row = conn.execute(
+                    "SELECT SUM(CASE WHEN msg_type='7' AND role='me' THEN 1 ELSE 0 END) echo,"
+                    "       SUM(CASE WHEN msg_id LIKE 'verify:%' THEN 1 ELSE 0 END) marker,"
+                    "       SUM(CASE WHEN text LIKE ? THEN 1 ELSE 0 END) rej "
+                    "FROM dm_messages WHERE account=? AND (conv_id=? OR conv_id=?)",
+                    (PLATFORM_REJECT_PREFIX + "%", acc, conv_id, _flip_conv(conv_id)),
+                ).fetchone()
+        elif uid:
+            row = conn.execute(
+                "SELECT SUM(CASE WHEN msg_type='7' AND role='me' THEN 1 ELSE 0 END) echo,"
+                "       SUM(CASE WHEN msg_id LIKE 'verify:%' THEN 1 ELSE 0 END) marker,"
+                "       SUM(CASE WHEN text LIKE ? THEN 1 ELSE 0 END) rej "
+                "FROM dm_messages WHERE account=? AND conv_id LIKE ?",
+                (PLATFORM_REJECT_PREFIX + "%", acc, f"%{uid}%"),
+            ).fetchone()
+        else:
+            return ""
+        if not row:
+            return ""
+        echo = int(row["echo"] or 0)
+        marker = int(row["marker"] or 0)
+        rej = int(row["rej"] or 0)
+        if echo or marker:
+            return "delivered"
+        if rej:
+            return "rejected"
+        return ""
+    except Exception as e:
+        logger.debug(f"[SILENT-00] services.delivery_verify: delivery_state_of 失败: {e}")
+        return ""
+
+
+def _my_uid(account: str) -> str:
+    """本账号 uid（复用 conv_identity.my_uid 的权威解析；取不到返回空串）。"""
+    try:
+        from services.conv_identity import my_uid as _mu
+
+        return str(_mu(account) or "")
+    except Exception as e:
+        logger.debug(f"[SILENT-00] services.delivery_verify: my_uid 解析失败: {e}")
+        return ""
+
+
+def _norm_conv(conv_id: str, peer: str) -> str:
+    """归一为「`0:1:*:对端`」查询键（实库两种方向并存，用末位通配匹配）。
+
+    为什么用 LIKE 而不是拼死两种形态：`my_uid` 可能取不到，而 conv_id 末段
+    未必是自己；只要**对端**确定，`0:1:*:<对端>` 就同时覆盖两种方向。
+    """
+    return f"0:1:%:{peer}"
+
+
+def _peer_of(conv_id: str) -> str:
+    """从 `0:1:A:B` 形状取对端（去自身 uid 不可能在纯读侧完成，
+    故这里返回**后半段**，由 SQL 两端 LIKE 共同覆盖）。"""
+    parts = (conv_id or "").split(":")
+    return parts[-1] if parts else ""
+
+
+def _flip_conv(conv_id: str) -> str:
+    """`0:1:A:B` ↔ `0:1:B:A`（回声/标记可能以另一方向落库）。"""
+    parts = (conv_id or "").split(":")
+    if len(parts) == 4:
+        return f"{parts[0]}:{parts[1]}:{parts[3]}:{parts[2]}"
+    return conv_id

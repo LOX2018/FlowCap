@@ -262,7 +262,53 @@ _DEFAULT_CONFIG = {
     # deepseek-v4.1-flash 只回「能认」两字且 finish_reason≠length，
     # 截断检测抓不到 ⇒ 2 字残句直发客户。低于此值判残句走兜底。
     "min_reply_len": 5,
+    # ---- 2026-09-29（用户实测反馈驱动）----
+    # 直播弹幕首触是否继续走「命中库」（reply_kb.find_match）——
+    # **默认 False（停用）**。理由：命中库是「命中即直接回复、零 token、
+    # 绕过全部出口护栏」的最高优先级短路分支，而它当前 28 条条目
+    # **全部来自自动学习**（碎片化、含个案裸答），实测已产出
+    # 「保守治疗 → 有等级，工伤10级」这类**无依据的等级直答**；
+    # 用户 2026-09-29 拍板：「直播首触不再查命中库，改为 AI 生成 + 引导型兜底」，
+    # 同时保留开关以便随时恢复（私信侧不受本开关影响，另由
+    # strict_level / reply_sem_enabled 控制）。
+    "live_reply_kb_enabled": False,
 }
+
+# 直播首触专用规则（2026-09-29，用户拍板）
+#
+# 为什么必须单独拼一段、而不是改 Agent 的 system_prompt：
+#   直播与私信共用同一个 Agent prompt，而该 prompt 第 ① 条原文要求
+#   「拿到伤情就给判断：…给出等级的初步口径与依据」——**方向与本规则相反**。
+#   在弹幕首触场景里，观众只发了一句话（常常连部位/城市都没有），
+#   此时给等级 = 无依据断言，实测已产出多起错答（用户原话：
+#   「部分弹幕已经说了骨折，生成回复还让别人说伤情」「『鼻骨骨折鼻中隔骨折，
+#   保守治疗』明显是问等级，生成的却是赔偿的内容」）。
+#   故此处以**显式覆盖**的方式给出场景契约（含「覆盖上文任何相反要求」），
+#   不动私信场景的既有行为。
+_LIVE_CONTACT_RULES = """
+
+【场景 · 直播间弹幕首触 —— 最高优先级，覆盖上文任何相反要求】
+你在给「刚在公屏发过一句话」的直播观众发第一条私信，不是会话内回复。
+1. **绝对不要报等级 / 评级结论 / 赔偿金额**。公屏一句话判断不了等级。
+   凡涉及「几级 / 能不能评上 / 赔多少」：一律**先引导补充可判定材料**
+   （受伤部位 · 诊断结论 · 是否手术/内固定 · 所在省市 · 有无劳动合同或社保）。
+2. **不要把话说成"有等级 / 没等级"这种二选一直答**。先问、先引导，
+   不要替对方下结论（对方的信息量还不支持任何结论）。
+3. 允许给的只有**方向性口径**：例如「能不能评，要看你诊断报告上的
+   伤情描述和有没有做内固定，具体等级以鉴定结论为准」——
+   并紧跟一句「你把 X 说一下，我帮你对一下」。
+4. 引导式追问**一次只问 1~2 个关键项**，不要一口气把所有问题都问完。
+5. 观众已经说过的信息**不要重复问**。观众没说清楚部位/城市时，
+   就只问这一个。
+"""
+
+# 直播兜底池追加位（2026-09-29）：主兜底池偏「会话内承接」，缺一条
+# **纯引导型**话术；直播首触被护栏拦下/模型不可用时，最需要的是
+# 「把对方拉进可判定的对话」而不是承接上文的措辞。
+_LIVE_FALLBACK_EXTRA = (
+    "你这个伤情能不能评级，得看诊断报告上的描述和有没有做内固定——"
+    "你先说下受伤部位和在哪受的伤，我帮你对一下？"
+)
 
 _KV_CONFIG = "ai_reply_config"
 _KV_KB = "ai_reply_knowledge_base"
@@ -797,6 +843,66 @@ def _looks_like_reasoning(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 直播场景专用护栏（2026-09-29，用户实测反馈驱动）
+#
+# 实测事故（用户原话）：「部分弹幕已经说了骨折，生成回复还让别人说伤情」
+# 「『鼻骨骨折鼻中隔骨折，保守治疗』明显是问等级，生成的却是赔偿的内容」
+# 「对于弹幕的内容不要直接说有等级/没等级，直接让发病例，先引导对话」。
+#
+# 与下面的 _RE_ASSERTIVE 的区别（两者不可互相替代）：
+#   · _RE_ASSERTIVE（会话内专业准确性护栏）只拦「陈旧性骨折能认」这类
+#     **与专业知识相悖**的断言，允许「十级有依据」这种有出处的口径；
+#   · 本组拦的是**场景违规** —— 直播间首触（对方只发了一句话）就下结论，
+#     无论结论对错都不该发：判据是**无依据断言**本身，不是结论是否正确。
+#   ⇒ 故只在 generate_dm_for_live 的出口启用（live_guard=True），
+#     私信会话内回复**不受影响**（那里已经有上下文，允许给判断）。
+# ---------------------------------------------------------------------------
+
+# ① 具体等级结论：**任何**「N 级」出现即拦。
+#    为什么放宽到「不论句式」：用户原话「不要直接说有等级/没等级」——
+#    直播间首触（对方只发了一句话）**根本没有**下等级结论的依据，
+#    所以判据不是「说得对不对」，而是「该不该在这个场景出现」。
+#    首触唯一合法口径是「能不能评要看 X，具体以鉴定结论为准」（无数字级）。
+_RE_LIVE_GRADE = re.compile(r"[一二三四五六七八九十0-9]+\s*级")
+
+# ② 等级结论（无数字级）：有/无/评上/评不上… + 等级
+#    实测漏网样本：「轻微骨裂大概率**评不上等级**」——原实现只匹配
+#    「有/没有/无/算」，未覆盖「评不上」，故被判为放行（负控当场抓出）。
+_RE_LIVE_YESNO = re.compile(
+    r"(?:有|没有|无|不算|算|评上|评不上|够上|够不上|达到|达不到|够到|够不到)"
+    r"[^。！？!?~\n]{0,3}等级"
+)
+
+# ③ 赔偿金额 / 清单承诺（直播间首触不该出现，对方信息量不支持算数）
+_RE_LIVE_MONEY = re.compile(
+    r"(?:个月本人工资|赔偿清单|赔多少钱|赔多少|能赔[0-9]|[0-9]+\s*万)"
+)
+
+
+def _live_guard_violation(text: str) -> Optional[str]:
+    """直播首触出口护栏：命中返回原因串（调用方改发引导型兜底）。"""
+    s = text or ""
+    for pat, label in ((_RE_LIVE_GRADE, "等级断言"),
+                       (_RE_LIVE_YESNO, "有/无等级二选一直答"),
+                       (_RE_LIVE_MONEY, "赔偿金额或清单承诺")):
+        m = pat.search(s)
+        if m:
+            return f"{label}「{m.group(0)}」"
+    return None
+
+
+def live_fallback_reply(cfg: dict) -> str:
+    """直播首触专用兜底：**引导型**（不作结论、只把对方拉进可判定对话）。
+
+    与 fallback_reply 的区别：主兜底池是为「会话内承接」写的（含「请您说下
+    哪里受的伤」这类措辞），在直播间首触场景里读起来像客服话术；本函数优先
+    取追加的纯引导话术，取不到才回落主池 —— 保证**任何情况下都不会无话可说**。
+    """
+    return (_LIVE_FALLBACK_EXTRA
+            or str(fallback_reply(cfg) or "").strip())
+
+
+# ---------------------------------------------------------------------------
 # 专业准确性护栏（2026-09-28，D4）：绝对化断言与专业知识相悖 —— 禁止外发。
 # 实测事故：AI 对「陈旧性骨折还能认工伤吗」回「能认」（与专业知识完全相悖）。
 # 这里只拦「把话说死」的形态，正常分析（含「最终以认定结论为准」）不命中。
@@ -1292,7 +1398,7 @@ def save_lead(account: str, conv_id: str, peer_name: str,
 # 护栏：AI 出口文本校验
 # ---------------------------------------------------------------------------
 
-def validate_reply(reply: str, cfg: dict) -> Optional[str]:
+def validate_reply(reply: str, cfg: dict, live_guard: bool = False) -> Optional[str]:
     """校验 AI 文本；不通过返回 None（调用方改发兜底话术）。
 
     2026-09-28（D4 内容层）新增**最小长度护栏**（残句防线）：
@@ -1300,10 +1406,20 @@ def validate_reply(reply: str, cfg: dict) -> Optional[str]:
     该情形 `finish_reason` **不是** `length`（截断检测 `_extract_reply` 抓不到），
     于是 2 字残句被当正常回复**直发客户**（客户视角＝敷衍/不专业）。
     低于 `min_reply_len`（默认 5，与 prompt「5-40 字」口径一致）判残句 → 走兜底。
+
+    2026-09-29：新增 `live_guard` 开关 —— 直播弹幕首触场景**额外**过
+    场景护栏（禁等级断言 / 禁「有·无等级」直答 / 禁赔偿金额承诺）。
+    默认 False ⇒ 私信会话内回复行为**逐字不变**（零回归）。
     """
     if not reply or not reply.strip():
         return None
     reply = reply.strip().strip('"“”')
+    # 2026-09-29：**剔掉 Markdown 强调符**。实测事故：AI 生成
+    # 「轻微骨裂**大概率评不上等级**，除非影响手指功能」—— 私信是纯文本，
+    # `**` 会**原样显示给客户**（截图可见），既不专业也像机器产物。
+    # 只处理成对强调符；单独一个 `*` 不动（可能是有意使用）。
+    if "**" in reply:
+        reply = reply.replace("**", "")
     low = reply.lower()
     for w in cfg.get("forbidden_words", []):
         if w and (w.lower() in low or w in reply):
@@ -1324,6 +1440,15 @@ def validate_reply(reply: str, cfg: dict) -> Optional[str]:
         if m:
             logger.warning(f"[AI-065] 护栏拦截（绝对化断言「{m.group(0)}」与专业"
                            f"知识相悖）-> 走兜底: {reply[:40]}")
+            return None
+    # 2026-09-29（直播首触）：**场景护栏** —— 与下面的「专业准确性护栏」是
+    # 两件不同的事（前者管「在什么场景不该下结论」，后者管「结论对不对」），
+    # 只在 live_guard=True 时生效，私信会话内回复零影响。
+    if live_guard:
+        _lg = _live_guard_violation(reply)
+        if _lg:
+            logger.info(f"[AI-069] 直播首触护栏拦截（{_lg}）-> 走引导型兜底: "
+                        f"{reply[:40]}")
             return None
     max_len = int(cfg.get("max_reply_len", 60))
     if len(reply) > max_len:
@@ -2119,15 +2244,21 @@ def generate_dm_for_live(account: str, peer_name: str, comment: str,
             return "", ""
         text_in = (comment or "").strip() or "（直播间新观众，暂无发言）"
 
-        # ① 对话回复库（命中库）：命中即回，零 token（与私信侧同一条链路）
-        try:
-            from services import reply_kb
+        # ① 对话回复库（命中库）：命中即回，零 token
+        # 🔴 2026-09-29（用户拍板）：**直播首触默认不再查命中库** ——
+        # 它是「命中即直接回复、绕过全部出口护栏」的最高优先级短路分支，
+        # 而库内条目**全部来自自动学习**（碎片化、含个案裸答），实测已直发
+        # 「保守治疗 → 有等级，工伤10级」这类无依据等级结论。开关
+        # `live_reply_kb_enabled` 默认 False（保留可打开）。私信侧不受影响。
+        if cfg.get("live_reply_kb_enabled"):
+            try:
+                from services import reply_kb
 
-            hit = reply_kb.find_match(text_in, account=account)
-            if hit:
-                return str(hit).strip(), "回复库"
-        except Exception:
-            pass
+                hit = reply_kb.find_match(text_in, account=account)
+                if hit:
+                    return str(hit).strip(), "回复库"
+            except Exception:
+                pass
 
         # ② 专业库（RAG 参考）+ 系统提示词（与私信侧同一构建器）
         kb_items = KB.list_items()
@@ -2138,25 +2269,29 @@ def generate_dm_for_live(account: str, peer_name: str, comment: str,
         except Exception:
             pass
         prompt = build_system_prompt(cfg, text_in)
-        # 直播首触没有对话历史：明确告知模型，避免它编造上下文
-        prompt = (prompt + "\n\n【场景】这是你主动向直播间观众发起的第一条私信。"
-                  "请紧扣对方在公屏说的话开场，不要假装此前有过对话。"
-                  f"对方昵称：{peer_name or '观众'}。")
+        # 直播首触没有对话历史：明确告知模型，避免它编造上下文。
+        # 🔴 2026-09-29：追加**首触场景规则**（禁等级断言 / 禁有无等级直答 /
+        #    只引导补材料）。必须放在 last（紧贴 user 消息），并显式声明
+        #    「覆盖上文任何相反要求」—— 因为 Agent prompt 里有一条要求
+        #    「拿到伤情就给判断…给出等级的初步口径与依据」，方向相反。
+        prompt = (prompt + _LIVE_CONTACT_RULES
+                  + f"\n【观众信息】昵称：{peer_name or '观众'}；"
+                    f"公屏发言：{text_in[:200]}")
 
         raw = AIClient(cfg).chat_failover(
             text_in, consumer_id="ai_main",
             user_id=f"live:{account}:{uid or peer_name or 'unknown'}",
             system_prompt=prompt)
         if not raw:
-            logger.info(f"[ai] 直播文案 AI 返回空，回落兜底（账号={account}）")
-            return str(fallback_reply(cfg) or "").strip(), "兜底"
+            logger.info(f"[ai] 直播文案 AI 返回空，回落引导型兜底（账号={account}）")
+            return str(live_fallback_reply(cfg) or "").strip(), "兜底"
         if _looks_like_reasoning(raw) and len(raw) > 40:
             logger.warning(f"[AI-019] " + f"[ai] 直播文案疑似思考过程残留，丢弃改兜底: {raw[:40]}")
-            return str(fallback_reply(cfg) or "").strip(), "兜底"
-        cleaned = validate_reply(raw, cfg)
+            return str(live_fallback_reply(cfg) or "").strip(), "兜底"
+        cleaned = validate_reply(raw, cfg, live_guard=True)
         if not cleaned:
-            logger.info(f"[ai] 直播文案被护栏拦截，改发兜底: {(raw or '')[:40]}")
-            return str(fallback_reply(cfg) or "").strip(), "兜底"
+            logger.info(f"[ai] 直播文案被护栏拦截，改发引导型兜底: {(raw or '')[:40]}")
+            return str(live_fallback_reply(cfg) or "").strip(), "兜底"
         return str(cleaned).strip(), "AI"
     except Exception as e:
         logger.warning(f"[AI-032] " + f"[ai] 直播文案生成失败: {e}")

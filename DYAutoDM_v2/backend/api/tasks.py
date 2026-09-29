@@ -128,15 +128,37 @@ def _records_from_adm(adm) -> list[dict]:
     if adm is None or getattr(adm, "dispatch", None) is None:
         return []
     recs = getattr(adm.dispatch, "records", {}) or {}
+    # 2026-09-29：「受理 ≠ 送达」—— records.status 的 SENT 只表示**已入池**
+    # （core/dispatch.py:446 的 `accepted=True`），不代表服务端确认送达。
+    # 这里按**真实投递证据**（回声帧 / 投递标记 / 平台拒收回执）派生
+    # `delivery_state` 字段下发给前端，**不改任何既有状态与计数口径**
+    # （sent/captured/fail 语义逐字不变，避免破坏别处消费点）。
+    try:
+        from services.delivery_verify import delivery_state_of as _dstate
+    except Exception:                                    # pragma: no cover
+        _dstate = None
+    _acct = getattr(adm, "account_name", "") or ""
     out = []
+    _cache: dict = {}
     for r in recs.values():
         d = r if isinstance(r, dict) else r.model_dump()
+        _uid = str(d.get("uid", "") or "")
+        _state = ""
+        if _dstate and _acct and _uid:
+            if _uid not in _cache:
+                try:
+                    _cache[_uid] = _dstate(_acct, uid=_uid)
+                except Exception:
+                    _cache[_uid] = ""
+            _state = _cache[_uid]
         out.append({
             "key": d.get("key", ""),
             "uid": d.get("uid", "") or d.get("sec_uid", "") or "",
             "nickname": d.get("nickname", ""),
             "sec_uid": d.get("sec_uid"),
             "status": d.get("status", "captured"),
+            # 真实投递结局：delivered / rejected / ""（无证据）
+            "delivery_state": _state,
             "reason": d.get("reason"),
             # 2026-09-08：失败原因结构化分类（前端弹窗区分调度堵塞/凭证失效/风控等）
             "fail_kind": d.get("fail_kind"),

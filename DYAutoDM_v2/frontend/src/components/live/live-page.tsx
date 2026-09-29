@@ -37,7 +37,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import {
-  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, DM_META, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, AiReplyCard,
+  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, AiReplyCard, displayStatus,
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
@@ -94,6 +94,9 @@ export default function LivePage(props: PageProps) {
   const [myLikes] = useState(0);
   const [burst] = useState(0);
   const [batchN, setBatchN] = useState("10");
+  // 2026-09-29（用户要求）：表格只有纵向滚动容器、没有筛选时，长会话很难定位
+  // 问题条目。此开关只影响**呈现**（是否过滤行），不改变任何统计口径。
+  const [onlyIssues, setOnlyIssues] = useState(false);
   // ── 配置来源（2026-09-15 用户定调：直播页不再手填任何配置）───────────────
   // 页面只做「选择对应配置的标签」；配置内容的编辑与「重启」都在
   // 「直播间配置管理」里（唯一可写入口）。这里只读展示生效配置。
@@ -289,6 +292,8 @@ export default function LivePage(props: PageProps) {
         failKind: (r.fail_kind as string) || null,
         failLabel: (r.fail_label as string) || null,
         failAdvice: (r.fail_advice as string) || null,
+        // 2026-09-29：后端派生的**真实投递结局**（受理 ≠ 送达）
+        deliveryState: (r.delivery_state as "delivered" | "rejected" | "") || "",
       })),
     [records],
   );
@@ -299,7 +304,16 @@ export default function LivePage(props: PageProps) {
     [rows],
   );
   const waitCount = useMemo(() => rows.filter((r) => r.dmStatus === "wait").length, [rows]);
-  const sentCount = useMemo(() => rows.filter((r) => r.dmStatus === "sent").length, [rows]);
+  // 2026-09-29（用户拍板「受理 ≠ 送达」）：原实现 `sentCount` 数的是
+  // RecordStatus.SENT = **已受理（入池）**，却被标成「已发送私信」显示，
+  // 实测当天受理 19 条里有 24 次平台拒收 —— 数字与事实相反。
+  // 现拆两档：受理（elapsed 交给发送链）与**真实送达**（有投递证据）。
+  const acceptedCount = useMemo(
+    () => rows.filter((r) => r.dmStatus === "sent").length, [rows]);
+  const deliveredCount = useMemo(
+    () => rows.filter((r) => r.deliveryState === "delivered").length, [rows]);
+  const rejectedCount = useMemo(
+    () => rows.filter((r) => r.deliveryState === "rejected").length, [rows]);
 
   // Esc 关闭查阅模式
   useEffect(() => {
@@ -1052,42 +1066,101 @@ export default function LivePage(props: PageProps) {
             data-od-id="comment-stats"
             title="实时评论统计列表"
             actions={
-              <Button variant="ghost" size="sm" data-od-id="review-open" onClick={openReview}>
-                <Eye className="h-3.5 w-3.5" />进入查阅模式
-              </Button>
+              <div className="flex items-center gap-2">
+                {/* 2026-09-29（用户实测反馈）：全量渲染后长会话难定位问题条目，
+                    给一个**只影响呈现**的过滤开关（不参与任何统计口径）。 */}
+                <button
+                  type="button"
+                  data-od-id="live-only-issues"
+                  onClick={() => setOnlyIssues((v) => !v)}
+                  className={cn(
+                    "rounded-[var(--radius-sm)] border px-2 py-1 font-mono text-[0.7rem]",
+                    "transition-colors",
+                    onlyIssues
+                      ? "border-[color-mix(in_srgb,var(--color-danger)_45%,transparent)] text-[var(--color-danger)]"
+                      : "border-[var(--color-border)] text-[var(--color-text-muted)]"
+                  )}
+                  title="只显示「被平台拒绝 / 发送失败」的条目"
+                >
+                  {onlyIssues ? "仅看异常 ✓" : "仅看异常"}
+                </button>
+                <Button variant="ghost" size="sm" data-od-id="review-open" onClick={openReview}>
+                  <Eye className="h-3.5 w-3.5" />进入查阅模式
+                </Button>
+              </div>
             }
           >
-            <div className="mb-2.5 text-[0.75rem] text-[var(--color-text-muted)]">
-              共 <b className="font-mono font-semibold text-[var(--color-text)]">{rows.length}</b> 条弹幕记录 · 去重{" "}
-              <b className="font-mono font-semibold text-[var(--color-text)]">{dedupCount}</b> 条 · 实际发言{" "}
-              <b className="font-mono font-semibold text-[var(--color-text)]">{dedup}</b> 人 · 待发送私信{" "}
-              <b className="font-mono font-semibold text-[var(--color-text)]">{waitCount}</b> 条 · 已发送私信{" "}
-              <b className="font-mono font-semibold text-[var(--color-text)]">{sentCount}</b> 条
+            <div className="mb-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.75rem]
+                            text-[var(--color-text-muted)]">
+              <span>共 <b className="font-mono font-semibold text-[var(--color-text)]">{rows.length}</b> 条弹幕记录</span>
+              <span>·</span>
+              <span>去重 <b className="font-mono font-semibold text-[var(--color-text)]">{dedupCount}</b> 条</span>
+              <span>·</span>
+              <span>实际发言 <b className="font-mono font-semibold text-[var(--color-text)]">{dedup}</b> 人</span>
+              <span>·</span>
+              <span>待发送 <b className="font-mono font-semibold text-[var(--color-text)]">{waitCount}</b> 条</span>
+              <span>·</span>
+              {/* 🔴 2026-09-29（用户实测反馈「投递成功不代表传递送达」）：
+                  原「已发送私信 N 条」把**受理**（入池）当成**送达**显示。
+                  实测当天受理 19 条 / 平台拒收回执 34 条 ⇒ 数字与事实相反。
+                  现拆三档并给出「送达率」，把缺口摆在界面上（可观测优先）。 */}
+              <span>已受理 <b className="font-mono font-semibold text-[var(--color-text)]">{acceptedCount}</b> 条</span>
+              <span>·</span>
+              <span>已送达 <b className="font-mono font-semibold text-[var(--color-success)]">{deliveredCount}</b> 条</span>
+              {rejectedCount > 0 && (
+                <>
+                  <span>·</span>
+                  <span title="抖音回执：对方回复或关注你之前，只能发送一条文字消息">
+                    被平台拒绝{" "}
+                    <b className="font-mono font-semibold text-[var(--color-danger)]">{rejectedCount}</b> 条
+                  </span>
+                </>
+              )}
+              <span className="text-[var(--color-text-muted)]">
+                （送达率 {acceptedCount > 0 ? Math.round((deliveredCount / acceptedCount) * 100) : 0}%）
+              </span>
             </div>
-            <div className="-mx-4 -mb-4 overflow-x-auto">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr>
-                    <Th>发送时间</Th>
-                    <Th>发言人</Th>
-                    <Th>评论内容</Th>
-                    <Th>私信状态</Th>
-                    <Th>私信文案</Th>
-                    <Th>私信时间</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.length === 0 && (
+            <div className="-mx-4 -mb-4 flex max-h-[clamp(320px,calc(100vh-560px),620px)]
+                            flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+                <table className="w-full border-collapse">
+                  <thead className="sticky top-0 z-[1] bg-[var(--color-surface)]">
                     <tr>
-                      <Td colSpan={6}>
-                        <Blank>
-                          <span className="text-[1.4rem]">📭</span>
-                          暂无评论记录 · 引擎运行后自动捕获
-                        </Blank>
-                      </Td>
+                      <Th>发送时间</Th>
+                      <Th>发言人</Th>
+                      <Th>评论内容</Th>
+                      <Th>私信状态</Th>
+                      <Th>私信文案</Th>
+                      <Th>私信时间</Th>
                     </tr>
-                  )}
-                  {rows.slice(0, 12).map((r) => (
+                  </thead>
+                  <tbody>
+                    {rows.length === 0 && (
+                      <tr>
+                        <Td colSpan={6}>
+                          <Blank>
+                            <span className="text-[1.4rem]">📭</span>
+                            暂无评论记录 · 引擎运行后自动捕获
+                          </Blank>
+                        </Td>
+                      </tr>
+                    )}
+                    {/* 🔴 2026-09-29（用户实测反馈）：「实时弹幕区域有区域限制，只显示 20 条
+                        左右，后续的弹幕都不显示，把该区域设为滚轮式」。
+                        原实现 `rows.slice(0, 12)` 把表格**硬截断到前 12 行**，而外层只有
+                        `overflow-x-auto`（横向）—— 既没有纵向滚动容器，也没有分页，
+                        于是第 13 行之后的弹幕在界面上**永远不可见**（诊断层不可观测 =
+                        缺陷被掩盖，与 H-20「受理冒充达成」同族）。
+                        修法：全部行渲染，交给**纵向滚动容器**承载（`overflow-auto` +
+                        `overscroll-contain`），表头 `sticky` 固定；容器高度用 `clamp`
+                        在 320~620px 之间随视口自适应，保证页面上仍能同时看到下面的板块。 */}
+                    {rows
+                      .filter((r) =>
+                        onlyIssues
+                          ? r.deliveryState === "rejected" || r.dmStatus === "fail"
+                          : true,
+                      )
+                      .map((r) => (
                     <tr key={r.id} className="transition-colors
                                               hover:bg-[var(--color-surface-raised)]">
                       <Td mono className="whitespace-nowrap">{r.time}</Td>
@@ -1109,10 +1182,15 @@ export default function LivePage(props: PageProps) {
                         <span className="block truncate">{r.content}</span>
                       </Td>
                       <Td>
-                        {r.dmStatus === "un" ? (
+                        {/* 2026-09-29：显示档 = 调度状态 ⊕ 真实投递证据
+                            （「被平台拒绝」优先于「已受理」） */}
+                        {r.dmStatus === "un" && !r.deliveryState ? (
                           <span className="text-[var(--color-text-muted)]">—</span>
                         ) : (
-                          <Tone tone={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Tone>
+                          (() => {
+                            const [label, tone] = displayStatus(r);
+                            return <Tone tone={tone}>{label}</Tone>;
+                          })()
                         )}
                       </Td>
                       <Td
@@ -1138,8 +1216,9 @@ export default function LivePage(props: PageProps) {
                       </Td>
                     </tr>
                   ))}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </Section>
         </>
