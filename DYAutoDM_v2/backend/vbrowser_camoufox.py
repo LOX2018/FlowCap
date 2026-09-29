@@ -38,6 +38,23 @@ from typing import Any, Optional
 
 from loguru import logger
 
+# ── 媒体设备（虚拟麦克风/摄像头）—— Camoufox 原生协议（Firefox pref）──────────
+#   Chromium 路径用 `vbrowser_args._FAKE_MEDIA_ARGS`（--use-fake-device-for-media-stream
+#   等）；Camoufox 是 **Firefox 内核，Chromium flag 会静默失效** ⇒ 2026-09-29 迁移补齐（H-12）。
+#   这些是与 Chromium 那组 **语义等价** 的 Firefox pref：
+#     media.navigator.streams.fake        = 用虚拟采集源替代真实麦克风/摄像头
+#     permissions.default.microphone/camera = 1（自动允许，不弹系统授权框）
+#     media.navigator.permission.disabled = 自动同意权限请求
+#     media.peerconnection.enabled        = 启用 WebRTC（连麦/语音必需）
+#   ⚠️ **设备红线**：始终使用**虚拟**设备，绝不触碰真实麦克风/摄像头（沿用 v0.40 铁律）。
+_CAMOUFOX_MEDIA_PREFS = {
+    "media.navigator.streams.fake": True,
+    "media.navigator.permission.disabled": True,
+    "permissions.default.microphone": 1,
+    "permissions.default.camera": 1,
+    "media.peerconnection.enabled": True,
+}
+
 
 def camoufox_enabled(cfg: Any = None) -> bool:
     """是否启用 Camoufox 内核（显式配置，绝不自动探测）。
@@ -65,6 +82,23 @@ def _proxy_for_camoufox(cfg: Any, account: Optional[str]) -> Optional[dict]:
     if not proxy_url:
         return None
     return {"server": proxy_url}
+
+
+def _media_prefs(cfg: Any = None) -> Optional[dict]:
+    """Camoufox 媒体 pref（虚拟麦克风/摄像头）。显式配置可关：DY_FAKE_MEDIA_OFF=1。
+
+    返回 None ⇒ 不注入（保持上游默认）。
+    """
+    off = str(os.environ.get("DY_FAKE_MEDIA_OFF", "") or "").strip().lower() in ("1", "true", "yes", "on")
+    try:
+        if cfg is not None and bool(getattr(cfg, "DY_FAKE_MEDIA_OFF", False)):
+            off = True
+    except Exception:
+        pass
+    if off:
+        logger.info("[camoufox] 虚拟媒体已按配置关闭（DY_FAKE_MEDIA_OFF）")
+        return None
+    return dict(_CAMOUFOX_MEDIA_PREFS)
 
 
 def launch_camoufox_sync(*, headless: bool = False, user_data_dir: str | None = None,
@@ -104,6 +138,7 @@ def launch_camoufox_sync(*, headless: bool = False, user_data_dir: str | None = 
         proxy=proxy,
         locale="zh-CN",
         os="windows",
+        firefox_user_prefs=_media_prefs(cfg),
         i_know_what_im_doing=True,
     )
     # 交给调用方管理生命周期：这里进入并返回 context，
@@ -164,6 +199,7 @@ async def launch_camoufox_async(*, headless: bool = False,
         proxy=proxy,
         locale="zh-CN",
         os="windows",
+        firefox_user_prefs=_media_prefs(cfg),
         i_know_what_im_doing=True,
     )
     context = await ctx_mgr.__aenter__()

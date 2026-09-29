@@ -54,6 +54,13 @@ class ApplyBody(BaseModel):
     anchor_id: str | None = None    # 主播 uid
     link_type: str = "2"            # 2=语音连线（实测值）
     apply_type: str = "0"           # 0=主动申请
+    # ── 2026-09-29（H-12 用户指令）：申请连麦改走 **DOM 页面原生路径** ──────────
+    #   接口直调 `/webcast/linkmic_audience/apply/` 需 msToken+a_bogus 签名，
+    #   签名失配会被服务端拒（实测 10011）；页面原生流程**天然带签名**且能正确
+    #   驱动「选麦克风 → 确定」对话框。故首选 DOM，接口直调降级保留。
+    method: str = "dom"             # "dom"（默认，页面原生）| "api"（接口直调，降级）
+    room_url: str | None = None     # 直播间 URL（缺省由 room_id 拼；DOM 路径需要）
+    raw_js: str | None = None       # 覆盖默认 DOM 脚本（便于不重打包即可调参）
 
 
 class RoomBody(BaseModel):
@@ -70,12 +77,121 @@ def _my_uid(account: str) -> str:
         return ""
 
 
+# ── DOM 页面原生申请连麦（H-12，2026-09-29 用户指令）───────────────────────
+#  实测要点（工作记忆/12 §5.5，禁止重犯）：
+#   · 按钮文案是「申请连线」（部分直播间可能「申请连麦」）——**两者都匹配**；
+#   · 按钮 **进房后约 24s 才出现** ⇒ 默认等约 40s，勿只等 8~9s；
+#   · class 是**动态哈希**（勿用固定 class）⇒ 用 `#BottomLayout` 作用域 + button + 文本；
+#   · 点后弹「请选择麦克风输入」对话框（Fake 设备）⇒ 选设备 + 点「确定」；
+#   · 需**虚拟麦克风**（已在 vbrowser_camoufox 注入 Firefox media prefs 实现）。
+_LINKMIC_DOM_JS = r"""
+async (arg) => {
+  const out = {steps: {}};
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const txt = (el) => ((el && (el.innerText || el.textContent)) || '').trim();
+  const clickReal = (el) => { try { el.scrollIntoView({block:'center'}); } catch(e){}
+                              el.click(); };
+  // ① 等「申请连线 / 申请连麦」按钮出现（进房后约 24s；给 40s）
+  let btn = null;
+  for (let i = 0; i < 80; i++) {
+    const btns = Array.from(document.querySelectorAll(
+      '#BottomLayout button, #BottomLayout [role="button"], button'));
+    btn = btns.find(b => /申请连线|申请连麦/.test(txt(b)));
+    if (btn) break;
+    await sleep(500);
+  }
+  out.steps.found = !!btn;
+  if (!btn) { out.error = '未找到「申请连线」按钮（该主播可能未开连麦，或已在连线中）'; return out; }
+  out.buttonText = txt(btn);
+  try { const r = btn.getBoundingClientRect();
+        out.buttonBox = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]; } catch(e){}
+  clickReal(btn);
+  out.steps.clicked = true;
+  await sleep(2500);
+  // ② 选麦克风设备 + 确定（Fake 设备对话框；多轮兜底）
+  for (let k = 0; k < 4; k++) {
+    out.steps['dialog_round_' + k] = (() => {
+      const cand = Array.from(document.querySelectorAll('div,span,li,button,p'))
+        .filter(e => { const r = e.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && /麦克风|确定|确认|同意|申请/.test(txt(e)); });
+      const dev = cand.find(e => /麦克风|Fake|Audio/i.test(txt(e)) && txt(e).length < 40);
+      if (dev) { clickReal(dev); return 'device:' + txt(dev).slice(0,20); }
+      const ok = cand.find(e => /^(确定|确认|同意)$/.test(txt(e)));
+      if (ok) { clickReal(ok); return 'confirm:' + txt(ok); }
+      return 'none';
+    })();
+    await sleep(1500);
+  }
+  out.ok = true;
+  return out;
+}
+"""
+
+
+async def _run_linkmic_dom(account: str, room_url: str, link_type: str,
+                           raw_js: str | None = None) -> dict:
+    """经 BCC `/linkmic_run` 在**直播间页面上下文**执行 DOM 申请流程。
+
+    为什么必须走 BCC（工作记忆/12 §5.5）：`/exec_js` 硬限制在 /chat 页，
+    无法驻留直播间；连麦必须在直播间页做交互。
+    """
+    from dy_apis.login_api import _bcc_post, _bcc_alive
+    if not _bcc_alive(account):
+        return {"ok": False, "via": "dom",
+                "error": f"BCC 未运行（账号 {account}）——请先打开该账号浏览器"}
+    js = raw_js or _LINKMIC_DOM_JS
+    res = _bcc_post(account, "/linkmic_run",
+                    {"action": "apply", "room_url": room_url, "js": js,
+                     "timeout": 90}, timeout=120)
+    if not isinstance(res, dict):
+        return {"ok": False, "via": "dom", "error": f"BCC 返回异常: {res!r}"}
+    if not res.get("ok"):
+        return {"ok": False, "via": "dom",
+                "error": res.get("msg") or res.get("error") or "BCC /linkmic_run 失败"}
+    result = res.get("result")
+    if isinstance(result, dict) and result.get("ok"):
+        return {"ok": True, "via": "dom", "result": result}
+    err = result.get("error") if isinstance(result, dict) else ""
+    return {"ok": False, "via": "dom", "result": result,
+            "error": err or "DOM 流程未成功（详见 result）"}
+
+
 @router.post("/apply")
 async def apply_linkmic(body: ApplyBody) -> dict:
-    """申请连麦（接口直调，与直播监听同链路）。"""
+    """申请连麦 —— **DOM 页面原生优先**（H-12，2026-09-29 用户指令），接口直调降级。
+
+    为什么改（实测，工作记忆/12 §5.5）：接口直调 `/webcast/linkmic_audience/apply/`
+    需 msToken+a_bogus 签名，签名失配被服务端拒（实测 10011）；而**页面原生流程**
+    天然带签名，且能正确驱动「选麦克风 → 确定」对话框。故默认走 DOM。
+    保留 `method="api"` 供显式选择 / 排查。
+    """
     from dy_apis.douyin_api import DouyinAPI
     auth = _auth_for(body.account)
     room_id, anchor_id = _room_ids(body.account, body.room_id, body.anchor_id)
+    room_url = (body.room_url or f"https://live.douyin.com/{room_id}").strip()
+
+    def _store(phase: str, extra: dict) -> None:
+        st = get_kv_json("linkmic_state", {}) or {}
+        st[body.account] = {"phase": phase, "room_id": room_id, "ts": int(time.time()),
+                            "method": body.method, **extra}
+        set_kv_json("linkmic_state", st)
+
+    # ── 路径 A：DOM 页面原生（默认）───────────────────────────────────
+    if str(body.method).lower() != "api":
+        dom = await _run_linkmic_dom(body.account, room_url, body.link_type, body.raw_js)
+        if dom.get("ok"):
+            r = dom.get("result") or {}
+            _store("applied", {"via": "dom", "button": r.get("buttonText"),
+                               "steps": r.get("steps")})
+            logger.info(f"[linkmic] apply(DOM) account={body.account} room={room_id} "
+                        f"button={r.get('buttonText')!r} steps={r.get('steps')}")
+            return {"ok": True, "via": "dom", "status_code": 0, "data": r,
+                    "error": None}
+        # DOM 失败 → 记录并**降级**接口直调（保留原能力，避免整体不可用）
+        logger.warning(f"[linkmic] apply(DOM) 未成功，降级接口直调: {dom.get('error')}")
+        _store("apply_dom_failed", {"via": "dom", "error": str(dom.get("error"))[:200]})
+
+    # ── 路径 B：接口直调（降级 / 显式选择）────────────────────────────
     # 2026-09-17 修补（OCR 审查 HIGH —— 补全分支被早退守卫变成死代码）：
     # 原实现在此先 `if not anchor_id: raise HTTPException(400)`，
     # 使下方「从直播间页抓 anchor_id」的补全逻辑**永不可达**（注释明写其意图），
@@ -104,21 +220,17 @@ async def apply_linkmic(body: ApplyBody) -> dict:
     data = (res or {}).get("data") or {}
     code = (res or {}).get("status_code")
     ok = code == 0
-    logger.info(f"[linkmic] apply account={body.account} room={room_id} "
+    logger.info(f"[linkmic] apply(API) account={body.account} room={room_id} "
                 f"code={code} prompts={data.get('prompts')} queue={data.get('waiting_list_offset')}")
     # 记录状态供前端轮询
-    st = get_kv_json("linkmic_state", {}) or {}
-    st[body.account] = {
-        "phase": "applied" if ok else "apply_failed",
-        "room_id": room_id,
+    _store("applied" if ok else "apply_failed", {
+        "via": "api",
         "linkmic_id_str": data.get("linkmic_id_str"),
         "queue_no": data.get("waiting_list_offset"),
         "auto_join": data.get("auto_join"),
         "prompts": data.get("prompts"),
-        "ts": int(time.time()),
-    }
-    set_kv_json("linkmic_state", st)
-    return {"ok": ok, "status_code": code, "data": data,
+    })
+    return {"ok": ok, "via": "api", "status_code": code, "data": data,
             "error": None if ok else (data.get("message") or data.get("prompts") or str(code))}
 
 

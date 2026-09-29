@@ -656,7 +656,7 @@ export default function LivePage(props: PageProps) {
                 size="sm"
                 data-od-id="live-linkmic"
                 disabled={linkMicBusy || !activeAcct}
-                title="对当前直播间发起连麦申请（经账号浏览器执行）"
+                title="对当前直播间发起连麦申请（DOM 页面原生 · 经账号浏览器执行；约需 40s 等按钮出现）"
                 onClick={() => {
                   const rid = extractRoomId(room) || (ls?.room_id ? String(ls.room_id) : "");
                   if (!rid) {
@@ -669,14 +669,18 @@ export default function LivePage(props: PageProps) {
                   }
                   if (linkMicBusy) return;
                   setLinkMicBusy(true);
-                  push("正在发起连麦申请（接口直调 · " + activeAcct + "）…");
+                  const roomUrl = /^https?:\/\//i.test(room.trim())
+                    ? room.trim()
+                    : `https://live.douyin.com/${rid}`;
+                  push("正在发起连麦申请（DOM 页面原生 · " + activeAcct + "）…");
                   api
-                    .requestLinkMic(activeAcct, rid, "audio")
+                    .requestLinkMic(activeAcct, rid, "audio", roomUrl)
                     .then((r) => {
                       if (r.ok) {
                         const q = r.data?.waiting_list_offset;
                         const autoJoin = r.data?.auto_join;
-                        push(`连麦申请成功 · 排队第 ${q ?? "?"} 位${autoJoin ? " · 免审批自动通过" : " · 等待主播接受"}`);
+                        const btn = r.data?.buttonText;
+                        push(`连麦申请成功 · ${r.via === "dom" ? "已点「" + (btn || "申请连线") + "」" : "接口直调"}${q != null ? " · 排队第 " + q + " 位" : ""}${autoJoin ? " · 免审批自动通过" : " · 等待主播接受"}`);
                       } else {
                         push("申请连麦失败: " + (r.error || r.data?.prompts || r.status_code || "未知错误"));
                       }

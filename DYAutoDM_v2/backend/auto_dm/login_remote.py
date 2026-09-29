@@ -55,6 +55,48 @@ from typing import Callable, Optional
 from loguru import logger
 from utils.fingerprint import get_profile
 
+# ── DOM 自适应定位兜底（可选依赖；缺失/异常即优雅降级，零回归）─────────────
+#   见 auto_dm/dom_locator.py（Scrapling parser 层 + 确定性校验 + 唯一性铁律）。
+#   **只作兜底**：各函数的既有确定性判据（稳定锚点 / JS 文本 / 服务端校验）永远优先；
+#   仅当它们找不到控件时，才用自适应重定位（应对抖音登录页改版）。
+try:
+    from auto_dm import dom_locator as _domloc
+except Exception:  # noqa: BLE001
+    try:
+        from . import dom_locator as _domloc  # type: ignore
+    except Exception:  # noqa: BLE001
+        _domloc = None
+
+# 文本 → 自适应目标键（供文本点击失败时兜底）
+_TEXT_TO_KEY = {"扫码登录": "tab_scan", "验证码登录": "tab_sms"}
+
+
+async def _adaptive_xpath(page, key: str):
+    """自适应兜底：依赖缺失/定位失败 ⇒ 返回 None（调用方保持原行为）。"""
+    if not key or _domloc is None or not _domloc.available():
+        return None
+    try:
+        return await _domloc.locate_xpath(page, key)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 自适应兜底异常: {}", e)
+        return None
+
+
+async def _mouse_click_locator(page, loc) -> bool:
+    """用**真实鼠标**点某个 locator（沿用项目惯例；JS .click() 在 Semi Design 不可靠）。"""
+    try:
+        box = await loc.bounding_box()
+        if not box:
+            return False
+        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        await asyncio.sleep(0.12)
+        await page.mouse.down(); await asyncio.sleep(0.06); await page.mouse.up()
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 真实鼠标点击失败: {}", e)
+        return False
+
+
 # 登录页入口（实测可靠，绕开 A/B 差异）
 LOGIN_URL = "https://www.douyin.com/?modal_id=login"
 
@@ -547,12 +589,26 @@ def _crop_to_code(src_png: str, out_png: str) -> None:
 # ══════════════════════════════════════════════════════════════════════
 
 async def click_by_text(page, text: str) -> bool:
-    """按**文本精确匹配**点击元素（tab / 按钮）。"""
+    """按**文本精确匹配**点击元素（tab / 按钮）。
+
+    兜底（2026-09-29）：精确文本未命中时，用**自适应定位**重定位后再用真实鼠标点击
+    （应对抖音改版 / 文案带空格 / 类名哈希化）。原判据永远优先。
+    """
     try:
-        return bool(await page.evaluate(_JS_CLICK_TEXT, text))
+        if await page.evaluate(_JS_CLICK_TEXT, text):
+            return True
     except Exception as e:  # noqa: BLE001
         logger.warning("[login_remote] 点击「{}」异常: {}", text, e)
-        return False
+    key = _TEXT_TO_KEY.get(text)
+    xp = await _adaptive_xpath(page, key) if key else None
+    if xp:
+        try:
+            if await _mouse_click_locator(page, page.locator(xp).first):
+                logger.info("[login_remote] 「{}」精确文本未命中 → 自适应重定位点击成功", text)
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[login_remote] 自适应点击「{}」失败: {}", text, e)
+    return False
 
 
 # ── 「获取验证码」按钮：启用态判据（2026-09-26 实测）─────────────────────
@@ -668,6 +724,16 @@ async def click_login(page) -> dict:
     })()
     """)
     if not box:
+        # 兜底（2026-09-29）：面板内精确「登录」文本未命中 → 自适应重定位（应对改版）
+        xp = await _adaptive_xpath(page, "btn_submit")
+        if xp:
+            try:
+                if await _mouse_click_locator(page, page.locator(xp).first):
+                    logger.info("[login_remote] 「登录」文本未命中 → 自适应重定位点击成功")
+                    await asyncio.sleep(2.5)
+                    return {"ok": True, "box": {"via": "adaptive"}, "reason": ""}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[login_remote] 自适应点击「登录」失败: {}", e)
         return {"ok": False, "reason": "未找到「登录」按钮"}
     try:
         await page.mouse.move(box["cx"], box["cy"])
@@ -766,11 +832,19 @@ async def _probe_session_valid_by_cookies(cookies: dict) -> dict:
 
 
 async def fill_phone(page, phone: str) -> bool:
-    """填手机号（逐字真实按键，避免 fill 的 JS 直赋值特征）。"""
+    """填手机号（逐字真实按键，避免 fill 的 JS 直赋值特征）。
+
+    兜底（2026-09-29）：稳定锚点落空时用**自适应定位**找回输入框。原判据优先。
+    """
     loc = page.locator(SEL_PHONE_INPUT).first
     if await loc.count() == 0:
-        logger.error("[login_remote] 未找到手机号输入框 {}", SEL_PHONE_INPUT)
-        return False
+        xp = await _adaptive_xpath(page, "input_phone")
+        if xp:
+            loc = page.locator(xp).first
+            logger.info("[login_remote] 手机号框稳定锚点落空 → 自适应重定位命中")
+        else:
+            logger.error("[login_remote] 未找到手机号输入框 {}", SEL_PHONE_INPUT)
+            return False
     await loc.click()
     await page.keyboard.type(phone, delay=60)
     got = await loc.input_value()
@@ -785,11 +859,18 @@ async def fill_code(page, code: str) -> bool:
 
     ⚠️ 实测：`Ctrl+V` 粘贴在 Camoufox headless 下**整体不可用**（连阳性对照
     手机号框都失败），故采用 `keyboard.type` —— 真实按键序列，最接近真人。
+
+    兜底（2026-09-29）：稳定锚点落空时用**自适应定位**找回输入框。原判据优先。
     """
     loc = page.locator(SEL_CODE_INPUT).first
     if await loc.count() == 0:
-        logger.error("[login_remote] 未找到验证码输入框 {}", SEL_CODE_INPUT)
-        return False
+        xp = await _adaptive_xpath(page, "input_code")
+        if xp:
+            loc = page.locator(xp).first
+            logger.info("[login_remote] 验证码框稳定锚点落空 → 自适应重定位命中")
+        else:
+            logger.error("[login_remote] 未找到验证码输入框 {}", SEL_CODE_INPUT)
+            return False
     await loc.click()
     await page.keyboard.type(code, delay=80)
     got = await loc.input_value()

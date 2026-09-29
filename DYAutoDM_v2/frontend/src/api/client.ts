@@ -1110,13 +1110,18 @@ export const api = {
 
   /** 申请连麦（接口直调：账号凭证 + msToken/a_bogus 签名，与直播监听同链路）。
    *  roomId 传真实 room_id（解析房间号可得）；成功响应 data.waiting_list_offset = 排队位次 */
-  async requestLinkMic(account: string, roomId: string, linkType: "audio" | "video" = "audio"): Promise<{
-    ok: boolean; status_code?: number; error?: string;
-    data?: { linkmic_id_str?: string; auto_join?: boolean; waiting_list_offset?: number; prompts?: string };
+  async requestLinkMic(account: string, roomId: string, linkType: "audio" | "video" = "audio", roomUrl?: string): Promise<{
+    ok: boolean; via?: string; status_code?: number; error?: string;
+    data?: { linkmic_id_str?: string; auto_join?: boolean; waiting_list_offset?: number; prompts?: string;
+             buttonText?: string; steps?: Record<string, unknown> };
   }> {
+    // 2026-09-29（H-12 用户指令）：申请连麦改走后端 **DOM 页面原生路径**（默认 method="dom"，
+    // 天然带签名，且能驱动「选麦克风→确定」对话框）；接口直调降级保留。
+    // room_url 供 DOM 路径导航到直播间页。
     return request("/api/live/linkmic/apply", {
       method: "POST",
-      body: JSON.stringify({ account, room_id: roomId, link_type: linkType === "video" ? "1" : "2" }),
+      body: JSON.stringify({ account, room_id: roomId, link_type: linkType === "video" ? "1" : "2",
+                             room_url: roomUrl || undefined, method: "dom" }),
     });
   },
 

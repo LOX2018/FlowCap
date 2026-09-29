@@ -294,6 +294,16 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
         "geoip2",
         "screeninfo",
         "ua_parser",
+        # 2026-09-29：DOM 自适应定位兜底（auto_dm/dom_locator.py）依赖 scrapling
+        # parser 层。仅 `--hidden-import` 只打入 .py，**漏掉 lxml 的 .pyd**
+        # （etree.cp314-win_amd64.pyd）⇒ 打包态 `ModuleNotFoundError: lxml.etree`。
+        # 与 orjson 同类的原生扩展坑。scrapling/tld 另有 data 文件，一并 collect-all。
+        # 注：只装 scrapling **base 包**（不含 fetchers extra）⇒ 不引入第二套浏览器栈。
+        "scrapling",                   # parser 层（+ 其 data 文件）
+        "lxml",                        # etree.html 等原生 .pyd
+        "cssselect",
+        "tld",                         # res/ 数据（顶级域名表）
+        "w3lib",
     ):
         cmd += ["--collect-all", _pkg]
     # 2026-09-16 v0.43.36：WS 稳态治理模块（daemon/ws_link.py）。

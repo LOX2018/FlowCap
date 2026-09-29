@@ -71,3 +71,11 @@ pyinstaller>=6.10.0
 # 注意：装到项目 Python（Python314）。**不要用裸 `uv pip install`**
 # —— 它会解析到 Hermes 自己的 venv（`hermes-agent\venv`），装错地方。
 curl_cffi>=0.16.0
+
+# ── 2026-09-29：DOM 自适应定位兜底（auto_dm/dom_locator.py）─────────────────
+# 只装 **base 包**（parser 层：lxml/cssselect/orjson/tld/w3lib），**不装**
+# `scrapling[fetchers]`（那会引入 playwright/patchright 第二套浏览器栈，与本项目
+# Camoufox 单内核冲突）。用途：登录页/控件在抖音改版后按「旧选择器 + 自适应重定位」
+# 找回元素（确定性校验 + 唯一性铁律，宁缺勿错）。缺失时优雅降级（走原锚点，零回归）。
+# 打包：scripts/build_sidecar.py 已 collect-all scrapling/lxml/tld/cssselect/w3lib。
+scrapling>=0.4.15
