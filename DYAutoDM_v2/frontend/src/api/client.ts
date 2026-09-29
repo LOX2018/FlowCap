@@ -287,6 +287,52 @@ export interface Overview {
   acct?: string;
 }
 
+/**
+ * 业务漏斗聚合（ADR-032，`GET /api/overview/funnel`）。
+ *
+ * ## 与 Overview.sent/limit 的本质区别
+ *
+ * `Overview.sent/limit` 是**单个引擎实例的内存态**（`adm.limit` 未启动时回落为
+ * 配置默认值 `max_target`）—— 把它当全局指标会得到恒定假数字（总览页长期显示
+ * `0/3` 的根因）。本结构是后端按**业务真值**从 SQLite 聚合的结果。
+ */
+export interface OverviewFunnel {
+  ok: boolean;
+  /** 统计日（`YYYY-MM-DD`，按 tz 切） */
+  date: string;
+  tz: number;
+  /** 统计日是否就是今天（false 表示展示的是回落的最近活跃日） */
+  is_today: boolean;
+  /** 最近有数据的那一天 */
+  latest_day: string;
+  crawl: {
+    /** 今日采集轮次 */
+    today_runs: number;
+    /** 今日采集结果条数 */
+    today_results: number;
+    /** 按 kind 拆分（video / comment / user） */
+    kinds: Record<string, number>;
+  };
+  capture: {
+    /** 今日捕获评论（= 客户来消息，清洗后） */
+    today_comments: number;
+    today_theirs: number;
+  };
+  dm: {
+    /** 今日**真实**已发私信（已剔除平台提示/噪音，见 ADR-032 §4.3） */
+    today_sent: number;
+    /** 今日被平台拒发（独立维度，**不计入** today_sent） */
+    rejected: number;
+    /** 诊断用：清洗前的 role='me' 行数 */
+    raw_me_rows: number;
+  };
+  accounts: {
+    total: number;
+    active: number;
+    credential_ok: number;
+  };
+}
+
 /** /api/engine/accounts 返回的每个账号引擎状态（ADR-002 §5.6，前端多任务卡片数据源） */
 export interface EngineAccountStatus {
   acct: string;
@@ -598,6 +644,20 @@ export const api = {
 
   async getOverview(): Promise<Overview> {
     return request("/api/overview");
+  },
+  /**
+   * 业务漏斗聚合（ADR-032）。**只读本地库，零网络零浏览器**。
+   *
+   * `day="latest"` 回到最近有数据那天：凌晨看总览时今日通常尚无数据，
+   * 全 0 会被误读为「系统没工作」。
+   */
+  async getOverviewFunnel(
+    day: "today" | "latest" | string = "today",
+    tz = 8,
+  ): Promise<OverviewFunnel> {
+    const qs = new URLSearchParams({ tz: String(tz) });
+    if (day !== "today") qs.set("day", day);
+    return request(`/api/overview/funnel?${qs.toString()}`);
   },
 
   async getStats(): Promise<{ sent: number; captured: number; queue: number }> {

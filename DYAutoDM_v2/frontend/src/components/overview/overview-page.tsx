@@ -39,24 +39,47 @@
  *        · 资源健康：账号凭证 + 能力健康
  *        · 最近发生：实时动态 + 任务历史速览
  *
+ * ### 2026-09-30 二次改版：从「排版重构」到「信息设计」（ADR-032）
+ *
+ * 用户指出上一版只是**重新排版**、信息维度一个没动，两处硬缺陷：
+ *   ① L1 显示 `0/3` —— `ov.sent/limit` 是**单个引擎实例的内存态**
+ *      （`adm.limit` 未启动时回落为配置默认值 3），不是任何真实业务量；
+ *   ② **采集功能零体现** —— 后端有 `crawl_history` 完整落库、侧栏有独立
+ *      「采集」页，总览却一字未提（获客漏斗的入口环节缺失）。
+ *
+ * 现改为：
+ *   L1 **业务漏斗**（入口→中间→出口→资源）：今日采集 / 今日评论 / 今日私信 / 活跃账号
+ *      —— 数据源改为后端聚合端点 `/api/overview/funnel`（ADR-032），
+ *         不再直读引擎内存态；「今日私信」已在后端剔除平台提示与噪音。
+ *   L2-① 入口 · 采集与内容（新增，含采集历史速览）
+ *   L2-② 触达 · 私信与直播
+ *   L2-③ 资源 · 账号与能力
+ *   L3   最近发生（实时动态 / 任务历史）
+ *
  * ### 已固化的决策（用户 2026-09-30 拍板）
  *   · 保留「单账户 / 多账户总览」双视图切换
  *   · 总览为**纯只读看板**，控制操作全部移出（AI 启停 → 直播页；巡检 → 配置中心）
+ *   · 按业务漏斗分区，每分区只放最关键 1–2 个指标（避免堆砌）
  *
- * ### 数据口径不变
- * 所有字段与旧版逐字一致 —— 重设计只改**编排**，不改**语义**（禁止为排版改数据）。
+ * ### 数据口径
+ * **禁止为排版改语义**。所有指标必须来自真实业务数据源；
+ * 引擎内存态（sent/limit）只允许出现在「正在跑」分区并明确标注归属。
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Send, Radio, Cpu, Users, ShieldAlert, History } from "lucide-react";
-import { PageProps } from "../../api/client";
+import {
+  Activity, Send, Cpu, Users, ShieldAlert, History, Search as SearchIcon,
+} from "lucide-react";
+import { PageProps, type OverviewFunnel } from "../../api/client";
 import { Avatar, KIND_NAME } from "../../components/ui";
 import AiRuntimeSection from "@/components/overview/AiRuntimeSection";
 import CapabilityHealthSection from "@/components/overview/CapabilityHealthSection";
-// ADR-018 F2：新增三张数据卡（全部只读既有端点，零新采集）
+// ADR-018 F2：三张数据卡（全部只读既有端点，零新采集）
 import AccountsHealthSection from "@/components/overview/AccountsHealthSection";
 import LiveStatusSection from "@/components/overview/LiveStatusSection";
 import TaskHistorySection from "@/components/overview/TaskHistorySection";
+// ADR-032：采集区（获客漏斗入口，此前总览零体现）
+import CrawlSection from "@/components/overview/CrawlSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -122,8 +145,44 @@ export default function OverviewPage(props: PageProps) {
     enabled: !!ready,
   });
 
+  /**
+   * 业务漏斗（ADR-032）—— L1 的真实数据源。
+   *
+   * ## 为什么不复用 `ov.sent/ov.limit`
+   *
+   * 那是**单个引擎实例的内存态**（`adm.limit` 未启动时回落为配置默认值），
+   * 当核心指标展示就是那个恒定的 `0/3`。本查询取后端按业务真值聚合的结果。
+   *
+   * ## 今日无数据时自动回落到最近活跃日
+   *
+   * 凌晨（如 01:30）看总览时，今日往往尚无任何数据 —— 四个指标全 0 会被
+   * 误读为「系统没工作」。故先请求今日，若全 0 且今日非活跃日，再取
+   * `day=latest`。**但这不是掩盖 0**：回落后 UI 会显式标注统计日期。
+   */
+  const funnelQ = useQuery({
+    queryKey: ["overview-funnel"],
+    queryFn: async (): Promise<OverviewFunnel> => {
+      let d = await api.getOverviewFunnel("today");
+      const allZeroToday =
+        d && (d.crawl.today_runs === 0) && (d.capture.today_comments === 0) &&
+        (d.dm.today_sent === 0);
+      if (allZeroToday && d.latest_day && d.latest_day !== d.date) {
+        try {
+          const prev = await api.getOverviewFunnel("latest");
+          if (prev && prev.ok) d = prev;
+        } catch {
+          /* 回落失败则保留今日（已是真实数据，不编造） */
+        }
+      }
+      return d;
+    },
+    refetchInterval: 30000,
+    enabled: !!ready,
+  });
+
   const accounts = accountsQ.data || [];
   const stats = statsQ.data || null;
+  const funnel = funnelQ.data || null;
 
   const realFeed: FeedItem[] = ((stats && stats.list) || [])
     .slice(0, 24)
@@ -268,34 +327,56 @@ export default function OverviewPage(props: PageProps) {
             </div>
           ) : null}
 
-          {/* ══ L1 核心指标（统一为「此刻 / 本次」口径） ══ */}
+          {/* ══ L1 业务漏斗（ADR-032：入口→中间→出口→资源）══ */}
           <Section bare data-od-id="overview-stats">
             {ready ? (
-              <StatRow cols={4}>
-                <Stat
-                  label="本次已发私信" icon={<Send className="h-3.5 w-3.5" />}
-                  value={`${(ov.sent || 0).toLocaleString()}/${ov.limit || 0}`}
-                  delta={`待发 ${ov.queue || 0}`} accent
-                />
-                <Stat
-                  label="捕获评论" icon={<Activity className="h-3.5 w-3.5" />}
-                  value={stats ? stats.total.toLocaleString() : "0"}
-                  unit="条"
-                  delta={`已发 ${stats ? stats.sent : 0}`}
-                />
-                <Stat
-                  label="引擎状态" icon={<Radio className="h-3.5 w-3.5" />}
-                  value={ov.running ? (ov.paused ? "已暂停" : "运行中") : "已停止"}
-                  delta={ov.status || ""}
-                />
-                <Stat
-                  label="守护在线" icon={<Users className="h-3.5 w-3.5" />}
-                  value={
-                    (ov.browserDaemon && ov.browserDaemon.alive ? "凭证就绪" : "凭证离线")
-                  }
-                  delta={ov.recvDaemon && ov.recvDaemon.alive ? "私信在线" : "私信离线"}
-                />
-              </StatRow>
+              <div className="space-y-2">
+                {/* 统计日提示：回落最近活跃日时必须显式标注（不得让用户误以为是今日） */}
+                {funnel && !funnel.is_today ? (
+                  <div className="flex flex-wrap items-center gap-x-2 text-[0.72rem] text-[var(--color-text-muted)]">
+                    <Badge variant="outline">今日尚无数据</Badge>
+                    <span>以下为最近活跃日 {funnel.date} 的数据</span>
+                  </div>
+                ) : null}
+                <StatRow cols={4}>
+                  <Stat
+                    label={`${funnel?.is_today === false ? "该日" : "今日"}采集`}
+                    icon={<SearchIcon className="h-3.5 w-3.5" />}
+                    value={funnel ? funnel.crawl.today_results.toLocaleString() : "—"}
+                    unit="条"
+                    delta={funnel ? `${funnel.crawl.today_runs} 轮` : undefined}
+                    accent
+                  />
+                  <Stat
+                    label={`${funnel?.is_today === false ? "该日" : "今日"}评论`}
+                    icon={<Activity className="h-3.5 w-3.5" />}
+                    value={funnel ? funnel.capture.today_comments.toLocaleString() : "—"}
+                    unit="条"
+                    delta={funnel && funnel.dm.rejected ? `拒发 ${funnel.dm.rejected}` : undefined}
+                  />
+                  <Stat
+                    label={`${funnel?.is_today === false ? "该日" : "今日"}私信`}
+                    icon={<Send className="h-3.5 w-3.5" />}
+                    value={funnel ? funnel.dm.today_sent.toLocaleString() : "—"}
+                    unit="条"
+                    delta={funnel ? "已剔除平台提示" : undefined}
+                  />
+                  <Stat
+                    label="活跃账号"
+                    icon={<Users className="h-3.5 w-3.5" />}
+                    value={
+                      funnel
+                        ? `${funnel.accounts.active}/${funnel.accounts.total}`
+                        : (ov.browserDaemon && ov.browserDaemon.alive ? "凭证就绪" : "凭证离线")
+                    }
+                    delta={
+                      funnel
+                        ? `凭证可用 ${funnel.accounts.credential_ok}`
+                        : (ov.recvDaemon && ov.recvDaemon.alive ? "私信在线" : "私信离线")
+                    }
+                  />
+                </StatRow>
+              </div>
             ) : (
               <div className="grid grid-cols-4 gap-4">
                 {[0, 1, 2, 3].map((i) => (
@@ -306,12 +387,36 @@ export default function OverviewPage(props: PageProps) {
             )}
           </Section>
 
-          {/* ══ L2-① 正在跑 ══ */}
+          {/* ══ L2-① 入口 · 采集与内容（ADR-032 新增）══ */}
+          <div data-od-id="overview-group-crawl">
+            <GroupLabel
+              icon={<SearchIcon className="h-3.5 w-3.5" />}
+              title="入口 · 采集与内容"
+              hint="获客漏斗第一步：先把人找出来"
+            />
+            <div className="space-y-3">
+              <CrawlSection
+                props={props}
+                today={
+                  funnel
+                    ? {
+                        runs: funnel.crawl.today_runs,
+                        results: funnel.crawl.today_results,
+                        kinds: funnel.crawl.kinds || {},
+                      }
+                    : null
+                }
+                dayLabel={funnel && !funnel.is_today ? funnel.date : undefined}
+              />
+            </div>
+          </div>
+
+          {/* ══ L2-② 触达 · 私信与直播 ══ */}
           <div data-od-id="overview-group-running">
             <GroupLabel
-              icon={<Activity className="h-3.5 w-3.5" />}
-              title="正在跑"
-              hint="当前执行中的任务与引擎"
+              icon={<Send className="h-3.5 w-3.5" />}
+              title="触达 · 私信与直播"
+              hint="找到人之后：捕获评论并发送私信"
             />
             <div className="space-y-3">
               {/* 账号切换（归入本分区，不再单独占一个顶层 Section） */}
@@ -350,8 +455,13 @@ export default function OverviewPage(props: PageProps) {
                 )}
               </Section>
 
-              {/* 私信发送进度（原「运行中任务」） */}
-              <Section title="私信发送进度" data-od-id="overview-tasks">
+              {/*
+                本次发送进度 —— 🔴 **唯一的引擎内存态**展示位。
+                与 L1「今日私信」是两个不同口径，标题必须让用户能分辨：
+                  · 今日私信（L1）  = 当天真实发出的总量（库聚合）
+                  · 本次发送进度     = 当前这个引擎实例的本次任务进度（内存态）
+              */}
+              <Section title="本次发送进度（当前引擎实例）" data-od-id="overview-tasks">
                 {ready ? (
                   <div className="space-y-4">
                     <div className="space-y-2">
@@ -363,21 +473,31 @@ export default function OverviewPage(props: PageProps) {
                           {ov.running ? (ov.paused ? "已暂停" : "运行中") : "未启动"}
                         </Tone>
                       </div>
-                      <ProgressBar percent={sentPct} active={!!ov.running && !ov.paused} />
-                      <div className="flex items-center justify-between font-mono text-[0.68rem]
-                                      text-[var(--color-text-muted)]">
-                        <span>{(ov.sent || 0).toLocaleString()} / {ov.limit || 0}</span>
-                        <span>{sentPct}%</span>
-                      </div>
+                      {ov.running ? (
+                        <>
+                          <ProgressBar percent={sentPct} active={!ov.paused} />
+                          <div className="flex items-center justify-between font-mono text-[0.68rem]
+                                          text-[var(--color-text-muted)]">
+                            <span>本次已发 {(ov.sent || 0).toLocaleString()} / 上限 {ov.limit || 0}</span>
+                            <span>{sentPct}%</span>
+                          </div>
+                        </>
+                      ) : (
+                        // 引擎未运行时**不显示** 0/N —— 那个 N 是配置默认值而非真实任务上限，
+                        // 展示它正是「0/3」误导的来源。
+                        <div className="flex items-center gap-2 rounded-[var(--radius-sm)]
+                                        bg-[var(--color-surface)] px-3 py-2 text-[0.74rem]
+                                        text-[var(--color-text-muted)]">
+                          <Cpu className="h-3.5 w-3.5" />
+                          引擎未启动 —— 可在「直播」页开始监听（无进行中的发送任务）
+                        </div>
+                      )}
                     </div>
-                    {!ov.running && (
-                      <div className="flex items-center gap-2 rounded-[var(--radius-sm)]
-                                      bg-[var(--color-surface)] px-3 py-2 text-[0.74rem]
-                                      text-[var(--color-text-muted)]">
-                        <Cpu className="h-3.5 w-3.5" />
-                        引擎未启动 —— 可在「直播」页开始监听
+                    {ov.running && ov.queue ? (
+                      <div className="text-[0.72rem] text-[var(--color-text-muted)]">
+                        待发队列 {ov.queue}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 ) : (
                   <SkeletonRows rows={2} />
@@ -390,12 +510,12 @@ export default function OverviewPage(props: PageProps) {
             </div>
           </div>
 
-          {/* ══ L2-② 资源健康 ══ */}
+          {/* ══ L2-③ 资源 · 账号与能力 ══ */}
           <div data-od-id="overview-group-health">
             <GroupLabel
               icon={<ShieldAlert className="h-3.5 w-3.5" />}
-              title="资源健康"
-              hint="账号凭证与各项能力的可用性"
+              title="资源 · 账号与能力"
+              hint="上面这条链路跑得动的前提"
             />
             <div className="space-y-3">
               <AccountsHealthSection {...props} />
@@ -404,7 +524,7 @@ export default function OverviewPage(props: PageProps) {
             </div>
           </div>
 
-          {/* ══ L2-③ 最近发生 ══ */}
+          {/* ══ L3 最近发生 ══ */}
           <div data-od-id="overview-group-recent">
             <GroupLabel
               icon={<History className="h-3.5 w-3.5" />}
