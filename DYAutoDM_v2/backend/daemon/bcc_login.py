@@ -267,6 +267,7 @@ class BccLoginMixin:
                     landing_url="https://www.douyin.com/chat?isPopup=1")
                 ok = False
                 _uid = None
+                _drift = False  # 已确认身份漂移（AUTH-050）：自动刷新救不回，不可重试
                 if auth and getattr(auth, "cookie", None):
                     try:
                         from services.uid_probe import (
@@ -275,11 +276,30 @@ class BccLoginMixin:
                         _uid = _uid_get(self.account, force=True)
                         if _uid and _uid_ok(self.account, _uid):
                             ok = True
+                        elif _uid:
+                            # 2026-09-28 修复（BCC-025/026/024 误判链）：
+                            # 这里是**已确认身份漂移**（探到了 uid，但不在历史 conv_id 中），
+                            # 与「探活取不到证据」语义相反。漂移是**自动刷新救不回**的
+                            # （代码注释原文：「session 疑似服务端已失效，自动登录救不回，
+                            # 请在指纹浏览器重新扫码」），把它当「一次待重试的失败」去累加
+                            # scan_fail_count 是错的 —— 实测后果：
+                            #   凭证有效跳过扫码 → AUTH-050 漂移 → ok=False
+                            #   → 计 1 次失败 → 再跑一轮无意义的 scan_login（含 context
+                            #     重建 = 抖音侧一次全新环境访问，风控面）→ 凑够 2 次才熔断
+                            #   ⇒ 09-27 实测 BCC-025 392 次 / BCC-021 317 次 / BCC-024 68 次。
+                            # 正解：漂移 ⇒ 标记不可自动救，**由调用方立即熔断**，
+                            # 不再消耗重试次数、不再重建浏览器。
+                            logger.error(
+                                f"[BCC-036] [bcc] 刷新后凭证身份漂移"
+                                f"（uid={_uid} 不在该账号历史 conv_id 中）"
+                                f"—— 自动刷新**救不回**，须人工扫码；"
+                                f"本轮不再计为可重试失败（避免无意义重建 context）")
+                            _drift = True
                         else:
+                            # 探活取不到证据（None）：语义未知，才按可重试失败处理
                             logger.warning(
                                 f"[BCC-036] [bcc] 刷新后凭证仍未通过校验"
-                                f"（uid={_uid}，与历史会话不一致或探活为空）"
-                                f"—— 判定为仍需人工扫码，不再视为成功")
+                                f"（uid={_uid}，探活无结果——结论未知，按可重试处理）")
                     except Exception as e:
                         logger.warning(
                             f"[BCC-036] [bcc] 刷新后凭证校验异常，判为未成功: {e}")
@@ -297,7 +317,9 @@ class BccLoginMixin:
                     logger.debug(
                         "[bcc] 凭证未通过校验，跳过环境基线记录（防把失效环境当基线）")
                 await self._launch()
-                return {"ok": ok, "uid": _uid}
+                return {"ok": ok, "uid": _uid,
+                        # 漂移标记供保活循环**立即熔断**，不再消耗重试次数
+                        "drift": _drift}
             finally:
                 _scan_exclusive_set(None)
 
@@ -653,11 +675,25 @@ class BccLoginMixin:
                             self.scan_login(force=False), self._loop)
                         try:
                             _r = fut.result(timeout=120) or {}
-                            scan_fail_count += 1
                             if not _r.get("ok"):
-                                logger.warning(
-                                    f"[BCC-026] [bcc] 自动刷新凭证未通过校验"
-                                    f"（连续 {scan_fail_count} 次，uid={_r.get('uid')}）")
+                                if _r.get("drift"):
+                                    # 2026-09-28：已确认身份漂移 ⇒ 自动刷新救不回，
+                                    # **立即熔断**，不再消耗重试次数。
+                                    # 旧实现在此 `scan_fail_count += 1`，而漂移再来一次
+                                    # 仍是漂移（还会重建 context = 一次全新环境访问）⇒
+                                    # 纯粹的风控面浪费。09-27 实测 BCC-025 392 次。
+                                    breaker_until = time.time() + SCAN_BACKOFF_SEC
+                                    logger.error(
+                                        f"[BCC-024] [bcc] 已确认身份漂移（uid="
+                                        f"{_r.get('uid')} 不在历史 conv_id 中）—— "
+                                        f"自动刷新救不回，**立即熔断 "
+                                        f"{SCAN_BACKOFF_SEC // 60} 分钟**，"
+                                        f"请在指纹浏览器重新扫码；期间只告警不重建浏览器")
+                                else:
+                                    scan_fail_count += 1
+                                    logger.warning(
+                                        f"[BCC-026] [bcc] 自动刷新凭证未通过校验"
+                                        f"（连续 {scan_fail_count} 次，uid={_r.get('uid')}）")
                         except Exception as e:
                             scan_fail_count += 1
                             logger.warning(
