@@ -156,6 +156,13 @@ npx tauri dev
 
 ## 六、生产打包
 
+> 🔴 **正式安装包（MSI/NSIS）必须走 `python scripts/package_installer.py`**（见 `项目说明.md §7.0`）。
+> `npx tauri build` 单独跑只会**按 `tauri.conf.json` 的 targets 出包**，且没有契约门禁与出包自证；
+> 其根因（`externalBin` 不带 contents 目录 / WiX 剥下划线 / MSI 装只读位置）曾导致装机必卡门禁。
+> 校验：`python scripts/check_packaging_contract.py`（无需构建）。
+
+
+
 ```bash
 # 1. 打包 3 个 Python sidecar → src-tauri/binaries/
 "C:\Users\LOX\AppData\Local\Programs\Python\Python314\python.exe" scripts/build_sidecar.py
