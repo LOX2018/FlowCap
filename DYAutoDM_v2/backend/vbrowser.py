@@ -775,8 +775,11 @@ def resource_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-#: 随附 profile 目录（只读模板）→ 首次运行种子化到可写数据根。
-SEEDED_PROFILES = ("vb_profile_default", "vb_profile_dm", "pw_profile_dm")
+# 2026-09-29（L-16）：**不再随包分发任何 browser profile** —— profile 目录含
+# 真实登录 cookie（sessionid/sid_guard/...），随安装包外发即凭证泄露。
+# 首次运行由浏览器自行在 `app_root()` 下生成空 profile（见 resolve_profile_dir
+# 的「无 seed 源则仅返回目标路径」分支），登录由用户现场扫码完成。
+# （历史常量 SEEDED_PROFILES 已删除：它零消费，且暗示存在随包模板，属误导。）
 
 
 def resolve_profile_dir(name):

@@ -154,9 +154,10 @@ def _verify(msi: Path, expect_ver: str) -> int:
         checks = {
             "contents 目录落为具名子目录": f'Name="{cname}"' in w,
             "无 $RESOURCE/_up_ 目录（profile 平铺回落）": 'Name="_up_"' not in w,
-            "随附 profile 落为具名子目录":
-                all(f'Name="{p}"' in w for p in
-                    ("vb_profile_default", "vb_profile_dm", "pw_profile_dm")),
+            # L-16（2026-09-29）：profile 含真实登录凭证，**不得**随包分发。
+            "无随包 profile（不泄露登录凭证）":
+                not any(f'Name="{p}"' in w for p in
+                        ("vb_profile_default", "vb_profile_dm", "pw_profile_dm")),
         }
         for name, ok in checks.items():
             _log(f"  {'✅' if ok else '❌'} {name}")

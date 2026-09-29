@@ -110,7 +110,11 @@ def walk(root: str, exts: tuple[str, ...], skip_dirs: set[str] | None = None):
 
 # ── R1: 源码树内不得混入数据根内容 ─────────────────────────────────────────
 def r1_source_has_no_data() -> None:
-    markers = ("members", ".env.enc", "profiles")
+    # 2026-09-29（L-16）：补入 browser profile 目录名 —— 它们含**真实登录凭证**
+    # （sessionid/sid_guard/sid_tt/uid_tt），必须只存在于数据根（app_root），
+    # 绝不落源码树（既污染源码树，又因 tauri bundle.resources 引用而可能随包外发）。
+    markers = ("members", ".env.enc", "profiles",
+               "vb_profile_default", "vb_profile_dm", "pw_profile_dm")
     hits = []
     for m in markers:
         p = os.path.join(SRC_ROOT, m)

@@ -109,18 +109,23 @@ def check_bundle_resources() -> None:
     else:
         _ok("P3", f'contents 映射 {src_key} → {tgt}')
 
-    # 3.2 三个 profile 映射到同名子目录（不能落 _up_ / 不能平铺）
+    # 3.2 🔴 不得随包分发任何 browser profile（L-16，2026-09-29 拍板）
+    # 理由：profile 目录含**真实抖音登录凭证**（sessionid/sid_guard/sid_tt/uid_tt）。
+    # 打包进 MSI = 把账号登录态随分发包外发（凭证泄露）。首次运行由浏览器自行
+    # 生成空 profile（resolve_profile_dir 无 seed 源时返回 app_root 下路径），
+    # 登录由用户现场扫码完成。
     profiles = ["vb_profile_default", "vb_profile_dm", "pw_profile_dm"]
-    bad = []
+    leaked = []
     for p in profiles:
-        k = f"../{p}"
-        if res.get(k) != f"{p}/":
-            bad.append(f"{k} = {res.get(k)!r}")
-    if bad:
-        _fail("P4", "三个随附 profile 映射到同名子目录",
-              "；".join(bad) + f'  —— 每个应为 "<name>/"（避免落到 $RESOURCE/_up_/ 或平铺）')
+        for k in (f"../{p}", p, f"{p}/"):
+            if k in res:
+                leaked.append(k)
+    if leaked:
+        _fail("P4", "不得随包分发 browser profile（含登录凭证）",
+              f"bundle.resources 仍含 {leaked} —— profile 含真实登录 cookie，"
+              f"随包外发 = 凭证泄露；应从 resources 移除")
     else:
-        _ok("P4", "三个 profile 均映射为 <name>/ 子目录（无 _up_）")
+        _ok("P4", "无随包 profile（不泄露登录凭证）")
 
     # 3.3 不得残留指向已废弃 _internal 的映射（该目录不再产出 ⇒ 构建直接报错）
     stale = [k for k in res if k.endswith("_internal")]
