@@ -35,7 +35,7 @@ import { Badge } from "@/components/ui/badge";
 import { StatusDot } from "@/components/ui/status-dot";
 
 import {
-  Section, Tone, Blank, SegmentedTabs, Toolbar, KeyValue,
+  Section, Tone, Blank, SegmentedTabs, Toolbar,
 } from "@/components/page/kit";
 
 import { cn } from "@/lib/utils";
@@ -49,40 +49,6 @@ import EngineCards from "./engine-cards";
 
 /** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
 const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
-
-// ── 直播私信文案的 AI 生效状态（2026-09-23，P1-2 可观测性）────────────────
-// 背景：Agent 的 scopes 默认不含 live（保守默认值，不把 AI 默认接到发送侧），
-// 于是「开了 AI 回复却仍发固定文本」在 UI 上完全无感。后端已把「未生效 + 具体
-// 原因」做成只读端点，这里负责**强提示**，由用户自己去决定是否勾选「直播监听」。
-type LiveAiDmState = {
-  ok?: boolean;
-  /** ok=已生效 / inactive=未生效 / unknown=尚未判定 */
-  status?: "ok" | "inactive" | "unknown";
-  active?: boolean;
-  /** 直接可展示：「已生效」/「未生效（原因：xxx）」 */
-  reason?: string;
-  reason_code?: string;
-  account?: string;
-  agent_id?: string;
-  enabled?: boolean | null;
-  strict_level?: string;
-  scopes?: string[];
-  source?: string;
-};
-
-/**
- * 拉取「AI 私信文案是否真的生效」。
- * 2026-09-24 收尾：已改走 api.client 的统一 request() 封装（见下方实现），
- * 不再直连 fetch —— 直连会缺 X-Member-Token 头被会员门禁拦成 401。
- */
-async function fetchLiveAiDmState(
-  acct: string,
-  api: { aiLiveDmState(p?: { account?: string }): Promise<unknown> },
-): Promise<LiveAiDmState> {
-  // 2026-09-24（P1-2 收尾）：改走 api.client 的统一 request() 封装。
-  // 原直连 fetch 缺 X-Member-Token / X-App-Version 头，会被会员门禁拦成 401。
-  return (await api.aiLiveDmState({ account: acct })) as LiveAiDmState;
-}
 
 
 export default function LivePage(props: PageProps) {
@@ -114,15 +80,11 @@ export default function LivePage(props: PageProps) {
   /** 高价值关键词权重表弹窗（2026-09-29：入口从设置页迁入「直播间」区，与策略同场景） */
   const [kwOpen, setKwOpen] = useState(false);
   // ── portal 宿主（2026-09-29 融合）────────────────────────────────────────
-  // 把「AI 自动回复开关」与「生效的自动私信配置」两块**跨层级搬进**评论统计卡，
-  // 但**不搬迁其 state / useQuery**：它们仍由本组件持有，只改变渲染位置。
-  // 这样避免把统计卡拆成 props 驱动的展示组件（会牵动大量既有逻辑），
-  // 同时保证数据实时性（每次渲染都重建 portal，children 恒为最新）。
+  // 把「AI 自动回复开关」**跨层级搬到**评论统计卡头，但不搬迁其 state / useQuery：
+  // 仍由本组件持有，只改变渲染位置（避免把统计卡拆成 props 驱动的展示组件）。
   // 用「回调 ref + state」而非 useRef：宿主节点挂载/卸载会触发重渲染，
-  // 从而让 portal 在节点出现的那一刻即被渲染（useRef 赋值不触发渲染，
-  // 且切回单账户视图时会因 ref 时机问题造成 portal 永久缺失）。
-  const [kwHost, setKwHost] = useState<HTMLDivElement | null>(null);       // 评论统计卡头部 actions 内
-  const [dmBodyHost, setDmBodyHost] = useState<HTMLDivElement | null>(null); // 评论统计卡正文第二排
+  // 从而让 portal 在节点出现的那一刻即被渲染（useRef 赋值不触发渲染）。
+  const [kwHost, setKwHost] = useState<HTMLDivElement | null>(null); // 评论统计卡头部 actions 内
   // 申请连麦进行中（防重复点击）
   const [linkMicBusy, setLinkMicBusy] = useState(false);
   // 2026-09-29【防连点】：启动/停止请求进行中锁。
@@ -227,20 +189,6 @@ export default function LivePage(props: PageProps) {
     () => roomCfgs.find((c) => sidOf(c) === selCfgId) || null,
     [roomCfgs, selCfgId],
   );
-
-  // ── AI 私信文案生效状态（P1-2：把「AI 未生效」显式暴露给用户）──────────
-  // 用「实际用于监听的那个账号」实时重判（后端按同一真源判定，不改任何配置）；
-  // 5s 轮询 —— 用户在设置页勾上「直播监听」作用域后，本页立刻显示「已生效」。
-  const aiDmAcct = activeAcct || selCfg?.acct || "";
-  const { data: aiDmState } = useQuery({
-    queryKey: ["live-ai-dm-state", aiDmAcct],
-    queryFn: async () => (await fetchLiveAiDmState(aiDmAcct, api)) as LiveAiDmState,
-    enabled: !!ready && !!aiDmAcct,
-    refetchInterval: 5000,
-  });
-  const aiDmActive = aiDmState?.status === "ok" && aiDmState?.active === true;
-  const aiDmUnknown = !aiDmAcct || aiDmState?.status === "unknown";
-  const aiDmReason = String(aiDmState?.reason || "尚未判定");
 
   // ── AI 自动回复开关（2026-09-29：从原顶部「AI 自动回复」卡迁入评论统计卡头部）───
   // 原 `AiReplyCard` 顶端独立成卡，与「评论统计」信息重复；现把开关与计数一起
@@ -485,26 +433,13 @@ export default function LivePage(props: PageProps) {
   };
 
   /**
-   * AI 自动回复开关块（2026-09-29 融合）——状态 + 计数 + 按钮一体，
-   * 经 portal 渲染进评论统计卡头部 actions；`aiReplyHost` 缺席时退回原顶部位置。
+   * AI 自动回复开关块（2026-09-29 融合）——状态 + 开关按钮，
+   * 经 portal 渲染进评论统计卡头部 actions。
+   * 计数（已回复/留资/错误）已按用户要求并入正文统计行（见 `aiCounts`）。
    */
   const aiReplyActions = (
     <div className="flex items-center gap-2" data-od-id="live-ai-reply-controls">
       <Tone tone={aiRunning ? "ok" : "mute"}>{aiRunning ? "AI 运行中" : "AI 已停止"}</Tone>
-      <span className="hidden items-center gap-x-1.5 text-[0.72rem]
-                       text-[var(--color-text-muted)] xl:flex">
-        <span>已回复
-          <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.replied ?? 0}</b>
-        </span>
-        <span>·</span>
-        <span>留资
-          <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.leads_total ?? 0}</b>
-        </span>
-        <span>·</span>
-        <span>错误
-          <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.errors ?? 0}</b>
-        </span>
-      </span>
       <Button
         variant={aiRunning ? "danger-outline" : "secondary"}
         size="sm"
@@ -516,6 +451,23 @@ export default function LivePage(props: PageProps) {
           : <><Play className="h-3.5 w-3.5" />开启 AI 回复</>}
       </Button>
     </div>
+  );
+
+  /** AI 计数（已回复 / 留资 / 错误）——并入评论统计正文统计行末尾。 */
+  const aiCounts = (
+    <span className="inline-flex items-center gap-x-1.5" data-od-id="live-ai-counts">
+      <span>已回复
+        <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.replied ?? 0}</b>
+      </span>
+      <span>·</span>
+      <span>留资
+        <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.leads_total ?? 0}</b>
+      </span>
+      <span>·</span>
+      <span>错误
+        <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.errors ?? 0}</b>
+      </span>
+    </span>
   );
 
   return (
@@ -640,7 +592,7 @@ export default function LivePage(props: PageProps) {
             description="多账号时需手动选择一个；引擎启动前会校验凭证有效性"
             actions={
               <>
-                <div className="flex flex-wrap items-center justify-end gap-2" data-od-id="live-acct-tabs">
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-2" data-od-id="live-acct-tabs">
                 {realAccts.length > 0 ? (
                   <SegmentedTabs
                     value={activeAcct || ""}
@@ -932,121 +884,8 @@ export default function LivePage(props: PageProps) {
             </div>
           </Section>
 
+          {/* AI 开关的 portal 落点：渲染进评论统计卡头 actions（kwHost） */}
           {kwHost && createPortal(aiReplyActions, kwHost)}
-
-          {dmBodyHost && createPortal(
-            <Section
-            className="mb-3.5"
-            data-od-id="live-auto-dm"
-            title="生效的自动私信配置"
-            description={
-              selCfg
-                ? `来自策略「${selCfg.name || sidOf(selCfg)}」· 任务进行中修改请点「管理策略」改后点「重启」`
-                : "尚未选择主播间配置（上方下拉选择）"
-            }
-            actions={
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="live-cfg-goto"
-                onClick={() => setCfgMgr(true)}
-              >
-                <Settings2 className="h-3.5 w-3.5" />管理策略
-              </Button>
-            }
-          >
-            {/* P1-2：AI 私信文案是否真的生效 —— 未生效必须让用户看得见 */}
-            <div
-              data-od-id="live-ai-dm-state"
-              className={`flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[var(--radius-sm)]
-                          border px-2.5 py-1.5 text-[0.78rem] ${
-                            aiDmActive
-                              ? "border-[var(--color-border)] bg-[var(--color-surface)]"
-                              : "border-amber-500/40 bg-amber-500/10"
-                          }`}
-            >
-              <Tone tone={aiDmActive ? "ok" : aiDmUnknown ? "mute" : "warn"}>
-                {aiDmActive ? "AI 文案：已生效" : `AI 文案：${aiDmReason}`}
-              </Tone>
-              <span className="min-w-0 flex-1 break-all text-[var(--color-text-secondary)]">
-                {aiDmActive
-                  ? "私信文案由 AI 生成（生成失败时才回落词库）"
-                  : "当前仍发送下方词库里的固定文本。需要 AI 写文案：设置页 Agent 作用域勾选「直播监听」"}
-              </span>
-            </div>
-            {selCfg ? (
-              <div className="flex flex-col gap-3">
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  <KeyValue
-                    cols={1}
-                    items={[
-                      { k: "发送上限", v: String(selCfg.max_target ?? "—"), mono: true },
-                    ]}
-                  />
-                  <KeyValue
-                    cols={1}
-                    items={[{ k: "间隔", v: `${selCfg.interval ?? "—"} s`, mono: true }]}
-                  />
-                  <KeyValue
-                    cols={1}
-                    items={[{ k: "延迟抖动", v: String(selCfg.delay || "—"), mono: true }]}
-                  />
-                </div>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.76rem]
-                                text-[var(--color-text-secondary)]">
-                  <span>
-                    自动申请连麦：
-                    <b className="font-mono text-[var(--color-text)]">
-                      {selCfg.auto_link_mic
-                        ? `开（${selCfg.link_mic_mode === "video" ? "视频" : "语音"}）`
-                        : "关"}
-                    </b>
-                  </span>
-                  <span>
-                    监听账号：
-                    <b className="font-mono text-[var(--color-text)]">
-                      {activeAcct || selCfg.acct || "未选择"}
-                    </b>
-                  </span>
-                </div>
-                <div>
-                  <div className="mb-1.5 text-[0.78rem] font-semibold text-[var(--color-text)]">
-                    私信词库
-                    <span className="ml-2 font-normal text-[var(--color-text-muted)]">
-                      发送时随机抽已启用的一条
-                    </span>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    {(selCfg.dm_pool || []).length === 0 && (
-                      <span className="text-[0.75rem] text-[var(--color-text-muted)]">
-                        该策略尚未设置词库 · 请点「管理策略」补充
-                      </span>
-                    )}
-                    {(selCfg.dm_pool || []).map((t, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-2 rounded-[var(--radius-sm)]
-                                   border border-[var(--color-border)] bg-[var(--color-surface)]
-                                   px-2.5 py-1.5 text-[0.78rem]"
-                      >
-                        <Tone tone={t.enabled ? "ok" : "mute"}>
-                          {t.enabled ? "启用" : "停用"}
-                        </Tone>
-                        <span className="min-w-0 flex-1 break-all text-[var(--color-text-secondary)]">
-                          {t.text || "（空）"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <Blank>
-                请在上方「直播间」区选择一条已保存的策略，
-                或点「管理策略」新建一条。
-              </Blank>
-            )}
-          </Section>, dmBodyHost)}
 
           <div className="mb-3.5 grid grid-cols-1 gap-3.5 lg:grid-cols-2">
             <Section
@@ -1242,9 +1081,9 @@ export default function LivePage(props: PageProps) {
                   送达情况暂无法判定 · 暂无投递回执证据
                 </span>
               )}
+              {/* 2026-09-29（图二「红线放到绿线位置」）：AI 计数并入统计行末尾 */}
+             {aiCounts}
             </div>
-            {/* 2026-09-29 融合：「生效的自动私信配置」的 portal 落点（第二排，表格上方） */}
-            <div ref={setDmBodyHost} className="mb-3" data-od-id="comment-stats-configs" />
             <div className="-mx-4 -mb-4 flex max-h-[clamp(320px,calc(100vh-560px),620px)]
                             flex-col overflow-hidden">
               <div className="min-h-0 flex-1 overflow-auto overscroll-contain">

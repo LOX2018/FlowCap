@@ -49,7 +49,7 @@ export function Section({
   bare?: boolean;
 } & React.HTMLAttributes<HTMLElement>) {
   const head = (title || description || actions) ? (
-    <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex w-full flex-wrap items-center justify-between gap-3">
       <div className="min-w-0">
         {title ? (
           <h3 className="text-[0.9rem] font-semibold tracking-tight text-[var(--color-text)]">
