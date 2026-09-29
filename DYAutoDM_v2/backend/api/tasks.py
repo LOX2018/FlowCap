@@ -113,6 +113,33 @@ async def clear_history(request: Request) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def _account_of(adm) -> str:
+    """从 adm 解析「发送账号名」——投递证据按**发送账号**归属。
+
+    2026-09-29（B-1 修复）：`AutoDM` **自身没有** `account_name` 属性
+    （实测 `core/auto_dm.py` 只在 `self.auth` / `self.monitor_auth` 上
+    `setattr(..., "account_name", ...)`；`AutoDM` 自身只有私有 `self._acct`）。
+    原实现 `getattr(adm, "account_name", "")` 恒得空串 ⇒ `delivery_state_of()`
+    从不被调用 ⇒ 下发的 `delivery_state` 恒空 ⇒ 前端「送达率/拒收」恒为 0
+    （即「受理≠送达」修复的假落地）。
+
+    按本项目**既有正确范式**取账号（参考 `core/dispatch.py:438` 的
+    `getattr(self.auth, "account_name", "")` 与 `core/live_hook.py:64`）：
+    优先取持有 records 的发送账号 auth（dispatch.auth），再逐级兜底。
+    """
+    for _obj in (
+        getattr(getattr(adm, "dispatch", None), "auth", None),
+        getattr(adm, "auth", None),
+        getattr(adm, "monitor_auth", None),
+    ):
+        _name = getattr(_obj, "account_name", "") or ""
+        if _name:
+            return str(_name)
+    # auth 尚未构建（引擎未启动/纯配置态）⇒ 兜底到配置声明账号
+    return str(getattr(adm, "target_acct", "") or
+               getattr(adm, "_acct", "") or "")
+
+
 def _records_from_adm(adm) -> list[dict]:
     """从 adm.dispatch.records 取实时发送记录，转成前端 live.tsx/tasks.tsx 期望的 dict 列表。
 
@@ -133,11 +160,15 @@ def _records_from_adm(adm) -> list[dict]:
     # 这里按**真实投递证据**（回声帧 / 投递标记 / 平台拒收回执）派生
     # `delivery_state` 字段下发给前端，**不改任何既有状态与计数口径**
     # （sent/captured/fail 语义逐字不变，避免破坏别处消费点）。
+    #
+    # ⚠️ 账号名必须取自**发送账号 auth**（`dispatch.auth.account_name`）——
+    # `AutoDM` 自身没有 `account_name`（见 `_account_of` 的说明）；
+    # 原写 `getattr(adm, "account_name", "")` 恒空 ⇒ 本派生从未落地。
     try:
         from services.delivery_verify import delivery_state_of as _dstate
     except Exception:                                    # pragma: no cover
         _dstate = None
-    _acct = getattr(adm, "account_name", "") or ""
+    _acct = _account_of(adm)
     out = []
     _cache: dict = {}
     for r in recs.values():

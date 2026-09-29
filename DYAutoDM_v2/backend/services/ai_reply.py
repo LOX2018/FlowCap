@@ -263,6 +263,12 @@ _DEFAULT_CONFIG = {
         "你这个情况我得按你当地标准细算才能给准数——你留个手机号，"
         "我算好把清单发你，跟公司谈心里也有底。"
     ),
+    # A-1（2026-09-29）：已达 max_lead_ask 上限、且原句含「放走语」时的**
+    # 不含索要的引导话术**（保证不再索要的同时也不把线索放走）。
+    "lead_no_ask_reply": (
+        "你这个伤情能不能评级、大概几级，得看诊断报告上的描述和治疗后的"
+        "功能恢复情况，最终以劳动能力鉴定的结论为准。"
+    ),
     "forbidden_words": [
         "微信", "vx", "VX", "weixin",  # 站外引流敏感词（"加我"单字误杀率高，已用 prompt 铁律约束）
         "作为一个AI", "作为一个ai",
@@ -315,6 +321,13 @@ _LIVE_CONTACT_RULES = """
 # 直播兜底池追加位（2026-09-29）：主兜底池偏「会话内承接」，缺一条
 # **纯引导型**话术；直播首触被护栏拦下/模型不可用时，最需要的是
 # 「把对方拉进可判定的对话」而不是承接上文的措辞。
+#
+# A-4（OCR[8]，2026-09-29）：原实现为 `_LIVE_FALLBACK_EXTRA
+# or fallback_reply(cfg)`，而 `_LIVE_FALLBACK_EXTRA` 是**恒非空的模块级常量**
+# ⇒ `fallback_reply(cfg)` 分支**永不执行**（死代码），docstring 承诺的
+# 「额外池不可用时回退主池」也**永不发生**。
+# 修法（选 b，语义对齐 docstring）：把「额外池」提升为**配置项**
+# `live_fallback_extra`（本常量仅作其默认值）—— 配置留空 ⇒ 真正回退主兜底池。
 _LIVE_FALLBACK_EXTRA = (
     "你这个伤情能不能评级，得看诊断报告上的描述和有没有做内固定——"
     "你先说下受伤部位和在哪受的伤，我帮你对一下？"
@@ -957,10 +970,16 @@ def live_fallback_reply(cfg: dict) -> str:
 
     与 fallback_reply 的区别：主兜底池是为「会话内承接」写的（含「请您说下
     哪里受的伤」这类措辞），在直播间首触场景里读起来像客服话术；本函数优先
-    取追加的纯引导话术，取不到才回落主池 —— 保证**任何情况下都不会无话可说**。
+    取配置的纯引导话术，取不到才回落主池 —— 保证**任何情况下都不会无话可说**。
+
+    A-4（OCR[8]，2026-09-29）：额外池取 `cfg["live_fallback_extra"]`，缺省回落到
+    模块默认 `_LIVE_FALLBACK_EXTRA`；仅当**两者都为空**时才走主池 fallback
+    —— 使 docstring 承诺的「额外池不可用 ⇒ 回退主池」成为**可达路径**
+    （原实现拿恒非空常量做短路，回退分支是死代码）。
     """
-    return (_LIVE_FALLBACK_EXTRA
-            or str(fallback_reply(cfg) or "").strip())
+    extra = cfg.get("live_fallback_extra", _LIVE_FALLBACK_EXTRA)
+    extra = str(extra or "").strip()
+    return extra or str(fallback_reply(cfg) or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1008,23 +1027,34 @@ def _is_lead_stalled(reply: str) -> bool:
     return not _has_lead_ask(s)
 
 
+# A-3（OCR[10]，2026-09-29）：`_KV_ASK_COUNT` 是**共享 KV 上的读-改-写**
+# （`_kv_get` → 改 dict → `_kv_set`），而 `_tick` 经 `reply_concurrency` 线程池
+# （默认 8）**跨会话并发** ⇒ 无锁时两线程读同一旧 dict、各自 +1 再写回 =
+# last-write-wins，**丢计数**（`max_lead_ask` 上限随之失效）。
+# 复用本模块既有锁原语（与 `_IMG_DESC_LOCK` 同款 `threading.Lock`），不新造机制。
+_LEAD_ASK_LOCK = threading.Lock()
+
+
 def _lead_ask_count(account: str, conv_id: str) -> int:
     """本会话已索要次数（`max_lead_ask` 上限用；键与既有 _KV_ASK_COUNT 一致）。"""
     try:
-        d = _kv_get(_KV_ASK_COUNT, {}) or {}
-        return int(d.get(f"{account}:{conv_id}", 0) or 0)
+        with _LEAD_ASK_LOCK:
+            d = _kv_get(_KV_ASK_COUNT, {}) or {}
+            return int(d.get(f"{account}:{conv_id}", 0) or 0)
     except Exception:
         return 0
 
 
 def _bump_lead_ask(account: str, conv_id: str) -> int:
+    """本会话索要次数 +1（A-3：读-改-写原子化，防并发丢计数）。"""
     try:
-        d = _kv_get(_KV_ASK_COUNT, {}) or {}
-        k = f"{account}:{conv_id}"
-        n = int(d.get(k, 0) or 0) + 1
-        d[k] = n
-        _kv_set(_KV_ASK_COUNT, d)
-        return n
+        with _LEAD_ASK_LOCK:
+            d = _kv_get(_KV_ASK_COUNT, {}) or {}
+            k = f"{account}:{conv_id}"
+            n = int(d.get(k, 0) or 0) + 1
+            d[k] = n
+            _kv_set(_KV_ASK_COUNT, d)
+            return n
     except Exception:
         return 0
 
@@ -1033,6 +1063,16 @@ def lead_fallback_reply(cfg: dict) -> str:
     """「客户无明确问题」时的专用留资话术（配置可覆盖）。"""
     return str(cfg.get("lead_first_reply")
                or _DEFAULT_CONFIG["lead_first_reply"]).strip()
+
+
+def _lead_no_ask_reply(cfg: dict) -> str:
+    """已达 `max_lead_ask` 上限、且原句含「放走语」时的**不含索要**引导话术。
+
+    A-1（2026-09-29）：上限生效后不能再追加索要，但也不能让「等你消息」这类
+    放走语外发；本函数给出「专业引导 + 不再索要」的收口（配置可覆盖）。
+    """
+    return str(cfg.get("lead_no_ask_reply")
+               or _DEFAULT_CONFIG["lead_no_ask_reply"]).strip()
 
 
 # 「把线索放走」的形态（出现这些 ⇒ **不能**只在末尾补索要，
@@ -1067,8 +1107,14 @@ def _is_deferring(reply: str) -> bool:
 def append_lead_ask(reply: str, cfg: dict) -> Optional[str]:
     """把「要联系方式」追加到专业回答末尾（**保留专业性**的首选处置）。
 
-    返回 None 表示「不该追加」（原句含放走语 / 追加后过长）——
-    调用方据此退回 `lead_fallback_reply`。
+    返回 None 表示「不该追加」（原句含放走语）——调用方据此退回
+    `lead_fallback_reply`。
+
+    A-2（OCR[9]，2026-09-29）：追加后超 `_LEAD_ASK_HARD_CAP` 时**不再整句丢弃**。
+    旧实现直接 `return None` ⇒ 调用方整句替换为通用引导话术，
+    把库内/模型给出的**专业正文**（>~99 字）一起丢掉，与「保专业性优先」相悖。
+    现改为：**截断专业正文**后再补索要（优先在句末标点处断，保留关键片段）；
+    确无正文可留时才返回 None。
     """
     s = (reply or "").strip()
     if not s or _is_deferring(s):
@@ -1076,11 +1122,29 @@ def append_lead_ask(reply: str, cfg: dict) -> Optional[str]:
     if _has_lead_ask(s):
         return s
     tail = _LEAD_ASK_TAIL
-    sep = "" if s.endswith(("。", "！", "？", "?", "!", "~")) else "。"
-    combined = f"{s}{sep}{tail}"
-    if len(combined) > _LEAD_ASK_HARD_CAP:
+
+    def _join(body: str) -> str:
+        sep = "" if body.endswith(("。", "！", "？", "?", "!", "~")) else "。"
+        return f"{body}{sep}{tail}"
+
+    combined = _join(s)
+    if len(combined) <= _LEAD_ASK_HARD_CAP:
+        return combined
+    # 超长：保专业正文，把正文截到「正文(+句号) + tail <= 硬上限」。
+    room = _LEAD_ASK_HARD_CAP - len(tail) - 1     # 预留一个句末标点
+    if room <= 0:
         return None
-    return combined
+    body = s[:room]
+    # 优先在句末标点处断句（不把话截半），且截断后仍需“像一句话”。
+    cut = max(body.rfind("。"), body.rfind("；"), body.rfind("！"),
+              body.rfind("？"), body.rfind("."), body.rfind(";"))
+    if cut >= int(room * 0.6):
+        body = body[:cut]
+    body = body.strip().rstrip("，,、；;")
+    if not body:
+        return None
+    out = _join(body)
+    return out if len(out) <= _LEAD_ASK_HARD_CAP else None
 
 
 # ---------------------------------------------------------------------------
@@ -2123,7 +2187,9 @@ class AutoReplyWorker:
             # 处理顺序（两轮实机验证后确定，勿改回"整句替换"）：
             #   ① 未达 max_lead_ask 且还能索要 → **定向重试**：要求「保留专业判断，
             #      末尾补一句索要」，既保专业性又拿到线索；
-            #   ② 重试仍不合格 / 索要次数已达上限 → 退回**引导留资话术**。
+            #   ② 重试仍不合格 → 保留专业回答 + 末尾追加索要，含放走语才换引导；
+            #   ③ **已达 max_lead_ask 上限 → 不再索要、不再计次**（A-1：上限真正生效，
+            #      只保留专业回答 / 换不含索要的引导）。
             if cleaned and not _contains_personal_contact(text):
                 if _is_lead_stalled(cleaned):
                     _max_ask = int(cfg.get("max_lead_ask", 2) or 0)
@@ -2152,26 +2218,46 @@ class AutoReplyWorker:
                         except Exception as e:
                             _probe(before_id, "LEAD_RETRY", "error",
                                    err=str(e)[:120])
-                    if _patched:
-                        cleaned = _patched
-                        _bump_lead_ask(account, conv_id)
-                    else:
-                        # 回退顺序（保专业性优先）：
-                        #   ① 原句**不含放走语** ⇒ 保留专业回答 + 末尾追加索要；
-                        #   ② 含放走语 / 追加后超长 ⇒ 整句替换为引导留资话术。
-                        _appended = append_lead_ask(cleaned, cfg)
-                        if _appended:
-                            logger.info(
-                                f"[AI-070] 留资护栏：为专业回答追加索要: "
-                                f"{cleaned[:24]!r} → {_appended[:40]!r}")
-                            cleaned = _appended
+                        if _patched:
+                            cleaned = _patched
+                            _bump_lead_ask(account, conv_id)
                         else:
-                            _lead = lead_fallback_reply(cfg)
+                            # 回退顺序（保专业性优先）：
+                            #   ① 原句**不含放走语** ⇒ 保留专业回答 + 末尾追加索要；
+                            #   ② 含放走语（追加无意义）⇒ 整句改为引导留资话术。
+                            _appended = append_lead_ask(cleaned, cfg)
+                            if _appended:
+                                logger.info(
+                                    f"[AI-070] 留资护栏：为专业回答追加索要: "
+                                    f"{cleaned[:24]!r} → {_appended[:40]!r}")
+                                cleaned = _appended
+                            else:
+                                _lead = lead_fallback_reply(cfg)
+                                logger.info(
+                                    f"[AI-070] 留资护栏：回复未索要/含放走语"
+                                    f"→ 整句改引导留资: {cleaned[:30]!r} → {_lead[:30]!r}")
+                                cleaned = _lead
+                            _bump_lead_ask(account, conv_id)
+                    else:
+                        # 🔴 A-1（OCR[22]）修复：**`max_lead_ask` 上限真正生效**。
+                        # 旧实现只有「重试分支」判了 `_n_ask < _max_ask`；达上限时
+                        # `_patched` 恒为 None ⇒ 落入 else **无条件**追加索要 /
+                        # 换引导留资并 `_bump_lead_ask` ⇒ 每一轮都继续索要，
+                        # 与 ADR-027 D5「被拒 N 次不再索要」承诺**直接矛盾**。
+                        # 现：达上限一律**不再追加索要、也不再 bump**；只保留专业回答
+                        # / 引导。若原句含「放走语」（等对方回头），因其不含索要、
+                        # 又不能追加，改发**不含索要的引导话术**（不再放走线索）。
+                        if _is_deferring(cleaned):
                             logger.info(
-                                f"[AI-070] 留资护栏：回复未索要/含放走语"
-                                f"→ 整句改引导留资: {cleaned[:30]!r} → {_lead[:30]!r}")
-                            cleaned = _lead
-                        _bump_lead_ask(account, conv_id)
+                                f"[AI-071] 留资护栏：已达 max_lead_ask({_max_ask}) 上限，"
+                                f"原句含放走语 → 改专业引导（不再索要/不再计次）: "
+                                f"{cleaned[:30]!r}")
+                            cleaned = _lead_no_ask_reply(cfg)
+                        else:
+                            logger.info(
+                                f"[AI-071] 留资护栏：已达 max_lead_ask({_max_ask}) 上限，"
+                                f"不再追加索要（保留专业回答，且不再计次）: "
+                                f"{cleaned[:30]!r}")
             _probe(before_id, "GUARD", "pass" if cleaned else "blocked",
                    level=level, cleaned=(cleaned or "")[:120],
                    raw=raw[:120])

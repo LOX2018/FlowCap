@@ -18,6 +18,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from database import get_kv_json, set_kv_json
+import asyncio
 import time
 
 router = APIRouter()
@@ -122,18 +123,33 @@ async (arg) => {
     })();
     await sleep(1500);
   }
-  out.ok = true;
+  // ③ 只有**确实确认到设备/点了确定**才算成功；四轮全 none 视为失败（禁假成功）
+  const rounds = Object.keys(out.steps)
+    .filter(k => k.indexOf('dialog_round_') === 0)
+    .map(k => out.steps[k]);
+  out.confirmed = rounds.some(s => /^(device:|confirm:)/.test(s || ''));
+  out.ok = out.confirmed;
+  if (!out.confirmed) {
+    out.error = '已点击「申请连线」但四轮均未选中麦克风设备/未点确定'
+      + '（可能未弹出对话框，或页面结构变化）——申请未确认';
+  }
   return out;
 }
 """
 
 
-async def _run_linkmic_dom(account: str, room_url: str, link_type: str,
-                           raw_js: str | None = None) -> dict:
+def _run_linkmic_dom(account: str, room_url: str,
+                     raw_js: str | None = None) -> dict:
     """经 BCC `/linkmic_run` 在**直播间页面上下文**执行 DOM 申请流程。
 
     为什么必须走 BCC（工作记忆/12 §5.5）：`/exec_js` 硬限制在 /chat 页，
     无法驻留直播间；连麦必须在直播间页做交互。
+
+    ⚠️ 本函数全程**同步阻塞 IO**（`_bcc_alive` 走 requests.get、`_bcc_post`
+    timeout=120，DOM 流程还要等按钮 ~40s）⇒ **禁止在事件循环里直接 await/调用**，
+    必须由调用方 `await asyncio.to_thread(_run_linkmic_dom, ...)` 下放线程
+    （否则冻结整个事件循环数十秒，实测 /api/live/stream 3s 轮询全部排队）。
+    原为 `async def` 但内部无任何 await ⇒ 加 async 是**假异步**，故改回 `def`。
     """
     from dy_apis.login_api import _bcc_post, _bcc_alive
     if not _bcc_alive(account):
@@ -178,7 +194,12 @@ async def apply_linkmic(body: ApplyBody) -> dict:
 
     # ── 路径 A：DOM 页面原生（默认）───────────────────────────────────
     if str(body.method).lower() != "api":
-        dom = await _run_linkmic_dom(body.account, room_url, body.link_type, body.raw_js)
+        # C-2 修复（OCR[7] MED）：`_run_linkmic_dom` 全程同步阻塞 IO
+        # （requests + DOM 等按钮 ~40s），若在事件循环里直接调用会冻结整个
+        # 循环数十秒（连 /api/live/stream 3s 轮询都排队）。下放线程执行，
+        # 返回值契约不变（仍为 dict）。
+        dom = await asyncio.to_thread(_run_linkmic_dom,
+                                      body.account, room_url, body.raw_js)
         if dom.get("ok"):
             r = dom.get("result") or {}
             _store("applied", {"via": "dom", "button": r.get("buttonText"),

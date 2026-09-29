@@ -140,9 +140,9 @@ def mark_delivery_verified(
 #   前端「已发送」取自调度记录 `RecordStatus.SENT`，而它是在
 #   `core/dispatch.py:_do_send` 拿到「调度器已入池（accepted=True）」时就置位
 #   —— 那是**受理**（消息交给了发送链），不是**送达**（服务端确认）。
-#   实测 2026-09-29：受理 19 条，而抖音回执里 34 条是
+#   实测 2026-09-29：**受理条数与平台拒收回执条数不一致**——相当一部分回执是
 #   「对方回复或关注你之前，只能发送一条文字消息」（平台拒收）。
-#   ⇒ 界面却把全部 19 条都显示成绿色「已发送」。
+#   ⇒ 界面却把**全部受理条**都显示成绿色「已发送」。
 #
 # 本模块**只增加一个「证据读取」出口**，不改任何写入路径/时序/限流：
 #   送达证据 = 该账号该会话存在 `msg_type='7'` 的**回声帧**
@@ -256,22 +256,6 @@ def _my_uid(account: str) -> str:
     except Exception as e:
         logger.debug(f"[SILENT-00] services.delivery_verify: my_uid 解析失败: {e}")
         return ""
-
-
-def _norm_conv(conv_id: str, peer: str) -> str:
-    """归一为「`0:1:*:对端`」查询键（实库两种方向并存，用末位通配匹配）。
-
-    为什么用 LIKE 而不是拼死两种形态：`my_uid` 可能取不到，而 conv_id 末段
-    未必是自己；只要**对端**确定，`0:1:*:<对端>` 就同时覆盖两种方向。
-    """
-    return f"0:1:%:{peer}"
-
-
-def _peer_of(conv_id: str) -> str:
-    """从 `0:1:A:B` 形状取对端（去自身 uid 不可能在纯读侧完成，
-    故这里返回**后半段**，由 SQL 两端 LIKE 共同覆盖）。"""
-    parts = (conv_id or "").split(":")
-    return parts[-1] if parts else ""
 
 
 def _flip_conv(conv_id: str) -> str:

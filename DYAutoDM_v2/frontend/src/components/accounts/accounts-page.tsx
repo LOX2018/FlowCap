@@ -157,9 +157,8 @@ export default function AccountsPage(props: PageProps) {
       push("请填写昵称");
       return;
     }
-    // 2026-09-29（方案2 · 用户拍板）：默认**手动** —— 打开有头指纹浏览器，
-    // 用户自己在窗口里完成扫码/验证码/滑块，凭证由既有链路自动写回。
-    // 固定的扫码/短信 RPA 模板降级为**显式备用**（抽屉底部「扫码备用 / 短信备用」）。
+    // 默认手动：打开有头指纹浏览器，由用户自行完成扫码/验证码/滑块，凭证自动写回。
+    // 固定 RPA 模板（扫码/短信）只作为抽屉底部「扫码备用 / 短信备用」的显式备用路径。
     api
       .updateLogin(name)
       .then((r): void => {
@@ -174,17 +173,27 @@ export default function AccountsPage(props: PageProps) {
       .catch((e: unknown) => push("更新凭证异常: " + errMsg(e)));
   };
 
-  // 显式备用：RPA 自动出二维码 / 短信验证码（原 ADR-017 模板，保留不删）。
-  // 用户默认走手动；只有在这两条备用按钮上才会自动出码/发短信。
+  // 就地补问绑定手机号并做格式校验 —— 备用登录与显式换路共用同一口径，避免两处分叉。
+  // 返回 undefined 表示未提供（取消/空串/格式错，均已 push 提示），调用方直接 return。
+  const promptSmsPhone = (): string | undefined => {
+    const phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
+    if (!phone) {
+      push("已取消（未提供手机号）");
+      return;
+    }
+    if (!/^\d{6,20}$/.test(phone)) {
+      push("手机号格式不正确（应为 6~20 位数字）");
+      return;
+    }
+    return phone;
+  };
+
+  // 显式备用：RPA 自动出二维码 / 发短信验证码；默认手动，只有点这两条备用按钮才走自动。
   const runBackupLogin = (name: string, mode: "qr" | "sms") => {
     let phone: string | undefined;
     if (mode === "sms") {
-      phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
+      phone = promptSmsPhone();
       if (!phone) return;
-      if (!/^\d{6,20}$/.test(phone)) {
-        push("手机号格式不正确（应为 6~20 位数字）");
-        return;
-      }
     }
     api
       .updateLogin(name, { mode, phone })
@@ -354,7 +363,7 @@ export default function AccountsPage(props: PageProps) {
       .openFingerprintBrowser(name)
       .then((d) => {
         if (d && d.ok) {
-          // ── H-20（2026-09-26）假阳性根治（呈现层闭环）────────────────
+          // ── 假阳性根治（呈现层闭环）────────────────
           // ok 只代表「已受理」；settled===true 才代表「窗口已就绪」。
           // 绝不用「已打开」这类**完成态**措辞，级别也不得无条件 SUCCESS。
           const notSettled = d.settled === false;
@@ -464,7 +473,7 @@ export default function AccountsPage(props: PageProps) {
                 : x,
             ),
           );
-          // 2026-08-31：校验可能触发浏览器重捕（耗时数分钟），提示停留 12s 避免错过
+          // 校验可能触发浏览器重捕（耗时数分钟），提示停留 12s 避免错过
           push(
             "引擎校验完成 · " + a.name + " · wp: " + (v.wp && v.wp.label) +
               " · dm: " + (v.dm && v.dm.label),
@@ -515,10 +524,8 @@ export default function AccountsPage(props: PageProps) {
   // 点击卡片 = 选中该账号为监听账号（设为监测/发送角色）
   // 注意：后端 AccountRole 枚举值为 watch/send/both（见 backend/models/enums.py）
   //
-  // 2026-09-17 修补（OCR 审查 CRITICAL）：原实现**同时**发了两个 setRole
-  // （先 "watch" 再 "send"），两者并发且后端「后到者生效」，最终角色
-  // 不确定；窗口文案说「选中监听账号」但结果可能是 send，语义也自相矛盾。
-  // 现改为单次请求，按业务语义设置 "watch"（监听/监测）。
+  // 只发单次 setRole：并发发两个（先 "watch" 再 "send"）会因后端「后到者生效」
+  // 而导致角色不确定，也与窗口文案「选中监听账号」自相矛盾。此处按语义置 "watch"。
   const selectAsMonitor = (a: FmtAccount) => {
     api.setRole(a.name, "watch").then(() => {
       api.addLog("INFO", `选中监听账号 · ${a.name}`).catch(() => {});
@@ -676,11 +683,8 @@ export default function AccountsPage(props: PageProps) {
                     >
                       <Pencil className="h-3.5 w-3.5" />更新凭证
                     </Button>
-                    {/* 2026-09-29（方案2 · 用户拍板）：点击「更新凭证」默认**打开有头指纹浏览器
-                        由用户自己登录**（ADR-017 之前的旧行为）；固定的扫码/短信 RPA 模板
-                        降级为**显式备用** —— 在编辑抽屉底部「扫码备用 / 短信备用」才触发。
-                        （历史：2026-09-28 曾收敛为按状态自动分流，用户实测反馈「默认变成
-                        短信更新了」；2026-09-29 进一步回归手动，不再让用户依赖自动选路。） */}
+                    {/* 点击「更新凭证」默认打开有头指纹浏览器、由用户自行登录；
+                        扫码/短信 RPA 模板降级为抽屉底部「扫码备用 / 短信备用」显式触发。 */}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -788,7 +792,7 @@ export default function AccountsPage(props: PageProps) {
                                              hover:text-[var(--color-text)]"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    // 2026-09-01：WebView 里 <a target="_blank"> 静默失败，
+                                    // WebView 里 <a target="_blank"> 会静默失败，
                                     // 必须走 shell.open()（见 utils/openExternal.ts）
                                     void openExternal(a.lastRun.roomUrl || "");
                                     push("已打开直播间：" + a.lastRun.room);
@@ -1086,15 +1090,11 @@ export default function AccountsPage(props: PageProps) {
             onClose={() => setScanning(null)}
             onToast={push}
             onSwitchMode={(mode) => {
-              // 显式换路：mode=sms 时手机号就地补问（与 saveEdit 同一套校验口径）
+              // 显式换路：mode=sms 时手机号就地补问（与备用登录同一 helper，口径唯一）
               let phone: string | undefined;
               if (mode === "sms") {
-                phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
+                phone = promptSmsPhone();
                 if (!phone) return;
-                if (!/^\d{6,20}$/.test(phone)) {
-                  push("手机号格式不正确（应为 6~20 位数字）");
-                  return;
-                }
               }
               api
                 .updateLogin(scanning.name, { mode, phone })

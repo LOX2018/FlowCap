@@ -58,7 +58,7 @@ export function LoginDialog({
   onClose: () => void;
   onToast: (msg: string) => void;
   onDone: () => void;
-  /** 2026-09-28：显式换路（后端按状态自动分流，此处只处理「我要另一条路」）。 */
+  /** 显式换路：只处理「我要走另一条路」，自动分流仍由后端按状态决定。 */
   onSwitchMode?: (mode: "qr" | "sms") => void;
 }) {
   const [code, setCode] = useState("");
@@ -104,29 +104,44 @@ export function LoginDialog({
     code_received: "验证码已收到，正在登录…",
   };
 
+  // 路径 → 文案查表（消除嵌套三元；未知/缺失一律落入 "qr"）。
+  type LoginPath = "manual" | "sms" | "qr";
+  const PATH_DESC: Record<LoginPath, string> = {
+    manual: "已打开有头指纹浏览器，请在窗口中手动完成登录（扫码/验证码/滑块）；完成后凭证将自动写回。",
+    qr: "请用抖音 App 扫描下方二维码",
+    sms: "", // 短信路径描述随 stage 变化，见 pathDesc()
+  };
+  const PATH_LOADING: Record<LoginPath, string> = {
+    manual: "等待你在指纹浏览器中完成登录…",
+    sms: "正在发送验证码…",
+    qr: "正在生成二维码…",
+  };
+  const PATH_LABEL: Record<LoginPath, string> = {
+    manual: "当前路径：手动（有头浏览器）",
+    sms: "当前路径：短信验证码（备用）",
+    qr: "当前路径：扫码（备用）",
+  };
+  const path: LoginPath = (["manual", "sms", "qr"] as const).includes(st.path as LoginPath)
+    ? (st.path as LoginPath)
+    : "qr";
+  const pathDesc = (): string =>
+    path === "sms" ? (stageText[st.stage ?? ""] ?? "正在处理…") : PATH_DESC[path];
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-[420px]">
         <DialogHeader>
           <DialogTitle>{name} · 登录</DialogTitle>
-          <DialogDescription>
-            {st.path === "manual"
-              ? "已打开有头指纹浏览器，请在窗口中手动完成登录（扫码/验证码/滑块）；完成后凭证将自动写回。"
-              : st.path === "sms"
-                ? (stageText[st.stage ?? ""] ?? "正在处理…")
-                : "请用抖音 App 扫描下方二维码"}
-          </DialogDescription>
+          <DialogDescription>{pathDesc()}</DialogDescription>
         </DialogHeader>
 
         {/* 二维码：仅当后端真的产出了图才渲染（不给用户假图） */}
         {st.qrPng ? (
           <div className="flex flex-col items-center gap-2 py-2">
-            {/* 本地绝对路径 ⇒ 必须经后端受保护端点取字节 */}
-            {/* 2026-09-27 全库审计 FE-1：原为裸 <img src="/api/accounts/qr-image?..."> ——
-                `<img src>` **无法携带 `X-Member-Token`**，而该端点不在 _MEMBER_EXEMPT
-                内 ⇒ 实测必 401 ⇒ 二维码永久破图（登录流程卡死且无提示）。
-                改用项目既有 `AuthedImg`（带令牌 fetch → Blob → objectURL），
-                与 message-bubble / message-viewer 同一套受保护媒体方案。 */}
+            {/* 本地绝对路径 ⇒ 必须经后端受保护端点取字节：
+                裸 `<img src>` 无法携带 `X-Member-Token`（该端点不在 _MEMBER_EXEMPT 内）
+                ⇒ 会 401 ⇒ 二维码永久破图。这里用项目既有 `AuthedImg`
+                （带令牌 fetch → Blob → objectURL），与 message-bubble / message-viewer 同一套受保护媒体方案。 */}
             <AuthedImg
               src={`/api/accounts/qr-image?path=${encodeURIComponent(st.qrPng)}`}
               alt="登录二维码"
@@ -142,11 +157,7 @@ export function LoginDialog({
           !st.needCode && (
             <div className="flex items-center justify-center gap-2 py-6 text-[0.85rem] text-[var(--color-text-muted)]">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {st.path === "sms"
-                ? "正在发送验证码…"
-                : st.path === "manual"
-                  ? "等待你在指纹浏览器中完成登录…"
-                  : "正在生成二维码…"}
+              {PATH_LOADING[path]}
             </div>
           )
         )}
@@ -169,19 +180,14 @@ export function LoginDialog({
           </div>
         )}
 
-        {/* 路径如实标注 + 显式备用（2026-09-29 · 方案2）：
-            默认是**手动**（有头浏览器用户自行登录）；扫码/短信为**显式备用**路径。
-            这里把**实际走的路径**说出来（不猜、不假装成功）。 */}
+        {/* 路径如实标注 + 显式备用：默认手动（有头浏览器用户自行登录），扫码/短信为显式备用路径。
+            这里只如实说出实际走的路径（不猜、不假装成功）。 */}
         {onSwitchMode && (
           <div className="flex items-center justify-between gap-2 rounded-[8px]
                           bg-[var(--color-surface-raised)] px-3 py-2
                           text-[0.74rem] text-[var(--color-text-muted)]">
             <span>
-              {st.path === "manual"
-                ? "当前路径：手动（有头浏览器）"
-                : st.path === "sms"
-                  ? "当前路径：短信验证码（备用）"
-                  : "当前路径：扫码（备用）"}
+              {PATH_LABEL[path]}
             </span>
             {st.path === "sms" ? (
               <button

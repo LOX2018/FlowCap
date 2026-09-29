@@ -586,9 +586,6 @@ class BccLoginMixin:
                                 f"[BCC-024] [bcc] 凭证刷新连续未通过 {scan_fail_count} 次，"
                                 f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟（自动救不回，"
                                 f"请在指纹浏览器重新扫码）")
-                            # E-1：熔断跳闸即归零，给恢复循环干净起跑 —— 否则残留
-                            # 计数会让熔断期满后**单次失败**立刻再跳闸（恢复期过短）。
-                            scan_fail_count = 0
                 elif uid:
                     _sync_env(uid)
                     page_state = self._page_login_state_sync()
@@ -640,8 +637,6 @@ class BccLoginMixin:
                                     f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟。"
                                     f"session 疑似服务端已失效，自动登录救不回，"
                                     f"请在指纹浏览器重新扫码；期间仅告警不重启浏览器")
-                                # E-1：熔断跳闸即归零（恢复期干净起跑，防期满后单次即跳）
-                                scan_fail_count = 0
                     else:
                         self._last_uid = uid
                         scan_fail_count = 0
@@ -694,9 +689,6 @@ class BccLoginMixin:
                                         f"自动刷新救不回，**立即熔断 "
                                         f"{SCAN_BACKOFF_SEC // 60} 分钟**，"
                                         f"请在指纹浏览器重新扫码；期间只告警不重建浏览器")
-                                    # E-1：漂移跳闸同样归零，否则残留计数会让熔断期满后
-                                    # 单次失败即再跳闸（恢复期过短、反复熔断）。
-                                    scan_fail_count = 0
                                 else:
                                     scan_fail_count += 1
                                     logger.warning(
@@ -713,8 +705,6 @@ class BccLoginMixin:
                                 f"熔断 {SCAN_BACKOFF_SEC // 60} 分钟（防浏览器频繁重启"
                                 f"引发风控）。session 疑似服务端已失效，自动登录救不回，"
                                 f"请在指纹浏览器重新扫码；期间仅告警不重启浏览器")
-                            # E-1：熔断跳闸即归零（恢复期干净起跑，防期满后单次即跳）
-                            scan_fail_count = 0
             except Exception as e:
                 logger.warning(f"[BCC-027] [bcc] 探活异常: {e}")
         logger.info("[bcc] 保活心跳退出")

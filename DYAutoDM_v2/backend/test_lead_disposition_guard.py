@@ -189,5 +189,245 @@ class TestLeadDispositionGuard(unittest.TestCase):
                             f"放走句未被识别: {s!r}")
 
 
+class TestOcrFixBatchAA(unittest.TestCase):
+    """OCR 审查两条修复门禁（2026-09-29）：A-1 上限生效 / A-2 不丢专业正文。
+
+    每条带**负控**：这里断言的是「修复后」行为；负控在报告里以
+    「把守卫改回旧实现即可复现失败」的方式给出（A-1 的负控同时内嵌为
+    `test_a1_negative_control_old_path_still_asks`，可直接跑红）。
+    """
+
+    CFG = dict(A._DEFAULT_CONFIG)
+
+    # ── 共用：把测试隔离到独立 DY_APP_ROOT（绝不动真实库）────────────────
+    def _isolate(self, prefix: str):
+        import tempfile
+        from pathlib import Path
+
+        import database
+        prev = os.environ.get("DY_APP_ROOT")
+        root = Path(tempfile.mkdtemp(prefix=prefix))
+        (root / "data").mkdir(parents=True, exist_ok=True)
+        os.environ["DY_APP_ROOT"] = str(root)
+        # 关键：清掉可能已指向真实库的全局连接，否则隔离根不生效。
+        database.reset_connection()
+
+        def _cleanup():
+            if prev is None:
+                os.environ.pop("DY_APP_ROOT", None)
+            else:
+                os.environ["DY_APP_ROOT"] = prev
+            database.reset_connection()
+
+        self.addCleanup(_cleanup)
+        return root
+
+    # ═══════════════════════════════════════════════════════════════════
+    # A-1（OCR[22] · HIGH）：`max_lead_ask` 上限真正生效
+    # ═══════════════════════════════════════════════════════════════════
+    def test_a1_cap_binds_no_growth_after_3_rounds(self):
+        """连续 3+ 轮后：`_asks` 不再增长，且第 3 轮起回复不含 `_LEAD_ASK_TAIL`。"""
+        self._isolate("lead_cap_a1_")
+        # 桩模型固定吐「专业但无索要」句 ⇒ 护栏必须介入；重试返回同句 ⇒ 走追加。
+        pro = "要判断等级得看治疗后遗留的功能障碍程度，不是按伤情名字对号入座。"
+        orig = A.AIClient
+
+        class _Stub:
+            def __init__(self, cfg):
+                pass
+
+            def chat_failover(self, *a, **kw):
+                return pro
+
+        A.AIClient = _Stub
+        worker = A.AutoReplyWorker.__new__(A.AutoReplyWorker)
+        worker.status = dict(getattr(A.AutoReplyWorker, "status", {}) or {})
+        cfg = dict(A._DEFAULT_CONFIG)
+        cfg.update({"enabled": True, "strict_level": "rag",
+                    "sem_enabled": False, "base_url": "http://127.0.0.1:1/v1"})
+        acct, conv = "a1acct", "0:9:9:9"
+        counts, replies = [], []
+        try:
+            for i in range(4):
+                reply, _src = A.AutoReplyWorker._generate_reply(
+                    worker, cfg, "好", acct, conv, i + 1)
+                counts.append(A._lead_ask_count(acct, conv))
+                replies.append(reply or "")
+        finally:
+            A.AIClient = orig
+
+        max_ask = int(cfg.get("max_lead_ask", 2))
+        self.assertEqual(counts[:max_ask], [1, 2],
+                         f"前 {max_ask} 轮应逐轮计次，实际 {counts}")
+        self.assertEqual(counts[max_ask:], [max_ask, max_ask],
+                         f"达上限后 _asks 必须不再增长，实际 {counts}")
+        # 前 2 轮：追加了索要
+        for i in range(max_ask):
+            self.assertIn(A._LEAD_ASK_TAIL, replies[i],
+                          f"第 {i+1} 轮应追加索要，实际 {replies[i]!r}")
+        # 第 3 轮起：不再追加索要（只保留专业回答）
+        for i in range(max_ask, 4):
+            self.assertNotIn(A._LEAD_ASK_TAIL, replies[i],
+                             f"第 {i+1} 轮不得再索要，实际 {replies[i]!r}")
+            self.assertFalse(A._has_lead_ask(replies[i]),
+                             f"第 {i+1} 轮不应含索要，实际 {replies[i]!r}")
+            self.assertIn("功能障碍", replies[i], "达上限后仍须保留专业回答")
+
+    def test_a1_deferring_at_cap_becomes_no_ask_guidance(self):
+        """达上限且原句含放走语 ⇒ 改发**不含索要**的专业引导（不再放走、不再计次）。"""
+        self._isolate("lead_cap_a1b_")
+        bad_defer = "好，问问进度，认定书下来第一时间通知我，我帮你算清单。"
+        orig = A.AIClient
+
+        class _Stub:
+            def __init__(self, cfg):
+                pass
+
+            def chat_failover(self, *a, **kw):
+                return bad_defer
+
+        A.AIClient = _Stub
+        worker = A.AutoReplyWorker.__new__(A.AutoReplyWorker)
+        worker.status = dict(getattr(A.AutoReplyWorker, "status", {}) or {})
+        cfg = dict(A._DEFAULT_CONFIG)
+        cfg.update({"enabled": True, "strict_level": "rag", "sem_enabled": False,
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "max_lead_ask": 0})   # 直接处于「已达上限」态
+        acct, conv = "a1b", "0:8:8:8"
+        try:
+            reply, _src = A.AutoReplyWorker._generate_reply(
+                worker, cfg, "好", acct, conv, 1)
+        finally:
+            A.AIClient = orig
+        self.assertTrue(reply)
+        self.assertNotEqual(reply, bad_defer, "放走句不得原样外发")
+        self.assertTrue(A._is_deferring(bad_defer) and not A._is_deferring(reply),
+                        f"出口应为不含放走语的引导，实际 {reply!r}")
+        self.assertFalse(A._has_lead_ask(reply),
+                         f"max_lead_ask=0 时绝不能再索要，实际 {reply!r}")
+        self.assertEqual(A._lead_ask_count(acct, conv), 0,
+                         "达上限时不得再计次（不 bump）")
+
+    def test_a1_negative_control_old_else_branch_always_asks(self):
+        """负控（离线复刻）：旧 `else` 分支无条件追加并 bump ⇒ 第 3 轮仍索要。
+
+        这是把 A-1 修好的分支**改回旧实现**时会得到的输出，用来说明
+        「修复前」确实每轮都继续索要（与 ADR-027 D5 矛盾）。
+        """
+        old_appended = A.append_lead_ask(
+            "要判断等级得看治疗后遗留的功能障碍程度，不是按伤情名字对号入座。",
+            self.CFG)
+        self.assertIsNotNone(old_appended)
+        self.assertIn(A._LEAD_ASK_TAIL, old_appended,
+                      "旧 else 分支的产物必然含索要 —— 与修复后第 3 轮相反")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # A-2（OCR[9] · MED）：超长时不得丢弃专业正文
+    # ═══════════════════════════════════════════════════════════════════
+    def test_a2_long_professional_body_preserved_after_guard(self):
+        pro = ("工伤认定后能否评级，要看治疗后遗留的功能障碍程度：手指末节缺失、"
+               "脊柱压缩超过三分之一、关节功能活动明显受限这类才够得上伤残等级；"
+               "单纯骨折保守治疗且功能恢复良好的，通常评不上等级，"
+               "具体以劳动能力鉴定委员会的结论为准。")
+        self.assertGreater(len(pro) + 1 + len(A._LEAD_ASK_TAIL),
+                           A._LEAD_ASK_HARD_CAP,
+                           "前置假设失效：样本没超过硬上限，测不到截断分支")
+        got = A.append_lead_ask(pro, self.CFG)
+        self.assertIsNotNone(
+            got, "超长专业回复不得整句丢弃（旧实现返回 None ⇒ 正文全丢）")
+        self.assertLessEqual(len(got), A._LEAD_ASK_HARD_CAP)
+        self.assertIn("功能障碍", got, "丢了专业正文关键片段")
+        self.assertTrue(A._has_lead_ask(got), "截断后仍须含索要")
+        self.assertNotIn("，，", got)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # A-3（OCR[10] · MED）：共享 KV 计数必须原子（并发不丢计数）
+    # ═══════════════════════════════════════════════════════════════════
+    def test_a3_concurrent_bump_never_loses_counts(self):
+        """多线程对照：旧读-改-写丢计数（负控）→ 新逻辑（持 `_LEAD_ASK_LOCK`）0 丢失。"""
+        import json
+        import threading
+        import time
+
+        key = A._KV_ASK_COUNT
+        store = {}
+        store_lock = threading.Lock()
+
+        # 用线程安全的进程内 store 替换 KV，并在「读之后」插入固定延时，
+        # 把旧逻辑的读-改-写窗口放大到必然交错（否则竞态是概率性的、测不稳）。
+        def fake_get(k, default=None):
+            with store_lock:
+                v = json.loads(json.dumps(store.get(k, default)))
+            time.sleep(0.002)          # 关键：读与写之间让出
+            return v
+
+        def fake_set(k, value):
+            with store_lock:
+                store[k] = json.loads(json.dumps(value))
+
+        orig_get, orig_set = A._kv_get, A._kv_set
+        A._kv_get, A._kv_set = fake_get, fake_set
+        n = 24
+        try:
+            # ---- 负控：旧逻辑（无锁读-改-写）必然丢计数 ----
+            def old_bump():
+                d = A._kv_get(key, {}) or {}
+                d["a3:conv"] = int(d.get("a3:conv", 0) or 0) + 1
+                A._kv_set(key, d)
+
+            b1 = threading.Barrier(n)
+            ths = [threading.Thread(target=lambda: (b1.wait(), old_bump()))
+                   for _ in range(n)]
+            for t in ths:
+                t.start()
+            for t in ths:
+                t.join()
+            old_final = A._lead_ask_count("a3", "conv")
+            self.assertLess(old_final, n,
+                            f"负控前提失效：旧逻辑竟未丢计数（{old_final}/{n}）")
+
+            # ---- 正控：新逻辑（持锁）24 次并发 ⇒ 恰好 24，0 丢失 ----
+            store.clear()
+            b2 = threading.Barrier(n)
+            ths = [threading.Thread(
+                target=lambda: (b2.wait(), A._bump_lead_ask("a3", "conv")))
+                for _ in range(n)]
+            for t in ths:
+                t.start()
+            for t in ths:
+                t.join()
+            new_final = A._lead_ask_count("a3", "conv")
+            self.assertEqual(new_final, n,
+                             f"新逻辑丢计数：{new_final}/{n}")
+        finally:
+            A._kv_get, A._kv_set = orig_get, orig_set
+
+    def test_a3_source_uses_lock(self):
+        """静态接线：`_bump_lead_ask`/`_lead_ask_count` 必须持同一把锁。"""
+        src = open(os.path.join(HERE, "services", "ai_reply.py"),
+                   encoding="utf-8").read()
+        seg = src.split("def _lead_ask_count")[-1].split("def lead_fallback_reply")[0]
+        self.assertIn("_LEAD_ASK_LOCK", seg, "计数读写未接同步锁")
+        self.assertEqual(seg.count("with _LEAD_ASK_LOCK:"), 2,
+                         "_lead_ask_count / _bump_lead_ask 应各持一次锁")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # A-4（OCR[8] · MED）：直播兜底的「回退主池」分支必须可达
+    # ═══════════════════════════════════════════════════════════════════
+    def test_a4_live_fallback_extra_empty_falls_back_to_main_pool(self):
+        cfg = dict(A._DEFAULT_CONFIG)
+        cfg["live_fallback_extra"] = ""       # 额外池不可用
+        got = A.live_fallback_reply(cfg)
+        self.assertTrue(got, "额外池为空时必须回退主兜底池（非死代码）")
+        self.assertIn(got, list(cfg.get("fallback_pool") or []),
+                      "回退应落到主兜底池（docstring 承诺的语义）")
+
+    def test_a4_default_still_uses_guidance_extra(self):
+        self.assertEqual(
+            A.live_fallback_reply(dict(A._DEFAULT_CONFIG)).strip(),
+            A._LIVE_FALLBACK_EXTRA.strip(),
+            "默认配置必须仍取纯引导话术（零回归）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

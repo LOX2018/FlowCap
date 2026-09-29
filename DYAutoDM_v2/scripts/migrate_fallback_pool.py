@@ -56,6 +56,10 @@ NEW_IMAGE = ("图片收到，我看下材料再给您准话。方便的话补充
              "受伤部位和所在城市，判断会更快。")
 
 
+class _NoTargetDB(Exception):
+    """I-4：没有任何候选库含 ai_reply_config ⇒ 无法定位真生产库（拒绝假阴性）。"""
+
+
 def _find_db() -> Path:
     """定位生产库。
 
@@ -64,6 +68,12 @@ def _find_db() -> Path:
     实测踩坑：按 `current`/`active`/`member_id` 取会取不到，退化路径又会
     先命中 `hotswap-probe`（探针库、无 ai_reply_config）⇒ 迁移"成功"但改错库。
     故：**优先选真正含 `ai_reply_config` 的那个库**。
+
+    I-4 修复（2026-09-29 · OCR[29] · MED · 假阴性）：
+    原逻辑在**没有任何候选**含 `ai_reply_config` 时 `return candidates[0]`
+    （= docstring 明示的 `hotswap-probe` 形态）⇒ `main()` 读到缺键即退出 0 报
+    「无需迁移（走代码默认值）」—— **假阴性**（真生产库根本没找到）。
+    现改为：无候选含该键时**抛 `_NoTargetDB` 报错**，绝不静默退 0。
     """
     root = os.environ.get("DY_APP_ROOT") or r"C:\temp\dyautodm_design"
     root_p = Path(root)
@@ -95,7 +105,13 @@ def _find_db() -> Path:
         except Exception:
             continue
     if candidates:
-        return candidates[0]
+        # I-4：没有任何候选含 ai_reply_config —— 不得拿候选[0] 冒充目标库
+        # （那会让 main() 静默退 0 = 假阴性）。报错列出候选，交由人工核对。
+        raise _NoTargetDB(
+            f"找到 {len(candidates)} 个 dyautodm.db，但**没有任何一个**含 "
+            f"ai_reply_config 键（docstring 所述 `hotswap-probe` 探针库即此形态）"
+            f"⇒ 真生产库未定位，**拒绝静默退出 0**（假阴性）。\n候选:\n  "
+            + "\n  ".join(str(p) for p in candidates))
     raise SystemExit("未找到 dyautodm.db")
 
 
@@ -104,7 +120,12 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="实际写入（默认 dry-run）")
     args = ap.parse_args()
 
-    db = _find_db()
+    try:
+        db = _find_db()
+    except _NoTargetDB as e:
+        # I-4：明确报错退出（非静默退 0）—— 真生产库没找到就必须让人看到
+        print(f"❌ 无法定位目标库：{e}")
+        return 2
     print(f"目标库: {db}")
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
@@ -136,9 +157,16 @@ def main() -> int:
         return 0
 
     print(f"\n将替换字段: {changed}")
-    print("新 fallback_pool:")
-    for x in cfg["fallback_pool"]:
-        print("   -", x)
+    # I-3 修复（2026-09-29 · OCR[28] · MED）：`fallback_pool` 可能**未迁移**
+    # （else 分支「缺失 ⇒ 不动」）。原逻辑无条件取 `cfg["fallback_pool"]`
+    # ⇒ KeyError；读回验证同样无条件取 `chk["fallback_pool"]`。现按 `changed`
+    # 分键守卫：未迁移的键既不打印也不纳入校验。
+    if "fallback_pool" in changed:
+        print("新 fallback_pool:")
+        for x in cfg["fallback_pool"]:
+            print("   -", x)
+    if "fallback_image" in changed:
+        print("新 fallback_image:", cfg["fallback_image"])
 
     if not args.apply:
         print("\n(--dry-run：未写入；加 --apply 实际执行)")
@@ -158,13 +186,21 @@ def main() -> int:
                  (json.dumps(cfg, ensure_ascii=False),))
     conn.commit()
 
-    # 写后读回验证
+    # 写后读回验证（I-3：只校验**本次真正迁移**的键，未迁移的键不参与）
     chk = json.loads(conn.execute(
         "SELECT value FROM kv_store WHERE key='ai_reply_config'").fetchone()[0])
     print("\n写后读回：")
-    print("  fallback_pool[0] =", chk["fallback_pool"][0][:40], "…")
+    checks = []
+    if "fallback_pool" in changed:
+        print("  fallback_pool[0] =", (chk.get("fallback_pool") or [""])[0][:40], "…")
+        checks.append(chk.get("fallback_pool") == NEW_POOL)
+    if "fallback_image" in changed:
+        print("  fallback_image =", str(chk.get("fallback_image"))[:40], "…")
+        checks.append(chk.get("fallback_image") == NEW_IMAGE)
     print("  其余键数量 =", len(chk), "（写前", len(json.loads(row["value"])), "）")
-    ok = chk["fallback_pool"] == NEW_POOL and len(chk) == len(json.loads(row["value"]))
+    # 键数量守恒：迁移只改值、不增删键（合并写回的铁律）
+    checks.append(len(chk) == len(json.loads(row["value"])))
+    ok = all(checks)
     print("迁移结果:", "✅ 成功" if ok else "❌ 校验失败")
     conn.close()
     return 0 if ok else 1

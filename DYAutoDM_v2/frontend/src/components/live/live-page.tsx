@@ -37,7 +37,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import {
-  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, AiReplyCard, displayStatus,
+  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, AiReplyCard, displayStatus, isIssue,
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
@@ -306,14 +306,29 @@ export default function LivePage(props: PageProps) {
   const waitCount = useMemo(() => rows.filter((r) => r.dmStatus === "wait").length, [rows]);
   // 2026-09-29（用户拍板「受理 ≠ 送达」）：原实现 `sentCount` 数的是
   // RecordStatus.SENT = **已受理（入池）**，却被标成「已发送私信」显示，
-  // 实测当天受理 19 条里有 24 次平台拒收 —— 数字与事实相反。
+  // 受理数里还有相当一部分被平台拒收 —— 数字与事实相反。
   // 现拆两档：受理（elapsed 交给发送链）与**真实送达**（有投递证据）。
-  const acceptedCount = useMemo(
-    () => rows.filter((r) => r.dmStatus === "sent").length, [rows]);
+  //
+  // 🔴 2026-09-29 口径统一（G-1）：投递结局（delivered/rejected）与受理数必须
+  // **同分母**。`delivery_state` 由后端按 uid×会话历史派生，同一 uid 的多条记录
+  // （含 un/wait/fail 行）都会带上同一结局；若直接数全部 rows，就会出现
+  // `deliveredCount > acceptedCount` ⇒ 送达率 >100%。
+  // 现口径：**只在「已受理」（dmStatus==='sent'）行内统计投递结局**，
+  // 于是 deliveredCount + rejectedCount ≤ acceptedCount，送达率必落在 0~100%。
+  const acceptedRows = useMemo(
+    () => rows.filter((r) => r.dmStatus === "sent"), [rows]);
+  const acceptedCount = acceptedRows.length;
   const deliveredCount = useMemo(
-    () => rows.filter((r) => r.deliveryState === "delivered").length, [rows]);
+    () => acceptedRows.filter((r) => r.deliveryState === "delivered").length, [acceptedRows]);
   const rejectedCount = useMemo(
-    () => rows.filter((r) => r.deliveryState === "rejected").length, [rows]);
+    () => acceptedRows.filter((r) => r.deliveryState === "rejected").length, [acceptedRows]);
+  // 空态降级：上游 `delivery_state` 仍可能整列为空（根因在 B 桶修）。
+  // 无任何投递证据时**不显示 0 条 / 0%**，改为定性提示，避免误导为「全部未送达」。
+  const hasDeliveryEvidence = useMemo(
+    () => acceptedRows.some((r) => !!r.deliveryState), [acceptedRows]);
+  // G-2/G-3：可见行与「仅看异常」判据都收敛到同一个真源（shared 的 isIssue）。
+  const visibleRows = useMemo(
+    () => (onlyIssues ? rows.filter(isIssue) : rows), [rows, onlyIssues]);
 
   // Esc 关闭查阅模式
   useEffect(() => {
@@ -1106,23 +1121,37 @@ export default function LivePage(props: PageProps) {
               <span>·</span>
               {/* 🔴 2026-09-29（用户实测反馈「投递成功不代表传递送达」）：
                   原「已发送私信 N 条」把**受理**（入池）当成**送达**显示。
-                  实测当天受理 19 条 / 平台拒收回执 34 条 ⇒ 数字与事实相反。
-                  现拆三档并给出「送达率」，把缺口摆在界面上（可观测优先）。 */}
+                  受理数里有相当一部分被平台拒收 ⇒ 数字与事实相反。
+                  现拆三档并给出「送达率」，把缺口摆在界面上（可观测优先）。
+                  G-1 口径统一：投递档只在**已受理**行内统计（同分母，比率≤100%）。 */}
               <span>已受理 <b className="font-mono font-semibold text-[var(--color-text)]">{acceptedCount}</b> 条</span>
               <span>·</span>
-              <span>已送达 <b className="font-mono font-semibold text-[var(--color-success)]">{deliveredCount}</b> 条</span>
-              {rejectedCount > 0 && (
+              {hasDeliveryEvidence ? (
                 <>
-                  <span>·</span>
-                  <span title="抖音回执：对方回复或关注你之前，只能发送一条文字消息">
-                    被平台拒绝{" "}
-                    <b className="font-mono font-semibold text-[var(--color-danger)]">{rejectedCount}</b> 条
+                  <span>已送达 <b className="font-mono font-semibold text-[var(--color-success)]">{deliveredCount}</b> 条</span>
+                  {rejectedCount > 0 && (
+                    <>
+                      <span>·</span>
+                      <span title="抖音回执：对方回复或关注你之前，只能发送一条文字消息">
+                        被平台拒绝{" "}
+                        <b className="font-mono font-semibold text-[var(--color-danger)]">{rejectedCount}</b> 条
+                      </span>
+                    </>
+                  )}
+                  <span className="text-[var(--color-text-muted)]">
+                    （送达率 {acceptedCount > 0 ? Math.round((deliveredCount / acceptedCount) * 100) : 0}%）
                   </span>
                 </>
+              ) : (
+                // 空态降级：上游 delivery_state 仍可能整列为空（根因在 B 桶修）。
+                // 此时**不显示 0 条 / 0%**（会被误读成「全部未送达」），改为定性提示。
+                <span
+                  className="text-[var(--color-text-muted)]"
+                  title="后端尚未派生投递结局（delivery_state 为空）；受理只代表已入池，不等于送达"
+                >
+                  送达情况暂无法判定 · 暂无投递回执证据
+                </span>
               )}
-              <span className="text-[var(--color-text-muted)]">
-                （送达率 {acceptedCount > 0 ? Math.round((deliveredCount / acceptedCount) * 100) : 0}%）
-              </span>
             </div>
             <div className="-mx-4 -mb-4 flex max-h-[clamp(320px,calc(100vh-560px),620px)]
                             flex-col overflow-hidden">
@@ -1149,6 +1178,18 @@ export default function LivePage(props: PageProps) {
                         </Td>
                       </tr>
                     )}
+                    {/* G-3：有记录、但「仅看异常」筛掉全部 ⇒ 给明确提示行。
+                        否则只剩表头，用户分不清是「本次无异常」还是「渲染坏了」。 */}
+                    {rows.length > 0 && visibleRows.length === 0 && (
+                      <tr>
+                        <Td colSpan={6}>
+                          <Blank>
+                            <span className="text-[1.4rem]">✅</span>
+                            当前筛选下无异常记录 · 已受理/待发送的条目被隐藏，点「仅看异常 ✓」可恢复全部
+                          </Blank>
+                        </Td>
+                      </tr>
+                    )}
                     {/* 🔴 2026-09-29（用户实测反馈）：「实时弹幕区域有区域限制，只显示 20 条
                         左右，后续的弹幕都不显示，把该区域设为滚轮式」。
                         原实现 `rows.slice(0, 12)` 把表格**硬截断到前 12 行**，而外层只有
@@ -1158,12 +1199,9 @@ export default function LivePage(props: PageProps) {
                         修法：全部行渲染，交给**纵向滚动容器**承载（`overflow-auto` +
                         `overscroll-contain`），表头 `sticky` 固定；容器高度用 `clamp`
                         在 320~620px 之间随视口自适应，保证页面上仍能同时看到下面的板块。 */}
-                    {rows
-                      .filter((r) =>
-                        onlyIssues
-                          ? r.deliveryState === "rejected" || r.dmStatus === "fail"
-                          : true,
-                      )
+                    {/* G-2：可见行来自 useMemo(visibleRows)，过滤判据 isIssue
+                        与状态列 displayStatus 同源 ⇒ 不会「过筛却渲染成绿色已送达」。 */}
+                    {visibleRows
                       .map((r) => (
                     <tr key={r.id} className="transition-colors
                                               hover:bg-[var(--color-surface-raised)]">

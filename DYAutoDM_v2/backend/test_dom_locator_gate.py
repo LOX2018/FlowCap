@@ -116,6 +116,73 @@ class TestDomLocatorGate(unittest.TestCase):
         ok2, why2 = dl.validate(search_input, t_phone)
         self.assertFalse(ok2, f"搜索框竟通过手机框校验（判据失效）: {why2}")
 
+    # ── D-1（OCR[13]）：exact 模式必须归一整段 Unicode 空白 ────────────────
+    def test_d1_nbsp_exact_hits(self):
+        """D-1 正向：标签含 NBSP/全角空格时 exact 仍命中（旧 replace 会拒）。"""
+        t = dl.Target("t", "span", ("span",), ("扫码登录",), ("login",),
+                      desc="", text_mode="exact")
+        # 纯函数级：NBSP(U+00A0) / 全角空格(U+3000) 均须被归一
+        self.assertTrue(dl._text_hit("扫码登录", {}, t))
+        self.assertTrue(dl._text_hit("扫\u00a0码登录", {}, t), "NBSP 未归一 ⇒ 视觉正确标签被拒")
+        self.assertTrue(dl._text_hit("扫\u3000码 登录", {}, t), "全角空格/ASCII 空格未归一")
+        # 端到端：真 DOM 内标签为 NBSP 时，locate(tab_scan) 仍应命中
+        nbsp_html = BASE.replace("扫码登录", "扫\u00a0码\u3000登录")
+        r = self._locate(nbsp_html, "tab_scan")
+        self.assertTrue(r.ok, f"NBSP 标签端到端未命中: {r.reason}")
+
+    def test_d1_negative_control_old_replace_fails(self):
+        """D-1 负控：还原旧 replace(' ','') 实现，本用例必须变红。"""
+        def _old_exact(own, w):
+            return own.replace(" ", "") == w.replace(" ", "")
+
+        self.assertFalse(_old_exact("扫\u00a0码登录", "扫码登录"),
+                         "旧实现竟命中 NBSP —— 负控失效")
+        self.assertFalse(_old_exact("扫\u00a0码\u3000登录", "扫码登录"))
+
+    # ── D-2（OCR[14]）：含双引号/反斜杠的 want_text 不得拼坏 CSS ──────────
+    def test_d2_quote_in_want_text_no_crash(self):
+        """D-2：want_text 含 `"`/`\\` 时域策略选择器仍语法合法（旧实现报 SelectorSyntaxError）。"""
+        t = dl.Target("q", "input", ("input",), ('a"b', "c\\d"), ("login",),
+                      ("placeholder",), desc="")
+        html = (r'<html><body><div class="login-wrap">'
+                r'<input name="z1" placeholder="a&quot;b">'
+                r'<input name="z2" placeholder="c\d">'
+                r'</div></body></html>')
+        res, _by = self.loc._collect(html, t)
+        bad = [a for a in res.attempts if isinstance(a[1], str) and "SelectorSyntaxError" in a[1]]
+        self.assertEqual(bad, [], f"选择器被拼坏: {bad}")
+
+    def test_d2_negative_control_raw_interp_breaks(self):
+        """D-2 负控：还原旧裸插值必须抛 SelectorSyntaxError（证明原缺陷真实）。"""
+        from cssselect import SelectorSyntaxError
+        old_css = 'input[placeholder*="a"b"]'
+        with self.assertRaises(SelectorSyntaxError):
+            self.loc._sel("<html><body><input placeholder='x'></body></html>").css(old_css)
+
+    # ── D-3（OCR[15]）：click_adaptive 与 login_remote 真鼠标时序防漂移 ────
+    def test_d3_click_timing_matches_login_remote(self):
+        """D-3：本模块 click_adaptive 与 login_remote._mouse_click_locator 的
+        asyncio.sleep 时序必须一致（防两条点击路径再次漂移）。"""
+        import re
+
+        def _sleeps(func):
+            try:
+                src = __import__("inspect").getsource(func)
+            except OSError:  # pragma: no cover
+                return None
+            return [round(float(x), 3) for x in re.findall(r"asyncio\.sleep\(\s*([0-9.]+)\s*\)", src)]
+
+        here = _sleeps(dl.click_adaptive)
+        try:
+            from auto_dm import login_remote as lr
+        except Exception:  # noqa: BLE001
+            from backend.auto_dm import login_remote as lr  # type: ignore
+        there = _sleeps(lr._mouse_click_locator)
+        self.assertIsNotNone(here)
+        self.assertIsNotNone(there)
+        self.assertEqual(here, there,
+                         f"真鼠标点击时序漂移 dom_locator={here} login_remote={there}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

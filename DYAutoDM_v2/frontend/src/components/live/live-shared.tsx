@@ -85,8 +85,8 @@ export const DM_META: Record<DmStatus, [string, PillColor]> = {
  *
  * 为什么必须分开两者（实测依据）：
  *   后端 `RecordStatus.SENT` 是在 `submit_by_uid` 返回 `accepted=True`（已入池）
- *   时置位的 —— 那是**受理**；实测 2026-09-29 当天受理 19 条、平台拒收回执 34 条，
- *   界面却全部显示绿色「已发送」（用户原话：「投递成功不代表传递送达」）。
+ *   时置位的 —— 那是**受理**；实测中平台拒收回执的条数可与受理数相当甚至更多，
+ *   界面却把受理行全部显示成绿色「已发送」（用户原话：「投递成功不代表传递送达」）。
  *
  * 显示判据（优先级从高到低）：
  *   1. 有平台拒收证据 ⇒ **被平台拒绝**（红）—— 无论调度状态如何
@@ -97,6 +97,23 @@ export function displayStatus(r: Row): [string, PillColor] {
   if (r.deliveryState === "rejected") return ["被平台拒绝", "danger"];
   if (r.deliveryState === "delivered") return ["已送达", "ok"];
   return DM_META[r.dmStatus];
+}
+
+/**
+ * 2026-09-29：「异常」判据 —— **与展示同一真源**（过滤与状态列必须同一口径）。
+ *
+ * 为什么必须抽成 helper 而不能各写一份：
+ *   过滤条件曾写成 `deliveryState==='rejected' || dmStatus==='fail'`，而状态列
+ *   用的是 `displayStatus`。两者在 `dmStatus==='fail' && deliveryState==='delivered'`
+ *   这一格上**判据相反** —— 该行会**通过「仅看异常」过滤，却被渲染成绿色「已送达」**
+ *   （用户看到「异常列表里全是绿色已送达」）。
+ *
+ * 现约定：**异常 = 展示档 tone 为 danger 的行**（即渲染成「被平台拒绝」或「发送失败」）。
+ * 直接读 `displayStatus` 的输出推导，故两者**在结构上不可能漂移**：
+ * `deliveryState==='delivered'` 覆盖 `dmStatus==='fail'` 的格子渲染成 ok ⇒ 不算异常。
+ */
+export function isIssue(r: Row): boolean {
+  return displayStatus(r)[1] === "danger";
 }
 
 /** 解析延迟抖动字符串：'50,120'/'50-120'/'50~120' -> [50,120]；'60' -> [60,60] */

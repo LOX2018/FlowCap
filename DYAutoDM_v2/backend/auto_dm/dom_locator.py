@@ -26,6 +26,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -125,6 +126,17 @@ def _in_scope(el, t: Target) -> bool:
     return False
 
 
+def _norm_ws(s: str) -> str:
+    """归一**全部** Unicode 空白（含 NBSP U+00A0、全角空格 U+3000、制表/换行等）。
+
+    2026-09-29 修正（D-1 · OCR[13]）：旧实现 `s.replace(" ", "")` 只去 **ASCII 空格**；
+    登录页标签常用 NBSP（如 `登\\u00a0录`），视觉正确的标签在 exact 模式下被拒
+    ⇒ 兜底静默 miss（正是本模块存在的目的）。`str.split()` 按任意 Unicode 空白切分，
+    `"".join(...)` 即「去除全部空白」，比正则 `\\s` 更全（`\\s` 在部分引擎不含 NBSP）。
+    """
+    return "".join(s.split())
+
+
 def _text_hit(own: str, attrs: dict, t: Target) -> bool:
     """自身文本/属性是否命中 want_text（支持 contains / exact 两种模式）。"""
     if not t.want_text:
@@ -134,8 +146,31 @@ def _text_hit(own: str, attrs: dict, t: Target) -> bool:
         if k in attrs:
             hay += " " + attrs[k]
     if t.text_mode == "exact":
-        return any(own.replace(" ", "") == w.replace(" ", "") for w in t.want_text)
+        return any(_norm_ws(own) == _norm_ws(w) for w in t.want_text)
     return any(w in hay for w in t.want_text)
+
+
+def _css_attr_value(v: str) -> str:
+    """把属性值安全转义进 CSS 字符串字面量（供 `[k*="..."]` 使用）。
+
+    2026-09-29 修正（D-2 · OCR[14]）：旧实现直接 `f'{tag}[{k}*="{w}"]'` 插值 `w`；
+    一旦 want_text 含 `"`/`\\` 即拼出坏选择器（SelectorSyntaxError，域策略静默失效）。
+    这里转义反斜杠与双引号，并把控制字符写成 CSS 十六进制转义（`\\<hex> `），
+    保证产出**语法合法**的选择器。普通文本不受影响（惰性：无非字母才转义）。
+    """
+    if not any(c == "\\" or c == '"' or ord(c) < 0x20 for c in v):
+        return v  # 热路径：常见文本零开销
+    out = []
+    for ch in v:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ord(ch) < 0x20:
+            out.append(f"\\{ord(ch):x} ")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def validate(el, t: Target) -> tuple:
@@ -263,7 +298,9 @@ class AdaptiveLocator:
                     if not isinstance(getattr(el, "tag", None), str):
                         continue
                     own = (el.text or "").strip()
-                    if own and any(w in own for w in t.want_text):
+                    # D-1：预筛也须容忍 Unicode 空白（如 `扫\u00a0码登录`），
+                    # 否则视觉正确的标签连候选都进不来 ⇒ 兜底静默 miss。
+                    if own and any(_norm_ws(w) in _norm_ws(own) for w in t.want_text):
                         good, why = validate(el, t)
                         res.attempts.append(("text", why))
                         if good:
@@ -275,7 +312,8 @@ class AdaptiveLocator:
             for k in t.attr_keys:
                 for w in (t.want_text or ()):
                     try:
-                        for c in _as_list(sel.css(f'{tag}[{k}*="{w}"]')):
+                        # D-2：属性值经转义后再拼选择器，防 `"`/`\` 拼出坏 CSS
+                        for c in _as_list(sel.css(f'{tag}[{k}*="{_css_attr_value(w)}"]')):
                             good, why = validate(c, t)
                             res.attempts.append(("domain", why))
                             if good:
@@ -349,7 +387,14 @@ async def locate_xpath(page, key: str) -> Optional[str]:
 
 
 async def click_adaptive(page, key: str) -> bool:
-    """自适应定位并用**真实鼠标**点击（沿用项目「真 mouse 事件」惯例）。"""
+    """自适应定位并用**真实鼠标**点击（沿用项目「真 mouse 事件」惯例）。
+
+    2026-09-29 修正（D-3 · OCR[15]）：`login_remote.py` 另写了一份近乎相同的
+    `_mouse_click_locator`（sleep 值不一致 ⇒ 两条路径漂移）。本模块保留此导出作为
+    **唯一**真鼠标点击实现，并把时序**对齐**到 login_remote 实测值
+    （move→0.12s→down→0.06s→up），使 login_remote 改调本函数时点击行为**零变化**，
+    从而消除漂移（具体改哪一行见交付报告）。
+    """
     xp = await locate_xpath(page, key)
     if not xp:
         return False
@@ -361,7 +406,9 @@ async def click_adaptive(page, key: str) -> bool:
         cx = box["x"] + box["width"] / 2
         cy = box["y"] + box["height"] / 2
         await page.mouse.move(cx, cy)
+        await asyncio.sleep(0.12)
         await page.mouse.down()
+        await asyncio.sleep(0.06)
         await page.mouse.up()
         logger.info("[dom_locator] 已点（自适应）{}", key)
         return True
