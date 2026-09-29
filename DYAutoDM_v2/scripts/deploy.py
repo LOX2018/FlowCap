@@ -302,6 +302,7 @@ def main() -> int:
     _kind = build_kind_const()
     _suffix = "-debug" if _kind == "debug" else ""
     dst_exe = app_root / f"DYAutoDM_v2_{norm(real)}{_suffix}.exe"
+    dst_main_exe = dst_exe  # 固定主程序路径：sidecar 循环会复用 dst_exe 变量，启动器必须指主程序
     shutil.copy2(exe_src, dst_exe)
     log("  ✅ 主程序 → %s (md5=%s) [%s]" % (dst_exe.name, _md5(dst_exe)[:12], _kind))
     # 清理旧版本：**只清理同类型**（debug 不删 release，反之亦然），
@@ -396,7 +397,7 @@ def main() -> int:
             _marker.write_text(str(app_root.resolve()) + "\n", encoding="utf-8")
             log("  ✅ 数据根声明 → %s（双击 exe 即用本环境）" % _marker.name)
             _launcher = app_root / "启动.cmd"
-            _exe_name = dst_exe.name
+            _exe_name = dst_main_exe.name  # 主程序 exe（dst_exe 已被 sidecar 循环复用，务必取固定值）
             _launcher.write_text(
                 (chr(13) + chr(10)).join([
                     "@echo off",
@@ -408,6 +409,7 @@ def main() -> int:
                     "",
                 ]),
                 encoding="utf-8",
+                newline="",  # 禁止文本模式换行转换（否则 CRLF 会多出一个 CR，cmd 可能误解析）
             )
             log("  ✅ 启动器 → %s（双击即用 · 数据根已显式注入）" % _launcher.name)
         except Exception as e:  # noqa: BLE001
@@ -418,7 +420,7 @@ def main() -> int:
     if ok_all:
         log("[部署] 完成。启动方式（任选其一）：")
         log("  · 双击同目录的「启动.cmd」（推荐 —— 已显式注入本环境数据根）")
-        log("  · 或直接双击 %s（同目录的 dyautodm_app_root.txt 会声明数据根）" % dst_exe.name)
+        log("  · 或直接双击 %s（同目录的 dyautodm_app_root.txt 会声明数据根）" % dst_main_exe.name)
         log("验收命令（启动应用后执行）：")
         log('  curl -s http://127.0.0.1:8000/api/version')
         log('  → 期望返回 {"backend":"%s", ...}' % exp)
