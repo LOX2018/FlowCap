@@ -106,6 +106,14 @@ export default function LivePage(props: PageProps) {
   const [roomMgr, setRoomMgr] = useState(false);
   // 申请连麦进行中（防重复点击）
   const [linkMicBusy, setLinkMicBusy] = useState(false);
+  // 2026-09-29【防连点】：启动/停止请求进行中锁。
+  // 为什么必须独立于 engineBusy：engineBusy 由**后端状态轮询**派生
+  // （engineState 来自 `ls?.engineState`，要等下一次轮询才更新），
+  // 从点击到状态刷新有 2~5s 窗口 —— 期间按钮不禁用，连点第二下必然
+  // 被后端 409 拒绝，弹出的却是「如需换房请先停止」，而**第一次其实已成功**
+  // ⇒ 误导用户以为启动失败。实测（run_20260929_110902.log）同一秒内
+  // 两次 /start：11:19:21 启动成功 + 11:19:21「已在 starting，拒绝重复启动（409）」。
+  const [engineReqBusy, setEngineReqBusy] = useState(false);
   // 任务中心「复用」载荷（标记已应用，避免容器回读覆盖用户刚改的字段）
   const reuseRef = useRef<ReusePayload | null>(null);
 
@@ -675,8 +683,13 @@ export default function LivePage(props: PageProps) {
                 <>
                   <Button
                     data-od-id="live-start"
-                    disabled={engineBusy || (realAccts.length > 1 && !activeAcct)}
+                    disabled={engineBusy || engineReqBusy || (realAccts.length > 1 && !activeAcct)}
                     onClick={() => {
+                      // 🔴 2026-09-29【防连点 · 必须有】：本锁独立于 engineBusy。
+                      // 实测缺陷：engineBusy 由后端状态轮询派生（2~5s 才刷新），
+                      // 期间按钮不禁用 ⇒ 连点第二下被 409 拒绝，弹「如需换房」
+                      // 而第一次其实已成功 ⇒ 误导为"启动失败"。
+                      if (engineReqBusy) return;
                       // 开启自动私信前核查账号情况
                       if (realAccts.length === 0) {
                         setAlert({
@@ -722,12 +735,25 @@ export default function LivePage(props: PageProps) {
                         dm_pool: selCfg.dm_pool || [],
                         acct: activeAcct || selCfg.acct || undefined,
                       };
+                      setEngineReqBusy(true);
                       api
                         .start(cfg)
-                        .then((r) =>
-                          push(r.ok ? "引擎已启动 · " + room : "启动失败: " + (r.state || "")),
-                        )
-                        .catch((e: unknown) => push("启动异常: " + errMsg(e)));
+                        .then((r) => {
+                          // 2026-09-29：`.then` 只处理成功/失败提示，
+                          // 锁在 finally 里统一释放（与连麦按钮同款范式）。
+                          if (r.ok) {
+                            push("引擎已启动 · " + room);
+                          } else {
+                            const st = (r as { state?: string; error?: string });
+                            push(
+                              "启动失败: " +
+                                (st.error || st.state ||
+                                 "已被拒绝（该账号可能已在监听；如需换房请先点「停止」）"),
+                            );
+                          }
+                        })
+                        .catch((e: unknown) => push("启动异常: " + errMsg(e)))
+                        .finally(() => setEngineReqBusy(false));
                     }}
                   >
                     <Play className="h-3.5 w-3.5" />开始自动私信

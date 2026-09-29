@@ -243,7 +243,22 @@ class Notifier:
                         f"{f' message_id={mid}' if mid else ''}"
                     )
                 else:
-                    logger.warning(f"[NTY-012] " + f"[notify] {cid} 推送失败 -> {target[:12]}…: {r.error}")
+                    # 2026-09-29：协议层固有限制（iLink 无 ctx / 窗口过期 /
+                    # 配额用尽）不算故障 → debug；真失败仍 WARNING。
+                    # 判据由渠道自身给出（channels.BaseChannel.is_protocol_limit），
+                    # notifier 不重复硬编码文案 —— 单一判据源。
+                    _is_pl = False
+                    try:
+                        _is_pl = bool(getattr(ch, "is_protocol_limit", None)
+                                      and ch.is_protocol_limit(r))
+                    except Exception:  # noqa: BLE001
+                        _is_pl = False
+                    if _is_pl:
+                        logger.debug(
+                            f"[notify] {cid} 跳过推送（协议层限制）-> "
+                            f"{str(target)[:12]}…: {r.error}")
+                    else:
+                        logger.warning(f"[NTY-012] " + f"[notify] {cid} 推送失败 -> {str(target)[:12]}…: {r.error}")
 
     def _cfg_of(self, cid: str) -> dict[str, Any]:
         for item in self.cfg.get("channels", []) or []:

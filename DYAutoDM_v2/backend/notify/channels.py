@@ -126,7 +126,9 @@ class BaseChannel(ABC):
         # 避免盲推 + 无谓重试。覆写见 WeixinOCChannel.preflight。
         block = self.preflight(target)
         if block:
-            logger.warning(f"[NTY-015] [notify:{self.name}] 前置检查未通过: {block}")
+            # 2026-09-29：preflight 拦下的同样属协议层限制（iLink 无 ctx/额度
+            # 用尽）⇒ 降为 debug，与 is_protocol_limit 口径一致。
+            logger.debug(f"[NTY-015] [notify:{self.name}] 前置检查未通过: {block}")
             return ChannelResult(False, self.name, block)
         last = ""
         for i in range(retries + 1):
@@ -137,9 +139,18 @@ class BaseChannel(ABC):
                     return r
                 last = r.error
                 if self._is_terminal_error(r):
-                    logger.warning(
-                        f"[NTY-014] [notify:{self.name}] 确定性失败，跳过重试: {last}"
-                    )
+                    # 2026-09-29：协议层固有限制（iLink 无 ctx / 窗口过期 / 配额
+                    # 用尽）不属故障，降为 debug —— 避免每次引擎停止都刷 WARNING
+                    # 淹没真信号（用户拍板「无 ctx 时跳过推送、不报 WARN」）。
+                    # 真故障（HTTP/网络/鉴权）仍走下面的 warning，未被削弱。
+                    if self.is_protocol_limit(r):
+                        logger.debug(
+                            f"[notify:{self.name}] 协议层限制，跳过推送: {last}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[NTY-014] [notify:{self.name}] 确定性失败，跳过重试: {last}"
+                        )
                     return r
             except Exception as e:  # noqa: BLE001
                 last = f"{type(e).__name__}: {e}"
@@ -168,6 +179,34 @@ class BaseChannel(ABC):
         判据来源：iLink `ret=-2` 属【确定性失败】（会话上下文不可用/参数非法），
         与网络瞬时故障（值得重试）性质不同。
         """
+        return False
+
+    def is_protocol_limit(self, r: "ChannelResult") -> bool:
+        """该失败是否属**协议层固有限制**（应静默，不算故障）。
+
+        2026-09-29（用户拍板「无 ctx 时跳过、不报 WARN」）：
+        iLink 是**被动应答**模型 —— 必须对方先给 Bot 发过消息（拿到
+        context_token）才能回推，且每 10 条需一次新入站刷新（官方规范，
+        无刷新接口）。因此「没 ctx / 窗口过期 / 配额用尽」导致的失败是
+        **协议设计使然**，不是系统故障：每次引擎停止都刷一条 WARNING
+        只会淹没真信号（实测 09-28 单日 6 条、09-29 2 条）。
+
+        判据刻意收窄（只放行这几条已知协议限制文案），
+        避免把真实故障也静默掉：
+          · 缺 context_token
+          · 外发额度已用尽 / 回复窗口
+          · 服务端 ret=-2 prepare failed（=窗口过期/额度用尽，注释已证）
+        其余失败（HTTP 错误 / 网络异常 / 鉴权失败）**照常 WARNING**。
+        """
+        err = str(getattr(r, "error", "") or "")
+        if not err:
+            return False
+        if "context_token" in err:
+            return True
+        if "外发额度已用尽" in err or "回复窗口" in err:
+            return True
+        if "ret=-2" in err and "prepare failed" in err:
+            return True
         return False
 
     async def close(self) -> None:
@@ -500,7 +539,9 @@ class WeixinOCChannel(BaseChannel):
         # L-13：与 send() 一致做前置检查（ctx 存在 + 额度未用尽）
         block = self.preflight(target)
         if block:
-            logger.warning(f"[NTY-015] [notify:{self.name}] 前置检查未通过: {block}")
+            # 2026-09-29：preflight 拦下的同样属协议层限制（iLink 无 ctx/额度
+            # 用尽）⇒ 降为 debug，与 is_protocol_limit 口径一致。
+            logger.debug(f"[NTY-015] [notify:{self.name}] 前置检查未通过: {block}")
             return ChannelResult(False, self.name, block)
         ctx = self._ctx.get(str(target), "")
         try:

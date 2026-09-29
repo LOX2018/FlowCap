@@ -180,11 +180,17 @@ async def start_engine(request: Request, config: TaskConfig, acct: str = Query("
     async with lock:
         if adm.state in (EngineState.RUNNING, EngineState.STARTING):
             logger.info(f"[engine] acct={key} 已在 {adm.state.value}，拒绝重复启动（409）")
-            raise HTTPException(
-                409,
-                f"该账号已在监听（acct={key}，state={adm.state.value}）—— "
-                f"如需换房请先停止",
-            )
+            # 2026-09-29：文案澄清。原「如需换房请先停止」在**连点**场景下是误导
+            # （实测 frontend 缺请求锁 ⇒ 第二下被拒，而第一下已成功启动）。
+            # 现区分两种状态如实说明，并给出可操作路径。
+            _st = adm.state.value
+            if _st == "starting":
+                _msg = (f"该账号正在启动中（acct={key}）—— 请等待就绪，"
+                        f"无需重复点击；若确要切换直播间，请先点「停止」再启动")
+            else:
+                _msg = (f"该账号已在监听中（acct={key}）—— "
+                        f"如需切换直播间，请先点「停止」再启动")
+            raise HTTPException(409, _msg)
 
         def _on_start_done(t: asyncio.Task) -> None:
             if t.cancelled():
