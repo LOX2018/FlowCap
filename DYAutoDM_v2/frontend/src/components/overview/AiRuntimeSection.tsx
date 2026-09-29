@@ -20,13 +20,10 @@
  * ## 搬迁保真声明
  * 启停逻辑、统计字段、最近回复展示、toast 文案与时长 **逐字搬迁**自 pages/ai.tsx。
  */
-import { useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Square } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowUpRight } from "lucide-react";
 import { PageProps } from "../../api/client";
-import { Button } from "@/components/ui/button";
-import { Tone, Section, Toolbar } from "@/components/page/kit";
-import { errMsg } from "@/lib/utils";
+import { Section, Tone, KeyValue, Blank, SkeletonRows } from "@/components/page/kit";
 
 interface AiStatus {
   ok: boolean; running: boolean; enabled: boolean; processed: number;
@@ -35,39 +32,23 @@ interface AiStatus {
 }
 
 export default function AiRuntimeSection(props: PageProps) {
-  const { api, push } = props;
-  const qc = useQueryClient();
+  const { api, ready } = props;
 
-  const { data: status } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["ai-status"],
     queryFn: () => api.aiStatus() as unknown as Promise<AiStatus>,
     refetchInterval: 5000,
+    enabled: !!ready,
   });
 
-  const running = !!status?.running;
-  const enabled = !!status?.enabled;
-  const st: Partial<AiStatus> = status || {};
-
-  const toggleRun = useCallback(async () => {
-    try {
-      // 2026-09-17 修补（OCR 审查 HIGH —— 按钮语义与实际动作相反）：
-      // 原实现用 `enabled`（服务端配置开关）决定 start/stop，而按钮文案/颜色
-      // 由 `running`（实际运行态）驱动。二者不一致时（如 enabled=true 但
-      // running=false，界面显示"启动监听"）点击会走 aiStop() ——
-      // **「启动」按钮执行了停止**。现改为与界面同一判据（running）。
-      if (running) await api.aiStop();
-      else await api.aiStart();
-      await qc.invalidateQueries({ queryKey: ["ai-status"] });
-      await qc.invalidateQueries({ queryKey: ["ai-config"] });
-      push(running ? "AI 自动回复已停止" : "AI 自动回复已启动（全自动监听）", 5000);
-    } catch (e) {
-      push(`操作失败: ${errMsg(e)}`, 8000);
-    }
-  }, [running, api, push, qc]);
+  const st: Partial<AiStatus> = data || {};
+  const running = !!st.running;
+  const enabled = !!st.enabled;
 
   return (
     <Section
       title="AI 自动回复"
+      description="运行态只读展示 · 启停在「直播」页"
       data-od-id="overview-ai-runtime"
       actions={
         <Tone tone={running ? "ok" : enabled ? "warn" : "mute"}>
@@ -75,27 +56,45 @@ export default function AiRuntimeSection(props: PageProps) {
         </Tone>
       }
     >
-      <Toolbar className="mb-2.5">
-        <Button variant={running ? "danger" : "default"} onClick={toggleRun}>
-          {running
-            ? <><Square className="h-4 w-4" />停止监听</>
-            : <><Play className="h-4 w-4" />启动监听</>}
-        </Button>
-        <span className="text-[0.74rem] text-[var(--color-text-secondary)]">
-          已处理 <b className="text-[var(--color-text)]">{st.processed ?? 0}</b> · 已回复{" "}
-          <b className="text-[var(--color-text)]">{st.replied ?? 0}</b> · 线索{" "}
-          <b className="text-[var(--color-text)]">{st.leads_total ?? 0}</b> · 错误{" "}
-          <b className="text-[var(--color-text)]">{st.errors ?? 0}</b>
-        </span>
-      </Toolbar>
-      {st.last_reply && (
-        <div className="text-[0.72rem] text-[var(--color-text-muted)]">
-          最近回复：{st.last_reply}
+      {isLoading ? (
+        <SkeletonRows rows={2} />
+      ) : isError ? (
+        <Blank>
+          读取 AI 状态失败：{(error as Error)?.message || "后端无响应"}
+          <br />
+          <span className="text-[0.72rem]">数据源 GET /api/ai —— 请确认后端已启动。</span>
+        </Blank>
+      ) : (
+        <div className="space-y-2.5">
+          <KeyValue
+            cols={2}
+            items={[
+              { k: "已处理", v: st.processed ?? 0, mono: true },
+              { k: "已回复", v: st.replied ?? 0, mono: true },
+              { k: "线索", v: st.leads_total ?? 0, mono: true },
+              { k: "错误", v: st.errors ?? 0, mono: true },
+            ]}
+          />
+          {st.last_reply ? (
+            <div className="truncate text-[0.72rem] text-[var(--color-text-muted)]">
+              最近回复：{st.last_reply}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.72rem] text-[var(--color-text-muted)]">
+            <span>启停在「直播」页；回复内容与护栏在「配置中心 → AI 回复引擎」</span>
+            {props.setTab ? (
+              <button
+                type="button"
+                onClick={() => props.setTab!("live")}
+                className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] underline-offset-2 hover:underline"
+              >
+                去直播页
+                <ArrowUpRight className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
         </div>
       )}
-      <div className="mt-2 text-[0.68rem] text-[var(--color-text-muted)]">
-        回复内容与护栏在「配置中心 → AI 回复引擎」；留资线索在「私信」页。
-      </div>
     </Section>
   );
 }

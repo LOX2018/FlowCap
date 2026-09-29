@@ -18,13 +18,10 @@
  * healthy 确认成功 / degraded 部分成功（带覆盖率）/ failed 确认失败 /
  * unknown **无法判定**（如观测窗内未活动）—— unknown 不得显示成健康。
  */
-import { useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, ShieldCheck, ShieldAlert, ShieldX, HelpCircle } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ShieldCheck, ShieldAlert, ShieldX, HelpCircle, ArrowUpRight } from "lucide-react";
 import { PageProps } from "../../api/client";
-import { Button } from "@/components/ui/button";
-import { Section, Tone, Blank } from "@/components/page/kit";
-import { errMsg } from "@/lib/utils";
+import { Section, Tone, Blank, SkeletonRows } from "@/components/page/kit";
 
 type ProbeState = "healthy" | "degraded" | "failed" | "unknown";
 
@@ -78,14 +75,14 @@ function fmtNext(ts?: number | null): string {
 }
 
 export default function CapabilityHealthSection(props: PageProps) {
-  const { api, push } = props;
-  const qc = useQueryClient();
+  const { api, ready } = props;
 
-  const { data } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["probe-status"],
     queryFn: () =>
       api.getProbeStatus() as unknown as Promise<{ ok: boolean; patrol: PatrolStatus }>,
     refetchInterval: 30000,
+    enabled: !!ready,
   });
 
   const patrol: PatrolStatus = (data?.patrol || {}) as PatrolStatus;
@@ -95,69 +92,77 @@ export default function CapabilityHealthSection(props: PageProps) {
   const meta = STATE_META[st] || STATE_META.unknown;
   const { Icon } = meta;
 
-  const runNow = useCallback(async () => {
-    try {
-      await api.runProbePatrol();
-      await qc.invalidateQueries({ queryKey: ["probe-status"] });
-      push("已跑一轮能力巡检（只读本地事实）", 4000);
-    } catch (e) {
-      push(`巡检失败: ${errMsg(e)}`, 8000);
-    }
-  }, [api, push, qc]);
-
   return (
     <Section
       title="能力健康"
-      description="只看本地事实，零网络零浏览器"
+      description="只读摘要 · 巡检操作在「配置中心 → 系统」"
+      data-od-id="overview-capability-health"
       actions={
-        <Button size="sm" variant="outline" onClick={runNow} data-od-id="probe-run-now">
-          <RefreshCw className="mr-1 h-3.5 w-3.5" />
-          立即巡检
-        </Button>
-      }
-    >
-      {/* 汇总行：总体态徽章 + 四态计数（纯文本，避免与状态徽章混淆）+ 巡检节奏 */}
-      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
         <Tone tone={meta.tone}>
           <Icon className="mr-1 h-3.5 w-3.5" />
           {meta.label}
         </Tone>
-        <span className="text-[0.78rem] text-[var(--color-text-secondary)]">
-          健康 {sum.healthy ?? 0} · 降级 {sum.degraded ?? 0} · 失效 {sum.failed ?? 0} · 未定论{" "}
-          {sum.unknown ?? 0}
-          {sum.total ? `（共 ${sum.total} 项）` : ""}
-        </span>
-        <span className="text-[0.78rem] text-[var(--color-text-muted)]">
-          {patrol.enabled === false
-            ? "定时巡检：已关闭"
-            : `定时巡检：每 ${patrol.interval_min ?? 15} 分钟 · 已跑 ${patrol.runs ?? 0} 轮 · 下次 ${fmtNext(patrol.next_run_at)}`}
-        </span>
-      </div>
-
-      {/* 需关注项（degraded/failed 的 能力@账号） */}
-      {(last.attention || []).length > 0 ? (
-        <div className="mb-3 flex flex-wrap gap-2" data-od-id="probe-attention">
-          {(last.attention || []).map((a) => {
-            const [cap, acct] = String(a).split("@");
-            return (
-              <Tone key={a} tone="danger">
-                <ShieldAlert className="mr-1 h-3 w-3" />
-                {CAP_NAME[cap] || cap}
-                {acct ? ` · ${acct}` : ""}
-              </Tone>
-            );
-          })}
-        </div>
-      ) : null}
-
-      {!patrol.runs ? (
-        <Blank>尚无巡检记录 —— 后端启动后会自动跑首轮；也可点右上「立即巡检」。</Blank>
+      }
+    >
+      {isLoading ? (
+        <SkeletonRows rows={2} />
+      ) : isError ? (
+        <Blank>
+          读取巡检状态失败：{(error as Error)?.message || "后端无响应"}
+          <br />
+          <span className="text-[0.72rem]">数据源 GET /api/probe/status —— 请确认后端已启动。</span>
+        </Blank>
       ) : (
-        <div className="flex flex-col gap-1">
-          <span className="text-[0.78rem] text-[var(--color-text-muted)]">
-            上次巡检 {last.at || patrol.last_run_at || "—"}
-            {typeof last.elapsed === "number" ? ` · 耗时 ${last.elapsed}s` : ""}
-          </span>
+        <div className="space-y-2.5">
+          {/* 汇总行：四态计数（纯文本，避免与状态徽章混淆）+ 巡检节奏 */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.78rem] text-[var(--color-text-secondary)]">
+            <span>
+              健康 <b className="text-[var(--color-text)]">{sum.healthy ?? 0}</b> · 降级{" "}
+              <b className="text-[var(--color-text)]">{sum.degraded ?? 0}</b> · 失效{" "}
+              <b className="text-[var(--color-text)]">{sum.failed ?? 0}</b> · 未定论{" "}
+              <b className="text-[var(--color-text)]">{sum.unknown ?? 0}</b>
+              {sum.total ? `（共 ${sum.total} 项）` : ""}
+            </span>
+            <span className="text-[var(--color-text-muted)]">
+              {patrol.enabled === false
+                ? "定时巡检：已关闭"
+                : `每 ${patrol.interval_min ?? 15} 分钟 · 下次 ${fmtNext(patrol.next_run_at)}`}
+            </span>
+          </div>
+
+          {/* 需关注项（degraded/failed 的 能力@账号） */}
+          {(last.attention || []).length > 0 ? (
+            <div className="flex flex-wrap gap-2" data-od-id="overview-probe-attention">
+              {(last.attention || []).map((a) => {
+                const [cap, acct] = String(a).split("@");
+                return (
+                  <Tone key={a} tone="danger">
+                    <ShieldAlert className="mr-1 h-3 w-3" />
+                    {CAP_NAME[cap] || cap}
+                    {acct ? ` · ${acct}` : ""}
+                  </Tone>
+                );
+              })}
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.72rem] text-[var(--color-text-muted)]">
+            <span>
+              上次巡检 {last.at || patrol.last_run_at || "—"}
+              {typeof last.elapsed === "number" ? ` · 耗时 ${last.elapsed}s` : ""}
+            </span>
+            {props.setTab ? (
+              <button
+                type="button"
+                onClick={() => props.setTab!("settings")}
+                className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] underline-offset-2 hover:underline"
+              >
+                去巡检
+                <ArrowUpRight className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
+
           {last.error ? (
             <Tone tone="danger">巡检异常：{String(last.error).slice(0, 120)}</Tone>
           ) : null}

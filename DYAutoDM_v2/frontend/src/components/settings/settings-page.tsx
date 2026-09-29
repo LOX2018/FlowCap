@@ -24,7 +24,7 @@ import {
   // 2026-09-18 审查修复（#54）：`MessageSquare` 原先在下方**重复 import**
   // 同一个模块（lucide-react 被 import 两次）；合并到这一处。
   Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users, MessageSquare,
-  Plug,
+  Plug, ShieldCheck,
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
@@ -38,13 +38,15 @@ import NicknameFallbackSection from "./NicknameFallbackSection";
 import McpSection from "./McpSection";
 // ADR-018 F6：日夜主题切换的唯一可写入口（主题引擎本身早已存在，缺的是入口）
 import AppearanceSection from "./AppearanceSection";
+// 2026-09-30：能力巡检入口从总览页迁来（总览改为纯只读看板）。
+import ProbeSection from "./ProbeSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type SectionKey =
   | "general" | "send" | "live" | "capture" | "dm"
-  | "ai" | "agent" | "tag" | "notify" | "mcp" | "crawlpolicy";
+  | "ai" | "agent" | "tag" | "notify" | "mcp" | "crawlpolicy" | "system";
 
 const TABS: {
   key: SectionKey;
@@ -67,6 +69,10 @@ const TABS: {
   // 2026-09-25：补 MCP 入口。此前后端 7 个端点已完整，但前端零引用
   // ⇒ 用户「看不到入口、也不知道令牌」= 能力在位但不可得。
   { key: "mcp", label: "MCP 服务", hint: "AI 客户端接入（stdio 免令牌 / 本机 HTTP 需令牌）", icon: <Plug className="h-3.5 w-3.5" /> },
+  // 2026-09-30：系统运维（能力巡检）。总览页改为纯只读看板后，
+  // 「立即巡检」的**唯一**入口落在此处 —— 端点此前仅总览页一处调用，
+  // 不补入口会让 /api/probe/patrol 变成「在位但不可得」。
+  { key: "system", label: "系统", hint: "能力巡检（只读本地事实，零网络零浏览器）", icon: <ShieldCheck className="h-3.5 w-3.5" /> },
 ];
 
 export default function SettingsPage(props: PageProps) {
@@ -81,7 +87,10 @@ export default function SettingsPage(props: PageProps) {
 
       <div className="flex items-start gap-4">
         {/* 左侧子导航 */}
-        <nav className="w-[168px] shrink-0 space-y-0.5">
+        {/* 独立固定：main 是滚动容器，nav 用 sticky 留在流内（保留 168px 占位与 gap-4，
+            无需 fixed 的宽度补偿）。top-0 贴 main 顶边；self-start 防止被拉伸导致无吸附余量；
+            max-h/overflow 使导航项超高时内部滚动且不把滚动链传导回 main。 */}
+        <nav className="w-[168px] shrink-0 space-y-0.5 sticky top-0 self-start z-20 max-h-[calc(100vh-120px)] overflow-y-auto overscroll-contain bg-[var(--color-background)] py-1">
           {TABS.map((t) => {
             const on = section === t.key;
             return (
@@ -156,6 +165,7 @@ export default function SettingsPage(props: PageProps) {
             {section === "crawlpolicy" && <CrawlPolicySection {...props} />}
             {section === "notify" && <NotifySection {...props} />}
             {section === "mcp" && <McpSection push={props.push} />}
+            {section === "system" && <ProbeSection {...props} />}
           </CardContent>
         </Card>
       </div>
