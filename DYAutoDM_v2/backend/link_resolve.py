@@ -271,7 +271,7 @@ def resolve_via_reflow(raw, auth=None):
     return None, None, source
 
 
-def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account_name=None):
+def _browser_resolve(url, headless=False, account_name=None):
     """用已登录浏览器打开链接，等其跳转到直播间页，再抠 live_id。
 
     适用于用户主页等需要登录态 + JS 跳转才能到达直播间的场景（备用）。
@@ -298,13 +298,29 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account
     from auto_dm import config as _cfg
     from auto_dm.vbrowser import should_use_vb, launch_sync
 
+    # 2026-09-29（L-16）：单 profile 铁律 —— profile 必须由账号推导
+    # （accounts.profile_dir_of(env_path)），**不得**回落到已废弃的字面量。
+    # 实测原实现漏传 user_data_dir，launch_sync 会 fail-loud 抛错 ⇒ 该兜底
+    # 路径实际不可用（真到需要时才发现）。此处按铁律补上推导。
+    _prof = None
+    if account_name:
+        try:
+            from auto_dm import accounts as _acc
+            _prof = _acc.profile_dir_of(_acc.env_path_of(account_name))
+        except Exception as _e:  # noqa: BLE001
+            logger.warning(f"[LIVE-021] [resolve] 推导账号 profile 失败({account_name}): {_e}")
+    if not _prof:
+        logger.error("[LIVE-021] [resolve] 无账号名，无法推导固定 profile —— "
+                     "浏览器兜底跳过（单 profile 铁律禁止临时目录）")
+        return None, None
+
     final_url = None
     live_id = None
     try:
         _vb, _vb_mode = should_use_vb(_cfg)
         logger.info(f"[resolve] 使用指纹浏览器内核解析跳转 (mode={_vb_mode})")
         _pw, _browser, context, _backend = launch_sync(
-            _vb_mode, _cfg, headless=headless, account=account_name)
+            _vb_mode, _cfg, headless=headless, user_data_dir=_prof, account=account_name)
     except RuntimeError as e:
         logger.error(f"[LIVE-018] " + f"[resolve] 浏览器解析不可用（已禁用原生 Playwright，跳过浏览器解析）：{e}")
         return None, None
@@ -351,7 +367,7 @@ def _browser_resolve(url, user_data_dir="pw_profile_dm", headless=False, account
     return live_id, final_url
 
 
-def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=None, account_name=None):
+def resolve_live_id(raw, headless=False, auth=None, account_name=None):
     """解析粘贴文本为 (live_id, source_url)。失败抛 ValueError。
 
     解析顺序：
@@ -404,8 +420,8 @@ def resolve_live_id(raw, user_data_dir="pw_profile_dm", headless=False, auth=Non
 
     if not live_id:
         logger.info("[resolve] 尝试用浏览器解析（用户主页/需登录态）...")
-        live_id, source = _browser_resolve(raw, user_data_dir=user_data_dir,
-                                           headless=headless, account_name=account_name)
+        live_id, source = _browser_resolve(raw, headless=headless,
+                                           account_name=account_name)
 
     if not live_id:
         raise ValueError(

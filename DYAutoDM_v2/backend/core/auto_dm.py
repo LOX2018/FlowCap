@@ -315,7 +315,7 @@ class AutoDM:
             )
         auth, _fresh_cookie = enrich_auth(
             auth, cookies_dy=cookies, headless=False,
-            user_data_dir="pw_profile_dm", env_path=env_path
+            env_path=env_path
         )
         return auth
 

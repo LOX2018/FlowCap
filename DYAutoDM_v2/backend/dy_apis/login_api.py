@@ -373,7 +373,8 @@ class DYLoginApi:
                     pass
 
     # 扫码登录并抓 ticket
-    async def login_grab_ticket(self, headless=False, timeout=300, user_data_dir="pw_profile_dm",
+    # 2026-09-29（L-16）：`user_data_dir` 死参数已移除（实现恒用 profile_dir_of(env_path)）。
+    async def login_grab_ticket(self, headless=False, timeout=300,
                                 env_path=".env", force=False,
                                 landing_url="https://www.douyin.com/chat?isPopup=1"):
         """捕获私信签名凭证。

@@ -19,8 +19,10 @@ import asyncio
 from loguru import logger
 
 
+# 2026-09-29（L-16）：`user_data_dir` 死参数已移除 —— 实现恒以
+# `profile_dir_of(env_path)` 推导（单 profile 铁律），传字面量既被忽略又误导。
 def enrich_auth(auth, cookies_dy="", headless=False,
-                user_data_dir="pw_profile_dm", env_path=".env", force=False,
+                env_path=".env", force=False,
                 landing_url="https://www.douyin.com/chat?isPopup=1"):
     """补全 auth 的私信签名字段。
 
@@ -196,7 +198,7 @@ def save_cookie_to_env(cookie_str, env_path=".env"):
     logger.info(f"[auth] 已将 cookie 加密写入 {env_path}.enc")
 
 
-def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
+def get_current_auth(headless=False):
     """构造并返回当前账号（accounts 选中）的已登录 auth。
 
     供需要「当前登录态」的入口（如 web_bridge 的搜索/点赞/收藏等）复用，
@@ -222,7 +224,7 @@ def get_current_auth(user_data_dir="pw_profile_dm", headless=False):
         auth.perepare_auth(cookies, "", "")
     auth, cookie_str = enrich_auth(
         auth, cookies_dy=cookies, headless=headless,
-        user_data_dir=user_data_dir, env_path=env_path or ".env", force=bool(not cookies))
+        env_path=env_path or ".env", force=bool(not cookies))
     ensure_uid(auth)
     if not getattr(auth, "cookie", None):
         logger.warning(f"[AUTH-010] " + "[auth] 当前账号无可用的登录态，请在「账号管理」完成登录。")

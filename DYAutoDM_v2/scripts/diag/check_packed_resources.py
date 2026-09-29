@@ -13,20 +13,24 @@ Camoufox 接入过程中，连续 6 个「只在打包态暴露、源码态全�
 对「源码态能 import 成功的每个模块」，取其包目录下的**全部非 .py 文件**，
 逐个检查是否存在于打包产物的对应位置。缺失即为打包漏漏项。
 
+## contents 目录名（2026-09-29 更新）
+
+contents 依赖目录名已由 `_internal` 改为 **`appinternals`**（原因：WiX 会把以 `_`
+开头的目录名规范化、剥掉下划线，而 PyInstaller 启动器只认原名 ⇒ MSI 装出来崩）。
+本自检**自动探测** `appinternals` 与旧名 `_internal`，不再硬编码单一名字
+（历史缺陷：硬编码 `_internal` ⇒ 每轮构建都误报「未找到 _internal 目录」）。
+
 ## 用法
 
     python scripts/diag/check_packed_resources.py <packed_dir> [模块名...]
 
-    packed_dir: 打包产物目录（含 _internal/ 的目录），如
-                C:\\temp\\dyautodm_design
+    packed_dir: 打包产物目录（内含 contents 依赖目录），如 `src-tauri/binaries`
     模块名:     可选，默认检查 Camoufox 依赖链
 
 退出码：0=全齐；1=有缺失（并打印清单）。
 """
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import os
 import sys
 
@@ -36,6 +40,20 @@ DEFAULT_MODULES = (
     "playwright.sync_api", "patchright.sync_api",
     "orjson", "maxminddb", "geoip2", "screeninfo", "ua_parser",
 )
+
+#: contents 依赖目录候选名（新名优先；旧名兼容）
+_CONTENTS_NAMES = ("appinternals", "_internal")
+
+
+def _find_contents_dir(packed_dir: str) -> str | None:
+    """在 packed_dir 下探测 contents 依赖目录（appinternals 或 _internal）。"""
+    for name in _CONTENTS_NAMES:
+        p = os.path.join(packed_dir, name)
+        if os.path.isdir(p):
+            return p
+    if os.path.basename(os.path.normpath(packed_dir)) in _CONTENTS_NAMES:
+        return packed_dir
+    return None
 
 
 def _pkg_root(mod: str) -> str | None:
@@ -48,7 +66,6 @@ def _pkg_root(mod: str) -> str | None:
     if not spec or not spec.origin or spec.origin in ("built-in", "frozen"):
         return None
     p = os.path.dirname(spec.origin)
-    # 上溯到顶层包目录（含 __init__.py 的最外层）
     while os.path.basename(os.path.dirname(p)) not in ("site-packages", "dist-packages", ""):
         parent = os.path.dirname(p)
         if not os.path.isfile(os.path.join(parent, "__init__.py")):
@@ -77,13 +94,10 @@ def collect_resources(modules) -> dict[str, list[str]]:
 
 
 def check(packed_dir: str, modules=DEFAULT_MODULES) -> tuple[bool, dict]:
-    internal = os.path.join(packed_dir, "_internal")
-    if not os.path.isdir(internal):
-        # 也支持传统布局：<packed_dir>/<pkg>/ 或直接 _internal 在 packed_dir 下
-        if os.path.isdir(os.path.join(packed_dir, "_internal")):
-            internal = os.path.join(packed_dir, "_internal")
-        else:
-            return False, {"error": f"未找到 _internal 目录: {internal}"}
+    internal = _find_contents_dir(packed_dir)
+    if not internal:
+        return False, {"error":
+                       f"未找到 contents 依赖目录（{' / '.join(_CONTENTS_NAMES)}）: {packed_dir}"}
     res = collect_resources(modules)
     missing: dict[str, list[str]] = {}
     for pkg, files in res.items():
@@ -91,7 +105,7 @@ def check(packed_dir: str, modules=DEFAULT_MODULES) -> tuple[bool, dict]:
                 if not os.path.exists(os.path.join(internal, pkg, f))]
         if miss:
             missing[pkg] = miss
-    return (not missing), {"checked": res, "missing": missing}
+    return (not missing), {"checked": res, "missing": missing, "contents": internal}
 
 
 def main() -> int:
@@ -107,6 +121,7 @@ def main() -> int:
     checked = info["checked"]
     missing = info["missing"]
     print(f"打包目录: {packed}")
+    print(f"contents 依赖目录: {info.get('contents')}")
     print(f"检查包数: {len(checked)}（资源文件共 {sum(len(v) for v in checked.values())} 个）")
     print()
     if ok:

@@ -355,11 +355,45 @@ def r10_no_cargo_target_in_src() -> None:
         check(True, "R10", "源码树无 cargo target（构建缓存已迁出树外）")
 
 
+# ── R11: 得用已废弃 profile 字面量作 user_data_dir（单 profile 铁律）────────
+def r11_no_legacy_profile_literal() -> None:
+    """铁律：账号浏览器 profile 一律由 `accounts.profile_dir_of(env_path)` 推导。
+
+    `vb_profile_default` / `vb_profile_dm` / `pw_profile_dm` 是**历史遗留名**：
+      - `vb_profile_dm` 全仓零业务引用（死链）；
+      - `pw_profile_dm` 曾是默认形参，但实现恒被 `profile_dir_of` 覆盖 ⇒ 传它无效；
+      - `vb_profile_default` 仅作默认账号的 profile **名**（解析到 app_root()，非随包资源）。
+    把它们当 `user_data_dir=` 实参传入，会让「单 profile 铁律」在读者/后续改动中失真（实测
+    2026-09-29：`link_resolve` 因此漏传 profile，兜底路径直接抛错不可用）。
+    判据：源码中不得出现 `user_data_dir="<遗留名>"`（含 def 默认值）。
+    """
+    _legacy = ("vb_profile_default", "vb_profile_dm", "pw_profile_dm")
+    hits = []
+    for f in walk(BACKEND, (".py",)):
+        if os.path.basename(f) == "check_iron_rules.py":
+            continue
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for i, line in enumerate(fh, 1):
+                    if line.lstrip().startswith("#") or "user_data_dir" not in line:
+                        continue
+                    for _n in _legacy:
+                        if (f'user_data_dir="{_n}"' in line or f"user_data_dir='{_n}'" in line
+                                or f'user_data_dir = "{_n}"' in line
+                                or f"user_data_dir = '{_n}'" in line):
+                            hits.append(f"{os.path.basename(f)}:{i}")
+                            break
+        except Exception:
+            continue
+    check(not hits, "R11", f"无遗留 profile 字面量作 user_data_dir（命中 {len(hits)}"
+                           f"{': ' + hits[0] if hits else ''}）")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
          r8_data_contract, r9_audit_redline,
-         r10_no_cargo_target_in_src]
+         r10_no_cargo_target_in_src, r11_no_legacy_profile_literal]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -435,6 +469,9 @@ def selftest() -> int:
     os.makedirs(os.path.join(fake_src, "members"), exist_ok=True)
     #   R10 源码树出现 cargo target
     os.makedirs(os.path.join(fake_src, "src-tauri", "target"), exist_ok=True)
+    #   R11 用已废弃 profile 字面量作 user_data_dir
+    with open(os.path.join(fake_backend, "legacy.py"), "w", encoding="utf-8") as f:
+        f.write('launch(user_data_dir="pw_profile_dm")\n')
     #   R3 backend 出现 .exe
     with open(os.path.join(fake_backend, "evil.exe"), "wb") as f:
         f.write(b"MZ")
@@ -493,7 +530,7 @@ def selftest() -> int:
     saved_dc = globals()["_load_datacontract_module"]
     globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R8-1"}
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R8-1"}
     for r in RULES:
         try:
             r()

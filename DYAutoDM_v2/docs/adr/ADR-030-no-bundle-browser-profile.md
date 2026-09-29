@@ -106,3 +106,45 @@
   → 这正是 R1 要拦的形态。**design/test 工作流始终显式设 `DY_APP_ROOT`**，故不受影响；
   R1 为兜底。
 - 既有测试环境里**已存在**的 `accounts/<name>/profile`（含登录态）**不动** —— 它们是运行期数据。
+
+---
+
+## 7. 附带修复（L-16 同批，2026-09-30）
+
+### 7.1 `link_resolve` 兜底 profile 缺陷（真缺陷，已修）
+
+`_browser_resolve()` 的**直开浏览器兜底路径**调用 `launch_sync(...)` 时**漏传
+`user_data_dir`**（只传 `account=`）→ 按单 profile 铁律，`launch_sync` 会 **fail-loud 抛错**
+⇒ 该兜底实际**不可用**（真到 BCC `/resolve_url` 失败时才发现）。
+**修法**：启动前由 `accounts.profile_dir_of(env_path_of(account_name))` 推导固定 profile；
+无账号名则显式 fail-loud 跳过（不回落临时/字面量 profile）。
+
+### 7.2 消除 3 处误导性死参数（同类缺陷温床）
+
+`enrich_auth` / `get_current_auth` / `login_grab_ticket` 的 `user_data_dir="pw_profile_dm"`
+形参**从未被使用**（实现恒以 `profile_dir_of(env_path)` 覆盖）—— 死参数既误导读者、又让
+「单 profile 铁律」在后续改动中失真。全部移除。
+
+### 7.3 新增门禁 R11（防复发）
+
+`check_iron_rules.py` **R11**：源码中不得出现 `user_data_dir="<遗留名>"`
+（`vb_profile_default` / `vb_profile_dm` / `pw_profile_dm`），含 def 默认值。
+（本项目已有同类先例：`web_probe.py:96` 记录过 `user_data_dir="pw_profile_probe"` 死参数被移除。）
+
+### 7.4 修复陈旧自检（误导性误报）
+
+`scripts/diag/check_packed_resources.py` 硬编码 `_internal` 目录名，而 contents 目录
+v0.45.97 起已改名 `appinternals` ⇒ **每轮构建都误报「未找到 _internal 目录」**。
+改为自动探测（`appinternals` 优先 / 兼容 `_internal`）。修后复跑：**260 个资源文件齐备 ✅**。
+
+### 7.5 MSI 实测（回答「不打包 profile 对 MSI 有无影响」）
+
+实机出包 v0.45.99 MSI（250,937,397 B，sha256 `3692586e…`）：
+- `✅ ProductVersion = 0.45.99`
+- `✅ contents 目录落为具名子目录`
+- `✅ 无 $RESOURCE/_up_ 目录`
+- **`✅ 无随包 profile（不泄露登录凭证）`** ← 本 ADR 的直接判据
+- WiX 源 `main.wxs` 实测：`appinternals` 7358 处、**零 profile 资源**
+
+⇒ **不打包 profile 不改变 MSI 功能**：旧方案里那 3 个 profile 是 Chromium 格式，
+而运行时实际用 Camoufox（`_camoufox/`）且按账号隔离 ⇒ 即便打了也用不上，属「含凭证 + 无效」的死重量。
