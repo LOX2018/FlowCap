@@ -253,6 +253,16 @@ _DEFAULT_CONFIG = {
     ],
     "fallback_image": "图片收到，我看下材料再给您准话。方便的话补充说明下"
                       "受伤部位和所在城市，判断会更快。",
+    # ---- 2026-09-29（用户拍板「留资是唯一目的」）----
+    # 「客户没有明确问题」时的**专用留资话术**。为什么必须与主兜底池分开：
+    # 主池 4 条全是「请您说下部位/材料」型（引导补信息），**不含任何索要动作** ——
+    # 客户只回「好 / 嗯 / 没下来」时用主池 = 白放走一次留资机会。
+    # 用户原话：「如果是这种对话对象，他的聊天内容没有明确目标的人群直接引导留资就行，
+    # 别说什么之后再联系，抖音是快平台…根本没有沉淀的必要」。
+    "lead_first_reply": (
+        "你这个情况我得按你当地标准细算才能给准数——你留个手机号，"
+        "我算好把清单发你，跟公司谈心里也有底。"
+    ),
     "forbidden_words": [
         "微信", "vx", "VX", "weixin",  # 站外引流敏感词（"加我"单字误杀率高，已用 prompt 铁律约束）
         "作为一个AI", "作为一个ai",
@@ -309,6 +319,53 @@ _LIVE_FALLBACK_EXTRA = (
     "你这个伤情能不能评级，得看诊断报告上的描述和有没有做内固定——"
     "你先说下受伤部位和在哪受的伤，我帮你对一下？"
 )
+
+# ---------------------------------------------------------------------------
+# 留资铁律（2026-09-29，用户拍板；**会话内回复专用，覆盖式追加**）
+#
+# 用户原话：「要知道私信的目的就是留资，这个对方的聊天内容如果是有明确的问题
+#   则先针对问题回复体现专业性同时引导留资，但如果是这种对话对象，他的聊天内容
+#   没有明确目标的人群直接引导留资就行，别说什么之后再联系，抖音是快平台，
+#   客户前一秒还在你这下一秒就去别人那了，根本没有沉淀的必要。」
+#
+# **为什么不能改 Agent 的 system_prompt**（与 _LIVE_CONTACT_RULES 同一条纪律）：
+#   Agent prompt 是**用户资产**（用户可自定义），且实测其漏斗是
+#   「先判断 → 再算清单 → **最后**才要联系方式」——用户要的是**更早要**。
+#   把这条诉求写进用户资产里 = 越权改动用户的配置；写在系统层覆盖式追加，
+#   才能保证「无论用户怎么写 prompt，留资铁律都成立」。
+#
+# 该段的判据来自实测事故：会话「668」中客户回「好」之后，
+#   AI 回了「好，问问进度。认定书下来第一时间通知我，我帮你算清赔偿清单。」
+#   + 「我等你人社局问完的消息」= **把客户放走**（等对方回头 = 抖音平台上等于丢单）。
+# ---------------------------------------------------------------------------
+_LEAD_DISPOSITION_RULES = """
+
+【留资铁律 —— 最高优先级，覆盖上文一切相反要求】
+这个账号做私信的唯一目的就是**留资（拿到手机号）**。抖音是快平台：
+客户前一秒在你这里，下一秒就去别人那里 —— **没有"之后再联系"这回事**。
+
+1. **有明确问题**（问等级/赔偿/流程/材料/认定）：先**正面答到点子上**（体现专业性，
+   2~3 句，紧扣他的问题），然后**同一轮**收口问手机号。
+   不要等"判断清楚"再要 —— 每轮都要往前推一步。
+2. **没有明确问题**（只回"好/嗯/没下来/在忙/谢谢"这类，或与工伤无关的闲聊）：
+   **不要再问伤情、不要再寒暄、不要再等**。直接用一句话把留资递出去，
+   例如「你这个情况得按你当地标准细算，你留个手机号，算好我发你」。
+3. **【机械禁止】任何"以后再说"式收尾** —— 不许出现：
+   · 等对方回头的表述（「等你消息」「你问完告诉我」「下来了通知我」「后面再说」）；
+   · 单方面结束对话的表述（「好」「好的」「了解了」「知道了」结尾，后面没有索要）；
+   · 把留资推后（「看完材料再说」「确认完再联系」）。
+   每一轮回复的最后一步只能是：**给出价值 + 要联系方式**。
+4. 客户已经留过手机号 → 只回确认，不再索要。
+5. 一次只索要手机号；绝不说"加微信"、绝不提其他平台。
+"""
+
+
+def _contains_personal_contact(text: str) -> bool:
+    """文本里是否已含手机号/微信号（决定是否还要继续索要）。"""
+    try:
+        return bool(extract_contacts(text or ""))
+    except Exception:
+        return False
 
 _KV_CONFIG = "ai_reply_config"
 _KV_KB = "ai_reply_knowledge_base"
@@ -575,7 +632,11 @@ def build_system_prompt(cfg: dict, text: str) -> str:
         else:
             kb_text = "（知识库暂无条目）"
         base += _RAG_SUFFIX.format(kb=kb_text, text=text)
-    return base
+    # 2026-09-29（用户拍板「私信的目的就是留资」）：追加**留资铁律**。
+    # 放在函数**最末**（紧贴 user 消息，权重最高），且显式声明「覆盖上文一切
+    # 相反要求」——因为 Agent prompt 的漏斗是「最后才要联系方式」，
+    # 而用户要的是「每轮都要往前推一步」。见 _LEAD_DISPOSITION_RULES 注释。
+    return base + _LEAD_DISPOSITION_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -900,6 +961,126 @@ def live_fallback_reply(cfg: dict) -> str:
     """
     return (_LIVE_FALLBACK_EXTRA
             or str(fallback_reply(cfg) or "").strip())
+
+
+# ---------------------------------------------------------------------------
+# 留资护栏（2026-09-29，用户拍板「私信的目的就是留资」）
+#
+# 判据来自实测事故（会话「668」）：客户回「好」之后，AI 发出
+#   ·「好，问问进度。认定书下来第一时间通知我，我帮你算清赔偿清单。」
+#   ·「我等你人社局问完的消息」
+# ⇒ 这是**把客户放走**（等对方回头）；在抖音上等于丢单。用户原话：
+#   「别说什么之后再联系…根本没有沉淀的必要」。
+#
+# 本护栏只管**一句话形态**：这轮回复若**既不含索要、也不含明确问题**，
+# 就是「对话沉降」→ 换引导留资话术。它**不要求每句都索要** ——
+# 「我帮你对一下，你在哪个省受的伤？」是在推进（问明确问题），合格。
+# ---------------------------------------------------------------------------
+
+# 轮次分类关键词（保守：宁愿判「模糊」而给留资话术，也不误伤专业问答）。
+# 🔴 判据演进（两轮实机验证驱动，务必按此理解）：
+#   初版用「无索要**且**无提问 ⇒ 沉降」，实机打回两处：
+#     ① 客户说「我下午去人社局问问」（**没明确问题**）→ 模型回专业清单但没索要，
+#        因为句中出现「有没有提交…材料」这种**解释性**疑问词，被误判成"在提问"⇒ 漏判；
+#     ② 客户问「我能评几级」（**有明确问题**）→ 模型给专业口径但没索要，
+#        若直接换成通用留资话术 ⇒ **专业性丢失**（与用户"先针对问题回复体现专业性"相悖）。
+#   ⇒ 现判据 = **「不含索要就是没推进」**（与用户第 3 条机械规则字面一致）；
+#      处理不再"整句替换"，而是**先定向重试**（保留专业回答 + 末尾补索要），
+#      重试仍不合格才退回引导留资话术。且受 `max_lead_ask` 上限约束（防刷屏）。
+_LEAD_ASK_RES = [
+    # 明确索取联系方式（私信里提这些词≈在要号）
+    re.compile(r"(手机号|手机号码|电话号码|电话|号码|联系方式|联系我|加微|加个微|微信|vx)"),
+    re.compile(r"(留个|留一下|发个|给我个)"),
+]
+
+
+def _has_lead_ask(reply: str) -> bool:
+    """回复里是否**明确索要了联系方式**（唯一"在推进留资"的判据）。"""
+    s = (reply or "").strip()
+    return bool(s) and any(p.search(s) for p in _LEAD_ASK_RES)
+
+
+def _is_lead_stalled(reply: str) -> bool:
+    """这轮回复是否**没在推进留资**（= 不含索要）。保留旧名供既有调用/测试引用。"""
+    s = (reply or "").strip()
+    if not s:
+        return True
+    return not _has_lead_ask(s)
+
+
+def _lead_ask_count(account: str, conv_id: str) -> int:
+    """本会话已索要次数（`max_lead_ask` 上限用；键与既有 _KV_ASK_COUNT 一致）。"""
+    try:
+        d = _kv_get(_KV_ASK_COUNT, {}) or {}
+        return int(d.get(f"{account}:{conv_id}", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _bump_lead_ask(account: str, conv_id: str) -> int:
+    try:
+        d = _kv_get(_KV_ASK_COUNT, {}) or {}
+        k = f"{account}:{conv_id}"
+        n = int(d.get(k, 0) or 0) + 1
+        d[k] = n
+        _kv_set(_KV_ASK_COUNT, d)
+        return n
+    except Exception:
+        return 0
+
+
+def lead_fallback_reply(cfg: dict) -> str:
+    """「客户无明确问题」时的专用留资话术（配置可覆盖）。"""
+    return str(cfg.get("lead_first_reply")
+               or _DEFAULT_CONFIG["lead_first_reply"]).strip()
+
+
+# 「把线索放走」的形态（出现这些 ⇒ **不能**只在末尾补索要，
+# 必须整句替换 —— 否则「等你消息…方便留个手机号」自相矛盾）。
+# 🔴 判据必须锚「人称」：`等认定/等结果` 是**陈述流程**（合法专业回答，
+# 实测「接下来等认定结果」被误判成放走语而丢掉专业内容）⇒ 不算放走；
+# 只有「等**你的**消息 / 通知**我** / 回头再说」才是把线索放走。
+_LEAD_DEFER_RES = [
+    re.compile(r"等[你您]{1,2}[^。！？!?~\n]{0,8}(消息|回复|结果|答复|认定|通知)"),
+    re.compile(r"等[我咱][^。！？!?~\n]{0,6}(消息|回复|结果|答复)"),
+    re.compile(r"(第一时间|到时候|下来)[^。！？!?~\n]{0,6}(通知|告诉)"),
+    re.compile(r"(以后|后面|回头|改天)[^。！？!?~\n]{0,4}(再说|联系|聊|找|看)"),
+    re.compile(r"(有消息|有结果|有情况|问完|问清|问问)"
+               r"[^。！？!?~\n]{0,4}再说"),
+    re.compile(r"(再说|再聊|再联系|再回你|再找你)[吧。！~]"),
+    re.compile(r"(再联系你|再回你|再找你|稍后联系你)"),
+]
+
+# 追加用（短，便于塞进 max_reply_len）
+_LEAD_ASK_TAIL = "方便留个手机号，我按你当地标准算份清单发你。"
+#: 追加后允许的硬上限（比 max_reply_len 宽松：`max_reply_len` 是给**模型输出**
+#: 的截断线，而这里是把专业回答保下来 + 尾接一句索要，略长优于丢掉专业性）。
+_LEAD_ASK_HARD_CAP = 120
+
+
+def _is_deferring(reply: str) -> bool:
+    """回复是否包含「把线索放走」的表述（等对方回头/推后处理）。"""
+    s = (reply or "").strip()
+    return bool(s) and any(p.search(s) for p in _LEAD_DEFER_RES)
+
+
+def append_lead_ask(reply: str, cfg: dict) -> Optional[str]:
+    """把「要联系方式」追加到专业回答末尾（**保留专业性**的首选处置）。
+
+    返回 None 表示「不该追加」（原句含放走语 / 追加后过长）——
+    调用方据此退回 `lead_fallback_reply`。
+    """
+    s = (reply or "").strip()
+    if not s or _is_deferring(s):
+        return None
+    if _has_lead_ask(s):
+        return s
+    tail = _LEAD_ASK_TAIL
+    sep = "" if s.endswith(("。", "！", "？", "?", "!", "~")) else "。"
+    combined = f"{s}{sep}{tail}"
+    if len(combined) > _LEAD_ASK_HARD_CAP:
+        return None
+    return combined
 
 
 # ---------------------------------------------------------------------------
@@ -1919,6 +2100,60 @@ class AutoReplyWorker:
                 raw = None
         if raw:
             cleaned = validate_reply(raw, cfg)
+            # 2026-09-29（用户拍板「私信的目的就是留资」）：**留资护栏**。
+            # 判据：**不含索要 ⇒ 没推进留资**（与用户第 3 条机械规则字面一致）。
+            # 处理顺序（两轮实机验证后确定，勿改回"整句替换"）：
+            #   ① 未达 max_lead_ask 且还能索要 → **定向重试**：要求「保留专业判断，
+            #      末尾补一句索要」，既保专业性又拿到线索；
+            #   ② 重试仍不合格 / 索要次数已达上限 → 退回**引导留资话术**。
+            if cleaned and not _contains_personal_contact(text):
+                if _is_lead_stalled(cleaned):
+                    _max_ask = int(cfg.get("max_lead_ask", 2) or 0)
+                    _n_ask = _lead_ask_count(account, conv_id)
+                    _patched = None
+                    if _n_ask < _max_ask:
+                        try:
+                            _hint = (
+                                "重要：你上一条回复**没有向客户要联系方式**。请重写："
+                                "① 先保留你上一条里给客户的**专业判断**（原文要点不要丢）；"
+                                "② 然后在**同一句末尾**自然补上索取手机号（给理由，"
+                                "例如「我按你当地标准算份清单发你」）；"
+                                "③ 不要出现「等你消息/回头再说/通知我」这类等对方的话。"
+                                "总长 15-100 字，直接给可发送的成品。")
+                            _raw2 = client.chat_failover(
+                                text, consumer_id="ai_main",
+                                user_id=f"{account}:{conv_id}",
+                                system_prompt=prompt + "\n\n" + _hint,
+                                history_extra=history)
+                            if _raw2:
+                                _c2 = validate_reply(_raw2, cfg)
+                                if _c2 and not _is_lead_stalled(_c2):
+                                    _patched = _c2
+                                    _probe(before_id, "LEAD_RETRY", "ok",
+                                           reply=_c2[:120])
+                        except Exception as e:
+                            _probe(before_id, "LEAD_RETRY", "error",
+                                   err=str(e)[:120])
+                    if _patched:
+                        cleaned = _patched
+                        _bump_lead_ask(account, conv_id)
+                    else:
+                        # 回退顺序（保专业性优先）：
+                        #   ① 原句**不含放走语** ⇒ 保留专业回答 + 末尾追加索要；
+                        #   ② 含放走语 / 追加后超长 ⇒ 整句替换为引导留资话术。
+                        _appended = append_lead_ask(cleaned, cfg)
+                        if _appended:
+                            logger.info(
+                                f"[AI-070] 留资护栏：为专业回答追加索要: "
+                                f"{cleaned[:24]!r} → {_appended[:40]!r}")
+                            cleaned = _appended
+                        else:
+                            _lead = lead_fallback_reply(cfg)
+                            logger.info(
+                                f"[AI-070] 留资护栏：回复未索要/含放走语"
+                                f"→ 整句改引导留资: {cleaned[:30]!r} → {_lead[:30]!r}")
+                            cleaned = _lead
+                        _bump_lead_ask(account, conv_id)
             _probe(before_id, "GUARD", "pass" if cleaned else "blocked",
                    level=level, cleaned=(cleaned or "")[:120],
                    raw=raw[:120])
@@ -1959,7 +2194,13 @@ class AutoReplyWorker:
                 except Exception as e:  # 重试失败不算错误，正常回落兜底
                     _probe(before_id, "RETRY", "error", err=str(e)[:120])
             logger.info(f"[ai] AI 输出被护栏拦截，改发兜底: {raw[:40]}")
+        # 🔴 2026-09-29：**降级路径同样不能放走线索**。实测：网关限流/模型不可用
+        # 时走 `fallback_reply`（主池 4 条**全都不含索要**）⇒ 客户收到的是
+        # 「请补充部位/诊断」而**没有任何留资动作** —— 正是用户指出的失效形态，
+        # 只不过换成了"模型挂了"这条触发路径。故终末兜底也过同一判据。
         fb = fallback_reply(cfg)
+        if not _contains_personal_contact(text) and _is_lead_stalled(fb):
+            fb = lead_fallback_reply(cfg)
         _probe(before_id, "FALLBACK", "used", level=level, reply=fb[:120])
         return fb, "兜底"
 
