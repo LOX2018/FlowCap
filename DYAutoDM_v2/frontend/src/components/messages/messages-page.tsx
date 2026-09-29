@@ -7,7 +7,13 @@ import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Avatar, hue, nowHM } from "../../components/ui";
 import { Loader2, Download, Paperclip, ImageIcon, VideoIcon, FileText, Mic } from "lucide-react";
-import { ImageDown, FileDown, CheckSquare, SquareDashedMousePointer } from "lucide-react";
+import { ImageDown, FileDown, SquareDashedMousePointer } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import LeadsSection from "./LeadsSection";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -108,9 +114,10 @@ export default function MessagesPage(props: PageProps) {
   const [refreshElapsed, setRefreshElapsed] = useState(0);
   // 2026-09-17：语音转写进行中标记（对照上游「语音转文字」能力）。
   const [transcribing, setTranscribing] = useState(false);
-  /** 2026-09-17：长图 / ChatLab 导出进行中（各自按钮的 loading 态） */
+  // 2026-09-17：长图导出进行中标记
+  // （2026-09-29：原 `exportingLab`（导出 ChatLab）随该按钮下线一并移除；
+  //   后端端点保留，仅私信中心不再有入口）
   const [exportingImg, setExportingImg] = useState(false);
-  const [exportingLab, setExportingLab] = useState(false);
   /** 2026-09-18（E1）：选区导出 —— selMode=是否处于选区模式；selAnchor/selEnd=首/末条 seq */
   const [selMode, setSelMode] = useState(false);
   const [selAnchor, setSelAnchor] = useState<number | null>(null);
@@ -489,6 +496,8 @@ export default function MessagesPage(props: PageProps) {
         {/* ── 左：会话列表 ── */}
         <Section
           title="会话列表"
+          className="flex h-[calc(100vh-136px)] min-h-[480px] flex-col"
+          contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden"
           actions={
             <Toolbar>
               {/* 更新会话：按需触发前移捕获（BCC 拉会话列表 + 会话详情/聊天记录）后写库。
@@ -623,7 +632,11 @@ export default function MessagesPage(props: PageProps) {
               )}
             </div>
           )}
-          <div className="mt-3 flex max-h-[calc(100vh-186px)] flex-col gap-0.5 overflow-y-auto">
+          {/* 2026-09-29：高度自适应 —— 原 `max-h-[calc(100vh-186px)]` 是「猜」
+              头部 + 筛选条开销的魔数，与右列 `h-[calc(100vh-136px)]` 互不相关，
+              筛选/搜索框条件显示一变就对不齐。现改为 flex 撑满 Card 剩余高度
+              （Card 已与右列同高），列表自身滚动 —— 两列底部**结构性**对齐。 */}
+          <div className="mt-3 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
             {shownConvs.length === 0 && convSearch.trim() && allConvs.length > 0 && (
               <div className="px-2.5 py-3 text-[0.78rem] text-[var(--color-text-muted)]">
                 没有昵称包含「{convSearch.trim()}」的会话
@@ -751,99 +764,86 @@ export default function MessagesPage(props: PageProps) {
                     </>
                   )}
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-od-id="dm-export-img"
-                  title="把当前会话渲染成聊天长图（PNG，本地渲染，不经浏览器）"
-                  disabled={!conv.conv_id || exportingImg}
-                  onClick={async () => {
-                    if (!conv.conv_id) return;
-                    setExportingImg(true);
-                    try {
-                      const r = await a.renderChatPng(activeAcct, conv.conv_id, {
-                        theme: "dark", scale: 2.0, asBase64: true,
-                      });
-                      if (r?.ok && r.data_uri) {
-                        const el = document.createElement("a");
-                        el.href = r.data_uri;
-                        el.download = `chat_${conv.conv_id.replace(/[^0-9A-Za-z]/g, "_").slice(0, 40)}.png`;
-                        el.click();
-                        push(`长图已导出（${Math.round((r.bytes || 0) / 1024)} KB）`);
-                      } else {
-                        push(`长图导出失败 · ${r?.error || "未知原因"}`);
-                      }
-                    } catch (e: unknown) {
-                      push("长图导出失败: " + (e instanceof Error ? e.message : String(e)));
-                    } finally {
-                      setExportingImg(false);
-                    }
-                  }}
-                >
-                  {exportingImg ? (
-                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
-                  ) : (
-                    <><ImageDown className="h-3.5 w-3.5" />导出长图</>
-                  )}
-                </Button>
-                {/* 2026-09-18（E1）：选区导出 —— 先点本按钮进入选区模式，
-                    再点击聊天里**首条**与**末条**消息定区间，浮条上导出 PNG/HTML。 */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-od-id="dm-export-sel"
-                  title="只导出选中的消息区间：进入选区模式后，点首条与末条消息"
-                  disabled={!conv.conv_id}
-                  onClick={() => {
-                    // 再点一次退出选区模式（进入模式后按钮变成「选区中…」）
-                    setSelMode((v) => !v);
-                    setSelAnchor(null);
-                  }}
-                >
-                  {selMode ? (
-                    <><CheckSquare className="h-3.5 w-3.5" />选区中…</>
-                  ) : (
-                    <><SquareDashedMousePointer className="h-3.5 w-3.5" />选区导出</>
-                  )}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-od-id="dm-export-chatlab"
-                  title="导出为 ChatLab 标准格式（JSONL，可导入 AI 分析工具/知识库）"
-                  disabled={!conv.conv_id || exportingLab}
-                  onClick={async () => {
-                    if (!conv.conv_id) return;
-                    setExportingLab(true);
-                    try {
-                      const r = await a.exportChatlab(activeAcct, conv.conv_id, "jsonl");
-                      if (r?.ok && r.url) {
-                        // 乙方案：导出落在后端默认目录，前端带令牌取回后触发保存
-                        // （媒体端点受会员门禁，<a download> 无法带 X-Member-Token）
-                        const { fetchAuthedBlob } = await import("@/api/client");
-                        const blob = await fetchAuthedBlob(r.url);
-                        const href = URL.createObjectURL(blob);
-                        const el = document.createElement("a");
-                        el.href = href; el.download = r.filename || "chatlab.jsonl";
-                        el.click();
-                        setTimeout(() => URL.revokeObjectURL(href), 8000);
-                        push(`ChatLab 已导出 · ${r.messages} 条消息`);
-                      } else {
-                        push(`ChatLab 导出失败 · ${r?.error || "未知原因"}`);
-                      }
-                    } catch (e: unknown) {
-                      push("ChatLab 导出失败: " + (e instanceof Error ? e.message : String(e)));
-                    } finally {
-                      setExportingLab(false);
-                    }
-                  }}
-                >
-                  {exportingLab ? (
-                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
-                  ) : (
-                    <><FileDown className="h-3.5 w-3.5" />导出 ChatLab</>
-                  )}
-                </Button>
+                {/* 2026-09-29：导出三合一 —— 「导出长图 / 选区导出 / 导出会话」
+                    合并为一个「导出」总按钮，点击弹出 3 个子选项（用户要求）。
+                    三个子项的**行为与 disabled 判据逐条原样保留**，只是换了承载容器：
+                      · 导出长图 —— 原 `dm-export-img`：直接渲染整会话 PNG（渲染中禁用）
+                      · 选区导出 —— 原 `dm-export-sel`：切进选区模式（再点退出）
+                      · 导出会话 —— 原第 6 个按钮（无 data-od-id）：JSON 导出（**后端未接线，
+                          见下方 `⚠️` 注释**）
+                    稳定锚点：`dm-export` 为总按钮；三个子项保留原 `data-od-id`
+                    （`dm-export-img` / `dm-export-sel` / `dm-export-json`），
+                    既有自动化与文档按 ID 定位不受影响。 */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-od-id="dm-export"
+                      title="导出当前会话：长图 PNG / 选区区间"
+                      disabled={!conv.conv_id || exportingImg}
+                    >
+                      {exportingImg ? (
+                        <><Loader2 className="h-3.5 w-3.5 animate-spin" />导出中…</>
+                      ) : (
+                        <><Download className="h-3.5 w-3.5" />导出</>
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      data-od-id="dm-export-img"
+                      disabled={!conv.conv_id || exportingImg}
+                      onSelect={async () => {
+                        if (!conv.conv_id) return;
+                        setExportingImg(true);
+                        try {
+                          const r = await a.renderChatPng(activeAcct, conv.conv_id, {
+                            theme: "dark", scale: 2.0, asBase64: true,
+                          });
+                          if (r?.ok && r.data_uri) {
+                            const el = document.createElement("a");
+                            el.href = r.data_uri;
+                            el.download = `chat_${conv.conv_id.replace(/[^0-9A-Za-z]/g, "_").slice(0, 40)}.png`;
+                            el.click();
+                            push(`长图已导出（${Math.round((r.bytes || 0) / 1024)} KB）`);
+                          } else {
+                            push(`长图导出失败 · ${r?.error || "未知原因"}`);
+                          }
+                        } catch (e: unknown) {
+                          push("长图导出失败: " + (e instanceof Error ? e.message : String(e)));
+                        } finally {
+                          setExportingImg(false);
+                        }
+                      }}
+                    >
+                      <ImageDown className="h-3.5 w-3.5" />
+                      导出长图（PNG）
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      data-od-id="dm-export-sel"
+                      disabled={!conv.conv_id}
+                      onSelect={() => {
+                        // 2026-09-18（E1）：进入选区模式后，再点击聊天里**首条**
+                        // 与**末条**消息定区间，浮条上导出 PNG/HTML。
+                        setSelMode((v) => !v);
+                        setSelAnchor(null);
+                      }}
+                    >
+                      <SquareDashedMousePointer className="h-3.5 w-3.5" />
+                      {selMode ? "退出选区模式" : "选区导出"}
+                    </DropdownMenuItem>
+                    {/* 2026-09-29：原「导出会话（JSON）」**已删除**（用户要求）。
+                        该按钮自引入起就是空壳 —— 只 `push("已导出该会话为 JSON")`
+                        一条 toast，**没有任何真实导出后端**；保留它等于给一个
+                        不存在的功能留入口。真要做 JSON 导出时再新接后端端点，
+                        而不是把这个桩搬回来。 */}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {/* 2026-09-29：原「导出 ChatLab」按钮已下线（用户要求）。
+                    后端端点 `POST /api/messages/export/chatlab/download` 与
+                    `client.ts` 的 `exportChatlab()` **保留**，由「知识库 · 来源导入」
+                    链路继续使用 —— 此处仅移除私信中心的可见入口。 */}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -860,16 +860,6 @@ export default function MessagesPage(props: PageProps) {
                 >
                   <SearchIcon className="h-3.5 w-3.5" />
                   {showDmSearch ? "关闭检索" : "检索消息"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    push("已导出该会话为 JSON");
-                  }}
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  导出会话
                 </Button>
               </Toolbar>
             </div>

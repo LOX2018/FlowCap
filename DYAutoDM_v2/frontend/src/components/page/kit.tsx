@@ -37,6 +37,14 @@ export function Section({
   actions,
   children,
   className,
+  /**
+   * 2026-09-29：CardContent 的附加类。
+   * 用于「内容区需填满 Card 剩余高度」的场景（如私信中心左列会话列表要与
+   * 右列 composer 底部对齐）—— 传 `flex-1 min-h-0 flex flex-col overflow-hidden`
+   * 后，children 内的列表再给 `flex-1 min-h-0` 即可自适应，不必反推 max-h 魔数。
+   * 默认空串 —— 既有调用点行为完全不变。
+   */
+  contentClassName = "",
   bare = false,
   ...rest
 }: {
@@ -45,6 +53,11 @@ export function Section({
   actions?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  /**
+   * 2026-09-29：CardContent 的附加类（见函数体上方说明）。
+   * 用于「内容区需填满 Card 剩余高度」的场景。
+   */
+  contentClassName?: string;
   /** bare=true 时不套 Card 外壳（用于自管容器的场景） */
   bare?: boolean;
 } & React.HTMLAttributes<HTMLElement>) {
@@ -79,7 +92,9 @@ export function Section({
   return (
     <Card className={cn("min-w-0", className)} {...rest}>
       {head ? <CardHeader>{head}</CardHeader> : null}
-      <CardContent className={head ? "" : "p-4"}>{children}</CardContent>
+      <CardContent className={cn(head ? "" : "p-4", contentClassName)}>
+        {children}
+      </CardContent>
     </Card>
   );
 }
