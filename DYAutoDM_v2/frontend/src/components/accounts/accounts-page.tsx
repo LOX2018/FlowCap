@@ -500,48 +500,23 @@ export default function AccountsPage(props: PageProps) {
   };
 
   const handleScanVerify = (a: FmtAccount) => {
-    push("已发起处理验证 · " + a.name + " · 将在弹出的指纹浏览器抖音首页完成重新扫码（**发起≠成功**）");
-    api.addLog("INFO", `发起处理验证 · ${a.name}`).catch(() => {});
+    push("已发起处理验证 · " + a.name + " · 接口桥扫码（无头，出码后请用抖音 App 扫描；**发起≠成功**）");
+    api.addLog("INFO", `发起处理验证（接口桥扫码） · ${a.name}`).catch(() => {});
     api
-      .autoRecapture(a.name)
+      .scanLogin(a.name)
       .then((d) => {
-        const r = d as { ok?: boolean; started?: boolean; msg?: string; error?: string };
+        const r = d as { ok?: boolean; msg?: string };
         if (!r || !r.ok) {
           push("处理验证未发起: " + ((r && r.msg) || "未知原因"));
           api.addLog("ERROR", `处理验证未发起 · ${a.name}: ${(r && r.msg) || ""}`).catch(() => {});
           return;
         }
-        // ★ 2026-09-30：ok=true 仅表示「已发起」，**不得**据此宣称成功
-        //   （用户报障「没更新却显示凭证已读回」= 谎报成功的根治）。
-        push((r.msg || "已发起重新捕获（请在指纹浏览器完成扫码）") + " · 正在核实结果…");
-        api.addLog("INFO", `已发起重新捕获，开始轮询实际结果 · ${a.name}`).catch(() => {});
+        // ★ 2026-09-30：ok=true 仅表示「已发起」，**不得**据此宣称成功。
+        //   打开二维码弹层（LoginDialog）→ 其渲染后端产出的 qrPng/qrUrl（无图则不渲染，
+        //   不给假图）；实际结果一律以 /scan-status 的结构化字段（含服务端确认）为准，
+        //   由上方 useEffect 在 done 时如实提示。
+        push((r.msg || "已发起接口桥扫码") + " · 请扫码（发起≠成功）");
         setScanning({ name: a.name, seq: Date.now() });
-        // 轮询真实结果（进行中 ⇒ 继续；失败 ⇒ 如实报错；成功 ⇒ 报成功）
-        let tries = 0;
-        const timer = window.setInterval(() => {
-          tries += 1;
-          api
-            .getRecaptureStatus(a.name)
-            .then((st) => {
-              if (st.running) {
-                if (tries >= 40) window.clearInterval(timer);
-                return;
-              }
-              window.clearInterval(timer);
-              if (st.ok) {
-                push("重新捕获已确认成功（服务端校验通过）· " + a.name);
-                api.addLog("SUCCESS", `重新捕获成功 · ${a.name}`).catch(() => {});
-                refetch();
-              } else {
-                push("重新捕获未成功: " + (st.error || st.msg || "未知原因"));
-                api.addLog("ERROR", `重新捕获未成功 · ${a.name}: ${st.error || st.msg}`).catch(() => {});
-                refetch();
-              }
-            })
-            .catch(() => {
-              if (tries >= 40) window.clearInterval(timer);
-            });
-        }, 3000);
       })
       .catch((e: unknown) => {
         push("处理验证异常: " + errMsg(e));

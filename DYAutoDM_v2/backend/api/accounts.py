@@ -672,28 +672,40 @@ def _do_scan(name: str):
         _quit_browser_daemon(name)
         env_path = acct_core.env_path_of(name)
 
-        # ── 更新凭证入口（2026-09-29 · 方案2 · 用户拍板）：默认**手动** ──────
-        # 用户原话：「账号、凭证更新换回之前的，用户手动操作，不要使用固定的扫码/短信模板」。
-        # 默认 = ADR-017 之前的旧路径 `enrich_auth(force=True)`：打开**有头**指纹浏览器，
-        # 用户自己在窗口里完成扫码/验证码/滑块；凭证由既有链路（save_credential +
-        # BCC 保活回写）写回 .env。**不**自动点「扫码登录」tab、**不**走短信 RPA 模板。
-        # ADR-017 的 RPA 两条**降级为显式备用**：仅当显式要求（st["_force_rpa"]）才走。
-        st["path"] = "manual"
+        # ── 更新凭证入口（2026-09-30 · 用户拍板）：默认**接口桥扫码** ＋ 手动兜底 ──
+        # 用户原话：「先尝试修复（接口/无头），如果不能就变回最初的弹出浏览器用户手动更新」。
+        #   默认 = 接口桥 RPA（**无头**）：页面自己发 get_qrcode / check_qrconnect，
+        #          我们**只被动监听响应** ⇒ 出码零唤醒浏览器、身份天然一致（ADR-034 §4.6）。
+        #   桥不可用（无内核 / 出码失败 / 等待超时）⇒ **自动回落** 有头手动
+        #          `enrich_auth(force=True)`（最初方案，作兜底；由 `_rpa_scan_login`
+        #          返回 False 触发 —— 每一层失败都必须真实落到下一层，禁中间层假成功）。
+        #   显式 mode="qr" ⇒ 等价默认（仍走桥）；mode="manual" ⇒ 跳过桥直接有头手动。
+        _manual_direct = bool(st.pop("_force_manual", False))
         _rpa_ok = False
-        if st.pop("_force_rpa", False):
+        if not _manual_direct:
+            st["path"] = "rpa"
             try:
                 _rpa_ok = _rpa_scan_login(name, env_path, st)
             except Exception as _e_rpa:  # noqa: BLE001
-                logger.warning(f"[ACC-029] [scan] 账号 {name} RPA 备用路径异常，回落手动: {_e_rpa}")
+                logger.warning(f"[ACC-029] [scan] 账号 {name} 接口桥异常，回落手动: {_e_rpa}")
         if _rpa_ok:
             st["path"] = "rpa"
             st["loggedIn"] = True
         else:
-            # 默认手动路径（ADR-017 之前的旧行为，下游逻辑一行未改）
+            # 兜底：有头手动（ADR-017 之前的旧行为，下游逻辑一行未改）
+            logger.info(f"[scan] 账号 {name} 接口桥未成 ⇒ 回落「弹出浏览器用户手动」")
             st["path"] = "manual"
             from auth_helper import enrich_auth
             auth, _ = enrich_auth(None, force=True, env_path=env_path)
-            st["loggedIn"] = bool(getattr(auth, "cookie", None))
+            # ★ 2026-09-30 谎报根治（兜底路径同样不得假成功）：
+            #   旧实现只判 `bool(auth.cookie)`；但**本地 cookie 存在 ≠ 会话有效**
+            #   （案例 rpa-sms-login-three-bugs §3，实测同一个坑：陈旧 sessionid 令
+            #   「未扫码」被读成「已读回」）。此处以**服务端权威判据**复判。
+            _bad = _cred_verify_after_write(name, env_path, st)
+            st["loggedIn"] = bool(getattr(auth, "cookie", None)) and not _bad
+            if _bad:
+                st["error"] = f"凭证未通过服务端校验（{_bad}）—— 未真正更新"
+                logger.error(f"[ACC-046] [scan] 账号 {name} 兜底路径凭证校验未通过: {_bad}")
         st["done"] = True
     except Exception as e:
         logger.error(f"[ACC-001] " + f"[scan] 账号 {name} 扫码异常: {e}")
@@ -1241,32 +1253,35 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
 
 @router.post("/{name}/scan")
 async def scan_login(name: str, body: dict | None = None) -> ScanLoginResponse:
-    """更新登录凭证（默认**打开有头指纹浏览器·用户手动操作**）。
+    """更新登录凭证 —— **默认接口桥扫码（无头）**，失败自动回落有头手动。
 
-    2026-09-29（方案2）：默认走 ADR-017 之前的手动路径 —— 打开有头指纹浏览器，
-    用户自己在窗口里完成扫码/验证码/滑块，凭证自动写回；**不再默认自动出二维码**。
-    body.mode="rpa" 时改走 ADR-017 的 RPA 备用路径（自动出二维码 PNG，可经 IM 推送）。
+    2026-09-30（用户拍板）：默认走**接口桥**（页面自发 get_qrcode / check_qrconnect，
+    我们**只被动监听响应** ⇒ 零唤醒浏览器出码、身份天然一致）；桥不可用（无内核 /
+    出码失败 / 等待超时）⇒ **自动回落**「弹出浏览器用户手动」（`enrich_auth(force=True)`，
+    最初方案）。**逐层回落，禁中间层假成功**。
+    body.mode="manual"/"browser" ⇒ 直接有头手动；"qr"/"rpa" ⇒ 等价默认（接口桥）。
     前端轮询 /scan-status 获取进度。
     """
     env_path = acct_core.env_path_of(name)
     if not os.path.exists(os.path.dirname(env_path)):
         return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
     mode = str((body or {}).get("mode", "") or "").strip().lower()
-    force_rpa = mode in ("rpa", "qr-rpa")
+    force_manual = mode in ("manual", "browser")
     # 同一账号已有扫码在跑则直接返回
     prev = _scan_state.get(name)
     if prev and prev.get("running"):
-        return ScanLoginResponse(ok=True, msg=f"账号 {name} 已在更新凭证中，请在指纹浏览器完成登录")
-    _scan_state.setdefault(name, {})["_force_rpa"] = force_rpa
+        return ScanLoginResponse(ok=True, msg=f"账号 {name} 已在更新凭证中，请稍候")
+    _scan_state.setdefault(name, {})["_force_manual"] = force_manual
     t = threading.Thread(target=_do_scan, args=(name,), daemon=True)
     t.start()
     err = _wait_scan_error(name)
     if err:
         return ScanLoginResponse(ok=False, msg=f"更新凭证失败: {err}")
-    if force_rpa:
-        return ScanLoginResponse(ok=True, msg=f"已启动扫码（RPA 备用路径），请用抖音 App 扫描二维码 · {name}")
+    if force_manual:
+        return ScanLoginResponse(
+            ok=True, msg=f"已打开有头指纹浏览器，请在其中完成登录/验证（凭证将自动写回）· {name}")
     return ScanLoginResponse(
-        ok=True, msg=f"已打开有头指纹浏览器，请在其中完成登录/验证（凭证将自动写回）· {name}")
+        ok=True, msg=f"已启动扫码（接口桥·无头），请用抖音 App 扫描二维码 · {name}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1473,10 +1488,11 @@ async def update_login(name: str, body: dict | None = None) -> ScanLoginResponse
     2026-09-29（方案2 · 用户拍板）：默认**不再**按账号状态自动分流到固定模板，
     而是打开有头指纹浏览器由用户自己登录（ADR-017 之前的旧行为）。
     body（均可省略）：
-      - mode: 省略 ⇒ 手动（有头浏览器，用户自己登录）；
-              "qr"/"rpa" ⇒ RPA 备用：自动出二维码 PNG（可经 IM 推送）；
-              "sms" ⇒ RPA 备用：短信验证码（需同时给 phone）。
-      - phone: "sms" 备用路径所需手机号
+          - mode: 省略 ⇒ **接口桥扫码（无头）**，失败自动回落有头手动；
+                  "qr"/"rpa" ⇒ 接口桥扫码（显式）；
+                  "manual"/"browser" ⇒ **直接** 有头浏览器手动（跳过桥）；
+                  "sms" ⇒ 短信验证码（需同时给 phone）。
+          - phone: "sms" 路径所需手机号
 
     返回 msg 会**如实标注所用路径**，前端据此渲染（不猜、不假装成功）。
     """
@@ -1484,8 +1500,11 @@ async def update_login(name: str, body: dict | None = None) -> ScanLoginResponse
     mode = str(body.get("mode", "") or "").strip().lower()
     if mode == "rpa":
         mode = "qr"
-    if mode and mode not in ("qr", "sms"):
-        return ScanLoginResponse(ok=False, msg=f"未知 mode={mode}（只允许 qr / sms，或省略走手动）")
+    if mode == "browser":
+        mode = "manual"
+    if mode and mode not in ("qr", "sms", "manual"):
+        return ScanLoginResponse(
+            ok=False, msg=f"未知 mode={mode}（只允许 qr / sms / manual，或省略走接口桥扫码）")
     phone = str(body.get("phone", "") or "").strip()
 
     env_path = acct_core.env_path_of(name)
@@ -1493,16 +1512,25 @@ async def update_login(name: str, body: dict | None = None) -> ScanLoginResponse
         return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
 
     if not mode:
-        # 2026-09-29（方案2）：默认**手动**（打开有头指纹浏览器由用户自己登录）。
-        # 旧 ADR-017 自动分流（状态 B→短信 / 其余→扫码）退居为显式备用，不再自动选路。
-        _login_method_hint[name] = "manual"
-        logger.info(f"[update-login] 账号 {name} → 手动（有头浏览器，用户自行登录）")
-        return await scan_login(name)
+        # 2026-09-30（用户拍板）：默认**接口桥扫码（无头）**——页面自发接口、零唤醒浏览器；
+        # 桥不可用 ⇒ `_do_scan` 内**自动回落**有头手动（最初方案）。不再默认直接开有头窗口。
+        _login_method_hint[name] = "bridge-qr"
+        logger.info(f"[update-login] 账号 {name} → 接口桥扫码（无头，失败自动回落手动）")
+        r = await scan_login(name, {"mode": "qr"})
+        if r.ok:
+            r.msg = f"已启动接口桥扫码（无头，出码后请用抖音 App 扫描）· {name}"
+        return r
 
     stt = _probe_account_state(name)
     _login_method_hint[name] = f"{mode}:{stt['verdict']}"
-    logger.info(f"[update-login] 账号 {name} 显式备用路径 → {mode}"
+    logger.info(f"[update-login] 账号 {name} 显式路径 → {mode}"
                 f"（state={stt['verdict']}, 依据={_login_method_hint[name]}）")
+
+    if mode == "manual":
+        r = await scan_login(name, {"mode": "manual"})
+        if r.ok:
+            r.msg = f"已按显式路径【手动·有头浏览器】· {name}：{r.msg}"
+        return r
 
     if mode == "sms":
         if not phone:
@@ -1516,9 +1544,9 @@ async def update_login(name: str, body: dict | None = None) -> ScanLoginResponse
             r.msg = f"已按显式备用路径【短信验证码】· {name}：{r.msg}"
         return r
 
-    r = await scan_login(name, {"mode": "rpa"})
+    r = await scan_login(name, {"mode": "qr"})
     if r.ok:
-        r.msg = f"已按显式备用路径【扫码】· {name}：{r.msg}"
+        r.msg = f"已按显式路径【扫码·接口桥】· {name}：{r.msg}"
     return r
 
 

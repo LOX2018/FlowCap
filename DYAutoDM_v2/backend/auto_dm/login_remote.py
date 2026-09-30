@@ -1173,9 +1173,17 @@ async def poll_bridge_confirmed(handle: dict, timeout_s: int = 240,
                                 interval_s: int = 3) -> dict:
     """轮询「扫码是否确认成功」——**被动**观察页面自己发的 `check_qrconnect`。
 
-    判据：① 截获 `check_qrconnect` 响应 `data.status == 'confirmed'`（页面自维持）
-          ② 兜底：context cookie 出现 sessionid/sid_tt 且**服务端确认**。
-    返回 {'ok','cookies','status','risk','reason'}
+    ★ 2026-09-30 修正（用户实测报障「没扫码却显示凭证已读回/拿到的是过期凭证」）：
+      原兜底判据是「context cookie 出现 `sessionid`/`sid_tt`」= **本地 cookie 存在**。
+      但铁律是「**本地 cookie 存在 ≠ 会话有效**」（案例 rpa-sms-login-three-bugs §3）：
+      账号**陈旧**的 sessionid 一直在 profile/cookie 里 ⇒ 旧判据会**立刻假成功**，
+      把过期凭证当新凭证落盘。这正是用户看到的现象。
+
+    现判据（**服务端权威**，与 `_probe_session_valid_by_cookies` 同一真源）：
+      ① 截获 `check_qrconnect` 响应 `data.status == 'confirmed'`（页面自维持）；且
+      ② 官方 `passport/account/info/v2` → `user_id>0 且无 error_code`（会话真有效）。
+      两次探活只在 **cookie 签名变化** 时触发（不空转打服务端）。
+    返回 {'ok','cookies','status','risk','reason','uid'}
     """
     context = handle.get("context")
     if context is None:
@@ -1204,18 +1212,35 @@ async def poll_bridge_confirmed(handle: dict, timeout_s: int = 240,
     except Exception as e:  # noqa: BLE001
         logger.debug("[bridge] 挂 check_qrconnect 监听失败: {}", e)
     t0 = time.time()
+    seen_sig = ""          # 上次探活时的 cookie 签名（值变化才重探，避免空转）
+    srv = {"ok": False, "uid": "", "reason": ""}
     while time.time() - t0 < timeout_s:
         try:
             cookies = {c["name"]: c["value"] for c in await context.cookies()}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "reason": f"读取 cookie 失败: {e}"}
-        if state["confirmed"] or cookies.get("sessionid") or cookies.get("sid_tt"):
-            logger.info("[bridge] 检测到登录态（status={}）", state["status"])
+        sig = f"{cookies.get('sessionid', '')}|{cookies.get('sid_tt', '')}"
+        # 仅在「页面自报 confirmed」或「cookie 签名变化」时做服务端探活
+        if (state["confirmed"] or sig != "|") and sig != seen_sig:
+            seen_sig = sig
+            try:
+                sv = await _probe_session_valid_by_cookies(cookies)
+            except Exception as e:  # noqa: BLE001
+                sv = {"ok": False, "reason": f"探活异常 {type(e).__name__}: {e}"}
+            srv = {"ok": bool(sv.get("ok")), "uid": str(sv.get("uid") or ""),
+                   "reason": sv.get("reason") or ""}
+            if srv["ok"]:
+                logger.info("[bridge] 服务端已确认会话有效（uid={}）", srv["uid"])
+            else:
+                logger.info("[bridge] 本地 cookie 存在但服务端未确认（{}），继续等待真实扫码",
+                            srv["reason"] or "未知")
+        if srv["ok"]:
             return {"ok": True, "cookies": cookies, "status": state["status"],
-                    "risk": False, "reason": ""}
+                    "risk": False, "reason": "", "uid": srv["uid"]}
         await asyncio.sleep(interval_s)
     return {"ok": False, "cookies": {}, "status": state["status"], "risk": False,
-            "reason": f"等待确认超时（{timeout_s}s，最后 status={state['status']}）"}
+            "uid": "", "reason": f"等待确认超时（{timeout_s}s，最后 status={state['status']}；"
+                                 f"服务端未确认：{srv['reason'] or '未取得有效会话'}）"}
 
 
 def risk_keywords() -> tuple:
@@ -1262,9 +1287,12 @@ async def poll_qr_scanned(handle: dict, timeout_s: int = 240,
                           interval_s: int = 3) -> dict:
     """轮询「用户是否已扫码登录成功」。
 
-    判据（任一）：
-      ① cookie 中出现真实登录标识（sessionid / sid_tt）
-      ② 页面离开登录弹窗（URL 变化 / 登录框消失）
+    判据（**服务端权威**，与 `poll_bridge_confirmed` 同一真源）：
+      ① cookie 中出现真实登录标识（sessionid / sid_tt）**且**服务端确认会话有效；
+         ——★ 2026-09-30：**本地 cookie 存在 ≠ 会话有效**（案例 rpa-sms-login-three-bugs §3）。
+         账号**陈旧**的 sessionid 一直在 profile 里 ⇒ 旧判据（只看存在）会**立刻假成功**，
+         把过期凭证当新凭证落盘（用户实测报障的「没扫码却显示凭证已读回」）。
+      ② 页面离开登录弹窗 —— 仅作**辅助**，不再单独作为成功判据。
 
     ⚠️ 2026-09-26（ADR-017 F6）：循环中**实时检测风控页**（见 `detect_risk_control`）。
        命中只告警一次并把 `risk` 标记写入返回，由调用方决定是否继续等。
@@ -1275,6 +1303,8 @@ async def poll_qr_scanned(handle: dict, timeout_s: int = 240,
     t0 = time.time()
     _risk_notified = False          # F6：风控告警只打一次，防刷屏
     _risk_seen = False
+    _seen_sig = ""                  # 上次探活时的 cookie 签名（值变化才重探，避免空转）
+    _srv_reason = ""
     while time.time() - t0 < timeout_s:
         # ── F6 风控实时检测（ADR-017）──────────────────────────────
         # 用 context.pages[0] 取当前页（handle 未携带 page，避免改能力层契约）。
@@ -1299,12 +1329,25 @@ async def poll_qr_scanned(handle: dict, timeout_s: int = 240,
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "reason": f"读取 cookie 失败: {e}",
                     "risk": _risk_seen}
-        if cookies.get("sessionid") or cookies.get("sid_tt"):
-            logger.info("[login_remote] 检测到真实登录态（已扫码）")
-            return {"ok": True, "cookies": cookies, "reason": "",
-                    "risk": _risk_seen}
+        # ★ 服务端确认才判成功（cookie 存在仅触发一次探活，不作为成功依据）
+        sig = f"{cookies.get('sessionid', '')}|{cookies.get('sid_tt', '')}"
+        if sig != "|" and sig != _seen_sig:
+            _seen_sig = sig
+            try:
+                sv = await _probe_session_valid_by_cookies(cookies)
+            except Exception as e:  # noqa: BLE001
+                sv = {"ok": False, "reason": f"探活异常 {type(e).__name__}: {e}"}
+            _srv_reason = sv.get("reason") or ""
+            if sv.get("ok"):
+                logger.info("[login_remote] 服务端已确认登录态有效（uid={}）",
+                            sv.get("uid"))
+                return {"ok": True, "cookies": cookies, "reason": "",
+                        "risk": _risk_seen}
+            logger.info("[login_remote] 本地 cookie 存在但服务端未确认（{}），继续等待真实扫码",
+                        _srv_reason or "未知")
         await asyncio.sleep(interval_s)
-    return {"ok": False, "reason": f"等待扫码超时（{timeout_s}s）",
+    return {"ok": False, "reason": f"等待扫码超时（{timeout_s}s；服务端未确认："
+                                   f"{_srv_reason or '未取得有效会话'}）",
             "risk": _risk_seen}
 
 

@@ -143,7 +143,8 @@ def _wire_update_login(monkeypatch, tmp_path):
     calls: list[tuple[str, str]] = []
 
     async def _scan(name, body=None):
-        calls.append(("qr", name))
+        mode = str((body or {}).get("mode", "") or "")
+        calls.append(("manual" if mode in ("manual", "browser") else "qr", name))
         return API.ScanLoginResponse(ok=True, msg="qr-ok")
 
     async def _sms(name, body):
@@ -155,28 +156,27 @@ def _wire_update_login(monkeypatch, tmp_path):
     return API, calls
 
 
-def test_t4_update_login_defaults_to_manual(monkeypatch, tmp_path):
-    """2026-09-29（方案2 · 用户拍板）：**默认手动**；扫码/短信为显式备用。
+def test_t4_update_login_defaults_to_bridge_qr(monkeypatch, tmp_path):
+    """2026-09-30（用户拍板）：**默认接口桥扫码（无头）**；手动/短信为显式路径。
 
-    用户原话：「账号、凭证更新换回之前的，用户手动操作，不要使用固定的扫码/短信模板」。
-    故 update_login() 省略 mode ⇒ 走手动 scan_login（不 body）；
-    只有显式 mode=qr / sms 才走 RPA 备用，且**不再**按账号状态自动选路。
+    用户原话：「先尝试修复（接口/无头），如果不能就变回最初的弹出浏览器用户手动更新」。
+    故 update_login() 省略 mode ⇒ 走**扫码**（scan_login mode=qr，桥内失败再落下层）；
+    不再按账号状态自动选短信，也不再默认直接开有头窗口。
     """
     API, calls = _wire_update_login(monkeypatch, tmp_path)
 
-    # ① 默认（省略 mode）⇒ 手动；即便账号状态看起来适合短信也**不得**自动选短信
+    # ① 默认（省略 mode）⇒ 接口桥扫码；即便账号状态看起来适合短信也**不得**自动选短信
     monkeypatch.setattr(API, "_probe_account_state",
                         lambda n: {"state": True, "verdict": "ok", "ok": True})
     r = asyncio.run(API.update_login("accX", None))
-    assert calls[-1][0] == "qr", "默认必须走手动 scan_login（不自动选短信）"
+    assert calls[-1][0] == "qr", "默认必须走扫码（接口桥），不自动选短信、不默认开有头"
     assert r.ok
 
     # ② 默认即便显式给了 phone，也不自动选短信（phone 只在 mode=sms 时用）
-    before = list(calls)
     r = asyncio.run(API.update_login("accX", {"phone": "13800000000"}))
-    assert calls[-1][0] == "qr", "给了 phone 但未指定 mode ⇒ 仍走手动"
+    assert calls[-1][0] == "qr", "给了 phone 但未指定 mode ⇒ 仍走扫码"
 
-    # ③ 显式备用 mode=sms ⇒ 走短信（缺手机号时如实上报，不静默改路）
+    # ③ 显式 mode=sms ⇒ 走短信（缺手机号时如实上报，不静默改路）
     before = list(calls)
     r = asyncio.run(API.update_login("accX", {"mode": "sms"}))
     assert r.ok is False and "手机号" in r.msg and calls == before
@@ -184,21 +184,27 @@ def test_t4_update_login_defaults_to_manual(monkeypatch, tmp_path):
     assert calls[-1][0] == "sms" and r.ok
     assert "短信" in r.msg, "返回必须**如实标注**实际走的路径"
 
-    # ④ 显式备用 mode=qr ⇒ 走扫码；mode=rpa 为同义别名
+    # ④ 显式 mode=qr ⇒ 走扫码；mode=rpa 为同义别名
     r = asyncio.run(API.update_login("accX", {"mode": "qr"}))
     assert calls[-1][0] == "qr"
     r = asyncio.run(API.update_login("accX", {"mode": "rpa"}))
     assert calls[-1][0] == "qr"
 
-    # ⑤ 非法 mode ⇒ 显式失败
+    # ⑤ 显式 mode=manual ⇒ **跳过桥**直接有头手动（最初方案，保留为显式路径）
+    r = asyncio.run(API.update_login("accX", {"mode": "manual"}))
+    assert calls[-1][0] == "manual", "mode=manual 必须直达有头手动（不走桥）"
+    r = asyncio.run(API.update_login("accX", {"mode": "browser"}))
+    assert calls[-1][0] == "manual", "mode=browser 为 manual 同义别名"
+
+    # ⑥ 非法 mode ⇒ 显式失败
     r = asyncio.run(API.update_login("accX", {"mode": "wechat"}))
     assert r.ok is False and "mode" in r.msg
 
-    # ⑥ 负控：把「默认手动」改回「按状态自动选短信」⇒ 断言①变红
-    #    （这里直接以「状态判据恒 True 也不再影响默认」表达 —— 默认与状态判据解耦）
+    # ⑦ 负控：若把默认改回「有头手动」或「按状态自动选短信」⇒ 断言①变红
+    #    （默认与状态判据解耦：状态恒 True 时默认仍必须是扫码）
     calls.clear()
     asyncio.run(API.update_login("accX", None))
-    assert calls[-1][0] == "qr", "负控生效：状态恒 True 时默认仍必须是手动"
+    assert calls[-1][0] == "qr", "负控生效：状态恒 True 时默认仍必须是接口桥扫码"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -225,7 +231,7 @@ def test_t5c_docstring_contract_is_implemented():
     src = (ROOT / "backend" / "auto_dm" / "login_remote.py").read_text(encoding="utf-8")
     api = (ROOT / "backend" / "api" / "accounts.py").read_text(encoding="utf-8")
     # 2026-09-29 方案2：默认手动；RPA 备用仍在 /update-login 有实现落点。
-    assert "def update_login" in api and "_force_rpa" in api, \
+    assert "def update_login" in api and "_force_manual" in api, \
         "默认手动 + 显式 RPA 备用 必须在 /update-login 有实现落点"
     assert 'st["path"] = "manual"' in api, \
         "默认手动路径必须有实现落点（不得只是注释）"
