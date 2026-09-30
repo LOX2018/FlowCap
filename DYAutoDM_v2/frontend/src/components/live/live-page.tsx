@@ -258,7 +258,7 @@ export default function LivePage(props: PageProps) {
     const matched = roomCfgs.find((x) => sidOf(x) === c.room);
     if (matched) setSelCfgId(sidOf(matched));
     push(
-      "已复用历史任务的直播间到直播监听页；发送参数请在「直播间配置管理」中核对该房间的配置",
+      "已跳转到该直播间的监听页",
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reusePayload, push]);
@@ -575,7 +575,7 @@ export default function LivePage(props: PageProps) {
         <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.leads_total ?? 0}</b>
       </span>
       <span>·</span>
-      <span title="含「发送失败」与「被平台拒绝」两类，与表格状态列同一判据">
+      <span title="含「发送失败」与「被平台拒绝」">
         错误
         <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{errorCount}</b>
       </span>
@@ -774,7 +774,7 @@ export default function LivePage(props: PageProps) {
                   variant="ghost"
                   size="sm"
                   data-od-id="live-room-registry"
-                  title="管理直播间登记（链接解析 / 备注 / 绑定策略 / 脱敏开关）"
+                  title="管理直播间登记"
                   onClick={() => setRoomMgr(true)}
                 >
                   <Settings2 className="h-3.5 w-3.5" />直播间管理
@@ -783,7 +783,7 @@ export default function LivePage(props: PageProps) {
                   variant="ghost"
                   size="sm"
                   data-od-id="live-high-value-keywords"
-                  title="编辑高价值关键词权重表（决定高价值窗口，进而影响是否被发送闸门拦下）"
+                  title="编辑高价值关键词权重表"
                   onClick={() => setKwOpen(true)}
                 >
                   <Tags className="h-3.5 w-3.5" />高价值关键词
@@ -819,11 +819,11 @@ export default function LivePage(props: PageProps) {
                 size="sm"
                 data-od-id="live-linkmic"
                 disabled={linkMicBusy || !activeAcct}
-                title="对当前直播间发起连麦申请（DOM 页面原生 · 经账号浏览器执行；约需 40s 等按钮出现）"
+                title="对当前直播间发起连麦申请（约需 40s）"
                 onClick={() => {
                   const rid = extractRoomId(room) || (ls?.room_id ? String(ls.room_id) : "");
                   if (!rid) {
-                    setAlert({ title: "请先填写直播间", msg: "请先在上方填写直播间 URL 或 room_id，再申请连麦。" });
+                    setAlert({ title: "请先填写直播间", msg: "请先填写直播间链接，再申请连麦。" });
                     return;
                   }
                   if (!activeAcct) {
@@ -875,21 +875,21 @@ export default function LivePage(props: PageProps) {
                       if (realAccts.length === 0) {
                         setAlert({
                           title: "尚未添加账号",
-                          msg: "账号管理中还没有任何账号，请先在「账号管理」页添加账号并完成扫码授权，再开启自动私信。",
+                          msg: "还没有账号，请先在「账号管理」页添加并授权。",
                         });
                         return;
                       }
                       if (!realAccts.some(acctValid)) {
                         setAlert({
                           title: "没有有效的账号",
-                          msg: "当前所有账号的凭证均无效（未扫码 / 凭证过期 / 风控）。请先在「账号管理」页完成扫码授权，确保至少一个账号凭证有效后再开启自动私信。",
+                          msg: "所有账号凭证无效，请先在「账号管理」页完成授权。",
                         });
                         return;
                       }
                       if (realAccts.length > 1 && !activeAcct) {
                         setAlert({
                           title: "请先选择账号",
-                          msg: "当前有多个账号，请先在上方「监听账号」下拉框中选择一个有效账号，再开启自动私信。",
+                          msg: "请先在上方选择一个有效账号。",
                         });
                         return;
                       }
@@ -897,14 +897,14 @@ export default function LivePage(props: PageProps) {
                       if (!selCfg) {
                         setAlert({
                           title: "请先选择直播间配置",
-                          msg: "直播页不再手填配置。请在上方「选择已保存的直播间配置」里选一条（或用「配置管理」新建一条）后再开始。",
+                          msg: "请先在上方选择一条已保存的直播间配置。",
                         });
                         return;
                       }
                       if (!room.trim()) {
                         setAlert({
                           title: "请先填写直播间",
-                          msg: "请填写直播间 URL 或 room_id（失焦会自动解析），或直接选择一条已保存的策略。",
+                          msg: "填写直播间链接，或选择一条已保存配置。",
                         });
                         return;
                       }
@@ -1039,7 +1039,7 @@ export default function LivePage(props: PageProps) {
                 ))}
                 {feed.length === 0 && (
                   <div className="px-3 py-7 text-center text-[0.75rem] text-[var(--color-text-muted)]">
-                    暂无实时信息 · 引擎运行后自动展示弹幕 / 礼物 / 进场 / 点赞 / 关注
+                    暂无实时信息，启动监听后自动展示
                   </div>
                 )}
               </div>
@@ -1199,7 +1199,7 @@ export default function LivePage(props: PageProps) {
                 // 此时**不显示 0 条 / 0%**（会被误读成「全部未送达」），改为定性提示。
                 <span
                   className="text-[var(--color-text-muted)]"
-                  title="后端尚未派生投递结局（delivery_state 为空）；受理只代表已入池，不等于送达"
+                  title="受理仅代表已入池，不等于送达"
                 >
                   送达情况暂无法判定 · 暂无投递回执证据
                 </span>
@@ -1254,7 +1254,7 @@ export default function LivePage(props: PageProps) {
                         <Td colSpan={6}>
                           <Blank>
                             <span className="text-[1.4rem]">✅</span>
-                            当前筛选下无异常记录 · 已受理/待发送的条目被隐藏，点「仅看异常 ✓」可恢复全部
+                            当前筛选下无异常记录
                           </Blank>
                         </Td>
                       </tr>

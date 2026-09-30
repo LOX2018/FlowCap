@@ -58,7 +58,7 @@ export default function SelfCheckModal({
   );
 
   const handleFix = (name: string) => {
-    push("已发起重新捕获 · " + name + " · 请在弹出的指纹浏览器私信页完成验证");
+    push("已发起重新授权 · " + name);
     api.addLog("INFO", `启动自检·重新捕获 · ${name}`).catch(() => {});
     api
       .autoRecapture(name)
@@ -94,13 +94,13 @@ export default function SelfCheckModal({
         {loading ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             <p className="text-[0.8rem] text-[var(--color-text-muted)]">
-              正在检测各账号的 wp 引擎与私信引擎…
+              正在检测账号凭证…
             </p>
           </div>
         ) : items.length === 0 ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             <p className="text-[0.8rem] text-[var(--color-text-muted)]">
-              未检测到任何账号。请先在「账号」页新增并扫码登录账号。
+              还没有账号，请先在「账号」页添加并登录。
             </p>
             <div className="mt-4 flex justify-end">
               <Button variant="secondary" onClick={onClose}>知道了</Button>
@@ -111,7 +111,7 @@ export default function SelfCheckModal({
             <p className="flex items-start gap-2 text-[0.8rem] text-[var(--color-success)]">
               <span className="mt-1.5 inline-block h-[7px] w-[7px] shrink-0 rounded-full
                                bg-[var(--color-success)]" />
-              全部账号的 wp 引擎与私信引擎均可用，可正常使用私信功能。
+              全部账号的凭证均可用。
             </p>
             <div className="mt-4 flex justify-end">
               <Button onClick={onClose}>开始使用</Button>
@@ -120,8 +120,7 @@ export default function SelfCheckModal({
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             <p className="text-[0.8rem] leading-relaxed text-[var(--color-warning)]">
-              检测到 {bad.length} 个账号的私信凭证引擎不可用，私信发送/接收可能失败。
-              请点击下方按钮在弹出的指纹浏览器私信页完成重新授权。
+              {bad.length} 个账号的凭证不可用，私信发送/接收可能失败。点下方按钮重新授权。
             </p>
 
             <ul className="mt-3 space-y-2.5">
@@ -148,7 +147,7 @@ export default function SelfCheckModal({
                     </div>
                     <div className="mt-2 space-y-1.5">
                       <div className="flex items-start gap-2">
-                        <Tone tone={wp.cls}>wp 引擎 · {wp.text}</Tone>
+                        <Tone tone={wp.cls}>登录凭证 · {wp.text}</Tone>
                         <span className="min-w-0 flex-1 text-[0.74rem] leading-relaxed
                                          text-[var(--color-text-muted)]">
                           {it.wp?.label || "—"}
@@ -156,7 +155,7 @@ export default function SelfCheckModal({
                         </span>
                       </div>
                       <div className="flex items-start gap-2">
-                        <Tone tone={dm.cls}>私信引擎 · {dm.text}</Tone>
+                        <Tone tone={dm.cls}>私信通道 · {dm.text}</Tone>
                         <span className="min-w-0 flex-1 text-[0.74rem] leading-relaxed
                                          text-[var(--color-text-muted)]">
                           {it.dm?.label || "—"}

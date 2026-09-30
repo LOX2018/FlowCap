@@ -109,7 +109,7 @@ export function AccountDrawer({
                 <Textarea
                   className="font-mono"
                   rows={3}
-                  placeholder="粘贴 Cookie 字符串，用于免扫码登录"
+                  placeholder="粘贴 Cookie 免扫码登录"
                   value={form.cookie}
                   onChange={(e) => setForm((f) => ({ ...f, cookie: e.target.value }))}
                 />
@@ -122,8 +122,8 @@ export function AccountDrawer({
                        text-[var(--color-text-muted)]"
           >
             {isEdit
-              ? "点击「手动更新凭证」默认打开有头指纹浏览器，由你手动完成扫码/验证码/滑块，凭证自动写回该账号。若需沿用自动化：下方「扫码备用（自动出二维码）」或「短信备用（自动发验证码）」为显式备用路径。"
-              : "保存后将打开内置指纹浏览器，请在其中手动完成抖音登录，凭证自动写回该账号；之后可在账号卡片中配置代理与凭证校验。"}
+              ? "手动更新：打开指纹浏览器，你完成登录后凭证自动写回。"
+              : "保存后打开指纹浏览器，完成登录即自动写回凭证。"}
           </div>
         </div>
 
@@ -137,7 +137,7 @@ export function AccountDrawer({
               <Button
                 variant="ghost"
                 size="sm"
-                title="备用路径：自动抓取二维码（可经 IM 推送），适合远程扫码"
+                title="自动生成二维码，适合远程扫码"
                 onClick={() => form.name.trim() && onBackupLogin(form.name.trim(), "qr")}
                 disabled={!form.name.trim()}
               >
@@ -146,7 +146,7 @@ export function AccountDrawer({
               <Button
                 variant="ghost"
                 size="sm"
-                title="备用路径：自动发短信验证码到绑定手机"
+                title="自动发送短信验证码到绑定手机"
                 onClick={() => form.name.trim() && onBackupLogin(form.name.trim(), "sms")}
                 disabled={!form.name.trim()}
               >

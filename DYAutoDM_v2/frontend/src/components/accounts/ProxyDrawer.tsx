@@ -168,7 +168,7 @@ export function ProxyDrawer({
           <Section className="mb-3.5">
             <PanelTitle>连接测试</PanelTitle>
             <div className="mb-2 text-[0.72rem] text-[var(--color-text-muted)]">
-              三种模式均可测试，返回真实出口 IP 与归属地（直连=走本机 IP）
+              返回真实出口 IP 与归属地
             </div>
             <Toolbar className="mb-3">
               <Input
@@ -219,8 +219,8 @@ export function ProxyDrawer({
                            px-3.5 py-2.5 text-[0.75rem] text-[var(--color-text-muted)]"
               >
                 {form.type === "direct"
-                  ? "不走代理：流量直接以本机 IP 发出（豁免代理软件端口），无需测试"
-                  : "系统代理：跟随本机系统代理设置，无需填写节点信息"}
+                  ? "直连：以本机 IP 发出，无需测试"
+                  : "跟随系统代理设置，无需填节点"}
               </div>
             )}
           </Section>

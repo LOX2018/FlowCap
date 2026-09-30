@@ -276,40 +276,40 @@ export const FAIL_KIND_META: Record<string, { label: string; color: string; advi
   credential: {
     label: "凭证失效",
     color: "var(--color-danger)",
-    advice: "该账号私信签名已失效。请到「账号」页面点【重新扫码】重新抓取签名后重试。",
+    advice: "私信签名已失效，请到「账号」页重新登录后重试",
   },
   risk: {
     label: "账号风控",
     color: "var(--color-danger)",
     advice:
-      "抖音对该账号的私信行为判定为风控（多见于向陌生用户频繁首发）。建议：降低发送频率、暂停该账号 30 分钟以上，或换账号发送。",
+      "该账号被判定为风控：降低发送频率，或暂停 30 分钟以上",
   },
   ratelimit: {
     label: "频控限流",
     color: "var(--color-warning)",
     advice:
-      "已达发送频率上限（统一闸门限流）。建议等待冷却结束再发，不要手动连续重发，否则会加重限流。",
+      "已达发送频率上限，等冷却结束后再发",
   },
   blocked: {
     label: "调度堵塞",
     color: "var(--color-warning)",
     advice:
-      "发送队列/调度被占满或排队超时。建议：暂停当前监听任务，等队列消化后再启动；若持续出现请重启后端。",
+      "发送队列已满或排队超时，等队列消化后再启动",
   },
   param: {
     label: "参数错误",
     color: "var(--color-text-muted)",
-    advice: "发送参数不合法（目标 uid 或文案为空/格式错误）。请检查该目标的会话数据是否完整。",
+    advice: "目标 uid 或文案不合法，请检查会话数据",
   },
   network: {
     label: "网络异常",
     color: "var(--color-warning)",
-    advice: "网络或守护进程不可达。请检查后端与 recv_daemon 是否在运行。",
+    advice: "服务不可达，请稍后重试",
   },
   other: {
     label: "其他原因",
     color: "var(--color-text-muted)",
-    advice: "未能归类的失败。可查看下方原始原因，或到「日志」页查看后端详细日志定位。",
+    advice: "未能归类的失败，可展开原始原因排查",
   },
 };
 

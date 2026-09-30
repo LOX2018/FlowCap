@@ -50,9 +50,7 @@ export default function HighValueKeywordsModal({
               高价值关键词权重
             </div>
             <div className="mt-0.5 text-[0.72rem] text-[var(--color-text-muted)]">
-              弹幕 / 评论命中即累加权重，命中总分 ≥ 阈值即判为高价值（决定高价值窗口，
-              进而影响是否被发送闸门拦下）。阈值（设置 → 发送 → 高价值关键词阈值）为{" "}
-              <b>0</b> 时本表不参与判定。
+              命中即累加权重，总分 ≥ 阈值判为高价值（阈值为 <b>0</b> 时不参与）
             </div>
           </div>
           <button

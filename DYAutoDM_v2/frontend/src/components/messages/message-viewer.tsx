@@ -150,7 +150,7 @@ export function ImageViewer({
               className="px-5 py-5 text-center text-[0.78rem] leading-[1.7]
                          text-[var(--color-text-secondary)]"
             >
-              该图为抖音私有加密格式，无法在内嵌预览中显示。
+              该图为加密格式，无法内嵌预览。
               <br />
               请在浏览器中打开查看。
             </div>
