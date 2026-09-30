@@ -20,11 +20,22 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-_tmp = os.path.join(tempfile.gettempdir(), "dyautodm_tag_test")
-os.makedirs(_tmp, exist_ok=True)
-os.environ["DY_APP_ROOT"] = _tmp
+# M-28（2026-09-29）：模块级根改为**一次性临时目录**，并在**每个用例 setUp**
+# 里重新钉根 —— 原实现用*固定*目录 + 只在模块级设一次，执行期会被别的模块
+# 改写 DY_APP_ROOT（`database.get_db()` 每次调用按当前根做会员一致性校验），
+# 于是读到的库文件由「谁最后设根」决定 ⇒ 顺序相关假失败。
+# 标识符（父会话 grep 用）：N1_M28_PIN_ROOT
+_TMP_ROOT = tempfile.mkdtemp(prefix="n1_m28_tag_")
+os.makedirs(_TMP_ROOT, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _TMP_ROOT
 
 from services import app_config as ac, config_tag  # noqa: E402
+try:                                              # noqa: E402
+    from services import dm_dispatch as _dd       # noqa: E402
+    from services.dm_dispatch import cfg as _PRISTINE_CFG  # noqa: E402
+except Exception:                                 # noqa: BLE001
+    _dd = None
+    _PRISTINE_CFG = None
 
 
 def reset_all():
@@ -34,13 +45,32 @@ def reset_all():
     conn.commit()
 
 
+def _n1_m28_pin_root():
+    """N1_M28_PIN_ROOT：把 DY_APP_ROOT 重新钉回本模块的一次性临时根。
+
+    M-28 修法核心：`database.get_db()` 每次调用都会按**当前** DY_APP_ROOT 做
+    会员一致性校验并在不一致时重建连接 ⇒ 只要在执行期（而非仅导入期）把根
+    钉住，本模块的读写就**不依赖模块执行顺序**。
+    """
+    os.environ["DY_APP_ROOT"] = _TMP_ROOT
+    import database
+    database.reset_connection()
+    # 归还 dm_dispatch 被别的测试模块换掉的 cfg（M-28 主毒源：
+    # test_uid_sink_ext 的 tearDown 把 dd.cfg 永久换成一个 bound method）
+    if _dd is not None and _PRISTINE_CFG is not None:
+        if getattr(_dd, "cfg", None) is not _PRISTINE_CFG:
+            _dd.cfg = _PRISTINE_CFG
+
+
 class TestTagIsOnlyMetadata(unittest.TestCase):
     """标签只存元数据，不存参数副本（用户明确要求）。"""
 
     def setUp(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def tearDown(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def test_tag_has_no_config(self):
@@ -64,9 +94,11 @@ class TestResolve(unittest.TestCase):
     """绑定/未绑定的解析行为。"""
 
     def setUp(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def tearDown(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def test_unbound_is_global(self):
@@ -124,9 +156,11 @@ class TestDeleteCleansUp(unittest.TestCase):
     """删标签必须解绑 + 清参数，不留孤儿。"""
 
     def setUp(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def tearDown(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def test_delete_unbinds_and_drops_params(self):
@@ -150,9 +184,11 @@ class TestDispatchWiring(unittest.TestCase):
     """dm_dispatch.cfg(account=) 按标签取值。"""
 
     def setUp(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def tearDown(self):
+        _n1_m28_pin_root()
         reset_all()
 
     def test_cfg_with_account(self):

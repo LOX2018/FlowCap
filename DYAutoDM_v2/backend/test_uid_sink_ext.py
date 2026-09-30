@@ -64,15 +64,19 @@ def _seq_cfg(**over):
     return _cfg
 
 
+# N1_M28_PIN_ROOT：模块级**强引用**原始 cfg（所有 import 必先于任何用例执行 ⇒ 此刻必为原始实现）。
+# 🔴 M-28 毒源修复（2026-09-30）：原实现把 `dd.cfg` 存成**类属性**（`cls._orig = dd.cfg`）
+#   再在 tearDown 里 `dd.cfg = self._orig` —— 经**描述符协议**取回时函数已被绑成
+#   `bound method cfg of <TestCase>`，于是所谓「还原」实际把 `dd.cfg` **永久换掉**：
+#   之后任何 `dd.cfg("X")` 的 name 位置收到的是 TestCase 实例 ⇒ `KeyError: <TestCase ...>`。
+#   改法：存进**非描述符容器**（模块级变量 `_orig_cfg` 本身），还原时直接用它。
 _orig_cfg = dd.cfg
 
 
 class T3UidSinkExtTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls._orig = dd.cfg
-
     def setUp(self):
+        # N1_M28_PIN_ROOT：执行期重钉本模块根 —— 防被别的模块改写 DY_APP_ROOT（M-28 ② 号根因）。
+        os.environ["DY_APP_ROOT"] = _ROOT
         # 每个用例用独立账号，避免相互干扰
         self.acct = "acct_" + self._testMethodName[-12:]
         database.reset_connection()
@@ -89,7 +93,8 @@ class T3UidSinkExtTest(unittest.TestCase):
         self.sink = dd.UidSink()
 
     def tearDown(self):
-        dd.cfg = self._orig
+        # N1_M28_PIN_ROOT：归还**模块级**原始函数（不得经类属性/描述符往返 —— 见上方毒源说明）。
+        dd.cfg = _orig_cfg
 
     # ---------- ① 零回归（最关键）----------
     def test_zero_regression_defaults_off(self):

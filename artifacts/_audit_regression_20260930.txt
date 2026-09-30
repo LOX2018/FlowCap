@@ -1,0 +1,41 @@
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF245D50>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF2448B0>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF2462F0>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF246020>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF245A80>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF245F30>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF245990>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF2464D0>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF2465C0>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAF2466B0>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<frozen importlib._bootstrap>:74: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000022FAC60D6C0>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..............[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+.[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+.[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+.[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+.[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+..[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+...............[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 7687606083061320475）: expected string or bytes-like object, got 'MagicMock'[0m
+..........................[32m15:41:41[0m | [33m[1mWARNING [0m | [33m[1m[VOICE-001] [voice] 识别失败 http=200 status_code=5 n=1[0m
+[32m15:41:41[0m | [1mINFO    [0m | [1m[wp-proto] 协议层监听到位（零 JS 注入）——HTTP=context.response, WS=page.websocket[0m
+.......................
+----------------------------------------------------------------------
+Ran 1229 tests in 266.580s
+
+OK
+[32m15:41:41[0m | [1mINFO    [0m | [1m[shutdown] 无本进程拉起的守护需清理（或已自行退出）[0m
+DONE 15:41:42

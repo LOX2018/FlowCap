@@ -24,7 +24,24 @@ from __future__ import annotations
 import inspect
 import os
 import re
+import tempfile
 import unittest
+
+# M-28（2026-09-29）：本模块是**纯源码静态门禁**（不 import database、不建库），
+# 但同进程内 `unittest discover` 会先导入别的模块，它们把 DY_APP_ROOT 设成各自
+# 的临时根；本模块虽然不读库，其被测静态断言仍会被「进程级根」影响（例如
+# `utils/ab_pure.py` 的导入期行为）。为消除顺序相关性，这里**无条件**钉一个
+# 一次性临时根，并在每个用例 setUp 里重钉。
+# 标识符（父会话 grep 用）：N1_M28_PIN_ROOT
+_ROOT = tempfile.mkdtemp(prefix="n1_m28_abogus_")
+os.makedirs(_ROOT, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _ROOT
+
+
+def _n1_m28_pin_root():
+    """N1_M28_PIN_ROOT：执行期把 DY_APP_ROOT 重钉回本模块的一次性临时根。"""
+    os.environ["DY_APP_ROOT"] = _ROOT
+
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 

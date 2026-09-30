@@ -11,16 +11,35 @@
 
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-_TMP = os.path.join(os.environ.get("TEMP", "/tmp"), "dyautodm_dispatch_test")
+# M-28（2026-09-29）：模块级根改为**一次性临时目录**，并在**每个用例 setUp**
+# 里重新钉根 —— 原实现用*固定*目录 + 只在模块级设一次，执行期会被别的模块
+# 改写 DY_APP_ROOT（`database.get_db()` 每次调用按当前根做会员一致性校验），
+# 于是读到的库文件由「谁最后设根」决定 ⇒ 顺序相关假失败。
+# 标识符（父会话 grep 用）：N1_M28_PIN_ROOT
+_TMP = tempfile.mkdtemp(prefix="n1_m28_dispatch_")
 os.makedirs(_TMP, exist_ok=True)
 os.environ["DY_APP_ROOT"] = _TMP
 
 import services.dm_dispatch as dd  # noqa: E402
 from services import app_config as ac  # noqa: E402
+# M-28 主毒源修复：`dd.cfg` 可能被别的测试模块（实测为 test_uid_sink_ext，
+# 其 tearDown 把 dd.cfg 永久换成一个 bound method）在执行期换掉。这里在导入期
+# 抓一份**原始函数对象**的强引用，setUp 里无条件归还 ⇒ 本模块不依赖执行顺序。
+from services.dm_dispatch import cfg as _PRISTINE_CFG  # noqa: E402
+
+
+def _n1_m28_pin_root():
+    """N1_M28_PIN_ROOT：重钉 DY_APP_ROOT + 归还 dm_dispatch.cfg 原始实现。"""
+    os.environ["DY_APP_ROOT"] = _TMP
+    import database
+    database.reset_connection()
+    if getattr(dd, "cfg", None) is not _PRISTINE_CFG:
+        dd.cfg = _PRISTINE_CFG
 
 # 接线前实测基线（2026-09-08，见提交记录）
 # 2026-09-24 扩展：+5 项（ADR-007 / C-06 沉淀池增强）。
@@ -51,6 +70,8 @@ BASELINE = {
 
 class TestDmDispatchConfig(unittest.TestCase):
     def setUp(self):
+        # N1_M28_PIN_ROOT：每个用例重新钉根 + 归还 dd.cfg 原始实现
+        _n1_m28_pin_root()
         ac.reset_section("send")
 
     # ---- 1. 零回归 ----

@@ -21,13 +21,38 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("DY_APP_ROOT", tempfile.mkdtemp(prefix="dy_sendcheck_"))
+# M-28（2026-09-29）：原实现 `os.environ.setdefault(...)` —— 一旦进程里已有
+# DY_APP_ROOT（别的测试模块设的），setdefault 是**空操作**，本模块就跑在别人的
+# 根上 ⇒ 顺序相关。改为**无条件赋值**一次性临时目录（M-17/M-20 同款范式），
+# 并在每个用例 setUp 里重新钉根。标识符（父会话 grep 用）：N1_M28_PIN_ROOT
+_ROOT = tempfile.mkdtemp(prefix="n1_m28_sendcheck_")
+os.makedirs(_ROOT, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _ROOT
 
 from services import send_response as SR          # noqa: E402
 from services import dm_dispatch as DD            # noqa: E402
+# M-28 主毒源修复：DD.cfg 可能被别的测试模块换成 bound method（实测毒源
+# test_uid_sink_ext）。导入期抓原始函数强引用，setUp 里无条件归还。
+from services.dm_dispatch import cfg as _PRISTINE_CFG  # noqa: E402
 
 
-class TestFailureKind(unittest.TestCase):
+def _n1_m28_pin_root():
+    """N1_M28_PIN_ROOT：重钉 DY_APP_ROOT + 归还 dm_dispatch.cfg 原始实现。"""
+    os.environ["DY_APP_ROOT"] = _ROOT
+    import database
+    database.reset_connection()
+    if getattr(DD, "cfg", None) is not _PRISTINE_CFG:
+        DD.cfg = _PRISTINE_CFG
+
+
+class _N1M28PinnedCase(unittest.TestCase):
+    """所有用例共用的 setUp：执行期重钉隔离根（不依赖模块执行顺序）。"""
+
+    def setUp(self):
+        _n1_m28_pin_root()
+
+
+class TestFailureKind(_N1M28PinnedCase):
     def test_risk_control_kinds(self):
         # 负控核心：改前 KICK/风控文案不含关键字 ⇒ 不冷静。现在必须归到 risk_control
         self.assertEqual(SR.failure_kind({"decision": "KICK"}), SR.KIND_RISK_CONTROL)
@@ -65,7 +90,7 @@ class TestFailureKind(unittest.TestCase):
         self.assertFalse(SR.kind_is_cooldown(SR.KIND_DELIVERED))
 
 
-class TestMinuteWindow(unittest.TestCase):
+class TestMinuteWindow(_N1M28PinnedCase):
     def test_per_minute_blocks_4th(self):
         q = DD.AccountQuota("acc_min")
         for i in range(3):
@@ -91,7 +116,7 @@ class TestMinuteWindow(unittest.TestCase):
         self.assertIn("冷静期", why)
 
 
-class TestCooldownTrigger(unittest.TestCase):
+class TestCooldownTrigger(_N1M28PinnedCase):
     def test_kind_triggers_cooldown(self):
         q = DD.AccountQuota("acc_kind")
         q.on_result(False, "", SR.KIND_RISK_CONTROL)
@@ -113,7 +138,7 @@ class TestCooldownTrigger(unittest.TestCase):
         self.assertEqual(q.cooldown_until, 0.0, "内容安全拦截不应触发冷静期")
 
 
-class TestManualExemption(unittest.TestCase):
+class TestManualExemption(_N1M28PinnedCase):
     """手动发送豁免：源码契约（source=='manual' 时不传 min_interval/per_minute）。"""
 
     def test_source_manual_recognized(self):

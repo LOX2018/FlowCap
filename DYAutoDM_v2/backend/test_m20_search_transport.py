@@ -38,9 +38,23 @@ _BACKEND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _BACKEND)
 # A-8 / M-17 隔离根单一化：模块级 DY_APP_ROOT 必须是**一次性临时目录**。
 # 先 mkdir 再赋值（vbrowser.app_root() 忽略不存在的根 → 回落仓库 data/）。
-_ROOT = tempfile.mkdtemp(prefix="m20_search_transport_")
+# M-28（2026-09-29）补强：模块级赋值只在**导入期**生效；`database.get_db()`
+# 每次调用都按**当前** DY_APP_ROOT 做会员一致性校验 ⇒ 执行期会被别的模块盖掉。
+# 故另加 `_n1_m28_pin_root()`，在每个用例 setUp 里重钉。
+# 标识符（父会话 grep 用）：N1_M28_PIN_ROOT
+_ROOT = tempfile.mkdtemp(prefix="n1_m28_m20_")
 os.makedirs(_ROOT, exist_ok=True)
 os.environ["DY_APP_ROOT"] = _ROOT
+
+
+def _n1_m28_pin_root():
+    """N1_M28_PIN_ROOT：执行期把 DY_APP_ROOT 重钉回本模块的一次性临时根。"""
+    os.environ["DY_APP_ROOT"] = _ROOT
+    try:
+        import database
+        database.reset_connection()
+    except Exception:                                     # noqa: BLE001
+        pass
 
 
 class _StubResp:
@@ -116,6 +130,10 @@ _OK_CHUNKED = _StubResp(200, b"%x\r\n" % len(_OK_BODY) + _OK_BODY + b"\r\n")
 
 
 class TestM20SearchTransport(unittest.TestCase):
+
+    def setUp(self):
+        # N1_M28_PIN_ROOT：每个用例重钉隔离根（不依赖模块执行顺序）
+        _n1_m28_pin_root()
 
     def test_g1_general_work_carries_transport_on_403(self):
         """G1：403 空响应 ⇒ `search_some_general_work` 必须带出传输层事实。"""

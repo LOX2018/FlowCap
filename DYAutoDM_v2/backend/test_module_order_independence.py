@@ -101,6 +101,9 @@ _CHAIN = (
     "test_cross_account_sink",
     "test_features_wiring",
     "test_settings_api",
+    # 2026-09-30（审计整改）：补入实际争根模块 —— 它用了 N1_M28_PIN_ROOT 却不在链内，
+    # 是既有覆盖缺口（新增争根模块必须登记，否则乱序面覆盖不到它）。
+    "test_lead_disposition_guard",
 )
 
 # 至少 3 组 seed，且含台账定位用的 seed=7
@@ -295,6 +298,76 @@ class TestR4NegativeControlOrderDependence(unittest.TestCase):
             self.assertEqual(
                 victim_first.returncode, 0,
                 f"R4 基准异常：反序本应通过\n{(victim_first.stderr or '')[-1500:]}")
+
+
+class TestR5NoDescriptorRoundTrip(unittest.TestCase):
+    """R5：禁止「模块函数存进类属性、再经 self./cls. 取回赋给模块」这一毒源范式。
+
+    直接守 M-28 ① 号根因的**形态**（不是等它炸出 KeyError）：把函数存成类属性后，
+    经**描述符协议**取回会得到 bound method ⇒「还原」实际把模块属性永久换成
+    `bound method <fn> of <TestCase>`，污染后续所有消费者。
+
+    判据：`_CHAIN` 模块源码中不得出现「`<mod>.<attr> = self.<x>` / `= cls.<x>`」形态。
+           正确写法是存进**非描述符容器**（模块级变量 / list 盒 / staticmethod），
+           例如 `dd.cfg = _orig_cfg`（本仓毒源已按此修复，见 test_uid_sink_ext）。
+    """
+
+    # 模块属性 ← 类/实例属性（描述符往返）。这是 M-28 ① 号根因的**唯一必要形态**。
+    #   ⚠️ 只有**类属性**存储（`cls._x = <函数>`）才会触发描述符绑定：
+    #      实例属性（`self._x = <函数>`）取回时是原值，不绑定 ⇒ 不构成毒源。
+    #      故判据 = 「先有 `cls.<n> =` 存储，再有 `Mod.attr = self./cls.<n>` 取回」。
+    _CLS_STORE = re.compile(r"^\s*cls\.(\w+)\s*=", re.M)
+    _ROUNDTRIP = re.compile(
+        r"^\s*\w+\.\w+\s*=\s*(?:self|cls)\.(\w+)\s*(?:#.*)?$", re.M)
+
+    def _scan(self, root, names):
+        out = []
+        for name in names:
+            path = os.path.join(root, name + ".py")
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                src = f.read()
+            class_attrs = set(self._CLS_STORE.findall(src))
+            if not class_attrs:
+                continue
+            for i, line in enumerate(src.splitlines(), 1):
+                m = self._ROUNDTRIP.match(line)
+                if m and m.group(1) in class_attrs:
+                    out.append((name, i, line.strip()))
+        return out
+
+    def test_chain_modules_have_no_descriptor_roundtrip(self):
+        bad = self._scan(_BACKEND, _CHAIN)
+        self.assertEqual(
+            bad, [],
+            "M-28 毒源形态复发（模块属性经 self./cls. 取回 = 描述符往返）：\n"
+            + "\n".join(f"  {n}:{i}  {ln}" for n, i, ln in bad))
+
+    def test_negative_control_descriptor_roundtrip_turns_red(self):
+        """R5 负控：注入毒源形态 ⇒ 必红；正确形态（模块级变量容器）⇒ 绿。"""
+        with tempfile.TemporaryDirectory(prefix="m28_r5_") as d:
+            bad = os.path.join(d, "test_poison.py")
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write(
+                    "class T:\n"
+                    "    @classmethod\n"
+                    "    def setUpClass(cls):\n"
+                    "        cls._orig = dd.cfg\n"
+                    "    def tearDown(self):\n"
+                    "        dd.cfg = self._orig\n")
+            found = self._scan(d, ("test_poison",))
+            self.assertEqual(len(found), 1, f"未抓到描述符往返毒源: {found}")
+            self.assertEqual(found[0][1], 6, f"应精确报在 tearDown 行: {found}")
+
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write(
+                    "_orig_cfg = dd.cfg\n\n\n"
+                    "class T:\n"
+                    "    def tearDown(self):\n"
+                    "        dd.cfg = _orig_cfg\n")
+            self.assertEqual(self._scan(d, ("test_poison",)), [],
+                             "正确形态（模块级变量容器）不应报红")
 
 
 if __name__ == "__main__":

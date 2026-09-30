@@ -33,13 +33,23 @@ if _BACKEND not in sys.path:
 
 import tempfile  # noqa: E402
 
-_FALLBACK_ROOT = os.path.join(tempfile.gettempdir(), "dyautodm_replay_root")
+# M-28（2026-09-29）：原实现 `os.environ.setdefault(...)` + **固定**目录 ——
+#   setdefault 在进程里已有 DY_APP_ROOT 时是**空操作**，本模块就跑在别人的根上。
+#   改为**无条件赋值**一次性临时目录，并在每个用例 setUp 里重钉。
+#   （本模块真正的 DB 是 setUpModule 里装入的夹具文件 `_dbfile`，根只用于
+#     `database.get_db()` 的一致性校验基线 —— 每次调用都读**当前**根，故必须
+#     执行期钉住，否则顺序相关。）标识符（父会话 grep 用）：N1_M28_PIN_ROOT
+_FALLBACK_ROOT = tempfile.mkdtemp(prefix="n1_m28_replay_")
 os.makedirs(_FALLBACK_ROOT, exist_ok=True)
-os.environ.setdefault("DY_APP_ROOT", _FALLBACK_ROOT)
+os.environ["DY_APP_ROOT"] = _FALLBACK_ROOT
 
 from replay import loader                        # noqa: E402
 
 FIXTURE = "dm_read_fixture"
+
+def _n1_m28_pin_root():
+    """N1_M28_PIN_ROOT：执行期把 DY_APP_ROOT 重钉回本模块的一次性临时根。"""
+    os.environ["DY_APP_ROOT"] = _FALLBACK_ROOT
 _ACCOUNTS = ("acct_A", "acct_B")
 
 _dbfile = None
@@ -114,6 +124,9 @@ def _call(account):
 
 
 class TestFixtureIsSanitized(unittest.TestCase):
+    def setUp(self):
+        # N1_M28_PIN_ROOT：每个用例重钉隔离根（不依赖模块执行顺序）
+        _n1_m28_pin_root()
     """脱敏自证 —— 夹具本身不得含真实标识（机械判据）。"""
 
     def test_no_urls_outside_placeholder(self):
@@ -148,6 +161,9 @@ class TestFixtureIsSanitized(unittest.TestCase):
 
 
 class TestConversationReadContract(unittest.TestCase):
+    def setUp(self):
+        # N1_M28_PIN_ROOT：每个用例重钉隔离根（不依赖模块执行顺序）
+        _n1_m28_pin_root()
     """产品函数 vs 夹具 SQL：两条路径互证。"""
 
     def test_counts_match_sql(self):
@@ -218,6 +234,9 @@ class TestConversationReadContract(unittest.TestCase):
 
 
 class TestManifestExpectedIsLive(unittest.TestCase):
+    def setUp(self):
+        # N1_M28_PIN_ROOT：每个用例重钉隔离根（不依赖模块执行顺序）
+        _n1_m28_pin_root()
     """P3-9：manifest 的 `expected` 必须被**消费者**读取并与现算真值互证。
 
     原缺陷：`expected` 是死元数据（唯一消费者用 SQL 现算期望，从不读 manifest）
@@ -252,6 +271,9 @@ class TestManifestExpectedIsLive(unittest.TestCase):
 
 
 class TestSensitivity(unittest.TestCase):
+    def setUp(self):
+        # N1_M28_PIN_ROOT：每个用例重钉隔离根（不依赖模块执行顺序）
+        _n1_m28_pin_root()
     """证明排序判据敏感：抬高空会话的 last_ts 后，它仍不得排到有消息会话之前。"""
 
     def test_inflated_empty_conversation_stays_behind(self):
