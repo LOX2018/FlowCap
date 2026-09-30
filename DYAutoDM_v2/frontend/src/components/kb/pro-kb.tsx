@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useRef } from "react";
+import { useRef, useLayoutEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Wrench, FileUp, SearchIcon, RefreshCw, Trash2, RotateCcw,
@@ -414,21 +414,35 @@ export function ProKb({
         </Card>
       )}
 
-      {/* 文件导入 */}
+      {/* 文件导入 —— 2026-09-29：「知识维护」按钮移入本卡片头部（actions），
+          与「选择文件」并列；内容区只保留**支持的文件类型**一行（用户要求）。
+          （此前误把「选择文件」当移动对象搬进内容区，已按用户澄清还原。） */}
       <Section className="mb-3.5" title="导入文件（AI 提纯）" actions={
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => fileRef.current?.click()}
-          disabled={impMut.isPending}
-        >
-          <FileUp className="h-3.5 w-3.5" />
-          {impMut.isPending ? `提纯中… ${impPct}%` : "选择文件"}
-        </Button>
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setMaintOpen(!maintOpen);
+              if (!maintOpen) void loadRecycle();
+            }}
+          >
+            <Wrench className="h-3.5 w-3.5" />知识维护
+            {maintOpen ? <ArrowLeft className="h-3 w-3 rotate-90" /> : null}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => fileRef.current?.click()}
+            disabled={impMut.isPending}
+          >
+            <FileUp className="h-3.5 w-3.5" />
+            {impMut.isPending ? `提纯中… ${impPct}%` : "选择文件"}
+          </Button>
+        </>
       }>
-        <div className="text-[0.7rem] leading-relaxed text-[var(--color-text-muted)]">
-          支持 txt / md / docx / xlsx / pdf（图片需先配视觉模型）· 自动按「主题 → 子分类 → 正文 → 总结」
-          提纯。提纯时会注入现有主题清单，AI 优先复用已有主题（保证全局一棵树），确认后入库。
+        <div className="text-[0.7rem] text-[var(--color-text-muted)]">
+          支持 txt / md / docx / xlsx / pdf（图片需先配视觉模型）
         </div>
         <input
           ref={fileRef}
@@ -632,14 +646,11 @@ export function ProKb({
                         </span>
                       ) : (
                         <span className="text-[0.68rem] text-[var(--color-text-muted)]">
-                          {typeof (r as ProKbItem & { hits?: number }).hits === "number" &&
-                          (r as ProKbItem & { hits?: number }).hits! > 0
-                            ? `命中${(r as ProKbItem & { hits?: number }).hits}`
-                            : "正常"}
+                          {typeof hits === "number" && hits > 0 ? `命中${hits}` : "正常"}
                         </span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-2 py-1.5">
+                    <td className="align-top whitespace-nowrap px-1.5 py-1.5">
                       <Button
                         variant="ghost"
                         size="sm"
