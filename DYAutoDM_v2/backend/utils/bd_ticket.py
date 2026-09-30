@@ -44,14 +44,22 @@ def verify_req_sign(e, sig_b64: str, pub_hex: str) -> bool:
 
 def generate_bd_ticket_client_data(api: str, ticket: str, ts_sign: str, prv: str) -> str:
     timestamp = int(time.time())
-    # 2026-09-17 修补（OCR 审查 MEDIUM —— 待签串分隔符注入）：
-    # `ticket` / `api` 直接插进 `k=v&k=v` 形式的待签串，若其中含 `&` 或 `=`
-    # 就能**伪造额外键值对**（改变被签名内容的语义）。这两者的取值本应是
-    # 不含分隔符的 token / 路径，此处按契约显式校验（fail-fast），
-    # 而不是静默产出被篡改的签名材料。
-    for _n, _v in (("ticket", ticket), ("api", api)):
-        if "&" in str(_v) or "=" in str(_v):
-            raise ValueError(f"{_n} 含非法分隔符（&/=），拒绝生成签名材料")
+    # 2026-09-17 修补（OCR 审查 MEDIUM —— 待签串分隔符注入）
+    # 2026-10-01 修正（**实测驱动的回归修复**）：原实现对 `ticket` 与 `api` **一律**
+    #   拒绝 `&` 与 `=`，但真实 `ticket` 是 **base64**（实测
+    #   `hash.mgTYBN0DfPL9gfxlJ…==`，49 字符，**必含 `=` padding**）⇒ 守卫**恒误拦**，
+    #   把合法凭证判为非法，写接口（弹幕/点赞）全线抛
+    #   `ValueError: ticket 含非法分隔符（&/=）`。上游 `cv-cat/DouYin_Spider`
+    #   的对应函数**没有**该校验（同一待签串格式），即以 `=` 参与签名是**正常形态**。
+    #
+    #   按**注入可行性**分别判定（这才是守卫的本意）：
+    #     · `&` —— 能**伪造额外键值对**（`ticket=a&path=/evil`）⇒ **必须拦**；
+    #     · `=` —— 落在第一个 `=` 之后，只是「值的一部分」，**不产生新键**
+    #       ⇒ 对 base64 的 `ticket` **必须放行**；对 `api`（契约是纯路径）仍拦。
+    if "&" in str(ticket):
+        raise ValueError("ticket 含非法分隔符（&），拒绝生成签名材料")
+    if "&" in str(api) or "=" in str(api):
+        raise ValueError("api 含非法字符（&/=），拒绝生成签名材料")
     res_sign = f"ticket={ticket}&path={api}&timestamp={timestamp}"
     p = {
         "ts_sign": ts_sign,

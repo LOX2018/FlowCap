@@ -8,6 +8,7 @@ import { AnimatePresence } from "framer-motion";
 
 import {
   Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X, Tags,
+  AlertTriangle,
 } from "lucide-react";
 
 import { PageProps, ReusePayload, RoomConfig, LiveRoom } from "../../api/client";
@@ -978,19 +979,42 @@ export default function LivePage(props: PageProps) {
                   >
                     <Play className="h-3.5 w-3.5" />继续
                   </Button>
+                  {/* 软停止（默认入口）：停止监听，**存量队列发完**才结束。
+                      2026-10-01 起与硬停止并列 —— 此前只有这一个入口，用户报
+                      「只有软着陆、没有硬着陆」。两者语义见 api/engine.py：
+                      /stop-soft → adm.stop(hard=False)（队列发完）
+                      /stop      → adm.stop(hard=True) （立即清空队列） */}
                   <Button
                     variant="danger-outline"
                     size="sm"
                     data-od-id="live-stop"
                     disabled={!engineBusy}
+                    title="停止监听：存量队列发完才结束（不丢已入队任务）"
                     onClick={() =>
                       api
                         .stopSoftEngine()
-                        .then((r) => push(r.ok ? "软停止中" : "停止异常"))
+                        .then((r) => push(r.ok ? "软停止中（存量队列发完即结束）" : "停止异常"))
                         .catch((e: unknown) => push("软停止异常: " + errMsg(e)))
                     }
                   >
                     <Square className="h-3.5 w-3.5" />停止监听
+                  </Button>
+                  <Button
+                    variant="danger-outline"
+                    size="sm"
+                    data-od-id="live-stop-hard"
+                    disabled={!engineBusy}
+                    title="强制停止：立即清空待发队列并断开监听（用于卡死/需立刻换房）"
+                    onClick={() => {
+                      // 破坏性操作（丢队列）⇒ 必须二次确认，避免误点
+                      if (!window.confirm("强制停止会立即清空待发私信队列并断开监听，未发出的任务不再补发。确定继续？")) return;
+                      api
+                        .stopEngine()
+                        .then((r) => push(r.ok ? "已强制停止（队列已清空）" : "强制停止异常"))
+                        .catch((e: unknown) => push("强制停止异常: " + errMsg(e)));
+                    }}
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />强制停止
                   </Button>
                 </>
               )}

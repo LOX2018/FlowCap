@@ -25,18 +25,25 @@ router = APIRouter()
 
 
 def _auth_for(account: str):
-    """加载指定账号凭证 → dy_auth（与直播监听引擎同源）。"""
+    """加载指定账号凭证 → dy_auth（与直播监听引擎**同一加载器**）。
+
+    ⚠️ 2026-10-01：原用 `utils.common_util.load_env` —— 那是**弱载入器**
+    （`perepare_auth(cookies, "", "")` 且**不还原** `DY_PRIVATE_KEY` 的字面量 `\\n`），
+    会让写接口在 `SigningKey.from_pem` 处抛 `Empty string does not encode a sequence`。
+    同族缺陷已在 `api/live.py::_auth_for` / `api/platform.py::_auth_for` 修过，
+    本处为**第三处残留**，一并收敛到唯一真源（SSOT）。
+    """
     try:
         from auto_dm import accounts as acct_core
         env_path = acct_core.env_path_of(account)
         if not env_path:
             raise HTTPException(404, f"账号 {account} 未登记")
-        import utils.common_util as common_util
-        return common_util.load_env(env_path)
+        from dy_apis.login_api import DYLoginApi
+        return DYLoginApi._load_auth_from_env(env_path)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(503, f"加载账号 {account} 凭证失败: {e}")
+        raise HTTPException(503, f"加载账号 {account} 凭证失败: {type(e).__name__}: {e}")
 
 
 def _room_ids(account: str, room_id: str | None, anchor_id: str | None):

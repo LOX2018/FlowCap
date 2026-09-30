@@ -148,18 +148,46 @@ class LikeSendBody(BaseModel):
 
 
 def _auth_for(account: str):
-    """加载指定账号凭证 → dy_auth（与 api/linkmic.py 同范式）。"""
+    """加载指定账号凭证 → dy_auth（与直播/采集/平台链路**同一加载器**）。
+
+    ## 🔴 2026-10-01 修复（写接口「异常」的真根因）
+
+    原实现调 `utils.common_util.load_env(env_path)`，它是**弱载入器**，与项目标准
+    载入器 `DYLoginApi._load_auth_from_env` 有两处致命差异（实测）：
+
+    | 项 | `common_util.load_env` | `DYLoginApi._load_auth_from_env` |
+    |---|---|---|
+    | 签名还原 | `perepare_auth(cookies, "", "")` ← **传空 web_protect/keys** | `perepare_auth(cookies, web_protect, keys)` |
+    | 私钥形态 | `_src['DY_PRIVATE_KEY']` **原样** | `_decode_private_key(...)` **还原换行** |
+
+    后果（用户实测日志）：
+    ```
+    [LIVE-002] [danmaku] 发送异常 …: Empty string does not encode a sequence
+    [LIVE-042] [like]    发送异常 …: Empty string does not encode a sequence
+    ```
+    `DY_PRIVATE_KEY` 在存储态是**字面量 `\\n`**（`_encode_private_key` 产物），未还原即
+    丢给 `SigningKey.from_pem` ⇒ PEM 解析失败。**只有写接口**会走到解析私钥这一步
+    （`with_bd` → `generate_bd_ticket_client_data`），只读接口用 `with_bd_readonly` 不碰私钥
+    ⇒ 这正是「只读能用、写就异常」的那一环。
+
+    ## 同族缺陷（本项目已修过同一处，这里是**残留**）
+
+    `api/platform.py:54-70` 于 2026-09-14 实测发现「`load_env` 返回的 `.cookie` 恒为空
+    ⇒ 所有 platform 请求不带凭证」并**已改**用 `DYLoginApi._load_auth_from_env`。
+    本文件与 `api/linkmic.py:35` 是**同族未收敛**的两处 ⇒ 本次一并收敛（SSOT）。
+    """
     try:
         from auto_dm import accounts as acct_core
         env_path = acct_core.env_path_of(account)
         if not env_path:
             raise HTTPException(404, f"账号 {account} 未登记")
-        import utils.common_util as common_util
-        return common_util.load_env(env_path)
+        # 唯一真源：与探活/直播/平台链路同一加载器（完整还原签名与私钥换行）
+        from dy_apis.login_api import DYLoginApi
+        return DYLoginApi._load_auth_from_env(env_path)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(503, f"加载账号 {account} 凭证失败: {e}")
+        raise HTTPException(503, f"加载账号 {account} 凭证失败: {type(e).__name__}: {e}")
 
 
 def _room_id_for(room_id: str | None):
