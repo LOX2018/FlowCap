@@ -335,8 +335,8 @@ class LiveMixin:
         response = requests.get(url, headers=headers.get(), params=params.get(),
                            cookies=auth.cookie, verify=tls_verify())
 
-        print(response.text)
-        print(response)
+        # 2026-09-30：删除两处残留调试 print（贡献榜改为每 60s 轮询后，
+        # 原 `print(response.text)` 会把整份榜单 JSON 倾倒进 stdout 污染日志）。
         return response.json()
 
     @staticmethod

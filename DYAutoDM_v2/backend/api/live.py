@@ -6,7 +6,7 @@
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
 from loguru import logger
-from models.live import LiveStreamResponse, LiveMessage, DanmakuRequest, DmTemplateRequest
+from models.live import LiveStreamResponse, LiveMessage, DanmakuRequest, DmTemplateRequest, RankUser
 from database import get_kv_json, set_kv_json
 from config import settings
 
@@ -39,6 +39,7 @@ async def get_stream(request: Request) -> LiveStreamResponse:
             statusMsg=status_msg,
             dmRunning=getattr(adm, "is_running", False),
             dmPaused=engine_value == "paused",
+            rankReason="未启动监听",
         )
 
     room = getattr(live, "room_status", None) or {}
@@ -68,6 +69,17 @@ async def get_stream(request: Request) -> LiveStreamResponse:
     heat = live.heat_snapshot() if hasattr(live, "heat_snapshot") else []
     heat_curve = [int(h[1]) for h in heat if isinstance(h, (list, tuple)) and len(h) > 1]
 
+    # 贡献榜（2026-09-30）：由 LiveChatHook 后台轮询上游榜单写入。
+    # 空态给**如实**说明：running 的引擎若榜单拉取失败（缺登录态/无 room_info/上游
+    # 结构变动），front 显示原因，绝不假装「无贡献者」。
+    _raw_rank = getattr(live, "contribution_rank", None) or []
+    _rank = [RankUser(**r) for r in _raw_rank if isinstance(r, dict)]
+    _rank_reason = getattr(live, "_rank_reason", "") or ""
+    if not _rank and not _rank_reason:
+        _rank_reason = "running" if running else "未启动"
+    elif not _rank and _rank_reason == "idle":
+        _rank_reason = "拉取中"
+
     return LiveStreamResponse(
         alive=running,
         room_id=getattr(adm, "live_id", None) or str(room_info.get("room_id") or ""),
@@ -82,6 +94,8 @@ async def get_stream(request: Request) -> LiveStreamResponse:
         statusMsg=status_msg,
         dmRunning=getattr(adm, "is_running", False),
         dmPaused=engine_value == "paused",
+        contribution_rank=_rank,
+        rankReason=_rank_reason,
     )
 
 

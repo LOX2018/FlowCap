@@ -5,10 +5,21 @@ from pydantic import BaseModel, Field
 class LiveMessage(BaseModel):
     """单条弹幕消息"""
 
-    uid: str = ""  # 弹幕可能无 uid，给默认值
+    uid: str = ""
     nickname: str = ""
     content: str = ""
     ts: int = 0  # 服务器时间戳（秒）
+
+
+class RankUser(BaseModel):
+    """贡献榜单个用户（2026-09-30 新增，上游 /webcast/ranklist/audience/ 归一化）"""
+
+    rank: int = 0
+    uid: str = ""
+    nickname: str = ""
+    score: int = 0
+    score_text: str = ""
+    avatar: str = ""
 
 
 class LiveStreamResponse(BaseModel):
@@ -23,6 +34,10 @@ class LiveStreamResponse(BaseModel):
     listening: bool = False
     roomTitle: str = ""
     liveUrl: str = ""
+
+    # 贡献榜（2026-09-30）：由 LiveChatHook 后台轮询上游榜单写入；空态由 rankReason 说明。
+    contribution_rank: list[RankUser] = Field(default_factory=list)
+    rankReason: str = ""  # ok/empty/需登录/需凭证/未启动…
 
     # V2 任务容器：切页后回读引擎真实状态（修复「页面显示等待启动」）
     engineState: str = "idle"  # idle/starting/running/paused/stopping/stopped

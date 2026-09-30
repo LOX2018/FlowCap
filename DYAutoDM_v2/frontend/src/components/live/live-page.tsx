@@ -41,12 +41,13 @@ import {
 import { cn } from "@/lib/utils";
 
 import {
-  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, displayStatus, isIssue,
+  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, RankUser, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, displayStatus, isIssue,
   sourceMetaOf, dmTitle, dmFailReason, dmPreviewText,
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
 import EngineCards from "./engine-cards";
+import ContributionRankCard from "./ContributionRankCard";
 
 /** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
 const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
@@ -98,6 +99,15 @@ export default function LivePage(props: PageProps) {
   const [engineReqBusy, setEngineReqBusy] = useState(false);
   // 任务中心「复用」载荷（标记已应用，避免容器回读覆盖用户刚改的字段）
   const reuseRef = useRef<ReusePayload | null>(null);
+  // 🟡 2026-09-30（用户实测）：实时弹幕/信息流**不自动滚动到最新**。
+  // 设计契约：只在用户已贴近底部时自动跟随（贴底阈值），用户上滚查看历史时
+  // 绝不打扰（看一半被拽到底 = 更差）；离开底部时露出「回到最新」按钮。
+  const feedBoxRef = useRef<HTMLDivElement | null>(null);
+  const tableBoxRef = useRef<HTMLDivElement | null>(null);
+  const tableStickRef = useRef(true);
+  const [feedStick, setFeedStick] = useState(true);
+  const [tableStick, setTableStick] = useState(true);
+  const FEED_STICK_PX = 24;
 
   const { data: tasksCfg } = useQuery({
     queryKey: ["live-tasks"],
@@ -141,6 +151,8 @@ export default function LivePage(props: PageProps) {
   const roomLikes = ls?.likes ?? 0;
   const messages = useMemo(() => ls?.messages ?? [], [ls]);
   const heat = useMemo(() => ls?.heat_curve ?? [], [ls]);
+  const rank = useMemo<RankUser[]>(() => ls?.contribution_rank ?? [], [ls]);
+  const rankReason = ls?.rankReason || "";
   const records = useMemo(() => tasksCfg?.records ?? [], [tasksCfg]);
   const engineLabel =
     engineState === "starting"
@@ -334,6 +346,45 @@ export default function LivePage(props: PageProps) {
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, []);
+
+  // ── 自动滚动跟随（2026-09-30 用户实测：弹幕/信息流不自动滚到最新）──────────
+  // 判据：仅当用户**贴底**（距底 ≤ FEED_STICK_PX）才自动跟随；上滚查看历史时不打扰。
+  const onFeedScroll = () => {
+    const el = feedBoxRef.current;
+    if (!el) return;
+    setFeedStick(el.scrollHeight - el.scrollTop - el.clientHeight <= FEED_STICK_PX);
+  };
+  const onTableScroll = () => {
+    const el = tableBoxRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight <= FEED_STICK_PX;
+    tableStickRef.current = near;
+    setTableStick(near);
+  };
+  useEffect(() => {
+    if (!feedStick) return;
+    const el = feedBoxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    // 依赖「最新一条的 id」而非长度：feed_snapshot 封顶 50 条，满员后 length 不再变，
+    // 用长度会漏掉后续每一条新弹幕（正是用户报的「不自动滚到最新」的根因之一）。
+  }, [feed[feed.length - 1]?.id, feedStick]);
+  useEffect(() => {
+    if (!tableStickRef.current) return;
+    const el = tableBoxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [rows[rows.length - 1]?.id]);
+  const jumpToLatest = (which: "feed" | "table") => {
+    if (which === "feed") {
+      setFeedStick(true);
+      const el = feedBoxRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    } else {
+      tableStickRef.current = true;
+      setTableStick(true);
+      const el = tableBoxRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  };
 
   const heatChart = (data: number[], w = 640, h = 120) => {
     if (!data || !data.length) {
@@ -957,7 +1008,11 @@ export default function LivePage(props: PageProps) {
                 </span>
               }
             >
-              <div className="flex max-h-[236px] flex-col gap-0.5 overflow-y-auto">
+              <div
+                ref={feedBoxRef}
+                onScroll={onFeedScroll}
+                className="relative flex max-h-[236px] flex-col gap-0.5 overflow-y-auto overscroll-contain"
+              >
                 {feed.map((f) => (
                   <div
                     key={f.id}
@@ -988,6 +1043,13 @@ export default function LivePage(props: PageProps) {
                   </div>
                 )}
               </div>
+              {!feedStick && feed.length > 0 && (
+                <div className="mt-1.5 flex justify-center">
+                  <Button variant="secondary" size="sm" data-od-id="live-feed-jump" onClick={() => jumpToLatest("feed")}>
+                    ↓ 回到最新
+                  </Button>
+                </div>
+              )}
 
               <Toolbar className="mt-3 border-t border-[var(--color-border)] pt-3">
                 <Input
@@ -1064,6 +1126,10 @@ export default function LivePage(props: PageProps) {
                 {heatChart(heat)}
               </div>
             </Section>
+
+            {/* 贡献榜（2026-09-30）：落在「房间热度」下方那块空白（用户黄框指定）。
+                数据由后端 /api/live/stream 承载，前端不新增请求。 */}
+            <ContributionRankCard rank={rank} reason={rankReason} />
           </div>
 
           <Section
@@ -1142,9 +1208,13 @@ export default function LivePage(props: PageProps) {
               {/* 2026-09-29（图二「红线放到绿线位置」）：AI 计数并入统计行末尾 */}
              {aiCounts}
             </div>
-            <div className="-mx-4 -mb-4 flex max-h-[clamp(320px,calc(100vh-560px),620px)]
+            <div className="relative -mx-4 -mb-4 flex max-h-[clamp(320px,calc(100vh-560px),620px)]
                             flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+              <div
+                ref={tableBoxRef}
+                onScroll={onTableScroll}
+                className="min-h-0 flex-1 overflow-auto overscroll-contain"
+              >
                 {/* 2026-09-30（用户实测「表格突然变宽/发言人列变宽」）：
                     原表格**没有 table-layout**，浏览器按内容自动分配列宽 ——
                     长昵称/长文案会把列挤变形。改为 `table-fixed` + 固定列宽，
@@ -1302,6 +1372,19 @@ export default function LivePage(props: PageProps) {
                   </tbody>
                 </table>
               </div>
+              {!tableStick && rows.length > 0 && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="pointer-events-auto shadow-[var(--shadow-lg)]"
+                    data-od-id="live-table-jump"
+                    onClick={() => jumpToLatest("table")}
+                  >
+                    ↓ 回到最新
+                  </Button>
+                </div>
+              )}
             </div>
           </Section>
         </>

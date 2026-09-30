@@ -80,6 +80,17 @@ export interface LiveMsg {
   status?: string;
 }
 
+export interface RankUser {
+  /** 名次（1 起） */
+  rank: number;
+  uid: string;
+  nickname: string;
+  score: number;
+  /** 后端若给出「N万」文案则优先显示 */
+  score_text?: string;
+  avatar?: string;
+}
+
 export interface LiveStream {
   alive: boolean;
   room_id?: string | null;
@@ -94,6 +105,10 @@ export interface LiveStream {
   liveUrl?: string;
   engineState?: string;
   statusMsg?: string;
+  /** 贡献榜（2026-09-30，后端 /api/live/stream 承载；由 LiveChatHook 后台轮询上游） */
+  contribution_rank?: RankUser[];
+  /** 贡献榜空态说明：ok / empty / 需登录 / 拉取中 / 未启动监听 …（后端下发，前端不推断） */
+  rankReason?: string;
 }
 
 export interface SendRecord {

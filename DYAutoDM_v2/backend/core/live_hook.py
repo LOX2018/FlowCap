@@ -82,6 +82,24 @@ class LiveChatHook(DouyinLive):
         self.room_stats = {"online": 0, "likes": 0, "total_user": 0, "display": ""}
         # 热度时间序列：(epoch, online, likes)
         self.heat_series: deque = deque(maxlen=180)
+        # ---- 点赞累计（2026-09-30 修：前端「实时信息流」卡头红心恒 0）----
+        # 设计契约：房间「累计点赞」有两个可独立取得的来源，必须合并而不是互相覆盖——
+        #   ① WS `WebcastLikeMessage`（点对点实时事件）：`count` 是**本次连击增量**，
+        #      逐帧累加即得累计值（前端实测：本房间 likes 恒 0，因旧实现只推 feed 未累计）；
+        #   ② `RoomStatsMessage` 文案解析（`X万点赞`）：是**绝对值**，可作校准锚。
+        # 合并规则：取两者较大值，且**绝不被解析到的 0 回退清零**（0 是「未解析到」不是「无点赞」）。
+        self._likes_total: int = 0        # 来自 ① 的累计增量
+        self._likes_from_ws: bool = False  # 是否已收到过 WS 点赞事件
+        # ---- 贡献榜（2026-09-30 新增，用户授权接入）----
+        # 上游接口 `/webcast/ranklist/audience/`（上游 `douyin_api.py:1799
+        # get_live_contribution_rank`），需 room_id/anchor_id/sec_uid —— 由 AutoDM
+        # 启动时预查的 room_info 提供。非关键路径：拉取失败绝不阻断监听。
+        self.contribution_rank: list = []
+        self._room_info: dict = {}
+        self._rank_reason: str = "idle"   # 最近一次拉取结论（供前端空态如实显示）
+        self._rank_thread: Optional[threading.Thread] = None
+        self._rank_stop = threading.Event()
+        self._rank_interval: int = 60
 
     # ------------------------------------------------------------------
     # 实时信息流快照（供 API 层 getLiveStream 查询）
@@ -90,6 +108,31 @@ class LiveChatHook(DouyinLive):
         self.feed.clear()
         self.room_stats = {"online": 0, "likes": 0, "total_user": 0, "display": ""}
         self.heat_series.clear()
+        # 点赞两个来源同时归零；贡献榜随新会话清空
+        self._likes_total = 0
+        self._likes_from_ws = False
+        self.contribution_rank = []
+
+    def _merge_likes(self, stats_val: int) -> int:
+        """合并「点赞累计」两个来源，写回 room_stats["likes"]。
+
+        判据（防「解析到的 0 把真值清零」）：
+          · ws_total  = WS 逐帧累加的增量（会话内只增不减）；
+                        None 表示本会话尚未收到任何 LikeMessage。
+          · stats_val = RoomStats 文案解析出的绝对值（可为 0 = 未解析到）。
+        规则：任一为 None/未取得 → 用另一方；两者都有 → 取较大值。
+        绝不把 likes 从 >0 降到 0（0 只代表「没解析到」）。
+        """
+        ws_total = self._likes_total if self._likes_from_ws else None
+        if ws_total is None:
+            merged = stats_val
+        elif stats_val is None or stats_val <= 0:
+            merged = ws_total
+        else:
+            merged = max(ws_total, stats_val)
+        cur = int(self.room_stats.get("likes", 0) or 0)
+        self.room_stats["likes"] = max(cur, int(merged or 0))
+        return self.room_stats["likes"]
 
     def feed_snapshot(self, limit: int = 120) -> list[dict]:
         """返回最近 limit 条信息流（前端倒序展示）。"""
@@ -101,6 +144,156 @@ class LiveChatHook(DouyinLive):
 
     def heat_snapshot(self) -> list[list]:
         return [list(x) for x in self.heat_series]
+
+    # ------------------------------------------------------------------
+    # 贡献榜（2026-09-30 新增；用户授权「通过上游情报编写接口」）
+    # ------------------------------------------------------------------
+    def set_room_info(self, room_info: Optional[dict]) -> None:
+        """快照启动时预查的直播间身份（贡献榜所需的 room_id/anchor_id/sec_uid）。
+
+        仅在有值时覆盖 —— 重连时基类 `on_close → self.start_ws()` 传的 room_info
+        为 None，此时必须保留首次的身份，不能被清空。
+        """
+        if room_info and isinstance(room_info, dict) and room_info.get("room_id"):
+            self._room_info = dict(room_info)
+
+    @staticmethod
+    def _normalize_rank(data: Any) -> list[dict]:
+        """把上游贡献榜 JSON 归一化为 [{rank,uid,nickname,score,score_text,avatar}]。
+
+        ⚠️ 上游 `get_live_contribution_rank` 只 `return response.json()`，**未提供
+        解析器**（本项目情报库登记为「未实测」）⇒ 必须防御式解析：容器键与字段均多
+        候选兜底，绝不因结构漂移抛错。首跑请核对日志里打印的原始片段再校准键名。
+        """
+        if not isinstance(data, dict):
+            return []
+        if data.get("status_code") not in (0, None):
+            return []
+        d = data.get("data") if isinstance(data.get("data"), dict) else data
+        if not isinstance(d, dict):
+            return []
+        arr = None
+        for k in ("ranks", "rank_list", "list", "users", "items", "audience"):
+            if isinstance(d.get(k), list):
+                arr = d[k]
+                break
+        if arr is None:
+            return []
+        out: list[dict] = []
+        for it in arr:
+            if not isinstance(it, dict):
+                continue
+            u = it.get("user") if isinstance(it.get("user"), dict) else {}
+            nick = (it.get("nickname") or u.get("nickname")
+                    or it.get("nick_name") or u.get("nick_name") or "")
+            uid = (u.get("id_str") or u.get("id") or it.get("user_id")
+                   or it.get("user_id_str") or it.get("uid") or "")
+            try:
+                score = int(it.get("score") or it.get("value")
+                            or it.get("rank_score") or 0)
+            except Exception:
+                score = 0
+            score_text = (it.get("score_str") or it.get("score_text")
+                          or it.get("score_display") or it.get("score_blur_text") or "")
+            av = it.get("avatar_thumb") or u.get("avatar_thumb") or it.get("avatar") or {}
+            avatar = ""
+            if isinstance(av, dict):
+                url_list = av.get("url_list") or []
+                avatar = str(url_list[0]) if url_list else ""
+            out.append({
+                "uid": str(uid or ""),
+                "nickname": str(nick or ""),
+                "score": score,
+                "score_text": str(score_text or ""),
+                "avatar": avatar,
+            })
+        out.sort(key=lambda x: x["score"], reverse=True)
+        for i, r in enumerate(out, 1):
+            r["rank"] = i
+        return out
+
+    @staticmethod
+    def fetch_rank(room_info: dict, auth_: Any) -> list[dict]:
+        """调用上游贡献榜接口并归一化；任何异常 → 返回 []（非关键路径，不阻断监听）。"""
+        try:
+            rid = str((room_info or {}).get("room_id") or "")
+            aid = str((room_info or {}).get("anchor_id") or "")
+            sec = str((room_info or {}).get("sec_uid") or "")
+            if not rid or not aid:
+                logger.info("[LIVE-040] [贡献榜] 缺 room_id/anchor_id（匿名进房无 anchor），跳过")
+                return []
+            if auth_ is None or not getattr(auth_, "cookie", None):
+                logger.info("[LIVE-040] [贡献榜] 当前无可用凭证，跳过（贡献榜需登录态）")
+                return []
+            from dy_apis.douyin_api import DouyinAPI
+            data = DouyinAPI.get_rank_list(auth_, rid, aid, sec)
+            rows = LiveChatHook._normalize_rank(data)
+            if rows:
+                logger.info(f"[贡献榜] 解析到 {len(rows)} 条（首条={rows[0].get('nickname')} "
+                            f"score={rows[0].get('score')}）")
+            elif isinstance(data, dict):
+                logger.warning(f"[LIVE-041] [贡献榜] 未解析出条目 status_code="
+                               f"{data.get('status_code')} 原始片段: {str(data)[:300]}")
+            return rows
+        except Exception as e:
+            logger.warning(f"[LIVE-042] [贡献榜] 拉取异常（非关键路径，忽略）: {e}")
+            return []
+
+    def _rank_loop(self) -> None:
+        while not self._rank_stop.is_set():
+            try:
+                if self._room_info:
+                    rows = self.fetch_rank(self._room_info, self.auth_)
+                    if rows:
+                        self.contribution_rank = rows
+                        self._rank_reason = "ok"
+                    elif not self.contribution_rank:
+                        # 失败/空 **不覆盖**已有非空榜（避免抖动清空）
+                        self._rank_reason = "empty"
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[贡献榜] 轮询异常: {e}")
+            if self._rank_stop.wait(self._rank_interval):
+                break
+
+    def start_rank_poll(self, interval: int = 60) -> None:
+        if self._rank_thread and self._rank_thread.is_alive():
+            return
+        self._rank_interval = interval
+        self._rank_stop.clear()
+        self._rank_thread = threading.Thread(target=self._rank_loop, daemon=True)
+        self._rank_thread.start()
+
+    def stop_rank_poll(self) -> None:
+        self._rank_stop.set()
+        self._rank_thread = None
+
+    # ------------------------------------------------------------------
+    # WS 生命周期覆盖（建连前快照身份 + 启动贡献榜轮询；不改动任何 WS 逻辑）
+    # ------------------------------------------------------------------
+    def start_ws(self, room_info: Optional[dict] = None) -> None:
+        """覆盖基类：建连前记录 room_info 并启动贡献榜轮询，随后完全委托基类。
+
+        基类 `start_ws` 阻塞到 WS 关闭（`on_close` 内的自动重连会再次进入本覆盖），
+        故这里是「每轮建连前」的幂等前置步骤。
+        """
+        try:
+            self.set_room_info(room_info)
+        except Exception:
+            pass
+        try:
+            self.start_rank_poll()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[贡献榜] 轮询启动失败: {e}")
+        super().start_ws(room_info)
+
+    def on_close(self, ws: Any, close_status_code: Any = None, close_msg: Any = None) -> None:
+        """覆盖基类：仅在「真停止」时停贡献榜轮询（重连的空隙不停，与 ENG-015 一致）。"""
+        if getattr(self, "_should_stop", False):
+            try:
+                self.stop_rank_poll()
+            except Exception:
+                pass
+        super().on_close(ws, close_status_code, close_msg)
 
     @staticmethod
     def _extract_num(text: str, keywords: tuple) -> int:
@@ -181,9 +374,10 @@ class LiveChatHook(DouyinLive):
         self.room_stats["display"] = text
         online, likes = self._parse_room_numbers(text)
         self.room_stats["online"] = online
-        self.room_stats["likes"] = likes
+        # 2026-09-30 修：点赞走**合并**（WS 累计 ⊕ 文案绝对值），不再被解析到的 0 清零。
+        merged_likes = self._merge_likes(likes)
         self.room_stats["total_user"] = max(online, self.room_stats.get("total_user") or 0)
-        self.heat_series.append((time.time(), online, likes))
+        self.heat_series.append((time.time(), online, merged_likes))
         # 首次（或文案变化时）打印原始文案，便于排查“热度看不到”问题
         if self.room_stats.get("_last_logged") != text:
             self.room_stats["_last_logged"] = text
@@ -482,6 +676,16 @@ class LiveChatHook(DouyinLive):
                     elif item.method == "WebcastLikeMessage":
                         m = Live_pb2.LikeMessage()
                         m.ParseFromString(item.payload)
+                        # 2026-09-30 修：累计点赞 —— 旧实现只推 feed，room_stats["likes"]
+                        # 从不增长（前端红心恒 0）。`count` 是本次连击增量，逐帧累加即累计值。
+                        try:
+                            _c = int(getattr(m, "count", 0) or 0)
+                            if _c > 0:
+                                self._likes_total += _c
+                                self._likes_from_ws = True
+                                self._merge_likes(0)
+                        except Exception:
+                            pass
                         try:
                             self._push_feed("like", m.user.nickname, f"点赞 × {m.count}")
                         except Exception:
