@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
-import { Avatar, hue, nowHM } from "../../components/ui";
+import { Avatar, hue } from "../../components/ui";
 import { Loader2, Download, Paperclip, ImageIcon, VideoIcon, FileText, Mic } from "lucide-react";
 import { ImageDown, FileDown, SquareDashedMousePointer } from "lucide-react";
 import {
@@ -25,7 +25,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   MediaInfo, Msg, Conv, Account, RawConversation, ConversationsResp, MessagesApi,
-  errMsg, isSystemTip,
+  errMsg, isSystemTip, mtDate, mtTime,
   SearchHit, DailyCount,
 } from "./message-shared";
 import { ImageViewer } from "./message-viewer";
@@ -194,7 +194,10 @@ export default function MessagesPage(props: PageProps) {
           dir: (m.dir || "in") as "in" | "out",
           type: m.type || "text",
           text: m.text || "",
-          mt: m.time || nowHM(),
+          // 2026-09-30：不再用 nowHM() 兜底（它返回 "HH:MM" 无日期，
+          // 会被日期分割线误当成日期 ⇒ 产生无意义分割线）。
+          // 缺失即空串 —— 空是零信息，渲染侧据此不插线、不显时间。
+          mt: m.time || "",
         })),
       }));
     },
@@ -264,7 +267,8 @@ export default function MessagesPage(props: PageProps) {
         dir: (m.dir || (m.role === "me" ? "out" : "in")) as "in" | "out",
         type: m.type || "text",
         text: m.text || "",
-        mt: m.time || nowHM(),
+        // 2026-09-30：同上，去掉 nowHM() 兜底（无日期，会污染日期分割线）。
+        mt: m.time || "",
         image_url: m.image_url || undefined,  // 2026-09-02：后端解密后的真原图
         thumb_url: m.thumb_url || undefined,  // 2026-09-25（H-25）：契约内缩略图
         // 2026-09-05：来源通道，后端已兜底 'ws'，这里再兜一层
@@ -678,7 +682,11 @@ export default function MessagesPage(props: PageProps) {
                         <span className="truncate">{c.name}</span>
                       </span>
                       <span className="shrink-0 font-mono text-[0.68rem] font-normal text-[var(--color-text-muted)]">
-                        {c.msgs && c.msgs.length ? c.msgs[c.msgs.length - 1].mt : ""}
+                        {/* 2026-09-30：列表末条只显示「时分」，且同样只认契约形状。
+                            旧实现直接打整条 mt，缺失时会露出 nowHM() 的 "01:01"。 */}
+                        {c.msgs && c.msgs.length
+                          ? mtTime(c.msgs[c.msgs.length - 1].mt)
+                          : ""}
                       </span>
                     </div>
                     <div className="truncate text-[0.74rem] text-[var(--color-text-muted)]">
@@ -964,9 +972,11 @@ export default function MessagesPage(props: PageProps) {
                 let lastDate = "";
                 const nodes: React.ReactNode[] = [];
                 convMsgs.forEach((m) => {
-                  // 2026-09-05:日期分割线。mt 格式 YYYY-MM-DD HH:MM:SS,
-                  // 提取日期部分,和上一条不同就插入分隔线。
-                  const fullDate = (m.mt || "").slice(0, 10);
+                  // 2026-09-30：日期分割线只认契约形状（YYYY-MM-DD HH:MM:SS）。
+                  // 旧实现 `(m.mt||"").slice(0,10)` 会把前端 nowHM() 兜底的
+                  // "01:01"（无日期）整条当成日期 ⇒ 渲染出无意义分割线。
+                  // mtDate 不合契约返回空串 ⇒ 此处不插线（脏数据不再可见）。
+                  const fullDate = mtDate(m.mt);
                   if (fullDate && fullDate !== lastDate) {
                     lastDate = fullDate;
                     nodes.push(
@@ -1064,7 +1074,8 @@ export default function MessagesPage(props: PageProps) {
                         }}
                       />
                       <span className="shrink-0 self-center font-mono text-[0.66rem] text-[var(--color-text-muted)]">
-                        {(m.mt || "").slice(11, 16)}
+                        {/* 2026-09-30：不合契约的 mt 显示为空，不伪造时间 */}
+                        {mtTime(m.mt)}
                       </span>
                       {/* 2026-09-18（E2）：单条存图 —— hover 出现的小按钮。
                           走渲染端点 start_seq=end_seq=本条 seq，只渲染这一条。

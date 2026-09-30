@@ -32,6 +32,8 @@ import time
 from typing import Any
 
 from loguru import logger
+# 2026-09-30：时间格式 SSOT（日期分割线 / 时分不再裸切片）
+from services.message_time import mt_date, mt_time
 
 # 主题（照上游 5 套：dark / wechat / light / warm / purple）
 THEMES: dict[str, dict[str, str]] = {
@@ -58,10 +60,15 @@ def _esc(s: Any) -> str:
 
 
 def _fmt_ts(ts: float) -> str:
-    try:
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(ts or 0)))
-    except Exception:
-        return ""
+    """时间戳 → 契约串 `YYYY-MM-DD HH:MM:SS`（委托 SSOT）。
+
+    2026-09-30：旧实现用 `%Y-%m-%d %H:%M`（无秒），且 `float(ts or 0)`
+    会把 ts 缺失映射成 **1970-01-01 08:00**，导出图/HTML 里出现「1970 年」
+    的假分割线。现委托 `services.message_time.fmt_mt`：
+    格式统一为带秒的契约串，且缺失 ⇒ 空串（零信息，不谎报）。
+    """
+    from services.message_time import fmt_mt
+    return fmt_mt(ts)
 
 
 def fetch_range(account: str, conv_id: str, start_seq: int | None = None,
@@ -216,7 +223,8 @@ def render_html(account: str, conv_id: str, start_seq: int | None = None,
     bubbles = []
     last_date = ""
     for m in r["messages"]:
-        day = (m["time"] or "")[:10]
+        # 2026-09-30：走 SSOT 判据（不合契约 ⇒ 空 ⇒ 不插分割线）。
+        day = mt_date(m["time"])
         if day and day != last_date:
             last_date = day
             bubbles.append(f'<div class="day"><span>{_esc(day)}</span></div>')
@@ -230,7 +238,7 @@ def render_html(account: str, conv_id: str, start_seq: int | None = None,
             f'<div class="row {"out" if out else "in"}">'
             f'<div class="bub">'
             f'<div class="txt">{body}</div>'
-            f'<div class="ts">{_esc((m["time"] or "")[11:16])}</div>'
+            f'<div class="ts">{_esc(mt_time(m["time"]))}</div>'
             f'</div></div>'
         )
     css = f"""

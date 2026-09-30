@@ -140,14 +140,15 @@ def _http_post_json(url: str, payload: dict, timeout: float = 8.0) -> dict:
 
 
 def _fmt_ts(ts: float | None) -> str:
-    try:
-        if ts:
-            # 2026-09-05:返回完整 ISO 时间 YYYY-MM-DD HH:MM:SS,
-            # 前端用它做日期分隔线 + 每条消息显示。
-            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
-    except Exception:
-        pass
-    return ""
+    """时间戳 → 契约串（委托 SSOT，保持本模块的调用签名不变）。
+
+    2026-09-30：原实现在此处内联 `%Y-%m-%d %H:%M:%S`；导出链路另有一份
+    `%Y-%m-%d %H:%M`（chat_render），两份格式不同且后者在 ts=0 时会产出
+    `1970-01-01`。现统一委托 `services.message_time.fmt_mt`，
+    三条链路共用一个判据（缺失 ⇒ 空串，不谎报）。
+    """
+    from services.message_time import fmt_mt
+    return fmt_mt(ts)
 
 
 def _front_type(msg_type: str) -> str:

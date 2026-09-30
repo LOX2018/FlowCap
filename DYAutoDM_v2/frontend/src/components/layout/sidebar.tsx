@@ -100,7 +100,8 @@ export function Sidebar({
       style={{ width: collapsed ? "var(--sidebar-collapsed)" : "var(--sidebar-width)" }}
     >
       {/* 品牌区 */}
-      <div className="flex h-[52px] shrink-0 items-center gap-2.5 px-3.5">
+      {/* px 随收起态缩放：collapsed 宽 41px，方块 28px 固定 ⇒ padding 必须 ≤6px 才不溢出 */}
+      <div className={cn("flex h-[52px] shrink-0 items-center gap-2.5", collapsed ? "px-1.5" : "px-3.5")}>
         <span
           aria-hidden="true"
           className="h-7 w-7 shrink-0 rounded-[9px] bg-[var(--color-accent)]

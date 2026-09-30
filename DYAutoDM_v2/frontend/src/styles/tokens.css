@@ -69,8 +69,12 @@
   --duration-slow: 400ms;
 
   /* ── 布局尺寸 ── */
-  --sidebar-width: 240px;
-  --sidebar-collapsed: 68px;
+  /* 2026-09-30 收窄：按用户要求缩为原宽的 60%（240→144 / 68→41）。
+     宽度是**单一真源**：sidebar.tsx 只引用这两个变量，改此处即全站生效。
+     ⚠️ collapsed=41px 时，品牌区固定 px-3.5(14×2)+方块28=56px 会横向溢出，
+        故 sidebar.tsx 的 collapsed 分支同步降到 px-1.5（28+12=40 ≤ 41）。 */
+  --sidebar-width: 144px;
+  --sidebar-collapsed: 41px;
   --bottombar-height: 42px;
   --bottombar-expanded: 320px;
   --topbar-height: 36px;

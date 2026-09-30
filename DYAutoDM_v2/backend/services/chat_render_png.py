@@ -36,6 +36,8 @@ from loguru import logger
 from PIL import Image, ImageDraw, ImageFont
 
 from services.chat_render import THEMES, MAX_SPAN, DEFAULT_WIDTH
+# 2026-09-30：时间格式 SSOT（日期分割线 / 时分不再裸切片）
+from services.message_time import mt_date, mt_time
 
 # 画布安全上限（Pillow 超大图会吃满内存）
 MAX_HEIGHT = 60000
@@ -156,7 +158,10 @@ def render_png(account: str, conv_id: str, start_seq: int | None = None,
     max_text_w = bub_max - bub_pad_x * 2
     for m in msgs:
         items: list[dict] = []
-        day = (m["time"] or "")[:10]
+        # 2026-09-30：日期/时分一律走 SSOT 判据（不合契约 ⇒ 空串）。
+        # 旧实现在此处直接切 time 的前 10 字符，一旦 time 是 1970 年的
+        # 占位值就会插一条 1970 年假分割线（源头已在 SSOT 侧消除）。
+        day = mt_date(m["time"])
         if day and (not layout or layout[-1].get("day") != day):
             items.append({"kind": "day", "day": day})
         body = _clean(m["text"])
@@ -169,7 +174,7 @@ def render_png(account: str, conv_id: str, start_seq: int | None = None,
         note_lines = (_wrap(_dummy_draw(), extra_note, f_small, max_text_w)
                       if extra_note else [])
         items.append({"kind": "msg", "dir": m["dir"], "lines": lines,
-                      "note_lines": note_lines, "time": (m["time"] or "")[11:16]})
+                      "note_lines": note_lines, "time": mt_time(m["time"])})
         h = 0
         if items and items[0]["kind"] == "day":
             h += day_gap + int(18 * S)

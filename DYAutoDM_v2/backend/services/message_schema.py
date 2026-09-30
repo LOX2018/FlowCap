@@ -233,9 +233,56 @@ class MessageRecord:
 
         8 列顺序：account, conv_id, role, text, msg_type, extra, ts, msg_id
         —— 写入点一律用它，杜绝各自手写列名导致的漏字段（ADR-012 层 2）。
+
+        2026-09-30（脏数据根治）：`ts` 若为 0（上游没给时间），在此**统一**
+        从 `extra.created_at_us` 回补；两者都没有才落 0。
+        放在唯一出口，是为了让 4 个写入点（`ts or 0` / `ts=m.get("ts") or 0`）
+        一次受益，不必逐点改、也不会再漏。
         """
         return (account, conv_id, role, self.text, self.msg_type,
-                self.extra_json(), ts, msg_id)
+                self.extra_json(), resolve_message_ts(ts, self.extra), msg_id)
+
+
+def resolve_message_ts(ts, extra) -> float:
+    """解析出一条消息可用的落库时间戳；**取不到就返回 0**（零信息，不谎报）。
+
+    ## 为什么需要（2026-09-30 缺陷根治）
+    写入侧有 4 处形如 `ts=m.get("ts") or 0` / `ts=ts or 0` 的落库调用。
+    当上游没给 `ts` 时，落库的 ts 就是 **0** ⇒ 后端 `fmt_mt(0)` 返回空串
+    ⇒ 该条消息在**聊天记录里没有任何时间**（这就是用户看到的「无意义时间脏数据」的源头）。
+
+    而 extra 里其实**常常带着真实的服务端时间**：`created_at_us`
+    （protobuf f4，服务端单调微秒序号）。它此前只被用于排序，没有被用来补 ts。
+
+    ## 判据（按可信度降级，绝不编造）
+    1. `ts` 有效（>0 且非 NaN）⇒ 直接用；
+    2. 否则取 `extra["created_at_us"]`（**真实服务端数据**），微秒 → 秒；
+    3. 两者都没有 ⇒ **返回 0**（保持"无时间"），**不用 `time.time()` 兜底**
+       —— 那会把"我不知道"伪装成一个看似合理的具体值，脏数据从此无法被发现。
+    """
+    try:
+        v = float(ts)
+        if v and v == v:            # 非 0 且非 NaN
+            return v
+    except (TypeError, ValueError):
+        pass
+
+    ex = extra
+    if isinstance(ex, str):
+        try:
+            ex = json.loads(ex)
+        except Exception:                                   # noqa: BLE001
+            ex = None
+    if isinstance(ex, dict):
+        raw = ex.get("created_at_us")
+        if raw:
+            try:
+                us = float(raw)
+                if us > 0:
+                    return us / 1_000_000.0
+            except (TypeError, ValueError):
+                pass
+    return 0.0
 
 
 def readable(text: str, msg_type: str | None, extra: str | dict | None) -> bool:

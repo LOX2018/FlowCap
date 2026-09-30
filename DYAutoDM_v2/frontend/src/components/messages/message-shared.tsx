@@ -291,6 +291,45 @@ export function isSystemTip(text: string): boolean {
   return /^(你|对方)(已|正在|已确认)/.test(t);
 }
 
+// ---------------------------------------------------------------------------
+// 时间格式 SSOT（2026-09-30 修「无意义时间分割线」脏数据）
+//
+// ## 契约（唯一真源，前后端共用此形状）
+// `mt` 恒为 `YYYY-MM-DD HH:MM:SS`（定长 19）。后端 `api/messages._fmt_ts`
+// 在 ts 缺失/为 0 时返回 **空串**（不是当前时间）。
+//
+// ## 缺陷（2026-09-30 实测复现）
+// 旧代码 `mt: m.time || nowHM()` 用 `nowHM()`（= `HH:MM`，**无日期**）兜底。
+// 于是 `slice(0, 10)` 把 `01:01` 整个当成日期，渲染出「01:01」这种
+// **无意义分割线**；且 `nowHM()` 每次渲染现取当前时刻 ⇒ 表现为
+// 「分割线的日期和时间不固定」，用户看到的是随机漂移的脏数据。
+//
+// ## 修法（判据放在读出边界，不猜格式）
+// 只有**严格匹配契约形状**的 `mt` 才允许产出生效的日期/时分；
+// 形状不符 ⇒ 日期返回空串（**不插分割线**），时分返回空串（不显示）。
+// 空串是「零信息」降级，绝不兜底成"看起来合理的具体值"
+// （返回当前时间会让脏数据永远无法被发现）。
+// ---------------------------------------------------------------------------
+
+/** 严格校验 `mt` 是否合契约：YYYY-MM-DD HH:MM:SS（定长 19，位上有值）。 */
+export function isValidMt(mt: string | undefined | null): boolean {
+  if (!mt || mt.length !== 19) return false;
+  return (
+    mt[4] === "-" && mt[7] === "-" && mt[10] === " " &&
+    mt[13] === ":" && mt[16] === ":"
+  );
+}
+
+/** 日期部分（`YYYY-MM-DD`）；不合契约 ⇒ 空串（调用方据此不插分割线）。 */
+export function mtDate(mt: string | undefined | null): string {
+  return isValidMt(mt) ? (mt as string).slice(0, 10) : "";
+}
+
+/** 时分部分（`HH:MM`）；不合契约 ⇒ 空串（不显示，避免假时间）。 */
+export function mtTime(mt: string | undefined | null): string {
+  return isValidMt(mt) ? (mt as string).slice(11, 16) : "";
+}
+
 /** 媒体消息的双 URL 结构（2026-08-30 实测落地） */
 export type MediaInfo = {
   /** 缩略图：data:image/webp;base64,...（inline_pic，可直接渲染）或远程 URL */
