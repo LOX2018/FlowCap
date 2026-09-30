@@ -1448,6 +1448,16 @@ _VERDICT_LABEL = {
     "ok": "具备直播昵称解密权",
 }
 
+# 能力矩阵的**面状态**标签（2026-10-01）。与 _VERDICT_LABEL 是两套语义：
+# 前者描述「某一用途能否用」，后者描述「解密权结论」。不可互替。
+_CAP_LABEL = {
+    "ok": "可用",
+    "fail": "拒用",
+    "unknown": "未知（取不到证据，不据此降级）",
+    "unset": "未配置",
+    "na": "不适用",
+}
+
 
 def uid_identity_verdict(name: str, auth=None, force: bool = False,
                          ttl: Optional[float] = None) -> Tuple[Optional[bool], str, str, str]:
@@ -1546,6 +1556,214 @@ def account_status(name=None, force=False, timeout=10):
         "has_web_protect": bool(local.get("has_web_protect")),
         "uid": v.get("uid"),
     }
+
+
+def derive_purposes(verdicts: dict) -> dict:
+    """由**面状态**推导**按用途**可用性（纯函数，可确定性测试）。
+
+    用途 = 端到端功能；某用途可用 ⟺ 其**全部前提面**都不是 fail。
+
+    | 前提面状态 | 用途结论 | 理由 |
+    |---|---|---|
+    | 任一 `fail` | **不可用** | 前提已被服务端明确拒绝，确定不可用 |
+    | 任一 `unset` | 未配置 | 缺输入（如未配直播间），无法取证 |
+    | 任一 `unknown` | **待定（可实测）** | 取不到证据 ≠ 不可用；**宁可让用户去试**，不替他判死 |
+    | 全 `ok` | 可用 | |
+
+    铁律：`unknown` **绝不**折成 `fail`（三态纪律）—— 这是「凭证仍可有效利用」的
+    判定基础：只要没被明确拒绝，就不要驱动用户去重扫。
+    """
+    def _p(label: str, need: list) -> dict:
+        sts = [verdicts.get(k, "unknown") for k in need]
+        if "fail" in sts:
+            return {"label": label, "usable": False, "state": "fail", "state_label": "不可用"}
+        if "unset" in sts:
+            return {"label": label, "usable": None, "state": "unset", "state_label": "未配置"}
+        if "unknown" in sts:
+            return {"label": label, "usable": None, "state": "unknown",
+                    "state_label": "待定（可实测）"}
+        return {"label": label, "usable": True, "state": "ok", "state_label": "可用"}
+
+    return {
+        "danmaku_decrypt": _p("弹幕昵称解密", ["session", "identity"]),
+        "im_write": _p("私信发送", ["im_write"]),
+        "live_read": _p("直播数据读（弹幕/礼物/贡献榜）", ["live_read"]),
+    }
+
+
+def capability_matrix(name=None, auth=None, force=False, live_id: str = ""):
+    """账号能力矩阵：把「凭证是否有效」拆成**按用途分面**的判据（2026-10-01）。
+
+    ## 为什么必须分面（实测驱动，非设计偏好）
+
+    同一份 cookie 在**不同服务端端点**上的裁决**互相独立**。实测 A/B 双账号
+    （同一时刻、同一台机）：
+
+    | 账号 | 主站 profile/self | 身份(AUTH-050) | imapi 写 | 贡献榜读 |
+    |---|---|---|---|---|
+    | 尚进工伤小助理 | 承认 | 一致 | 可写 | **51~52 条** |
+    | 四川工伤张老师 | **拒绝(8)** | **漂移** | 拒写 | **51~52 条** |
+
+    另有端点级对照（同一 cookie）：`webcast/reflow/info` 对**匿名**返回 0、
+    对尚进 cookie 返回 **101**、对张老师 cookie 返回 0 —— 即「被拒」是**端点级**
+    现象，不能外推成「账号失效」。
+
+    ⇒ 单一 verdict 会驱动**无效重扫**：用户看到某面失效就重扫，而重扫对该面
+      可能根本不变，且每次重扫都触碰 passport 验证（**最强风控信号**）。
+
+    ## 契约
+
+    - 每条能力 = `{key,label,state,state_label,detail,hint}`；
+      `state ∈ {ok(承认), fail(拒绝), unknown(未知), unset(未配置), na(不适用)}`。
+    - **「未知」≠「拒绝」**：探测失败只能保守降级（沿用 `live_session_state` 的三态纪律）。
+    - 判据**全部复用既有探针**（`credentials_complete` / `live_session_state` /
+      `uid_identity_verdict` / `probe_im_write` / `get_live_info`+`get_rank_list`），
+      **不新造判据**，防判据漂移。
+    - `hint` 只写「这一面该怎么修」，**不**统一建议「重扫」—— 有些面重扫无效。
+
+    ## 性能
+
+    `force=False`（默认）走各探针自带的 TTL 缓存，适合 UI 轮询；
+    `force=True` 强探活（每面约 1~3s），仅供用户手动点击/排查。
+
+    返回 `{"name","uid","caps":[...],"verdicts":{"<key>":state},"actions":[...]}`。
+    """
+    name = name or current_name()
+    if not name:
+        return {"name": None, "uid": None, "caps": [], "verdicts": {},
+                "purposes": {}, "actions": ["无账号（请先新增）"]}
+    env_path = env_path_of(name)
+    if not env_path:
+        return {"name": name, "uid": None, "caps": [], "verdicts": {},
+                "purposes": {}, "actions": ["账号不存在"]}
+    if auth is None:
+        try:
+            from dy_apis.login_api import DYLoginApi
+            auth = DYLoginApi._load_auth_from_env(env_path)
+        except Exception:  # noqa: BLE001
+            auth = None
+
+    caps: list[dict] = []
+
+    def _add(key: str, label: str, state: str, detail: str, hint: str = "") -> None:
+        caps.append({"key": key, "label": label, "state": state,
+                     "state_label": _CAP_LABEL.get(state, state),
+                     "detail": detail, "hint": hint})
+
+    # ① 凭证字段齐全性（零网络）
+    try:
+        _c, _r = credentials_complete(env_path)
+        _add("static", "凭证字段", "ok" if _c else "fail",
+             "四件套 + web_protect/keys 齐全" if _c else f"不全：{_r}",
+             "" if _c else "需重新扫码补齐字段（此项重扫**确实有效**）")
+    except Exception as e:  # noqa: BLE001
+        _add("static", "凭证字段", "unknown", f"读取异常 {type(e).__name__}")
+
+    # ② 主站会话活性（profile/self）→ 直播昵称解密权
+    try:
+        st, det = live_session_state(name, auth=auth, force=force)
+        _stt = {True: "ok", False: "fail", None: "unknown"}[st]
+        _add("session", "主站会话活性", _stt, str(det)[:140],
+             "" if _stt == "ok" else
+             "该项失效 → 弹幕昵称会被脱敏(uid=111111)；**重扫通常有效**；"
+             "若重扫后仍如此，可能是该直播间开启「隐藏观众信息」（非凭证问题）")
+    except Exception as e:  # noqa: BLE001
+        _add("session", "主站会话活性", "unknown", f"探测异常 {type(e).__name__}")
+
+    # ③ 身份一致性（AUTH-050：探活 uid 是否 ∈ 历史 conv_id）
+    #    ⚠️ 身份侧读数来自 `services.uid_probe.uid_verdict()`（读 get_uid 的出口记录），
+    #    本进程若尚未对该账号做过 uid 判定则**取不到证据**（诚实返回 unknown）。
+    #    故先触发一次 `get_uid`（走其自带 TTL/串行锁，不额外加风控面）再取判定。
+    try:
+        try:
+            from services.uid_probe import get_uid as _prime_uid
+            _prime_uid(name, force=force)
+        except Exception:  # noqa: BLE001
+            pass
+        _ok, _lvl, _lbl, _det = uid_identity_verdict(name, auth=auth, force=force)
+        # 🔴 契约：返回 (state, reason, label, detail)。三态**必须用 state**判定；
+        #    曾误用 label（中文串）比 "ok" ⇒ 恒不成立 ⇒ 可用误报为「未知」。
+        _stt = "ok" if _ok is True else ("fail" if _ok is False else "unknown")
+        _add("identity", "身份一致性", _stt, str(_det)[:140],
+             "" if _stt == "ok" else "身份已漂移 = 凭证失效（非网络抖动）；**重扫有效**")
+    except Exception as e:  # noqa: BLE001
+        _add("identity", "身份一致性", "unknown", f"探测异常 {type(e).__name__}")
+
+    # ④ imapi 写能力（cmd 609：账号级只读态的**唯一**判据）
+    try:
+        _ok, _det = probe_im_write(name, auth=auth, force=force)
+        _add("im_write", "私信写能力", "ok" if _ok else "fail", str(_det)[:140],
+             "" if _ok else "写被拒（账号级只读态）→ 私信发送会失败；"
+             "**重扫未必有效**：先用另一账号做 A/B 判型（本项目已有判型法），"
+             "只读态重扫常不变")
+    except Exception as e:  # noqa: BLE001
+        _add("im_write", "私信写能力", "unknown", f"探测异常 {type(e).__name__}")
+
+    # ⑤ 直播数据读（弹幕/礼物流/贡献榜）—— 端到端：主站解析房间 → 直播域取榜
+    try:
+        _rid = str(live_id or "")
+        if not _rid:
+            try:
+                from config import settings as _s
+                _rid = str(getattr(_s, "live_url", "") or "")
+            except Exception:  # noqa: BLE001
+                _rid = ""
+        if not _rid:
+            _add("live_read", "直播数据读", "unset",
+                 "未配置直播间，无法取证（零网络跳过）", "配置直播间后自动覆盖此面")
+        else:
+            from dy_apis.douyin_api import DouyinAPI
+            info = DouyinAPI.get_live_info(auth, _rid) if auth else None
+            _room = str((info or {}).get("room_id") or "")
+            _aid = str((info or {}).get("anchor_id") or "")
+            _sec = str((info or {}).get("sec_uid") or "")
+            if not _room:
+                _add("live_read", "直播数据读", "fail",
+                     f"主站解析房间失败（live_id={_rid}）—— 直播间可能未开播",
+                     "**先确认是否开播**；开播下仍失败再考虑凭证")
+            else:
+                _data = DouyinAPI.get_rank_list(auth, _room, _aid, _sec)
+                _d = (_data or {}).get("data") if isinstance((_data or {}).get("data"), dict) else {}
+                _n = len((_d or {}).get("ranks") or [])
+                _sc = (_data or {}).get("status_code")
+                _add("live_read", "直播数据读", "ok" if _n else "fail",
+                     f"直播域应答 status_code={_sc}，贡献榜 {_n} 条（room_id={_room}）",
+                     "" if _n else "接口可达但榜单为空（可能无人上榜/未开播）")
+    except Exception as e:  # noqa: BLE001
+        _add("live_read", "直播数据读", "unknown", f"探测异常 {type(e).__name__}")
+
+    verdicts = {c["key"]: c["state"] for c in caps}
+
+    # ── 按**实际用途**汇总（这才是「凭证还能怎么用」的答案，见 derive_purposes）──
+    purposes = derive_purposes(verdicts)
+
+    # 处置建议：**只**为「重扫确实有效」的面给出重扫建议（避免无谓重扫=风控信号）
+    actions: list[str] = []
+    if verdicts.get("static") == "fail":
+        actions.append("凭证字段不全 → 重新扫码（有效）")
+    if verdicts.get("identity") == "fail":
+        actions.append("身份漂移(AUTH-050) → 重新扫码（有效）")
+    if verdicts.get("session") == "fail" and verdicts.get("identity") == "ok":
+        actions.append("仅主站会话失效 → 重扫通常有效；若重扫后仍如此，"
+                       "查该直播间是否开启「隐藏观众信息」")
+    if verdicts.get("im_write") == "fail" and verdicts.get("session") == "ok":
+        actions.append("仅写能力被拒（账号级只读态）→ **不要盲目重扫**，"
+                       "先用另一账号 A/B 判型")
+    if verdicts.get("live_read") in ("fail", "unknown") and verdicts.get("session") != "fail":
+        actions.append("直播数据读失败但会话正常 → **优先确认直播间是否开播**，再怀疑凭证")
+    if not actions:
+        actions.append("各面均通过，无需处理")
+
+    uid = None
+    try:
+        from services.uid_probe import get_uid as _get_uid
+        _u = _get_uid(name, force=False)
+        uid = str(_u) if _u else None
+    except Exception:  # noqa: BLE001
+        uid = None
+
+    return {"name": name, "uid": uid, "caps": caps,
+            "verdicts": verdicts, "purposes": purposes, "actions": actions}
 
 
 def _probe(env_path, timeout):

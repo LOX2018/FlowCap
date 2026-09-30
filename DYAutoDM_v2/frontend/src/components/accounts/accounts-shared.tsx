@@ -41,6 +41,8 @@ export interface RawAccount {
   recvDaemonAlive?: boolean;
   wpEngine?: EngineInfo;
   dmEngine?: EngineInfo;
+  /** 能力矩阵（按用途分面，`/{name}/check` 返回；与 wpEngine/dmEngine 语义不同）。 */
+  capabilities?: Capabilities | null;
   isCurrent?: boolean;
   isMonitor?: boolean;
   isSender?: boolean;
@@ -89,6 +91,8 @@ export interface FmtAccount {
   recvDaemonAlive: boolean;
   wpEngine: EngineInfo;
   dmEngine: EngineInfo;
+  /** 能力矩阵（按用途分面）。 */
+  capabilities?: Capabilities | null;
   isCurrent: boolean;
   isMonitor: boolean;
   isSender: boolean;
@@ -97,11 +101,44 @@ export interface FmtAccount {
   fp: FpInfo;
 }
 
+export interface CapabilityFace {
+  key: string;
+  label: string;
+  state: "ok" | "fail" | "unknown" | "unset" | "na";
+  state_label: string;
+  detail?: string;
+  hint?: string;
+}
+
+/** 用途面（按**功能**汇总：凭证还能用来做什么）。 */
+export interface CapabilityPurpose {
+  label: string;
+  usable: boolean | null;
+  state: "ok" | "fail" | "unknown" | "unset";
+  state_label: string;
+}
+
+/**
+ * 能力矩阵（后端 `auto_dm.accounts.capability_matrix`）。
+ *
+ * 与 `verify` 是**两套语义**，不可互替：
+ *   - `verify` = 单一「能不能用」结论（wp/dm 双引擎）；
+ *   - `capabilities` = **按用途分面**（同一份 cookie 在不同服务端端点裁决独立，
+ *     故会出现「wp=fail 但仍能取直播数据」的形态）。用于避免**无效重扫**。
+ */
+export interface Capabilities {
+  caps: CapabilityFace[];
+  verdicts?: Record<string, string>;
+  purposes?: Record<string, CapabilityPurpose>;
+  actions?: string[];
+}
+
 export interface CheckResult {
   ok?: boolean;
   error?: string;
   msg?: string;
   verify?: { wp?: EngineInfo; dm?: EngineInfo; uid?: string; auto_fix_triggered?: boolean };
+  capabilities?: Capabilities | null;
 }
 
 export interface ReviewRow {
@@ -174,6 +211,7 @@ export function mapAcct(a: RawAccount, i: number): FmtAccount {
     recvDaemonAlive: !!a.recvDaemonAlive,
     wpEngine: a.wpEngine || { level: "unknown", label: "未校验", detail: "" },
     dmEngine: a.dmEngine || { level: "unknown", label: "未校验", detail: "" },
+    capabilities: a.capabilities ?? null,
     isCurrent: !!a.isCurrent,
     isMonitor: !!a.isMonitor,
     isSender: !!a.isSender,

@@ -42,7 +42,7 @@ import { StatRow, KeyValue, Tone, Toolbar } from "@/components/page/kit";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import {
-  type AcctForm, type CheckResult, type FmtAccount, type ProxyForm,
+  type AcctForm, type CapabilityPurpose, type CheckResult, type FmtAccount, type ProxyForm,
   type RawAccount, type FpInfo,
   enginePill, errMsg, mapAcct, StatCard, SectionLabel,
 } from "./accounts-shared";
@@ -469,6 +469,8 @@ export default function AccountsPage(props: PageProps) {
                     wpEngine: v.wp || x.wpEngine,
                     dmEngine: v.dm || x.dmEngine,
                     uid: v.uid || x.uid,
+                    // 能力矩阵（按用途分面）：与 wpEngine/dmEngine 语义不同，单独存
+                    capabilities: (r as CheckResult).capabilities ?? x.capabilities,
                   }
                 : x,
             ),
@@ -888,6 +890,56 @@ export default function AccountsPage(props: PageProps) {
                             <Tone tone={enginePill(a.dmEngine.level)}>{a.dmEngine.label}</Tone>
                           </div>
                         </div>
+                        {/* 能力矩阵（按用途）：同一份凭证对不同端点的裁决**互相独立**，
+                            单一引擎结论无法表达「哪些功能还能用」。用于避免**无效重扫**
+                            （某面失效就重扫，而重扫可能对该面根本无效，且触碰风控）。 */}
+                        {a.capabilities?.purposes && (
+                          <div
+                            className="rounded-[var(--radius-sm)] bg-[var(--color-background)] px-3 py-2.5"
+                            data-od-id="capability-matrix"
+                          >
+                            <div className="mb-1.5 flex items-center gap-2">
+                              <span className="text-[0.8rem] font-semibold text-[var(--color-text)]">
+                                能力矩阵
+                              </span>
+                              <span className="font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+                                按用途
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              {Object.entries<CapabilityPurpose>(a.capabilities.purposes).map(([k, p]) => (
+                                <div key={k} className="flex items-center justify-between gap-2">
+                                  <span className="text-[0.75rem] text-[var(--color-text-secondary)]">
+                                    {p.label}
+                                  </span>
+                                  <Tone
+                                    tone={
+                                      p.state === "ok"
+                                        ? "ok"
+                                        : p.state === "fail"
+                                          ? "danger"
+                                          : "warn"
+                                    }
+                                  >
+                                    {p.state_label}
+                                  </Tone>
+                                </div>
+                              ))}
+                            </div>
+                            {a.capabilities.actions?.length ? (
+                              <div className="mt-2 border-t border-[var(--color-border)] pt-1.5">
+                                {a.capabilities.actions.map((s, i) => (
+                                  <div
+                                    key={i}
+                                    className="text-[0.7rem] text-[var(--color-text-muted)]"
+                                  >
+                                    · {s}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
                       </div>
                       <div className="flex flex-col items-stretch justify-center">
                         <Button

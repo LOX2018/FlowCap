@@ -984,10 +984,20 @@ async def check_account(name: str) -> dict:
         loop = asyncio.get_running_loop()
         verify = await loop.run_in_executor(
             None, lambda: acct_core.verify_account(name, timeout=8, dm_loopback=True))
+        # 2026-10-01：附带**能力矩阵**（按用途分面）。与 verify_account 是**两套语义**：
+        #   verify「能不能用」= 单一 wp/dm 结论；矩阵「哪些用途能用」= 分面判据。
+        # 实测动机：同一份 cookie 在不同端点裁决独立（有账号 wp=fail 却仍能取直播数据），
+        # 单值会驱动**无效重扫**。矩阵走各探针 TTL 缓存（force=False），不加重轮询负担。
+        caps = None
+        try:
+            caps = await loop.run_in_executor(
+                None, lambda: acct_core.capability_matrix(name, force=False))
+        except Exception as _e:  # noqa: BLE001
+            logger.warning(f"[ACC-004] [check] 能力矩阵计算失败（不影响校验结论）: {_e}")
         logger.success(
             f"[check] 账号 {name} 校验完成 · wp:{verify['wp']['label']} · dm:{verify['dm']['label']}"
         )
-        return {"ok": True, "verify": verify}
+        return {"ok": True, "verify": verify, "capabilities": caps}
     except Exception as e:
         logger.error(f"[ACC-003] " + f"[check] 账号 {name} 校验异常: {e}")
         return {"ok": False, "error": str(e)}
