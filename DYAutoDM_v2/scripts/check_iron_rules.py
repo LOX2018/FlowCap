@@ -498,13 +498,35 @@ def r14_deploy_root_marker_consistent() -> None:
     check(name in dt, "R14", f"部署数据根声明文件名与 SSOT 一致（{name}）")
 
 
+# ── R15: 配置中心字段文案「简洁性」（用户 2026-09-30 定的 UI 文案铁律）──────────
+# 出处：用户原话「55 个字的说明也很长啊……只需告诉他们这个选项是干嘛的就行了」。
+# 判据 SSOT：scripts/check_schema_copy.py（hint≤18 / label≤18 / 无开发信息）。
+# 本函数只调用，不自带阈值 —— 避免两处漂移。
+def r15_schema_copy_concision() -> None:
+    sub = os.path.join(SRC_ROOT, "scripts", "check_schema_copy.py")
+    if not os.path.isfile(sub):
+        check(False, "R15", "判据脚本缺失: scripts/check_schema_copy.py")
+        return
+    import subprocess
+    py = sys.executable or "python"
+    try:
+        r = subprocess.run([py, sub], capture_output=True, text=True, timeout=30)
+        out = (r.stdout or "").strip().splitlines()
+        detail = next((l.strip() for l in out if "[PASS]" in l or "[FAIL]" in l), "")
+        check(r.returncode == 0, "R15",
+              f"配置中心字段文案简洁（hint≤18字）{('· ' + detail) if detail else ''}")
+    except Exception as e:  # noqa: BLE001
+        check(False, "R15", f"调用 check_schema_copy 失败: {type(e).__name__}")
+
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
          r8_data_contract, r9_audit_redline,
          r10_no_cargo_target_in_src, r11_no_legacy_profile_literal,
          r12_credential_exposure, r13_no_internal_info_in_ui_copy,
-         r14_deploy_root_marker_consistent]
+         r14_deploy_root_marker_consistent, r15_schema_copy_concision]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
