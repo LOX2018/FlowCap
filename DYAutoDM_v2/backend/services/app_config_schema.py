@@ -279,92 +279,92 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "float", "default": 8.0, "min": 8, "max": 300,
                 "env": "DY_SEND_MIN_INTERVAL",
                 "apply": "restart_daemon", "risk": True,
-                "hint": "两条发送之间的最小间隔"
+                "hint": "两条发送的最小间隔"
             },
             "max_wait": {
                 "label": "闸门排队等待上限（秒）",
                 "type": "float", "default": 30.0, "min": 5, "max": 300,
                 "env": "DY_SEND_MAX_WAIT",
                 "apply": "restart_daemon", "risk": True,
-                "hint": "超时快速失败，不排队堆积"
+                "hint": "超时快速失败"
             },
             "per_minute_limit": {
                 "label": "全账号 每分钟发送上限",
                 "type": "int", "default": 3, "min": 0, "max": 60,
                 "env": "DY_SEND_PER_MINUTE",
                 "apply": "hot", "risk": True,
-                "hint": "全账号每分钟发送上限，0=不限"
+                "hint": "每分钟发送上限"
             },
             "per_minute_manual_exempt": {
                 "label": "手动发送豁免分钟窗",
                 "type": "bool", "default": True, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "开 = 手动发送不受上限拦下"
+                "hint": "手动发送不受限"
             },
             "stranger_per_minute": {
                 "label": "陌生人首发 每分钟上限",
                 "type": "int", "default": 2, "min": 0, "max": 60,
                 "env": "DY_STRANGER_PER_MINUTE",
-                "apply": "hot", "risk": True, "hint": "向陌生人发送的每分钟上限"
+                "apply": "hot", "risk": True, "hint": "陌生人每分钟上限"
             },
             "stranger_per_day": {
                 "label": "陌生人首发 每日上限",
                 "type": "int", "default": 30, "min": 0, "max": 2000,
                 "env": "DY_STRANGER_PER_DAY",
-                "apply": "hot", "risk": True, "hint": "向陌生人发送的每日上限，0=不限"
+                "apply": "hot", "risk": True, "hint": "陌生人每日上限"
             },
             "cooldown_freq": {
                 "label": "频控命中冷静期（秒）",
                 "type": "float", "default": 600.0, "min": 0, "max": 86400,
                 "env": "DY_DM_COOLDOWN_FREQ",
-                "apply": "hot", "risk": True, "hint": "命中频控后暂停发送的时长"
+                "apply": "hot", "risk": True, "hint": "被频控后的暂停时长"
             },
             "cooldown_max": {
                 "label": "冷静期上限（秒）",
                 "type": "float", "default": 3600.0, "min": 0, "max": 604800,
                 "env": "DY_DM_COOLDOWN_MAX",
-                "apply": "hot", "risk": True, "hint": "连续被频控时冷静期封顶"
+                "apply": "hot", "risk": True, "hint": "冷静期封顶值"
             },
             "weight_recover_halflife": {
                 "label": "权重恢复半衰期（秒）",
                 "type": "float", "default": 21600.0, "min": 60, "max": 604800,
                 "env": "DY_WEIGHT_RECOVER_HALFLIFE",
-                "apply": "hot", "risk": True, "hint": "被降权后的恢复速度"
+                "apply": "hot", "risk": True, "hint": "降权后恢复速度"
             },
             "weight_forgive_after": {
                 "label": "权重原谅期（秒）",
                 "type": "float", "default": 86400.0, "min": 60, "max": 2592000,
                 "env": "DY_WEIGHT_FORGIVE_AFTER",
-                "apply": "hot", "risk": True, "hint": "多久后视为已原谅"
+                "apply": "hot", "risk": True, "hint": "视为已原谅的时长"
             },
             "dedup_window": {
                 "label": "去重窗口（秒）",
                 "type": "float", "default": 5.0, "min": 0, "max": 3600,
                 "env": "DY_DM_DEDUP_WINDOW", "apply": "hot", "risk": True,
-                "hint": "同会话同文本的去重窗口"
+                "hint": "同文本去重窗口"
             },
             "queue_max": {
                 "label": "队列上限",
                 "type": "int", "default": 200, "min": 1, "max": 10000,
                 "env": "DY_DM_QUEUE_MAX", "apply": "hot", "risk": True,
-                "hint": "超过则拒绝入队"
+                "hint": "超出则拒绝入队"
             },
             "pool_strict": {
                 "label": "会话整理严格模式",
                 "type": "bool", "default": True, "env": "DY_DM_POOL_STRICT",
                 "apply": "hot", "risk": True,
-                "hint": "无法解析真实对端时直接拒绝"
+                "hint": "无法识别对端即拒绝"
             },
             "uid_sink_cooldown": {
                 "label": "UID 沉淀冷却（秒）",
                 "type": "float", "default": 604800.0, "min": 0, "max": 31536000,
                 "env": "DY_UID_SINK_COOLDOWN", "apply": "hot", "risk": True,
-                "hint": "同 UID 冷却期内不重复发送"
+                "hint": "同 UID 冷却时长"
             },
             "uid_sink_strict": {
                 "label": "UID 沉淀严格模式",
                 "type": "bool", "default": True, "env": "DY_UID_SINK_STRICT",
-                "apply": "hot", "risk": True, "hint": "关 = 仅提示不拦截"
+                "apply": "hot", "risk": True, "hint": "关则仅提示不拦截"
             },
             # ── ADR-007 / C-06（2026-09-24）沉淀池增强 ──────────────
             # ⚠️ 默认值 = **关闭**（0），非 ADR 建议的 300/10。
@@ -375,31 +375,31 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "沉淀窗口时长（秒）",
                 "type": "float", "default": 0.0, "min": 0, "max": 86400,
                 "env": "DY_UID_SINK_WINDOW", "apply": "hot",
-                "hint": "先收 N 秒再统一发送，0=即见即发"
+                "hint": "先收集再统一发送"
             },
             "high_value_window_seconds": {
                 "label": "高价值加速窗口（秒）",
                 "type": "float", "default": 60.0, "min": 0, "max": 86400,
                 "env": "DY_HIGH_VALUE_WINDOW", "apply": "hot",
-                "hint": "高价值用户的加速发送窗口"
+                "hint": "高价值的加速窗口"
             },
             "high_value_score_threshold": {
                 "label": "高价值关键词阈值",
                 "type": "int", "default": 0, "min": 0, "max": 1000,
                 "env": "DY_HIGH_VALUE_THRESHOLD", "apply": "hot",
-                "hint": "关键词权重和≥此值算高价值"
+                "hint": "判高价值的权重门槛"
             },
             "high_value_llm_enabled": {
                 "label": "高价值 LLM 精判",
                 "type": "bool", "default": False,
                 "env": "DY_HIGH_VALUE_LLM", "apply": "hot",
-                "hint": "对候选做 AI 精判，不可用时降级"
+                "hint": "对候选做 AI 精判"
             },
             "aggregate_max_chars": {
                 "label": "聚合文本上限（字符）",
                 "type": "int", "default": 2000, "min": 100, "max": 20000,
                 "env": "DY_AGGREGATE_MAX_CHARS", "apply": "hot",
-                "hint": "聚合文本的截断上限"
+                "hint": "聚合文本截断上限"
             },
         },
     },

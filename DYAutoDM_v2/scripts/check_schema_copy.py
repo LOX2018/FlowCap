@@ -28,7 +28,9 @@ import os
 import re
 import sys
 
+# hint 长度上限：默认 18 字；用户 2026-09-30 明确要求「私信发送与风控」段 ≤10 字。
 HINT_MAX = 18
+HINT_MAX_BY_SECTION = {"send": 10}
 LABEL_MAX = 18
 _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "backend", "services", "app_config_schema.py")
@@ -60,8 +62,9 @@ def check(path: str) -> list[str]:
             h = fv.get("hint")
             if h is None:
                 continue
-            if len(h) > HINT_MAX:
-                bad.append(f"[R15-1] {sk}.{fk} hint {len(h)}>{HINT_MAX}: {h[:40]}…")
+            hmax = HINT_MAX_BY_SECTION.get(sk, HINT_MAX)
+            if len(h) > hmax:
+                bad.append(f"[R15-1] {sk}.{fk} hint {len(h)}>{hmax}: {h[:40]}…")
             m = _INTERNAL.search(h)
             if m:
                 bad.append(f"[R15-3] {sk}.{fk} hint 含开发信息「{m.group(0)}」: {h[:40]}…")
@@ -86,7 +89,7 @@ def main() -> int:
             f.write(src)
 
     bad = check(target)
-    print(f"check_schema_copy  阈值: hint≤{HINT_MAX} / label≤{LABEL_MAX}")
+    print(f"check_schema_copy  阈值: hint≤{HINT_MAX}（send 段 ≤{HINT_MAX_BY_SECTION['send']}）/ label≤{LABEL_MAX}")
     if bad:
         print(f"  [FAIL] 命中 {len(bad)} 条：")
         for b in bad[:20]:
