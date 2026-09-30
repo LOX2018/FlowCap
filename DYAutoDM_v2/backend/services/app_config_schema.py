@@ -165,6 +165,20 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "int", "default": 300, "min": 30, "max": 3600, "env": None,
                 "apply": "hot", "hint": "定期探活重连"
             },
+            # ── 红心（真实点赞）/ 贡献榜 刷新节拍（2026-10-01，HC-16 M-30）────
+            # 红心的 `real` 取自 reflow/info 的 room.like_count，目前挂在贡献榜轮询
+            # 节拍上 ⇒ 总量最多滞后一个节拍。此键让节拍**显式可配**（用户「显式
+            # 配置原则」：行为由配置显式选择，不依赖本机外部可变状态）。
+            #   · 默认 60 —— 与改前的硬编码完全一致 ⇒ **不改配置 = 行为不变**；
+            #   · 下限 15 —— 更低会把 reflow/info 的请求频次放大到异常形状
+            #     （风控敏感），故写小一律抬回下限；
+            #   · 上限 600 —— 更慢已失去「实时」意义（此时 WS 增量仍即时可见）。
+            # 消费点：core/live_hook.py::start_rank_poll
+            "rank_poll_interval_sec": {
+                "label": "红心刷新间隔（秒）",
+                "type": "int", "default": 60, "min": 15, "max": 600, "env": None,
+                "apply": "hot", "hint": "越小越频繁"
+            },
             "enable_danmaku": {
                 "label": "接收弹幕", "type": "bool", "default": True, "env": None,
                 "apply": "hot",

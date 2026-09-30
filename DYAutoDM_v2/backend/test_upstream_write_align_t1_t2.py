@@ -345,18 +345,39 @@ class TestT1SendMsgInRoom(unittest.TestCase):
     def test_with_bd_receives_live_origin(self):
         """`with_bd(..., origin=live_url)` 确实被传入（对齐上游形态）。
 
-        ⚠️ 同时证明本项目 `with_bd` 的 `origin` 是**空操作**：
-        `generate_bd_ticket_client_data` 只收到 (api, ticket, ts_sign, private_key)，
-        未收到 origin —— 即「证书按直播域生成」并未发生（本项目缺 ecdh_key）。
-        这条断言是**如实记录能力缺口**，不是缺陷修复。
+        2026-10-01（HC-16）**本条断言已按原注释的指示同步更新**：
+          旧实现里 `with_bd` 的 `origin` 是**空操作**（缺 `ecdh_key`），此处的
+          `_spy` 只收 4 参并断言 `assertNotIn("origin", seen)` 来**如实记录该能力
+          缺口**。ECDH 移植落地后 client-data 生成改由 `auth.ecdh_key(aid, origin)`
+          参与 ⇒ `generate_bd_ticket_client_data` 现在会多收三个关键字参数。
+          _spy 的形参表同步放开（`ecdh_key` / `timestamp` / `t_trust`），
+          并把「origin 空操作」的旧断言**替换为**「origin 真实生效」的新断言：
+          `auth.ecdh_key` 必须收到 `aid` 与 `origin=直播域`。
+
+        ⚠️ 变的是**能力**，不是放水：新断言比旧的更强——旧断言只要「没传东西」
+          就通过，新断言要求 **origin 明确等于直播域**，缺失/传错都会红。
         """
         import dy_apis.douyin_api as _dapi
         auth = _FakeAuth()
         seen = {}
+        ecdh_seen = {}
 
-        def _spy(api, ticket, ts_sign, prik):
-            seen.update(api=api, ticket=ticket, ts_sign=ts_sign, prik=prik)
-            return "CLIENT_DATA_STUB"
+        # _FakeAuth 无 ecdh_key ⇒ with_bd 走 getattr 兜底，ecdh_key 为 None；
+        # 这里显式补一个探针，以验证 with_bd 把 (aid, origin) 如实往下传。
+        def _fake_ecdh_key(aid=6383, origin="https://www.douyin.com"):
+            ecdh_seen.update(aid=aid, origin=origin)
+            return b"\x00" * 32
+
+        auth.ecdh_key = _fake_ecdh_key
+
+        def _spy(api, ticket, ts_sign, prik, ecdh_key=None, timestamp=None,
+                 t_trust=None):
+            seen.update(api=api, ticket=ticket, ts_sign=ts_sign, prik=prik,
+                        ecdh_key=ecdh_key)
+            # 走真实返回类型（str 子类携带 algo_type），保证 header 的解包路径被测到
+            from utils.bd_ticket import _ClientDataResult
+            return _ClientDataResult("CLIENT_DATA_STUB",
+                                     "hmac" if ecdh_key else "ecdsa")
 
         import dy_apis.client_live as cl
         with mock.patch.object(cl, "requests", mock.MagicMock()) as fake_req, \
@@ -373,9 +394,11 @@ class TestT1SendMsgInRoom(unittest.TestCase):
         self.assertEqual(seen["ticket"], auth.ticket)
         self.assertEqual(seen["ts_sign"], auth.ts_sign)
         self.assertEqual(seen["prik"], auth.private_key)
-        self.assertNotIn("origin", seen,
-                         "本项目 with_bd 的 origin 实为空操作 —— 若此处出现 origin，"
-                         "说明 ecdh_key 已移植，需同步更新本断言与文档")
+        # ★ HC-16：origin 不再是空操作 —— 它必须经 ecdh_key 传到直播域
+        self.assertEqual(ecdh_seen.get("origin"), LIVE_URL,
+                         "with_bd 的 origin 未传给 auth.ecdh_key —— 证书会按主站域取，"
+                         "直播写接口重定向回 ECDSA/403")
+        self.assertEqual(ecdh_seen.get("aid"), 6383)
 
     def test_abogus_signed_with_live_host(self):
         """a_bogus 必须按 live 子域签名（(aid,page_id) 与主站不同）。"""

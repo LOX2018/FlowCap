@@ -212,7 +212,11 @@ async def save_strategy(body: StrategyBody) -> dict:
     else:
         upd["name"] = sid
     for k in ("max_target", "interval", "delay",
-              "dm_pool", "acct", "auto_link_mic", "link_mic_mode"):
+              "dm_pool", "acct", "auto_link_mic", "link_mic_mode",
+              # ===== 写接口自动化（2026-10-01 补；此前**未进白名单** ⇒ 静默丢弃）=====
+              "danmaku_pool", "danmaku_timer_enabled", "danmaku_timer_min",
+              "danmaku_timer_max", "like_batch_enabled", "like_batch_total",
+              "like_batch_steps", "like_batch_step_max", "like_batch_cooldown_sec"):
         v = getattr(body, k)
         if v is not None:
             upd[k] = v

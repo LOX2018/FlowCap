@@ -34,6 +34,9 @@ API_AI = BACKEND / "api" / "ai.py"
 CLIENT = FRONTEND / "api" / "client.ts"
 SECTION = FRONTEND / "components" / "settings" / "HighValueKeywordsSection.tsx"
 SETTINGS_PAGE = FRONTEND / "components" / "settings" / "settings-page.tsx"
+# 直播页链路（2026-10-01 · 台账 L-18）：live-page → HighValueKeywordsModal → Section
+LIVE_PAGE = FRONTEND / "components" / "live" / "live-page.tsx"
+MODAL = FRONTEND / "components" / "live" / "HighValueKeywordsModal.tsx"
 
 
 def _src(p: Path) -> str:
@@ -133,15 +136,114 @@ def test_g5_frontend_client_has_calls():
         assert name in s, f"client.ts 缺少 {name}"
 
 
-def test_g6_section_mounted_in_settings():
-    """G6（决定性）：组件必须**挂进设置页** —— 光有组件文件等于不存在。
+# ---------------------------------------------------------------------------
+# G6 · 判定纯函数（可被负控直接喂源码文本，无需动真实文件）
+# ---------------------------------------------------------------------------
+
+#: JSX 元素开标签（`<Xxx` / `< Xxx`），**不含** import / 注释里出现的裸标识符
+_JSX_SECTION = re.compile(r"<\s*HighValueKeywordsSection\b")
+_JSX_MODAL = re.compile(r"<\s*HighValueKeywordsModal\b")
+
+
+def _section_is_mounted(settings_src: str, live_src: str, modal_src: str) -> bool:
+    """关键词权重表 Section 是否真实挂载在「设置页」**或**「直播页」。
+
+    判据（两分支任一成立即通过；两分支都要求**JSX 真实渲染**，只 import 不算）：
+
+    · 设置页分支：`settings-page.tsx` 的 JSX 里出现 `<HighValueKeywordsSection`
+    · 直播页分支（**两跳**，缺一跳即不算）：
+        ① `live-page.tsx` 的 JSX 里出现 `<HighValueKeywordsModal`
+        ② `HighValueKeywordsModal.tsx` 的 JSX 里出现 `<HighValueKeywordsSection`
+
+    抽成纯函数是为了让负控能**在内存里**构造"摘掉挂载"的源码文本喂进来，
+    证明门禁真会红（而不是把负控写在注释里）。
+    """
+    if bool(_JSX_SECTION.search(settings_src)):
+        return True
+    return bool(_JSX_MODAL.search(live_src)) and bool(_JSX_SECTION.search(modal_src))
+
+
+def _drop_lines_matching(src: str, pattern: re.Pattern) -> str:
+    """按行摘掉命中 pattern 的行（用于负控构造「未挂载」的源码样本）。"""
+    return "\n".join(ln for ln in src.splitlines() if not pattern.search(ln))
+
+
+def test_g6_section_mounted_in_settings_or_live():
+    """G6（决定性）：组件必须**真实挂载**到设置页**或**直播页 —— 光有组件文件等于不存在。
 
     H-26 的教训：能力层交付但未挂载 ⇒ 用户零感知。
+
+    ## 为什么判据从「只在设置页」改成「设置页 **或** 直播页」（2026-10-01 · 台账 L-18）
+
+    提交 `7592727`「高价值关键词权重表**只保留直播页入口**（消除设置页重复入口）」
+    是**有意重构**，不是缺陷：设置页的入口按钮会跳到直播页弹窗，保留两处会形成
+    重复入口。而本门禁（源自更早的 `8c7436e`）没跟着改 ⇒ 门禁过时报错。
+
+    有效入口链（实测）：
+        `live-page.tsx:705` 渲染 `<HighValueKeywordsModal open={kwOpen} … />`
+        → `HighValueKeywordsModal.tsx:68` 渲染 `<HighValueKeywordsSection embedded />`
+
+    因此判据改为「设置页 **或** 直播页任一挂载即可」，且直播页分支必须**两跳都真**
+    （只认 import 字符串会假绿 —— 见负控 `test_g6_negative_control_...`）。
+
+    **不删除本门禁**的原因：该组件确实必须对用户可见，只是换了宿主页；
+    换成"删门禁"等于放弃 H-26 的机械防线。
     """
     assert SECTION.is_file(), "HighValueKeywordsSection.tsx 不存在"
-    page = _src(SETTINGS_PAGE)
-    assert "HighValueKeywordsSection" in page, (
-        "组件未在 settings-page 中 import/挂载 ⇒ 用户看不见（H-26 同型缺口）")
-    # 必须真的出现在 JSX 里（不只是 import）
-    assert re.search(r"<\s*HighValueKeywordsSection\s*/?>", page), (
-        "HighValueKeywordsSection 只被 import、未在 JSX 中渲染")
+    assert LIVE_PAGE.is_file(), "live-page.tsx 不存在"
+    assert MODAL.is_file(), "HighValueKeywordsModal.tsx 不存在"
+
+    assert _section_is_mounted(_src(SETTINGS_PAGE), _src(LIVE_PAGE), _src(MODAL)), (
+        "高价值关键词表在设置页与直播页**都未挂载**：\n"
+        "  ① settings-page.tsx 的 JSX 中无 <HighValueKeywordsSection\n"
+        "  ② 或 live-page.tsx 的 JSX 中无 <HighValueKeywordsModal\n"
+        "  ③ 或 HighValueKeywordsModal.tsx 的 JSX 中无 <HighValueKeywordsSection\n"
+        "⇒ 用户看不见（H-26 同型缺口）"
+    )
+
+
+def test_g6_negative_control_unmounted_everywhere_turns_red():
+    """G6 负控：把挂载从**两处**都摘掉，门禁必须变红（否则门禁是摆设）。
+
+    全部在内存中构造源码样本喂给同一个纯函数 `_section_is_mounted`，
+    **不碰真实文件**（避免与并行工作线争文件）。
+
+    三条断言：
+      · 真实三份源码 ⇒ True（基线，证明门禁当前是绿的）
+      · 摘掉 live-page 的 `<HighValueKeywordsModal …/>` ⇒ False
+      · 摘掉 modal 的 `<HighValueKeywordsSection …/>` ⇒ False
+      · 两处都摘 ⇒ False（"两处都摘掉必须变红"的可执行形态）
+    """
+    settings_src = _src(SETTINGS_PAGE)
+    live_src = _src(LIVE_PAGE)
+    modal_src = _src(MODAL)
+
+    # 基线：真实源码必须绿，否则下面的负控没有意义
+    assert _section_is_mounted(settings_src, live_src, modal_src) is True, \
+        "基线失败：真实源码都没判绿，负控无从谈起"
+
+    # 负控 A：摘掉 live-page 里的 <HighValueKeywordsModal …/>
+    live_no_modal = _drop_lines_matching(live_src, _JSX_MODAL)
+    assert live_no_modal != live_src, "负控 A 没摘掉任何行（自造假绿）"
+    assert _section_is_mounted(settings_src, live_no_modal, modal_src) is False, \
+        "负控 A 失败：摘掉 live-page 的 Modal 挂载后门禁仍绿 ⇒ 判据不判直播页那一跳"
+
+    # 负控 B：摘掉 modal 里的 <HighValueKeywordsSection …/>
+    modal_no_section = _drop_lines_matching(modal_src, _JSX_SECTION)
+    assert modal_no_section != modal_src, "负控 B 没摘掉任何行（自造假绿）"
+    assert _section_is_mounted(settings_src, live_src, modal_no_section) is False, \
+        "负控 B 失败：摘掉 Modal 内的 Section 挂载后门禁仍绿 ⇒ 判据不判第二跳"
+
+    # 负控 C：两处都摘 ⇒ 必须红
+    assert _section_is_mounted(settings_src, live_no_modal, modal_no_section) is False, \
+        "负控 C 失败：两处挂载都摘掉后门禁仍绿 ⇒ 门禁完全不设防"
+
+    # 正控：设置页分支仍有效（避免将来只留直播页分支而把设置页分支写死成 False）
+    settings_mounted = settings_src + "\n<HighValueKeywordsSection />\n"
+    assert _section_is_mounted(settings_mounted, live_no_modal, modal_no_section) is True, \
+        "正控失败：设置页 JSX 挂载后仍判红 ⇒ 设置页分支失效"
+
+    # 判别力：光有 import、没有 JSX ⇒ 必须红（防"字符串命中即绿"的假绿）
+    live_import_only = "import HighValueKeywordsModal from \"./HighValueKeywordsModal\";\n"
+    assert _section_is_mounted(settings_src, live_import_only, modal_src) is False, \
+        "判别力失败：live-page 只有 import 无 JSX 却判绿 ⇒ 判据退化为字符串匹配"

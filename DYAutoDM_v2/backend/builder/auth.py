@@ -19,11 +19,13 @@ class DouyinAuth:
         self.ticket = None
         self.ts_sign = None
         self.client_cert = None
+        self.server_cert = None      # 服务端 ecies 证书（ecdh_key 取到后回填）
         self.ree_public_key = None
         self.uid = None
         self._ttwid = ""
         self._ms_cache = ""      # 动态 msToken 缓存
         self._ms_ts = 0          # 缓存时间戳
+        self._ecdh_cache = {}    # (aid, origin) -> 32 字节 HMAC 密钥 / None（HC-16 新增）
 
     def perepare_auth(self, cookieStr: str, web_protect_: str = "", keys_: str = ""):
         # 2026-09-17 修补（OCR 审查 CRITICAL）：原实现无条件执行
@@ -60,6 +62,8 @@ class DouyinAuth:
             keys_ = json.loads(json.loads(keys_)['data'])
             self.private_key = keys_['ec_privateKey']
             self.ree_public_key = base64.b64encode(self.private_key.encode()).decode()
+            # HC-16：私钥换了 ⇒ 旧 ECDH 密钥作废（新的共享密钥必须按新私钥重算）。
+            self.clear_ecdh_cache()
         elif keys_ is None:
             logger.debug("[auth] perepare_auth 收到 keys_=None（SDK 未就绪/未登录），跳过私钥刷新")
 
@@ -93,6 +97,50 @@ class DouyinAuth:
         self._ms_cache = ""
         self._ms_ts = 0
         return self.msToken
+
+    def ecdh_key(self, aid=6383, origin="https://www.douyin.com"):
+        """bd-ticket-guard HMAC 密钥（ECDH + HKDF），失败返回 None 由调用方回退 ECDSA。
+
+        对齐上游 `cv-cat/DouYin_Spider builder/auth.py:1008`。上游两处适应性修改：
+          - **UA 注入**：上游 `HeaderBuilder.ua` 是**类求值时的**快照；本项目
+            `HeaderBuilder` 同样是类体求值（`header.py:146-149`），语义一致，
+            但本项目不出网时不应触发 `utils.fingerprint`，故**延迟到方法内**取。
+          - **失败语义**：上游 `except Exception: key = None`（静默）；本项目
+            补一行 `logger.warning` ——「静默回退 ECDSA」正是本次 403 缺陷
+            **难以定位**的原因（头已声明 hmac，实际悄悄走了 ECDSA）。回退本身
+            保留（保障可用性），但必须在日志里留下可归因的痕迹。
+          - **负结果也缓存**：失败会写 None 并缓存，避免每次写请求都重试出网
+            （一次会话内证书取不到，重试通常也取不到）。若凭证已刷新，调用方
+            可用 `clear_ecdh_cache()` 主动失效。
+
+        :param aid: 子域 aid（www=6383，creator=2906，直播域沿用 6383）。
+        :param origin: 取证书的子域，需与业务请求同源 —— 直播写接口必须传
+            `https://live.douyin.com`，否则拿的是主站证书。
+        """
+        if not self.private_key:
+            return None
+        cache_key = (aid, origin)
+        if cache_key in self._ecdh_cache:
+            return self._ecdh_cache[cache_key]
+        key = None
+        try:
+            from utils.bd_ticket import derive_ecdh_key, fetch_server_cert
+            from builder.header import HeaderBuilder
+            cert, _sn = fetch_server_cert(
+                aid, self.cookie_str, origin=origin, user_agent=HeaderBuilder.ua,
+            )
+            self.server_cert = cert
+            key = derive_ecdh_key(self.private_key, cert)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[auth] ecdh_key 获取失败（本次回退 ECDSA 签名）："
+                           f"{type(e).__name__}: {e}")
+            key = None
+        self._ecdh_cache[cache_key] = key
+        return key
+
+    def clear_ecdh_cache(self):
+        """凭证刷新后主动失效 ECDH 密钥缓存（(aid, origin) 全清）。"""
+        self._ecdh_cache = {}
 
     def get_uid(self):
         if self.uid is None:

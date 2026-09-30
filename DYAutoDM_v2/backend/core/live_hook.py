@@ -36,6 +36,44 @@ import static.Live_pb2 as Live_pb2
 from dy_live.server import DouyinLive
 
 
+# ── 红心（真实点赞）/ 贡献榜 刷新节拍（2026-10-01，HC-16 M-30）──────────────
+# 红心的 `real` 取自 reflow/info 的 room.like_count，挂在与贡献榜同一个轮询节拍上
+# ⇒ 总量最多滞后一个节拍。此处把该节拍从「写死的 60」提升为**显式可配**。
+KEY_RANK_POLL_SEC = "rank_poll_interval_sec"
+RANK_POLL_DEFAULT = 60     # 必须与改前硬编码一致 ⇒ 不改配置 = 行为完全不变
+RANK_POLL_MIN = 15         # 下限：低于此会把 reflow/info 的请求频次放大成异常
+                           # 形状（高频、绝对规律的请求是风控敏感面），故写小一律抬回。
+RANK_POLL_MAX = 600        # 上限：比这更慢已失去「分钟级实时」的意义（WS 增量仍即时可见）。
+
+
+def _rank_poll_seconds() -> int:
+    """解析刷新节拍：策略层 kv `config.live[key]` → 设置页 `app_config.live[key]`
+    → 常量默认 60。与 services/live_automation.py::_cfg 同构（同一优先级约定）。
+
+    任何异常/缺失一律回落 60（而非「放行”），保证零回归；并对越界值做
+    clamp 到 [15, 600] —— schema 侧的 min/max 只在 UI 写入时生效，运行期仍自守。
+    """
+    raw = None
+    try:
+        from database import get_kv_json
+        _live = (get_kv_json("config", {}) or {}).get("live")
+        if isinstance(_live, dict) and _live.get(KEY_RANK_POLL_SEC) is not None:
+            raw = _live.get(KEY_RANK_POLL_SEC)
+    except Exception:  # noqa: BLE001
+        raw = None
+    if raw is None:
+        try:
+            from services import app_config as _ac
+            raw = _ac.get("live", KEY_RANK_POLL_SEC, RANK_POLL_DEFAULT)
+        except Exception:  # noqa: BLE001
+            raw = RANK_POLL_DEFAULT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return RANK_POLL_DEFAULT
+    return max(RANK_POLL_MIN, min(RANK_POLL_MAX, val))
+
+
 class LiveChatHook(DouyinLive):
     """在基类 DouyinLive 的 on_message 基础上，把公屏弹幕转成私信目标推给 dispatch。
 
@@ -100,7 +138,11 @@ class LiveChatHook(DouyinLive):
         self._rank_reason: str = "idle"   # 最近一次拉取结论（供前端空态如实显示）
         self._rank_thread: Optional[threading.Thread] = None
         self._rank_stop = threading.Event()
-        self._rank_interval: int = 60
+        # 实例初值 = 默认节拍 60（与 RANK_POLL_DEFAULT 同源）；真实值在
+        # start_rank_poll 里按配置解析 —— 构造期不碰 DB/配置（`__new__` 旁路构造的
+        # 测试钩子也不会被拖累触网）。实际取值见 start_rank_poll()：解析配置后
+        # clamp 到 [RANK_POLL_MIN, RANK_POLL_MAX]。
+        self._rank_interval: int = RANK_POLL_DEFAULT
         self._automation_svc = None   # 写接口自动化（定时弹幕/分步点赞）
 
     # ------------------------------------------------------------------
@@ -361,10 +403,28 @@ class LiveChatHook(DouyinLive):
             return {}
 
 
-    def start_rank_poll(self, interval: int = 60) -> None:
+    def start_rank_poll(self, interval: Optional[int] = None) -> None:
+        """启动贡献榜 / 红心刷新轮询（幂等）。
+
+        ## 节拍来源（2026-10-01，HC-16 M-30：改为**显式可配**）
+
+        `interval` 显式给出时用它的 clamp 值；**不传则读配置**
+        `live.rank_poll_interval_sec`（策略层 kv → app_config → 默认 60）。
+        项目唯一的调用点 `start_ws` 不传 ⇒ 走配置路径，`apply: hot` 下一次
+        启动监听即生效。
+
+        ## 为什么 clamp 而不是照抄配置值
+
+        下限 15s：节拍直接决定对 `reflow/info` 的出站频次，写太小会把请求
+        形状推向「高频且绝对规律」——这是风控敏感面，用户手滑写 1 也不应被
+        忠实执行；上限 600s：再慢已失去分钟级实时的意义。
+        ⟹ 配置只能调，不能突破 [15, 600] 这个包络（运行时再自守一次，因为
+        schema 的 min/max 只在设置页写入时生效）。
+        """
         if self._rank_thread and self._rank_thread.is_alive():
             return
-        self._rank_interval = interval
+        sec = _rank_poll_seconds() if interval is None else int(interval)
+        self._rank_interval = max(RANK_POLL_MIN, min(RANK_POLL_MAX, sec))
         self._rank_stop.clear()
         self._rank_thread = threading.Thread(target=self._rank_loop, daemon=True)
         self._rank_thread.start()

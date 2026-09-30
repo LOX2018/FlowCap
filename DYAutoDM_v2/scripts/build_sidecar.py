@@ -25,6 +25,25 @@ BINARIES = ROOT / "src-tauri" / "binaries"
 
 EXT = ".exe" if platform.system() == "Windows" else ""
 
+# ── PyInstaller workpath/specpath：必须落在源码树之外（2026-10-01 · L-19） ──────
+# 旧配置把 workpath/specpath 定在 `backend/build/<name>/`，与铁律 R3
+# 「源码 backend 目录不得残留构建产物」**天然冲突**（构建器自己往 backend/
+# 写中间产物，门禁必然报红 —— 判据与实现互打）。
+# 迁移目标 = 仓库根的 `build/pyi_work/<name>`：
+#   · 在 DYAutoDM_v2 源码树**之外**（R3 只扫 BACKEND ⇒ 不再命中）；
+#   · 已被仓库根 `.gitignore:17` 的 `build/` 覆盖（实测 git check-ignore 命中）
+#     ⇒ 不会进提交；
+#   · 与 R10 的既有架构决策（cargo target 经 build_paths 迁出树外）同源同理：
+#     **构建缓存不落源码树**。
+# ⚠ --distpath **不动**：产物位置（src-tauri/binaries）有部署依赖。
+# 按 name 分子目录 ⇒ 三路并行构建仍互不干扰（无共享可写状态）。
+PYI_WORK_ROOT = ROOT.parent / "build" / "pyi_work"
+
+
+def _pyi_work(name: str) -> str:
+    """返回 PyInstaller 的 --workpath / --specpath（源码树外，按 name 隔离）。"""
+    return str(PYI_WORK_ROOT / name)
+
 # 测试白名单注入标记（build_sidecar.inject/restore 与守卫测试共用，避免字面量漂移）
 _WS_START = "# ---DM_TEST_WHITELIST_INJECT_START---"
 _WS_END = "# ---DM_TEST_WHITELIST_INJECT_END---"
@@ -124,8 +143,8 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
         sys.executable, "-m", "PyInstaller",
         "--name", full,
         "--distpath", str(BINARIES),
-        "--workpath", str(BACKEND / "build" / name),
-        "--specpath", str(BACKEND / "build" / name),
+        "--workpath", _pyi_work(name),
+        "--specpath", _pyi_work(name),
         "--clean", "--noconfirm",
     ]
     if mode == "onedir":
@@ -753,9 +772,9 @@ def main() -> None:
         # ════════════════════════════════════════════════════════════════
         # 2026-09-20：三份 sidecar **并行**构建（用户要求「打包这么慢，有并发吗」）。
         #
-        # 为什么可并行：三者互不依赖；PyInstaller 的 --workpath/--specpath
-        #   （各自 backend/build/<name>/）与 --name 完全独立，产物不同名
-        #   → 无共享可写状态。
+        #   为什么可并行：三者互不依赖；PyInstaller 的 --workpath/--specpath
+        #   （各自 _pyi_work(name)，源码树外 build/pyi_work/<name>/，见 L-19）
+        #   与 --name 完全独立，产物不同名 → 无共享可写状态。
         # 前提：inject_test_whitelist() / _write_version_file() 均在此之前
         #   串行完成（它们改共享源码，不可并行）。
         # 实测收益：串行 ~9 分钟 → 并行约等于**最慢的那一个**（~3.5 分钟）。

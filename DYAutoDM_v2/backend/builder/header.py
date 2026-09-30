@@ -2,7 +2,12 @@ from enum import Enum
 
 from loguru import logger
 
-from utils.dy_util import generate_ree_key, generate_bd_ticket_client_data, generate_csrf_token
+# 2026-10-01（HC-16）：client-data 的**唯一实现**在 utils/bd_ticket（含 ECDH/HMAC），
+# `utils/dy_util.generate_bd_ticket_client_data` 只是一份**单值返回的旧包装**
+# （不在本次改动范围）。header 必须用真实现才能拿到 `algo_type` 去驱动
+# `bd-ticket-guard-web-sign-type`——否则「头声明 hmac、载荷 ECDSA」的矛盾无法消除。
+from utils.bd_ticket import generate_bd_ticket_client_data
+from utils.dy_util import generate_ree_key, generate_csrf_token
 
 
 class HeaderType(Enum):
@@ -36,6 +41,11 @@ class Header:
           - `x-tt-session-dtrait` 设备特征头：本项目 auth 无
             `session_dtrait_header` 能力，优雅跳过（高风控接口需要它，
             IM 私信发送以 bd-ticket-guard 为鉴权主体，缺 dtrait 不阻断）。
+
+        2026-10-01（HC-16）：`origin` 由空操作变为**真实生效** —— 它经
+        `auth.ecdh_key(aid, origin)` 决定从哪个子域换取服务端 ecies 证书
+        （直播域与主站证书/密钥不通用）。同时 `bd-ticket-guard-web-sign-type`
+        改由 client-data 的**实际算法** `algo_type` 驱动，不再靠 client_cert 形态猜测。
         """
         from utils.bd_ticket import ticket_guard_version
         # 会话一致性门禁（能力存在时强校验；缺失时降级告警）
@@ -49,17 +59,33 @@ class Header:
             raise
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[header] ticket 会话一致性校验异常（放行）：{e}")
+        # 2026-10-01（HC-16）：ECDH/HMAC 移植。`origin` 不再是空操作 —— 它决定
+        # 从哪个子域取服务端 ecies 证书（直播域 aid 与主站不同，证书/密钥不通用）。
+        ecdh_key = None
+        try:
+            ecdh_fn = getattr(auth, "ecdh_key", None)
+            if callable(ecdh_fn):
+                ecdh_key = ecdh_fn(aid=aid, origin=origin)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[header] ecdh_key 获取失败（回退 ECDSA）：{e}")
+        trust_cookie = (getattr(auth, "cookie", None) or {}).get("_bd_ticket_crypt_cookie")
+        # client_data 是 str 子类，`set_header` 走 requests 编码时就是它的 str 本体。
         client_data = generate_bd_ticket_client_data(
-            api, auth.ticket, auth.ts_sign, auth.private_key)
+            api, auth.ticket, auth.ts_sign, auth.private_key, ecdh_key=ecdh_key,
+            timestamp=timestamp, t_trust=1 if trust_cookie else None)
+        # mock/替身返回裸值时兜底为 ecdsa（真实实现恒是新返回类型）
+        algo_type = getattr(client_data, "algo_type", "ecdsa")
         self.set_header('bd-ticket-guard-client-data', client_data)
         self.set_header('bd-ticket-guard-ree-public-key', generate_ree_key(auth.private_key))
         self.set_header('bd-ticket-guard-version', '2')
         self.set_header('bd-ticket-guard-web-version',
                         str(ticket_guard_version(getattr(auth, 'ts_sign', '') or '')))
-        # web-sign-type 由客户端证书格式决定：pub.<b64> 新版证书走 hmac(=1)，
-        # 否则 ECDSA 兜底(=0)。与 with_bd_readonly 用同一套判定，保证自洽。
-        algo = 'hmac' if str(getattr(auth, 'client_cert', '') or '').startswith('pub.') else 'ecdsa'
-        self.set_header('bd-ticket-guard-web-sign-type', '1' if algo == 'hmac' else '0')
+        # ★ web-sign-type 由**本次 client-data 实际使用的签名算法**驱动（algo_type），
+        #   不再由 client_cert 形态猜测。2026-10-01（HC-16）：此前按
+        #   `client_cert.startswith('pub.')` 标 hmac(=1)，而 client-data 恒为 ECDSA
+        #   签名 ⇒ 头声明与载荷自相矛盾，服务端校签必失败（写接口恒 403 的根因）。
+        self.set_header('bd-ticket-guard-web-sign-type',
+                        '1' if algo_type == 'hmac' else '0')
         # 设备特征头（能力存在才发）
         try:
             if hasattr(auth, "session_dtrait_header"):
