@@ -286,9 +286,23 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
         prep = None
         waited = None
         try:
+            # ★ UX：二维码一就绪就写入 st（前端立刻可显示），避免「干转圈到等待结束」。
+            def _on_qr_ready(_prep):
+                try:
+                    if _prep and _prep.get("ok"):
+                        st["qrPng"] = _prep.get("png") or png
+                        st["decoded"] = bool(_prep.get("decoded"))
+                        st["path"] = "rpa"
+                        st["qrUrl"] = _prep.get("qr_url") or ""
+                        st["stage"] = "qr_ready"
+                        logger.info(f"[scan] 账号 {name} 二维码已就绪（即时下发，"
+                                    f"via={_prep.get('via')}）: {st['qrPng']}")
+                except Exception as _e_cb:  # noqa: BLE001
+                    logger.debug(f"[scan] on_qr_ready 写入失败: {_e_cb}")
+
             _bw = asyncio.run(_lr.bridge_qr_login_and_wait(
                 env_path=env_path, out_png=png, headless=True,
-                qr_timeout_s=90, wait_timeout_s=240))
+                qr_timeout_s=90, wait_timeout_s=240, on_qr_ready=_on_qr_ready))
             prep = _bw.get("prep")
             waited = _bw.get("waited")
             if prep and prep.get("ok"):

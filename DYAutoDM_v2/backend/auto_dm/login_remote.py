@@ -1761,7 +1761,8 @@ def reap_api_qr_login(handle: Optional[dict]) -> None:
 async def bridge_qr_login_and_wait(env_path: str, out_png: str,
                                    headless: bool = True,
                                    qr_timeout_s: int = 90,
-                                   wait_timeout_s: int = 240) -> dict:
+                                   wait_timeout_s: int = 240,
+                                   on_qr_ready=None) -> dict:
     """**出码 + 等待扫码确认，全程在同一个事件循环内**（根治跨循环断连）。
 
     2026-10-01 根因实测：
@@ -1776,6 +1777,15 @@ async def bridge_qr_login_and_wait(env_path: str, out_png: str,
     """
     prep = await bridge_qr_login(env_path=env_path, out_png=out_png,
                                  headless=headless, timeout_s=qr_timeout_s)
+    # ★ UX：出码成功**立即**回调（让前端马上看到二维码），不要等 240s 等待结束。
+    #   未提供回调时行为与从前完全一致（向后兼容）。
+    if on_qr_ready is not None:
+        try:
+            r = on_qr_ready(prep)
+            if hasattr(r, "__await__"):
+                await r
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[bridge] on_qr_ready 回调异常（不阻断）: {}", e)
     if not prep.get("ok"):
         return {"prep": prep, "waited": None}
     waited = await poll_bridge_confirmed(prep.get("handle"), timeout_s=wait_timeout_s)
