@@ -810,6 +810,29 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "env": "DY_CRAWL_BATCH_MAX_WORKS", "apply": "hot",
                 "hint": "单次最多采集几个作品"
             },
+            "anon_preview": {
+                "label": "匿名评论预览（探针）", "type": "bool", "default": True,
+                "env": "DY_CRAWL_ANON_PREVIEW", "apply": "hot",
+                "hint": "匿名预览评论"
+            },
+            "anon_preview_interval": {
+                "label": "匿名预览间隔（秒）", "type": "float", "default": 0.6,
+                "min": 0.0, "max": 10.0,
+                "env": "DY_CRAWL_ANON_PREVIEW_INTERVAL", "apply": "hot",
+                "hint": "仅串行模式生效的停顿"
+            },
+            "anon_preview_concurrency": {
+                "label": "匿名预览并发度", "type": "int", "default": 6,
+                "min": 1, "max": 12,
+                "env": "DY_CRAWL_ANON_PREVIEW_CONCURRENCY", "apply": "hot",
+                "hint": "并发数1=串行"
+            },
+            "anon_preview_max_works": {
+                "label": "匿名预览作品上限", "type": "int", "default": 24,
+                "min": 1, "max": 60,
+                "env": "DY_CRAWL_ANON_PREVIEW_MAX_WORKS", "apply": "hot",
+                "hint": "预览作品上限"
+            },
         },
     },
 }

@@ -54,6 +54,15 @@ def work_comments(auth, url, cursor="0", count="20"):
     return _safe("get_work_out_comment", auth, url, cursor, str(count))
 
 
+def work_comments_anon(aweme_id):
+    """**匿名**评论预览（零凭证，★ 2026-09-30 C 方案探针）。
+
+    走 `iesdouyin.com` 移动 web 端点，实测裸请求即可返回评论；只给 ≤20 条、
+    **不可翻页**、**无 user.uid**（不可直接私信）。仅作「哪些视频值得采」的预览。
+    """
+    return _safe("get_work_out_comment_anon", aweme_id)
+
+
 def work_all_comments(auth, url):
     return _safe("get_work_all_out_comment", auth, url)
 

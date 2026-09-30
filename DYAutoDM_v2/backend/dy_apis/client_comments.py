@@ -41,6 +41,32 @@ from dy_apis._common import *  # noqa: F401,F403
 DouyinAPI = None  # type: ignore[assignment]
 
 
+# ===========================================================================
+# 匿名评论预览端点（★ 2026-09-30 实测新增，C 方案「探针」）
+# ---------------------------------------------------------------------------
+# 端点：`https://www.iesdouyin.com/web/api/v2/comment/list/`（移动 web）。
+#
+# 🔴 实测事实（逐条取证，勿凭印象改）：
+#   · **零凭证可用**：裸请求（无 cookie/签名）即 `status_code:0` 返回评论；
+#     故可用于**未登录会话**的评论预览，不消耗任何账号风控面。
+#   · 参数名是 **`aweme_id`**（不是 `item_id` —— 传 item_id 返回
+#     `status_code:5 参数不合法`）。
+#   · **分页参数被忽略**：`cursor`/`count` 传任何值都返回**同一批 ≤20 条**
+#     （实测 cursor=0/10/20/40、count=20/50/100/200 全部相同），响应里**无**
+#     `cursor`/`has_more`/`total` 字段 ⇒ 这不是可翻页的全量流，而是服务端
+#     挑选的**预览批次**，且**不是最新**（与带凭证首页 20 条仅 3 条重叠）。
+#   · 返回 **无 `user.uid`**（只有 `sec_uid`/`short_id`/`nickname`）
+#     ⇒ **不能直接私信**（`core.sender.send_by_uid` 要求数字 uid）。
+#
+# ⇒ **定位：探针/预览**，不是采集主力。全量采集仍走带凭证的
+#   `get_work_out_comment`（同一视频实测分页正常：cursor 为整数偏移 0→20→40…，
+#   8 页累计 159 条）。用途：搜索后**零账号风险**地先看「哪些视频有评论值得采」。
+_ANON_COMMENT_API = "https://www.iesdouyin.com/web/api/v2/comment/list/"
+_ANON_MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 "
+                   "Mobile/15E148 Safari/604.1")
+
+
 class CommentsMixin:
     """评论域接口（来自 DouyinAPI）。"""
 
@@ -354,4 +380,46 @@ class CommentsMixin:
         res = requests.post(f'{DouyinAPI.douyin_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, data=data, verify=tls_verify())
         return safe_json(res)
+
+    @staticmethod
+    def get_work_out_comment_anon(aweme_id: str, **kwargs) -> dict:
+        """**匿名**评论预览（零凭证，★ 2026-09-30 C 方案「探针」）。
+
+        ## 为什么独立于 `get_work_out_comment`
+        本方法**不接收 auth**：走 `www.iesdouyin.com` 移动 web 端点，实测
+        裸请求（无 cookie / 无 a_bogus / 无 secsdk 签名）即 `status_code:0` 返回
+        评论 ⇒ 可在**未登录会话**下预览，不消耗任何账号风控面。
+
+        ## 契约（实测，调用方必须知情）
+        - 入参只用 **`aweme_id`**（该端点不认 `item_id`）。
+        - 返回**同一批 ≤20 条**，`cursor`/`count` 被服务端忽略、**无 has_more**
+          ⇒ 只能取「预览」，**无法翻页**。
+        - 评论 **无 `user.uid`**（只有 `sec_uid`/`short_id`）⇒ **不可直接私信**。
+        详见本模块顶部 `_ANON_COMMENT_API` 注释的逐条实测证据。
+
+        :param aweme_id: 作品 ID（数字串）。
+        :return: 原始 JSON dict（含 `comments` 列表）；失败返回 `{}`。
+        """
+        aid = str(aweme_id or "").strip()
+        if not aid:
+            return {}
+        params = {
+            "aweme_id": aid,
+            "cursor": "0",
+            "count": "20",
+            "aid": "1128",
+        }
+        headers = {
+            "user-agent": _ANON_MOBILE_UA,
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "referer": "https://www.iesdouyin.com/",
+        }
+        try:
+            r = requests.get(_ANON_COMMENT_API, params=params, headers=headers,
+                             timeout=20, verify=tls_verify())
+        except Exception as e:  # noqa: BLE001 —— 网络异常按「取不到」降级
+            logger.warning(f"[CRAWL-ANON] 匿名评论预览请求异常 aweme={aid}: {e}")
+            return {}
+        return safe_json(r)
 

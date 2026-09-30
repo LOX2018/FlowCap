@@ -42,7 +42,11 @@ _KV_BIND = "config_tag_bind"    # {account: tag_id}
 _KV_BIND_SECTION = "config_tag_bind_section"  # {account: {section: tag_id}} —— 板块级绑定（2026-09-24 B-4）
 
 # 标签能指引的分区
-MANAGED_SECTIONS = ("send", "live", "capture")
+# ★ 2026-09-30：纳入 `crawl`（采集域）。此前只有 send/live/capture，而
+#   `capture`（私信会话捕获）与「内容采集」是两件事 —— 采集参数无处按账号隔离，
+#   `crawl_policy` 自己的模块头就记着「capture 板块形同虚设、无消费者」。
+#   现采集参数走本分区，`scope_of(account, "crawl")` 才有真实消费者。
+MANAGED_SECTIONS = ("send", "live", "capture", "crawl")
 
 _lock = threading.RLock()
 

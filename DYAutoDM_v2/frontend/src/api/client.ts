@@ -2250,14 +2250,18 @@ export const api = {
 
   // ===== 数据采集（关键词搜索 + 评论采集 + 评论转私信截流）=====
   async crawlSearch(body: {
-    account: string;
-    query: string;
-    kind: "video" | "user";
-    sort_type?: string;
-    publish_time?: string;
-    filter_duration?: string;
-    num?: number;
-  }): Promise<{
+      account: string;
+      query: string;
+      kind: "video" | "user";
+      /** 留空 = 用采集策略（推荐）；显式传值则覆盖策略 */
+      sort_type?: string;
+      publish_time?: string;
+      filter_duration?: string;
+      /** 搜索条数；0/缺省 = 用策略 num */
+      num?: number;
+      /** 指定采集策略 id（缺省 = 该账号标签/全局默认策略） */
+      policy_id?: string;
+    }): Promise<{
     ok: boolean;
     items: Record<string, unknown>[];
     total: number;
@@ -2312,6 +2316,7 @@ export const api = {
   async crawlCommentsAnonPreview(body: {
     aweme_ids: string[];
     count?: number;
+    limit?: number;
   }): Promise<{
     ok: boolean;
     anonymous: boolean;

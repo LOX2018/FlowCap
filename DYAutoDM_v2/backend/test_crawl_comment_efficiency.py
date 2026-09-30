@@ -191,5 +191,204 @@ class TestCommentEfficiency(unittest.TestCase):
         self.assertEqual(cm.exception.status_code, 400)
 
 
+class TestAnonPreview(unittest.TestCase):
+    """C 方案匿名预览门禁（★ 2026-09-30）。
+
+    判据：
+      A1 匿名预览**经 features**（走 `work_comments_anon`，不外泄到直连）
+      A2 匿名预览**不需要 account**（请求体无 account 字段）
+      A3 匿名预览**串行 + 间隔**（两作品之间真的 sleep）
+      A4 匿名预览**失败隔离**（单作品失败不拖垮整批）
+      A5 端点走**零凭证**基座（`get_work_out_comment_anon` 用 iesdouyin + 无 auth）
+    """
+
+    def setUp(self):
+        self.features = sys.modules.get("features") or __import__("features")
+        from api import crawl as c
+        self.crawl = c
+        self._saved = self.features.work_comments_anon
+        ac.reset_section("crawl")
+        ac.save_section("crawl", {"anon_preview_interval": 0.0})
+
+    def tearDown(self):
+        self.features.work_comments_anon = self._saved
+        ac.reset_section("crawl")
+
+    def test_a1_a2_a3_anon_preview_serial_no_account(self):
+        """A1 经 features / A2 无 account / A3 **并发默认**（串行仅当 conc=1）。"""
+        calls = []
+
+        def _stub(aid):
+            calls.append(aid)
+            return {"ok": True, "data": {"comments": [{"cid": "c" + aid, "text": "t",
+                                                        "user": {"nickname": "n"}}]}}
+        self.features.work_comments_anon = _stub
+        # A2：请求体**无 account** 字段（匿名端点不接收账号）
+        self.assertNotIn("account", self.crawl.CrawlAnonPreviewRequest.model_fields)
+
+        # --- A3a：默认并发（conc=6）⇒ 3 个作品耗时接近单次，而非 2×interval ---
+        ac.save_section("crawl", {"anon_preview_concurrency": 6,
+                                  "anon_preview_interval": 0.3})
+        t0 = time.time()
+        r = asyncio.run(self.crawl.crawl_comments_anon_preview(
+            self.crawl.CrawlAnonPreviewRequest(aweme_ids=["a1", "a2", "a3"])))
+        dt_concurrent = time.time() - t0
+        self.assertEqual(sorted(calls), ["a1", "a2", "a3"],
+                         "匿名预览未逐作品走 features 桩（A1）")
+        self.assertTrue(r["anonymous"])
+        self.assertEqual(r["total_comments"], 3)
+        self.assertLess(dt_concurrent, 0.6,
+                        f"默认并发未生效（{dt_concurrent:.2f}s ≥ 0.6s）—— "
+                        "是否又退回串行？")
+
+        # --- A3b：conc=1 时回退串行 + 真间隔（配置可回到串行） ---
+        calls.clear()
+        ac.save_section("crawl", {"anon_preview_concurrency": 1,
+                                  "anon_preview_interval": 0.25})
+        t0 = time.time()
+        asyncio.run(self.crawl.crawl_comments_anon_preview(
+            self.crawl.CrawlAnonPreviewRequest(aweme_ids=["a1", "a2", "a3"])))
+        dt_serial = time.time() - t0
+        self.assertGreaterEqual(dt_serial, 0.45,
+                                f"conc=1 未按间隔串行（{dt_serial:.2f}s < 2×0.25s）")
+        self.assertGreater(dt_serial, dt_concurrent,
+                           "串行应比并发慢 —— 并发开关无判别力")
+
+    def test_a4_failure_isolation(self):
+        ac.save_section("crawl", {"anon_preview_interval": 0.0})
+        n = {"i": 0}
+
+        def _flaky(aid):
+            n["i"] += 1
+            if n["i"] == 1:
+                return {"ok": False, "error": "网络" }
+            return {"ok": True, "data": {"comments": [{"cid": "c", "text": "t",
+                                                        "user": {"nickname": "n"}}]}}
+        self.features.work_comments_anon = _flaky
+        body = self.crawl.CrawlAnonPreviewRequest(aweme_ids=["bad", "good"])
+        r = asyncio.run(self.crawl.crawl_comments_anon_preview(body))
+        self.assertEqual([w["status"] for w in r["per_work"]], ["failed", "ok"])
+        self.assertEqual(r["ok_works"], 1)
+
+    def test_a5_base_method_is_credential_free(self):
+        """基座 `get_work_out_comment_anon`：签名**不含 auth**，且指向 iesdouyin。"""
+        import inspect
+        from dy_apis.douyin_api import DouyinAPI
+        sig = inspect.signature(DouyinAPI.get_work_out_comment_anon)
+        self.assertNotIn("auth", sig.parameters,
+                         "匿名方法不应接收 auth（零凭证契约）")
+        from dy_apis import client_comments as cc
+        self.assertIn("iesdouyin.com", cc._ANON_COMMENT_API,
+                      "匿名端点应指向 iesdouyin（实测可达的零凭证端点）")
+
+
+class TestPolicyWiring(unittest.TestCase):
+    """★ 2026-09-30 门禁：「采集策略 → 采集链路」必须真的接通。
+
+    ## 为什么需要
+    接线前实测：`crawl_policies` 写入 num=50，而采集实际发的仍是 app_config 的值
+    —— 参数层**写进去读不到**，前端契约 `resolveCrawlPolicy` 也无人调用，
+    属「已建未用」家族（本项目反复踩到的形态）。
+
+    判据：
+      W1 搜索端点的排序/时段/时长/条数**留空即取策略**（不再恒用写死默认）
+      W2 策略的 num 真的进入搜索调用（打桩捕获传参）
+      W3 `crawl` 在 `config_tag.MANAGED_SECTIONS` 内（标签采集板块有消费者）
+      W4 采集端点的 count 按**账号标签 scope** 读取（`_page_count(count, account)`）
+      W5 `is_default` 白名单可写（否则第 ③ 级永远取不到）
+    """
+
+    def setUp(self):
+        import api.crawl as c
+        from api import crawl_policy as cp
+        self.c = c
+        self.cp = cp
+        self._saved_load = c._load_auth
+        c._load_auth = lambda account: _StubAuth()
+        from database import set_kv_json
+        set_kv_json("crawl_policies", {})
+        ac.reset_section("crawl")
+
+    def tearDown(self):
+        from database import set_kv_json
+        set_kv_json("crawl_policies", {})
+        ac.reset_section("crawl")
+        self.c._load_auth = self._saved_load
+
+    def test_w1_w2_policy_num_enters_search_call(self):
+        """策略 num 必须进入真实搜索调用（打桩捕获）。"""
+        from dy_apis.douyin_api import DouyinAPI
+        asyncio.run(self.cp.save_policy(self.cp.PolicyBody(
+            id="polA", name="保守", kind="video", num=37,
+            sort_type="2", publish_time="7", is_default=True)))
+
+        captured = {}
+
+        def _stub_search(auth, q, num, sort_type, publish_time, filter_duration,
+                         *a, **k):
+            captured.update(num=num, sort_type=sort_type,
+                            publish_time=publish_time,
+                            filter_duration=filter_duration)
+            return []
+        saved = DouyinAPI.search_some_general_work
+        DouyinAPI.search_some_general_work = staticmethod(_stub_search)
+        try:
+            body = self.c.CrawlSearchRequest(account="acc", query="kw")
+            asyncio.run(self.c.crawl_search(body))
+        finally:
+            DouyinAPI.search_some_general_work = saved
+
+        self.assertEqual(captured.get("num"), 37,
+                         "策略 num 未进入搜索调用 —— 策略层又被旁路了")
+        self.assertEqual(captured.get("sort_type"), "2", "策略 sort_type 未生效")
+        self.assertEqual(captured.get("publish_time"), "7", "策略 publish_time 未生效")
+
+    def test_w1b_explicit_body_overrides_policy(self):
+        """显式传值必须覆盖策略（策略是默认，不是强制）。"""
+        from dy_apis.douyin_api import DouyinAPI
+        asyncio.run(self.cp.save_policy(self.cp.PolicyBody(
+            id="polB", kind="video", num=40, sort_type="1", is_default=True)))
+        captured = {}
+
+        def _stub(auth, q, num, sort_type, publish_time, filter_duration, *a, **k):
+            captured.update(num=num, sort_type=sort_type)
+            return []
+        saved = DouyinAPI.search_some_general_work
+        DouyinAPI.search_some_general_work = staticmethod(_stub)
+        try:
+            body = self.c.CrawlSearchRequest(account="acc", query="kw",
+                                             num=11, sort_type="0")
+            asyncio.run(self.c.crawl_search(body))
+        finally:
+            DouyinAPI.search_some_general_work = saved
+        self.assertEqual(captured.get("num"), 11, "显式 num 未覆盖策略")
+        self.assertEqual(captured.get("sort_type"), "0", "显式 sort_type 未覆盖策略")
+
+    def test_w3_crawl_is_tag_managed(self):
+        """`crawl` 必须在标签受管分区内 —— 否则标签的采集板块永远无消费者。"""
+        from services import config_tag
+        self.assertIn("crawl", config_tag.MANAGED_SECTIONS,
+                      "crawl 未纳入 MANAGED_SECTIONS ⇒ 采集参数无法按账号隔离")
+
+    def test_w4_page_count_reads_with_account(self):
+        """`_page_count(body_count, account)` 必须按账号解析（标签 scope 可生效）。"""
+        import inspect
+        sig = inspect.signature(self.c._page_count)
+        self.assertIn("account", sig.parameters,
+                      "_page_count 未接 account ⇒ 标签 scope 无法影响评论每页条数")
+
+    def test_w5_is_default_writable(self):
+        """`is_default` 必须在写入白名单内，且「全局默认」唯一。"""
+        self.assertIn("is_default", self.cp._FIELDS,
+                      "is_default 不在 _FIELDS => 写不进去（第③级永远取不到）")
+        asyncio.run(self.cp.save_policy(self.cp.PolicyBody(
+            id="d1", kind="video", is_default=True)))
+        asyncio.run(self.cp.save_policy(self.cp.PolicyBody(
+            id="d2", kind="video", is_default=True)))
+        data = self.cp._load_all()
+        flagged = [k for k, v in data.items() if isinstance(v, dict) and v.get("is_default")]
+        self.assertEqual(flagged, ["d2"], f"全局默认策略不唯一：{flagged}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -81,6 +81,7 @@ _KV_KEY = "crawl_policies"
 _FIELDS = {
     "id", "name", "kind", "num", "sort_type", "publish_time",
     "filter_duration", "search_range", "content_type", "max_rounds",
+    "is_default",
 }
 
 # 采集类型白名单（与 api/crawl.py 的端点一一对应）。
@@ -119,6 +120,9 @@ class PolicyBody(BaseModel):
     search_range: str = ""
     content_type: str = ""
     max_rounds: int = 20
+    # ★ 2026-09-30：标记「全局默认策略」—— 采集时若账号未绑定采集标签、
+    #   也未显式指定 policy_id，则用它（见 api/crawl.py::_resolve_policy_params）。
+    is_default: bool = False
 
 
 def _load_all() -> dict:
@@ -244,8 +248,17 @@ async def save_policy(body: PolicyBody) -> dict:
             "search_range": pick("search_range", clearable=True),
             "content_type": pick("content_type", clearable=True),
             "max_rounds": max_rounds,
+            # ★ is_default：显式提交才改（未提交则沿用旧值），保持「清空语义」一致
+            "is_default": bool(body.is_default) if "is_default" in sent
+            else bool(old.get("is_default")),
             "updated_at": time.time(),
         }
+        # 「全局默认」必须唯一 —— 置真时把其它策略的标记清掉，
+        # 否则 _resolve_policy_params 会按 dict 顺序取到不确定的一条。
+        if upd["is_default"]:
+            for other_k, other_v in list(data.items()):
+                if other_k != k and isinstance(other_v, dict) and other_v.get("is_default"):
+                    other_v["is_default"] = False
         data[k] = {f: upd[f] for f in _FIELDS if f in upd}
         # 白名单过滤后 updated_at 不在 _FIELDS 内，需显式补回（它是审计字段，非策略字段）
         data[k]["updated_at"] = upd["updated_at"]

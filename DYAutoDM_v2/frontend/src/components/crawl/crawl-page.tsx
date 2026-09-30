@@ -36,6 +36,7 @@ export default function CrawlPage(props: PageProps) {
   );
   const [dmState, setDmState] = useState<Record<string, string>>({});
   const [batchResult, setBatchResult] = useState<Record<string, any[]>>({});
+  const [dmPreview, setDmPreview] = useState<Record<string, any[]>>({});
   const [cmtFilter, setCmtFilter] = useState("");
   const filteredCmts = cmtFilter.trim()
     ? cmts.filter((c) => (c?.content || c?.text || "").includes(cmtFilter.trim()))
@@ -46,6 +47,9 @@ export default function CrawlPage(props: PageProps) {
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [batchCollecting, setBatchCollecting] = useState(false);
   const pickedIds = results.filter((v) => picked[v.awemeId]).map((v) => v.awemeId);
+  // ★ 2026-09-30 C 方案：匿名预览（零凭证探针）—— 搜索后自动跑，只预览不私信。
+  const [anonPreview, setAnonPreview] = useState<Record<string, any[]>>({});
+  const [anonLoading, setAnonLoading] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -63,6 +67,27 @@ export default function CrawlPage(props: PageProps) {
     };
   }, []);
 
+  /** 拉匿名预览（零凭证探针）。搜索**尚未返回**即可先拉第一屏 —— 见 runSearch 内的首屏预热。 */
+  const fetchAnonPreview = async (ids: string[], limit = 0) => {
+    if (!ids.length) return;
+    const want = limit > 0 ? ids.slice(0, limit) : ids;
+    const todo = want.filter((id) => !anonPreview[id]);
+    if (!todo.length) return;
+    setAnonLoading(true);
+    try {
+      const r: any = await api.crawlCommentsAnonPreview({ aweme_ids: todo });
+      const byId: Record<string, any[]> = {};
+      (r?.per_work || []).forEach((w: any) => { byId[w.aweme_id] = w.items || []; });
+      setAnonPreview((s) => ({ ...s, ...byId }));
+      const hit = Object.values(byId).filter((a) => a.length).length;
+      push(`匿名预览完成：${hit}/${todo.length} 个视频有评论预览（零凭证）`, 6000);
+    } catch {
+      /* 预览失败静默：不影响搜索与渲染 */
+    } finally {
+      setAnonLoading(false);
+    }
+  };
+
   const runSearch = async () => {
     const kw = q.trim();
     if (!kw) return push("请输入搜索关键词");
@@ -71,43 +96,81 @@ export default function CrawlPage(props: PageProps) {
     setSearching(true);
     setDid(true);
     setResults([]);
-    try {
-      const r = await api.crawlSearch({
-        account,
-        query: kw,
-        kind: "video",
-        sort_type: order,
-        publish_time: pt,
-        filter_duration: dur,
-        num: 24,
-      });
-      setResults(r.items || []);
-      push(`搜索完成，命中 ${r.total} 条`);
-    } catch (e: any) {
-      push(`搜索失败：${e?.message || e}`);
-    } finally {
-      setSearching(false);
-    }
+    setAnonPreview({});
+    // ★ 2026-09-30：搜索**发起的同时**并行拉第一屏匿名预览（零凭证、与账号无关）。
+    //   两请求互不等待 ⇒ 预览结果不必等卡片渲染完（命中缓存后开抽屉即出）。
+    void (async () => {
+      setAnonLoading(true);
+      try {
+        const r: any = await api.crawlSearch({
+          account, query: kw, kind: "video",
+          // ★ 2026-09-30 接线：不传 num/sort_type/... ⇒ 由「采集策略」决定
+          //   （排序/时段/时长/条数 集中在设置页的采集策略里维护，一处可调）。
+          //   仅当用户在页面显式改过筛选器时才覆盖 —— 见 sendPolicyOverrides()。
+          ...policyOverrides(),
+        });
+        setResults(r.items || []);
+        push(`搜索完成，命中 ${r.total} 条`);
+        void fetchAnonPreview((r.items || []).map((v: any) => v.awemeId).filter(Boolean));
+      } catch (e: any) {
+        push(`搜索失败：${e?.message || e}`);
+      } finally {
+        setSearching(false);
+        setAnonLoading(false);
+      }
+    })();
   };
+
+  // 注：匿名预览不再用「结果变化」的 effect 触发（那会与 runSearch 内的
+  // 并行拉取重复请求）。现由 runSearch 直接调 fetchAnonPreview，避免双发。
 
   const openComments = async (v: any) => {
     setCmtFor(v);
-    if (!account) return push("请先登录账号");
-    // 批量采集已缓存过该作品 → 直接展示，不再重复请求（省一次风控暴露）
-    const cached = batchResult[v.awemeId];
-    if (cached && cached.length) {
-      setCmts(cached);
-      push(`展示批量采集结果，共 ${cached.length} 条`);
+    const awemeId = v.awemeId;
+    // 优先级：完整采集缓存 > 匿名预览 > 现采
+    const full = batchResult[awemeId];
+    if (full && full.length) {
+      setCmts(full);
+      setDmPreview({});
+      push(`展示完整采集结果，共 ${full.length} 条`);
       return;
     }
+    const prev = anonPreview[awemeId];
+    if (prev && prev.length) {
+      // 匿名预览：免凭证、免账号风险，但不可翻页、无数字 uid（不能私信）
+      setCmts(prev);
+      setDmPreview({ [awemeId]: prev });
+      push(`展示匿名预览 ${prev.length} 条（不消耗账号；要全量请点「完整采集」）`, 6000);
+      return;
+    }
+    if (!account) return push("请先登录账号（预览无数据时需账号才能完整采集）");
     setCmts([]);
     setCmtLoading(true);
     try {
-      const r = await api.crawlComments({ account, aweme_id: v.awemeId, limit: 100 });
+      const r = await api.crawlComments({ account, aweme_id: awemeId, limit: 100 });
       setCmts(r.items || []);
       push(`评论采集完成，共 ${r.total} 条`);
     } catch (e: any) {
       push(`评论采集失败：${e?.message || e}`);
+    } finally {
+      setCmtLoading(false);
+    }
+  };
+
+  /** 抽屉内「完整采集」：绕开预览缓存，用真实凭证全量翻页采当前视频。 */
+  const fetchFullForCurrent = async () => {
+    if (!cmtFor) return;
+    if (!account) return push("完整采集需要账号");
+    const awemeId = cmtFor.awemeId;
+    setCmtLoading(true);
+    try {
+      const r = await api.crawlComments({ account, aweme_id: awemeId, limit: 200 });
+      setCmts(r.items || []);
+      setDmPreview({});
+      setBatchResult((s) => ({ ...s, [awemeId]: r.items || [] }));
+      push(`完整采集完成，共 ${r.total} 条`, 6000);
+    } catch (e: any) {
+      push(`完整采集失败：${e?.message || e}`, 8000);
     } finally {
       setCmtLoading(false);
     }
@@ -208,7 +271,19 @@ export default function CrawlPage(props: PageProps) {
     return () => window.removeEventListener("keydown", h);
   }, []);
 
+  const q0 = "0";
   const empty = did && !searching && results.length === 0;
+  // ★ 2026-09-30 接线：**只把用户真正改过的筛选器**带给后端，其余留空 ⇒ 用采集策略。
+  //   判据 = 与初始值比对；未改动 ⇒ 不传 ⇒ 策略生效（改造前是恒传写死默认，策略永无效）。
+  const policyOverrides = () => {
+    const out: Record<string, unknown> = {};
+    if (order !== q0) out.sort_type = order;
+    if (pt !== q0) out.publish_time = pt;
+    if (dur !== "") out.filter_duration = dur;
+    return out;
+  };
+  // ★ 当前抽屉展示的是否为「匿名预览」数据（无数字 uid ⇒ 不可私信）
+  const isPreview = !!(cmtFor && dmPreview[cmtFor.awemeId]);
 
   return (
     <PageContainer>
@@ -306,6 +381,12 @@ export default function CrawlPage(props: PageProps) {
           <Section className="mb-3" actions={
             <div className="flex items-center gap-2">
               <Badge variant="outline">{results.length} 条结果</Badge>
+              {anonLoading && (
+                <span className="flex items-center gap-1 text-[0.7rem]
+                                 text-[var(--color-text-muted)]">
+                  <Loader2 className="h-3 w-3 animate-spin" />匿名预览中…
+                </span>
+              )}
               <Button
                 size="sm"
                 variant="outline"
@@ -361,6 +442,13 @@ export default function CrawlPage(props: PageProps) {
                                      text-[0.68rem] text-white/90 backdrop-blur">
                       💬 {fmtNumShort(v.cmts)}
                     </span>
+                    {anonPreview[v.awemeId] && (
+                      <span className="absolute left-2 bottom-2 rounded-full bg-black/65 px-2 py-0.5
+                                       text-[0.62rem] text-white/90 backdrop-blur"
+                            title="匿名预览（零凭证，仅≤20条，不可翻页/私信）">
+                        预览 {anonPreview[v.awemeId].length}
+                      </span>
+                    )}
                   </button>
 
                   <CardContent className="p-2.5">
@@ -429,7 +517,23 @@ export default function CrawlPage(props: PageProps) {
               <h2 className="min-w-0 flex-1 truncate text-[0.95rem] font-semibold
                              text-[var(--color-text)]">
                 评论区 · {cmtFor.title?.slice(0, 24) || cmtFor.awemeId}
+                {isPreview && (
+                  <span className="ml-2 rounded-full bg-[var(--color-surface-raised)]
+                                   px-2 py-0.5 align-middle text-[0.6rem]
+                                   font-normal text-[var(--color-text-muted)]">
+                    匿名预览 · 不全
+                  </span>
+                )}
               </h2>
+              {isPreview && (
+                <Button size="sm" variant="outline" disabled={cmtLoading || !account}
+                        onClick={fetchFullForCurrent}
+                        title="用真实账号全量采集该视频评论（可私信）">
+                  {cmtLoading
+                    ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />采集中…</>
+                    : <>完整采集</>}
+                </Button>
+              )}
               <Button variant="ghost" size="icon-sm" onClick={() => setCmtFor(null)}>
                 <X className="h-4 w-4" />
               </Button>
@@ -469,7 +573,8 @@ export default function CrawlPage(props: PageProps) {
                   <div className="flex-1" />
                   <Button
                     size="sm"
-                    disabled={batching || !dmTpl.trim()}
+                    disabled={batching || !dmTpl.trim() || isPreview}
+                    title={isPreview ? "匿名预览无数字 uid，先点「完整采集」后才能私信" : undefined}
                     onClick={sendBatch}
                   >
                     {batching
@@ -508,7 +613,7 @@ export default function CrawlPage(props: PageProps) {
                             ♥ {fmtNumShort(c.digg)} · {fmtTs(c.ts)}
                           </div>
                         </div>
-                        {c.uid && (
+                        {c.uid ? (
                           <Button
                             variant={st === "sent" ? "success-outline" : "ghost"}
                             size="sm"
@@ -517,6 +622,11 @@ export default function CrawlPage(props: PageProps) {
                           >
                             {st === "sending" ? "发送中…" : st === "sent" ? "已私信" : "私信"}
                           </Button>
+                        ) : (
+                          <span className="shrink-0 text-[0.62rem] text-[var(--color-text-muted)]"
+                                title="匿名预览无数字 uid，完整采集后可私信">
+                            无私信ID
+                          </span>
                         )}
                       </Row>
                     );

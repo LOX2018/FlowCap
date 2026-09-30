@@ -38,13 +38,13 @@ class CrawlSearchRequest(BaseModel):
     account: str
     query: str
     kind: str = "video"          # video | user
-    # 排序 0 综合 / 1 最多点赞 / 2 最新发布（仅 video）
-    sort_type: str = "0"
-    # 发布时间 0 不限 / 1 一天内 / 7 一周内 / 180 半年内（仅 video）
-    publish_time: str = "0"
-    # 视频时长 '' 不限 / 0-1 / 1-5 / 5-10000
-    filter_duration: str = ""
-    num: int = 20
+    # ★ 2026-09-30 接线：以下四项**留空 = 用采集策略**（`crawl_policies`，按账号标签
+    #   scope 解析）；显式传值则覆盖策略。空串是「未指定」而非「值 = 空」。
+    sort_type: str = ""          # 排序 0 综合 / 1 最多点赞 / 2 最新发布（仅 video）
+    publish_time: str = ""       # 发布时间 0 不限 / 1 一天内 / 7 一周内 / 180 半年内
+    filter_duration: str = ""    # 视频时长 '' 不限 / 0-1 / 1-5 / 5-10000
+    num: int = 0                 # 搜索条数（0 = 用策略 num；上限 50 由策略侧 clamp）
+    policy_id: str = ""          # 指定采集策略 id（空 = 用该账号绑定/全局默认）
 
 
 class CrawlCommentsRequest(BaseModel):
@@ -185,12 +185,28 @@ _CRAWL_FALLBACK = {"comment_page_count": 20, "batch_interval": 1.5,
                    "batch_max_works": 20}
 
 
-def _crawl_cfg(key: str):
-    """读 `crawl` 分区配置；读不到（配置中心不可用/旧环境）回退默认值。
+def _crawl_cfg(key: str, account: str = ""):
+    """读 `crawl` 分区配置；**优先按账号标签 scope**，读不到回退默认值。
 
-    与 `errcode_data.py` 中多处「读配置失败按默认处理」的项目约定一致：
-    配置中心异常**不得**让采集功能整体不可用。
+    ★ 2026-09-30 接线：此前只读全局（`scope=None`）⇒ 「采集策略」与标签的
+    采集板块**都没有消费者**（`crawl_policy` 模块头自记的待办）。现按
+    `config_tag.scope_of(account, "crawl")` 取该账号在采集板块应使用的标签 scope，
+    与 `dm_dispatch` 的既有范式一致（标签是**指引**，参数仍由 app_config 按 scope 隔离存储）。
+
+    与 `errcode_data.py` 多处「读配置失败按默认处理」的项目约定一致：
+    配置中心/标签异常**不得**让采集功能整体不可用。
     """
+    if account:
+        try:
+            from services import config_tag
+            scope = config_tag.scope_of(account, "crawl")
+            if scope:
+                from services import app_config as _ac
+                v = _ac.get("crawl", key, None, scope=scope)
+                if v is not None:
+                    return v
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[crawl] 按标签读 crawl.{key} 失败，回落全局: {e}")
     try:
         from services import app_config
         v = app_config.get("crawl", key, None)
@@ -201,14 +217,18 @@ def _crawl_cfg(key: str):
     return _CRAWL_FALLBACK[key]
 
 
-def _page_count(body_count=None) -> int:
-    """确定本次采集的单页条数（请求体 > 配置中心 > 缺省 20）。"""
+def _page_count(body_count=None, account: str = "") -> int:
+    """确定本次**评论每页条数**（请求体 > 该账号标签/全局配置 > 缺省 20）。
+
+    ⚠️ 与「采集策略」的 `num`（**搜索条数**上限，`crawl_policy`）是**两个量**，
+    不可混用：本项管评论分页大小，`num` 管一次搜索取回多少个作品。
+    """
     if body_count:
         try:
             return max(5, min(int(body_count), 50))
         except (TypeError, ValueError):
             pass
-    return max(5, min(int(_crawl_cfg("comment_page_count")), 50))
+    return max(5, min(int(_crawl_cfg("comment_page_count", account)), 50))
 
 
 def _fetch_work_comments(auth, aweme_id: str, limit: int, count: int) -> list[dict]:
@@ -261,18 +281,69 @@ async def _save_history(account: str, kind: str, keyword: str, target: str,
 # ---------------------------------------------------------------------------
 # 路由
 # ---------------------------------------------------------------------------
+def _resolve_policy_params(account: str, policy_id: str = "") -> dict:
+    """解析该账号应使用的**采集策略参数包**（★ 2026-09-30 接线）。
+
+    优先级（与 `config_tag.scope_of` 同构）：
+      ① 显式 `policy_id`（若存在）
+      ② 该账号在**采集板块**绑定的标签 scope 下的策略（`scope_of(account,"crawl")`
+         指向的策略记录本身存于 kv `crawl_policies`，按 id 取）
+      ③ **全局默认策略**：`crawl_policies` 中 `is_default=True` 的一条
+      ④ 都没有 ⇒ `{}`（调用方回落端点默认值 —— 零回归）
+
+    诚实边界：策略层目前是**全局命名空间**（kv `crawl_policies` 不按标签分区）；
+    本函数负责把「账号 → 标签 scope → 策略」这条指引链打通，使标签的采集板块
+    真正有消费者。策略记录**只存参数、不发请求**（沿用 `crawl_policy` 原有约束）。
+    """
+    try:
+        from api import crawl_policy as _cp
+        data = _cp._load_all()
+    except Exception as e:  # noqa: BLE001 —— 策略不可用不得让采集失败
+        logger.debug(f"[crawl] 采集策略不可用，回落端点默认: {e}")
+        return {}
+    if not isinstance(data, dict) or not data:
+        return {}
+
+    pid = str(policy_id or "").strip()
+    if not pid and account:
+        try:
+            from services import config_tag
+            scope = config_tag.scope_of(str(account).strip(), "crawl")
+            if scope and scope in data:
+                pid = scope
+        except Exception:  # noqa: BLE001
+            pid = ""
+    if not pid:
+        for k, v in data.items():
+            if isinstance(v, dict) and v.get("is_default"):
+                pid = k
+                break
+    item = data.get(pid)
+    return dict(item) if isinstance(item, dict) else {}
+
+
 @router.post("/search")
 async def crawl_search(body: CrawlSearchRequest):
     """关键词搜索（video=综合搜索 / user=用户搜索）。
 
     复用基座签名链路（a_bogus 纯算签名），凭证与手动浏览同源。
+
+    ★ 2026-09-30 接线：排序/时段/时长/条数**留空即取采集策略**（按账号标签 scope），
+    显式传值则覆盖 —— 策略成为采集参数的**唯一可复用入口**。
     """
     q = (body.query or "").strip()
     if not q:
         raise HTTPException(400, "请输入搜索关键词")
     if body.kind not in ("video", "user"):
         raise HTTPException(400, f"不支持的采集类型: {body.kind}")
-    num = max(1, min(int(body.num or 20), 60))
+
+    # 策略解析（失败一律回落端点默认，绝不让采集整体不可用）
+    pol = _resolve_policy_params(body.account, body.policy_id)
+    sort_type = (body.sort_type or pol.get("sort_type") or "0")
+    publish_time = (body.publish_time or pol.get("publish_time") or "0")
+    filter_duration = body.filter_duration or pol.get("filter_duration") or ""
+    num = int(body.num or pol.get("num") or 20)
+    num = max(1, min(num, 60))
 
     auth = _load_auth(body.account)
 
@@ -282,7 +353,7 @@ async def crawl_search(body: CrawlSearchRequest):
         if body.kind == "video":
             raw = await asyncio.to_thread(
                 DouyinAPI.search_some_general_work, auth, q, num,
-                body.sort_type, body.publish_time, body.filter_duration,
+                sort_type, publish_time, filter_duration,
             )
             items = [_map_video(w) for w in (raw or []) if w.get("aweme_info")]
         else:
@@ -317,7 +388,7 @@ async def crawl_comments(body: CrawlCommentsRequest):
     if not aweme_id:
         raise HTTPException(400, "缺少作品 ID")
     limit = max(1, min(int(body.limit or 100), 300))
-    count = _page_count(body.count)
+    count = _page_count(body.count, body.account)
 
     auth = _load_auth(body.account)
 
@@ -357,13 +428,13 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
             ids.append(s)
     if not ids:
         raise HTTPException(400, "缺少作品 ID 列表")
-    max_works = max(1, int(_crawl_cfg("batch_max_works")))
+    max_works = max(1, int(_crawl_cfg("batch_max_works", body.account)))
     if len(ids) > max_works:
         raise HTTPException(
             400, f"单次批量最多 {max_works} 个作品（当前 {len(ids)}），请分批")
-    interval = max(0.0, float(_crawl_cfg("batch_interval")))
+    interval = max(0.0, float(_crawl_cfg("batch_interval", body.account)))
     limit = max(1, min(int(body.limit or 100), 300))
-    count = _page_count(body.count)
+    count = _page_count(body.count, body.account)
 
     auth = _load_auth(body.account)
 
@@ -393,6 +464,88 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
                 f"作品 {ok_works}/{len(ids)} 成功，共 {total} 条评论")
     return {"ok": True, "works": len(ids), "ok_works": ok_works,
             "total_comments": total, "per_work": per_work}
+
+
+class CrawlAnonPreviewRequest(BaseModel):
+    """匿名评论预览（★ 2026-09-30 C 方案探针）。
+
+    **不需要 account**：走零凭证移动端点，可在未登录会话下预览。
+    结果只用于「哪些视频评论值得采」，**不能**直接私信（无数字 uid）。
+    """
+    aweme_ids: list[str] = []
+    count: int = 0               # 单页条数（0=用配置中心值；该端点实际被忽略）
+    limit: int = 0               # 只预览前 N 个作品（0=全部，上限=anon_preview_max_works）
+
+
+@router.post("/comments/anon-preview")
+async def crawl_comments_anon_preview(body: CrawlAnonPreviewRequest):
+    """匿名预览多作品评论（★ 2026-09-30 C 方案「探针」）。
+
+    ## 定位（诚实边界，勿当采集主力）
+    走 `iesdouyin.com` 移动端点：**零凭证**、**零账号风控面**，但每个作品
+    只返回**同一批 ≤20 条热门预览**、**不可翻页**、**无数字 uid**（不可私信）。
+    用途：搜索后零风险地先看「哪些视频有评论值得全量采」。
+
+    ## 为什么默认并发（★ 2026-09-30 修订）
+    本端点是**零凭证**（不携带任何账号 cookie）⇒ 请求**不落在账号风控面**上，
+    只是匿名 IP 的普通请求。故默认**有界并发**（`crawl.anon_preview_concurrency`）
+    以求「搜索一返回就尽快拿到预览」，而非串行等待。并发上限可配；设为 1 即回退串行。
+
+    ## 失败隔离
+    单个作品失败不影响整批（记 `status="failed"`，继续下一个）。
+    """
+    ids: list[str] = []
+    seen: set[str] = set()
+    for x in (body.aweme_ids or []):
+        s = str(x or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            ids.append(s)
+    if not ids:
+        raise HTTPException(400, "缺少作品 ID 列表")
+    max_works = max(1, int(_crawl_cfg("anon_preview_max_works")))
+    ids = ids[:max_works]
+    if body.limit and body.limit > 0:
+        ids = ids[:int(body.limit)]
+    interval = max(0.0, float(_crawl_cfg("anon_preview_interval")))
+    conc = max(1, min(int(_crawl_cfg("anon_preview_concurrency")), 12))
+    sem = asyncio.Semaphore(conc)
+    import features
+
+    async def _one(aid: str) -> dict:
+        async with sem:
+            try:
+                r = await asyncio.to_thread(features.work_comments_anon, aid)
+                # ★ 失败必须显式上抛 ⇒ 记 failed；**绝不**把「取不到」记成
+                #   「ok 且 0 条」（本项目禁止的「把失败静默成空」，A4 门禁守护）。
+                if not r.get("ok"):
+                    raise RuntimeError(f"匿名预览失败: {r.get('error')}")
+                res = r.get("data")
+                raw = (res.get("comments") if isinstance(res, dict) else None) or []
+                items = [_map_comment(c) for c in raw]
+                return {"aweme_id": aid, "status": "ok", "count": len(items),
+                        "items": items}
+            except Exception as e:  # noqa: BLE001 —— 单作品失败不拖垮整批
+                logger.warning(f"[CRAWL-007] [crawl] 匿名预览失败 aweme={aid}: {e}")
+                return {"aweme_id": aid, "status": "failed", "count": 0,
+                        "items": [], "error": str(e)}
+
+    # 并发抓取；间隔仅当 conc==1（串行）时生效 —— 并发下由信号量限流，无需再停
+    per_work: list[dict] = []
+    if conc == 1 and interval > 0:
+        for i, aid in enumerate(ids):
+            if i:
+                await asyncio.sleep(interval)
+            per_work.append(await _one(aid))
+    else:
+        per_work = list(await asyncio.gather(*[_one(a) for a in ids]))
+
+    total = sum(w["count"] for w in per_work)
+    ok_works = sum(1 for w in per_work if w["status"] == "ok")
+    logger.info(f"[crawl] 匿名预览完成 作品 {ok_works}/{len(ids)} 成功，"
+                f"共 {total} 条（**仅供预览，不可翻页/无私信 uid**）")
+    return {"ok": True, "anonymous": True, "works": len(ids),
+            "ok_works": ok_works, "total_comments": total, "per_work": per_work}
 
 
 @router.post("/dm")
@@ -450,7 +603,7 @@ async def crawl_batch(body: CrawlBatchRequest):
     limit = max(1, min(int(body.limit or 100), 300))
     max_send = max(0, int(body.max_send or 0))
     interval = max(0.0, float(body.interval or 0.0))
-    count = _page_count(body.count)
+    count = _page_count(body.count, body.account)
 
     try:
         raw = await asyncio.to_thread(_fetch_work_comments, auth, aweme_id, limit, count)
