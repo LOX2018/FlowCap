@@ -21,31 +21,27 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "启动时拉起浏览器容器",
                 "type": "bool", "default": False, "env": "DY_BCC_ON_START",
                 "apply": "restart_backend",
-                "hint": "开启会增加启动耗时与风控暴露；默认关闭，需要时再开",
             },
             "bcc_headless_mode": {
                 "label": "浏览器容器无头模式",
                 "type": "select", "default": "native", "env": "DY_BCC_HEADLESS_MODE",
-                "options": ["native"],
+                "options": [{"value": "native", "label": "无头（仅此模式）"}],
                 "apply": "restart_backend",
-                "hint": "仅 native（无头模式）",
             },
             "cred_refresh_mode": {
                 "label": "凭证更新方式",
                 "type": "select", "default": "observe", "env": "DY_CRED_REFRESH_MODE",
                 "options": [
-                    {"value": "observe", "label": "观测态静默更新（推荐）"},
-                    {"value": "popup", "label": "弹窗激活更新（需人工点一下）"},
-                    {"value": "both", "label": "两者兼容（观测优先，失效再弹窗）"},
+                    {"value": "observe", "label": "静默更新（推荐）"},
+                    {"value": "popup", "label": "弹窗提醒更新"},
+                    {"value": "both", "label": "静默为主，失败再弹窗"},
                 ],
                 "apply": "restart_daemon",
-                "hint": "observe=后台静默刷新（推荐）；popup=弹窗提醒后更新；both=自动失败再弹窗",
             },
             "auto_capture_on_start": {
                 "label": "启动时自动捕获会话",
                 "type": "bool", "default": False, "env": "DY_AUTO_CAPTURE_ON_START",
                 "apply": "restart_backend",
-                "hint": "默认关闭（每次开软件抓包等于白白暴露）；私信页应纯读库",
             },
             # P3 策略中心：timeout 默认值（热生效，消费端按需读 app_config.get("general", "timeout_xxx")）
             # 🔴 2026-09-23 修补（P2-9，实测复现）：三个 timeout_* 原声明 `apply:"hot"`
@@ -61,21 +57,18 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "float", "default": 15.0, "min": 0.5, "max": 120.0,
                 "env": "DY_TIMEOUT_BCC_HTTP",
                 "apply": "hot",
-                "hint": "容器 HTTP 接口调用的超时上限（秒）",
             },
             "timeout_fast_probe": {
                 "label": "端口快速探活超时（秒）",
                 "type": "float", "default": 0.3, "min": 0.05, "max": 10.0,
                 "env": "DY_TIMEOUT_FAST_PROBE",
                 "apply": "hot",
-                "hint": "端口快速探测的超时上限（秒）",
             },
             "timeout_http_req": {
                 "label": "通用 HTTP 请求超时（秒）",
                 "type": "float", "default": 30.0, "min": 1.0, "max": 300.0,
                 "env": "DY_TIMEOUT_HTTP_REQ",
                 "apply": "hot",
-                "hint": "对外 HTTP 请求的通用超时上限（秒）",
             },
         },
     },
@@ -88,48 +81,47 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "启用昵称兜底查询（默认关闭）",
                 "type": "bool", "default": False, "env": None,
                 "apply": "hot",
-                "hint": "默认关闭。仅对「库里没有昵称」的会话做低频兜底，受下方间隔/单次/每日上限约束。",
+                "hint": "库中无昵称时低频补查（默认关）"
             },
             "nickname_fallback_min_interval_sec": {
                 "label": "兜底最小间隔（秒）",
                 "type": "int", "default": 600, "env": None,
                 "apply": "hot",
-                "hint": "两次兜底调用之间的最小间隔，下限 60 秒；默认 600 秒（10 分钟）",
             },
             "nickname_fallback_max_per_run": {
                 "label": "单次最多查询用户数",
                 "type": "int", "default": 10, "env": None,
-                "apply": "hot", "hint": "单次调用最多查询的用户数（上限 20，与接口批次一致）",
+                "apply": "hot",
             },
             "nickname_fallback_daily_cap": {
                 "label": "每日最多查询用户数",
                 "type": "int", "default": 50, "env": None,
-                "apply": "hot", "hint": "当日累计查询上限，达到后当日不再查询",
+                "apply": "hot",
             },
             # ── 对话回复库「向量提纯」参数（2026-09-28）──
             "learn_min_cluster": {
                 "label": "学习·通用性门槛（最少问法数）",
                 "type": "int", "default": 2, "min": 1, "max": 20, "env": None,
                 "apply": "hot",
-                "hint": "同一类问题至少被 N 条不同问法命中才沉淀为通用条目；1 = 不设门槛（不推荐）",
+                "hint": "同一问题至少几种问法命中才算通用"
             },
             "learn_min_sources": {
                 "label": "学习·通用性门槛（最少不同客户数）",
                 "type": "int", "default": 2, "min": 1, "max": 50, "env": None,
                 "apply": "hot",
-                "hint": "同一类问题须来自 ≥N 个不同客户才算通用；同一客户重复问不计入",
+                "hint": "同一问题至少几个客户问过才算通用"
             },
             "learn_sim_threshold": {
                 "label": "学习·聚类相似度阈值",
                 "type": "float", "default": 0.80, "min": 0.5, "max": 0.99, "env": None,
                 "apply": "hot",
-                "hint": "问法向量余弦 ≥ 该值即视为同一问题；越高越严格（簇越碎）",
+                "hint": "问法相似度阈值，越高越严格"
             },
             "learn_max_case_chars": {
                 "label": "学习·个案问法长度上限",
                 "type": "int", "default": 30, "min": 10, "max": 200, "env": None,
                 "apply": "hot",
-                "hint": "问法超过该长度视为个案照搬，不参与通用提纯",
+                "hint": "超过此长度视为个案，不参与提纯"
             },
         },
     },
@@ -141,49 +133,49 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "live_url": {
                 "label": "直播间链接",
                 "type": "str", "default": "", "env": None,
-                "apply": "hot", "hint": "https://live.douyin.com/<房间号>",
+                "apply": "hot",
             },
             "max_target": {
                 "label": "每场私信上限",
                 "type": "int", "default": 3, "min": 1, "max": 200, "env": None,
-                "apply": "hot", "hint": "达到后停止发送",
+                "apply": "hot",
             },
             "interval": {
                 "label": "私信间隔（秒）",
                 "type": "float", "default": 60.0, "min": 1, "max": 3600, "env": None,
-                "apply": "hot", "hint": "两条私信之间的最小间隔",
+                "apply": "hot",
             },
             "delay_min": {
                 "label": "延迟抖动下限（秒）",
                 "type": "int", "default": 40, "min": 0, "max": 600, "env": None,
-                "apply": "hot", "hint": "模拟真人「看到弹幕→过一会再私信」",
+                "apply": "hot", "hint": "发送前随机延迟，模拟真人"
             },
             "delay_max": {
                 "label": "延迟抖动上限（秒）",
                 "type": "int", "default": 65, "min": 0, "max": 900, "env": None,
-                "apply": "hot", "hint": "需 >= 下限",
+                "apply": "hot",
             },
             "live_poll_interval": {
                 "label": "未开播轮询间隔（秒）",
                 "type": "int", "default": 30, "min": 5, "max": 600, "env": None,
-                "apply": "hot", "hint": "开播前每 N 秒复查一次房间状态",
+                "apply": "hot",
             },
             "ws_heartbeat_interval": {
                 "label": "WS 心跳间隔（秒）",
                 "type": "int", "default": 300, "min": 30, "max": 3600, "env": None,
-                "apply": "hot", "hint": "监听中定期探活，登录态失效自动触发重扫",
+                "apply": "hot", "hint": "定期探活，登录失效自动重连"
             },
             "enable_danmaku": {
                 "label": "接收弹幕", "type": "bool", "default": True, "env": None,
-                "apply": "hot", "hint": "启动监听时自动接收弹幕评论",
+                "apply": "hot",
             },
             "enable_console": {
                 "label": "控制台输出", "type": "bool", "default": True, "env": None,
-                "apply": "hot", "hint": "运行日志输出到控制台",
+                "apply": "hot",
             },
             "enable_send": {
                 "label": "启用发送", "type": "bool", "default": True, "env": None,
-                "apply": "hot", "hint": "关闭则只采集不发送（调试用）",
+                "apply": "hot", "hint": "关 = 只采集不发送"
             },
             # ── 直播间主动互动（2026-09-30）──────────────────────────────
             # 🔴 这两个开关管的是**写接口**（/webcast/room/chat/ 与 /webcast/room/like/），
@@ -197,17 +189,16 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "danmaku_enabled": {
                 "label": "发送弹幕（主动发言·写接口）", "type": "bool", "default": False,
                 "env": None, "apply": "hot",
-                "hint": "默认关闭。开启后直播页才能真实发送弹幕；关闭时直接拒发",
+                "hint": "开启后才能在直播页发言"
             },
             "like_enabled": {
                 "label": "点赞（主动互动·写接口）", "type": "bool", "default": False,
                 "env": None, "apply": "hot",
-                "hint": "默认关闭。开启后直播页才能真实点赞；关闭时直接拒发",
+                "hint": "开启后才能在直播页点赞"
             },
             "like_max": {
                 "label": "单次点赞上限", "type": "int", "default": 1000,
                 "min": 1, "max": 1000, "env": None, "apply": "hot",
-                "hint": "批量点赞单次请求的上限（越界显式拒绝，不静默夹取）",
             },
         },
     },
@@ -217,64 +208,64 @@ SECTIONS: dict[str, dict[str, Any]] = {
     # 🔴 消费点在 ADR-002 §5.5（(B) 跨账号沉淀池 + 轮转）落地时接入 —— 当前**可配置**，
     #    但运行时**暂不消费**（label 已标「待接线」，避免「改了以为生效」的假成功）。
     "live_orchestration": {
-        "label": "直播编排策略（多账号）· 待接线",
+        "label": "直播编排策略（多账号，未启用）",
         "fields": {
             "connection_mode": {
                 "label": "连接模式",
                 "type": "select", "default": "credential", "env": None,
                 "options": [
-                    {"value": "credential", "label": "凭证连接（1 账号 1 任务，可解密）"},
-                    {"value": "anonymous", "label": "匿名连接（多房间，身份脱敏）"},
+                    {"value": "credential", "label": "凭证连接"},
+                    {"value": "anonymous", "label": "匿名连接"},
                 ],
                 "apply": "hot",
-                "hint": "凭证=登录账号态，单账号单任务、能拿真实昵称/uid；匿名=可同时盯多个房间但身份脱敏（拿不到真昵称）",
+                "hint": "凭证=真实身份；匿名=脱敏多房间"
             },
             "anonymous_max_rooms": {
                 "label": "匿名模式并发房间上限",
                 "type": "int", "default": 4, "min": 1, "max": 10, "env": None,
                 "apply": "hot",
-                "hint": "仅匿名模式生效；凭证模式硬约束为 1 账号 1 任务（不可调）",
+                "hint": "仅匿名模式生效"
             },
             "rotation_strategy": {
                 "label": "发送轮转策略（同房间多账号）",
                 "type": "select", "default": "per_target", "env": None,
                 "options": [
-                    {"value": "per_target", "label": "按目标轮转（同一用户交替由不同账号接待）"},
-                    {"value": "per_time_window", "label": "按时间窗交替（账号按时间段轮换）"},
-                    {"value": "per_room", "label": "按房间分配（每房间固定主责账号）"},
+                    {"value": "per_target", "label": "按目标轮转"},
+                    {"value": "per_time_window", "label": "按时间段轮换"},
+                    {"value": "per_room", "label": "每房间固定账号"},
                 ],
                 "apply": "hot",
-                "hint": "仅「多账号同房间」时生效，决定由哪个账号发；同一用户绝不被双账号发送",
+                "hint": "多账号同房间时由哪个账号发送"
             },
             "desensitized_strategy": {
                 "label": "脱敏直播间处理策略",
                 "type": "select", "default": "skip", "env": None,
                 "options": [
-                    {"value": "skip", "label": "跳过（不监听）— 默认"},
-                    {"value": "observe_only", "label": "仅统计（不采昵称、不发送）"},
+                    {"value": "skip", "label": "跳过（默认）"},
+                    {"value": "observe_only", "label": "仅统计，不发送"},
                     {"value": "prompt", "label": "提示后由用户决定"},
                     {"value": "reduce_anonymous", "label": "降级为匿名模式"},
                 ],
                 "apply": "hot",
-                "hint": "脱敏直播间=无解密权（弹幕 uid 全为 111111）。自营房间有解密权，他人房间默认脱敏（正常态，非故障）",
+                "hint": "无解密权时如何处理该直播间"
             },
             "sink_global_scope": {
                 "label": "沉淀池全局作用域（跨账号去重）",
                 "type": "bool", "default": True, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "开=同一用户被本机任一账号发过后其余账号不再发（多账号防重复私信）；关=各账号各自去重，可能被双发",
+                "hint": "跨账号去重，防同一人重复私信"
             },
             "sink_cooldown_days": {
                 "label": "沉淀池冷却（天）",
                 "type": "float", "default": 90.0, "min": 0.0, "max": 3650.0, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "默认 90 天内的用户不再重复发送；0 = 不冷却",
+                "hint": "冷却期内不再重复发送，0=不冷却"
             },
             "sink_permanent": {
                 "label": "「永久冷却」档",
                 "type": "bool", "default": False, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "默认关闭。开启后忽略上方天数：该用户一经发送永不再发（不可逆）",
+                "hint": "开启后永不重复发送（不可逆）"
             },
         },
     },
@@ -288,92 +279,92 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "float", "default": 8.0, "min": 8, "max": 300,
                 "env": "DY_SEND_MIN_INTERVAL",
                 "apply": "restart_daemon", "risk": True,
-                "hint": "per-account 令牌闸门；低于 8s 显著增加风控风险",
+                "hint": "两条发送之间的最小间隔"
             },
             "max_wait": {
                 "label": "闸门排队等待上限（秒）",
                 "type": "float", "default": 30.0, "min": 5, "max": 300,
                 "env": "DY_SEND_MAX_WAIT",
                 "apply": "restart_daemon", "risk": True,
-                "hint": "超时快速失败 rate_limited，不静默堆积",
+                "hint": "超时快速失败，不排队堆积"
             },
             "per_minute_limit": {
                 "label": "全账号 每分钟发送上限",
                 "type": "int", "default": 3, "min": 0, "max": 60,
                 "env": "DY_SEND_PER_MINUTE",
                 "apply": "hot", "risk": True,
-                "hint": "全账号每分钟发送上限（滑窗，所有发送路径都计入）。0 = 不启用",
+                "hint": "全账号每分钟发送上限，0=不限"
             },
             "per_minute_manual_exempt": {
                 "label": "手动发送豁免分钟窗",
                 "type": "bool", "default": True, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "开：手动发送不受每分钟上限拦下（但仍计入）；关：手动发送也受限",
+                "hint": "开 = 手动发送不受上限拦下"
             },
             "stranger_per_minute": {
                 "label": "陌生人首发 每分钟上限",
                 "type": "int", "default": 2, "min": 0, "max": 60,
                 "env": "DY_STRANGER_PER_MINUTE",
-                "apply": "hot", "risk": True, "hint": "陌生人是风控最高频面",
+                "apply": "hot", "risk": True, "hint": "向陌生人发送的每分钟上限"
             },
             "stranger_per_day": {
                 "label": "陌生人首发 每日上限",
                 "type": "int", "default": 30, "min": 0, "max": 2000,
                 "env": "DY_STRANGER_PER_DAY",
-                "apply": "hot", "risk": True, "hint": "0 = 不限制",
+                "apply": "hot", "risk": True, "hint": "向陌生人发送的每日上限，0=不限"
             },
             "cooldown_freq": {
                 "label": "频控命中冷静期（秒）",
                 "type": "float", "default": 600.0, "min": 0, "max": 86400,
                 "env": "DY_DM_COOLDOWN_FREQ",
-                "apply": "hot", "risk": True, "hint": "被频控后暂停发送时长",
+                "apply": "hot", "risk": True, "hint": "命中频控后暂停发送的时长"
             },
             "cooldown_max": {
                 "label": "冷静期上限（秒）",
                 "type": "float", "default": 3600.0, "min": 0, "max": 604800,
                 "env": "DY_DM_COOLDOWN_MAX",
-                "apply": "hot", "risk": True, "hint": "连续被频控时冷静期封顶",
+                "apply": "hot", "risk": True, "hint": "连续被频控时冷静期封顶"
             },
             "weight_recover_halflife": {
                 "label": "权重恢复半衰期（秒）",
                 "type": "float", "default": 21600.0, "min": 60, "max": 604800,
                 "env": "DY_WEIGHT_RECOVER_HALFLIFE",
-                "apply": "hot", "risk": True, "hint": "默认 6 小时；保证被降权后能恢复",
+                "apply": "hot", "risk": True, "hint": "被降权后的恢复速度"
             },
             "weight_forgive_after": {
                 "label": "权重原谅期（秒）",
                 "type": "float", "default": 86400.0, "min": 60, "max": 2592000,
                 "env": "DY_WEIGHT_FORGIVE_AFTER",
-                "apply": "hot", "risk": True, "hint": "默认 24 小时",
+                "apply": "hot", "risk": True, "hint": "多久后视为已原谅"
             },
             "dedup_window": {
                 "label": "去重窗口（秒）",
                 "type": "float", "default": 5.0, "min": 0, "max": 3600,
                 "env": "DY_DM_DEDUP_WINDOW", "apply": "hot", "risk": True,
-                "hint": "同会话同文本在此窗口内视为重复",
+                "hint": "同会话同文本的去重窗口"
             },
             "queue_max": {
                 "label": "队列上限",
                 "type": "int", "default": 200, "min": 1, "max": 10000,
                 "env": "DY_DM_QUEUE_MAX", "apply": "hot", "risk": True,
-                "hint": "超出拒绝入队",
+                "hint": "超过则拒绝入队"
             },
             "pool_strict": {
                 "label": "会话整理严格模式",
                 "type": "bool", "default": True, "env": "DY_DM_POOL_STRICT",
                 "apply": "hot", "risk": True,
-                "hint": "无法从 conv_id 解析真实对端时直接拒绝（防发给自）",
+                "hint": "无法解析真实对端时直接拒绝"
             },
             "uid_sink_cooldown": {
                 "label": "UID 沉淀冷却（秒）",
                 "type": "float", "default": 604800.0, "min": 0, "max": 31536000,
                 "env": "DY_UID_SINK_COOLDOWN", "apply": "hot", "risk": True,
-                "hint": "默认 7 天：同 UID 冷却期内不重复发",
+                "hint": "同 UID 冷却期内不重复发送"
             },
             "uid_sink_strict": {
                 "label": "UID 沉淀严格模式",
                 "type": "bool", "default": True, "env": "DY_UID_SINK_STRICT",
-                "apply": "hot", "risk": True, "hint": "关则仅提示不拦截",
+                "apply": "hot", "risk": True, "hint": "关 = 仅提示不拦截"
             },
             # ── ADR-007 / C-06（2026-09-24）沉淀池增强 ──────────────
             # ⚠️ 默认值 = **关闭**（0），非 ADR 建议的 300/10。
@@ -384,31 +375,31 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "沉淀窗口时长（秒）",
                 "type": "float", "default": 0.0, "min": 0, "max": 86400,
                 "env": "DY_UID_SINK_WINDOW", "apply": "hot",
-                "hint": "先收 N 秒再统一发送（0=即见即发，退回原行为）",
+                "hint": "先收 N 秒再统一发送，0=即见即发"
             },
             "high_value_window_seconds": {
                 "label": "高价值加速窗口（秒）",
                 "type": "float", "default": 60.0, "min": 0, "max": 86400,
                 "env": "DY_HIGH_VALUE_WINDOW", "apply": "hot",
-                "hint": "高价值用户的缩短窗口（热度加速）",
+                "hint": "高价值用户的加速发送窗口"
             },
             "high_value_score_threshold": {
                 "label": "高价值关键词阈值",
                 "type": "int", "default": 0, "min": 0, "max": 1000,
                 "env": "DY_HIGH_VALUE_THRESHOLD", "apply": "hot",
-                "hint": "关键词权重和 ≥ 该值判为高价值（0=关闭筛查，全部放行）",
+                "hint": "关键词权重和≥此值算高价值"
             },
             "high_value_llm_enabled": {
                 "label": "高价值 LLM 精判",
                 "type": "bool", "default": False,
                 "env": "DY_HIGH_VALUE_LLM", "apply": "hot",
-                "hint": "开则对关键词候选做 LLM 精判；AI 不可用时自动退化为纯关键词（不阻塞）",
+                "hint": "对候选做 AI 精判，不可用时降级"
             },
             "aggregate_max_chars": {
                 "label": "聚合文本上限（字符）",
                 "type": "int", "default": 2000, "min": 100, "max": 20000,
                 "env": "DY_AGGREGATE_MAX_CHARS", "apply": "hot",
-                "hint": "aggregate_text 累积截断上界，防单行无限膨胀",
+                "hint": "聚合文本的截断上限"
             },
         },
     },
@@ -423,25 +414,25 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "通知解析 API 地址",
                 "type": "str", "default": "http://127.0.0.1:31415/v1",
                 "env": None, "apply": "hot",
-                "hint": "IM 通知指令解析用的模型地址；留空则回落到 AI 全局配置",
+                "hint": "留空则用 AI 全局配置"
             },
             "llm_model": {
                 "label": "通知解析模型",
                 "type": "str", "default": "glm-5.2",
                 "env": None, "apply": "hot",
-                "hint": "用于把自然语言指令转成结构化操作",
+                "hint": "把自然语言指令转成结构化操作"
             },
             "llm_api_key": {
                 "label": "通知解析 API Key",
                 "type": "str", "default": "",
                 "env": None, "apply": "hot",
-                "hint": "留空则回落到 AI 全局配置的 api_key",
+                "hint": "留空则用 AI 全局配置"
             },
             "llm_enabled": {
                 "label": "启用模型指令解析",
                 "type": "bool", "default": False,
                 "env": None, "apply": "hot",
-                "hint": "关闭则只用规则解析（零模型调用）",
+                "hint": "关 = 只用规则解析，零模型调用"
             },
         },
     },
@@ -454,63 +445,62 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "历史补全会话数（每轮）",
                 "type": "int", "default": 45, "min": 0, "max": 500,
                 "env": "DY_HISTORY_MAX", "apply": "hot",
-                "hint": "每轮补全的会话数上限；单次更新可跑多轮",
             },
             "history_max_rounds": {
                 "label": "单次最多轮数（分批）",
                 "type": "int", "default": 3, "min": 1, "max": 10,
                 "env": "DY_HISTORY_MAX_ROUNDS", "apply": "hot",
-                "hint": "单次「更新会话」最多跑几轮；总上限 = 每轮数 × 本值（默认 45×3=135）",
+                "hint": "更新会话最多跑几轮"
             },
             "history_batch_gap": {
                 "label": "轮间隔（秒）",
                 "type": "float", "default": 60.0, "min": 0, "max": 3600,
                 "env": "DY_HISTORY_BATCH_GAP", "apply": "hot",
-                "hint": "分批轮与轮之间的错峰等待，比批间隔更长以规避风控",
+                "hint": "轮与轮之间的等待，防风控"
             },
             "history_sleep": {
                 "label": "补全间隔（秒）",
                 "type": "float", "default": 1.5, "min": 0, "max": 30,
-                "env": "DY_HISTORY_SLEEP", "apply": "hot", "hint": "每次请求间隔",
+                "env": "DY_HISTORY_SLEEP", "apply": "hot", "hint": "每次请求之间的间隔"
             },
             "history_workers": {
                 "label": "补全并发数",
                 "type": "int", "default": 4, "min": 1, "max": 8,
-                "env": "DY_HISTORY_WORKERS", "apply": "hot", "hint": "上限 8",
+                "env": "DY_HISTORY_WORKERS", "apply": "hot",
             },
             "history_full": {
                 "label": "启用历史补全",
                 "type": "bool", "default": True, "env": "DY_HISTORY_FULL",
-                "apply": "hot", "hint": "首包只给每会话最后 ~20 条，长会话需补全",
+                "apply": "hot", "hint": "长会话需补全历史"
             },
             "history_skip_paged": {
                 "label": "跳过翻页补全",
                 "type": "bool", "default": False, "env": "DY_HISTORY_SKIP_PAGED",
-                "apply": "hot", "hint": "调试用",
+                "apply": "hot", "hint": "调试用"
             },
             "userinfo_cache_sec": {
                 "label": "昵称缓存 TTL（秒）",
                 "type": "int", "default": 600, "min": 0, "max": 86400,
                 "env": "DY_USERINFO_CACHE_SEC", "apply": "restart_daemon",
-                "hint": "调小 = 更多浏览器读取，增加暴露",
+                "hint": "昵称缓存的有效期"
             },
             "uid_probe_ttl_ok": {
                 "label": "UID 探活缓存 TTL（秒）",
                 "type": "float", "default": 300.0, "min": 0, "max": 86400,
                 "env": "DY_UID_PROBE_TTL_OK", "apply": "restart_daemon",
-                "hint": "调小 = 更多 query/user 请求，增加风控面",
+                "hint": "探活成功后的缓存时长"
             },
             "uid_probe_ttl_fail": {
                 "label": "探活失败退避（秒）",
                 "type": "float", "default": 60.0, "min": 0, "max": 3600,
                 "env": "DY_UID_PROBE_TTL_FAIL", "apply": "restart_daemon",
-                "hint": "失败后此期间内不重试",
+                "hint": "探活失败后多久内不重试"
             },
             "uid_probe_lock_wait": {
                 "label": "探活锁等待上限（秒）",
                 "type": "float", "default": 10.0, "min": 1, "max": 120,
                 "env": "DY_UID_PROBE_LOCK_WAIT", "apply": "restart_daemon",
-                "hint": "超时退化为读缓存，绝不无限等待",
+                "hint": "超时退化为读缓存"
             },
             # ===== 能力探针 M1 阈值（2026-09-21 P2，见 工作记忆/02_效果定义与探针.md）=====
             # 探针只读本地事实（DB + 本项目日志），不发起任何网络/浏览器动作。
@@ -519,50 +509,48 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "探针·最低会话数",
                 "type": "int", "default": 10, "min": 1, "max": 5000,
                 "env": "DY_PROBE_MIN_CONVS", "apply": "hot",
-                "hint": "低于此数判 degraded —— 覆盖骤降属典型静默失效",
+                "hint": "低于此数判为异常"
             },
             "probe_nickname_healthy": {
                 "label": "探针·昵称覆盖率健康线",
                 "type": "float", "default": 0.95, "min": 0.0, "max": 1.0,
                 "env": "DY_PROBE_NICKNAME_HEALTHY", "apply": "hot",
-                "hint": "≥此值判 healthy（02 文档：昵称覆盖率 ≥ 95%）",
+                "hint": "达到此值判健康"
             },
             "probe_nickname_degraded": {
                 "label": "探针·昵称覆盖率失败线",
                 "type": "float", "default": 0.50, "min": 0.0, "max": 1.0,
                 "env": "DY_PROBE_NICKNAME_DEGRADED", "apply": "hot",
-                "hint": "低于此值判 failed；介于两线之间判 degraded（三态，非二态）",
+                "hint": "低于此值判失败"
             },
             "probe_capture_stale_sec": {
                 "label": "探针·捕获陈旧阈值（秒）",
                 "type": "int", "default": 3600, "min": 60, "max": 604800,
                 "env": "DY_PROBE_CAPTURE_STALE_SEC", "apply": "hot",
-                "hint": "最新捕获日志超此秒数未更新 → 判 failed（能力停摆）",
+                "hint": "捕获超时未更新判失败"
             },
             # ---- 其余业务域探针（P1，2026-09-21 v0.44.27）----
             "probe_live_window_hours": {
                 "label": "探针·直播弹幕观察窗（小时）",
                 "type": "int", "default": 24, "min": 1, "max": 720,
                 "env": "DY_PROBE_LIVE_WINDOW_HOURS", "apply": "hot",
-                "hint": "窗口内无弹幕记录 → 判 unknown（未监听，非失效）",
+                "hint": "窗口内无弹幕判未知"
             },
             "probe_live_healthy": {
                 "label": "探针·弹幕真实率健康线",
                 "type": "float", "default": 0.95, "min": 0.0, "max": 1.0,
                 "env": "DY_PROBE_LIVE_HEALTHY", "apply": "hot",
-                "hint": "脱敏判据：uid 全为 111111 且 sec_uid 为空",
             },
             "probe_live_degraded": {
                 "label": "探针·弹幕真实率失败线",
                 "type": "float", "default": 0.50, "min": 0.0, "max": 1.0,
                 "env": "DY_PROBE_LIVE_DEGRADED", "apply": "hot",
-                "hint": "低于此值判 failed（昵称被脱敏 = 无解密权/凭证降权）",
             },
             "probe_ai_window_hours": {
                 "label": "探针·AI 活动观察窗（小时）",
                 "type": "int", "default": 72, "min": 1, "max": 2160,
                 "env": "DY_PROBE_AI_WINDOW_HOURS", "apply": "hot",
-                "hint": "窗口内 AI 相关日志行数，用于判断该域是否在活动",
+                "hint": "窗口内 AI 活动判定"
             },
             # ---- 定时巡检（P1 收尾，2026-09-21 v0.44.28）----
             # 探针只读本地事实（DB+本项目日志），零网络零浏览器，故可安全常驻。
@@ -570,46 +558,45 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "探针·启用定时巡检",
                 "type": "bool", "default": True,
                 "env": "DY_PROBE_PATROL_ENABLED", "apply": "restart_backend",
-                "hint": "关闭后只能手动触发；探针零风控，建议保持开启",
+                "hint": "关闭后只能手动巡检"
             },
             "probe_patrol_interval_min": {
                 "label": "探针·巡检周期（分钟）",
                 "type": "int", "default": 15, "min": 1, "max": 1440,
                 "env": "DY_PROBE_PATROL_INTERVAL_MIN", "apply": "restart_backend",
-                "hint": "能力劣化时由此周期决定「多久先于用户被发现」",
+                "hint": "多久自动巡检一次"
             },
             "probe_patrol_first_delay_sec": {
                 "label": "探针·巡检首轮延迟（秒）",
                 "type": "int", "default": 120, "min": 30, "max": 3600,
                 "env": "DY_PROBE_PATROL_FIRST_DELAY_SEC", "apply": "restart_backend",
-                "hint": "避开启动初始化高峰；最小 30s",
+                "hint": "首轮巡检延迟，避开启动高峰"
             },
             "image_inline_max_kb": {
                 "label": "图片内联阈值（KB）",
                 "type": "int", "default": 32, "min": 0, "max": 10240,
                 "env": "IMAGE_INLINE_MAX_KB", "apply": "hot",
-                "hint": "≤此值内联 base64（实测图片平均 2.9KB）；0=永远内联",
+                "hint": "≤此值内联，0=始终内联"
             },
             "origin_image_ttl_days": {
                 "label": "原图保留天数",
                 "type": "int", "default": 30, "min": 1, "max": 365,
-                "env": "ORIGIN_IMAGE_TTL_DAYS", "apply": "hot", "hint": "TTL 回收",
+                "env": "ORIGIN_IMAGE_TTL_DAYS", "apply": "hot", "hint": "原图保留天数，过期回收"
             },
             "origin_image_max_mb": {
                 "label": "原图目录上限（MB）",
                 "type": "int", "default": 2048, "min": 64, "max": 102400,
-                "env": "ORIGIN_IMAGE_MAX_MB", "apply": "hot", "hint": "超限按 mtime 清理",
+                "env": "ORIGIN_IMAGE_MAX_MB", "apply": "hot", "hint": "超过上限按时间清理"
             },
             "image_force_hosted": {
                 "label": "强制上图床",
                 "type": "bool", "default": False, "env": "IMAGE_FORCE_HOSTED",
-                "apply": "hot", "hint": "默认本地托管（图床更慢且公开可访问）",
+                "apply": "hot", "hint": "关 = 本地托管（更快更私密）"
             },
             "image_host_backend": {
                 "label": "图床后端",
                 "type": "select", "default": "tucdn", "env": "IMAGE_HOST_BACKEND",
                 "options": ["tucdn", "imgbb"], "apply": "hot",
-                "hint": "tucdn 比 imgbb 上传/下载更快（实测约 6 倍）",
             },
         },
     },
@@ -637,14 +624,12 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "int", "default": 60, "min": 10, "max": 1440,
                 "env": "DY_CREATOR_MONITOR_INTERVAL_MIN",
                 "apply": "hot",
-                "hint": "（前端约束 10~1440，默认 60）",
             },
             "max_new_per_check": {
                 "label": "单次检查最多处理新条目",
                 "type": "int", "default": 10, "min": 1, "max": 200,
                 "env": "DY_MONITOR_MAX_NEW_PER_CHECK",
                 "apply": "hot",
-                "hint": "（本体用于下载，此处用于处理）",
             },
             # 2026-09-17：min_digg_count / min_comment_count / min_play_count /
             # match_keywords / exclude_keywords / use_global_gate 的**前一份
@@ -655,167 +640,145 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "monitor_notices": {
                 "label": "监控·通知", "type": "bool", "default": False,
                 "env": "DY_AUTO_MONITOR_NOTICES", "apply": "hot",
-                "hint": "新粉丝/评论/赞通知",
+                "hint": "新粉丝 / 评论 / 赞"
             },
             "monitor_friends": {
                 "label": "监控·好友动态", "type": "bool", "default": False,
                 "env": "DY_AUTO_MONITOR_FRIENDS", "apply": "hot",
-                "hint": "",
             },
             "monitor_comments": {
                 "label": "监控·评论", "type": "bool", "default": False,
                 "env": "DY_AUTO_MONITOR_COMMENTS", "apply": "hot",
-                "hint": "自己作品下的新评论",
             },
             "monitor_feed": {
                 "label": "监控·推荐流", "type": "bool", "default": False,
                 "env": "DY_AUTO_MONITOR_FEED", "apply": "hot",
-                "hint": "",
             },
             "follow_back_on_new_follower": {
                 "label": "新粉丝自动回关", "type": "bool", "default": False,
                 "env": "DY_AUTO_FOLLOW_BACK_ON_NEW_FOLLOWER", "apply": "hot", "risk": True,
-                "hint": "",
             },
             "match_keywords": {
                 "label": "通用·包含词", "type": "str", "default": "",
                 "env": "DY_AUTO_MATCH_KEYWORDS", "apply": "hot",
-                "hint": "（逗号/空格分隔；空=不过滤）",
+                "hint": "逗号分隔，空=不过滤"
             },
             "exclude_keywords": {
                 "label": "通用·排除词", "type": "str", "default": "",
                 "env": "DY_AUTO_EXCLUDE_KEYWORDS", "apply": "hot",
-                "hint": "",
+                "hint": "逗号分隔，空=不过滤"
             },
             "private_match_keywords": {
                 "label": "私信·包含词", "type": "str", "default": "",
                 "env": "DY_AUTO_PRIVATE_MATCH_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "private_exclude_keywords": {
                 "label": "私信·排除词", "type": "str", "default": "",
                 "env": "DY_AUTO_PRIVATE_EXCLUDE_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "comment_match_keywords": {
                 "label": "评论·包含词", "type": "str", "default": "",
                 "env": "DY_AUTO_COMMENT_MATCH_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "comment_exclude_keywords": {
                 "label": "评论·排除词", "type": "str", "default": "",
                 "env": "DY_AUTO_COMMENT_EXCLUDE_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "like_match_keywords": {
                 "label": "点赞·包含词", "type": "str", "default": "",
                 "env": "DY_AUTO_LIKE_MATCH_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "like_exclude_keywords": {
                 "label": "点赞·排除词", "type": "str", "default": "",
                 "env": "DY_AUTO_LIKE_EXCLUDE_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "collect_match_keywords": {
                 "label": "收藏·包含词", "type": "str", "default": "",
                 "env": "DY_AUTO_COLLECT_MATCH_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "collect_exclude_keywords": {
                 "label": "收藏·排除词", "type": "str", "default": "",
                 "env": "DY_AUTO_COLLECT_EXCLUDE_KEYWORDS", "apply": "hot",
-                "hint": "（空则回落通用词）",
+                "hint": "空则回落通用词"
             },
             "min_digg_count": {
                 "label": "门槛·最少点赞", "type": "int", "default": 0, "min": 0, "max": 100000000,
                 "env": "DY_AUTO_MIN_DIGG_COUNT", "apply": "hot",
-                "hint": "",
             },
             "min_comment_count": {
                 "label": "门槛·最少评论", "type": "int", "default": 0, "min": 0, "max": 100000000,
                 "env": "DY_AUTO_MIN_COMMENT_COUNT", "apply": "hot",
-                "hint": "",
             },
             "min_play_count": {
                 "label": "门槛·最少播放", "type": "int", "default": 0, "min": 0, "max": 1000000000,
                 "env": "DY_AUTO_MIN_PLAY_COUNT", "apply": "hot",
-                "hint": "",
             },
             "scan_interval_seconds": {
                 "label": "扫描间隔（秒）", "type": "int", "default": 30, "min": 10, "max": 300,
                 "env": "DY_AUTO_SCAN_INTERVAL_SECONDS", "apply": "hot", "risk": True,
-                "hint": "（clamp 10~300）",
             },
             "max_actions_per_run": {
                 "label": "单轮最大动作数", "type": "int", "default": 5, "min": 1, "max": 50,
                 "env": "DY_AUTO_MAX_ACTIONS_PER_RUN", "apply": "hot", "risk": True,
-                "hint": "（clamp 1~50）",
             },
             "send_delay_ms": {
                 "label": "动作间隔（毫秒）", "type": "int", "default": 0, "min": 0, "max": 10000,
                 "env": "DY_AUTO_SEND_DELAY_MS", "apply": "hot", "risk": True,
-                "hint": "（clamp 0~10000）",
             },
             "return_shared_media": {
                 "label": "回流·共享媒体", "type": "bool", "default": False,
                 "env": "DY_AUTO_RETURN_SHARED_MEDIA", "apply": "hot",
-                "hint": "",
             },
             "return_shared_allow_images": {
                 "label": "回流·允许图片", "type": "bool", "default": True,
                 "env": "DY_AUTO_RETURN_SHARED_ALLOW_IMAGES", "apply": "hot",
-                "hint": "",
             },
             "return_shared_allow_videos": {
                 "label": "回流·允许视频", "type": "bool", "default": True,
                 "env": "DY_AUTO_RETURN_SHARED_ALLOW_VIDEOS", "apply": "hot",
-                "hint": "",
             },
             "return_shared_max_size_mb": {
                 "label": "回流·单文件上限(MB)", "type": "int", "default": 20, "min": 1, "max": 200,
                 "env": "DY_AUTO_RETURN_SHARED_MAX_SIZE_MB", "apply": "hot",
-                "hint": "（clamp 1~200）",
             },
             "return_shared_max_media_count": {
                 "label": "回流·最大媒体数", "type": "int", "default": 9, "min": 1, "max": 20,
                 "env": "DY_AUTO_RETURN_SHARED_MAX_MEDIA_COUNT", "apply": "hot",
-                "hint": "（clamp 1~20）",
             },
             "auto_like": {
                 "label": "动作·点赞", "type": "bool", "default": False,
                 "env": "DY_AUTO_LIKE", "apply": "hot", "risk": True,
-                "hint": "",
             },
             "auto_collect": {
                 "label": "动作·收藏", "type": "bool", "default": False,
                 "env": "DY_AUTO_COLLECT", "apply": "hot", "risk": True,
-                "hint": "",
             },
             "auto_comment": {
                 "label": "动作·评论", "type": "bool", "default": False,
                 "env": "DY_AUTO_COMMENT", "apply": "hot", "risk": True,
-                "hint": "自动评论（本项目扩展）",
             },
             "auto_private": {
                 "label": "动作·私信", "type": "bool", "default": False,
                 "env": "DY_AUTO_PRIVATE", "apply": "hot", "risk": True,
-                "hint": "本项目扩展",
             },
             "auto_follow": {
                 "label": "动作·关注", "type": "bool", "default": False,
                 "env": "DY_AUTO_FOLLOW", "apply": "hot", "risk": True,
-                "hint": "自动关注 / 回关（本项目扩展）",
             },
             "require_context": {
                 "label": "需要上下文才动作", "type": "bool", "default": True,
                 "env": "DY_AUTO_REQUIRE_CONTEXT", "apply": "hot",
-                "hint": "回复前须结合上下文",
             },
             "use_global_gate": {
                 "label": "同时使用全局发送闸门", "type": "bool", "default": True,
                 "env": "DY_AUTO_USE_GLOBAL_GATE", "apply": "hot",
-                "hint": "受全局发送闸门约束",
             },
         },
     },
@@ -833,19 +796,19 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "评论每页条数", "type": "int", "default": 20,
                 "min": 5, "max": 50,
                 "env": "DY_CRAWL_COMMENT_PAGE_COUNT", "apply": "hot",
-                "hint": "单页评论条数。5=旧行为；20~50=服务端支持（越大请求越少，上限 50）",
+                "hint": "单页条数，越大请求越少（5~50）"
             },
             "batch_interval": {
                 "label": "多作品采集间隔（秒）", "type": "float", "default": 1.5,
                 "min": 0.0, "max": 30.0,
                 "env": "DY_CRAWL_BATCH_INTERVAL", "apply": "hot",
-                "hint": "批量采评论时两作品之间的停顿（串行，不开并发）",
+                "hint": "两作品之间的停顿"
             },
             "batch_max_works": {
                 "label": "单次批量作品上限", "type": "int", "default": 20,
                 "min": 1, "max": 100,
                 "env": "DY_CRAWL_BATCH_MAX_WORKS", "apply": "hot",
-                "hint": "一次「批量采集」最多处理几个作品，防止误点造成长跑与过度请求",
+                "hint": "单次最多采集几个作品"
             },
         },
     },
