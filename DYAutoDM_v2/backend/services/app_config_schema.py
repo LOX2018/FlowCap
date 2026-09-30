@@ -81,7 +81,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "启用昵称兜底查询（默认关闭）",
                 "type": "bool", "default": False, "env": None,
                 "apply": "hot",
-                "hint": "库中无昵称时低频补查（默认关）"
+                "hint": "无昵称时低频补查"
             },
             "nickname_fallback_min_interval_sec": {
                 "label": "兜底最小间隔（秒）",
@@ -103,25 +103,25 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "学习·通用性门槛（最少问法数）",
                 "type": "int", "default": 2, "min": 1, "max": 20, "env": None,
                 "apply": "hot",
-                "hint": "同一问题至少几种问法命中才算通用"
+                "hint": "至少几种问法算通用"
             },
             "learn_min_sources": {
                 "label": "学习·通用性门槛（最少不同客户数）",
                 "type": "int", "default": 2, "min": 1, "max": 50, "env": None,
                 "apply": "hot",
-                "hint": "同一问题至少几个客户问过才算通用"
+                "hint": "至少几个客户算通用"
             },
             "learn_sim_threshold": {
                 "label": "学习·聚类相似度阈值",
                 "type": "float", "default": 0.80, "min": 0.5, "max": 0.99, "env": None,
                 "apply": "hot",
-                "hint": "问法相似度阈值，越高越严格"
+                "hint": "问法相似度阈值"
             },
             "learn_max_case_chars": {
                 "label": "学习·个案问法长度上限",
                 "type": "int", "default": 30, "min": 10, "max": 200, "env": None,
                 "apply": "hot",
-                "hint": "超过此长度视为个案，不参与提纯"
+                "hint": "超此长度视为个案"
             },
         },
     },
@@ -148,7 +148,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "delay_min": {
                 "label": "延迟抖动下限（秒）",
                 "type": "int", "default": 40, "min": 0, "max": 600, "env": None,
-                "apply": "hot", "hint": "发送前随机延迟，模拟真人"
+                "apply": "hot", "hint": "发送前随机延迟"
             },
             "delay_max": {
                 "label": "延迟抖动上限（秒）",
@@ -163,7 +163,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "ws_heartbeat_interval": {
                 "label": "WS 心跳间隔（秒）",
                 "type": "int", "default": 300, "min": 30, "max": 3600, "env": None,
-                "apply": "hot", "hint": "定期探活，登录失效自动重连"
+                "apply": "hot", "hint": "定期探活重连"
             },
             "enable_danmaku": {
                 "label": "接收弹幕", "type": "bool", "default": True, "env": None,
@@ -189,12 +189,12 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "danmaku_enabled": {
                 "label": "发送弹幕（主动发言·写接口）", "type": "bool", "default": False,
                 "env": None, "apply": "hot",
-                "hint": "开启后才能在直播页发言"
+                "hint": "开启后才能发言"
             },
             "like_enabled": {
                 "label": "点赞（主动互动·写接口）", "type": "bool", "default": False,
                 "env": None, "apply": "hot",
-                "hint": "开启后才能在直播页点赞"
+                "hint": "开启后才能点赞"
             },
             "like_max": {
                 "label": "单次点赞上限", "type": "int", "default": 1000,
@@ -218,7 +218,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                     {"value": "anonymous", "label": "匿名连接"},
                 ],
                 "apply": "hot",
-                "hint": "凭证=真实身份；匿名=脱敏多房间"
+                "hint": "凭证或匿名"
             },
             "anonymous_max_rooms": {
                 "label": "匿名模式并发房间上限",
@@ -235,7 +235,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                     {"value": "per_room", "label": "每房间固定账号"},
                 ],
                 "apply": "hot",
-                "hint": "多账号同房间时由哪个账号发送"
+                "hint": "多账号由谁发"
             },
             "desensitized_strategy": {
                 "label": "脱敏直播间处理策略",
@@ -247,25 +247,25 @@ SECTIONS: dict[str, dict[str, Any]] = {
                     {"value": "reduce_anonymous", "label": "降级为匿名模式"},
                 ],
                 "apply": "hot",
-                "hint": "无解密权时如何处理该直播间"
+                "hint": "无解密权时处理"
             },
             "sink_global_scope": {
                 "label": "沉淀池全局作用域（跨账号去重）",
                 "type": "bool", "default": True, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "跨账号去重，防同一人重复私信"
+                "hint": "跨账号去重"
             },
             "sink_cooldown_days": {
                 "label": "沉淀池冷却（天）",
                 "type": "float", "default": 90.0, "min": 0.0, "max": 3650.0, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "冷却期内不再重复发送，0=不冷却"
+                "hint": "冷却期内不重发"
             },
             "sink_permanent": {
                 "label": "「永久冷却」档",
                 "type": "bool", "default": False, "env": None,
                 "apply": "hot", "risk": True,
-                "hint": "开启后永不重复发送（不可逆）"
+                "hint": "开启后永不重发"
             },
         },
     },
@@ -414,25 +414,25 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "通知解析 API 地址",
                 "type": "str", "default": "http://127.0.0.1:31415/v1",
                 "env": None, "apply": "hot",
-                "hint": "留空则用 AI 全局配置"
+                "hint": "留空用全局配置"
             },
             "llm_model": {
                 "label": "通知解析模型",
                 "type": "str", "default": "glm-5.2",
                 "env": None, "apply": "hot",
-                "hint": "把自然语言指令转成结构化操作"
+                "hint": "指令转结构化操作"
             },
             "llm_api_key": {
                 "label": "通知解析 API Key",
                 "type": "str", "default": "",
                 "env": None, "apply": "hot",
-                "hint": "留空则用 AI 全局配置"
+                "hint": "留空用全局配置"
             },
             "llm_enabled": {
                 "label": "启用模型指令解析",
                 "type": "bool", "default": False,
                 "env": None, "apply": "hot",
-                "hint": "关 = 只用规则解析，零模型调用"
+                "hint": "关则只用规则"
             },
         },
     },
@@ -456,7 +456,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "轮间隔（秒）",
                 "type": "float", "default": 60.0, "min": 0, "max": 3600,
                 "env": "DY_HISTORY_BATCH_GAP", "apply": "hot",
-                "hint": "轮与轮之间的等待，防风控"
+                "hint": "轮间等待防风控"
             },
             "history_sleep": {
                 "label": "补全间隔（秒）",
@@ -494,7 +494,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "探活失败退避（秒）",
                 "type": "float", "default": 60.0, "min": 0, "max": 3600,
                 "env": "DY_UID_PROBE_TTL_FAIL", "apply": "restart_daemon",
-                "hint": "探活失败后多久内不重试"
+                "hint": "失败后不重试"
             },
             "uid_probe_lock_wait": {
                 "label": "探活锁等待上限（秒）",
@@ -550,7 +550,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "探针·AI 活动观察窗（小时）",
                 "type": "int", "default": 72, "min": 1, "max": 2160,
                 "env": "DY_PROBE_AI_WINDOW_HOURS", "apply": "hot",
-                "hint": "窗口内 AI 活动判定"
+                "hint": "AI 活动观察窗"
             },
             # ---- 定时巡检（P1 收尾，2026-09-21 v0.44.28）----
             # 探针只读本地事实（DB+本项目日志），零网络零浏览器，故可安全常驻。
@@ -570,18 +570,18 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "探针·巡检首轮延迟（秒）",
                 "type": "int", "default": 120, "min": 30, "max": 3600,
                 "env": "DY_PROBE_PATROL_FIRST_DELAY_SEC", "apply": "restart_backend",
-                "hint": "首轮巡检延迟，避开启动高峰"
+                "hint": "首轮巡检延迟"
             },
             "image_inline_max_kb": {
                 "label": "图片内联阈值（KB）",
                 "type": "int", "default": 32, "min": 0, "max": 10240,
                 "env": "IMAGE_INLINE_MAX_KB", "apply": "hot",
-                "hint": "≤此值内联，0=始终内联"
+                "hint": "≤此值内联"
             },
             "origin_image_ttl_days": {
                 "label": "原图保留天数",
                 "type": "int", "default": 30, "min": 1, "max": 365,
-                "env": "ORIGIN_IMAGE_TTL_DAYS", "apply": "hot", "hint": "原图保留天数，过期回收"
+                "env": "ORIGIN_IMAGE_TTL_DAYS", "apply": "hot", "hint": "原图保留天数"
             },
             "origin_image_max_mb": {
                 "label": "原图目录上限（MB）",
@@ -591,7 +591,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "image_force_hosted": {
                 "label": "强制上图床",
                 "type": "bool", "default": False, "env": "IMAGE_FORCE_HOSTED",
-                "apply": "hot", "hint": "关 = 本地托管（更快更私密）"
+                "apply": "hot", "hint": "关则本地托管"
             },
             "image_host_backend": {
                 "label": "图床后端",
@@ -640,7 +640,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "monitor_notices": {
                 "label": "监控·通知", "type": "bool", "default": False,
                 "env": "DY_AUTO_MONITOR_NOTICES", "apply": "hot",
-                "hint": "新粉丝 / 评论 / 赞"
+                "hint": "新粉丝/评论/赞"
             },
             "monitor_friends": {
                 "label": "监控·好友动态", "type": "bool", "default": False,
@@ -796,7 +796,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "评论每页条数", "type": "int", "default": 20,
                 "min": 5, "max": 50,
                 "env": "DY_CRAWL_COMMENT_PAGE_COUNT", "apply": "hot",
-                "hint": "单页条数，越大请求越少（5~50）"
+                "hint": "单页条数5~50"
             },
             "batch_interval": {
                 "label": "多作品采集间隔（秒）", "type": "float", "default": 1.5,
