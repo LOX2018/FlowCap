@@ -83,6 +83,43 @@ def _zero_net_extract(raw: str) -> str | None:
     return None
 
 
+class ReflowRouteGate(unittest.TestCase):
+    """2026-10-01 任务 1：`/webcast/reflow/<room_id>` 与短链的**路由**判据。
+
+    ⚠️ 本组钉死「**room_id ≠ web_rid**」这一语义 —— 权威双源：
+      · DTK `urls/patterns.py` 明文注释；
+      · DouyinLiveRecorder `room.py:61-66,109-137`（经 `reflow/info` 换 web_rid）。
+    """
+
+    def test_r1_reflow_room_extracted_as_room_id(self):
+        """R1：`/webcast/reflow/<id>` 抽出的必须是 room_id（供桥接），**不得**当 web_rid 直返。"""
+        import link_resolve as L
+        url = ("https://webcast.amemv.com/douyin/webcast/reflow/7683789197988793122")
+        self.assertEqual(L._extract_reflow_room_id(url), "7683789197988793122")
+        # 关键：零网络判定**不得**把它当 web_rid 直接返回
+        self.assertIsNone(_zero_net_extract(url),
+                          "reflow 的 id 是 room_id，零网络直取会得到错误标识")
+
+    def test_r2_short_link_routed_to_reflow_bridge(self):
+        """R2：短链/iesdouyin 必须被路由到 reflow 桥接分支（源码级断言）。"""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "link_resolve.py"), encoding="utf-8").read()
+        # 短链分支存在，且引用 v.douyin / v.amemv / iesdouyin
+        self.assertRegex(src, r"v\\\.douyin\\\.com\|v\\\.amemv\\\.com\|iesdouyin")
+        # 该分支确实调用了 resolve_via_reflow（而非直接落到浏览器兜底）
+        seg = src.split("情形2·乙")[-1][:900] if "情形2·乙" in src else ""
+        self.assertIn("resolve_via_reflow", seg, "短链分支未接 reflow 桥接")
+
+    def test_r3_room_id_ne_web_rid_semantics_documented(self):
+        """R3：语义澄清（room_id ≠ web_rid）必须留在模块文档/注释里（防再次混淆）。"""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "link_resolve.py"), encoding="utf-8").read()
+        self.assertIn("reflow links carry a", src)      # DTK 权威原文引用
+        self.assertIn("room_id", src)
+        # 两套标识必须都写明
+        self.assertIn("web_rid", src)
+
+
 class LiveLinkResolveGate(unittest.TestCase):
     def test_g1_user_url_hits_live_web_rid(self):
         """G1：用户实证 URL 必须解析出 291891133640。"""

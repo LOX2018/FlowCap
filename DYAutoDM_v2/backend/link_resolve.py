@@ -4,17 +4,28 @@
 解析优先级（主引擎 -> 备用）：
   【主引擎】reflow 两步换发（借鉴 DouyinLiveRecorder）：
       分享短链 / 直播链接 / 用户主页
-        -> 跟随重定向拿 room_id + sec_user_id
+        -> 跟随重定向拿 **room_id**（注意：重定向后 URL 里是 room_id）
         -> 调 webcast.amemv.com/webcast/room/reflow/info/（带 X-Bogus 签名）
-        -> 取真实直播间号 web_rid 与主播 sec_uid
+        -> 取真实直播间号 **web_rid** 与主播 sec_uid
     该方式拿到的 web_rid 比直接抠 URL 片段更权威，且一并返回主播 sec_uid。
   【备用】直接抠 URL 片段 / 已登录浏览器兜底跳转（保留原逻辑，reflow 失败时用）。
+
+> 🔴 2026-10-01 语义澄清（doc-rot 订正）：本项目共有**两套房间标识**，勿混 ——
+>   · **web_rid**（URL 短号，如 `291891133640`）：`live.douyin.com/<web_rid>` 用它；
+>   · **room_id**（19 位大数，如 `7691345987004009258`）：直播域 API 用它。
+>   上游 DTK `urls/patterns.py` 明文：「Douyin reflow links carry a **room_id**,
+>   not the web_rid that `live.douyin.com/<id>` uses」⇒ `/webcast/reflow/<id>`
+>   与短链重定向后的 id 都是 **room_id**，须经 `reflow/info` 桥接换出 web_rid。
+>   （原文档早前把重定向结果写作「room_id」却又当 web_rid 用，属同源混淆，已订正。）
 
 支持输入形式：
   1) 数字 / web_rid 直播间号（直接当成 live_id）
   2) 直播页链接  https://live.douyin.com/7323xxxx?...
   3) 分享短链    https://v.douyin.com/iRxxxx/  （自动跟随重定向）
   4) 用户主页    https://www.douyin.com/user/MS4wLjAB...（需该用户正在直播）
+  5) 关注页直播  https://www.douyin.com/follow/live/<web_rid>?anchor_id=...
+  6) 搜索页直播卡 https://www.douyin.com/search/<kw>?...&live_web_rid=<web_rid>&type=live
+  7) reflow 分享 https://webcast.amemv.com/douyin/webcast/reflow/<room_id>（经桥接换 web_rid）
 """
 
 from utils.tls_policy import tls_verify  # noqa: E402
@@ -157,6 +168,21 @@ def _follow_redirects(url, cookies=None, timeout=15):
         return url
 
 
+def _extract_reflow_room_id(url):
+    """从 `/webcast/reflow/<id>` 抽 **room_id**（⚠️ 是 room_id，**不是** web_rid）。
+
+    2026-10-01（任务 1）：权威依据双源一致 ——
+      · 上游 DTK `urls/patterns.py` 明文注释：「Douyin reflow links carry a
+        **room_id**, not the web_rid that live.douyin.com/<id> uses」；
+      · 上游 DouyinLiveRecorder `room.py:61-66`：`room_id = redirect_url.split('?')[0]
+        .rsplit('/', maxsplit=1)[1]`，再经 `reflow/info` 换出 web_rid。
+    ⇒ 该 id **不能**直接当 web_rid 用（本项目实测两套值是不同数字），
+      必须交 `_reflow_resolve` 桥接。
+    """
+    m = _REFLOW_ROOM_RE.search(url or "")
+    return m.group(1) if m else None
+
+
 def _build_reflow_params(room_id, sec_user_id, ms_token=""):
     """拼 reflow/info 的 query 参数（与 DouyinLiveRecorder 对齐）。"""
     return {
@@ -212,10 +238,31 @@ def _reflow_resolve(room_id, sec_user_id, auth=None, ua=None):
     }
     cookies = getattr(auth, "cookie", None) if auth else None
     try:
-        resp = requests.get(url, headers=headers, cookies=cookies, timeout=15, verify=tls_verify())
+        resp = requests.get(url, headers=headers, cookies=cookies,
+                            timeout=15, verify=tls_verify())
         data = resp.json()
     except Exception as e:
         logger.warning(f"[LIVE-012] " + f"[resolve] reflow 请求失败: {e}")
+        return None, None
+    # 🔴 2026-10-01（任务 1 实测驱动）：**先判业务码，再判结构**。
+    #   历史形态：直接取 `data["data"]["room"]`，业务失败（无 `room` 键）时抛
+    #   `KeyError: 'room'` 并被下面的 except 记成「可能未开播/接口变更」——
+    #   实测真因是 `status_code=101 / "invalid session"`（**账号会话失效**），
+    #   与「未开播」完全两回事。误报会把排查引到错误方向（A/B 判型才发现）。
+    #   现有两种账号实测对照：张老师 status_code=0 → web_rid 正确换出；
+    #   尚进 status_code=101 → 会话失效。故此处**如实区分**两者。
+    _sc = data.get("status_code") if isinstance(data, dict) else None
+    if _sc not in (0, None):
+        _msg = ""
+        _d = data.get("data") if isinstance(data.get("data"), dict) else {}
+        _msg = str(_d.get("message") or data.get("status_message") or "")
+        if _sc in (101, 10001, 10002) or "session" in _msg.lower():
+            logger.warning(f"[LIVE-013b] [resolve] reflow 被拒：**账号会话失效**"
+                           f"（status_code={_sc} msg={_msg!r}）—— 请重新扫码/换账号，"
+                           f"不是「未开播」")
+        else:
+            logger.warning(f"[LIVE-013b] [resolve] reflow 业务失败"
+                           f"（status_code={_sc} msg={_msg!r}）")
         return None, None
     try:
         room = data["data"]["room"]
@@ -223,7 +270,7 @@ def _reflow_resolve(room_id, sec_user_id, auth=None, ua=None):
         anchor_sec_uid = room["owner"].get("sec_uid") or sec_user_id
         return web_rid, anchor_sec_uid
     except Exception as e:
-        logger.warning(f"[LIVE-013] " + f"[resolve] reflow 响应解析失败（可能未开播/接口变更）: {e}")
+        logger.warning(f"[LIVE-013] " + f"[resolve] reflow 响应解析失败（可能未开播/结构变更）: {e}")
         return None, None
 
 
@@ -450,6 +497,31 @@ def resolve_live_id(raw, headless=False, auth=None, account_name=None):
             logger.info(f"[resolve] 主播 sec_uid={anchor_sec_uid}（可直接用于私信/主页）")
         _cache_put(raw, (web_rid, source))
         return web_rid, source
+
+    # 情形2·乙（2026-10-01 任务 1）：**reflow / 短链形态**经 `reflow/info` 桥接。
+    #   背景（权威双源）：`/webcast/reflow/<id>` 带的是 **room_id**（DTK 明文注释 +
+    #   DouyinLiveRecorder `room.py:61-66`），与 `live.douyin.com/<web_rid>` 是两套值
+    #   ⇒ 不能直取；而 `v.douyin.com` / `v.amemv.com` / `iesdouyin.com/share/...` 既是
+    #   官方常见分享形态、又**只能**靠重定向到达。
+    #   原行为：这三类走「备用」→ 浏览器兜底 → 而浏览器兜底要求账号名推导 profile，
+    #   解析端点若未传账号 ⇒ 必然失败（实测报 `LIVE-021 无账号名… 浏览器兜底跳过`）。
+    #   ⇒ 本分支把它们路由到**已有**的 reflow 桥接（无需 GUI、无需账号即可拿到 web_rid）。
+    _short = re.search(r"(?:v\.douyin\.com|v\.amemv\.com|iesdouyin\.com)/", raw)
+    if _short:
+        rid, sec = resolve_via_reflow(_follow_redirects(raw, auth=auth), auth=auth)
+        if rid:
+            _cache_put(raw, (rid, raw))
+            logger.info(f"[resolve] 短链/reflow 桥接成功 web_rid={rid}"
+                        f"{'（sec_uid=' + sec + '）' if sec else ''}")
+            return rid, raw
+    # 情形2·丙：输入本身即 `/webcast/reflow/<room_id>`
+    _rf_room = _extract_reflow_room_id(raw)
+    if _rf_room and auth is not None:
+        rid, _sec = _reflow_resolve(_rf_room, "", auth=auth)
+        if rid:
+            _cache_put(raw, (rid, raw))
+            logger.info(f"[resolve] reflow room_id={_rf_room} → web_rid={rid}")
+            return rid, raw
 
     # 情形3/4：【备用】直接抠 URL 片段 / 浏览器兜底（保留原逻辑）
     live_id = _extract_live_id_from_url(raw)
