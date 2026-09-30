@@ -1168,6 +1168,60 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
         await page.set_viewport_size({"width": 1600, "height": 1000})
         await page.goto(LOGIN_URL, wait_until="domcontentloaded",
                         timeout=max(30, timeout_s) * 1000)
+        # ★ 2026-10-01 根因修复：**必须用真实鼠标点击「登录」按钮才会发 get_qrcode**。
+        #   实测三种做法对照：
+        #     · 只 goto 登录页 ⇒ 被重定向到 /jingxuan，登录弹窗不挂载 ⇒ 永不出码；
+        #     · JS 合成 `el.click()` ⇒ 返回 clicked 但**不发** get_qrcode（抖音忽略合成事件）；
+        #     · **真实鼠标** `page.mouse.click(x,y)` ⇒ 立刻截获 get_qrcode + 二维码容器 ✅
+        #   先给页面一点挂载时间，再（可重试地）点。
+        async def _try_click_login(max_wait: float = 25.0) -> str:
+            _t = time.time()
+            while time.time() - _t < max_wait:
+                try:
+                    _box = await page.evaluate(
+                        "() => {"
+                        "const n = Array.from(document.querySelectorAll('button,div,span,a'))"
+                        ".find(x => (x.textContent||'').trim().replace(/\\s/g,'') === '登录');"
+                        "if (!n) return null;"
+                        "const r = n.getBoundingClientRect();"
+                        "if (r.width < 8 || r.height < 8) return null;"
+                        "return {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};}")
+                except Exception:  # noqa: BLE001
+                    _box = None
+                if _box:
+                    try:
+                        # 真实鼠标：先移动（带轨迹），再点击
+                        await page.mouse.move(_box["x"] - 40, _box["y"] - 25)
+                        await asyncio.sleep(0.35)
+                        await page.mouse.move(_box["x"], _box["y"])
+                        await asyncio.sleep(0.22)
+                        await page.mouse.click(_box["x"], _box["y"])
+                        logger.info("[bridge] 已真实点击「登录」按钮（{},{}）",
+                                    _box["x"], _box["y"])
+                        return "clicked"
+                    except Exception as _e_clk:  # noqa: BLE001
+                        logger.debug("[bridge] 点击登录按钮异常: {}", _e_clk)
+                await asyncio.sleep(2.0)
+            return "not-found"
+
+        # 点击可能因布局未稳/动画偏移落空 ⇒ **点击 → 校验是否出码 → 未出再点**（最多 3 轮）
+        _clk = "not-found"
+        for _round in range(3):
+            _clk = await _try_click_login(max_wait=(18.0 if _round == 0 else 8.0))
+            if _clk != "clicked":
+                break
+            # 给前端一点时间发 get_qrcode
+            for _i in range(6):
+                await asyncio.sleep(1.0)
+                if caps.get("qr_url"):
+                    break
+            if caps.get("qr_url"):
+                break
+            logger.info("[bridge] 第 {} 次点击后仍未出码，重试点击（布局可能尚未稳定）",
+                        _round + 1)
+        if _clk != "clicked":
+            logger.warning("[bridge] 未找到「登录」按钮（页面可能已登录或结构已变），"
+                           "继续等待页面自发接口")
         # 轮询等待：页面自己发接口（实测约 30~40s；面板 30s 才挂载）
         t0 = time.time()
         while time.time() - t0 < max(30, timeout_s):
