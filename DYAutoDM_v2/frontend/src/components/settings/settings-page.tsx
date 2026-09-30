@@ -82,7 +82,7 @@ export default function SettingsPage(props: PageProps) {
     <PageContainer>
       <PageHeader
         title="配置中心"
-        description="全局唯一可写配置入口。业务页只做「选择/引用」；业务参数（发送/监听/捕获）可用「配置标签」按账号差异化"
+        description="业务参数可按账号用「配置标签」差异化"
       />
 
       <div className="flex items-start gap-4">

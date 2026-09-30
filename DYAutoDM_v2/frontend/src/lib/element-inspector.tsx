@@ -562,8 +562,16 @@ export function ElementInspectorButton({ currentTab = "" }: InspectorProps) {
     try { localStorage.setItem("dy.inspector.pos", JSON.stringify({ x, y })); } catch { /* ignore */ }
   };
 
-  /** 长按（160ms）后才进入拖动 —— 短按仍是「开关选择模式」，两者不冲突。 */
-  const DRAG_HOLD_MS = 160;
+  /**
+   * 拖动判据：**按位移**（>4px 才算拖动），不再按「按住时长」。
+   *
+   * ★ 2026-09-30 根因修复（用户报障「元素选择按钮点了之后变成『位置已记录』」）：
+   *  原实现用 160ms 长按定时器判定拖动意图 —— 一旦按住超过 160ms 就进入拖动态，
+   *  抬起时**只存位置、不切换选择模式**。普通点击只要按得稍慢（或手抖 >4px）
+   *  就落进拖动分支 ⇒ 按钮**永远进不了选择模式**，只会弹「位置已记录」。
+   *  正解：拖动意图由**实际位移**决定（与指针何时按下无关），短按即切换。
+   */
+  const DRAG_MOVE_PX = 4;
 
   const onFabPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.button !== 0) return; // 只响应左键
@@ -575,15 +583,8 @@ export function ElementInspectorButton({ currentTab = "" }: InspectorProps) {
       baseX: b.left, baseY: b.top,
       moved: false, active: false, pointerId: e.pointerId,
     };
-    // 160ms 长按后仍未抬起 → 进入拖动（并接管指针）
-    window.setTimeout(() => {
-      const d = dragRef.current;
-      if (d && d.pointerId === e.pointerId && !d.moved) {
-        d.active = true;
-        setDragging(true);
-        try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      }
-    }, DRAG_HOLD_MS);
+    // 立即接管指针：移出按钮范围也能收到 move（拖动跟手）；短按不受影响（up 后照常 click）
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   };
 
   const onFabPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
@@ -591,12 +592,13 @@ export function ElementInspectorButton({ currentTab = "" }: InspectorProps) {
     if (!d || d.pointerId !== e.pointerId) return;
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
-    if (!d.active) {
-      // 长按前就移动了 → 记为「已移动」，抬起时不切换模式（避免误触）
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) d.moved = true;
-      return;
+    // 首次超过阈值 → 进入拖动（此后不再判「短按」）
+    if (!d.active && (Math.abs(dx) > DRAG_MOVE_PX || Math.abs(dy) > DRAG_MOVE_PX)) {
+      d.active = true;
+      d.moved = true;
+      setDragging(true);
     }
-    d.moved = true;
+    if (!d.active) return;
     const el = fabRef.current;
     const w = el?.offsetWidth ?? 110;
     const h = el?.offsetHeight ?? 32;
@@ -611,21 +613,20 @@ export function ElementInspectorButton({ currentTab = "" }: InspectorProps) {
     if (!d) return;
     try { fabRef.current?.releasePointerCapture(d.pointerId); } catch { /* ignore */ }
     if (d.active) {
+      // 拖动结束：记住位置，**不切换**选择模式
       setDragging(false);
       const el = fabRef.current;
       const b = el?.getBoundingClientRect();
       const x = Math.round(b ? b.left : d.baseX);
       const y = Math.round(b ? b.top : d.baseY);
       saveFabPos(x, y);
-      setPosTip("位置已记住");
+      setPosTip("位置已记录");
       window.setTimeout(() => setPosTip(""), 1600);
-      return; // ★ 拖动结束不触发 onClick
+      return; // ★ 拖动结束不触发切换
     }
-    // 未进入拖动：若几乎没动 → 视为短按，切换选择模式
-    if (!d.moved) {
-      setActive((v) => !v);
-      setTip("");
-    }
+    // 未发生位移 = 短按 → 切换选择模式（与拖动互不干扰）
+    setActive((v) => !v);
+    setTip("");
   };
 
   /** 双击复位到默认位置（左下角） */

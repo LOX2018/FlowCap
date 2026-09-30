@@ -170,7 +170,16 @@ class TestElementInspectorContract(unittest.TestCase):
         self.assertIn("onPointerMove", self.src, "入口缺少指针移动处理（无法跟手）")
         self.assertIn("onPointerUp", self.src, "入口缺少指针抬起处理（无法落位/存位置）")
         self.assertIn("setPointerCapture", self.src, "拖动未接管指针（移出按钮即断）")
-        self.assertIn("DRAG_HOLD_MS", self.src, "缺少长按阈值 —— 短按与拖动会互相干扰")
+        # ★ 2026-09-30 判据纠正：拖动必须以**位移**判定。
+        #   原实现用「长按 160ms 阈值」（DRAG_HOLD_MS）判拖动意图 —— 实测缺陷：
+        #   普通点击只要按得稍慢 / 手抖 >4px 就落进拖动分支 ⇒ 只弹「位置已记录」，
+        #   按钮**永远进不了选择模式**（用户报障原话）。故本断言从
+        #   `assertIn("DRAG_HOLD_MS")` 反转为「须有位移阈值 + 不得再有长按阈值」，
+        #   同时把该缺陷钉成**负控**（恢复长按判定即变红）。
+        self.assertIn("DRAG_MOVE_PX", self.src,
+                      "缺少位移阈值 —— 拖动须按实际位移判定，不得用按住时长")
+        self.assertNotIn("DRAG_HOLD_MS", self.src,
+                         "不得恢复长按阈值判定拖动（已知会把慢点击吞成『位置已记录』）")
         self.assertIn("dy.inspector.pos", self.src, "缺少位置记忆键")
         self.assertIn("onFabDoubleClick", self.src, "缺少双击复位路径（拖丢后无法找回）")
         # 位置写入必须唯一集中在 saveFabPos（防多处散写）

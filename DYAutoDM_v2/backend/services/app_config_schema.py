@@ -21,7 +21,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "启动时拉起 BCC 浏览器容器",
                 "type": "bool", "default": False, "env": "DY_BCC_ON_START",
                 "apply": "restart_backend",
-                "hint": "BCC 已改懒加载，按需拉起；开启会增加启动耗时与风控暴露",
+                "hint": "开启会增加启动耗时与风控暴露；默认关闭，需要时再开",
             },
             "bcc_headless_mode": {
                 "label": "BCC 无头模式",
@@ -39,7 +39,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                     {"value": "both", "label": "两者兼容（观测优先，失效再弹窗）"},
                 ],
                 "apply": "restart_daemon",
-                "hint": ("observe=观测态静默更新（保活心跳读实时 cookie 写回 .env，"
+                "hint": ("observe=静默更新（后台自动刷新登录态，"
                          "不弹窗、零打扰，推荐）；popup=仅弹窗激活更新"
                          "（发现登录态待激活时弹指纹浏览器请用户点一下，"
                          "适合习惯人工确认的账号）；both=先观测态、"
@@ -65,21 +65,21 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "float", "default": 15.0, "min": 0.5, "max": 120.0,
                 "env": "DY_TIMEOUT_BCC_HTTP",
                 "apply": "hot",
-                "hint": "BCC 容器 HTTP 接口调用超时，覆盖约 18 处 hardcoded timeout=15",
+                "hint": "容器 HTTP 接口调用的超时上限（秒）",
             },
             "timeout_fast_probe": {
                 "label": "端口快速探活超时（秒）",
                 "type": "float", "default": 0.3, "min": 0.05, "max": 10.0,
                 "env": "DY_TIMEOUT_FAST_PROBE",
                 "apply": "hot",
-                "hint": "socket 端口是否已开的快速检测超时，覆盖约 13 处 hardcoded timeout=0.3",
+                "hint": "端口快速探测的超时上限（秒）",
             },
             "timeout_http_req": {
                 "label": "通用 HTTP 请求超时（秒）",
                 "type": "float", "default": 30.0, "min": 1.0, "max": 300.0,
                 "env": "DY_TIMEOUT_HTTP_REQ",
                 "apply": "hot",
-                "hint": "后端对外 HTTP API 调用的通用超时，覆盖约 23 处 hardcoded timeout=30",
+                "hint": "对外 HTTP 请求的通用超时上限（秒）",
             },
         },
     },
@@ -240,7 +240,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                     {"value": "anonymous", "label": "匿名连接（多房间，身份脱敏）"},
                 ],
                 "apply": "hot",
-                "hint": ("凭证 = 带账号 cookie，单账号单任务、能拿真实昵称/uid；"
+                "hint": ("凭证 = 登录账号态，单账号单任务、能拿真实昵称/uid；"
                          "匿名 = 不带 cookie，可同时盯多个房间但**身份被脱敏为 111111**"
                          "（只适合开播检测/热度，拿不到真昵称）。两模式风控面不同。"),
             },
@@ -415,7 +415,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "高价值加速窗口（秒）",
                 "type": "float", "default": 60.0, "min": 0, "max": 86400,
                 "env": "DY_HIGH_VALUE_WINDOW", "apply": "hot",
-                "hint": "高价值用户的缩短窗口（ADR-007 D2 热度加速）",
+                "hint": "高价值用户的缩短窗口（热度加速）",
             },
             "high_value_score_threshold": {
                 "label": "高价值关键词阈值",
@@ -595,7 +595,7 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "探针·启用定时巡检",
                 "type": "bool", "default": True,
                 "env": "DY_PROBE_PATROL_ENABLED", "apply": "restart_backend",
-                "hint": "关闭后只能手动跑（/api/probe/run）；探针零风控，建议保持开启",
+                "hint": "关闭后只能手动触发；探针零风控，建议保持开启",
             },
             "probe_patrol_interval_min": {
                 "label": "探针·巡检周期（分钟）",

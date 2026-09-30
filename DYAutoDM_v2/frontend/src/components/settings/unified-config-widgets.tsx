@@ -109,11 +109,17 @@ export function SchemaField(props: {
 
   return (
     <div
-      className={
-        "set-field" +
-        (s.risk ? " is-risk" : "") +
-        (props.dirty ? " is-dirty" : "")
-      }
+      className={"set-field" + (s.risk ? " is-risk" : "") + (props.dirty ? " is-dirty" : "")}
+      /**
+       * ★ 2026-09-30 根因修复（用户报障「配置中心副标题/输入框异常夸张、页面分布不合理」）：
+       *  `.set-field` 的 CSS 定义在 v0.43.16「旧 CSS 体系下线」时被删除，本组件仍在
+       *  引用该**死类名** ⇒ 字段丢失 `flex: 1 0 220px; min-width: 0`。父容器是
+       *  `display:flex; flex-wrap:wrap`，flex 项随即按 **max-content** 定宽；中文**无空格**
+       *  ⇒ 一行 hint 就是一个不可断「单词」⇒ max-content = 整条 hint 长度 ⇒ 字段被撑到
+       *  极宽、内部 `width:100%` 的 input 同步被撑爆、整页分布崩坏。
+       *  此处把关键布局内联化（不再依赖已删的 CSS），并把 hint 限制在字段宽度内换行。
+       */
+      style={{ flex: "1 1 240px", minWidth: 0, maxWidth: "100%" }}
     >
       <span style={{ color: "var(--color-text-muted)", fontSize: 11.5, display: "flex", gap: 6 }}>
         <span>{s.label}</span>
@@ -121,7 +127,7 @@ export function SchemaField(props: {
           <span style={{ color: "var(--color-accent)" }} title="已修改未保存">●</span>
         )}
         {s.risk && (
-          <span style={{ color: "var(--warn, #d8962c)" }} title="风控敏感项">⚠</span>
+          <span style={{ color: "var(--color-warning)" }} title="风控敏感项">⚠</span>
         )}
       </span>
 
@@ -192,13 +198,13 @@ export function SchemaField(props: {
       )}
 
       {err ? (
-        <span style={{ fontSize: 11, color: "var(--danger, #c0392b)", marginTop: 2 }}>
+        <span style={{ fontSize: 11, color: "var(--color-danger)", marginTop: 2 }}>
           {err}
         </span>
       ) : (
         <>
           {s.hint && (
-            <span style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 2 }}>
+            <span style={{ fontSize: 11, lineHeight: 1.5, overflowWrap: "anywhere", color: "var(--color-text-muted)", marginTop: 2 }}>
               {s.hint}
             </span>
           )}
