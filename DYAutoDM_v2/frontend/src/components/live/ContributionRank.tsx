@@ -1,20 +1,19 @@
 /**
- * 贡献榜卡（2026-09-30 新增）——「房间热度」卡片下方那块预留区域。
+ * 贡献榜（内联面板，2026-09-30）——嵌在「房间热度」卡内、热度曲线**下方**。
  *
- * ## 数据源与为什么不新增请求
- * 数据来自 `/api/live/stream` 的 `contribution_rank` 字段：后端 `LiveChatHook` 在
- * WS 生命周期内**后台轮询**上游 `/webcast/ranklist/audience/`（上游
- * `douyin_api.py:1799 get_live_contribution_rank`）写入。前端**不新增任何请求**——
- * 既复用 `App.tsx` 已有的 3s 常驻轮询（`queryKey:["live-stream"]`），也避免改
- * 正被并发会话占用的 `api/client.ts`。
+ * ## 为什么是内联面板而非独立卡片
+ * 用户指定落点：`[data-od-id="heat-chart"] > div:nth-of-type(2) > div.relative > svg > path` 下方，
+ * 即热度曲线 SVG 的**正下方**，不另立卡片（原独立 Card 会挤占右列、与热度卡分离）。
+ *
+ * ## 数据源
+ * 来自 `/api/live/stream` 的 `contribution_rank` 字段：后端 `LiveChatHook` 在 WS 生命周期内
+ * **后台轮询**上游 `/webcast/ranklist/audience/`（上游 `douyin_api.py:1799`）。前端不新增请求。
  *
  * ## 空态必须如实
- * 拿不到榜单时显示后端下发的 `rankReason`（未启动监听 / 拉取中 / 需登录 …），
- * **绝不假装「无贡献者」**（与项目「受理≠送达」同族的可观测纪律）。
+ * 拿不到榜单时显示后端下发的 `rankReason` 翻译，**绝不假装「无贡献者」**。
  */
 import { Heart } from "lucide-react";
 
-import { Section, Blank } from "@/components/page/kit";
 import { Avatar, hue } from "../../components/ui";
 
 import type { RankUser } from "./live-shared";
@@ -45,24 +44,23 @@ interface Props {
   reason?: string;
 }
 
-export default function ContributionRankCard({ rank, reason }: Props) {
+export default function ContributionRank({ rank, reason }: Props) {
   return (
-    <Section
-      data-od-id="live-rank"
-      title="贡献榜"
-      description={rank.length ? `Top ${rank.length} · 每分钟刷新` : "直播间贡献排行"}
-    >
+    <div className="mt-3 border-t border-[var(--color-border)] pt-2.5" data-od-id="live-rank">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[0.82rem] font-semibold tracking-tight text-[var(--color-text)]">
+          贡献榜
+        </span>
+        <span className="font-mono text-[0.7rem] text-[var(--color-text-muted)]">
+          {rank.length ? `Top ${rank.length} · 每分钟刷新` : ""}
+        </span>
+      </div>
       {rank.length === 0 ? (
-        <Blank>
-          <span className="text-[1.4rem]">🏆</span>
+        <div className="py-3 text-center text-[0.72rem] text-[var(--color-text-muted)]">
           {reasonText(reason)}
-          <br />
-          <span className="text-[0.72rem]">
-            贡献榜依赖登录态与主播身份，开播后由后台每分钟刷新。
-          </span>
-        </Blank>
+        </div>
       ) : (
-        <div className="flex max-h-[236px] flex-col gap-0.5 overflow-y-auto overscroll-contain">
+        <div className="flex max-h-[168px] flex-col gap-0.5 overflow-y-auto overscroll-contain">
           {rank.map((u, i) => (
             <div
               key={u.uid || i}
@@ -94,6 +92,6 @@ export default function ContributionRankCard({ rank, reason }: Props) {
           ))}
         </div>
       )}
-    </Section>
+    </div>
   );
 }

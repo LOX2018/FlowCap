@@ -47,7 +47,7 @@ import {
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
 import EngineCards from "./engine-cards";
-import ContributionRankCard from "./ContributionRankCard";
+import ContributionRank from "./ContributionRank";
 
 /** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
 const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
@@ -1125,11 +1125,10 @@ export default function LivePage(props: PageProps) {
               <div className="relative [&_svg]:block [&_svg]:w-full">
                 {heatChart(heat)}
               </div>
+              {/* 贡献榜（2026-09-30）：用户指定**内联**进本卡、热度曲线 svg 之下，
+                  不另立卡片。数据由 /api/live/stream 承载。 */}
+              <ContributionRank rank={rank} reason={rankReason} />
             </Section>
-
-            {/* 贡献榜（2026-09-30）：落在「房间热度」下方那块空白（用户黄框指定）。
-                数据由后端 /api/live/stream 承载，前端不新增请求。 */}
-            <ContributionRankCard rank={rank} reason={rankReason} />
           </div>
 
           <Section

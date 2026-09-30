@@ -239,10 +239,45 @@ class LiveChatHook(DouyinLive):
             logger.warning(f"[LIVE-042] [贡献榜] 拉取异常（非关键路径，忽略）: {e}")
             return []
 
+    def _resolve_anchor_identity(self) -> None:
+        """用**带凭证**的 get_live_info 补齐 anchor_id / sec_uid（贡献榜接口必需）。
+
+        为什么需要（实测根因）：AutoDM 按 ENG-023 走**匿名进房**取开播状态，
+        那份 room_info 只有 room_id；而贡献榜 `/webcast/ranklist/audience/`
+        要求 room_id+anchor_id+sec_anchor_id 三者齐全
+        （实测日志：[LIVE-040] 缺 room_id/anchor_id（匿名进房无 anchor），跳过
+         ⇒ 榜单恒空）。
+        本方法从直播间页脚本解析 anchor/sec_uid。**只在轮询线程内调用**、
+        一次成功即缓存，不阻断 WS 主链；失败仅告警（非关键路径）。
+        """
+        if self._room_info.get("anchor_id"):
+            return
+        if self.auth_ is None or not getattr(self.auth_, "cookie", None):
+            return
+        if not self._room_info.get("room_id"):
+            return
+        try:
+            from dy_apis.douyin_api import DouyinAPI
+            info = DouyinAPI.get_live_info(self.auth_, self.live_id)
+            if info and isinstance(info, dict) and info.get("anchor_id"):
+                self._room_info["anchor_id"] = str(info.get("anchor_id") or "")
+                self._room_info["sec_uid"] = str(info.get("sec_uid") or "")
+                if info.get("room_id"):
+                    self._room_info["room_id"] = str(info["room_id"])
+                logger.info(
+                    f"[贡献榜] 已补齐房间身份（带凭证 get_live_info）："
+                    f"room_id={self._room_info.get('room_id')} "
+                    f"anchor_id={self._room_info['anchor_id']}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LIVE-043] [贡献榜] 补齐 anchor/sec_uid 失败（非关键路径）: {e}")
+
     def _rank_loop(self) -> None:
         while not self._rank_stop.is_set():
             try:
-                if self._room_info:
+                # 匿名进房的 room_info 无 anchor_id ⇒ 首次补齐后才能取榜
+                if self._room_info and not self._room_info.get("anchor_id"):
+                    self._resolve_anchor_identity()
+                if self._room_info.get("anchor_id"):
                     rows = self.fetch_rank(self._room_info, self.auth_)
                     if rows:
                         self.contribution_rank = rows

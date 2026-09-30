@@ -121,6 +121,26 @@ def test_normalize_rank_garbage_never_raises():
         assert LiveChatHook._normalize_rank(bad) == []
 
 
+# ── ③ 房间身份补齐（贡献榜接口必需 anchor_id/sec_uid）────────────────────
+def test_resolve_anchor_noop_without_auth():
+    """无凭证 → 早退，不触网、不抛（补齐只在有 auth 时进行）。"""
+    h = _hook()
+    h._room_info = {"room_id": "123"}
+    h.auth_ = None
+    h.live_id = "123"
+    h._resolve_anchor_identity()
+    assert "anchor_id" not in h._room_info
+
+
+def test_resolve_anchor_skips_when_already_present():
+    """已具备 anchor_id → 直接返回，不再查询。"""
+    h = _hook()
+    h._room_info = {"room_id": "1", "anchor_id": "9", "sec_uid": "s"}
+    h.auth_ = None  # 即便无 auth，也不应进入查询分支
+    h._resolve_anchor_identity()
+    assert h._room_info["anchor_id"] == "9"
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
