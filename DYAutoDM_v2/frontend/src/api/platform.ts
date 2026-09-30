@@ -135,8 +135,12 @@ export interface MixItem {
 
 export interface NoticeItem {
   notice_id: string;
+  /** 中文标签（评论 / 新粉丝 / 点赞）；未知 type 原样回显数字 */
   type: string;
+  /** 可读文案（后端已按 type 从对应子对象提取，2026-09-30 修复） */
   content: string;
+  /** 动作发起者昵称（新粉丝/评论/点赞各取自己子对象） */
+  nickname?: string;
   create_time: number;
   is_read: boolean;
 }
@@ -171,9 +175,15 @@ export interface CommentFullItem {
 }
 
 export const platformApi = {
-  feed: (account: string, count = 20) =>
-    post<{ ok: boolean; items: AwemeItem[]; has_more: boolean }>(
-      "/api/platform/feed", { account, count }),
+  /** 推荐流。
+   *  ★ 2026-09-30：「换一批」由 `refreshIndex` 驱动 —— 上游 `get_feed` 的
+   *  `refresh_index` 是换一批旋钮，不同值返回互不重复的新批次（实测 0 重复）。
+   *  原实现后端把它硬编码为 2 ⇒ 每次同一批且条目少，前端无刷新入口。 */
+  feed: (account: string, count = 20, refreshIndex = 2) =>
+    post<{ ok: boolean; items: AwemeItem[]; has_more: boolean;
+           /** 被剔除的不可播条目数（直播卡/空壳）；前端可提示 */
+           filtered?: number; refresh_index?: number }>(
+      "/api/platform/feed", { account, count, refresh_index: refreshIndex }),
 
   userWorks: (account: string, user_url: string, limit = 50) =>
     post<{ ok: boolean; items: AwemeItem[]; total: number }>(

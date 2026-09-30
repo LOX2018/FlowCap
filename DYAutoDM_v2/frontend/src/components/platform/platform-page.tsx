@@ -12,7 +12,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User, MessageSquare,
-  Users, BookOpen, AlertTriangle,
+  Users, BookOpen, AlertTriangle, RefreshCw,
 } from "lucide-react";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -108,9 +108,11 @@ export default function PlatformPage(props: PageProps) {
   };
 
   // 推荐流：仅在该 tab 激活时请求（enabled 控制，避免无用主动请求）
+  // ★ 2026-09-30：新增「换一批」——refreshIdx 递增即请求互不重复的新批次。
+  const [feedIdx, setFeedIdx] = useState(2);
   const feedQ = useQuery({
-    queryKey: ["platform-feed", account],
-    queryFn: () => platformApi.feed(account, 20),
+    queryKey: ["platform-feed", account, feedIdx],
+    queryFn: () => platformApi.feed(account, 20, feedIdx),
     enabled: !!account && tab === "feed",
     staleTime: 120_000,
   });
@@ -295,6 +297,26 @@ export default function PlatformPage(props: PageProps) {
         </TabsList>
 
         <TabsContent value="feed">
+          {/* ★ 2026-09-30：推荐流「换一批」按钮（用户报障：只有 6 个且没有刷新按钮）。
+              上游 refresh_index 是换一批旋钮，递增即取新批次。 */}
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-[0.78rem] text-[var(--color-text-secondary)]">
+              {feedQ.data?.items?.length
+                ? `本批 ${feedQ.data.items.length} 个作品`
+                : ""}
+              {typeof feedQ.data?.filtered === "number" && feedQ.data.filtered > 0
+                ? `（已过滤 ${feedQ.data.filtered} 个不可播条目）` : ""}
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={feedQ.isFetching}
+              onClick={() => setFeedIdx((n) => n + 1)}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${feedQ.isFetching ? "animate-spin" : ""}`} />
+              换一批
+            </Button>
+          </div>
           {renderQ(feedQ, "video")}
         </TabsContent>
 

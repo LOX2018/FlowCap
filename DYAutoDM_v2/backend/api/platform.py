@@ -173,6 +173,91 @@ def _trim_video(video: dict) -> dict:
     return out
 
 
+def _is_playable(w: dict) -> bool:
+    """条目是否**可播/可展示**（视频或图文）。
+
+    ★ 2026-09-30（推荐流「空视频噪音」根因）：`/tab/feed/` 返回的 `aweme_list`
+    **混入非作品卡** —— 实测存在 `aweme_type=101` 的**直播推荐卡**（顶层带
+    `cell_room`，但**没有 `video` 子树**）。`_pick_aweme` 只读 `video.cover`
+    ⇒ 该卡落到前端即「无封面 / 0 赞 / 0 评 / 无描述」的占位噪音。
+
+    判据（只看 payload 事实，不猜类型号）：
+      · 有 `video.play_addr.url_list`（可播）或 `video.bit_rate`（有清晰度档）→ 作品；
+      · 或 `images` 非空（图文作品）。
+    其余（直播卡 / 未解析空壳）判为噪音，由 `/feed` 剔除并如实计数。
+    """
+    if not isinstance(w, dict):
+        return False
+    video = w.get("video") or {}
+    if isinstance(video, dict):
+        if (video.get("play_addr") or {}).get("url_list"):
+            return True
+        if video.get("bit_rate"):
+            return True
+    if w.get("images"):
+        return True
+    return False
+
+
+# 站内通知 type → 中文标签（实测取值，2026-09-30）
+_NOTICE_TYPE_LABELS = {
+    "31": "评论",
+    "33": "新粉丝",
+    "41": "点赞",
+}
+
+
+def _notice_type_label(t: Any) -> str:
+    """通知 type 数字 → 中文标签（未知 type 原样回显数字，不猜语义）。"""
+    s = str(t) if t not in (None, "") else ""
+    return _NOTICE_TYPE_LABELS.get(s, s)
+
+
+def _notice_actor_text(n: dict) -> tuple[str, str]:
+    """从**各 type 专属子对象**取「谁 + 做了什么」文案。
+
+    ★ 2026-09-30 根因修复（用户报障「站内通知全是噪音」）：
+      `notice_list_v2` 的通知**没有顶层 content**，文案分散在 type 专属子对象：
+        · `33` 新粉丝 → `follow.from_user.nickname`（谁关注了我）
+        · `31` 评论   → `comment.comment.text`（评论内容）+ `...user.nickname`
+        · `41` 点赞   → `digg.aweme.desc`（被赞作品）+ `...author.nickname`
+      旧实现只读 `digg.aweme.desc` ⇒ 24/47 条（新粉丝）与 10/47 条（评论）
+      全显示「（无内容）」。
+
+    返回 (actor, text)：actor=动作发起者昵称，text=可读内容（含前缀标签）。
+    方向语义仅按**实测事实**标注（见 `_notice_type_label`），凭空不写。
+    """
+    if not isinstance(n, dict):
+        return "", ""
+    t = str(n.get("type") or "")
+    if t == "33":  # 新粉丝
+        who = (((n.get("follow") or {}).get("from_user") or {}).get("nickname")) or ""
+        return who, (f"{who} 关注了你" if who else "有新粉丝关注了你")
+    if t == "31":  # 评论
+        c = (n.get("comment") or {}).get("comment") or {}
+        who = ((c.get("user") or {}).get("nickname")) or ""
+        body = c.get("text") or ""
+        if who and body:
+            return who, f"{who}：{body}"
+        if body:
+            return who, body
+        # ★ 上游未给评论文本（实测存在）→ 用**方向中立**的兜底，绝不编内容
+        return who, "评论通知（平台未提供内容）"
+    if t == "41":  # 点赞
+        aw = (n.get("digg") or {}).get("aweme") or {}
+        who = ((aw.get("author") or {}).get("nickname")) or ""
+        desc = aw.get("desc") or ""
+        if desc:
+            return who, (f"{who}：{desc}" if who else desc)
+        # ★ 上游被赞作品 desc 为 null（实测 11/47）→ 中立兜底，不编方向
+        return who, "点赞通知（平台未提供作品信息）"
+    # 未知 type：回落到通用字段（不猜语义）
+    return (
+        n.get("nickname") or "",
+        n.get("content") or n.get("text") or "",
+    )
+
+
 def _pick_aweme(w: dict) -> dict:
     """裁剪作品字段（只保留前端需要的，避免把巨量原始 JSON 透传）。"""
     if not isinstance(w, dict):
@@ -240,6 +325,13 @@ def _pick_user(u: dict) -> dict:
 class FeedReq(BaseModel):
     account: str
     count: int = 20
+    # ★ 2026-09-30（推荐流「换一批」）：`refresh_index` 是基座 `get_feed` 的
+    #   **换一批旋钮**。实测（真实账号，2026-09-30）：
+    #     · 不同 refresh_index → 返回**互不重复**的新批次（ri=1..12 共 58 条、0 重复）；
+    #     · 同一 refresh_index 连取两次 → 结果会变（⇒ 它是**刷新种子**，非稳定游标）；
+    #     · 单次返回**条数不固定**（实测 2~6 条，与 count=20 无关），故 count 只作上限。
+    #   原实现把它**硬编码为 "2"** ⇒ 前端每次都是同一批的少量条目，且无「换一批」入口。
+    refresh_index: int = 2
 
 
 class UserWorksReq(BaseModel):
@@ -377,13 +469,23 @@ class CommentDmReq(BaseModel):
 
 @router.post("/feed")
 async def get_feed(req: FeedReq) -> dict[str, Any]:
-    """推荐流。对应基座 `get_feed`。"""
+    """推荐流。对应基座 `get_feed`。
+
+    ★ 2026-09-30 两处修正（用户报障「推荐流有空视频噪音，且只有 6 个，没有刷新按钮」）：
+      ① **refresh_index 透传**：原实现把换一批旋钮硬编码为 `"2"` ⇒ 每次同一批；
+         现由 `FeedReq.refresh_index` 透传，前端「换一批」递增它即可取到新批次。
+      ② **剔除不可播噪音**：上游 `aweme_list` 会混入**直播推荐卡**（`aweme_type=101`，
+         带 `cell_room` 但无 `video`）⇒ 原样下发即「无封面 / 0 赞」占位。
+         现按 payload 事实（play_addr / bit_rate / images）过滤，并**如实上报**
+         `filtered` 计数（铁律「禁假成功」：过滤不静默，前端可提示）。
+    """
     auth = _auth_for(req.account)
     api = _api()
+    ri = max(1, min(int(req.refresh_index), 50))
     try:
         # 基座真实签名：get_feed(auth, count='20', refresh_index='2')
         raw = await asyncio.to_thread(api.get_feed, auth,
-                                      str(max(1, min(req.count, 50))), "2")
+                                      str(max(1, min(req.count, 50))), str(ri))
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[PLT-001] " + f"推荐流获取失败: {type(e).__name__}")
         raise HTTPException(502, f"推荐流获取失败: {type(e).__name__}")
@@ -407,7 +509,16 @@ async def get_feed(req: FeedReq) -> dict[str, Any]:
                         aw = None
                 if isinstance(aw, dict):
                     items.append(aw)
-    return {"ok": True, "items": [_pick_aweme(w) for w in items],
+    playable = [w for w in items if _is_playable(w)]
+    filtered = len(items) - len(playable)
+    if filtered:
+        # 若过滤后为空（整批都是直播卡/空壳），保留原批**并在响应说明**，
+        # 避免把"确实没取到作品"伪装成「暂无内容」，用户可点「换一批」重试。
+        logger.info(f"[PLT-001] 推荐流剔除不可播条目 {filtered}/{len(items)}（ri={ri}）")
+    out = playable or items
+    return {"ok": True, "items": [_pick_aweme(w) for w in out],
+            "filtered": filtered,
+            "refresh_index": ri,
             "has_more": bool(raw.get("has_more")) if isinstance(raw, dict) else False}
 
 
@@ -856,24 +967,20 @@ async def notice_list(req: NoticeReq) -> dict[str, Any]:
     for n in (items or []):
         if not isinstance(n, dict):
             continue
+        t = _notice_type_label(n.get("type"))
+        # ★ 2026-09-30 根因修复（用户报障「站内通知全是噪音」）：
+        #   `notice_list_v2` 的通知**没有顶层 `content`**，文案分散在**各 type
+        #   专属子对象**里（实测 type 分布）：`33`→`follow.from_user.nickname`（新粉丝）、
+        #   `31`→`comment.comment.text`（评论）、`41`→`digg.aweme.desc`（点赞）。
+        #   旧实现**只读 `digg.aweme.desc`** ⇒ 非点赞类通知 content 恒空 ⇒
+        #   前端显示「（无内容）」占位噪音（实测 47 条中 34 条为空）。
+        actor, text = _notice_actor_text(n)
         out.append({
             "notice_id": str(n.get("notice_id") or n.get("nid_str")
                              or n.get("nid") or ""),
-            "type": n.get("type") or n.get("type_label") or "",
-            # ★ 2026-09-14 实测修正：`notice_list_v2` 没有 `content` 字段，
-            #   文案在 `digg.aweme.desc`；作者昵称在 `digg.aweme.author.nickname`。
-            #   原实现只读 `content` ⇒ v2 下**全部通知显示为空**。
-            "content": (
-                n.get("content") or n.get("text")
-                or ((n.get("digg") or {}).get("aweme") or {}).get("desc")
-                or ""
-            )[:300],
-            "nickname": (
-                n.get("nickname")
-                or ((((n.get("digg") or {}).get("aweme") or {}).get("author") or {})
-                    .get("nickname"))
-                or ""
-            ),
+            "type": t,
+            "content": text[:300],
+            "nickname": actor,
             "create_time": n.get("create_time") or 0,
             "is_read": bool(n.get("is_read") or n.get("has_read")),
         })
