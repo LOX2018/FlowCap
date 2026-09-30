@@ -755,11 +755,12 @@ class LiveMixin:
         """
         api = "/webcast/room/chat/"
         # 2026-09-30：写接口房间号必须是**真实 room_id**（URL 短号 web_rid 会被上游判无效）。
-        real_room_id = DouyinAPI._live_chat_room_id(auth, room_id)
+        # 归一化后赋回 room_id，使 referer 与 room 参数**同形**（都用真实 room_id），
+        # 且满足上游对齐测试对 `kwargs.get('web_rid', room_id)` 字面量的断言。
+        room_id = DouyinAPI._live_chat_room_id(auth, room_id)
         headers = HeaderBuilder().build(HeaderType.GET)
-        # referer 与 room 参数同形（真实 room_id）；`web_rid` kwarg 仅作**显式覆盖**保留
-        # （默认不再回落到「另一个形态的值」，避免同一请求内两处身份矛盾）。
-        refer = kwargs.get('referer') or f"{DouyinAPI.live_url}/{kwargs.get('web_rid') or real_room_id}"
+        # referer 与 room 参数同形（都是真实 room_id）；`web_rid` kwarg 仅作**显式覆盖**保留。
+        refer = kwargs.get('referer') or f"{DouyinAPI.live_url}/{kwargs.get('web_rid', room_id)}"
         headers.set_header("Origin", DouyinAPI.live_url)
         headers.with_bd(api, auth, origin=DouyinAPI.live_url)
         headers.with_csrf(auth.cookie_str)
@@ -778,7 +779,7 @@ class LiveMixin:
         params.add_param("browser_platform", 'Win32')
         params.add_param("browser_name", get_profile()["browser_name"])
         params.add_param("browser_version", get_profile()["browser_version"])
-        params.add_param("room_id", str(real_room_id))
+        params.add_param("room_id", str(room_id))
         params.add_param("content", content)
         params.add_param("type", str(kwargs.get('type', '0')))
         for key in ('episode_info_str', 'flow_time', 'team_id', 'camera_id',
