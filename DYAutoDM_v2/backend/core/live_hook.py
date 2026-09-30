@@ -89,6 +89,7 @@ class LiveChatHook(DouyinLive):
         #   ② `RoomStatsMessage` 文案解析（`X万点赞`）：是**绝对值**，可作校准锚。
         # 合并规则：取两者较大值，且**绝不被解析到的 0 回退清零**（0 是「未解析到」不是「无点赞」）。
         self._likes_total: int = 0        # 来自 ① 的累计增量
+        self._likes_real: Optional[int] = None  # 真实绝对值（reflow/info，匿名）
         self._likes_from_ws: bool = False  # 是否已收到过 WS 点赞事件
         # ---- 贡献榜（2026-09-30 新增，用户授权接入）----
         # 上游接口 `/webcast/ranklist/audience/`（上游 `douyin_api.py:1799
@@ -100,6 +101,7 @@ class LiveChatHook(DouyinLive):
         self._rank_thread: Optional[threading.Thread] = None
         self._rank_stop = threading.Event()
         self._rank_interval: int = 60
+        self._automation_svc = None   # 写接口自动化（定时弹幕/分步点赞）
 
     # ------------------------------------------------------------------
     # 实时信息流快照（供 API 层 getLiveStream 查询）
@@ -111,28 +113,75 @@ class LiveChatHook(DouyinLive):
         # 点赞两个来源同时归零；贡献榜随新会话清空
         self._likes_total = 0
         self._likes_from_ws = False
+        self._likes_real = None            # 真实绝对值随会话归零（换房不残留）
         self.contribution_rank = []
 
     def _merge_likes(self, stats_val: int) -> int:
-        """合并「点赞累计」两个来源，写回 room_stats["likes"]。
+        """合并「点赞」三源，写回 room_stats["likes"]（2026-10-01 语义修正）。
 
-        判据（防「解析到的 0 把真值清零」）：
-          · ws_total  = WS 逐帧累加的增量（会话内只增不减）；
-                        None 表示本会话尚未收到任何 LikeMessage。
-          · stats_val = RoomStats 文案解析出的绝对值（可为 0 = 未解析到）。
-        规则：任一为 None/未取得 → 用另一方；两者都有 → 取较大值。
+        ## 语义（关键，勿再改回「取 max」）
+
+        · `real`     = **真实绝对值**（`reflow/info` 的 room.like_count）——
+                       房间**历史累计**点赞，实测 976 量级。**权威基线**。
+        · `ws_delta` = 本会话**新增**的点赞增量（LikeMessage.count 逐帧累加）。
+        · `stats_val`= RoomStats **文案**解析值 —— 实测当前文案为「30在线观众」，
+                       **不含点赞** ⇒ 恒 0，仅作历史兼容。
+
+        TOTAL = real + ws_delta   （**相加**，不是取 max：
+          real 是刷新时刻的历史存量，ws_delta 是其后新发生的量，二者不重叠）
+        无 real 时退化为 max(ws_delta, stats_val)。
+
+        ## 防重复计数
+
+        每次 `_refresh_real_likes` 成功**重置** ws_delta（并把 _likes_from_ws 置回
+        False）—— 因为新的 real 快照**已包含**此前的增量；不重置会重复累加。
+
+        ## 防降级
+
         绝不把 likes 从 >0 降到 0（0 只代表「没解析到」）。
         """
-        ws_total = self._likes_total if self._likes_from_ws else None
-        if ws_total is None:
-            merged = stats_val
-        elif stats_val is None or stats_val <= 0:
-            merged = ws_total
+        real = getattr(self, "_likes_real", None)
+        ws_delta = int(self._likes_total) if self._likes_from_ws else 0
+        if real is not None:
+            total = int(real) + ws_delta
         else:
-            merged = max(ws_total, stats_val)
+            total = max(ws_delta, int(stats_val or 0))
         cur = int(self.room_stats.get("likes", 0) or 0)
-        self.room_stats["likes"] = max(cur, int(merged or 0))
+        self.room_stats["likes"] = max(cur, int(total or 0))
         return self.room_stats["likes"]
+
+    def _refresh_real_likes(self) -> None:
+        """经**匿名** `reflow/info` 取真实点赞总数（只读；失败静默沿用既有值）。
+
+        ## 为什么需要（2026-10-01 实测，修「红心读不到真实点赞数量」）
+
+        1. WS `RoomStatsMessage` 文案实测为 `30在线观众` —— **不含点赞** ⇒ 旧解析恒 0；
+        2. WS `LikeMessage` 只在「有人正在点赞」时推事件 ⇒ 无事件时累计恒 0；
+        3. ⇒ 两源都取不到「房间总点赞」，红心只能显示 0。
+           **`reflow/info` 的 `room.like_count` 才是权威值**（实测同刻 976）。
+
+        用**匿名**：实测匿名与带凭证取值完全相同，而带凭证在部分账号上会被该
+        端点拒绝（101）—— 只读统计不该被账号态拖累（同 ENG-023 纪律）。
+        """
+        rid = str((self._room_info or {}).get("room_id") or "")
+        if not rid:
+            return
+        try:
+            from link_resolve import fetch_room_stats
+            st = fetch_room_stats(rid)          # 匿名（不传 auth）
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[房间统计] 真实点赞取数失败（沿用既有值）: {e}")
+            return
+        if not st:
+            return
+        _lc = int(st.get("like_count") or 0)
+        if _lc > 0:
+            self._likes_real = _lc
+            # 新快照已含此前增量 ⇒ 重置 ws_delta，否则下次会重复累加
+            self._likes_total = 0
+            self._likes_from_ws = False
+            self._merge_likes(0)
+            logger.info(f"[房间统计] 真实点赞总数={_lc}（匿名 reflow，room_id={rid}）")
 
     def feed_snapshot(self, limit: int = 120) -> list[dict]:
         """返回最近 limit 条信息流（前端倒序展示）。"""
@@ -285,10 +334,32 @@ class LiveChatHook(DouyinLive):
                     elif not self.contribution_rank:
                         # 失败/空 **不覆盖**已有非空榜（避免抖动清空）
                         self._rank_reason = "empty"
+                # 2026-10-01：顺带刷新**真实点赞总数**（同一 60s 节拍）。
+                # 放在贡献榜之外、**不依赖 anchor_id** —— 点赞匿名可取，
+                # 不该被「贡献榜需要身份」的前提挡住。
+                self._refresh_real_likes()
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[贡献榜] 轮询异常: {e}")
             if self._rank_stop.wait(self._rank_interval):
                 break
+
+    def _automation(self):
+        """惰性构造写接口自动化服务（复用本 hook 的 auth 与 room_id）。"""
+        if self._automation_svc is None:
+            from services.live_automation import LiveAutomation
+            self._automation_svc = LiveAutomation(
+                auth_provider=lambda: self.auth_,
+                room_id_provider=lambda: str((self._room_info or {}).get("room_id") or ""),
+            )
+        return self._automation_svc
+
+    def automation_status(self) -> dict:
+        """供 API 读：写接口自动化运行态（未启动时返回空态）。"""
+        try:
+            return self._automation().status()
+        except Exception:  # noqa: BLE001
+            return {}
+
 
     def start_rank_poll(self, interval: int = 60) -> None:
         if self._rank_thread and self._rank_thread.is_alive():
@@ -319,6 +390,12 @@ class LiveChatHook(DouyinLive):
             self.start_rank_poll()
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[贡献榜] 轮询启动失败: {e}")
+        # 2026-10-01：写接口自动化（定时弹幕 / 分步批量点赞）随监听生命周期启停。
+        # 默认休眠（总开关 automation_enabled 默认 False）⇒ 不改配置即零出站。
+        try:
+            self._automation().start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[自动化] 启动失败（不影响监听）: {e}")
         super().start_ws(room_info)
 
     def on_close(self, ws: Any, close_status_code: Any = None, close_msg: Any = None) -> None:
@@ -328,6 +405,11 @@ class LiveChatHook(DouyinLive):
                 self.stop_rank_poll()
             except Exception:
                 pass
+            try:
+                if self._automation_svc is not None:
+                    self._automation_svc.stop()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[自动化] 停止失败: {e}")
         super().on_close(ws, close_status_code, close_msg)
 
     @staticmethod

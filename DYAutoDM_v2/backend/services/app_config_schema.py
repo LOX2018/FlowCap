@@ -200,6 +200,57 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "单次点赞上限", "type": "int", "default": 1000,
                 "min": 1, "max": 1000, "env": None, "apply": "hot",
             },
+            # ===== 写接口**自动化**（2026-10-01 新增；总开关默认关）=====
+            # 全部默认休眠：不改任何配置 ⇒ 零出站（可断言的零回归）。
+            # 消费点：services/live_automation.py（由 live_hook 随监听生命周期启停）。
+            "automation_enabled": {
+                "label": "写接口自动化总开关", "type": "bool", "default": False,
+                "env": None, "apply": "hot",
+                "hint": "关则以下全不生效"
+            },
+            "danmaku_timer_enabled": {
+                "label": "定时发弹幕", "type": "bool", "default": False,
+                "env": None, "apply": "hot",
+                "hint": "监听开始才生效"
+            },
+            "danmaku_timer_min": {
+                "label": "弹幕间隔下限", "type": "float", "default": 3.0,
+                "min": 0.5, "max": 120.0, "env": None, "apply": "hot",
+                "hint": "单位：分钟"
+            },
+            "danmaku_timer_max": {
+                "label": "弹幕间隔上限", "type": "float", "default": 6.0,
+                "min": 0.5, "max": 240.0, "env": None, "apply": "hot",
+                "hint": "每轮在此区间随机"
+            },
+            "danmaku_timer_max_per_run": {
+                "label": "单轮最多发几条", "type": "int", "default": 3,
+                "min": 1, "max": 20, "env": None, "apply": "hot",
+                "hint": "正常每轮 1 条"
+            },
+            "like_batch_enabled": {
+                "label": "分步批量点赞", "type": "bool", "default": False,
+                "env": None, "apply": "hot",
+                "hint": "监听开始才生效"
+            },
+            "like_batch_total": {
+                "label": "批量点赞总数", "type": "int", "default": 3000,
+                "min": 1, "max": 100000, "env": None, "apply": "hot",
+            },
+            "like_batch_steps": {
+                "label": "分几步完成", "type": "int", "default": 4,
+                "min": 1, "max": 50, "env": None, "apply": "hot",
+            },
+            "like_batch_step_max": {
+                "label": "单步点赞上限", "type": "int", "default": 1000,
+                "min": 1, "max": 1000, "env": None, "apply": "hot",
+                "hint": "超出则自动增加步数"
+            },
+            "like_batch_cooldown_sec": {
+                "label": "步间冷却（秒）", "type": "int", "default": 150,
+                "min": 120, "max": 1800, "env": None, "apply": "hot",
+                "hint": "下限 120 秒"
+            },
         },
     },
 

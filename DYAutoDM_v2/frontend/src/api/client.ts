@@ -2533,6 +2533,16 @@ export interface RoomConfig {
   acct?: string | null;
   auto_link_mic?: boolean;
   link_mic_mode?: "audio" | "video";
+  /** ===== 写接口自动化（2026-10-01；**默认关**）===== */
+  danmaku_pool?: { text: string; enabled: boolean }[];
+  danmaku_timer_enabled?: boolean;
+  danmaku_timer_min?: number;      // 间隔下限（分钟）
+  danmaku_timer_max?: number;      // 间隔上限（分钟）
+  like_batch_enabled?: boolean;    // 分步批量点赞
+  like_batch_total?: number;       // 点赞总数
+  like_batch_steps?: number;       // 分几步完成
+  like_batch_step_max?: number;    // 单步上限
+  like_batch_cooldown_sec?: number;// 步间冷却秒数
   updated_at?: number;
 }
 

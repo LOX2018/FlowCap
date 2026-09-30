@@ -168,6 +168,98 @@ def _follow_redirects(url, cookies=None, timeout=15):
         return url
 
 
+def fetch_room_stats(room_id, auth=None, ua=None):
+    """经 `reflow/info` 取房间**真实统计**：点赞总数 / 在线 / 房间状态。
+
+    返回 `{"like_count": int, "total_user": int, "status": int, "title": str,
+    "user_count": int}`；失败返回 `{}`。
+
+    ## 为什么必须走这里（2026-10-01 实测，修「红心读不到真实点赞」）
+
+    **实测事实（同刻、同一房间 room_id=7691345987004009258）**：
+
+    | 来源 | 结果 |
+    |---|---|
+    | WS `RoomStatsMessage` 文案 | `30在线观众` —— **不含点赞** ⇒ 旧解析恒得 `点赞=0` |
+    | WS `LikeMessage` | 只有「有人正在点赞」时才推事件；无点赞事件时累计恒 0 |
+    | 直播页 HTML `like_count` | `0`（且在商品上下文，非房间统计） |
+    | **`reflow/info` → `room.like_count`** | **976** ✅ 真实值 |
+    | `reflow/info` → `room.stats.total_user` | **2943** ✅（并含 `digg_count`/`comment_count`/`fan_ticket`） |
+
+    ## 为什么不带凭证（**关键**）
+
+    本函数**默认匿名**（`auth=None` ⇒ 不传 cookie）。实测匿名调用
+    `status_code=0` 且 `room.like_count=976` 与带凭证**完全相同**；
+    而带凭证在部分账号上会被该端点拒绝（实测某账号 `status_code=101
+    invalid session`，见交接卡 HC-15 / 台账 T-03）。
+    ⇒ 取**只读统计**没必要承担「被账号态拖累」的风险，匿名即可（也符合
+    ENG-023「状态探测走匿名」的既有纪律）。
+
+    只读、幂等；失败返回 `{}`（调用方沿用既有值，绝不把真实值清零）。
+    """
+    ua = ua or _ua()
+    rid = str(room_id or "")
+    if not rid:
+        return {}
+    if auth is not None and not getattr(auth, "cookie", None):
+        auth = None                      # 空凭证等于匿名，避免传出空 cookies
+    params = _build_reflow_params(
+        rid, "", ms_token=(getattr(auth, "msToken", "") or "") if auth else "")
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    try:
+        xb = _xbogus_sign(query, ua)
+    except Exception:  # noqa: BLE001
+        xb = ""
+    url = f"{_REFLOW_URL}?{query}&X-Bogus={xb}"
+    headers = {"User-Agent": ua, "Referer": "https://live.douyin.com/",
+               "Accept": "application/json"}
+    cookies = getattr(auth, "cookie", None) if auth else None
+    try:
+        resp = requests.get(url, headers=headers, cookies=cookies,
+                            timeout=15, verify=tls_verify())
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-014] [resolve] fetch_room_stats 请求失败: {e}")
+        return {}
+    _sc = data.get("status_code") if isinstance(data, dict) else None
+    if _sc not in (0, None):
+        _d = data.get("data") if isinstance(data.get("data"), dict) else {}
+        logger.warning(f"[LIVE-014] [resolve] fetch_room_stats 被拒："
+                       f"status_code={_sc} msg={str(_d.get('message') or '')!r}")
+        return {}
+    try:
+        room = (data.get("data") or {}).get("room") or {}
+        stats = room.get("stats") if isinstance(room.get("stats"), dict) else {}
+
+        def _i(*vals) -> int:
+            """取第一个可用值；**0 视为「该源没有值」继续往后找**（沿用本项目
+            「0 只代表没解析到」的既有判据），全无则 0。"""
+            for v in vals:
+                try:
+                    if v not in (None, ""):
+                        i = int(v)
+                        if i:
+                            return i
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            return 0
+
+        return {
+            # 点赞总数：房间级 like_count 是权威（实测 976）；stats.digg_count 仅作兜底
+            "like_count": _i(room.get("like_count"), stats.get("digg_count"),
+                             stats.get("like_count")),
+            # ⚠️ 语义提醒：这是**人气/累计观看**（实测 2943），**不是**并发在线人数
+            # （后者来自 WS `RoomStatsMessage` 文案「30在线观众」）。两者不可互换。
+            "popularity": _i(stats.get("total_user"), room.get("user_count")),
+            "status": _i(room.get("status")),
+            "title": str(room.get("title") or ""),
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-014] [resolve] fetch_room_stats 解析失败: {e}")
+        return {}
+
+
 def _extract_reflow_room_id(url):
     """从 `/webcast/reflow/<id>` 抽 **room_id**（⚠️ 是 room_id，**不是** web_rid）。
 

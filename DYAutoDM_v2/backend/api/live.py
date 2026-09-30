@@ -96,6 +96,9 @@ async def get_stream(request: Request) -> LiveStreamResponse:
         dmPaused=engine_value == "paused",
         contribution_rank=_rank,
         rankReason=_rank_reason,
+        # 写接口自动化运行态（定时弹幕 / 分步点赞进度）；未启用时为空 dict
+        automation=(live.automation_status()
+                    if hasattr(live, "automation_status") else {}),
     )
 
 

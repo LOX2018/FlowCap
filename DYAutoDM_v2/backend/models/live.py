@@ -45,6 +45,10 @@ class LiveStreamResponse(BaseModel):
     dmRunning: bool = False  # 私信引擎是否运行（running/paused/starting/stopping）
     dmPaused: bool = False  # 私信引擎是否暂停
 
+    # 写接口自动化（2026-10-01）：定时弹幕 / 分步批量点赞的运行态与进度。
+    # 未启用时为空 dict（前端据此决定是否显示进度）。
+    automation: dict = Field(default_factory=dict)
+
 
 class DanmakuRequest(BaseModel):
     content: str

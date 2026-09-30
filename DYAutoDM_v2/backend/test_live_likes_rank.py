@@ -144,3 +144,37 @@ def test_resolve_anchor_skips_when_already_present():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+# ── ③ 真实绝对值（reflow/info）+ 叠加语义（2026-10-01 新增）─────────────────
+def test_real_like_is_additive_not_max():
+    """真实值 + WS 增量必须**相加**（976+5=981），不是取 max。
+
+    语义：real = 刷新时刻的**历史累计存量**；ws_delta = 其后**新发生**的量；
+    二者不重叠 ⇒ 相加。取 max 会把新增点赞吞掉（实测踩到过）。
+    """
+    h = _hook()
+    h._likes_real = 976
+    h._merge_likes(0)
+    assert h.room_stats["likes"] == 976
+    h._likes_total, h._likes_from_ws = 5, True
+    assert h._merge_likes(0) == 981, "真实值应叠加 WS 增量"
+
+
+def test_refresh_real_resets_ws_delta_no_double_count():
+    """刷新真实值后必须重置 ws_delta —— 新快照已含此前增量，不重置会重复累加。"""
+    h = _hook()
+    h._likes_real, h._likes_total, h._likes_from_ws = 976, 5, True
+    assert h._merge_likes(0) == 981
+    # 模拟 _refresh_real_likes 成功后的重置动作
+    h._likes_real = 981
+    h._likes_total, h._likes_from_ws = 0, False
+    assert h._merge_likes(0) == 981, "重置后不得变成 986（双计）"
+
+
+def test_real_zero_does_not_downgrade():
+    """真实值取到 0（未开播/解析不到）不得把已有值清零。"""
+    h = _hook()
+    h._likes_real = 976
+    h._merge_likes(0)
+    h._likes_real = None
+    assert h._merge_likes(0) == 976

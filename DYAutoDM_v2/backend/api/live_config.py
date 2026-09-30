@@ -159,6 +159,16 @@ class StrategyBody(BaseModel):
     acct: str | None = None
     auto_link_mic: bool | None = None
     link_mic_mode: str | None = None   # "audio" | "video"
+    # ===== 写接口自动化（2026-10-01 新增；**默认关**，策略里配好才生效）=====
+    danmaku_pool: list | None = None            # 弹幕文案库（定时弹幕随机取一条）
+    danmaku_timer_enabled: bool | None = None   # 定时发弹幕
+    danmaku_timer_min: float | None = None      # 间隔下限（分钟）
+    danmaku_timer_max: float | None = None      # 间隔上限（分钟）
+    like_batch_enabled: bool | None = None      # 分步批量点赞
+    like_batch_total: int | None = None         # 点赞总数
+    like_batch_steps: int | None = None         # 分几步完成
+    like_batch_step_max: int | None = None      # 单步上限
+    like_batch_cooldown_sec: int | None = None  # 步间冷却秒数
 
 
 class StrategyApplyBody(BaseModel):
@@ -301,6 +311,18 @@ def _apply_to_task_kv(cfg: dict, room_id: str | None = None,
     if url:
         cur["live_url"] = url
         cur["live_id"] = url.rsplit("/", 1)[-1]
+    # 写接口自动化：落在 cur["live"] 子字典（**服务端权威**；设置页 live 分区是全局兜底）。
+    # 只写显式给出的键 —— 未配的项保持运行时既有值，避免策略保存把别处配置清空。
+    _auto_keys = ("danmaku_pool", "danmaku_timer_enabled", "danmaku_timer_min",
+                  "danmaku_timer_max", "like_batch_enabled", "like_batch_total",
+                  "like_batch_steps", "like_batch_step_max", "like_batch_cooldown_sec")
+    _live = cur.get("live") if isinstance(cur.get("live"), dict) else {}
+    for _k in _auto_keys:
+        _v = cfg.get(_k)
+        if _v is not None:
+            _live[_k] = _v
+    if _live:
+        cur["live"] = _live
     set_kv_json("config", cur)
     return cur
 

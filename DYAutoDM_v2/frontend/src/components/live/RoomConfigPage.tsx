@@ -61,6 +61,16 @@ const EMPTY_DRAFT: Partial<RoomConfig> = {
   auto_link_mic: false,
   dm_pool: [],
   link_mic_mode: "audio",
+  // 写接口自动化（默认关 ⇒ 不改即零出站）
+  danmaku_pool: [],
+  danmaku_timer_enabled: false,
+  danmaku_timer_min: 3,
+  danmaku_timer_max: 6,
+  like_batch_enabled: false,
+  like_batch_total: 3000,
+  like_batch_steps: 4,
+  like_batch_step_max: 1000,
+  like_batch_cooldown_sec: 150,
 };
 
 /** 后端 applied/not_applied 的英文键 → 中文名（汇报口径统一） */
@@ -69,6 +79,9 @@ const FIELD_CN: Record<string, string> = {
   interval: "间隔",
   delay_range: "延迟抖动",
   dm_pool: "私信词库",
+  danmaku_pool: "弹幕文案库",
+  danmaku_timer_enabled: "定时发弹幕",
+  like_batch_enabled: "分步批量点赞",
   live_url: "直播间",
   acct: "监听账号",
 };
@@ -475,6 +488,127 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                 >
                   + 新增一条文案
                 </Button>
+              </div>
+            </div>
+
+            {/* ===== 写接口自动化（2026-10-01）=====
+                默认全关 ⇒ 不改这里 = 零出站。风控：弹幕/点赞都是**写接口**。 */}
+            <div className="col-span-2 flex flex-col gap-1.5 border-t
+                            border-[var(--color-border)] pt-3">
+              <div className="flex items-center gap-2 text-[0.74rem]">
+                <span style={{ color: "var(--color-text-muted)" }}>弹幕文案库</span>
+                <span style={{ color: "var(--color-text-muted)", opacity: 0.8 }}>
+                  定时弹幕随机抽已启用的一条
+                </span>
+              </div>
+              {(draft.danmaku_pool || []).map((t, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <Switch
+                    checked={t.enabled !== false}
+                    onCheckedChange={(v) => {
+                      const pool = [...(draft.danmaku_pool || [])];
+                      pool[idx] = { ...pool[idx], enabled: v };
+                      touch({ danmaku_pool: pool });
+                    }}
+                  />
+                  <Input
+                    value={t.text || ""}
+                    placeholder="弹幕文案（如：有工伤问题可以打在公屏）"
+                    onChange={(e) => {
+                      const pool = [...(draft.danmaku_pool || [])];
+                      pool[idx] = { ...pool[idx], text: e.target.value };
+                      touch({ danmaku_pool: pool });
+                    }}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="删除该条文案"
+                    onClick={() => touch({
+                      danmaku_pool: (draft.danmaku_pool || []).filter((_, k) => k !== idx),
+                    })}
+                  >
+                    删除
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => touch({
+                    danmaku_pool: [...(draft.danmaku_pool || []), { text: "", enabled: true }],
+                  })}
+                >
+                  + 新增一条弹幕文案
+                </Button>
+              </div>
+            </div>
+
+            <div className="col-span-2 flex flex-col gap-2 border-t
+                            border-[var(--color-border)] pt-3">
+              <label className="flex items-center gap-2 text-[0.74rem]">
+                <Switch
+                  checked={!!draft.danmaku_timer_enabled}
+                  onCheckedChange={(v) => touch({ danmaku_timer_enabled: v })}
+                />
+                <span style={{ color: "var(--color-text-muted)" }}>
+                  定时发弹幕（监听中按随机间隔自动发一条）
+                </span>
+              </label>
+              <div className="flex items-center gap-2 text-[0.74rem]"
+                   style={{ color: "var(--color-text-muted)" }}>
+                <span>间隔</span>
+                <Input
+                  className="h-8 w-[80px]" type="number" min="0.5" step="0.5"
+                  aria-label="弹幕间隔下限"
+                  value={draft.danmaku_timer_min ?? 3}
+                  onChange={(e) => touch({ danmaku_timer_min: parseFloat(e.target.value) || 3 })}
+                />
+                <span>~</span>
+                <Input
+                  className="h-8 w-[80px]" type="number" min="0.5" step="0.5"
+                  aria-label="弹幕间隔上限"
+                  value={draft.danmaku_timer_max ?? 6}
+                  onChange={(e) => touch({ danmaku_timer_max: parseFloat(e.target.value) || 6 })}
+                />
+                <span>分钟（每轮在此区间随机）</span>
+              </div>
+            </div>
+
+            <div className="col-span-2 flex flex-col gap-2 border-t
+                            border-[var(--color-border)] pt-3">
+              <label className="flex items-center gap-2 text-[0.74rem]">
+                <Switch
+                  checked={!!draft.like_batch_enabled}
+                  onCheckedChange={(v) => touch({ like_batch_enabled: v })}
+                />
+                <span style={{ color: "var(--color-text-muted)" }}>
+                  分步批量点赞（分多步完成，步间冷却，模拟真人节奏）
+                </span>
+              </label>
+              <div className="flex flex-wrap items-center gap-2 text-[0.74rem]"
+                   style={{ color: "var(--color-text-muted)" }}>
+                <span>总点赞</span>
+                <Input className="h-8 w-[90px]" type="number" min="1"
+                       aria-label="批量点赞总数"
+                       value={draft.like_batch_total ?? 3000}
+                       onChange={(e) => touch({ like_batch_total: parseInt(e.target.value, 10) || 3000 })} />
+                <span>分</span>
+                <Input className="h-8 w-[70px]" type="number" min="1" max="50"
+                       aria-label="分几步完成"
+                       value={draft.like_batch_steps ?? 4}
+                       onChange={(e) => touch({ like_batch_steps: parseInt(e.target.value, 10) || 4 })} />
+                <span>步</span>
+                <span className="opacity-80">
+                  （单步上限 {draft.like_batch_step_max ?? 1000}，超出自动加步）
+                </span>
+                <span>冷却</span>
+                <Input className="h-8 w-[80px]" type="number" min="120"
+                       aria-label="步间冷却秒数"
+                       value={draft.like_batch_cooldown_sec ?? 150}
+                       onChange={(e) => touch({ like_batch_cooldown_sec: parseInt(e.target.value, 10) || 150 })} />
+                <span>秒</span>
               </div>
             </div>
           </div>
