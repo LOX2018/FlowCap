@@ -193,7 +193,7 @@ export default function McpSection(props: { push?: (msg: string, holdMs?: number
     <SetCard>
       <SetCardHead
         title="MCP 服务（本机工具接口）"
-        description="把本项目的读取/操作能力暴露给 AI 客户端。stdio 模式无需令牌；本机 HTTP 模式需要令牌"
+        description="把本项目的读取/操作能力暴露给 AI 客户端（stdio 免令牌，本机 HTTP 需令牌）"
         right={
           <span
             data-od-id="mcp-state"

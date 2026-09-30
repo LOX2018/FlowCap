@@ -219,7 +219,7 @@ export default function AiEngineSection(props: PageProps) {
 
           <FormField
             label="回复档位"
-            hint="🔒 仅知识库：AI 不参与，最安全；⚖️ RAG 限定（推荐）：AI 只准依据知识库回答，出界被护栏拦下；🕊️ 自由：仅靠人设约束"
+            hint="🔒 仅知识库：AI 不参与，最安全；⚖️ RAG 限定（推荐）：只依据知识库回答；🕊️ 自由：仅靠人设约束"
           >
             <Select
               value={c.strict_level || "rag"}
