@@ -566,6 +566,64 @@ class LiveMixin:
         return safe_json(res)
 
     @staticmethod
+    def check_risk_response(resp):
+        """把「HTTP 200 + 空 body / 人机验证页」翻译成**可读异常**。
+
+        ## 来源（Open-Source Provenance Law）
+
+        移植上游 `cv-cat/DouYin_Spider`（head `b17b12ee`）`dy_apis/douyin_api.py:58`
+        的 `check_risk_response`（同名同义，2026-09-30 按 R8 复核后引入）。
+
+        ## 为什么必须移植（本轮实测教训）
+
+        抖音风控/限流时**返回 HTTP 200 但 body 为空或 HTML 挑战页**，且**原因只写在响应头**
+        （`X-Vc-Bdturing-Parameters` / `X-Tt-Verify-Passport-Decision`）。本项目此前的做法是
+        `safe_json()` 把空响**降级为 `{}`** —— 后果有两个：
+          ① 调用方拿到 `{}`，`status_code` 缺失 ⇒ 只能报「上游 status_code=None」，
+             **看不出是风控**（不可归因）；
+          ② 若上游写法是「没报错就算成功」，空响应会被**误判成功**（假成功）。
+        ⇒ 本函数**只在这些易被静默吞掉的分支上**把原因翻译出来；正常 JSON 一律原样返回。
+
+        ⚠️ **非破坏性**：不 raise 正常响应；只在「非 JSON + 有风控头 / 空 body / JS 挑战页」
+        三种情形抛 `RuntimeError`（含 logid），由调用方如实上报为失败。
+        """
+        text = (resp.text or "").lstrip()
+        if text.startswith("{") or text.startswith("["):
+            return
+        bd = resp.headers.get("X-Vc-Bdturing-Parameters")
+        if bd:
+            subtype = ""
+            try:
+                import base64 as _b64
+                info = json.loads(_b64.b64decode(bd + "=" * (-len(bd) % 4)))
+                subtype = info.get("subtype", "")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"触发人机验证（bdturing {subtype or '未知类型'}）。"
+                f"需在浏览器完成验证、或更换 IP / 降低请求频率后重试。"
+                f"logid={resp.headers.get('X-Tt-Logid')}")
+        pp = resp.headers.get("X-Tt-Verify-Passport-Decision")
+        if pp:
+            scene = ""
+            try:
+                scene = json.loads(pp)["event_params"]["verify_scene"]
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"需要二次身份验证（scene={scene or '未知'}）。"
+                f"多为缺少 x-tt-session-dtrait 或账号风控所致。"
+                f"logid={resp.headers.get('X-Tt-Logid')}")
+        if not text:
+            raise RuntimeError(
+                f"接口返回空响应（HTTP {resp.status_code}），通常是签名参数不对或被风控拦截。"
+                f"logid={resp.headers.get('X-Tt-Logid')}")
+        if "__ac_nonce" in text or "_$jsvmprt" in text:
+            raise RuntimeError(
+                f"返回 JS 挑战页（HTTP {resp.status_code}），被风控拦截。"
+                f"logid={resp.headers.get('X-Tt-Logid')}")
+
+    @staticmethod
     def _live_chat_room_id(auth, room_id):
         """把「直播间号(web_rid)」升级为**真实 room_id** —— 直播域写接口只认后者。
 
@@ -633,6 +691,9 @@ class LiveMixin:
         room_id = DouyinAPI._live_chat_room_id(auth, room_id)
         api = "/webcast/room/like/"
         headers = HeaderBuilder().build(HeaderType.FORM)
+        # 🔴 referer 必须与写接口收到的 room 参数**同形**（都是真实 room_id）。
+        # 原实现用传入值（可能是 URL 短号）拼 referer，与本请求自己的 room_id 参数**不一致**
+        # —— 同一请求内两处身份矛盾（同族缺陷：sendMsgInRoom 也踩过，见其 docstring）。
         refer = f"{DouyinAPI.live_url}/{room_id}"
         headers.set_header("Origin", DouyinAPI.live_url)
         headers.with_bd(api, auth, origin=DouyinAPI.live_url)
@@ -660,6 +721,7 @@ class LiveMixin:
         params.with_a_bogus(data, host=LIVE_HOST)
         res = requests.post(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
                             cookies=auth.cookie, data=data, verify=tls_verify())
+        DouyinAPI.check_risk_response(res)   # 风控形态可读化（HTTP 200 + 空 body / 挑战页）
         return safe_json(res)
 
     @staticmethod
@@ -695,7 +757,9 @@ class LiveMixin:
         # 2026-09-30：写接口房间号必须是**真实 room_id**（URL 短号 web_rid 会被上游判无效）。
         real_room_id = DouyinAPI._live_chat_room_id(auth, room_id)
         headers = HeaderBuilder().build(HeaderType.GET)
-        refer = kwargs.get('referer') or f"{DouyinAPI.live_url}/{kwargs.get('web_rid', room_id)}"
+        # referer 与 room 参数同形（真实 room_id）；`web_rid` kwarg 仅作**显式覆盖**保留
+        # （默认不再回落到「另一个形态的值」，避免同一请求内两处身份矛盾）。
+        refer = kwargs.get('referer') or f"{DouyinAPI.live_url}/{kwargs.get('web_rid') or real_room_id}"
         headers.set_header("Origin", DouyinAPI.live_url)
         headers.with_bd(api, auth, origin=DouyinAPI.live_url)
         headers.with_csrf(auth.cookie_str)
@@ -726,5 +790,6 @@ class LiveMixin:
         params.with_a_bogus(host=LIVE_HOST)
         res = requests.get(f'{DouyinAPI.live_url}{api}', headers=headers.get(), params=params.get(),
                            cookies=auth.cookie, verify=tls_verify())
+        DouyinAPI.check_risk_response(res)   # 风控形态可读化（HTTP 200 + 空 body / 挑战页）
         return safe_json(res)
 

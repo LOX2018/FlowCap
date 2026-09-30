@@ -466,6 +466,71 @@ class TestD7BaseShape(unittest.TestCase):
         self.assertIn("LIVE-038", src, "探测失败未留痕")
         self.assertIn("LIVE-039", src, "取不到真实 room_id 未留痕")
 
+    def test_risk_response_translated_to_readable_error(self):
+        """风控形态（HTTP 200 + 空 body / 挑战页）必须翻成可读异常，不得静默降级。"""
+        import dy_apis.douyin_api as dapi
+
+        class _Resp:
+            def __init__(self, text="", headers=None):
+                self.text = text
+                self.headers = headers or {}
+                self.status_code = 200
+
+        # ① 空 body ⇒ 抛可读异常（不是返回 {} 让调用方猜）
+        with self.assertRaises(RuntimeError) as ctx:
+            dapi.DouyinAPI.check_risk_response(_Resp(""))
+        self.assertIn("空响应", str(ctx.exception))
+
+        # ② 人机验证头 ⇒ 可读
+        import base64 as _b64
+        bd = _b64.b64encode(b'{"subtype":"slide"}').decode()
+        with self.assertRaises(RuntimeError) as ctx:
+            dapi.DouyinAPI.check_risk_response(
+                _Resp("", {"X-Vc-Bdturing-Parameters": bd}))
+        self.assertIn("人机验证", str(ctx.exception))
+
+        # ③ 正常 JSON ⇒ 不抛（不破坏正常路径）
+        dapi.DouyinAPI.check_risk_response(_Resp('{"status_code":0}'))
+
+    def test_resolve_persists_authoritative_room_id(self):
+        """resolve 端点必须把真实 room_id 落库（权威字段），不只是 web_rid。"""
+        L = _load_live()
+        _prep(L)
+        from database import get_kv_json, set_kv_json
+        set_kv_json("config", {})
+        # 打桩 get_live_info 返回真实 room_id
+        _install_room_probe({"room_id": REAL_ROOM_ID})
+        # 打桩 current_name 返回非空账号名（否则 _auth_for 不会被调用）
+        import auto_dm.accounts as acct_core
+        _orig_cn = acct_core.current_name
+        acct_core.current_name = lambda: "test_account"
+        try:
+            got = asyncio.run(L.resolve_live(L.ResolveRequest(url="https://live.douyin.com/" + WEB_RID)))
+        finally:
+            acct_core.current_name = _orig_cn
+        self.assertTrue(got.get("ok"), f"resolve 应成功: {got}")
+        self.assertEqual(got.get("liveRoomId"), REAL_ROOM_ID,
+                         "resolve 必须回传真实 room_id")
+        stored = get_kv_json("config", {}) or {}
+        self.assertEqual(stored.get("live_room_id"), REAL_ROOM_ID,
+                         "真实 room_id 必须落库到 config.live_room_id（权威字段）")
+        self.assertEqual(stored.get("live_id"), WEB_RID,
+                         "web_rid 仍须保留在 config.live_id（URL 用）")
+
+    def test_room_id_for_prefers_authoritative_field(self):
+        """_room_id_for 必须优先取 config.live_room_id（权威），而非 live_id。"""
+        L = _load_live()
+        _prep(L)
+        from database import set_kv_json
+        set_kv_json("config", {"live_id": WEB_RID, "live_room_id": REAL_ROOM_ID})
+        rid = L._room_id_for(None)
+        self.assertEqual(rid, REAL_ROOM_ID,
+                         "必须优先取权威字段 live_room_id")
+        # 无权威字段时回落 live_id（兼容旧数据）
+        set_kv_json("config", {"live_id": WEB_RID})
+        rid2 = L._room_id_for(None)
+        self.assertEqual(rid2, WEB_RID, "无权威字段时应回落 live_id")
+
 
 # ══════════════════════════════════════════════════════════════════════
 # D8 · 负控：拆掉归一化 ⇒ 写接口收到 URL 短号

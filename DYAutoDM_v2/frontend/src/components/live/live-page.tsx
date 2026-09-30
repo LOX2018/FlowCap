@@ -62,8 +62,8 @@ export default function LivePage(props: PageProps) {
   // 提示弹窗：解析房间号未填地址 / 开启自动私信前核查账号
   const [alert, setAlert] = useState<{ title: string; msg: string } | null>(null);
   const [dmDraft, setDmDraft] = useState("");
-  const [myLikes] = useState(0);
-  const [burst] = useState(0);
+  const [myLikes, setMyLikes] = useState(0);
+  const [burst, setBurst] = useState(0);
   const [batchN, setBatchN] = useState("10");
   // 2026-09-29（用户要求）：表格只有纵向滚动容器、没有筛选时，长会话很难定位
   // 问题条目。此开关只影响**呈现**（是否过滤行），不改变任何统计口径。
@@ -418,6 +418,8 @@ export default function LivePage(props: PageProps) {
       .likeRoom(n, activeAcct, rid)
       .then((r) => {
         if (r.ok) {
+          setMyLikes((v) => v + n);
+          setBurst((v) => v + n);
           push(`已点赞 ×${n}`);
         } else if (r.reason === "like_disabled") {
           push("点赞未启用（默认休眠）：请到「设置 → 直播」开启「点赞」");

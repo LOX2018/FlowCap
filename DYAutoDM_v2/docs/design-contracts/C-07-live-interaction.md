@@ -41,6 +41,7 @@
 | P5 | `/dm-template` 的 `set_kv_json("config", data)` 与随后 `get_kv_json("config", {})` 均可执行 | 抛异常即 `ok=False`，`reason=persist_failed` / `readback_failed` |
 | P6 | `/ws` 连接在 `_MEMBER_EXEMPT` 白名单内（路径前缀 `/api/live/ws`）→ 免 HTTP 会员中间件 | 无（白名单由 `main.py` 维护，属**已知设计**，见 I5） |
 | **P7** | **`/like` 的 `count` 为 1..`live.like_max`（默认 1000）的整数** | 越界/非整数即 `ok=False`，`reason=bad_count`，**零出站**（显式拒绝，**不静默夹取**） |
+| **P8** | **`POST /resolve` 必须同时落库 `config.live_room_id`（真实 room_id）与 `config.live_id`（web_rid）** | 只落 web_rid ⇒ 写接口拿短号当 room_id 用（上游静默失败）；探测失败**不影响解析结果**（写接口侧仍有 `_live_chat_room_id` 兜底归一化） |
 
 ### 2.2 后置条件（Q）
 
@@ -200,7 +201,20 @@ grep -n "LIVE-038\|LIVE-039" backend/dy_apis/client_live.py
 
 # 契约守护：点赞次数越界显式拒绝（不静默夹取）
 grep -n "bad_count" backend/api/live.py
-# 期望：命中（count 越界分型）；缺 ⇒ 越界被静默接受 ⇒ 红
+# 期望：命中（count 越界分型）；缺 ⇒ 越界被静默接受 ⇒红
+
+# ── 2026-09-30 第二轮：权威字段 + 风控可读化 ────────────────────────
+# 契约守护：resolve 必须落库 live_room_id（真实 room_id）
+grep -n "live_room_id" backend/api/live.py
+# 期望：命中（resolve 落库 + _room_id_for 读取）；缺 ⇒ 写接口拿短号 ⇒ 红
+
+# 契约守护：风控形态必须翻成可读异常（不得静默降级为 {}）
+grep -n "check_risk_response" backend/dy_apis/client_live.py
+# 期望：命中（定义 + 两处写接口接线）；缺 ⇒ 风控不可归因 ⇒ 红
+
+# 契约守护：写接口 referer 与 room 参数同形（不得混用 web_rid/room_id）
+grep -n "同形" backend/dy_apis/client_live.py
+# 期望：命中（两处注释说明）；缺 ⇒ 同一请求内两处身份矛盾 ⇒ 红
 ```
 
 ## 7. 已知缺口（诚实记录）

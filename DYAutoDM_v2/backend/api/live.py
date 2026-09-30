@@ -149,14 +149,34 @@ def _auth_for(account: str):
 
 
 def _room_id_for(room_id: str | None):
-    """room_id 缺省时从 kv `config.live_id` 补齐（与 linkmic._room_ids 同范式）。"""
-    rid = room_id
+    """取「直播域写接口可用的房间号」——**权威优先**。
+
+    ## 两套标识（2026-09-30 厘清，这是本域最容易踩的概念坑）
+
+    | 标识 | 示例 | **谁必须用它** |
+    |---|---|---|
+    | `web_rid`（URL 短号） | `992931212705` | **URL / referer**（`https://live.douyin.com/<web_rid>` 才是可访问的直播间页） |
+    | `room_id`（真实房间号） | `7688251038101556006` | **直播域 API**（`/webcast/room/{chat,like}/` 等一律只认它） |
+
+    二者**都是真实需要**，不存在哪个「已经不需要」——所以是**两个字段**，不是二选一。
+    此前链路把它们混用（`config.live_id` 一处被写 web_rid、一处被写真实 room_id ⇒ 语义污染），
+    本函数按其**权威来源**取数：
+
+    ① `config.live_room_id`（**权威**：真实 room_id，`link_resolve` / 监听启动时落库）；
+    ② `config.live_id`（**兼容旧数据**；既可能存 web_rid 也可能存真实 room_id）；
+    ③ 调用方显式传入的 `room_id`。
+
+    取到的值**不保证**已是真实 room_id（②③ 可能是 web_rid）⇒ 仍由
+    `DouyinAPI._live_chat_room_id()` 做最终归一化/校验（那里是唯一出口）。
+    本函数只解决「从哪个字段取」，不重复实现归一化（SSOT）。
+    """
+    if room_id and str(room_id).strip():
+        return str(room_id).strip()
+    cfg = get_kv_json("config", {}) or {}
+    rid = str(cfg.get("live_room_id") or cfg.get("live_id") or "").strip()
     if not rid:
-        cfg = get_kv_json("config", {}) or {}
-        rid = cfg.get("live_id") or ""
-    if not rid:
-        raise HTTPException(400, "缺少 room_id（请先解析直播间）")
-    return str(rid)
+        raise HTTPException(400, "缺少房间号（请先解析直播间）")
+    return rid
 
 
 @router.post("/danmaku")
@@ -438,14 +458,40 @@ async def resolve_live(body: ResolveRequest):
 
     # 运行时生效：写入 settings 单例（原版 C.LIVE_ID / C.LIVE_URL）
     settings.live_url = raw
+
+    # 🔴 2026-09-30：**同时落两个字段**（两套标识都有真实用途，见 `_room_id_for` 的说明）——
+    #   · `live_id`      = web_rid（URL 短号）：`https://live.douyin.com/<web_rid>` 才是
+    #                      可访问的直播间页，也是写接口 referer 的正确取值；
+    #   · `live_room_id` = **真实 room_id**：直播域 API（发弹幕 / 点赞等）只认它。
+    # 只落 web_rid 会让写接口拿短号当 room_id 用（上游静默失败）——这正是本轮根因，
+    # 故在**解析侧**就把权威 room_id 一并落库（写接口无需每次多打一次网去探测）。
+    # 探测失败**不影响解析结果**（写接口侧仍有 `_live_chat_room_id` 兜底归一化）。
+    _real_room_id = ""
+    try:
+        from dy_apis.douyin_api import DouyinAPI
+        _auth = None
+        if _acct:
+            try:
+                _auth = _auth_for(_acct)
+            except Exception:
+                _auth = None
+        if _auth is not None:
+            _info = DouyinAPI.get_live_info(_auth, live_id)
+            if isinstance(_info, dict):
+                _real_room_id = str(_info.get("room_id") or "").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[resolve] 真实 room_id 探测失败（不影响解析）: {e}")
+
     # 落盘到 SQLite kv_store（替代 config.json）
     try:
         from database import get_kv_json, set_kv_json
         data = get_kv_json("config", {}) or {}
         data["live_url"] = raw
-        data["live_id"] = live_id
+        data["live_id"] = live_id                       # web_rid（短号，URL 用）
+        if _real_room_id:
+            data["live_room_id"] = _real_room_id        # 真实 room_id（API 用）
         set_kv_json("config", data)
     except Exception as e:
         logger.warning(f"[LIVE-001] " + f"[resolve] 配置落盘失败（不影响本次解析）: {e}")
 
-    return {"ok": True, "liveId": live_id, "liveUrl": raw}
+    return {"ok": True, "liveId": live_id, "liveRoomId": _real_room_id, "liveUrl": raw}
