@@ -204,7 +204,7 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
     ## 为什么撤回「API 默认」（实测证据）
     出码 3.5s vs 桥 25~30s，API 更快；但**码只活 65 秒**（正常 5 分钟的 1/5），
     用户实扫即提示过期，四项签名与 sessionid 全无。轮询 poll_err=None ⇒ 非限频拦截，
-    而是会话被降级（合成指纹：缺 fpk1 / dtrait）。⇒ **快而无用**，故不作默认。
+    而是会话被降级（**成因未确定**，见下方【归因订正】）。⇒ **快而无用**，故不作默认。
 
     失败**不抛异常**（由调用方回落），返回 True 表示**凭证已落盘且校验通过**。
     """
@@ -223,7 +223,21 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
     # ── ① API 扫码（**可选前置**，仅显式开启；默认走 ② RPA 同身份）──────
     # 🔴 2026-10-01 实测订正：API **不再默认**（曾误提为默认，已撤回）。
     #   实测：API 出码 3.5s 但**二维码仅活 65s** 即 expired（三轮一致，正常 5 分钟）；
-    #   用户实扫 ⇒ 过期；轮询 poll_err=None（非限频）。根因：合成指纹（缺 fpk1/dtrait）。
+    #   用户实扫 ⇒ 过期；轮询 poll_err=None（非限频）。**成因未确定**（见下方【归因订正】，『缺 fpk1』已被协议层事实否证）。
+    #   【归因订正 2026-10-01】曾写作「根因：合成指纹（缺 fpk1/dtrait）」—— **已证伪**：
+
+    #     · fpk1 列于 `WWW_ONLY_COOKIES`（上游 login_api.py:56-58，注释：「login.douyin.com
+
+    #       上面这些一个都没有」）而 get_qrcode 在 **login.douyin.com** ⇒ **fpk1 到不了 QR 请求**；
+
+    #     · 实测灌注真实 fpk1（88 字符）+ ttwid + s_v_web_id + msToken ⇒ 码寿命
+
+    #       65.013s vs 65.013s **零改善**，与此吻合。
+
+    #   ⇒ 65 秒真实成因**尚未确定**，只知是与指纹素材无关的固定 TTL。
+
+    #     禁止再照「补 fpk1 即可」这条错误因果施工。
+
     #   ⇒ 默认走接口桥（真实身份）；API 仅在 DY_LOGIN_QR_BACKEND=api 时启用，供对照实验。
     import os as _os
     _backend = _os.environ.get("DY_LOGIN_QR_BACKEND", "").strip().lower()
@@ -231,7 +245,7 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
         # 🔴 2026-10-01 实测：**API 当前不可用于完成登录**（仅出码、码活不过 65s）
         #   三轮一致：出码 3.5s，但二维码 **65 秒** 即被服务端判 expired
         #   （正常 5 分钟 ⇒ 被压缩到 1/5）；轮询 poll_err=None 说明未被限频/拦截，
-        #   是会话被降级（缺 fpk1/dtrait ⇒ 合成指纹）。用户实扫 ⇒ 提示过期。
+        #   是会话被降级（**成因未确定**，见【归因订正】）。用户实扫 ⇒ 提示过期。
         #   ⇒ 故 API **降为显式可选**（DY_LOGIN_QR_BACKEND=api 才会走），
         #     默认仍走「接口桥」（本机 Camoufox 真实身份）。
         logger.warning(f"[scan] 账号 {name} 显式要求 API 扫码（注意：实测二维码约 65s 即过期）")
