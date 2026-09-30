@@ -52,6 +52,26 @@ _LIVE_RE = re.compile(r"live\.douyin\.com/([^?/\s\"']+)")
 # live.douyin.com/https://…（实测 404）。此正则**零网络**直接抠出 web_rid。
 # ⚠️ 必须忽略 `anchor_id` 等查询参数（它**不是**直播间号）。
 _LIVE_PAGE_RE = re.compile(r"douyin\.com/(?:[A-Za-z0-9_\-]+/)*live/(\d{5,})")
+# 🔴 2026-10-01（用户实测报障）：**房间号出现在 query 参数里**的形态。
+#   例：https://www.douyin.com/search/<关键词>?from_search=true&is_aweme_tied=1
+#        &live_web_rid=291891133640&search_id=…&search_result_id=7691345930137652543&type=live
+#       （抖音「搜索结果里的直播卡」分享出来的链接）
+#   ⇒ 直播间号 = **`live_web_rid` 的值**（实测：用它能匿名进房，HTTP 200 / 1.1MB；
+#      且该房间真实 room_id=7691345987004009258 —— 二者是**两套值**，勿混）。
+# 🔴 必须**精确锚定 `live_web_rid`**，绝不能「取 URL 里第一个大数字」：
+#      同一 URL 里 `search_result_id=7691345930137652543` 也是 19 位大数，
+#      却**不是**直播间号（search_result_id 是搜索结果项 id）。
+# 💡 开源溯源核对：上游 DTK `src/dtk/urls/patterns.py` 的 DOUYIN_ROUTES 含
+#      `[?&]modal_id=` / `[?&]vid=`（视频）/ `[?&]mix_id=` / `[?&]sec_(uid|user_id)=`，
+#      **不含 `live_web_rid`** ⇒ 该格式连最权威的上游库都未覆盖，属**本地新增**能力。
+_LIVE_QQ_RE = re.compile(r"[?&]live_web_rid=(\d{5,})")
+# 兼容拼写/大小写差异（`live_web_rid` / `liveWebRid` / `live_web_rid` 的常见变体）
+_LIVE_QQ_ALT_RE = re.compile(r"[?&]live_?web_?rid=(\d{5,})", re.I)
+# 🔴 2026-10-01：`/webcast/reflow/<id>`（DTK ResourceKind.LIVE_ROOM）——
+#   ⚠️ 该路径里带的是 **room_id（19 位大数），不是 web_rid**（DTK 源码明文注释：
+#   「Douyin reflow links carry a room_id, not the web_rid that live.douyin.com/<id> uses」）。
+#   ⇒ 该形态**不能**零网络直接当 web_rid 用，必须经 room_id→web_rid 桥接。
+_REFLOW_ROOM_RE = re.compile(r"/webcast/reflow/(\d{5,})")
 # reflow 重定向链接里抽 sec_user_id
 _SEC_UID_RE = re.compile(r"sec_user_id=([\w_\-]+)")
 # reflow/info 返回 JSON 取 web_rid 的路径：data.room.owner.web_rid
@@ -83,12 +103,24 @@ def _cache_put(raw: str, value: tuple) -> None:
 
 
 def _extract_live_id_from_url(url):
-    """从 URL 文本里抠出 live.douyin.com/<id> 的 id。"""
+    """从 URL 文本里抠出直播间号（web_rid）。
+
+    2026-10-01 补：**顺序 = 路径语义 → query 参数**（与输入解析层同序）。
+      · `live.douyin.com/<id>` 的 path id 才是 web_rid；
+      · `?live_web_rid=<id>`（搜索页直播卡分享）零网络可直取；
+    绝不「取 URL 里第一个大数字」—— 同 URL 里 `search_result_id` 是 19 位大数
+    但**不是**直播间号。
+    """
     if not url:
         return None
     m = _LIVE_RE.search(url)
     if m:
         return m.group(1)
+    # query 参数形态（并经重定向后仍可能保留）
+    for _re_qq in (_LIVE_QQ_RE, _LIVE_QQ_ALT_RE):
+        m = _re_qq.search(url)
+        if m:
+            return m.group(1)
     return None
 
 
@@ -395,6 +427,15 @@ def resolve_live_id(raw, headless=False, auth=None, account_name=None):
     if m:
         _cache_put(raw, (m.group(1), raw))
         return m.group(1), raw
+    # 🔴 2026-10-01（用户实测报障）：房间号在 **query 参数 `live_web_rid`** 里的形态。
+    # 例：搜索页分享的直播卡 https://www.douyin.com/search/<kw>?...&live_web_rid=291891133640&type=live
+    # 零网络直接抠出（无需重定向/浏览器），与 _LIVE_PAGE_RE 同为「输入解析」层。
+    for _re_qq in (_LIVE_QQ_RE, _LIVE_QQ_ALT_RE):
+        m = _re_qq.search(raw)
+        if m:
+            _cache_put(raw, (m.group(1), raw))
+            logger.info(f"[resolve] query 参数 live_web_rid 命中 web_rid={m.group(1)}")
+            return m.group(1), raw
 
     # TTL 缓存命中（短链/用户主页的慢解析结果，秒回）
     cached = _cache_get(raw)

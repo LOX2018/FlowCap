@@ -502,10 +502,21 @@ export default function LivePage(props: PageProps) {
 
   /** 从输入框提取直播间号（纯数字或 URL 里的 /<digits>），失败返回空串 */
   const extractRoomId = (raw: string): string => {
+    // 2026-10-01（用户实测报障）：原实现只认 `^\d+$` 与 `live.douyin.com/(\d+)`，
+    // 而抖音「搜索页直播卡」分享出来的链接**房间号在 query 参数** `live_web_rid` 里
+    // （实测 URL：https://www.douyin.com/search/<kw>?...&live_web_rid=291891133640&type=live）
+    // ⇒ 原实现返回空串。此处与后端 `link_resolve.py` 同源补齐三类形态。
+    // ⚠️ 必须精确锚定 `live_web_rid`：同 URL 里 `search_result_id` 也是大数但**不是**房间号。
     const s = (raw || "").trim();
     if (/^\d+$/.test(s)) return s;
-    const m = s.match(/live\.douyin\.com\/(\d+)/);
-    return m ? m[1] : "";
+    const byPath = s.match(/live\.douyin\.com\/(\d+)/);
+    if (byPath) return byPath[1];
+    // 路径形：douyin.com/**/live/<id>
+    const byLivePath = s.match(/douyin\.com\/(?:[^/?#]+\/)*live\/(\d{5,})/);
+    if (byLivePath) return byLivePath[1];
+    // query 形：?live_web_rid=<id>（大小写/拼写变体兼容）
+    const byQuery = s.match(/[?&]live_?web_?rid=(\d{5,})/i);
+    return byQuery ? byQuery[1] : "";
   };
 
   // v0.38.5d 遗留未用函数（其他会话），暂注释避免 noUnusedLocals 卡构建
