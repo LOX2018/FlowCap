@@ -21,16 +21,17 @@ if __name__ == "__main__":
     import sys as _sys
     if "--qr-api-runner" in _sys.argv:
         _i = _sys.argv.index("--qr-api-runner")
-        # 只保留 runner 自己的参数（去掉分发标记），交给 runner 解析
-        _sys.argv = ([_sys.argv[0]]
-                     + _sys.argv[_i + 1:]
-                     + [a for a in _sys.argv[1:_i]])  # 兜底：把前置参数放后面
-        import runpy as _runpy
-        import os as _os
-        _runner = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                                "login_qr_api_runner.py")
-        _runpy.run_path(_runner, run_name="__main__")
-        _sys.exit(0)
+        # 只保留 runner 自己的参数（去掉分发标记），交给 runner 的 main(argv) 解析
+        _rest = _sys.argv[_i + 1:] + [a for a in _sys.argv[1:_i]]
+        # ★ 必须是 **import + 调用**，绝不用 `runpy.run_path`：
+        #   PyInstaller 冻结态下 run_path 找不到 `__main__` 模块
+        #   （实测 `ImportError: can't find '__main__' module in
+        #     .../appinternals/login_qr_api_runner.py`）——
+        #   而本块位于任何项目 import 之前，`import login_qr_api_runner`
+        #   不会把项目同名包带进 sys.modules（干净解释器语义不变）。
+        #   模块已随 sidecar 收集（见 build_sidecar 的 --hidden-import）。
+        import login_qr_api_runner as _runner
+        _sys.exit(_runner.run_argv(_rest))
 
 from contextlib import asynccontextmanager
 import asyncio

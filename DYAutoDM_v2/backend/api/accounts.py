@@ -191,22 +191,21 @@ def _build_last_run(name: str) -> dict:
 #  （**不自造**写盘逻辑 —— ADR-017 §8.3）。
 
 def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
-    """扫码登录。**优先走上游 API（纯 HTTP、零浏览器）**，失败回落 RPA 浏览器。
+    """扫码登录。**默认走 RPA 无头 Camoufox（同一设备身份）**；API 纯 HTTP 为可选前置。
 
-    ## 路由（ADR-017 §8.1：扫码→API、短信→RPA）
+    ## 路由
     ```
-    ① API 扫码（login_qr_api_runner 子进程，纯协议）
-       成功 → 落凭证（走既有 save_credential，含 wp/keys 的 merge 保真）→ return True
-       失败 → ②
-    ② RPA 扫码（Camoufox 截图二维码，DOM 兜底）
+    ① API 扫码（**仅当显式开启** DY_LOGIN_QR_BACKEND=api；纯协议、零浏览器）
+    ② RPA 无头 Camoufox（默认）：同身份出码 → 保持窗口 → 等扫码 → 落凭证
     ```
-    **为什么优先 API**（2026-09-30 实测）：真机纯 HTTP 冒烟
-    `bootstrap 33 cookie → get_qrcode error_code=0（含 PNG）→ check status=new` 全绿，
-    且**不需要浏览器**（少一次抖音侧环境访问 + 不占 profile 锁 + 秒级出码）。
-    API 子进程是**干净解释器**（vendor 与 backend 有 5 个同名顶层包，同进程必静默半坏）。
+    ## 为什么默认 RPA 而不是 API（2026-09-30 身份审查 + 实机实测）
+    API 路径用 **Chrome 151 UA + curl_cffi(chrome150)**，与本机 **Camoufox(Firefox 152)**
+    的日常会话构成**跨信号身份矛盾**（H-27「凭证 3 小时失效」同族根因）。
+    而 RPA 在本机 Camoufox 内完成，**TLS/JS/指纹天然同一身份**，且
+    **无头即可出码**（实测 headless=True：8.5s 启动，容器栅格化锚点解出
+    `https://v.douyin.com/...`）⇒ 兼顾「不开窗口」与「身份一致」。
 
-    失败**不抛异常** —— 由调用方决定回落，保证 RPA 路径始终可用。
-    返回 True 表示**凭证已落盘**。
+    失败**不抛异常**（由调用方回落），返回 True 表示**凭证已落盘且校验通过**。
     """
     import tempfile
 
@@ -220,24 +219,271 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[scan] 账号 {name} 代理读取失败（按直连）: {e}")
 
-    # ── ① API 扫码（纯 HTTP）──────────────────────────────────────────
+    # ── ① API 扫码（**可选前置**，仅显式开启；默认走 ② RPA 同身份）──────
+    #   开启条件：环境变量 `DY_LOGIN_QR_BACKEND=api`。默认**不启用**（见函数文档
+    #   的「为什么默认 RPA」：API 是 Chrome 身份，与账号的 Firefox 会话跨信号矛盾）。
+    import os as _os
+    if (_os.environ.get("DY_LOGIN_QR_BACKEND", "").strip().lower() == "api"):
+        if _api_scan_login(name, env_path, st, proxy):
+            return True
+        logger.warning(f"[ACC-040] [scan] 账号 {name} API 扫码未成功，回落 RPA 无头")
+
+    # ── ② RPA 扫码：**桥优先（接口响应出码）→ 截图兜底**─────────────────
+    from auto_dm import login_remote as _lr
+
+    handle = None
+    try:
+        out_dir = tempfile.mkdtemp(prefix="rpa_scan_")
+        png = os.path.join(out_dir, "login_qr.png")
+
+        # ②·a 接口桥（无头；二维码来自页面自己发的 get_qrcode 响应）
+        prep = None
+        try:
+            _bridge = asyncio.run(_lr.bridge_qr_login(
+                env_path=env_path, out_png=png, headless=True, timeout_s=90))
+            if _bridge.get("ok"):
+                prep = _bridge
+                st["qrUrl"] = _bridge.get("qr_url") or ""
+                logger.info(f"[scan] 账号 {name} 接口桥出码成功（via={_bridge.get('via')}）")
+            else:
+                logger.warning(f"[ACC-044] [scan] 账号 {name} 接口桥未出码，回落截图: "
+                               f"{_bridge.get('reason')}")
+        except Exception as _e_bridge:  # noqa: BLE001
+            logger.warning(f"[ACC-045] [scan] 账号 {name} 接口桥异常，回落截图: {_e_bridge}")
+
+        # ②·b 截图兜底（既有链路，锚点已修）
+        if not prep or not prep.get("ok"):
+            prep = asyncio.run(_lr.prepare_qr_login(env_path=env_path, out_png=png,
+                                                    headless=True, timeout_s=90))
+        if not prep.get("ok"):
+            logger.warning(f"[ACC-025] [scan] 账号 {name} RPA 出码失败: {prep.get('reason')}")
+            return False
+        handle = prep.get("handle")
+        st["qrPng"] = prep.get("png") or png
+        st["decoded"] = bool(prep.get("decoded"))
+        st["path"] = "rpa"
+        logger.info(f"[scan] 账号 {name} RPA 二维码已就绪: {st['qrPng']}")
+
+        # ③ 等扫码（桥优先用被动确认；否则走 cookie 轮询）
+        if prep.get("via") in ("bridge", "bridge-url-only"):
+            waited = asyncio.run(_lr.poll_bridge_confirmed(handle, timeout_s=240))
+        else:
+            waited = asyncio.run(_lr.poll_qr_scanned(handle, timeout_s=240, interval_s=3))
+        if not waited.get("ok"):
+            logger.warning(f"[ACC-026] [scan] 账号 {name} 等待扫码未成功: {waited.get('reason')}")
+            return False
+        st["risk"] = bool(waited.get("risk"))
+
+        # ③ F6 页面风控曾命中 ⇒ **拒写**（污染态，写入=污染凭证）
+        if waited.get("risk"):
+            logger.error(f"[ACC-033] [scan] 账号 {name} 扫码过程曾命中风控页，**拒绝写入**凭证")
+            st["rejected"] = "risk_control"
+            return False
+
+        # ④ 凭证落盘（**保留 ADR-017 F5/F8 既有契约**：先备份、可回滚、生成捕获报告）
+        cookies = waited.get("cookies") or {}
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        if not cookie_str:
+            logger.warning(f"[ACC-027] [scan] 账号 {name} RPA 拿到的 cookie 为空")
+            return False
+        from auth_helper import save_cookie_to_env
+
+        # ── F5 非污染态校验（判据取自既有实测结论，不自创）─────────────────
+        try:
+            from login_capture import snapshot_old_env, analyze_login_capture
+            from builder.auth import DouyinAuth
+
+            _auth = DouyinAuth()
+            _auth.perepare_auth(cookie_str)
+            _old = snapshot_old_env(env_path)
+            _report, _rpt_path = analyze_login_capture(_auth, _old, env_path)
+            st["captureReport"] = _rpt_path or ""
+            _ck = _auth.cookie or {}
+            _missing = [k for k in ("sessionid", "sid_tt") if not _ck.get(k)]
+            if _missing:
+                logger.warning(f"[ACC-031] [scan] 账号 {name} 凭证缺关键字段 {_missing}")
+                st["missingKeys"] = _missing
+        except Exception as _e_f5:  # noqa: BLE001
+            logger.warning(f"[ACC-032] [scan] 账号 {name} F5 捕获分析失败（不阻断）: {_e_f5}")
+
+        # ── F8 失败回滚：写前先备份（失败不阻断写入，只告警）──────────────
+        _bak = ""
+        try:
+            from services.db_transfer import _backup_file
+            _enc = f"{env_path}.enc"
+            if os.path.exists(_enc):
+                _bak = _backup_file(_enc)
+                st["backup"] = _bak
+                logger.info(f"[scan] 账号 {name} 凭证已备份（F8 可回滚）: {_bak}")
+        except Exception as _e_bak:  # noqa: BLE001
+            logger.warning(f"[ACC-030] [scan] 账号 {name} 凭证备份失败（不阻断写入）: {_e_bak}")
+
+        save_cookie_to_env(cookie_str, env_path)
+
+        # ⑤ ★ 增强（2026-09-30 审查修复，第三个假成功点）：
+        #    上面只写了 cookie ⇒ 留下「新 sessionid + 旧 ticket/ts_sign」，
+        #    而 imapi 私有网关**按签名鉴权** ⇒ 会「更新成功却仍不可写」。
+        #    若能从当前 context 读到 security-sdk（wp/keys），则**全量重写**
+        #    并做「服务端 + 身份」双校验；读不到（如无头早期/桩环境）⇒ 保持
+        #    上面既有契约行为（skip），不误判失败。
+        _enh = _enhance_from_live(name, env_path, handle, st)
+        if _enh == "failed":
+            return False
+        logger.info(f"[scan] 账号 {name} RPA 扫码完成（落盘增强={_enh}）")
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ACC-028] [scan] 账号 {name} RPA 路径异常，回落老路径: "
+                       f"{type(e).__name__}: {e}")
+        return False
+    finally:
+        # 无论成败都必须收尾，否则 profile 被长期占用（ADR-017 §8.5 启动门禁）
+        try:
+            if handle:
+                asyncio.run(_lr.close_handle(handle))
+        except Exception as _e_close:  # noqa: BLE001
+            logger.debug(f"[scan] 账号 {name} RPA 收尾跳过: {_e_close}")
+
+
+def _cred_verify_after_write(name: str, env_path: str, st: dict) -> str:
+    """落盘后的**服务端 + 身份**双校验（RPA / API 两条路径**共用**，防判据漂移）。
+
+    返回 "" 表示通过；否则返回失败原因（**调用方负责从备份还原**）。
+    判据（均为项目既有权威判据，不自创）：
+      ① 服务端会话有效：`passport/account/info/v2` → user_id>0 且无 error_code
+         （本地 cookie 存在 ≠ 会话有效 —— 案例 rpa-sms-login-three-bugs §3 铁律）
+      ② 身份一致：探活 uid ∈ 该账号历史 `conv_id`（防串号/幽灵身份，AUTH-050）
+    """
+    from dy_apis.login_api import DYLoginApi as _DLA
+    from auto_dm import login_remote as _lr
+
+    try:
+        back = _DLA._load_auth_from_env(env_path)      # noqa: SLF001
+        ck = getattr(back, "cookie", None) or {}
+        if not (ck.get("sessionid") or ck.get("sid_tt")):
+            return "磁盘回读缺 sessionid/sid_tt"
+    except Exception as e:  # noqa: BLE001
+        return f"磁盘回读失败 {type(e).__name__}: {e}"
+
+    _uid = ""
+    try:
+        sv = asyncio.run(_lr._probe_session_valid_by_cookies(ck))
+        if not sv.get("ok"):
+            return f"服务端未确认（{sv.get('reason')}）"
+        _uid = str(sv.get("uid") or "")
+        st["serverUid"] = _uid
+    except Exception as e:  # noqa: BLE001
+        return f"服务端校验异常 {type(e).__name__}: {e}"
+
+    try:
+        from services.uid_probe import _uid_consistent_with_history as _uid_ok
+        if _uid and not _uid_ok(name, _uid):
+            return f"身份漂移（uid={_uid} 不在历史 conv_id）"
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[scan] 账号 {name} 身份一致性校验跳过（不阻断）: {e}")
+    return ""
+
+
+def _enhance_from_live(name: str, env_path: str, handle: dict, st: dict) -> str:
+    """**增强落盘**（第三个假成功点的修复）：能读到 security-sdk 时**全量重写**并双校验。
+
+    背景：原有的 `save_cookie_to_env(cookie_str)` 只写 cookie ⇒ 留下「新 sessionid +
+    旧 ticket/ts_sign」，而 imapi 私有网关**按签名鉴权** ⇒「更新成功却仍不可写」。
+
+    返回三态（**保持既有契约、不误判**）：
+      · "written"  —— 已全量重写且服务端+身份双校验通过
+      · "skipped"  —— 读不到 wp/keys（无头早期 / 桩环境 / 无备份可还原）⇒ **保持上面既有行为**
+      · "failed"   —— 已写但校验不过，且**已从备份还原** ⇒ 调用方如实判失败
+    """
+    from dy_apis.login_api import DYLoginApi
+
+    async def _read():
+        ctx = handle.get("context")
+        if ctx is None:
+            raise RuntimeError("no context")
+        page = None
+        try:
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        except Exception:  # noqa: BLE001
+            page = None
+        ck = {c["name"]: c["value"] for c in await ctx.cookies()}
+        keys = wp = ""
+        try:
+            keys = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+            wp = await page.evaluate(
+                'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[scan] 账号 {name} 读 localStorage 失败（按 skip 处理）: {e}")
+        return ck, keys, wp
+
+    try:
+        ck, keys, wp = asyncio.run(_read())
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[scan] 账号 {name} 增强落盘读取不可用（保持既有契约）: {e}")
+        return "skipped"
+    if not (ck.get("sessionid") or ck.get("sid_tt")):
+        return "skipped"
+    if not (keys and wp):
+        # 读不到 security-sdk ⇒ 无法重派生签名 ⇒ 保持既有「只写 cookie」契约
+        logger.info(f"[scan] 账号 {name} 未读到 security-sdk（wp/keys），保持既有落盘契约")
+        return "skipped"
+
+    def _restore_if_possible() -> bool:
+        bak = st.get("backup") or ""
+        if bak and os.path.exists(bak):
+            try:
+                import shutil
+                shutil.copy2(bak, f"{env_path}.enc")
+                logger.warning(f"[scan] 账号 {name} 已从备份还原: {bak}")
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[scan] 账号 {name} 还原失败（备份仍在 {bak}）: {e}")
+        return False
+
+    try:
+        from builder.auth import DouyinAuth
+        _auth = DouyinAuth()
+        _auth.cookie = ck
+        _auth.perepare_auth("", wp, keys)       # 派生 ticket/ts_sign/client_cert/private_key
+        try:
+            _auth.web_protect_str = wp           # 持久化原始串（复用时可完整还原）
+            _auth.keys_str = keys
+        except Exception:  # noqa: BLE001
+            pass
+        DYLoginApi().save_credential(_auth, env_path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[scan] 账号 {name} 增强写盘失败: {type(e).__name__}: {e}")
+        return "failed" if _restore_if_possible() else "skipped"
+
+    bad = _cred_verify_after_write(name, env_path, st)
+    if bad:
+        logger.error(f"[scan] 账号 {name} 增强落盘后校验未通过（{bad}）")
+        return "failed" if _restore_if_possible() else "skipped"
+    st["saved"] = True
+    st["cookieCount"] = len(ck)
+    return "written"
+
+
+def _api_scan_login(name: str, env_path: str, st: dict, proxy: str) -> bool:
+    """API 扫码（纯 HTTP，子进程隔离）。**默认不启用**（见 `_rpa_scan_login` 文档）。
+
+    返回 True 仅当「凭证落盘且服务端+身份双校验通过」。
+    """
+    import tempfile
+    from auto_dm import login_remote as _lr
+
     api_jobdir = None
     api_handle = None
     try:
-        from auto_dm import login_remote as _lr
-
         api_jobdir = tempfile.mkdtemp(prefix="rpa_scan_")
         png = os.path.join(api_jobdir, "qr.png")
 
         def _on_status(s: dict) -> None:
-            # 状态回填（供前端展示；沿用既有 qrPng/decoded 契约）
             if s.get("qr_png"):
                 st["qrPng"] = s["qr_png"]
-                st["decoded"] = True          # 机械判据：已校验 PNG 魔数
+                st["decoded"] = True
             st["stage"] = s.get("stage", "")
 
         api_handle = _lr.spawn_api_qr_login(api_jobdir, timeout_s=300, proxy=proxy)
-        # 等首张二维码就绪（最多 60s）——出码后再进入长轮询
         _t0 = time.time()
         while time.time() - _t0 < 60:
             _s = _lr._read_json_quiet(os.path.join(api_jobdir, "status.json")) or {}
@@ -253,139 +499,31 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
 
         api = _lr.poll_api_qr_login(api_handle, timeout_s=300, interval_s=2.0,
                                     on_status=_on_status)
-        if api.get("ok"):
-            res = api.get("result") or {}
-            # ★ 硬门禁：必须 **sessionid + 四件套齐全** 才落盘。
-            #   理由（本项目签名模型）：私信走 imapi 私有网关，靠 protobuf 体内的
-            #   ticket/ts_sign/client_cert（由登录响应 bd-ticket-guard-server-data 签发）
-            #   鉴权。缺任一项 ⇒ 只拿到 cookie ⇒ 要么沿用旧 wp/keys（**反派生旧签名**，
-            #   明面「更新成功」实则无效），要么签名缺失 ⇒ 都会静默坏。
-            #   ⇒ 宁可回落 RPA，绝不写半成品凭证。
-            _need = ("cookie_str", "ticket", "ts_sign", "client_cert", "private_key")
-            _missing = [k for k in _need if not res.get(k)]
-            if _missing or not res.get("has_sessionid"):
-                logger.warning(f"[ACC-041] [scan] 账号 {name} API 扫码凭证不完整"
-                               f"（缺 {_missing or ['sessionid']}），回落 RPA")
-            else:
-                _save_api_credential(name, env_path, res, st)
-                logger.info(f"[scan] 账号 {name} API 扫码成功，凭证已落盘"
-                            f"（{res.get('cookie_count')} 项 cookie）")
-                return True
-        else:
-            logger.warning(f"[ACC-040] [scan] 账号 {name} API 扫码失败，回落 RPA: {api.get('reason')}")
+        if not api.get("ok"):
+            logger.warning(f"[ACC-040] [scan] 账号 {name} API 扫码失败: {api.get('reason')}")
+            return False
+        res = api.get("result") or {}
+        # 硬门禁：sessionid + 四件套齐全才落盘（缺件会反派生旧签名 = 假成功）
+        _need = ("cookie_str", "ticket", "ts_sign", "client_cert", "private_key")
+        _missing = [k for k in _need if not res.get(k)]
+        if _missing or not res.get("has_sessionid"):
+            logger.warning(f"[ACC-041] [scan] 账号 {name} API 凭证不完整"
+                           f"（缺 {_missing or ['sessionid']}）")
+            return False
+        if not _save_api_credential(name, env_path, res, st):
+            return False
+        logger.info(f"[scan] 账号 {name} API 扫码成功（{res.get('cookie_count')} 项 cookie）")
+        st["path"] = "api"
+        return True
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"[ACC-042] [scan] 账号 {name} API 扫码异常，回落 RPA: "
-                       f"{type(e).__name__}: {e}")
+        logger.warning(f"[ACC-042] [scan] 账号 {name} API 扫码异常: {type(e).__name__}: {e}")
+        return False
     finally:
         try:
             if api_handle is not None:
-                from auto_dm import login_remote as _lr2
-                _lr2.reap_api_qr_login(api_handle)
+                _lr.reap_api_qr_login(api_handle)
         except Exception as _e:  # noqa: BLE001
             logger.debug(f"[scan] API 子进程收尾跳过: {_e}")
-
-    # ── ② RPA 扫码（浏览器，DOM 兜底）─────────────────────────────────
-    from auto_dm import login_remote as _lr
-
-    png = ""
-    handle = None
-    try:
-        out_dir = tempfile.mkdtemp(prefix="rpa_scan_")
-        png = os.path.join(out_dir, "login_qr.png")
-
-        # ① 出码（浏览器保持打开，供用户扫码）
-        prep = asyncio.run(_lr.prepare_qr_login(env_path=env_path, out_png=png,
-                                                headless=True, timeout_s=90))
-        if not prep.get("ok"):
-            logger.warning(f"[ACC-025] [scan] 账号 {name} RPA 出码失败，回落老路径: "
-                           f"{prep.get('reason')}")
-            return False
-        handle = prep.get("handle")
-        st["qrPng"] = prep.get("png") or png
-        st["decoded"] = bool(prep.get("decoded"))
-        logger.info(f"[scan] 账号 {name} RPA 二维码已就绪: {st['qrPng']}")
-
-        # ② 等扫码（硬判据：cookie 出现 sessionid / sid_tt）
-        waited = asyncio.run(_lr.poll_qr_scanned(handle, timeout_s=240, interval_s=3))
-        if not waited.get("ok"):
-            logger.warning(f"[ACC-026] [scan] 账号 {name} 等待扫码未成功，回落老路径: "
-                           f"{waited.get('reason')}")
-            return False
-
-        # ③ 凭证落盘（复用既有入口，merge=True 保留其余字段）
-        cookies = waited.get("cookies") or {}
-        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-        if not cookie_str:
-            logger.warning(f"[ACC-027] [scan] 账号 {name} RPA 拿到的 cookie 为空，回落老路径")
-            return False
-        from auth_helper import save_cookie_to_env
-
-        # ── F5 非污染态校验（ADR-017）────────────────────────────────
-        # 判据取自**既有实测结论**，不自创：
-        #   · `dy_apis/login_api.py::_cookie_is_polluted` 已于 2026-08-17 **明确废弃**
-        #     基于 cookie 格式的污染判定（实测会误伤合法凭证，一律放行）——
-        #     ⇒ **不得**再按 cookie 格式判污染，污染由【页面风控监测】兜底。
-        #   · 故本处判据 = ①F6 页面风控曾命中 ⇒ **拒写**；②关键 cookie 缺失 ⇒ 告警。
-        #   · 同时复用既有 `login_capture`（snapshot_old_env + analyze_login_capture）
-        #     生成旧→新差异报告（可追溯），**不自造报告格式**。
-        try:
-            from login_capture import snapshot_old_env, analyze_login_capture
-            from builder.auth import DouyinAuth
-
-            _auth = DouyinAuth()
-            _auth.perepare_auth(cookie_str)      # 复用既有构造，不自造
-            _old = snapshot_old_env(env_path)
-            _report, _rpt_path = analyze_login_capture(_auth, _old, env_path)
-            st["captureReport"] = _rpt_path or ""
-            logger.info(f"[scan] 账号 {name} F5 捕获分析报告: {_rpt_path}")
-
-            # 判据②：关键 cookie 缺失（sessionid/sid_tt 决定会话是否"活"）
-            _ck = _auth.cookie or {}
-            _missing = [k for k in ("sessionid", "sid_tt") if not _ck.get(k)]
-            if _missing:
-                logger.warning(f"[ACC-031] [scan] 账号 {name} 凭证缺关键字段 {_missing}，"
-                               f"会话可能无效（仍写入，由后续探活兜底）")
-                st["missingKeys"] = _missing
-        except Exception as _e_f5:  # noqa: BLE001
-            logger.warning(f"[ACC-032] [scan] 账号 {name} F5 捕获分析失败（不阻断）: {_e_f5}")
-
-        # 判据①：F6 页面风控曾命中 ⇒ **拒写**（污染态，写入=污染凭证）
-        if waited.get("risk"):
-            logger.error(f"[ACC-033] [scan] 账号 {name} 扫码过程曾命中风控页，"
-                         f"**拒绝写入**凭证（防污染态）")
-            st["rejected"] = "risk_control"
-            return False
-
-        # ── F8 失败回滚（ADR-017）：**写前先备份**，失败可还原 ──────────
-        # 复用既有备份语义（`services/db_transfer._backup_file`：copy2 →
-        # `<path>.bak.<时间戳>`），**不自造**。备份的是 `<env_path>.enc`
-        # （明文 .env 已于 2026-09-21 废弃，即使存在也不被读取）。
-        # 备份失败**不阻断**写入（不能因为备份不了就永远不更新凭证），只告警。
-        _bak = ""
-        try:
-            from services.db_transfer import _backup_file
-            _enc = f"{env_path}.enc"
-            if os.path.exists(_enc):
-                _bak = _backup_file(_enc)
-                st["backup"] = _bak
-                logger.info(f"[scan] 账号 {name} 凭证已备份（F8 可回滚）: {_bak}")
-        except Exception as _e_bak:  # noqa: BLE001
-            logger.warning(f"[ACC-030] [scan] 账号 {name} 凭证备份失败（不阻断写入）: {_e_bak}")
-
-        save_cookie_to_env(cookie_str, env_path)
-        logger.info(f"[scan] 账号 {name} RPA 凭证已落盘（{len(cookies)} 项 cookie）")
-        return True
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[ACC-028] [scan] 账号 {name} RPA 路径异常，回落老路径: "
-                       f"{type(e).__name__}: {e}")
-        return False
-    finally:
-        # 无论成败都必须收尾，否则 profile 被长期占用（ADR-017 §8.5 启动门禁）
-        try:
-            if handle:
-                asyncio.run(_lr.close_handle(handle))
-        except Exception as _e_close:  # noqa: BLE001
-            logger.debug(f"[scan] 账号 {name} RPA 收尾跳过: {_e_close}")
 
 
 def _save_api_credential(name: str, env_path: str, res: dict, st: dict) -> bool:
@@ -438,6 +576,20 @@ def _save_api_credential(name: str, env_path: str, res: dict, st: dict) -> bool:
         _auth.client_cert = res.get("client_cert") or None
         _auth.private_key = res.get("private_key") or None
         DYLoginApi().save_credential(_auth, env_path)
+        # ★★ 2026-09-30 审查发现（**会制造假成功**，必须清）：
+        #   `_load_auth_from_env` 的判据是 `if not (web_protect and keys):` ——
+        #   **只有当 wp/keys 缺失时**才用四件套；wp/keys 存在 ⇒ 走
+        #   `perepare_auth(cookies, wp, keys)` **从 wp/keys 反派生 ticket/ts_sign/client_cert**。
+        #   而 `save_credential` 的 `set_values` 会**过滤空值**，本路径拿不到 API 的
+        #   web_protect/keys ⇒ `merge=True` 会**保留上一会话的旧 wp/keys** ⇒
+        #   下次加载**优先用旧 wp/keys 反派生** ⇒ 本次 API 新签发的四件套**被丢弃** ⇒
+        #   会话看似更新、**签名仍是旧的** ⇒ imapi 依旧拒绝（"更新成功"却不可写）。
+        #   ⇒ 本路径的四件套由服务端直接签发、自足，故**显式清空** wp/keys，
+        #     让加载走「四件套」分支（`_load_auth_from_env` 会补 ree_public_key）。
+        #   `write_env_file` 的 `kv_lines` 会**丢弃空值键** ⇒ 传 "" 即**删除该键**。
+        from services import member_ctx as _mctx
+        _mctx.write_env_file(env_path, {"DY_WEB_PROTECT": "", "DY_KEYS": ""}, merge=True)
+        logger.info(f"[scan] 账号 {name} API 凭证已落盘并**清除旧 wp/keys**（防签名被旧会话反派生）")
     except Exception as e:  # noqa: BLE001
         logger.error(f"[scan] 账号 {name} API 凭证写盘异常: {type(e).__name__}: {e}")
         _restore()
@@ -1384,6 +1536,9 @@ async def scan_status(name: str):
         # 供前端展示（老 enrich_auth 路径无图 ⇒ 为空串，前端按此判有无）。
         "qrPng": st.get("qrPng", ""),
         "decoded": st.get("decoded", False),
+        # 2026-09-30 · 接口桥：二维码**原始 URL**（来自页面自己发的 get_qrcode 响应）。
+        # 前端可直接用它渲染（不必依赖 PNG），也更接近"把接口暴露给前端"的语义。
+        "qrUrl": st.get("qrUrl", ""),
         # 实际生效的登录路径（"rpa" / "legacy"）—— 便于排障归因，不做控制。
         "path": st.get("path", ""),
         # 2026-09-26 · F4 短信登录状态机：前端据此决定 UI。
@@ -1519,24 +1674,81 @@ _RECAP_LANDING = "https://www.douyin.com/chat?isPopup=1"
 
 @router.post("/{name}/auto-recapture")
 async def auto_recapture(name: str) -> ScanLoginResponse:
-    """私信凭证失效自动重新捕获（手动触发入口）。
+    """私信凭证失效 —— 重新捕获（**如实上报**，绝不谎报成功）。
 
-    后端发送链路检测到凭证失效（三件套缺失 / INVALID_REQUEST）时会自动调用
-    auto_dm.accounts.auto_recapture 在后台拉起指纹浏览器打开 chat?isPopup=1 重新授权，
-    本路由供前端“立即处理验证”按钮或手动触发使用，行为与自动触发一致。
+    ★ 2026-09-30 修正（用户实测报障「没更新却显示凭证已读回」）：
+      原实现是 **fire-and-forget** —— 只调用 `auto_recapture()`（内部起后台线程）
+      便**立刻 `return ok=True`「已拉起…重新捕获」**。而真正的结果（成功/失败）
+      只写进后台线程的 `_recap_state[name]["error"]`，**调用方与前端从不读它**
+      ⇒ 必然出现「日志 `[AUTH-007] 获取登录凭证失败` + 紧接着 `SUCCESS 自动重新捕获完成`」
+      而 UI 仍显示成功。这是结构性谎报，违反「验证后才汇报」。
+
+    现判据：
+      ① 已在跑 ⇒ `ok=True` 但 `msg` 明说「进行中，不代表成功」；
+      ② 节流跳过 ⇒ `ok=False`（**这次确实什么都没做**，如实说）；
+      ③ 可发起 ⇒ `ok=True`（`started=True`，**只声明已启动**），
+         `msg` 明说「请等待完成信号；用 GET /{name}/recapture-status 查实际结果」。
     """
     env_path = acct_core.env_path_of(name)
     if not os.path.exists(os.path.dirname(env_path)):
         return ScanLoginResponse(ok=False, msg=f"账号 {name} 不存在")
-    # 直接走后台重捕获（复用 send_target 自动触发同一条路径，带 5 分钟节流）
+
+    # ── 读取后台线程的真实状态（唯一真源）────────────────────────────
+    from auto_dm import accounts as _acct_mod
+    _st = getattr(_acct_mod, "_recap_state", {}).get(name) or {}
+    _running = bool(_st.get("running"))
+    _err = (_st.get("error") or "").strip()
+    _last = float(_st.get("last") or 0.0)
+    _interval = float(getattr(_acct_mod, "_RECAP_INTERVAL", 300) or 300)
+    _since = (time.time() - _last) if _last else 1e9
+
+    if _running:
+        return ScanLoginResponse(
+            ok=True, started=True,
+            msg=f"账号 {name} 的重新捕获**正在进行中**（这不代表已成功）；"
+                f"请在指纹浏览器中完成扫码，完成后用 GET /api/accounts/{name}/recapture-status 查结果。")
+    if _since < _interval:
+        # 节流窗口内 ⇒ **什么都没做**，绝不报成功
+        return ScanLoginResponse(
+            ok=False, started=False,
+            msg=f"账号 {name} 距上次重新捕获仅 {int(_since)}s（节流 {int(_interval)}s），"
+                f"本次**未发起**。上次结果：{_err or '（无错误记录，但不代表本次已刷新）'}")
+
+    # ── 发起（仍沿用既有 best-effort 链路，但**只声明已启动**）─────────
     try:
         acct_core.auto_recapture(name, landing_url=_RECAP_LANDING)
-        return ScanLoginResponse(
-            ok=True,
-            msg=f"已拉起指纹浏览器重新捕获私信凭证（{_RECAP_LANDING}）· {name}",
-        )
-    except Exception as e:
-        return ScanLoginResponse(ok=False, msg=f"自动重新捕获失败: {e}")
+    except Exception as e:  # noqa: BLE001
+        return ScanLoginResponse(ok=False, msg=f"自动重新捕获发起失败: {e}")
+    if _err:
+        logger.info(f"[recap] 账号 {name} 上次失败记录（供参考）: {_err}")
+    return ScanLoginResponse(
+        ok=True, started=True,
+        msg=f"已发起重新捕获（{_RECAP_LANDING}）· {name}；"
+            f"**请在指纹浏览器中完成扫码**，完成后用 GET /api/accounts/{name}/recapture-status 查实际结果。")
+
+
+@router.get("/{name}/recapture-status")
+async def recapture_status(name: str):
+    """重新捕获的**实际结果**（供前端轮询，取代「只看 ok=true 就报成功」）。
+
+    返回 {running, ok, error, lastRunAgoS, msg}
+      ok=True  ⇒ 最近一次捕获**确实拿到登录态并写盘**（`error` 为空）
+      ok=False ⇒ 未在跑且最近一次有错误（或从未跑过）
+    """
+    from auto_dm import accounts as _acct_mod
+    st = getattr(_acct_mod, "_recap_state", {}).get(name) or {}
+    running = bool(st.get("running"))
+    err = (st.get("error") or "").strip()
+    last = float(st.get("last") or 0.0)
+    ago = (time.time() - last) if last else None
+    ok = (not running) and (not err) and (last > 0)
+    return {
+        "name": name, "running": running, "ok": ok, "error": err,
+        "lastRunAgoS": (round(ago) if ago is not None else None),
+        "msg": ("进行中" if running else
+                ("最近一次捕获成功" if ok else
+                 (f"最近一次捕获失败: {err}" if err else "尚未发起过重新捕获"))),
+    }
 
 
 @router.get("/{name}/proxy-status")

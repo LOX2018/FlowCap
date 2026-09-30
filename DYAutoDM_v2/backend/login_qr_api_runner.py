@@ -73,14 +73,15 @@ def _emit(jobdir: str, stage_value: str, **extra) -> None:
                 {"stage": stage_value, "ts": round(time.time(), 3), **extra})
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    """runner 主体。`argv=None` ⇒ 取 sys.argv（命令行/冻结态分发都走这里）。"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobdir", required=True)
     ap.add_argument("--timeout", type=int, default=300,
                     help="等待用户扫码的总超时（秒）")
     ap.add_argument("--proxy", default="",
                     help="HTTP/SOCKS 代理；空=直连（与账号环境门阀一致由调用方决定）")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     jobdir = os.path.abspath(args.jobdir)
     os.makedirs(jobdir, exist_ok=True)
@@ -207,13 +208,38 @@ def main() -> int:
                             f"{(last.get('data') or {}).get('status')}")
 
 
+def _cli() -> int:
+    """命令行入口（`python login_qr_api_runner.py …` / `--qr-api-runner` 分发）。"""
+    return main()
+
+
+def run_argv(argv) -> int:
+    """供冻结态分发复用：`main.py` 解析 `--qr-api-runner` 后，把**剩余参数**
+    交给本函数（不重跑 argparse 的 prog 检测，直接透传）。
+
+    ★ 为什么不用 `runpy.run_path`：**PyInstaller 冻结态下 `runpy.run_path`
+    对「PYZ 内源码 / _MEIPASS 内源码」都会失败**（实测
+    `ImportError: can't find '__main__' module`）。⇒ 冻结态必须走**import + 调用**。
+    """
+    return main(list(argv or []))
+
+
+def run_job(jobdir: str, timeout_s: int = 300, proxy: str = "") -> int:
+    """显式参数入口（进程内直接调用，便于测试/嵌入式）。"""
+    argv = ["--jobdir", str(jobdir), "--timeout", str(int(timeout_s))]
+    if proxy:
+        argv += ["--proxy", str(proxy)]
+    return main(argv)
+
+
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        sys.exit(_cli())
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001
-        # 顶层兜底：任何未捕获异常也要留下可诊断痕迹（否则主程序只看到「消失了」）
+        # 顶层兜底：任何未捕获异常也要留下可诊断痕迹
+        #（否则主程序只看到「子进程消失了」——实机踩到过）。
         try:
             jd = None
             for i, a in enumerate(sys.argv):

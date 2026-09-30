@@ -69,6 +69,13 @@ _ALLOWLIST_DUAL_HOST = {
     "dy_apis.login_api": "开发用 __main__ 调试块，产品内仅按库名 import；无 spec",
     "utils.bd_ticket": "开发用 __main__ 自检块，产品内仅按库名 import；无 spec",
     "utils.sm3": "开发用 __main__ 自检块，产品内仅按库名 import；无 spec",
+    # 2026-09-30（ADR-017 API 扫码 / 接口桥）：`login_qr_api_runner` 是**CLI 入口**
+    #   （源码态 `python login_qr_api_runner.py …`），同时被 `main.py` 的**前置分发**
+    #   以**库名** `import login_qr_api_runner` 复用（**不是** `runpy.run_path` /
+    #   `run_name="__main__"`）。⇒ 只会有一个 `login_qr_api_runner` 模块实例，
+    #   被 import 时其 `__main__` 块**不执行**，**不存在**「同模块两份实例」敞口。
+    #   它随 backend sidecar 打包（有 spec；见 build_sidecar 的 --hidden-import）。
+    "login_qr_api_runner": "CLI 入口；main.py 前置分发以**库名** import 复用（非 runpy __main__）⇒ 无双份实例敞口；随 backend sidecar 打包",
 }
 
 _SKIP_DIR_PARTS = {"__pycache__", "build", "dist", "node_modules", ".git", ".venv", "venv"}

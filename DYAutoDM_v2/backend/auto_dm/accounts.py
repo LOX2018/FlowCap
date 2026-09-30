@@ -1682,6 +1682,28 @@ def auto_recapture(name: str = None, landing_url: str = "https://www.douyin.com/
         logger.warning(f"[ACC-010] " + f"[recap] 账号 {name} 发起自动重捕获失败: {e}")
 
 
+def _recap_verify_server(env_path: str) -> tuple:
+    """重新捕获后的**服务端权威判据**（本地 cookie 存在 ≠ 会话有效）。
+
+    从**磁盘**读回凭证 → 调官方 `passport/account/info/v2` → 只有 `user_id>0 且无 error_code`
+    才算通过。绝不凭「本地有 sessionid」宣称成功（项目铁律，案例 rpa-sms-login-three-bugs §3）。
+    """
+    try:
+        from dy_apis.login_api import DYLoginApi
+        from auto_dm import login_remote as _lr
+        _a = DYLoginApi._load_auth_from_env(env_path)
+        _ck = getattr(_a, "cookie", None) or {}
+        if not (_ck.get("sessionid") or _ck.get("sid_tt")):
+            return False, "磁盘回读无 sessionid/sid_tt"
+        import asyncio as _aio
+        sv = _aio.run(_lr._probe_session_valid_by_cookies(_ck))
+        if sv.get("ok"):
+            return True, f"uid={sv.get('uid')}"
+        return False, str(sv.get("reason") or "服务端未确认")
+    except Exception as e:  # noqa: BLE001
+        return False, f"服务端校验异常 {type(e).__name__}: {e}"
+
+
 def _do_auto_recapture(name: str, landing_url: str):
     """后台线程：停守护释放 profile 锁 → 强制重扫（打开 chat?isPopup=1）→ 写回 .env。"""
     st = _recap_state.setdefault(name, {"running": False, "last": 0.0, "error": ""})
@@ -1715,8 +1737,21 @@ def _do_auto_recapture(name: str, landing_url: str):
         env_path = env_path_of(name)
         logger.info(f"[recap] 账号 {name} 私信凭证失效，自动拉起指纹浏览器重新捕获（{landing_url}）")
         auth, _ = enrich_auth(None, force=True, env_path=env_path, landing_url=landing_url)
-        st["error"] = "" if getattr(auth, "cookie", None) else "捕获未完成（未拿到登录态）"
-        logger.success(f"[recap] 账号 {name} 自动重新捕获完成")
+        # ★ 2026-09-30：**先判本地 cookie，再判服务端**，只有两者都过才 success。
+        #   原实现无条件 `logger.success("自动重新捕获完成")` —— 实测会出现
+        #   `[AUTH-007] 获取登录凭证失败` 之后紧接着 `SUCCESS 自动重新捕获完成`，
+        #   是典型的假成功（用户要的「验证后才汇报」正是此处的反面）。
+        if not getattr(auth, "cookie", None):
+            st["error"] = "捕获未完成（未拿到登录态）"
+            logger.error(f"[recap] 账号 {name} 重新捕获未拿到登录态 ⇒ 判失败（不报成功）")
+        else:
+            _srv_ok, _srv_msg = _recap_verify_server(env_path)
+            if _srv_ok:
+                st["error"] = ""
+                logger.success(f"[recap] 账号 {name} 自动重新捕获完成（服务端已确认 {_srv_msg}）")
+            else:
+                st["error"] = f"凭证已写盘但服务端未确认：{_srv_msg}"
+                logger.error(f"[recap] 账号 {name} 重新捕获后服务端未确认 ⇒ 判失败: {_srv_msg}")
     except Exception as e:
         st["error"] = str(e)
         logger.error(f"[ACC-012] " + f"[recap] 账号 {name} 自动重新捕获异常: {e}")

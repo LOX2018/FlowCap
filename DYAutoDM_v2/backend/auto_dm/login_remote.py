@@ -1036,6 +1036,188 @@ async def prepare_qr_login(env_path: str, out_png: str, headless: bool = True,
                 "reason": f"{type(e).__name__}: {e}", "handle": None, "heal": heal}
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  接口桥（Bridge）：无头浏览器里「页面自己发接口」→ 我们**只被动监听**
+# ══════════════════════════════════════════════════════════════════════
+#  【设计来源】用户 2026-09-30 指定：
+#    「先起个无头浏览器，然后把 API 使用的方法在无头浏览器上面进行监测……
+#      相当于一个桥梁，把浏览器上面的接口暴露给前端」。
+#  【实测依据】（2026-09-30 真机，bridge_probe2）
+#    · 无头 Camoufox + 深链 `?modal_id=login` ⇒ 页面**自己**发 `get_qrcode`
+#      （响应体含 token / qrcode_index_url / error_code=0），并**自维持**
+#      `check_qrconnect` 轮询（计数 2→3→5→7）。
+#    · 面板约 30s 挂载（早采样会误判"面板不存在"）。
+#    · 首页 + 点「登录」**不发**这些接口 ⇒ 入口必须是深链。
+#  【为什么优于 DOM 截图】二维码数据来自**网络响应**（原始 URL），
+#    不依赖元素锚点/像素解码 ⇒ 对改版免疫；且**同一 Firefox 身份**，
+#    无 API 纯协议路径的「Chrome ⊗ Firefox」跨信号矛盾。
+#  【关键判据】页面**自己**发请求 = 与真人在浏览器里操作等价，
+#    不存在 API 路径那种「缺 x-tt-session-dtrait / 身份不一致」的问题。
+
+_BRIDGE_QR_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<style>body{margin:0;display:flex;align-items:center;justify-content:center;background:#fff}
+img{width:100%;height:100%;object-fit:contain}</style></head>
+<body><img src="%s" alt="qr"></body></html>"""
+
+
+def _render_qr_png(url: str, out_png: str, box_size: int = 10) -> bool:
+    """把二维码 URL 渲染成 PNG。返回是否成功。
+
+    `qrcode` / `PIL` 已随 sidecar 打包（build_sidecar `--hidden-import qrcode.image.pil`）。
+    """
+    try:
+        import qrcode
+        qr = qrcode.QRCode(border=2, box_size=int(box_size))
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr.make_image(fill_color="black", back_color="white").save(out_png)
+        return os.path.getsize(out_png) > 0
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[bridge] 二维码渲染失败（url 仍可用）: {}", e)
+        return False
+
+
+async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
+                          timeout_s: int = 90) -> dict:
+    """**接口桥**：起无头浏览器 → 被动监听页面自己发的登录接口 → 出码。
+
+    与 `prepare_qr_login` 的区别：
+      · 不点 DOM tab、**不截图猜二维码**；二维码来自 `get_qrcode` 的**响应体**。
+      · 二维码**渲染成 PNG**（前端展示需要，且兼容既有 `qrPng` 契约），
+        同时把 `qr_url` 一并返回（前端/IM 也可直接用 url）。
+
+    返回 {'ok','png','decoded','qr_url','token','handle','reason','via'}
+      via = "bridge"（接口桥）| "bridge-url-only"（拿到 url 但渲染失败）| ...
+    """
+    from auto_dm import accounts as _acc
+    from auto_dm import config as _cfg
+    from auto_dm.vbrowser import launch_async, should_use_vb
+
+    profile = _acc.profile_dir_of(env_path)
+    os.makedirs(profile, exist_ok=True)
+    heal = ensure_profile_released(profile)
+    _vb, mode = should_use_vb(_cfg)
+    acc_name = os.path.basename(os.path.dirname(os.path.abspath(env_path)))
+    pw, browser, context, backend = await launch_async(
+        mode, _cfg, headless=headless, force=False,
+        account=acc_name, user_data_dir=profile)
+    handle = {"pw": pw, "browser": browser, "context": context,
+              "backend": backend, "env_path": env_path, "profile": profile}
+    caps: dict = {}
+    lock = asyncio.Lock()
+
+    async def _on_response(resp):
+        try:
+            u = resp.url or ""
+        except Exception:  # noqa: BLE001
+            return
+        if "get_qrcode" in u:
+            try:
+                body = await resp.text()
+                import json as _json
+                data = (_json.loads(body).get("data") or {})
+                async with lock:
+                    caps["token"] = data.get("token")
+                    caps["qr_url"] = (data.get("qrcode_index_url")
+                                      or data.get("qrcode_url"))
+                    caps["error_code"] = data.get("error_code")
+                logger.info("[bridge] 截获 get_qrcode：token={} error_code={}",
+                            str(caps.get("token"))[:18], caps.get("error_code"))
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[bridge] 解析 get_qrcode 响应失败: {}", e)
+
+    try:
+        context.on("response", lambda r: asyncio.create_task(_on_response(r)))
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.set_viewport_size({"width": 1600, "height": 1000})
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded",
+                        timeout=max(30, timeout_s) * 1000)
+        # 轮询等待：页面自己发接口（实测约 30~40s；面板 30s 才挂载）
+        t0 = time.time()
+        while time.time() - t0 < max(30, timeout_s):
+            qr_url = caps.get("qr_url")
+            if qr_url:
+                rendered = _render_qr_png(qr_url, out_png)
+                if rendered:
+                    logger.info("[bridge] 二维码已由接口响应渲染（token={} 等 {:.1f}s）",
+                                str(caps.get("token"))[:18], time.time() - t0)
+                else:
+                    logger.warning("[bridge] 二维码渲染失败，仅返回 url（前端可自行渲染）")
+                return {"ok": True, "png": (out_png if rendered else None),
+                        "decoded": bool(caps.get("token")),
+                        "qr_url": qr_url, "token": caps.get("token"),
+                        "handle": handle,
+                        "reason": "" if rendered else "渲染失败，url 可用",
+                        "via": "bridge" if rendered else "bridge-url-only",
+                        "waited_s": round(time.time() - t0, 1), "heal": heal}
+            if caps.get("error_code") not in (None, 0):
+                return {"ok": False, "png": None, "decoded": None, "qr_url": None,
+                        "token": None, "handle": handle, "heal": heal,
+                        "reason": f"get_qrcode error_code={caps.get('error_code')}",
+                        "via": "bridge"}
+            await asyncio.sleep(1.0)
+        # 超时：如实返回（不静默）
+        return {"ok": False, "png": None, "decoded": None, "qr_url": None,
+                "token": None, "handle": handle, "heal": heal, "via": "bridge",
+                "reason": f"桥超时（{timeout_s}s 内未截获 get_qrcode 响应；"
+                          f"面板/DOM 不参与判据）"}
+    except Exception as e:  # noqa: BLE001
+        logger.error("[bridge] 接口桥异常: {}", e)
+        await close_handle(handle)
+        return {"ok": False, "png": None, "decoded": None, "qr_url": None,
+                "token": None, "handle": None, "heal": heal, "via": "bridge",
+                "reason": f"{type(e).__name__}: {e}"}
+
+
+async def poll_bridge_confirmed(handle: dict, timeout_s: int = 240,
+                                interval_s: int = 3) -> dict:
+    """轮询「扫码是否确认成功」——**被动**观察页面自己发的 `check_qrconnect`。
+
+    判据：① 截获 `check_qrconnect` 响应 `data.status == 'confirmed'`（页面自维持）
+          ② 兜底：context cookie 出现 sessionid/sid_tt 且**服务端确认**。
+    返回 {'ok','cookies','status','risk','reason'}
+    """
+    context = handle.get("context")
+    if context is None:
+        return {"ok": False, "reason": "handle 无效"}
+    state: dict = {"status": None, "confirmed": False}
+
+    async def _on_response(resp):
+        try:
+            u = resp.url or ""
+        except Exception:  # noqa: BLE001
+            return
+        if "check_qrconnect" in u:
+            try:
+                body = await resp.text()
+                import json as _json
+                st = (_json.loads(body).get("data") or {}).get("status")
+                state["status"] = st
+                if st == "confirmed":
+                    state["confirmed"] = True
+                    logger.info("[bridge] 页面自报扫码已确认（check_qrconnect=confirmed）")
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        context.on("response", lambda r: asyncio.create_task(_on_response(r)))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[bridge] 挂 check_qrconnect 监听失败: {}", e)
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            cookies = {c["name"]: c["value"] for c in await context.cookies()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "reason": f"读取 cookie 失败: {e}"}
+        if state["confirmed"] or cookies.get("sessionid") or cookies.get("sid_tt"):
+            logger.info("[bridge] 检测到登录态（status={}）", state["status"])
+            return {"ok": True, "cookies": cookies, "status": state["status"],
+                    "risk": False, "reason": ""}
+        await asyncio.sleep(interval_s)
+    return {"ok": False, "cookies": {}, "status": state["status"], "risk": False,
+            "reason": f"等待确认超时（{timeout_s}s，最后 status={state['status']}）"}
+
+
 def risk_keywords() -> tuple:
     """风控页判据关键词 —— **复用既有 SSOT，禁止在此另立一份**。
 

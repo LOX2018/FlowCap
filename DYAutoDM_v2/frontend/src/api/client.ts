@@ -864,11 +864,23 @@ export const api = {
     });
   },
 
-  /** 私信凭证失效自动重新捕获：打开 chat?isPopup=1 重新授权（替代单纯 scanLogin） */
-  async autoRecapture(name: string): Promise<{ ok: boolean; msg: string }> {
+  /** 私信凭证失效自动重新捕获：打开 chat?isPopup=1 重新授权（替代单纯 scanLogin）。
+   *  ★ 2026-09-30：`ok=True` 只代表「已发起」（`started=true`），**不代表已成功**；
+   *  实际结果必须轮询 `getRecaptureStatus` 查（谎报成功的根治，见 accounts.py 端点文档）。 */
+  async autoRecapture(name: string): Promise<{
+    ok: boolean; started?: boolean; settled?: boolean; switching?: boolean; msg: string;
+  }> {
     return request(`/api/accounts/${encodeURIComponent(name)}/auto-recapture`, {
       method: "POST",
     });
+  },
+
+  /** 重新捕获的**实际结果**（供轮询；`ok` 为真才表示最近一次确实成功）。 */
+  async getRecaptureStatus(name: string): Promise<{
+    name: string; running: boolean; ok: boolean; error: string;
+    lastRunAgoS: number | null; msg: string;
+  }> {
+    return request(`/api/accounts/${encodeURIComponent(name)}/recapture-status`);
   },
 
   /**
@@ -2290,6 +2302,32 @@ export const api = {
     detail?: string;
   }> {
     return request("/api/crawl/comments/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** 匿名评论预览（★ 2026-09-30 C 方案探针）。**不需要 account**，只给 ≤20 条/作品、
+   *  不可翻页、无数字 uid（不可直接私信）。仅用于「哪些视频有评论值得全量采」。 */
+  async crawlCommentsAnonPreview(body: {
+    aweme_ids: string[];
+    count?: number;
+  }): Promise<{
+    ok: boolean;
+    anonymous: boolean;
+    works: number;
+    ok_works: number;
+    total_comments: number;
+    per_work: {
+      aweme_id: string;
+      status: string;
+      count: number;
+      items: Record<string, unknown>[];
+      error?: string;
+    }[];
+    detail?: string;
+  }> {
+    return request("/api/crawl/comments/anon-preview", {
       method: "POST",
       body: JSON.stringify(body),
     });

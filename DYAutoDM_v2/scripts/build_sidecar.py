@@ -337,6 +337,11 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
         cmd += ["--add-data", f"{_vendor}{os.pathsep}vendor/douyin_spider_upstream"]
         for _m in ("curl_cffi", "curl_cffi.requests"):
             cmd += ["--hidden-import", _m]
+        # 2026-09-30：`main.py --qr-api-runner` 前置分发用 `import login_qr_api_runner`
+        # （**不用 runpy.run_path** —— 冻结态 run_path 找不到 __main__，实测 rc=1）。
+        # 该 import 写在 `if __name__ == "__main__"` 块内，静态分析可能判为可选 ⇒
+        # 显式 hidden-import 保证它进 PYZ（缺失则冻结态分发 ModuleNotFoundError）。
+        cmd += ["--hidden-import", "login_qr_api_runner"]
     # 2026-09-16 v0.43.36：WS 稳态治理模块（daemon/ws_link.py）。
     # RecvChannel._make_link / _catchup_after_reconnect 在**函数体内**
     # `from daemon.ws_link import WSLink` —— 与上面两条完全同类的坑
