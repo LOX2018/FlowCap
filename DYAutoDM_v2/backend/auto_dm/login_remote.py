@@ -54,7 +54,7 @@ import time
 from typing import Callable, Optional
 
 from loguru import logger
-from utils.fingerprint import get_profile
+from utils.fingerprint import get_profile, user_agent
 
 # ── DOM 自适应定位兜底（可选依赖；缺失/异常即优雅降级，零回归）─────────────
 #   见 auto_dm/dom_locator.py（Scrapling parser 层 + 确定性校验 + 唯一性铁律）。
@@ -893,7 +893,11 @@ async def _probe_session_valid_by_cookies(cookies: dict) -> dict:
             #   ⇒ 服务端看到「UID 来自 Firefox 会话、探活却自称 Chrome」的身份矛盾，
             #   可能据此误判**会话失效**（正是 H-27「凭证频繁失效」的同族形态）。
             #   统一走档案 UA（与全部出站请求同一身份，零硬编码）。
-            "User-Agent": get_profile()["user_agent"],
+            # ★ 2026-10-01 修正：原写 `get_profile()["user_agent"]` —— 该键**不存在**
+            #   （档案真键名是 `ua`；全仓既有 5 处均走 `utils.fingerprint.user_agent()`），
+            #   实测必然抛 `KeyError: 'user_agent'`（真机日志 [ACC-046]），导致本函数
+            #   **永远探活失败** ⇒ 凭证校验恒不过。此处改用**既有单一真源** user_agent()。
+            "User-Agent": user_agent(),
             "Referer": "https://www.douyin.com/",
         }
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as cli:
@@ -1128,6 +1132,38 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
 
     try:
         context.on("response", lambda r: asyncio.create_task(_on_response(r)))
+        # ★ 2026-10-01 根治「桥永不出码」：清掉**陈旧登录态** cookie，让登录弹窗重新出现。
+        #   为什么要清：桥复用账号固定 profile（保设备指纹），但该 profile 常残留
+        #   **已过期**的 sessionid/sid_tt ⇒ 抖音视作「已登录」⇒ **不弹登录框** ⇒
+        #   页面**不发 `get_qrcode`** ⇒ 桥必然超时（真机实测 [ACC-044] 90s 未截获）。
+        #   项目自身 `force=True` 亦**不清 cookie**（`login_api.py:579` 注释自承
+        #   「残留旧登录态导致没出现登录按钮」），故此处显式清理。
+        #   做法：**全量取回 → 清空 → 回填「除登录态以外」的全部 cookie**
+        #   ⇒ 设备/风控 cookie（ttwid / s_v_web_id / msToken / __ac_*）逐字保留，
+        #     只丢登录态（后者是**过期**的，留着只会阻止出码）。
+        _LOGIN_STATE_COOKIES = {
+            "sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt", "uid_tt_ss",
+            "sso_uid_tt", "sso_uid_tt_ss", "passport_csrf_token",
+            "passport_csrf_token_default", "sid_ucp_v1", "ssid_ucp_v1", "d_ticket",
+        }
+        try:
+            _before = await context.cookies()
+            _login_names = [c["name"] for c in _before if c["name"] in _LOGIN_STATE_COOKIES]
+            if _login_names:
+                _keep = []
+                for _c in _before:
+                    if _c["name"] in _LOGIN_STATE_COOKIES:
+                        continue
+                    _keep.append({k: _c[k] for k in (
+                        "name", "value", "domain", "path", "expires",
+                        "httpOnly", "secure", "sameSite") if k in _c})
+                await context.clear_cookies()
+                if _keep:
+                    await context.add_cookies(_keep)
+                logger.info("[bridge] 已清陈旧登录态 cookie {} 个（保留设备/风控 cookie {} 个）: {}",
+                            len(_login_names), len(_keep), _login_names)
+        except Exception as _e_clr:  # noqa: BLE001
+            logger.warning("[bridge] 清登录态 cookie 失败（不阻断，继续尝试出码）: {}", _e_clr)
         page = context.pages[0] if context.pages else await context.new_page()
         await page.set_viewport_size({"width": 1600, "height": 1000})
         await page.goto(LOGIN_URL, wait_until="domcontentloaded",

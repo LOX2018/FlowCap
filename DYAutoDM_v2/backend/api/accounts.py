@@ -405,14 +405,43 @@ def _enhance_from_live(name: str, env_path: str, handle: dict, st: dict) -> str:
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         except Exception:  # noqa: BLE001
             page = None
-        ck = {c["name"]: c["value"] for c in await ctx.cookies()}
         keys = wp = ""
+        # ★ 2026-10-01 修正：桥停在**首页** ⇒ 那里 security-sdk 只是**空壳**
+        #   （项目明文：`login_api.py:393`「仅停留在首页时拿到的是空壳 → 私信 KICK」）。
+        #   必须在**私信落地页**取签名，否则会把空壳当有效签名写盘 ⇒「更新成功却仍不可写」。
+        #   做法：**同窗口**导航到私信页触发 security-sdk 生成有效值，读回后**不导航回去**
+        #   （keep landing page，与既有 `enrich_auth` 同策略）。
+        #   注意：「首页 + 私信页」两个页面 **≠** 两个窗口 —— 本流程始终**只有一个无头窗口**。
         try:
-            keys = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
-            wp = await page.evaluate(
-                'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+            _CHAT = "https://www.douyin.com/chat?isPopup=1"
+            if page is not None and "chat" not in (page.url or ""):
+                logger.info(f"[scan] 账号 {name} 导航到私信落地页以取有效签名：{_CHAT}")
+                await page.goto(_CHAT, wait_until="domcontentloaded", timeout=45000)
+                _t0 = time.time()
+                while time.time() - _t0 < 45:
+                    _k = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                    _w = await page.evaluate(
+                        'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+                    if _k and _w and len(_w) > 500:      # 未登录空壳仅 ~417B
+                        keys, wp = _k, _w
+                        break
+                    await asyncio.sleep(2)
+                if not (keys and wp):
+                    keys = keys or _k
+                    wp = wp or _w
+                logger.info(f"[scan] 账号 {name} 私信页签名：crypt_sdk={len(keys or '')} "
+                            f"web_protect={len(wp or '')}")
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"[scan] 账号 {name} 读 localStorage 失败（按 skip 处理）: {e}")
+            logger.warning(f"[scan] 账号 {name} 私信落地页取签名失败（退回首页取值）: {e}")
+        # cookie 在**导航之后**读回 ⇒ 含私信页补充字段（如 web_sign_token）
+        ck = {c["name"]: c["value"] for c in await ctx.cookies()}
+        if not (keys and wp):
+            try:
+                keys = await page.evaluate('localStorage["security-sdk/s_sdk_crypt_sdk"]')
+                wp = await page.evaluate(
+                    'localStorage["security-sdk/s_sdk_sign_data_key/web_protect"]')
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[scan] 账号 {name} 读 localStorage 失败（按 skip 处理）: {e}")
         return ck, keys, wp
 
     try:
