@@ -141,3 +141,67 @@ def test_s3_server_probe_uses_official_endpoint():
     body = _func_body(_LR, "_probe_session_valid_by_cookies")
     assert "passport/account/info/v2" in body, "必须以官方会话端点为准"
     assert "user_id" in body, "必须校验 user_id>0"
+
+# ══════════════════════════════════════════════════════════════════
+#  2026-10-01：API 优先 + A 方案（稳定 id）兜底 —— 防回归
+# ══════════════════════════════════════════════════════════════════
+
+def test_a1_default_is_bridge_api_explicit_only():
+    """G-A1：默认必须走**接口桥**；API **仅**在 DY_LOGIN_QR_BACKEND=api 时启用。
+
+    🔴 2026-10-01 实测订正（曾误把 API 提为默认，已撤回）：
+       API 出码仅 3.5s（vs 桥 25~30s），但**二维码约 65 秒即被服务端判 expired**
+       （三轮一致：65s / 65s / 64s；正常应 5 分钟 ⇒ 压缩到 1/5）。
+       用户实扫 ⇒ 提示过期；ok=False，四项签名与 sessionid 全无。
+       轮询 poll_err=None ⇒ 非限频/拦截，是会话被降级（合成指纹：缺 fpk1/dtrait）。
+       ⇒ **快而无用**，不得作默认。
+    """
+    body = _func_body(_ACCOUNTS, "_rpa_scan_login")
+    # ① API 必须被**显式门控**为可选（只有 == "api" 才走）
+    assert '_backend == "api"' in body, \
+        "API 必须是显式可选（DY_LOGIN_QR_BACKEND=api），不得作默认"
+    # ② 默认分支不得调用 API（默认走桥）
+    assert 'logger.info(f"[scan] 账号 {name} 走接口桥' in body, \
+        "默认分支必须走接口桥"
+    # ③ 「API 先于桥」的旧断言必须已撤销（否则等于又把 API 设成默认）
+    assert '_backend not in ("bridge", "rpa")' not in body, \
+        "旧的『API 默认优先』门控必须已移除"
+
+
+def test_a1b_api_65s_expiry_is_recorded():
+    """G-A1b：API 通道的「二维码约 65s 过期」实测结论必须**留在代码里**。
+
+    这是**防重蹈**门禁：若未来有人又想当然把 API 提为默认，
+    本条与 G-A1 会立刻提醒他去看这条实测（而不是只看「出码快」）。
+    """
+    body = _func_body(_ACCOUNTS, "_rpa_scan_login")
+    assert "65" in body and ("expired" in body or "过期" in body), \
+        "API 的 65 秒过期实测必须记录在案（防未来误判『出码快=可用』）"
+
+
+def test_a2_bridge_click_prefers_stable_id():
+    """G-A2：桥点「登录」必须**优先用稳定 id**，不得只用文本匹配+坐标。
+
+    上游情报（2026-10-01）：仓库已配好 `div[id=douyin_login_comp_btn_id]`
+    （dom_locator.py:214 btn_submit）。旧实现全页文本匹配 + getBoundingClientRect
+    算坐标 ⇒ 分辨率/跨设备/改版即点空（用户质疑点）。
+    """
+    body = _func_body(_LR, "bridge_qr_login")
+    assert "SEL_ONE_CLICK_BTN" in body, "必须优先使用稳定 id 锚点（SEL_ONE_CLICK_BTN）"
+    assert '_adaptive_xpath(page, "btn_submit")' in body, \
+        "必须有自适应兜底（dom_locator 的 btn_submit）"
+    # 顺序：稳定 id → 自适应 → 文本
+    i_id = body.find("SEL_ONE_CLICK_BTN")
+    i_xp = body.find('_adaptive_xpath(page, "btn_submit")')
+    i_txt = body.find("querySelectorAll('button,div,span,a')")
+    assert i_id < i_xp < i_txt, "定位顺序必须是：稳定 id → 自适应 → 文本兜底"
+
+
+def test_a3_bridge_no_hardcoded_viewport():
+    """G-A3：桥**不得**硬编码 1600x1000（会覆盖账号档案视口 ⇒ 破坏指纹单源化）。
+
+    证据：errcode_data.py:663 列为错误码根因；services/env_audit 会报 screen 不一致。
+    """
+    body = _func_body(_LR, "bridge_qr_login")
+    assert 'set_viewport_size({"width": 1600' not in body, \
+        "桥不得硬编码视口（应沿用账号档案视口）"

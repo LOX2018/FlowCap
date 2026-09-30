@@ -1165,7 +1165,11 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
         except Exception as _e_clr:  # noqa: BLE001
             logger.warning("[bridge] 清登录态 cookie 失败（不阻断，继续尝试出码）: {}", _e_clr)
         page = context.pages[0] if context.pages else await context.new_page()
-        await page.set_viewport_size({"width": 1600, "height": 1000})
+        # ★ 2026-10-01：**不再硬编码 1600x1000** —— launch_async 已按账号档案设好
+        #   viewport（`_viewport_for_account`），此处覆盖会【破坏指纹单源化】
+        #   （errcode_data.py:663 列为错误码根因；services/env_audit 会报 screen 不一致）。
+        #   档案视口是账号级稳定值 ⇒ 跨设备一致性由档案保证，不由本函数决定。
+
         await page.goto(LOGIN_URL, wait_until="domcontentloaded",
                         timeout=max(30, timeout_s) * 1000)
         # ★ 2026-10-01 根因修复：**必须用真实鼠标点击「登录」按钮才会发 get_qrcode**。
@@ -1175,19 +1179,58 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
         #     · **真实鼠标** `page.mouse.click(x,y)` ⇒ 立刻截获 get_qrcode + 二维码容器 ✅
         #   先给页面一点挂载时间，再（可重试地）点。
         async def _try_click_login(max_wait: float = 25.0) -> str:
+            """点「登录」——**稳定 id 优先**，自适应/文本兜底（消除坐标脆弱性）。
+
+            2026-10-01（上游情报 + 用户质疑「分辨率变了 / 跨设备怎么办」）：
+              旧做法 = 全页文本匹配 + getBoundingClientRect 算屏幕坐标 ⇒
+              分辨率/断点/改版一变即点空（重试只救抖动、不救结构变化）。
+              按 ADR-034 §7-3「改版免疫的定位顺序：确定性接口/入口 → 稳定 id →
+              容器栅格化 → 文本兜底」，改用仓库**已配好**的稳定 id：
+                `div[id="douyin_login_comp_btn_id"]`（dom_locator.py:214 btn_submit）
+              三级策略全部走**真实鼠标**（抖音忽略 JS 合成 click —— 实测结论）。
+            """
             _t = time.time()
             while time.time() - _t < max_wait:
+                _box = None
+                # (a) 稳定 id —— 最优先
                 try:
-                    _box = await page.evaluate(
-                        "() => {"
-                        "const n = Array.from(document.querySelectorAll('button,div,span,a'))"
-                        ".find(x => (x.textContent||'').trim().replace(/\\s/g,'') === '登录');"
-                        "if (!n) return null;"
-                        "const r = n.getBoundingClientRect();"
-                        "if (r.width < 8 || r.height < 8) return null;"
-                        "return {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};}")
+                    _loc = page.locator(SEL_ONE_CLICK_BTN).first
+                    if await _loc.count() > 0 and await _loc.is_visible():
+                        _bb = await _loc.bounding_box()
+                        if _bb and _bb.get("width", 0) >= 8 and _bb.get("height", 0) >= 8:
+                            _box = {"x": int(_bb["x"] + _bb["width"] / 2),
+                                    "y": int(_bb["y"] + _bb["height"] / 2),
+                                    "how": "stable-id"}
                 except Exception:  # noqa: BLE001
                     _box = None
+                # (b) 自适应 XPath（dom_locator，仓库既有兜底能力）
+                if _box is None:
+                    try:
+                        _xp = await _adaptive_xpath(page, "btn_submit")
+                        if _xp:
+                            _loc2 = page.locator(f"xpath={_xp}").first
+                            if await _loc2.count() > 0:
+                                _bb2 = await _loc2.bounding_box()
+                                if _bb2:
+                                    _box = {"x": int(_bb2["x"] + _bb2["width"] / 2),
+                                            "y": int(_bb2["y"] + _bb2["height"] / 2),
+                                            "how": "adaptive-xpath"}
+                    except Exception:  # noqa: BLE001
+                        _box = None
+                # (c) 文本兜底（最后）
+                if _box is None:
+                    try:
+                        _box = await page.evaluate(
+                            "() => {"
+                            "const n = Array.from(document.querySelectorAll('button,div,span,a'))"
+                            ".find(x => (x.textContent||'').trim().replace(/\\s/g,'') === '登录');"
+                            "if (!n) return null;"
+                            "const r = n.getBoundingClientRect();"
+                            "if (r.width < 8 || r.height < 8) return null;"
+                            "return {x: Math.round(r.x + r.width/2),"
+                            " y: Math.round(r.y + r.height/2), how: 'text'};}")
+                    except Exception:  # noqa: BLE001
+                        _box = None
                 if _box:
                     try:
                         # 真实鼠标：先移动（带轨迹），再点击
@@ -1196,8 +1239,8 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
                         await page.mouse.move(_box["x"], _box["y"])
                         await asyncio.sleep(0.22)
                         await page.mouse.click(_box["x"], _box["y"])
-                        logger.info("[bridge] 已真实点击「登录」按钮（{},{}）",
-                                    _box["x"], _box["y"])
+                        logger.info("[bridge] 已真实点击「登录」按钮（{},{}） via={}",
+                                    _box["x"], _box["y"], _box.get("how", "?"))
                         return "clicked"
                     except Exception as _e_clk:  # noqa: BLE001
                         logger.debug("[bridge] 点击登录按钮异常: {}", _e_clk)

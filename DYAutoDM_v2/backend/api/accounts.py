@@ -191,19 +191,20 @@ def _build_last_run(name: str) -> dict:
 #  （**不自造**写盘逻辑 —— ADR-017 §8.3）。
 
 def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
-    """扫码登录。**默认走 RPA 无头 Camoufox（同一设备身份）**；API 纯 HTTP 为可选前置。
+    """扫码登录：**默认走 API 纯 HTTP**，失败回落接口桥（无头 Camoufox）。
 
-    ## 路由
+    ## 路由（2026-10-01 实测订正版）
     ```
-    ① API 扫码（**仅当显式开启** DY_LOGIN_QR_BACKEND=api；纯协议、零浏览器）
-    ② RPA 无头 Camoufox（默认）：同身份出码 → 保持窗口 → 等扫码 → 落凭证
+    ① 接口桥（**默认**）：无头 Camoufox + 三级定位点「登录」→ 截获页面自发的
+       get_qrcode 响应。真实身份 ⇒ 码可活到正常时长。
+    ② API 扫码（**显式可选**，DY_LOGIN_QR_BACKEND=api）：纯协议、零浏览器、出码仅 3.5s，
+       但**实测二维码约 65s 即 expired**（三轮一致）⇒ 当前不足以完成登录。
+    ③ 上层 _do_scan 再回落「有头浏览器用户手动」（最终兜底）。
     ```
-    ## 为什么默认 RPA 而不是 API（2026-09-30 身份审查 + 实机实测）
-    API 路径用 **Chrome 151 UA + curl_cffi(chrome150)**，与本机 **Camoufox(Firefox 152)**
-    的日常会话构成**跨信号身份矛盾**（H-27「凭证 3 小时失效」同族根因）。
-    而 RPA 在本机 Camoufox 内完成，**TLS/JS/指纹天然同一身份**，且
-    **无头即可出码**（实测 headless=True：8.5s 启动，容器栅格化锚点解出
-    `https://v.douyin.com/...`）⇒ 兼顾「不开窗口」与「身份一致」。
+    ## 为什么撤回「API 默认」（实测证据）
+    出码 3.5s vs 桥 25~30s，API 更快；但**码只活 65 秒**（正常 5 分钟的 1/5），
+    用户实扫即提示过期，四项签名与 sessionid 全无。轮询 poll_err=None ⇒ 非限频拦截，
+    而是会话被降级（合成指纹：缺 fpk1 / dtrait）。⇒ **快而无用**，故不作默认。
 
     失败**不抛异常**（由调用方回落），返回 True 表示**凭证已落盘且校验通过**。
     """
@@ -220,13 +221,31 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
         logger.debug(f"[scan] 账号 {name} 代理读取失败（按直连）: {e}")
 
     # ── ① API 扫码（**可选前置**，仅显式开启；默认走 ② RPA 同身份）──────
-    #   开启条件：环境变量 `DY_LOGIN_QR_BACKEND=api`。默认**不启用**（见函数文档
-    #   的「为什么默认 RPA」：API 是 Chrome 身份，与账号的 Firefox 会话跨信号矛盾）。
+    # 🔴 2026-10-01 实测订正：API **不再默认**（曾误提为默认，已撤回）。
+    #   实测：API 出码 3.5s 但**二维码仅活 65s** 即 expired（三轮一致，正常 5 分钟）；
+    #   用户实扫 ⇒ 过期；轮询 poll_err=None（非限频）。根因：合成指纹（缺 fpk1/dtrait）。
+    #   ⇒ 默认走接口桥（真实身份）；API 仅在 DY_LOGIN_QR_BACKEND=api 时启用，供对照实验。
     import os as _os
-    if (_os.environ.get("DY_LOGIN_QR_BACKEND", "").strip().lower() == "api"):
-        if _api_scan_login(name, env_path, st, proxy):
-            return True
-        logger.warning(f"[ACC-040] [scan] 账号 {name} API 扫码未成功，回落 RPA 无头")
+    _backend = _os.environ.get("DY_LOGIN_QR_BACKEND", "").strip().lower()
+    if _backend == "api":
+        # 🔴 2026-10-01 实测：**API 当前不可用于完成登录**（仅出码、码活不过 65s）
+        #   三轮一致：出码 3.5s，但二维码 **65 秒** 即被服务端判 expired
+        #   （正常 5 分钟 ⇒ 被压缩到 1/5）；轮询 poll_err=None 说明未被限频/拦截，
+        #   是会话被降级（缺 fpk1/dtrait ⇒ 合成指纹）。用户实扫 ⇒ 提示过期。
+        #   ⇒ 故 API **降为显式可选**（DY_LOGIN_QR_BACKEND=api 才会走），
+        #     默认仍走「接口桥」（本机 Camoufox 真实身份）。
+        logger.warning(f"[scan] 账号 {name} 显式要求 API 扫码（注意：实测二维码约 65s 即过期）")
+        try:
+            if _api_scan_login(name, env_path, st, proxy):
+                return True
+            logger.warning(f"[ACC-040] [scan] 账号 {name} API 扫码未成功，"
+                           f"回落接口桥（无头 Camoufox）")
+        except Exception as _e_api:  # noqa: BLE001
+            logger.warning(f"[ACC-042] [scan] 账号 {name} API 扫码异常，"
+                           f"回落接口桥: {type(_e_api).__name__}: {_e_api}")
+    else:
+        logger.info(f"[scan] 账号 {name} 走接口桥（无头 Camoufox，真实身份）"
+                    f"（DY_LOGIN_QR_BACKEND={_backend or '默认'}）")
 
     # ── ② RPA 扫码：**桥优先（接口响应出码）→ 截图兜底**─────────────────
     from auto_dm import login_remote as _lr
