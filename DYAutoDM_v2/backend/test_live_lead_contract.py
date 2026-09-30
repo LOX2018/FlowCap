@@ -228,9 +228,13 @@ class TestTableRenderingContract(unittest.TestCase):
         self.assertIn("export const DM_PREVIEW_CHARS = 10;", shared)
 
     def test_g7b_both_views_use_shared_helpers(self):
+        # 2026-09-30（ADR-033 D4/D5）：共享助手集合**扩容** —— 截断/缘由的呈现逻辑
+        # 收敛进 `dmPreviewText` / `dmFailReason`（比原先「各视图自己 slice(0,10)」
+        # 更严格的单一真源）。判据随之改为断言这两个新助手的**使用**，而非字面
+        # `DM_PREVIEW_CHARS`（旧判据是代理指标，已被 superseded；常量仍由 G7 守住）。
         for f in ("live-page.tsx", "LiveReviewMode.tsx"):
             s = self._read(f)
-            for helper in ("dmTitle", "sourceMetaOf", "DM_PREVIEW_CHARS"):
+            for helper in ("dmTitle", "sourceMetaOf", "dmPreviewText", "dmFailReason"):
                 self.assertIn(helper, s, f"{f} 未使用共享 {helper}")
             self.assertNotIn("const SOURCE_META: Record<string", s,
                              f"{f} 内联了第二份来源映射（契约漂移）")

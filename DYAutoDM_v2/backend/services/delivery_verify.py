@@ -95,6 +95,12 @@ def mark_delivery_verified(
     text_content += f" msg_id={sid}"
 
     extra = {
+        # 🔴 2026-09-30（H-29 单一出口契约）：本函数是**裸 SQL 写入点**，不经
+        # `MessageRecord.build()`，故必须**自行**带上 `kind` —— 否则行绕过
+        # H-29 读侧白名单（`extra.kind` 缺失 ⇒ 按 kind 白名单放行的读侧会漏判），
+        # 且门禁 `test_h29_message_schema.test_g7_all_rows_labeled` 恒红。
+        # 实测：生产库 8 行缺 kind（2026-09-30 12:46~12:55 写入）正由此产生。
+        "kind": "delivery_marker",
         "delivery_verified": True,
         "server_message_id": sid,
         "status_code": status_code,
@@ -157,7 +163,7 @@ PLATFORM_REJECT_PREFIX = "对方回复或关注你之前"
 
 
 def delivery_state_of(account: str, conv_id: str = "",
-                      uid: str = "") -> str:
+                      uid: str = "", after_ts: float = 0.0) -> str:
     """返回该目标最近一次投递的**真实结局**（只读，零副作用）。
 
     取值（供调用方与前端映射，语义即契约）：
@@ -175,8 +181,14 @@ def delivery_state_of(account: str, conv_id: str = "",
 
         conn = get_db()
         acc = account
-        if conv_id:
-            # 回声帧：role=me 且 msg_type='7'（recv_daemon 的 WS 回执指纹）
+        # 🔴 2026-09-30（用户实测「显示已送达却无文案」）：**必须带时间锚** ——
+        # 原实现只按 uid 匹配该会话的**全部历史**，于是该 uid 只要曾经有过回声帧/
+        # 投递标记，本次全部记录（含未发/失败行）都会被判 delivered（实库实测：
+        # verify 标记 61 / 回声 115 条，污染面极大）。after_ts>0 时只统计
+        # 「本次发送之后」到达的证据；不传（0）保持旧行为（零回归）。
+        _tclause = " AND ts >= ?" if after_ts and float(after_ts) > 0 else ""
+        _targs = (float(after_ts),) if _tclause else ()
+        if conv_id:            # 回声帧：role=me 且 msg_type='7'（recv_daemon 的 WS 回执指纹）
             # 标记行：msg_id 以 verify: 开头（mark_delivery_verified 的命名空间）
             #
             # 🔴 2026-09-29：定位口径**复用项目 SSOT** `conv_identity.peer_uid`
@@ -209,8 +221,8 @@ def delivery_state_of(account: str, conv_id: str = "",
                     "SELECT SUM(CASE WHEN msg_type='7' AND role='me' THEN 1 ELSE 0 END) echo,"
                     "       SUM(CASE WHEN msg_id LIKE 'verify:%' THEN 1 ELSE 0 END) marker,"
                     "       SUM(CASE WHEN text LIKE ? THEN 1 ELSE 0 END) rej "
-                    f"FROM dm_messages WHERE account=? AND conv_id IN ({ph})",
-                    (PLATFORM_REJECT_PREFIX + "%", acc, *forms),
+                    f"FROM dm_messages WHERE account=? AND conv_id IN ({ph})" + _tclause,
+                    (PLATFORM_REJECT_PREFIX + "%", acc, *forms) + _targs,
                 ).fetchone()
             else:
                 # 对端解析不出来（my_uid 未知等）⇒ 退回精确 conv_id + 反向形态，
@@ -219,16 +231,16 @@ def delivery_state_of(account: str, conv_id: str = "",
                     "SELECT SUM(CASE WHEN msg_type='7' AND role='me' THEN 1 ELSE 0 END) echo,"
                     "       SUM(CASE WHEN msg_id LIKE 'verify:%' THEN 1 ELSE 0 END) marker,"
                     "       SUM(CASE WHEN text LIKE ? THEN 1 ELSE 0 END) rej "
-                    "FROM dm_messages WHERE account=? AND (conv_id=? OR conv_id=?)",
-                    (PLATFORM_REJECT_PREFIX + "%", acc, conv_id, _flip_conv(conv_id)),
+                    "FROM dm_messages WHERE account=? AND (conv_id=? OR conv_id=?)" + _tclause,
+                    (PLATFORM_REJECT_PREFIX + "%", acc, conv_id, _flip_conv(conv_id)) + _targs,
                 ).fetchone()
         elif uid:
             row = conn.execute(
                 "SELECT SUM(CASE WHEN msg_type='7' AND role='me' THEN 1 ELSE 0 END) echo,"
                 "       SUM(CASE WHEN msg_id LIKE 'verify:%' THEN 1 ELSE 0 END) marker,"
                 "       SUM(CASE WHEN text LIKE ? THEN 1 ELSE 0 END) rej "
-                "FROM dm_messages WHERE account=? AND conv_id LIKE ?",
-                (PLATFORM_REJECT_PREFIX + "%", acc, f"%{uid}%"),
+                "FROM dm_messages WHERE account=? AND conv_id LIKE ?" + _tclause,
+                (PLATFORM_REJECT_PREFIX + "%", acc, f"%{uid}%") + _targs,
             ).fetchone()
         else:
             return ""

@@ -178,7 +178,10 @@ def _records_from_adm(adm) -> list[dict]:
         if _dstate and _acct and _uid:
             if _uid not in _cache:
                 try:
-                    _cache[_uid] = _dstate(_acct, uid=_uid)
+                    # 2026-09-30：**必须带时间锚** —— 否则该 uid 的历史回声帧/
+                    # 投递标记会把本次记录全判 delivered（「已送达却无文案」根因）。
+                    _cache[_uid] = _dstate(_acct, uid=_uid,
+                                          after_ts=float(d.get("sent_at") or 0))
                 except Exception:
                     _cache[_uid] = ""
             _state = _cache[_uid]
@@ -198,7 +201,13 @@ def _records_from_adm(adm) -> list[dict]:
             "captured_at": d.get("captured_at", 0),
             "send_at": d.get("send_at"),
             "send_ts": d.get("sent_at"),
+            # 2026-09-30（契约漂移修复）：前端直播页读 `sent_at`，而本端点只发
+            # `send_ts` ⇒「私信时间」列恒空。补规范名别名，两处口径归一。
+            "sent_at": d.get("sent_at"),
             "content": d.get("content") or "",
+            # 2026-09-30：**尝试发送的文案** —— 失败行 content 为 None，
+            # 前端据此把「试发了什么」呈现出来，失败才不至于只剩一个红标签。
+            "attempted_content": d.get("attempted_content") or "",
             # 2026-09-30：文案**实际来源**（AI / 词库 / 原文）—— 用户实测反馈
             # 「发送的文本没有标识，根本不知道是词库、AI 生成还是兜底文档」。
             # 由 dispatch._do_send 在取值点写入，这里只做透传，不推断。

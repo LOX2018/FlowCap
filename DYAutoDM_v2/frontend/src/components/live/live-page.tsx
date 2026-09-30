@@ -42,7 +42,7 @@ import { cn } from "@/lib/utils";
 
 import {
   LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, displayStatus, isIssue,
-  DM_PREVIEW_CHARS, sourceMetaOf, dmTitle,
+  sourceMetaOf, dmTitle, dmFailReason, dmPreviewText,
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
@@ -274,6 +274,7 @@ export default function LivePage(props: PageProps) {
         content: r.comment || r.content || "",
         dmStatus: toDmStatus(r.status),
         dmText: r.content || "",
+        attemptedContent: r.attempted_content || r.content || "",
         dmTime: r.sent_at ? fmtTime(r.sent_at) : "",
         ts: (r.captured_at || 0) * 1000,
         reason: String(r.reason || ""),
@@ -317,6 +318,13 @@ export default function LivePage(props: PageProps) {
   // G-2/G-3：可见行与「仅看异常」判据都收敛到同一个真源（shared 的 isIssue）。
   const visibleRows = useMemo(
     () => (onlyIssues ? rows.filter(isIssue) : rows), [rows, onlyIssues]);
+  // 🔴 2026-09-30（用户实测「发送失败…也没有进入错误统计」）：
+  // 原「错误」取 `/api/ai/status` 的 `errors` —— 那是 **AI 会话回复 worker**
+  // 的计数，与直播私信发送链路**不通** ⇒ 发送失败永远是 0。
+  // 现与表格**同一判据**（displayStatus 的 danger 档 = 发送失败 / 被平台拒绝），
+  // 保证「表里看得到几条失败，统计里就是几条」。
+  const errorCount = useMemo(
+    () => rows.filter((r) => displayStatus(r)[1] === "danger").length, [rows]);
 
   // Esc 关闭查阅模式
   useEffect(() => {
@@ -516,8 +524,9 @@ export default function LivePage(props: PageProps) {
         <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.leads_total ?? 0}</b>
       </span>
       <span>·</span>
-      <span>错误
-        <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{aiSt.errors ?? 0}</b>
+      <span title="含「发送失败」与「被平台拒绝」两类，与表格状态列同一判据">
+        错误
+        <b className="ml-0.5 font-mono tabular-nums text-[var(--color-text)]">{errorCount}</b>
       </span>
     </span>
   );
@@ -1136,14 +1145,25 @@ export default function LivePage(props: PageProps) {
             <div className="-mx-4 -mb-4 flex max-h-[clamp(320px,calc(100vh-560px),620px)]
                             flex-col overflow-hidden">
               <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
-                <table className="w-full border-collapse">
+                {/* 2026-09-30（用户实测「表格突然变宽/发言人列变宽」）：
+                    原表格**没有 table-layout**，浏览器按内容自动分配列宽 ——
+                    长昵称/长文案会把列挤变形。改为 `table-fixed` + 固定列宽，
+                    列宽与内容解耦（结构稳定），溢出由单元格 truncate 兜住。 */}
+                <table className="w-full table-fixed border-collapse">
+                  <colgroup>
+                    <col style={{ width: 88 }} />
+                    <col style={{ width: 150 }} />
+                    <col style={{ width: 240 }} />
+                    <col style={{ width: 120 }} />
+                    <col style={{ width: 260 }} />
+                    <col style={{ width: 88 }} />
+                  </colgroup>
                   <thead className="sticky top-0 z-[1] bg-[var(--color-surface)]">
                     <tr>
-                      <Th width={88}>发送时间</Th>
-                      <Th width={150}>发言人</Th>
+                      <Th width={88}>发送时间</Th>                      <Th width={150}>发言人</Th>
                       <Th width={240}>评论内容</Th>
-                      <Th width={96}>私信状态</Th>
-                      <Th width={210}>私信文案</Th>
+                      <Th width={120}>私信状态</Th>
+                      <Th width={260}>私信文案</Th>
                       <Th width={88}>私信时间</Th>
                     </tr>
                   </thead>
@@ -1250,9 +1270,27 @@ export default function LivePage(props: PageProps) {
                                 : "text-[var(--color-text-muted)]"
                             )}
                           >
-                            {r.dmText
-                              ? r.dmText.slice(0, DM_PREVIEW_CHARS)
-                              : "未发送"}
+                            {/* 2026-09-30：失败行优先显示**可读缘由** —— 用户原话
+                                「发送失败，既没有显示失败缘由」。缘由非空即替换预览，
+                                全文仍可经 title 悬浮查看。 */}
+                            {dmFailReason(r) ? (
+                              <span className="block min-w-0 flex-1 truncate
+                                               text-[var(--color-danger)]"
+                                    title={"失败原因：" + dmFailReason(r)}>
+                                {dmFailReason(r)}
+                              </span>
+                            ) : (
+                              <span
+                                className={cn(
+                                  "block min-w-0 flex-1 truncate",
+                                  r.attemptedContent || r.dmText
+                                    ? "text-[var(--color-text)]"
+                                    : "text-[var(--color-text-muted)]"
+                                )}
+                              >
+                                {dmPreviewText(r)}
+                              </span>
+                            )}
                           </span>
                         </span>
                       </Td>

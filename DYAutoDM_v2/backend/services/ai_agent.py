@@ -79,6 +79,9 @@ def list_agents() -> list[dict]:
             "merchant_name": cfg.get("merchant_name", ""),
             "enabled": bool(cfg.get("enabled", False)),
             "kb_count": len(cfg.get("knowledge_base") or []),
+            # 2026-09-30：意向门（Agent 层配置）—— 前端编辑器据此回显。
+            "intent_scope_enabled": bool(cfg.get("intent_scope_enabled")),
+            "intent_scope": list(cfg.get("intent_scope") or []),
             "updated_at": a.get("updated_at", 0),
         })
     return sorted(out, key=lambda x: x.get("updated_at") or 0, reverse=True)

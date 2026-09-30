@@ -26,6 +26,11 @@ class SendRecord(BaseModel):
     send_at: float | None = None  # 计划发送时间
     sent_at: float | None = None  # 实际发送时间
     content: str | None = None
+    # 2026-09-30（用户实测「发送失败，既没有显示失败缘由」）：**尝试发送的文案**。
+    # content 在失败时被置 None（历史语义：失败=没有内容），于是表格里失败行永远
+    # 只剩一个红标签、看不到到底试发了什么。本字段独立保留「当时要发的那句话」，
+    # 与 content 的成败语义解耦 —— 不改 content 的任何既有消费点。
+    attempted_content: str | None = None
     # 2026-09-30：文案**实际来源**（用户实测反馈：界面上无法辨别这条私信
     # 到底是词库、AI 生成，还是兜底文档）。取值由 core/dispatch._do_send 在
     # **取值点**写入（不是事后推断），故与实际外发内容一一对应：

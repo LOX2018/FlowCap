@@ -1,0 +1,54 @@
+fix(live): 直播 AI 发送四连修——投递时间锚/意向门(Agent层)/失败可观测/列宽稳定 + H-29 单一出口补齐 v0.45.121
+
+[Design-Intent Regression]
+Original design assumption:
+  · delivery_state_of 的返回值 = 「该目标最近一次投递的真实结局」（应只反映本次发送）
+  · 异常判据与状态列渲染必须同一真源（isIssue 由 displayStatus 派生）
+  · 直播发送链必须「目标筛选 + 发送 + 可观测（缘由/计数/时间）」三件齐
+  · 意向判定属业务语义，应归 Agent 层（用户 2026-09-30 架构校正：通用引擎不含行业规则）
+The design contract this fix restores:
+  · ADR-033 D1~D6；C-06 §6 符号守护 17 条；H-29「7 处写入点 100% 经单一出口」
+Expected behavior:
+  · 失败行不得渲染成绿色「已送达」；失败必须可见缘由并计入「错误」
+  · 历史回声帧不得把本次记录判成 delivered
+  · 未配置意向范围的 Agent 行为逐字不变（零回归）；配置后未命中即不发且落可读原因
+
+[Standard-Contract Adherence]
+字段命名沿用既有规范 snake_case 出口（attempted_content / content_source /
+intent_scope_enabled / intent_scope / send_ts 与 sent_at 双写），未引入新命名风格。
+
+[Problem-Analysis Chain]
+Source:
+  ① live-page.tsx / LiveReviewMode.tsx 两处 <table> 无 table-layout ⇒ 列宽随内容漂移
+  ② live_hook.py:415 提交唯一条件 = 有 nickname ⇒ 直播链零意向过滤（既有阈值/窗口全休眠）
+  ③ dispatch._do_send 失败置 content=None ⇒ 表格只剩红标签；
+     「错误」计数取自 ai_reply.WORKER.status（AI 会话 worker），与直播发送链不通
+  ④ api/tasks._records_from_adm 只传 uid ⇒ delivery_verify 宽匹配且无时间锚 ⇒
+     历史回声帧把本次全部记录判 delivered；displayStatus 又让 delivered 覆盖 fail
+  ⑤ delivery_verify 裸 SQL 写 dm_messages，绕过 message_schema 单一出口 ⇒ extra.kind 缺失
+Propagation:
+  用户可见症状：表格突然变宽 / 非意向照发 / 失败无踪由无计数 / 已送达无文案
+Terminal:
+  控制台「实时评论统计列表」呈现与统计与事实相悖（用户报「系统性的发送功能性障碍」）
+Open-source component analysis: 不涉及。
+实库取证（张老师库 m17db0f8209156f26，只读）：
+  verify 标记 61 / msg_type='7'&role='me' 回声 115 / 平台拒收 176；
+  会被判 delivered 的会话 80/253（小助理 22/71）；
+  「先回声后拒收」样本 5 例，其中 1 例锚前 delivered → 锚后 rejected。
+
+[Live Verification]
+- Command: python -m unittest test_live_ai_send_defects -v
+- Environment: C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2\backend（Python314）
+- Result: 19/19 OK；负控双向确认（回退时间锚 ⇒ G1 红；跳过不落 reason ⇒ G4 红，还原复绿）
+- Command: npx tsc -b / npx tsc --noEmit  → 0 错误
+- Command: python -m unittest discover -s . -p "test_*.py"  → Ran 1227 tests, OK（0 失败）
+- Command: python scripts/check_version_sync.py  → 6 处齐平 0.45.121
+- Command: python scripts/check_contracts.py   → G0~G15 全 PASS
+- Command: python scripts/check_iron_rules.py  → 19 项，阻断 0（3 项存量磁盘卫生警告）
+- 生产库回填：8 行 delivery_marker 补 extra.kind（写前备份 + 按 id 逐条 + 写后读回）⇒ 残留 0/1156
+
+[Knowledge Archival]
+- Standards updated: 无（未改动 knowledge/standards/）
+- Case archived: 工作记忆/cases/2026-09-30_直播AI发送功能性障碍四连修_case_v0.45.121.md
+- ADR: DYAutoDM_v2/docs/adr/ADR-033-live-intent-gate-and-delivery-honesty.md
+- Ownership: DYAutoDM_v2/artifacts/d12_20260930/OWNERSHIP.md

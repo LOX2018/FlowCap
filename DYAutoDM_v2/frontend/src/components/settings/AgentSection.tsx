@@ -91,6 +91,8 @@ export default function AgentSection(props: PageProps) {
       model: sel.model || "",
       enabled: String(!!sel.enabled),
       scopes: sel.scopes || ["dm"],
+      intent_scope_enabled: String(!!sel.intent_scope_enabled),
+      intent_scope: (sel.intent_scope || []).join("\n"),
     } as Record<string, string | string[]>);
   }, [sel?.id]);
 
@@ -135,6 +137,10 @@ export default function AgentSection(props: PageProps) {
       model: draft.model || "",
       enabled: draft.enabled === "true",
       scopes: Array.isArray(draft.scopes) ? draft.scopes : (["dm"] as string[]),
+      // 2026-09-30（P2-B 意向门，Agent 层）：范围词按行拆分；空 ⇒ 不启用。
+      intent_scope_enabled: draft.intent_scope_enabled === "true",
+      intent_scope: String(draft.intent_scope || "")
+        .split("\n").map((s) => s.trim()).filter((s) => s),
     };
     saveMut.mutate({
       id: selId || undefined,
@@ -204,6 +210,8 @@ export default function AgentSection(props: PageProps) {
                 strict_level: "rag",
                 model: "",
                 enabled: "false",
+                intent_scope_enabled: "false",
+                intent_scope: "",
               });
             }}
           >
@@ -311,6 +319,32 @@ export default function AgentSection(props: PageProps) {
                   {SCOPE_LABELS[s]}
                 </label>
               ))}
+            </div>
+          </Field>
+          {/* 意向门（2026-09-30，P2-B）：判定归属 **Agent 层** —— 引擎不含行业规则，
+              范围词由本 Agent 提供。默认关闭；开启且范围非空 ⇒ 弹幕未命中即不发。 */}
+          <Field label="意向范围过滤（开启后：未命中下列关键词的弹幕不发私信）">
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <select
+                value={draft.intent_scope_enabled || "false"}
+                onChange={(e) =>
+                  setDraft({ ...draft, intent_scope_enabled: e.target.value })
+                }
+                style={{ ...inputStyle, maxWidth: 260 }}
+              >
+                <option value="false">关闭（不按内容过滤，全部发送）</option>
+                <option value="true">开启（未命中范围词即不发）</option>
+              </select>
+              <textarea
+                value={String(draft.intent_scope || "")}
+                onChange={(e) => setDraft({ ...draft, intent_scope: e.target.value })}
+                rows={4}
+                placeholder={"每行一个关键词，例如：\n工伤\n骨折\n怎么赔"}
+                style={{ ...inputStyle, minHeight: 78, resize: "vertical" }}
+              />
+              <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                留空 = 不启用（零回归）。命中规则：弹幕文本包含任一关键词即视为意向。
+              </span>
             </div>
           </Field>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>

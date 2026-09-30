@@ -34,6 +34,11 @@ from models.task import SendRecord
 from core.sender import send_target_async
 
 
+#: apply_runtime 的「未传参」哨兵 —— 意向门需要能**显式关掉**（传 None），
+#: 故不能拿 None 当「未提供」。
+_UNSET = object()
+
+
 @dataclass(order=True)
 class _QueueItem:
     """队列项：按 send_at 排序"""
@@ -61,6 +66,10 @@ class DispatchCenter:
         # 2026-09-20：直播/采集来源的 AI 生成回调。由上层（AutoDM）传入；
         # 与 pick_dm_message 同为 None 时由调用方自带 content。
         gen_dm_message: Optional[Any] = None,
+        # 2026-09-30（P2-B 意向门，Agent 层）：可调用对象，返回 (ok, reason)。
+        # None = 不启用（零回归）。判据由上层从 Agent 配置解析后注入，
+        # 调度器只消费结论、不含任何行业规则。
+        intent_verdict: Optional[Any] = None,
     ) -> None:
         self.auth = auth
         self.max_target = int(max_target)
@@ -69,6 +78,7 @@ class DispatchCenter:
         self.enable_send = enable_send
         # pick_dm_message: 可调用对象，返回一条私信文案；为 None 时由调用方传入 content
         self.pick_dm_message = pick_dm_message
+        self.intent_verdict = intent_verdict
         # gen_dm_message: 按目标生成 AI 文案；None 或返回空 → 回落词库/调用方 content
         self.gen_dm_message = gen_dm_message
 
@@ -161,6 +171,7 @@ class DispatchCenter:
         delay_range: tuple[int, int] | None = None,
         pick_dm_message: Any | None = None,
         gen_dm_message: Any | None = None,
+        intent_verdict: Any | None = _UNSET,
     ) -> list[str]:
         """运行期热更调度参数（**不打断消费循环、不清队列、不重置去重/计数**）。
 
@@ -187,6 +198,10 @@ class DispatchCenter:
         if gen_dm_message is not None:
             self.gen_dm_message = gen_dm_message
             applied.append("ai_gen")
+        # 意向门：允许「显式关掉」（传 None 也要落位，否则旧判据会残留）
+        if intent_verdict is not _UNSET:
+            self.intent_verdict = intent_verdict
+            applied.append("intent_gate")
         if applied:
             logger.info(f"[调度] 运行时参数热更：{applied}")
         return applied
@@ -268,6 +283,24 @@ class DispatchCenter:
 
         # 先确保有「已捕获」记录（即使后面因停止/去重/暂停被拒，也不丢数据）
         self._ensure_record(key, target)
+
+        # 2026-09-30（P2-B 意向门）：**未命中 Agent 意向范围 ⇒ 不入池、不发送**。
+        # 判据由上层从 Agent 配置解析后注入；None=不启用（零回归）。
+        # 与「去重/上限」同属提交期跳过，但**必须如实落 reason**（否则就是
+        # 「发送失败却无缘由」的同族缺陷）。
+        if self.intent_verdict is not None:
+            try:
+                _ok, _why = self.intent_verdict(target)
+            except Exception as e:
+                logger.warning(f"[调度] 意向判定异常，按放行处理: {e}")
+                _ok, _why = True, ""
+            if not _ok:
+                _rec = self.records.get(key)
+                if _rec is not None:
+                    _rec.status = RecordStatus.SKIPPED
+                    _rec.reason = _why or "非意向内容：未命中意向范围，未发送"
+                logger.info(f"[调度] 意向门跳过「{target.get('nickname')}」：{_why}")
+                return False
 
         # 停止/暂停态：拒绝真发，但记录已保留（用户可在统计里看到「已捕获未发」）
         if self._clear_queue or not self._accept_new:
@@ -401,6 +434,9 @@ class DispatchCenter:
             return
 
         content = ""
+        # 2026-09-30：**尝试发送的文案**（best-effort：AI/词库产出或原文兜底）。
+        # 失败时 content 会被置 None，本变量用来把「试发了什么」如实带到前端。
+        _attempted = ""
         # 2026-09-30：记录文案**实际来源**（用户实测反馈「根本不知道这个文本到底是
         # 词库，还是 AI 生成，还是兜底文档」）。来源在**取值点**写入，与实际外发
         # 内容一一对应；sent 时随 records 下发给前端呈现（见 api/tasks._records_from_adm）。
@@ -423,10 +459,12 @@ class DispatchCenter:
             else:
                 # 2026-09-30：来源只在**成功产出**时置位（异常/空串 ⇒ 留给词库分支）
                 src = "AI" if content else ""
+                _attempted = _attempted or content
         if not content and self.pick_dm_message is not None:
             try:
                 content = self.pick_dm_message()
                 src = "词库" if content else ""
+                _attempted = _attempted or content
             except Exception as e:
                 logger.warning(f"[SEND-005] " + f"[调度] pick_dm_message 异常: {e}")
                 content = ""
@@ -437,6 +475,7 @@ class DispatchCenter:
         if not content:
             content = str(target.get("comment") or "").strip()
             src = "原文" if content else ""
+            _attempted = _attempted or content
 
         try:
             # 2026-09-07：视频采集 / 直播监听的私信统一走 dm_dispatch 调度。
@@ -474,6 +513,8 @@ class DispatchCenter:
         rec.send_at = rec.send_at  # 保留计划发送时间
         rec.sent_at = time.time()
         rec.content = content if ok else None
+        # 2026-09-30：无论成败都保留「尝试发送的文案」，供前端呈现失败缘由上下文。
+        rec.attempted_content = _attempted or content or None
         rec.content_source = src if ok else None
 
         if ok:

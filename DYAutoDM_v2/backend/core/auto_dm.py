@@ -198,6 +198,9 @@ class AutoDM:
         # 2026-09-20：AI 生成回调（直播/采集来源的私信文案）。
         # 由 _apply_config 构建；None 时发送完全走词库（与改造前逐字一致）。
         self.gen_dm_message: Optional[Any] = None
+        # 2026-09-30（P2-B 意向门，Agent 层）：按 Agent 配置构造的「是否意向」判定
+        # 回调。None = 不启用（Agent 未配置范围）⇒ 调度器不过滤，零回归。
+        self.intent_verdict: Optional[Any] = None
         # 当前任务的目标账号（供 AI 生成时解析 Agent 绑定/作用域）
         self.target_acct: Optional[str] = None
         # 直播监听指定账号（TaskConfig.acct）。__init__ 里先置 None，供 start()
@@ -400,8 +403,10 @@ class AutoDM:
         # 2026-09-20：AI 生成回调（按「账号绑定 Agent + scopes 含 live」判定；
         # 未绑定/未启用 → 返回空串 → 调度器回落词库，零回归）。
         self.gen_dm_message = self._make_gen_dm_message()
+        self.intent_verdict = self._make_intent_verdict()
         if self.dispatch is not None:
             self.dispatch.gen_dm_message = self.gen_dm_message
+            self.dispatch.intent_verdict = self.intent_verdict
 
     def _make_pick_dm_message(self):
         """从已启用词库随机抽一条文案（修复旧版恒取 dm_pool[0] 导致文案重复被风控）。"""
@@ -625,6 +630,37 @@ class AutoDM:
                 return ""
 
         return _gen
+
+    def _make_intent_verdict(self):
+        """构造「意向门」判定回调（2026-09-30，P2-B）。
+
+        设计契约（用户拍板：判定归属 **Agent 层**）：
+          - 范围关键词来自该账号**绑定的 Agent** 配置（`intent_scope_enabled` /
+            `intent_scope`），引擎自身**不含任何行业规则**（保住通用引擎属性）；
+          - **未配置即不启用** ⇒ 返回 None，调度器不做过滤（零回归）；
+          - 配置了范围 ⇒ 未命中即不发（SKIPPED + 可读原因），命中才放行。
+
+        匹配实现复用 `ai_reply.intent_in_scope`（唯一真源），本方法只做配置解析。
+        """
+        account = (self.target_acct or getattr(self, "_acct", None) or "")
+        try:
+            from services import ai_agent, ai_reply
+            cfg = ai_agent.resolve_config(account, ai_reply.get_config()) or {}
+            words = ai_reply.intent_scope_words(cfg)
+        except Exception as e:
+            logger.warning(f"[意向门] 配置解析失败，按不启用处理: {e}")
+            return None
+        if not words:
+            return None
+        logger.info(f"[意向门] 已启用（范围词 {len(words)} 个，账号 {account or '?'}）")
+
+        def _verdict(target: dict) -> tuple:
+            text = str((target or {}).get("comment") or "")
+            if ai_reply.intent_in_scope(text, words):
+                return True, ""
+            return False, "非意向内容：未命中 Agent 意向范围，未发送"
+
+        return _verdict
 
     def _snapshot_config(self) -> dict:
         """当前任务的配置快照（任务中心「进入/复用」回读数据源）。"""
@@ -904,6 +940,8 @@ class AutoDM:
                 pick_dm_message=self.pick_dm_message,
                 gen_dm_message=self.gen_dm_message,
             )
+            # 2026-09-30：把意向门注入调度器（未启用时为 None ⇒ 零回归）
+            self.dispatch.intent_verdict = self.intent_verdict
             self.dispatch.on_idle = self._on_dispatch_idle
             await self.dispatch.start()
 
@@ -1388,6 +1426,7 @@ class AutoDM:
         self.delay_range = want_delay
         self.dm_template = want_pool
         self.pick_dm_message = self._make_pick_dm_message()
+        self.intent_verdict = self._make_intent_verdict()
 
         if self.dispatch:
             # 调度器是这些运行时字段的唯一持有者 → 以它回报的字段为准
@@ -1397,6 +1436,7 @@ class AutoDM:
                 delay_range=(int(want_delay[0]), int(want_delay[1])),
                 pick_dm_message=self.pick_dm_message,
                 gen_dm_message=self.gen_dm_message,
+                intent_verdict=self.intent_verdict,
             )
         else:
             # 引擎 RUNNING 却无 dispatch：属异常态，显式失败而不是假装热更成功

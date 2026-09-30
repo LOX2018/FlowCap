@@ -211,6 +211,12 @@ _DEFAULT_CONFIG = {
     # ---- Agent 分类与作用域（v0.38.6）----
     "kind": "dm",                # dm=私信 Agent | dispatch=调度 Agent（IM Bot）
     "scopes": ["dm", "live", "crawl"],  # 作用域：AI 智能回复注入哪些模块
+    # ---- 意向门（2026-09-30 用户拍板：判定归属 **Agent 层**）----
+    # 引擎**不含任何行业规则**；范围关键词由 Agent 配置提供 ⇒ 通用引擎不失通用性。
+    # 默认**关闭**（False）⇒ 调度器不做任何过滤，零回归。
+    # 开启且范围非空 ⇒ 弹幕**未命中任一关键词即不发**（落「非意向跳过」+ 可读原因）。
+    "intent_scope_enabled": False,
+    "intent_scope": [],          # 命中其中任一即视为意向内容；空表=不启用
     # ---- 知识库/兜底 ----
     "knowledge_first": True,
     # ---- 语义检索（三级漏斗第2级；本机 FreeLLM OpenAI 兼容 /embeddings）----
@@ -2720,6 +2726,27 @@ def generate_dm_for_live(account: str, peer_name: str, comment: str,
     except Exception as e:
         logger.warning(f"[AI-032] " + f"[ai] 直播文案生成失败: {e}")
         return "", ""
+
+
+def intent_scope_words(cfg: dict) -> list:
+    """意向门范围词表（Agent 层配置）。未启用/空表 ⇒ 返回 []（= 不拦）。"""
+    if not isinstance(cfg, dict) or not cfg.get("intent_scope_enabled"):
+        return []
+    return [str(w).strip() for w in (cfg.get("intent_scope") or [])
+            if str(w).strip()]
+
+
+def intent_in_scope(text: str, words: list) -> bool:
+    """领域中立子串命中（大小写不敏感）。words 为空 ⇒ True（不拦）。
+
+    这是意向门的**唯一匹配实现**（SSOT）：引擎侧只消费结论，行业范围由 Agent
+    配置决定，写进代码的只有「匹配」这一个通用动作。
+    """
+    _w = [str(x).strip() for x in (words or []) if str(x).strip()]
+    if not _w:
+        return True
+    low = str(text or "").lower()
+    return any(w.lower() in low for w in _w)
 
 
 def judge_high_value(text: str, account: str = "") -> dict:

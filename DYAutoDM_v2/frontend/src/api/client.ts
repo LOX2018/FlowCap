@@ -527,6 +527,9 @@ export interface AiAgentSummary {
   merchant_name: string;
   enabled: boolean;
   kb_count: number;
+  /** 2026-09-30（P2-B 意向门，Agent 层）：是否启用意向范围过滤，及范围词表。 */
+  intent_scope_enabled?: boolean;
+  intent_scope?: string[];
   updated_at: number;
 }
 

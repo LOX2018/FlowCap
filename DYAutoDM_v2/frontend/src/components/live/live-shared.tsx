@@ -27,7 +27,13 @@ export const DM_META: Record<DmStatus, [string, PillColor]> = {
  *   3. 其余沿用调度状态（已受理 / 发送失败 / 待发送 / 未私信）
  */
 export function displayStatus(r: Row): [string, PillColor] {
+  // 🔴 2026-09-30（用户实测「发送失败却显示已送达、且无文案」）：
+  // 原顺序把 `delivered` 放在 `fail` 之前 ⇒ 只要该 uid 历史上有过回声帧，
+  // 本次**失败**的记录也会被渲染成绿色「已送达」，而 dmText 为空 ⇒
+  // 「已送达 + 未发送」自相矛盾。**失败是确定的负向事实，不得被历史证据掩盖**。
+  // 现口径：拒绝 > 失败 > 送达 > 调度状态。
   if (r.deliveryState === "rejected") return ["被平台拒绝", "danger"];
+  if (r.dmStatus === "fail") return DM_META.fail;
   if (r.deliveryState === "delivered") return ["已送达", "ok"];
   return DM_META[r.dmStatus];
 }
@@ -105,6 +111,8 @@ export interface SendRecord {
   send_at?: number | null;
   sent_at?: number | null;
   content?: string | null;
+  /** 2026-09-30：后端下发的「尝试发送的文案」（失败行 content 为 null）。 */
+  attempted_content?: string | null;
   comment: string;
   /**
    * 2026-09-29：**真实投递结局**（后端 `api/tasks.py::_records_from_adm` 派生）。
@@ -164,6 +172,8 @@ export interface Row {
   content: string;
   dmStatus: DmStatus;
   dmText: string;
+  /** 2026-09-30：**尝试发送的文案**（失败时 dmText 为空，本字段仍有值）。 */
+  attemptedContent?: string;
   dmTime: string;
   ts: number;
   reason?: string;
@@ -215,11 +225,22 @@ export function sourceMetaOf(src: string | undefined | null) {
   return SOURCE_META[String(src || "")];
 }
 
+/** 2026-09-30：发送失败时的**可读缘由**（空串 = 非失败或无原因）。 */
+export function dmFailReason(r: Row): string {
+  return r.dmStatus === "fail" ? String(r.reason || "").trim() : "";
+}
+
+/** 2026-09-30：单元格正文 —— 优先「尝试发送的文案」（失败行也看得到试发了什么）。 */
+export function dmPreviewText(r: Row): string {
+  const body = r.attemptedContent || r.dmText || "";
+  return body ? body.slice(0, DM_PREVIEW_CHARS) : "未发送";
+}
+
 /** `title` 提示用：把来源前缀与正文拼成可悬浮查看的完整文本。 */
 export function dmTitle(r: Row): string {
   const m = sourceMetaOf(r.contentSource);
   const tag = m ? `【${m.label}】` : "";
-  const body = r.dmText || "未发送";
+  const body = r.attemptedContent || r.dmText || "未发送";
   const head =
     r.dmStatus === "fail" && r.reason
       ? `${body}\n失败原因: ${r.reason}`
@@ -465,6 +486,7 @@ export function recordsToRows(src: Record<string, unknown>[]): Row[] {
     content: String(r.comment || r.content || ""),
     dmStatus: toDmStatus(String(r.status || "")),
     dmText: String(r.content || ""),
+    attemptedContent: String(r.attempted_content || r.content || ""),
     dmTime: r.send_ts ? String(r.send_ts) : "",
     ts: (Number(r.captured_at) || 0) * 1000,
     reason: String(r.reason || ""),
@@ -491,6 +513,8 @@ export function Th({
       style={width ? { width } : undefined}
       className={cn(
         "whitespace-nowrap border-b border-[var(--color-border)] px-2.5 py-2 text-left",
+        // 2026-09-30：与 table-fixed 配合 —— 长昵称/长文案不再撑宽列。
+        width ? "overflow-hidden text-ellipsis" : "",
         "text-[0.7rem] font-semibold tracking-[0.03em] text-[var(--color-text-secondary)]",
         className
       )}

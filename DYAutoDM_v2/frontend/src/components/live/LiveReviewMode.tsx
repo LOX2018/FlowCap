@@ -15,7 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Row, DmStatus, DM_META, Th, Td, failInfoOf, FailReasonModal,
-  sourceMetaOf, dmTitle, DM_PREVIEW_CHARS,
+  sourceMetaOf, dmTitle, displayStatus, dmFailReason, dmPreviewText,
 } from "./live-shared";
 
 export { errMsg } from "@/lib/utils";
@@ -179,16 +179,28 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
 
           <Card className="overflow-hidden p-0">
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
+              {/* 2026-09-30：与直播页同款固定列宽（同一「实时评论统计列表」的两个视图，
+                  列宽契约不得各写一份）。 */}
+              <table className="w-full table-fixed border-collapse">
+                <colgroup>
+                  <col style={{ width: 30 }} />
+                  <col style={{ width: 80 }} />
+                  <col style={{ width: 130 }} />
+                  <col style={{ width: 200 }} />
+                  <col style={{ width: 110 }} />
+                  <col style={{ width: 220 }} />
+                  <col style={{ width: 80 }} />
+                  <col style={{ width: 150 }} />
+                </colgroup>
                 <thead>
                   <tr>
                     <Th width={30} />
-                    <Th>发送时间</Th>
-                    <Th>发言人</Th>
-                    <Th>评论内容</Th>
-                    <Th>私信状态</Th>
-                    <Th>私信文案</Th>
-                    <Th>私信时间</Th>
+                    <Th width={80}>发送时间</Th>
+                    <Th width={130}>发言人</Th>
+                    <Th width={200}>评论内容</Th>
+                    <Th width={110}>私信状态</Th>
+                    <Th width={220}>私信文案</Th>
+                    <Th width={80}>私信时间</Th>
                     <Th width={150}>操作</Th>
                   </tr>
                 </thead>
@@ -220,10 +232,13 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
                           <span className="block truncate">{r.content}</span>
                         </Td>
                         <Td>
-                          {r.dmStatus === "un" ? (
+                          {r.dmStatus === "un" && !r.deliveryState ? (
                             <span className="text-[var(--color-text-muted)]">—</span>
                           ) : (
-                            <Tone tone={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Tone>
+                            (() => {
+                              const [label, tone] = displayStatus(r);
+                              return <Tone tone={tone}>{label}</Tone>;
+                            })()
                           )}
                         </Td>
                         {/* 2026-09-30：与直播页同一真源（live-shared）——
@@ -256,7 +271,9 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
                                   : "text-[var(--color-text-muted)]"
                               )}
                             >
-                              {r.dmText ? r.dmText.slice(0, DM_PREVIEW_CHARS) : "未发送"}
+                              {dmFailReason(r)
+                                ? <span className="text-[var(--color-danger)]">{dmFailReason(r)}</span>
+                                : dmPreviewText(r)}
                             </span>
                           </span>
                         </Td>
