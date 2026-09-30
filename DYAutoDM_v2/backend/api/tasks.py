@@ -199,6 +199,10 @@ def _records_from_adm(adm) -> list[dict]:
             "send_at": d.get("send_at"),
             "send_ts": d.get("sent_at"),
             "content": d.get("content") or "",
+            # 2026-09-30：文案**实际来源**（AI / 词库 / 原文）—— 用户实测反馈
+            # 「发送的文本没有标识，根本不知道是词库、AI 生成还是兜底文档」。
+            # 由 dispatch._do_send 在取值点写入，这里只做透传，不推断。
+            "content_source": d.get("content_source") or "",
             "comment": d.get("comment") or "",
         })
     return out
@@ -345,7 +349,8 @@ async def export_stats(request: Request):
             wb = Workbook()
             ws = wb.active
             ws.title = "明细"
-            ws.append(["序号", "发言人", "评论内容", "私信状态", "私信内容", "捕获时间", "发送时间"])
+            ws.append(["序号", "发言人", "评论内容", "私信状态", "私信文案来源",
+                       "私信内容", "捕获时间", "发送时间"])
             for i, r in enumerate(records, 1):
                 # 2026-09-17 修补（OCR 审查 HIGH —— 导出列取错字段名恒为空）：
                 # `SendRecord` 的时间字段是 `captured_at`（捕获）/ `sent_at`（已发），
@@ -355,12 +360,14 @@ async def export_stats(request: Request):
                 if isinstance(r, dict):
                     ws.append([
                         i, r.get("nickname", ""), r.get("comment", ""),
-                        r.get("status", ""), r.get("content", ""),
+                        r.get("status", ""), r.get("content_source", ""),
+                        r.get("content", ""),
                         _fmt_ts(r.get("captured_at")), _fmt_ts(r.get("sent_at") or r.get("send_ts")),
                     ])
                 else:
                     ws.append([i, getattr(r, "nickname", ""), getattr(r, "comment", ""),
-                               getattr(r, "status", ""), getattr(r, "content", ""),
+                               getattr(r, "status", ""), getattr(r, "content_source", "") or "",
+                               getattr(r, "content", ""),
                                _fmt_ts(getattr(r, "captured_at", None)),
                                _fmt_ts(getattr(r, "sent_at", None))])
             wb.save(path)
@@ -372,15 +379,19 @@ async def export_stats(request: Request):
             csv_path = out_dir / f"stats_{ts}.csv"
             with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
-                w.writerow(["发言人", "评论内容", "私信状态", "私信内容", "捕获时间", "发送时间"])
+                w.writerow(["发言人", "评论内容", "私信状态", "私信文案来源",
+                            "私信内容", "捕获时间", "发送时间"])
                 for r in records:
                     if isinstance(r, dict):
                         w.writerow([r.get("nickname", ""), r.get("comment", ""),
-                                    r.get("status", ""), r.get("content", ""),
+                                    r.get("status", ""), r.get("content_source", ""),
+                                    r.get("content", ""),
                                     r.get("capture_ts", ""), r.get("send_ts", "")])
                     else:
                         w.writerow([getattr(r, "nickname", ""), getattr(r, "comment", ""),
-                                    getattr(r, "status", ""), getattr(r, "content", ""),
+                                    getattr(r, "status", ""),
+                                    getattr(r, "content_source", "") or "",
+                                    getattr(r, "content", ""),
                                     getattr(r, "capture_ts", ""), getattr(r, "send_ts", "")])
             return {"ok": True, "path": str(csv_path), "count": len(records)}
     except Exception as e:

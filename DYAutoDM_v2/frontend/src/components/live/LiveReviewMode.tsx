@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Row, DmStatus, DM_META, Th, Td, failInfoOf, FailReasonModal,
+  sourceMetaOf, dmTitle, DM_PREVIEW_CHARS,
 } from "./live-shared";
 
 export { errMsg } from "@/lib/utils";
@@ -225,22 +226,38 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
                             <Tone tone={DM_META[r.dmStatus][1]}>{DM_META[r.dmStatus][0]}</Tone>
                           )}
                         </Td>
-                        <Td
-                          title={
-                            r.dmStatus === "fail" && r.reason
-                              ? `${r.dmText}\n失败原因: ${r.reason}`
-                              : r.dmText
-                          }
-                        >
-                          <span
-                            className={cn(
-                              "block truncate",
-                              r.dmText
-                                ? "text-[var(--color-text)]"
-                                : "text-[var(--color-text-muted)]"
-                            )}
-                          >
-                            {r.dmText || "未发送"}
+                        {/* 2026-09-30：与直播页同一真源（live-shared）——
+                            来源徽标 + 前 10 字预览 + title 全文。
+                            查阅模式此前复用 `title` 里的 `\n`（JSX 属性中是普通字符，
+                            不换行），改为统一调用 dmTitle()。 */}
+                        <Td title={dmTitle(r)}>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            {(() => {
+                              const _src = sourceMetaOf(r.contentSource);
+                              return _src ? (
+                                <span
+                                  className="shrink-0 rounded-[4px] border px-1
+                                             font-mono text-[0.66rem]"
+                                  style={{
+                                    color: _src.color,
+                                    borderColor: `color-mix(in srgb, ${_src.color} 40%, transparent)`,
+                                  }}
+                                  title={`文案来源：${_src.label}`}
+                                >
+                                  {_src.label}
+                                </span>
+                              ) : null;
+                            })()}
+                            <span
+                              className={cn(
+                                "block min-w-0 flex-1 truncate",
+                                r.dmText
+                                  ? "text-[var(--color-text)]"
+                                  : "text-[var(--color-text-muted)]"
+                              )}
+                            >
+                              {r.dmText ? r.dmText.slice(0, DM_PREVIEW_CHARS) : "未发送"}
+                            </span>
                           </span>
                         </Td>
                         <Td mono className="whitespace-nowrap">

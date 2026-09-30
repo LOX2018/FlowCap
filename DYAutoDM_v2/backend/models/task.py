@@ -26,6 +26,14 @@ class SendRecord(BaseModel):
     send_at: float | None = None  # 计划发送时间
     sent_at: float | None = None  # 实际发送时间
     content: str | None = None
+    # 2026-09-30：文案**实际来源**（用户实测反馈：界面上无法辨别这条私信
+    # 到底是词库、AI 生成，还是兜底文档）。取值由 core/dispatch._do_send 在
+    # **取值点**写入（不是事后推断），故与实际外发内容一一对应：
+    #   "AI"   —— gen_dm_message 回调产出（经 ai_reply 出口护栏）
+    #   "词库" —— pick_dm_message 从 dm_pool 抽取
+    #   "原文" —— 两个来源都空，回退弹幕原文（M-9 兜底）
+    #    None  —— 未发送（content 同为空）
+    content_source: str | None = None
     comment: str = ""  # 原始评论内容（展示用）
 
 

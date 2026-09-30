@@ -401,6 +401,10 @@ class DispatchCenter:
             return
 
         content = ""
+        # 2026-09-30：记录文案**实际来源**（用户实测反馈「根本不知道这个文本到底是
+        # 词库，还是 AI 生成，还是兜底文档」）。来源在**取值点**写入，与实际外发
+        # 内容一一对应；sent 时随 records 下发给前端呈现（见 api/tasks._records_from_adm）。
+        src = ""
         # 2026-09-20：来源回调优先 —— 有 gen_dm_message 时先按目标生成 AI 文案；
         # 生成失败/被护栏拦/未接线 → 回落 pick_dm_message（词库），行为与改造前一致。
         if self.gen_dm_message is not None:
@@ -416,9 +420,13 @@ class DispatchCenter:
                 # （validate_reply/思考泄漏检测）；此处只兜「回调本身抛异常」。
                 logger.warning(f"[SEND-038] " + f"[调度] gen_dm_message 异常: {e}")
                 content = ""
+            else:
+                # 2026-09-30：来源只在**成功产出**时置位（异常/空串 ⇒ 留给词库分支）
+                src = "AI" if content else ""
         if not content and self.pick_dm_message is not None:
             try:
                 content = self.pick_dm_message()
+                src = "词库" if content else ""
             except Exception as e:
                 logger.warning(f"[SEND-005] " + f"[调度] pick_dm_message 异常: {e}")
                 content = ""
@@ -428,6 +436,7 @@ class DispatchCenter:
         # => 空串 -> submit_by_uid 拒绝 -> SEND-006（调度透传缺口，两账号均复现）。
         if not content:
             content = str(target.get("comment") or "").strip()
+            src = "原文" if content else ""
 
         try:
             # 2026-09-07：视频采集 / 直播监听的私信统一走 dm_dispatch 调度。
@@ -465,6 +474,7 @@ class DispatchCenter:
         rec.send_at = rec.send_at  # 保留计划发送时间
         rec.sent_at = time.time()
         rec.content = content if ok else None
+        rec.content_source = src if ok else None
 
         if ok:
             rec.status = RecordStatus.SENT

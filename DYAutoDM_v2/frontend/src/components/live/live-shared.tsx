@@ -179,6 +179,52 @@ export interface Row {
    *   · `""`        —— 无证据（保持既有语义，不臆断）
    */
   deliveryState?: "delivered" | "rejected" | "";
+  /**
+   * 2026-09-30：私信文案的**实际来源**（「AI」/「词库」/「原文」/「」）。
+   * 用户实测反馈：界面上「根本不知道这个文本到底是词库，还是 AI 生成，
+   * 还是兜底文档」。后端在取值点写入、随 records 下发，前端只呈现不推断。
+   */
+  contentSource?: string;
+}
+
+// ============================================================================
+// 私信文案来源标签 + 发送内容预览（2026-09-30，用户实测反馈）
+// ----------------------------------------------------------------------------
+// 用户原话两条：
+//   ① 「发送内容不需要完整的全部展示，显示前10个字就行，不要破坏表格结构」
+//   ② 「发送私信的文本目前没有标识，根本不知道这个文本到底是词库，还是 AI
+//      生成，还是兜底文档」
+// 真源放在本文件（live-shared）而非各视图内联：直播页与查阅模式渲染的是**同一批
+// records**，两处各写一份必然漂移（Canonical Contract Law）。
+// 契约：来源值只由后端 `content_source` 给定，**前端绝不推断**；
+//       取不到 ⇒ 不显示标签（宁缺勿错）。
+// ============================================================================
+
+/** 来源标签的呈现映射（键 = 后端 content_source 取值）。 */
+export const SOURCE_META: Record<string, { label: string; color: string }> = {
+  AI: { label: "AI", color: "var(--color-info)" },
+  词库: { label: "词库", color: "var(--color-accent)" },
+  原文: { label: "原文", color: "var(--color-warning)" },
+};
+
+/** 发送内容**只展示前 10 字**（用户口径：「显示前 10 个字就行」）。 */
+export const DM_PREVIEW_CHARS = 10;
+
+/** 取来源标签元数据；无来源值返回 undefined（不猜、不显示）。 */
+export function sourceMetaOf(src: string | undefined | null) {
+  return SOURCE_META[String(src || "")];
+}
+
+/** `title` 提示用：把来源前缀与正文拼成可悬浮查看的完整文本。 */
+export function dmTitle(r: Row): string {
+  const m = sourceMetaOf(r.contentSource);
+  const tag = m ? `【${m.label}】` : "";
+  const body = r.dmText || "未发送";
+  const head =
+    r.dmStatus === "fail" && r.reason
+      ? `${body}\n失败原因: ${r.reason}`
+      : body;
+  return tag ? tag + head : head;
 }
 
 // ============================================================================
