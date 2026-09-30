@@ -50,9 +50,15 @@ import tempfile
 import threading
 import time
 import unittest
+import atexit  # noqa: F401  # D-5b：selftest 中断兜底还原（见 selftest()）
 
 # ── 隔离根：必须在 import 业务模块**之前**设置（app_root() 会忽略不存在的路径）
-_ROOT = os.path.join(tempfile.gettempdir(), "f4_gate_v2")
+# M-28（2026-09-29）：原实现用**固定**目录 `f4_gate_v2` 且只在模块级设一次。
+#   `database.get_db()` **每次调用**都按**当前** DY_APP_ROOT 做会员一致性校验，
+#   故「导入期设一次」不够 —— 执行期会被别的模块盖掉 ⇒ 顺序相关假失败。
+#   改为一次性临时目录，并在每个用例 setUp 里重钉。
+#   标识符（父会话 grep 用）：N1_M28_PIN_ROOT
+_ROOT = tempfile.mkdtemp(prefix="n1_m28_f4gate_")
 os.makedirs(os.path.join(_ROOT, "members"), exist_ok=True)
 os.environ["DY_APP_ROOT"] = _ROOT
 # 门禁自身只做只读行为断言 ⇒ 不带外部开关（各用例内临时改运行时常量）
@@ -62,7 +68,38 @@ os.environ.pop("DY_AUTO_SEND_ENABLED", None)
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _BACKEND)
 
+# M-28 / D-3（2026-09-30）：`dd.cfg` 可能被别的测试模块（实测毒源
+# `test_uid_sink_ext`：`setUpClass` 存 `cls._orig = dd.cfg`，`tearDown` 经描述符
+# 协议取回成 bound method 后写回）在执行期换掉。这里在**导入期**抓一份**原始函数
+# 对象**的强引用，`_n1_m28_pin_root()` 里无条件归还 ⇒ 本模块不依赖执行顺序。
+from services import dm_dispatch as dd  # noqa: E402
+from services.dm_dispatch import cfg as _PRISTINE_CFG  # noqa: E402
+
 RESULTS: list = []
+
+
+def _n1_m28_pin_root():
+    """N1_M28_PIN_ROOT：执行期重钉本模块的一次性隔离根。
+
+    M-28（2026-09-29）：`database.get_db()` **每次调用**都按**当前** DY_APP_ROOT
+    做会员一致性校验（不一致即重连）⇒ 模块级设一次不够，执行期会被别的模块盖掉。
+
+    2026-09-30 补（D-3）：原实现**只钉根、不归还 `dd.cfg`**，而本模块**不在**
+    `test_module_order_independence._CFG_DEPENDENT` 的既有修复名单内 ⇒ 毒源
+    `test_uid_sink_ext`（其 `setUpClass` 存 `cls._orig = dd.cfg`，经描述符协议
+    取回成 bound method）污染后本模块照单全收，`dd.cfg("X")` 的 name 位收到
+    TestCase 实例 ⇒ `KeyError: <TestCase ...>`，表现为「单跑绿、乱序红」。
+    修法与既有受害者（test_dm_dispatch_config 等）**同体例**：导入期抓原始函数
+    强引用，执行期无条件归还。
+    """
+    os.environ["DY_APP_ROOT"] = _ROOT
+    try:
+        import database
+        database.reset_connection()
+    except Exception:                                           # noqa: BLE001
+        pass
+    if getattr(dd, "cfg", None) is not _PRISTINE_CFG:
+        dd.cfg = _PRISTINE_CFG
 
 
 def check(ok: bool, gid: str, desc: str) -> None:
@@ -555,12 +592,80 @@ def selftest() -> int:
     每个用例：篡改源码 → 跑门禁 → 断言目标判据变红 → **无条件还原**。
     若锚点已不存在（说明该项已按 A 方案修好），该用例**跳过**并明确标注
     —— 跳过是诚实的（不假装测过），且不会造成假绿。
+
+    D-5b（2026-09-30）中断兜底：原实现只在 `finally` 里还原；**中断**
+    （超时 / 强杀 / Ctrl-C / 父进程被杀）会让源码**永久停在注入态**。
+    实测踩到：`task_scheduler.py` 一度同时带 `enabled: bool = True` 与
+    「注入缺陷（负控）：完全去掉重入保护」注释，进而让 B7/B8/B10 长期假失败
+    （并使后续 selftest 以污染文件为 `orig` ⇒ **自我延续**）。
+    故此处三重加固：
+      ① 运行前校验 `MOD` 工作区==HEAD（否则拒绝执行，避免把污染当基线）；
+      ② `atexit` + SIGINT/SIGTERM 处理，任何退出路径都还原；
+      ③ 收尾断言源码已回到基线（不静默放过）。
     """
     print("=" * 72)
     print("自检：注入 v1 漏掉的缺陷形态，验证 v2 门禁真的报红（D-07）")
     print("=" * 72)
     MOD = os.path.join(_BACKEND, "services", "task_scheduler.py")
+    # ① 基线校验：工作区必须==HEAD，否则拒绝（防「以污染态为基线」自我延续）
+    try:
+        import subprocess
+        rel = os.path.relpath(MOD, _BACKEND).replace(os.sep, "/")
+        # 仓库根：从 backend 目录**自身**开始上溯到含 .git 的目录
+        #   （勿先 dirname 三层再上溯 —— 会把起点抬到仓库外，实测 git 不可用）
+        _r = _BACKEND
+        while _r and not os.path.isdir(os.path.join(_r, ".git")):
+            _nxt = os.path.dirname(_r)
+            if _nxt == _r:
+                break
+            _r = _nxt
+        head = subprocess.run(
+            ["git", "-C", _r, "show", f"HEAD:DYAutoDM_v2/backend/{rel}"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=30)
+        if head.returncode == 0:
+            cur = open(MOD, encoding="utf-8", newline="").read()
+            if cur.replace("\r\n", "\n") != (head.stdout or "").replace("\r\n", "\n"):
+                print("  ❌ 拒绝执行：services/task_scheduler.py 工作区 ≠ HEAD")
+                print("     （疑似上次注入未还原；先 git checkout 再跑负控）")
+                return 1
+        else:
+            print("  ⚠️ 基线校验跳过（git 不可用），仍执行并在收尾复核还原")
+    except Exception as e:                                      # noqa: BLE001
+        print(f"  ⚠️ 基线校验异常（跳过）: {type(e).__name__}: {e}")
     orig = open(MOD, encoding="utf-8", newline="").read()
+
+    # ② 任何退出路径都还原
+    _restored = {"done": False}
+
+    def _restore() -> None:
+        if _restored["done"]:
+            return
+        try:
+            with open(MOD, "w", encoding="utf-8", newline="") as f:
+                f.write(orig)
+            _restored["done"] = True
+        except Exception:                                       # noqa: BLE001
+            pass
+
+    atexit.register(_restore)
+    _prev_int = None
+    try:
+        import signal
+
+        def _on_sig(signum, frame):                             # noqa: ANN001
+            _restore()
+            # 交回默认行为并重发，保持「被中断」的语义
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+        _prev_int = signal.signal(signal.SIGINT, _on_sig)
+        try:
+            signal.signal(signal.SIGTERM, _on_sig)
+        except Exception:                                       # noqa: BLE001
+            pass
+    except Exception:                                           # noqa: BLE001
+        pass
     # ★ 行尾自适应：被改文件是 CRLF ⇒ 只写 `\n` 的锚点会「命中 0 次」而静默跳过
     #   （负控跳过 = 该判据没有覆盖，比报错更危险）
     _NL = "\r\n" if "\r\n" in orig else "\n"
@@ -652,6 +757,26 @@ def selftest() -> int:
             _reload_target()          # ★ 清缓存：让下一轮读到**已还原**的代码
 
     print("-" * 72)
+    # ③ 收尾复核：任何路径都必须已还原（中断兜底之外的最后一道）
+    try:
+        _final = open(MOD, encoding="utf-8", newline="").read()
+        _same = (_final.replace("\r\n", "\n")
+                 == orig.replace("\r\n", "\n"))
+    except Exception as e:                                      # noqa: BLE001
+        _final, _same = "", False
+        print(f"  ❌ 收尾复核读文件失败: {type(e).__name__}: {e}")
+    if not _same:
+        print("  ❌ 收尾复核失败：services/task_scheduler.py 未还原到基线")
+        print("     ⇒ 已强制还原，请复查 git diff（不得把注入态提交）")
+        _restore()
+        all_ok = False
+    # 恢复原 SIGINT 处理（不留全局副作用）
+    if _prev_int is not None:
+        try:
+            import signal
+            signal.signal(signal.SIGINT, _prev_int)
+        except Exception:                                       # noqa: BLE001
+            pass
     RESULTS = []
     _reload_target()                  # ★ 复跑前再清一次，确保读磁盘真态
     rc = run()
@@ -681,6 +806,11 @@ if __name__ == "__main__":
 # ===========================================================================
 class GateTestCase(unittest.TestCase):
     """把每个 B 判据桥成一个 unittest 用例。"""
+
+    def setUp(self):
+        # N1_M28_PIN_ROOT：执行期重钉根 —— 本门禁所有判据都读运行时状态，
+        # 若根被别的模块改写，读到的配置/库就属于别人 ⇒ 顺序相关假失败。
+        _n1_m28_pin_root()
 
     def _run_one_gate(self, gid: str, fn) -> None:
         RESULTS.clear()

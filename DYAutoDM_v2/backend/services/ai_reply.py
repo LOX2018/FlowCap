@@ -167,6 +167,16 @@ def _img_desc_mark(msg_id, desc: str, model: str = "") -> None:
 # 配置（kv_store: ai_reply_config）
 # ---------------------------------------------------------------------------
 
+# ============================================================================
+# SSOT · 中性商家名缺省值（2026-09-30 统一）
+#
+# 历史缺陷（命名漂移 + 自指病句）：同一语义的中性缺省值散落 4 处，其中 2 处用
+# 「顾问」、2 处用「本团队」——「顾问」代入模板 `我是{merchant}的顾问` 会得到
+# `我是顾问的顾问`（自指病句，实测 g8 报出）。统一到本常量，禁止各点自写字面量。
+# ============================================================================
+NEUTRAL_MERCHANT = "本团队"
+
+
 _DEFAULT_CONFIG = {
     "enabled": False,            # 总开关（全自动监听）
     # ---- 主 LLM（文本）----
@@ -258,10 +268,14 @@ _DEFAULT_CONFIG = {
                       "具体情况和所在城市，判断会更快。",
     # ---- 2026-09-29（用户拍板「留资是唯一目的」）----
     # 「客户没有明确问题」时的**专用留资话术**。为什么必须与主兜底池分开：
-    # 主池 4 条全是「请您说下部位/材料」型（引导补信息），**不含任何索要动作** ——
-    # 客户只回「好 / 嗯 / 没下来」时用主池 = 白放走一次留资机会。
+    # 主池含「请您说下具体材料」型（引导补信息）的条目 —— 这些**不含索要动作**，
+    # 客户只回「好 / 嗯 / 没下来」时用它们 = 白放走一次留资机会。
     # 用户原话：「如果是这种对话对象，他的聊天内容没有明确目标的人群直接引导留资就行，
     # 别说什么之后再联系，抖音是快平台…根本没有沉淀的必要」。
+    # 🔴 2026-09-30 注释订正：主池第 1 条已按「首触三段结构」重写为**含索要**
+    #    （「…算好清单留个手机号发你」）—— 故「主池全不含索要」的前提**不再成立**。
+    #    降级路径的判据见 test_lead_disposition_guard.test_g8（按「存在不含索要的条目」判定，
+    #    不依赖随机抽取，避免 flaky）。
     "lead_first_reply": (
         "你这个情况我得按你当地标准细算才能给准数——你留个手机号，"
         "我算好把清单发你，跟公司谈心里也有底。"
@@ -604,7 +618,7 @@ def build_system_prompt(cfg: dict, text: str) -> str:
     # 2026-09-30（架构层校正）：原兜底写死「唐律工伤团队」—— 本项目是**通用**
     # 采集/私信引擎，不得内置任何具体商家名或行业实体。未配置商家名时用中性称谓
     # （占位替换仍需成立，否则 prompt 里会残留 {merchant} 字面量）。
-    merchant = (cfg.get("merchant_name") or "").strip() or "本团队"
+    merchant = (cfg.get("merchant_name") or "").strip() or NEUTRAL_MERCHANT
     base = (cfg.get("system_prompt") or "").strip() or _DEFAULT_AGENT_PROMPT
     base = (base.replace("{merchant}", merchant)
                 .replace("{max_ask}", str(cfg.get("max_lead_ask", 2))))
@@ -1008,7 +1022,7 @@ def ensure_live_brand(text: str, cfg: dict | None = None) -> str:
     if not s or _LIVE_BRAND_RE.search(s):
         return s
     _cfg = cfg if cfg is not None else get_config()
-    _m = (_cfg.get("merchant_name") or "").strip() or "顾问"
+    _m = (_cfg.get("merchant_name") or "").strip() or NEUTRAL_MERCHANT
     return f"我是{_m}的顾问。" + s
 
 
@@ -1027,7 +1041,7 @@ def live_fallback_reply(cfg: dict) -> str:
     extra = cfg.get("live_fallback_extra", _LIVE_FALLBACK_EXTRA)
     # 2026-09-30：默认模板含 {merchant} 占位，须与 build_system_prompt 同口径替换；
     # 否则外发文案会带上未替换的占位符（用户会看到 `{merchant}` 字面量）。
-    _m = (cfg.get("merchant_name") or "").strip() or "本团队"
+    _m = (cfg.get("merchant_name") or "").strip() or NEUTRAL_MERCHANT
     extra = str(extra or "").replace("{merchant}", _m).strip()
     return extra or str(fallback_reply(cfg) or "").strip()
 
@@ -1767,7 +1781,7 @@ def validate_reply(reply: str, cfg: dict, live_guard: bool = False) -> Optional[
 def fallback_reply(cfg: dict, kind: str = "text") -> str:
     # 2026-09-30：默认模板里用 {merchant} 占位，取配置商家名替换；
     # 未配置则回落到中性词，**不硬编码任何行业/团队名**（通用引擎铁律）。
-    _m = (cfg.get("merchant_name") or "").strip() or "顾问"
+    _m = (cfg.get("merchant_name") or "").strip() or NEUTRAL_MERCHANT
     _pool = [str(x).replace("{merchant}", _m) for x in (cfg.get("fallback_pool") or [])]
     pool = _pool
     if kind == "image":
@@ -1779,7 +1793,7 @@ def fallback_reply(cfg: dict, kind: str = "text") -> str:
     # 2026-09-30：末位默认话术同步三段结构（身份 / 结合需求 / 留资钩子）；
     # 身份取配置的商家名，未配置时用中性称谓（不替任何行业断言）。
     return random.choice(pool) if pool else (
-        f"我是{(cfg.get('merchant_name') or '顾问').strip()}的顾问。"
+        f"我是{(cfg.get('merchant_name') or NEUTRAL_MERCHANT).strip()}的顾问。"
         "请补充你的具体情况和相关资料，我帮你先判断一下；"
         "算好清单留个手机号发你。")
 

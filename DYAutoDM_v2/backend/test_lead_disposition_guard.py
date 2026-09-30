@@ -26,8 +26,46 @@ if HERE not in sys.path:
 
 from services import ai_reply as A  # noqa: E402
 
+# ============================================================================
+# N1_M28_PIN_ROOT · 执行期隔离根（2026-09-30 修，原缺）
+#
+# 被守的缺陷（顺序依赖 + 写脏真实库）：
+#   `_bump_lead_ask` 经 `_kv_get/_kv_set` 落 SQLite `kv_store` 表的
+#   `ai_reply_lead_ask` 键，键名含 `{account}:{conv_id}`；g7/g10 等用例用的
+#   账号/会话是**固定字面量**（`验证账号` / `0:1:1:2`）。本文件此前**没有**自己的
+#   隔离根，于是：
+#     ① 计数被写进**仓库真实库** `DYAutoDM_v2/data/dyautodm.db`（实测残留
+#        `{"验证账号:0:1:1:2": 2}`）；
+#     ② 计数跨用例/跨次运行**累积**，涨到 `max_lead_ask`(=2) 后，
+#        留资护栏改走「已达上限 ⇒ 不再索要」分支（`lead_no_ask_reply`）⇒
+#        `test_g7` 断言「出口含索要」必然失败 —— 且**单跑通过、连跑失败**
+#        （顺序依赖假失败）。
+# 修法：一次性临时根 + 每个用例 setUp 重钉（`database.get_db()` 每次调用都按
+#   **当前** DY_APP_ROOT 做会员一致性校验 ⇒ 只在导入期设一次不够）。
+# ============================================================================
+import tempfile  # noqa: E402
+import database  # noqa: E402
 
-class TestLeadDispositionGuard(unittest.TestCase):
+_LEAD_GUARD_ROOT = tempfile.mkdtemp(prefix="n1_m28_leadguard_")
+
+
+def _n1_m28_pin_root() -> None:
+    """N1_M28_PIN_ROOT：执行期重钉一次性隔离根（防写脏真实库 / 防顺序依赖）。"""
+    os.environ["DY_APP_ROOT"] = _LEAD_GUARD_ROOT
+    try:
+        database.reset_connection()
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
+class _PinnedRootMixin:
+    """所有用例执行前重钉隔离根（含 `_pinnedRoot` 哨兵，供门禁扫码）。"""
+
+    def setUp(self) -> None:
+        _n1_m28_pin_root()
+
+
+class TestLeadDispositionGuard(_PinnedRootMixin, unittest.TestCase):
     CFG = dict(A._DEFAULT_CONFIG)
 
     # ── G1 正控：截图原文（放走线索）必须判「未推进」 ────────────────────
@@ -135,10 +173,24 @@ class TestLeadDispositionGuard(unittest.TestCase):
 
     # ── G8 降级路径：主兜底池不含索要 ⇒ 必须换成引导留资 ─────────────────
     def test_g8_fallback_pool_guard(self):
+        """G8 降级路径：主兜底池**存在**不含索要的条目 ⇒ 必须有专用引导留资话术。
+
+        2026-09-30 修（D-8）：原实现取 `fallback_reply(cfg)`（内部 `random.choice`）
+        再断言它「不含索要」—— 而主池第 1 条在三段结构改写后已**含索要**
+        （「…留个手机号发你」），抽到它就是**随机假失败**（同一代码时绿时红）。
+        判据改为**确定性**，不依赖随机抽取：
+          ① 遍历全池按「是否含索要」分类；
+          ② 只要有任一条不含索要 ⇒ 专用话术必须含索要（G8 真正要守的不变量）。
+        """
         cfg = dict(A._DEFAULT_CONFIG)
-        fb = A.fallback_reply(cfg)
-        self.assertTrue(A._is_lead_stalled(fb),
-                        f"前提假设失效：主兜底池已含索要？{fb!r}")
+        merchant = (cfg.get("merchant_name") or "").strip() or A.NEUTRAL_MERCHANT
+        pool = [str(x).replace("{merchant}", merchant)
+                for x in (cfg.get("fallback_pool") or [])]
+        self.assertTrue(pool, "默认主兜底池不得为空")
+        stalled = [x for x in pool if A._is_lead_stalled(x)]
+        self.assertTrue(
+            stalled,
+            f"前提假设失效：主兜底池已**全部**含索要，降级路径无从触发：{pool!r}")
         self.assertTrue(A._has_lead_ask(A.lead_fallback_reply(cfg)),
                         "引导留资话术必须含索要")
 
@@ -189,7 +241,7 @@ class TestLeadDispositionGuard(unittest.TestCase):
                             f"放走句未被识别: {s!r}")
 
 
-class TestOcrFixBatchAA(unittest.TestCase):
+class TestOcrFixBatchAA(_PinnedRootMixin, unittest.TestCase):
     """OCR 审查两条修复门禁（2026-09-29）：A-1 上限生效 / A-2 不丢专业正文。
 
     每条带**负控**：这里断言的是「修复后」行为；负控在报告里以
@@ -419,14 +471,43 @@ class TestOcrFixBatchAA(unittest.TestCase):
         cfg["live_fallback_extra"] = ""       # 额外池不可用
         got = A.live_fallback_reply(cfg)
         self.assertTrue(got, "额外池为空时必须回退主兜底池（非死代码）")
-        self.assertIn(got, list(cfg.get("fallback_pool") or []),
+        # 2026-09-30 修：主池条目含 `{merchant}` 占位，`fallback_reply()` 会做
+        # **同口径替换**后再返回 ⇒ 不能拿返回值直接比**未替换的原始模板**。
+        # 判据改为「替换后相等」。
+        merchant = (cfg.get("merchant_name") or "").strip() or A.NEUTRAL_MERCHANT
+        pool = [str(x).replace("{merchant}", merchant)
+                for x in (cfg.get("fallback_pool") or [])]
+        self.assertIn(got, pool,
                       "回退应落到主兜底池（docstring 承诺的语义）")
 
     def test_a4_default_still_uses_guidance_extra(self):
+        """默认配置必须仍取纯引导话术（零回归）——**占位替换口径**。
+
+        2026-09-30 修（D-1）：原断言拿 `live_fallback_reply()` 的**返回值**直接比
+        `_LIVE_FALLBACK_EXTRA` **原始常量**，两者不可能相等 —— 因为实现按
+        `build_system_prompt` 同口径把 `{merchant}` 替换成了商家名
+        （`merchant_name` 缺省时为「本团队」）。该替换是**修复后的正确行为**
+        （否则外发文案会带 `{merchant}` 字面量），故断言过严。
+
+        判据改为：返回值 == 常量**在同口径替换后**的形态。
+        """
+        cfg = dict(A._DEFAULT_CONFIG)
+        merchant = (cfg.get("merchant_name") or "").strip() or "本团队"
+        expected = A._LIVE_FALLBACK_EXTRA.replace("{merchant}", merchant).strip()
         self.assertEqual(
-            A.live_fallback_reply(dict(A._DEFAULT_CONFIG)).strip(),
-            A._LIVE_FALLBACK_EXTRA.strip(),
-            "默认配置必须仍取纯引导话术（零回归）")
+            A.live_fallback_reply(cfg).strip(),
+            expected,
+            "默认配置必须仍取纯引导话术（占位符按商家名口径替换，零回归）")
+        # 反向判据：外发文案**不得**残留未替换的占位符（用户会看到字面量）
+        self.assertNotIn(
+            "{merchant}", A.live_fallback_reply(cfg),
+            "外发文案残留 {merchant} 字面量（占位替换失效）")
+        # 商家名配置生效时必须采用配置值（而非恒用默认「本团队」）
+        cfg2 = dict(A._DEFAULT_CONFIG)
+        cfg2["merchant_name"] = "测试商家"
+        self.assertIn(
+            "测试商家", A.live_fallback_reply(cfg2),
+            "配置了 merchant_name 时占位符必须替换为该值")
 
 
 if __name__ == "__main__":
