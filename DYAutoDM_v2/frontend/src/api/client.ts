@@ -306,25 +306,47 @@ export interface OverviewFunnel {
   /** 最近有数据的那一天 */
   latest_day: string;
   crawl: {
-    /** 今日采集轮次 */
+    /** 该日采集轮次 */
     today_runs: number;
-    /** 今日采集结果条数 */
+    /** 该日采集结果条数 */
     today_results: number;
     /** 按 kind 拆分（video / comment / user） */
     kinds: Record<string, number>;
   };
-  capture: {
-    /** 今日捕获评论（= 客户来消息，清洗后） */
-    today_comments: number;
-    today_theirs: number;
-  };
-  dm: {
-    /** 今日**真实**已发私信（已剔除平台提示/噪音，见 ADR-032 §4.3） */
+  /**
+   * 捕获池（`dm_uid_sink`）—— 真实漏斗核心。
+   *
+   * 每行 = 一个被捕获的 peer_uid（**按人去重**：同一 UID 多次发弹幕只留一条），
+   * 与 `dm.today_sent`（按**条**计的消息数）是两个不同单位，UI 必须区分标注。
+   */
+  sink: {
+    /** 该日新增捕获人数 */
+    today_new: number;
+    /** 该日被标记已发送的人数（与 dm.today_sent 的「条」不同单位） */
     today_sent: number;
-    /** 今日被平台拒发（独立维度，**不计入** today_sent） */
-    rejected: number;
+    /** 累计捕获人数 */
+    total: number;
+    /** 累计已发送人数 */
+    total_sent: number;
+    /** 按来源拆（live=弹幕捕获 / crawl=采集 / manual=手工 / dispatch=发送侧沉淀） */
+    sources: Record<string, number>;
+  };
+  /** 私信消息辅助计数（**注意**：today_theirs 是客户来消息，不是「捕获评论」） */
+  messages: {
+    today_theirs: number;
     /** 诊断用：清洗前的 role='me' 行数 */
     raw_me_rows: number;
+  };
+  dm: {
+    /** 该日**真实**已发私信**条数**（已剔除平台提示/噪音，见 ADR-032 §4.3） */
+    today_sent: number;
+    /** 该日被平台拒发（独立维度，**不计入** today_sent） */
+    rejected: number;
+  };
+  /** 留资线索（`ai_leads`） */
+  leads: {
+    today: number;
+    total: number;
   };
   accounts: {
     total: number;

@@ -68,7 +68,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity, Send, Cpu, Users, ShieldAlert, History, Search as SearchIcon,
+  Send, Cpu, Users, ShieldAlert, History, Search as SearchIcon, UserPlus, MessageSquare,
 } from "lucide-react";
 import { PageProps, type OverviewFunnel } from "../../api/client";
 import { Avatar, KIND_NAME } from "../../components/ui";
@@ -164,8 +164,8 @@ export default function OverviewPage(props: PageProps) {
     queryFn: async (): Promise<OverviewFunnel> => {
       let d = await api.getOverviewFunnel("today");
       const allZeroToday =
-        d && (d.crawl.today_runs === 0) && (d.capture.today_comments === 0) &&
-        (d.dm.today_sent === 0);
+        d && (d.crawl.today_runs === 0) && (d.dm.today_sent === 0) &&
+        (d.sink.today_new === 0);
       if (allZeroToday && d.latest_day && d.latest_day !== d.date) {
         try {
           const prev = await api.getOverviewFunnel("latest");
@@ -345,33 +345,36 @@ export default function OverviewPage(props: PageProps) {
                     value={funnel ? funnel.crawl.today_results.toLocaleString() : "—"}
                     unit="条"
                     delta={funnel ? `${funnel.crawl.today_runs} 轮` : undefined}
+                  />
+                  <Stat
+                    label={`${funnel?.is_today === false ? "该日" : "今日"}新增线索`}
+                    icon={<UserPlus className="h-3.5 w-3.5" />}
+                    value={funnel ? funnel.sink.today_new.toLocaleString() : "—"}
+                    unit="人"
+                    delta={funnel ? `累计 ${funnel.sink.total} 人` : undefined}
                     accent
                   />
                   <Stat
-                    label={`${funnel?.is_today === false ? "该日" : "今日"}评论`}
-                    icon={<Activity className="h-3.5 w-3.5" />}
-                    value={funnel ? funnel.capture.today_comments.toLocaleString() : "—"}
-                    unit="条"
-                    delta={funnel && funnel.dm.rejected ? `拒发 ${funnel.dm.rejected}` : undefined}
-                  />
-                  <Stat
-                    label={`${funnel?.is_today === false ? "该日" : "今日"}私信`}
+                    label={`${funnel?.is_today === false ? "该日" : "今日"}已发私信`}
                     icon={<Send className="h-3.5 w-3.5" />}
                     value={funnel ? funnel.dm.today_sent.toLocaleString() : "—"}
                     unit="条"
-                    delta={funnel ? "已剔除平台提示" : undefined}
-                  />
-                  <Stat
-                    label="活跃账号"
-                    icon={<Users className="h-3.5 w-3.5" />}
-                    value={
-                      funnel
-                        ? `${funnel.accounts.active}/${funnel.accounts.total}`
-                        : (ov.browserDaemon && ov.browserDaemon.alive ? "凭证就绪" : "凭证离线")
-                    }
                     delta={
                       funnel
-                        ? `凭证可用 ${funnel.accounts.credential_ok}`
+                        ? funnel.dm.rejected
+                          ? `被拒发 ${funnel.dm.rejected}`
+                          : "已剔除平台提示"
+                        : undefined
+                    }
+                  />
+                  <Stat
+                    label="留资线索"
+                    icon={<Users className="h-3.5 w-3.5" />}
+                    value={funnel ? funnel.leads.total.toLocaleString() : "—"}
+                    unit="条"
+                    delta={
+                      funnel
+                        ? `${funnel.accounts.active}/${funnel.accounts.total} 账号在线`
                         : (ov.recvDaemon && ov.recvDaemon.alive ? "私信在线" : "私信离线")
                     }
                   />
@@ -496,6 +499,34 @@ export default function OverviewPage(props: PageProps) {
                     {ov.running && ov.queue ? (
                       <div className="text-[0.72rem] text-[var(--color-text-muted)]">
                         待发队列 {ov.queue}
+                      </div>
+                    ) : null}
+
+                    {/*
+                      「客户来消息」= dm_messages 中 role='them' 的真实条数。
+                      ⚠️ 它**不是**「捕获评论」—— 本项目无评论持久表（9 张表已实测列全）。
+                      与上方「本次发送进度」并列，让用户看清双向互动而非单向发送。
+                    */}
+                    {funnel ? (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1
+                                      border-t border-[var(--color-border)] pt-2.5
+                                      text-[0.74rem] text-[var(--color-text-secondary)]">
+                        <span className="flex items-center gap-1.5">
+                          <MessageSquare className="h-3.5 w-3.5 text-[var(--color-text-muted)]" />
+                          {funnel.is_today ? "今日" : `${funnel.date}`}客户来消息
+                          <b className="font-mono text-[var(--color-text)]">
+                            {funnel.messages.today_theirs.toLocaleString()}
+                          </b>
+                          条
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <UserPlus className="h-3.5 w-3.5 text-[var(--color-text-muted)]" />
+                          捕获池累计
+                          <b className="font-mono text-[var(--color-text)]">
+                            {funnel.sink.total.toLocaleString()}
+                          </b>
+                          人（已发 {funnel.sink.total_sent}）
+                        </span>
                       </div>
                     ) : null}
                   </div>

@@ -202,8 +202,36 @@ def _funnel_sync(tz_hours: int, day: str = "") -> dict:
         crawl_runs += int(r.get("n") or 0)
         crawl_results += int(r.get("rc") or 0)
 
-    # ── ② 捕获（今日入库的消息，按 role 分客户来消息 / 我方）──
+    # ── ② 捕获池（dm_uid_sink：本项目的**真实漏斗核心表**）──
+    #    每行 = 一个被捕获的 peer_uid，含来源与是否已发送。
+    #    ⚠️ 修正（2026-09-30）：此前把 dm_messages.role='them' 标为「捕获评论」——
+    #       那是**客户发来的私信消息**，与「评论」无关；且库中并无评论持久表
+    #       （9 张表已实测列全：ai_leads/crawl_history/dm_conversations/dm_cross_sink/
+    #        dm_messages/dm_uid_sink/kv_store/tasks）。该标签属**误标假数据**，已移除。
+    sink_total = exec_query("SELECT COUNT(*) AS n FROM dm_uid_sink")[0]["n"] or 0
+    sink_sent_total = exec_query(
+        "SELECT COUNT(*) AS n FROM dm_uid_sink WHERE sent_ts IS NOT NULL"
+    )[0]["n"] or 0
+    sink_today_new = exec_query(
+        "SELECT COUNT(*) AS n FROM dm_uid_sink WHERE first_seen_ts >= ? AND first_seen_ts < ?",
+        (start, end),
+    )[0]["n"] or 0
+    sink_today_sent = exec_query(
+        "SELECT COUNT(*) AS n FROM dm_uid_sink WHERE sent_ts >= ? AND sent_ts < ?",
+        (start, end),
+    )[0]["n"] or 0
+    # 按来源拆（live=弹幕捕获 / crawl=采集 / manual=手工 / dispatch=发送侧沉淀）
+    sink_sources: dict[str, int] = {}
+    for r in exec_query(
+        "SELECT source, COUNT(*) AS n FROM dm_uid_sink "
+        "WHERE first_seen_ts >= ? AND first_seen_ts < ? GROUP BY source",
+        (start, end),
+    ):
+        sink_sources[str(r.get("source") or "unknown")] = int(r.get("n") or 0)
+
+    # ── ③ 私信消息（dm_messages）—— 仅用于「真实已发」与「客户来消息」──
     #    读侧口径对齐 dm_search.py:233-234：剔除 msg_type=50001 与未知媒体占位。
+    #    实际触达量以 `dm.today_sent`（经清洗）为准；此处只产出辅助计数。
     msg_rows = exec_query(
         "SELECT role, text, msg_type FROM dm_messages "
         "WHERE ts >= ? AND ts < ? AND ts > 0 "
@@ -235,7 +263,14 @@ def _funnel_sync(tz_hours: int, day: str = "") -> dict:
             continue
         today_sent += 1
 
-    # ── ③ 账号（凭证可用性）──
+    # ── ④ 留资线索（ai_leads：AI 留资捕获的唯一真源）──
+    leads_total = exec_query("SELECT COUNT(*) AS n FROM ai_leads")[0]["n"] or 0
+    leads_today = exec_query(
+        "SELECT COUNT(*) AS n FROM ai_leads WHERE created_at >= ? AND created_at < ?",
+        (start, end),
+    )[0]["n"] or 0
+
+    # ── ⑤ 账号（凭证可用性）──
     #     复用 api/accounts.py::_to_raw_account（前端账号页的同一 SSOT）
     #     —— 它内含 TTL 缓存，不会因本端点轮询而重复触发重型网络探活。
     #     🔴 禁止在此自造凭证判定（会与账号页结论不一致）。
@@ -272,14 +307,27 @@ def _funnel_sync(tz_hours: int, day: str = "") -> dict:
             "today_results": crawl_results,
             "kinds": crawl_kinds,
         },
-        "capture": {
-            "today_comments": today_theirs,
+        # 捕获池（dm_uid_sink）—— 真实漏斗核心：捕获了多少人、发了多少
+        "sink": {
+            "today_new": sink_today_new,
+            "today_sent": sink_today_sent,
+            "total": sink_total,
+            "total_sent": sink_sent_total,
+            "sources": sink_sources,
+        },
+        # 私信消息辅助计数（**不再**冒充「捕获评论」）
+        "messages": {
             "today_theirs": today_theirs,
+            "raw_me_rows": raw_me,  # 诊断用：清洗前的 role='me' 行数
         },
         "dm": {
             "today_sent": today_sent,
             "rejected": rejected,
-            "raw_me_rows": raw_me,  # 诊断用：清洗前的 role='me' 行数
+        },
+        # 留资线索（ai_leads）
+        "leads": {
+            "today": leads_today,
+            "total": leads_total,
         },
         "accounts": {
             "total": acct_total,
