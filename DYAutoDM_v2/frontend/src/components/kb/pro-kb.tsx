@@ -207,7 +207,7 @@ export function ProKb({
         .filter((g) => g.children.length > 0);
 
   // 表格行 = 树的展平。同行相邻 equal 值才画「分组边框」，实现 xlsx 式行归类。
-  type RowT = ProKbItem & { _groupStart: boolean; _catStart: boolean };
+  type RowT = ProKbItem & { _groupStart: boolean; _catStart: boolean; _groupSize: number };
   const trows: RowT[] = [];
   filteredTree.forEach((g) => {
     g.children.forEach((c) => {
@@ -217,9 +217,18 @@ export function ProKb({
           ...(it as ProKbItem),
           _groupStart: !prev || prev.topic !== it.topic,
           _catStart: idx === 0,
+          _groupSize: 1,
         });
       });
     });
+  });
+
+  // 同一主题的连续行数：只有「真的成组」（>=2 行）才画主题色分组线。
+  // 否则单行组也画线 => 每行都带强调线 = 视觉噪声（2026-09-30 表格可读性修复）。
+  const topicCount = new Map<string, number>();
+  trows.forEach((r) => topicCount.set(r.topic, (topicCount.get(r.topic) ?? 0) + 1));
+  trows.forEach((r) => {
+    r._groupSize = topicCount.get(r.topic) ?? 1;
   });
 
   const staleInfo = (id: number): string => {
@@ -230,33 +239,14 @@ export function ProKb({
     return "";
   };
 
-  const cellCls =
-    "w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] " +
-    "px-2 py-1.5 text-[0.76rem] text-[var(--color-text)] outline-none " +
-    "focus:border-[var(--color-accent)]";
-
   return (
     <div>
-      <div className="mb-3 text-[0.74rem] leading-relaxed text-[var(--color-text-muted)]">
-        思维导图结构：主题 → 子分类 → 正文内容 → 总结（一棵全项目共享的主题树）。作为向量模型的
-        前置参考（AI 检索条目<b className="text-[var(--color-text-secondary)]">全文</b>
-        生成参考答案），<b className="text-[var(--color-text-secondary)]">不直接回复</b>。
-      </div>
+      {/* 2026-09-29：原顶部「思维导图结构：…」说明块已删除（用户要求）——
+          该段与下方「导入文件」区重复解释同一套主题树机制，且占据首屏。 */}
 
-      {/* 工具条 */}
-      <Toolbar className="mb-3 justify-end">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => {
-            setMaintOpen(!maintOpen);
-            if (!maintOpen) void loadRecycle();
-          }}
-        >
-          <Wrench className="h-3.5 w-3.5" />知识维护
-          {maintOpen ? <ArrowLeft className="h-3 w-3 rotate-90" /> : null}
-        </Button>
-      </Toolbar>
+      {/* 2026-09-29：原独立「知识维护」工具条已删除 —— 该按钮移入下方
+          「导入文件（AI 提纯）」卡片的头部（actions），与「选择文件」并列，
+          不再单独占一行右对齐工具条（用户要求）。 */}
 
       {/* 知识维护面板 */}
       {maintOpen && (
@@ -533,24 +523,30 @@ export function ProKb({
         <Badge variant="outline">共 {items.length} 条 · {tree.length} 个主题</Badge>
       </Toolbar>
 
-      {/* 表格视图（xlsx 式：行归类 / 列分类 / 单元格可编辑） */}
+      {/* 表格视图（xlsx 式：行归类 / 列分类 / 单元格可编辑）
+          2026-09-30 可读性重构（用户：「专业知识库的表格分布太丑了」）
+          · 修复前：单元格用 <input> 单行框 —— 主题/子分类/总结超长时横向裁掉且无省略号，
+            用户无法区分「本来就短」与「被截断」；表头虽为 6 列却完全没有垂直分隔线。
+          · 单元格改为 auto-grow <textarea> + 统一「编辑中才显示框、空闲即无框」外观；
+            正文列上限 ~5 行、超出内部滚动；单元格内支持真正的换行。
+          · 列宽改为按内容密度分配（正文弹性取得余量），并恢复浅色网格线。 */}
       <Card className="overflow-hidden">
         <div className="overflow-auto">
-          <table className="w-full table-fixed border-collapse text-[0.76rem]">
+          <table className="w-full table-fixed border-collapse text-[0.76rem] [--cell-line:var(--color-border)]">
             <colgroup>
-              <col style={{ width: 130 }} />
-              <col style={{ width: 110 }} />
-              <col style={{ width: 190 }} />
+              <col style={{ width: 136 }} />
+              <col style={{ width: 132 }} />
+              <col style={{ width: 240 }} />
               <col />
-              <col style={{ width: 96 }} />
-              <col style={{ width: 64 }} />
+              <col style={{ width: 84 }} />
+              <col style={{ width: 56 }} />
             </colgroup>
             <thead>
               <tr className="sticky top-0 z-[1] bg-[var(--color-surface-solid)]">
                 {["主题", "子分类", "总结", "正文", "状态", "操作"].map((h) => (
                   <th
                     key={h}
-                    className="whitespace-nowrap border-b border-[var(--color-border)]
+                    className="whitespace-nowrap border-b border-[var(--cell-line)]
                                px-2.5 py-2 text-left text-[0.7rem] font-semibold
                                text-[var(--color-text-secondary)]"
                   >
@@ -562,65 +558,67 @@ export function ProKb({
             <tbody>
               {trows.map((r) => {
                 const si = staleInfo(r.id);
+                const hits = (r as ProKbItem & { hits?: number }).hits;
                 return (
-                  <tr key={r.id} className="border-b border-[var(--color-border)]">
-                    <td
-                      className="p-0"
-                      style={{ borderTop: r._groupStart ? "2px solid var(--color-accent)" : undefined }}
-                    >
+                  <tr
+                    key={r.id}
+                    className={cn(
+                      "border-b border-[var(--cell-line)]",
+                      r._groupStart && r._groupSize > 1
+                        ? "border-t-2 border-t-[var(--color-accent)]"
+                        : ""
+                    )}
+                  >
+                    <td className="align-top">
                       {r._groupStart ? (
-                        <input
-                          className={cn(cellCls, "font-semibold")}
-                          defaultValue={r.topic}
+                        <AutoGrowCell
                           key={`${r.id}-t`}
-                          onBlur={(e) => {
-                            const v = e.target.value.trim();
-                            if (v && v !== r.topic) patchMut.mutate({ id: r.id, patch: { topic: v } });
+                          value={r.topic}
+                          className="font-semibold text-[var(--color-text)]"
+                          onCommit={(v) => {
+                            const t = v.trim();
+                            if (t && t !== r.topic) patchMut.mutate({ id: r.id, patch: { topic: t } });
                           }}
                         />
                       ) : (
                         <div className="px-2 py-1.5 text-[var(--color-text-muted)]">〃</div>
                       )}
                     </td>
-                    <td className="p-0">
+                    <td className="align-top">
                       {r._catStart ? (
-                        <input
-                          className={cellCls}
-                          defaultValue={r.category}
+                        <AutoGrowCell
                           key={`${r.id}-c`}
-                          onBlur={(e) => {
-                            const v = e.target.value.trim();
-                            if (v !== r.category) patchMut.mutate({ id: r.id, patch: { category: v } });
+                          value={r.category}
+                          onCommit={(v) => {
+                            const t = v.trim();
+                            if (t !== r.category) patchMut.mutate({ id: r.id, patch: { category: t } });
                           }}
                         />
                       ) : (
                         <div className="px-2 py-1.5 text-[var(--color-text-muted)]">〃</div>
                       )}
                     </td>
-                    <td className="p-0">
-                      <input
-                        className={cellCls}
-                        defaultValue={r.summary}
+                    <td className="align-top">
+                      <AutoGrowCell
                         key={`${r.id}-s`}
-                        onBlur={(e) => {
-                          const v = e.target.value;
+                        value={r.summary}
+                        placeholder="（无总结）"
+                        onCommit={(v) => {
                           if (v !== r.summary) patchMut.mutate({ id: r.id, patch: { summary: v } });
                         }}
                       />
                     </td>
-                    <td className="p-0">
-                      <textarea
-                        className={cn(cellCls, "min-h-[34px] resize-y")}
-                        defaultValue={r.content}
+                    <td className="align-top">
+                      <AutoGrowCell
                         key={`${r.id}-b`}
-                        rows={2}
-                        onBlur={(e) => {
-                          const v = e.target.value;
+                        value={r.content}
+                        maxRows={5}
+                        onCommit={(v) => {
                           if (v !== r.content) patchMut.mutate({ id: r.id, patch: { content: v } });
                         }}
                       />
                     </td>
-                    <td className="px-2.5 py-1.5">
+                    <td className="align-top whitespace-nowrap px-2.5 py-1.5">
                       {si ? (
                         <span
                           className={cn(
@@ -660,12 +658,80 @@ export function ProKb({
             <Blank>暂无条目。用上方「导入文件」让 AI 提纯入库，或直接点击单元格编辑。</Blank>
           )}
         </div>
-        <div className="border-t border-[var(--color-border)] px-3 py-2 text-[0.66rem]
+        <div className="border-t border-[var(--cell-line)] px-3 py-2 text-[0.66rem]
                         text-[var(--color-text-muted)]">
-          单元格直接编辑，失去焦点即保存（改表格 = 改树）。主题列相邻同值自动合并显示（〃）。
+          单元格直接编辑，失去焦点即保存（改表格 = 改树）。主题列相邻同值自动合并显示（〃），
+          成组（同主题 ≥ 2 行）才画分组线。
         </div>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 表格自适应单元格（2026-09-30 新增）
+// ---------------------------------------------------------------------------
+
+/**
+ * 表格内可编辑单元格：自动增高，空闲时无框（像表格文本，不像一排表单输入框）。
+ *
+ * 修复来源：原实现每格一个 <input> —— 单行硬裁 + 无省略号，长中文标题/总结
+ * 一被切掉用户就分不清「本来就短」还是「被截断」；表头 6 列却无网格线，
+ * 整张表读起来没有列感。改为 textarea 后：① 自动撑高，内容完整可见；
+ * ② 单元格内可真的换行；③ 统一「聚焦才显框」的外观，静止时是干净的表格。
+ *
+ * @param maxRows 超过该行数转为内部滚动（默认 3 行；正文列传 5）。
+ *                用「阈值 + scrollHeight 跳变」判断溢出，不做逐像素测量。
+ */
+function AutoGrowCell({
+  value,
+  onCommit,
+  maxRows = 3,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onCommit: (v: string) => void;
+  maxRows?: number;
+  placeholder?: string;
+  className?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  // 内容或列宽变化时重算高度；用「多行高度是否超出 maxRows 上限」判断是否溢出。
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const lh = parseFloat(getComputedStyle(el).lineHeight) || 18;
+    const cap = lh * maxRows + 8;
+    const over = el.scrollHeight > cap + 1;
+    setOverflowing(over);
+    el.style.height = `${Math.min(el.scrollHeight, cap)}px`;
+  });
+
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      defaultValue={value}
+      placeholder={placeholder}
+      onBlur={(e) => {
+        onCommit(e.target.value);
+        const el = ref.current;
+        if (el) el.scrollTop = 0;
+      }}
+      className={cn(
+        "block w-full resize-none rounded-[4px] border border-transparent bg-transparent",
+        "px-2 py-1.5 text-[0.76rem] leading-snug text-[var(--color-text)] outline-none",
+        "transition-colors placeholder:text-[var(--color-text-muted)]",
+        "hover:border-[var(--color-border)] focus:border-[var(--color-accent)]",
+        "focus:bg-[var(--color-surface)]",
+        overflowing ? "overflow-auto" : "overflow-hidden",
+        className
+      )}
+    />
   );
 }
 
