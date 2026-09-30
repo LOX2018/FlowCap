@@ -289,7 +289,10 @@ def _funnel_sync(tz_hours: int, day: str = "") -> dict:
     }
 
 
-@router.get("/funnel")
+# 🔴 路由路径必须带 /overview 前缀 —— main.py:804 的 include prefix 是 "/api"，
+#    所以这里写 "/funnel" 会注册成 /api/funnel（前端调 /api/overview/funnel → 404）。
+#    写 "/overview/funnel" 才注册成 /api/overview/funnel，与前端调用一致。
+@router.get("/overview/funnel")
 async def get_funnel(tz: int = 8, day: str = "") -> dict:
     """业务漏斗聚合（ADR-032）。只读本地库，零网络零浏览器。
 

@@ -154,7 +154,7 @@ L2-③ 资源 · 账号与能力      （账号凭证 + 能力健康）
 
 | 层 | 文件 | 性质 |
 |---|---|---|
-| 后端 | `backend/api/overview.py` | 新增 `GET /overview/funnel`（不动既有 2 端点） |
+| 后端 | `backend/api/overview.py` | 新增 `GET /overview/funnel`（不动既有 2 端点）<br>⚠️ 路径必须带 `/overview` 前缀，因为 `main.py:804` 的 include prefix 是 `/api`，写 `/funnel` 会注册成 `/api/funnel` 导致前端 404 |
 | 前端 | `frontend/src/api/client.ts` | 新增 `getOverviewFunnel()` |
 | 前端 | `frontend/src/components/overview/overview-page.tsx` | L1 换口径、L2 重分区、新增采集区 |
 | 前端 | `frontend/src/components/overview/CrawlSection.tsx` | 新建（采集历史速览） |
