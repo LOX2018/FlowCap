@@ -134,8 +134,12 @@ def r2_data_root_no_source() -> None:
     if not os.path.isdir(DATA_ROOT):
         check(True, "R2", f"数据根不存在，跳过（{DATA_ROOT}）")
         return
-    # 部署产物目录（PyInstaller _internal / 解压运行时）—— 非源码，排除
-    DEPLOY_DIRS = {"_internal", "binaries", "resources"}
+    # 部署产物目录（PyInstaller 解压运行时）—— 非源码，排除。
+    # 2026-09-30 修正：contents 目录名已由 `_internal` 改为 **`appinternals`**
+    #   （见 scripts/build_sidecar.py / check_packaging_contract.py / deploy.py，
+    #   改名原因：WiX 会剥掉下划线开头的目录名）——R2 排除名单未跟上改名，
+    #   把部署运行时的 356 个 .py 误判为「数据根散落源码」（假红）。
+    DEPLOY_DIRS = {"_internal", "appinternals", "binaries", "resources"}
     src = []
     for f in walk(DATA_ROOT, (".py", ".ts", ".tsx")):
         rel = os.path.relpath(f, DATA_ROOT)
@@ -594,6 +598,12 @@ def selftest() -> int:
     os.makedirs(fake_data, exist_ok=True)
     with open(os.path.join(fake_data, "leak.py"), "w", encoding="utf-8") as f:
         f.write("x = 1\n")
+    #   R2 反例：部署产物目录（appinternals）下的 .py **不得**被判红
+    #     —— 与上面顶层 leak.py 同处一棵树，用一次 run 同时验「豁免生效」+「顶层仍红」。
+    os.makedirs(os.path.join(fake_data, "appinternals"), exist_ok=True)
+    with open(os.path.join(fake_data, "appinternals", "runtime.py"),
+              "w", encoding="utf-8") as f:
+        f.write("x = 1\n")
     #   R13 前端文案含内部开发信息（接口路径 + 进程代号）
     fake_fe = os.path.join(fake_src, "frontend", "src", "components")
     os.makedirs(fake_fe, exist_ok=True)
@@ -669,6 +679,12 @@ def selftest() -> int:
             check(False, "???", f"{r.__name__} 异常: {e}")
 
     got_failed = {rid for ok, rid, _ in RESULTS if not ok}
+    # ── R2 正控（豁免面精确）：负控 run 里数据根同时放 ① 顶层 leak.py（必须计）
+    #    ② appinternals/runtime.py（豁免，不得计）⇒ R2 的「命中数」必须恰为 1，
+    #    且被点的不是 appinternals。若豁免名单失效（如改名后漏加），命中数会变 2 ⇒ 报错。
+    r2_details = [d for ok, rid, d in RESULTS if rid == "R2"]
+    r2_exemption_ok = any(("命中 1 个" in d and "appinternals" not in d)
+                          for d in r2_details)
     globals()["_load_redline_module"] = saved_loader   # 无论如何都要还原
     globals()["_load_datacontract_module"] = saved_dc
     globals()["_load_credexposure_module"] = saved_cred
@@ -712,12 +728,14 @@ def selftest() -> int:
         RESULTS.clear()
 
     missing = failed_expect - got_failed
-    ok = not missing and r9_clean and r8_clean
+    ok = not missing and r9_clean and r8_clean and r2_exemption_ok
     print("-" * 70)
     print(f"  期望报红: {sorted(failed_expect)}")
     print(f"  实际报红: {sorted(got_failed)}")
     print(f"  R9 正控（未触发形态应 PASS）: {'通过' if r9_clean else '未通过'}")
     print(f"  R8 正控（子项全通过应 PASS）: {'通过' if r8_clean else '未通过'}")
+    print(f"  R2 正控（appinternals 豁免 / 顶层仍红）: "
+          f"{'通过' if r2_exemption_ok else '未通过'}")
     if missing:
         print(f"\n✗ 自检失败：以下规则在违规样本下**没有变红** = 形同虚设: {sorted(missing)}")
         return 1
@@ -726,6 +744,10 @@ def selftest() -> int:
         return 1
     if not r8_clean:
         print("\n✗ 自检失败：R8 在「子项全通过」形态下误报 = 判据不可信")
+        return 1
+    if not r2_exemption_ok:
+        print("\n✗ 自检失败：R2 未精确豁免部署运行时目录（appinternals）"
+              "—— 豁免名单可能未跟上 contents 目录改名")
         return 1
     print("\n✓ 自检通过：所有可判定规则在违规时均会报红（非空架子）")
     return 0
