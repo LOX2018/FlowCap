@@ -7,6 +7,31 @@
 - getAccounts 重操作 → 拆分轻量 list + 重量级 verify
 - 3s 轮询 → WebSocket 推送
 """
+# ══════════════════════════════════════════════════════════════════════════
+# ★ 最前置：API 扫码 runner 分发（**必须早于任何项目 import**）
+#
+# 为什么放这里、且要在所有项目 import 之前：
+#   vendor 与 backend 有 5 个同名顶层包（dy_apis/builder/utils/dy_live/static）。
+#   一旦本项目任一模块被 import（如 `from config import settings`），
+#   `dy_apis` 等就进了 sys.modules ⇒ 上游 vendor 的顶层绝对导入会命中项目实现
+#   ⇒ **静默半坏**（AUTH-073 / 门禁 test_h22_p4 G1 已把这条钉死）。
+#   ⇒ 冻结态复用一个 exe 当「干净解释器」时，分发必须先于一切。
+# ══════════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    import sys as _sys
+    if "--qr-api-runner" in _sys.argv:
+        _i = _sys.argv.index("--qr-api-runner")
+        # 只保留 runner 自己的参数（去掉分发标记），交给 runner 解析
+        _sys.argv = ([_sys.argv[0]]
+                     + _sys.argv[_i + 1:]
+                     + [a for a in _sys.argv[1:_i]])  # 兜底：把前置参数放后面
+        import runpy as _runpy
+        import os as _os
+        _runner = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                "login_qr_api_runner.py")
+        _runpy.run_path(_runner, run_name="__main__")
+        _sys.exit(0)
+
 from contextlib import asynccontextmanager
 import asyncio
 import atexit

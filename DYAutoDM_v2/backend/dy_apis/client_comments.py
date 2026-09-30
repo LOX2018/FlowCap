@@ -45,12 +45,18 @@ class CommentsMixin:
     """评论域接口（来自 DouyinAPI）。"""
 
     @staticmethod
-    def get_work_out_comment(auth, url: str, cursor: str = '0', **kwargs) -> dict:
+    def get_work_out_comment(auth, url: str, cursor: str = '0', count: str = '5',
+                             **kwargs) -> dict:
         """
-        获取作品的全部一级评论.
+        获取作品的一级评论（单页）.
         :param auth: DouyinAuth object.
         :param url: 作品URL.
         :param cursor: 评论游标.
+        :param count: 单页条数。★ 2026-09-30 新增（方案1 效率修复，v0.45.125）：
+            原实现把 `count` **硬编码为 "5"**，采集 100 条要发 20 次请求；实测
+            服务端支持更大分页（count=20→0.41s/20条、count=50→0.51s/50条，
+            同账号同视频实测），故上提为参数，调用方按需取 5/20/50。
+            **缺省仍为 "5"** —— `get_work_all_out_comment` 等既有调用方零回归。
         :return: JSON.
         """
         api = f"/aweme/v1/web/comment/list/"
@@ -67,7 +73,7 @@ class CommentsMixin:
         params.add_param("channel", "channel_pc_web")
         params.add_param("aweme_id", aweme_id)
         params.add_param("cursor", cursor)
-        params.add_param("count", "5")
+        params.add_param("count", str(count))
         params.add_param("item_type", "0")
         params.add_param("whale_cut_token", "")
         params.add_param("cut_version", "1")

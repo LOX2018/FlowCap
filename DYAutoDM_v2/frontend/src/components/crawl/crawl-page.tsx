@@ -35,12 +35,17 @@ export default function CrawlPage(props: PageProps) {
     "你好，刷到你的作品很感兴趣，想和你聊聊合作～",
   );
   const [dmState, setDmState] = useState<Record<string, string>>({});
+  const [batchResult, setBatchResult] = useState<Record<string, any[]>>({});
   const [cmtFilter, setCmtFilter] = useState("");
   const filteredCmts = cmtFilter.trim()
     ? cmts.filter((c) => (c?.content || c?.text || "").includes(cmtFilter.trim()))
     : cmts;
   const [batching, setBatching] = useState(false);
   const [account, setAccount] = useState("");
+  // ★ 2026-09-30 方案1：多作品批量采集（勾选 → 串行采评论）。默认全不选。
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
+  const [batchCollecting, setBatchCollecting] = useState(false);
+  const pickedIds = results.filter((v) => picked[v.awemeId]).map((v) => v.awemeId);
 
   useEffect(() => {
     let alive = true;
@@ -87,8 +92,15 @@ export default function CrawlPage(props: PageProps) {
 
   const openComments = async (v: any) => {
     setCmtFor(v);
-    setCmts([]);
     if (!account) return push("请先登录账号");
+    // 批量采集已缓存过该作品 → 直接展示，不再重复请求（省一次风控暴露）
+    const cached = batchResult[v.awemeId];
+    if (cached && cached.length) {
+      setCmts(cached);
+      push(`展示批量采集结果，共 ${cached.length} 条`);
+      return;
+    }
+    setCmts([]);
     setCmtLoading(true);
     try {
       const r = await api.crawlComments({ account, aweme_id: v.awemeId, limit: 100 });
@@ -98,6 +110,35 @@ export default function CrawlPage(props: PageProps) {
       push(`评论采集失败：${e?.message || e}`);
     } finally {
       setCmtLoading(false);
+    }
+  };
+
+  /** 批量采集：对勾选的作品**串行**采评论（后端 + 间隔），只采不发。 */
+  const runBatchCollect = async () => {
+    if (!account) return push("请先登录账号");
+    if (!pickedIds.length) return push("请先勾选要采集的作品");
+    if (batchCollecting) return;
+    setBatchCollecting(true);
+    try {
+      const r = await api.crawlCommentsBatch({
+        account,
+        aweme_ids: pickedIds,
+        limit: 100,
+      });
+      const failed = (r.per_work || []).filter((w) => w.status !== "ok");
+      push(
+        `批量采集完成：${r.ok_works}/${r.works} 个作品成功，共 ${r.total_comments} 条评论` +
+          (failed.length ? `（${failed.length} 个失败）` : ""),
+        8000,
+      );
+      // 把采集到的评论挂到对应作品上，便于就地打开查看
+      const byId: Record<string, any[]> = {};
+      (r.per_work || []).forEach((w) => { byId[w.aweme_id] = w.items || []; });
+      setBatchResult(byId);
+    } catch (e: any) {
+      push(`批量采集失败：${e?.message || e}`, 8000);
+    } finally {
+      setBatchCollecting(false);
     }
   };
 
@@ -263,7 +304,20 @@ export default function CrawlPage(props: PageProps) {
       ) : (
         <>
           <Section className="mb-3" actions={
-            <Badge variant="outline">{results.length} 条结果</Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">{results.length} 条结果</Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={batchCollecting || pickedIds.length === 0}
+                onClick={runBatchCollect}
+                title="对勾选的作品串行采集评论（只采集，不发送）"
+              >
+                {batchCollecting
+                  ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />批量采集中…</>
+                  : <>批量采集{pickedIds.length ? `（${pickedIds.length}）` : ""}</>}
+              </Button>
+            </div>
           }>
             <div className="flex items-center gap-2">
               <span className="shrink-0 text-[0.74rem] text-[var(--color-text-secondary)]">
@@ -320,6 +374,15 @@ export default function CrawlPage(props: PageProps) {
                       <span className="truncate">{v.nickname || "未知作者"}</span>
                     </div>
                     <div className="mt-2 flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-[var(--color-accent)]"
+                        checked={!!picked[v.awemeId]}
+                        onChange={(e) =>
+                          setPicked((s) => ({ ...s, [v.awemeId]: e.target.checked }))
+                        }
+                        title="勾选后可「批量采集」"
+                      />
                       <Button variant="ghost" size="sm" onClick={() => openComments(v)}>
                         <MessageSquare className="h-3.5 w-3.5" />采评论
                       </Button>

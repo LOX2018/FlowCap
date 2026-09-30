@@ -280,6 +280,13 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
         #   os.walk(d) for f in fs if not f.endswith(('.py','.pyc','.pyi'))])"
         # 只含 py.typed（空标记）的包不收集，避免产物无谓膨胀。
         # ════════════════════════════════════════════════════════════════
+        # 2026-09-30（ADR-017 API 扫码）：上游登录 HTTP 客户端依赖 curl_cffi（TLS/HTTP2
+        # 指纹冒充）。**仅 main.py（backend）需要**；它必须进 collect-all ——
+        #   ① 含原生扩展 `_wrapper.pyd` + `libcurl` DLL（漏掉则打包态 ImportError）；
+        #   ② 还带 cacert.pem 等数据文件。
+        # 判据：源码态 `import curl_cffi` 正常 ≠ 冻结态正常（本项目已多次踩原生扩展坑）。
+        (("curl_cffi",) if entry == "main.py" else ())
+        + (
         "orjson",                      # orjson.cp314-win_amd64.pyd
         "maxminddb",                   # extension.cp314-win_amd64.pyd
         "camoufox",                    # *.json 预设（fingerprint-presets/fonts/voices）
@@ -308,8 +315,28 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
         "cssselect",
         "tld",                         # res/ 数据（顶级域名表）
         "w3lib",
+        )
     ):
         cmd += ["--collect-all", _pkg]
+    # 2026-09-30（ADR-017 API 扫码）：把 **vendor 上游源码树**随 backend sidecar 打包。
+    #   · 上游以**顶层绝对导入**（from dy_apis.../from builder...）；必须把 vendor 目录
+    #     本身放进 PYZ 搜索路径（`dest="vendor/douyin_spider_upstream"` 不够 —— 那样
+    #     import dy_apis 找不到）。⇒ `--paths <VENDOR>` 让 `dy_apis`/`builder`/`utils`/
+    #     `dy_live`/`static` 作为顶层包被收集（干净子进程里不会被项目包遮蔽）。
+    #   · 同时 `--add-data` 一份到 `vendor/douyin_spider_upstream`，供 runner 的
+    #     `_resolve_vendor()`（按 __file__ 同级查找源码树）兜底命中。
+    #   · 运行期 `DY_VENDOR_DIR` 由 spawn 侧显式注入（优先），不靠猜路径。
+    #   判据：源码态冒烟已全绿（bootstrap 33 cookie / get_qrcode error_code=0 / status=new）。
+    if entry == "main.py":
+        _vendor = os.path.abspath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..",
+            "vendor", "douyin_spider_upstream"))
+        if not os.path.isdir(_vendor):
+            raise RuntimeError(f"[打包契约] vendor 上游目录缺失: {_vendor}")
+        cmd += ["--paths", _vendor]
+        cmd += ["--add-data", f"{_vendor}{os.pathsep}vendor/douyin_spider_upstream"]
+        for _m in ("curl_cffi", "curl_cffi.requests"):
+            cmd += ["--hidden-import", _m]
     # 2026-09-16 v0.43.36：WS 稳态治理模块（daemon/ws_link.py）。
     # RecvChannel._make_link / _catchup_after_reconnect 在**函数体内**
     # `from daemon.ws_link import WSLink` —— 与上面两条完全同类的坑
@@ -734,6 +761,10 @@ def main() -> None:
             ("daemon/browser_daemon.py", "dyautodm-browser-daemon"),
             ("daemon/recv_daemon.py", "dyautodm-recv-daemon"),
         ]
+        # login_qr_api_runner.py 不单独成 exe：它由 `dyautodm-backend --qr-api-runner`
+        # 前置分发复用同一份冻结解释器（保持「干净解释器」语义）。但**必须**被
+        # 收集进 backend sidecar 的 PYZ 源码集，否则冻结态 `run_path` 找不到文件。
+        # 判据：main.py 的前置分发按 `__file__` 同级查找该文件。
         _parallel = "--no-parallel" not in sys.argv and len(_targets) > 1
         if _parallel:
             import concurrent.futures as _cf

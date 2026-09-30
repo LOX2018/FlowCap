@@ -43,8 +43,15 @@ def work_info(auth, url):
 
 
 # ---------------- 评论 ----------------
-def work_comments(auth, url, cursor="0"):
-    return _safe("get_work_out_comment", auth, url, cursor)
+def work_comments(auth, url, cursor="0", count="20"):
+    """单页一级评论。
+
+    `count` ★ 2026-09-30 新增（方案1 效率修复，v0.45.125）：原实现固定取基座
+    缺省 5 条/页，采集 100 条要发 20 次请求。实测服务端支持更大分页
+    （count=20→0.41s/20条、count=50→0.51s/50条，同账号同视频实测），
+    缺省提到 20；调用方仍可显式传入覆盖。
+    """
+    return _safe("get_work_out_comment", auth, url, cursor, str(count))
 
 
 def work_all_comments(auth, url):

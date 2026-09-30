@@ -2261,8 +2261,35 @@ export const api = {
     account: string;
     aweme_id: string;
     limit?: number;
+    count?: number;
   }): Promise<{ ok: boolean; items: Record<string, unknown>[]; total: number; detail?: string }> {
     return request("/api/crawl/comments", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** 多作品批量采集评论（★ 2026-09-30 方案1）。后端**串行 + 间隔**，只采不发。 */
+  async crawlCommentsBatch(body: {
+    account: string;
+    aweme_ids: string[];
+    limit?: number;
+    count?: number;
+  }): Promise<{
+    ok: boolean;
+    works: number;
+    ok_works: number;
+    total_comments: number;
+    per_work: {
+      aweme_id: string;
+      status: string;
+      count: number;
+      items: Record<string, unknown>[];
+      error?: string;
+    }[];
+    detail?: string;
+  }> {
+    return request("/api/crawl/comments/batch", {
       method: "POST",
       body: JSON.stringify(body),
     });

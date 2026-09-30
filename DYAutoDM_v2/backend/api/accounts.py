@@ -191,11 +191,100 @@ def _build_last_run(name: str) -> dict:
 #  （**不自造**写盘逻辑 —— ADR-017 §8.3）。
 
 def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
-    """RPA 扫码登录。成功返回 True（凭证已落盘）；否则 False（调用方回落老路径）。
+    """扫码登录。**优先走上游 API（纯 HTTP、零浏览器）**，失败回落 RPA 浏览器。
 
-    失败**不抛异常** —— 由调用方决定回落，保证老路径始终可用。
+    ## 路由（ADR-017 §8.1：扫码→API、短信→RPA）
+    ```
+    ① API 扫码（login_qr_api_runner 子进程，纯协议）
+       成功 → 落凭证（走既有 save_credential，含 wp/keys 的 merge 保真）→ return True
+       失败 → ②
+    ② RPA 扫码（Camoufox 截图二维码，DOM 兜底）
+    ```
+    **为什么优先 API**（2026-09-30 实测）：真机纯 HTTP 冒烟
+    `bootstrap 33 cookie → get_qrcode error_code=0（含 PNG）→ check status=new` 全绿，
+    且**不需要浏览器**（少一次抖音侧环境访问 + 不占 profile 锁 + 秒级出码）。
+    API 子进程是**干净解释器**（vendor 与 backend 有 5 个同名顶层包，同进程必静默半坏）。
+
+    失败**不抛异常** —— 由调用方决定回落，保证 RPA 路径始终可用。
+    返回 True 表示**凭证已落盘**。
     """
     import tempfile
+
+    # 代理：与账号环境门阀一致（显式配置决定，代码不探测本机）
+    proxy = ""
+    try:
+        from auto_dm.vbrowser import parse_proxy_config as _ppc
+        _mode, _node, _ = _ppc(env_path)
+        if _mode == "node" and _node:
+            proxy = _node
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[scan] 账号 {name} 代理读取失败（按直连）: {e}")
+
+    # ── ① API 扫码（纯 HTTP）──────────────────────────────────────────
+    api_jobdir = None
+    api_handle = None
+    try:
+        from auto_dm import login_remote as _lr
+
+        api_jobdir = tempfile.mkdtemp(prefix="rpa_scan_")
+        png = os.path.join(api_jobdir, "qr.png")
+
+        def _on_status(s: dict) -> None:
+            # 状态回填（供前端展示；沿用既有 qrPng/decoded 契约）
+            if s.get("qr_png"):
+                st["qrPng"] = s["qr_png"]
+                st["decoded"] = True          # 机械判据：已校验 PNG 魔数
+            st["stage"] = s.get("stage", "")
+
+        api_handle = _lr.spawn_api_qr_login(api_jobdir, timeout_s=300, proxy=proxy)
+        # 等首张二维码就绪（最多 60s）——出码后再进入长轮询
+        _t0 = time.time()
+        while time.time() - _t0 < 60:
+            _s = _lr._read_json_quiet(os.path.join(api_jobdir, "status.json")) or {}
+            if _s.get("qr_png"):
+                st["qrPng"] = _s["qr_png"]
+                st["decoded"] = True
+                break
+            if _s.get("stage") == "failed":
+                break
+            if api_handle.get("proc") is not None and api_handle["proc"].poll() is not None:
+                break
+            time.sleep(1.0)
+
+        api = _lr.poll_api_qr_login(api_handle, timeout_s=300, interval_s=2.0,
+                                    on_status=_on_status)
+        if api.get("ok"):
+            res = api.get("result") or {}
+            # ★ 硬门禁：必须 **sessionid + 四件套齐全** 才落盘。
+            #   理由（本项目签名模型）：私信走 imapi 私有网关，靠 protobuf 体内的
+            #   ticket/ts_sign/client_cert（由登录响应 bd-ticket-guard-server-data 签发）
+            #   鉴权。缺任一项 ⇒ 只拿到 cookie ⇒ 要么沿用旧 wp/keys（**反派生旧签名**，
+            #   明面「更新成功」实则无效），要么签名缺失 ⇒ 都会静默坏。
+            #   ⇒ 宁可回落 RPA，绝不写半成品凭证。
+            _need = ("cookie_str", "ticket", "ts_sign", "client_cert", "private_key")
+            _missing = [k for k in _need if not res.get(k)]
+            if _missing or not res.get("has_sessionid"):
+                logger.warning(f"[ACC-041] [scan] 账号 {name} API 扫码凭证不完整"
+                               f"（缺 {_missing or ['sessionid']}），回落 RPA")
+            else:
+                _save_api_credential(name, env_path, res, st)
+                logger.info(f"[scan] 账号 {name} API 扫码成功，凭证已落盘"
+                            f"（{res.get('cookie_count')} 项 cookie）")
+                return True
+        else:
+            logger.warning(f"[ACC-040] [scan] 账号 {name} API 扫码失败，回落 RPA: {api.get('reason')}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ACC-042] [scan] 账号 {name} API 扫码异常，回落 RPA: "
+                       f"{type(e).__name__}: {e}")
+    finally:
+        try:
+            if api_handle is not None:
+                from auto_dm import login_remote as _lr2
+                _lr2.reap_api_qr_login(api_handle)
+        except Exception as _e:  # noqa: BLE001
+            logger.debug(f"[scan] API 子进程收尾跳过: {_e}")
+
+    # ── ② RPA 扫码（浏览器，DOM 兜底）─────────────────────────────────
     from auto_dm import login_remote as _lr
 
     png = ""
@@ -297,6 +386,108 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
                 asyncio.run(_lr.close_handle(handle))
         except Exception as _e_close:  # noqa: BLE001
             logger.debug(f"[scan] 账号 {name} RPA 收尾跳过: {_e_close}")
+
+
+def _save_api_credential(name: str, env_path: str, res: dict, st: dict) -> bool:
+    """把 API 扫码拿到的凭证落盘，并**服务端 + 身份双校验**；不过则还原。
+
+    返回 True 仅当「已落盘 **且** 校验通过」。任何环节失败 ⇒ 还原备份 + 返回 False
+    （调用方回落 RPA），**绝不留下半成品或谎报成功**（用户铁律：验证后才汇报）。
+
+    ## 写盘协议（复用既有唯一入口，ADR-017 §8.3）
+    `DYLoginApi().save_credential(auth, env_path)` → `member_ctx.write_env_file(merge=True)`：
+      · **写前备份** `<env_path>.enc` → `.bak.<时间戳>`（复用 `services.db_transfer._backup_file`）
+      · `merge=True` 保留其余字段（含既有 `DY_WEB_PROTECT/DY_KEYS`）
+    ## 校验（缺一不可）
+      ① 磁盘可读：`_load_auth_from_env` 能读回且含 sessionid
+      ② 服务端会话有效：`passport/account/info/v2` 返回 user_id>0 且无 error_code
+      ③ 身份一致：探活 uid ∈ 该账号历史 conv_id（防串号/幽灵身份）
+    """
+    enc = f"{env_path}.enc"
+    bak = ""
+    # ── 写前备份（备份失败**不阻断**写入，但要显式记录）────────────────
+    try:
+        from services.db_transfer import _backup_file
+        if os.path.exists(enc):
+            bak = _backup_file(enc)
+            st["backup"] = bak
+            logger.info(f"[scan] 账号 {name} API 凭证写前已备份: {bak}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[scan] 账号 {name} API 凭证备份失败（不阻断写入）: {e}")
+
+    def _restore() -> None:
+        if bak and os.path.exists(bak):
+            try:
+                import shutil
+                shutil.copy2(bak, enc)
+                logger.warning(f"[scan] 账号 {name} 已从备份还原凭证: {bak}")
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[scan] 账号 {name} 凭证还原失败（备份仍在 {bak}）: {e}")
+
+    # ── 落盘（复用既有唯一写入口）─────────────────────────────────────
+    try:
+        from builder.auth import DouyinAuth
+        from dy_apis.login_api import DYLoginApi
+        _auth = DouyinAuth()
+        _ck = res.get("cookie_str") or ""
+        _auth.perepare_auth(_ck, "", "")
+        _auth.cookie = {kv.split("=", 1)[0]: kv.split("=", 1)[1]
+                        for kv in _ck.split("; ") if "=" in kv}
+        _auth.ticket = res.get("ticket") or None
+        _auth.ts_sign = res.get("ts_sign") or None
+        _auth.client_cert = res.get("client_cert") or None
+        _auth.private_key = res.get("private_key") or None
+        DYLoginApi().save_credential(_auth, env_path)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[scan] 账号 {name} API 凭证写盘异常: {type(e).__name__}: {e}")
+        _restore()
+        return False
+
+    cookies = _auth.cookie or {}
+    st["saved"] = True
+    st["cookieCount"] = len(cookies)
+
+    # ── 校验①磁盘可读 ──────────────────────────────────────────────────
+    try:
+        from dy_apis.login_api import DYLoginApi as _DLA
+        back = _DLA._load_auth_from_env(env_path)   # noqa: SLF001
+        bc = getattr(back, "cookie", None) or {}
+        if not (bc.get("sessionid") or bc.get("sid_tt")):
+            logger.error(f"[scan] 账号 {name} API 凭证回读缺 sessionid ⇒ 还原")
+            _restore()
+            return False
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[scan] 账号 {name} API 凭证回读失败 ⇒ 还原: {e}")
+        _restore()
+        return False
+
+    # ── 校验②服务端会话有效（官方 passport 接口，权威判据）───────────
+    try:
+        from auto_dm import login_remote as _lr
+        sv = asyncio.run(_lr._probe_session_valid_by_cookies(cookies))
+        if not sv.get("ok"):
+            logger.error(f"[scan] 账号 {name} API 凭证服务端未确认（{sv.get('reason')}）⇒ 还原并回落 RPA")
+            _restore()
+            return False
+        st["serverUid"] = str(sv.get("uid") or "")
+        logger.info(f"[scan] 账号 {name} API 凭证服务端确认有效 uid={sv.get('uid')}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[scan] 账号 {name} API 凭证服务端校验异常 ⇒ 保守还原: {e}")
+        _restore()
+        return False
+
+    # ── 校验③身份一致（探活 uid ∈ 历史 conv_id）──────────────────────
+    try:
+        from services.uid_probe import _uid_consistent_with_history as _uid_ok
+        _u = str(st.get("serverUid") or "")
+        if _u and not _uid_ok(name, _u):
+            logger.error(f"[scan] 账号 {name} API 凭证身份漂移（uid={_u} 不在历史 conv_id）⇒ 还原并回落 RPA")
+            _restore()
+            return False
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[scan] 账号 {name} 身份一致性校验跳过（不阻断）: {e}")
+
+    return True
 
 
 def _do_scan(name: str):

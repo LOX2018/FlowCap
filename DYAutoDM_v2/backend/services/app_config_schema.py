@@ -844,6 +844,39 @@ SECTIONS: dict[str, dict[str, Any]] = {
             },
         },
     },
+
+    # ===== 内容采集 / 评论截流（★ 2026-09-30 新增，v0.45.125）=====
+    # 采集页评论拉取的效率参数。设计依据：`/aweme/v1/web/comment/list/` 的
+    # `count` 原被硬编码为 5 条/页（采集 100 条 = 20 次请求），实测服务端支持
+    # 20~50 条/页 —— 见 `工作记忆/14_业务域_内容采集.md`。此处把「每页条数」与
+    # 「多作品之间的间隔」显式化，遵循本项目「禁止代码自动探测本机状态」与
+    # 「风控参数可观测、可调」的既有原则（对齐 automation 分区的做法）。
+    "crawl": {
+        "label": "内容采集 / 评论截流",
+        "fields": {
+            "comment_page_count": {
+                "label": "评论每页条数", "type": "int", "default": 20,
+                "min": 5, "max": 50,
+                "env": "DY_CRAWL_COMMENT_PAGE_COUNT", "apply": "hot",
+                "hint": ("comment/list 单页条数。5=旧行为（请求数最多）；"
+                         "20~50=实测服务端支持。越大请求数越少、单次风控暴露越集中，"
+                         "上限 50（实测值，超过未验证）"),
+            },
+            "batch_interval": {
+                "label": "多作品采集间隔（秒）", "type": "float", "default": 1.5,
+                "min": 0.0, "max": 30.0,
+                "env": "DY_CRAWL_BATCH_INTERVAL", "apply": "hot",
+                "hint": ("多作品批量采评论时，两作品之间的停顿。**串行 + 间隔**，"
+                         "刻意不开并发（同端点高频并发是账号级限流高发区）"),
+            },
+            "batch_max_works": {
+                "label": "单次批量作品上限", "type": "int", "default": 20,
+                "min": 1, "max": 100,
+                "env": "DY_CRAWL_BATCH_MAX_WORKS", "apply": "hot",
+                "hint": "一次「批量采集」最多处理几个作品，防止误点造成长跑与过度请求",
+            },
+        },
+    },
 }
 
 

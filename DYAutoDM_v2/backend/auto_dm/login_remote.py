@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from typing import Callable, Optional
 
@@ -107,20 +108,32 @@ SEL_LOGIN_PANEL = "#douyin-login-new-id"           # 登录面板（实测 id）
 SEL_SCAN_COMP = "#douyin_login_comp_scan_code"     # 扫码组件整块
 SEL_QR_CONTAINER = "#animate_qrcode_container"     # 二维码【动画外框】（内部才是码）
 
-# 二维码锚点优先级（2026-09-26 实测，见 ADR-017 调研记录 §7）
-#   · img 直取 = 最优（178×178 精确，解码成功）
-#   · 扫码组件整块 = 兜底（248×226，也能解）
-#   · svg = ❌ 是 40×40 装饰图标，勿用；容器本体 = ❌ 空白外框，勿用
-_SEL_QR_IMG = f"{SEL_QR_CONTAINER} img"
+# ★ 2026-09-30 实测修正（真机 DOM 快照 `artifacts/spike-scrapling-locator/_live/`）
+#   抖音登录页已改版，旧锚点**全部失效**，按新结构重建：
+#   · 二维码本体 = `#animate_qrcode_container` 内 **13 个 `<image>`** 拼成的 SVG
+#     ⇒ 旧主锚点 `"#animate_qrcode_container img"` **恒命中 0**（真机读数 `qr_img=0`）
+#     ⇒ 改为「**对该容器元素截图**（Playwright 会把 SVG 栅格化）→ cv2 解码」。
+#   · 两个 tab 是 `<span class="C6OZQwMA">`（**哈希类名、无 id**，不可作点击锚点）
+#     ⇒ 改点**稳定 id 的父容器**（下方实测 id 稳定、非构建期哈希）。
+_SEL_QR_IMG = f"{SEL_QR_CONTAINER} img"          # 旧锚点：仅历史兼容（现已恒 0）
 _QR_ANCHORS = (
-    _SEL_QR_IMG,
+    SEL_QR_CONTAINER,                             # ★ 容器本体（SVG ⇒ 栅格化后解码）
+    _SEL_QR_IMG,                                  # 旧 img 锚点（若改回 img 仍可用）
     SEL_SCAN_COMP,
 )
+
+# ── 稳定 id 的 tab / 入口（点击目标；2026-09-30 真机 DOM 实测）──────────────
+SEL_TAB_SMS_BOX = "#douyin_login_comp_mobile_code"      # 「验证码登录」tab 容器（稳定 id）
+SEL_ONE_CLICK_BTN = "#douyin_login_comp_btn_id"         # 「一键登录」面板主按钮（文本实测=「登录」）
+SEL_PHONE_BOX = "#douyin_login_comp_normal_input_id"    # 手机号框外层容器
+SEL_CODE_BOX = "#douyin_login_comp_button_input_id"     # 验证码框外层容器
 
 TAB_SCAN = "扫码登录"
 TAB_PHONE = "验证码登录"
 BTN_SEND_CODE = "获取验证码"
 BTN_LOGIN = "登录"
+# 「一键登录」面板 → 进入手机号表单的**唯一入口**（真机 DOM 实测文案）
+ONE_CLICK_ENTRY = "登录其他账号"
 
 # 陈旧锁文件名（Firefox 系）
 _LOCK_FILES = ("parent.lock", ".parentlock")
@@ -426,58 +439,124 @@ _JS_CLICK_TEXT = r"""
 async def handle_one_click_login(page, timeout_s: float = 6.0) -> dict:
     """处理「一键登录」界面：若出现则点「登录其他账号」进入表单。
 
-    ## 为什么需要（2026-09-26 P6 实测发现，非推测）
+    ## 为什么需要（2026-09-26 P6 / 2026-09-30 真机 DOM 复核，非推测）
     profile 里抖音**记住了上次账号**时，点「登录」弹出的**不是手机号表单**，
-    而是「一键登录」面板（DOM 实测）::
+    而是「一键登录」面板（真机 DOM）::
 
-        <p class="B_Nj1uaz">尚进工伤小助理</p>          ← 显示记住的账号昵称
-        <div id="douyin_login_comp_btn_id">一键登录</div>  ← 主按钮
-        <div class="cq1UKYpd"><p>登录其他账号</p></div>     ← ★ 进入表单的入口
+        <p class="B_Nj1uaz">尚进工伤小助理</p>            ← 显示记住的账号昵称
+        <div id="douyin_login_comp_btn_id">登录</div>       ← 主按钮（★ 文本是「登录」！
+                                                              旧注释误标为「一键登录」，
+                                                              故**不能**拿它当判据）
+        <div class="cq1UKYpd"><p>登录其他账号</p></div>      ← ★ 进入表单的唯一入口
 
-    此时 `input[name="normal-input"]`、「验证码登录」tab **都不存在** ⇒
-    直接找表单锚点必然失败（P2 实测：切 tab False / 填号 False / 发码 False）。
+    此面板下 `input[name="normal-input"]`、「验证码登录」tab **都不存在** ⇒
+    直接 `fill_phone` 必然失败（2026-09-30 运行日志实证：
+    `短信登录失败于 fill_phone: 手机号填入失败（input[name="normal-input"]）`）。
 
-    判据：出现「一键登录」文本 ⇒ 点击「登录其他账号」⇒ 表单才会渲染。
-    返回 {'one_click': bool, 'switched': bool}。
+    ## 判据（决定性，不猜按钮文案）
+      ① `input[name="normal-input"]` 存在 ⇒ **已是表单**，无需处理；
+      ② 页面出现「**登录其他账号**」文案 ⇒ **一键登录面板**（这是唯一入口，确定性）；
+      ③ 两者都无 ⇒ 保持原行为返回（**绝不猜**、绝不乱点）。
+
+    返回 {'one_click': bool, 'switched': bool, 'form': bool}
     """
-    out = {"one_click": False, "switched": False}
+    out = {"one_click": False, "switched": False, "form": False}
     try:
-        # 等「一键登录」或表单任一出现
-        import asyncio as _a
-        t0 = _a.get_event_loop().time()
-        while _a.get_event_loop().time() - t0 < timeout_s:
+        t0 = time.time()
+        st: dict = {}
+        while time.time() - t0 < timeout_s:
             st = await page.evaluate(r"""
 (() => {
-  const el = document.querySelector('#douyin_login_comp_btn_id');
-  const one = !!(el && (el.innerText||'').includes('一键登录'));
   const form = !!document.querySelector('input[name="normal-input"]');
-  const other = Array.from(document.querySelectorAll('p,span,div,a'))
-      .some(e => (e.innerText||'').trim() === '登录其他账号');
-  return {one, form, other};
+  // 「登录其他账号」是进入手机号表单的**唯一入口**（决定性判据）——
+  // 用「自身直接文本」精确匹配，避免父容器含子孙文本造成误命中。
+  let other = false;
+  for (const el of document.querySelectorAll('p,span,div,a,button')) {
+    const own = Array.from(el.childNodes)
+        .filter(n => n.nodeType === 3)
+        .map(n => (n.textContent || '').trim())
+        .join('')
+        .trim();
+    if (own === '登录其他账号') { other = true; break; }
+  }
+  return {form, other};
 })()
 """)
-            if st.get("form"):
-                logger.debug("[login_remote] 已是表单界面，无需处理一键登录")
-                return out
-            if st.get("one"):
-                out["one_click"] = True
+            if st.get("form") or st.get("other"):
                 break
-            await _a.sleep(0.4)
+            await asyncio.sleep(0.4)
 
-        if not out["one_click"]:
-            logger.debug("[login_remote] 未检测到「一键登录」界面")
+        if st.get("form"):
+            out["form"] = True
+            logger.debug("[login_remote] 已是表单界面，无需处理一键登录")
+            return out
+        if not st.get("other"):
+            logger.debug("[login_remote] 未检测到「一键登录」界面（也无表单）")
             return out
 
-        logger.info("[login_remote] 检测到「一键登录」界面，点「登录其他账号」进入表单")
-        if await click_by_text(page, "登录其他账号"):
+        out["one_click"] = True
+        logger.info("[login_remote] 检测到「一键登录」面板，点「{}」进入表单", ONE_CLICK_ENTRY)
+        # ① 先走既有文本点击（JS .click()）
+        done = await click_by_text(page, ONE_CLICK_ENTRY)
+        # ② 兜底：Semi/Firefox 下 JS .click() 可能不生效 ⇒ 用**真实鼠标**点该文案节点
+        if not done:
+            done = await _mouse_click_by_text(page, ONE_CLICK_ENTRY)
+        if done:
             out["switched"] = True
-            await _a.sleep(1.5)
-            logger.info("[login_remote] 已切换到账号密码/验证码表单")
+            await asyncio.sleep(1.5)
+            # 切换后确认表单真的出现（否则如实返回 switched=False 的语义）
+            try:
+                out["form"] = await page.locator(SEL_PHONE_INPUT).count() > 0
+            except Exception:  # noqa: BLE001
+                out["form"] = False
+            logger.info("[login_remote] 「{}」已点击，表单出现={}",
+                        ONE_CLICK_ENTRY, out["form"])
         else:
-            logger.warning("[login_remote] 「登录其他账号」点击失败")
+            logger.warning("[login_remote] 「{}」点击失败（文本/鼠标两种方式均未命中）",
+                           ONE_CLICK_ENTRY)
     except Exception as e:  # noqa: BLE001
         logger.warning("[login_remote] 一键登录处理异常（不阻塞）: {}", e)
     return out
+
+
+async def _mouse_click_by_text(page, text: str) -> bool:
+    """用**真实鼠标**点击「自身直接文本 === text」的最小元素（JS .click() 的兜底）。
+
+    为什么需要：本项目既有实测结论 —— Semi Design 组件在 Camoufox/Firefox 下
+    JS `.click()` 常不生效，必须走真实鼠标事件（与 `click_send_code` 同源做法）。
+    """
+    try:
+        box = await page.evaluate(r"""
+(t) => {
+  let best = null, bestArea = Infinity;
+  for (const el of document.querySelectorAll('p,span,div,a,button,label')) {
+    const own = Array.from(el.childNodes)
+        .filter(n => n.nodeType === 3)
+        .map(n => (n.textContent || '').trim())
+        .join('')
+        .trim();
+    if (own !== t) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) continue;
+    const a = r.width * r.height;
+    if (a < bestArea) { bestArea = a; best = el; }   // 取**最小**者＝文字本体
+  }
+  if (!best) return null;
+  const r = best.getBoundingClientRect();
+  return {cx: Math.round(r.x + r.width / 2), cy: Math.round(r.y + r.height / 2),
+          w: Math.round(r.width), h: Math.round(r.height)};
+}
+""", text)
+        if not box:
+            return False
+        await page.mouse.move(box["cx"], box["cy"])
+        await asyncio.sleep(0.12)
+        await page.mouse.down(); await asyncio.sleep(0.06); await page.mouse.up()
+        logger.info("[login_remote] 真实鼠标点击「{}」成功（{}x{}）", text, box["w"], box["h"])
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 真实鼠标点击「{}」失败: {}", text, e)
+        return False
 
 
 async def grab_login_qrcode(page, out_png: str, shots_dir: Optional[str] = None,
@@ -1097,6 +1176,27 @@ async def do_sms_login(env_path: str, phone: str, code_provider,
                         timeout=max(30, timeout_s) * 1000)
         await asyncio.sleep(5)
 
+        # ⓪ 界面分流（★ 2026-09-30 修根因）
+        # profile 记住账号时，抖音弹的是「一键登录」面板 —— 手机号框
+        # `input[name="normal-input"]` **根本不存在**，直接 fill_phone 必失败。
+        # 实证：本函数此前**从不调用** `handle_one_click_login`（全仓零调用点），
+        # 短信路径 100% 卡在 fill_phone（运行日志：
+        # `短信登录失败于 fill_phone: 手机号填入失败（input[name="normal-input"]）`）。
+        oc = await handle_one_click_login(page)
+        if not oc.get("form"):
+            # 仍未见到表单 ⇒ 用**稳定 id** 点「验证码登录」tab
+            # （两个 tab 的真实节点是哈希类名 `C6OZQwMA`，不可作锚点；
+            #   其父容器 id 实测稳定，故点 id。）
+            try:
+                if await page.locator(SEL_TAB_SMS_BOX).count() > 0:
+                    await _mouse_click_locator(page, page.locator(SEL_TAB_SMS_BOX).first)
+                    logger.info("[login_remote] 已点「验证码登录」tab（稳定 id {}）", SEL_TAB_SMS_BOX)
+                    await asyncio.sleep(1.2)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[login_remote] 点「验证码登录」tab 失败: {}", e)
+        logger.info("[login_remote] 界面分流结果：one_click={} switched={} form={}",
+                    oc.get("one_click"), oc.get("switched"), oc.get("form"))
+
         # ① 填手机号
         if not await fill_phone(page, phone):
             return _fail("fill_phone", f"手机号填入失败（{SEL_PHONE_INPUT}）")
@@ -1142,6 +1242,148 @@ async def do_sms_login(env_path: str, phone: str, code_provider,
         logger.error("[login_remote] 短信登录异常: {}", e)
         traceback.print_exc()
         return _fail("exception", f"{type(e).__name__}: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  上游 API 扫码（ADR-017「扫码走 API」）—— 子进程隔离 + 文件交接
+# ══════════════════════════════════════════════════════════════════════
+#  【为什么是子进程】vendor 与 backend 有 5 个同名顶层包 ⇒ 同进程必静默半坏
+#    （AUTH-073 / 门禁 G1 已钉死）。唯一正确形态 = 干净解释器子进程。
+#  【为什么单进程 + 文件交接】P-256 私钥与票据是会话内状态，跨进程重建需
+#    序列化私钥（脆弱）。子进程从头跑到尾，只把「二维码图/进度/最终凭证」落盘。
+
+def _api_runner_cmd(jobdir: str, timeout_s: int, proxy: str) -> list:
+    """构造子进程命令行（源码态走脚本；冻结态走 `--qr-api-runner` 前置分发）。"""
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--qr-api-runner", "--jobdir", jobdir,
+               "--timeout", str(int(timeout_s))]
+    else:
+        runner = os.path.abspath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "login_qr_api_runner.py"))
+        cmd = [sys.executable, runner, "--jobdir", jobdir,
+               "--timeout", str(int(timeout_s))]
+    if proxy:
+        cmd += ["--proxy", proxy]
+    return cmd
+
+
+def spawn_api_qr_login(jobdir: str, timeout_s: int = 300, proxy: str = "") -> dict:
+    """启动 API 扫码子进程（立即返回，**不阻塞**）。
+
+    返回 handle: {'proc','jobdir','log','timeout_s'}；失败抛异常（由调用方回落 RPA）。
+    """
+    import subprocess
+    os.makedirs(jobdir, exist_ok=True)
+    env = dict(os.environ)
+    # 显式传 vendor 位置，避免冻结态靠相对路径猜（判据：runner._resolve_vendor）
+    try:
+        from auto_dm.login_api_vendor import VENDOR_DIR as _VD  # type: ignore
+        if os.path.isdir(_VD):
+            env["DY_VENDOR_DIR"] = _VD
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] 注入 DY_VENDOR_DIR 失败（不阻塞）: {}", e)
+    cmd = _api_runner_cmd(jobdir, timeout_s, proxy)
+    log_path = os.path.join(jobdir, "runner.log")
+    logf = open(log_path, "w", encoding="utf-8", errors="replace")
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                            env=env, creationflags=creationflags)
+    logger.info("[login_remote] API 扫码子进程已启动 pid={} jobdir={}", proc.pid, jobdir)
+    return {"proc": proc, "jobdir": jobdir, "log": log_path,
+            "timeout_s": int(timeout_s), "logf": logf}
+
+
+def _read_json_quiet(path: str) -> Optional[dict]:
+    """读 JSON；文件不存在/半截/损坏一律返回 None（绝不抛）。"""
+    import json
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def poll_api_qr_login(handle: dict, timeout_s: Optional[int] = None,
+                      interval_s: float = 2.0, on_status=None) -> dict:
+    """轮询 API 扫码子进程，直到「确认/失败/超时」。
+
+    返回 {'ok','reason','result','status'}
+      ok=True  ⇒ result 为子进程写出的凭证 payload（含 cookie_str + 四项签名）
+    每读到新的 status.json 会调用 `on_status(status_dict)`（供编排层回填 qrPng 等）。
+    """
+    jobdir = handle.get("jobdir") or ""
+    status_path = os.path.join(jobdir, "status.json")
+    result_path = os.path.join(jobdir, "result.json")
+    deadline = time.time() + (timeout_s or handle.get("timeout_s", 300) + 90)
+    _last_stage = ""
+
+    def _consume_result(r: dict) -> dict:
+        if r.get("ok"):
+            return {"ok": True, "reason": "", "result": r,
+                    "status": _read_json_quiet(status_path) or {}}
+        return {"ok": False, "result": None,
+                "reason": f"{r.get('stage')}: {r.get('error')}",
+                "status": _read_json_quiet(status_path) or {}}
+
+    while time.time() < deadline:
+        # ① 最终结果优先（原子写，见到即可用）
+        r = _read_json_quiet(result_path)
+        if isinstance(r, dict):
+            return _consume_result(r)
+        # ② 进度
+        s = _read_json_quiet(status_path) or {}
+        stage = s.get("stage") or ""
+        if stage and stage != _last_stage:
+            _last_stage = stage
+            logger.info("[login_remote] API 扫码阶段={} token={} png={}",
+                        stage, str(s.get("token"))[:12], bool(s.get("has_png")))
+            if callable(on_status):
+                try:
+                    on_status(s)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("[login_remote] on_status 回调异常: {}", e)
+            if stage == "failed":
+                return {"ok": False, "result": None,
+                        "reason": s.get("error") or "子进程报失败", "status": s}
+        # ③ 子进程意外退出且无 result ⇒ 立刻失败（不等满超时）
+        proc = handle.get("proc")
+        if proc is not None and proc.poll() is not None:
+            r = _read_json_quiet(result_path)
+            if isinstance(r, dict):
+                return _consume_result(r)
+            return {"ok": False, "result": None,
+                    "reason": f"子进程提前退出（rc={proc.returncode}），日志: {handle.get('log')}",
+                    "status": s}
+        time.sleep(interval_s)
+    return {"ok": False, "result": None, "reason": f"API 扫码等待超时（{timeout_s or handle.get('timeout_s')}s）",
+            "status": _read_json_quiet(status_path) or {}}
+
+
+def reap_api_qr_login(handle: Optional[dict]) -> None:
+    """收尾：确保子进程结束、关闭日志句柄（幂等，绝不抛）。"""
+    if not handle:
+        return
+    try:
+        proc = handle.get("proc")
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[login_remote] API 扫码子进程收尾异常: {}", e)
+    try:
+        f = handle.get("logf")
+        if f is not None and not f.closed:
+            f.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def close_handle(handle: Optional[dict]) -> None:
