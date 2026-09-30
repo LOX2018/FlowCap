@@ -149,6 +149,22 @@ def _install_send_stub(L, mode="ok", status_code=0, exc=None):
     return _stub
 
 
+def _enable_danmaku_write():
+    """打开 `live.danmaku_enabled`（**写接口默认休眠**，见 C-07 §2.1 P0 / LIVE-040）。
+
+    ⚠️ 2026-09-30 契约变更：`/danmaku` 是**写接口**，未开启时**不外发且零出站**
+    （`reason=danmaku_disabled`）。本模块验的是「真调之后是否谎报成功」，
+    故须先开闸；否则全部用例会停在 `danmaku_disabled` 分支（测不到本模块判据）。
+    """
+    from database import get_kv_json, set_kv_json
+    data = get_kv_json("app_config", {}) or {}
+    live = dict(data.get("live") or {})
+    live["danmaku_enabled"] = True
+    data["live"] = live
+    set_kv_json("app_config", data)
+
+
+
 def _install_auth_stub(L, mode="ok"):
     """打桩凭证加载：ok=返回假凭证 / missing=账号未登记 / none=凭证为空。"""
     def _auth_for(account):
@@ -172,6 +188,7 @@ class TestL1SendRaisesMustBeFalse(unittest.TestCase):
         os.environ["DY_APP_ROOT"] = _ROOT
         from database import set_kv_json
         set_kv_json("config", {"live_id": "7351000000"})
+        _enable_danmaku_write()
 
         got = asyncio.run(L.send_danmaku(
             L.DanmakuSendBody(content="测试弹幕", account="acc1")))
@@ -192,6 +209,7 @@ class TestL2FailureShapeReflected(unittest.TestCase):
         os.environ["DY_APP_ROOT"] = _ROOT
         from database import set_kv_json
         set_kv_json("config", {"live_id": "7351000000"})
+        _enable_danmaku_write()
 
         got = asyncio.run(L.send_danmaku(
             L.DanmakuSendBody(content="测试弹幕", account="acc1")))
@@ -210,6 +228,7 @@ class TestL2FailureShapeReflected(unittest.TestCase):
         os.environ["DY_APP_ROOT"] = _ROOT
         from database import set_kv_json
         set_kv_json("config", {"live_id": "7351000000"})
+        _enable_danmaku_write()
 
         got = asyncio.run(L.send_danmaku(
             L.DanmakuSendBody(content="测试弹幕", account="acc1")))
@@ -230,6 +249,7 @@ class TestL3CredentialMissingNoEgress(unittest.TestCase):
         os.environ["DY_APP_ROOT"] = _ROOT
         from database import set_kv_json
         set_kv_json("config", {"live_id": "7351000000"})
+        _enable_danmaku_write()
 
         got = asyncio.run(L.send_danmaku(
             L.DanmakuSendBody(content="测试弹幕", account="ghost")))
@@ -246,6 +266,7 @@ class TestL3CredentialMissingNoEgress(unittest.TestCase):
         os.environ["DY_APP_ROOT"] = _ROOT
         from database import set_kv_json
         set_kv_json("config", {"live_id": "7351000000"})
+        _enable_danmaku_write()
 
         got = asyncio.run(L.send_danmaku(
             L.DanmakuSendBody(content="测试弹幕", account="acc1")))
@@ -339,6 +360,7 @@ async def send_danmaku(body: DanmakuSendBody):
             from database import set_kv_json
             os.environ["DY_APP_ROOT"] = _ROOT
             set_kv_json("config", {"live_id": "7351000000"})
+            _enable_danmaku_write()
             _NET.reset()
             _install_send_stub(L, mode="raise")
             _install_auth_stub(L, "ok")
@@ -396,6 +418,7 @@ async def send_danmaku(body: DanmakuSendBody):
         os.environ["DY_APP_ROOT"] = _ROOT
         from database import set_kv_json
         set_kv_json("config", {"live_id": "7351000000"})
+        _enable_danmaku_write()
         _NET.reset()
         _install_send_stub(L, mode="raise")
         _install_auth_stub(L, "ok")
@@ -435,6 +458,7 @@ class TestL6NoRealNetworkEgress(unittest.TestCase):
             os.environ["DY_APP_ROOT"] = _ROOT
             from database import set_kv_json
             set_kv_json("config", {"live_id": "7351000000"})
+            _enable_danmaku_write()
             _NET.reset()
             _install_send_stub(L, mode="ok")
             _install_auth_stub(L, "ok")

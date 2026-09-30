@@ -181,6 +181,7 @@ function mockApi() {
     getStream: async () => ({ ok: true, info: { online: 0, danmaku: 0, sent: 0 } }),
     getTasks: async () => ({ ok: true, list: [] }),
     sendDanmaku: async () => ({ ok: true }),
+    likeRoom: async () => ({ ok: true }),
     // accounts
     checkAccount: async () => ({ ok: true }),
     listAgents: async () => ({ agents: [{ id: "a1", name: "默认 Agent" }, { id: "a2", name: "保守号" }] }),

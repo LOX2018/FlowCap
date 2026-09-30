@@ -121,6 +121,18 @@ class DanmakuSendBody(DanmakuRequest):
     room_id: str | None = None
 
 
+class LikeSendBody(BaseModel):
+    """直播间点赞请求体（2026-09-30 新增）。
+
+    与 `DanmakuSendBody` 同契约：缺 `account` 时回落「当前账号」，
+    仍取不到即 fail-closed（`reason=no_account`）——绝不静默沿用空账号。
+    """
+
+    count: int = 1
+    account: str | None = None
+    room_id: str | None = None
+
+
 def _auth_for(account: str):
     """加载指定账号凭证 → dy_auth（与 api/linkmic.py 同范式）。"""
     try:
@@ -166,6 +178,22 @@ async def send_danmaku(body: DanmakuSendBody):
     if not content:
         return {"ok": False, "error": "弹幕内容为空", "reason": "empty_content", "sent": False}
 
+    # 🔴 2026-09-30：**显式配置门**（用户「显式配置原则」+「新能力默认休眠」）。
+    # `/webcast/room/chat/` 是**写接口，触风控红线**；此前只要凭证齐备就无条件外发。
+    # 现改为：不显式打开 `live.danmaku_enabled` 就**不外发**（默认 False）。
+    # 判据：不改任何配置时，本端点行为 == 关闭态（可断言的零回归）。
+    try:
+        from services import app_config as _ac
+        _enabled = bool(_ac.get("live", "danmaku_enabled", False))
+    except Exception as e:  # noqa: BLE001
+        # 读不到配置 ⇒ 无法证明「已启用」⇒ fail-closed（绝不静默放行外发）
+        logger.warning(f"[LIVE-040] [danmaku] 读取 danmaku_enabled 失败（按未启用处理）: {e}")
+        _enabled = False
+    if not _enabled:
+        return {"ok": False, "sent": False, "reason": "danmaku_disabled",
+                "error": "发送弹幕未启用（默认休眠）",
+                "hint": "设置 → 直播 → 「发送弹幕」，开启后重试"}
+
     account = (body.account or "").strip()
     if not account:
         # 向后兼容兜底：旧调用方不带 account 时取「当前账号」；
@@ -193,10 +221,18 @@ async def send_danmaku(body: DanmakuSendBody):
         return {"ok": False, "error": f"账号 {account} 凭证为空",
                 "reason": "credential_empty", "sent": False, "account": account}
 
+    # 🔴 2026-09-30：kv `config.live_id` / 前端输入框里的是 **web_rid（URL 短号）**，
+    # 而 `/webcast/room/chat/` 要的是**真实 room_id**（实测 992931212705 →
+    # 7688251038101556006，二者不同）。此前直接把 web_rid 当 room_id 发 ⇒
+    # 上游业务失败且响应里没有可读错误码（静默失败 = 用户看到的「发了没反应」）。
+    # 这里经基座**唯一**归一化入口升级（取不到则原样回退，绝不编造）。
+    # 位置必须在凭证就绪之后 —— 该探测是带凭证的真实请求。
+    from dy_apis.douyin_api import DouyinAPI
+    room_id = DouyinAPI._live_chat_room_id(auth, room_id)
+
     # 真实发送：DouyinAPI 由 LiveMixin 提供 sendMsgInRoom（staticmethod）。
     # 返回 safe_json(res) → dict，status_code==0 为业务成功。
     try:
-        from dy_apis.douyin_api import DouyinAPI
         res = DouyinAPI.sendMsgInRoom(auth, room_id, content)
     except HTTPException as e:
         return {"ok": False, "error": str(e.detail), "reason": "request_rejected",
@@ -214,6 +250,106 @@ async def send_danmaku(body: DanmakuSendBody):
         return {"ok": True, "sent": True, "content": content, "account": account,
                 "roomId": room_id, "statusCode": code, "data": data, "error": None}
     return {"ok": False, "sent": False, "content": content, "account": account,
+            "roomId": room_id, "statusCode": code, "data": data,
+            "error": data.get("message") or data.get("prompts") or f"上游返回 status_code={code}",
+            "reason": "upstream_failed"}
+
+
+@router.post("/like")
+async def like_room(body: LikeSendBody):
+    """给直播间点赞（`/webcast/room/like/`）—— **真实调用 dy_apis**。
+
+    ## 设计契约（2026-09-30 立）
+
+    - **前置**：`live.like_enabled=true`（**默认 False**，显式配置门）；
+      否则 `ok=False, reason=like_disabled`，**零出站**。
+    - **入参**：`count` 正整数（上限见 `live.like_max`，默认 1000）；
+      `account`/`room_id` 缺省可回落（与 `/danmaku` 同一套回落契约）。
+    - **房间号**：`room_id` 缺省来自 kv `config.live_id`，那是 **web_rid（URL 短号）**；
+      直播域写接口要的是**真实 room_id** ⇒ 经基座唯一入口
+      `DouyinAPI._live_chat_room_id` 归一化后使用。
+    - **成功判据**：上游 `status_code == 0`；其余一律 fail-closed。
+    - **红线**：写接口触风控；本项目「非必要不主动互动」，故默认休眠。
+
+    与 `/danmaku` 的字段分层刻意保持一致（`ok`/`sent`/`reason`/`statusCode`），
+    前端只需一套错误呈现逻辑。
+    """
+    # ① 显式配置门（默认休眠 —— 写接口不配置不外发）
+    try:
+        from services import app_config as _ac
+        _enabled = bool(_ac.get("live", "like_enabled", False))
+        _max = int(_ac.get("live", "like_max", 1000) or 1000)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-041] [like] 读取 like_enabled 失败（按未启用处理）: {e}")
+        _enabled, _max = False, 1000
+    if not _enabled:
+        return {"ok": False, "sent": False, "reason": "like_disabled",
+                "error": "点赞未启用（默认休眠）",
+                "hint": "设置 → 直播 → 「点赞」，开启后重试"}
+
+    # ② count 校验（越界显式拒绝，**不静默夹取**）
+    # 🔴 实测踩坑（门禁抓到的真实缺陷，不是用例错）：原写 `int(body.count or 1)`
+    #    ⇒ `0` 是 falsy，被 `or 1` **静默吃成 1** —— 用户传 0 却发出 1 次点赞。
+    #    改用显式三态：None（未传）⇒ 默认 1；其余一律 `int()`，非法即 0 ⇒ 走拒绝分支。
+    raw_count = body.count
+    if raw_count is None:
+        count = 1
+    else:
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            count = 0
+    if count < 1 or count > _max:
+        return {"ok": False, "sent": False, "reason": "bad_count",
+                "error": f"点赞次数须在 1~{_max} 之间（收到 {body.count!r}）"}
+
+    # ③ 账号（缺省回落当前账号；仍取不到 ⇒ fail-closed）
+    account = (body.account or "").strip()
+    if not account:
+        try:
+            from auto_dm.accounts import current_name
+            account = (current_name() or "").strip()
+        except Exception:
+            account = ""
+    if not account:
+        return {"ok": False, "sent": False, "reason": "no_account",
+                "error": "未指定账号且无当前账号（无法加载发送凭证）"}
+
+    # ④ 房间号（缺省回落 kv config.live_id）
+    try:
+        room_id = _room_id_for(body.room_id)
+    except HTTPException as e:
+        return {"ok": False, "sent": False, "reason": "no_room_id", "error": str(e.detail)}
+
+    # ⑤ 凭证
+    try:
+        auth = _auth_for(account)
+    except HTTPException as e:
+        return {"ok": False, "sent": False, "reason": "credential_unavailable",
+                "error": str(e.detail), "account": account}
+    if auth is None:
+        return {"ok": False, "sent": False, "reason": "credential_empty",
+                "error": f"账号 {account} 凭证为空", "account": account}
+
+    from dy_apis.douyin_api import DouyinAPI
+    room_id = DouyinAPI._live_chat_room_id(auth, room_id)
+
+    # ⑥ 真实调用（唯一出站点）
+    try:
+        res = DouyinAPI.diggLiveRoom(auth, room_id, str(count))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LIVE-042] [like] 发送异常 account={account} room={room_id}: {e}")
+        return {"ok": False, "sent": False, "reason": "exception",
+                "error": f"点赞失败: {e}", "account": account, "roomId": room_id}
+
+    data = (res or {}).get("data") or {}
+    code = (res or {}).get("status_code")
+    ok = code == 0
+    logger.info(f"[LIVE-043] [like] account={account} room={room_id} count={count} code={code} ok={ok}")
+    if ok:
+        return {"ok": True, "sent": True, "count": count, "account": account,
+                "roomId": room_id, "statusCode": code, "data": data, "error": None}
+    return {"ok": False, "sent": False, "count": count, "account": account,
             "roomId": room_id, "statusCode": code, "data": data,
             "error": data.get("message") or data.get("prompts") or f"上游返回 status_code={code}",
             "reason": "upstream_failed"}

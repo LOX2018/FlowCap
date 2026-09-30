@@ -411,6 +411,12 @@ ERRCODES = {
     "LIVE-035": {"meaning": "live-identity] 监测账号无直播昵称解密权 —— 弹幕昵称将被脱敏（uid=111111）", "file": "auto_dm/accounts.py", "line": 0},
     "LIVE-036": {"meaning": "live-identity] 登录态探测失败（结论未知，不据此降级）", "file": "auto_dm/accounts.py", "line": 0},
     "LIVE-037": {"meaning": "live-ws] 带凭证进房未获 room_id/异常，回落匿名进房", "file": "dy_live/server.py", "line": 0},
+    "LIVE-038": {"meaning": "live-chat] 真实 room_id 探测失败（沿用原值）—— 写接口房间号可能不符", "file": "dy_apis/client_live.py", "line": 0},
+    "LIVE-039": {"meaning": "live-chat] 未取到真实 room_id（沿用原值）—— 写接口可能因房间号形态失败", "file": "dy_apis/client_live.py", "line": 0},
+    "LIVE-040": {"meaning": "danmaku] 读取 danmaku_enabled 失败（按未启用处理，拒发）", "file": "api/live.py", "line": 0},
+    "LIVE-041": {"meaning": "like] 读取 like_enabled 失败（按未启用处理，拒发）", "file": "api/live.py", "line": 0},
+    "LIVE-042": {"meaning": "like] 发送异常（网络/签名/风控）", "file": "api/live.py", "line": 0},
+    "LIVE-043": {"meaning": "like] 调用结果（成功判据 = 上游 status_code==0）", "file": "api/live.py", "line": 0},
 
 
     "MEM-001": {"meaning": "member] 会员 DB 初始化失败:", "file": "api/member.py", "line": 72},
@@ -871,6 +877,93 @@ CODE_DESIGN = {
         "root": "DouyinAPI.get_live_info 依赖 res.cookies['ttwid']，"
                 "在服务端未承认该会话时可能取不到或返回结构异常。",
         "verify": "日志出现 LIVE-037 后应紧跟 LIVE-033，且最终仍能建连（收帧数>0）。",
+    },
+    # ── 直播域写接口（主动互动）房间号归一化与配置门（2026-09-30）─────────
+    "LIVE-038": {
+        "design": "`/webcast/room/like/` 与 `/webcast/room/chat/` 是直播域**写**接口，"
+                  "其 `room_id` 参数要的是**真实房间号**（如 7688251038101556006），"
+                  "而不是 URL 上的直播间短号（web_rid，如 992931212705）。",
+        "contract": "写接口房间号必须经 `DouyinAPI._live_chat_room_id`（唯一归一化入口）"
+                    "把 web_rid 升级为真实 room_id：① 能取到就用真实值；"
+                    "② 取不到**原样回退**（绝不编造、绝不抛错打断）；③ 只读幂等。",
+        "deviation": "实测 `www.douyin.com/follow/live/992931212705` 进房 "
+                     "`room_id=7688251038101556006`，与 web_rid 逐字不同"
+                     "（见 12_业务域_直播监听 §10.2 同一房间两套标识）。"
+                     "直接拿 kv `config.live_id`（解析层返回的就是 web_rid）当 room_id 发 ⇒ "
+                     "上游业务失败且响应里没有可读错误码（静默失败）。",
+        "chain": "前端发送 → POST /api/live/{danmaku,like} → kv config.live_id(web_rid) → "
+                 "DouyinAPI._live_chat_room_id → get_live_info(web_rid)[\"room_id\"] → "
+                 "真实 room_id → /webcast/room/{chat,like}/",
+        "root": "两套标识在链路里被混用：解析层（link_resolve.resolve_live_id）的契约只保证"
+                "返回 web_rid，而写接口只认 room_id。缺一层显式归一化。",
+        "verify": "① 归一化失败时必须打 LIVE-038 且**沿用原值**（日志可见 room_id 未变）；"
+                  "② 端到端：日志里 `[like]/[danmaku]` 行的 `room=` 应是纯数字真实 room_id"
+                  "（不是 URL 短号）；③ 负控：去掉归一化 → 上游 status_code≠0。",
+    },
+    "LIVE-039": {
+        "design": "房间号归一化是**增强**步骤，取不到真实 room_id 时链路仍应尝试原值，"
+                  "不得因增强失败而中断用户操作。",
+        "contract": "取不到真实 room_id ⇒ 打 LIVE-039 警告 + 沿用原值继续；"
+                    "**不得**因此 fail-closed（与「凭证缺失必须 fail-closed」区分开）。",
+        "deviation": "get_live_info 返回 None / 空 dict / 无 room_id 键"
+                     "（未开播、页面结构变更、网络异常）。",
+        "chain": "DouyinAPI._live_chat_room_id → get_live_info 空 → 打 LIVE-039 → 返回原值",
+        "root": "探测本身不可靠（依赖直播间页面 HTML 解析），属外部不可控因素。",
+        "verify": "造「get_live_info 返回空」的桩 → 断言返回原值 + LIVE-039 出现 + 不抛异常。",
+    },
+    "LIVE-040": {
+        "design": "发送弹幕（`/webcast/room/chat/`）是**写接口，触风控红线**；"
+                  "本项目原则是「非必要不主动互动」，故该能力**默认休眠**，"
+                  "由用户在设置里显式开启（用户「显式配置原则」）。",
+        "contract": "`live.danmaku_enabled`（默认 False）为前置门：未开启 ⇒ "
+                    "`ok=False, sent=False, reason=danmaku_disabled`，**零出站**"
+                    "（连 get_live_info 都不发）。读配置失败同样按未启用处理（fail-closed）。",
+        "deviation": "开启前直接调 /api/live/danmaku 会得到 reason=danmaku_disabled —— "
+                     "这是**按设计的默认态**，不是故障。",
+        "chain": "POST /api/live/danmaku → app_config.get('live','danmaku_enabled') → "
+                 "False → 拒发（无任何网络请求）",
+        "root": "此前该端点只要凭证齐备就无条件外发，未把「用户是否想要主动发言」"
+                "做成显式选择。",
+        "verify": "① 默认态调用 → reason=danmaku_disabled 且出站计数=0；"
+                  "② 开启后 → 真实调用 sendMsgInRoom（出站计数=1）；"
+                  "③ 负控：把开关改回 False → 又拒发。",
+    },
+    "LIVE-041": {
+        "design": "点赞（`/webcast/room/like/`）同为**写接口 / 触风控**，"
+                  "与发送弹幕共享「默认休眠 + 显式开启」的设计原则。",
+        "contract": "`live.like_enabled`（默认 False）为前置门：未开启 ⇒ "
+                    "`ok=False, sent=False, reason=like_disabled`，**零出站**；"
+                    "读配置失败按未启用处理。",
+        "deviation": "关闭态调用 /api/live/like 得到 reason=like_disabled —— 默认态，非故障。",
+        "chain": "POST /api/live/like → app_config.get('live','like_enabled') → False → 拒发",
+        "root": "新建能力时若不设默认门，UI 上的「点赞」按钮一点就会真发请求"
+                "（前端此前是 push('功能开发中：点赞') 的空壳，接真后必须补门）。",
+        "verify": "同 LIVE-040 的三条（默认拒发 / 开启后出站=1 / 改回后又拒发）。",
+    },
+    "LIVE-042": {
+        "design": "点赞请求的出站异常（网络/签名/风控）必须如实上报为失败，"
+                  "不得让前端显示成功。",
+        "contract": "`diggLiveRoom` 抛异常 ⇒ `ok=False, sent=False, reason=exception` "
+                    "+ 明确 error 文案；**绝不**返回 ok=True。",
+        "deviation": "上游连接重置 / 签名异常 / 请求库异常。",
+        "chain": "like_room → DouyinAPI.diggLiveRoom → requests 异常 → except → "
+                 "reason=exception",
+        "root": "外网与签名链路的正常失败面；关键是**不被吞掉**。",
+        "verify": "打桩 diggLiveRoom 抛异常 → 断言 ok=False 且 reason=exception。",
+    },
+    "LIVE-043": {
+        "design": "点赞的成败判据唯一：上游响应 `status_code == 0` 才算成功；"
+                  "其余一律失败（含风控页/空响应）。",
+        "contract": "成功 ⇒ 返回携带可核验依据（count/roomId/statusCode/data）；"
+                    "非 0 ⇒ `reason=upstream_failed` + 上游 message/prompts。",
+        "deviation": "实测风控/参数错误时上游返回非 0 或**空响应体**"
+                     "（safe_json 降级为 {} ⇒ status_code 缺失 ⇒ 同样判失败，不误报成功）。",
+        "chain": "like_room → diggLiveRoom → safe_json(res) → code==0 判定 → 成功/失败分支",
+        "root": "写接口在风控下倾向返回空响应而非错误码，故判据必须取**正向确认**"
+                "（code==0）而不是「没有错误码就是成功」。",
+        "verify": "打桩返回 {status_code:0} → ok=True 且 sent=True；"
+                  "打桩返回 {status_code:2154} → ok=False 且透传 2154；"
+                  "打桩返回 {}（空响应）→ ok=False（**不得**判成功）。",
     },
     "BCC-005": {
         "design": "打开 chat 页是 BCC 一切能力（昵称 hook/发送/页面探活）的前置；"

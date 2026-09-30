@@ -1030,10 +1030,28 @@ export const api = {
     return request("/api/live/stream");
   },
 
-  async sendDanmaku(content: string): Promise<{ ok: boolean; content: string }> {
+  async sendDanmaku(
+    content: string,
+    account?: string | null,
+    roomId?: string | null,
+  ): Promise<{ ok: boolean; sent?: boolean; content?: string; error?: string | null; reason?: string; hint?: string }> {
+    // 2026-09-30：补齐 account / room_id。缺 account 时后端回落「当前账号」，
+    // 仍取不到即 fail-closed（reason=no_account）—— 前端必须如实呈现该失败。
     return request("/api/live/danmaku", {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, account: account || null, room_id: roomId || null }),
+    });
+  },
+
+  /** 直播间点赞（2026-09-30 新增；写接口，后端默认休眠，需在设置里开启「点赞」） */
+  async likeRoom(
+    count: number,
+    account?: string | null,
+    roomId?: string | null,
+  ): Promise<{ ok: boolean; sent?: boolean; count?: number; error?: string | null; reason?: string; hint?: string }> {
+    return request("/api/live/like", {
+      method: "POST",
+      body: JSON.stringify({ count, account: account || null, room_id: roomId || null }),
     });
   },
 

@@ -42,6 +42,7 @@ import { cn } from "@/lib/utils";
 
 import {
   LiveStream, TaskListResponse, RealAcct, FeedItem, Row, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, displayStatus, isIssue,
+  DM_PREVIEW_CHARS, sourceMetaOf, dmTitle,
 } from "./live-shared";
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
@@ -371,6 +372,13 @@ export default function LivePage(props: PageProps) {
     );
   };
 
+  /**
+   * 发送弹幕（写接口）。
+   * 2026-09-30：① 必须带 **account**（否则后端回落「当前账号」，多账号时可能用错身份）；
+   * ② `room` 可能是 URL，交给后端 `link_resolve` 无关 —— 后端会用 kv `config.live_id`
+   * 兜底并经基座归一化为**真实 room_id**；③ 失败必须如实呈现 `reason`（尤其是
+   * `danmaku_disabled` = 用户未在设置里开启该写接口，属**默认休眠态**而非故障）。
+   */
   const sendDanmaku = () => {
     const text = dmDraft.trim();
     if (!text) return;
@@ -378,15 +386,57 @@ export default function LivePage(props: PageProps) {
       push("未连接后端，无法发送弹幕");
       return;
     }
-    api.sendDanmaku(text)
-      .then((r) => push(r.ok ? "弹幕已发送 · " + text : "发送失败: " + (r.content || "")))
+    // 只把纯数字 room_id 传给后端（URL 形态由后端 kv 兜底，避免传错形状）
+    const rid = extractRoomId(room) || ls?.room_id || null;
+    api
+      .sendDanmaku(text, activeAcct, rid)
+      .then((r) => {
+        if (r.ok) {
+          push("弹幕已发送 · " + text);
+        } else if (r.reason === "danmaku_disabled") {
+          push("发送弹幕未启用（默认休眠）：请到「设置 → 直播」开启「发送弹幕」");
+        } else {
+          push("发送失败: " + (r.error || r.reason || "未知原因"));
+        }
+      })
       .catch((e: unknown) => push("发送异常: " + errMsg(e)));
     setDmDraft("");
   };
 
-  // doLike / requestDm / resolveLive 后端暂未实现
-  const doLike = () => push("功能开发中：点赞");
-  const doBatch = () => push("功能开发中：批量点赞");
+  /**
+   * 直播间点赞（写接口，2026-09-30 接真；此前为 `push("功能开发中：点赞")` 空壳）。
+   * 后端默认休眠：未在设置里开启 `like_enabled` 时直接拒发（reason=like_disabled），
+   * **零出站** —— 前端如实呈现，不谎报成功。
+   */
+  const likeOnce = (n: number) => {
+    if (!ready) {
+      push("未连接后端，无法点赞");
+      return;
+    }
+    const rid = extractRoomId(room) || ls?.room_id || null;
+    api
+      .likeRoom(n, activeAcct, rid)
+      .then((r) => {
+        if (r.ok) {
+          push(`已点赞 ×${n}`);
+        } else if (r.reason === "like_disabled") {
+          push("点赞未启用（默认休眠）：请到「设置 → 直播」开启「点赞」");
+        } else {
+          push("点赞失败: " + (r.error || r.reason || "未知原因"));
+        }
+      })
+      .catch((e: unknown) => push("点赞异常: " + errMsg(e)));
+  };
+
+  const doLike = () => likeOnce(1);
+  const doBatch = () => {
+    const n = parseInt(batchN, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 1000) {
+      push("批量点赞数量须在 1~1000 之间");
+      return;
+    }
+    likeOnce(n);
+  };
   const sendDm = (r: Row) => push("功能开发中：发送私信 → " + r.name);
 
   /** 从输入框提取直播间号（纯数字或 URL 里的 /<digits>），失败返回空串 */
@@ -1087,12 +1137,12 @@ export default function LivePage(props: PageProps) {
                 <table className="w-full border-collapse">
                   <thead className="sticky top-0 z-[1] bg-[var(--color-surface)]">
                     <tr>
-                      <Th>发送时间</Th>
-                      <Th>发言人</Th>
-                      <Th>评论内容</Th>
-                      <Th>私信状态</Th>
-                      <Th>私信文案</Th>
-                      <Th>私信时间</Th>
+                      <Th width={88}>发送时间</Th>
+                      <Th width={150}>发言人</Th>
+                      <Th width={240}>评论内容</Th>
+                      <Th width={96}>私信状态</Th>
+                      <Th width={210}>私信文案</Th>
+                      <Th width={88}>私信时间</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1163,22 +1213,45 @@ export default function LivePage(props: PageProps) {
                           })()
                         )}
                       </Td>
+                      {/* 2026-09-30（用户实测反馈）：
+                          ① 「发送内容不需要完整的全部展示，显示前 10 个字就行」→ 正文只渲
+                             前 10 字（JS 截断，字数固定；CSS `truncate` 兜住窄列溢出）；
+                          ② 「不知道这个文本到底是词库、AI 生成还是兜底文档」→ 前置来源
+                             徽标（来自后端 content_source，前端不推断）；
+                          ③ 「不要破坏表格结构」→ 列数/列序/行结构逐字不变，仅单元格内部
+                             布局调整；全文经 `title` 悬浮可见（信息不丢）。 */}
                       <Td
-                        title={
-                          r.dmStatus === "fail" && r.reason
-                            ? `${r.dmText}\n失败原因: ${r.reason}`
-                            : r.dmText
-                        }
+                        title={dmTitle(r)}
                       >
-                        <span
-                          className={cn(
-                            "block truncate",
-                            r.dmText
-                              ? "text-[var(--color-text)]"
-                              : "text-[var(--color-text-muted)]"
-                          )}
-                        >
-                          {r.dmText || "未发送"}
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {(() => {
+                            const _src = sourceMetaOf(r.contentSource);
+                            return _src ? (
+                              <span
+                                className="shrink-0 rounded-[4px] border px-1
+                                           font-mono text-[0.66rem]"
+                                style={{
+                                  color: _src.color,
+                                  borderColor: `color-mix(in srgb, ${_src.color} 40%, transparent)`,
+                                }}
+                                title={`文案来源：${_src.label}`}
+                              >
+                                {_src.label}
+                              </span>
+                            ) : null;
+                          })()}
+                          <span
+                            className={cn(
+                              "block min-w-0 flex-1 truncate",
+                              r.dmText
+                                ? "text-[var(--color-text)]"
+                                : "text-[var(--color-text-muted)]"
+                            )}
+                          >
+                            {r.dmText
+                              ? r.dmText.slice(0, DM_PREVIEW_CHARS)
+                              : "未发送"}
+                          </span>
                         </span>
                       </Td>
                       <Td mono className="whitespace-nowrap">

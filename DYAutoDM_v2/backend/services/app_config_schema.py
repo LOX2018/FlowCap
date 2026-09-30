@@ -194,6 +194,34 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "启用发送", "type": "bool", "default": True, "env": None,
                 "apply": "hot", "hint": "关闭则只采集不发送（调试用）",
             },
+            # ── 直播间主动互动（2026-09-30）──────────────────────────────
+            # 🔴 这两个开关管的是**写接口**（/webcast/room/chat/ 与 /webcast/room/like/），
+            #    触风控红线，故**默认 False = 休眠**（用户「显式配置原则」：
+            #    行为由用户显式选择，不由代码默认替用户决定）。
+            #    与上面的 enable_danmaku / enable_send 语义**无关**：
+            #      · enable_danmaku = 是否**接收**弹幕（只读）
+            #      · enable_send    = 采集到的目标是否**发送私信**
+            #      · danmaku_enabled/like_enabled = 是否**主动在直播间发言/点赞**
+            #    消费点：backend/api/live.py 的 POST /api/live/danmaku 与 /api/live/like。
+            "danmaku_enabled": {
+                "label": "发送弹幕（主动发言·写接口）", "type": "bool", "default": False,
+                "env": None, "apply": "hot",
+                "hint": ("**默认关闭**。开启后，直播页「发送弹幕」才会真实调用 "
+                         "/webcast/room/chat/；关闭时端点直接拒发（reason=danmaku_disabled），"
+                         "零出站。写接口触风控，非必要不发言。"),
+            },
+            "like_enabled": {
+                "label": "点赞（主动互动·写接口）", "type": "bool", "default": False,
+                "env": None, "apply": "hot",
+                "hint": ("**默认关闭**。开启后，直播页「点赞 / 批量点赞」才会真实调用 "
+                         "/webcast/room/like/；关闭时端点直接拒发（reason=like_disabled），"
+                         "零出站。"),
+            },
+            "like_max": {
+                "label": "单次点赞上限", "type": "int", "default": 1000,
+                "min": 1, "max": 1000, "env": None, "apply": "hot",
+                "hint": "批量点赞单次请求的上限（越界显式拒绝，不静默夹取）",
+            },
         },
     },
 

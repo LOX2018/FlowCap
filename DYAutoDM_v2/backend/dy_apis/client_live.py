@@ -566,16 +566,76 @@ class LiveMixin:
         return safe_json(res)
 
     @staticmethod
+    def _live_chat_room_id(auth, room_id):
+        """把「直播间号(web_rid)」升级为**真实 room_id** —— 直播域写接口只认后者。
+
+        ## 为什么必须有这一层（2026-09-30，直播发送链路根因）
+
+        本项目「直播间号」有两套标识，此前链路把二者混用了：
+
+        | 标识 | 取值来源 | 谁在用 |
+        |---|---|---|
+        | `web_rid`（URL 短号，如 `992931212705`） | `link_resolve.resolve_live_id` → kv `config.live_id` | 取房间信息 / 进房 |
+        | `room_id`（真实房间号，如 `7688251038101556006`） | 进房页 `roomId`、`get_live_info()["room_id"]` | 直播域**写**接口 |
+
+        `link_resolve.resolve_live_id` 的契约只保证返回 **web_rid**（其文档原文：
+        「返回的 live_id 即为 web_rid（真实直播间号）」），而 `/webcast/room/chat/`
+        与 `/webcast/room/like/` 要的 `room_id` 是**另一套值** —— 实测
+        `follow/live/992931212705` 进房 `room_id=7688251038101556006`，二者逐字不同。
+        ⇒ 直接拿 web_rid 调写接口 ⇒ 上游业务失败，且响应里没有可读错误码（静默失败）。
+
+        ⇒ 本函数是**唯一**的写接口房间号归一化入口：能取到真实 `room_id` 就用，
+        取不到**原样回退**（绝不编造、绝不抛错打断）。只读、幂等。
+        """
+        rid = str(room_id or "").strip()
+        if not rid:
+            return rid
+        try:
+            info = DouyinAPI.get_live_info(auth, rid)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LIVE-038] [live-chat] 真实 room_id 探测失败（沿用原值 {rid}）: {e}")
+            return rid
+        real = ""
+        if isinstance(info, dict):
+            real = str(info.get("room_id") or "").strip()
+        if real and real != rid:
+            logger.debug(f"[live-chat] room_id 归一化：web_rid={rid} -> room_id={real}")
+            return real
+        if not real:
+            logger.warning(f"[LIVE-039] [live-chat] 未取到真实 room_id（沿用 {rid}）——"
+                           "直播域写接口可能因房间号形态不符而失败")
+        return rid
+
+    @staticmethod
     def diggLiveRoom(auth, room_id: str, count: str = '1'):
-        # 2026-09-17 修补（OCR 审查 CRITICAL）：本方法由 douyin_api.py 机械
-        # 拆分而来，**丢失了 `@staticmethod`**，但首参是 auth 且方法体不用 self。
-        # 缺装饰器时会变成实例方法，`DouyinAPI.diggLiveRoom(auth, room_id)`
-        # （兄弟方法的统一调用形态）将抛 TypeError。同 mixin 其余方法均带
-        # @staticmethod，此处补齐。
+        """直播间点赞（`/webcast/room/like/`，POST form）。
+
+        ## 对齐上游（2026-09-30）
+
+        逐字段核对上游 `cv-cat/DouYin_Spider` **最新 head** `b17b12ee` 的
+        `dy_apis/douyin_api.py:1897-1928`（与本地 vendor 快照逐字节相同 ⇒
+        该接口自 09-19 起上游未再改动）。
+
+        🔴 **差异（本项目修复）**：上游仍写 `headers.set_header("origin",
+        DouyinAPI.douyin_url)`（= **主站** www.douyin.com）。而这个接口打的是
+        `live.douyin.com` —— 同一份上游自己的 `sendMsgInRoom` 已把这一点写明：
+        「直播域的 Origin 和 bd-ticket 证书也必须按 live.douyin.com 生成；
+        沿用主站 Origin 会得到空响应或业务失败」。点赞与发弹幕**同属直播域写接口**，
+        同一约束成立（ADR-004 §4「E 线同族残留」即登记本条）。
+
+        ⇒ 本项目按直播域写接口的**统一形态**落地（与 `sendMsgInRoom` 一致）：
+          ① `Origin` 用直播域；
+          ② 补 `with_bd(api, auth, origin=live_url)` —— 写接口需要 bd-ticket 证书，
+             此前完全缺失（发弹幕有、点赞没有 = 同族不一致）。
+        真实投递验证 pending（写接口触风控红线，不在本批真发）。
+        """
+        # 2026-09-30：写接口房间号必须是**真实 room_id**，不是 URL 短号(web_rid)。
+        room_id = DouyinAPI._live_chat_room_id(auth, room_id)
         api = "/webcast/room/like/"
         headers = HeaderBuilder().build(HeaderType.FORM)
-        refer = f"https://live.douyin.com/{room_id}"
-        headers.set_header("origin", DouyinAPI.douyin_url)
+        refer = f"{DouyinAPI.live_url}/{room_id}"
+        headers.set_header("Origin", DouyinAPI.live_url)
+        headers.with_bd(api, auth, origin=DouyinAPI.live_url)
         headers.with_csrf(auth.cookie_str)
         headers.set_referer(refer)
         params = Params()
@@ -632,6 +692,8 @@ class LiveMixin:
         ⚠️ 写接口（触风控红线）：本项目当前无生产调用方；真实投递验证 pending。
         """
         api = "/webcast/room/chat/"
+        # 2026-09-30：写接口房间号必须是**真实 room_id**（URL 短号 web_rid 会被上游判无效）。
+        real_room_id = DouyinAPI._live_chat_room_id(auth, room_id)
         headers = HeaderBuilder().build(HeaderType.GET)
         refer = kwargs.get('referer') or f"{DouyinAPI.live_url}/{kwargs.get('web_rid', room_id)}"
         headers.set_header("Origin", DouyinAPI.live_url)
@@ -652,7 +714,7 @@ class LiveMixin:
         params.add_param("browser_platform", 'Win32')
         params.add_param("browser_name", get_profile()["browser_name"])
         params.add_param("browser_version", get_profile()["browser_version"])
-        params.add_param("room_id", str(room_id))
+        params.add_param("room_id", str(real_room_id))
         params.add_param("content", content)
         params.add_param("type", str(kwargs.get('type', '0')))
         for key in ('episode_info_str', 'flow_time', 'team_id', 'camera_id',
