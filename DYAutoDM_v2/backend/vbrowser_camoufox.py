@@ -84,6 +84,32 @@ def _proxy_for_camoufox(cfg: Any, account: Optional[str]) -> Optional[dict]:
     return {"server": proxy_url}
 
 
+# ★ 2026-10-01 防 GC 强引用池（**修复「扫码/短信等待期间 context 被回收」**）
+#   实测：`AsyncCamoufox`（PlaywrightContextManager）被挂到 `context.__dict__["_camoufox_ctx_mgr"]`
+#   后**无强引用** ⇒ 等待用户操作（扫码最长 240s、短信最长 300s）期间被 GC 回收
+#   ⇒ 触发其 `__aexit__` ⇒ context 关闭 ⇒ 后续 `context.cookies()` 抛
+#   `'NoneType' object has no attribute 'send'` / `TargetClosedError`。
+#   实测对照：无强引用 45s 断；有强引用 150s 稳定。
+#   这里在**创建点**统一登记，确保所有路径（桥/短信/截图）一致生效。
+_CAMOUFOX_KEEP: dict = {}
+
+
+def _keep_camoufox_alive(context, ctx_mgr) -> None:
+    """登记强引用，防止 ctx_mgr 被 GC 回收（幂等）。"""
+    try:
+        _CAMOUFOX_KEEP[id(context)] = {"ctx_mgr": ctx_mgr, "context": context}
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _release_camoufox(context) -> None:
+    """配对释放强引用（幂等；context 关闭后调用）。"""
+    try:
+        _CAMOUFOX_KEEP.pop(id(context), None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _media_prefs(cfg: Any = None) -> Optional[dict]:
     """Camoufox 媒体 pref（虚拟麦克风/摄像头）。显式配置可关：DY_FAKE_MEDIA_OFF=1。
 
@@ -217,6 +243,7 @@ async def launch_camoufox_async(*, headless: bool = False,
         i_know_what_im_doing=True,
     )
     context = await ctx_mgr.__aenter__()
+    _keep_camoufox_alive(context, ctx_mgr)   # ★ 防 GC：创建即登记强引用
     try:
         context.__dict__["_camoufox_ctx_mgr"] = ctx_mgr
         context.__dict__["_camoufox_is_async"] = True
@@ -334,6 +361,7 @@ def _reap_camoufox_processes(user_data_dir: str | None = None,
 
 
 async def close_camoufox_context(context, user_data_dir: str | None = None) -> None:
+    _release_camoufox(context)   # ★ 配对释放：摘掉强引用（在关闭前，顺序无关紧要）
     """统一关闭 Camoufox context（含其 AsyncCamoufox 上下文管理器）。
 
     ## 为什么必须单独一个函数（2026-09-20 实测事故）

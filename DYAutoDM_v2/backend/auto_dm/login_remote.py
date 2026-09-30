@@ -101,6 +101,10 @@ async def _mouse_click_locator(page, loc) -> bool:
 # 登录页入口（实测可靠，绕开 A/B 差异）
 LOGIN_URL = "https://www.douyin.com/?modal_id=login"
 
+# 说明：防 GC 强引用池已统一实现在 `vbrowser_camoufox`（创建点登记，全路径生效）：
+#   `vbrowser_camoufox._CAMOUFOX_KEEP` / `_keep_camoufox_alive` / `_release_camoufox`。
+#   本模块不再单独维护，避免两处实现漂移。
+
 # ── DOM 锚点（全部实测得来，勿凭猜修改）─────────────────────────────────
 SEL_CODE_INPUT = 'input[name="button-input"]'      # 验证码框（maxLength=6）
 SEL_PHONE_INPUT = 'input[name="normal-input"]'     # 手机号框（maxLength=50）
@@ -1276,6 +1280,8 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
                                 str(caps.get("token"))[:18], time.time() - t0)
                 else:
                     logger.warning("[bridge] 二维码渲染失败，仅返回 url（前端可自行渲染）")
+                # ★ 强引用已在 vbrowser_camoufox.launch_camoufox_async 创建点统一登记
+                #   （见 _keep_camoufox_alive），此处无需重复；等待期间 context 保持有效。
                 return {"ok": True, "png": (out_png if rendered else None),
                         "decoded": bool(caps.get("token")),
                         "qr_url": qr_url, "token": caps.get("token"),
@@ -1568,10 +1574,18 @@ async def do_sms_login(env_path: str, phone: str, code_provider,
             return _fail("send_code", f"获取验证码失败：{send.get('reason')}")
 
         # ③ 取验证码（渠道由调用方决定）
+        #   ★ 2026-10-01 修复死锁：同步 provider（如 `threading.Event.wait(300)`）
+        #     若在事件循环内直调，会**阻塞整个 loop 300s** ⇒ Playwright 传输停摆
+        #     （页面卡死/context 被关），且同一循环上的 `/sms-code` 端点无法被调度
+        #     ⇒ 用户提交的验证码永远送不进来（死锁）。故同步 provider 一律放 worker 线程。
+        #     async provider 仍按原语义直接 await（行为不变）。
         import inspect
-        code = code_provider()
-        if inspect.isawaitable(code):
-            code = await code
+        if inspect.iscoroutinefunction(code_provider):
+            code = await code_provider()
+        else:
+            code = await asyncio.to_thread(code_provider)
+            if inspect.isawaitable(code):
+                code = await code
         code = (code or "").strip()
         if not code:
             return _fail("get_code", "调用方未提供验证码")
@@ -1744,8 +1758,32 @@ def reap_api_qr_login(handle: Optional[dict]) -> None:
         pass
 
 
+async def bridge_qr_login_and_wait(env_path: str, out_png: str,
+                                   headless: bool = True,
+                                   qr_timeout_s: int = 90,
+                                   wait_timeout_s: int = 240) -> dict:
+    """**出码 + 等待扫码确认，全程在同一个事件循环内**（根治跨循环断连）。
+
+    2026-10-01 根因实测：
+      · 旧写法是两次独立 `asyncio.run`（出码一个、等待一个）⇒ Camoufox context
+        的传输随前一个循环销毁而关闭 ⇒ `poll_bridge_confirmed` 第一次读 cookie 就炸
+        （`'NoneType' object has no attribute 'send'`），表现为「用户扫了码但程序没在等」。
+      · 同循环但无强引用 ⇒ 稳定 40s 后 `TargetClosedError`（ctx_mgr 被 GC 回收）。
+      · **同循环 + 模块级强引用** ⇒ 实测 150s 稳定。
+    本函数即把两者合为一体，是**唯一的桥扫码入口**。
+
+    返回：{"prep": <bridge_qr_login 结果>, "waited": <poll_bridge_confirmed 结果 或 None>}
+    """
+    prep = await bridge_qr_login(env_path=env_path, out_png=out_png,
+                                 headless=headless, timeout_s=qr_timeout_s)
+    if not prep.get("ok"):
+        return {"prep": prep, "waited": None}
+    waited = await poll_bridge_confirmed(prep.get("handle"), timeout_s=wait_timeout_s)
+    return {"prep": prep, "waited": waited}
+
+
 async def close_handle(handle: Optional[dict]) -> None:
-    """收尾：关闭 Camoufox 浏览器（幂等）。
+    """收尾：关闭 Camoufox 浏览器（幂等），**并释放 _CAMOUFOX_KEEP 中的强引用**。
 
     ⚠️ 2026-09-26 修正（ADR-017 M4 实测踩坑 —— **原先的实现是错的**）
     ------------------------------------------------------------------

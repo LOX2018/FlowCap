@@ -190,6 +190,17 @@ def _build_last_run(name: str) -> dict:
 #  浏览器操作全部委托 `login_remote`；凭证落盘全部委托 `auth_helper.save_cookie_to_env`
 #  （**不自造**写盘逻辑 —— ADR-017 §8.3）。
 
+
+async def _wait_bridge_and_poll(_lr, handle, timeout_s: int = 240):
+    """在同**一个**事件循环内等待扫码确认（Camoufox context 才能保持有效）。
+
+    2026-10-01：原先 `asyncio.run(poll_bridge_confirmed(...))` 与出码的
+    `asyncio.run(bridge_qr_login(...))` 是**两个独立事件循环** ⇒ context 跨循环失效。
+    这里只做「保持在本循环内调用既有 poll_bridge_confirmed」，**不改任何判据**。
+    """
+    return await _lr.poll_bridge_confirmed(handle, timeout_s=timeout_s)
+
+
 def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
     """扫码登录：**默认走 API 纯 HTTP**，失败回落接口桥（无头 Camoufox）。
 
@@ -270,17 +281,22 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
         png = os.path.join(out_dir, "login_qr.png")
 
         # ②·a 接口桥（无头；二维码来自页面自己发的 get_qrcode 响应）
+        #   ★ 出码与等待**必须同一次 asyncio.run**（single event loop），否则
+        #     Camoufox context 跨循环失效 ⇒ 用户扫了也没有回执。见 login_remote 该函数注释。
         prep = None
+        waited = None
         try:
-            _bridge = asyncio.run(_lr.bridge_qr_login(
-                env_path=env_path, out_png=png, headless=True, timeout_s=90))
-            if _bridge.get("ok"):
-                prep = _bridge
-                st["qrUrl"] = _bridge.get("qr_url") or ""
-                logger.info(f"[scan] 账号 {name} 接口桥出码成功（via={_bridge.get('via')}）")
+            _bw = asyncio.run(_lr.bridge_qr_login_and_wait(
+                env_path=env_path, out_png=png, headless=True,
+                qr_timeout_s=90, wait_timeout_s=240))
+            prep = _bw.get("prep")
+            waited = _bw.get("waited")
+            if prep and prep.get("ok"):
+                st["qrUrl"] = prep.get("qr_url") or ""
+                logger.info(f"[scan] 账号 {name} 接口桥出码成功（via={prep.get('via')}）")
             else:
                 logger.warning(f"[ACC-044] [scan] 账号 {name} 接口桥未出码，回落截图: "
-                               f"{_bridge.get('reason')}")
+                               f"{(prep or {}).get('reason')}")
         except Exception as _e_bridge:  # noqa: BLE001
             logger.warning(f"[ACC-045] [scan] 账号 {name} 接口桥异常，回落截图: {_e_bridge}")
 
@@ -299,7 +315,11 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
 
         # ③ 等扫码（桥优先用被动确认；否则走 cookie 轮询）
         if prep.get("via") in ("bridge", "bridge-url-only"):
-            waited = asyncio.run(_lr.poll_bridge_confirmed(handle, timeout_s=240))
+            # ★ 已在 ②·a 的同一次 asyncio.run 内完成等待（see bridge_qr_login_and_wait）。
+            if waited is None:
+                # 仅当桥出码成功但组合协程未能返回 waited 时才补一次（异常路径兜底）
+                logger.warning(f"[ACC-026x] [scan] 账号 {name} 桥等待结果缺失，补一次同循环等待")
+                waited = asyncio.run(_wait_bridge_and_poll(_lr, handle, timeout_s=240))
         else:
             waited = asyncio.run(_lr.poll_qr_scanned(handle, timeout_s=240, interval_s=3))
         if not waited.get("ok"):
