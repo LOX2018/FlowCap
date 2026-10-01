@@ -1180,10 +1180,21 @@ async def check_account(name: str) -> dict:
         #   verify「能不能用」= 单一 wp/dm 结论；矩阵「哪些用途能用」= 分面判据。
         # 实测动机：同一份 cookie 在不同端点裁决独立（有账号 wp=fail 却仍能取直播数据），
         # 单值会驱动**无效重扫**。矩阵走各探针 TTL 缓存（force=False），不加重轮询负担。
+        #
+        # 2026-10-01 修：`live_read` 面必须**显式**传生效直播间 —— 此前不传，
+        # 而 `settings.live_url` 在进程内为空（用户配的是 kv `config.live_url`，
+        # 两者不同步）⇒ 该面恒走「零网络跳过」判 unset，UI 恒显「未配置」，
+        # 把所有面板都通的账号误报成缺配，进而**驱动用户无效重扫**（触碰 passport
+        # = 最强风控信号）—— 恰是本矩阵要根治的失效模式。
+        try:
+            _live_ref = acct_core.live_room_ref()
+        except Exception:  # noqa: BLE001
+            _live_ref = ""
         caps = None
         try:
             caps = await loop.run_in_executor(
-                None, lambda: acct_core.capability_matrix(name, force=False))
+                None, lambda: acct_core.capability_matrix(
+                    name, force=False, live_id=_live_ref))
         except Exception as _e:  # noqa: BLE001
             logger.warning(f"[ACC-004] [check] 能力矩阵计算失败（不影响校验结论）: {_e}")
         logger.success(

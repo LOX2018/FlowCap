@@ -78,6 +78,105 @@ class CapabilityMatrixGate(unittest.TestCase):
         self.assertIs(p["im_write"]["usable"], False)
 
 
+class LiveRoomRefGate(unittest.TestCase):
+    """M6-M8：**生效直播间**唯一真源 + 调用方契约 + unset 语义（2026-10-01 修）。
+
+    ## 守的缺陷（实测，非假设）
+
+    用户在「目标直播间」配好了直播间（持久在 `kv config.live_url`，
+    形态为**搜索页 URL**：`…?live_web_rid=697879973787`），但 `settings.live_url`
+    在进程内**为空**（两者不同步），且 `api/accounts.py` 的 check 端点
+    **不传 live_id** ⇒ `live_read` 面恒走「零网络跳过」判 `unset` ⇒ UI 恒显
+    「未配置」⇒ 把所有面板都通的账号误报成缺配，**驱动用户无效重扫**
+    （触碰 passport = 最强风控信号）—— 恰是本矩阵的设计初衷要根治的失效模式。
+    """
+
+    def test_m6_live_room_ref_prefers_kv_and_parses_search_url(self):
+        """M6：真源优先 **kv 持久配置**；形态解析在「无 kv 回退」下单独验。
+
+        用**运行中的真实配置**（只读），不 mock —— 因为本缺陷正是「读错存储层」。
+        """
+        import database as _db
+        import config as _cfg
+        _orig_kv, _orig_url = _db.get_kv_json, _cfg.settings.live_url
+        _orig_lid = getattr(_cfg.settings, "live_id", "")
+
+        def _kv_empty(key, default=None):
+            return {} if key == "config" else _orig_kv(key, default)
+
+        # ── A：无任何持久配置时，函数**只**看显式入参 ⇒ 可纯验形态解析 ──
+        try:
+            _db.get_kv_json = _kv_empty
+            _cfg.settings.live_url = ""
+            if hasattr(_cfg.settings, "live_id"):
+                _cfg.settings.live_id = ""
+            self.assertEqual(
+                acc.live_room_ref("https://www.douyin.com/jingxuan/search/x?live_web_rid=123456"),
+                "123456", "搜索页形态未解析")
+            self.assertEqual(acc.live_room_ref("https://live.douyin.com/7890"), "7890",
+                             "直播间页形态未解析")
+            self.assertEqual(acc.live_room_ref("697879973787"), "697879973787", "裸房间号未透传")
+            self.assertEqual(acc.live_room_ref(""), "", "无配置 + 空入参 ⇒ 空")
+            self.assertEqual(acc.live_room_ref("http://example.com/nope"), "",
+                             "无配置 + 无房间号的 URL ⇒ 空（不得瞎猜）")
+        finally:
+            _db.get_kv_json = _orig_kv
+            _cfg.settings.live_url = _orig_url
+            if hasattr(_cfg.settings, "live_id"):
+                _cfg.settings.live_id = _orig_lid
+
+        # ── B：恢复后，真源必须产出**纯数字房间号**（或真的没配时为空）──
+        ref = acc.live_room_ref()
+        self.assertRegex(ref, r"^(\d*)$", "房间号必须是纯数字（或空）")
+        # 显式入参优先于 kv（kv 有值时也不该被覆盖）
+        self.assertEqual(acc.live_room_ref("https://live.douyin.com/999"), "999",
+                         "显式入参应优先")
+
+    def test_m7_live_read_prefers_kv_over_settings(self):
+        """M7（**负控**）：kv 与 settings 都为空 ⇒ **必须**判 `unset`（防「假 ok」）。
+
+        反向也要防：这个修复**不得**把「真没配」变成「假可用」。
+        """
+        import database as _db
+        import config as _cfg
+        _orig_kv, _orig_url = _db.get_kv_json, _cfg.settings.live_url
+        _orig_lid = getattr(_cfg.settings, "live_id", "")
+        try:
+            def _kv(key, default=None):        # 只清 config 键，其余照常
+                return {} if key == "config" else _orig_kv(key, default)
+            _db.get_kv_json = _kv
+            _cfg.settings.live_url = ""
+            if hasattr(_cfg.settings, "live_id"):
+                _cfg.settings.live_id = ""
+
+            self.assertEqual(acc.live_room_ref(), "", "无配置时不得解析出房间号")
+            m = acc.capability_matrix("尚进工伤小助理", force=False, live_id="")
+            lr = [c for c in m["caps"] if c["key"] == "live_read"][0]
+            self.assertEqual(lr["state"], "unset", "无配置时必须判 unset（不得假 ok）")
+            p = m["purposes"]["live_read"]
+            self.assertEqual(p["state_label"], "未配置直播间",
+                             "label 须具体，不能只写模糊的「未配置」")
+        finally:
+            _db.get_kv_json = _orig_kv
+            _cfg.settings.live_url = _orig_url
+            if hasattr(_cfg.settings, "live_id"):
+                _cfg.settings.live_id = _orig_lid
+
+    def test_m8_api_check_passes_live_room_ref(self):
+        """M8：check 端点**必须显式**传生效直播间（防「调用方漏传」复发）。"""
+        src = open(os.path.join(_BE, "api", "accounts.py"), encoding="utf-8").read()
+        seg = src[src.find("capability_matrix"):]
+        self.assertIn("live_id=_live_ref", seg,
+                      "check 端点未传 live_id ⇒ live_read 面会恒判 unset（缺陷复发）")
+        self.assertIn("live_room_ref()", src, "未取生效直播间真源")
+
+    def test_m8b_unset_says_not_a_credential_problem(self):
+        """M8b：unset 的 hint/actions **必须**写明「不是凭证问题」，防驱动无效重扫。"""
+        src = open(os.path.join(_BE, "auto_dm", "accounts.py"), encoding="utf-8").read()
+        self.assertIn("不是凭证问题", src, "unset 未明确「不是凭证问题」")
+        self.assertIn("勿因此重扫", src, "actions 未劝阻因 unset 而重扫")
+
+
 class CapabilityMatrixSourceGate(unittest.TestCase):
     """M4-M5：源码级纪律（复用既有探针 / 不新造判据 / 不额外发请求面）。"""
 

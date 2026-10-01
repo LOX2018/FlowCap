@@ -21,6 +21,7 @@ import json
 import time
 import asyncio
 import platform
+import re
 import subprocess
 import threading
 from loguru import logger
@@ -1558,6 +1559,57 @@ def account_status(name=None, force=False, timeout=10):
     }
 
 
+def live_room_ref(live_id: str = "") -> str:
+    """**生效直播间**的唯一真源（2026-10-01 根治）。
+
+    判定顺序（**kv 持久配置优先**，settings 只是运行时缓存/回退）：
+
+      1. 显式传入的 ``live_id``（调用方明确指定 → 最高优先）
+      2. ``kv config.live_id`` / ``kv config.live_url`` —— **用户实际配置的持久值**
+      3. ``settings.live_id`` / ``settings.live_url`` —— 运行时缓存
+
+    ## 为什么必须有这个函数（实测缺陷，非设计偏好）
+
+    实测 2026-10-01：用户在「目标直播间」配好了直播间
+    （`kv config.live_url = https://www.douyin.com/jingxuan/search/…?live_web_rid=697879973787`），
+    但 `settings.live_url` **在进程内为空**（两者不同步），而调用方
+    （`api/accounts.py` 的 check 端点）**不传 live_id** ⇒ 直播数据读判据恒走
+    「未配置直播间，**零网络跳过**」⇒ 能力矩阵恒报 `unset（未配置）`。
+
+    **后果（本函数要消灭的）**：所有面板都通过，界面却报「未配置」⇒
+    把用户驱动去**重扫凭证**，而重扫触碰 passport 验证（**最强风控信号**）——
+    恰好违背能力矩阵「根治无效重扫」的设计初衷。
+
+    另注：用户实际配置的直播间常是**搜索页 URL**（含 `live_web_rid=<房间号>`），
+    故需从中抽取房间号；`resolve_live_url` 只认 `live.douyin.com/<数字>`，会漏。
+    """
+    cands = []
+    try:
+        from database import get_kv_json
+        _c = get_kv_json("config", {}) or {}
+        cands += [_c.get("live_id"), _c.get("live_url")]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from config import settings as _s
+        cands += [getattr(_s, "live_id", ""), getattr(_s, "live_url", "")]
+    except Exception:  # noqa: BLE001
+        pass
+    for _cand in [live_id] + cands:
+        _s2 = str(_cand or "").strip()
+        if not _s2:
+            continue
+        _m = re.search(r"live_web_rid=(\d+)", _s2)        # 搜索页形态（用户实际配的）
+        if _m:
+            return _m.group(1)
+        _m = re.search(r"live\.douyin\.com/(\d+)", _s2)  # 直播间页形态
+        if _m:
+            return _m.group(1)
+        if re.fullmatch(r"\d+", _s2):                      # 裸房间号
+            return _s2
+    return ""
+
+
 def derive_purposes(verdicts: dict) -> dict:
     """由**面状态**推导**按用途**可用性（纯函数，可确定性测试）。
 
@@ -1573,12 +1625,15 @@ def derive_purposes(verdicts: dict) -> dict:
     铁律：`unknown` **绝不**折成 `fail`（三态纪律）—— 这是「凭证仍可有效利用」的
     判定基础：只要没被明确拒绝，就不要驱动用户去重扫。
     """
-    def _p(label: str, need: list) -> dict:
+    def _p(label: str, need: list, label_unset: str = "") -> dict:
         sts = [verdicts.get(k, "unknown") for k in need]
         if "fail" in sts:
             return {"label": label, "usable": False, "state": "fail", "state_label": "不可用"}
         if "unset" in sts:
-            return {"label": label, "usable": None, "state": "unset", "state_label": "未配置"}
+            # `unset` 的含义是「缺输入、无法取证」，**不是**「凭证有问题」。
+            # 故允许调用方给更具体的说法，避免 UI 只剩模糊的「未配置」而误导用户去重扫。
+            return {"label": label, "usable": None, "state": "unset",
+                    "state_label": label_unset or "未配置"}
         if "unknown" in sts:
             return {"label": label, "usable": None, "state": "unknown",
                     "state_label": "待定（可实测）"}
@@ -1587,7 +1642,8 @@ def derive_purposes(verdicts: dict) -> dict:
     return {
         "danmaku_decrypt": _p("弹幕昵称解密", ["session", "identity"]),
         "im_write": _p("私信发送", ["im_write"]),
-        "live_read": _p("直播数据读（弹幕/礼物/贡献榜）", ["live_read"]),
+        "live_read": _p("直播数据读（弹幕/礼物/贡献榜）", ["live_read"],
+                        label_unset="未配置直播间"),
     }
 
 
@@ -1701,16 +1757,11 @@ def capability_matrix(name=None, auth=None, force=False, live_id: str = ""):
 
     # ⑤ 直播数据读（弹幕/礼物流/贡献榜）—— 端到端：主站解析房间 → 直播域取榜
     try:
-        _rid = str(live_id or "")
-        if not _rid:
-            try:
-                from config import settings as _s
-                _rid = str(getattr(_s, "live_url", "") or "")
-            except Exception:  # noqa: BLE001
-                _rid = ""
+        _rid = live_room_ref(live_id)
         if not _rid:
             _add("live_read", "直播数据读", "unset",
-                 "未配置直播间，无法取证（零网络跳过）", "配置直播间后自动覆盖此面")
+                 "未配置直播间，无法取证（零网络跳过）",
+                 "**不是凭证问题**：在「目标直播间」或「直播配置」里选一个直播间会自动覆盖此面")
         else:
             from dy_apis.douyin_api import DouyinAPI
             info = DouyinAPI.get_live_info(auth, _rid) if auth else None
@@ -1749,6 +1800,9 @@ def capability_matrix(name=None, auth=None, force=False, live_id: str = ""):
     if verdicts.get("im_write") == "fail" and verdicts.get("session") == "ok":
         actions.append("仅写能力被拒（账号级只读态）→ **不要盲目重扫**，"
                        "先用另一账号 A/B 判型")
+    if verdicts.get("live_read") == "unset":
+        actions.append("直播数据读**未取证**（未配直播间）→ 在「目标直播间」或「直播配置」"
+                       "里选一个直播间即可覆盖此面；**这不是凭证问题，勿因此重扫**")
     if verdicts.get("live_read") in ("fail", "unknown") and verdicts.get("session") != "fail":
         actions.append("直播数据读失败但会话正常 → **优先确认直播间是否开播**，再怀疑凭证")
     if not actions:

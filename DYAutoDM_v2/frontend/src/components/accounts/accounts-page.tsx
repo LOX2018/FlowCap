@@ -907,8 +907,16 @@ export default function AccountsPage(props: PageProps) {
                               </span>
                             </div>
                             <div className="flex flex-col gap-1">
-                              {Object.entries<CapabilityPurpose>(a.capabilities.purposes).map(([k, p]) => (
-                                <div key={k} className="flex items-center justify-between gap-2">
+                              {Object.entries<CapabilityPurpose>(a.capabilities.purposes).map(([k, p]) => {
+                                // `unset` = 「缺输入、无法取证」，**不是**「凭证有问题」。
+                                // 把该面的具体原因显示出来，避免用户看到「未配置」就去重扫凭证。
+                                const faceDetail =
+                                  p.state === "unset"
+                                    ? a.capabilities?.caps?.find((c) => c.key === k)?.detail
+                                    : undefined;
+                                return (
+                                <div key={k} className="flex flex-col gap-0.5">
+                                  <div className="flex items-center justify-between gap-2">
                                   <span className="text-[0.75rem] text-[var(--color-text-secondary)]">
                                     {p.label}
                                   </span>
@@ -923,8 +931,15 @@ export default function AccountsPage(props: PageProps) {
                                   >
                                     {p.state_label}
                                   </Tone>
+                                  </div>
+                                  {faceDetail ? (
+                                    <div className="text-[0.68rem] text-[var(--color-text-muted)]">
+                                      {faceDetail}
+                                    </div>
+                                  ) : null}
                                 </div>
-                              ))}
+                                );
+                              })}
                             </div>
                             {a.capabilities.actions?.length ? (
                               <div className="mt-2 border-t border-[var(--color-border)] pt-1.5">
