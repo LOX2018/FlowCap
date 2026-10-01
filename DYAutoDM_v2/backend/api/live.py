@@ -514,12 +514,8 @@ async def resolve_live(body: ResolveRequest):
     _real_room_id = ""
     try:
         from dy_apis.douyin_api import DouyinAPI
-        _auth = None
-        if _acct:
-            try:
-                _auth = _auth_for(_acct)
-            except Exception:
-                _auth = None
+        from services.auth_policy import get_auth_for
+        _auth = get_auth_for("/api/live/resolve", _acct or "")
         if _auth is not None:
             _info = DouyinAPI.get_live_info(_auth, live_id)
             if isinstance(_info, dict):

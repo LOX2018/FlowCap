@@ -478,14 +478,22 @@ async def get_feed(req: FeedReq) -> dict[str, Any]:
          带 `cell_room` 但无 `video`）⇒ 原样下发即「无封面 / 0 赞」占位。
          现按 payload 事实（play_addr / bit_rate / images）过滤，并**如实上报**
          `filtered` 计数（铁律「禁假成功」：过滤不静默，前端可提示）。
+
+    ★ 2026-10-01 统一凭证决策：推荐流可匿名，通过 `auth_policy` 统一调度。
     """
-    auth = _auth_for(req.account)
+    from services.auth_policy import get_auth_for
+    auth = get_auth_for("/api/platform/feed", req.account)
     api = _api()
     ri = max(1, min(int(req.refresh_index), 50))
     try:
-        # 基座真实签名：get_feed(auth, count='20', refresh_index='2')
-        raw = await asyncio.to_thread(api.get_feed, auth,
-                                      str(max(1, min(req.count, 50))), str(ri))
+        if auth is None:
+            # 匿名请求
+            raw = await asyncio.to_thread(api.get_feed_anon,
+                                          str(max(1, min(req.count, 50))), str(ri))
+        else:
+            # 带凭证请求
+            raw = await asyncio.to_thread(api.get_feed, auth,
+                                          str(max(1, min(req.count, 50))), str(ri))
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[PLT-001] " + f"推荐流获取失败: {type(e).__name__}")
         raise HTTPException(502, f"推荐流获取失败: {type(e).__name__}")
@@ -720,32 +728,51 @@ def _im_user_info_by_sec(auth, sec_uids: list[str]) -> dict[str, Any]:
 
 @router.post("/search")
 async def search(req: SearchReq) -> dict[str, Any]:
-    """搜索作品 / 用户。对应基座 `search_some_general_work` / `search_some_user`。"""
-    auth = _auth_for(req.account)
+    """搜索作品 / 用户。对应基座 `search_some_general_work` / `search_some_user`。
+
+    ★ 2026-10-01 统一凭证决策：搜索可匿名，通过 `auth_policy` 统一调度。
+    """
+    from services.auth_policy import get_auth_for
+    auth = get_auth_for("/api/platform/search", req.account)
     api = _api()
     num = max(1, min(req.num, 50))
     try:
         if req.kind == "user":
-            users = await asyncio.to_thread(api.search_some_user, auth, req.query, num)
+            if auth is None:
+                users = await asyncio.to_thread(api.search_user_anon, req.query, num)
+            else:
+                users = await asyncio.to_thread(api.search_some_user, auth, req.query, num)
             return {"ok": True, "kind": "user",
                     "items": [_pick_user(u) for u in (users or [])]}
         # ★ 2026-09-15：视频搜索改用**源项目方案** `/general/search/stream/`（实测 10 条、
         #   真实作者可读）；失败则回落到原 `search_some_general_work`（老接口），保证可用。
         works = None
         stream = None  # ★ M-20：供传输层事实读取（except 分支下保持 None）
-        try:
-            stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
-            works = (stream or {}).get("aweme_list") or []
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
-            works = None
+        if auth is None:
+            # 匿名搜索
+            try:
+                stream = await asyncio.to_thread(api.search_general_work_anon, req.query, "0", "0", "0")
+                works = (stream or {}).get("aweme_list") or []
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[PLT-009] " + f"匿名搜索失败: {type(e).__name__}")
+                works = None
+        else:
+            try:
+                stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
+                works = (stream or {}).get("aweme_list") or []
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
+                works = None
         # ★ 2026-09-27 修复（M-20 收口 · 「禁止假成功」）：此前 `works` 为空时
         #   一律回 200 + `items: []` —— 前端**无从区分**「这个关键词真没作品」与
         #   「被 Argus 风控拦截」，只能显示空列表**假装没结果**（项目铁律禁止）。
         #   现按同族已修范式把传输层事实如实上抛：`blocked=True` + 原因文案。
         transport = api.take_search_transport(stream)
         if not works:
-            fb = await asyncio.to_thread(api.search_some_general_work, auth, req.query, num, "0", "0")
+            if auth is None:
+                fb = await asyncio.to_thread(api.search_general_work_anon, req.query, "0", "0", "0")
+            else:
+                fb = await asyncio.to_thread(api.search_some_general_work, auth, req.query, num, "0", "0")
             works = fb or []
             # 回落接口也带传输层事实（取更可信的那一个：先流的、再回落的）
             transport = transport or api.take_search_transport(fb)

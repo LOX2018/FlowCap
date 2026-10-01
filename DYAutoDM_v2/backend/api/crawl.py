@@ -345,26 +345,34 @@ async def crawl_search(body: CrawlSearchRequest):
     num = int(body.num or pol.get("num") or 20)
     num = max(1, min(num, 60))
 
-    auth = _load_auth(body.account)
+    from services.auth_policy import get_auth_for
+    auth = get_auth_for("/api/crawl/search", body.account)
 
     from dy_apis.douyin_api import DouyinAPI
 
     try:
         if body.kind == "video":
-            raw = await asyncio.to_thread(
-                DouyinAPI.search_some_general_work, auth, q, num,
-                sort_type, publish_time, filter_duration,
-            )
+            if auth is None:
+                raw = await asyncio.to_thread(
+                    DouyinAPI.search_general_work_anon, q,
+                    sort_type, publish_time, "0", filter_duration,
+                )
+            else:
+                raw = await asyncio.to_thread(
+                    DouyinAPI.search_some_general_work, auth, q, num,
+                    sort_type, publish_time, filter_duration,
+                )
             items = [_map_video(w) for w in (raw or []) if w.get("aweme_info")]
         else:
-            # 经 features 基座封装层调用（返回 {"ok":bool,"data":...}）。
-            # ok=False 必须按原有 502 语义上抛，绝不把「采集失败」降级成「没有结果」。
-            import features
-            res = await asyncio.to_thread(features.search_user, auth, q, num)
-            if not res.get("ok"):
-                raise HTTPException(502, f"搜索失败: {res.get('error')}")
-            raw = res.get("data") or []
-            items = [_map_user(u) for u in raw]
+            if auth is None:
+                raw = await asyncio.to_thread(
+                    DouyinAPI.search_user_anon, q, num
+                )
+            else:
+                raw = await asyncio.to_thread(
+                    DouyinAPI.search_some_user, auth, q, num
+                )
+            items = [_map_user(u) for u in (raw or [])]
     except HTTPException:
         raise
     except Exception as e:

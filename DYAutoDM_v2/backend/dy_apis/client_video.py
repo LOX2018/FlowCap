@@ -288,3 +288,47 @@ class VideoMixin:
                             verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
+    @staticmethod
+    def get_feed_anon(count='20', refresh_index='2', **kwargs):
+        """**匿名**获取首页推荐视频（零凭证）。
+
+        ## 为什么独立于 `get_feed`
+        本方法**不接收 auth**：走 `www.douyin.com` 的 `/aweme/v1/web/tab/feed/`，
+        实测裸请求（无 cookie / 无 a_bogus / 无 secsdk 签名）即 `status_code:0`
+        返回推荐流 ⇒ 可在**未登录会话**下获取，不消耗任何账号风控面。
+
+        ## 🔴 设备指纹（每次请求都不同）
+        使用 `AnonFingerprint.generate()` 生成**随机设备指纹**：
+        - 每次请求生成不同的 ttwid / s_v_web_id / webid / msToken
+        - UA 在桌面端（Windows/macOS）和移动端（iOS/Android）之间随机选择
+        - **设备一致性**：UA、屏幕尺寸、浏览器、引擎、操作系统全部来自同一个模板
+        - **禁止"吕布骑狗"**：不会出现 iPhone UA + Windows 分辨率的矛盾
+
+        ## 契约（实测，调用方必须知情）
+        - 返回标准 `aweme_list` 结构（与带凭证时相同）
+        - 条数不固定（实测 2~6 条，与 count 无关）
+        - 不携带任何账号 cookie，不触账号级限流
+
+        :param count: 数量（仅作上限，实际返回条数由服务端决定）
+        :param refresh_index: 刷新索引（换一批旋钮）
+        :return: JSON（含 `aweme_list`）
+        """
+        from services.anon_fingerprint import AnonFingerprint
+        fp = AnonFingerprint.generate()
+
+        api = "/aweme/v1/web/tab/feed/"
+        headers = fp.to_headers(referer="https://www.douyin.com/")
+        params = Params()
+        # 使用指纹生成器提供的设备参数（保证设备一致性）
+        anon_params = fp.to_params()
+        for k, v in anon_params.items():
+            params.add_param(k, v)
+        params.add_param("count", str(count))
+        params.add_param("refresh_index", str(refresh_index))
+        # 匿名：不调用 with_web_id / with_a_bogus / signed_url
+        url = f'{DouyinAPI.domain_for(api)}{api}?{params.toString()}'
+        resp = requests.get(url,
+                            headers=headers,
+                            verify=tls_verify(), timeout=15)
+        return safe_json(resp)
+

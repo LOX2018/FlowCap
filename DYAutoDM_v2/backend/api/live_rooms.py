@@ -651,18 +651,22 @@ async def discover_live(req: DiscoverReq) -> dict:
         # 空关键词属于「输入问题」，不是「搜索结果为空」——两者必须可区分
         raise HTTPException(400, "请输入搜索关键词")
 
-    auth = _auth_for(req.account)
+    from services.auth_policy import get_auth_for
+    auth = get_auth_for("/api/live/rooms/discover", req.account)
     num = max(1, min(int(req.num or 20), 50))
 
     try:
         from dy_apis.douyin_api import DouyinAPI
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(503, f"平台接口层不可用: {type(e).__name__}") from e
+        raise HTTPException(502, f"平台接口层不可用: {type(e).__name__}") from e
 
     # DouyinAPI 是同步 requests 实现 ⇒ 一律 asyncio.to_thread，避免阻塞事件循环
     # （与 api/crawl.py、api/platform.py 一致）。
     try:
-        raw = await asyncio.to_thread(DouyinAPI.search_some_live, auth, query, num)
+        if auth is None:
+            raw = await asyncio.to_thread(DouyinAPI.search_live_anon, query, num)
+        else:
+            raw = await asyncio.to_thread(DouyinAPI.search_some_live, auth, query, num)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[LIVE-ROOMS-002] 直播搜索异常: {type(e).__name__}: {e}")
         raise HTTPException(502, f"搜索失败: {type(e).__name__}")

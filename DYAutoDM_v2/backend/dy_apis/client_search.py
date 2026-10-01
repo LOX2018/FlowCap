@@ -462,3 +462,133 @@ class SearchMixin:
         """取回 ``search_some_live`` 结果上的传输层事实（无则 None）。"""
         return getattr(live_list, "last_transport", None) if live_list is not None else None
 
+    @staticmethod
+    def search_general_work_anon(query: str, sort_type: str = '0', publish_time: str = '0', offset: str = '0',
+                                 filter_duration="", search_range="", content_type="", **kwargs):
+        """**匿名**搜索综合频道作品（零凭证）。
+
+        ## 为什么独立于 `search_general_work`
+        本方法**不接收 auth**：走 `www.douyin.com` 的 `/aweme/v1/web/general/search/single/`，
+        实测裸请求（无 cookie / 无 a_bogus / 无 secsdk 签名）即 `status_code:0`
+        返回搜索结果 ⇒ 可在**未登录会话**下搜索，不消耗任何账号风控面。
+
+        ## 🔴 设备指纹（每次请求都不同）
+        使用 `AnonFingerprint.generate()` 生成**随机设备指纹**：
+        - 每次请求生成不同的 ttwid / s_v_web_id / webid / msToken
+        - UA 在桌面端（Windows/macOS）和移动端（iOS/Android）之间随机选择
+        - **设备一致性**：UA、屏幕尺寸、浏览器、引擎、操作系统全部来自同一个模板
+        - **禁止"吕布骑狗"**：不会出现 iPhone UA + Windows 分辨率的矛盾
+
+        ## 契约（实测，调用方必须知情）
+        - 返回标准 `aweme_list` 结构（与带凭证时相同）
+        - 不携带任何账号 cookie，不触账号级限流
+
+        :param query: 搜索关键字
+        :param sort_type: 排序方式 0 综合排序, 1 最多点赞, 2 最新发布
+        :param publish_time: 发布时间 0 不限, 1 一天内, 7 一周内, 180 半年内
+        :param offset: 搜索结果偏移量
+        :param filter_duration: 视频时长
+        :param search_range: 搜索范围
+        :param content_type: 内容形式
+        :return: JSON（含 `aweme_list`）
+        """
+        from services.anon_fingerprint import AnonFingerprint
+        fp = AnonFingerprint.generate()
+
+        api = f"/aweme/v1/web/general/search/single/"
+        headers = fp.to_headers(referer=f'https://www.douyin.com/search/{urllib.parse.quote(query)}?type=general')
+        params = Params()
+        # 使用指纹生成器提供的设备参数（保证设备一致性）
+        anon_params = fp.to_params()
+        for k, v in anon_params.items():
+            params.add_param(k, v)
+        params.add_param("search_channel", "aweme_general")
+        params.add_param("enable_history", "1")
+        params.add_param("filter_selected", r'{"sort_type":"%s","publish_time":"%s","filter_duration":"%s",'
+                                            r'"search_range":"%s","content_type":"%s"}' % (sort_type, publish_time,
+                                                                                           filter_duration,
+                                                                                           search_range, content_type))
+        params.add_param("keyword", query)
+        params.add_param("search_source", "tab_search")
+        params.add_param("query_correct_type", "1")
+        params.add_param("is_filter_search", "1")
+        params.add_param("from_group_id", "")
+        params.add_param("offset", offset)
+        params.add_param("count", '25')
+        # 匿名：不调用 with_web_id / with_a_bogus / signed_url
+        url = f'{DouyinAPI.domain_for(api)}{api}?{params.toString()}'
+        resp = requests.get(url,
+                            headers=headers,
+                            verify=tls_verify(), timeout=15)
+        return safe_json(resp)
+
+    @staticmethod
+    def search_user_anon(query: str, num: int = 20, **kwargs):
+        """**匿名**搜索用户（零凭证）。
+
+        ## 为什么独立于 `search_some_user`
+        本方法**不接收 auth**：走 `www.douyin.com` 的 `/aweme/v1/web/search/user/`，
+        实测裸请求（无 cookie / 无 a_bogus / 无 secsdk 签名）即 `status_code:0`
+        返回搜索结果 ⇒ 可在**未登录会话**下搜索，不消耗任何账号风控面。
+
+        :param query: 搜索关键字
+        :param num: 返回条数
+        :return: JSON（含 `user_list`）
+        """
+        api = "/aweme/v1/web/search/user/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        refer = f'https://www.douyin.com/search/{urllib.parse.quote(query)}?type=user'
+        headers.set_referer(refer)
+        params = Params()
+        params.add_param("device_platform", "webapp")
+        params.add_param("aid", "6383")
+        params.add_param("channel", "channel_pc_web")
+        params.add_param("search_channel", "aweme_user")
+        params.add_param("keyword", query)
+        params.add_param("search_source", "tab_search")
+        params.add_param("query_correct_type", "1")
+        params.add_param("is_filter_search", "1")
+        params.add_param("offset", "0")
+        params.add_param("count", str(num))
+        # 匿名：不调用 with_web_id / with_a_bogus / signed_url
+        url = f'{DouyinAPI.domain_for(api)}{api}?{params.toString()}'
+        resp = requests.get(url,
+                            headers=headers.get(),
+                            verify=tls_verify(), timeout=15)
+        return safe_json(resp)
+
+    @staticmethod
+    def search_live_anon(query: str, num: int = 20, **kwargs):
+        """**匿名**搜索直播间（零凭证）。
+
+        ## 为什么独立于 `search_some_live`
+        本方法**不接收 auth**：走 `www.douyin.com` 的 `/aweme/v1/web/search/live/`，
+        实测裸请求（无 cookie / 无 a_bogus / 无 secsdk 签名）即 `status_code:0`
+        返回搜索结果 ⇒ 可在**未登录会话**下搜索，不消耗任何账号风控面。
+
+        :param query: 搜索关键字
+        :param num: 返回条数
+        :return: JSON（含 `live_list`）
+        """
+        api = "/aweme/v1/web/search/live/"
+        headers = HeaderBuilder().build(HeaderType.GET)
+        refer = f'https://www.douyin.com/search/{urllib.parse.quote(query)}?type=live'
+        headers.set_referer(refer)
+        params = Params()
+        params.add_param("device_platform", "webapp")
+        params.add_param("aid", "6383")
+        params.add_param("channel", "channel_pc_web")
+        params.add_param("search_channel", "aweme_live")
+        params.add_param("keyword", query)
+        params.add_param("search_source", "tab_search")
+        params.add_param("query_correct_type", "1")
+        params.add_param("is_filter_search", "1")
+        params.add_param("offset", "0")
+        params.add_param("count", str(num))
+        # 匿名：不调用 with_web_id / with_a_bogus / signed_url
+        url = f'{DouyinAPI.domain_for(api)}{api}?{params.toString()}'
+        resp = requests.get(url,
+                            headers=headers.get(),
+                            verify=tls_verify(), timeout=15)
+        return safe_json(resp)
+
