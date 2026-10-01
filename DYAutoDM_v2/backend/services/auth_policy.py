@@ -63,6 +63,17 @@ ANON_ENDPOINTS = {
     # 评论预览（iesdouyin 移动端点；实测 34KB/10 条，零凭证 ✅）
     "/api/crawl/comments/anon-preview",
     "/aweme/v1/web/comment/list/anon",
+    # ── 2026-10-02 实测订正：直播探活**必须匿名**（★ 你的设想成立）──
+    # 实测（部署环境，web_rid=291891133640）：
+    #   匿名 GET live.douyin.com/<web_rid>
+    #   → HTTP 200 / 934KB / 解析 roomId=7691345987004009258 / status=2（直播中）
+    #   → 服务端下发 ttwid(127字符) ⇒ 真匿名设备标识
+    #   → 与历史实测 roomId 完全一致 ✅
+    # ★ 知识库 ENG-023 已登记：开播检测**必须**匿名进房取 room_status；
+    #   带凭证在降权账号下会返回错误 status='4'（误判下播），匿名反而更准。
+    #   （项目既有实现 `core/live_hook.py:_anon_live_info` 本就是匿名探活）
+    "/api/live/resolve",
+    "/webcast/room/info/anon",
 }
 
 # 必须凭证的接口（写操作或登录门禁）
@@ -79,9 +90,11 @@ CREDENTIAL_ENDPOINTS = {
     "/aweme/v1/web/general/search/stream/",
     "/aweme/v1/web/search/user/",
     "/aweme/v1/web/search/live/",
-    # 直播探活 / 媒体取址（未经匿名实测通过，保守取凭证侧）
-    "/api/live/resolve",
-    "/aweme/v1/web/room/info/",
+    # 直播探活 / 房间状态：实测匿名可用，已移入 ANON_ENDPOINTS（见上）
+    # ⛔ 贡献榜（实测匿名不可用）：room_id+anchor_id+sec_uid 齐全仍 HTTP 200/0 字节
+    "/webcast/ranklist/audience/",
+    "/aweme/v1/web/rank/list/",
+    # 媒体取址（未经匿名实测通过，保守取凭证侧）
     "/api/platform/media/resolve",
     # 评论列表（登录门禁）
     "/api/platform/comments",
