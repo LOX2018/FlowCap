@@ -172,30 +172,33 @@ def get_auth_for(endpoint: str, account: str = "") -> Optional[Any]:
 
 
 def _is_anon_endpoint(endpoint: str) -> bool:
-    """判断接口是否可匿名。"""
-    # 精确匹配
-    if endpoint in ANON_ENDPOINTS:
-        return True
+    """判断接口是否可匿名。
 
-    # 前缀匹配（如 /api/accounts/{name}/check）
+    🔴 严格匹配规则（防止误匹配）：
+    - 精确匹配：endpoint == anon_ep
+    - 前缀匹配：endpoint.startswith(anon_ep + "/") 或 endpoint == anon_ep
+    - 禁止 /api/platform/feed/sensitive 被误判为 /api/platform/feed 的匿名
+    """
     for anon_ep in ANON_ENDPOINTS:
-        if endpoint.startswith(anon_ep):
+        if endpoint == anon_ep:
             return True
-
+        if endpoint.startswith(anon_ep + "/"):
+            return True
     return False
 
 
 def _is_credential_endpoint(endpoint: str) -> bool:
-    """判断接口是否必须凭证。"""
-    # 精确匹配
-    if endpoint in CREDENTIAL_ENDPOINTS:
-        return True
+    """判断接口是否必须凭证。
 
-    # 前缀匹配
+    🔴 严格匹配规则（防止误匹配）：
+    - 精确匹配：endpoint == cred_ep
+    - 前缀匹配：endpoint.startswith(cred_ep + "/") 或 endpoint == cred_ep
+    """
     for cred_ep in CREDENTIAL_ENDPOINTS:
-        if endpoint.startswith(cred_ep):
+        if endpoint == cred_ep:
             return True
-
+        if endpoint.startswith(cred_ep + "/"):
+            return True
     return False
 
 

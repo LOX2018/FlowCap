@@ -531,18 +531,22 @@ class SearchMixin:
         实测裸请求（无 cookie / 无 a_bogus / 无 secsdk 签名）即 `status_code:0`
         返回搜索结果 ⇒ 可在**未登录会话**下搜索，不消耗任何账号风控面。
 
+        ## 🔴 设备指纹（每次请求都不同）
+        使用 `AnonFingerprint.generate()` 生成**随机设备指纹**。
+
         :param query: 搜索关键字
         :param num: 返回条数
-        :return: JSON（含 `user_list`）
+        :return: list（用户列表）
         """
+        from services.anon_fingerprint import AnonFingerprint
+        fp = AnonFingerprint.generate()
+
         api = "/aweme/v1/web/search/user/"
-        headers = HeaderBuilder().build(HeaderType.GET)
-        refer = f'https://www.douyin.com/search/{urllib.parse.quote(query)}?type=user'
-        headers.set_referer(refer)
+        headers = fp.to_headers(referer=f'https://www.douyin.com/search/{urllib.parse.quote(query)}?type=user')
         params = Params()
-        params.add_param("device_platform", "webapp")
-        params.add_param("aid", "6383")
-        params.add_param("channel", "channel_pc_web")
+        anon_params = fp.to_params()
+        for k, v in anon_params.items():
+            params.add_param(k, v)
         params.add_param("search_channel", "aweme_user")
         params.add_param("keyword", query)
         params.add_param("search_source", "tab_search")
@@ -553,9 +557,13 @@ class SearchMixin:
         # 匿名：不调用 with_web_id / with_a_bogus / signed_url
         url = f'{DouyinAPI.domain_for(api)}{api}?{params.toString()}'
         resp = requests.get(url,
-                            headers=headers.get(),
+                            headers=headers,
                             verify=tls_verify(), timeout=15)
-        return safe_json(resp)
+        data = safe_json(resp)
+        # 返回 list（与 search_some_user 调用方期望一致）
+        if isinstance(data, dict):
+            return data.get("user_list") or data.get("data") or []
+        return data if isinstance(data, list) else []
 
     @staticmethod
     def search_live_anon(query: str, num: int = 20, **kwargs):
@@ -566,18 +574,22 @@ class SearchMixin:
         实测裸请求（无 cookie / 无 a_bogus / 无 secsdk 签名）即 `status_code:0`
         返回搜索结果 ⇒ 可在**未登录会话**下搜索，不消耗任何账号风控面。
 
+        ## 🔴 设备指纹（每次请求都不同）
+        使用 `AnonFingerprint.generate()` 生成**随机设备指纹**。
+
         :param query: 搜索关键字
         :param num: 返回条数
-        :return: JSON（含 `live_list`）
+        :return: list（直播列表）
         """
+        from services.anon_fingerprint import AnonFingerprint
+        fp = AnonFingerprint.generate()
+
         api = "/aweme/v1/web/search/live/"
-        headers = HeaderBuilder().build(HeaderType.GET)
-        refer = f'https://www.douyin.com/search/{urllib.parse.quote(query)}?type=live'
-        headers.set_referer(refer)
+        headers = fp.to_headers(referer=f'https://www.douyin.com/search/{urllib.parse.quote(query)}?type=live')
         params = Params()
-        params.add_param("device_platform", "webapp")
-        params.add_param("aid", "6383")
-        params.add_param("channel", "channel_pc_web")
+        anon_params = fp.to_params()
+        for k, v in anon_params.items():
+            params.add_param(k, v)
         params.add_param("search_channel", "aweme_live")
         params.add_param("keyword", query)
         params.add_param("search_source", "tab_search")
@@ -588,7 +600,11 @@ class SearchMixin:
         # 匿名：不调用 with_web_id / with_a_bogus / signed_url
         url = f'{DouyinAPI.domain_for(api)}{api}?{params.toString()}'
         resp = requests.get(url,
-                            headers=headers.get(),
+                            headers=headers,
                             verify=tls_verify(), timeout=15)
-        return safe_json(resp)
+        data = safe_json(resp)
+        # 返回 list（与 search_some_live 调用方期望一致）
+        if isinstance(data, dict):
+            return data.get("live_list") or data.get("data") or []
+        return data if isinstance(data, list) else []
 
