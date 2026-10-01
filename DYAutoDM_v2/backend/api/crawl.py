@@ -347,31 +347,24 @@ async def crawl_search(body: CrawlSearchRequest):
 
     from services.auth_policy import get_auth_for
     auth = get_auth_for("/api/crawl/search", body.account)
+    if auth is None:
+        # 实测搜索不可匿名（sc=2483 / 404 Janus）⇒ fail-closed
+        raise HTTPException(
+            503, "采集搜索需登录态凭证（实测匿名被风控拒绝）；请先完成账号登录")
 
     from dy_apis.douyin_api import DouyinAPI
 
     try:
         if body.kind == "video":
-            if auth is None:
-                raw = await asyncio.to_thread(
-                    DouyinAPI.search_general_work_anon, q,
-                    sort_type, publish_time, "0", filter_duration,
-                )
-            else:
-                raw = await asyncio.to_thread(
-                    DouyinAPI.search_some_general_work, auth, q, num,
-                    sort_type, publish_time, filter_duration,
-                )
+            raw = await asyncio.to_thread(
+                DouyinAPI.search_some_general_work, auth, q, num,
+                sort_type, publish_time, filter_duration,
+            )
             items = [_map_video(w) for w in (raw or []) if w.get("aweme_info")]
         else:
-            if auth is None:
-                raw = await asyncio.to_thread(
-                    DouyinAPI.search_user_anon, q, num
-                )
-            else:
-                raw = await asyncio.to_thread(
-                    DouyinAPI.search_some_user, auth, q, num
-                )
+            raw = await asyncio.to_thread(
+                DouyinAPI.search_some_user, auth, q, num
+            )
             items = [_map_user(u) for u in (raw or [])]
     except HTTPException:
         raise

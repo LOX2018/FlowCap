@@ -479,21 +479,23 @@ async def get_feed(req: FeedReq) -> dict[str, Any]:
          现按 payload 事实（play_addr / bit_rate / images）过滤，并**如实上报**
          `filtered` 计数（铁律「禁假成功」：过滤不静默，前端可提示）。
 
-    ★ 2026-10-01 统一凭证决策：推荐流可匿名，通过 `auth_policy` 统一调度。
+    ★ 2026-10-01 实测订正（v0.46.2）：推荐流**不可匿名**。
+      部署环境实测 `/aweme/v1/web/tab/feed/` 匿名恒返 HTTP 200 / **0 字节**
+      （同环境 iesdouyin 移动端点 34KB、douyin 首页 72KB 均通 ⇒ 网络正常，
+      是端点要求登录态）。故本端点经 auth_policy 判为**必须凭证**；
+      取不到凭证时 **fail-closed**，绝不静默返回空列表假装没内容。
     """
     from services.auth_policy import get_auth_for
     auth = get_auth_for("/api/platform/feed", req.account)
+    if auth is None:
+        raise HTTPException(
+            503,
+            "推荐流需登录态凭证（实测匿名请求返回空）；请在账号管理完成登录后重试")
     api = _api()
     ri = max(1, min(int(req.refresh_index), 50))
     try:
-        if auth is None:
-            # 匿名请求
-            raw = await asyncio.to_thread(api.get_feed_anon,
-                                          str(max(1, min(req.count, 50))), str(ri))
-        else:
-            # 带凭证请求
-            raw = await asyncio.to_thread(api.get_feed, auth,
-                                          str(max(1, min(req.count, 50))), str(ri))
+        raw = await asyncio.to_thread(api.get_feed, auth,
+                                      str(max(1, min(req.count, 50))), str(ri))
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[PLT-001] " + f"推荐流获取失败: {type(e).__name__}")
         raise HTTPException(502, f"推荐流获取失败: {type(e).__name__}")
@@ -730,39 +732,35 @@ def _im_user_info_by_sec(auth, sec_uids: list[str]) -> dict[str, Any]:
 async def search(req: SearchReq) -> dict[str, Any]:
     """搜索作品 / 用户。对应基座 `search_some_general_work` / `search_some_user`。
 
-    ★ 2026-10-01 统一凭证决策：搜索可匿名，通过 `auth_policy` 统一调度。
+    ★ 2026-10-01 实测订正（v0.46.2）：搜索**不可匿名**。
+      部署环境实测：综合搜索匿名返 `sc=2483`（风控拒绝）；用户/直播搜索
+      HTTP 404 `Unsupported path(Janus)`。故搜索一律**必须凭证**，
+      取不到凭证时 fail-closed，不返回空结果假装没搜到。
     """
     from services.auth_policy import get_auth_for
     auth = get_auth_for("/api/platform/search", req.account)
+    if auth is None:
+        raise HTTPException(
+            503,
+            "搜索需登录态凭证（实测匿名请求被风控拒绝）；请在账号管理完成登录后重试")
     api = _api()
     num = max(1, min(req.num, 50))
     try:
         if req.kind == "user":
-            if auth is None:
-                users = await asyncio.to_thread(api.search_user_anon, req.query, num)
-            else:
-                users = await asyncio.to_thread(api.search_some_user, auth, req.query, num)
+            users = await asyncio.to_thread(api.search_some_user, auth, req.query, num)
             return {"ok": True, "kind": "user",
                     "items": [_pick_user(u) for u in (users or [])]}
         # ★ 2026-09-15：视频搜索改用**源项目方案** `/general/search/stream/`（实测 10 条、
         #   真实作者可读）；失败则回落到原 `search_some_general_work`（老接口），保证可用。
         works = None
         stream = None  # ★ M-20：供传输层事实读取（except 分支下保持 None）
-        if auth is None:
-            # 匿名搜索
-            try:
-                stream = await asyncio.to_thread(api.search_general_work_anon, req.query, "0", "0", "0")
-                works = (stream or {}).get("aweme_list") or []
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[PLT-009] " + f"匿名搜索失败: {type(e).__name__}")
-                works = None
-        else:
-            try:
-                stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
-                works = (stream or {}).get("aweme_list") or []
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
-                works = None
+        # auth 已由策略层保证非 None（匿名不可用，见函数头 fail-closed）
+        try:
+            stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
+            works = (stream or {}).get("aweme_list") or []
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
+            works = None
         # ★ 2026-09-27 修复（M-20 收口 · 「禁止假成功」）：此前 `works` 为空时
         #   一律回 200 + `items: []` —— 前端**无从区分**「这个关键词真没作品」与
         #   「被 Argus 风控拦截」，只能显示空列表**假装没结果**（项目铁律禁止）。

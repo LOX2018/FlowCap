@@ -40,28 +40,49 @@ from typing import Optional, Any
 # 接口凭证策略表（SSOT）
 # ============================================================================
 
-# 只读公开数据接口（可匿名）
+# ============================================================================
+# 🔴 2026-10-01 实测订正（部署环境 C:\temp\dyautodm_design，v0.46.2）
+# ============================================================================
+# 初版按「推荐流/搜索可匿名」分类，部署环境实测**证伪**。实测对照：
+#
+#   | 端点                                  | 匿名结果                  |
+#   |---------------------------------------|---------------------------|
+#   | /aweme/v1/web/tab/feed/               | HTTP 200 / 0 字节 ❌      |
+#   | /aweme/v1/web/general/search/single/  | sc=2483（风控拒绝）❌     |
+#   | /aweme/v1/web/search/user/            | HTTP 404 Janus ❌         |
+#   | /aweme/v1/web/search/live/            | HTTP 404 Janus ❌         |
+#   | www.iesdouyin.com 移动评论端点         | 34KB / 10 条 ✅（仅此）   |
+#   | https://www.douyin.com/ 首页           | 72KB ✅（网络正常）       |
+#
+# 判据：首页与 iesdouyin 均通 ⇒ 网络/本机未被封，是**端点本身要求登录态**。
+# 故推荐流与搜索一律移回「必须凭证」，只保留实测真通过的匿名端点。
+# ⛔ 禁止把「匿名但恒返回空」当成匿名可用 —— 那是本项目的**假成功**红线。
+
+# 只读公开数据接口（可匿名）—— 仅限实测真通过的
 ANON_ENDPOINTS = {
-    # 推荐流
-    "/api/platform/feed",
-    "/aweme/v1/web/tab/feed/",
-    # 搜索
-    "/api/platform/search",
-    "/api/crawl/search",
-    "/aweme/v1/web/general/search/single/",
-    "/aweme/v1/web/search/user/",
-    "/aweme/v1/web/search/live/",
-    # 直播探活
-    "/api/live/resolve",
-    "/aweme/v1/web/room/info/",
-    # 媒体取址
-    "/api/platform/media/resolve",
-    # 评论预览（已有匿名端点）
+    # 评论预览（iesdouyin 移动端点；实测 34KB/10 条，零凭证 ✅）
     "/api/crawl/comments/anon-preview",
+    "/aweme/v1/web/comment/list/anon",
 }
 
 # 必须凭证的接口（写操作或登录门禁）
 CREDENTIAL_ENDPOINTS = {
+    # ── 2026-10-01 实测订正：以下「只读」端点实测匿名取不到，移回凭证 ──
+    # 推荐流（实测 HTTP 200 / 0 字节）
+    "/api/platform/feed",
+    "/aweme/v1/web/tab/feed/",
+    # 搜索（综合 sc=2483；用户/直播 404 Janus）
+    "/api/platform/search",
+    "/api/crawl/search",
+    "/api/live/rooms/discover",
+    "/aweme/v1/web/general/search/single/",
+    "/aweme/v1/web/general/search/stream/",
+    "/aweme/v1/web/search/user/",
+    "/aweme/v1/web/search/live/",
+    # 直播探活 / 媒体取址（未经匿名实测通过，保守取凭证侧）
+    "/api/live/resolve",
+    "/aweme/v1/web/room/info/",
+    "/api/platform/media/resolve",
     # 评论列表（登录门禁）
     "/api/platform/comments",
     "/api/platform/comments/full",
@@ -229,5 +250,13 @@ def is_anonymous(endpoint: str) -> bool:
 
 
 def is_credential(endpoint: str) -> bool:
-    """判断接口是否必须凭证（供路由层快速判断）。"""
-    return _is_credential_endpoint(endpoint.rstrip("/"))
+    """判断接口是否必须凭证（供路由层快速判断）。
+
+    🔴 匿名优先：若已判定可匿名，则不再算作「必须凭证」
+    （否则 `/api/crawl/comments/anon-preview` 会同时命中匿名与凭证两套前缀，
+    造成调用方歧义）。
+    """
+    ep = endpoint.rstrip("/")
+    if _is_anon_endpoint(ep):
+        return False
+    return _is_credential_endpoint(ep)

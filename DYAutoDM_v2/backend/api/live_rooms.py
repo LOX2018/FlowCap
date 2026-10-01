@@ -653,6 +653,10 @@ async def discover_live(req: DiscoverReq) -> dict:
 
     from services.auth_policy import get_auth_for
     auth = get_auth_for("/api/live/rooms/discover", req.account)
+    if auth is None:
+        # 实测直播搜索不可匿名（404 Janus）⇒ fail-closed
+        raise HTTPException(
+            503, "直播搜索需登录态凭证（实测匿名不可用）；请先完成账号登录")
     num = max(1, min(int(req.num or 20), 50))
 
     try:
@@ -663,10 +667,7 @@ async def discover_live(req: DiscoverReq) -> dict:
     # DouyinAPI 是同步 requests 实现 ⇒ 一律 asyncio.to_thread，避免阻塞事件循环
     # （与 api/crawl.py、api/platform.py 一致）。
     try:
-        if auth is None:
-            raw = await asyncio.to_thread(DouyinAPI.search_live_anon, query, num)
-        else:
-            raw = await asyncio.to_thread(DouyinAPI.search_some_live, auth, query, num)
+        raw = await asyncio.to_thread(DouyinAPI.search_some_live, auth, query, num)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[LIVE-ROOMS-002] 直播搜索异常: {type(e).__name__}: {e}")
         raise HTTPException(502, f"搜索失败: {type(e).__name__}")
