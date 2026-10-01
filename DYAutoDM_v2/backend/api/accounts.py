@@ -201,6 +201,62 @@ async def _wait_bridge_and_poll(_lr, handle, timeout_s: int = 240):
     return await _lr.poll_bridge_confirmed(handle, timeout_s=timeout_s)
 
 
+LEGACY_QR_ENV = "DY_LOGIN_QR_BACKEND"
+
+
+def _resolve_login_channel() -> str:
+    """决定本次凭证更新走哪条通道：bridge（默认）/ api（实验）/ manual（兜底）。
+
+    取值优先级（**配置中心优先，环境变量降级为兼容回退**）：
+      ① 配置中心 `general.login_channel`（用户在「配置中心 → 通用配置」所选，
+         热生效，每次扫码前重读 ⇒ 无需重启）
+      ② 环境变量 `DY_LOGIN_CHANNEL`
+      ③ **旧**环境变量 `DY_LOGIN_QR_BACKEND`（历史接线，必须继续可用）：
+         仅 `api` 视为 api 通道；空/bridge/rpa 一律作 bridge
+      ④ 兜底 `bridge`
+
+    ## 为什么①不用 `app_config.get("general", "login_channel")`
+    `get()` 的回落链是「存储 → 环境变量 → schema 默认」，而 schema 默认就是
+    `"bridge"` ⇒ 只要用户没在配置中心显式选过，`get()` **永远返回一个非空值**
+    bridge（因为非空即短路），③的旧环境变量就被永久遮蔽 —— 那等于**静默废弃**
+    既有环境变量接线（用户设了 DY_LOGIN_QR_BACKEND=api 却仍走桥，且无告警）。
+    故刻意改读 `section_stored()`（只返回用户**显式保存过**的值，不含默认/环境变量），
+    显式值为空才继续往下回落。
+
+    返回值为三者之一；任何环节读到非法值都**忽略并继续回落**，不静默改语义。
+    """
+    _VALID = ("bridge", "api", "manual")
+
+    # ① 配置中心显式值
+    try:
+        from services import app_config as _ac
+        _stored = str((_ac.section_stored("general") or {}).get("login_channel") or ""
+                      ).strip().lower()
+        if _stored in _VALID:
+            return _stored
+        if _stored:
+            logger.warning(f"[ACC-047] [scan] 配置中心 general.login_channel="
+                           f"{_stored!r} 非法，回落到环境变量判定")
+    except Exception as _e_cfg:  # noqa: BLE001
+        # 配置中心不可用（DB 未就绪等）不得阻断扫码 —— 继续回落到环境变量
+        logger.debug(f"[scan] 读取 general.login_channel 失败，回落环境变量: {_e_cfg}")
+
+    # ② 新环境变量
+    _v = os.environ.get("DY_LOGIN_CHANNEL", "").strip().lower()
+    if _v in _VALID:
+        return _v
+    if _v:
+        logger.warning(f"[ACC-048] [scan] DY_LOGIN_CHANNEL={_v!r} 非法，忽略")
+
+    # ③ 旧环境变量（兼容）
+    _legacy = os.environ.get(LEGACY_QR_ENV, "").strip().lower()
+    if _legacy == "api":
+        return "api"
+
+    # ④ 兜底
+    return "bridge"
+
+
 def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
     """扫码登录：**默认走 API 纯 HTTP**，失败回落接口桥（无头 Camoufox）。
 
@@ -250,8 +306,25 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
     #     禁止再照「补 fpk1 即可」这条错误因果施工。
 
     #   ⇒ 默认走接口桥（真实身份）；API 仅在 DY_LOGIN_QR_BACKEND=api 时启用，供对照实验。
-    import os as _os
-    _backend = _os.environ.get("DY_LOGIN_QR_BACKEND", "").strip().lower()
+    #
+    # 🔧 2026-10-01 配置化：上面这条「仅靠环境变量」的判定，改为统一走
+    #    `_resolve_login_channel()` —— 配置中心 general.login_channel 优先，
+    #    环境变量（含旧的 DY_LOGIN_QR_BACKEND）降级为兼容回退。
+    #    既是优先级实现，也是 user 可见 switch（see app_config_schema.py general.login_channel）。
+    try:
+        _channel = _resolve_login_channel()
+    except Exception as _e_ch:  # noqa: BLE001
+        logger.warning(f"[ACC-049] [scan] 账号 {name} 通道判定失败，回落接口桥: {_e_ch}")
+        _channel = "bridge"
+
+    if _channel == "manual":
+        # 用户在配置中心显式选了「有头浏览器手动」⇒ 不走任何无头/协议通道，
+        # 直接把控制权交回上层 _do_scan 的 manual 兜底分支。
+        logger.info(f"[scan] 账号 {name} 配置为「有头浏览器手动」通道，"
+                    f"跳过接口桥/API，直接回落手动")
+        return False
+
+    _backend = _channel      # 保持与既有下游代码/门禁断言兼容的变量名
     if _backend == "api":
         # 🔴 2026-10-01 实测：**API 当前不可用于完成登录**（仅出码、码活不过 65s）
         #   三轮一致：出码 3.5s，但二维码 **65 秒** 即被服务端判 expired
@@ -270,7 +343,7 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
                            f"回落接口桥: {type(_e_api).__name__}: {_e_api}")
     else:
         logger.info(f"[scan] 账号 {name} 走接口桥（无头 Camoufox，真实身份）"
-                    f"（DY_LOGIN_QR_BACKEND={_backend or '默认'}）")
+                    f"（通道={_backend}）")
 
     # ── ② RPA 扫码：**桥优先（接口响应出码）→ 截图兜底**─────────────────
     from auto_dm import login_remote as _lr
@@ -397,6 +470,8 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
         if _enh == "failed":
             return False
         logger.info(f"[scan] 账号 {name} RPA 扫码完成（落盘增强={_enh}）")
+        # ★ 2026-10-01：成功后【自动】双引擎校验（用户无需再手点「凭证校验」）
+        _finalize_login_and_verify(name, env_path, st)
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[ACC-028] [scan] 账号 {name} RPA 路径异常，回落老路径: "
@@ -409,6 +484,45 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
                 asyncio.run(_lr.close_handle(handle))
         except Exception as _e_close:  # noqa: BLE001
             logger.debug(f"[scan] 账号 {name} RPA 收尾跳过: {_e_close}")
+
+
+def _finalize_login_and_verify(name: str, env_path: str, st: dict,
+                               reason_prefix: str = "") -> None:
+    """登录成功后的**统一收口**：自动双引擎校验 + 状态写回（前端免手点）。
+
+    2026-10-01（用户报障「更新完没及时刷新凭证有效性，还要手动点校验」）：
+      扫码 / 短信 两条路径成功后都应当**立即**给出有效性结论，而不是等用户
+      手工点「引擎校验」。判据复用项目**既有权威** `acct_core.verify_account()`
+      （wp 引擎 + 私信引擎双校验），不自创判据。
+
+    写入 st：
+      · verify       : {"ok", "wp":{level,label}, "dm":{level,label}, "uid"}
+      · wpLevel / dmLevel / verifyAt
+    本函数**绝不抛异常**（校验失败只是状态，不应推翻已完成的登录）。
+    """
+    try:
+        v = acct_core.verify_account(name, timeout=8, dm_loopback=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"{reason_prefix}[scan] 账号 {name} 双引擎校验异常（不推翻登录）: "
+                       f"{type(e).__name__}: {e}")
+        st["verify"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return
+    try:
+        wp = (v or {}).get("wp") or {}
+        dm = (v or {}).get("dm") or {}
+        st["verify"] = {
+            "ok": bool((v or {}).get("ok")),
+            "wp": {"level": wp.get("level", "unknown"), "label": wp.get("label", "未校验")},
+            "dm": {"level": dm.get("level", "unknown"), "label": dm.get("label", "未校验")},
+            "uid": (v or {}).get("uid", ""),
+        }
+        st["wpLevel"] = wp.get("level", "unknown")
+        st["dmLevel"] = dm.get("level", "unknown")
+        st["verifyAt"] = time.strftime("%H:%M:%S")
+        logger.info(f"{reason_prefix}[scan] 账号 {name} 凭证已更新并自动校验 → "
+                    f"wp={st['wpLevel']} / 私信={st['dmLevel']}")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[scan] 账号 {name} 校验结果写回失败（不影响登录）: {e}")
 
 
 def _cred_verify_after_write(name: str, env_path: str, st: dict) -> str:
@@ -791,6 +905,17 @@ def _do_scan(name: str):
             # 兜底：有头手动（ADR-017 之前的旧行为，下游逻辑一行未改）
             logger.info(f"[scan] 账号 {name} 接口桥未成 ⇒ 回落「弹出浏览器用户手动」")
             st["path"] = "manual"
+            # ★ 2026-10-01：桥失败回落有头时，**先显式释放 profile**。
+            #   实测（10:48:29）：无头 context 已 close 但进程**未退净**，紧接着
+            #   启有头即报「指纹浏览器被占用」（BCC-074 清扫后才成功）。
+            #   复用既有 `ensure_profile_released`（唯一启动出口同款自愈，不自造）。
+            try:
+                from auto_dm import login_remote as _lr_rel
+                _pd = acct_core.profile_dir_of(env_path)
+                if _pd:
+                    _lr_rel.ensure_profile_released(_pd)
+            except Exception as _e_rel:  # noqa: BLE001
+                logger.debug(f"[scan] 账号 {name} 回落前 profile 释放跳过: {_e_rel}")
             from auth_helper import enrich_auth
             auth, _ = enrich_auth(None, force=True, env_path=env_path)
             # ★ 2026-09-30 谎报根治（兜底路径同样不得假成功）：
@@ -1455,6 +1580,23 @@ def _do_sms_scan(name: str, phone: str):
             st["error"] = out.get("reason", "") or "短信登录未成功"
             logger.warning(f"[ACC-036] [scan] 账号 {name} 短信登录失败"
                            f"（stage={out.get('stage')}）: {st['error']}")
+        else:
+            # ★ 2026-10-01：与扫码路径**对称** —— 此前短信成功后**只设 loggedIn**，
+            #   既无落盘增强、也无双引擎校验 ⇒ 用户观察到「只保证 WP 引擎、私信引擎没处理」。
+            #   现补齐：cookie 落盘 → 增强落盘 → 自动双引擎校验（判据与扫码共用）。
+            try:
+                _cookies = out.get("cookies") or {}
+                if _cookies:
+                    from auth_helper import save_cookie_to_env
+                    _cs = "; ".join(f"{k}={v}" for k, v in _cookies.items())
+                    save_cookie_to_env(_cs, env_path)
+                    logger.info(f"[scan] 账号 {name} 短信登录凭证已落盘")
+                _enh = _enhance_from_live(name, env_path, out.get("handle") or {}, st)
+                st["enhance"] = _enh
+            except Exception as _e_sms_save:  # noqa: BLE001
+                logger.warning(f"[ACC-038] [scan] 账号 {name} 短信凭证落盘/增强失败"
+                               f"（不推翻已登录）: {type(_e_sms_save).__name__}: {_e_sms_save}")
+            _finalize_login_and_verify(name, env_path, st)
     except Exception as e:  # noqa: BLE001
         logger.error(f"[ACC-037] [scan] 账号 {name} 短信登录异常: {e}")
         st["error"] = f"{type(e).__name__}: {e}"

@@ -1174,6 +1174,26 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
         #   （errcode_data.py:663 列为错误码根因；services/env_audit 会报 screen 不一致）。
         #   档案视口是账号级稳定值 ⇒ 跨设备一致性由档案保证，不由本函数决定。
 
+        # ★ 2026-10-01：**出码前先判登录态**（避免「已登录账号」被反复点击登录按钮、
+        #   却永远等不到 get_qrcode —— 实测点满 3 次仍无码即此场景；
+        #   实证：张老师 cookie 69 项含 sessionid、服务端探活 ok=True uid=3887506…）。
+        try:
+            from dy_apis.login_api import DYLoginApi as _DLA_pre
+            _a = _DLA_pre._load_auth_from_env(env_path)          # noqa: SLF001
+            _ck = getattr(_a, "cookie", None) or {}
+            if _ck.get("sessionid") or _ck.get("sid_tt"):
+                _sv = await _probe_session_valid_by_cookies(_ck)
+                if _sv.get("ok"):
+                    logger.info("[bridge] 账号当前**已登录**（uid={}），无需出码扫码",
+                                _sv.get("uid"))
+                    await close_handle(handle)
+                    return {"ok": True, "png": None, "decoded": False, "qr_url": None,
+                            "token": None, "handle": None, "heal": heal,
+                            "via": "already-logged", "reason": "",
+                            "waited_s": 0.0, "uid": _sv.get("uid")}
+        except Exception as _e_pre:  # noqa: BLE001
+            logger.debug("[bridge] 出码前登录态预检跳过（不阻断）: {}", _e_pre)
+
         await page.goto(LOGIN_URL, wait_until="domcontentloaded",
                         timeout=max(30, timeout_s) * 1000)
         # ★ 2026-10-01 根因修复：**必须用真实鼠标点击「登录」按钮才会发 get_qrcode**。
@@ -1221,18 +1241,43 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
                                             "how": "adaptive-xpath"}
                     except Exception:  # noqa: BLE001
                         _box = None
-                # (c) 文本兜底（最后）
+                # (c) 文本兜底（最后）—— ★ 2026-10-01 **限定在登录弹窗容器内**。
+                #   旧实现是**全页**匹配文本「登录」⇒ 页面未加载完时会命中**顶栏**
+                #   的「登录」（实测坐标 1852,28 = 页面右上角），点了不发 get_qrcode
+                #   ⇒ 表现为「必须点第 2 次才出码」。改为只在登录面板/弹窗内找。
                 if _box is None:
                     try:
                         _box = await page.evaluate(
                             "() => {"
-                            "const n = Array.from(document.querySelectorAll('button,div,span,a'))"
-                            ".find(x => (x.textContent||'').trim().replace(/\\s/g,'') === '登录');"
-                            "if (!n) return null;"
-                            "const r = n.getBoundingClientRect();"
-                            "if (r.width < 8 || r.height < 8) return null;"
-                            "return {x: Math.round(r.x + r.width/2),"
-                            " y: Math.round(r.y + r.height/2), how: 'text'};}")
+                            "const kw = ['登录', '扫码登录', '验证码登录', '立即登录'];"
+                            "const isLogin = (t) => {"
+                            "  const s = (t||'').trim().replace(/\\s/g,'');"
+                            "  if (!s || s.length > 12) return false;"
+                            "  return kw.some(k => s.indexOf(k) >= 0);"
+                            "};"
+                            "const inDialog = (n) => {"
+                            "  for (let e = n; e; e = e.parentElement) {"
+                            "    const c = (e.className||'') + ' ' + (e.id||'');"
+                            "    if (/login|passport|modal|dialog|panel|qrcode/i.test(c)) return true;"
+                            "  }"
+                            "  return false;"
+                            "};"
+                            "const all = Array.from(document.querySelectorAll('button,div,span,a'));"
+                            "const pick = (arr, skipHeader) => {"
+                            "  for (const x of arr) {"
+                            "    if (!isLogin(x.textContent)) continue;"
+                            "    const r = x.getBoundingClientRect();"
+                            "    if (r.width < 8 || r.height < 8) continue;"
+                            "    if (skipHeader && r.top < 100) continue;"
+                            "    return {x: Math.round(r.x + r.width/2),"
+                            "     y: Math.round(r.y + r.height/2),"
+                            "     how: skipHeader ? 'text-below-header' : 'text-in-dialog'};"
+                            "  }"
+                            "  return null;"
+                            "};"
+                            "let hit = pick(all.filter(inDialog), false);"
+                            "if (!hit) hit = pick(all, true);"
+                            "return hit;}")
                     except Exception:  # noqa: BLE001
                         _box = None
                 if _box:
@@ -1253,8 +1298,11 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
 
         # 点击可能因布局未稳/动画偏移落空 ⇒ **点击 → 校验是否出码 → 未出再点**（最多 3 轮）
         _clk = "not-found"
+        t_start = time.time()      # ★ 供「重试耗尽立即失败」分支计算总耗时
+        # ★ 2026-10-01：第 1 轮给足等待（等登录面板挂载 + 稳定 id 就绪），
+        #   减少「首点落到 text 兜底 → 命中顶栏 → 白点一次」的概率。
         for _round in range(3):
-            _clk = await _try_click_login(max_wait=(18.0 if _round == 0 else 8.0))
+            _clk = await _try_click_login(max_wait=(22.0 if _round == 0 else 8.0))
             if _clk != "clicked":
                 break
             # 给前端一点时间发 get_qrcode
@@ -1269,6 +1317,18 @@ async def bridge_qr_login(env_path: str, out_png: str, headless: bool = True,
         if _clk != "clicked":
             logger.warning("[bridge] 未找到「登录」按钮（页面可能已登录或结构已变），"
                            "继续等待页面自发接口")
+        elif not caps.get("qr_url"):
+            # ★ 2026-10-01：**已真实点击 3 次仍未出码** ⇒ 不再静默空等 30~90s。
+            #   旧行为：只 warn 后继续轮询 ⇒ 前端 `st` 无任何 error ⇒ 用户看到
+            #   「点 3 次后就没下文、也没报错」。现在**立即**如实返回失败，
+            #   让上层能马上把原因呈现给用户（并可回落其它通道）。
+            _why = ("已真实点击「登录」3 次仍未触发 get_qrcode"
+                    "（多为登录面板未挂载 / 页面结构已变 / 账号已登录态）")
+            logger.error("[bridge] {}", _why)
+            await close_handle(handle)
+            return {"ok": False, "png": None, "decoded": None, "qr_url": None,
+                    "token": None, "handle": None, "heal": heal, "via": "bridge",
+                    "reason": _why, "waited_s": round(time.time() - t_start, 1)}
         # 轮询等待：页面自己发接口（实测约 30~40s；面板 30s 才挂载）
         t0 = time.time()
         while time.time() - t0 < max(30, timeout_s):
@@ -1788,6 +1848,12 @@ async def bridge_qr_login_and_wait(env_path: str, out_png: str,
             logger.warning("[bridge] on_qr_ready 回调异常（不阻断）: {}", e)
     if not prep.get("ok"):
         return {"prep": prep, "waited": None}
+    # ★ 已登录短路：无需再等扫码（`bridge_qr_login` 已关掉浏览器、handle=None）
+    if prep.get("via") == "already-logged":
+        logger.info("[bridge] 已登录短路（无需等扫码确认），uid={}", prep.get("uid"))
+        return {"prep": prep, "waited": {"ok": True, "status": "already-logged",
+                                         "uid": prep.get("uid", ""), "reason": "",
+                                         "cookies": {}, "risk": False}}
     waited = await poll_bridge_confirmed(prep.get("handle"), timeout_s=wait_timeout_s)
     return {"prep": prep, "waited": waited}
 

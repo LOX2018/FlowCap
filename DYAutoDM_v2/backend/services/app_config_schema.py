@@ -38,6 +38,35 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 ],
                 "apply": "restart_daemon",
             },
+            # 凭证更新通道（扫码 / 短信）—— 2026-10-01 配置化
+            # 背景：原先通道只能靠环境变量 DY_LOGIN_QR_BACKEND 切换（api=纯协议 /
+            # 空或 bridge=接口桥），用户在 UI 上无从选择/无从知晓。现提升为一等公民
+            # 配置项，热生效（每次扫码前读取，无需重启）。
+            # 取值 ancestry（读取端见 backend/api/accounts.py::_resolve_login_channel）：
+            #   配置中心 general.login_channel  →  环境变量 DY_LOGIN_CHANNEL
+            #   →  兼容旧环境变量 DY_LOGIN_QR_BACKEND  →  默认 bridge
+            # label 必须**如实标注能力边界**（禁止把实验通道包装得像可用通道）：
+            #   api 通道 2026-10-01 实测三轮一致：出码仅 3.5s，但二维码约 65s 即被
+            #   服务端判 expired（正常 5 分钟的 1/5）⇒ 出码快但无法完成登录。
+            "login_channel": {
+                "label": "凭证更新通道",
+                "type": "select", "default": "bridge", "env": "DY_LOGIN_CHANNEL",
+                "options": [
+                    {"value": "bridge", "label": "接口桥（推荐）"},
+                    {"value": "api",
+                     "label": "API（实验·仍无法登录）"},
+                    {"value": "manual", "label": "有头浏览器（兜底）"},
+                ],
+                "apply": "hot",
+                "hint": "默认接口桥",
+                # 🔴 完整能力边界（hint 有 18 字上限，故详注在此，勿删）：
+                #   · bridge = 无头 Camoufox、真实身份（推荐·默认）
+                #   · api    = 纯协议出码约 3.5s，但实测二维码约 65s 即被服务端判
+                #             expired（正常约 5 分钟的 1/5）⇒ **出码快但无法完成登录**，
+                #             仅供对照实验（2026-10-01 三轮对照一致）
+                #   · manual = 弹出有头浏览器由用户自行完成（最终兜底）
+                #   兼容旧环境变量 DY_LOGIN_QR_BACKEND（配置中心留空时生效）。
+            },
             "auto_capture_on_start": {
                 "label": "启动时自动捕获会话",
                 "type": "bool", "default": False, "env": "DY_AUTO_CAPTURE_ON_START",
