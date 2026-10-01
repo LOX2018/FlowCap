@@ -121,8 +121,12 @@ def test_c4_api_option_label_states_it_cannot_complete_login():
     opts = ac.SECTIONS["general"]["fields"]["login_channel"]["options"]
     lbl = next(o["label"] for o in opts if o.get("value") == "api")
     assert "实验" in lbl, f"API 选项须标注为实验通道（当前：{lbl}）"
-    assert "无法" in lbl and "登录" in lbl, \
-        f"API 选项 label 必须写明能力边界（无法完成登录）（当前：{lbl}）"
+    # 2026-10-01 二次修正：label 由「仍无法登录」改为「当前跑不通」——
+    #   用户质疑「上游既然有这方案肯定有用」成立：上游 qrcodeMain **设计上**可完成登录。
+    #   实测结论应表述为「**当前**跑不通」（plain requests 的 TLS 暴露 + AUTH-062 keys 缺失），
+    #   而非「方案无用」。守门意图不变：必须标注为实验/不可用状态，禁止包装成可用通道。
+    assert ("跑不通" in lbl or "无法" in lbl), \
+        f"API 选项 label 必须写明当前不可用（当前：{lbl}）"
 
 
 # ══════════════════════════════════════════════════════════════════

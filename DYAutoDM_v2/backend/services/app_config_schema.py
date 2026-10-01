@@ -54,16 +54,23 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "options": [
                     {"value": "bridge", "label": "接口桥（推荐）"},
                     {"value": "api",
-                     "label": "API（实验·仍无法登录）"},
+                     "label": "API（实验·当前跑不通）"},
                     {"value": "manual", "label": "有头浏览器（兜底）"},
                 ],
                 "apply": "hot",
                 "hint": "默认接口桥",
-                # 🔴 完整能力边界（hint 有 18 字上限，故详注在此，勿删）：
+                # 🔴 完整能力边界（hint 限 10 字，故详注在此，勿删）：
                 #   · bridge = 无头 Camoufox、真实身份（推荐·默认）
-                #   · api    = 纯协议出码约 3.5s，但实测二维码约 65s 即被服务端判
-                #             expired（正常约 5 分钟的 1/5）⇒ **出码快但无法完成登录**，
-                #             仅供对照实验（2026-10-01 三轮对照一致）
+                #   · api    = 上游纯协议链路（qrcodeMain）。**设计上**可完成登录
+                #             （自建 P-256 密钥 + redirect_url/status==2 判据），
+                #             但 2026-10-01 实测**当前跑不通** —— status=no_qrcode，
+                #             连码都出不来。两条已证成因：
+                #             ① 该路径走 **plain requests**（非 curl_cffi）⇒ TLS 指纹暴露，
+                #                get_qrcode 返回 10168 字节 **HTML** 而非 JSON ⇒ safe_json 降级 None；
+                #             ② AUTH-062：`keys 有效=False`（账号未登录 ⇒ 取不到 security-sdk）
+                #                ⇒ 请求缺签名四件套。
+                #             ⇒ 结论应表述为「**当前跑不通**」，而非「方案无用」。
+                #             修 ②（登录态写回浏览器 profile）后 keys 前置有望满足，可再测。
                 #   · manual = 弹出有头浏览器由用户自行完成（最终兜底）
                 #   兼容旧环境变量 DY_LOGIN_QR_BACKEND（配置中心留空时生效）。
             },

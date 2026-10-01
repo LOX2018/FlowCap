@@ -470,6 +470,9 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
         if _enh == "failed":
             return False
         logger.info(f"[scan] 账号 {name} RPA 扫码完成（落盘增强={_enh}）")
+        # ★ 2026-10-01：供「登录态回填浏览器」使用（见 _persist_cookies_to_browser）
+        st["_browser_handle"] = handle
+        st["_browser_cookies"] = cookies
         # ★ 2026-10-01：成功后【自动】双引擎校验（用户无需再手点「凭证校验」）
         _finalize_login_and_verify(name, env_path, st)
         return True
@@ -484,6 +487,40 @@ def _rpa_scan_login(name: str, env_path: str, st: dict) -> bool:
                 asyncio.run(_lr.close_handle(handle))
         except Exception as _e_close:  # noqa: BLE001
             logger.debug(f"[scan] 账号 {name} RPA 收尾跳过: {_e_close}")
+
+
+async def _persist_cookies_to_browser(name: str, handle: dict,
+                                      cookie_map: dict) -> int:
+    """把登录态 cookie **回填浏览器 context**（使其持久化到 profile）。
+
+    2026-10-01（用户观察「应用能用、浏览器显示未登录」→ 取证后修复）：
+      桥出码前会清掉登录态 cookie（必要），但登录成功后**只写应用 .env**，
+      浏览器 profile 仍是空的 ⇒ 用户打开浏览器看到未登录；且上游
+      `dyGenerateInitData` 因此拿不到 security-sdk（AUTH-062 keys=False）。
+    判据：只回填**登录态相关**键（不覆盖设备/风控类），domain 固定 `.douyin.com`。
+    返回成功写入条数；失败返回 0（**绝不阻断**已完成的登录）。
+    """
+    ctx = (handle or {}).get("context")
+    if ctx is None or not cookie_map:
+        return 0
+    LOGIN_KEYS = ("sessionid", "sessionid_ss", "sid_tt", "sid_guard",
+                  "uid_tt", "uid_tt_ss", "passport_csrf_token",
+                  "sid_ucp_v1", "ssid_ucp_v1")
+    items = []
+    for k, v in (cookie_map or {}).items():
+        if k in LOGIN_KEYS and v:
+            items.append({"name": k, "value": str(v),
+                          "domain": ".douyin.com", "path": "/"})
+    if not items:
+        return 0
+    try:
+        await ctx.add_cookies(items)     # ★ 复用既有范式（login_remote.py:1166）
+        logger.info(f"[scan] 账号 {name} 登录态已回填浏览器 profile（{len(items)} 项）")
+        return len(items)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ACC-039] [scan] 账号 {name} 登录态回填浏览器失败"
+                       f"（不影响应用凭证）: {type(e).__name__}: {e}")
+        return 0
 
 
 def _finalize_login_and_verify(name: str, env_path: str, st: dict,
@@ -519,6 +556,15 @@ def _finalize_login_and_verify(name: str, env_path: str, st: dict,
         st["wpLevel"] = wp.get("level", "unknown")
         st["dmLevel"] = dm.get("level", "unknown")
         st["verifyAt"] = time.strftime("%H:%M:%S")
+        # ★ 2026-10-01：校验通过后把登录态**回填浏览器 profile**
+        #   （修「应用能用、浏览器显示未登录」，并缓解 AUTH-062 keys 缺失）。
+        try:
+            _h = st.get("_browser_handle") or {}
+            _cm = st.get("_browser_cookies") or {}
+            if _h and _cm:
+                asyncio.run(_persist_cookies_to_browser(name, _h, _cm))
+        except Exception as _e_back:  # noqa: BLE001
+            logger.debug(f"[scan] 账号 {name} 浏览器登录态回填写跳过: {_e_back}")
         logger.info(f"{reason_prefix}[scan] 账号 {name} 凭证已更新并自动校验 → "
                     f"wp={st['wpLevel']} / 私信={st['dmLevel']}")
     except Exception as e:  # noqa: BLE001
