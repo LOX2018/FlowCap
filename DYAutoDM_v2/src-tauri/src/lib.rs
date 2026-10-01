@@ -191,6 +191,20 @@ pub fn run() {
         })
         .setup(|_app| {
             log::info!("DYAutoDM v2 启动");
+            // 🔴 2026-10-02：**仅 debug 构建**自动开启浏览器 DevTools（F12）。
+            // 用户要求「测试版有 Dev 日志窗口，正式版不变」（A 方案）。
+            // `open_devtools()` 在 debug 构建内可用（release 无此 API ⇒ 编译期分流），
+            // 故 `#[cfg(debug_assertions)]` 同时满足「仅测试版生效」与「正式版零影响」。
+            #[cfg(debug_assertions)]
+            {
+                use tauri::Manager;
+                if let Some(win) = _app.get_webview_window("main") {
+                    win.open_devtools();
+                    log::info!("DevTools 已开启（debug 构建）");
+                } else {
+                    log::warn!("未找到 main 窗口，DevTools 未开启");
+                }
+            }
             // 开发模式下后端由 uvicorn 单独跑；生产模式自动拉起 sidecar
             #[cfg(not(debug_assertions))]
             {
