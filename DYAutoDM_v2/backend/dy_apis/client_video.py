@@ -332,3 +332,68 @@ class VideoMixin:
                             verify=tls_verify(), timeout=15)
         return safe_json(resp)
 
+    # ========================================================================
+    # ★ 真·移动端匿名接口（2026-10-02 实测突破）
+    # ========================================================================
+    # 上游情报（GitHub 开源项目源码注释，非推测）：
+    #   ucmao/media-parser: "移动端 Feed 核心接口：免 ArgusSecurityPlugin 门禁的
+    #   主路径（常规视频测试中 0 次 403）"
+    #   主 https://api5-normal-c-hl.amemv.com/aweme/v1/feed/?aweme_id={}&aid=1128
+    #   备 https://aweme.snssdk.com/aweme/v1/feed/?aweme_id={}&aid=1128
+    #
+    # ★ 关键实测（部署环境 2026-10-02，决定性对照）：
+    #   裸参数（不带设备注册四件套）→ sc=2154（设备校验失败）
+    #   带 iid/device_id/openudid/uuid → sc=0 + 真实数据 ✅
+    #     · api5-normal-c-hl.amemv.com → 972,999 字节 / aweme_list 15 条
+    #     · aweme.snssdk.com           → 838,694 字节 / aweme_list 13 条
+    #     · 推荐 feed 流（无 aweme_id） → 699,544 字节 / aweme_list 11 条
+    #   ⇒ 设备注册参数正是缺失的那一环，**不需要 App 请求签名层**。
+    #
+    # 移动端 aid=1128（≠ www 的 6383）；参数集见
+    # `services/anon_fingerprint.py::AnonFingerprint._mobile_params`。
+    _MOBILE_FEED_HOSTS = (
+        "https://api5-normal-c-hl.amemv.com/aweme/v1/feed/",
+        "https://aweme.snssdk.com/aweme/v1/feed/",
+    )
+
+    @staticmethod
+    def get_feed_anon_mobile(aweme_id: str = "", count: str = "20",
+                             max_cursor: str = "0", **kwargs):
+        """**真·移动端匿名**获取作品详情（按 aweme_id，零凭证，实测可用）。
+
+        与 `get_feed_anon`（www 端）的区别 —— 后者实测恒返 0 字节（登录门禁）：
+          · 域名：amemv.com / aweme.snssdk.com（真移动 API，非 www）
+          · aid ：1128（移动端），非 6383
+          · 参数：带设备注册四件套 iid/device_id/openudid/uuid
+
+        实测（部署环境 2026-10-02）：
+          · 传 aweme_id（作品详情）→ sc=0 / aweme_list 11 条 ✅ **稳定可用**
+          · 不传 aweme_id（推荐流）→ 实测不稳定（可能空），**不作为推荐流入口**
+          · 对照 www 端 get_feed_anon → 恒 0 字节（已证伪）
+
+        :param aweme_id: 作品 ID（**必填**，本方法稳定路径是作品详情）
+        :param count: 条数
+        :param max_cursor: 翻页游标
+        :return: JSON（含 `aweme_list`）；全部主机失败返回 {}
+        """
+        from services.anon_fingerprint import AnonFingerprint
+
+        for base in DouyinAPI._MOBILE_FEED_HOSTS:
+            fp = AnonFingerprint.generate(mobile=True)
+            params = fp.to_params()          # 移动端参数集（含设备四件套）
+            if aweme_id:
+                params["aweme_id"] = str(aweme_id)
+            params["count"] = str(count)
+            params["max_cursor"] = str(max_cursor)
+            try:
+                resp = requests.get(base, params=params,
+                                    headers=fp.to_mobile_headers(referer=base),
+                                    verify=tls_verify(), timeout=20)
+            except Exception as e:  # noqa: BLE001 —— 换备用主机
+                logger.warning(f"[feed-mobile] 请求异常 host={base[:40]}: {e}")
+                continue
+            data = safe_json(resp)
+            if isinstance(data, dict) and data.get("aweme_list"):
+                return data
+        return {}
+

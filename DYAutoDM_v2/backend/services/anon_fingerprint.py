@@ -71,6 +71,9 @@ class DeviceTemplate:
     cpu_core_num: int
     # 设备内存（GB）
     device_memory: int
+    # ── 移动端专属（桌面模板留空即可；上游情报取样）──
+    device_type: str = ""      # 如 SM-G955N / iPhone15,3
+    device_brand: str = ""     # 如 samsung / Apple
 
 
 # 桌面端设备模板（Windows + macOS）
@@ -138,6 +141,7 @@ MOBILE_TEMPLATES = [
         engine_name="WebKit", engine_version="605.1.15",
         os_name="iPhone OS", os_version="17.1",
         platform="iPhone", cpu_core_num=6, device_memory=6,
+        device_type="iPhone15,3", device_brand="Apple",
     ),
     DeviceTemplate(
         ua="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
@@ -146,6 +150,7 @@ MOBILE_TEMPLATES = [
         engine_name="WebKit", engine_version="605.1.15",
         os_name="iPhone OS", os_version="17.0",
         platform="iPhone", cpu_core_num=6, device_memory=6,
+        device_type="iPhone15,2", device_brand="Apple",
     ),
     DeviceTemplate(
         ua="Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
@@ -154,6 +159,7 @@ MOBILE_TEMPLATES = [
         engine_name="WebKit", engine_version="605.1.15",
         os_name="iPhone OS", os_version="16.6",
         platform="iPhone", cpu_core_num=6, device_memory=6,
+        device_type="iPhone14,3", device_brand="Apple",
     ),
     # Android Chrome
     DeviceTemplate(
@@ -163,6 +169,7 @@ MOBILE_TEMPLATES = [
         engine_name="Blink", engine_version="120.0.0.0",
         os_name="Android", os_version="14",
         platform="Android", cpu_core_num=8, device_memory=12,
+        device_type="SM-S918B", device_brand="samsung",
     ),
     DeviceTemplate(
         ua="Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
@@ -171,6 +178,7 @@ MOBILE_TEMPLATES = [
         engine_name="Blink", engine_version="119.0.0.0",
         os_name="Android", os_version="13",
         platform="Android", cpu_core_num=8, device_memory=12,
+        device_type="SM-S908B", device_brand="samsung",
     ),
     DeviceTemplate(
         ua="Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
@@ -179,6 +187,7 @@ MOBILE_TEMPLATES = [
         engine_name="Blink", engine_version="120.0.0.0",
         os_name="Android", os_version="14",
         platform="Android", cpu_core_num=8, device_memory=12,
+        device_type="Pixel 8", device_brand="Google",
     ),
 ]
 
@@ -201,6 +210,11 @@ class AnonFingerprint:
     s_v_web_id: str
     webid: str
     msToken: str
+    # ── 移动端设备注册四件套（同一"设备"固定，★ 2026-10-02 新增）──
+    iid: str = ""           # 安装实例 ID（如 69281070982）
+    device_id: str = ""     # 设备 ID（如 67022866585）
+    openudid: str = ""      # 16 位 hex
+    uuid: str = ""          # 15 位数字
 
     @classmethod
     def generate(cls, mobile: Optional[bool] = None) -> "AnonFingerprint":
@@ -226,12 +240,24 @@ class AnonFingerprint:
         webid = cls._gen_webid()
         msToken = cls._gen_msToken()
 
+        # 移动端：生成设备注册四件套（同一"设备"固定）
+        iid = device_id = openudid = uuid_ = ""
+        if template.platform in ("iPhone", "Android"):
+            iid = cls._gen_iid()
+            device_id = cls._gen_device_id()
+            openudid = cls._gen_openudid()
+            uuid_ = cls._gen_uuid()
+
         return cls(
             template=template,
             ttwid=ttwid,
             s_v_web_id=s_v_web_id,
             webid=webid,
             msToken=msToken,
+            iid=iid,
+            device_id=device_id,
+            openudid=openudid,
+            uuid=uuid_,
         )
 
     # ====================================================================
@@ -286,6 +312,16 @@ class AnonFingerprint:
     def device_memory(self) -> int:
         return self.template.device_memory
 
+    @property
+    def device_type(self) -> str:
+        """移动端设备型号（如 SM-S918B / iPhone15,3）。"""
+        return self.template.device_type
+
+    @property
+    def device_brand(self) -> str:
+        """移动端设备品牌（如 samsung / Apple）。"""
+        return self.template.device_brand
+
     # ====================================================================
     # 转换方法
     # ====================================================================
@@ -303,17 +339,26 @@ class AnonFingerprint:
         """转换为参数字典（包含所有设备参数）。
 
         🔴 所有参数都来自同一个模板，保证设备一致性。
+
+        ★ 2026-10-02 扩展：移动端分支（真·移动 API）
+          桌面端（www.douyin.com）：aid=6383，web 参数集
+          移动端（aweme.snssdk.com / amemv.com）：aid=1128 + 设备注册参数
+            （iid / device_id / openudid / uuid / device_type / os_api ...）
+          依据上游情报（GitHub 开源项目真实移动端 URL 取样）。
         """
+        is_mobile = self.platform in ("iPhone", "Android")
+        if is_mobile:
+            return self._mobile_params()
         return {
             "webid": self.webid,
             "verifyFp": self.s_v_web_id,
             "fp": self.s_v_web_id,
             "msToken": self.msToken,
             # 设备参数（从模板读取）
-            "device_platform": "webapp" if self.platform == "PC" else "android",
+            "device_platform": "webapp",
             "aid": "6383",
-            "channel": "channel_pc_web" if self.platform == "PC" else "channel_standard",
-            "pc_client_type": "1" if self.platform == "PC" else "0",
+            "channel": "channel_pc_web",
+            "pc_client_type": "1",
             "version_code": "170400",
             "version_name": "17.4.0",
             "cookie_enabled": "true",
@@ -331,6 +376,47 @@ class AnonFingerprint:
             "cpu_core_num": str(self.cpu_core_num),
             "device_memory": str(self.device_memory),
             "platform": self.platform,
+        }
+
+    def _mobile_params(self) -> dict:
+        """移动端参数集（真·移动 API，aid=1128 + 设备注册参数）。
+
+        设备注册参数（iid/device_id/openudid/uuid）在实例创建时**一次性生成**，
+        保证同一个"设备"的所有请求参数一致（真实 App 行为：一台设备一套 ID）。
+        """
+        return {
+            # ── 设备注册四件套（同一设备固定）──
+            "iid": self.iid,
+            "device_id": self.device_id,
+            "openudid": self.openudid,
+            "uuid": self.uuid,
+            # ── App / 设备形态 ──
+            "aid": "1128",                    # 移动端 aid（≠ www 的 6383）
+            "app_name": "aweme",
+            "device_platform": "android" if self.platform == "Android" else "iphone",
+            "device_type": self.device_type,
+            "device_brand": self.device_brand,
+            "os_api": "25",
+            "os_version": self.os_version.replace("_", "."),
+            "resolution": f"{self.screen_width}*{self.screen_height}",
+            "language": "zh",
+            "ac": "wifi",
+            "version_code": "170400",
+            "version_name": "17.4.0",
+            "channel": "xiaomi" if self.platform == "Android" else "App Store",
+            "update_version_code": "170400",
+            "dpi": "320",
+            "mcc_mnc": "46001",
+            # 匿名：不携带任何账号相关字段（无 cookie / 无 session）
+        }
+
+    def to_mobile_headers(self, referer: str = "https://aweme.snssdk.com/") -> dict:
+        """移动端请求头（真·移动 API 用）。"""
+        return {
+            "user-agent": self.ua,
+            "accept": "application/json",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "referer": referer,
         }
 
     # ====================================================================
@@ -396,6 +482,33 @@ class AnonFingerprint:
         part2 = "".join(random.choices(chars, k=60))
         part3 = "".join(random.choices(chars, k=22))
         return part1 + part2 + part3
+
+    # ── 移动端设备注册参数生成器（★ 2026-10-02 新增）──────────────────
+    # 依据上游情报（GitHub 开源项目真实移动端 URL 取样）：
+    #   iid=69281070982        → 11 位数字（安装实例 ID）
+    #   device_id=67022866585  → 11 位数字（设备 ID）
+    #   openudid=4a5a6ac011d51959 → 16 位小写 hex
+    #   uuid=865990032676740   → 15 位数字
+
+    @staticmethod
+    def _gen_iid() -> str:
+        """生成 iid（安装实例 ID，11 位数字）。"""
+        return "".join(random.choices(string.digits, k=11))
+
+    @staticmethod
+    def _gen_device_id() -> str:
+        """生成 device_id（设备 ID，11 位数字）。"""
+        return "".join(random.choices(string.digits, k=11))
+
+    @staticmethod
+    def _gen_openudid() -> str:
+        """生成 openudid（16 位小写 hex）。"""
+        return "".join(random.choices("0123456789abcdef", k=16))
+
+    @staticmethod
+    def _gen_uuid() -> str:
+        """生成 uuid（15 位数字）。"""
+        return "".join(random.choices(string.digits, k=15))
 
 
 def get_anon_fingerprint(mobile: Optional[bool] = None) -> AnonFingerprint:
