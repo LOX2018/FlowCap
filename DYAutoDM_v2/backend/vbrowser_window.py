@@ -219,7 +219,9 @@ async def _minimize_window(context):
             logger.info("[vbrowser] 窗口已最小化到任务栏（有头特征保留，风控对齐）")
         finally:
             try: await session.detach()
-            except Exception: pass
+            except Exception as e:
+                # 🔴 2026-10-01 修复：静默兜底改为可观测日志
+                logger.debug(f"[vbrowser] session.detach 失败: {e}")
     except Exception as e:
         logger.warning(f"[BCC-035] " + f"[vbrowser] 窗口最小化失败（不阻塞启动）: {e}")
 

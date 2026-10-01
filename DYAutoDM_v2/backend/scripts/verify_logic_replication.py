@@ -23,7 +23,8 @@ import sys
 from pathlib import Path
 
 # ── 1. 环境隔离门禁（先于任何业务导入）──────────────────────────────
-DESIGN_ROOT = r"C:\temp\dyautodm_design"
+# 🔴 2026-10-01 修复：硬编码路径改为从环境变量读取（环境隔离原则）
+DESIGN_ROOT = os.environ.get("DY_APP_ROOT", r"C:\temp\dyautodm_design")
 _SOURCE_REPO = r"C:\Users\LOX\Desktop\DYchajian\DYAutoDM_v2"
 # 2026-09-20：主分支环境 C:\temp\dyautodm_test 已废弃删除（两分支合并为
 # design/better-douyin）。隔离门禁改为防「数据落进源码树」。

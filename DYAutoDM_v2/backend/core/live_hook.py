@@ -46,13 +46,29 @@ RANK_POLL_MIN = 15         # 下限：低于此会把 reflow/info 的请求频�
 RANK_POLL_MAX = 600        # 上限：比这更慢已失去「分钟级实时」的意义（WS 增量仍即时可见）。
 
 
+# 🔴 2026-10-01 修复：配置缓存（高频路径性能优化）
+# 原实现每次调用都读两层配置（kv_store + app_config），在弹幕/点赞高频调用
+# 路径上成为性能瓶颈。改为缓存 + 显式刷新机制。
+_rank_poll_cache: Optional[int] = None
+_rank_poll_cache_ts: float = 0
+_RANK_POLL_CACHE_TTL = 30  # 缓存 30 秒
+
+
 def _rank_poll_seconds() -> int:
     """解析刷新节拍：策略层 kv `config.live[key]` → 设置页 `app_config.live[key]`
     → 常量默认 60。与 services/live_automation.py::_cfg 同构（同一优先级约定）。
 
-    任何异常/缺失一律回落 60（而非「放行”），保证零回归；并对越界值做
+    任何异常/缺失一律回落 60（而非「放行」），保证零回归；并对越界值做
     clamp 到 [15, 600] —— schema 侧的 min/max 只在 UI 写入时生效，运行期仍自守。
+
+    🔴 2026-10-01 修复：加缓存（30 TTL），避免高频路径每次读两层配置。
     """
+    global _rank_poll_cache, _rank_poll_cache_ts
+    import time as _time
+    now = _time.time()
+    if _rank_poll_cache is not None and (now - _rank_poll_cache_ts) < _RANK_POLL_CACHE_TTL:
+        return _rank_poll_cache
+
     raw = None
     try:
         from database import get_kv_json
@@ -70,8 +86,18 @@ def _rank_poll_seconds() -> int:
     try:
         val = int(raw)
     except (TypeError, ValueError):
-        return RANK_POLL_DEFAULT
-    return max(RANK_POLL_MIN, min(RANK_POLL_MAX, val))
+        val = RANK_POLL_DEFAULT
+    result = max(RANK_POLL_MIN, min(RANK_POLL_MAX, val))
+    _rank_poll_cache = result
+    _rank_poll_cache_ts = now
+    return result
+
+
+def refresh_rank_poll_cache() -> None:
+    """显式刷新配置缓存（配置变更时调用）。"""
+    global _rank_poll_cache, _rank_poll_cache_ts
+    _rank_poll_cache = None
+    _rank_poll_cache_ts = 0
 
 
 class LiveChatHook(DouyinLive):

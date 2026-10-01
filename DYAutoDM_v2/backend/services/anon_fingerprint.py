@@ -381,9 +381,21 @@ class AnonFingerprint:
 
     @staticmethod
     def _gen_msToken() -> str:
-        """生成 msToken（107 字符）。"""
+        """生成 msToken（107 字符）。
+
+        🔴 2026-10-01 修复：参考真实 msToken 格式生成（来自上游情报）。
+        真实 msToken 通常包含：
+        - 前缀部分（约 20-30 字符）
+        - 中间随机部分（约 60-70 字符）
+        - 后缀部分（约 10-20 字符）
+        字符集：字母 + 数字 + "="
+        """
+        # 三段式结构，更接近真实 msToken 格式
         chars = string.ascii_letters + string.digits + "="
-        return "".join(random.choices(chars, k=107))
+        part1 = "".join(random.choices(chars, k=25))
+        part2 = "".join(random.choices(chars, k=60))
+        part3 = "".join(random.choices(chars, k=22))
+        return part1 + part2 + part3
 
 
 def get_anon_fingerprint(mobile: Optional[bool] = None) -> AnonFingerprint:

@@ -116,11 +116,14 @@ def handle(conn, kill_after):
                     return
                 else:
                     received["other"] += 1
-    except Exception:
-        pass
+    except Exception as e:
+        # 🔴 2026-10-01 修复：静默兜底改为可观测日志（项目铁律：静默兜底是故障隐藏层）
+        import logging
+        logging.getLogger(__name__).debug(f"[verify_ws_link] WebSocket 验证异常: {e}")
     finally:
         try: conn.close()
-        except Exception: pass
+        except Exception:
+            pass
 
 
 PORT = 8901

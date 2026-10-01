@@ -672,7 +672,12 @@ def _enhance_from_live(name: str, env_path: str, handle: dict, st: dict) -> str:
         return ck, keys, wp
 
     try:
-        ck, keys, wp = asyncio.run(_read())
+        # 🔴 2026-10-01 修复：asyncio.run() 在 async 函数内调用会导致
+        # "This event loop is already running" RuntimeError。
+        # 改为在新线程中运行，隔离事件循环。
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            ck, keys, wp = _pool.submit(asyncio.run, _read()).result()
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[scan] 账号 {name} 增强落盘读取不可用（保持既有契约）: {e}")
         return "skipped"
