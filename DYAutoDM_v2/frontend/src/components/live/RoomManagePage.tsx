@@ -5,13 +5,13 @@
  *
  * 用户要求：在「直播间」板块按现有「配置管理（管理策略）」的样式**复刻一个
  * 「直播间管理」按钮**，点开的管理页用于：
- *   填直播间链接 → **自动解析出房间** + 备注 + **绑定直播策略** + **是否支持脱敏**。
+ *   填直播间链接 → **自动解析出房间** + 备注 + **绑定参数标签** + **是否支持脱敏**。
  *
  * ## 与「管理策略」的分工（**房间与策略分离**，勿混）
  *
  * | 层 | 载体 | 内容 |
  * |---|---|---|
- * | **策略**（怎么发） | `RoomConfigPage.tsx` → kv `live_room_configs` | 发送参数，零身份 |
+ * | **策略**（怎么发） | **参数标签**（配置中心 → 配置标签） | 发送参数，零身份 |
  * | **房间**（在哪发） | **本页** → kv `live_rooms` | 身份 + `strategy_id` 引用 + 脱敏开关 |
  *
  * 一份策略可被多个房间**引用**；删除策略时后端**自动解绑**引用它的房间
@@ -24,7 +24,7 @@
  */
 import { useEffect, useState } from "react";
 import { X, Search, Loader2, AlertTriangle } from "lucide-react";
-import { api, LiveRoom, RoomConfig, DiscoveredRoom, ConfigTagSummary } from "../../api/client";
+import { api, LiveRoom, DiscoveredRoom, ConfigTagSummary } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -41,6 +41,10 @@ interface Props {
   onChanged?: () => void;
   /** 选用某房间（把房间号回填直播页输入框） */
   onPick?: (room: LiveRoom) => void;
+  /** 2026-10-02：直播搜索需登录态凭证 —— 由父页传入当前选中账号。
+   *  此前未传 ⇒ 后端 get_auth_for(...,"") 取不到凭证 ⇒ 503「需登录态凭证」，
+   *  而页面又无账号选择器，用户「明明选了账号」却必然报错。 */
+  acct?: string | null;
 }
 
 /** 新房间草稿：**不含策略参数**（那是策略层的事） */
@@ -53,9 +57,8 @@ const EMPTY_DRAFT: Partial<LiveRoom> = {
   allow_desensitized: false,
 };
 
-export default function RoomManagePage({ open, onClose, push, onChanged, onPick }: Props) {
+export default function RoomManagePage({ open, onClose, push, onChanged, onPick, acct }: Props) {
   const [items, setItems] = useState<LiveRoom[]>([]);
-  const [strategies, setStrategies] = useState<RoomConfig[]>([]);
   /** 房间级标签候选（ADR-018 F1-D1）。与「策略」并列：策略管怎么发，标签管用哪套参数。 */
   const [tags, setTags] = useState<ConfigTagSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -86,14 +89,12 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
     setLoading(true);
     Promise.all([
       api.listLiveRooms(),
-      api.listRoomConfigs(),
       // 标签加载失败**不阻断**房间列表（标签是增强项，房间管理是主线）：
       // 用 catch 兜成空数组，而不是让整个 Promise.all 挂掉。
       api.listTags().catch(() => ({ ok: false, tags: [], bindings: {} })),
     ])
-      .then(([rooms, cfgs, tg]) => {
+      .then(([rooms, tg]) => {
         setItems(rooms.items || []);
-        setStrategies(cfgs.items || []);
         setTags((tg as { tags?: ConfigTagSummary[] }).tags || []);
       })
       .catch((e: unknown) => push("加载直播间失败: " + errMsg(e)))
@@ -179,12 +180,6 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
     setDirty(false);
   };
 
-  const strategyName = (sid: string): string => {
-    if (!sid) return "";
-    const c = strategies.find((x) => String(x.id || x.room_id || "") === sid);
-    return c?.name || sid;
-  };
-
   /** F5：按关键词**只读**搜索直播间（后端 /discover，不写库） */
   const doSearch = () => {
     const kw = q.trim();
@@ -196,7 +191,8 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
     setBlocked("");
     setFound(null);
     api
-      .discoverLiveRooms(kw, undefined, 20)
+      // 2026-10-02 修复：必须传账号（直播搜索需登录态凭证）；此前传 undefined ⇒ 必然 503
+      .discoverLiveRooms(kw, acct || undefined, 20)
       .then((r) => {
         if (!r.ok) {
           push("搜索失败: " + (r.error || "未知错误"));
@@ -243,37 +239,6 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
       })
       .catch((e: unknown) => push("上架异常: " + errMsg(e)))
       .finally(() => setShelving(""));
-  };
-
-  /** 一次性迁移：干跑 → 用户确认 → 应用（ADR-003 §3.5，迁移必须可复现且留日志） */
-  const migrate = (dryRun: boolean) => {
-    api
-      .migrateLiveRooms(dryRun)
-      .then((r) => {
-        if (!r.ok) {
-          push("迁移失败: " + (r.error || "未知错误"));
-          return;
-        }
-        const found = r.found || [];
-        if (dryRun) {
-          push(
-            found.length
-              ? `干跑：发现 ${found.length} 条「房间形」旧记录（${found.join("、")}）。点「应用迁移」执行。`
-              : "干跑：未发现需要迁移的旧记录。",
-            found.length ? 8000 : 5000,
-          );
-        } else {
-          push(
-            `迁移完成：房间 ${(r.migrated_rooms || []).length} 条、` +
-              `承接策略 ${(r.created_strategies || []).length} 条、` +
-              `清理旧键 ${(r.removed_config_keys || []).length} 个`,
-            8000,
-          );
-          load();
-          onChanged?.();
-        }
-      })
-      .catch((e: unknown) => push("迁移异常: " + errMsg(e)));
   };
 
   if (!open) return null;
@@ -421,24 +386,6 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
             <div className="mb-2 flex items-center gap-2 text-[0.78rem] font-semibold
                             text-[var(--color-text)]">
               <span>已登记直播间（{items.length}）</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="room-migrate-dry"
-                title="干跑：只报告将迁移哪些旧记录，不写库"
-                onClick={() => migrate(true)}
-              >
-                扫描旧记录
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-od-id="room-migrate-apply"
-                title="把「房间形」旧策略记录迁移为直播间登记（不丢信息）"
-                onClick={() => migrate(false)}
-              >
-                应用迁移
-              </Button>
             </div>
             {loading && (
               <div className="text-[0.74rem] text-[var(--color-text-muted)]">加载中…</div>
@@ -489,12 +436,10 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
                   </div>
                   <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
                     房间 {room.room_id || "—"}
-                    {room.strategy_id
-                      ? ` · 策略:${strategyName(room.strategy_id)}`
-                      : " · 未绑定策略"}
+                    {/* 2026-10-02：策略真源 = 参数标签（房间级策略已下线）。 */}
                     {room.tag_id
                       ? ` · 标签:${tags.find((t) => t.id === room.tag_id)?.name || room.tag_id}`
-                      : ""}
+                      : " · 跟随账号/板块"}
                   </div>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => { onPick?.(room); onClose(); }}>
@@ -549,28 +494,10 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
                 data-od-id="room-name"
               />
             </div>
-            <div className="flex flex-col gap-1">
-              <label>绑定直播策略</label>
-              <Select
-                value={draft.strategy_id || "__none__"}
-                onValueChange={(v) => touch({ strategy_id: v === "__none__" ? "" : v })}
-              >
-                <SelectTrigger data-od-id="room-strategy">
-                  <SelectValue placeholder="未绑定" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">未绑定</SelectItem>
-                  {strategies.map((c) => {
-                    const sid = String(c.id || c.room_id || "");
-                    return (
-                      <SelectItem key={sid} value={sid}>
-                        {c.name || sid}
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* 2026-10-02（用户定调「策略以标签为主」）：原策略下拉已**移除** ——
+                房间级策略（live_room_configs / RoomConfigPage）已下线，
+                策略唯一真源 = 下方「绑定参数标签」。
+                ⚠️ 此处刻意不写该控件旧名，避免污染门禁的 grep 判据。 */}
 
             {/* ★ ADR-018 F1-D1（2026-09-27）：房间级标签绑定。
                 语义与「策略」不同 —— 策略 = 怎么发；标签 = 用哪一套参数集。

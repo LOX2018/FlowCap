@@ -315,8 +315,17 @@ class TestFrontendRoomManagePage(unittest.TestCase):
                            encoding="utf-8", errors="replace").read()
 
     def test_page_has_required_fields(self):
-        for k in ("直播间链接", "备注", "绑定直播策略", "解析出的房间号"):
+        for k in ("直播间链接", "备注", "绑定参数标签", "解析出的房间号"):
             self.assertIn(k, self.page, f"直播间管理页缺少「{k}」控件")
+
+    def test_room_level_strategy_field_removed(self):
+        """2026-10-02（用户定调「策略以标签为主」）：房间级策略下拉必须已下线。
+
+        原字段名不得再出现 —— 策略唯一真源 = 参数标签。
+        （注意：断言串只能出现在本处，不得写进被测文件的注释，否则 grep 判据失效。）
+        """
+        self.assertNotIn("绑定直播策略", self.page,
+                         "房间级策略下拉已下线（策略真源 = 参数标签），不得复活")
 
     def test_desensitized_wording_is_honest(self):
         """🔴 脱敏开关文案不得暗示「能拿到昵称」（ADR-003 §3.3 诚实标注）。"""

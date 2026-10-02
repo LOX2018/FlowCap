@@ -625,6 +625,9 @@ export default function LivePage(props: PageProps) {
         open={roomMgr}
         onClose={() => setRoomMgr(false)}
         push={push}
+        /* 2026-10-02 修复：直播搜索需登录态凭证 —— 把当前选中账号传进去，
+           否则后端 get_auth_for(...,"") 取不到凭证 ⇒ 搜索必然 503。 */
+        acct={activeAcct}
         onPick={(r: LiveRoom) => {
           // 「选用」＝把房间号回填到直播页输入框（房间层只提供身份，不需选策略）
           if (r.room_id) setRoom(r.room_id);
