@@ -52,7 +52,10 @@ export const KIND_NAME: Record<string, string> = {
 /** @deprecated 导航已由 `components/layout/sidebar.tsx` 接管（含 kb/notify）。仅少数旧调用点仍引用。 */
 export const TABS: [string, string][] = [
   ["overview", "总览"],
-  ["crawl", "采集"],
+  // ★ ADR-034（2026-10-03）：「采集」不再是独立视图（已并入 platform 的 tab），
+  //   移除该入口，避免本副本渲染出点不动/回落的死链。
+  ["platform", "内容"],
+  ["stats", "统计"],
   ["live", "直播监听"],
   ["msg", "私信"],
   ["accounts", "账号管理"],

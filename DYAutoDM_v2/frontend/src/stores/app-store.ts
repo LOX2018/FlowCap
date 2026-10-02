@@ -34,6 +34,9 @@
  *   · 子页面从 props 拿到的 `setTab` 类型仍兼容
  */
 import { create } from "zustand";
+// ★ ADR-034（2026-10-03）：视图集合改为**派生自 sidebar 的 TabId**（单一真源），
+//   消除「两份 SSOT 漂移」——旧副本漏了 stats 却被 `setView` 当白名单 ⇒ 点统计回落总览。
+import type { TabId } from "@/components/layout/sidebar";
 
 /** 源项目 better-douyin 的视图集合（照抄，供对照与未来对齐）。 */
 export const SOURCE_VIEWS = [
@@ -42,21 +45,21 @@ export const SOURCE_VIEWS = [
   "automation", "settings",
 ] as const;
 
-/** 本项目当前视图集合（= 源项目 11 视图的**超集**，独有视图并列保留）。 */
-export type ViewType =
-  // ── 本项目独有（源项目无对应，按「只对齐结构、保留独有能力」契约保留）──
-  | "overview"     // 总览
-  | "msg"          // 私信
-  | "live"         // 直播
-  | "crawl"        // 采集
-  | "platform"     // 内容
-  | "kb"           // 知识库
-  | "accounts"     // 账号
-  | "tasks"        // 任务
-  | "notify"       // 通知
-  | "logs"         // 日志
-  // ── 与源项目重合 ──
-  | "settings";    // 设置／配置中心
+/**
+ * 本项目视图集合 = **sidebar 的 TabId**（单一真源）。
+ *
+ * 🔴 2026-10-03（ADR-034 缺陷修复）：此前本文件**另立一份**视图枚举
+ * （含已撤的 `crawl`、缺新增的 `stats`），而 `readStoredView()` 与
+ * `setView()` 都拿 `VIEW_TITLE` 当运行时白名单 ⇒ 点「统计」时 `stats`
+ * 不在白名单 ⇒ **被静默回落成 `DEFAULT_VIEW`（总览）**。
+ * 实测症状：点击导航「统计」后仍显示总览，统计页永远打不开。
+ *
+ * 根因不是漏加一个键，而是**同一份「有哪些视图」维护在两处**：
+ * `components/layout/sidebar.tsx::TabId`（导航真源）与本文件（旧副本）。
+ * 修法不是把 `stats` 补进来（那样下次再加页又会漏），而是**让本文件
+ * 直接派生自 TabId** ⇒ 增删导航项时本文件自动跟随，不可能再漂。
+ */
+export type ViewType = TabId;
 
 /** 视图持久化键（与原 App.tsx 一致，**不可改**，否则用户选择丢失）。 */
 export const VIEW_STORAGE_KEY = "dy:tab";
@@ -69,9 +72,13 @@ export const VIEW_TITLE: Record<ViewType, string> = {
   overview: "总览",
   msg: "私信",
   live: "直播",
-  crawl: "采集",
+  // ★ ADR-034（2026-10-03）：「采集」不再是独立视图（已并入 platform 的 tab），
+  //   故从本表移除（它是 `Record<ViewType,…>` 的穷举键，多一个键即类型错误）。
   platform: "内容",
   kb: "知识库",
+  // ★ ADR-034：统计页为独立只读看板（非总览的下游），必须有独立标题，
+  //   否则 `TITLE_OF` 会因 `hasOwnProperty` 落空而回落「控制台」。
+  stats: "统计",
   accounts: "账号",
   tasks: "任务",
   notify: "通知",

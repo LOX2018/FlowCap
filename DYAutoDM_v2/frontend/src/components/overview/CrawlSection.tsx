@@ -162,10 +162,14 @@ export default function CrawlSection({
               {props.setTab ? (
                 <button
                   type="button"
-                  onClick={() => props.setTab!("crawl")}
+                  // ★ ADR-034（2026-10-03）：「采集」不再是独立视图（已并入 platform 的
+                  //   「采集」tab），setTab("crawl") 会被 app-store 的白名单静默回落成
+                  //   「总览」——实测症状：点「去采集页」却回到总览，等于按钮失效。
+                  //   故改指「内容」页（内容总览的最后一个 tab 即采集）。
+                  onClick={() => props.setTab!("platform")}
                   className="inline-flex items-center gap-1 text-[0.72rem] text-[var(--color-text-muted)] underline-offset-2 hover:underline"
                 >
-                  去采集页
+                  去内容页采集
                   <ArrowUpRight className="h-3 w-3" />
                 </button>
               ) : null}
