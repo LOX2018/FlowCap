@@ -146,13 +146,29 @@ def _install_auth(L):
 
 
 def _install_room_probe(info=None, raise_exc=False):
-    """打桩真实 room_id 探测（`get_live_info`），绝不出网。
+    """打桩真实 room_id 探测，**绝不出网**。
 
     info: 探测返回的 dict（None=空）; raise_exc=True 时抛异常。
+
+    ★ 2026-10-02 同步：`api/live.py::resolve_live` 的探测点已由
+    `DouyinAPI.get_live_info(auth, ...)`（带凭证）迁移到
+    `core.live_hook.anon_live_info(live_id)`（匿名，ENG-023）。
+    故桩**两处都打**：
+      · 打 `core.live_hook.anon_live_info` —— resolve 现在真正走这条；
+      · 打 `DouyinAPI.get_live_info` —— 保留兼容，写接口侧
+        （`_live_chat_room_id` 归一化）仍可能走它。
+    只打一处会让另一条链路打空气（门禁失真）。
     """
     import dy_apis.douyin_api as dapi
+    import core.live_hook as lh
     _ensure_snapshot()
     _SNAPSHOT["patched"] = True
+
+    def _stub_anon(live_id, **kwargs):
+        _NET.probes += 1
+        if raise_exc:
+            raise RuntimeError("探测异常（桩）")
+        return info
 
     def _stub(auth, live_id, **kwargs):
         _NET.probes += 1
@@ -160,8 +176,8 @@ def _install_room_probe(info=None, raise_exc=False):
             raise RuntimeError("探测异常（桩）")
         return info
 
+    lh.anon_live_info = _stub_anon
     dapi.DouyinAPI.get_live_info = staticmethod(_stub)
-
 
 def _install_send_stub(mode="ok", status_code=0):
     """打桩 sendMsgInRoom；记录写接口**实际收到**的 room_id。"""

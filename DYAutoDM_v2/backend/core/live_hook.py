@@ -51,6 +51,85 @@ RANK_POLL_MAX = 600        # 上限：比这更慢已失去「分钟级实时」
 # 路径上成为性能瓶颈。改为缓存 + 显式刷新机制。
 _rank_poll_cache: Optional[int] = None
 _rank_poll_cache_ts: float = 0
+def anon_live_info(live_id: str) -> dict:
+    """**匿名**获取直播间信息（room_id / ttwid / 开播状态）。
+
+    2026-09-21（ENG-017）起源：``LiveChatHook._anon_live_info`` —— 不走
+    ``DouyinAPI.get_live_info``（该函数签名要求 ``auth_`` 非空，内部
+    ``cookies=auth_.cookie``，传 None 会 ``AttributeError``）。这里自建等价的
+    匿名请求：GET 直播间页面 → 响应里取 ttwid、页面里正则取
+    room_id/user_id/status。全程**不带任何账号身份**（ttwid 为服务端下发的
+    设备级标识），属匿名观看，不触碰账号风控面。
+
+    实测：匿名 GET → HTTP 200、~905KB、含 roomId / ttwid(127)。
+
+    ## ★ 2026-10-02 提取为模块级函数（SSOT 归位）
+
+    此前它是 ``LiveChatHook`` 的**实例方法**，只有监听链路能用；
+    ``api/live.py::resolve_live`` 因「``/api/live/resolve`` 在
+    ``ANON_ENDPOINTS`` ⇒ ``get_auth_for`` 返回 None ⇒ ``if _auth is not None``
+    恒 False」而**整段跳过探测**，导致 ``liveRoomId`` 恒为空（门禁
+    ``test_resolve_persists_authoritative_room_id`` 实测 FAIL）。
+
+    根因不是「匿名拿不到 room_id」，而是**「匿名」被实现成了「不探测」**——
+    策略层（auth_policy）与实现层（live_hook）对同一个词的语义不一致。
+    知识库 ENG-023 已判定：直播探活**必须**匿名（带凭证在降权账号下会返回
+    错误 status='4'，误判下播）。
+
+    故把既有实现提取到模块级，供 resolve 与监听**共用同一份逻辑**
+    （不自造第二份，避免两处再次漂移）。
+    """
+    import re as _re
+    import requests
+    from builder.header import HeaderBuilder
+    from utils.dy_util import tls_verify
+
+    if not live_id:
+        return {}
+    url = f"https://live.douyin.com/{live_id}"
+    sess = requests.Session()
+    r = sess.get(url, headers={
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "zh-CN,zh;q=0.9",
+        "cache-control": "no-cache",
+        "referer": "https://live.douyin.com/?from_nav=1",
+        "user-agent": HeaderBuilder.ua,
+    }, timeout=20, verify=tls_verify())
+    if r.status_code != 200:
+        logger.error(f"[LIVE-031] " + f"[anon-live-info] 匿名进房失败 HTTP {r.status_code}")
+        return {}
+    ttwid = (sess.cookies.get_dict() or {}).get("ttwid") or ""
+
+    # 页面脚本里取 room_id / user_id / status（与官方解析同源，但匿名）
+    room_id = user_id = status = None
+    for m in _re.finditer(r'\\"roomId\\":\\"(\d+)\\"', r.text):
+        room_id = m.group(1)
+        break
+    if not room_id:
+        m = _re.search(r'"roomId"\s*:\s*"(\d+)"', r.text)
+        if m:
+            room_id = m.group(1)
+    m = _re.search(r'\\"user_unique_id\\":\\"(\d+)\\"', r.text) or \
+        _re.search(r'"user_unique_id"\s*:\s*"(\d+)"', r.text)
+    if m:
+        user_id = m.group(1)
+    m = _re.search(r'\\"status\\":(\d+)', r.text)
+    if m:
+        status = m.group(1)
+
+    if not room_id:
+        logger.error(f"[LIVE-032] " + "[anon-live-info] 匿名进房未解析出 room_id"
+                     "（页面结构可能变更 / 直播间不存在）")
+        return {}
+    return {
+        "room_id": room_id,
+        "user_id": user_id,
+        "ttwid": ttwid,
+        "room_status": int(status) if status is not None else None,
+        "room_title": "",
+    }
+
+
 _RANK_POLL_CACHE_TTL = 30  # 缓存 30 秒
 
 
@@ -707,63 +786,13 @@ class LiveChatHook(DouyinLive):
     def _anon_live_info(self) -> dict:
         """匿名获取直播间信息（room_id / ttwid / 开播状态）。
 
-        2026-09-21（ENG-017）：**不走 `DouyinAPI.get_live_info`** ——
-        该函数签名要求 `auth_` 非空（内部 `cookies=auth_.cookie`），传 None 会
-        `AttributeError`；而它是并发写者正在维护的文件，本会话不叠加改动。
-
-        这里自建等价的匿名请求：GET 直播间页面 → 响应里取 ttwid、页面里正则取
-        room_id/user_id/status。全程**不带任何账号身份**（ttwid 为服务端
-        下发的设备级标识），属匿名观看，不触碰账号风控面。
-
-        实测（本会话）：匿名 GET → HTTP 200、~905KB、含 roomId / ttwid(127)。
+        ★ 2026-10-02：实现已提取为**模块级** ``anon_live_info(live_id)``，
+        供 ``api/live.py::resolve_live`` 与本监听链路**共用同一份逻辑**。
+        （此前只有监听链路能用；而 resolve 因「匿名 ⇒ 无凭证 ⇒ 跳过探测」
+        导致 liveRoomId 恒空 —— 同一个词在策略层与实现层语义不一致。）
+        本方法保留为薄封装以兼容既有调用方，**勿在此另写一份实现**。
         """
-        import re as _re
-        import requests
-        from builder.header import HeaderBuilder
-        from utils.dy_util import tls_verify
-
-        url = f"https://live.douyin.com/{self.live_id}"
-        sess = requests.Session()
-        r = sess.get(url, headers={
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "accept-language": "zh-CN,zh;q=0.9",
-            "cache-control": "no-cache",
-            "referer": "https://live.douyin.com/?from_nav=1",
-            "user-agent": HeaderBuilder.ua,
-        }, timeout=20, verify=tls_verify())
-        if r.status_code != 200:
-            logger.error(f"[LIVE-031] " + f"[live-ws] 匿名进房失败 HTTP {r.status_code}")
-            return {}
-        ttwid = (sess.cookies.get_dict() or {}).get("ttwid") or ""
-
-        # 页面脚本里取 room_id / user_id / status（与官方解析同源，但匿名）
-        room_id = user_id = status = None
-        for m in _re.finditer(r'\\"roomId\\":\\"(\d+)\\"', r.text):
-            room_id = m.group(1)
-            break
-        if not room_id:
-            m = _re.search(r'"roomId"\s*:\s*"(\d+)"', r.text)
-            if m:
-                room_id = m.group(1)
-        m = _re.search(r'\\"user_unique_id\\":\\"(\d+)\\"', r.text) or \
-            _re.search(r'"user_unique_id"\s*:\s*"(\d+)"', r.text)
-        if m:
-            user_id = m.group(1)
-        m = _re.search(r'\\"status\\":(\d+)', r.text)
-        if m:
-            status = m.group(1)
-
-        if not room_id:
-            logger.error(f"[LIVE-032] " + "[live-ws] 匿名进房未解析出 room_id"
-                         "（页面结构可能变更 / 直播间不存在）")
-            return {}
-        return {
-            "room_id": room_id,
-            "user_id": user_id,
-            "ttwid": ttwid,
-            "room_status": int(status) if status is not None else None,
-            "room_title": "",
-        }
+        return anon_live_info(self.live_id)
 
     def _anon_cookie(self) -> str:
         """无凭证时用于建立 WS 的匿名 cookie（页面侧下发的 ttwid）。

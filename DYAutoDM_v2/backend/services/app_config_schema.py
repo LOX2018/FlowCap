@@ -994,6 +994,13 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "env": "DY_CRAWL_ANON_PREVIEW_MAX_WORKS", "apply": "hot",
                 "hint": "预览作品上限"
             },
+            # ★ 2026-10-02：批量采集/私信的高价值关键词最低得分门槛
+            "batch_min_score": {
+                "label": "批量采集·高价值门槛", "type": "int", "default": 0,
+                "min": 0, "max": 100,
+                "env": "DY_CRAWL_BATCH_MIN_SCORE", "apply": "hot",
+                "hint": "0=不过滤"
+            },
         },
     },
 }

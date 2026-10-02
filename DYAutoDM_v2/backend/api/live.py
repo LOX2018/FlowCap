@@ -512,14 +512,24 @@ async def resolve_live(body: ResolveRequest):
     # 故在**解析侧**就把权威 room_id 一并落库（写接口无需每次多打一次网去探测）。
     # 探测失败**不影响解析结果**（写接口侧仍有 `_live_chat_room_id` 兜底归一化）。
     _real_room_id = ""
+    # ★ 2026-10-02 修复（复用既有能力，非新增出网逻辑）：走**匿名**进房探测。
+    #
+    # 此前此处是 `if _auth is not None:` 门禁 —— 而 `/api/live/resolve` 在
+    # `auth_policy.ANON_ENDPOINTS` 里（ENG-023：直播探活**必须**匿名，带凭证在
+    # 降权账号下会返回错误 status='4'、误判下播）⇒ `get_auth_for` 恒返回 None
+    # ⇒ **探测整段被跳过** ⇒ `liveRoomId` 恒空、权威 `live_room_id` 不落库
+    # （门禁 test_resolve_persists_authoritative_room_id 实测 FAIL）。
+    #
+    # 即「匿名」被实现成了「不探测」—— 策略层与实现层语义不一致。现直接复用
+    # `core/live_hook.anon_live_info`（即监听链路 ENG-017 的同一份实现），
+    # 既满足 ENG-023，又让两条链路共用一份逻辑，杜绝再次漂移。
+    #
+    # 探测失败**不影响解析结果**（写接口侧仍有 `_live_chat_room_id` 兜底归一化）。
     try:
-        from dy_apis.douyin_api import DouyinAPI
-        from services.auth_policy import get_auth_for
-        _auth = get_auth_for("/api/live/resolve", _acct or "")
-        if _auth is not None:
-            _info = DouyinAPI.get_live_info(_auth, live_id)
-            if isinstance(_info, dict):
-                _real_room_id = str(_info.get("room_id") or "").strip()
+        from core.live_hook import anon_live_info
+        _info = anon_live_info(live_id)
+        if isinstance(_info, dict):
+            _real_room_id = str(_info.get("room_id") or "").strip()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[resolve] 真实 room_id 探测失败（不影响解析）: {e}")
 

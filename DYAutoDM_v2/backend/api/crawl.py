@@ -27,6 +27,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from database import exec_modify, exec_query
+from services import high_value_keywords as _hv
 
 router = APIRouter()
 
@@ -59,11 +60,17 @@ class CrawlCommentsBatchRequest(BaseModel):
 
     只**采集**，不发送（与 `/batch` 的「采集+私信」语义分开，避免误触发写操作）。
     刻意**串行 + 间隔**（配置中心 `crawl.batch_interval`），不开并发。
+
+    ★ 2026-10-02 改造：
+      · `min_score` > 0 时，只保留关键词权重得分 >= min_score 的评论（高价值过滤）。
+      · 只保留有效 UID（uid 非空）的评论。
+      · 支持通过 `/comments/batch/cancel` 终止正在进行的批量采集。
     """
     account: str
     aweme_ids: list[str] = []
     limit: int = 100             # 每作品评论上限
     count: int = 0               # 单页条数（0=配置中心值）
+    min_score: int = 0           # 高价值关键词最低得分（0=不过滤）
 
 
 class CrawlDmRequest(BaseModel):
@@ -182,7 +189,7 @@ def _map_comment(c: dict) -> dict:
 #     （知识库 2483 封禁 / cmd609 只读态先例）。
 # 取值一律走配置中心（可观测、可调、可回滚），代码不写死。
 _CRAWL_FALLBACK = {"comment_page_count": 20, "batch_interval": 1.5,
-                   "batch_max_works": 20}
+                   "batch_max_works": 20, "batch_min_score": 0}
 
 
 def _crawl_cfg(key: str, account: str = ""):
@@ -419,6 +426,11 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
     ## 失败隔离
     单个作品失败**不**中断整批：该作品记 `status="failed"` 并继续下一个；
     每作品成功数进 `per_work`，总数进 `total_comments`。**不**把失败静默成 0 条。
+
+    ★ 2026-10-02 改造：
+      · `min_score` > 0 时，只保留关键词权重得分 >= min_score 的评论（高价值过滤）。
+      · 只保留有效 UID（uid 非空）的评论。
+      · 支持通过 `/comments/batch/cancel` 终止正在进行的批量采集。
     """
     ids: list[str] = []
     seen: set[str] = set()
@@ -436,18 +448,37 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
     interval = max(0.0, float(_crawl_cfg("batch_interval", body.account)))
     limit = max(1, min(int(body.limit or 100), 300))
     count = _page_count(body.count, body.account)
+    min_score = max(0, int(body.min_score or 0))
 
     auth = _load_auth(body.account)
 
+    # ★ 2026-10-02：取消标志（按账号隔离）
+    cancel_key = f"batch_cancel:{body.account}"
+    _batch_cancel_flags.discard(cancel_key)
+
     per_work: list[dict] = []
     total = 0
+    cancelled = False
     for i, aweme_id in enumerate(ids):
+        # 检查取消标志
+        if cancel_key in _batch_cancel_flags:
+            cancelled = True
+            logger.info(f"[crawl] 批量采集被用户终止 account={body.account} "
+                        f"已完成 {i}/{len(ids)}")
+            break
         if i:
             await asyncio.sleep(interval)   # ★ 串行节流（配置中心可调）
         try:
             raw = await asyncio.to_thread(
                 _fetch_work_comments, auth, aweme_id, limit, count)
             items = [_map_comment(c) for c in raw]
+            # ★ 2026-10-02：只保留有效 UID
+            items = [c for c in items if c.get("uid")]
+            # ★ 2026-10-02：高价值关键词过滤
+            if min_score > 0:
+                scope = _hv_scope(body.account)
+                items = [c for c in items
+                         if _hv.score_text(c.get("text", ""), scope) >= min_score]
             total += len(items)
             per_work.append({"aweme_id": aweme_id, "status": "ok",
                              "count": len(items), "items": items})
@@ -462,9 +493,36 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
 
     ok_works = sum(1 for w in per_work if w["status"] == "ok")
     logger.info(f"[crawl] 批量采集完成 account={body.account} "
-                f"作品 {ok_works}/{len(ids)} 成功，共 {total} 条评论")
+                f"作品 {ok_works}/{len(ids)} 成功，共 {total} 条评论"
+                f"{'（已终止）' if cancelled else ''}")
     return {"ok": True, "works": len(ids), "ok_works": ok_works,
-            "total_comments": total, "per_work": per_work}
+            "total_comments": total, "per_work": per_work,
+            "cancelled": cancelled}
+
+
+# ★ 2026-10-02：批量采集取消标志集（按账号隔离）
+_batch_cancel_flags: set[str] = set()
+
+
+def _hv_scope(account: str) -> str | None:
+    """获取账号的高价值关键词标签 scope（与 crawl 配置同链路）。"""
+    try:
+        from services import config_tag
+        return config_tag.scope_of(account, "crawl") or None
+    except Exception:
+        return None
+
+
+@router.post("/comments/batch/cancel")
+async def crawl_comments_batch_cancel(body: CrawlCommentsBatchRequest):
+    """终止正在进行的批量采集（★ 2026-10-02）。
+
+    设置取消标志，批量采集循环会在下一个作品开始前检查并退出。
+    """
+    cancel_key = f"batch_cancel:{body.account}"
+    _batch_cancel_flags.add(cancel_key)
+    logger.info(f"[crawl] 批量采集终止请求 account={body.account}")
+    return {"ok": True, "message": "终止信号已发送，采集将在当前作品完成后停止"}
 
 
 class CrawlAnonPreviewRequest(BaseModel):
@@ -553,7 +611,7 @@ async def crawl_comments_anon_preview(body: CrawlAnonPreviewRequest):
 async def crawl_dm(body: CrawlDmRequest):
     """对评论/搜索结果中的用户直发私信（评论截流）。
 
-    复用 core.sender.send_by_uid：优先走 recv_daemon 统一发送闸门
+    复用 core.sender.send_by_uid：优先 recv_daemon 统一发送闸门
     （三源一配额），守护不可达时兜底本进程 imapi 直发。
     """
     uid = (body.uid or "").strip()
@@ -577,6 +635,115 @@ async def crawl_dm(body: CrawlDmRequest):
 
     logger.info(f"[crawl] 私信发送 account={body.account} uid={uid} ok={ok} reason={reason}")
     return {"ok": bool(ok), "reason": reason}
+
+
+class CrawlDmBatchRequest(BaseModel):
+    """批量私信（★ 2026-10-02）：从已采集评论中筛选候选并逐条发送。
+
+    与 `/batch` 的区别：`/batch` 会重新采集评论，本端点接收前端已采集的
+    评论数据，只负责筛选 + 发送。筛选逻辑（高价值关键词）在后端执行，
+    避免前端与后端两套筛选逻辑的契约漂移。
+    """
+    account: str
+    text: str
+    items: list[dict] = []  # [{uid, nickname, text}, ...]
+    min_score: int = 0      # 高价值关键词最低得分（0=不过滤）
+    max_send: int = 0       # 最多发 N 条（0=不限）
+    interval: float = 0.0   # 每条之间额外间隔秒
+
+
+@router.post("/dm/batch")
+async def crawl_dm_batch(body: CrawlDmBatchRequest):
+    """批量私信：从已采集评论中按高价值关键词筛选候选，逐条发送（★ 2026-10-02）。
+
+    筛选逻辑在后端执行（SSOT），发送走统一发送闸门（core.sender.send_by_uid）。
+    """
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "缺少私信文案")
+    if not body.items:
+        raise HTTPException(400, "缺少评论数据")
+
+    auth = _load_auth(body.account)
+    try:
+        auth.account_name = body.account
+    except Exception:
+        pass
+
+    from core.sender import send_by_uid
+
+    # ★ 2026-10-02：高价值关键词筛选（门槛 > 0 时生效）
+    #
+    # 🔴 SSOT 归位（2026-10-02 审计发现契约漂移）：此前门槛只认**请求体**
+    # `min_score`，而前端恒传 `min_score: 0`（注释写「后端读取配置中心」
+    # 但后端从未读）⇒ 用户在配置中心把门槛调高，批量采集会过滤、批量私信
+    # **一条都不过滤**。同一语义（高价值门槛）两条路径两套实现 = 契约漂移。
+    #
+    # 现行契约：配置中心 `crawl.batch_min_score` 是**唯一权威来源**；
+    # 请求体 `min_score` **仅作为「本次覆盖」**，且**0 视为不覆盖**
+    # （否则前端每次传 0 又会把门槛踩回不过滤 —— 正是本次要消灭的缺陷）。
+    _cfg_min = _crawl_cfg("batch_min_score", body.account)
+    try:
+        _cfg_min = int(_cfg_min)
+    except (TypeError, ValueError):
+        _cfg_min = 0
+    try:
+        _req_min = int(body.min_score or 0)
+    except (TypeError, ValueError):
+        _req_min = 0
+    min_score = max(0, _cfg_min) if _req_min <= 0 else max(0, _req_min)
+    if min_score != _cfg_min:
+        logger.info(f"[crawl] 批量私信门槛由本次请求覆盖: "
+                    f"配置={_cfg_min} → 生效={min_score} account={body.account}")
+    hv_scope = _hv_scope(body.account)
+    candidates: list[dict] = []
+    seen_uid: set[str] = set()
+    for item in body.items:
+        uid = str(item.get("uid") or "").strip()
+        ctext = str(item.get("text") or "").strip()
+        if not uid or uid in seen_uid:
+            continue
+        if min_score > 0:
+            score = _hv.score_text(ctext, hv_scope)
+            if score < min_score:
+                continue
+        seen_uid.add(uid)
+        candidates.append({"uid": uid, "nickname": item.get("nickname") or "", "text": ctext})
+
+    if body.max_send > 0:
+        candidates = candidates[:body.max_send]
+
+    sent_ok = 0
+    sent_fail = 0
+    rate_limited = 0
+    results: list[dict] = []
+    for cand in candidates:
+        try:
+            ok, reason = await asyncio.to_thread(send_by_uid, auth, cand["uid"], text)
+            if ok:
+                sent_ok += 1
+            elif "rate_limited" in str(reason):
+                rate_limited += 1
+                reason = "rate_limited"
+            else:
+                sent_fail += 1
+            results.append({"uid": cand["uid"], "nickname": cand["nickname"], "ok": bool(ok), "reason": reason})
+        except Exception as e:
+            sent_fail += 1
+            results.append({"uid": cand["uid"], "nickname": cand["nickname"], "ok": False, "reason": str(e)})
+        if body.interval > 0:
+            await asyncio.sleep(body.interval)
+
+    logger.info(f"[crawl] 批量私信完成 account={body.account} "
+                f"候选={len(candidates)} 成功={sent_ok} 失败={sent_fail} 限流={rate_limited}")
+    return {
+        "ok": True,
+        "candidates": len(candidates),
+        "sent_ok": sent_ok,
+        "sent_fail": sent_fail,
+        "rate_limited": rate_limited,
+        "results": results,
+    }
 
 
 @router.post("/batch")
@@ -614,9 +781,11 @@ async def crawl_batch(body: CrawlBatchRequest):
         logger.error(f"[CRAWL-005] " + f"[crawl] 批量评论采集失败 account={body.account} aweme={aweme_id}: {e}")
         raise HTTPException(502, f"评论采集失败: {e}") from e
 
-    # 提取候选（uid 非空 + 关键词筛选）
+    # 提取候选（uid 非空 + 关键词筛选 + 高价值关键词过滤）
     candidates: list[dict] = []
     seen_uid: set[str] = set()
+    hv_min_score = max(0, int(_crawl_cfg("batch_min_score", body.account)))
+    hv_scope = _hv_scope(body.account)
     for c in raw:
         u = c.get("user") or {}
         uid = str(u.get("uid") or u.get("user_id") or "")
@@ -625,6 +794,11 @@ async def crawl_batch(body: CrawlBatchRequest):
             continue
         if kw and kw not in ctext:
             continue
+        # ★ 2026-10-02：高价值关键词过滤（min_score > 0 时生效）
+        if hv_min_score > 0:
+            score = _hv.score_text(ctext, hv_scope)
+            if score < hv_min_score:
+                continue
         seen_uid.add(uid)
         candidates.append({"uid": uid, "nickname": u.get("nickname") or "", "text": ctext})
 

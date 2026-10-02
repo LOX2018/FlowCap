@@ -69,6 +69,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 
@@ -303,15 +304,59 @@ def _pick_cover(d: dict) -> str:
     return ""
 
 
+def _unwrap_live_item(item: dict) -> dict:
+    """把「搜索条目」解包成**扁平直播字典**（2026-10-02 抖音改版适配）。
+
+    ## 背景（实机取证，2026-10-02）
+
+    `/aweme/v1/web/live/search/` 现返回 ``data[]`` 每项为::
+
+        {"type": 1, "lives": {..., "aweme_type": 101, "rawdata": "<JSON 字符串>"}}
+
+    真正的**直播间数据全在 ``lives.rawdata``**（一个 JSON 字符串），字段形如::
+
+        {"id_str": "<room_id>", "status": 2, "title": "...", "user_count": 58,
+         "owner": {"nickname": "...", "sec_uid": "..."}, "cover": {"url_list": [...]}}
+
+    ``status == 2`` 即**直播中**（与 ENG-023 判据一致）。改版前 ``data[]`` 直接就是
+    扁平直播字典 —— 故本函数**两种形态都兼容**（rawdata 优先，缺失则原样返回）。
+    """
+    if not isinstance(item, dict):
+        return {}
+    # ① 新形态：{"lives": {...}}（rawdata 是 JSON 字符串）
+    lv = item.get("lives")
+    if isinstance(lv, dict):
+        raw = lv.get("rawdata")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    # 补上 rawdata 里没有、但 lives/author 有的昵称
+                    au = lv.get("author")
+                    au = au if isinstance(au, dict) else {}
+                    if au.get("nickname"):
+                        parsed.setdefault("_author_nickname", au.get("nickname"))
+                    if au.get("sec_uid"):
+                        parsed.setdefault("_author_sec_uid", au.get("sec_uid"))
+                    return parsed
+            except Exception:  # noqa: BLE001
+                pass
+        return lv
+    # ② 旧形态：本身就是扁平直播字典
+    return item
+
+
 def _pick_live(item: dict) -> dict:
     """把平台原始直播条目压成前端够用的形状（**D7：昵称只用结果自带**）。
 
-    三种布局都兼容（上游字段命名曾多次漂移，稳妥起见逐个兜底）：
+    兼容三种布局（上游字段命名曾多次漂移）：
       · 扁平      ``{room_id, title, nickname, user_count, cover}``
       · 包 author ``{room_id, title, author:{nickname}, stats:{user_count}}``
       · 包 room   ``{room:{id_str,title,...}, anchor:{nickname}}``
+      · **新包 lives+rawdata**（2026-10-02 改版，见 `_unwrap_live_item`）
     """
-    if not isinstance(item, dict):
+    item = _unwrap_live_item(item)
+    if not isinstance(item, dict) or not item:
         return {}
     lo = {str(k).lower(): v for k, v in item.items()}
 
@@ -329,7 +374,7 @@ def _pick_live(item: dict) -> dict:
             rlo = {str(k).lower(): v for k, v in room.items()}
             room_id = str(rlo.get("id_str") or rlo.get("id") or rlo.get("room_id") or "")
 
-    author = get("author", "user", "anchor")
+    author = get("author", "user", "anchor", "owner")
     author = author if isinstance(author, dict) else {}
     alo = {str(k).lower(): v for k, v in author.items()} if author else {}
 
@@ -344,18 +389,25 @@ def _pick_live(item: dict) -> dict:
     except (TypeError, ValueError):
         online = 0
 
+    # 直播状态：status==2 即直播中（ENG-023 判据）；缺失时用 video_feed_tag 兜底
+    status = get("status")
+    if status is None:
+        status = 2 if str(get("video_feed_tag") or "").strip() == "直播中" else None
+
     return {
         "room_id": room_id,
         "title": str(_first(get("title", "name", "room_title")) or ""),
+        "status": status,
         # D7 红线：只用搜索结果自带的昵称，绝不回调补查接口
-        "nickname": str(_first(alo.get("nickname"), get("nickname", "nick_name")) or ""),
-        "sec_uid": str(_first(alo.get("sec_uid"), get("sec_uid")) or ""),
+        "nickname": str(_first(alo.get("nickname"), get("nickname"),
+                               get("_author_nickname")) or ""),
+        "sec_uid": str(_first(alo.get("sec_uid"), get("sec_uid"),
+                              get("_author_sec_uid")) or ""),
         "online_count": online,
-        "cover": _pick_cover(item),
+        "cover": _pick_cover(item) or _pick_cover(author),
         # 上架时直接可塞进 RoomBody 的现成值
         "live_url": f"https://live.douyin.com/{room_id}" if room_id else "",
     }
-
 
 def _find_room_shaped_configs() -> list[tuple[str, dict]]:
     """找出 ``live_room_configs`` 里的**房间形**旧记录。
@@ -673,6 +725,8 @@ async def discover_live(req: DiscoverReq) -> dict:
         raise HTTPException(502, f"搜索失败: {type(e).__name__}")
 
     transport = DouyinAPI.take_live_transport(raw) or None
+    # 2026-10-02：业务层风控事实（HTTP 200 + data=[] + search_nil_type=verify_check）
+    nil_info = DouyinAPI.take_live_nil(raw) or None
     items_raw = list(raw or [])
     items = [_pick_live(x) for x in items_raw]
     # 没有房间号 = 无法上架，也没有展示价值，直接丢掉（而非返回一条残缺行）
@@ -695,4 +749,16 @@ async def discover_live(req: DiscoverReq) -> dict:
                 f"{status}，{transport.get('bytes')} 字节）——请稍后重试或重新扫码登录"
             )
             logger.warning(f"[LIVE-ROOMS-003] 直播搜索被风控拦截: {transport}")
+    # 风控判据二（2026-10-02）：HTTP 200 但业务层要求风控验证
+    #   实测响应：status_code=0 + data=[] + search_nil_info.search_nil_type="verify_check"
+    #   此时**必须**报 blocked —— 否则前端显示「未搜索到」= 把风控说成「没结果」（假成功）。
+    if not resp["blocked"] and nil_info:
+        _nt = str(nil_info.get("search_nil_type") or "")
+        if _nt and _nt != "normal":
+            resp["blocked"] = True
+            resp["error"] = (
+                "被风控拦截（平台要求验证，search_nil_type="
+                f"{_nt}）——请稍后重试或重新扫码登录"
+            )
+            logger.warning(f"[LIVE-ROOMS-004] 直播搜索要求风控验证: {nil_info}")
     return resp

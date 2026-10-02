@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
-  SearchIcon, MessageSquare, Send, Filter, X, Loader2,
+  SearchIcon, MessageSquare, Send, Filter, X, Loader2, Square,
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { Avatar, hue } from "../../components/ui";
@@ -46,6 +46,7 @@ export default function CrawlPage(props: PageProps) {
   // ★ 2026-09-30 方案1：多作品批量采集（勾选 → 串行采评论）。默认全不选。
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [batchCollecting, setBatchCollecting] = useState(false);
+  const batchCancelRef = useRef(false);
   const pickedIds = results.filter((v) => picked[v.awemeId]).map((v) => v.awemeId);
   // ★ 2026-09-30 C 方案：匿名预览（零凭证探针）—— 搜索后自动跑，只预览不私信。
   const [anonPreview, setAnonPreview] = useState<Record<string, any[]>>({});
@@ -176,21 +177,32 @@ export default function CrawlPage(props: PageProps) {
     }
   };
 
-  /** 批量采集：对勾选的作品**串行**采评论（后端 + 间隔），只采不发。 */
+  /** 批量采集：对勾选的作品**串行**采评论（后端 + 间隔），只采不发。
+   *  ★ 2026-10-02：接入高价值关键词过滤 + 支持终止。 */
   const runBatchCollect = async () => {
     if (!account) return push("请先登录账号");
     if (!pickedIds.length) return push("请先勾选要采集的作品");
     if (batchCollecting) return;
     setBatchCollecting(true);
+    batchCancelRef.current = false;
     try {
+      // ★ 2026-10-02：从配置中心读取高价值关键词门槛
+      let minScore = 0;
+      try {
+        const cfg = await api.getConfig();
+        const crawlCfg = (cfg.config as any)?.crawl || {};
+        minScore = Math.max(0, parseInt(crawlCfg.batch_min_score || "0", 10) || 0);
+      } catch { /* 配置读取失败时不过滤 */ }
       const r = await api.crawlCommentsBatch({
         account,
         aweme_ids: pickedIds,
         limit: 100,
+        min_score: minScore,
       });
       const failed = (r.per_work || []).filter((w) => w.status !== "ok");
       push(
-        `批量采集完成：${r.ok_works}/${r.works} 个作品成功，共 ${r.total_comments} 条评论` +
+        (r.cancelled ? "批量采集已终止：" : "批量采集完成：") +
+          `${r.ok_works}/${r.works} 个作品成功，共 ${r.total_comments} 条评论` +
           (failed.length ? `（${failed.length} 个失败）` : ""),
         8000,
       );
@@ -202,6 +214,18 @@ export default function CrawlPage(props: PageProps) {
       push(`批量采集失败：${e?.message || e}`, 8000);
     } finally {
       setBatchCollecting(false);
+    }
+  };
+
+  /** 终止正在进行的批量采集（★ 2026-10-02）。 */
+  const cancelBatchCollect = async () => {
+    if (!batchCollecting) return;
+    batchCancelRef.current = true;
+    try {
+      await api.crawlCommentsBatchCancel(account);
+      push("终止信号已发送，采集将在当前作品完成后停止", 4000);
+    } catch (e: any) {
+      push(`终止失败：${e?.message || e}`, 4000);
     }
   };
 
@@ -233,29 +257,40 @@ export default function CrawlPage(props: PageProps) {
     }
   };
 
+  /** 批量私信：从已采集评论中按高价值关键词筛选候选，逐条发送（★ 2026-10-02）。
+   *  与「批量采集」权限分离：采集只采不发，发送从采集结果中筛选。
+   *  筛选逻辑在后端执行（SSOT），发送走统一发送闸门。 */
   const sendBatch = async () => {
     if (!cmtFor) return;
     if (!dmTpl.trim()) return push("请先填写私信文案");
     if (batching) return;
+    if (!cmts.length) return push("当前无采集结果，请先采集评论");
     setBatching(true);
     try {
-      const r = await api.crawlBatch({
+      // ★ 2026-10-02：调用后端 /dm/batch，筛选逻辑在后端执行
+      const r = await api.crawlDmBatch({
         account,
-        aweme_id: cmtFor.awemeId,
         text: dmTpl,
-        keyword: cmtFilter.trim(),
-        limit: 200,
+        items: cmts.map((c: any) => ({
+          uid: c.uid || "",
+          nickname: c.nickname || "",
+          text: c.text || "",
+        })),
+        // ★ 2026-10-02：0 = 「不覆盖」⇒ 后端以配置中心 crawl.batch_min_score 为准。
+        // （传正数才是「本次临时覆盖」；传 0 不会把门槛踩回不过滤。）
+        min_score: 0,
         max_send: 0,
         interval: 0,
       });
-      push(
-        `批量完成：候选 ${r.candidates} · 成功 ${r.sent_ok} · 失败 ${r.sent_fail} · 限流 ${r.rate_limited}`,
-      );
       const ns: Record<string, string> = {};
       (r.results || []).forEach((x) => {
         ns[x.uid] = x.ok ? "sent" : `失败:${x.reason}`;
       });
       setDmState((s) => ({ ...s, ...ns }));
+      push(
+        `批量私信完成：候选 ${r.candidates} · 成功 ${r.sent_ok} · 失败 ${r.sent_fail} · 限流 ${r.rate_limited}`,
+        6000,
+      );
     } catch (e: any) {
       push(`批量私信失败：${e?.message || e}`);
     } finally {
@@ -387,17 +422,29 @@ export default function CrawlPage(props: PageProps) {
                   <Loader2 className="h-3 w-3 animate-spin" />匿名预览中…
                 </span>
               )}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={batchCollecting || pickedIds.length === 0}
-                onClick={runBatchCollect}
-                title="对勾选的作品串行采集评论（只采集，不发送）"
-              >
-                {batchCollecting
-                  ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />批量采集中…</>
-                  : <>批量采集{pickedIds.length ? `（${pickedIds.length}）` : ""}</>}
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={batchCollecting || pickedIds.length === 0}
+                  onClick={runBatchCollect}
+                  title="对勾选的作品串行采集评论（只采集，不发送）"
+                >
+                  {batchCollecting
+                    ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />批量采集中…</>
+                    : <>批量采集{pickedIds.length ? `（${pickedIds.length}）` : ""}</>}
+                </Button>
+                {batchCollecting && (
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    onClick={cancelBatchCollect}
+                    title="终止当前批量采集"
+                  >
+                    <Square className="h-3 w-3" />终止
+                  </Button>
+                )}
+              </div>
             </div>
           }>
             <div className="flex items-center gap-2">
@@ -420,36 +467,48 @@ export default function CrawlPage(props: PageProps) {
               const st = dmState[v.uid];
               return (
                 <Card key={vId} className="overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => openComments(v)}
-                    title="点击采集该视频评论区"
-                    className="relative block aspect-[3/4] w-full cursor-pointer overflow-hidden"
-                    style={{
-                      background: v.cover
-                        ? undefined
-                        : `linear-gradient(135deg, oklch(40% 0.13 ${hu}), oklch(24% 0.08 ${hu}))`,
-                      backgroundImage: v.cover ? `url("${v.cover}")` : undefined,
-                      backgroundSize: "cover",
-                      backgroundPosition: "center",
-                    }}
-                  >
-                    <span className="absolute left-2 top-2 rounded-full bg-black/55 px-2 py-0.5
-                                     text-[0.62rem] text-white/90 backdrop-blur">
-                      douyin
-                    </span>
-                    <span className="absolute bottom-2 right-2 rounded-full bg-black/55 px-2 py-0.5
-                                     text-[0.68rem] text-white/90 backdrop-blur">
-                      💬 {fmtNumShort(v.cmts)}
-                    </span>
-                    {anonPreview[v.awemeId] && (
-                      <span className="absolute left-2 bottom-2 rounded-full bg-black/65 px-2 py-0.5
-                                       text-[0.62rem] text-white/90 backdrop-blur"
-                            title="匿名预览（零凭证，仅≤20条，不可翻页/私信）">
-                        预览 {anonPreview[v.awemeId].length}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => openComments(v)}
+                      title="点击采集该视频评论区"
+                      className="relative block aspect-[3/4] w-full cursor-pointer overflow-hidden"
+                      style={{
+                        background: v.cover
+                          ? undefined
+                          : `linear-gradient(135deg, oklch(40% 0.13 ${hu}), oklch(24% 0.08 ${hu}))`,
+                        backgroundImage: v.cover ? `url("${v.cover}")` : undefined,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                      }}
+                    >
+                      <span className="absolute left-2 top-7 rounded-full bg-black/55 px-2 py-0.5
+                                       text-[0.62rem] text-white/90 backdrop-blur">
+                        douyin
                       </span>
-                    )}
-                  </button>
+                      <span className="absolute bottom-2 right-2 rounded-full bg-black/55 px-2 py-0.5
+                                       text-[0.68rem] text-white/90 backdrop-blur">
+                        💬 {fmtNumShort(v.cmts)}
+                      </span>
+                      {anonPreview[v.awemeId] && (
+                        <span className="absolute left-2 bottom-2 rounded-full bg-black/65 px-2 py-0.5
+                                         text-[0.62rem] text-white/90 backdrop-blur"
+                              title="匿名预览（零凭证，仅≤20条，不可翻页/私信）">
+                          预览 {anonPreview[v.awemeId].length}
+                        </span>
+                      )}
+                    </button>
+                    {/* ★ 2026-10-02：勾选项移到卡片左上角（封面图之上） */}
+                    <input
+                      type="checkbox"
+                      className="absolute left-2 top-2 z-10 h-4 w-4 cursor-pointer accent-[var(--color-accent)]"
+                      checked={!!picked[v.awemeId]}
+                      onChange={(e) =>
+                        setPicked((s) => ({ ...s, [v.awemeId]: e.target.checked }))
+                      }
+                      title="勾选后可「批量采集」"
+                    />
+                  </div>
 
                   <CardContent className="p-2.5">
                     <div className="line-clamp-2 text-[0.76rem] leading-snug text-[var(--color-text)]">
@@ -462,15 +521,6 @@ export default function CrawlPage(props: PageProps) {
                       <span className="truncate">{v.nickname || "未知作者"}</span>
                     </div>
                     <div className="mt-2 flex items-center gap-1.5">
-                      <input
-                        type="checkbox"
-                        className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-[var(--color-accent)]"
-                        checked={!!picked[v.awemeId]}
-                        onChange={(e) =>
-                          setPicked((s) => ({ ...s, [v.awemeId]: e.target.checked }))
-                        }
-                        title="勾选后可「批量采集」"
-                      />
                       <Button variant="ghost" size="sm" onClick={() => openComments(v)}>
                         <MessageSquare className="h-3.5 w-3.5" />采评论
                       </Button>
@@ -573,8 +623,8 @@ export default function CrawlPage(props: PageProps) {
                   <div className="flex-1" />
                   <Button
                     size="sm"
-                    disabled={batching || !dmTpl.trim() || isPreview}
-                    title={isPreview ? "匿名预览无数字 uid，先点「完整采集」后才能私信" : undefined}
+                    disabled={batching || !dmTpl.trim() || cmts.length === 0}
+                    title={cmts.length === 0 ? "请先采集评论" : undefined}
                     onClick={sendBatch}
                   >
                     {batching
