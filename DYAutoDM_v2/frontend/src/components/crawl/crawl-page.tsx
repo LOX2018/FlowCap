@@ -13,11 +13,38 @@ import {
   Section, Row, Blank, SkeletonRows, Toolbar,
 } from "@/components/page/kit";
 import {
+  Tabs, TabsList, TabsTrigger, TabsContent,
+} from "@/components/ui/tabs";
+import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
 import { fmtNumShort, fmtTs, ORDER_OPTS, DUR_OPTS, PT_OPTS } from "./crawl-shared";
+// ★ ADR-034（2026-10-03，用户 2026-10-03 拍板，方向反转 ADR-033）：
+//   原 ADR-033 把「内容浏览」融进**采集页**（采集为宿主）。
+//   现按用户新指令反转：**采集功能融进「内容总览」**（内容为宿主，采集为 tab）。
+//   —— 导航只保留「内容」一项；采集作为其二级 tab，链路仍是
+//      「浏览 → 选中 → 采集 → 私信」，只是入口名称与层级反过来。
+//
+// ★ 本文件**不再导入 PlatformPage**（2026-10-03）：
+//   保留它会形成 `platform-page → crawl-page → platform-page` 的**循环依赖**
+//   （ESM 循环下模块初始化顺序不确定，且两边都 lazy import 时会放大）。
+//   而采集页已不再是导航项，它内部那个「内容浏览」二级 tab 也就没有存在意义
+//   ——「浏览作品」的唯一入口就是「内容总览」页本身。
+//   故此处删除该 tab，让本文件成为**纯粹的采集工作台**（可被内容页 embedded 挂载）。
 
-export default function CrawlPage(props: PageProps) {
+/**
+ * 采集工作台（ADR-034）—— 可独立成页，也可被 PlatformPage 以 `embedded` 挂为 tab。
+ *
+ * @param embedded  true = 只吐 Tabs 主体（宿主已有 PageContainer/Tabs）
+ * @param account   嵌入模式下由宿主提供账号（与内容 tab 共享同一账号）
+ * @param accounts  嵌入模式下由宿主提供账号名列表
+ */
+export default function CrawlPage(props: PageProps & {
+  embedded?: boolean;
+  account?: string;
+  accounts?: string[];
+  onSelectAweme?: (awemeId: string) => void;
+}) {
   const { push, ready, api } = props;
   const [q, setQ] = useState("");
   const [order, setOrder] = useState("0");
@@ -45,7 +72,10 @@ export default function CrawlPage(props: PageProps) {
     ? cmts.filter((c) => (c?.content || c?.text || "").includes(cmtFilter.trim()))
     : cmts;
   const [batching, setBatching] = useState(false);
-  const [account, setAccount] = useState("");
+  // ★ ADR-034：嵌入模式（宿主=内容总览）下账号由**宿主**提供，与宿主其它 tab 共享同一账号；
+  //   独立成页时用本页自己的 state（下方 useEffect 会拉已登录账号并自动选第一个）。
+  const [ownAccount, setOwnAccount] = useState("");
+  const account = (props as { account?: string }).account ?? ownAccount;
   // ★ 2026-09-30 方案1：多作品批量采集（勾选 → 串行采评论）。默认全不选。
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [batchCollecting, setBatchCollecting] = useState(false);
@@ -54,6 +84,17 @@ export default function CrawlPage(props: PageProps) {
   // ★ 2026-09-30 C 方案：匿名预览（零凭证探针）—— 搜索后自动跑，只预览不私信。
   const [anonPreview, setAnonPreview] = useState<Record<string, any[]>>({});
   const [anonLoading, setAnonLoading] = useState(false);
+  /**
+   * ★ ADR-033：从「内容浏览」tab 选中的作品 ID。
+   *
+   * 用途：用户在内容 tab 里点开一个作品 → 切回「采集」tab 时，
+   * 该作品已作为采集目标待命（不必再搜一遍、再凭记忆找）。
+   *
+   * ⚠️ 为何不直接自动采集：采集是**账号凭证写操作 + 消耗风控额度**，
+   *    用户只是「看了一眼」就自动采，违反「所有请求由用户显式动作触发」铁律。
+   *    这里只**预填目标**，采集仍由用户点按钮触发。
+   */
+  const [selectedAweme, setSelectedAweme] = useState<string>("");
 
   useEffect(() => {
     let alive = true;
@@ -63,7 +104,8 @@ export default function CrawlPage(props: PageProps) {
         if (!alive) return;
         const ls = (list || []).filter((a: any) => a.loggedIn);
         setAccounts(ls);
-        if (!account && ls.length) setAccount(ls[0].name);
+        // ★ ADR-034：仅独立成页时自动选第一个账号；嵌入模式账号由宿主给。
+        if (!account && ls.length) setOwnAccount(ls[0].name);
       })
       .catch(() => {});
     return () => {
@@ -337,28 +379,83 @@ export default function CrawlPage(props: PageProps) {
   const isPreview = !!(cmtFor && dmPreview[cmtFor.awemeId]);
 
   return (
-    <PageContainer>
-      <PageHeader
-        title="数据采集 · 评论截流"
-        description="复用账号凭证被动签名，不批量查询用户"
-      />
+    <>
+      {/* ★ ADR-034（2026-10-03）：方向反转 —— 采集作为「内容总览」的一个 tab。
+          嵌入模式（embedded=true）下：
+            · 不套 PageContainer / PageHeader（宿主已有）
+            · 不再渲染「内容浏览」tab（否则 tab 套 tab）
+            · 只吐「采集」工作台主体，账号由宿主提供（与宿主其它 tab 共享） */}
+      {!(props as { embedded?: boolean }).embedded && (
+        <PageContainer>
+          <PageHeader
+            title="数据采集 · 评论截流"
+            description="复用账号凭证被动签名，不批量查询用户"
+          />
+        </PageContainer>
+      )}
+
+      <Tabs defaultValue="collect" className="mb-4">
+        <TabsList>
+          <TabsTrigger value="collect">
+            <SearchIcon className="h-3.5 w-3.5" />采集
+          </TabsTrigger>
+          {/* ★ ADR-034：原「内容浏览」二级 tab 已删除 ——
+              「浏览作品」的唯一入口是「内容总览」页；采集则作为它的 tab 存在。
+              保留它会造成 tab 套 tab + 与宿主循环依赖。 */}
+        </TabsList>
+
+        <TabsContent value="collect">
+      {/* ★ ADR-033：从「内容浏览」tab 带回来的采集目标。
+          只**展示并等待用户点按钮**，不自动发起采集（风控铁律）。 */}
+      {selectedAweme && !results.some((v: any) => v.awemeId === selectedAweme) ? (
+        <Card className="mb-4 border-[var(--color-accent)]">
+          <CardContent className="flex items-center gap-3 p-3">
+            <Badge variant="accent">内容浏览选中</Badge>
+            <code className="min-w-0 flex-1 truncate font-mono text-[0.76rem]
+                             text-[var(--color-text-secondary)]"
+                  title={selectedAweme}>
+              {selectedAweme}
+            </code>
+            <Button
+              size="sm"
+              disabled={!account}
+              title="用当前账号采集该作品的评论区"
+              onClick={() => openComments({ awemeId: selectedAweme, title: selectedAweme })}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />采评论
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setSelectedAweme("")}>
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* 账号 + 搜索面板 */}
       <Section className="mb-4">
         <Toolbar>
-          <Select value={account} onValueChange={setAccount}>
-            <SelectTrigger className="h-9 w-[170px]">
-              <SelectValue placeholder="选择账号" />
-            </SelectTrigger>
-            <SelectContent>
-              {accounts.length === 0 && (
-                <SelectItem value="__none" disabled>（无可登录账号）</SelectItem>
-              )}
-              {accounts.map((a) => (
-                <SelectItem key={a.name} value={a.name}>{a.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* ★ ADR-034：嵌入模式（宿主=内容总览）下账号由宿主统一选择，
+              此处不再重复渲染下拉 —— 否则同一页出现两个账号选择器、切 tab 不同步。 */}
+          {!(props as { embedded?: boolean }).embedded ? (
+            <Select value={account} onValueChange={setOwnAccount}>
+              <SelectTrigger className="h-9 w-[170px]">
+                <SelectValue placeholder="选择账号" />
+              </SelectTrigger>
+              <SelectContent>
+                {accounts.length === 0 && (
+                  <SelectItem value="__none" disabled>（无可登录账号）</SelectItem>
+                )}
+                {accounts.map((a) => (
+                  <SelectItem key={a.name} value={a.name}>{a.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            /* 嵌入模式：只读回显当前账号（可为空），不提供第二处选择入口 */
+            <span className="flex h-9 items-center rounded border border-[var(--border)] px-3 text-[0.78rem] text-[var(--color-text-secondary)]">
+              {account || "（宿主未选账号）"}
+            </span>
+          )}
 
           <Input
             value={q}
@@ -714,6 +811,9 @@ export default function CrawlPage(props: PageProps) {
           </div>
         </div>
       )}
-    </PageContainer>
+        </TabsContent>
+
+      </Tabs>
+    </>
   );
 }

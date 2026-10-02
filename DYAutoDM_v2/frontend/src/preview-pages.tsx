@@ -18,7 +18,9 @@ import { SegmentedTabs } from "@/components/page/kit";
 
 import OverviewPage from "@/components/overview/overview-page";
 import PlatformPage from "@/components/platform/platform-page";
-import CrawlPage from "@/components/crawl/crawl-page";
+// ★ ADR-034（2026-10-03）：采集已并入 PlatformPage 的 tab，此处不再单独预演；
+//   统计页是独立只读看板，预演入口保留。
+import StatsPage from "@/components/stats/stats-page";
 import SettingsPage from "@/components/settings/settings-page";
 import NotifyPage from "@/components/notify/notify-page";
 import TasksPage from "@/components/tasks/tasks-page";
@@ -237,8 +239,11 @@ const BASE_PROPS: PageProps = {
 
 const PAGES: Record<string, { title: string; tab: TabId; el: (p: PageProps) => React.ReactNode }> = {
   overview: { title: "总览", tab: "overview", el: (p) => <OverviewPage {...p} /> },
-  platform: { title: "内容浏览", tab: "platform", el: (p) => <PlatformPage {...p} /> },
-  crawl: { title: "采集", tab: "crawl", el: (p) => <CrawlPage {...p} /> },
+  platform: { title: "内容总览", tab: "platform", el: (p) => <PlatformPage {...p} /> },
+  // ★ ADR-034（2026-10-03）：采集不再是独立路由，入口已并入 platform 页的「采集」tab
+  //   （它的 preview 也随之通过 platform 覆盖）。若需单独预演采集工作台，
+  //   访问 preview-pages.html?p=platform&tab=crawl。
+  stats: { title: "统计", tab: "stats", el: (p) => <StatsPage {...p} /> },
   tasks: { title: "任务", tab: "tasks", el: (p) => <TasksPage {...p} /> },
   notify: { title: "通知", tab: "notify", el: (p) => <NotifyPage {...p} /> },
   logs: { title: "日志", tab: "logs", el: (p) => <LogsPage {...p} /> },

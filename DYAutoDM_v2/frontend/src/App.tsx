@@ -16,8 +16,11 @@ import { api, PageProps, ReviewPayload, ReusePayload } from "./api/client";
 // 原实现 11 个页面全静态 import → 全部打进主 chunk（782KB），首屏要解析所有页面代码。
 // 改为 React.lazy：每个页面独立 chunk，首屏只加载当前视图（overview），
 // 其余按需拉取。行为不变（仍由 `tab === x && <Page/>` 条件渲染）。
+// ★ ADR-034（2026-10-03）：采集功能融进「内容总览」页（PlatformPage 的一个 tab），
+//   故 CrawlPage 不再是顶层路由；它由 PlatformPage 内部 import 挂载，
+//   因此这里**移除**原先的 lazy 入口（否则打进主 chunk 白占体积）。
 const OverviewPage = lazy(() => import("./components/overview/overview-page"));
-const CrawlPage = lazy(() => import("./components/crawl/crawl-page"));
+const StatsPage = lazy(() => import("./components/stats/stats-page"));
 const PlatformPage = lazy(() => import("./components/platform/platform-page"));
 const LivePage = lazy(() => import("./components/live/live-page"));
 const MessagesPage = lazy(() => import("./components/messages/messages-page"));
@@ -580,7 +583,11 @@ export default function App() {
               原应用无边界，任一页面渲染抛错会**卸载整树 → 全白空窗**且无日志痕迹。 */}
           <ErrorBoundary key={tab} onReset={() => setTab("overview")}>
           {tab === "overview" && <OverviewPage {...pageProps} />}
-          {tab === "crawl" && <CrawlPage {...pageProps} />}
+          {/* ★ ADR-034（2026-10-03，方向反转 ADR-033）：
+              采集功能已融进「内容总览」页（PlatformPage 的最后一个 tab），
+              故「采集」不再是独立路由 —— 撤除该分支与 CrawlPage 的 lazy 入口。
+              统计页（StatsPage）保持独立路由：纯只读看板，不跳转总览。 */}
+          {tab === "stats" && <StatsPage {...pageProps} />}
           {tab === "platform" && <PlatformPage {...pageProps} />}
           {tab === "live" && <LivePage {...pageProps} />}
           {tab === "msg" && <MessagesPage {...pageProps} />}

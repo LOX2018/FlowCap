@@ -23,8 +23,11 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { EmptyState, LoadingState, ErrorState } from "@/components/ui/empty-state";
 import { platformApi, type AwemeItem, type UserItem, type NoticeItem } from "@/api/platform";
-// 采集 = 内容浏览的「高级模式」（用户 2026-09-15 决策：采集页合并进内容浏览）
-import { CrawlPanel } from "./crawl-panel";
+// ★ ADR-034（2026-10-03）：**采集功能融进本「内容总览」页**（最后一个 tab），
+//   挂载 CrawlPage 的 embedded 模式（完整工作台，非简化面板）。
+//   ⚠️ 循环依赖防护：CrawlPage 内部**不再**反向 import 本文件（见该文件头注释），
+//      故这里单向 import 是安全的。
+import CrawlWorkbench from "@/components/crawl/crawl-page";
 // ★ 2026-09-27（ADR-018 F3）：播放 + 评论同时展示；评论行可手动发私信
 import { CommentPanel } from "./comment-panel";
 import { fmtNum, fmtAgo } from "@/lib/utils";
@@ -35,18 +38,42 @@ import type { PlayerMedia } from "@/components/player";
 /** 作品卡片（封面 + 统计；点击打开播放器）。 */
 import { Grid, UserCard } from "./platform-cards";
 
-export default function PlatformPage(props: PageProps) {
+export default function PlatformPage(props: PageProps & {
+  /**
+   * 嵌入模式（ADR-033，2026-10-03）—— 内容浏览作为「采集页」的一个 tab 存在。
+   *
+   * 为什么不是复制一份代码到采集页：复制会让两处逻辑各自漂移
+   * （播放器取址 / 风控拦截提示 / 互动写接口降级文案…都是踩过坑才写对的）。
+   * 改为**同一组件两种宿主**：
+   *   · 独立模式（默认）：自带 PageContainer + PageHeader，自带 tab 状态；
+   *   · 嵌入模式（`embedded`）：只吐 Tabs 主体，外层宿主管容器与 tab 切换。
+   *
+   * @param embedded      true = 嵌入采集页（不渲染 PageContainer/PageHeader）
+   * @param account      嵌入模式下由宿主提供账号（宿主与采集页共用同一下拉）
+   * @param accounts     嵌入模式下由宿主提供账号列表
+   * @param onSelectAweme 选中作品时回调宿主（采集页据此填入采集目标）
+   */
+  embedded?: boolean;
+  account?: string;
+  accounts?: string[];
+  onSelectAweme?: (awemeId: string) => void;
+}) {
+  const embedded = props.embedded === true;
   // ★ 账号来源（2026-09-14 修复）：原用 `props.overview.accounts`，
   //   但 `/api/overview` **不返回 accounts 字段** → 内容页恒显示「还没有账号」，
   //   而私信页（走 `/api/accounts`）却正常。现统一为本项目的账号真源。
+  // ★ ADR-033：嵌入模式下账号由宿主（采集页）提供，本组件不再自己拉 ——
+  //   否则采集页与内容 tab 会各持一份账号状态，切 tab 时选择不同步。
   const accountsQ = useQuery({
     queryKey: ["platform-accounts"],
     queryFn: async (): Promise<{ name: string }[]> =>
       (await props.api.getAccounts()) as unknown as { name: string }[],
-    enabled: !!props.ready,
+    enabled: !!props.ready && !embedded,
     staleTime: 300_000,
   });
-  const accounts = (accountsQ.data || []).map((a) => a.name).filter(Boolean);
+  const accounts = embedded
+    ? (props.accounts || [])
+    : (accountsQ.data || []).map((a) => a.name).filter(Boolean);
   const [acct, setAcct] = useState<string>(() => {
     try {
       return localStorage.getItem("platform.acct") || "";
@@ -54,7 +81,7 @@ export default function PlatformPage(props: PageProps) {
       return "";
     }
   });
-  const account = acct || accounts[0] || "";
+  const account = embedded ? (props.account || "") : (acct || accounts[0] || "");
   const [tab, setTab] = useState("feed");
   const [query, setQuery] = useState("");
   const [searchKind, setSearchKind] = useState<"video" | "user">("video");
@@ -72,6 +99,9 @@ export default function PlatformPage(props: PageProps) {
     setPlayerErr("");
     setPlayerOpen(true);
     setSelectedAweme(it.aweme_id || "");
+    // ★ ADR-033：嵌入模式下把选中作品回传宿主（采集页据此设为采集目标），
+    //   避免「内容 tab 里点开作品、切回采集 tab 还得重新搜一遍」的割裂。
+    if (embedded && it.aweme_id) props.onSelectAweme?.(it.aweme_id);
     setPlayerMedia({ type: "video", aweme_id: it.aweme_id, cover: it.cover, desc: it.desc });
     try {
       // ★ 2026-09-21 方案 B：换 **本机同源流地址**，而不是直接用 CDN 直链。
@@ -221,10 +251,15 @@ export default function PlatformPage(props: PageProps) {
   });
 
   if (!account) {
+    // 嵌入模式下不套 PageContainer（宿主已有），只给提示
+    const noAcct = (
+      <EmptyState title="还没有账号" description="请先在「账号」页添加并登录一个账号。" />
+    );
+    if (embedded) return noAcct;
     return (
       <PageContainer>
         <PageHeader title="内容浏览" description="推荐流 / 搜索 / 用户作品 / 点赞 / 收藏 / 站内通知" />
-        <EmptyState title="还没有账号" description="请先在「账号」页添加并登录一个账号。" />
+        {noAcct}
       </PageContainer>
     );
   }
@@ -266,23 +301,27 @@ export default function PlatformPage(props: PageProps) {
                  onOpenAweme={kind === "video" ? openAweme : undefined} />;
   };
 
-  return (
-    <PageContainer>
-      <PageHeader
-        title="内容浏览"
-        description="所有请求均由你的操作触发，不做后台轮询"
-        actions={
-          <div className="flex items-center gap-2">
-            <Select value={account} onValueChange={setAcctPersist}>
-              <SelectTrigger className="h-9 w-[180px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {accounts.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-        }
-      />
+  // ★ ADR-034：嵌入模式下不渲染 PageContainer / PageHeader / 账号下拉 ——
+  //   三者都由宿主提供，否则会出现「一个页面两个标题栏」。
+  const header = embedded ? null : (
+    <PageHeader
+      title="内容总览"
+      description="推荐流 / 搜索 / 作品 / 点赞 / 收藏 / 通知，以及评论采集与私信截流"
+      actions={
+        <div className="flex items-center gap-2">
+          <Select value={account} onValueChange={setAcctPersist}>
+            <SelectTrigger className="h-9 w-[180px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {accounts.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      }
+    />
+  );
 
+  const body = (
+    <>
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="feed"><LayoutGrid className="h-3.5 w-3.5" />推荐流</TabsTrigger>
@@ -293,7 +332,14 @@ export default function PlatformPage(props: PageProps) {
           <TabsTrigger value="mixes"><BookOpen className="h-3.5 w-3.5" />合集</TabsTrigger>
           <TabsTrigger value="relation"><Users className="h-3.5 w-3.5" />粉丝/关注</TabsTrigger>
           <TabsTrigger value="notices"><Bell className="h-3.5 w-3.5" />站内通知</TabsTrigger>
-          <TabsTrigger value="crawl"><MessageSquare className="h-3.5 w-3.5" />采集</TabsTrigger>
+          {/* ★ ADR-034（2026-10-03，方向反转 ADR-033）：**采集**融进本「内容总览」页，
+              作为最后一个二级 tab。挂载的是 CrawlPage 的**完整工作台**（embedded），
+              含搜索/策略覆写/批量勾选采集/匿名预览/风控 blocked 提示/双模板私信 ——
+              不是早期那个简化版 CrawlPanel（后者只有「采评论 + 批量私信」两个按钮）。
+              `embedded` 模式下隐藏（宿主的宿主已提供采集容器，tab 套 tab 无意义）。 */}
+          {!embedded && (
+            <TabsTrigger value="crawl"><MessageSquare className="h-3.5 w-3.5" />采集</TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="feed">
@@ -548,25 +594,19 @@ export default function PlatformPage(props: PageProps) {
             ) : <EmptyState title="暂无通知" />)}
         </TabsContent>
         <TabsContent value="crawl">
-          {/* 采集 = 内容浏览的高级模式：先搜作品 → 选中 → 采评论 → 私信截流 */}
-          <div className="space-y-3">
-            <div className="text-[0.78rem] text-[var(--color-text-secondary)]">
-              在「搜索」或「推荐流」里点开一个作品，即可在此采集它的评论区并批量私信。
-            </div>
-            {selectedAweme ? (
-              <CrawlPanel
-                account={account}
-                api={props.api as never}
-                awemeId={selectedAweme}
-                push={props.push}
-              />
-            ) : (
-              <EmptyState
-                title="还没有选中作品"
-                description="切到「搜索」或「推荐流」，点开任意作品卡片后回到这里。"
-              />
-            )}
-          </div>
+          {/* ★ ADR-034（2026-10-03）：采集功能融进「内容总览」，此处挂载
+              **完整采集工作台**（CrawlPage 的 embedded 模式），而非早期简化版 CrawlPanel。
+              简化版只有「采评论 + 批量私信」两个按钮，会丢掉：
+              采集策略覆写 / 多作品勾选批量采集 / 匿名零凭证预览 /
+              搜索域风控 blocked 显式提示（v0.46.18「禁止假成功」）/ 双模板私信。
+              —— 这些都是踩坑后写对的，不能因为「面板看起来够用」就丢。
+              账号与本页其它 tab 共享同一个（宿主选择器唯一），切换 tab 不需重选。 */}
+          <CrawlWorkbench
+            {...props}
+            embedded
+            account={account}
+            accounts={accounts}
+          />
         </TabsContent>
 
       </Tabs>
@@ -625,6 +665,14 @@ export default function PlatformPage(props: PageProps) {
           </aside>
         </div>
       )}
+    </>
+  );
+
+  if (embedded) return body;
+  return (
+    <PageContainer>
+      {header}
+      {body}
     </PageContainer>
   );
 }
