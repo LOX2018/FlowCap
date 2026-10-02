@@ -8,9 +8,10 @@ function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(
-        "rounded-[var(--radius-md)] border border-[var(--color-border)]",
-        "bg-[color-mix(in_srgb,var(--color-surface-solid)_80%,transparent)] backdrop-blur-xl",
-        "shadow-[var(--shadow-sm)]",
+        // 2026-10-02 重设计：材质收敛到 .card-surface（令牌驱动，昼/夜自动适配）。
+        // 原实现为「80% 实底 + 极弱阴影」⇒ 浅色主题下是「浅灰底上一块纯白」，
+        // 无层次、显廉价。现改为微透明底 + 发丝线 + 顶部内高光 + 有分量投影。
+        "card-surface rounded-[var(--radius-md)]",
         "transition-[background-color,border-color,box-shadow,transform,opacity]",
         "duration-[var(--duration-base)] ease-[var(--ease-spring)]",
         className

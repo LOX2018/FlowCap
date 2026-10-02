@@ -17,12 +17,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type { AiAgentSummary } from "../../api/client";
 import { errMsg, SectionBlock, Field } from "./settings-shared";
+import { confirmDialog } from "@/components/ui/modal";
 import { GlobalModelCard } from "./GlobalModelCard";
 
+// 2026-10-02 用户要求：下拉只显示缩写（完整语义见字段说明），避免下拉框被撑长。
 const LEVELS = [
-  { value: "kb_only", label: "kb_only（仅知识库，AI 不参与）" },
-  { value: "rag", label: "rag（AI 只准依据知识库答，默认）" },
-  { value: "free", label: "free（纯 prompt 约束）" },
+  { value: "kb_only", label: "仅知识库" },
+  { value: "rag", label: "RAG 限定" },
+  { value: "free", label: "自由" },
 ];
 
 /** Agent 作用域（私信 Agent）：AI 智能回复注入哪些模块 */
@@ -162,24 +164,16 @@ export default function AgentSection(props: PageProps) {
 
   return (
     <div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "var(--color-text-muted)",
-          marginBottom: 10,
-          lineHeight: 1.6,
-        }}
-      >
-        Agent 是<b>模版</b>：建一个 Agent，让多个账号绑定它 —— 改一次，所有绑定
-        账号同步生效。知识库 / 黑名单 / 兜底话术都跟随 Agent，账号不单独持有。
-      </div>
+      {/* 2026-10-02 用户要求：删除「开发使用说明」式导语（原「Agent 是模版：…」）。
+          页面语义由 SetCardHead 标题承担，导语属冗余说明。 */}
 
       {/* ⓪ 全局模型配置（v0.38.3：模型配置在配置中心体现，与「AI 回复引擎」同源） */}
       <GlobalModelCard api={api} ready={ready} push={push} />
 
       {/* ① Agent 列表 */}
       <SectionBlock title="Agent 列表" subtitle={`${agents.length} 个`}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+        {/* 2026-10-02：Agent 列表改单行（超出横向滚动），消除多行换行的参差。 */}
+        <div style={{ display: "flex", flexWrap: "nowrap", gap: 8, marginBottom: 10, overflowX: "auto", paddingBottom: 2 }}>
           {agents.length === 0 && (
             <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
               暂无 Agent，点「新建」创建
@@ -220,8 +214,8 @@ export default function AgentSection(props: PageProps) {
           {selId && (
             <button
               className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
-              onClick={() => {
-                if (confirm(`确认删除 Agent「${sel?.name}」？绑定它的账号会自动解绑。`)) {
+              onClick={async () => {
+                if (await confirmDialog({ message: `确认删除 Agent「${sel?.name}」？绑定它的账号会自动解绑。`, danger: true })) {
                   delMut.mutate(selId);
                 }
               }}
@@ -235,7 +229,8 @@ export default function AgentSection(props: PageProps) {
       {/* ② Agent 参数 */}
       {(selId || draft.name) && (
         <SectionBlock title="Agent 参数" subtitle={sel ? sel.name : "新建"}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+          {/* 2026-10-02 用户要求：统一为等宽网格，消除 flex-wrap 造成的不规则跨行。 */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
             <Field label="Agent 名称">
               <input
                 value={draft.name || ""}
@@ -243,7 +238,7 @@ export default function AgentSection(props: PageProps) {
                 style={inputStyle}
               />
             </Field>
-            <Field label="商家名（注入 prompt，决定 AI 自称与话术）">
+            <Field label="商家名">
               <input
                 value={draft.merchant_name || ""}
                 onChange={(e) =>
@@ -286,7 +281,7 @@ export default function AgentSection(props: PageProps) {
             </Field>
           </div>
           {/* 作用域：该 Agent 的 AI 智能回复注入哪些模块 */}
-          <Field label="作用域（AI 智能回复应用到哪些模块）">
+          <Field label="作用域">
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12.5 }}>
               {(Array.isArray(draft.scopes) ? draft.scopes : ["dm"]).map((s: string) => (
                 <label key={s} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
@@ -323,31 +318,30 @@ export default function AgentSection(props: PageProps) {
           </Field>
           {/* 意向门（2026-09-30，P2-B）：判定归属 **Agent 层** —— 引擎不含行业规则，
               范围词由本 Agent 提供。默认关闭；开启且范围非空 ⇒ 弹幕未命中即不发。 */}
-          <Field label="意向范围过滤（开启后：未命中下列关键词的弹幕不发私信）">
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <Field label="意向范围过滤">
+            {/* 2026-10-02 用户要求：开关与关键词框在同一行显示。 */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <select
                 value={draft.intent_scope_enabled || "false"}
                 onChange={(e) =>
                   setDraft({ ...draft, intent_scope_enabled: e.target.value })
                 }
-                style={{ ...inputStyle, maxWidth: 260 }}
+                style={{ ...inputStyle, flex: "0 0 180px" }}
               >
-                <option value="false">关闭（不按内容过滤，全部发送）</option>
-                <option value="true">开启（未命中范围词即不发）</option>
+                <option value="false">关闭（全部发送）</option>
+                <option value="true">开启（未命中不发）</option>
               </select>
               <textarea
                 value={String(draft.intent_scope || "")}
                 onChange={(e) => setDraft({ ...draft, intent_scope: e.target.value })}
-                rows={4}
-                placeholder={"每行一个关键词，例如：\n工伤\n骨折\n怎么赔"}
-                style={{ ...inputStyle, minHeight: 78, resize: "vertical" }}
+                rows={2}
+                placeholder={"每行一个关键词，如：\n工伤\n骨折\n怎么赔"}
+                style={{ ...inputStyle, flex: 1, minHeight: 40, resize: "vertical" }}
               />
-              <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                留空 = 不启用（零回归）。命中规则：弹幕文本包含任一关键词即视为意向。
-              </span>
             </div>
           </Field>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+          {/* 2026-10-02 用户要求：只显示 AI 回复状态（去掉 Agent 名与参数尾缀）。 */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
             <button
               className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
               onClick={doSave}
@@ -355,10 +349,6 @@ export default function AgentSection(props: PageProps) {
             >
               {saveMut.isPending ? "保存中…" : "保存 Agent"}
             </button>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
-            更完整的参数（prompt / 护栏 / 兜底话术 / 黑名单）在同页
-            <b>「AI 回复引擎」</b> 调整；此处只放模版与绑定。
           </div>
         </SectionBlock>
       )}
@@ -370,7 +360,6 @@ export default function AgentSection(props: PageProps) {
         )}
         {acctList.map((name) => {
           const bound = bindings[name] || "";
-          const boundName = agents.find((a: AiAgentSummary) => a.id === bound)?.name;
           return (
             <div
               key={name}
@@ -409,26 +398,12 @@ export default function AgentSection(props: PageProps) {
                     <span
                       style={{
                         flex: "0 0 auto",
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "flex-end",
-                        gap: 2,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: effOn ? "var(--color-accent)" : "var(--color-text-muted)",
                       }}
                     >
-                      <span
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          color: effOn ? "var(--color-accent)" : "var(--color-text-muted)",
-                        }}
-                      >
-                        {boundName || "全局"}
-                        {effOn ? " · AI回复开启" : " · AI回复关闭"}
-                      </span>
-                      <span style={{ fontSize: 10.5, color: "var(--color-text-muted)" }}>
-                        {ag?.strict_level || "rag"} · {ag?.model || "auto"} ·
-                        知识库{ag?.kb_count ?? 0}条
-                      </span>
+                      {effOn ? "AI 回复开启" : "AI 回复关闭"}
                     </span>
                   );
                 })()

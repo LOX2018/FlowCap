@@ -14,6 +14,7 @@ import {
   Blank, Section, Stat, StatRow, Tone, Toolbar, SegmentedTabs, KeyValue,
 } from "@/components/page/kit";
 import { cn } from "@/lib/utils";
+import { BrandMark, BRAND_NAME } from "@/components/brand";
 import {
   type FmtAccount, type ReviewRow, PanelTitle, DM_META, Th, Td,
 } from "./accounts-shared";
@@ -83,7 +84,7 @@ export function AccountReview({
 
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-[var(--color-background)]"
+      className="fixed inset-0 z-[var(--z-view)] flex flex-col overflow-hidden bg-[var(--color-background)]"
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
@@ -92,20 +93,16 @@ export function AccountReview({
     >
       <header
         className="flex flex-wrap items-center gap-5 border-b border-[var(--color-border)]
-                   px-5 py-2.5"
+                   px-5 py-2.5 pr-[128px]"
       >
         <div className="flex items-baseline gap-2.5 whitespace-nowrap">
-          <span
-            aria-hidden="true"
-            className="h-[22px] w-[22px] shrink-0 self-center rounded-[6px]
-                       bg-[var(--color-accent)]"
-          />
+          <BrandMark size={22} rounded={6} className="shrink-0 self-center" />
           <h1 className="text-[0.94rem] font-semibold tracking-tight text-[var(--color-text)]">
-            抖音数据控制台
+            {BRAND_NAME}
           </h1>
           <span className="font-mono text-[0.68rem] uppercase tracking-[0.06em]
                            text-[var(--color-text-muted)]">
-            Douyin Console
+            Chuanliu Console
           </span>
         </div>
         <nav className="flex flex-1 flex-wrap gap-0.5" aria-label="主导航">
@@ -221,13 +218,13 @@ export function AccountReview({
           <div>
             <Toolbar className="mb-3">
               <Input
-                className="h-8 min-w-[180px] flex-1 text-[0.78rem]"
+                className="min-w-[180px] flex-1 text-[0.78rem]"
                 placeholder="搜索昵称 / 评论内容 / 私信文案…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
               />
               <Select value={st} onValueChange={setSt}>
-                <SelectTrigger className="h-8 w-[130px] text-[0.78rem]" aria-label="私信状态筛选">
+                <SelectTrigger className="w-[130px] text-[0.78rem]" aria-label="私信状态筛选">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

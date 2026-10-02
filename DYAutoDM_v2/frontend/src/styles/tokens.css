@@ -9,16 +9,18 @@
    ═══════════════════════════════════════════════════════════════ */
 
 @theme {
-  /* ── 背景层 ── */
-  --color-background: #0e0e14;
-  --color-background-soft: #0a0a0f;
-  --color-surface: rgba(255, 255, 255, 0.04);
-  --color-surface-solid: #16161e;
-  --color-surface-raised: rgba(255, 255, 255, 0.07);
+  /* ── 背景层（2026-10-02 重设计：加深并加入氛围层，见 .app-atmosphere）── */
+  --color-background: #0b0d13;
+  --color-background-soft: #07090e;
+  --color-surface: rgba(255, 255, 255, 0.045);
+  --color-surface-solid: #14161e;
+  --color-surface-2: rgba(255, 255, 255, 0.055);   /* 嵌套 / 内凹面 */
+  --color-surface-raised: rgba(255, 255, 255, 0.075);
 
-  /* ── 描边 ── */
+  /* ── 描边（发丝线 + 强线）── */
   --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --color-border-strong: rgba(255, 255, 255, 0.15);
+  --color-hairline: rgba(255, 255, 255, 0.06);
   --image-outline: rgba(255, 255, 255, 0.1);
 
   /* ── 文字 ── */
@@ -54,10 +56,15 @@
   --radius-xl: 24px;
   --radius-2xl: 32px;
 
-  /* ── 阴影 ── */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 10px 30px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 18px 55px rgba(0, 0, 0, 0.12), 0 4px 14px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 30px 90px rgba(0, 0, 0, 0.18), 0 8px 24px rgba(0, 0, 0, 0.08);
+  /* ── 阴影 / 高度层（2026-10-02 重设计：加厚，卡片不再「贴平」）── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px -12px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.35), 0 24px 60px -20px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 8px 20px rgba(0, 0, 0, 0.4), 0 48px 110px -28px rgba(0, 0, 0, 0.7);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px -12px rgba(0, 0, 0, 0.5);
+  --elev-2: 0 2px 6px rgba(0, 0, 0, 0.35), 0 24px 60px -20px rgba(0, 0, 0, 0.6);
+  --elev-3: 0 8px 20px rgba(0, 0, 0, 0.4), 0 48px 110px -28px rgba(0, 0, 0, 0.7);
+  /* 卡片顶部内高光（暗色下提亮上沿，避免「一块死板色」） */
+  --ring-inset-hi: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --shadow-glow: 0 0 0 1px rgba(104, 203, 110, 0.22),
                  0 10px 30px rgba(104, 203, 110, 0.15);
 
@@ -79,6 +86,31 @@
   --bottombar-expanded: 320px;
   --topbar-height: 36px;
 
+  /* ── 背景氛围光晕（2026-10-02 用户指定：淡绿 → 浅黄 渐变光晕）──
+     两团对角柔光（左上绿 / 右下黄），由 `.app-atmosphere` 渲染。
+     与 accent 解耦：改这里即换整个背景的「气色」，不必动主色。
+     alpha 分主题：暗色克制（防刺眼），亮色明显（用户要「不单调」）。 */
+  --aura-1-rgb: 104, 203, 110;   /* 绿 */
+  --aura-2-rgb: 235, 200, 120;   /* 黄 */
+  --aura-1-a: 0.16;
+  --aura-2-a: 0.12;
+  /* 浮层（弹窗/下拉/气泡）内的同色光晕强度：暗色克制、亮色明显 */
+  --aura-surface-a1: 0.10;
+  --aura-surface-a2: 0.08;
+  /* 卡片内的同色光晕（更淡，避免与纯白块割裂） */
+  --aura-card-a1: 0.05;
+  --aura-card-a2: 0.04;
+
+  /* ── 层级梯队（2026-10-02 统一浮层 z 序，唯一真源）──
+     规则：抽屉 < 模态 < 全屏视图 < toast。禁止再用 999/9999/99999。 */
+  --z-chrome: 30;      /* 顶栏 / 侧栏 */
+  --z-popover: 50;     /* 下拉 / 选择 / 气泡 */
+  --z-drawer: 60;      /* 侧滑抽屉 */
+  --z-modal: 100;      /* 模态弹窗 / 遮罩 */
+  --z-view: 120;       /* 全屏视图级接管（查阅模式 / 播放器浮层） */
+  --z-blocker: 200;    /* 阻断式门禁（版本不一致） */
+  --z-toast: 300;      /* 全局 toast（必须最高） */
+
   /* ── 字体 ── */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
     system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
@@ -96,29 +128,129 @@
    ═══════════════════════════════════════════════════════════════ */
 [data-theme="light"],
 [data-theme="day"] {
-  --color-background: #f5f5f7;
-  --color-background-soft: #efeff1;
-  --color-surface: rgba(255, 255, 255, 0.88);
+  /* 2026-10-02 重设计：浅色不再「浅灰底 + 纯白大块」。
+     底改**暖调浅绿白**，并叠「淡绿 → 浅黄」对角光晕（见 .app-atmosphere）；
+     卡片靠**发丝线 + 顶部内高光 + 有分量投影**浮起来。 */
+  --color-background: #f3f6ec;
+  --color-background-soft: #eaf0e2;
+  --aura-1-rgb: 150, 214, 152;   /* 淡绿 */
+  --aura-2-rgb: 250, 224, 150;   /* 浅黄 */
+  --aura-1-a: 0.62;
+  --aura-2-a: 0.55;
+  --aura-surface-a1: 0.40;
+  --aura-surface-a2: 0.34;
+  --aura-card-a1: 0.22;
+  --aura-card-a2: 0.18;
+  --color-surface: rgba(255, 255, 255, 0.72);
   --color-surface-solid: #ffffff;
-  --color-surface-raised: rgba(255, 255, 255, 0.94);
-  --color-border: rgba(0, 0, 0, 0.1);
-  --color-border-strong: rgba(0, 0, 0, 0.18);
-  --image-outline: rgba(0, 0, 0, 0.1);
-  --color-text: #1d1d1f;
-  --color-text-secondary: #6e6e73;
-  --color-text-muted: #6f6f74;
-  --color-setting-card: rgba(0, 0, 0, 0.03);
-  --color-subtle-bg: rgba(0, 0, 0, 0.04);
-  --color-toggle-track: rgba(0, 0, 0, 0.12);
-  --shadow-sm: 0 1px 2px rgba(18, 18, 24, 0.06), 0 10px 30px rgba(18, 18, 24, 0.06);
-  --shadow-md: 0 18px 55px rgba(18, 18, 24, 0.12), 0 4px 14px rgba(18, 18, 24, 0.06);
-  --shadow-lg: 0 30px 90px rgba(18, 18, 24, 0.14), 0 8px 24px rgba(18, 18, 24, 0.06);
+  --color-surface-2: rgba(15, 23, 42, 0.035);
+  --color-surface-raised: #ffffff;
+  --color-border: rgba(15, 23, 42, 0.10);
+  --color-border-strong: rgba(15, 23, 42, 0.18);
+  --color-hairline: rgba(15, 23, 42, 0.06);
+  --image-outline: rgba(15, 23, 42, 0.10);
+  --color-text: #10131a;
+  --color-text-secondary: #5b6472;
+  --color-text-muted: #6b7482;
+  --color-setting-card: rgba(15, 23, 42, 0.03);
+  --color-subtle-bg: rgba(15, 23, 42, 0.045);
+  --color-toggle-track: rgba(15, 23, 42, 0.14);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 10px 24px -12px rgba(15, 23, 42, 0.16);
+  --shadow-md: 0 2px 6px rgba(15, 23, 42, 0.07), 0 24px 48px -18px rgba(15, 23, 42, 0.22);
+  --shadow-lg: 0 8px 20px rgba(15, 23, 42, 0.10), 0 48px 96px -28px rgba(15, 23, 42, 0.28);
+  --elev-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 10px 24px -12px rgba(15, 23, 42, 0.16);
+  --elev-2: 0 2px 6px rgba(15, 23, 42, 0.07), 0 24px 48px -18px rgba(15, 23, 42, 0.22);
+  --elev-3: 0 8px 20px rgba(15, 23, 42, 0.10), 0 48px 96px -28px rgba(15, 23, 42, 0.28);
+  --ring-inset-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 /* ═══════════════════════════════════════════════════════════════
    设计工具类
    ═══════════════════════════════════════════════════════════════ */
 @layer utilities {
+  /* ═══════════════════════════════════════════════════════════════
+     背景氛围层（2026-10-02 重设计）
+     ───────────────────────────────────────────────────────────────
+     原 tokens 里定义了 `orb-drift`/`nebula-pulse` 关键帧却**无任何渲染层**
+     （死代码）⇒ 页面是纯平底色、无纵深。本类把氛围光真正渲染出来：
+     跟随 `--glow-rgb`（由主题/主色引擎写入），在应用底层铺两团柔光 + 细网格，
+     使所有内容都「浮」在环境之上。纯装饰、`pointer-events:none`、不遮内容。
+     ═══════════════════════════════════════════════════════════════ */
+  .app-atmosphere {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+    /* 2026-10-02：由「单色主光晕」改为**双色对角光晕**（淡绿 → 浅黄），
+       颜色/强度由 --aura-* 令牌控制，昼/夜各一套（见 tokens）。 */
+    background:
+      radial-gradient(1200px 780px at 6% -12%, rgba(var(--aura-1-rgb), var(--aura-1-a)), transparent 62%),
+      radial-gradient(1100px 720px at 102% 112%, rgba(var(--aura-2-rgb), var(--aura-2-a)), transparent 60%),
+      var(--color-background);
+  }
+  /* 细网格：极低透明度，给底色「质感」而非死平 */
+  .app-atmosphere::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: radial-gradient(1200px 800px at 30% 0%, #000 0%, transparent 78%);
+  }
+  [data-theme="light"] .app-atmosphere::before,
+  [data-theme="day"] .app-atmosphere::before {
+    background-image:
+      linear-gradient(rgba(15, 23, 42, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(15, 23, 42, 0.025) 1px, transparent 1px);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     统一卡面 / 弹窗面（2026-10-02 重设计：告别「浅灰底 + 大白块」）
+     ───────────────────────────────────────────────────────────────
+     `card-surface` —— 主内容卡：微透明底 + 发丝线 + 顶部内高光 + 高度阴影。
+     `modal-surface` —— 弹窗面：更实、更强投影，与遮罩形成清晰前后关系。
+     两者都只读令牌 ⇒ 昼/夜自动适配，且**全站卡片只此一套材质**。
+     ═══════════════════════════════════════════════════════════════ */
+  .card-surface {
+    /* 卡片：微透明底 + **同色淡光晕**（与全局底图同气色，不再是纯白块） */
+    background:
+      radial-gradient(130% 110% at 0% 0%, rgba(var(--aura-1-rgb), var(--aura-card-a1)), transparent 62%),
+      radial-gradient(130% 110% at 100% 100%, rgba(var(--aura-2-rgb), var(--aura-card-a2)), transparent 60%),
+      color-mix(in srgb, var(--color-surface-solid) 82%, transparent);
+    backdrop-filter: blur(18px);
+    border: 1px solid var(--color-border);
+    box-shadow: var(--ring-inset-hi), var(--shadow-sm);
+  }
+  /* 浮层（弹窗 / 下拉 / 气泡）：**同款「淡绿→浅黄」光晕**，与全局底图同气色。
+     2026-10-02 用户要求「浮窗也换成这个色调」—— 故浮层面不再是中性灰白，
+     而是带同源光晕；强度由 --aura-surface-a1/a2 控制（暗克制 / 亮明显）。 */
+  .modal-surface,
+  .popover-surface {
+    background:
+      radial-gradient(120% 100% at 0% 0%, rgba(var(--aura-1-rgb), var(--aura-surface-a1)), transparent 58%),
+      radial-gradient(120% 100% at 100% 100%, rgba(var(--aura-2-rgb), var(--aura-surface-a2)), transparent 56%),
+      color-mix(in srgb, var(--color-surface-solid) 92%, transparent);
+    border: 1px solid var(--color-border-strong);
+    box-shadow: var(--ring-inset-hi), var(--shadow-lg);
+  }
+  .modal-surface { backdrop-filter: blur(48px); }
+  /* 小浮层（下拉/气泡）：更轻的模糊与投影，避免「小气泡像大弹窗」 */
+  .popover-surface {
+    backdrop-filter: blur(28px);
+    box-shadow: var(--ring-inset-hi), var(--shadow-md);
+  }
+  .modal-scrim {
+    background: color-mix(in srgb, #05060a 55%, transparent);
+    backdrop-filter: blur(6px);
+  }
+  [data-theme="light"] .modal-scrim,
+  [data-theme="day"] .modal-scrim {
+    background: color-mix(in srgb, #0b1220 34%, transparent);
+  }
+
   /* 玻璃拟态 —— 蓝本核心手法 */
   /* 磨砂开关：ThemeContext 写 `<html data-glass-frost="true">`。
      缺省（无该属性）= 轻磨砂；开启 = 强磨砂。 */
@@ -151,6 +283,12 @@
 
   .no-scrollbar { scrollbar-width: none; }
   .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+  /* 页面切换淡入（配合 app-shell 的 keyed div） */
+  .page-in { animation: page-in 0.12s ease-out both; }
+  @media (prefers-reduced-motion: reduce) {
+    .page-in { animation: none; }
+  }
 
   .select-text, input, textarea, [contenteditable="true"] {
     user-select: text;
@@ -185,6 +323,13 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+/* 页面切换淡入（2026-10-02）：极短、只动透明度。
+   起点 0.6（而非 0）⇒ 背景不会完全透出，避免「闪一下白」。
+   不用 transform ⇒ 不产生 containing block，页面内 fixed 浮层不受影响。 */
+@keyframes page-in {
+  from { opacity: 0.6; }
+  to   { opacity: 1; }
+}
 
 /* ═══════════════════════════════════════════════════════════════
    全局基础
@@ -203,7 +348,26 @@ body {
   background: var(--color-background);
   color: var(--color-text);
   min-height: 100vh;
-  overflow: hidden;
+  /* 2026-10-02：**不得**用 overflow:hidden —— Tauri 官方文档明确：body 上
+     overflow:hidden 会阻断 `-webkit-app-region: drag`，使 `data-tauri-drag-region`
+     拖动失效（自绘标题栏因此无法拖动窗口）。本应用无滚动需求（#root=100vh +
+     AppShell h-screen overflow-hidden），去掉后行为不变。 */
+}
+
+/* 自绘标题栏拖拽（Tauri v2）：
+   `data-tauri-drag-region` 在 Windows/WebView2 上靠 `-webkit-app-region: drag` 生效；
+   其内部的交互元素必须显式 no-drag，否则无法点击（按钮/输入/链接/角色按钮）。 */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] select,
+[data-tauri-drag-region] textarea,
+[data-tauri-drag-region] [role="button"],
+[data-tauri-drag-region] [role="link"] {
+  -webkit-app-region: no-drag;
 }
 
 #root { height: 100vh; }

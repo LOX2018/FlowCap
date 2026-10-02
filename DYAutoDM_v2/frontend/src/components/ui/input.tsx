@@ -13,9 +13,10 @@ const base =
   "focus:ring-2 focus:ring-[var(--color-accent-ring)] " +
   "disabled:opacity-50 disabled:cursor-not-allowed";
 
+// 2026-10-02 统一：输入框高度对齐按钮（h-9），全站表单控件同一规格。
 const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
-    <input ref={ref} className={cn(base, "h-10 px-3", className)} {...props} />
+    <input ref={ref} className={cn(base, "h-9 px-3", className)} {...props} />
   )
 );
 Input.displayName = "Input";

@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { Modal, ModalHeader, ModalBody, ModalFooter } from "@/components/ui/modal";
 
 export type DmStatus = "un" | "wait" | "sent" | "fail";
 export type PillColor = "ok" | "warn" | "danger" | "accent" | "mute";
@@ -393,27 +394,22 @@ export function FailReasonModal({
 }) {
   if (!row) return null;
   const info = failInfoOf(row);
+  // 2026-10-02：并入统一 Modal（原 z-[9999] + bg-black/45 无模糊 + surface-solid，全站最不一致的一处）
   return (
-    <div
-      onClick={onClose}
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/45 p-5"
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[520px] rounded-[var(--radius-md)]
-                   border border-[var(--color-border)] bg-[var(--color-surface-solid)] p-5
-                   shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
-      >
-        <div className="mb-3 flex items-center gap-2.5">
+    <Modal open onClose={onClose} maxWidth="520px" labelledBy="fr-title">
+      <ModalHeader
+        onClose={onClose}
+        title={<b id="fr-title" className="text-[0.95rem]">私信发送失败</b>}
+        icon={
           <span
             className="rounded-full px-2.5 py-[3px] text-[0.75rem] font-semibold text-white"
             style={{ background: info.color }}
           >
             {info.label}
           </span>
-          <b className="text-[0.95rem] text-[var(--color-text)]">私信发送失败</b>
-        </div>
-
+        }
+      />
+      <ModalBody>
         <div className="mb-2.5 text-[0.82rem] text-[var(--color-text-muted)]">
           目标：{row.name || "未知"}
         </div>
@@ -437,12 +433,11 @@ export function FailReasonModal({
             </pre>
           </details>
         ) : null}
-
-        <div className="mt-4 text-right">
-          <Button onClick={onClose}>我知道了</Button>
-        </div>
-      </div>
-    </div>
+      </ModalBody>
+      <ModalFooter>
+        <Button onClick={onClose}>我知道了</Button>
+      </ModalFooter>
+    </Modal>
   );
 }
 
@@ -566,6 +561,12 @@ export function Td({
         "text-[0.78rem] text-[var(--color-text)]",
         mono && "font-mono tabular-nums",
         muted && "text-[var(--color-text-muted)]",
+        // 2026-10-02 修（用户实测「捕获私信列表出现溢出」）：
+        // `table-fixed` 已固定列宽，但表格单元格默认 `overflow: visible`
+        // ⇒ 超长内容（长昵称 / 长文案）**直接溢出到相邻列**，覆盖右侧单元格文本。
+        // 补 overflow-hidden + 省略号，与表头 Th 的处置对齐（Th 早有 overflow-hidden
+        // text-ellipsis）；colSpan 行（空态整行提示）不裁 —— 那是占位需完整显示。
+        !colSpan && "overflow-hidden text-ellipsis",
         className
       )}
     >

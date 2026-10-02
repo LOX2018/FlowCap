@@ -252,14 +252,14 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5 backdrop-blur-sm"
+      className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center modal-scrim p-5"
       onClick={onClose}
     >
       <div
-        className="glass-premium max-h-[86vh] w-[720px] max-w-[92vw] overflow-auto
+        className="modal-surface max-h-[86vh] w-[720px] max-w-[92vw] overflow-auto
                    rounded-[var(--radius-xl)]"
-        onClick={(e) => e.stopPropagation()}
-        data-od-id="live-strategy-modal"
+              onClick={(e) => e.stopPropagation()}
+              data-od-id="live-strategy-modal"
       >
         <div className="flex items-center justify-between border-b border-[var(--color-border)]
                         px-4 py-3">
@@ -560,14 +560,14 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                    style={{ color: "var(--color-text-muted)" }}>
                 <span>间隔</span>
                 <Input
-                  className="h-8 w-[80px]" type="number" min="0.5" step="0.5"
+                  className="w-[80px]" type="number" min="0.5" step="0.5"
                   aria-label="弹幕间隔下限"
                   value={draft.danmaku_timer_min ?? 3}
                   onChange={(e) => touch({ danmaku_timer_min: parseFloat(e.target.value) || 3 })}
                 />
                 <span>~</span>
                 <Input
-                  className="h-8 w-[80px]" type="number" min="0.5" step="0.5"
+                  className="w-[80px]" type="number" min="0.5" step="0.5"
                   aria-label="弹幕间隔上限"
                   value={draft.danmaku_timer_max ?? 6}
                   onChange={(e) => touch({ danmaku_timer_max: parseFloat(e.target.value) || 6 })}
@@ -590,12 +590,12 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
               <div className="flex flex-wrap items-center gap-2 text-[0.74rem]"
                    style={{ color: "var(--color-text-muted)" }}>
                 <span>总点赞</span>
-                <Input className="h-8 w-[90px]" type="number" min="1"
+                <Input className="w-[90px]" type="number" min="1"
                        aria-label="批量点赞总数"
                        value={draft.like_batch_total ?? 3000}
                        onChange={(e) => touch({ like_batch_total: parseInt(e.target.value, 10) || 3000 })} />
                 <span>分</span>
-                <Input className="h-8 w-[70px]" type="number" min="1" max="50"
+                <Input className="w-[70px]" type="number" min="1" max="50"
                        aria-label="分几步完成"
                        value={draft.like_batch_steps ?? 4}
                        onChange={(e) => touch({ like_batch_steps: parseInt(e.target.value, 10) || 4 })} />
@@ -604,7 +604,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
                   （单步上限 {draft.like_batch_step_max ?? 1000}，超出自动加步）
                 </span>
                 <span>冷却</span>
-                <Input className="h-8 w-[80px]" type="number" min="120"
+                <Input className="w-[80px]" type="number" min="120"
                        aria-label="步间冷却秒数"
                        value={draft.like_batch_cooldown_sec ?? 150}
                        onChange={(e) => touch({ like_batch_cooldown_sec: parseInt(e.target.value, 10) || 150 })} />

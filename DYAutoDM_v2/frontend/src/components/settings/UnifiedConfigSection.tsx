@@ -18,6 +18,7 @@ import { PageProps } from "../../api/client";
 import type {
   SettingsSchema,
 } from "../../api/client";
+import { Button } from "@/components/ui/button";
 import { errMsg } from "./settings-shared";
 import { type Val, SectionCard, SchemaField } from "./unified-config-widgets";
 
@@ -226,24 +227,26 @@ export default function UnifiedConfigSection(
           }}
         >
           <span style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginRight: 2 }}>
-            保存到
-          </span>
-          <button
-            className={"btn sm" + (scope === "" ? " accent" : " ghost")}
-            onClick={() => setActiveTag("")}
-          >
-            全局
-          </button>
-          {tagList.map((t) => (
-            <button
-              key={t.id}
-              className={"btn sm" + (scope === t.id ? " accent" : " ghost")}
-              onClick={() => setActiveTag(t.id)}
-              title={`编辑标签「${t.name}」的参数`}
-            >
-              {t.name}
-            </button>
-          ))}
+                      保存到
+                    </span>
+                    <Button
+                      variant={scope === "" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setActiveTag("")}
+                    >
+                      全局
+                    </Button>
+                    {tagList.map((t) => (
+                      <Button
+                        key={t.id}
+                        variant={scope === t.id ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => setActiveTag(t.id)}
+                        title={`编辑标签「${t.name}」的参数`}
+                      >
+                        {t.name}
+                      </Button>
+                    ))}
           <div style={{ flex: 1 }} />
           <span
             style={{
@@ -282,7 +285,7 @@ export default function UnifiedConfigSection(
           key={sec.key}
           title={sec.label}
           subtitle={`${sec.fields.length} 项`}
-          defaultOpen={i === 0}
+                    defaultOpen={props.onlySections ? i === 0 : true}
           dirty={dirtyOf(sec.key)}
           saving={saveMut.isPending}
           onSave={() => saveMut.mutate({ sec: sec.key, scope: scope || "" })}

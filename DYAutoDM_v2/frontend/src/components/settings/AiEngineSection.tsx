@@ -394,10 +394,13 @@ export default function AiEngineSection(props: PageProps) {
                 if (e.key === "Enter") blAdd();
               }}
             />
+          </Toolbar>
+          {/* 2026-10-02 用户要求：按钮单独一行。 */}
+          <div style={{ marginBottom: 8 }}>
             <Button variant="secondary" size="sm" onClick={blAdd}>
               <Plus className="h-3.5 w-3.5" />添加
             </Button>
-          </Toolbar>
+          </div>
           {!(blData?.items || []).length && <Blank>黑名单为空</Blank>}
           <div className="divide-y divide-[var(--color-border)]">
             {(blData?.items || []).map((uid) => (

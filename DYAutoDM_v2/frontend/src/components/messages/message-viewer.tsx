@@ -64,13 +64,12 @@ export function ImageViewer({
   return (
     <div
       ref={rootRef}
-      className="fixed inset-0 z-[999] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center modal-scrim"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[90vh] max-w-[65vw] flex-col overflow-hidden
-                   rounded-[var(--radius-md)] border border-[var(--color-border)]
-                   bg-[var(--color-surface-solid)] shadow-[var(--shadow-lg)]"
+        className="card-surface flex max-h-[90vh] max-w-[65vw] flex-col overflow-hidden
+                   rounded-[var(--radius-md)]"
         onClick={(e) => e.stopPropagation()}
       >
         <div

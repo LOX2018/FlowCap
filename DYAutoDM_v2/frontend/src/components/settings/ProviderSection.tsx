@@ -16,6 +16,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { HubProvider, HubModel } from "../../api/client";
 import type { PageProps } from "../../api/client";
 import { errMsg, SectionBlock, inputStyle } from "./settings-shared";
+import { confirmDialog } from "@/components/ui/modal";
 
 interface ProviderSectionProps {
   providers: HubProvider[];
@@ -117,8 +118,8 @@ export function ProviderSection({ providers, models, presets, api, push, refresh
               编辑
             </button>
             <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[var(--color-danger-soft)] text-[var(--color-danger)] hover:bg-[var(--color-danger)] hover:text-white h-9 px-4 text-[0.78rem] rounded-[10px]"
-              onClick={() => {
-                if (confirm(`删除提供商「${p.name}」？其模型与链路绑定会一并清理。`))
+              onClick={async () => {
+                if (await confirmDialog({ message: `删除提供商「${p.name}」？其模型与链路绑定会一并清理。`, danger: true }))
                   delPvMut.mutate(p.id);
               }}>
               删除

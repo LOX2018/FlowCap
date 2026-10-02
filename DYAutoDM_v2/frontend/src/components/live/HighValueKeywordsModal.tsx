@@ -18,8 +18,8 @@
  * 3. **点击遮罩关闭**，与同页 `alert` 弹窗、`RoomConfigPage` 的交互一致。
  */
 
-import { X } from "lucide-react";
 import HighValueKeywordsSection from "@/components/settings/HighValueKeywordsSection";
+import { Modal, ModalHeader, ModalBody } from "@/components/ui/modal";
 
 export default function HighValueKeywordsModal({
   open,
@@ -29,45 +29,18 @@ export default function HighValueKeywordsModal({
   onClose: () => void;
 }) {
   // 与 RoomConfigPage / RoomManagePage 同款：关闭态直接不渲染（零 DOM 残留）。
+  // 2026-10-02：并入统一 Modal（原 z-[9999] + surface-solid）。
   if (!open) return null;
   return (
-    <div
-      data-od-id="high-value-keywords-modal"
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55
-                 p-5 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[86vh] w-full max-w-[760px] flex-col overflow-hidden
-                   rounded-[var(--radius-lg)] border border-[var(--color-border)]
-                   bg-[var(--color-surface-solid)] shadow-[var(--shadow-lg)]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between gap-3 border-b
-                        border-[var(--color-border)] px-4 py-3">
-          <div className="min-w-0">
-            <div className="text-[0.95rem] font-semibold text-[var(--color-text)]">
-              高价值关键词权重
-            </div>
-            <div className="mt-0.5 text-[0.72rem] text-[var(--color-text-muted)]">
-              命中即累加权重，总分 ≥ 阈值判为高价值（阈值为 <b>0</b> 时不参与）
-            </div>
-          </div>
-          <button
-            type="button"
-            aria-label="关闭"
-            onClick={onClose}
-            className="shrink-0 cursor-pointer rounded-[var(--radius-sm)] p-1
-                       text-[var(--color-text-muted)] transition-colors
-                       hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <HighValueKeywordsSection embedded />
-        </div>
-      </div>
-    </div>
+    <Modal open onClose={onClose} maxWidth="760px" labelledBy="hvk-title">
+      <ModalHeader
+        onClose={onClose}
+        title={<span id="hvk-title">高价值关键词权重</span>}
+        description={<>命中即累加权重，总分 ≥ 阈值判为高价值（阈值为 <b>0</b> 时不参与）</>}
+      />
+      <ModalBody>
+        <HighValueKeywordsSection embedded />
+      </ModalBody>
+    </Modal>
   );
 }

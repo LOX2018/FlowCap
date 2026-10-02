@@ -243,7 +243,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="h-8 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[0.78rem] outline-none focus:border-[var(--color-accent)]"
+      className="h-9 rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-[0.78rem] outline-none focus:border-[var(--color-accent)]"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>

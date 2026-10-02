@@ -15,7 +15,7 @@ export default function KbPage({ push, api }: PageProps) {
   const qc = useQueryClient();
 
   return (
-    <PageContainer maxWidth="1080px">
+    <PageContainer>
       <PageHeader
         title="知识库管理"
         description="专业知识库（向量参考，不直接回复） · 对话回复库（案例命中，零 token 直回）"

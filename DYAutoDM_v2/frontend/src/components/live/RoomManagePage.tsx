@@ -280,14 +280,14 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5 backdrop-blur-sm"
+      className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center modal-scrim p-5"
       onClick={onClose}
     >
       <div
-        className="glass-premium max-h-[86vh] w-[760px] max-w-[92vw] overflow-auto
+        className="modal-surface max-h-[86vh] w-[760px] max-w-[92vw] overflow-auto
                    rounded-[var(--radius-xl)]"
-        onClick={(e) => e.stopPropagation()}
-        data-od-id="live-room-modal"
+              onClick={(e) => e.stopPropagation()}
+              data-od-id="live-room-modal"
       >
         <div className="flex items-center justify-between border-b border-[var(--color-border)]
                         px-4 py-3">

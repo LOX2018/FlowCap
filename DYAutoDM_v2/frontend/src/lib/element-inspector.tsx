@@ -456,7 +456,7 @@ function buildReport(el: Element): Report {
 function reportToText(r: Report, tab: string): string {
   const stamp = new Date().toLocaleString("zh-CN");
   const L: string[] = [];
-  L.push("# DYAutoDM 元素取址报告");
+  L.push("# 川流 元素取址报告");
   L.push(`# 页面 tab: ${tab}   时间: ${stamp}   前端版本: ${frontendVersion()}`);
   L.push(`# 元素: ${r.label}${r.oid ? `   data-od-id: ${r.oid}` : ""}`);
   L.push("");

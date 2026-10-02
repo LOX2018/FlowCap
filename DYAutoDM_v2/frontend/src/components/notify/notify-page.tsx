@@ -175,7 +175,7 @@ export default function NotifyPage({ api, push }: PageProps) {
   }
 
   return (
-    <PageContainer maxWidth="860px">
+    <PageContainer>
       <PageHeader
         title="IM 通知"
         description="凭证失效提醒会推送到已配置的渠道"
@@ -194,7 +194,7 @@ export default function NotifyPage({ api, push }: PageProps) {
           </>
         }
         footer={
-          <Button disabled={saveMut.isPending} onClick={() => saveMut.mutate(cfg)}>
+          <Button size="sm" disabled={saveMut.isPending} onClick={() => saveMut.mutate(cfg)}>
             {saveMut.isPending ? "保存中…" : "保存配置"}
           </Button>
         }
@@ -336,7 +336,7 @@ export default function NotifyPage({ api, push }: PageProps) {
 
       {channels.length > 0 && (
         <div className="mt-1.5">
-          <Button disabled={saveMut.isPending} onClick={() => saveMut.mutate(cfg)}>
+          <Button size="sm" disabled={saveMut.isPending} onClick={() => saveMut.mutate(cfg)}>
             {saveMut.isPending ? "保存中…" : "保存配置"}
           </Button>
         </div>

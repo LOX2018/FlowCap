@@ -54,7 +54,7 @@ const TABS: {
   hint: string;
   icon: React.ReactNode;
 }[] = [
-  { key: "general", label: "通用配置", hint: "前端与系统行为（非业务）", icon: <SettingsIcon className="h-3.5 w-3.5" /> },
+  { key: "general", label: "通用配置", hint: "前端行为（非业务）", icon: <SettingsIcon className="h-3.5 w-3.5" /> },
   { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", icon: <Send className="h-3.5 w-3.5" /> },
   { key: "live", label: "直播监听", hint: "监听节奏与轮询", icon: <Radio className="h-3.5 w-3.5" /> },
   { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", icon: <Database className="h-3.5 w-3.5" /> },
@@ -72,7 +72,7 @@ const TABS: {
   // 2026-09-30：系统运维（能力巡检）。总览页改为纯只读看板后，
   // 「立即巡检」的**唯一**入口落在此处 —— 端点此前仅总览页一处调用，
   // 不补入口会让 /api/probe/patrol 变成「在位但不可得」。
-  { key: "system", label: "系统", hint: "能力巡检（只读本地事实，零网络零浏览器）", icon: <ShieldCheck className="h-3.5 w-3.5" /> },
+  { key: "system", label: "系统", hint: "外观主题 · 能力巡检（只读本地事实，零网络零浏览器）", icon: <ShieldCheck className="h-3.5 w-3.5" /> },
 ];
 
 export default function SettingsPage(props: PageProps) {
@@ -119,13 +119,9 @@ export default function SettingsPage(props: PageProps) {
         <Card className="min-w-0 flex-1">
           <CardContent className="p-3.5">
             {section === "general" && (
-              <>
-                {/* 后端 schema 驱动的通用配置（非业务） */}
-                <UnifiedConfigSection {...props} onlySections={["general"]} />
-                {/* ADR-018 F6：外观（日夜主题）。纯前端偏好，存 localStorage，
-                    不经后端 schema，故单独成卡、不塞进 UnifiedConfigSection。 */}
-                <AppearanceSection />
-              </>
+              /* 后端 schema 驱动的通用配置（非业务）。
+                 2026-10-02 用户要求：「外观（日夜主题）」实为系统页功能，已移至「系统」tab。 */
+              <UnifiedConfigSection {...props} onlySections={["general"]} />
             )}
             {section === "send" && (
               <UnifiedConfigSection {...props} onlySections={["send"]} />
@@ -165,7 +161,14 @@ export default function SettingsPage(props: PageProps) {
             {section === "crawlpolicy" && <CrawlPolicySection {...props} />}
             {section === "notify" && <NotifySection {...props} />}
             {section === "mcp" && <McpSection push={props.push} />}
-            {section === "system" && <ProbeSection {...props} />}
+            {section === "system" && (
+              <>
+                {/* 2026-10-02 从「通用配置」迁入：外观（日夜主题）属系统级功能。
+                    纯前端偏好，存 localStorage，不经后端 schema。 */}
+                <AppearanceSection />
+                <ProbeSection {...props} />
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -329,7 +329,7 @@ export default function CrawlPage(props: PageProps) {
           <label className="flex items-center gap-1.5">
             排序
             <Select value={order} onValueChange={setOrder}>
-              <SelectTrigger className="h-8 w-[118px]"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-[118px]"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {ORDER_OPTS.map((o) => (
                   <SelectItem key={o.v} value={o.v}>{o.label}</SelectItem>
@@ -340,7 +340,7 @@ export default function CrawlPage(props: PageProps) {
           <label className="flex items-center gap-1.5">
             发布时间
             <Select value={pt} onValueChange={setPt}>
-              <SelectTrigger className="h-8 w-[110px]"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {PT_OPTS.map((o) => (
                   <SelectItem key={o.v} value={o.v}>{o.label}</SelectItem>
@@ -351,7 +351,7 @@ export default function CrawlPage(props: PageProps) {
           <label className="flex items-center gap-1.5">
             视频时长
             <Select value={dur || "__all"} onValueChange={(v) => setDur(v === "__all" ? "" : v)}>
-              <SelectTrigger className="h-8 w-[120px]"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {DUR_OPTS.map((o) => (
                   <SelectItem key={o.v || "__all"} value={o.v || "__all"}>{o.label}</SelectItem>
@@ -496,7 +496,7 @@ export default function CrawlPage(props: PageProps) {
       {/* 评论区抽屉 —— Radix Dialog（替代旧 .overlay，自带焦点管理与 Esc 关闭） */}
       {cmtFor && (
         <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/55 backdrop-blur-sm"
+          className="fixed inset-0 z-[var(--z-drawer)] flex justify-end modal-scrim"
           onClick={() => setCmtFor(null)}
         >
           <div

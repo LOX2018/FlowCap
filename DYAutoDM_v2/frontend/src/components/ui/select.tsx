@@ -16,7 +16,7 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-10 w-full items-center justify-between gap-2 rounded-[10px] px-3",
+      "flex h-9 w-full items-center justify-between gap-2 rounded-[10px] px-3",
       "bg-[var(--color-surface)] border border-[var(--color-border)]",
       "text-[0.85rem] text-[var(--color-text)] transition-colors duration-200",
       "hover:border-[var(--color-border-strong)]",
@@ -43,8 +43,8 @@ const SelectContent = React.forwardRef<
       ref={ref}
       position={position}
       className={cn(
-        "relative z-50 max-h-96 min-w-[8rem] overflow-hidden",
-        "rounded-[12px] glass-premium p-1",
+        "relative z-[var(--z-popover)] max-h-96 min-w-[8rem] overflow-hidden",
+        "rounded-[12px] popover-surface p-1",
         position === "popper" && "translate-y-1",
         className
       )}

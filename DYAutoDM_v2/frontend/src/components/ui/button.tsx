@@ -39,10 +39,16 @@ const buttonVariants = cva(
         link: "text-[var(--color-accent)] underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-10 px-5 rounded-[12px]",
+        /**
+         * 2026-10-02 统一（用户要求「前端能统一的都统一了」）：
+         * 全站页面/工具条按钮**一律 `sm` 规格**（h-9 / 0.78rem）——
+         * 此前 41 处用默认 h-10、54 处用 sm，同屏混排显得突兀。
+         * `default` 保留为 sm 的等价尺寸（旧调用点无需逐处改），`lg` 供强调主操作。
+         */
+        default: "h-9 px-4 text-[0.78rem] rounded-[10px]",
         sm: "h-9 px-4 text-[0.78rem] rounded-[10px]",
-        lg: "h-12 px-8 text-[0.95rem] rounded-[14px]",
-        icon: "h-10 w-10 rounded-[12px]",
+        lg: "h-11 px-6 text-[0.9rem] rounded-[12px]",
+        icon: "h-9 w-9 rounded-[10px]",
         "icon-sm": "h-9 w-9 rounded-[10px]",
       },
     },

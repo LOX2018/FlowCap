@@ -16,6 +16,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps, HubProvider, HubModel, HubRouteKind } from "../../api/client";
 import { errMsg, SectionBlock, inputStyle } from "./settings-shared";
 import { ProviderSection } from "./ProviderSection";
+import { confirmDialog } from "@/components/ui/modal";
 
 
 const CAP_LABEL: Record<string, string> = {
@@ -274,13 +275,14 @@ export default function ModelHubSection(props: PageProps) {
                 <span style={{ fontSize: 10.5, color: "var(--color-accent)" }}>兜底</span>
               )}
               <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[var(--color-danger-soft)] text-[var(--color-danger)] hover:bg-[var(--color-danger)] hover:text-white h-9 px-4 text-[0.78rem] rounded-[10px]"
-                onClick={() => {
-                  if (confirm(`删除模型「${m.model}」？链路与绑定会自动清理。`))
+                onClick={async () => {
+                  if (await confirmDialog({ message: `删除模型「${m.model}」？链路与绑定会自动清理。`, danger: true }))
                     delModelMut.mutate(m.id);
                 }}>删</button>
             </div>
           );
         })}
+        {/* 2026-10-02 用户要求：按钮单独一行，不与输入框/下拉混排。 */}
         <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
           <select style={{ ...inputStyle, flex: 1 }} value={newModel.providerId}
             onChange={(e) => setNewModel({ ...newModel, providerId: e.target.value })}>
@@ -292,13 +294,15 @@ export default function ModelHubSection(props: PageProps) {
           <input style={{ ...inputStyle, flex: 2 }} value={newModel.name}
             placeholder="模型名（手动添加；一般用「拉取模型」）"
             onChange={(e) => setNewModel({ ...newModel, name: e.target.value })} />
+        </div>
+        <div style={{ marginTop: 8 }}>
           <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={addModelMut.isPending || !newModel.providerId || !newModel.name.trim()}
             onClick={() => addModelMut.mutate()}>添加模型</button>
         </div>
       </SectionBlock>
 
-      {/* ===== ②·乙 避障链路 ===== */}
-      <SectionBlock title="②·乙 避障链路" subtitle={`每链最多 ${maxChain} 个模型 · 按序尝试失败自动切换`}>
+      {/* ===== ② 避障链路 ===== */}
+      <SectionBlock title="② 避障链路" subtitle={`每链最多 ${maxChain} 个模型 · 按序尝试失败自动切换`}>
         {ROUTE_META.map(({ kind, label, hint }) => {
           const ids: string[] = routeDraft ? (routeDraft[kind] || []) : (routes[kind]?.models || []);
           return (
@@ -375,6 +379,9 @@ export default function ModelHubSection(props: PageProps) {
                 </option>
               ))}
             </select>
+          </div>
+          {/* 2026-10-02 用户要求：按钮单独一行。 */}
+          <div style={{ marginTop: 8 }}>
             <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={fbMut.isPending || fbDraft === fallbackId}
               onClick={() => fbMut.mutate(fbDraft)}>保存兜底</button>
           </div>
@@ -385,7 +392,8 @@ export default function ModelHubSection(props: PageProps) {
           )}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        {/* 2026-10-02 用户要求：按钮单独一行，不与输入框/下拉混排（全站配置中心统一）。 */}
+        <div style={{ marginTop: 10 }}>
           <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]" disabled={saveRouteMut.isPending || routeDraft === null}
             onClick={() => saveRouteMut.mutate()}>
             {saveRouteMut.isPending ? "保存中…" : "保存链路"}

@@ -44,6 +44,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/api/client";
+import { confirmDialog } from "@/components/ui/modal";
 
 /** draft 的一行：`id` 为稳定身份（React key 与增删改定位都用它）。 */
 export type DraftRow = { id: string; word: string; weight: string };
@@ -192,9 +193,11 @@ export default function HighValueKeywordsSection({
 
   const reset = async () => {
     if (
-      !confirm(
-        "确认恢复默认关键词表？你自定义的全部关键词与权重会被覆盖为「工伤业务域种子词表」，且无法撤销。",
-      )
+      !(await confirmDialog({
+        message:
+          "确认恢复默认关键词表？你自定义的全部关键词与权重会被覆盖为「工伤业务域种子词表」，且无法撤销。",
+        danger: true,
+      }))
     ) {
       return;
     }

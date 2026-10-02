@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>抖音直播间自动私信 · 控制台</title>
+    <title>川流 · 控制台</title>
     <!--
       首帧主题预置（防 FOUC）。
       ThemeContext 要等 React 挂载后的 useEffect 才写 <html data-theme>，
@@ -13,6 +13,12 @@
       只写 data-theme / color-scheme；accent 与氛围光的变量值仍由
       ThemeContext 统一注入（它们依赖颜色计算，不适合内联）。
     -->
+    <!-- 首帧背景（防白闪）：与 tokens.css 的「淡绿→浅黄」底图一致。
+         内联在此是因为本脚本在样式表之前执行，读不到 CSS 变量。 -->
+    <style>
+      html, body { margin: 0; background: #0b0d13; }
+      html[data-theme="day"], html[data-theme="day"] body { background: #f3f6ec; }
+    </style>
     <script>
       (function () {
         try {

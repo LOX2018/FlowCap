@@ -23,6 +23,7 @@ import {
 } from "../../api/client";
 import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
 import { errMsg } from "./settings-shared";
+import { confirmDialog } from "@/components/ui/modal";
 
 /** 绑定下拉统一样式（整账号 / 板块级共用，避免两处各写一份）。 */
 const selectStyle: React.CSSProperties = {
@@ -182,11 +183,12 @@ export default function TagSection(props: PageProps) {
             {selId && (
               <button
                 className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
-                onClick={() => {
+                onClick={async () => {
                   if (
-                    confirm(
-                      `确认删除标签「${sel?.name}」？其参数会被清空，绑定它的账号自动解绑。`,
-                    )
+                    await confirmDialog({
+                      message: `确认删除标签「${sel?.name}」？其参数会被清空，绑定它的账号自动解绑。`,
+                      danger: true,
+                    })
                   ) {
                     delMut.mutate(selId);
                   }

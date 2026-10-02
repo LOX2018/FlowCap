@@ -38,6 +38,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { SetCard, SetCardHead, SetCardBody, SetField } from "@/components/page/set-card";
 import { api, type McpStatus, type McpTool } from "@/api/client";
+import { confirmDialog } from "@/components/ui/modal";
 
 /** 统一的忙碌态标记，避免同一时刻多个按钮并发触发。 */
 type Busy = "" | "load" | "save" | "token" | "rotate" | "restart" | "tools";
@@ -148,9 +149,10 @@ export default function McpSection(props: { push?: (msg: string, holdMs?: number
   };
 
   const rotate = async () => {
-    if (!window.confirm(
-      "轮换令牌会让「所有已配置的 AI 客户端」立即失效（需各自更新为新令牌）。确定继续？",
-    )) return;
+    if (!(await confirmDialog({
+      message: "轮换令牌会让「所有已配置的 AI 客户端」立即失效（需各自更新为新令牌）。确定继续？",
+      danger: true,
+    }))) return;
     setBusy("rotate");
     setErr("");
     try {

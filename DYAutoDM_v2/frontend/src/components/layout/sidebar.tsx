@@ -21,6 +21,7 @@ import {
   PanelLeftOpen, ChevronDown, Compass,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { BrandMark } from "@/components/brand";
 
 export type TabId =
   | "overview" | "msg" | "live" | "crawl" | "platform" | "kb"
@@ -63,7 +64,7 @@ export const NAV_GROUPS: NavGroup[] = [
 export function Sidebar({
   tab,
   setTab,
-  brand = "DYAutoDM",
+  brand = "川流",
   footer,
 }: {
   tab: TabId;
@@ -103,15 +104,16 @@ export function Sidebar({
       {/* px 随收起态缩放：collapsed 宽 41px，方块 28px 固定 ⇒ padding 必须 ≤6px 才不溢出 */}
       <div className={cn("flex h-[52px] shrink-0 items-center gap-2.5", collapsed ? "px-1.5" : "px-3.5")}>
         <span
-          aria-hidden="true"
-          className="h-7 w-7 shrink-0 rounded-[9px] bg-[var(--color-accent)]
-                     shadow-[0_0_18px_-2px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
-        />
-        {!collapsed && (
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[0.86rem] font-semibold tracking-tight text-[var(--color-text)]">
-              {brand}
-            </div>
+                  aria-hidden="true"
+                  className="shrink-0"
+                >
+                  <BrandMark size={28} rounded={9} />
+                </span>
+                {!collapsed && (
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[0.86rem] font-semibold tracking-tight text-[var(--color-text)]">
+                      {brand}
+                    </div>
             <div className="truncate text-[0.66rem] uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
               控制台
             </div>

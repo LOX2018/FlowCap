@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 
 import {
-  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, X, Tags,
+  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, Tags,
   AlertTriangle,
 } from "lucide-react";
 
@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 
 import { StatusDot } from "@/components/ui/status-dot";
+import { Modal, ModalHeader, ModalBody, ModalFooter, ConfirmDialog } from "@/components/ui/modal";
 
 import {
   Section, Tone, Blank, SegmentedTabs, Toolbar,
@@ -63,6 +64,8 @@ export default function LivePage(props: PageProps) {
   const [reviewRows, setReviewRows] = useState<Row[]>([]);
   // 提示弹窗：解析房间号未填地址 / 开启自动私信前核查账号
   const [alert, setAlert] = useState<{ title: string; msg: string } | null>(null);
+  // 强制停止二次确认（原用 window.confirm，2026-10-02 改主题化 ConfirmDialog）
+  const [confirmStop, setConfirmStop] = useState(false);
   const [dmDraft, setDmDraft] = useState("");
   const [myLikes, setMyLikes] = useState(0);
   const [burst, setBurst] = useState(0);
@@ -596,44 +599,38 @@ export default function LivePage(props: PageProps) {
 
   return (
     <PageContainer>
+      {/* 2026-10-02：提示弹窗改用统一 Modal（原自绘 surface-solid 卡片与新弹窗观感不一） */}
       {alert && (
-        <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55
-                     p-5 backdrop-blur-sm"
-          onClick={() => setAlert(null)}
-        >
-          <div
-            className="w-full max-w-[460px] rounded-[var(--radius-lg)]
-                       border border-[var(--color-border)] bg-[var(--color-surface-solid)]
-                       p-5 shadow-[var(--shadow-lg)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h3 className="text-[0.95rem] font-semibold text-[var(--color-text)]">
-                {alert.title}
-              </h3>
-              <button
-                type="button"
-                aria-label="关闭"
-                className="cursor-pointer rounded-[var(--radius-sm)] p-1
-                           text-[var(--color-text-muted)] transition-colors
-                           hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
-                onClick={() => setAlert(null)}
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+        <Modal open onClose={() => setAlert(null)} maxWidth="460px" labelledBy="live-alert-title">
+          <ModalHeader title={alert.title} onClose={() => setAlert(null)} className="!border-b-0" />
+          <ModalBody className="pt-0">
             <div className="rounded-[var(--radius-sm)] border border-[var(--color-warning-soft)]
                             bg-[var(--color-warning-soft)] px-3 py-2.5 text-[0.82rem]
                             leading-relaxed text-[var(--color-text-secondary)]">
               {alert.msg}
             </div>
-            <div className="mt-4 text-right">
-              <Button onClick={() => setAlert(null)}>我知道了</Button>
-            </div>
-          </div>
-        </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button onClick={() => setAlert(null)}>我知道了</Button>
+          </ModalFooter>
+        </Modal>
       )}
+
+      <ConfirmDialog
+        open={confirmStop}
+        danger
+        title="强制停止监听"
+        message="强制停止会立即清空待发私信队列并断开监听，未发出的任务不再补发。确定继续？"
+        confirmText="强制停止"
+        onCancel={() => setConfirmStop(false)}
+        onConfirm={() => {
+          setConfirmStop(false);
+          api
+            .stopEngine()
+            .then((r) => push(r.ok ? "已强制停止（队列已清空）" : "强制停止异常"))
+            .catch((e: unknown) => push("强制停止异常: " + errMsg(e)));
+        }}
+      />
       <RoomConfigPage
         open={cfgMgr}
         onClose={() => setCfgMgr(false)}
@@ -754,7 +751,7 @@ export default function LivePage(props: PageProps) {
               <>
                 <Select value={selCfgId} onValueChange={pickRoomCfg}>
                   <SelectTrigger
-                    className="h-8 min-w-[220px]"
+                    className="min-w-[220px]"
                     aria-label="选择直播策略"
                     data-od-id="live-cfg-select"
                   >
@@ -1006,12 +1003,9 @@ export default function LivePage(props: PageProps) {
                     disabled={!engineBusy}
                     title="强制停止：立即清空待发队列并断开监听（用于卡死/需立刻换房）"
                     onClick={() => {
-                      // 破坏性操作（丢队列）⇒ 必须二次确认，避免误点
-                      if (!window.confirm("强制停止会立即清空待发私信队列并断开监听，未发出的任务不再补发。确定继续？")) return;
-                      api
-                        .stopEngine()
-                        .then((r) => push(r.ok ? "已强制停止（队列已清空）" : "强制停止异常"))
-                        .catch((e: unknown) => push("强制停止异常: " + errMsg(e)));
+                      // 破坏性操作（丢队列）⇒ 必须二次确认，避免误点。
+                      // 2026-10-02：原生 window.confirm → 主题化 ConfirmDialog。
+                      setConfirmStop(true);
                     }}
                   >
                     <AlertTriangle className="h-3.5 w-3.5" />强制停止
@@ -1128,7 +1122,7 @@ export default function LivePage(props: PageProps) {
                   批量点赞
                 </span>
                 <Input
-                  className="h-8 w-[100px]"
+                  className="w-[100px]"
                   type="number"
                   min="1"
                   max="1000"
@@ -1311,11 +1305,11 @@ export default function LivePage(props: PageProps) {
                                               hover:bg-[var(--color-surface-raised)]">
                       <Td mono className="whitespace-nowrap">{r.time}</Td>
                       <Td>
-                        <span className="inline-flex items-center gap-2">
+                        <span className="flex min-w-0 items-center gap-2">
                           <Avatar name={r.name} h={hue(r.name.length)} sm />
-                          <span className="whitespace-nowrap font-medium">{r.name}</span>
+                          <span className="min-w-0 truncate font-medium">{r.name}</span>
                           {r.lv < 99 && (
-                            <span className="rounded-[4px] border
+                            <span className="shrink-0 rounded-[4px] border
                                              border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]
                                              px-1 font-mono text-[0.66rem]
                                              text-[var(--color-warning)]">

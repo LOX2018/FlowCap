@@ -11,10 +11,10 @@
  * - **业务逻辑零改动**：`engBadge` 等级映射（ok/warn/skip/其余）、`bad` 过滤条件
  *   （fail/error/unknown）、`handleFix` 的 autoRecapture 调用与文案全部原样保留
  */
-import { X } from "lucide-react";
 import { api } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Tone } from "@/components/page/kit";
+import { Modal, ModalHeader } from "@/components/ui/modal";
 
 export interface SelfCheckItem {
   name: string;
@@ -71,27 +71,10 @@ export default function SelfCheckModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="glass-premium flex max-h-[85vh] w-full max-w-[620px] flex-col
-                   overflow-hidden rounded-[var(--radius-xl)]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* 头部 */}
-        <div className="flex shrink-0 items-center justify-between border-b
-                        border-[var(--color-border)] px-4 py-3">
-          <h3 className="text-[0.95rem] font-semibold text-[var(--color-text)]">
-            私信凭证启动自检
-          </h3>
-          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭">
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
+    <Modal open onClose={onClose} maxWidth="620px" labelledBy="sc-title">
+      <ModalHeader onClose={onClose} title={<span id="sc-title">私信凭证启动自检</span>} />
 
-        {loading ? (
+      {loading ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             <p className="text-[0.8rem] text-[var(--color-text-muted)]">
               正在检测账号凭证…
@@ -173,7 +156,6 @@ export default function SelfCheckModal({
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }

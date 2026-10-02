@@ -12,6 +12,7 @@
  */
 import { useEffect, useState } from "react";
 import { Dot, Pill } from "../ui";
+import { confirmDialog } from "@/components/ui/modal";
 import { Card } from "./notify-widgets";
 import { ROLE_LABELS, CHANNEL_SHORT } from "./settings-shared";
 import type { GatewayGrant, GatewayPending } from "../../api/client";
@@ -78,8 +79,8 @@ export function AuthorizationCard(props: AuthorizationCardProps) {
       <button
         className={"btn sm" + (gwMode === "open" ? " accent" : "")}
         disabled={gwBusy}
-        onClick={() => {
-          if (confirm("开放模式将允许所有来源直接执行指令（受权限组限制的除外），确认切换？"))
+        onClick={async () => {
+          if (await confirmDialog({ message: "开放模式将允许所有来源直接执行指令（受权限组限制的除外），确认切换？" }))
             onMode("open");
         }}
       >

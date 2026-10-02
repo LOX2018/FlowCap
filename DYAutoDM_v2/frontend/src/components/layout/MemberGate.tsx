@@ -17,6 +17,7 @@ import { memberApi, getMemberToken } from "../../api/client";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { BrandMark, BRAND_NAME } from "@/components/brand";
 
 export default function MemberGate({ onLogin }: { onLogin: (username: string) => void }) {
   const [checking, setChecking] = useState(true);
@@ -98,7 +99,7 @@ export default function MemberGate({ onLogin }: { onLogin: (username: string) =>
   if (checking) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--color-background)]">
-        <div className="glass-premium rounded-[var(--radius-xl)] px-8 py-6
+        <div className="modal-surface rounded-[var(--radius-xl)] px-8 py-6
                         text-[0.86rem] text-[var(--color-text-secondary)]">
           正在检查登录态…
         </div>
@@ -108,16 +109,12 @@ export default function MemberGate({ onLogin }: { onLogin: (username: string) =>
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[var(--color-background)] p-6">
-      <div className="glass-premium w-full max-w-[400px] rounded-[var(--radius-xl)] p-7">
+      <div className="modal-surface w-full max-w-[400px] rounded-[var(--radius-xl)] p-7">
         {/* 品牌 */}
         <div className="mb-6 flex items-center justify-center gap-2.5">
-          <span
-            aria-hidden="true"
-            className="h-7 w-7 rounded-[var(--radius-sm)] bg-[var(--color-accent)]
-                       shadow-[var(--shadow-glow)]"
-          />
+          <BrandMark size={28} rounded={8} />
           <span className="text-[1.05rem] font-semibold tracking-tight text-[var(--color-text)]">
-            抖音数据控制台
+            {BRAND_NAME}
           </span>
         </div>
         {/* 2026-09-10：功能说明文案移至开放说明文档（项目说明.md），前端不展示 */}

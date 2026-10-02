@@ -573,10 +573,12 @@ export default function PlatformPage(props: PageProps) {
 
       {/* 播放器浮层（照源项目 components/player 的独立业务域形态） */}
       {playerOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+        <div className="fixed inset-0 z-[var(--z-view)] flex items-center justify-center modal-scrim p-6"
              onClick={() => setPlayerOpen(false)}>
-          {/* ★ 2026-09-27（F3）：播放器 + 评论同屏，容器加宽到 max-w-5xl */}
-          <div className="flex h-[70vh] w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--color-surface)]"
+          {/* ★ 2026-09-27（F3）：播放器 + 评论同屏，容器加宽到 max-w-5xl
+              ★ 2026-10-02：材质改 card-surface（原 bg-[var(--color-surface)] 是极淡半透明，
+                在光晕底上几乎看不见 → 用户实测「不适配主题」）。 */}
+          <div className="card-surface flex h-[70vh] w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-lg)]"
                onClick={(e) => e.stopPropagation()}>
             {playerErr ? (
               <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-text-muted)]">
@@ -611,7 +613,7 @@ export default function PlatformPage(props: PageProps) {
               ★ 2026-09-28：评论区改走**采集页同款一级评论**路径
               （api.crawlComments），不再自己走 comments/full + 串行楼中楼。 */}
           <aside
-            className="ml-4 hidden h-[70vh] w-[22rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--color-surface)] p-3 md:flex"
+            className="card-surface ml-4 hidden h-[70vh] w-[22rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] p-3 md:flex"
             onClick={(e) => e.stopPropagation()}
           >
             <CommentPanel

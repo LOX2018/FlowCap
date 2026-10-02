@@ -28,8 +28,12 @@ const SettingsPage = lazy(() => import("./components/settings/settings-page"));
 const NotifyPage = lazy(() => import("./components/notify/notify-page"));
 const LogsPage = lazy(() => import("./components/logs/logs-page"));
 import SelfCheckModal, { SelfCheckItem } from "./components/layout/SelfCheckModal";
+import { DialogHost } from "./components/ui/modal";
+import { BrandMark, BRAND_NAME } from "./components/brand";
 import MemberGate from "./components/layout/MemberGate";
 import { AppShell } from "./components/layout/app-shell";
+import { WindowControls } from "./components/layout/window-controls";
+import { ErrorBoundary } from "./components/layout/ErrorBoundary";
 import { type TabId } from "./components/layout/sidebar";
 // 视图状态：照源项目 stores/app-store 的 currentView/setView 机制（阶段2）
 import { useAppViewStore, VIEW_TITLE, type ViewType } from "./stores/app-store";
@@ -79,18 +83,15 @@ function BootSplash({ onSkip }: { onSkip?: () => void }) {
           width: 64,
           height: 64,
           borderRadius: 16,
-          background: "var(--color-accent)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          fontSize: 30,
-          color: "#fff",
-          fontWeight: 700,
+          overflow: "hidden",
         }}
       >
-        DY
+        <BrandMark size={64} rounded={16} />
       </div>
-      <div style={{ fontSize: 16, fontWeight: 600 }}>抖音数据控制台</div>
+      <div style={{ fontSize: 16, fontWeight: 600 }}>{BRAND_NAME}</div>
       <div
         className="mt-1 h-5 w-5 animate-spin rounded-full border-2
                    border-[var(--color-border)] border-t-[var(--color-accent)]"
@@ -451,6 +452,8 @@ export default function App() {
       <>
         {gate}
         <ElementInspectorButton />
+        {/* 登录门/闪屏阶段也要能操作窗口（与主界面同一常驻层）。 */}
+        <WindowControls />
       </>
     );
   }
@@ -470,28 +473,30 @@ export default function App() {
           ModuleNotFoundError）。改为：不一致时**全屏遮罩、不渲染
           AppShell**，用户只能看到错误 + 处理办法。 */}
       {verBlock ? (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center
-                        bg-[#0a0a0a] px-6">
-          <div className="w-full max-w-lg rounded-lg border border-[#7f1d1d]
-                          bg-[#1a0d0d] p-6 shadow-2xl">
+        <div className="fixed inset-0 z-[var(--z-blocker)] flex items-center justify-center
+                        bg-[var(--color-background)] px-6">
+          <div className="modal-surface w-full max-w-lg rounded-[var(--radius-lg)] p-6
+                          border-[color-mix(in_srgb,var(--color-danger)_45%,transparent)]">
             <div className="mb-3 flex items-center gap-2">
               <span className="text-2xl">⛔</span>
-              <h1 className="text-lg font-semibold text-[#fca5a5]">
+              <h1 className="text-lg font-semibold text-[var(--color-danger)]">
                 版本不一致，已阻止启动
               </h1>
             </div>
             <p className="mb-4 font-mono text-[13px] leading-relaxed
-                          text-[#e5e5e5]">
+                          text-[var(--color-text)]">
               {verBlock}
             </p>
-            <div className="rounded border border-[#4b2525] bg-[#140a0a] p-3">
-              <div className="mb-1 text-[11px] font-medium text-[#fca5a5]">
+            <div className="rounded-[var(--radius-sm)] border
+                            border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)]
+                            bg-[var(--color-danger-soft)] p-3">
+              <div className="mb-1 text-[11px] font-medium text-[var(--color-danger)]">
                 处理办法
               </div>
               <ol className="list-decimal space-y-1 pl-4 font-mono
-                             text-[11px] leading-relaxed text-[#a3a3a3]">
+                             text-[11px] leading-relaxed text-[var(--color-text-secondary)]">
                 <li>重新打包 sidecar：
-                  <code className="mx-1 text-[#e5e5e5]">
+                  <code className="mx-1 text-[var(--color-text)]">
                     python scripts/build_sidecar.py --onedir
                   </code>
                 </li>
@@ -508,9 +513,11 @@ export default function App() {
                     `版本仍不一致：前端 ${v.frontend} / 后端 ${v.backend}`);
                 }
               })}
-              className="mt-4 w-full rounded border border-[#7f1d1d]
-                         bg-[#7f1d1d]/30 px-3 py-2 text-[12px]
-                         text-[#fca5a5] hover:bg-[#7f1d1d]/50"
+              className="mt-4 w-full rounded-[var(--radius-sm)] border
+                         border-[color-mix(in_srgb,var(--color-danger)_35%,transparent)]
+                         bg-[var(--color-danger-soft)] px-3 py-2 text-[12px]
+                         text-[var(--color-danger)] hover:bg-[var(--color-danger)]
+                         hover:text-white transition-colors"
             >
               重新检测
             </button>
@@ -569,6 +576,9 @@ export default function App() {
             </div>
           }
         >
+          {/* 2026-10-02：页面级错误边界（key=tab ⇒ 切页自动复位）。
+              原应用无边界，任一页面渲染抛错会**卸载整树 → 全白空窗**且无日志痕迹。 */}
+          <ErrorBoundary key={tab} onReset={() => setTab("overview")}>
           {tab === "overview" && <OverviewPage {...pageProps} />}
           {tab === "crawl" && <CrawlPage {...pageProps} />}
           {tab === "platform" && <PlatformPage {...pageProps} />}
@@ -580,18 +590,21 @@ export default function App() {
           {tab === "settings" && <SettingsPage {...pageProps} />}
           {tab === "notify" && <NotifyPage {...pageProps} />}
           {tab === "logs" && <LogsPage {...pageProps} />}
+          </ErrorBoundary>
         </Suspense>
       </AppShell>
       )}
 
       {/* 全局 toast（保留旧样式类，与新外壳共存） */}
-      <div className="pointer-events-none fixed bottom-5 left-1/2 z-[100] flex -translate-x-1/2
+      <div className="pointer-events-none fixed bottom-5 left-1/2 z-[var(--z-toast)] flex -translate-x-1/2
                       flex-col items-center gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
-            className="glass-premium pointer-events-auto rounded-[var(--radius-md)] px-4 py-2
-                       text-[0.8rem] text-[var(--color-text)] shadow-[var(--shadow-md)]"
+            className="modal-surface pointer-events-auto rounded-[var(--radius-md)] px-4 py-2
+                       text-[0.8rem] text-[var(--color-text)]
+                       ring-1 ring-[color-mix(in_srgb,var(--color-accent)_60%,transparent)]
+                       shadow-[var(--shadow-md),0_0_18px_-6px_color-mix(in_srgb,var(--color-accent)_45%,transparent)]"
           >
             {t.msg}
           </div>
@@ -609,6 +622,14 @@ export default function App() {
       {/* 元素选择模式：全局顶层悬浮入口 + 覆盖层 + 结果面板。
           设计契约：只选择、不触发；不读不写任何业务数据。 */}
       <ElementInspectorButton currentTab={tab} />
+
+      {/* 指令式确认 / 输入弹窗的单例宿主（取代原生 confirm/prompt，全站统一主题观感）。
+          挂载一次，供 confirmDialog()/promptDialog() 投递请求。 */}
+      <DialogHost />
+
+      {/* 窗口控制**常驻层**：恒在浮层之上（z-blocker=200），
+          保证任何浮窗/全屏视图下都能最小化/最大化/关闭窗口。 */}
+      <WindowControls />
     </>
   );
 }

@@ -110,11 +110,12 @@ def wix_dir() -> Path:
 
 
 def msi_path(version: str) -> Path:
-    return bundle_dir() / "msi" / f"DYAutoDM_{version}_x64_en-US.msi"
+    # 2026-10-02：产品定名「川流」（tauri.conf.json productName）⇒ 安装包名随之改。
+    return bundle_dir() / "msi" / f"川流_{version}_x64_en-US.msi"
 
 
 def nsis_path(version: str) -> Path:
-    return bundle_dir() / "nsis" / f"DYAutoDM_{version}_x64-setup.exe"
+    return bundle_dir() / "nsis" / f"川流_{version}_x64-setup.exe"
 
 
 if __name__ == "__main__":           # 便于人工核对

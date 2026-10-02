@@ -33,6 +33,7 @@ import { openExternal } from "../../utils/openExternal";
 import { stopBrowserDaemon, stopRecvDaemon } from "../../api/sidecar";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
+import { promptDialog } from "@/components/ui/modal";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -175,8 +176,13 @@ export default function AccountsPage(props: PageProps) {
 
   // 就地补问绑定手机号并做格式校验 —— 备用登录与显式换路共用同一口径，避免两处分叉。
   // 返回 undefined 表示未提供（取消/空串/格式错，均已 push 提示），调用方直接 return。
-  const promptSmsPhone = (): string | undefined => {
-    const phone = window.prompt("请输入该账号绑定的手机号（用于接收短信验证码）")?.trim();
+  // 2026-10-02：window.prompt → 主题化 promptDialog（单例宿主，见 App 根部 DialogHost）。
+  const promptSmsPhone = async (): Promise<string | undefined> => {
+    const phone = (await promptDialog({
+      title: "绑定手机号",
+      message: "该手机号用于接收短信验证码。",
+      placeholder: "请输入该账号绑定的手机号",
+    }))?.trim();
     if (!phone) {
       push("已取消（未提供手机号）");
       return;
@@ -189,10 +195,10 @@ export default function AccountsPage(props: PageProps) {
   };
 
   // 显式备用：RPA 自动出二维码 / 发短信验证码；默认手动，只有点这两条备用按钮才走自动。
-  const runBackupLogin = (name: string, mode: "qr" | "sms") => {
+  const runBackupLogin = async (name: string, mode: "qr" | "sms") => {
     let phone: string | undefined;
     if (mode === "sms") {
-      phone = promptSmsPhone();
+      phone = await promptSmsPhone();
       if (!phone) return;
     }
     api
@@ -1158,11 +1164,11 @@ export default function AccountsPage(props: PageProps) {
             status={scanData}
             onClose={() => setScanning(null)}
             onToast={push}
-            onSwitchMode={(mode) => {
+            onSwitchMode={async (mode) => {
               // 显式换路：mode=sms 时手机号就地补问（与备用登录同一 helper，口径唯一）
               let phone: string | undefined;
               if (mode === "sms") {
-                phone = promptSmsPhone();
+                phone = await promptSmsPhone();
                 if (!phone) return;
               }
               api

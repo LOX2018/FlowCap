@@ -8,6 +8,12 @@
  */
 import { useCallback, useState } from "react";
 import { SetCard, SetCardHead, SetCardBody, SetCardFoot } from "@/components/page/set-card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
 import type { SettingsFieldSchema } from "../../api/client";
 
 export type Val = string | number | boolean;
@@ -48,17 +54,13 @@ export function SectionCard(props: {
             {props.children}
           </div>
           <SetCardFoot>
-            <button className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]" onClick={props.onReset} disabled={props.saving}>
-              恢复默认
-            </button>
-            <button
-              className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
-              onClick={props.onSave}
-              disabled={props.saving || !props.dirty}
-            >
-              {props.saving ? "保存中…" : "保存此分组"}
-            </button>
-          </SetCardFoot>
+                      <Button variant="secondary" onClick={props.onReset} disabled={props.saving}>
+                        恢复默认
+                      </Button>
+                      <Button onClick={props.onSave} disabled={props.saving || !props.dirty}>
+                        {props.saving ? "保存中…" : "保存此分组"}
+                      </Button>
+                    </SetCardFoot>
         </SetCardBody>
       )}
     </SetCard>
@@ -121,81 +123,61 @@ export function SchemaField(props: {
        */
       style={{ flex: "1 1 240px", minWidth: 0, maxWidth: "100%" }}
     >
-      <span style={{ color: "var(--color-text-muted)", fontSize: 11.5, display: "flex", gap: 6 }}>
-        <span>{s.label}</span>
-        {props.dirty && (
-          <span style={{ color: "var(--color-accent)" }} title="已修改未保存">●</span>
-        )}
-        {s.risk && (
-          <span style={{ color: "var(--color-warning)" }} title="风控敏感项">⚠</span>
-        )}
-      </span>
+      <span className="mb-1 flex items-center gap-1.5 text-[0.7rem] text-[var(--color-text-muted)]">
+              <span className="truncate">{s.label}</span>
+              {props.dirty && (
+                <span className="text-[var(--color-accent)]" title="已修改未保存">●</span>
+              )}
+              {s.risk && (
+                <span className="text-[var(--color-warning)]" title="风控敏感项">⚠</span>
+              )}
+            </span>
 
       {s.type === "bool" ? (
-        <label className="switch" style={{ marginTop: 2 }}>
-          <input
-            type="checkbox"
-            checked={Boolean(value)}
-            onChange={(e) => props.onChange(e.target.checked)}
-          />
-          <i />
-        </label>
+        <div className="flex h-9 items-center">
+          <Switch checked={Boolean(value)} onCheckedChange={(c) => props.onChange(c)} />
+        </div>
       ) : s.options && s.options.length > 0 ? (
-        <select
-          value={String(value)}
-          onChange={(e) => props.onChange(e.target.value)}
-          style={{
-            width: "100%",
-            background: "var(--color-surface-raised)",
-            border: "1px solid var(--color-border)",
-            borderRadius: 4,
-            padding: "4px 6px",
-            fontSize: 12,
-            color: "var(--color-text)",
-            outline: "none",
-          }}
-        >
-          {s.options.map((o) => {
-            // 后端 schema 的 options 当前是字符串数组（如 ["native"]），
-            // 也兼容 { value, label } 对象数组；两种形状都要能正确渲染出文本。
-            const val = typeof o === "string" ? o : o.value;
-            const lbl = typeof o === "string" ? o : o.label;
-            return (
-              <option key={val} value={val}>
-                {lbl}
-              </option>
-            );
-          })}
-        </select>
-      ) : (
-        <input
-          className="mono"
-          type={s.type === "int" || s.type === "float" ? "number" : "text"}
-          value={String(value ?? "")}
-          min={s.min}
-          max={s.max}
-          onChange={(e) => {
-            // 允许中途空串（用户正在输入），失焦时才校验
-            setErr("");
-            if (e.target.value === "") {
-              props.onChange("");
-              return;
-            }
-            commit(e.target.value);
-          }}
-          onBlur={(e) => commit(e.target.value)}
-          style={{
-            width: "100%",
-            background: "var(--color-surface-raised)",
-            border: `1px solid ${err ? "var(--danger, #c0392b)" : "var(--color-border)"}`,
-            borderRadius: 4,
-            padding: "4px 6px",
-            fontSize: 12,
-            color: "var(--color-text)",
-            outline: "none",
-          }}
-        />
-      )}
+        <Select value={String(value)} onValueChange={(v) => props.onChange(v)}>
+          <SelectTrigger className="text-[0.78rem]">
+            <SelectValue />
+          </SelectTrigger>
+                <SelectContent>
+                  {s.options.map((o) => {
+                    // 后端 schema 的 options 当前是字符串数组（如 ["native"]），
+                    // 也兼容 { value, label } 对象数组；两种形状都要能正确渲染出文本。
+                    const val = typeof o === "string" ? o : o.value;
+                    const lbl = typeof o === "string" ? o : o.label;
+                    return (
+                      <SelectItem key={val} value={val}>
+                        {lbl}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                className={
+                  "px-2.5 font-mono text-[0.78rem]" +
+                  (err ? " border-[var(--color-danger)]" : "")
+                }
+                type={s.type === "int" || s.type === "float" ? "number" : "text"}
+                value={String(value ?? "")}
+                min={s.min}
+                max={s.max}
+                onChange={(e) => {
+                  // 允许中途空串（用户正在输入），失焦时才校验
+                  setErr("");
+                  if (e.target.value === "") {
+                    props.onChange("");
+                    return;
+                  }
+                  commit(e.target.value);
+                }}
+                onBlur={(e) => commit(e.target.value)}
+              />
+            )}
 
       {err ? (
         <span style={{ fontSize: 11, color: "var(--color-danger)", marginTop: 2 }}>

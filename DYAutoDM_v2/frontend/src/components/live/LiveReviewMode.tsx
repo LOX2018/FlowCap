@@ -82,7 +82,7 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
 
   return (
     <motion.div
-      className="fixed inset-0 z-[60] flex flex-col bg-[var(--color-background)]"
+      className="fixed inset-0 z-[var(--z-view)] flex flex-col bg-[var(--color-background)]"
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
@@ -90,7 +90,7 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
       data-od-id="live-review"
     >
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b
-                      border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-3.5">
+                      border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-3.5 pr-[128px]">
         <Button variant="ghost" size="sm" data-od-id="review-back" onClick={onClose}>
           ‹ 返回实时流
         </Button>
@@ -114,7 +114,7 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
               value={st}
               onValueChange={(v) => setSt(v as "all" | DmStatus)}
             >
-              <SelectTrigger className="h-8 w-[124px]" aria-label="私信状态筛选">
+              <SelectTrigger className="w-[124px]" aria-label="私信状态筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -215,11 +215,11 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
                         </Td>
                         <Td mono className="whitespace-nowrap">{r.time}</Td>
                         <Td>
-                          <span className="inline-flex items-center gap-2">
+                          <span className="flex min-w-0 items-center gap-2">
                             <Avatar name={r.name} h={hue(r.name.length)} sm />
-                            <span className="whitespace-nowrap font-medium">{r.name}</span>
+                            <span className="min-w-0 truncate font-medium">{r.name}</span>
                             {r.lv < 99 && (
-                              <span className="rounded-[4px] border
+                              <span className="shrink-0 rounded-[4px] border
                                                border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]
                                                px-1 font-mono text-[0.66rem]
                                                text-[var(--color-warning)]">

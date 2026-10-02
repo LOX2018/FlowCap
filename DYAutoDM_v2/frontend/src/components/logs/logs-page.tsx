@@ -277,7 +277,7 @@ export default function LogsPage(props: PageProps) {
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <span className="text-[0.74rem] text-[var(--color-text-secondary)]">行数上限：</span>
           <Select value={String(limit)} onValueChange={(v) => setLimit(Number(v))}>
-            <SelectTrigger className="h-8 w-[90px]"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[90px]"><SelectValue /></SelectTrigger>
             <SelectContent>
               {[200, 500, 1000, 2000].map((n) => (
                 <SelectItem key={n} value={String(n)}>{n}</SelectItem>

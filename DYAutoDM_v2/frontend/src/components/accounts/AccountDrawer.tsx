@@ -30,7 +30,7 @@ export function AccountDrawer({
     <>
       <motion.div
         key={"acct-backdrop-" + mode}
-        className="fixed inset-0 z-[60] bg-black/55 backdrop-blur-sm"
+        className="fixed inset-0 z-[var(--z-drawer)] modal-scrim"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -39,7 +39,7 @@ export function AccountDrawer({
       />
       <motion.div
         key={"acct-drawer-" + mode}
-        className="fixed bottom-0 right-0 top-0 z-[61] flex w-[480px] max-w-[92vw]
+        className="fixed bottom-0 right-0 top-0 z-[var(--z-drawer)] flex w-[480px] max-w-[92vw]
                    flex-col border-l border-[var(--color-border)]
                    bg-[var(--color-background)] shadow-[var(--shadow-lg)]"
         initial={{ x: "100%" }}

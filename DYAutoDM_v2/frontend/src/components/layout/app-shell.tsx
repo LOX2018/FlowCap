@@ -10,11 +10,7 @@
  * 改为「内容区 + 可选底栏插槽」，保持结构同源但不引入空壳。
  */
 import { Suspense, type ReactNode } from "react";
-// 2026-09-15 性能优化：改用 framer-motion 的 LazyMotion 轻量模式。
-// 本处动画仅用 opacity/y 的进出场（fade+slide），无需完整 motion 运行时；
-// `m` + `domAnimation` 特性集可显著减小首屏 JS（官方推荐的减包用法），
-// 且 `m` 与 `motion` 的 props 兼容（initial/animate/exit/transition 不变）。
-import { AnimatePresence, LazyMotion, domAnimation, m } from "framer-motion";
+// 2026-10-02：页面切换已移出 framer-motion（见 <main> 内注释），故不再引入动画运行时。
 import { Sidebar, type TabId } from "./sidebar";
 import { TopBar } from "./topbar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -49,9 +45,11 @@ export function AppShell({
   children: ReactNode;
 }) {
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-background)]">
+    <div className="flex h-screen w-screen overflow-hidden">
+      {/* 背景氛围层：跟随主题/主色的柔光 + 细网格，内容浮于其上 */}
+      <div className="app-atmosphere" aria-hidden="true" />
       <Sidebar tab={tab} setTab={setTab} footer={sidebarFooter} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative z-10 flex min-w-0 flex-1 flex-col">
         <TopBar
           connected={connected}
           memberName={memberName}
@@ -66,20 +64,18 @@ export function AppShell({
           right={topRight}
         />
         <main className="min-h-0 flex-1 overflow-y-auto">
-          <LazyMotion features={domAnimation}>
-          <AnimatePresence mode="wait">
-            <m.div
-              key={tab}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.16, ease: [0.2, 0, 0, 1] }}
-              className="min-h-full"
-            >
-              <Suspense fallback={<ViewFallback />}>{children}</Suspense>
-            </m.div>
-          </AnimatePresence>
-          </LazyMotion>
+          {/*
+           * 2026-10-02 修（用户实测「切换页面时明显闪烁跳跃」）——**两次根因**：
+           *  ① `AnimatePresence mode="wait"` 会先等旧页淡出、再挂载新页 ⇒ 中间一段空档 = 闪。
+           *  ② framer-motion 的 `y` 位移产生 transform ⇒ 成为 `position:fixed` 后代的
+           *     包含块，页面内浮层在切换期间被困在容器内（见下）。
+           * 现**彻底移出 framer-motion**：用 keyed div + 极短 CSS 淡入
+           * （opacity .6→1，不产生 transform、无空档、旧页立即卸载）。
+           * 页面**宽度已统一**（PageContainer 全站 1180px），故不再有横向跳跃。
+           */}
+          <div key={tab} className="page-in min-h-full">
+            <Suspense fallback={<ViewFallback />}>{children}</Suspense>
+          </div>
         </main>
       </div>
     </div>
@@ -103,6 +99,11 @@ export function AppShell({
 export function PageContainer({
   children,
   className = "",
+  /**
+   * ⚠️ 2026-10-02 起：**不要再按页覆盖 maxWidth**（用户实测「每页内容初始位置不同、
+   * 切页横向跳跃」）。原先 kb=1080 / notify=860 与其它页的 1180 不一致 ⇒ 内容块左边缘
+   * 逐页偏移。现全站统一 1180px（此参数仅为**遗留兼容**保留，默认即可）。
+   */
   maxWidth = "1180px",
 }: {
   children: ReactNode;

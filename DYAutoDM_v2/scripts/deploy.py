@@ -299,16 +299,17 @@ def main() -> int:
     # 主程序：用【产物真实版本 + 构建类型】命名
     #   2026-09-20 用户铁律（选 A 方案）：默认 debug 版；debug 产物名带 -debug 后缀，
     #   正式版不带。这样「一眼可辨」，杜绝把 debug 包当正式包发出去。
+    #   2026-10-02：产品定名「川流」⇒ 副本名由 DYAutoDM_v2_ 改为 川流_。
     _kind = build_kind_const()
     _suffix = "-debug" if _kind == "debug" else ""
-    dst_exe = app_root / f"DYAutoDM_v2_{norm(real)}{_suffix}.exe"
+    dst_exe = app_root / f"川流_{norm(real)}{_suffix}.exe"
     dst_main_exe = dst_exe  # 固定主程序路径：sidecar 循环会复用 dst_exe 变量，启动器必须指主程序
     shutil.copy2(exe_src, dst_exe)
     log("  ✅ 主程序 → %s (md5=%s) [%s]" % (dst_exe.name, _md5(dst_exe)[:12], _kind))
     # 清理旧版本：**只清理同类型**（debug 不删 release，反之亦然），
     # 避免交叉删除把另一种构建误删。
     is_debug_target = _kind == "debug"
-    for p in app_root.glob("DYAutoDM_v2_*.exe"):
+    for p in app_root.glob("川流_*.exe"):
         if p.name == dst_exe.name:
             continue
         p_is_debug = p.stem.endswith("-debug")
@@ -401,7 +402,7 @@ def main() -> int:
             _launcher.write_text(
                 (chr(13) + chr(10)).join([
                     "@echo off",
-                    "rem DYAutoDM 测试副本启动器（由 deploy.py 生成）——显式注入本环境数据根",
+                    "rem 川流 测试副本启动器（由 deploy.py 生成）——显式注入本环境数据根",
                     "rem 以免未设 DY_APP_ROOT 时落到 LOCALAPPDATA 下的空根",
                     "chcp 65001 >nul",
                     'set "DY_APP_ROOT=%~dp0."',
