@@ -111,6 +111,35 @@ def _load_auth(account: str):
     return auth
 
 
+def _unwrap(env) -> list:
+    """拆开 `features` 封装层的信封，取出列表载荷。
+
+    🔴 2026-10-02（架构契约修复）：`features.*` 统一返回
+    `{"ok": bool, "data": [...], "error": str?}` **信封**；而本模块的
+    `_map_video` / `_map_user` 期望**裸列表**（原实现直连 `DouyinAPI`，
+    后者才返回裸列表）。v0.46.3「搜索不可匿名，移回凭证」那次把调用改成
+    直连，连带让 features 封装层被绕过 —— `test_features_wiring` 的哨兵
+    （直连即抛）正是为抓这个而存在。
+
+    现回到「走封装层」的设计意图，故必须在此**显式拆信封**：
+
+      · `ok=False` ⇒ **fail-closed**，抛 502（绝不把失败吞成空列表 = 假成功，
+        项目铁律）。原直连实现里底层异常会自然冒泡，语义一致。
+      · `ok=True` 但 `data` 非 list ⇒ 视为结构异常，同样 fail-closed。
+    """
+    if isinstance(env, dict):
+        if not env.get("ok"):
+            raise RuntimeError(env.get("error") or "features 调用失败")
+        data = env.get("data")
+    else:
+        data = env                      # 兼容直接返回列表的旧桩
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise RuntimeError(f"features 返回结构异常：{type(data).__name__}")
+    return data
+
+
 def _map_video(w: dict) -> dict:
     """搜索结果条目 -> 前端视频卡字段（与旧 crawl.tsx 契约兼容）。"""
     a = w.get("aweme_info") or w
@@ -329,6 +358,28 @@ def _resolve_policy_params(account: str, policy_id: str = "") -> dict:
     return dict(item) if isinstance(item, dict) else {}
 
 
+def _search_blocked_reason(account: str, auth: Any) -> str | None:
+    """空结果时复核「是风控拦截，还是真没结果」。
+
+    ★ v0.46.18：这是「凭证有效 ≠ 搜索域有权」这条判据的**唯一落地处**。
+    返回 None 表示「搜索域有权，确实无结果」（正常空）；
+    返回文案表示「被平台风控拦截」（前端据此显示 blocked，不再显示空列表）。
+
+    为什么用 `force=True`：本次搜索**刚刚**拿到空结果，若命中 60s 失败缓存
+    会把「上一次的风控」误当成本次结论；必须真打一次才能归因到本次请求。
+    同理，若探针这次**通**了（有结果），说明搜索域正常，那就是真没结果。
+    """
+    try:
+        from services import search_probe
+        r = search_probe.probe_search_domain(account, auth=auth, force=True)
+    except Exception as e:  # noqa: BLE001 —— 复核失败不得让采集整体失败
+        logger.debug(f"[crawl] 搜索域复核异常 account={account}: {e}")
+        return None
+    if r.get("level") in ("warn", "fail"):
+        return str(r.get("label") or "被平台风控拦截")
+    return None
+
+
 @router.post("/search")
 async def crawl_search(body: CrawlSearchRequest):
     """关键词搜索（video=综合搜索 / user=用户搜索）。
@@ -359,25 +410,45 @@ async def crawl_search(body: CrawlSearchRequest):
         raise HTTPException(
             503, "采集搜索需登录态凭证（实测匿名被风控拒绝）；请先完成账号登录")
 
-    from dy_apis.douyin_api import DouyinAPI
+    from features import search_user as _fsu, search_work as _fsw
 
     try:
         if body.kind == "video":
-            raw = await asyncio.to_thread(
-                DouyinAPI.search_some_general_work, auth, q, num,
-                sort_type, publish_time, filter_duration,
+            env = await asyncio.to_thread(
+                _fsw, auth, q, num, sort_type, publish_time, filter_duration,
             )
-            items = [_map_video(w) for w in (raw or []) if w.get("aweme_info")]
+            raw = _unwrap(env)
+            items = [_map_video(w) for w in raw if (w or {}).get("aweme_info")]
         else:
-            raw = await asyncio.to_thread(
-                DouyinAPI.search_some_user, auth, q, num
+            env = await asyncio.to_thread(
+                _fsu, auth, q, num,
             )
-            items = [_map_user(u) for u in (raw or [])]
+            raw = _unwrap(env)
+            items = [_map_user(u) for u in raw]
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"[CRAWL-002] " + f"[crawl] 搜索失败 account={body.account} q={q}: {e}")
         raise HTTPException(502, f"搜索失败: {e}") from e
+
+    # ★ v0.46.18「禁止假成功」：空结果必须区分「真没搜到」与「被平台风控拦截」。
+    #   实测（2026-10-02）平台对搜索域下发业务层风控时，响应是
+    #   **HTTP 200 + status_code=0 + data=[] + search_nil_info.search_nil_type=
+    #   "verify_check"** —— 传输层完全正常，`_transport` 为 None，
+    #   所以下面这层「读传输层事实」的旧逻辑**完全测不到**它，
+    #   结果就是「命中 0 条」（把风控说成没结果）。
+    #   ⇒ 空结果时用 `services.search_probe` 复核搜索域权限，如实回 blocked。
+    #   为什么用探针而不是直接读 `search_nil_info`：`client_search.search_some_general_work`
+    #   尚未把该字段带出（直播那条线正在改），而**本文件不与那条线冲突**。
+    blocked_reason: str | None = None
+    if not items:
+        blocked_reason = await asyncio.to_thread(_search_blocked_reason, body.account, auth)
+    if blocked_reason:
+        logger.warning(f"[CRAWL-004] [crawl] 搜索被风控拦截 account={body.account} "
+                       f"kind={body.kind} q={q}: {blocked_reason}")
+        # 风控时不落历史：空结果不是一次有效采集，写进去会污染统计
+        return {"ok": True, "items": [], "total": 0,
+                "blocked": True, "blocked_reason": blocked_reason}
 
     await _save_history(body.account, body.kind, q, "", items)
     logger.info(f"[crawl] 搜索完成 account={body.account} kind={body.kind} "

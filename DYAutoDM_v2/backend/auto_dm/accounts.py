@@ -1644,6 +1644,12 @@ def derive_purposes(verdicts: dict) -> dict:
         "im_write": _p("私信发送", ["im_write"]),
         "live_read": _p("直播数据读（弹幕/礼物/贡献榜）", ["live_read"],
                         label_unset="未配置直播间"),
+        # ★ v0.46.18 新增：关键词搜索（视频采集/用户搜索）依赖搜索域权限。
+        #   只依赖 `search` 单面 —— 搜索域实测**独立于身份域**
+        #   （2026-10-02：query/user 通而 general/search 被 verify_check），
+        #   故不能把 identity 当作它的前提，否则 identity=ok 会把 search=fail
+        #   折成 ok，正是本项目要根治的「单值掩盖分面失效」。
+        "search": _p("关键词搜索（视频/用户采集）", ["search"]),
     }
 
 
@@ -1782,6 +1788,33 @@ def capability_matrix(name=None, auth=None, force=False, live_id: str = ""):
                      "" if _n else "接口可达但榜单为空（可能无人上榜/未开播）")
     except Exception as e:  # noqa: BLE001
         _add("live_read", "直播数据读", "unknown", f"探测异常 {type(e).__name__}")
+
+    # ⑥ 搜索域权限（★ v0.46.18 新增）
+    #    本面是 2026-10-01 矩阵论证的**直接延续**：那次已实测「同一份 cookie 在
+    #    不同端点裁决独立」（webcast/reflow/info 对匿名 0、对某 cookie 101、
+    #    对另一 cookie 0）⇒ 单一 verdict 会驱动**无效重扫**。搜索域是当时漏掉的一面。
+    #    2026-10-02 实测补齐（小助理，同一份 auth 同一时刻）：
+    #      query/user         ✅ user_uid=316276709526638（身份域仍放行）
+    #      user/profile/self  ⚠️ status_msg="blocked"（身份域已在收窄）
+    #      general/search/    ❌ search_nil_type="verify_check"
+    #      live/search/       ❌ 同上
+    #    ⇒ 「凭证有效」只覆盖身份域，**不能**外推为「搜索域有权」。
+    #    hint 强调：**重扫通常无效**（风控是端点级策略，非凭证失效），
+    #    这正是本矩阵要根治的失效模式 —— 否则用户会反复重扫，而重扫本身
+    #    触碰 passport = 最强风控信号。
+    try:
+        from services import search_probe
+        _sp = search_probe.probe_search_domain(name, auth=auth, force=force)
+        _lvl_s = _sp.get("level")
+        # 映射到矩阵三态：ok/empty ⇒ ok（域可用）；warn/fail ⇒ fail；error ⇒ unknown
+        _stt_s = ("ok" if _lvl_s in ("ok", "empty")
+                  else ("fail" if _lvl_s in ("warn", "fail") else "unknown"))
+        _add("search", "搜索域权限", _stt_s, str(_sp.get("label") or "")[:140],
+             "" if _stt_s == "ok" else
+             "搜索域被平台风控（端点级限制，**非凭证失效**）——**重扫通常无效**；"
+             "先等待风控自然衰减（通常数小时），持续不解除再考虑换网络/重扫")
+    except Exception as e:  # noqa: BLE001
+        _add("search", "搜索域权限", "unknown", f"探测异常 {type(e).__name__}")
 
     verdicts = {c["key"]: c["state"] for c in caps}
 

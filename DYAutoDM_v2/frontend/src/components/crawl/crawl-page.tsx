@@ -26,6 +26,9 @@ export default function CrawlPage(props: PageProps) {
   const [searching, setSearching] = useState(false);
   const [did, setDid] = useState(false);
   const [results, setResults] = useState<any[]>([]);
+  // ★ v0.46.18：搜索域被平台风控时的原因（非空 = 被拦截）。
+  //   与 results.length===0 必须区分：空结果可能是「真没搜到」，也可能是「被风控」。
+  const [blocked, setBlocked] = useState("");
   const [accounts, setAccounts] = useState<{ name: string; loggedIn: boolean }[]>([]);
   const [cmtFor, setCmtFor] = useState<any | null>(null);
   const [cmts, setCmts] = useState<any[]>([]);
@@ -111,7 +114,17 @@ export default function CrawlPage(props: PageProps) {
           ...policyOverrides(),
         });
         setResults(r.items || []);
-        push(`搜索完成，命中 ${r.total} 条`);
+        // ★ v0.46.18「禁止假成功」：后端在搜索域被平台风控时返回
+        //   blocked=true + blocked_reason，此时 items 必为空。
+        //   必须显式告知用户「被风控拦截」，否则「命中 0 条」会被
+        //   读成「这个关键词没有作品」——实测 2026-10-02 就是这个坑。
+        if (r.blocked) {
+          setBlocked(r.blocked_reason || "被平台风控拦截，请稍后重试。");
+          push(`搜索被风控拦截：${r.blocked_reason || "请稍后重试"}`);
+        } else {
+          setBlocked("");
+          push(`搜索完成，命中 ${r.total} 条`);
+        }
         void fetchAnonPreview((r.items || []).map((v: any) => v.awemeId).filter(Boolean));
       } catch (e: any) {
         push(`搜索失败：${e?.message || e}`);
@@ -308,6 +321,9 @@ export default function CrawlPage(props: PageProps) {
 
   const q0 = "0";
   const empty = did && !searching && results.length === 0;
+  // ★ v0.46.18：被风控时**不能**显示「未命中，换个关键词」——那把平台限制
+  //   说成了「你的关键词没作品」，是误导。blocked 优先于 empty。
+  const blockedEmpty = empty && !!blocked;
   // ★ 2026-09-30 接线：**只把用户真正改过的筛选器**带给后端，其余留空 ⇒ 用采集策略。
   //   判据 = 与初始值比对；未改动 ⇒ 不传 ⇒ 策略生效（改造前是恒传写死默认，策略永无效）。
   const policyOverrides = () => {
@@ -409,6 +425,17 @@ export default function CrawlPage(props: PageProps) {
             </Card>
           ))}
         </div>
+      ) : blockedEmpty ? (
+        <Blank>
+          <div data-od-id="crawl-search-blocked" className="space-y-1">
+            <div className="font-medium text-[var(--color-warning)]">搜索被平台风控拦截</div>
+            <div className="text-[0.8rem] text-[var(--color-text-muted)]">{blocked}</div>
+            <div className="text-[0.75rem] text-[var(--color-text-muted)]">
+              这是平台对该账号搜索功能临时限制，不是「{q}」没有作品。
+              通常数小时内自动解除；持续出现请重新扫码登录或更换网络。
+            </div>
+          </div>
+        </Blank>
       ) : empty ? (
         <Blank>{did ? `未命中「${q}」，换一个关键词试试` : "输入关键词并点击「搜索」，查看结果集"}</Blank>
       ) : (
