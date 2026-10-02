@@ -70,11 +70,15 @@ class Settings(BaseSettings):
     # tucdn.wpon.cn：上传 0.83s、下载 0.35s（实测比 imgbb 快 6.4×）
     # imgbb：境外，上传常 SSL 超时、下载 2.1~2.5s，偶发 31s 超时
     # 隐私提示：图床链接公开可访问（imgbb 为 expiration=0 永久）
-    image_host_backend: str = "tucdn"  # tucdn / imgbb
+    image_host_backend: str = "tucdn"  # tucdn / imgbb / custom（自建）
     tucdn_token: str = ""
     imgbb_api_key: str = ""
     imgbb_enabled: bool = True
     imgbb_timeout: int = 20
+    # 2026-10-02：自建图床（配置中心 capture.image_host_custom_url/_key 为真源；
+    # 此处保留 settings 兜底字段，便于纯 env 部署时也可配）。
+    image_host_custom_url: str = ""
+    image_host_custom_key: str = ""
 
 
 settings = Settings()

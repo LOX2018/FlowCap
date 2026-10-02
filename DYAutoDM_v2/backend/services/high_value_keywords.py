@@ -23,6 +23,13 @@ from services.kv_store import kv_get, kv_set
 
 _KEYS = "high_value_keywords"
 
+# 2026-10-02（用户定调「策略以标签为主」）：关键词表支持按标签 scope 隔离。
+#   scope=None → 全局表（键 `high_value_keywords`，与改造前逐字一致）
+#   scope=<tag_id> → 该标签的表（键 `high_value_keywords::<tag_id>`）
+# 未在标签表里存过 → 回落全局（零回归）。
+def _keys(scope: str | None = None) -> str:
+    return f"{_KEYS}::{scope}" if scope else _KEYS
+
 # 工伤业务域种子关键词（权重越高越强指向「有效咨询」）。
 # 依据：案例库/真实对话实证的高频有效问法（见 AI回复勘探手册 §6）。
 DEFAULT_KEYWORDS: dict[str, int] = {
@@ -59,28 +66,35 @@ DEFAULT_KEYWORDS: dict[str, int] = {
 }
 
 _lock = threading.Lock()
-_cache: dict | None = None
+# 按 scope 分缓存：{"" : 全局表, "<tag_id>": 标签表}
+_caches: dict[str, dict] = {}
 
 
-def get_keywords() -> dict:
-    """读关键词权重表；**键不存在时**懒初始化写种子词表并返回。
+def get_keywords(scope: str | None = None) -> dict:
+    """读关键词权重表（scope 为空读全局）；**键不存在时**懒初始化写种子词表。
 
     2026-09-29 修正：原判据 `if not isinstance(raw, dict) or not raw` 把
     **用户主动清空的空表**（`{}`）也当成"缺失"⇒ 重新写回种子词表
     ⇒ 用户永远无法清空关键词表（有 UI 入口后这是真实诉求：
     清空 = 不按关键词过滤）。现改为以「**键是否存在**」为判据 ——
     `kv_get` 返回 None 表示从未初始化，返回 `{}` 表示用户显式清空。
+
+    2026-10-02：加 scope 参数（标签隔离）。**scope 表未存过 → 回落全局**
+    （而不是写种子词表），避免每个新标签都凭空多一份种子表。
     """
-    global _cache
+    sk = scope or ""
     with _lock:
-        if _cache is not None:
-            return dict(_cache)
-        raw = kv_get(_KEYS, None)
+        if sk in _caches:
+            return dict(_caches[sk])
+        raw = kv_get(_keys(scope), None)
+        if raw is None and scope:
+            # 标签未存过 → 回落全局（读全局表，不写回）
+            raw = kv_get(_KEYS, None)
         if raw is None or not isinstance(raw, dict):
-            # 从未初始化（键不存在）→ 写种子词表
+            # 从未初始化（键不存在）→ 写种子词表（仅全局）
             raw = dict(DEFAULT_KEYWORDS)
             try:
-                kv_set(_KEYS, raw)
+                kv_set(_keys(scope), raw)
             except Exception:
                 pass
         # 归一化：键 str、值 int（容忍配置页写进来的字符串数字）
@@ -90,11 +104,11 @@ def get_keywords() -> dict:
                 norm[str(k)] = int(v)
             except Exception:
                 continue
-        _cache = norm
+        _caches[sk] = norm
         return dict(norm)
 
 
-def put_keywords(words: dict) -> dict:
+def put_keywords(words: dict, scope: str | None = None) -> dict:
     """整表覆盖（供配置中心/UI 调用），并刷新内存缓存。
 
     ⚠️ 命名注意：**不要**叫 `set_keywords` ——
@@ -108,35 +122,40 @@ def put_keywords(words: dict) -> dict:
             norm[str(k)] = int(v)
         except Exception:
             continue
-    kv_set(_KEYS, norm)
-    global _cache
+    kv_set(_keys(scope), norm)
+    sk = scope or ""
     with _lock:
-        _cache = dict(norm)
+        _caches[sk] = dict(norm)
     return dict(norm)
 
 
-def invalidate() -> None:
-    """清内存缓存（配置变更后调用；下次 get 重新读 kv）。"""
-    global _cache
+def invalidate(scope: str | None = None) -> None:
+    """清内存缓存（配置变更后调用；下次 get 重新读 kv）。
+
+    scope 为空只清全局缓存；传 scope 清该标签；传 "__all__" 清全部。
+    """
     with _lock:
-        _cache = None
+        if scope == "__all__":
+            _caches.clear()
+        else:
+            _caches.pop(scope or "", None)
 
 
-def score_text(text: str) -> int:
+def score_text(text: str, scope: str | None = None) -> int:
     """文本的关键词权重得分（命中累加；同一关键词只计一次）。"""
     t = str(text or "")
     if not t:
         return 0
     total = 0
-    for word, weight in get_keywords().items():
+    for word, weight in get_keywords(scope).items():
         if word and word in t:
             total += int(weight)
     return total
 
 
-def is_high_value(text: str, threshold: int) -> bool:
+def is_high_value(text: str, threshold: int, scope: str | None = None) -> bool:
     """关键词口径的高价值判定（不含 LLM 精判）。"""
     try:
-        return score_text(text) >= int(threshold)
+        return score_text(text, scope) >= int(threshold)
     except Exception:
         return False

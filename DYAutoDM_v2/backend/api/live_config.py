@@ -436,3 +436,64 @@ async def apply_strategy(sid: str, body: StrategyApplyBody | None = None) -> dic
     logger.info(f"[live-strategy] 已应用策略 {sid} 到当前任务")
     return {"ok": True, "config": cur}
 
+
+class TagApplyBody(BaseModel):
+    """把**配置标签**应用到当前任务（用户定调「策略以标签为主」）。
+
+    标签是策略唯一真源：解析该标签的 live / send 参数 → 映射成引擎读取的
+    kv ``config`` 形状 → 复用 `_apply_to_task_kv` 同一写入路径。
+    """
+
+    tag_id: str
+    room_id: str = ""
+    account: str = ""
+
+
+def _tag_to_strategy_cfg(tag_id: str) -> dict:
+    """把标签的 live/send 参数映射成 `_apply_to_task_kv` 接受的 cfg 形状。
+
+    零回归：未配置的字段一律返回 None/缺省，`_apply_to_task_kv` 只在
+    显式给出时才覆盖 —— 与既有策略应用语义一致。
+    """
+    from services import app_config as ac
+
+    g = ac.get
+    # 列表型字段用换行分隔字符串承载 → 转回 [{text, enabled}]
+    dm_lines = [s.strip() for s in str(g("live", "dm_pool", "", scope=tag_id) or "").splitlines() if s.strip()]
+    dk_lines = [s.strip() for s in str(g("live", "danmaku_pool", "", scope=tag_id) or "").splitlines() if s.strip()]
+    return {
+        "max_target": g("live", "max_target", None, scope=tag_id),
+        "interval": g("live", "interval", None, scope=tag_id),
+        "delay": f"{g('live', 'delay_min', 0, scope=tag_id)},{g('live', 'delay_max', 0, scope=tag_id)}",
+        "dm_pool": [{"text": t, "enabled": True} for t in dm_lines] or None,
+        "auto_link_mic": g("live", "auto_link_mic", None, scope=tag_id),
+        "link_mic_mode": g("live", "link_mic_mode", None, scope=tag_id),
+        "danmaku_pool": [{"text": t, "enabled": True} for t in dk_lines] or None,
+        "danmaku_timer_enabled": g("live", "danmaku_timer_enabled", None, scope=tag_id),
+        "danmaku_timer_min": g("live", "danmaku_timer_min", None, scope=tag_id),
+        "danmaku_timer_max": g("live", "danmaku_timer_max", None, scope=tag_id),
+        "like_batch_enabled": g("live", "like_batch_enabled", None, scope=tag_id),
+        "like_batch_total": g("live", "like_batch_total", None, scope=tag_id),
+        "like_batch_steps": g("live", "like_batch_steps", None, scope=tag_id),
+        "like_batch_step_max": g("live", "like_batch_step_max", None, scope=tag_id),
+        "like_batch_cooldown_sec": g("live", "like_batch_cooldown_sec", None, scope=tag_id),
+    }
+
+
+@router.post("/apply-by-tag")
+async def apply_by_tag(body: TagApplyBody) -> dict:
+    """按**配置标签**应用策略（策略唯一真源 = 标签）。
+
+    ⚠️ 路径为单段 `/apply-by-tag`，**刻意避开** `/{sid}/apply` 的路由遮蔽
+    （后者会先把 `by-tag` 当 sid 匹配掉，导致本端点不可达）。
+    """
+    from services import config_tag
+
+    if not body.tag_id or not config_tag.get_tag(body.tag_id):
+        return {"ok": False, "error": "标签不存在"}
+    cfg = _tag_to_strategy_cfg(body.tag_id)
+    cur = _apply_to_task_kv(cfg, room_id=body.room_id or None,
+                            account=body.account or None)
+    logger.info(f"[live-strategy] 已应用标签 {body.tag_id} 到当前任务")
+    return {"ok": True, "config": cur, "tag_id": body.tag_id}
+

@@ -328,11 +328,19 @@ class TestFrontendRoomManagePage(unittest.TestCase):
         self.assertIn("<RoomManagePage", self.livepage, "直播页未挂载直播间管理弹窗")
         self.assertIn("直播间管理", self.livepage, "缺少「直播间管理」按钮文案")
         self.assertIn("data-od-id=\"live-room-registry\"", self.livepage)
-        # 两个入口必须并排（都在「管理策略」按钮所在的同一 actions 块内）
-        i_cfg = self.livepage.index("data-od-id=\"live-room-configs\"")
+        # 两个入口必须并排（都在「直播间」板块的同一 actions 块内）
+        # 2026-10-02：策略入口由 `live-room-configs`（RoomConfigPage）改为
+        # `live-tag-select`（选配置标签，策略以标签为主）。
+        i_cfg = self.livepage.index("data-od-id=\"live-tag-select\"")
         i_reg = self.livepage.index("data-od-id=\"live-room-registry\"")
-        self.assertLess(i_cfg, i_reg, "「直播间管理」应排在「管理策略」右侧（并排）")
-        self.assertLess(i_reg - i_cfg, 700, "两个按钮相距过远 = 不在同一并排组")
+        self.assertLess(i_cfg, i_reg, "「直播间管理」应排在标签下拉右侧（并排）")
+        # 用**结构性**判据（同一 <Section> 块）替代脆弱的字符距离：
+        # 2026-10-02 起该 actions 行含 3 个控件（标签下拉/配置标签/直播间管理），
+        # 字符距离随控件增减漂移，不是「并排」的可靠判据。
+        i_sec_cfg = self.livepage.rfind("<Section", 0, i_cfg)
+        i_sec_reg = self.livepage.rfind("<Section", 0, i_reg)
+        self.assertEqual(i_sec_cfg, i_sec_reg,
+                         "两个入口不在同一个 Section（并排组）内")
 
     def test_old_assertion_comment_updated_frontend(self):
         """RoomConfigPage 头部旧断言（「没有目标直播间体系」）必须已被标注逆转。"""

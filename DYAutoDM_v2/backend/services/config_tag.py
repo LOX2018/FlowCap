@@ -46,7 +46,10 @@ _KV_BIND_SECTION = "config_tag_bind_section"  # {account: {section: tag_id}} —
 #   `capture`（私信会话捕获）与「内容采集」是两件事 —— 采集参数无处按账号隔离，
 #   `crawl_policy` 自己的模块头就记着「capture 板块形同虚设、无消费者」。
 #   现采集参数走本分区，`scope_of(account, "crawl")` 才有真实消费者。
-MANAGED_SECTIONS = ("send", "live", "capture", "crawl")
+# ★ 2026-10-02：纳入 `live_orchestration`（直播编排策略）。用户定调「策略以标签为主」
+#   —— 直播监听页不再单独配置策略，改为选标签；直播编排策略随标签走。
+#   高价值关键词作为该策略的附属（见 services/high_value_keywords.py 的 scope 化）。
+MANAGED_SECTIONS = ("send", "live", "capture", "crawl", "live_orchestration")
 
 _lock = threading.RLock()
 

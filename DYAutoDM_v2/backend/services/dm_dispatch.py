@@ -762,6 +762,9 @@ class UidSink:
           4. 否则放行。
 
         零回归：窗口/阈值**默认 0（关闭）** ⇒ 不做任何 DB 查，行为与改造前逐字一致。
+
+        2026-10-02：所有 cfg 取值带上 `account` —— 按账号绑定的标签取值
+        （标签优先于全局；未绑定标签则与不传完全一致）。
         """
         if not account or not peer_uid:
             return False, "账号或 UID 为空"
@@ -772,14 +775,14 @@ class UidSink:
         with self._lock:
             last = self._cache.get(key)
         # ① 冷却（已发送过）
-        if last and (now - last) < cfg("UID_SINK_COOLDOWN"):
-            left = int(cfg("UID_SINK_COOLDOWN") - (now - last))
-            if cfg("UID_SINK_STRICT"):
+        if last and (now - last) < cfg("UID_SINK_COOLDOWN", account):
+            left = int(cfg("UID_SINK_COOLDOWN", account) - (now - last))
+            if cfg("UID_SINK_STRICT", account):
                 return False, (f"UID 已发送过，冷却期内（剩余 {left // 86400} 天）")
             return True, f"（非严格模式放行，{left // 86400} 天前发过）"
         # ②/③ 窗口 + 高价值（关闭时零 DB 查 ⇒ 零回归）
-        window = float(cfg("UID_SINK_WINDOW") or 0)
-        threshold = int(cfg("HIGH_VALUE_THRESHOLD") or 0)
+        window = float(cfg("UID_SINK_WINDOW", account) or 0)
+        threshold = int(cfg("HIGH_VALUE_THRESHOLD", account) or 0)
         if window > 0 or threshold > 0:
             row = self._read_row(account, uid)
             if row is not None:
@@ -787,7 +790,7 @@ class UidSink:
                 if window > 0 and wend and now < float(wend):
                     return False, (f"仍在聚合窗口（剩余 {int(float(wend) - now)}s）")
                 if threshold > 0 and not int(row.get("is_high_value") or 0):
-                    if cfg("UID_SINK_STRICT"):
+                    if cfg("UID_SINK_STRICT", account):
                         return False, ("非高价值目标（关键词分 "
                                        f"{int(row.get('keyword_score') or 0)} < 阈值 {threshold}）")
         return True, ""
@@ -833,15 +836,24 @@ class UidSink:
         if not account or not uid:
             return
         now = time.time()
-        window = float(cfg("UID_SINK_WINDOW") or 0)
-        hv_win = float(cfg("HIGH_VALUE_WINDOW") or 0)
-        max_chars = int(cfg("AGGREGATE_MAX_CHARS") or 2000)
-        threshold = int(cfg("HIGH_VALUE_THRESHOLD") or 0)
+        window = float(cfg("UID_SINK_WINDOW", account) or 0)
+        hv_win = float(cfg("HIGH_VALUE_WINDOW", account) or 0)
+        max_chars = int(cfg("AGGREGATE_MAX_CHARS", account) or 2000)
+        threshold = int(cfg("HIGH_VALUE_THRESHOLD", account) or 0)
         score = 0
         if text:
             try:
                 from services import high_value_keywords as _hv
-                score = int(_hv.score_text(text))
+
+                # 2026-10-02：按账号绑定的标签取关键词表（标签优先，未绑定=全局，零回归）
+                _scope = None
+                try:
+                    from services import config_tag as _ct
+
+                    _scope = _ct.scope_of(account)
+                except Exception:
+                    _scope = None
+                score = int(_hv.score_text(text, _scope))
             except Exception:
                 score = 0
         hv = 1 if (threshold > 0 and score >= threshold) else 0

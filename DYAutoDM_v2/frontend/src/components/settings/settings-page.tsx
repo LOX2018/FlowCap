@@ -40,6 +40,7 @@ import McpSection from "./McpSection";
 import AppearanceSection from "./AppearanceSection";
 // 2026-09-30：能力巡检入口从总览页迁来（总览改为纯只读看板）。
 import ProbeSection from "./ProbeSection";
+import BackupSection from "./BackupSection";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -72,7 +73,7 @@ const TABS: {
   // 2026-09-30：系统运维（能力巡检）。总览页改为纯只读看板后，
   // 「立即巡检」的**唯一**入口落在此处 —— 端点此前仅总览页一处调用，
   // 不补入口会让 /api/probe/patrol 变成「在位但不可得」。
-  { key: "system", label: "系统", hint: "外观主题 · 能力巡检（只读本地事实，零网络零浏览器）", icon: <ShieldCheck className="h-3.5 w-3.5" /> },
+  { key: "system", label: "系统", hint: "外观主题 · 备份 · 导出路径 · 能力巡检", icon: <ShieldCheck className="h-3.5 w-3.5" /> },
 ];
 
 export default function SettingsPage(props: PageProps) {
@@ -163,9 +164,13 @@ export default function SettingsPage(props: PageProps) {
             {section === "mcp" && <McpSection push={props.push} />}
             {section === "system" && (
               <>
+                {/* 2026-10-02：系统分区（后端 schema）—— 文件导出路径管理。 */}
+                <UnifiedConfigSection {...props} onlySections={["system"]} />
                 {/* 2026-10-02 从「通用配置」迁入：外观（日夜主题）属系统级功能。
                     纯前端偏好，存 localStorage，不经后端 schema。 */}
                 <AppearanceSection />
+                {/* 2026-10-02 用户要求：备份子板块（导出 / 导入，自定义范围）。 */}
+                <BackupSection {...props} />
                 <ProbeSection {...props} />
               </>
             )}

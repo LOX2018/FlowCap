@@ -117,11 +117,19 @@ class TestParentRefreshWiring(unittest.TestCase):
             n, 3,
             f"onChanged 调用点只有 {n} 处，应至少覆盖 保存/删除/重启 三条写路径。")
 
-    def test_live_page_passes_callback(self):
+    def test_live_page_uses_tag_as_strategy_source(self):
+        """2026-10-02（用户定调「策略以标签为主」）：直播页以**配置标签**为策略真源。
+
+        原契约（要求挂载 `RoomConfigPage` 并把 `loadRoomCfgs` 作为 onChanged 传下去）
+        已被用户明确替换 —— 房间级策略编辑器下线，改由标签承载策略参数。
+        """
         src = _read(_LIVEPAGE)
-        self.assertIn("onChanged={loadRoomCfgs}", src,
-                      "直播页没有把 loadRoomCfgs 作为 onChanged 传下去 → "
-                      "配置管理里保存后直播页列表不会刷新。")
+        self.assertNotIn("<RoomConfigPage", src,
+                         "RoomConfigPage 已下线，不得复活（策略以标签为主）")
+        self.assertIn("applyLiveTag", src,
+                      "直播页未把所选标签应用到任务配置 → 启动不会读到标签策略")
+        self.assertIn("选择配置标签", src, "「直播间」板块缺少标签下拉")
+        self.assertIn("live-tag-select", src, "缺少标签下拉的稳定锚点")
 
 
 class TestDmPoolEditorExists(unittest.TestCase):
@@ -181,12 +189,13 @@ class TestConfigTagAndTargetRoomSeparation(unittest.TestCase):
         for k in ("备注名", "直播间号或 URL", "直播链接", "强制重扫"):
             self.assertNotIn(k, jsx, f"策略编辑页 JSX 仍含非策略字段「{k}」")
 
-    def test_live_page_mounts_strategy_modal(self):
-        """策略弹窗挂在直播页；入口在「直播间」板块的策略下拉旁（无子 tab）。"""
+    def test_live_page_mounts_tag_selector(self):
+        """2026-10-02：策略入口 = 「直播间」板块的**标签下拉**（RoomConfigPage 已下线）。"""
         src = _read(_LIVEPAGE)
-        self.assertIn("<RoomConfigPage", src, "直播页未挂载策略弹窗")
-        self.assertIn("管理策略", src, "「直播间」板块缺少策略管理入口")
-        self.assertIn("选择直播策略", src, "「直播间」板块缺少策略下拉")
+        self.assertNotIn("<RoomConfigPage", src, "RoomConfigPage 已下线，不得复活")
+        self.assertIn('data-od-id="live-tag-select"', src,
+                      "「直播间」板块缺少标签下拉锚点")
+        self.assertIn("配置标签", src, "缺少「配置标签」入口文案")
 
     def test_draft_mode_replaces_new_button(self):
         """**草稿模式**取代「新建策略」按钮（用户 2026-09-19 第三次定调）。

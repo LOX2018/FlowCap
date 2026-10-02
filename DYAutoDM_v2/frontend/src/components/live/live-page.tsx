@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 
 import { createPortal } from "react-dom";
 
@@ -11,9 +11,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
-import { PageProps, ReusePayload, RoomConfig, LiveRoom } from "../../api/client";
+import { PageProps, ReusePayload, LiveRoom } from "../../api/client";
 
-import RoomConfigPage from "./RoomConfigPage";
 
 import RoomManagePage from "./RoomManagePage";
 
@@ -51,8 +50,6 @@ import { ReviewMode, errMsg } from "./LiveReviewMode";
 import EngineCards from "./engine-cards";
 import ContributionRank from "./ContributionRank";
 
-/** 策略唯一键（以 id 为准，兼容旧数据的 room_id） */
-const sidOf = (c: RoomConfig): string => String(c.id || c.room_id || "");
 
 
 export default function LivePage(props: PageProps) {
@@ -76,11 +73,15 @@ export default function LivePage(props: PageProps) {
   // ── 配置来源（2026-09-15 用户定调：直播页不再手填任何配置）───────────────
   // 页面只做「选择对应配置的标签」；配置内容的编辑与「重启」都在
   // 「直播间配置管理」里（唯一可写入口）。这里只读展示生效配置。
-  const [roomCfgs, setRoomCfgs] = useState<RoomConfig[]>([]);
-  const [selCfgId, setSelCfgId] = useState<string>("");
-  // 直播策略弹窗开关（2026-09-19 用户定调：**不要** tab 切换栏 / 子 tab 页面；
-  // 策略编辑以弹窗提供，入口在「直播间」板块的策略下拉旁）
-  const [cfgMgr, setCfgMgr] = useState(false);
+  const [selTagId, setSelTagId] = useState<string>("");
+  // 2026-10-02：直播页的「直播策略」改为**选配置标签**（策略以标签为主）。
+  const tagsQ = useQuery({
+    queryKey: ["live-tags"],
+    queryFn: () => api.listTags(),
+    enabled: !!ready,
+    staleTime: 30_000,
+  });
+  const liveTags = (tagsQ.data?.tags || []) as { id: string; name: string }[];
   /** 「直播间管理」（房间层，ADR-003）：身份 + 策略引用 + 脱敏开关 */
   const [roomMgr, setRoomMgr] = useState(false);
   /** 高价值关键词权重表弹窗（2026-09-29：入口从设置页迁入「直播间」区，与策略同场景） */
@@ -181,32 +182,20 @@ export default function LivePage(props: PageProps) {
   }, [reviewPayload, push]);
 
   // ── 直播间配置（「标签」）：列表来自唯一可写入口「直播间配置管理」 ──────────
-  const loadRoomCfgs = useCallback(() => {
-    if (!ready) return;
-    api
-      .listRoomConfigs()
-      .then((r) => setRoomCfgs(Array.isArray(r.items) ? r.items : []))
-      .catch(() => {});
-  }, [ready, api]);
-
-  useEffect(() => {
-    loadRoomCfgs();
-  }, [loadRoomCfgs]);
-
-  // 选择某条配置：只读到页面（不写库、不起任务）——「选择配置的调用口」
-  const pickRoomCfg = (roomId: string) => {
-    setSelCfgId(roomId);
-    const c = roomCfgs.find((x) => sidOf(x) === roomId);
-    if (!c) return;
-    if (c.acct && realAccts.some((a) => a.name === c.acct)) setActiveAcct(c.acct);
-    push(`已选择直播策略「${c.name || roomId}」· 内容可在「管理策略」中改后点「重启」`);
+  // 2026-10-02（用户定调「策略以标签为主」）：直播页的「直播策略」下拉
+  // 改为**选配置标签** —— 标签是策略唯一真源（live/send 参数）。
+  // 原 `RoomConfigPage`（房间级策略编辑器）已下线。
+  // `roomCfgs` 仅保留给「直播间管理」的 onChanged 复用（不再驱动启动配置）。
+  const pickTag = (tagId: string) => {
+    setSelTagId(tagId);
+    push(`已选择配置标签「${liveTags.find((t) => t.id === tagId)?.name || tagId}」· 点「启动」生效`);
   };
 
-  const selCfg = useMemo(
-    () => roomCfgs.find((c) => sidOf(c) === selCfgId) || null,
-    [roomCfgs, selCfgId],
+  const selTag = useMemo(
+    () => liveTags.find((t) => t.id === selTagId) || null,
+    [liveTags, selTagId],
   );
-
+  void selTag;
   // ── AI 自动回复开关（2026-09-29：从原顶部「AI 自动回复」卡迁入评论统计卡头部）───
   // 原 `AiReplyCard` 顶端独立成卡，与「评论统计」信息重复；现把开关与计数一起
   // 收敛到 comment-stats 卡头部同一排（用户指定融合落点）。
@@ -259,8 +248,6 @@ export default function LivePage(props: PageProps) {
     if (!reusePayload) return;
     const c = reusePayload;
     if (c.room) setRoom(c.room);
-    const matched = roomCfgs.find((x) => sidOf(x) === c.room);
-    if (matched) setSelCfgId(sidOf(matched));
     push(
       "已跳转到该直播间的监听页",
     );
@@ -631,26 +618,16 @@ export default function LivePage(props: PageProps) {
             .catch((e: unknown) => push("强制停止异常: " + errMsg(e)));
         }}
       />
-      <RoomConfigPage
-        open={cfgMgr}
-        onClose={() => setCfgMgr(false)}
-        push={push}
-        onChanged={loadRoomCfgs}
-        onApply={(cfg) => {
-          const sid = String(cfg.id || cfg.room_id || "");
-          if (sid) setSelCfgId(sid);
-          if (cfg.acct && realAccts.some((a) => a.name === cfg.acct)) setActiveAcct(cfg.acct);
-        }}
-      />
+      {/* 2026-10-02（用户定调「策略以标签为主」）：原 `RoomConfigPage`
+          （房间级策略编辑器）已**下线** —— 策略唯一真源 = 配置标签。
+          连麦设置 / 私信词库 / 弹幕文案库 4 项已迁入 live 分区（配置中心可编辑）。 */}
       <RoomManagePage
         open={roomMgr}
         onClose={() => setRoomMgr(false)}
         push={push}
-        onChanged={loadRoomCfgs}
         onPick={(r: LiveRoom) => {
           // 「选用」＝把房间号回填到直播页输入框（房间层只提供身份，不需选策略）
           if (r.room_id) setRoom(r.room_id);
-          if (r.strategy_id) setSelCfgId(r.strategy_id);
           push(`已选用直播间「${r.name || r.room_id}」`);
         }}
       />
@@ -749,23 +726,23 @@ export default function LivePage(props: PageProps) {
             title="直播间"
             actions={
               <>
-                <Select value={selCfgId} onValueChange={pickRoomCfg}>
+                <Select value={selTagId} onValueChange={pickTag}>
                   <SelectTrigger
                     className="min-w-[220px]"
-                    aria-label="选择直播策略"
-                    data-od-id="live-cfg-select"
+                    aria-label="选择配置标签（策略）"
+                    data-od-id="live-tag-select"
                   >
-                    <SelectValue placeholder="选择直播策略…" />
+                    <SelectValue placeholder="选择配置标签…" />
                   </SelectTrigger>
                   <SelectContent>
-                    {roomCfgs.length === 0 && (
+                    {liveTags.length === 0 && (
                       <SelectItem value="__none__" disabled>
-                        暂无策略 · 点右侧「管理策略」新建
+                        暂无标签 · 去「配置中心 → 配置标签」新建
                       </SelectItem>
                     )}
-                    {roomCfgs.map((c) => (
-                      <SelectItem key={sidOf(c)} value={sidOf(c)}>
-                        {c.name || sidOf(c)}
+                    {liveTags.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -773,11 +750,11 @@ export default function LivePage(props: PageProps) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  data-od-id="live-room-configs"
-                  title="管理直播策略（增删改 + 重启，不中断监听）"
-                  onClick={() => setCfgMgr(true)}
+                  data-od-id="live-tag-manage"
+                  title="去配置中心管理标签（策略参数）"
+                  onClick={() => props.push("配置中心 → 配置标签")}
                 >
-                  <Settings2 className="h-3.5 w-3.5" />管理策略
+                  <Settings2 className="h-3.5 w-3.5" />配置标签
                 </Button>
                 <Button
                   variant="ghost"
@@ -902,11 +879,11 @@ export default function LivePage(props: PageProps) {
                         });
                         return;
                       }
-                      // 启动配置全部取自所选「直播间配置」（标签）—— 页面无手填项
-                      if (!selCfg) {
+                      // 启动配置取自所选「配置标签」（策略唯一真源）
+                      if (!selTagId) {
                         setAlert({
-                          title: "请先选择直播间配置",
-                          msg: "请先在上方选择一条已保存的直播间配置。",
+                          title: "请先选择配置标签",
+                          msg: "请先在上方选择一个配置标签（策略参数在「配置中心 → 配置标签」维护）。",
                         });
                         return;
                       }
@@ -917,13 +894,14 @@ export default function LivePage(props: PageProps) {
                         });
                         return;
                       }
+                      // 2026-10-02：先把标签策略应用到任务配置（写 kv config），
+                      // 再启动引擎 —— 引擎从 kv config 读取 max_target/interval/delay/dm_pool。
+                      api
+                        .applyLiveTag(selTagId, room, activeAcct || "")
+                        .catch((e: unknown) => push("应用标签策略异常: " + errMsg(e)));
                       const cfg = {
                         live_url: room,
-                        max_target: selCfg.max_target ?? 3,
-                        interval: selCfg.interval ?? 60,
-                        delay: selCfg.delay || "50,120",
-                        dm_pool: selCfg.dm_pool || [],
-                        acct: activeAcct || selCfg.acct || undefined,
+                        acct: activeAcct || undefined,
                       };
                       setEngineReqBusy(true);
                       api

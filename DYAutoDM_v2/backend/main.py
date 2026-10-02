@@ -71,6 +71,7 @@ for _stream_name in ("stdout", "stderr"):
 
 from config import settings
 from api import accounts, engine, live, messages, overview, settings as settings_api, tasks, logs as logs_api
+from api import backup as backup_api
 from api import ai as ai_api
 from api import crawl as crawl_api
 from core.auto_dm import AutoDM
@@ -841,6 +842,7 @@ app.include_router(linkmic_api.router, prefix="/api/live/linkmic", tags=["live"]
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
+app.include_router(backup_api.router, prefix="/api/backup", tags=["backup"])
 app.include_router(logs_api.router, prefix="/api/logs", tags=["logs"])
 # AI 获客自动回复（嵌入自 douyin-auto-reply-assistant，2026-09-06）
 app.include_router(ai_api.router, prefix="/api/ai", tags=["ai"])

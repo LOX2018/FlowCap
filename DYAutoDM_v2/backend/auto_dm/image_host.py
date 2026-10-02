@@ -18,7 +18,9 @@
 
 - **零风控风险**：上传的是**本地已有的字节**，不发任何请求给抖音。
 - **失败降级**：上传失败不影响主流程，返回 None，调用方保留原 data URI。
-- **不硬编码密钥**：从 `settings.imgbb_api_key` 读（env `IMGBB_API_KEY`）。
+- **不硬编码密钥**：从 `settings.imgbb_api_key` 读（env `IMGBB_API_KEY`）；
+  2026-10-02 起改为**配置中心优先**（`capture.image_host_custom_url/_key`，
+  支持自建图床），回落 settings/env。
 - **去重缓存**：同图（SHA1）只传一次，进程内缓存结果。
 - **隐私提示**：imgbb 图床链接**公开可访问且 expiration=0 永久保存**，
   接入前必须经用户确认（已在 SKILL/知识库记录）。
@@ -79,20 +81,46 @@ def _get_tucdn_token() -> str:
     return os.environ.get("TUCDN_TOKEN", "") or ""
 
 
+def _cfg(key: str, default=None):
+    """读配置中心（capture 分区）的值；未配置/异常回落 default。
+
+    2026-10-02：本模块原只读 `config.settings`（= env/默认），配置中心里
+    保存的值**不生效**（典型「填了没用」）。现统一为：
+    **配置中心 → settings/env → 模块默认**（与 `cred_refresh_mode` 等消费方同构）。
+    """
+    try:
+        from services.app_config import get as _ac_get
+
+        return _ac_get("capture", key, default)
+    except Exception:
+        return default
+
+
 def _backend() -> str:
-    """图床后端：tucdn（默认，国内快）/ imgbb（境外备选）。"""
+    """图床后端：tucdn（默认，国内快）/ imgbb（境外备选）/ custom（自建）。"""
+    b = ""
     try:
         from config import settings
 
         b = (getattr(settings, "image_host_backend", "") or "").lower()
-        if b in ("tucdn", "imgbb"):
-            return b
     except Exception:
         pass
     import os
 
-    b = (os.environ.get("IMAGE_HOST_BACKEND", "") or "").lower()
-    return b if b in ("tucdn", "imgbb") else "tucdn"
+    b = b or (os.environ.get("IMAGE_HOST_BACKEND", "") or "").lower()
+    # 配置中心优先（用户可在 UI 里切换）
+    b = str(_cfg("image_host_backend", b) or b).lower()
+    return b if b in ("tucdn", "imgbb", "custom") else "tucdn"
+
+
+def _custom_url() -> str:
+    """自建图床上传端点（配置中心 capture.image_host_custom_url）。"""
+    return str(_cfg("image_host_custom_url", "") or "").strip()
+
+
+def _custom_key() -> str:
+    """自建图床 API Key（配置中心 capture.image_host_custom_key；留空则不鉴权）。"""
+    return str(_cfg("image_host_custom_key", "") or "").strip()
 
 
 def _enabled() -> bool:
@@ -148,6 +176,17 @@ def upload(data: bytes, name: str = "") -> Optional[str]:
                         "[图床] 未配置 TUCDN_TOKEN，跳过上传（大图将内联渲染）"
                     )
             return None
+    elif backend == "custom":
+        # 自建图床：只需 URL；Key 可空（部分自建服务不鉴权）
+        if not _custom_url():
+            with _lock:
+                _stats["skip"] += 1
+                if _stats["skip"] == 1:
+                    logger.info(
+                        "[图床] 已选「自定义」但未填「图床 API 地址」，"
+                        "跳过上传（大图将内联渲染）"
+                    )
+            return None
     else:
         key = _get_key()
         if not key:
@@ -168,6 +207,8 @@ def upload(data: bytes, name: str = "") -> Optional[str]:
     try:
         if backend == "tucdn":
             url = _upload_tucdn(data, token, name)
+        elif backend == "custom":
+            url = _upload_custom(data, _custom_url(), _custom_key(), name)
         else:
             url = _upload_imgbb(data, key, name)
         if not url:
@@ -221,6 +262,54 @@ def _upload_tucdn(data: bytes, token: str, name: str = "") -> Optional[str]:
     if url.startswith("//"):
         url = "https:" + url
     return url or None
+
+
+def _upload_custom(data: bytes, url: str, key: str, name: str = "") -> Optional[str]:
+    """上传到**自建图床**（2026-10-02 用户要求：图床是用户自己的服务）。
+
+    请求形态（最常见自建图床约定）：
+      · POST `multipart/form-data`，文件字段名 `image`
+      · 鉴权：`Authorization: Bearer <key>`（key 为空则不发送该头）
+    响应兼容多种常见形状（尽力而为，取第一个非空 url）：
+      · `{"data":{"url": "..."}}`（imgbb / tucdn 风格）
+      · `{"url": "..."}` / `{"data":"..."}` / `{"link":"..."}`
+    失败抛异常 → 由 `upload()` 统一降级（内联 base64），不阻断主流程。
+    """
+    import uuid
+
+    boundary = "----Chuanliu" + uuid.uuid4().hex
+    fname = (name or "image") + ".webp"
+    body = (
+        f"--{boundary}\r\n".encode()
+        + f'Content-Disposition: form-data; name="image"; filename="{fname}"\r\n'.encode()
+        + b"Content-Type: image/webp\r\n\r\n"
+        + data
+        + b"\r\n"
+        + f"--{boundary}--\r\n".encode()
+    )
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=_timeout()) as r:
+        j = json.loads(r.read().decode("utf-8", "replace"))
+
+    if not isinstance(j, dict):
+        raise RuntimeError(f"响应非对象: {str(j)[:120]}")
+    d = j.get("data")
+    cand = None
+    if isinstance(d, dict):
+        cand = d.get("url") or d.get("link") or d.get("display_url")
+    elif isinstance(d, str):
+        cand = d
+    cand = cand or j.get("url") or j.get("link")
+    if not cand:
+        raise RuntimeError(f"响应缺少 url 字段: {str(j)[:120]}")
+    cand = str(cand)
+    # 兼容协议相对路径 //host/path
+    if cand.startswith("//"):
+        cand = "https:" + cand
+    return cand or None
 
 
 def _upload_imgbb(data: bytes, key: str, name: str = "") -> Optional[str]:

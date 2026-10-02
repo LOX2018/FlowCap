@@ -41,6 +41,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/api/client";
@@ -125,6 +126,15 @@ export default function HighValueKeywordsSection({
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const seq = useRef(0);
+  // 2026-10-02（用户定调「策略以标签为主」）：本表可按标签隔离。
+  //   scope="" = 全局；scope=<tag_id> = 该标签的关键词表。
+  const [scope, setScope] = useState<string>("");
+  const tagsQ = useQuery({
+    queryKey: ["hvk-tags"],
+    queryFn: () => api.listTags(),
+    staleTime: 30_000,
+  });
+  const tagList = (tagsQ.data?.tags || []) as { id: string; name: string }[];
 
   const nextId = () => `r${(seq.current += 1)}`;
 
@@ -138,7 +148,7 @@ export default function HighValueKeywordsSection({
   const load = async () => {
     setErr("");
     try {
-      const r = await api.aiHighValueKeywords();
+      const r = await api.aiHighValueKeywords(scope);
       setItems(r.items || {});
       setDraft(toDraft(r.items || {}));
       setBadIds([]);
@@ -149,7 +159,8 @@ export default function HighValueKeywordsSection({
 
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
 
   const save = async () => {
     setMsg("");
@@ -172,7 +183,7 @@ export default function HighValueKeywordsSection({
     setBusy(true);
     const sent = Object.keys(out).length;
     try {
-      const r = await api.aiHighValueKeywordsSave(out);
+      const r = await api.aiHighValueKeywordsSave(out, scope);
       const got = r.items || {};
       setItems(got);
       setDraft(toDraft(got));
@@ -205,7 +216,7 @@ export default function HighValueKeywordsSection({
     setMsg("");
     setErr("");
     try {
-      const r = await api.aiHighValueKeywordsReset();
+      const r = await api.aiHighValueKeywordsReset(scope);
       setItems(r.items || {});
       setDraft(toDraft(r.items || {}));
       setBadIds([]);
@@ -253,6 +264,41 @@ export default function HighValueKeywordsSection({
               {busy ? "保存中…" : "保存"}
             </Button>
           </div>
+        </div>
+
+        {/* 2026-10-02：标签切换栏（「策略以标签为主」）。全局 / 各标签各一份关键词表。 */}
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <span className="mr-0.5 text-[0.72rem] text-[var(--color-text-muted)]">保存到</span>
+          <button
+            type="button"
+            onClick={() => setScope("")}
+            className={
+              "rounded-[8px] border px-2.5 py-1 text-[0.72rem] transition-colors " +
+              (scope === ""
+                ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)]")
+            }
+          >
+            全局
+          </button>
+          {tagList.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setScope(t.id)}
+              className={
+                "rounded-[8px] border px-2.5 py-1 text-[0.72rem] transition-colors " +
+                (scope === t.id
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                  : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)]")
+              }
+            >
+              {t.name}
+            </button>
+          ))}
+          <span className="ml-1 text-[0.68rem] text-[var(--color-text-muted)]">
+            {scope ? "该标签的关键词表（未编辑则回落全局）" : "对所有未绑定标签的账号生效"}
+          </span>
         </div>
 
         {(msg || err) && (

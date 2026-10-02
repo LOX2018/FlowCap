@@ -615,11 +615,15 @@ export interface ConfigTagSummary {
   updated_at: number;
 }
 
-/** 受标签管理的板块（对应后端 config_tag.MANAGED_SECTIONS，顺序一致）。 */
+/** 受标签管理的板块（对应后端 config_tag.MANAGED_SECTIONS，顺序一致）。
+ *  2026-10-02 同步后端：补 `crawl`（此前前端漏了，前后端漂移）+
+ *  `live_orchestration`（用户定调「策略以标签为主」）。 */
 export const TAG_MANAGED_SECTIONS = [
   "send",
   "live",
   "capture",
+  "crawl",
+  "live_orchestration",
 ] as const;
 export type TagManagedSection = (typeof TAG_MANAGED_SECTIONS)[number];
 
@@ -628,6 +632,8 @@ export const TAG_SECTION_LABELS: Record<TagManagedSection, string> = {
   send: "私信发送",
   live: "直播监听",
   capture: "捕获与存储",
+  crawl: "内容采集",
+  live_orchestration: "直播策略",
 };
 
 export interface ConfigTag {
@@ -642,6 +648,44 @@ export interface AiAgent {
   name: string;
   config: Record<string, unknown>;
   updated_at: number;
+}
+
+// ===== 备份（系统页「备份」子板块，2026-10-02）=====
+export interface BackupScope { key: string; label: string; desc: string; kind: string }
+export interface BackupExportResult {
+  ok: boolean; path: string; bytes: number; filename: string;
+  scopes: string[]; kv_keys: number; table_rows: number;
+}
+
+/** 带令牌的备份上传（FormData 直传）。request() 会强加 JSON Content-Type，
+ *  故 FormData 必须单独走 fetch（与 aiKbImport 同因）。 */
+async function backupUpload(path: string, form: FormData): Promise<any> {
+  await ensureBackendReady().catch(() => { /* 由 fetch 结果说话 */ });
+  const headers: Record<string, string> = {};
+  const tk = getMemberToken();
+  if (tk) headers["X-Member-Token"] = tk;
+  try { headers["X-App-Version"] = String(__APP_VERSION__); } catch { /* ignore */ }
+  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    if (res.status === 401) setMemberToken("");
+    throw new Error(`备份导入失败 (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** 带令牌下载导出文件 → Blob（下载端点受会员门禁保护）。 */
+async function backupDownloadBlob(path: string): Promise<Blob> {
+  await ensureBackendReady().catch(() => { /* ignore */ });
+  const headers: Record<string, string> = {};
+  const tk = getMemberToken();
+  if (tk) headers["X-Member-Token"] = tk;
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (!res.ok) {
+    if (res.status === 401) setMemberToken("");
+    throw new Error(`下载失败 (${res.status})`);
+  }
+  return res.blob();
 }
 
 // ===== API 客户端 =====
@@ -1158,6 +1202,20 @@ export const api = {
 
   async listRoomConfigs(): Promise<{ ok: boolean; items: RoomConfig[] }> {
     return request("/api/live/config-tags");
+  },
+
+  // ===== 直播策略「以标签为主」（2026-10-02）=====
+  // 策略唯一真源 = 配置标签（live/send 参数）。把标签应用到当前任务配置，
+  // 引擎启动时读取（复用既有的 kv config 路径）。
+  async applyLiveTag(
+    tagId: string,
+    roomId = "",
+    account = "",
+  ): Promise<{ ok: boolean; config?: Record<string, unknown>; tag_id?: string; error?: string }> {
+    return request("/api/live/config-tags/apply-by-tag", {
+      method: "POST",
+      body: JSON.stringify({ tag_id: tagId, room_id: roomId, account }),
+    });
   },
 
   async saveRoomConfig(cfg: Partial<RoomConfig> & { id?: string }): Promise<{ ok: boolean; config?: RoomConfig; error?: string }> {
@@ -1772,6 +1830,41 @@ export const api = {
     });
   },
 
+  // ===== 备份（系统页「备份」子板块，2026-10-02）=====
+  /** 可备份范围清单（供前端渲染勾选；用户要求「自定义选择范围」） */
+  async getBackupScopes(): Promise<{ ok: boolean; scopes: BackupScope[] }> {
+    return request("/api/backup/scopes");
+  },
+
+  /** 当前导出目录（来自配置中心 system.export_dir，留空则后端默认） */
+  async getExportDir(): Promise<{ ok: boolean; dir: string }> {
+    return request("/api/backup/export_dir");
+  },
+
+  /** 按范围导出（纯读 + 落盘一个新文件） */
+  async exportBackup(scopes: string[]): Promise<BackupExportResult> {
+    return request("/api/backup/export", {
+      method: "POST",
+      body: JSON.stringify({ scopes }),
+    });
+  },
+
+  /** 导入备份包（FormData 直传；scopes 空 = 包内全部） */
+  async importBackup(
+    file: File,
+    scopes: string[] = [],
+  ): Promise<{ ok: boolean; imported_scopes: string[]; kv_keys: string[]; tables: string[]; error?: string }> {
+    const form = new FormData();
+    form.append("file", file);
+    const q = scopes.length ? `?scopes=${encodeURIComponent(scopes.join(","))}` : "";
+    return backupUpload(`/api/backup/import${q}`, form);
+  },
+
+  /** 下载导出文件（返回 Blob，由调用方触发保存） */
+  async downloadBackup(filename: string): Promise<Blob> {
+    return backupDownloadBlob(`/api/backup/download/${encodeURIComponent(filename)}`);
+  },
+
   // ===== IM 通知（v0.37.0，2026-09-09）=====
   /** 各渠道就绪状态 */
   async getNotifyStatus(): Promise<NotifyStatus> {
@@ -2233,19 +2326,23 @@ export const api = {
   },
 
   // ===== 高价值关键词权重表（直播/采集发送闸门的过滤依据）=====
-  async aiHighValueKeywords(): Promise<{ ok: boolean; items: Record<string, number> }> {
-    return request("/api/ai/high-value-keywords");
+  // 2026-10-02：「策略以标签为主」—— 支持按标签 scope 读写（scope 空 = 全局）。
+  async aiHighValueKeywords(scope = ""): Promise<{ ok: boolean; items: Record<string, number> }> {
+    const q = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+    return request(`/api/ai/high-value-keywords${q}`);
   },
   async aiHighValueKeywordsSave(
     keywords: Record<string, number>,
+    scope = "",
   ): Promise<{ ok: boolean; items: Record<string, number> }> {
     return request("/api/ai/high-value-keywords", {
       method: "POST",
-      body: JSON.stringify({ keywords }),
+      body: JSON.stringify({ keywords, scope }),
     });
   },
-  async aiHighValueKeywordsReset(): Promise<{ ok: boolean; items: Record<string, number> }> {
-    return request("/api/ai/high-value-keywords/reset", { method: "DELETE" });
+  async aiHighValueKeywordsReset(scope = ""): Promise<{ ok: boolean; items: Record<string, number> }> {
+    const q = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+    return request(`/api/ai/high-value-keywords/reset${q}`, { method: "DELETE" });
   },
 
   // ===== 数据采集（关键词搜索 + 评论采集 + 评论转私信截流）=====

@@ -109,6 +109,21 @@ SECTIONS: dict[str, dict[str, Any]] = {
         },
     },
 
+    # ===== 系统（2026-10-02 用户要求：系统页的文件导出路径管理）=====
+    # 与前端「系统」tab 对应。放独立分区而非 general，避免同一字段
+    # 在「通用配置」与「系统」两处重复出现（用户要求该管理在系统页）。
+    "system": {
+        "label": "系统",
+        "fields": {
+            "export_dir": {
+                "label": "文件导出目录",
+                "type": "str", "default": "", "env": None,
+                "apply": "hot",
+                "hint": "留空用默认目录",
+            },
+        },
+    },
+
     # ===== 私信 / 昵称兜底 =====
     "dm": {
         "label": "私信 / 昵称兜底",
@@ -300,6 +315,32 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "label": "步间冷却（秒）", "type": "int", "default": 150,
                 "min": 120, "max": 1800, "env": None, "apply": "hot",
                 "hint": "下限 120 秒"
+            },
+            # 2026-10-02（用户定调「策略以标签为主」）：原 `live_room_configs`
+            # 房间级策略的 4 个字段迁入本分区 —— 否则下线 RoomConfigPage 后
+            # 连麦设置 / 私信词库 / 弹幕文案库将「无处可配」（能力净损失）。
+            # 列表型用**换行分隔字符串**承载（与 automation 的 *_keywords 同范式）。
+            "dm_pool": {
+                "label": "私信词库（每行一条）", "type": "str", "default": "",
+                "env": None, "apply": "hot",
+                "hint": "每行一条，随机选用"
+            },
+            "danmaku_pool": {
+                "label": "弹幕文案库（每行一条）", "type": "str", "default": "",
+                "env": None, "apply": "hot",
+                "hint": "每行一条，定时发送"
+            },
+            "auto_link_mic": {
+                "label": "自动申请连麦", "type": "bool", "default": False,
+                "env": None, "apply": "hot",
+                "hint": "写接口·需开连麦"
+            },
+            "link_mic_mode": {
+                "label": "连麦方式", "type": "select", "default": "audio",
+                "options": [{"value": "audio", "label": "语音"},
+                            {"value": "video", "label": "视频"}],
+                "env": None, "apply": "hot",
+                "hint": "语音或视频"
             },
         },
     },
@@ -697,7 +738,26 @@ SECTIONS: dict[str, dict[str, Any]] = {
             "image_host_backend": {
                 "label": "图床后端",
                 "type": "select", "default": "tucdn", "env": "IMAGE_HOST_BACKEND",
-                "options": ["tucdn", "imgbb"], "apply": "hot",
+                "options": [{"value": "tucdn", "label": "tucdn（国内·内置）"},
+                            {"value": "imgbb", "label": "imgbb（境外·内置）"},
+                            {"value": "custom", "label": "自定义（自建图床）"}],
+                "apply": "hot",
+                "hint": "自定义用下方地址"
+            },
+            # 2026-10-02 用户要求：图床是用户自己的服务，必须能填地址与密钥。
+            # 此前只有后端二选一，端点（UPLOAD_URL/TUCDN_URL）硬编码在 image_host.py，
+            # UI 无从填写 ⇒ 用户自建图床无法接入。
+            "image_host_custom_url": {
+                "label": "图床 API 地址",
+                "type": "str", "default": "", "env": None,
+                "apply": "hot",
+                "hint": "自定义图床上传端点"
+            },
+            "image_host_custom_key": {
+                "label": "图床 API Key",
+                "type": "str", "default": "", "env": None,
+                "apply": "hot",
+                "hint": "留空则不鉴权"
             },
         },
     },

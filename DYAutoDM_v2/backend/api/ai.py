@@ -880,34 +880,41 @@ async def bl_remove(user_id: str):
 # 故按黑名单同款范式开独立端点（不塞进 schema）。
 
 @router.get("/high-value-keywords")
-async def hv_keywords_get():
-    """读关键词权重表（缺失时服务层会懒初始化种子词表）。"""
+async def hv_keywords_get(scope: str = ""):
+    """读关键词权重表（缺失时服务层会懒初始化种子词表）。
+
+    `scope` = 标签 id 时读该标签的表（未存过回落全局）。
+    """
     from services import high_value_keywords as _hv
 
-    return {"ok": True, "items": _hv.get_keywords()}
+    return {"ok": True, "items": _hv.get_keywords(scope or None)}
 
 
 class HvKeywordsBody(BaseModel):
     keywords: dict
+    scope: str = ""
 
 
 @router.post("/high-value-keywords")
 async def hv_keywords_put(body: HvKeywordsBody):
-    """整表覆盖关键词与权重（值为 int 权重；非法项由服务层丢弃）。"""
+    """整表覆盖关键词与权重（值为 int 权重；非法项由服务层丢弃）。
+
+    `scope` = 标签 id 时写入该标签的表（「策略以标签为主」）。
+    """
     from services import high_value_keywords as _hv
 
-    out = _hv.put_keywords(body.keywords or {})
+    out = _hv.put_keywords(body.keywords or {}, body.scope or None)
     return {"ok": True, "items": out}
 
 
 @router.delete("/high-value-keywords/reset")
-async def hv_keywords_reset():
-    """恢复为工伤业务域种子词表（默认值）。"""
+async def hv_keywords_reset(scope: str = ""):
+    """恢复为工伤业务域种子词表（默认值）。`scope` = 标签 id 时重置该标签表。"""
     from services import high_value_keywords as _hv
 
     # 注意：不能只 `invalidate()` —— 那只是清内存缓存，
     # 下次 get 重读 kv 仍是旧值 ⇒ 假"重置"。必须把种子表写回 kv。
-    out = _hv.put_keywords(dict(_hv.DEFAULT_KEYWORDS))
+    out = _hv.put_keywords(dict(_hv.DEFAULT_KEYWORDS), scope or None)
     return {"ok": True, "items": out}
 
 
