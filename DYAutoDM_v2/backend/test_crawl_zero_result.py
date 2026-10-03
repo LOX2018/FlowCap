@@ -234,6 +234,41 @@ class TestSearchResultUnwrap(unittest.TestCase):
         self.assertEqual(r, [], "未识别结构应回空列表，不能静默把 dict 往下传")
         self.assertEqual(self.extract(None), [])
 
+    def test_unwraps_aweme_info_envelope(self):
+        """🔴 上游是两层包装 `data[].aweme_info`（基座
+        `dy_apis/douyin_api.py:481`：`[w for w in res_json["data"]
+        if w.get("aweme_info")]`）。只解一层 ⇒ item 有 aweme_id 但无 video
+        ⇒ 取址拿不到地址 ⇒ 前端报 502「无可用地址」。
+        """
+        inner = {"aweme_id": "7389", "desc": "d", "statistics": {},
+                 "author": {"nickname": "n", "uid": "1", "sec_uid": "s"},
+                 "video": {"duration": 1, "cover": {"url_list": ["c"]},
+                           "play_addr": {"url_list": ["https://v/real.mp4"]}}}
+        raw = {"status_code": 0, "data": [{"type": 1, "aweme_info": inner}]}
+        lst = self.extract(raw)
+        self.assertEqual(len(lst), 1)
+        self.assertEqual(self.pick(lst[0]).get("aweme_id"), "7389")
+        # 关键：必须能取到播放地址（502 的直接判据）
+        from downloader import media_request as MR
+        item = self.pick(lst[0])
+        url = MR.pick_quality(MR.extract_media(item.get("media") or {}), "origin")
+        self.assertTrue(url, "剥壳后仍取不到地址 ⇒ 会再报 502")
+
+    def test_drops_non_aweme_cards_per_upstream(self):
+        """上游口径：无 `aweme_info` 的项（非作品卡）应丢弃，不能漏给前端。"""
+        raw = {"status_code": 0, "data": [
+            {"type": 1, "aweme_info": {"aweme_id": "A"}},
+            {"type": 68, "cell_room": {"x": 1}},   # 直播推荐卡
+        ]}
+        self.assertEqual([self.pick(w).get("aweme_id") for w in self.extract(raw)],
+                         ["A"])
+
+    def test_bare_list_not_broken(self):
+        """回归：`search_stream` 的裸列表不得被剥壳逻辑误伤。"""
+        bare = [{"aweme_id": "B1",
+                 "video": {"play_addr": {"url_list": ["https://v/b.mp4"]}}}]
+        self.assertEqual([w.get("aweme_id") for w in self.extract(bare)], ["B1"])
+
     def test_backend_calls_extractor(self):
         import inspect
         import api.platform as P

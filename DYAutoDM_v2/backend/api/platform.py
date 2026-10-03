@@ -259,31 +259,66 @@ def _notice_actor_text(n: dict) -> tuple[str, str]:
 
 
 def _extract_aweme_list(raw) -> list:
-    """从 `search_general_work` 的返回里取出**作品列表**。
+    """从搜索返回里取出**作品列表**（每项已是**裸作品对象**）。
 
-    🔴 2026-10-04：该接口在不同上游版本下返回形态不同，必须**都认**：
-      ① 裸列表 `[aweme, ...]`
-      ② 完整 resp_json `{"status_code":0,"data":[aweme,...],...}`
-      ③ features 信封 `{"ok":true,"data":[...],"error":...}`
-    只认一种就会出现「搜到了但 aweme_id 全空」（实测导致播放取址 422）。
+    🔴 2026-10-04 二次修复（R8 溯源：以基座 `cv-cat/Douyin_Spider` 为准）：
 
-    ⚠️ 取不到就返回 `[]` **并留日志** —— 绝不静默把 dict 当列表往下传
-       （那正是本次事故的形态）。
+    上游形式是**两层包装**，不是一层：
+        `{"status_code":0, "data":[{"type":1, "aweme_info":{...真实作品...}}]}`
+
+    上游原文（`_ext_repos/DouYin_Spider-master/dy_apis/douyin_api.py:481`）：
+        `works = [w for w in res_json["data"] if w.get("aweme_info")]`
+    随后由 `handle_work_info(work_info['aweme_info'])` 再展开
+    （`utils/data_util.py:28` 起，读的是 `data['author']['sec_uid']` 等标准字段）
+    ⇒ **`aweme_info` 才是“作品对象”本体**，`data[]` 的元素只是壳。
+
+    第一版只解了外层 `data` ⇒ `_pick_aweme` 拿到的是壳
+    （有 `aweme_id` 但**没有 `video` 子树**）⇒ 播放取址拿不到地址 ⇒ **502
+    「无可用地址」**（432 的前身 422 同为漏解层的症状）。
+
+    ⇒ 本函数必须**解到 aweme_info 层**才返回，且：
+      · 无 `aweme_info` 的项（`type` 不等于 1 的非作品卡）**按上游口径丢弃**；
+      · 已是裸作品形态（如 `search_stream` 的 `aweme_list`）则**原样保留**，
+        兜底写法 `w.get("aweme_info") or w`（与 `api/crawl.py:168` 一致）。
     """
     if raw is None:
         return []
+    items: list = []
     if isinstance(raw, list):
-        return raw
-    if isinstance(raw, dict):
+        items = raw
+    elif isinstance(raw, dict):
         for key in ("data", "aweme_list", "items"):
             v = raw.get(key)
             if isinstance(v, list):
-                return v
-        logger.warning(f"[PLT-011] [platform] 搜索返回结构未识别（无 data/"
-                       f"aweme_list/items），keys={sorted(raw.keys())[:8]}")
+                items = v
+                break
+        else:
+            logger.warning(f"[PLT-011] [platform] 搜索返回结构未识别（无 data/"
+                           f"aweme_list/items），keys={sorted(raw.keys())[:8]}")
+            return []
+    else:
+        logger.warning(f"[PLT-011] [platform] 搜索返回类型异常: {type(raw).__name__}")
         return []
-    logger.warning(f"[PLT-011] [platform] 搜索返回类型异常: {type(raw).__name__}")
-    return []
+
+    # ★ 第二层：剥 `aweme_info` 外壳（上游口径：无此项者非作品，丢弃）
+    out = []
+    dropped = 0
+    for w in items:
+        if not isinstance(w, dict):
+            dropped += 1
+            continue
+        inner = w.get("aweme_info")
+        if isinstance(inner, dict) and inner:
+            out.append(inner)
+        elif w.get("aweme_id"):
+            # 已是裸作品（`search_stream` 路径）⇒ 原样保留
+            out.append(w)
+        else:
+            dropped += 1
+    if dropped:
+        logger.info(f"[PLT-012] [platform] 搜索结果丢弃非作品项 {dropped} 条"
+                    f"（无 aweme_info 且无 aweme_id，按上游口径过滤）")
+    return out
 
 
 def _pick_aweme(w: dict) -> dict:
