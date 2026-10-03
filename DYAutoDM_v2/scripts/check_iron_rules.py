@@ -352,9 +352,41 @@ def r10_no_cargo_target_in_src() -> None:
     """
     p = os.path.join(SRC_ROOT, "src-tauri", "target")
     if os.path.isdir(p):
-        n = sum(len(fs) for _, _, fs in os.walk(p))
-        check(False, "R10",
-              f"源码树残留 cargo target（{n} 文件）: {p}")
+        # 🔴 2026-10-03 修判据缺陷（**误报**，实测 7486 文件 / 613MB）：
+        #   `target/debug/binaries` 是**目录联接（junction）** → 指向
+        #   `src-tauri/binaries`（tauri 打包时 sidecar 产物的**来源**，
+        #   不是构建缓存）。原实现用 os.walk 递归 ⇒ 把**产物源本身**
+        #   7486 个文件全算成「源码树残留构建产物」，而该目录**一字节不占**
+        #   （`ls -la` 显示 total 0，里面只有一个链接）。
+        #   ⚠️ 这不只是噪音：它诱导人 `rm -rf src-tauri/target` ——
+        #   而那会**跟随联接清空 src-tauri/binaries（613MB 产物源）**，
+        #   正是本项目已发生过的事故类型（worktree remove --force 清空
+        #   主仓 node_modules）。故判据必须**剪掉联接**。
+        #
+        # ⚠️ 判据用 **realpath 前缀**而非 `os.path.islink`：实测在 Windows 上
+        #   该联接 `os.path.islink()` 返回 **False**（junction 不被 islink 识别），
+        #   而 `os.path.realpath()` 与 `abspath()` **不同** ⇒ 后者才可靠。
+        _root_real = os.path.realpath(p)
+        _seen = set()
+        n = 0
+        for root, dirs, files in os.walk(p):
+            rp = os.path.realpath(root)
+            # 已进入过的地方不再重复计数（联接可能构成环）
+            if rp in _seen:
+                dirs[:] = []
+                continue
+            _seen.add(rp)
+            if rp != _root_real and not rp.startswith(_root_real + os.sep):
+                # 越出 target 真实边界 ⇒ 这是联接/挂载，别跟着走
+                dirs[:] = []
+                continue
+            n += len(files)
+        if n == 0:
+            check(True, "R10",
+                  "源码树无 cargo target 产物（仅联接/空目录，不计）")
+        else:
+            check(False, "R10",
+                  f"源码树残留 cargo target（{n} 文件）: {p}")
     else:
         check(True, "R10", "源码树无 cargo target（构建缓存已迁出树外）")
 
@@ -601,7 +633,14 @@ def selftest() -> int:
     #   R1 源码树出现 members/
     os.makedirs(os.path.join(fake_src, "members"), exist_ok=True)
     #   R10 源码树出现 cargo target
-    os.makedirs(os.path.join(fake_src, "src-tauri", "target"), exist_ok=True)
+    #     ⚠️ 2026-10-03：判据已改为「跳过联接 + 只数**真实文件**」
+    #       （空目录/仅联接不算残留，见 r10_no_cargo_target_in_src）。
+    #       故样本必须**含真实文件**，否则造的是空壳 → 门禁正确不红，
+    #       自检却会误判「形同虚设」（实测踩到）。
+    _tgt = os.path.join(fake_src, "src-tauri", "target")
+    os.makedirs(_tgt, exist_ok=True)
+    with open(os.path.join(_tgt, "_probe.bin"), "wb") as f:
+        f.write(b"\x00" * 16)
     #   R11 用已废弃 profile 字面量作 user_data_dir
     with open(os.path.join(fake_backend, "legacy.py"), "w", encoding="utf-8") as f:
         f.write('launch(user_data_dir="pw_profile_dm")\n')
