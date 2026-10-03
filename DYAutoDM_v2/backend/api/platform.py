@@ -838,9 +838,19 @@ async def search(req: SearchReq) -> dict[str, Any]:
         stream = None  # ★ M-20：供传输层事实读取（except 分支下保持 None）
         if _has_filter:
             _raw = await asyncio.to_thread(
-                api.search_general_work, auth, req.query,
-                req.sort_type or "0", req.publish_time or "0", "0",
-                str(num), req.filter_duration)
+                # 🔴 2026-10-04 三修：此前用**位置参数**调用，把 `str(num)`
+                #   传到了 `filter_duration` 位、真 duration 落到 `search_range`
+                #   位 ⇒ `filter_selected` 里的 `publish_time` / `filter_duration`
+                #   被污染（数量 20 被当成"视频时长"，直接被平台判为无效筛选）
+                #   ⇒ 「筛选一天内」返回失效。
+                #   改用**关键字参数**——位置参数是这类静默错位的温床。
+                api.search_general_work,
+                auth, req.query,
+                sort_type=req.sort_type or "0",
+                publish_time=req.publish_time or "0",
+                offset="0",
+                filter_duration=req.filter_duration or "",
+            )
             # 🔴 2026-10-04 修「搜到结果但 aweme_id 全空 ⇒ 播放取址 422」：
             #   `DouyinAPI.search_general_work` 返回的是**完整 resp_json**
             #   （`{"status_code":..,"data":[..],..}`），而 `search_stream`

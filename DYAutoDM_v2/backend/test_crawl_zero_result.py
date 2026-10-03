@@ -269,6 +269,35 @@ class TestSearchResultUnwrap(unittest.TestCase):
                  "video": {"play_addr": {"url_list": ["https://v/b.mp4"]}}}]
         self.assertEqual([w.get("aweme_id") for w in self.extract(bare)], ["B1"])
 
+    def test_filter_args_bound_by_keyword(self):
+        """🔴 位置参数静默错位 ⇒「筛选一天内」失效（2026-10-04 三修）。
+
+        事故：以位置参数调用 `(auth, q, sort, publish, "0", str(num), dur)`
+        ⇒ `str(num)` 落在 `filter_duration` 位、真 duration 落到
+        `search_range` 位 ⇒ 平台 `filter_selected` 收到 ` duration="20" `
+        （数量当时长）⇒ 非法筛选 ⇒ 一天内/时长筛选静默失效。
+
+        ⇒ 判据：调用点**必须**关键字绑定这几个筛选参数。
+        """
+        import inspect
+        import api.platform as P
+        src = inspect.getsource(P.search)
+        i = src.find("api.search_general_work,")
+        self.assertGreater(i, 0, "找不到 search_general_work 调用")
+        seg = src[i:i + 320]
+        for kw in ("sort_type=", "publish_time=", "offset=", "filter_duration="):
+            self.assertIn(kw, seg, f"未用关键字绑定 {kw} ⇒ 位置错位风险回归")
+
+    def test_num_never_reaches_filter_duration(self):
+        """上行 EXTENSION：数量不得进入任何筛选位。"""
+        import inspect
+        import api.platform as P
+        src = inspect.getsource(P.search)
+        i = src.find("api.search_general_work,")
+        seg = src[i:i + 320]
+        self.assertNotIn("str(num)", seg,
+                         "`str(num)` 出现在调用实参里 ⇒ 它正在占某个筛选位")
+
     def test_backend_calls_extractor(self):
         import inspect
         import api.platform as P
