@@ -148,9 +148,11 @@ class TestMessageTimeSSOT(unittest.TestCase):
         rec = MessageRecord.build(text="你好", msg_type="7",
                                   extra={"created_at_us": 1694832000000000})
         tup = rec.tuple("acct", "c1", ts=0, role="them")
-        # 8 列同序：account, conv_id, role, text, msg_type, extra, ts, msg_id
-        self.assertEqual(len(tup), 8)
-        self.assertEqual(tup[6], 1694832000.0,
+        # ★ 2026-10-03 P5：8 列 → **9 列**（新增 msg_code）。
+        #   列序：account, conv_id, role, text, msg_type, msg_code,
+        #         extra, ts, msg_id
+        self.assertEqual(len(tup), 9)
+        self.assertEqual(tup[7], 1694832000.0,
                          "tuple 出口未回补 ts（脏数据会复发）")
 
     def test_no_writer_emits_bare_zero_ts(self):

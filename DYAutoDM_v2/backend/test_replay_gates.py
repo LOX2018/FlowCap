@@ -255,6 +255,31 @@ class TestZeroNetworkGateScope(unittest.TestCase):
                 self.assertEqual(selftest.scan_network_calls(mod_name, funcs=[fn]),
                                  [], f"{mod_name}.{fn} 含网络调用")
 
+    def test_aux_modules_have_no_network(self):
+        """🔴 回放期间**被实际执行**的 AUX 模块必须无网络。
+
+        ## 范围（勿扩大）
+
+        只扫「回放用例 setUp 里**真的调用**」的 AUX 模块 —— 即
+        `AUX_EXECUTED_IN_REPLAY`。**不可**改成扫全 AUX 集合：
+        既有 AUX（如 `daemon.browser_daemon._detect_existing_bcc` → urlopen）
+        本就含网络调用，AUX 的语义是「回放辅助、非网络扫描对象」，
+        全量扫会把既有基线判红 ⇒ 门禁越界、失去判别力。
+
+        ## 为什么需要这条
+
+        ★ 2026-10-03：P5 拆列后 `test_replay_conversation_read` 在 setUp 里
+        跑了一次 `database._migrate_schema`（对齐冻结夹具结构）。若无门禁，
+        将来有人往迁移里塞网络调用（写日志/上报/拉配置）会**静默破坏**
+        「零网络回放」这一核心保证。range 对账只查「是否登记」，
+        不查「是否含网络」⇒ 需要这条。
+        """
+        for mod_name in sorted(selftest.AUX_EXECUTED_IN_REPLAY_TOP):
+            with self.subTest(module=mod_name):
+                self.assertEqual(
+                    selftest.scan_network_calls(mod_name), [],
+                    f"回放期间执行的 AUX 模块 {mod_name} 含网络调用 ⇒ 零网络回放被破坏")
+
     def test_injecting_requests_turns_gate_red(self):
         """反证：往「被扫模块的入口函数」注入 requests 调用 → 门禁必须变红。
 

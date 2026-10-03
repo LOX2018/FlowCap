@@ -119,7 +119,7 @@ def _load_msgs(conn, account: str, conv_id: str) -> tuple[dict, list]:
         raise ValueError("会话不存在")
     msgs = conn.execute(
         "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
-        "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
+        "WHERE account=? AND conv_id=? AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') "
         "  AND text <> '[分享视频]' "
         "ORDER BY CASE WHEN json_extract(NULLIF(extra,''),'$.created_at_us') IS NOT NULL"
         " THEN CAST(json_extract(NULLIF(extra,''),'$.created_at_us') AS INTEGER)"
@@ -325,7 +325,7 @@ def export_to_kb(account: str, conv_id: str = "", *, target: str = "reply",
     else:
         rows = conn.execute(
             "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
-            "WHERE account=? AND msg_type <> '50001' ORDER BY ts ASC",
+            "WHERE account=? AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') ORDER BY ts ASC",
             (account,)).fetchall()
         msgs = list(rows)
     pairs = extract_qa_pairs(msgs)[:max_items]

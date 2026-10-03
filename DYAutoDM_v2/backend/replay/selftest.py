@@ -81,7 +81,30 @@ REPLAY_SCOPE_IGNORE_TOP = {
 REPLAY_AUX_MODULES = {
     "services.env_audit",   # T5-b 两世界可见性探针宿主
     "daemon.browser_daemon",  # T5-a init script 清理宿主
+    # ★ 2026-10-03 P5：夹具结构对齐。`test_replay_conversation_read` 加载
+    #   **冻结快照**（sha256 校验，旧结构无 msg_code）后跑一次幂等迁移，
+    #   与生产启动路径一致 —— 不可改夹具（破坏冻结样本真实性），
+    #   也不可回退读侧 SQL（会丢存量兼容兜底）。
+    #   迁移是纯 DDL/DML，**无网络**；本模块由
+    #   `test_replay_gates.TestAuxModulesHaveNoNetwork` **主动扫过**
+    #   （AUX 集合本身只参与范围对账、不自动扫网络，故必须显式扫）。
+    "database",
+    # ⚠️ 对账粒度是**前两段**（`_scan_replay_scope_coverage` 取
+    #   `nm.split('.')[:2]`）。`database` 是单段模块（backend/database.py），
+    #   `from database import _migrate_schema` 被解析成
+    #   `database._migrate_schema`，只登记 `database` 匹配不上 ⇒ 并列登记两段形式。
+    "database._migrate_schema",
 }
+
+#: 🔴 上者中**回放期间真的会被执行**的顶层模块（必须证明无网络调用）。
+#:
+#: `REPLAY_AUX_MODULES` 只是「范围对账时不误报」的登记集合，**不含**网络检查
+#: 语义 —— 既有成员（`daemon.browser_daemon` 等）本就含网络调用。
+#: 只有本集合里的模块，其网络调用才会让「零网络回放」名存实亡，故单独列出。
+#:
+#: ★ 2026-10-03：`database` —— P5 拆列后 `test_replay_conversation_read`
+#:   在 setUp 里跑 `_migrate_schema` 对齐冻结夹具结构。
+AUX_EXECUTED_IN_REPLAY_TOP = {"database"}
 
 #: 已知基线：这些「回放不执行」的函数含网络调用，登记以免误报。
 #: 新增未登记网络调用点（任何函数）→ G7b2 变红。

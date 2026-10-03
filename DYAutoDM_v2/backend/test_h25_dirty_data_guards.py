@@ -121,7 +121,7 @@ class TestHistorySanitizer(unittest.TestCase):
         con = sqlite3.connect(dbf)
         con.execute("CREATE TABLE dm_messages(id INTEGER PRIMARY KEY, account TEXT,"
                     " conv_id TEXT, role TEXT, text TEXT, msg_type TEXT,"
-                    " extra TEXT, ts REAL, msg_id TEXT)")
+                    " msg_code TEXT, extra TEXT, ts REAL, msg_id TEXT)")
         rows = [
             ("acc", "0:1:P:ME", "them", "客户真实提问", "text", "{}", 1),
             ("acc", "0:1:P:ME", "them", "[图片] data:image/webp;base64," + "A" * 3000,

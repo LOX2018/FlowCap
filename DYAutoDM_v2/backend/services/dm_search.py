@@ -134,8 +134,15 @@ def search_messages(account: str, query: str = "", *, conv_id: str | None = None
         params.extend(mp)
 
     # 与聊天页一致的噪音过滤（否则搜出来点不开：前端本就不显示这些行）
-    clauses.append("m.msg_type <> '50001'")
-    clauses.append("NOT (m.msg_type = '7' AND m.msg_id IS NULL)")
+    # ⚠️ 判据语义（★ 2026-10-03 P5 修正）：**排除**「上游码=7 且 msg_id 为空」
+    #   的回查帧 —— 注意是 AND（两者同时成立才排除），不是 OR。
+    #   🔴 我曾误写成 `(msg_code IS NULL OR msg_code = '7')`：msg_code 为 NULL
+    #   时该子句**恒真** ⇒ 全部正常消息被排除 ⇒ 搜索恒返回 0 条（实测 10 项红）。
+    #   正确写法：NULL 视为「非 7」，用 COALESCE 统一兜底。
+    clauses.append("(m.msg_code IS NULL OR m.msg_code <> '50001') "
+                   "AND (m.msg_type IS NULL OR m.msg_type <> '50001')")
+    clauses.append("NOT (COALESCE(m.msg_code, m.msg_type) = '7' "
+                   "AND m.msg_id IS NULL)")
     clauses.append("m.text NOT LIKE '[未知媒体]%'")
     clauses.append("m.text <> '[分享视频]'")
 
@@ -230,7 +237,7 @@ def daily_stats(account: str, conv_id: str, tz_hours: int = 8) -> dict:
     rows = conn.execute(
         "SELECT msg_id, ts FROM dm_messages "
         "WHERE account=? AND conv_id=? AND ts > 0 "
-        "  AND msg_type <> '50001' "
+        "  AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') "
         "  AND text NOT LIKE '[未知媒体]%' AND text <> '[分享视频]' "
         "ORDER BY ts ASC",
         (account, str(conv_id)),

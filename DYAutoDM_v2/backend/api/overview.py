@@ -235,7 +235,7 @@ def _funnel_sync(tz_hours: int, day: str = "") -> dict:
     msg_rows = exec_query(
         "SELECT role, text, msg_type FROM dm_messages "
         "WHERE ts >= ? AND ts < ? AND ts > 0 "
-        "  AND msg_type <> '50001' "
+        "  AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') "
         "  AND (text IS NULL OR (text NOT LIKE '[未知媒体]%' AND text <> '[分享视频]'))",
         (start, end),
     )

@@ -273,7 +273,7 @@ def _mkdb():
         CREATE TABLE dm_messages(
             id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, conv_id TEXT,
             role TEXT, text TEXT, msg_type TEXT DEFAULT 'text',
-            extra TEXT DEFAULT '{}', ts REAL NOT NULL, msg_id TEXT,
+            msg_code TEXT, extra TEXT DEFAULT '{}', ts REAL NOT NULL, msg_id TEXT,
             UNIQUE(account, conv_id, msg_id));
     """)
     return c

@@ -79,7 +79,7 @@ _KV_KEY = "crawl_policies"
 # 允许写入的字段白名单。**与 live_rooms 同一条设计约束**：本集合是写入侧真源，
 # `save_policy` 落库前按其过滤 ⇒ 从本集合删字段 = 该字段不再可写。
 _FIELDS = {
-    "id", "name", "kind", "num", "sort_type", "publish_time",
+    "id", "name", "kind", "num", "comment_limit", "sort_type", "publish_time",
     "filter_duration", "search_range", "content_type", "max_rounds",
     "is_default",
 }
@@ -113,7 +113,12 @@ class PolicyBody(BaseModel):
     id: str = ""
     name: str = ""
     kind: str = "video"
+    # ★ `num` 语义**冻结**为「一次搜索取回多少个作品」（勿与评论条数混用 ——
+    #   `_page_count` 的 docstring 已明写「与 num 是两个量，不可混用」）。
     num: int = 20
+    # ★ 2026-10-03 拆分新增：每作品的**评论采集上限**（原被 num 兼任，语义混淆）。
+    #   0/缺省 = 不覆盖（用请求体的 limit）。
+    comment_limit: int = 0
     sort_type: str = "0"
     publish_time: str = "0"
     filter_duration: str = ""
@@ -236,12 +241,20 @@ async def save_policy(body: PolicyBody) -> dict:
         max_rounds = _clamp_int(
             getattr(body, "max_rounds", None) if "max_rounds" in sent else old.get("max_rounds"),
             1, 100, 20)
+        # ★ 2026-10-03 拆分：`comment_limit`（每作品评论上限）。
+        #   范围 0~300，**0 = 不覆盖**（回落请求体的 limit）——
+        #   与 `num`（1~50，搜索条数）语义分离，两者不可混用。
+        comment_limit = _clamp_int(
+            getattr(body, "comment_limit", None) if "comment_limit" in sent
+            else old.get("comment_limit"),
+            0, 300, 0)
 
         upd = {
             "id": k,
             "name": pick("name", clearable=True),
             "kind": kind,
             "num": num,
+            "comment_limit": comment_limit,
             "sort_type": pick("sort_type", clearable=False, default="0"),
             "publish_time": pick("publish_time", clearable=False, default="0"),
             "filter_duration": pick("filter_duration", clearable=True),

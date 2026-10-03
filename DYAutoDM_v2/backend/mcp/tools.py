@@ -61,7 +61,7 @@ def _list_conversations(account: str = "", limit: int = 50) -> list[dict[str, An
                       c.last_ts,
                       (SELECT COUNT(1) FROM dm_messages m
                         WHERE m.account=c.account AND m.conv_id=c.conv_id
-                          AND m.msg_type <> '50001') AS n
+                          AND (m.msg_code IS NULL OR m.msg_code <> '50001') AND (m.msg_type IS NULL OR m.msg_type <> '50001')) AS n
                  FROM dm_conversations c
                 WHERE c.account=?
                 ORDER BY COALESCE(n,0) DESC, c.last_ts DESC, c.conv_id ASC
@@ -72,7 +72,7 @@ def _list_conversations(account: str = "", limit: int = 50) -> list[dict[str, An
                       c.last_ts,
                       (SELECT COUNT(1) FROM dm_messages m
                         WHERE m.account=c.account AND m.conv_id=c.conv_id
-                          AND m.msg_type <> '50001') AS n
+                          AND (m.msg_code IS NULL OR m.msg_code <> '50001') AND (m.msg_type IS NULL OR m.msg_type <> '50001')) AS n
                  FROM dm_conversations c
                 ORDER BY COALESCE(n,0) DESC, c.last_ts DESC, c.conv_id ASC
                 LIMIT ?""", (limit,))
@@ -97,7 +97,7 @@ def _read_messages(account: str, conv_id: str, limit: int = 30) -> list[dict[str
     limit = max(1, min(int(limit or 30), 200))
     rows = exec_query(
         """SELECT role, text, msg_type, ts FROM dm_messages
-            WHERE account=? AND conv_id=? AND msg_type <> '50001'
+            WHERE account=? AND conv_id=? AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001')
             ORDER BY ts DESC LIMIT ?""", (account, conv_id, limit))
     rows.reverse()
     return [{

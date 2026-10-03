@@ -58,6 +58,13 @@ class CrawlCommentsRequest(BaseModel):
 class CrawlCommentsBatchRequest(BaseModel):
     """多作品批量采集评论（★ 2026-09-30 方案1，v0.45.125）。
 
+    🔴 `extra="forbid"`（★ 2026-10-03 新增，**必读**）：
+    Pydantic 默认**静默丢弃**未知字段。实测旧 sidecar（0.46.22）对
+    `start_date` 返回 200 且**不生效** —— 用户填了日期却被静默忽略，
+    表现为「日期筛选没用」而毫无报错，正是本项目「禁止假成功」红线。
+    ⇒ 显式禁止多余字段：前端比后端新时，**响亮地 422**，而不是假装成功。
+    （同模型被 `/comments/batch/cancel` 复用，cancel 不发日期字段，无影响。）
+
     只**采集**，不发送（与 `/batch` 的「采集+私信」语义分开，避免误触发写操作）。
     刻意**串行 + 间隔**（配置中心 `crawl.batch_interval`），不开并发。
 
@@ -65,12 +72,23 @@ class CrawlCommentsBatchRequest(BaseModel):
       · `min_score` > 0 时，只保留关键词权重得分 >= min_score 的评论（高价值过滤）。
       · 只保留有效 UID（uid 非空）的评论。
       · 支持通过 `/comments/batch/cancel` 终止正在进行的批量采集。
+
+    ★ 2026-10-03 新增：
+      · `start_date` / `end_date`：只采集指定日期范围内的评论（YYYY-MM-DD）。
     """
+    model_config = {"extra": "forbid"}
     account: str
     aweme_ids: list[str] = []
     limit: int = 100             # 每作品评论上限
     count: int = 0               # 单页条数（0=配置中心值）
     min_score: int = 0           # 高价值关键词最低得分（0=不过滤）
+    start_date: str = ""         # 评论日期范围起（YYYY-MM-DD，空=不限）
+    end_date: str = ""           # 评论日期范围止（YYYY-MM-DD，空=不限）
+    # ★ 2026-10-03：指定采集策略 id（空 = 用该账号绑定/全局默认策略）。
+    #   此前 `policy_id` **只有 `/search` 端点认**，批量采集完全无视它 ⇒
+    #   悬浮窗里选策略毫无效果（假成功）。现接入，与搜索端点同源
+    #   （`_resolve_policy_params`），策略层才真正覆盖采集链路。
+    policy_id: str = ""
 
 
 class CrawlDmRequest(BaseModel):
@@ -191,6 +209,36 @@ def _map_user(u: dict) -> dict:
     }
 
 
+def _day_range_ts(start_date: str, end_date: str, tz_hours: int = 8) -> tuple[int, int]:
+    """把 `YYYY-MM-DD` 日期范围解析成 Unix 秒区间（含首尾两端当日）。
+
+    🔴 时区铁律：日切按**本地时区**（默认 +08:00），与 `overview._day_start_ts` /
+    `_crawl_stats_sync` 的 `tz`（夹取 [-12,14]）同约定。
+    此前用 `timezone.utc` 会让「今天」的边界偏 8 小时 —— 早上 8 点前的评论被算到昨天。
+
+    ⚠️ 契约：解析失败**不抛**，返回哨兵 `(0, 0)`（`hi == 0` 即「日期非法」），
+    由调用方决定是回 400 还是忽略；绝不因一个畸形日期让整条采集链路 500。
+    """
+    try:
+        off = max(-12, min(int(tz_hours), 14))
+    except Exception:
+        off = 8
+    from datetime import datetime, timedelta, timezone
+
+    tzinfo = timezone(timedelta(hours=off))
+    lo, hi = 0, 2 ** 31 - 1
+    try:
+        if start_date:
+            lo = int(datetime.strptime(str(start_date).strip(), "%Y-%m-%d")
+                     .replace(tzinfo=tzinfo).timestamp())
+        if end_date:
+            hi = int(datetime.strptime(str(end_date).strip(), "%Y-%m-%d")
+                     .replace(tzinfo=tzinfo).timestamp()) + 86399  # 含当日 23:59:59
+    except Exception:
+        return 0, 0  # 哨兵：调用方按 `hi == 0` 判「日期非法」
+    return lo, hi
+
+
 def _map_comment(c: dict) -> dict:
     """评论条目 -> 前端字段。uid/nickname 均为评论数据自带，无额外请求。"""
     u = c.get("user") or {}
@@ -221,17 +269,37 @@ _CRAWL_FALLBACK = {"comment_page_count": 20, "batch_interval": 1.5,
                    "batch_max_works": 20, "batch_min_score": 0}
 
 
-def _crawl_cfg(key: str, account: str = ""):
-    """读 `crawl` 分区配置；**优先按账号标签 scope**，读不到回退默认值。
+def _crawl_cfg(key: str, account: str = "", scope_override: str | None = None):
+    """读 `crawl` 分区配置；**优先按标签 scope**，读不到回退默认值。
 
     ★ 2026-09-30 接线：此前只读全局（`scope=None`）⇒ 「采集策略」与标签的
     采集板块**都没有消费者**（`crawl_policy` 模块头自记的待办）。现按
     `config_tag.scope_of(account, "crawl")` 取该账号在采集板块应使用的标签 scope，
     与 `dm_dispatch` 的既有范式一致（标签是**指引**，参数仍由 app_config 按 scope 隔离存储）。
 
+    ★ 2026-10-03 增 `scope_override`（方案A：本次运行的临时标签覆盖）：
+    悬浮窗让用户显式选一个标签时，该标签**优先于**账号默认绑定，用于
+    「按标签试跑一批」的临时切换。取值优先级：
+      ① `scope_override`（本次显式选，**最高**）
+      ② `config_tag.scope_of(account, "crawl")`（账号在采集板块的绑定标签）
+      ③ 全局 `app_config.get("crawl", key)`（无 scope）
+      ④ `_CRAWL_FALLBACK` 缺省
+    ⚠️ 显式传 `scope_override=""`（空串）视为**不覆盖**，回落 ②；
+       传 None 亦然。只有非空标签 id 才算覆盖。
+
     与 `errcode_data.py` 多处「读配置失败按默认处理」的项目约定一致：
     配置中心/标签异常**不得**让采集功能整体不可用。
     """
+    if scope_override:
+        try:
+            from services import app_config as _ac
+            v = _ac.get("crawl", key, None, scope=scope_override)
+            if v is not None:
+                return v
+            logger.debug(f"[crawl] 覆盖标签 scope={scope_override} 无 crawl.{key}，"
+                         f"继续按账号绑定回落")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[crawl] 按覆盖标签读 crawl.{key} 失败，继续回落: {e}")
     if account:
         try:
             from services import config_tag
@@ -520,6 +588,27 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
     limit = max(1, min(int(body.limit or 100), 300))
     count = _page_count(body.count, body.account)
     min_score = max(0, int(body.min_score or 0))
+    # ★ 2026-10-03 拆分：策略的**评论上限**读 `comment_limit`（新字段），
+    #   **不再读 `num`** —— `num` 的语义是「搜索条数」，两者不可混用
+    #   （`_page_count` docstring 早已明写该约定，此前误接 num 违反之）。
+    #   约定：仅在请求体**未显式**给 limit 时生效（显式值优先）。
+    _pol = _resolve_policy_params(body.account, body.policy_id)
+    if _pol:
+        try:
+            p_climit = int(_pol.get("comment_limit") or 0)
+        except (TypeError, ValueError):
+            p_climit = 0
+        if p_climit > 0 and not body.limit:
+            limit = max(1, min(p_climit, 300))
+        logger.info(f"[crawl] 批量采集按策略取参数: policy={body.policy_id or '(默认)'} "
+                    f"comment_limit={p_climit} limit={limit} account={body.account}")
+    # ★ 2026-10-03：日期范围（本地时区日切；非法日期回 400，不静默忽略）
+    lo_ts, hi_ts = _day_range_ts(body.start_date, body.end_date)
+    if hi_ts == 0 and (body.start_date or body.end_date):
+        raise HTTPException(
+            400, "日期格式非法，须为 YYYY-MM-DD（如 2026-10-01）")
+    if lo_ts > hi_ts:
+        raise HTTPException(400, "起始日期不能晚于结束日期")
 
     auth = _load_auth(body.account)
 
@@ -545,6 +634,9 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
             items = [_map_comment(c) for c in raw]
             # ★ 2026-10-02：只保留有效 UID
             items = [c for c in items if c.get("uid")]
+            # ★ 2026-10-03：日期范围过滤（时区与日切统计一致，见 _day_range_ts）
+            if lo_ts <= hi_ts:
+                items = [c for c in items if lo_ts <= (c.get("ts") or 0) <= hi_ts]
             # ★ 2026-10-02：高价值关键词过滤
             if min_score > 0:
                 scope = _hv_scope(body.account)
@@ -714,13 +806,23 @@ class CrawlDmBatchRequest(BaseModel):
     与 `/batch` 的区别：`/batch` 会重新采集评论，本端点接收前端已采集的
     评论数据，只负责筛选 + 发送。筛选逻辑（高价值关键词）在后端执行，
     避免前端与后端两套筛选逻辑的契约漂移。
+
+    🔴 `extra="forbid"`（★ 2026-10-03）：与 `CrawlCommentsBatchRequest` 同理 ——
+    Pydantic 默认 `extra='ignore'` 会**静默丢弃**前端多发的字段（如 `tag_id`），
+    表现为「选了标签/填了条数却毫无效果」且无任何报错。显式禁止 ⇒ 版本错配
+    响亮地 422，符合项目「禁止假成功」红线。
     """
+    model_config = {"extra": "forbid"}
     account: str
     text: str
     items: list[dict] = []  # [{uid, nickname, text}, ...]
     min_score: int = 0      # 高价值关键词最低得分（0=不过滤）
     max_send: int = 0       # 最多发 N 条（0=不限）
     interval: float = 0.0   # 每条之间额外间隔秒
+    # ★ 2026-10-03（方案A）：本次显式选定的标签 id，作为**临时覆盖**优先于
+    # 账号在采集板块的默认绑定（`config_tag.scope_of(account,"crawl")`）。
+    # 空串 = 不覆盖，沿用账号绑定。UI 语义见前端 CrawlFloatingPanel。
+    tag_id: str = ""
 
 
 @router.post("/dm/batch")
@@ -753,7 +855,13 @@ async def crawl_dm_batch(body: CrawlDmBatchRequest):
     # 现行契约：配置中心 `crawl.batch_min_score` 是**唯一权威来源**；
     # 请求体 `min_score` **仅作为「本次覆盖」**，且**0 视为不覆盖**
     # （否则前端每次传 0 又会把门槛踩回不过滤 —— 正是本次要消灭的缺陷）。
-    _cfg_min = _crawl_cfg("batch_min_score", body.account)
+    # ★ 2026-10-03（方案A）：本次显式选的标签 **优先于** 账号默认绑定。
+    # 空串 = 不覆盖，沿用 `_crawl_cfg` 原有的账号绑定回落链。
+    _tag_scope = (body.tag_id or "").strip() or None
+    if _tag_scope:
+        logger.info(f"[crawl] 批量私信按本次选中标签取参数: "
+                    f"tag={_tag_scope} account={body.account}")
+    _cfg_min = _crawl_cfg("batch_min_score", body.account, _tag_scope)
     try:
         _cfg_min = int(_cfg_min)
     except (TypeError, ValueError):
@@ -766,7 +874,7 @@ async def crawl_dm_batch(body: CrawlDmBatchRequest):
     if min_score != _cfg_min:
         logger.info(f"[crawl] 批量私信门槛由本次请求覆盖: "
                     f"配置={_cfg_min} → 生效={min_score} account={body.account}")
-    hv_scope = _hv_scope(body.account)
+    hv_scope = _tag_scope or _hv_scope(body.account)
     candidates: list[dict] = []
     seen_uid: set[str] = set()
     for item in body.items:
@@ -918,3 +1026,168 @@ async def crawl_history(limit: int = 50):
     for r in rows:
         r["ts"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"])) if r.get("ts") else ""
     return {"ok": True, "items": rows}
+
+
+# ════════════════════════════════════════════════════════════════
+# 采集专项统计（ADR-033，2026-10-03）
+# ════════════════════════════════════════════════════════════════
+#
+# ## 为什么单独建端点，而不是复用 /api/overview/funnel
+#
+# `/overview/funnel` 是**全局业务漏斗**（含私信/线索/账号），口径是「全站今日」。
+# 采集页要的是**采集域自己的明细**：按关键词排行、按 kind 拆分、近 N 日趋势、
+# 顶级作品榜。两者维度不同，混在一起会让任一方都读不清。
+#
+# ## 风控契约（铁律，不可破坏）
+#
+# 只读本地 SQLite（`crawl_history` / `dm_uid_sink`），**零网络零浏览器**，
+# 不触发任何捕获 / 昵称查询 / 浏览器动作。可安全高频轮询。
+#
+# ## 口径铁律（禁止假成功）
+#
+# · `crawl_history.result_count` 是该次采集**返回的条数**，不是「去重后人数」，
+#   两者不可混标（UI 必须写明是「条」）。
+# · `kind='comment'` 的 target 是 aweme_id（不是关键词）；排行只统计
+#   keyword 非空的视频/用户类采集，避免把 aweme_id 当关键词塞进榜单。
+# · 日切按本地时区，与 overview._day_start_ts 同约定（tz 夹取 [-12,14]）。
+
+
+def _crawl_stats_sync(tz_hours: int = 8, days: int = 7) -> dict:
+    """在**非事件循环**线程里做全部同步 SQLite 读。"""
+    from database import exec_query
+
+    try:
+        off = max(-12, min(int(tz_hours), 14))
+    except Exception:
+        off = 8
+    days = max(1, min(int(days), 30))
+    now = time.time()
+    # 本日 00:00（本地时区）
+    today_start = now + off * 3600
+    today_start = today_start - (today_start % 86400) - off * 3600
+    window_start = today_start - (days - 1) * 86400
+
+    # ── ① 累计总量（含全部历史，不受窗口限制）──
+    tot = exec_query(
+        "SELECT COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS results "
+        "FROM crawl_history"
+    )[0] or {}
+    total_runs = int(tot.get("runs") or 0)
+    total_results = int(tot.get("results") or 0)
+
+    # ── ② 今日（本地时区）──
+    td = exec_query(
+        "SELECT COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS results "
+        "FROM crawl_history WHERE ts >= ? AND ts < ?",
+        (today_start, today_start + 86400),
+    )[0] or {}
+    today_runs = int(td.get("runs") or 0)
+    today_results = int(td.get("results") or 0)
+
+    # ── ③ 按 kind 拆分（全量 + 窗口内）──
+    kinds_total: dict[str, dict] = {}
+    for r in exec_query(
+        "SELECT kind, COUNT(*) AS n, COALESCE(SUM(result_count),0) AS rc "
+        "FROM crawl_history GROUP BY kind"
+    ):
+        k = str(r.get("kind") or "unknown")
+        kinds_total[k] = {"runs": int(r.get("n") or 0), "results": int(r.get("rc") or 0)}
+
+    # ── ④ 关键词排行（只统计 keyword 非空的 video/user 类）──
+    kw_rows = exec_query(
+        "SELECT keyword, COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS rc, "
+        "       MAX(ts) AS last_ts "
+        "FROM crawl_history "
+        "WHERE keyword IS NOT NULL AND TRIM(keyword) <> '' "
+        "  AND kind IN ('video','user') "
+        "GROUP BY keyword "
+        "ORDER BY rc DESC, runs DESC LIMIT 20"
+    )
+    top_keywords = [
+        {
+            "keyword": str(r.get("keyword") or ""),
+            "runs": int(r.get("runs") or 0),
+            "results": int(r.get("rc") or 0),
+            "last_ts": float(r.get("last_ts") or 0),
+        }
+        for r in kw_rows
+    ]
+
+    # ── ⑤ 近 N 日趋势（按本地日切，逐日聚合；缺日补 0）──
+    #    用 ts+off*3600 归入本地日，避免 UTC 切日错位。
+    trend_rows = exec_query(
+        "SELECT CAST((ts + ?) / 86400 AS INTEGER) * 86400 AS day_key, "
+        "       COUNT(*) AS n, COALESCE(SUM(result_count),0) AS rc "
+        "FROM crawl_history WHERE ts >= ? GROUP BY day_key ORDER BY day_key",
+        (off * 3600, window_start),
+    )
+    by_day = {int(r["day_key"]): (int(r["n"] or 0), int(r["rc"] or 0)) for r in trend_rows}
+    trend: list[dict] = []
+    for i in range(days):
+        ds = window_start + i * 86400
+        key = int((ds + off * 3600) // 86400) * 86400
+        n, rc = by_day.get(key, (0, 0))
+        trend.append({
+            "date": time.strftime("%Y-%m-%d", time.gmtime(ds + off * 3600 + 12 * 3600)),
+            "runs": n,
+            "results": rc,
+        })
+
+    # ── ⑥ 采集域沉淀（dm_uid_sink.source='crawl'）—— 采集真正带来的人 ──
+    #    单位 = **人**（按 peer_uid 去重），与 result_count 的「条」不同。
+    sink_total = 0
+    sink_sent = 0
+    try:
+        s = exec_query("SELECT COUNT(*) AS n FROM dm_uid_sink WHERE source='crawl'")[0] or {}
+        sink_total = int(s.get("n") or 0)
+        s2 = exec_query(
+            "SELECT COUNT(*) AS n FROM dm_uid_sink "
+            "WHERE source='crawl' AND sent_ts IS NOT NULL"
+        )[0] or {}
+        sink_sent = int(s2.get("n") or 0)
+    except Exception:
+        # source 列在极旧库可能不存在 —— 降级为 0，不伪造
+        pass
+
+    # ── ⑦ 最近采集记录（复用 /history 的摘要口径）──
+    recent: list[dict] = []
+    for r in exec_query(
+        "SELECT id,account,kind,keyword,target,result_count,ts FROM crawl_history "
+        "ORDER BY id DESC LIMIT 20"
+    ):
+        recent.append({
+            "id": r.get("id"),
+            "account": r.get("account") or "",
+            "kind": r.get("kind") or "",
+            "keyword": r.get("keyword") or "",
+            "target": r.get("target") or "",
+            "result_count": int(r.get("result_count") or 0),
+            "ts": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(r["ts"])
+            ) if r.get("ts") else "",
+        })
+
+    return {
+        "ok": True,
+        "tz": off,
+        "days": days,
+        "date": time.strftime("%Y-%m-%d", time.gmtime(now + off * 3600)),
+        "total": {"runs": total_runs, "results": total_results},
+        "today": {"runs": today_runs, "results": today_results},
+        "kinds": kinds_total,
+        "top_keywords": top_keywords,
+        "trend": trend,
+        # 采集域捕获池：单位「人」，与上面的「条」严格区分
+        "sink": {"total": sink_total, "sent": sink_sent},
+        "recent": recent,
+    }
+
+
+@router.get("/stats")
+async def crawl_stats(tz: int = 8, days: int = 7):
+    """采集专项统计（ADR-033）。只读本地库，零网络零浏览器。
+
+    `tz`  日切时区，默认 +8；`days` 趋势窗口天数，默认 7（夹取 1..30）。
+    同步 IO 走 to_thread，不阻塞事件循环。
+    """
+    return await asyncio.to_thread(_crawl_stats_sync, tz, days)

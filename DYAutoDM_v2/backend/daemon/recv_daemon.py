@@ -767,7 +767,7 @@ class AccountInbox:
                 # 与 conversation_capture / 首包补全路径行为一致。
                 conn.execute(
                     "INSERT OR IGNORE INTO dm_messages("
-                    "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                    "account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id)"
                     " VALUES(?,?,?,?,?,?,?,?)",
                     _ws_tuple(self.name, conv_id, role, text, msg_type, extra, ts, msg_id)
 
@@ -1499,7 +1499,7 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                         try:
                             conn.execute(
                                 "INSERT OR IGNORE INTO dm_messages("
-                                "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                                "account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id)"
                                 " VALUES(?,?,?,?,?,?,?,?)",
                                 _msg_tuple(m, ib.name, conv_id)
 
@@ -1526,7 +1526,7 @@ def _pull_conversations_api(ib: AccountInbox) -> int:
                     try:
                         conn.execute(
                             "INSERT OR IGNORE INTO dm_messages("
-                            "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                            "account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id)"
                             " VALUES(?,?,?,?,?,?,?,?)",
                             _msg_tuple(m, ib.name, conv_id)
 

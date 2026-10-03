@@ -98,7 +98,7 @@ def fetch_range(account: str, conv_id: str, start_seq: int | None = None,
         raise ValueError("会话不存在")
     rows = conn.execute(
         "SELECT rowid AS rid, msg_id, role, text, msg_type, extra, ts FROM dm_messages "
-        "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
+        "WHERE account=? AND conv_id=? AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') "
         # 2026-09-18（E1/E2）：过滤口径与 `/conversations/{id}` 详情端点**完全一致** ——
         # 否则详情下发的 seq 与渲染端点的 seq 会错位（选区导出错条）。
         # 附带修正：此前导出长图会把系统引导噪音也画进去。

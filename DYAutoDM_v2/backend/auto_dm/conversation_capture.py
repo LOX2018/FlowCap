@@ -2020,7 +2020,7 @@ def capture_all(name, with_browser=True):
                         if (_cur.rowcount or 0) == 0:
                             conn.execute(
                                 "INSERT OR IGNORE INTO dm_messages("
-                                "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
+                                "account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id) "
                                 "VALUES(?,?,?,?,?,?,?,?)",
                                 _rec_of(m, _extra).tuple(
                                     name, cid,
@@ -2033,7 +2033,7 @@ def capture_all(name, with_browser=True):
                     else:
                         conn.execute(
                             "INSERT OR IGNORE INTO dm_messages("
-                            "account,conv_id,role,text,msg_type,extra,ts,msg_id) "
+                            "account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id) "
                             "VALUES(?,?,?,?,?,?,?,?)",
                             _rec_of(m, _extra).tuple(
                                     name, cid,

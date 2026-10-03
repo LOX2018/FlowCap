@@ -156,16 +156,20 @@ class MessageRecord:
         rec = MessageRecord.build(role=..., text=..., msg_type=..., extra={...})
         conn.execute(
             "INSERT OR IGNORE INTO dm_messages"
-            "(account,conv_id,role,text,msg_type,extra,ts,msg_id) VALUES(?,?,?,?,?,?,?,?)",
+            "(account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id) VALUES(?,?,?,?,?,?,?,?,?)",
             (acct, cid, rec.text, ...)  # ← 用 rec.text / rec.msg_type / rec.extra
         )
     """
 
-    __slots__ = ("text", "msg_type", "extra", "kind")
+    __slots__ = ("text", "msg_type", "msg_code", "extra", "kind")
 
-    def __init__(self, text: str, msg_type: str, extra: dict, kind: str):
+    def __init__(self, text: str, msg_type: str, extra: dict, kind: str,
+                 msg_code: str | None = None):
         self.text = text
         self.msg_type = msg_type
+        #: ★ 2026-10-03 P5：上游原始数字码，与语义名 msg_type **分列**。
+        #: None = 上游只给了语义名（补拉/历史路径）⇒ 无原始码可存。
+        self.msg_code = msg_code
         self.extra = extra
         self.kind = kind
 
@@ -184,11 +188,17 @@ class MessageRecord:
         raw_text = "" if text is None else str(text)
         mt = "" if msg_type is None else str(msg_type)
 
+        # ★ 2026-10-03 P5：把「上游码 or 语义名」**分流**到两列。
+        #   ⚠️ 必须在此**最前面**算 —— 下面每个 return 分支都要用 mt_sem/mt_code，
+        #   放在 is_system_text 之后会 UnboundLocalError（实测 g2b/g9 崩）。
+        #   kind_of 仍按注册表判语义（不受拆分影响）。
+        mt_sem, mt_code = MessageRecord.split_type(mt)
+
         # 次序：平台提示文案 → 未知类型 → 已登记类型
         if is_system_text(raw_text):
             ex["kind"] = "system_notice"
             ex.setdefault("raw", raw_text)
-            return MessageRecord(raw_text, mt or "15", ex, "system_notice")
+            return MessageRecord(raw_text, mt_sem or "text", ex, "system_notice", mt_code)
 
         kind, known = kind_of(mt)
         if not known:
@@ -196,7 +206,7 @@ class MessageRecord:
             ex["kind"] = "unknown"
             ex.setdefault("raw", raw_text)
             label = LABEL_UNKNOWN + (mt or "")
-            return MessageRecord(label, mt, ex, "unknown")
+            return MessageRecord(label, mt_sem, ex, "unknown", mt_code)
 
         ex["kind"] = kind
         if kind == "user_text" and is_noise_text(raw_text):
@@ -209,37 +219,78 @@ class MessageRecord:
             # system_notice，且遵守「已标注即跳过」的幂等规则 ⇒ 写侧若错标为
             # user_text，迁移**永不纠正**。
             ex["kind"] = "system_notice"
-            return MessageRecord(raw_text, mt, ex, "system_notice")
+            return MessageRecord(raw_text, mt_sem, ex, "system_notice", mt_code)
         if kind == "media":
             # ADR-011：缩略图字节必须在 extra.thumb，不得在 text
             if raw_text.startswith("data:image") or "base64," in raw_text[:64] \
                     or raw_text.startswith("http"):
                 ex.setdefault("raw", raw_text)
-                return MessageRecord(LABEL_MEDIA, mt, ex, "media")
-            return MessageRecord(raw_text or LABEL_MEDIA, mt, ex, "media")
+                return MessageRecord(LABEL_MEDIA, mt_sem, ex, "media", mt_code)
+            return MessageRecord(raw_text or LABEL_MEDIA, mt_sem, ex, "media", mt_code)
 
         if kind == "delivery_marker":
             ex.setdefault("raw", raw_text)
 
-        return MessageRecord(raw_text, mt, ex, kind)
+        return MessageRecord(raw_text, mt_sem, ex, kind, mt_code)
 
     def extra_json(self) -> str:
         return json.dumps(self.extra, ensure_ascii=False)
 
+    @staticmethod
+    def split_type(mt: str) -> tuple[str, str | None]:
+        """★ 2026-10-03 P5：把「上游码 or 语义名」拆成 (语义名, 上游码)。
+
+        ## 为什么要拆
+
+        拆分前 `msg_type` 一列**混装两套体系**：语义名（'text'）与上游数字码
+        （'7' / '27' / '50001'）。读侧判据因此分裂 —— 同一列上既有
+        `== '50001'`（`api/messages.py:894`）又有 `== 'text'`（各处默认值），
+        且 `api/messages._front_type` 得再做一次「数字→语义」归一才能给前端。
+
+        ## 拆列后
+
+        - `msg_type`：**只**存语义名（列语义单一，可直接给前端/AI 读）
+        - `msg_code`：**只**存上游原始码（审计/回溯上游用，语义名时为 None）
+
+        ## 映射口径
+
+        语义名取自 `MSG_TYPES` 注册表登记的 kind 之外的**规范名**：
+        上游码 `'7'`→`'text'`、`'27'`→`'image'`、`'8'`→`'video'`，
+        其余系统类码（`'0'/'1'/'15'/'50010'`）→`'text'`（它们本来就是提示文案，
+        由 `is_system_text` 分支另行处理，此处仅作兜底不崩）。
+        未知值（未登记）⇒ 语义名原样透传、上游码 None（**不猜**）。
+        """
+        if not mt:
+            return ("text", None)
+        if not mt.isdigit():
+            return (mt, None)          # 已是语义名
+        code = mt
+        # 🔴 不猜铁律：只有**已登记**的码才映射语义名；未登记的码**原样保留**
+        #   （`build()` 的未知分支会加 [未知类型] 前缀并标 extra.kind='unknown'，
+        #   若这里把它猜成 'text'，那条降级路径就永远走不到 ⇒ 分类失效）。
+        #   ⚠️ 未登记码**仍要存入 msg_code**（那是上游原值，审计/回溯需要），
+        #   只是 msg_type 不给它编语义名。
+        name = {"7": "text", "27": "image", "8": "video"}.get(code)
+        if name is None:
+            return (code, code)       # 未登记：语义列存原值，码也留档
+        return (name, code)
+
     def tuple(self, account: str, conv_id: str, *,
               ts: float = 0.0, msg_id: str | None = None,
               role: str = "them") -> tuple:
-        """产出与 `dm_messages(...)` 8 列**同序**的插入元组。
+        """产出与 `dm_messages(...)` **9 列**同序的插入元组。
 
-        8 列顺序：account, conv_id, role, text, msg_type, extra, ts, msg_id
+        9 列顺序：account, conv_id, role, text, msg_type, **msg_code**,
+        extra, ts, msg_id
         —— 写入点一律用它，杜绝各自手写列名导致的漏字段（ADR-012 层 2）。
+        ★ 2026-10-03 P5：新增 `msg_code`（上游原始码），与 msg_type 分列。
 
         2026-09-30（脏数据根治）：`ts` 若为 0（上游没给时间），在此**统一**
         从 `extra.created_at_us` 回补；两者都没有才落 0。
         放在唯一出口，是为了让 4 个写入点（`ts or 0` / `ts=m.get("ts") or 0`）
         一次受益，不必逐点改、也不会再漏。
         """
-        return (account, conv_id, role, self.text, self.msg_type,
+        return (account, conv_id, role, self.text, self.msg_type, self.msg_code,
                 self.extra_json(), resolve_message_ts(ts, self.extra), msg_id)
 
 

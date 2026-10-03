@@ -41,7 +41,8 @@ def _mkdb(path=":memory:"):
         CREATE TABLE dm_messages(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account TEXT, conv_id TEXT, role TEXT, text TEXT,
-            msg_type TEXT DEFAULT 'text', extra TEXT DEFAULT '{}',
+            msg_type TEXT DEFAULT 'text', msg_code TEXT,
+            extra TEXT DEFAULT '{}',
             ts REAL NOT NULL, msg_id TEXT, UNIQUE(account, conv_id, msg_id));
         CREATE TABLE kv_store(key TEXT PRIMARY KEY, value TEXT);
         """

@@ -341,7 +341,7 @@ async def list_conversations(account: str):
             "       c.conv_type "
             "FROM dm_conversations c "
             "LEFT JOIN (SELECT conv_id, COUNT(*) n FROM dm_messages "
-            "           WHERE account=? AND msg_type <> '50001' GROUP BY conv_id) m "
+            "           WHERE account=? AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') GROUP BY conv_id) m "
             "  ON m.conv_id = c.conv_id "
             "WHERE c.account=? "
             "ORDER BY COALESCE(m.n, 0) DESC, c.last_ts DESC, c.conv_id ASC",
@@ -431,7 +431,7 @@ async def get_conversation(account: str, conv_id: str):
         # 和[分享视频]脏数据(WS 错误解析产生的噪音)
         msgs = conn.execute(
             "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
-            "WHERE account=? AND conv_id=? AND msg_type <> '50001' "
+            "WHERE account=? AND conv_id=? AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') "
             "AND NOT (msg_type = '7' AND msg_id IS NULL) "
             # 2026-09-23（审计 P0-1）：排除投递验证标记，禁止其泄漏进用户聊天框。
             # 标记行（msg_type='delivery_marker' / msg_id 前缀 'verify:' / text 前缀
@@ -891,7 +891,7 @@ async def export_chatlab(body: ChatlabExportReq) -> dict:
                 else:
                     msgs = list(_gdb().execute(
                         "SELECT msg_id, role, text, msg_type, extra, ts FROM dm_messages "
-                        "WHERE account=? AND msg_type <> '50001' ORDER BY ts ASC",
+                        "WHERE account=? AND (msg_code IS NULL OR msg_code <> '50001') AND (msg_type IS NULL OR msg_type <> '50001') ORDER BY ts ASC",
                         (body.account,)).fetchall())
                 pairs = _ce.extract_qa_pairs(msgs)[:body.max_items]
                 return {"ok": True, "pairs": pairs, "count": len(pairs),

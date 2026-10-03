@@ -352,7 +352,7 @@ def process_events(account: str, events: list[dict]) -> int:
                     role=m["role"])
                 conn.execute(
                     "INSERT OR IGNORE INTO dm_messages("
-                    "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                    "account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id)"
                     " VALUES(?,?,?,?,?,?,?,?)",
                     (account, m["conv_id"], m["role"], rec.text,
                      rec.msg_type, rec.extra_json(), m["ts"],

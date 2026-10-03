@@ -190,6 +190,12 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         role TEXT NOT NULL,
         text TEXT,
         msg_type TEXT DEFAULT 'text',
+        -- ★ 2026-10-03 P5 字段拆分：`msg_type` 与上游原始码**分列**。
+        --   msg_type = **语义名**（text / image / video / delivery_marker …）
+        --   msg_code = **上游数字码**（7 / 27 / 8 / 50001 …），语义名时为 NULL。
+        --   拆分前两者混在一列，读侧判据分裂（=='50001' 与 =='text' 并存）。
+        --   迁移见 _migrate_schema（幂等 ALTER + 回填），旧库自动对齐。
+        msg_code TEXT,
         extra TEXT DEFAULT '{}',
         ts REAL NOT NULL
     );
@@ -202,6 +208,11 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     );
 
     -- 数据采集历史（crawl.py）：关键词搜索 / 评论采集的结果摘要
+    -- ⚠️ `kind` 的**实际取值**（★ 2026-10-03 按实测补全，此前注释只写 3 种、
+    --   与真实库不符）：video | user | comment | comment_batch
+    --   （`comment_batch` 由批量采集写入；实测见 audit_db_fields.py 输出）
+    --   `target` 语义随 kind 变：comment/comment_batch = aweme_id；
+    --   video/user = 关键词。消费方**必须**先看 kind 再读 target。
     CREATE TABLE IF NOT EXISTS crawl_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         account TEXT NOT NULL,
@@ -343,6 +354,151 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             f"同毫秒重复消息将**不会被去重**：{type(_e).__name__}: {_e}；"
             f"通常由库内已存在重复行引起，可手工清理后重启以启用")
 
+    # ★ 2026-10-03 字段整理（P5）：`msg_type` 一列曾**混装两套体系** ——
+    #   语义名（'text' / 'delivery_marker'）与上游数字码（'7' / '27' / '50001'）。
+    #   实测读侧判据因此分裂（`== '50001'` 与 `== 'text'` 并存于同一列）。
+    #   ⇒ 拆为两列：`msg_type`=语义名，`msg_code`=上游码。
+    try:
+        conn.execute("ALTER TABLE dm_messages ADD COLUMN msg_code TEXT")
+    except Exception:
+        pass  # 列已存在
+    try:
+        # 回填：把**已登记为上游码**的值从 msg_type 搬到 msg_code（幂等）。
+        #   判据用注册表口径（message_schema.MSG_TYPES 的 key 集合），
+        #   而不是「看起来像数字」——后者会把语义名 'text' 也误搬（其实不冲突，
+        #   但语义列必须只留语义名，保持列语义单一）。
+        # ⚠️ 不可 import services（循环依赖 + 启动期开销）⇒ 用显式映射表，
+        #   判据与 MSG_TYPES 保持一致；漂移由 test_msg_type_code_split 守住。
+        #   ★ 映射 = MSG_TYPES 的**纯数字 key**（实测 2026-10-03）：
+        #     0→text, 1→text, 7→text, 8→video, 15→text, 27→image, 50010→text
+        #   ⚠️ 不含 '5'/'17' —— 它们只在 api/messages._front_type 的**读侧**映射里，
+        #     **未登记进 MSG_TYPES** ⇒ 不该在此搬运（否则与注册表漂移）。
+        #     门禁 test_msg_type_code_split::test_whitelist_matches_registry 守这条。
+        #   ⚠️ '50001'（已读回执）**故意不在映射**：recv_daemon.py:705 已在
+        #     落库前拦掉，实测真实库 0 行 ⇒ 无存量可搬。**不可**为"完整性"
+        #     而加它，否则会与注册表漂移（门禁会红）。若将来某路径漏拦，
+        #     该行会以 msg_type='50001' 留存并被读侧兼容过滤兜住。
+        #
+        # 🔴 为什么用 CASE WHEN 而非 `msg_type IN (...)` 逐条 UPDATE：
+        #   ① 语义更强 —— 直接表达「码 → 名」的映射关系，而非「哪些值要搬」；
+        #   ② 一次 UPDATE 完成搬码+归一，**天然原子**，不会出现两条语句
+        #      只跑了一半的脱耦（我曾实测到该盲区：禁掉搬码那一句，
+        #      归一那句仍独立生效 ⇒ 码被静默丢弃）；
+        #   ③ 不写 `msg_type IN (多值)` 这种「同一语义多名字并列」形态 ——
+        #      铁律门禁 R8-6 正是禁它（该形态是补丁痕迹的信号）。
+        #      ⚠️ 不可为绕过门禁而放宽 R8-6 判据。
+        # 🔴 SQLite 的 CASE 有两种形态，别混：
+        #   ① 简单式  `CASE <表达式> WHEN <值> THEN <结果> ... END`
+        #   ② 搜索式  `CASE WHEN <条件> THEN <结果> ... END`
+        #   本处用**简单式**：被判断的表达式就是 `msg_type` 本身（= 值），
+        #   写成搜索式（`CASE WHEN '7' THEN`）会**缺条件** ⇒ SQL 语法错，
+        #   且整个回填静默失败（实测踩到：`hi/7` 被改成 `hi/text/1`，
+        #   msg_code 存成了**枚举序号**而非原值）。判据见下方门禁。
+        _UPD = (
+            "UPDATE dm_messages SET "
+            "  msg_code = CASE msg_type {c} ELSE msg_code END, "
+            "  msg_type = CASE msg_type {n} ELSE msg_type END "
+            "WHERE msg_code IS NULL AND msg_type GLOB '[0-9]*'"
+        )
+        # 「纯数字」判据：GLOB 全数字。与注册表映射表配对，缺项即漂移。
+        _MAP = {"0": "text", "1": "text", "7": "text", "8": "video",
+                "15": "text", "27": "image", "50010": "text"}
+        # ⚠️ 必须按 key 长度**升序**排（'1' 先于 '15'、'5' 先于 '50010'）：
+        #   CASE 简单式按出现顺序**首次命中即返回**，短码在前才不会吃掉长码。
+        _code_when = " ".join(
+            f"WHEN '{k}' THEN '{k}'" for k in sorted(_MAP, key=len))
+        _name_when = " ".join(
+            f"WHEN '{k}' THEN '{v}'" for k, v in sorted(_MAP.items(), key=lambda x: len(x[0])))
+        conn.execute(_UPD.format(c=_code_when, n=_name_when))
+    except Exception as _e:
+        logger.warning(f"[DB-006] [db] msg_type/msg_code 拆分回填失败"
+                       f"（不影响启动，读侧有兼容分支）：{type(_e).__name__}: {_e}")
+
+    # ★ 2026-10-03 字段整理（P1）：`crawl_history` 此前**零索引**。
+    #   实测（audit_db_fields.py）：8 列全部「无索引左前缀」，24 行。
+    #   而 `_crawl_stats_sync` / `/api/crawl/stats` 正是按 **account + ts**
+    #   聚合（见该函数 SQL）⇒ 每次打开总览都**全表扫**。
+    #   复合索引左前缀 account 命中 account 查询；ts 供排序/范围。
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_crawl_acct_ts "
+                     "ON crawl_history(account, ts DESC)")
+    except Exception as _e:
+        logger.warning(f"[DB-003] [db] crawl_history 索引创建失败，"
+                       f"统计将退化为全表扫：{type(_e).__name__}: {_e}")
+    # `tasks.live_id`：任务历史按直播间号检索的入口（复看历史任务）。
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_live "
+                     "ON tasks(live_id)")
+    except Exception:
+        pass
+
+    # ★ 2026-10-03 字段整理（P3）：`tasks` 同一事实存了**两种时间格式** ——
+    #   `start_ts` TEXT（'2026-10-02 02:40:27'）与 `created_at` REAL（1790880027.717）。
+    #   实测真实业务行两者指同一时刻。排序/比较必须各自转换，易错。
+    #   ⇒ 增 REAL 列并**回填**（可解析的文本 → epoch 秒；不可解析的留 NULL）。
+    #   文本列保留（既有消费方不改），新列供排序/范围查询。
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN start_ts_real REAL")
+    except Exception:
+        pass  # 列已存在
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN end_ts_real REAL")
+    except Exception:
+        pass  # 列已存在
+    try:
+        # 回填：把「北京时间」文本转 epoch 秒。
+        # 🔴 时区铁律（2026-10-03 修正）：`strftime('%s')` 按 **UTC** 解析，
+        #   而 `start_ts` 存的是**本地时间**（UTC+8）⇒ 直接用会**偏 8 小时**
+        #   （实测：'2026-10-02 02:40:27' 得 1790908827，正确值 1790880027）。
+        #   正确做法：SQLite 的 modifier 是「**叠加**到 UTC 结果上」，而我们要的是
+        #   「本地时间当成 UTC 解析」再**减**掉时差 ⇒ 必须用 `'-8 hours'`
+        #   （实测：'+8 hours'=1790937627 偏 +16h；'-8 hours'=1790880027 正确）。
+        # 不可解析（如测试脏数据 'a'/'b'）⇒ 保持 NULL，**不猜测、不填 0**
+        # （填 0 会让它们排到 1970 年，伪装成有效数据 = 假数据）。
+        conn.execute(
+            "UPDATE tasks SET start_ts_real = "
+            "CAST(strftime('%s', start_ts, '-8 hours') AS REAL) "
+            "WHERE start_ts_real IS NULL AND start_ts GLOB "
+            "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:*'"
+        )
+        conn.execute(
+            "UPDATE tasks SET end_ts_real = "
+            "CAST(strftime('%s', end_ts, '-8 hours') AS REAL) "
+            "WHERE end_ts_real IS NULL AND end_ts != '' AND end_ts GLOB "
+            "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:*'"
+        )
+        # 🔴 修正已回填但**时区错误**的行（epoch 明显大于 created_at 8h 以上的）。
+        #   判据：start_ts_real - created_at 落在 [7h, 9h] ⇒ 是 UTC 误算的特征。
+        #   只改这一类，不动其他行。
+        conn.execute(
+            "UPDATE tasks SET start_ts_real = start_ts_real - 28800 "
+            "WHERE created_at > 0 AND start_ts_real IS NOT NULL "
+            "AND start_ts_real - created_at BETWEEN 25200 AND 32400"
+        )
+        conn.execute(
+            "UPDATE tasks SET end_ts_real = end_ts_real - 28800 "
+            "WHERE created_at > 0 AND end_ts_real IS NOT NULL "
+            "AND end_ts_real - created_at BETWEEN 25200 AND 32400"
+        )
+    except Exception as _e:
+        logger.warning(f"[DB-004] [db] tasks 时间列回填失败（旧格式列仍在，不影响读写）："
+                       f"{type(_e).__name__}: {_e}")
+
+    # ★ 2026-10-03 字段整理（P2）：清理 `tasks` 里的**脚本测试残留行**。
+    #   判据（机械、可复跑，不靠猜）：`created_at < 1` 的行必是测试桩 ——
+    #   实测这 3 行 acct=''/live_id='' 且 start_ts 为 'a'/'b'/'c'（非日期）。
+    #   ⚠️ 只删测试桩：**不删**任何 created_at >= 1 的行（真实业务行是
+    #   epoch 秒 ≈ 1.79e9，远大于 1）。
+    try:
+        _n = conn.execute(
+            "DELETE FROM tasks WHERE created_at IS NOT NULL AND created_at < 1"
+        ).rowcount
+        if _n > 0:
+            logger.info(f"[db] 清理 tasks 测试残留行 { _n } 条"
+                        f"（判据 created_at < 1）")
+    except Exception as _e:
+        logger.warning(f"[DB-005] [db] 清理 tasks 测试行失败：{type(_e).__name__}: {_e}")
+
 
 def _migrate_json(conn: sqlite3.Connection) -> None:
     """首次运行时把旧 JSON 数据导入 SQLite（幂等，重复运行无副作用）。"""
@@ -460,7 +616,7 @@ def _migrate_json(conn: sqlite3.Connection) -> None:
                             role=msg.get("role", "them"))
                         conn.execute(
                             "INSERT OR IGNORE INTO dm_messages("
-                            "account,conv_id,role,text,msg_type,extra,ts,msg_id)"
+                            "account,conv_id,role,text,msg_type,msg_code,extra,ts,msg_id)"
                             " VALUES(?,?,?,?,?,?,?,?)",
                             _rec.tuple(
                                 acct, conv_id,

@@ -155,12 +155,19 @@ class TestWriteExit(unittest.TestCase):
     def test_g5_tuple_order(self):
         r = ms.MessageRecord.build(text="t", msg_type="text")
         got = r.tuple("acct", "cid", ts=1.0, msg_id="m1", role="me")
-        self.assertEqual(len(got), 8)
+        # ★ 2026-10-03 P5：8 列 → **9 列**（新增 msg_code，上游原始码）。
+        #   列序：account, conv_id, role, text, msg_type, msg_code,
+        #         extra, ts, msg_id
+        self.assertEqual(len(got), 9)
         self.assertEqual(got[0], "acct")
         self.assertEqual(got[1], "cid")
         self.assertEqual(got[2], "me")
         self.assertEqual(got[3], "t")
-        self.assertEqual(got[5], r.extra_json())
+        self.assertEqual(got[4], r.msg_type)   # 语义名
+        self.assertEqual(got[5], r.msg_code)   # ★ 新增列：上游码（本例 None）
+        self.assertEqual(got[6], r.extra_json())
+        self.assertEqual(got[7], 1.0)
+        self.assertEqual(got[8], "m1")
 
     def test_g6_all_seven_write_points_converged(self):
         """G6：7 处写入点**全部**经单一出口（不得再裸写列名元组）。"""

@@ -85,6 +85,25 @@ def setUpModule():
     with open(_dbfile, "wb") as _f:
         _f.write(loader.load_fixture(FIXTURE))
 
+    # ★ 2026-10-03 P5：夹具是**冻结的真实生产快照**（sha256 校验，不可改），
+    #   其 `dm_messages` 结构停留在拆分**之前**（无 msg_code 列）。
+    #   而 `api/messages.py` 的读侧 SQL 已按拆列后结构写（读 msg_code）
+    #   ⇒ 直接用会 `no such column: msg_code`（实测本模块 9 项红）。
+    #
+    #   正确修法：**加载后跑一次幂等迁移**（与生产启动路径一致），
+    #   而不是改夹具（会破坏冻结样本的真实性与 sha256）或改读侧 SQL
+    #   （会丢掉存量兼容兜底）。迁移只加列、不改数据行数。
+    _fix = sqlite3.connect(_dbfile)
+    try:
+        from database import _migrate_schema as _ms
+        _ms(_fix)
+        _fix.commit()
+        _cols = {r[1] for r in _fix.execute('PRAGMA table_info("dm_messages")')}
+        if "msg_code" not in _cols:
+            raise RuntimeError("夹具迁移后仍无 msg_code 列（P5 拆列未生效）")
+    finally:
+        _fix.close()
+
     _was_imported = "api.messages" in sys.modules
     import api.messages as M                     # noqa: E402
     _saved_get_db = M.get_db
