@@ -34,6 +34,8 @@ interface GlobalStatus {
 // ===========================================================================
 
 export default function LiveBatchPage({ push, ready }: PageProps) {
+  // 注：本组件只用到 push / ready（数据全部走 api 模块单例）。
+  // 作为「直播监听」的子页签嵌入时，父组件会传整份 PageProps —— 多余字段在此忽略。
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [showTemplate, setShowTemplate] = useState(false);
@@ -261,28 +263,12 @@ export default function LiveBatchPage({ push, ready }: PageProps) {
     restartInstanceMut.mutate(instanceId);
   }, [restartInstanceMut]);
 
-  // 未开启总开关时显示提示
-  if (global && !global.global_enabled) {
-    return (
-      <PageContainer>
-        <PageHeader title="批量采集" description="多房间 × 多账号并发监听" />
-        <Section className="mt-4">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0 text-yellow-500" />
-            <div>
-              <p className="font-medium">批量采集功能默认休眠</p>
-              <p className="text-sm mt-1 opacity-80">
-                这是风控红线设计：批量采集是本项目风控敞口最大的功能，必须显式开启才能使用。
-              </p>
-              <p className="text-sm mt-2 opacity-80">
-                开启方式：设置环境变量 <code className="px-1 py-0.5 rounded bg-black/10">DY_LIVE_BATCH_ENABLED=1</code> 后重启应用。
-              </p>
-            </div>
-          </div>
-        </Section>
-      </PageContainer>
-    );
-  }
+  // 🔴 2026-10-03（用户定调）：总开关关闭**不代表页面不可访问** ——
+  //   只应禁止「启动」，配置（新建/编辑/删除任务与模板）与查看必须照常可用。
+  //   原实现在此整页 return 提示条 ⇒ 用户连任务都建不了、看不到已有配置，
+  //   属于把「运行门」误做成「功能门」。现在改为**顶部一条提示横幅**，
+  //   页面主体照常渲染，仅「启动/重启」按钮禁用。
+  const batchOff = !!(global && !global.global_enabled);
 
   return (
     <PageContainer>
@@ -317,6 +303,19 @@ export default function LiveBatchPage({ push, ready }: PageProps) {
           </Button>
         </div>
       } />
+
+      {/* 关闭提示：横幅而非整页替换（配置与查看不受影响） */}
+      {batchOff && (
+        <Section className="mt-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-yellow-500" />
+            <p className="text-sm opacity-80">
+              批量采集总开关已关闭：可正常新建、编辑与查看任务，但无法启动监听。
+              开启位置：设置 → 通用 / 启动 → 批量采集总开关。
+            </p>
+          </div>
+        </Section>
+      )}
 
       {/* 全局状态概览 */}
       {global && (
@@ -385,6 +384,7 @@ export default function LiveBatchPage({ push, ready }: PageProps) {
                 onEdit={() => setEditingTask(t.task.task_id)}
                 onExport={() => handleExport(t.task.task_id)}
                 onSaveTemplate={() => handleSaveTemplate(t.task)}
+                startDisabled={batchOff}
                 onStartInstance={handleStartInstance}
                 onStopInstance={handleStopInstance}
                 onRestartInstance={handleRestartInstance}
@@ -479,7 +479,7 @@ function StatusCard({ icon, label, value, tone }: {
   );
 }
 
-function TaskCard({ task, onStart, onStop, onRestart, onDelete, onSelect, selected, onEdit, onExport, onSaveTemplate, onStartInstance, onStopInstance, onRestartInstance, selectedInstance, onSelectInstance }: {
+function TaskCard({ task, onStart, onStop, onRestart, onDelete, onSelect, selected, onEdit, onExport, onSaveTemplate, startDisabled, onStartInstance, onStopInstance, onRestartInstance, selectedInstance, onSelectInstance }: {
   task: TaskWithInstances;
   onStart: () => void;
   onStop: () => void;
@@ -490,6 +490,8 @@ function TaskCard({ task, onStart, onStop, onRestart, onDelete, onSelect, select
   onEdit: () => void;
   onExport: () => void;
   onSaveTemplate: () => void;
+  /** 总开关关闭时禁用「启动/重启」；停止与配置不受影响 */
+  startDisabled: boolean;
   onStartInstance: (instanceId: string) => void;
   onStopInstance: (instanceId: string) => void;
   onRestartInstance: (instanceId: string) => void;
@@ -537,12 +539,16 @@ function TaskCard({ task, onStart, onStop, onRestart, onDelete, onSelect, select
               停止
             </Button>
           ) : (
-            <Button size="sm" onClick={onStart} disabled={!task.task.enabled}>
+            <Button size="sm" onClick={onStart}
+              disabled={!task.task.enabled || startDisabled}
+              title={startDisabled ? "批量采集总开关已关闭" : undefined}>
               <Play className="h-3 w-3" />
               启动
             </Button>
           )}
-          <Button size="sm" variant="ghost" onClick={onRestart} title="重启任务">
+          <Button size="sm" variant="ghost" onClick={onRestart}
+            disabled={startDisabled}
+            title={startDisabled ? "批量采集总开关已关闭" : "重启任务"}>
             <RotateCcw className="h-3 w-3" />
           </Button>
           <Button size="sm" variant="ghost" onClick={onEdit} title="编辑任务">
@@ -573,6 +579,7 @@ function TaskCard({ task, onStart, onStop, onRestart, onDelete, onSelect, select
                 onStart={() => onStartInstance(inst.instance_id)}
                 onStop={() => onStopInstance(inst.instance_id)}
                 onRestart={() => onRestartInstance(inst.instance_id)}
+                startDisabled={startDisabled}
               />
             ))}
           </div>
@@ -582,13 +589,14 @@ function TaskCard({ task, onStart, onStop, onRestart, onDelete, onSelect, select
   );
 }
 
-function InstanceRow({ instance, selected, onSelect, onStart, onStop, onRestart }: {
+function InstanceRow({ instance, selected, onSelect, onStart, onStop, onRestart, startDisabled }: {
   instance: LiveInstance;
   selected: boolean;
   onSelect: () => void;
   onStart: () => void;
   onStop: () => void;
   onRestart: () => void;
+  startDisabled: boolean;
 }) {
   const stateConfig: Record<string, { icon: React.ReactNode; label: string; tone: string }> = {
     running: { icon: <CheckCircle2 className="h-3 w-3" />, label: "运行中", tone: "text-green-500" },
@@ -625,11 +633,15 @@ function InstanceRow({ instance, selected, onSelect, onStart, onStop, onRestart 
               <Square className="h-3 w-3" />
             </Button>
           ) : (
-            <Button size="sm" variant="ghost" onClick={onStart} title="启动实例">
+            <Button size="sm" variant="ghost" onClick={onStart}
+              disabled={startDisabled}
+              title={startDisabled ? "批量采集总开关已关闭" : "启动实例"}>
               <Play className="h-3 w-3" />
             </Button>
           )}
-          <Button size="sm" variant="ghost" onClick={onRestart} title="重启实例">
+          <Button size="sm" variant="ghost" onClick={onRestart}
+            disabled={startDisabled}
+            title={startDisabled ? "批量采集总开关已关闭" : "重启实例"}>
             <RotateCcw className="h-3 w-3" />
           </Button>
         </div>

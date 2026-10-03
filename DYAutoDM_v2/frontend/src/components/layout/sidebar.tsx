@@ -18,13 +18,13 @@ import { useState } from "react";
 import {
   LayoutDashboard, MessageSquare, Radio, Search, BookOpen,
   Users, ListChecks, Bell, ScrollText, Settings, PanelLeftClose,
-  PanelLeftOpen, ChevronDown, BarChart3, Layers,
+  PanelLeftOpen, ChevronDown, BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/brand";
 
 export type TabId =
-  | "overview" | "msg" | "live" | "live-batch" | "platform" | "kb" | "stats"
+  | "overview" | "msg" | "live" | "platform" | "kb" | "stats"
   | "accounts" | "tasks" | "notify" | "logs" | "settings";
 
 type NavItem = { id: TabId; label: string; icon: React.ElementType };
@@ -39,7 +39,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "overview", label: "总览", icon: LayoutDashboard },
       { id: "msg", label: "私信", icon: MessageSquare },
       { id: "live", label: "直播", icon: Radio },
-      { id: "live-batch", label: "批量采集", icon: Layers },
       // ★ ADR-034（2026-10-03，方向反转 ADR-033）：「采集」导航项已撤除 ——
       //   采集功能融进「内容」页，成为它的一个二级 tab。
       //   独立采集页会造成「两处都能搜作品/看作品」的双入口心智。

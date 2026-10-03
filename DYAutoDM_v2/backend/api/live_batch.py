@@ -113,9 +113,6 @@ async def list_tasks() -> dict:
 @router.post("/tasks")
 async def create_task(req: CreateTaskRequest) -> dict:
     """创建批量任务（仅注册配置，不启动）。"""
-    if not batch_enabled():
-        return {"ok": False, "error": "批量采集总开关未开启",
-                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
     # 参数校验
     if not req.name or not req.name.strip():
@@ -183,8 +180,8 @@ async def delete_task(task_id: str) -> dict:
 async def start_task(task_id: str, req: Optional[StartTaskRequest] = None) -> dict:
     """启动批量任务。"""
     if not batch_enabled():
-        return {"ok": False, "error": "批量采集总开关未开启",
-                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
+        return {"ok": False, "error": "批量采集总开关未开启，无法启动",
+                "hint": "请在设置页「通用 / 启动」开启批量采集总开关后再启动"}
 
     mgr = get_manager()
     # 可选：随启动一并改「启用」状态。
@@ -228,9 +225,6 @@ async def update_task(task_id: str, req: UpdateTaskRequest) -> dict:
     既不落盘（重启即丢）也不持锁。HTTP 层只保留**入参校验**，
     字段落盘与并发安全由管理器负责（单一写入路径）。
     """
-    if not batch_enabled():
-        return {"ok": False, "error": "批量采集总开关未开启",
-                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
     mgr = get_manager()
     if not mgr.get_task(task_id):
@@ -266,8 +260,8 @@ async def update_task(task_id: str, req: UpdateTaskRequest) -> dict:
 async def restart_task(task_id: str) -> dict:
     """重启批量任务（先停止再启动）。"""
     if not batch_enabled():
-        return {"ok": False, "error": "批量采集总开关未开启",
-                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
+        return {"ok": False, "error": "批量采集总开关未开启，无法启动",
+                "hint": "请在设置页「通用 / 启动」开启批量采集总开关后再启动"}
 
     mgr = get_manager()
     # 先停止
@@ -292,8 +286,8 @@ async def restart_task(task_id: str) -> dict:
 async def start_instance(instance_id: str) -> dict:
     """启动单个实例。"""
     if not batch_enabled():
-        return {"ok": False, "error": "批量采集总开关未开启",
-                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
+        return {"ok": False, "error": "批量采集总开关未开启，无法启动",
+                "hint": "请在设置页「通用 / 启动」开启批量采集总开关后再启动"}
 
     mgr = get_manager()
     # 获取实例信息
@@ -327,8 +321,8 @@ async def stop_instance(instance_id: str) -> dict:
 async def restart_instance(instance_id: str) -> dict:
     """重启单个实例。"""
     if not batch_enabled():
-        return {"ok": False, "error": "批量采集总开关未开启",
-                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
+        return {"ok": False, "error": "批量采集总开关未开启，无法启动",
+                "hint": "请在设置页「通用 / 启动」开启批量采集总开关后再启动"}
 
     mgr = get_manager()
     # 获取实例信息
@@ -372,9 +366,6 @@ async def list_templates() -> dict:
 @router.post("/templates")
 async def create_template(req: CreateTemplateRequest) -> dict:
     """创建任务模板。"""
-    if not batch_enabled():
-        return {"ok": False, "error": "批量采集总开关未开启",
-                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
     
     if not req.name or not req.name.strip():
         raise HTTPException(400, "模板名不能为空")

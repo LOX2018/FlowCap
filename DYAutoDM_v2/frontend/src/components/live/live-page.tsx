@@ -7,8 +7,8 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 
 import {
-  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, Tags,
-  AlertTriangle,
+  Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, Tags, Layers,
+  AlertTriangle, ChevronDown,
 } from "lucide-react";
 
 import { PageProps, ReusePayload, LiveRoom } from "../../api/client";
@@ -21,8 +21,9 @@ import HighValueKeywordsModal from "./HighValueKeywordsModal";
 import { Avatar, hue, KIND_NAME } from "../../components/ui";
 
 import {
-  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
-} from "@/components/ui/select";
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 
@@ -48,13 +49,16 @@ import {
 
 import { ReviewMode, errMsg } from "./LiveReviewMode";
 import EngineCards from "./engine-cards";
+import LiveBatchPage from "./live-batch-page";
 import ContributionRank from "./ContributionRank";
 
 
 
 export default function LivePage(props: PageProps) {
   const { push, ready, goMsg, api, reviewPayload, reusePayload } = props;
-  const [viewMode, setViewMode] = useState<"single" | "grid">("single");
+  // 2026-10-03（用户定调「批量采集是直播监听的子页面」）：
+  // 批量从侧栏独立入口**下沉**为本页第三个子页签。
+  const [viewMode, setViewMode] = useState<"single" | "grid" | "batch">("single");
   const [activeAcct, setActiveAcct] = useState<string | null>(null);
   const [room, setRoom] = useState("");
   const [review, setReview] = useState(false);
@@ -645,6 +649,7 @@ export default function LivePage(props: PageProps) {
               items={[
                 { value: "single", label: "单账户", icon: <LogIn className="h-3.5 w-3.5" /> },
                 { value: "grid", label: "多账户总览", icon: <Users className="h-3.5 w-3.5" /> },
+                { value: "batch", label: "批量采集", icon: <Layers className="h-3.5 w-3.5" /> },
               ]}
             />
             <Badge variant={streaming ? "success" : engineBusy ? "warning" : "outline"}>
@@ -681,7 +686,9 @@ export default function LivePage(props: PageProps) {
       {/* 高价值关键词权重表弹窗（2026-09-29：入口从设置页迁来，见「直播间」区按钮） */}
       <HighValueKeywordsModal open={kwOpen} onClose={() => setKwOpen(false)} />
 
-      {viewMode === "grid" ? (
+      {viewMode === "batch" ? (
+              <LiveBatchPage push={push} ready={ready} api={api} />
+            ) : viewMode === "grid" ? (
               <EngineCards push={push} />
             ) : (
               <>
@@ -729,36 +736,45 @@ export default function LivePage(props: PageProps) {
             title="直播间"
             actions={
               <>
-                <Select value={selTagId} onValueChange={pickTag}>
-                  <SelectTrigger
-                    className="min-w-[220px]"
-                    aria-label="选择配置标签（策略）"
-                    data-od-id="live-tag-select"
-                  >
-                    <SelectValue placeholder="选择配置标签…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {liveTags.length === 0 && (
-                      <SelectItem value="__none__" disabled>
-                        暂无标签 · 去「配置中心 → 配置标签」新建
-                      </SelectItem>
+                {/* 2026-10-02（用户指正）：本按钮**就是标签选择器**，不再是
+                    「去配置中心」的提醒按钮。原「Select + 提醒按钮」两件重复，
+                    现合并为一个下拉：点开即选标签（选中即应用）。 */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-od-id="live-tag-select"
+                      aria-label="选择配置标签（策略）"
+                      title="选择配置标签（策略参数在「配置中心 → 配置标签」维护）"
+                    >
+                      <Tags className="h-3.5 w-3.5" />
+                      {selTag ? selTag.name : "选择配置标签"}
+                      <ChevronDown className="h-3 w-3 opacity-70" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="max-h-[320px] overflow-auto">
+                    <DropdownMenuLabel>配置标签（策略）</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {liveTags.length === 0 ? (
+                      <DropdownMenuItem disabled>暂无标签</DropdownMenuItem>
+                    ) : (
+                      liveTags.map((t) => (
+                        <DropdownMenuItem
+                          key={t.id}
+                          onSelect={() => pickTag(t.id)}
+                          data-od-id={"live-tag-pick-" + t.id}
+                        >
+                          {t.id === selTagId ? "✓ " : ""}{t.name}
+                        </DropdownMenuItem>
+                      ))
                     )}
-                    {liveTags.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>
-                        {t.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-od-id="live-tag-manage"
-                  title="去配置中心管理标签（策略参数）"
-                  onClick={() => props.push("配置中心 → 配置标签")}
-                >
-                  <Settings2 className="h-3.5 w-3.5" />配置标签
-                </Button>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => props.push("配置中心 → 配置标签")}>
+                      <Settings2 className="h-3.5 w-3.5" />管理标签…
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <Button
                   variant="ghost"
                   size="sm"
