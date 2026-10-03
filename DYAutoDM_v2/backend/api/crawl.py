@@ -843,7 +843,12 @@ class CrawlDmBatchRequest(BaseModel):
     """
     model_config = {"extra": "forbid"}
     account: str
-    text: str
+    # ★ 2026-10-03（用户指令「私信复用标签」）：`text` 改为**可选** ——
+    #   留空即由本端点按标签取 `send.dm_pool` 首条（见下方取值优先级）。
+    #   ⚠️ 此前是 `text: str`（必填）⇒ 前端删掉输入框后不传该字段会 **422**，
+    #   复用标签的分支永远走不到。默认值给 "" 而非 None，与 `(body.text or "")`
+    #   的既有读法一致。
+    text: str = ""
     items: list[dict] = []  # [{uid, nickname, text}, ...]
     min_score: int = 0      # 高价值关键词最低得分（0=不过滤）
     max_send: int = 0       # 最多发 N 条（0=不限）

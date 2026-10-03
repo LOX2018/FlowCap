@@ -87,6 +87,32 @@ class TestDmTextFromTag(unittest.TestCase):
         self.assertNotIn('placeholder="私信文案"', src,
                          "私信文案输入框仍在（应复用标签）")
 
+    def test_backend_text_is_optional(self):
+        """🔴 后端 `text` 必须**可选** —— 否则前端不传就 422，复用标签走不到。
+
+        实测事故（★ 2026-10-03 部署后冒烟发现）：OpenAPI 里
+        `CrawlDmBatchRequest.required` 仍含 `text` ⇒ 我只改了前端契约
+        （`text?: string`）与后端**取值逻辑**，却漏改**模型声明**
+        `text: str`（无默认值 ⇒ Pydantic 判必填）。
+        """
+        from api.crawl import CrawlDmBatchRequest as M
+        # Pydantic v2 的权威读法：`field.is_required()`（不用 required 列表绕）
+        self.assertFalse(M.model_fields["text"].is_required(),
+                         "text 仍是必填（前端不传会 422）")
+        # 行为验证：不传 text 也能构造成功
+        m = M(account="a", items=[{"uid": "1", "nickname": "n", "text": "t"}])
+        self.assertEqual(m.text, "", "未传 text 时默认值应为空串")
+
+    def test_frontend_contract_matches_backend(self):
+        """🔴 前后端对 `text` 的**可选性**必须一致（契约漂移防线）。"""
+        import api.crawl as C
+        be_optional = not C.CrawlDmBatchRequest.model_fields["text"].is_required()
+        self.assertTrue(be_optional, "后端 text 必填")
+        src = _read(os.path.join("api", "client.ts"))
+        i = src.find("async crawlDmBatch")
+        self.assertIn("text?: string", src[i:i + 700],
+                      "前端契约把 text 标成必填（与后端不一致）")
+
     def test_dm_batch_call_omits_text(self):
         src = _read(self.PANEL)
         i = src.find("crawlDmBatch")

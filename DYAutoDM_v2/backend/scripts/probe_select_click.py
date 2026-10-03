@@ -1,6 +1,19 @@
 # -*- coding: utf-8 -*-
 """CDP 实测：采集悬浮窗三个下拉能否点击（★ 2026-10-03）。
 
+## ⚠️ 前置条件（三条，缺一即白跑 —— 我实测踩了 3 次）
+
+1. **必须先起后端**：`C:/temp/dyautodm_design/dyautodm-backend-*.exe`
+   （否则页面 `ERR_CONNECTION_REFUSED`）。
+2. **必须先起应用本体**（`川流_*.exe`）并完成登录 —— 悬浮窗与页面数据都
+   依赖已登录会话；未登录只会看到登录页，探针报 `count: 0`。
+3. **Edge 启动必须带** `--remote-allow-origins=*`，
+   否则 WebSocket 握手被拒（实测 403）：
+   `msedge.exe --remote-debugging-port=9333 --remote-allow-origins=* \
+        --user-data-dir=<临时目录>`
+   ⚠️ `--user-data-dir` **必须用一次性目录**：复用真实 profile 会带上
+   已登录 cookie（可省步骤 2），但也可能污染用户自己的浏览器数据。
+
 ## 为什么不用 browser 工具
 
 实测 `browser.use_real_profile` 指向的 brave profile 不存在，且本项目历史上
@@ -14,7 +27,14 @@
      —— 这是「点了没反应」的决定性证据（被遮挡/被 overlay 盖住都会红）；
   ③ 真实派发点击后，`[role=listbox]` 是否出现。
 
-只报读数，不下结论 —— 结论由人判。
+## 2026-10-03 实测结论（未跑通，如实记录）
+
+三条路径都失败，**下拉定位修复未获实机证据**：
+  A. `browser` 工具 → brave profile 缺失；
+  B. vite dev（:5199）→ origin 与后端不同 ⇒ 停在唤醒/登录页；
+  C. CDP + Edge → 能连上，但拿不到已登录页面（`count: 0`）。
+⇒ 该修复目前的证据是「根因推理 + test_crawl_panel_fixes 门禁」，
+  **需部署后由用户确认**。本脚本留存，供环境可用时复跑。
 """
 import json
 import time
