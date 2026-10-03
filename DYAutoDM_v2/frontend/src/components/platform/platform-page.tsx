@@ -232,9 +232,9 @@ export default function PlatformPage(props: PageProps & {
   //  · 上游首批不足 10 ⇒ 再并行追加一段（受 `FEED_MAX_BATCHES` 风控上限约束，只增不减，
   //    旧批数据保留 ⇒ 合并结果单调增长，不会「凑够了又掉回去」）；
   //  · 「换一批」⇒ 起始索引跳过已用段，取全新批次。
-  const FEED_TARGET = 10;
-  const FEED_BATCHES = 6;        // 每次并行拉多少批（实测每批 2~6 条 ⇒ 6 批通常一次就够 10）
-  const FEED_MAX_BATCHES = 12;   // 上游持续不足时的最大批数（风控上限：主动请求要可控）
+  const FEED_TARGET = 30;
+  const FEED_BATCHES = 10;        // 每次并行拉多少批（实测每批 2~6 条 ⇒ 6 批通常一次就够 10）
+  const FEED_MAX_BATCHES = 20;   // 上游持续不足时的最大批数（风控上限：主动请求要可控）
   const [feedBase, setFeedBase] = useState(2);
   const [feedSpan, setFeedSpan] = useState(FEED_BATCHES);
   const feedIndices: number[] = useMemo(

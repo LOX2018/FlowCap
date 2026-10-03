@@ -190,7 +190,7 @@ export function CommentPanel({ account, awemeId, api, dmTplDefault, push }: Prop
   }
 
   return (
-    <div className="space-y-2">
+    <div className="flex h-full flex-col space-y-2">
       <div className="flex items-center gap-2">
         <MessageSquare className="h-3.5 w-3.5 text-[var(--color-text-muted)]" />
         <span className="text-[0.78rem] font-medium">评论</span>
@@ -223,7 +223,7 @@ export function CommentPanel({ account, awemeId, api, dmTplDefault, push }: Prop
       ) : items.length === 0 ? (
         <EmptyState title="该作品暂无评论" description="已成功请求，平台返回的评论列表为空。" />
       ) : (
-        <div className="max-h-[46vh] space-y-1 overflow-y-auto">
+        <div className="flex-1 space-y-1 overflow-y-auto">
           {items.map((c, i) => {
             const uid = String(c.uid || "");
             return (
