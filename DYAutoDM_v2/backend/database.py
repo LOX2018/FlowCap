@@ -322,18 +322,31 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         pass
     # dm_messages: 新增 msg_id（抖音消息唯一 ID，protobuf field 3）
     # 并建唯一索引，让 INSERT OR IGNORE 真正生效，杜绝重复落库。
+    # 🔴 2026-10-04 修（审计 P0-2）：原为 `except Exception: pass  # 列已存在`。
+    # 静默吞掉**所有**异常 —— 磁盘满 / 锁冲突 / 权限问题导致的失败同样被
+    # 吞掉，运维以为已迁移而实际 schema 未更新，后续 INSERT 引用该列才炸
+    # （且错误被更外层 try 吞掉，无法归因）。现与 uniq_dmmsg_fallback
+    # 同标准：**区分「列已存在」与真失败**，真失败必须告警（DB-001）。
     try:
         conn.execute("ALTER TABLE dm_messages ADD COLUMN msg_id TEXT")
-    except Exception:
-        pass  # 列已存在
+    except Exception as _e:
+        if "duplicate column name" in str(_e).lower():
+            pass  # 列已存在：预期路径，不告警
+        else:
+            logger.warning(f"[DB-006] " + f"[db] dm_messages.msg_id 列添加失败，"
+                f"消息唯一 ID 将**不会落库**（去重与溯源受影响）："
+                f"{type(_e).__name__}: {_e}")
     try:
         # 仅对 msg_id 非空的行生效（旧数据 msg_id IS NULL 不受唯一约束影响）
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS uniq_dmmsg "
             "ON dm_messages(account, conv_id, msg_id) WHERE msg_id IS NOT NULL"
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        # 同 DB-001 标准：索引创建失败 ⇒ INSERT OR IGNORE 不去重却无任何提示
+        logger.warning(f"[DB-007] " + f"[db] 唯一索引 uniq_dmmsg 创建失败，"
+            f"msg_id 去重**未生效**（可能重复入库）："
+            f"{type(_e).__name__}: {_e}；通常由库内已存在重复行引起")
     try:
         # 兜底去重：同一会话同一角色同一文本同一毫秒时间戳视为同一条
         #

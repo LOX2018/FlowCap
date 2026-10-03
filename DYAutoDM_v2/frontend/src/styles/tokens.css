@@ -302,14 +302,28 @@
      ⚠️ 判据门禁 test_glass_blur_container.py 守这条：任何新加的
         「自身带 backdrop-filter/filter/transform」选择器都会让它变红。
      ───────────────────────────────────────────────────────────────── */
-  .glass-premium,
-  .glass-panel,
-  .card-surface {
+  .glass-premium:not(.fixed),
+  .glass-panel:not(.fixed),
+  .card-surface:not(.fixed) {
     /* ⚠️ 关键：模糊值存进自定义属性，伪元素读它。
        若直接写 `backdrop-filter: none` 清声明，伪元素的 `inherit` 会
        一并变成 none ⇒ **模糊完全消失（视觉回归）**。
        自定义属性不在元素上触发包含块，只作数据载体。 */
     --glass-blur: blur(48px);
+    /* 🔴 2026-10-04 修（OCR 审计 #14，critical）：宿主必须是 `::before`
+       的**包含块**。伪元素写死 `position:absolute; inset:0`，宿主若为
+       `static`，inset 会锚到**最近的定位祖先**（实测 = app-shell 的
+       600×400 主面板）⇒ 模糊层铺满整个主内容区而非卡片本身。
+       实测对照（chromium 计算值）：static 宿主 ::before=600×400（错）
+       / relative 宿主 ::before=200×100（对）。
+       为什么安全：`position: relative` **不**创建 fixed 的包含块
+       （只有 transform/filter/backdrop-filter 才会），故不影响 Radix
+       Portal 挂到 body 的 fixed 定位；这里刻意**不给** backdrop-filter
+       宿主写（那才是 2026-10-03「浮窗跑位」回归的根因）。
+       `:not(.fixed)` 兜底：万一某处宿主自带 fixed（如采集悬浮窗
+       `modal-surface fixed`，fixed 自身即包含块），不许把它覆盖成
+       relative —— 那会重演 v0.46.42 的浮窗跑位回归。 */
+    position: relative;
   }
   /* ⚠️ 变体必须**逐个**定义 `--glass-blur`（2026-10-03 实测漏了）：
      frost 关闭时命中 `html:not([data-glass-frost])` 变体，若该变体没定义
@@ -461,6 +475,20 @@ body {
 }
 
 #root { height: 100vh; }
+
+/* ★ 2026-10-04：滚动条「占位稳定」修复（用户报障「配置中心切 Tab 画面跳脱」）。
+   根因：`main` 是唯一纵向滚动容器（`app-shell.tsx` 第 66 行
+   `min-h-0 flex-1 overflow-y-auto`）。内容矮的 tab（通用配置）**不出**滚动条，
+   内容高的 tab（AI / 通知）**出** 5px 滚动条 ⇒ 内容区可用宽在两个 tab 之间
+   相差 5px ⇒ `PageContainer` 的 `mx-auto` 居中位置随之偏移 2.5px，
+   用户看到的就是「切一下 Tab 画面横向跳一下」。
+   `scrollbar-gutter: stable` 让**滚动条槽位始终预留**（无论是否需要滚动），
+   彻底消除这个抖动。它不改变视觉风格，只把「有时有、有时无」变成「恒有槽」。
+   ⚠️ 作用域限定在 main：全局加会让所有滚动容器（侧栏 nav、抽屉、表格）都预留
+   槽位，在窄容器里反而吃掉 5px 有效宽度。 */
+main {
+  scrollbar-gutter: stable;
+}
 
 ::selection { background: color-mix(in srgb, var(--color-accent) 25%, transparent); }
 

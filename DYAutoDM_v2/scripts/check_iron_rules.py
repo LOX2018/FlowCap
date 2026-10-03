@@ -473,7 +473,13 @@ def r12_credential_exposure() -> None:
 # M1 探针编号、内部参考项目名。它们对用户零信息量，却暴露实现细节。
 # 判据范围：前端组件里会渲染给人看的说明字段（description/subtitle/hint/
 # tip/help/note/placeholder/label）。空态(EmptyState)说明同属用户可见，一并覆盖。
+# 🔴 2026-10-04 修（审计：R13 假绿）：原正则只匹配 `description=` / `hint=`
+# 这类 **JSX 属性**，漏掉 **JSX 文本子节点**（`<span>数据源 GET /api/…</span>`）
+# ⇒ overview 8 处泄漏长期查不到却报绿。现补第二道判据：凡含内部信息的行，
+# 只要它是可渲染文本（含 `<tag>` 开头的 JSX 元素），一律计入。
 _UI_COPY_KEY = re.compile(r"\b(description|subtitle|hint|tip|help|note|placeholder|label)=")
+# 第二道：JSX 文本子节点 —— 形如 `<span ...>文本</span>` / `>文本<`
+_UI_JSX_TEXT = re.compile(r"<[a-zA-Z][^>]*>\s*[^<>{]*[一-龥][^<]*<")
 _UI_INTERNAL_PATTERNS = (
     (re.compile(r"/api/[a-z_]"), "内部接口路径 /api/…"),
     (re.compile(r"better[-_]douyin", re.I), "参考项目名 better-douyin"),
@@ -494,7 +500,10 @@ def r13_no_internal_info_in_ui_copy() -> None:
         try:
             with open(f, encoding="utf-8", errors="replace") as fh:
                 for i, line in enumerate(fh, 1):
-                    if not _UI_COPY_KEY.search(line):
+                    # 两道判据任一命中即算「用户可见文案」：
+                    #   ① 属性形式（description=/hint=…）
+                    #   ② JSX **文本子节点**（<span …>中文…</span>）—— 2026-10-04 补
+                    if not (_UI_COPY_KEY.search(line) or _UI_JSX_TEXT.search(line)):
                         continue
                     for pat, why in _UI_INTERNAL_PATTERNS:
                         if pat.search(line):

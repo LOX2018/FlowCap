@@ -85,7 +85,7 @@ export default function LiveStatusSection(props: PageProps) {
         <Blank>
           读取直播状态失败：{(error as Error)?.message || "后端无响应"}
           <br />
-          <span className="text-[0.72rem]">数据源 GET /api/live/stream —— 请确认后端已启动。</span>
+          <span className="text-[0.72rem]">直播状态暂未取到，请确认服务已启动。</span>
         </Blank>
       ) : !alive ? (
         <Blank>

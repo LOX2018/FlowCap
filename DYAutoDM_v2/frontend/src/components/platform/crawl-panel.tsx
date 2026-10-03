@@ -141,7 +141,7 @@ export function CrawlPanel({ account, api, awemeId, push }: Props) {
           value={dmTpl}
           onChange={(e) => setDmTpl(e.target.value)}
           placeholder="私信模板…"
-          className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-[0.78rem] outline-none"
+          className="w-full rounded border border-[var(--color-border)] bg-transparent px-2 py-1.5 text-[0.78rem] outline-none"
         />
 
         {cmts.length > 0 && (
@@ -151,7 +151,7 @@ export function CrawlPanel({ account, api, awemeId, push }: Props) {
               return (
                 <div
                   key={c.cid || i}
-                  className="flex items-center justify-between gap-2 rounded border border-[var(--border)] px-2 py-1.5"
+                  className="flex items-center justify-between gap-2 rounded border border-[var(--color-border)] px-2 py-1.5"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[0.75rem] font-medium">

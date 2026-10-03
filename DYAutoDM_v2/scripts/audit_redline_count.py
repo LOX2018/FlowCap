@@ -47,8 +47,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: 第 42 行原文 ——「审计区间 = abd1f29..HEAD(c9db81e) ← 承接上一轮，不重叠」，
 #: 即 `c9db81e` 是该次审计**显式声明的区间终点**。
 #:
-#: ⚠️ 后续每次全库审计后，本值须同步更新为该次审计声明的区间终点。
-DEFAULT_SINCE = "a57aca8"
+# ⚠️ 后续每次全库审计后，本值须同步更新为该次审计声明的区间终点。
+# 2026-10-04 更新（本次全量审计归档）：区间终点 = cdbe3e1 (v0.46.46)。
+DEFAULT_SINCE = "cdbe3e1"
 
 #: 审计红线阈值（D-02，用户 2026-09-26 定）
 THRESHOLD = 20

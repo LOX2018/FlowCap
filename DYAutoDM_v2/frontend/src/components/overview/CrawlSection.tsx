@@ -107,14 +107,14 @@ export default function CrawlSection({
         <Blank>
           读取采集记录失败：{(error as Error)?.message || "后端无响应"}
           <br />
-          <span className="text-[0.72rem]">数据源 GET /api/crawl/history —— 请确认后端已启动。</span>
+          <span className="text-[0.72rem]">采集记录暂未取到，请确认服务已启动。</span>
         </Blank>
       ) : !ok ? (
         // 后端明确 ok=false：读库失败，必须如实暴露（不得显示成「暂无记录」）
         <Blank>
           后端未能取到采集记录 —— 不代表没有采集过。
           <br />
-          <span className="text-[0.72rem]">数据源 GET /api/crawl/history 返回 ok=false。</span>
+          <span className="text-[0.72rem]">采集记录读取失败。</span>
         </Blank>
       ) : (
         <div className="space-y-2.5">

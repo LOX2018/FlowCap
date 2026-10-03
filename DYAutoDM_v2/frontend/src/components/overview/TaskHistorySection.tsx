@@ -120,7 +120,7 @@ export default function TaskHistorySection(props: PageProps) {
         <Blank>
           读取任务历史失败：{errMsg(error)}
           <br />
-          <span className="text-[0.72rem]">数据源 GET /api/tasks/history —— 请确认后端已启动。</span>
+          <span className="text-[0.72rem]">任务记录暂未取到，请确认服务已启动。</span>
         </Blank>
       ) : !ok ? (
         // 后端明确返回 ok=false：读库失败，必须如实暴露，不能显示「暂无任务」
@@ -128,7 +128,7 @@ export default function TaskHistorySection(props: PageProps) {
           后端未能取到任务历史：{data?.error || "未知原因"}
           <br />
           <span className="text-[0.72rem]">
-            数据源 GET /api/tasks/history 返回 ok=false —— 不代表没有任务。
+            任务记录读取失败，不代表没有任务。
           </span>
         </Blank>
       ) : !items.length ? (

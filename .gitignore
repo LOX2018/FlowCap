@@ -122,6 +122,24 @@ DYAutoDM_v2/accounts/
 *.bak2.[0-9]*
 # 台账写时备份（脚本生成，不入库；SSOT 仅保留最新版）
 artifacts/_ledger_bak_*.md
+# 🔴 2026-10-04 修（审计 P0-1）：profile 备份目录整体不入库。
+# `artifacts/yingyue_profile_backup_20261003-131055/` 内含
+# `.env`(26.7KB：GITHUB_TOKEN / NVIDIA_API_KEY / LONGCAT_API_KEY 等)、
+# `state.db`(270KB 含会话与记忆)、`config.yaml` / `profile.yaml` /
+# `memories/`。此前只有 `.env` 被既有规则覆盖，**其余 6 个文件
+# `git add -A` 会直接入库** —— 且 R12 凭证门禁的扫描根只到
+# `DYAutoDM_v2/`，结构上看不见仓根 `artifacts/`，无任何机械防线。
+# 故在此按**目录整体**排除，不逐文件列举（防下次备份换个名就漏）。
+artifacts/*profile_backup*/
+artifacts/*_profile_backup*/
+# 🔴 同类兜底（负控实测：只认 `profile_backup` 名字时，换成
+# `_probe_newbackup_xyz` 就会漏网）。故按**内容类型**再兜一层 ——
+# artifacts/ 是审计/备份产物区，本就不该有入库的库文件与配置：
+artifacts/**/*.db
+artifacts/**/*.sqlite
+artifacts/**/config.yaml
+artifacts/**/profile.yaml
+artifacts/**/memories/
 
 # ── vendored 上游代码（ADR-017 API 备用路径）────────────────────────────
 # 只提交源码，不提交上游的 .git（省 1.8M，且避免嵌套仓库）

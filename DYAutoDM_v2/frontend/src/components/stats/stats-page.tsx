@@ -218,7 +218,7 @@ export default function StatsPage(props: PageProps) {
         title="全域概览"
         description={
           <>
-            六个业务域 · 数据源 <code className="text-[0.72rem]">/api/overview/funnel</code>
+            六个业务域 · 数据来自后端聚合
             {fn && ` · ${fn.date}${fn.is_today ? "" : "（今日无数据，回落到最近有数据的一天）"}`}
           </>
         }
@@ -252,7 +252,7 @@ export default function StatsPage(props: PageProps) {
                     "rounded-[var(--radius-md)] border p-3 text-left transition-colors",
                     active
                       ? "border-[var(--color-accent)] bg-[var(--color-surface-raised)]"
-                      : "border-[var(--border)] hover:border-[var(--color-accent)]",
+                      : "border-[var(--color-border)] hover:border-[var(--color-accent)]",
                   ].join(" ")}
                   title={`查看「${d.label}」明细`}
                 >
@@ -644,7 +644,7 @@ function DomainDetail({
     <div className="overflow-x-auto">
       <table className="w-full text-[0.75rem]">
         <thead>
-          <tr className="border-b border-[var(--border)] text-left text-[var(--color-text-muted)]">
+          <tr className="border-b border-[var(--color-border)] text-left text-[var(--color-text-muted)]">
             <th className="py-1.5 pr-3 font-medium">时间</th>
             <th className="py-1.5 pr-3 font-medium">账号</th>
             <th className="py-1.5 pr-3 font-medium">类型</th>
@@ -658,7 +658,7 @@ function DomainDetail({
             const target = String(it.target ?? "");
             const kw = String(it.keyword ?? "");
             return (
-              <tr key={String(it.id ?? i)} className="border-b border-[var(--border)] last:border-0">
+              <tr key={String(it.id ?? i)} className="border-b border-[var(--color-border)] last:border-0">
                 <td className="py-1.5 pr-3 font-mono text-[var(--color-text-muted)]">
                   {String(it.ts ?? "")}
                 </td>

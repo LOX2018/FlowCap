@@ -127,6 +127,20 @@ DOMAIN_DESIGN = {
                  "→ 各 sidecar。",
         "verify": "curl :8000/api/version 比对 :11231/status.version；进程路径核对。",
     },
+    # 🔴 2026-10-04 补（审计：110/389 错误码缺六段契约，DB 域此前未登记）
+    "DB": {
+        "intent": "持久化与 schema 迁移层：保证表结构演进（加列 / 建索引 / 迁移旧 "
+                  "JSON）在**失败时可观测**，绝不静默。",
+        "invariant": "① schema 变更失败必须告警（区分「已存在」这类预期路径与真失败），"
+                     "禁止 `except: pass` 一刀切；② 去重索引未建成 ⇒ INSERT OR "
+                     "IGNORE 不去重，必须显式告知而非假装成功；③ 迁移失败不影响"
+                     "应用启动，但必须留痕可查。",
+        "chain": "database.get_db() → _migrate()（ALTER TABLE / CREATE UNIQUE INDEX "
+                 "→ 旧 JSON 迁移）→ 各 Sink 写入 → 消费方查询。",
+        "verify": "PRAGMA table_info(dm_messages) 看 msg_id 列；"
+                  "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'uniq_dmmsg%'；"
+                  "grep 日志 [DB-006]/[DB-007]。",
+    },
     "RECV": {
         "intent": "私信接收守护：WS 长连接把新消息实时落库，是「新消息/AI 回复/未读」"
                   "的数据源。",
@@ -369,6 +383,8 @@ ERRCODES = {
     "DB-003": {"meaning": "db] accounts.json 迁移失败:", "file": "database.py", "line": 307},
     "DB-004": {"meaning": "db] /dm_history.json 迁移失败:", "file": "database.py", "line": 354},
     "DB-005": {"meaning": "db] 数据库初始化失败:", "file": "main.py", "line": 279},
+    "DB-006": {"meaning": "db] dm_messages.msg_id 列添加失败（消息唯一 ID 不落库，去重与溯源受影响）:", "file": "database.py", "line": 333},
+    "DB-007": {"meaning": "db] 唯一索引 uniq_dmmsg 创建失败（msg_id 去重未生效，可能重复入库）:", "file": "database.py", "line": 346},
     "ENG-001": {"meaning": "直播间状态] get_live_info 返回空，保守视为已开播以免误阻断监听", "file": "core/auto_dm.py", "line": 64},
     "ENG-002": {"meaning": "直播间状态] 查询异常（保守视为已开播）:", "file": "core/auto_dm.py", "line": 75},
     "ENG-003": {"meaning": "history] 记录历史任务失败:", "file": "core/auto_dm.py", "line": 406},

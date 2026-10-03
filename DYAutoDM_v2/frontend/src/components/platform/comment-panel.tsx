@@ -227,7 +227,7 @@ export function CommentPanel({ account, awemeId, api, dmTplDefault, push }: Prop
           {items.map((c, i) => {
             const uid = String(c.uid || "");
             return (
-              <div key={String(c.cid || i)} className="rounded border border-[var(--border)]">
+              <div key={String(c.cid || i)} className="rounded border border-[var(--color-border)]">
                 <CommentRow
                   c={c}
                   sending={sendingUid === uid}

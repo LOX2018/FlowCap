@@ -452,7 +452,7 @@ export default function CrawlPage(props: PageProps & {
             </Select>
           ) : (
             /* 嵌入模式：只读回显当前账号（可为空），不提供第二处选择入口 */
-            <span className="flex h-9 items-center rounded border border-[var(--border)] px-3 text-[0.78rem] text-[var(--color-text-secondary)]">
+            <span className="flex h-9 items-center rounded border border-[var(--color-border)] px-3 text-[0.78rem] text-[var(--color-text-secondary)]">
               {account || "（宿主未选账号）"}
             </span>
           )}

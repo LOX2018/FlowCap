@@ -110,7 +110,7 @@ export default function AccountsHealthSection(props: PageProps) {
         <Blank>
           读取账号列表失败：{(error as Error)?.message || "后端无响应"}
           <br />
-          <span className="text-[0.72rem]">数据源 GET /api/accounts —— 请确认后端已启动。</span>
+          <span className="text-[0.72rem]">账号数据暂未取到，请确认服务已启动。</span>
         </Blank>
       ) : !accounts.length ? (
         <Blank>尚未添加账号 —— 请先在「账号」页添加并登录后再来看凭证健康。</Blank>

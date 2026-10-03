@@ -110,7 +110,7 @@ export default function CapabilityHealthSection(props: PageProps) {
         <Blank>
           读取巡检状态失败：{(error as Error)?.message || "后端无响应"}
           <br />
-          <span className="text-[0.72rem]">数据源 GET /api/probe/status —— 请确认后端已启动。</span>
+          <span className="text-[0.72rem]">能力状态暂未取到，请确认服务已启动。</span>
         </Blank>
       ) : (
         <div className="space-y-2.5">
