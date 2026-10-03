@@ -135,19 +135,28 @@ class TestLiveOrchestrationSchema(unittest.TestCase):
         self.assertTrue(ac.SECTIONS[self.SEC].get("label"))
 
     def test_field_set_is_exactly_the_contract(self):
-        # 2026-10-03（用户定调「取消默认休眠的 env 机制，改用配置中心控制」）：
-        # 新增 batch_* 三项，把「批量采集总开关 / 并发上限 / 速率上限」从
-        # 环境变量搬进配置中心。**契约随之扩展** —— 本门禁的用意是
-        # 「字段集漂移必变红」，不是「字段集永不可变」；故此处显式登记新增项，
-        # 仍保持「多一个少一个都红」的自证强度。
+        # 2026-10-03（用户定调②）：batch_* 三项**已迁出**本分区到 `general`
+        # —— `live_orchestration` 整体受标签管，功能门放这儿会被存进标签作用域
+        # 而不生效。`general` 不在 MANAGED_SECTIONS 内 ⇒ 纯全局。
+        # 本门禁的用意是「字段集漂移必变红」，故 batch_* 出现在这里也要红。
         fields = set((ac.SECTIONS[self.SEC].get("fields") or {}).keys())
         self.assertEqual(fields, {
             "connection_mode", "anonymous_max_rooms", "rotation_strategy",
             "desensitized_strategy", "sink_global_scope",
             "sink_cooldown_days", "sink_permanent",
-            # ↓ 2026-10-03 新增（批量采集配置面）
-            "batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min",
         })
+
+    def test_batch_fields_live_in_general_not_here(self):
+        """🔴 batch_* **不得**出现在 live_orchestration（会被标签域污染）。
+
+        迁移到 `general` 的回归守卫：若有人图省事把它挪回来，本用例必红。
+        """
+        fields = ac.SECTIONS[self.SEC].get("fields") or {}
+        for k in ("batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min"):
+            self.assertNotIn(k, fields,
+                             f"{k} 不得在 live_orchestration（该分区受标签管，功能门会被存进标签而不生效）")
+            self.assertIn(k, ac.SECTIONS["general"]["fields"],
+                          f"{k} 应在 general 分区")
 
     def test_batch_defaults_are_conservative(self):
         """批量三项默认值必须是**保守值**（关 + 小并发 + 低速率）。
@@ -160,7 +169,7 @@ class TestLiveOrchestrationSchema(unittest.TestCase):
         实测「单跑绿、全量红」的顺序相关假失败（本项目测试隔离老问题）。
         「用户在 UI 存了什么」不是契约，**「出厂默认是什么」才是**。
         """
-        fields = ac.SECTIONS[self.SEC]["fields"]
+        fields = ac.SECTIONS["general"]["fields"]
         self.assertIs(fields["batch_enabled"]["default"], False,
                       "批量采集出厂默认必须关闭（fail-closed）")
         self.assertEqual(fields["batch_max_concurrent"]["default"], 3)
@@ -169,20 +178,24 @@ class TestLiveOrchestrationSchema(unittest.TestCase):
         self.assertEqual(fields["batch_max_concurrent"]["max"], 10)
         self.assertEqual(fields["batch_rate_limit_per_min"]["max"], 600)
 
-    def test_batch_enabled_is_not_tag_managed(self):
-        """🔴 批量三项**不得**按标签 scope 取值（它们是功能门，不是策略）。
+    def test_batch_switch_sits_in_unmanaged_section(self):
+        """🔴 批量三项必须落在**不受标签管**的分区，且消费时不传 scope。
 
         理由：标签是「给账号/房间分发送参数」的机制。若把功能门纳入标签域，
-        会出现「标签 A 开、标签 B 关」的功能级分裂状态 —— 无法解释也无法排查。
+        会出现「标签 A 开、标签 B 关」的功能级分裂状态 —— 无法解释也无法排查；
+        且用户在标签下改了值却不生效（消费侧刻意不传 scope）。
 
-        判据：取 `batch_*` 三个 `ac.get(...)` 调用的**实参**，断言没有 `scope`。
+        判据：① 分区不在 config_tag.MANAGED_SECTIONS；② 三个 ac.get 调用无 scope。
         """
         import re
         from services import live_batch
+        from services.config_tag import MANAGED_SECTIONS
+        self.assertNotIn("general", MANAGED_SECTIONS,
+                         "general 若被纳入标签管，本用例的前提就不成立")
+        self.assertIn("general", ac.SECTIONS)
         with open(live_batch.__file__, encoding="utf-8") as f:
             src = f.read()
         for key in ("batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min"):
-            # 形如 ac.get(_SECTION, "batch_enabled", False) 的调用片段
             m = re.search(rf'ac\.get\(\s*_SECTION\s*,\s*"{key}"[^)]*\)', src)
             self.assertIsNotNone(m, f"未找到 {key} 的 ac.get 调用（契约漂移）")
             self.assertNotIn("scope", m.group(0),

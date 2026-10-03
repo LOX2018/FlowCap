@@ -79,6 +79,34 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "bool", "default": False, "env": "DY_AUTO_CAPTURE_ON_START",
                 "apply": "restart_backend",
             },
+            # ===== 批量采集（2026-10-03）=====
+            # 🔴 放 `general` 而非 `live_orchestration` 的理由（用户 2026-10-03 定调）：
+            #   `live_orchestration` **整体受标签管**（config_tag.MANAGED_SECTIONS 含它），
+            #   UI 会弹出「保存到 全局/标签」切换栏。但标签是「给账号/房间分发送参数」
+            #   的机制，而批量总开关是**功能门** —— 把它放进标签域会出现
+            #   「标签 A 开、标签 B 关」的功能级分裂状态（无法解释也无法排查），
+            #   且用户在标签下改了值却**不生效**（消费侧刻意不传 scope）。
+            #   `general` 不在 MANAGED_SECTIONS 内 ⇒ UI 无标签栏、纯全局，语义干净。
+            # apply 刻意用 "hot"（区别于本分区既有的 restart_backend）：
+            #   开关改完应**立即**可用，不该要求重启 backend。
+            "batch_enabled": {
+                "label": "批量采集总开关",
+                "type": "bool", "default": False, "env": "DY_LIVE_BATCH_ENABLED",
+                "apply": "hot", "risk": True,
+                "hint": "关闭时写操作拒绝"
+            },
+            "batch_max_concurrent": {
+                "label": "批量并发实例上限",
+                "type": "int", "default": 3, "min": 1, "max": 10, "env": None,
+                "apply": "hot", "risk": True,
+                "hint": "同时监听房间数"
+            },
+            "batch_rate_limit_per_min": {
+                "label": "批量速率上限（次/分）",
+                "type": "int", "default": 60, "min": 1, "max": 600, "env": None,
+                "apply": "hot", "risk": True,
+                "hint": "防止批量轮询"
+            },
             # P3 策略中心：timeout 默认值（热生效，消费端按需读 app_config.get("general", "timeout_xxx")）
             # 🔴 2026-09-23 修补（P2-9，实测复现）：三个 timeout_* 原声明 `apply:"hot"`
             #    却**缺 min/max** —— 而 app_config._coerce 对 int/float 只在声明了
@@ -350,26 +378,8 @@ SECTIONS: dict[str, dict[str, Any]] = {
     # 🔴 消费点在 ADR-002 §5.5（(B) 跨账号沉淀池 + 轮转）落地时接入 —— 当前**可配置**，
     #    但运行时**暂不消费**（label 已标「待接线」，避免「改了以为生效」的假成功）。
     "live_orchestration": {
-        "label": "直播编排策略（多账号 / 批量采集）",
+        "label": "直播编排策略（多账号）",
         "fields": {
-            "batch_enabled": {
-                "label": "批量采集总开关",
-                "type": "bool", "default": False, "env": "DY_LIVE_BATCH_ENABLED",
-                "apply": "hot", "risk": True,
-                "hint": "关闭时全部写操作拒绝"
-            },
-            "batch_max_concurrent": {
-                "label": "全局并发实例上限",
-                "type": "int", "default": 3, "min": 1, "max": 10, "env": None,
-                "apply": "hot", "risk": True,
-                "hint": "同时运行的监听实例数"
-            },
-            "batch_rate_limit_per_min": {
-                "label": "全局请求速率上限（次/分）",
-                "type": "int", "default": 60, "min": 1, "max": 600, "env": None,
-                "apply": "hot", "risk": True,
-                "hint": "防止批量轮询"
-            },
             "connection_mode": {
                 "label": "连接模式",
                 "type": "select", "default": "credential", "env": None,

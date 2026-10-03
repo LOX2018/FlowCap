@@ -21,7 +21,7 @@
 ## 风控（继承项目红线）
 
 1. **默认关闭（fail-closed）**：`batch_enabled()` 默认 `False`；未显式开启时
-   `start()` 拒绝。开关来源为**配置中心** `live_orchestration.batch_enabled`
+   `start()` 拒绝。开关来源为**配置中心** `general.batch_enabled`
    （env `DY_LIVE_BATCH_ENABLED` 降级为回退，见 `batch_enabled()` 文档）。
 2. **并发上限**：`max_concurrent` 控制同时运行的实例数（默认 3）。
 3. **速率限制**：全局每分钟请求数上限（`rate_limit_per_minute`），防止批量轮询
@@ -79,14 +79,17 @@ def _env_int(name: str, default: int) -> int:
 #:   现改为**每次读取都走 app_config.get()**（热生效），env 变量降级为
 #:   app_config.get 自身的第③层回退（旧部署不破）。
 #:   优先级：配置中心全局值 → env（DY_LIVE_BATCH_ENABLED 等）→ schema 默认。
-#:   注：本分区**不受标签管**（config_tag.MANAGED_SECTIONS 不含它），
-#:   故刻意**不传 scope** —— 批量总开关是功能门，与账号/房间级策略正交。
+#:   `general` 不在 `config_tag.MANAGED_SECTIONS` 内 ⇒ 天然纯全局。
 
-_SECTION = "live_orchestration"
+#: 🔴 2026-10-03（用户定调②，理由见 schema 注释）：分区用 `general`，
+#:   **不是** `live_orchestration` —— 后者整体受标签管，会让「功能门」被存进
+#:   标签作用域而**不生效**（消费侧刻意不传 scope）。`general` 不在
+#:   `config_tag.MANAGED_SECTIONS` 内 ⇒ UI 无标签栏、纯全局、语义干净。
+_SECTION = "general"
 
 
 def batch_enabled() -> bool:
-    """批量采集总开关（配置中心 `live_orchestration.batch_enabled`）。
+    """批量采集总开关（配置中心 `general.batch_enabled`）。
 
     默认 `False`（fail-closed）：未显式开启时所有写操作拒绝。
     """
@@ -99,7 +102,7 @@ def batch_enabled() -> bool:
 
 
 def batch_max_concurrent() -> int:
-    """全局并发实例上限（配置中心 `live_orchestration.batch_max_concurrent`）。"""
+    """全局并发实例上限（配置中心 `general.batch_max_concurrent`）。"""
     try:
         from services import app_config as ac
         v = ac.get(_SECTION, "batch_max_concurrent", 3)
@@ -109,7 +112,7 @@ def batch_max_concurrent() -> int:
 
 
 def batch_rate_limit_per_min() -> int:
-    """全局请求速率上限（配置中心 `live_orchestration.batch_rate_limit_per_min`）。"""
+    """全局请求速率上限（配置中心 `general.batch_rate_limit_per_min`）。"""
     try:
         from services import app_config as ac
         v = ac.get(_SECTION, "batch_rate_limit_per_min", 60)

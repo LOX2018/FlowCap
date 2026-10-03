@@ -376,7 +376,7 @@ class TestLiveBatchConfigCenterSwitch(unittest.TestCase):
         import os
         from services.live_batch import batch_enabled
         from services import app_config as ac
-        stored = ac._load().get("live_orchestration") or {}
+        stored = ac._load().get("general") or {}
         if "batch_enabled" in stored:
             self.skipTest("配置中心已显式设置 batch_enabled（非默认态）")
         bak = os.environ.pop("DY_LIVE_BATCH_ENABLED", None)
@@ -392,7 +392,7 @@ class TestLiveBatchConfigCenterSwitch(unittest.TestCase):
         import os
         from services.live_batch import batch_enabled
         from services import app_config as ac
-        stored = ac._load().get("live_orchestration") or {}
+        stored = ac._load().get("general") or {}
         if "batch_enabled" in stored:
             self.skipTest("配置中心已显式设置（优先级更高，非默认态）")
         bak = os.environ.get("DY_LIVE_BATCH_ENABLED")
@@ -407,7 +407,7 @@ class TestLiveBatchConfigCenterSwitch(unittest.TestCase):
 
     def test_lb13_schema_has_the_three_fields(self):
         from services.app_config_schema import SECTIONS
-        f = SECTIONS["live_orchestration"]["fields"]
+        f = SECTIONS["general"]["fields"]
         for k in ("batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min"):
             self.assertIn(k, f, f"schema 缺 {k} ⇒ 配置中心 UI 无该项")
         # 开关必须落在**不受标签管**的语义下：显式不传 scope
