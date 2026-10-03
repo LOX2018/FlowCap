@@ -210,11 +210,41 @@ def check_r8_5() -> tuple:
     return (not miss), "前向兼容（未知类型降级 + 门禁在位）", miss
 
 
+_R8_6_ALLOWED: dict = {
+    "services/ai_reply.py:*": "ADR-008 决策2/P1-1：WS 落 '7'、查询落 'text'，同一 user_text 语义；'27' 为图片走 _build_history 二次筛选",
+    "mcp/tools_debug.py:*": "同上口径（落库健康统计与 ai_reply 白名单必须同源一致）",
+}
+# R8-6 已知豁免：`{"<rel>:<line 或 *>": "<理由>"}`。
+#
+# 纪律（照本仓 `test_m17_order_independence._ALLOWED_UNLOADS` / G6 `_ALLOWED_ORPHANS`）：
+# **只因「确属已登记决策的既定事实」才登记，不是为让门禁变绿**。
+# 若一条豁免的理由说不出「哪条 ADR / 哪个决策号」，就不该登记 —— 应去修数据契约。
+#
+# ⚠️ 登记后条目仍会**以 `[已豁免]` 前缀打印**（不静默），确保审计者看得见已知例外。
+#
+# 当前两条的由来（2026-10-04 登记）：`msg_type IN ('text','7','27')` 是
+# **ADR-008 决策2（2026-09-23）+ P1-1 + 2026-09-25 决策** 的既定事实：
+#   · WS 实时路径落库 `'7'`，历史/查询路径落库 `'text'`（同一 `user_text` 语义、两个名字）；
+#   · `'27'` 是图片（`media`），SQL 层先收、再由 `_build_history` 按视觉描述二次筛选；
+#   · 两处**故意**用显式枚举而非 `message_schema.MSG_TYPES`，因为 `MSG_TYPES` 会把
+#     `15/50010/1/0` 等 system_notice 一并收进 —— 白名单优于排除式（宁可少收）。
+#   ⇒ 正解是「注册表把 `text`/`7` 合并为同一规范名」，但那要动**写入侧全部落库点**
+#     （发送/接收关键路径），风险远大于收益，需单开 ADR。故此处登记为已知例外。
+
+
 def check_r8_6() -> tuple:
     """R8-6：同一语义不得多名字（本次 4 次审计漏掉的根因）。
 
     判据：SQL 里出现 `msg_type IN (...)` / `msg_type = 'x' OR msg_type = 'y'`
     这种**多值并列**写法，即「同一语义两个名字」的补丁痕迹，必须报出。
+
+    🔴 2026-10-04 修（审计 P1 假绿，H-36）：原实现有两处盲区 ——
+      ① 扫描面是**硬编码文件列表**（WRITE_FILES + 3 个名字），
+         `mcp/tools_debug.py` 不在其中 ⇒ 漏 `msg_type IN ('text','7','27')`；
+      ② 正则只认**字面量** `IN ('a','b')`，参数化 `IN ({ph})`
+         （占位符在别处按白名单元组展开）匹配不到 ⇒ 漏 ai_reply.py:2507。
+    修后：扫描面走**全 backend 扫描**；新增参数化判据（`IN ({ph})` +
+    同文件 `_*_TYPES = (...)` 白名单元组 ≥2 元素）。
     """
     hits = []
     # msg_type IN ('a','b',...) 含 ≥2 个值
@@ -224,12 +254,16 @@ def check_r8_6() -> tuple:
     pat_or = re.compile(
         rb"msg_type\s*=\s*['\"]([^'\"]+)['\"].{0,40}?OR.{0,40}?"
         rb"msg_type\s*=\s*['\"]([^'\"]+)['\"]", re.I)
-    for rel in WRITE_FILES + ("services/dm_search.py", "services/ai_reply.py",
-                              "services/dm_dispatch.py"):
+    # 参数化形态：`msg_type IN ({ph})` 且同文件存在 ≥2 元素的白名单元组
+    pat_ph = re.compile(rb"msg_type\s+IN\s*\(\s*\{\s*\w+\s*\}\s*\)", re.I)
+    pat_tuple = re.compile(
+        rb"(?m)^\s*(?:_)?[A-Z_]*(?:TYPE|TYPES|KIND|KINDS)\w*\s*=\s*\(([^)]*)\)")
+
+    def _scan(rel: str) -> None:
         try:
             src = _read(rel)
         except OSError:
-            continue
+            return
         for m in pat_in.finditer(src):
             if m.group(1) != m.group(2):
                 line = src[:m.start()].count(b"\n") + 1
@@ -242,7 +276,54 @@ def check_r8_6() -> tuple:
                 hits.append(
                     f"{rel}:{line} OR 并列 "
                     f"{m.group(1).decode()}/{m.group(2).decode()}")
-    return (not hits), "同一语义不得多名字（禁 msg_type 多值并列）", hits
+        # 参数化：IN ({ph}) + 同文件白名单元组 ≥2 元素
+        if pat_ph.search(src):
+            for tm in pat_tuple.finditer(src):
+                items = [x.strip().strip(b"'\"") for x in tm.group(1).split(b",")
+                         if x.strip()]
+                if len(items) >= 2:
+                    line = src[:tm.start()].count(b"\n") + 1
+                    vals = ",".join(x.decode(errors="replace") for x in items[:4])
+                    hits.append(
+                        f"{rel}:{line} 参数化并列 IN({{ph}}) "
+                        f"← 白名单元组 ({vals})")
+
+    def _is_allowed(rel: str, line: int) -> bool:
+        return (f"{rel}:{line}" in _R8_6_ALLOWED) or (f"{rel}:*" in _R8_6_ALLOWED)
+
+    # 扫描面：WRITE_FILES + 已知消费方 + **全 backend 其余 .py**（补盲区①）
+    seen = set()
+    for rel in WRITE_FILES + ("services/dm_search.py", "services/ai_reply.py",
+                              "services/dm_dispatch.py"):
+        if rel not in seen:
+            seen.add(rel)
+            _scan(rel)
+    for dirpath, _dirs, files in os.walk(_BACKEND):
+        if "__pycache__" in dirpath or "_ext_repos" in dirpath:
+            continue
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, fn), _BACKEND)
+            rel = rel.replace(os.sep, "/")
+            if rel in seen:
+                continue
+            seen.add(rel)
+            _scan(rel)
+    # 应用已知豁免：命中的项**从阻断列表移除**，但作为 note 保留可观测性
+    notes = []
+    real_hits = []
+    for h in hits:
+        rel, _, tail = h.partition(":")
+        try:
+            line = int(tail.split(" ", 1)[0])
+        except (ValueError, IndexError):
+            line = -1
+        if _is_allowed(rel, line):
+            notes.append(f"[已豁免] {h}")
+        else:
+            real_hits.append(h)
+    return (not real_hits), "同一语义不得多名字（禁 msg_type 多值并列）", (real_hits + notes)
 
 
 CHECKS = (

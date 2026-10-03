@@ -231,6 +231,17 @@ def _run_rpa_scan_routing(channel: str) -> tuple[bool, list]:
     saved_lr = sys.modules.get("auto_dm.login_remote")
     saved_asyncio_run = asyncio.run
     sys.modules["auto_dm.login_remote"] = fake_lr
+    # 🔴 2026-10-04 修（审计 H-38 / 单跑绿批次红）：
+    # `_rpa_scan_login` 用的是 `from auto_dm import login_remote as _lr`
+    # —— 该语句命中**包属性** `auto_dm.login_remote`，**不读** `sys.modules`。
+    # 单跑本模块时包里还没有该属性（子模块未导入）⇒ `from ... import` 回落到
+    # sys.modules 查到假模块 ⇒ 绿；整批时**别的测试已真导入**过该子模块，
+    # 包属性已被绑定成**真模块** ⇒ 我们的 sys.modules 注入被绕过 ⇒ 真 bridge
+    # 被调用（无头浏览器/网络）⇒ `touched=[]` ⇒ 红。故必须**同时改写包属性**。
+    import auto_dm as _adpkg
+    _had_attr = hasattr(_adpkg, "login_remote")
+    _saved_attr = getattr(_adpkg, "login_remote", None)
+    _adpkg.login_remote = fake_lr
     try:
         st: dict = {}
         ok = A._rpa_scan_login("__gate_probe__", "", st)
@@ -238,6 +249,13 @@ def _run_rpa_scan_routing(channel: str) -> tuple[bool, list]:
     finally:
         if real_api is not None:
             A._api_scan_login = real_api
+        try:
+            if _had_attr:
+                _adpkg.login_remote = _saved_attr
+            elif "login_remote" in _adpkg.__dict__:
+                del _adpkg.__dict__["login_remote"]
+        except Exception:  # noqa: BLE001
+            pass
         if saved_lr is not None:
             sys.modules["auto_dm.login_remote"] = saved_lr
         else:
@@ -284,6 +302,48 @@ def test_p9_rpa_scan_still_honors_legacy_env(_clean_env):
     _ok, touched = _run_rpa_scan_routing("api")
     assert "api" in touched, \
         f"旧环境变量 DY_LOGIN_QR_BACKEND=api 应仍生效（触碰={touched}）"
+
+
+def test_p10_package_attr_bypass_regression(_clean_env):
+    """H-38 回归：`from auto_dm import login_remote` 命中的是**包属性**，不是 sys.modules。
+
+    实测形态（2026-10-04）：`_rpa_scan_login` 用 `from auto_dm import login_remote as _lr`。
+      · 单跑本模块 → `auto_dm` 包**尚无** `login_remote` 属性 ⇒ 该 import 回落到
+        sys.modules 查到注入的假模块 ⇒ 绿；
+      · 整批 → 前序某个测试运行过同一 import ⇒ 包属性被绑成**真模块** ⇒
+        helper 只注入 sys.modules 便**被绕过** ⇒ 真 bridge（无头浏览器）被调用 ⇒
+        `touched=[]` ⇒ 红（且会真启浏览器，实测把一次跑拖到 420s 超时）。
+
+    本用例用**安全替身**复现该污染形态：先把包属性绑成一个「调用即抛错」的模块，
+    再跑路由。修复在位 ⇒ helper 改写包属性 ⇒ 走到桩 ⇒ 绿；
+    修复缺失 ⇒ 走替身 ⇒ 抛错被吞 ⇒ `touched=[]` ⇒ 本用例变红。**全程不触真浏览器**。
+    """
+    import types
+    import auto_dm as _adpkg
+
+    def _poison(*_a, **_k):
+        raise RuntimeError("POISON: 包属性未被 helper 改写 ⇒ sys.modules 注入被绕过")
+
+    poison = types.ModuleType("auto_dm.login_remote")
+    poison.bridge_qr_login_and_wait = _poison
+    poison.prepare_qr_login = _poison
+
+    _had = hasattr(_adpkg, "login_remote")
+    _orig = getattr(_adpkg, "login_remote", None)
+    _adpkg.login_remote = poison          # 模拟「前序测试已真导入」
+    try:
+        import services.app_config as ac
+        ac.reset_section("general")
+        ac.save_section("general", {"login_channel": "bridge"})
+        _ok, touched = _run_rpa_scan_routing("bridge")
+        assert "bridge" in touched, (
+            f"包属性被污染时 bridge sink 未被触碰（touched={touched}）⇒ "
+            f"helper 未改写包属性，`from auto_dm import login_remote` 绕过了注入")
+    finally:
+        if _had:
+            _adpkg.login_remote = _orig
+        else:
+            _adpkg.__dict__.pop("login_remote", None)
 
 
 # ══════════════════════════════════════════════════════════════════

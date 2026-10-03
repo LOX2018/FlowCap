@@ -247,6 +247,48 @@ except Exception as e:                                    # noqa: BLE001
 if protected:
     # 逐端点判定：找到 `api = "<受保护路径>"` 后，看其后 ~60 行窗口内是否出现签名调用。
     # （不能「文件里出现过 signed_url 就跳过整个文件」——同一文件常有多端点，只在其一上接线。）
+    #
+    # 🔴 2026-10-04 修（审计 H-37 / G2 假绿）：原实现**不认函数边界**，窗口会跨进
+    #   **下一个**函数体。仓里有成对的「登录态实现 / 匿名实现」共用同一路径：
+    #     client_search.py:86  search_single()      → 有 signed_url ✓
+    #     client_search.py:517 search_single_anon() → 匿名，按设计不签名（被误判违规）
+    #     client_video.py:252  get_feed()           → 有 signed_url ✓
+    #     client_video.py:319  get_feed_anon()      → 匿名，按设计不签名（被误判违规）
+    #   匿名实现走 AnonFingerprint 独立设备参数、不挂账号 cookie、无 web_id/a_bogus，
+    #   签名反而会带上无效账号上下文 ⇒ **按设计就不该签名**。
+    #   本口径与 `backend/test_m2_secsdk_send_side.py` 的 S1 判据同源（此前两处实现漂移）。
+    _ANON_FUNC_RE = re.compile(r"\w*anon\w*", re.IGNORECASE)
+
+    def _enclosing_func(lines: list[str], idx: int) -> str:
+        """向上找 `idx` 所属的**函数名**（含缩进方法，故必须带 `\\s*` 前缀）。"""
+        for j in range(idx, -1, -1):
+            m = re.match(r"\s*(?:async\s+)?def\s+(\w+)\s*\(", lines[j])
+            if m:
+                return m.group(1)
+        return ""
+
+    def _indent(s: str) -> int:
+        return len(s) - len(s.lstrip())
+
+    def _func_body(lines: list[str], idx: int) -> str:
+        """从 `idx` 起取**当前函数体**内的行。
+
+        右界 = 下一个「缩进 ≤ 本函数 `def` 缩进」的 def/class（含无缩进的顶层定义），
+        以缩进判定而非列号，避免把下一个方法体读进来。
+        """
+        base = 0
+        for j in range(idx, -1, -1):
+            if re.match(r"\s*(?:async\s+)?def\s+\w+\s*\(", lines[j]):
+                base = _indent(lines[j])
+                break
+        out = []
+        for j in range(idx, len(lines)):
+            if j > idx and re.match(r"\s*(?:async\s+)?(?:def|class)\s+\w+", lines[j]) \
+                    and _indent(lines[j]) <= base:
+                break
+            out.append(lines[j])
+        return "\n".join(out)
+
     offenders = []
     for py in BE.rglob("*.py"):
         if "__pycache__" in str(py) or py.name.startswith("test_"):
@@ -256,9 +298,14 @@ if protected:
             for path in protected:
                 if not re.search(r'api\s*=\s*f?["\'`]' + re.escape(path), line):
                     continue
-                window = "\n".join(lines[i:i + 60])
+                # 匿名实现按设计不签名 —— 显式豁免（与 test_m2 同口径）
+                if _ANON_FUNC_RE.search(_enclosing_func(lines, i)):
+                    continue
+                window = _func_body(lines, i)
                 if "signed_url(" not in window:
-                    offenders.append(f"{py.relative_to(ROOT).as_posix()}:{path}")
+                    fn = _enclosing_func(lines, i) or "?"
+                    offenders.append(
+                        f"{py.relative_to(ROOT).as_posix()}:{path}#{fn}")
     new_off, known_off = classify("G2 C-02 secsdk 签名接线", offenders)
     check("G2 C-02 secsdk 签名接线", not new_off,
           (f"⚠ 已知缺口 {len(known_off)} 处（见 .known-gaps.json）"

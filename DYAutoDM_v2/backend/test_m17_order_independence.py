@@ -61,6 +61,14 @@ _ALLOWED_UNLOADS = {
         "仅在「api.messages 本就是本模块引入」时，把它移回**未导入态**（收尾还原，"
         "见文件内 2026-09-23 注释）。只卸载 `api.messages`，不触碰 database/services.*。"
     ),
+    "test_login_channel_config.py": (
+        "G-P8 行为级用例的 fixture 收尾：`_rpa_scan_login` 需要 `auto_dm.login_remote` "
+        "**已导入**才能验证通道路由，故先注入桩模块、跑完在 `finally` 里 pop 掉"
+        "（若它本非本模块引入则还原原对象）。只卸载 `auto_dm.login_remote`，"
+        "不触碰 `database` / `services.*`（M-17 关心的正是那两者的进程级单例）。"
+        "⚠️ 登记纪律：只因**确属合理的收尾还原**才登记，不是为让门禁变绿"
+        "（照 G6 `_ALLOWED_ORPHANS` 同一条纪律）。"
+    ),
 }
 
 
@@ -171,6 +179,13 @@ _POISON_SET = [
     "test_model_hub_key_masking",
     "test_reply_kb_generality",
     "test_config_isolation",
+    # ⚠️ 2026-10-04（审计 H-38）实测：本集**不能**用来覆盖 H-38 的 P8 顺序依赖。
+    #   原因：本类的 `_run_unittest` 走 `python -m unittest`，而
+    #   `test_login_channel_config` 是 **pytest 风格**（`@pytest.fixture`，无 TestCase）
+    #   ⇒ unittest **收集不到**它（实测 `Ran 0 tests`）。若把它加进来会制造
+    #   「已覆盖」的**假象**（子进程 0 收集也算 returncode 0 ⇒ 永远绿）。
+    #   H-38 的回归保护改在 `test_login_channel_config.py` 内以**自污染测试**实现
+    #   （`test_p10_...`：先真导入 login_remote 制造包属性污染，再跑路由断言）。
 ]
 
 
