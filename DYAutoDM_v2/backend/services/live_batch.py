@@ -20,7 +20,9 @@
 
 ## 风控（继承项目红线）
 
-1. **默认休眠**：`LIVE_BATCH_ENABLED` 默认 `False`；未显式开启时 `start()` 拒绝。
+1. **默认关闭（fail-closed）**：`batch_enabled()` 默认 `False`；未显式开启时
+   `start()` 拒绝。开关来源为**配置中心** `live_orchestration.batch_enabled`
+   （env `DY_LIVE_BATCH_ENABLED` 降级为回退，见 `batch_enabled()` 文档）。
 2. **并发上限**：`max_concurrent` 控制同时运行的实例数（默认 3）。
 3. **速率限制**：全局每分钟请求数上限（`rate_limit_per_minute`），防止批量轮询
    改变风控形状。
@@ -70,19 +72,56 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-#: 🔴 总开关 —— **默认 False（休眠）**。与 task_scheduler 同款红线。
-LIVE_BATCH_ENABLED = _env_bool("DY_LIVE_BATCH_ENABLED", False)
+#: 🔴 2026-10-03（用户定调「取消默认休眠的 env 机制，改用配置中心控制」）：
+#:   三个批量参数**从模块常量改为函数**，原因：模块常量在 import 时求值一次，
+#:   配置中心改值**不生效**（必须重启）—— 这正是「假成功」的典型形态
+#:   （用户以为改了配置，实际行为没变）。
+#:   现改为**每次读取都走 app_config.get()**（热生效），env 变量降级为
+#:   app_config.get 自身的第③层回退（旧部署不破）。
+#:   优先级：配置中心全局值 → env（DY_LIVE_BATCH_ENABLED 等）→ schema 默认。
+#:   注：本分区**不受标签管**（config_tag.MANAGED_SECTIONS 不含它），
+#:   故刻意**不传 scope** —— 批量总开关是功能门，与账号/房间级策略正交。
 
-#: 全局并发上限（同时运行的实例数）
-LIVE_BATCH_MAX_CONCURRENT = _env_int("DY_LIVE_BATCH_MAX_CONCURRENT", 3)
+_SECTION = "live_orchestration"
 
-#: 全局速率限制（每分钟请求数上限，防止批量轮询改变风控形状）
-LIVE_BATCH_RATE_LIMIT_PER_MIN = _env_int("DY_LIVE_BATCH_RATE_LIMIT_PER_MIN", 60)
 
-#: 单实例启动超时（秒）
+def batch_enabled() -> bool:
+    """批量采集总开关（配置中心 `live_orchestration.batch_enabled`）。
+
+    默认 `False`（fail-closed）：未显式开启时所有写操作拒绝。
+    """
+    try:
+        from services import app_config as ac
+        return bool(ac.get(_SECTION, "batch_enabled", False))
+    except Exception:
+        # 配置中心不可用 ⇒ 保持 fail-closed（不因读配置失败而放开风控门）
+        return _env_bool("DY_LIVE_BATCH_ENABLED", False)
+
+
+def batch_max_concurrent() -> int:
+    """全局并发实例上限（配置中心 `live_orchestration.batch_max_concurrent`）。"""
+    try:
+        from services import app_config as ac
+        v = ac.get(_SECTION, "batch_max_concurrent", 3)
+        return max(1, int(v))
+    except Exception:
+        return _env_int("DY_LIVE_BATCH_MAX_CONCURRENT", 3)
+
+
+def batch_rate_limit_per_min() -> int:
+    """全局请求速率上限（配置中心 `live_orchestration.batch_rate_limit_per_min`）。"""
+    try:
+        from services import app_config as ac
+        v = ac.get(_SECTION, "batch_rate_limit_per_min", 60)
+        return max(1, int(v))
+    except Exception:
+        return _env_int("DY_LIVE_BATCH_RATE_LIMIT_PER_MIN", 60)
+
+
+#: 单实例启动超时（秒）—— 纯技术参数，保留 env（无 UI 消费方）
 INSTANCE_START_TIMEOUT = _env_int("DY_LIVE_BATCH_INSTANCE_START_TIMEOUT", 30)
 
-#: 单实例停止超时（秒）
+#: 单实例停止超时（秒）—— 纯技术参数，保留 env（无 UI 消费方）
 INSTANCE_STOP_TIMEOUT = _env_int("DY_LIVE_BATCH_INSTANCE_STOP_TIMEOUT", 10)
 
 
@@ -338,8 +377,114 @@ class LiveBatchManager:
         self._tasks: dict[str, LiveBatchConfig] = {}
         self._instances: dict[str, LiveInstance] = {}
         self._task_instances: dict[str, list[str]] = {}  # task_id -> [instance_id]
-        self._rate_limiter = _RateLimiter(LIVE_BATCH_RATE_LIMIT_PER_MIN)
+        self._rate_limiter = _RateLimiter(batch_rate_limit_per_min())
         self._state_lock = threading.RLock()
+        # 本进程**确实加载过**的 task_id（_load_from_store 恢复成功 + create 新建）。
+        # 用途：`_save_to_store` 只删「本进程管理过且已从内存移除」的记录，
+        # 避免误删 kv 里其他写入方（或脏数据恢复时被跳过）的 key。
+        self._managed_ids: set[str] = set()
+        # 🔴 2026-10-03（用户定调「改成存 kv_store」）：从 kv 恢复任务配置。
+        # 为什么必须持久化：`_tasks` 是**进程内内存态**，不落盘则**重启即全丢**
+        # （用户配了 N 个批量任务，重启后一个不剩）。而「配置中心控制总开关」
+        # 在此前提下是半成品 —— 开关控着一个重启即消失的东西。
+        self._load_from_store()
+
+    # ── kv_store 持久化 ──────────────────────────────────────────────────
+
+    #: 任务配置存储键（与 live_config 的 `live_room_configs` 同款范式）
+    _KV_KEY = "live_batch_tasks"
+
+    def _load_from_store(self) -> None:
+        """启动时从 kv 恢复任务配置（**不恢复运行态**：重启后一律 stopped）。
+
+        单条损坏**不阻断**整批恢复：逐条 try/except + 计数上报（避免一条脏数据
+        导致全部任务消失）。房间/账号在**启动时**才校验（`create_task` 校验账号
+        存在性），此处不校验 —— 账号可能在这期间被删除，启动时会明确报错。
+        """
+        try:
+            from database import get_kv_json
+            data = get_kv_json(self._KV_KEY, {}) or {}
+        except Exception as e:
+            logger.warning(f"[LiveBatch] 读取任务配置失败，跳过恢复: {e}")
+            return
+        if not isinstance(data, dict):
+            logger.warning("[LiveBatch] 任务配置格式异常（非 dict），跳过恢复")
+            return
+
+        ok = bad = 0
+        for tid, raw in data.items():
+            try:
+                cfg = self._cfg_from_dict(tid, raw)
+            except Exception as e:
+                bad += 1
+                logger.warning(f"[LiveBatch] 任务 {tid} 恢复失败（已跳过）: {e}")
+                continue
+            self._tasks[tid] = cfg
+            self._task_instances[tid] = []
+            self._managed_ids.add(tid)
+            ok += 1
+        if ok or bad:
+            logger.info(f"[LiveBatch] 已从 kv 恢复任务: {ok} 条成功"
+                        + (f"，{bad} 条损坏已跳过" if bad else ""))
+
+    @staticmethod
+    def _cfg_from_dict(tid: str, raw: dict) -> "LiveBatchConfig":
+        """kv 记录 → LiveBatchConfig（**白名单字段**，越界丢弃）。"""
+        if not isinstance(raw, dict):
+            raise ValueError("记录非 dict")
+        dr = raw.get("delay_range")
+        return LiveBatchConfig(
+            task_id=str(raw.get("task_id") or tid),
+            name=str(raw.get("name") or tid),
+            rooms=[str(r) for r in (raw.get("rooms") or [])],
+            accounts=[str(a) for a in (raw.get("accounts") or [])],
+            strategy=str(raw.get("strategy") or "round_robin"),
+            max_concurrent=int(raw.get("max_concurrent") or 3),
+            enabled=bool(raw.get("enabled", False)),
+            dm_pool=([str(x) for x in raw["dm_pool"]]
+                     if raw.get("dm_pool") else None),
+            delay_range=(tuple(dr) if isinstance(dr, (list, tuple)) and len(dr) == 2
+                         else None),
+            interval=float(raw.get("interval") or 60.0),
+            max_target=int(raw.get("max_target") or 3),
+            tag_id=str(raw.get("tag_id") or ""),
+        )
+
+    def _save_to_store(self) -> None:
+        """把全部任务配置落盘（**upsert 整键**，与 live_config 同款）。
+
+        调用点必须已持 `_state_lock`。
+
+        🔴 2026-10-03 修正「以内存覆盖 kv」的缺陷（实测坐实）：
+        本实现原先只写**内存里已恢复的任务**，等于每次增删改都把 kv
+        **整体重写为内存快照**。后果：`_load_from_store` 跳过的脏记录
+        （损坏/未来版本新增的字段）会在**任何一次写操作后被静默删除** ——
+        实测「删掉 good1」连带把两条脏记录也清掉。
+        ⇒ 改为**读改写**：以 kv 现存内容为基底，只覆盖本进程管理的 task_id，
+           kv 里其他 key（脏记录 / 未来版本写入的）**原样保留**。
+        """
+        try:
+            from database import get_kv_json, set_kv_json
+            KEY = self._KV_KEY
+            # 读改写：以 kv 为基底（不是以内存为基底）
+            base = get_kv_json(KEY, {}) or {}
+            if not isinstance(base, dict):
+                base = {}
+            for tid, cfg in self._tasks.items():
+                base[tid] = cfg.to_dict()
+            # 删「本进程加载过、但已从内存移除」的记录 = 用户删掉的任务。
+            # ⚠️ 2026-10-03 修正判据方向：原先误写成 `if tid in self._managed_ids`
+            #   （= 在 managed 里就删），结果**恰好删掉还活着的任务**、留下已删的
+            #   —— 实测「删 good1」后 kv 里 good1 仍在、good2 消失。
+            # 正确判据：**在 managed 里（曾归本进程管）且不在 _tasks 里（现已删除）**。
+            for tid in list(base.keys()):
+                if tid in self._managed_ids and tid not in self._tasks:
+                    base.pop(tid, None)
+            set_kv_json(KEY, base)
+        except Exception as e:
+            # 🔴 落盘失败**必须显式上报**：静默吞掉 = 用户以为存上了、重启全丢
+            # （与 app_config.save_section 的 2026-09-17 修补同款教训）。
+            logger.warning(f"[LiveBatch] 任务配置落盘失败（重启后将丢失）: {e}")
 
     # ── 任务 CRUD ────────────────────────────────────────────────────────
 
@@ -360,9 +505,57 @@ class LiveBatchManager:
                     return {"ok": False, "error": f"账号不存在: {acct}"}
             self._tasks[config.task_id] = config
             self._task_instances[config.task_id] = []
+            self._managed_ids.add(config.task_id)
+            self._save_to_store()
             logger.info(f"[LiveBatch] 任务已创建: {config.name} "
                         f"({len(config.rooms)} 房间 × {len(config.accounts)} 账号)")
             return {"ok": True, "task": config.to_dict()}
+
+    def update_task(self, task_id: str, patch: dict) -> dict:
+        """更新任务配置（部分更新）并落盘。
+
+        ## 为什么放在管理器而不是 API 层
+        2026-10-03 实测缺口：原 `update_task` 只存在于 `api/live_batch.py`，
+        直接改 `mgr.get_task()` 返回的 `cfg` 属性 —— **绕过管理器**，
+        于是既不落盘（重启即丢），也不持锁（与 start/stop 并发时字段可能写坏）。
+        ⇒ 收敛到管理器：**持锁 + 改完立即落盘**，API 层只做 HTTP 校验与入参转换。
+        """
+        with self._state_lock:
+            cfg = self._tasks.get(task_id)
+            if not cfg:
+                return {"ok": False, "error": f"任务不存在: {task_id}"}
+            for k, v in (patch or {}).items():
+                if v is None:
+                    continue
+                if k == "delay_range":
+                    if isinstance(v, (list, tuple)) and len(v) == 2:
+                        cfg.delay_range = (int(v[0]), int(v[1]))
+                    continue
+                if k in ("rooms", "accounts", "dm_pool"):
+                    # 🔴 逐条 strip：本方法是**唯一写入路径**，若只靠 API 层清洗，
+                    #   直调管理器（脚本/测试/未来端点）就会存进带空白的脏值。
+                    #   幂等：API 层已 strip 过的再 strip 无副作用。
+                    setattr(cfg, k, [str(x).strip() for x in v if str(x).strip()])
+                    continue
+                if k == "max_concurrent":
+                    cfg.max_concurrent = int(v)
+                    continue
+                if k == "max_target":
+                    cfg.max_target = int(v)
+                    continue
+                if k == "interval":
+                    cfg.interval = float(v)
+                    continue
+                if k == "enabled":
+                    cfg.enabled = bool(v)
+                    continue
+                if k in ("name", "strategy", "tag_id"):
+                    setattr(cfg, k, str(v))
+                    continue
+                # 越界字段静默丢弃（白名单语义，与 create/update 的 HTTP 层校验一致）
+                logger.debug(f"[LiveBatch] update 忽略未知字段: {k}")
+            self._save_to_store()
+            return {"ok": True, "task": cfg.to_dict()}
 
     def delete_task(self, task_id: str) -> dict:
         """删除任务（先停止所有实例）。"""
@@ -376,6 +569,12 @@ class LiveBatchManager:
                 self._instances.pop(iid, None)
             self._task_instances.pop(task_id, None)
             self._tasks.pop(task_id, None)
+            # ⚠️ **不要** `self._managed_ids.discard(task_id)`：
+            #   `_managed_ids` 的语义是「曾归本进程管过」，而 `_save_to_store`
+            #   靠它 + 「不在 _tasks」判定「该从 kv 删掉」。这里 discard 会让
+            #   判据永远不成立 ⇒ 已删任务在 kv 里**复活**（实测坐实）。
+            #   清理交给进程退出（内存态，无需显式清）。
+            self._save_to_store()   # 2026-10-03：删除必须落盘，否则重启后复活
             return {"ok": True}
 
     def list_tasks(self) -> list[dict]:
@@ -417,17 +616,17 @@ class LiveBatchManager:
                 "instances": instances,
                 "running_count": sum(1 for i in instances if i["state"] == "running"),
                 "total_count": len(instances),
-                "global_enabled": LIVE_BATCH_ENABLED,
-                "global_max_concurrent": LIVE_BATCH_MAX_CONCURRENT,
+                "global_enabled": batch_enabled(),
+                "global_max_concurrent": batch_max_concurrent(),
             }
 
     # ── 启动 / 停止 ──────────────────────────────────────────────────────
 
     def start_task(self, task_id: str) -> dict:
         """启动批量任务（受总开关 + 并发上限约束）。"""
-        if not LIVE_BATCH_ENABLED:
-            return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                    "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
+        if not batch_enabled():
+            return {"ok": False, "error": "批量采集总开关未开启",
+                    "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
         with self._state_lock:
             cfg = self._tasks.get(task_id)
@@ -445,10 +644,10 @@ class LiveBatchManager:
             current_running = sum(
                 1 for inst in self._instances.values() if inst.state == "running"
             )
-            available_slots = LIVE_BATCH_MAX_CONCURRENT - current_running
+            available_slots = batch_max_concurrent() - current_running
             if available_slots <= 0:
                 return {"ok": False,
-                        "error": f"全局并发已达上限（{LIVE_BATCH_MAX_CONCURRENT}）",
+                        "error": f"全局并发已达上限（{batch_max_concurrent()}）",
                         "current_running": current_running}
 
             # 启动实例（不超过可用槽位）
@@ -849,8 +1048,8 @@ class LiveBatchManager:
             running = sum(1 for i in self._instances.values() if i.state == "running")
             error = sum(1 for i in self._instances.values() if i.state == "error")
             return {
-                "global_enabled": LIVE_BATCH_ENABLED,
-                "global_max_concurrent": LIVE_BATCH_MAX_CONCURRENT,
+                "global_enabled": batch_enabled(),
+                "global_max_concurrent": batch_max_concurrent(),
                 "current_running": running,
                 "total_instances": total_instances,
                 "error_count": error,
@@ -926,7 +1125,7 @@ __all__ = [
     "LiveBatchConfig",
     "LiveInstance",
     "get_manager",
-    "LIVE_BATCH_ENABLED",
-    "LIVE_BATCH_MAX_CONCURRENT",
-    "LIVE_BATCH_RATE_LIMIT_PER_MIN",
+    "batch_enabled",
+    "batch_max_concurrent",
+    "batch_rate_limit_per_min",
 ]

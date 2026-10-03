@@ -341,6 +341,182 @@ class TestLiveBatchTagPool(unittest.TestCase):
 
 
 # ===========================================================================
+class TestLiveBatchConfigCenterSwitch(unittest.TestCase):
+    """LB-13：总开关改由**配置中心**控制（用户 2026-10-03 定调「取消默认休眠的 env 机制」）。
+
+    关键判据：**必须是函数、每次读都走 app_config**。
+    若退回模块常量（import 时求值一次），配置中心改值**不生效** ——
+    用户以为改了配置、实际行为没变，这正是本项目反复出现的「假成功」。
+    """
+
+    def test_lb13_switch_is_function_not_module_constant(self):
+        import services.live_batch as m
+        for fn in ("batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min"):
+            self.assertTrue(callable(getattr(m, fn, None)),
+                            f"{fn} 必须是函数（模块常量在 import 时求值，配置中心改值不生效）")
+        # 不得再有裸常量
+        # ⚠️ 判据只查**赋值形态**（`NAME = ...`），不能查「字符串里出现」——
+        #   env 变量名 `DY_LIVE_BATCH_ENABLED` 合法包含该子串，docstring 里
+        #   也会引用它。查「出现」会永远红（实测踩过），那是假门禁。
+        code = _strip_comments(_read())
+        import re
+        for name in ("LIVE_BATCH_ENABLED", "LIVE_BATCH_MAX_CONCURRENT",
+                     "LIVE_BATCH_RATE_LIMIT_PER_MIN"):
+            self.assertIsNone(
+                re.search(rf"^{name}\s*=", code, re.M),
+                f"仍存在模块常量 {name} = ... ⇒ 配置中心改值不生效（须改为函数）")
+
+    def test_lb13_default_is_fail_closed(self):
+        """未显式配置时必须为 False（fail-closed）。
+
+        优先级链：配置中心 → env(`DY_LIVE_BATCH_ENABLED`) → schema 默认 False。
+        本测试进程顶部设了 env=1（供其它用例跑），故这里**临时清掉 env** 才能
+        验到真正的默认值 —— 否则测的是 env 回退而非 schema 默认。
+        """
+        import os
+        from services.live_batch import batch_enabled
+        from services import app_config as ac
+        stored = ac._load().get("live_orchestration") or {}
+        if "batch_enabled" in stored:
+            self.skipTest("配置中心已显式设置 batch_enabled（非默认态）")
+        bak = os.environ.pop("DY_LIVE_BATCH_ENABLED", None)
+        try:
+            self.assertFalse(batch_enabled(),
+                             "未配置且无 env 时必须是 False（fail-closed）")
+        finally:
+            if bak is not None:
+                os.environ["DY_LIVE_BATCH_ENABLED"] = bak
+
+    def test_lb13_env_still_works_as_fallback(self):
+        """env 降级回退必须保留（旧部署不破）—— 用户只要求改控制方式，不是删能力。"""
+        import os
+        from services.live_batch import batch_enabled
+        from services import app_config as ac
+        stored = ac._load().get("live_orchestration") or {}
+        if "batch_enabled" in stored:
+            self.skipTest("配置中心已显式设置（优先级更高，非默认态）")
+        bak = os.environ.get("DY_LIVE_BATCH_ENABLED")
+        os.environ["DY_LIVE_BATCH_ENABLED"] = "1"
+        try:
+            self.assertTrue(batch_enabled(), "env=1 时应放行（回退链第③层）")
+        finally:
+            if bak is None:
+                os.environ.pop("DY_LIVE_BATCH_ENABLED", None)
+            else:
+                os.environ["DY_LIVE_BATCH_ENABLED"] = bak
+
+    def test_lb13_schema_has_the_three_fields(self):
+        from services.app_config_schema import SECTIONS
+        f = SECTIONS["live_orchestration"]["fields"]
+        for k in ("batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min"):
+            self.assertIn(k, f, f"schema 缺 {k} ⇒ 配置中心 UI 无该项")
+        # 开关必须落在**不受标签管**的语义下：显式不传 scope
+        self.assertIn("ac.get(_SECTION, \"batch_enabled\"", _read())
+
+
+class TestLiveBatchPersistence(unittest.TestCase):
+    """LB-14：任务配置落 kv_store（用户 2026-10-03 定调「改成存 kv_store」）。"""
+
+    KEY = "live_batch_tasks"
+
+    def setUp(self):
+        from database import get_kv_json
+        self._bak = get_kv_json(self.KEY, None)
+
+    def tearDown(self):
+        from database import set_kv_json
+        set_kv_json(self.KEY, self._bak if self._bak is not None else {})
+
+    def test_lb14_roundtrip_via_store(self):
+        """写盘 → 新管理器恢复：全部字段逐字一致。"""
+        from services.live_batch import LiveBatchManager, LiveBatchConfig
+        from database import get_kv_json
+        m = LiveBatchManager.__new__(LiveBatchManager)   # 绕开单例
+        m._tasks, m._instances = {}, {}
+        m._task_instances, m._managed_ids = {}, set()
+        m._state_lock = __import__("threading").RLock()
+        cfg = LiveBatchConfig(task_id="rt1", name="往返", rooms=["1", "2"],
+                              accounts=["a"], strategy="fixed", max_concurrent=5,
+                              enabled=True, interval=77.0, max_target=9,
+                              tag_id="tagX")
+        m._tasks["rt1"] = cfg
+        m._task_instances["rt1"] = []
+        m._managed_ids.add("rt1")
+        m._save_to_store()
+
+        raw = get_kv_json(self.KEY, {}) or {}
+        self.assertIn("rt1", raw, "未落盘")
+        self.assertEqual(raw["rt1"]["max_target"], 9)
+        self.assertEqual(raw["rt1"]["tag_id"], "tagX")
+
+        # 反序列化
+        back = LiveBatchManager._cfg_from_dict("rt1", raw["rt1"])
+        self.assertEqual(back.to_dict(), cfg.to_dict(), "往返字段不一致")
+
+    def test_lb14_corrupt_record_does_not_block_others(self):
+        """单条损坏**不得**拖垮整批恢复。"""
+        from services.live_batch import LiveBatchManager
+        good = LiveBatchManager._cfg_from_dict("g", {"name": "好的", "rooms": ["1"],
+                                                     "accounts": ["a"]})
+        self.assertEqual(good.name, "好的")
+        with self.assertRaises(Exception):
+            LiveBatchManager._cfg_from_dict("b", "不是 dict")
+
+    def test_lb14_save_keeps_unmanaged_keys(self):
+        """🔴 防「以内存覆盖 kv」：kv 里**本进程未管理**的 key 必须原样保留。
+
+        实测坐实的缺陷：原实现只写内存快照，导致任何一次写操作都会
+        静默删除恢复时被跳过的脏记录。
+        """
+        import threading
+        from database import get_kv_json, set_kv_json
+        from services.live_batch import LiveBatchManager, LiveBatchConfig
+        set_kv_json(self.KEY, {"foreign": "别的写入方", "bad": "脏记录"})
+
+        m = LiveBatchManager.__new__(LiveBatchManager)
+        m._tasks, m._instances = {}, {}
+        m._task_instances = {}
+        m._managed_ids = {"t1"}          # t1 曾归本进程管
+        m._state_lock = threading.RLock()
+        cfg = LiveBatchConfig(task_id="t2", name="本进程新建", rooms=["9"],
+                              accounts=["z"])
+        m._tasks["t2"] = cfg
+        m._managed_ids.add("t2")
+        m._save_to_store()
+
+        keys = set((get_kv_json(self.KEY, {}) or {}).keys())
+        self.assertIn("foreign", keys, "未管理的 key 被误删")
+        self.assertIn("bad", keys, "脏记录被误删（应保留待人工处理）")
+        self.assertIn("t2", keys)
+
+    def test_lb14_delete_removes_only_managed(self):
+        """删除判据方向：**曾受管 且 已不在内存** ⇒ 只删它自己。"""
+        import threading
+        from database import get_kv_json, set_kv_json
+        from services.live_batch import LiveBatchManager, LiveBatchConfig
+        set_kv_json(self.KEY, {"keep": {"name": "留", "rooms": ["1"], "accounts": ["a"]},
+                               "gone": {"name": "删", "rooms": ["2"], "accounts": ["b"]}})
+
+        m = LiveBatchManager.__new__(LiveBatchManager)
+        m._tasks, m._instances = {}, {}
+        m._task_instances = {}
+        m._managed_ids = {"keep", "gone"}
+        m._state_lock = threading.RLock()
+        m._tasks["keep"] = LiveBatchConfig(task_id="keep", name="留",
+                                          rooms=["1"], accounts=["a"])
+        m._task_instances["keep"] = []
+        m._tasks["gone"] = LiveBatchConfig(task_id="gone", name="删",
+                                          rooms=["2"], accounts=["b"])
+        m._task_instances["gone"] = []
+
+        r = m.delete_task("gone")
+        self.assertTrue(r["ok"])
+        keys = set((get_kv_json(self.KEY, {}) or {}).keys())
+        self.assertNotIn("gone", keys, "已删任务未从 kv 移除（重启会复活）")
+        self.assertIn("keep", keys, "误删了另一个任务")
+
+
+
 # 负控（Negative Controls）
 # ===========================================================================
 # 纪律（skill 铁律）：**门禁必须能变红**。先造缺陷证明它会红，再信它报绿。
@@ -364,6 +540,16 @@ def _has_unawaited_start(src: str) -> bool:
     code = _strip_comments(src)
     return any("inst._dispatch.start()" in ln and "await" not in ln
                for ln in code.splitlines())
+
+
+def _has_module_const_enabled(src: str) -> bool:
+    """LB-13 判据（修正版）：只认**赋值形态**的模块常量。
+
+    ⚠️ 不得查「字符串出现」—— env 名 `DY_LIVE_BATCH_ENABLED` 与 docstring
+    都会合法包含该子串，照「出现」判会永远红（假门禁，实测踩过）。
+    """
+    import re
+    return bool(re.search(r"^LIVE_BATCH_ENABLED\s*=", _strip_comments(src), re.M))
 
 
 def _has_registry_leak(src: str) -> bool:
@@ -416,11 +602,29 @@ def self_check_negative_controls():
     probe("NC6 未注入 pick_dm_message", m6,
           lambda s: "pick_dm_message=" not in _strip_comments(s))
 
+    # NC-7: 退回「以内存覆盖 kv」写盘（未管理的 key 会被误删）
+    leak2 = """            base = get_kv_json(KEY, {}) or {}
+            if not isinstance(base, dict):
+                base = {}
+"""
+    m7 = src.replace(leak2, "            base = {}\n", 1)
+    assert m7 != src, "NC7 注入失败"
+    probe("NC7 以内存覆盖 kv（误删未管理 key）", m7,
+          lambda s: "base = get_kv_json(KEY, {})" not in _strip_comments(s))
+
+    # NC-8: 退回模块常量（配置中心改值不生效）
+    m8 = src.replace("def batch_enabled() -> bool:",
+                     "LIVE_BATCH_ENABLED = False\ndef batch_enabled() -> bool:", 1)
+    assert m8 != src, "NC8 注入失败"
+    probe("NC8 存在模块常量", m8, _has_module_const_enabled)
+
     # ── 正控：未变异的真实源码必须「无缺陷」──
     for nm, det in [("NC1", _has_bare_dispatch), ("NC2", _has_bare_hook),
                     ("NC3", _has_unawaited_start), ("NC4", _has_registry_leak),
                     ("NC5", lambda s: "stop_hard" not in _strip_comments(s)),
-                    ("NC6", lambda s: "pick_dm_message=" not in _strip_comments(s))]:
+                    ("NC6", lambda s: "pick_dm_message=" not in _strip_comments(s)),
+                    ("NC7", lambda s: "base = get_kv_json(KEY, {})" not in _strip_comments(s)),
+                    ("NC8", _has_module_const_enabled)]:
         if det(src):
             out.append((f"{nm} 正控（真实源码应无缺陷）", False))
         else:

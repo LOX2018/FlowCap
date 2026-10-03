@@ -135,12 +135,58 @@ class TestLiveOrchestrationSchema(unittest.TestCase):
         self.assertTrue(ac.SECTIONS[self.SEC].get("label"))
 
     def test_field_set_is_exactly_the_contract(self):
+        # 2026-10-03（用户定调「取消默认休眠的 env 机制，改用配置中心控制」）：
+        # 新增 batch_* 三项，把「批量采集总开关 / 并发上限 / 速率上限」从
+        # 环境变量搬进配置中心。**契约随之扩展** —— 本门禁的用意是
+        # 「字段集漂移必变红」，不是「字段集永不可变」；故此处显式登记新增项，
+        # 仍保持「多一个少一个都红」的自证强度。
         fields = set((ac.SECTIONS[self.SEC].get("fields") or {}).keys())
         self.assertEqual(fields, {
             "connection_mode", "anonymous_max_rooms", "rotation_strategy",
             "desensitized_strategy", "sink_global_scope",
             "sink_cooldown_days", "sink_permanent",
+            # ↓ 2026-10-03 新增（批量采集配置面）
+            "batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min",
         })
+
+    def test_batch_defaults_are_conservative(self):
+        """批量三项默认值必须是**保守值**（关 + 小并发 + 低速率）。
+
+        这三项直接决定风控敞口：默认放开等于批量自动私信默认启用 ——
+        违反项目红线（用户 2026-09-27 定调「默认休眠，你要用再开」）。
+
+        ⚠️ 判据取 **schema 里的 default**，**不取 `ac.get()`**：
+        后者读的是 kv，别的测试（或用户）把值改成 True 后本用例就红 ——
+        实测「单跑绿、全量红」的顺序相关假失败（本项目测试隔离老问题）。
+        「用户在 UI 存了什么」不是契约，**「出厂默认是什么」才是**。
+        """
+        fields = ac.SECTIONS[self.SEC]["fields"]
+        self.assertIs(fields["batch_enabled"]["default"], False,
+                      "批量采集出厂默认必须关闭（fail-closed）")
+        self.assertEqual(fields["batch_max_concurrent"]["default"], 3)
+        self.assertEqual(fields["batch_rate_limit_per_min"]["default"], 60)
+        # 边界约束也锁死（防止有人把上限放到 10 / 600 之外）
+        self.assertEqual(fields["batch_max_concurrent"]["max"], 10)
+        self.assertEqual(fields["batch_rate_limit_per_min"]["max"], 600)
+
+    def test_batch_enabled_is_not_tag_managed(self):
+        """🔴 批量三项**不得**按标签 scope 取值（它们是功能门，不是策略）。
+
+        理由：标签是「给账号/房间分发送参数」的机制。若把功能门纳入标签域，
+        会出现「标签 A 开、标签 B 关」的功能级分裂状态 —— 无法解释也无法排查。
+
+        判据：取 `batch_*` 三个 `ac.get(...)` 调用的**实参**，断言没有 `scope`。
+        """
+        import re
+        from services import live_batch
+        with open(live_batch.__file__, encoding="utf-8") as f:
+            src = f.read()
+        for key in ("batch_enabled", "batch_max_concurrent", "batch_rate_limit_per_min"):
+            # 形如 ac.get(_SECTION, "batch_enabled", False) 的调用片段
+            m = re.search(rf'ac\.get\(\s*_SECTION\s*,\s*"{key}"[^)]*\)', src)
+            self.assertIsNotNone(m, f"未找到 {key} 的 ac.get 调用（契约漂移）")
+            self.assertNotIn("scope", m.group(0),
+                             f"{key} 传了 scope ⇒ 功能门被纳入标签域，会出现按标签分裂")
 
     def test_defaults_match_adr(self):
         self.assertEqual(ac.get(self.SEC, "connection_mode"), "credential")

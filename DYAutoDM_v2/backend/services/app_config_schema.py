@@ -350,8 +350,26 @@ SECTIONS: dict[str, dict[str, Any]] = {
     # 🔴 消费点在 ADR-002 §5.5（(B) 跨账号沉淀池 + 轮转）落地时接入 —— 当前**可配置**，
     #    但运行时**暂不消费**（label 已标「待接线」，避免「改了以为生效」的假成功）。
     "live_orchestration": {
-        "label": "直播编排策略（多账号，未启用）",
+        "label": "直播编排策略（多账号 / 批量采集）",
         "fields": {
+            "batch_enabled": {
+                "label": "批量采集总开关",
+                "type": "bool", "default": False, "env": "DY_LIVE_BATCH_ENABLED",
+                "apply": "hot", "risk": True,
+                "hint": "关闭时全部写操作拒绝"
+            },
+            "batch_max_concurrent": {
+                "label": "全局并发实例上限",
+                "type": "int", "default": 3, "min": 1, "max": 10, "env": None,
+                "apply": "hot", "risk": True,
+                "hint": "同时运行的监听实例数"
+            },
+            "batch_rate_limit_per_min": {
+                "label": "全局请求速率上限（次/分）",
+                "type": "int", "default": 60, "min": 1, "max": 600, "env": None,
+                "apply": "hot", "risk": True,
+                "hint": "防止批量轮询"
+            },
             "connection_mode": {
                 "label": "连接模式",
                 "type": "select", "default": "credential", "env": None,

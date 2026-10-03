@@ -3,7 +3,9 @@
 
 ## 风控红线（继承项目铁律）
 
-1. **默认休眠**：`LIVE_BATCH_ENABLED` 默认 `False`，未开启时所有写操作拒绝。
+1. **默认关闭（fail-closed）**：总开关来自**配置中心**
+   `live_orchestration.batch_enabled`（默认 `False`），未开启时所有写操作拒绝。
+   env `DY_LIVE_BATCH_ENABLED` 降级为回退，保证旧部署不破。
 2. **fail-closed**：任何异常不静默放行，明确返回失败原因。
 3. **显式配置门**：不显式开启 = 零副作用（可断言的零回归）。
 
@@ -28,7 +30,7 @@ from typing import Optional
 from services.live_batch import (
     get_manager,
     LiveBatchConfig,
-    LIVE_BATCH_ENABLED,
+    batch_enabled,
 )
 
 router = APIRouter()
@@ -105,15 +107,15 @@ async def list_tasks() -> dict:
     """列出所有批量任务及其实例状态。"""
     mgr = get_manager()
     tasks = mgr.list_tasks()
-    return {"ok": True, "tasks": tasks, "global_enabled": LIVE_BATCH_ENABLED}
+    return {"ok": True, "tasks": tasks, "global_enabled": batch_enabled()}
 
 
 @router.post("/tasks")
 async def create_task(req: CreateTaskRequest) -> dict:
     """创建批量任务（仅注册配置，不启动）。"""
-    if not LIVE_BATCH_ENABLED:
-        return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
+    if not batch_enabled():
+        return {"ok": False, "error": "批量采集总开关未开启",
+                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
     # 参数校验
     if not req.name or not req.name.strip():
@@ -180,16 +182,16 @@ async def delete_task(task_id: str) -> dict:
 @router.post("/tasks/{task_id}/start")
 async def start_task(task_id: str, req: Optional[StartTaskRequest] = None) -> dict:
     """启动批量任务。"""
-    if not LIVE_BATCH_ENABLED:
-        return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
+    if not batch_enabled():
+        return {"ok": False, "error": "批量采集总开关未开启",
+                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
     mgr = get_manager()
-    # 可选：临时启用任务
-    if req and req.enabled is not None:
-        cfg = mgr.get_task(task_id)
-        if cfg:
-            cfg.enabled = req.enabled
+    # 可选：随启动一并改「启用」状态。
+    # 🔴 2026-10-03：原先直接 `cfg.enabled = req.enabled` 绕过管理器
+    # ⇒ 不落盘（重启后回退）。改走 `mgr.update_task()` 单一写入路径。
+    if req and req.enabled is not None and mgr.get_task(task_id):
+        mgr.update_task(task_id, {"enabled": bool(req.enabled)})
 
     result = mgr.start_task(task_id)
     if not result.get("ok"):
@@ -219,57 +221,53 @@ async def get_instance(instance_id: str) -> dict:
 
 @router.put("/tasks/{task_id}")
 async def update_task(task_id: str, req: UpdateTaskRequest) -> dict:
-    """更新批量任务（部分更新）。"""
-    if not LIVE_BATCH_ENABLED:
-        return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
-    
+    """更新批量任务（部分更新）。
+
+    🔴 2026-10-03：改为**委托管理器** `mgr.update_task()`。
+    原实现在这里直接改 `mgr.get_task()` 返回的 `cfg` 属性 ——
+    既不落盘（重启即丢）也不持锁。HTTP 层只保留**入参校验**，
+    字段落盘与并发安全由管理器负责（单一写入路径）。
+    """
+    if not batch_enabled():
+        return {"ok": False, "error": "批量采集总开关未开启",
+                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
+
     mgr = get_manager()
-    cfg = mgr.get_task(task_id)
-    if not cfg:
+    if not mgr.get_task(task_id):
         raise HTTPException(404, "任务不存在")
-    
-    # 部分更新
-    if req.name is not None:
-        cfg.name = req.name.strip()
-    if req.rooms is not None:
-        cfg.rooms = [r.strip() for r in req.rooms if r.strip()]
-    if req.accounts is not None:
-        cfg.accounts = [a.strip() for a in req.accounts if a.strip()]
-    if req.strategy is not None:
-        if req.strategy not in ("round_robin", "fixed", "cartesian"):
-            raise HTTPException(400, f"未知策略: {req.strategy}")
-        cfg.strategy = req.strategy
-    if req.max_concurrent is not None:
-        if req.max_concurrent < 1 or req.max_concurrent > 10:
-            raise HTTPException(400, "并发上限须在 1~10 之间")
-        cfg.max_concurrent = req.max_concurrent
-    if req.enabled is not None:
-        cfg.enabled = req.enabled
-    if req.dm_pool is not None:
-        cfg.dm_pool = req.dm_pool
-    if req.delay_range is not None:
-        if len(req.delay_range) == 2:
-            cfg.delay_range = (req.delay_range[0], req.delay_range[1])
-    if req.interval is not None:
-        cfg.interval = req.interval
-    if req.max_target is not None:
-        if req.max_target < 1 or req.max_target > 999:
-            raise HTTPException(400, "每房私信上限须在 1~999 之间")
-        cfg.max_target = req.max_target
-    if req.tag_id is not None:
-        cfg.tag_id = req.tag_id.strip()
-    
+
+    # ---- 入参校验（不通过就不该进管理器）----
+    if req.strategy is not None and req.strategy not in ("round_robin", "fixed", "cartesian"):
+        raise HTTPException(400, f"未知策略: {req.strategy}")
+    if req.max_concurrent is not None and not (1 <= req.max_concurrent <= 10):
+        raise HTTPException(400, "并发上限须在 1~10 之间")
+    if req.max_target is not None and not (1 <= req.max_target <= 999):
+        raise HTTPException(400, "每房私信上限须在 1~999 之间")
+
+    patch = req.model_dump(exclude_none=True)
+    # 列表字段去空白（与 create 口径一致）
+    for k in ("rooms", "accounts"):
+        if k in patch:
+            patch[k] = [str(x).strip() for x in patch[k] if str(x).strip()]
+    if "delay_range" in patch and len(patch["delay_range"] or []) != 2:
+        patch.pop("delay_range")
+    for k in ("name", "tag_id"):
+        if k in patch:
+            patch[k] = str(patch[k]).strip()
+
+    result = mgr.update_task(task_id, patch)
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error", "任务不存在"))
     logger.info(f"[LiveBatch] 任务已更新: {task_id}")
-    return {"ok": True, "task": cfg.to_dict()}
+    return result
 
 
 @router.post("/tasks/{task_id}/restart")
 async def restart_task(task_id: str) -> dict:
     """重启批量任务（先停止再启动）。"""
-    if not LIVE_BATCH_ENABLED:
-        return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
+    if not batch_enabled():
+        return {"ok": False, "error": "批量采集总开关未开启",
+                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
     mgr = get_manager()
     # 先停止
@@ -293,9 +291,9 @@ async def restart_task(task_id: str) -> dict:
 @router.post("/instances/{instance_id}/start")
 async def start_instance(instance_id: str) -> dict:
     """启动单个实例。"""
-    if not LIVE_BATCH_ENABLED:
-        return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
+    if not batch_enabled():
+        return {"ok": False, "error": "批量采集总开关未开启",
+                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
     mgr = get_manager()
     # 获取实例信息
@@ -328,9 +326,9 @@ async def stop_instance(instance_id: str) -> dict:
 @router.post("/instances/{instance_id}/restart")
 async def restart_instance(instance_id: str) -> dict:
     """重启单个实例。"""
-    if not LIVE_BATCH_ENABLED:
-        return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
+    if not batch_enabled():
+        return {"ok": False, "error": "批量采集总开关未开启",
+                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
 
     mgr = get_manager()
     # 获取实例信息
@@ -374,9 +372,9 @@ async def list_templates() -> dict:
 @router.post("/templates")
 async def create_template(req: CreateTemplateRequest) -> dict:
     """创建任务模板。"""
-    if not LIVE_BATCH_ENABLED:
-        return {"ok": False, "error": "批量采集总开关未开启（默认休眠）",
-                "hint": "设置 DY_LIVE_BATCH_ENABLED=1 以启用"}
+    if not batch_enabled():
+        return {"ok": False, "error": "批量采集总开关未开启",
+                "hint": "在设置页「直播编排策略」开启批量采集总开关"}
     
     if not req.name or not req.name.strip():
         raise HTTPException(400, "模板名不能为空")
