@@ -507,10 +507,13 @@ export default function CrawlFloatingPanel({
               onValueChange={(v) => { onTagChange?.(v); }}
             >
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="默认标签" />
+                <SelectValue placeholder="不使用标签" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">默认标签</SelectItem>
+                {/* ★ 2026-10-04（用户指令）：明确给出「不使用标签」选项。
+                    此前写「默认标签」—— 语义模糊，用户不知道它其实是
+                    「不按标签过滤」（选它 = 全采，不选任何标签）。 */}
+                <SelectItem value="">不使用标签</SelectItem>
                 {tags.map((t) => (
                   <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                 ))}

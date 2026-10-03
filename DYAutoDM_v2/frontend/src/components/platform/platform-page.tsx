@@ -267,7 +267,17 @@ export default function PlatformPage(props: PageProps & {
     }
   });
   _feedMerged.sort((a, b) => a.ri - b.ri);
-  const feedItems: AwemeItem[] = _feedMerged.slice(0, FEED_TARGET).map((x) => x.item);
+  // ★ 2026-10-04（用户指令）：推荐流**不要实时排版** —— 凑够数量后一起渲染。
+  //   此前每批到达就合并渲染 ⇒ 卡片一批批「跳出来」，视觉上在实时重排。
+  //   现：未达 `FEED_TARGET` **且不仍在取** ⇒ 先不渲染（返回空）。
+  //
+  //   🔴 必须防「永远空白」：若上游给不满（风控/去重后不足），仍在取时
+  //      等；**取完了仍不足** ⇒ 照常渲染已有的（不能让用户盯着空白页）。
+  //      判据是「是否还有 query 在跑」，不是「数量是否达标」。
+  const _feedStillWorking = feedQueries.some((q) => q.isFetching || q.isPending);
+  const feedItems: AwemeItem[] = (_feedMerged.length >= FEED_TARGET || !_feedStillWorking)
+    ? _feedMerged.slice(0, FEED_TARGET).map((x) => x.item)
+    : [];
   const feedFiltered = feedQueries.reduce(
     (n, q) => n + (typeof q.data?.filtered === "number" ? q.data.filtered : 0), 0);
   const feedLoaded = feedQueries.filter((q) => (q.data?.items?.length ?? 0) > 0).length;

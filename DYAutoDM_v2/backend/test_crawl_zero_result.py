@@ -193,6 +193,88 @@ class TestTaskPageShowsCrawlTasks(unittest.TestCase):
         self.assertIn("成功 {t.ok_works", src, "未显示成功/失败结果")
 
 
+class TestSearchResultUnwrap(unittest.TestCase):
+    """⑥ 搜索结果必须解到**作品列表**层（用户实测：播放取址 422）。
+
+    事故链：`search_general_work` 返回**完整 resp_json**
+    （`{"status_code":..,"data":[..]}`），直接喂给 `_pick_aweme` ⇒
+    它拿到的是 dict，`w.get("aweme_id")` 恒空 ⇒ 前端拿不到 aweme_id ⇒
+    `POST /api/platform/media/stream-ticket` 报
+    `missing body.aweme_id`（422）—— 表现为「默认搜索和筛选搜索全部失败」。
+
+    ⇒ 判据：必须经 `_extract_aweme_list` 显式取 data 层，且**多种上游
+       形态都要活**（裸列表 / resp_json / features 信封）。
+    """
+
+    def setUp(self):
+        from api.platform import _extract_aweme_list, _pick_aweme
+        self.extract = _extract_aweme_list
+        self.pick = _pick_aweme
+
+    def _ids(self, raw):
+        return [self.pick(w).get("aweme_id") for w in self.extract(raw)]
+
+    def test_bare_list(self):
+        self.assertEqual(self._ids([{"aweme_id": "A1"}]), ["A1"])
+
+    def test_resp_json_with_data(self):
+        self.assertEqual(self._ids({"status_code": 0, "data": [{"aweme_id": "B1"}]}),
+                         ["B1"])
+
+    def test_features_envelope(self):
+        self.assertEqual(self._ids({"ok": True, "data": [{"aweme_id": "C1"}],
+                                    "error": ""}), ["C1"])
+
+    def test_aweme_list_key(self):
+        self.assertEqual(self._ids({"aweme_list": [{"aweme_id": "D1"}]}), ["D1"])
+
+    def test_unknown_shape_returns_empty_not_dict(self):
+        """🔴 认不出的结构必须回 []，绝不返回 dict 冒充列表。"""
+        r = self.extract({"foo": 1})
+        self.assertEqual(r, [], "未识别结构应回空列表，不能静默把 dict 往下传")
+        self.assertEqual(self.extract(None), [])
+
+    def test_backend_calls_extractor(self):
+        import inspect
+        import api.platform as P
+        src = inspect.getsource(P.search)
+        self.assertIn("_extract_aweme_list", src,
+                      "筛选路径未调用提取器 ⇒ aweme_id 会再丢一次")
+
+
+class TestUiRequirements(unittest.TestCase):
+    """⑦ 三条 UI 硬要求（用户逐条指定）。"""
+
+    def _read(self, *parts):
+        with io.open(os.path.join(_SRC, *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def test_tag_select_has_no_tag_option(self):
+        with io.open(os.path.join(_SRC, "frontend", "src", "components",
+                                  "crawl", "CrawlFloatingPanel.tsx"),
+                     encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("不使用标签", src,
+                      "标签下拉缺「不使用标签」选项 ⇒ 用户不知道如何停用过滤")
+
+    def test_feed_renders_only_when_complete(self):
+        """🔴 必须防「永远空白」：取完了仍不足也要渲染。"""
+        src = self._read("frontend", "src", "components", "platform",
+                         "platform-page.tsx")
+        i = src.find("const feedItems: AwemeItem[] =")
+        self.assertGreater(i, 0, "找不到 feedItems 定义")
+        seg = src[i:i + 260]
+        self.assertIn("FEED_TARGET", seg, "未凑够数量才渲染的判据缺失")
+        self.assertIn("_feedStillWorking", seg,
+                      "缺「仍在取」的短路 ⇒ 上游给不满时页面永远空白")
+
+    def test_checked_card_has_accent_ring(self):
+        src = self._read("frontend", "src", "components", "platform",
+                         "platform-cards.tsx")
+        self.assertIn("checked\n          ? \"ring-2", src,
+                      "选中卡片未加 ring 边框")
+
+
 class TestNegativeControl(unittest.TestCase):
     """负控自证：门禁必须能变红。"""
 

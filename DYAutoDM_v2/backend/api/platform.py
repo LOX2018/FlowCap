@@ -258,6 +258,34 @@ def _notice_actor_text(n: dict) -> tuple[str, str]:
     )
 
 
+def _extract_aweme_list(raw) -> list:
+    """从 `search_general_work` 的返回里取出**作品列表**。
+
+    🔴 2026-10-04：该接口在不同上游版本下返回形态不同，必须**都认**：
+      ① 裸列表 `[aweme, ...]`
+      ② 完整 resp_json `{"status_code":0,"data":[aweme,...],...}`
+      ③ features 信封 `{"ok":true,"data":[...],"error":...}`
+    只认一种就会出现「搜到了但 aweme_id 全空」（实测导致播放取址 422）。
+
+    ⚠️ 取不到就返回 `[]` **并留日志** —— 绝不静默把 dict 当列表往下传
+       （那正是本次事故的形态）。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("data", "aweme_list", "items"):
+            v = raw.get(key)
+            if isinstance(v, list):
+                return v
+        logger.warning(f"[PLT-011] [platform] 搜索返回结构未识别（无 data/"
+                       f"aweme_list/items），keys={sorted(raw.keys())[:8]}")
+        return []
+    logger.warning(f"[PLT-011] [platform] 搜索返回类型异常: {type(raw).__name__}")
+    return []
+
+
 def _pick_aweme(w: dict) -> dict:
     """裁剪作品字段（只保留前端需要的，避免把巨量原始 JSON 透传）。"""
     if not isinstance(w, dict):
@@ -774,13 +802,23 @@ async def search(req: SearchReq) -> dict[str, Any]:
         works = None
         stream = None  # ★ M-20：供传输层事实读取（except 分支下保持 None）
         if _has_filter:
-            works = await asyncio.to_thread(
+            _raw = await asyncio.to_thread(
                 api.search_general_work, auth, req.query,
                 req.sort_type or "0", req.publish_time or "0", "0",
                 str(num), req.filter_duration)
+            # 🔴 2026-10-04 修「搜到结果但 aweme_id 全空 ⇒ 播放取址 422」：
+            #   `DouyinAPI.search_general_work` 返回的是**完整 resp_json**
+            #   （`{"status_code":..,"data":[..],..}`），而 `search_stream`
+            #   那条路径的 `aweme_list` 才是**裸作品列表**。
+            #   直接把 resp_json 当列表喂给 `_pick_aweme` ⇒ 它拿到的是
+            #   {"data":[...]} 这个字典 ⇒ `w.get("aweme_id")` 恒空 ⇒
+            #   前端拿不到 aweme_id ⇒ media/stream-ticket 报
+            #   `missing body.aweme_id`（422）。故此处必须**显式取 data 层**。
+            works = _extract_aweme_list(_raw)
             logger.info(f"[PLT-010] [platform] 搜索走筛选接口: "
                         f"q={req.query!r} sort={req.sort_type or '0'} "
-                        f"pt={req.publish_time or '0'} dur={req.filter_duration!r}")
+                        f"pt={req.publish_time or '0'} dur={req.filter_duration!r} "
+                        f"→ {len(works or [])} 条")
         else:
             # auth 已由策略层保证非 None（匿名不可用，见函数头 fail-closed）
             try:
