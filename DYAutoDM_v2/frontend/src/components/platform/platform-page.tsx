@@ -8,8 +8,8 @@
  * 所有请求都是**用户显式动作触发**（切 tab / 点搜索 / 点刷新），
  * **不做后台自动轮询** —— 主动请求越少越安全。
  */
-import { useState, useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useRef, useMemo } from "react";
+import { useQuery, useQueries } from "@tanstack/react-query";
 import {
   LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User, MessageSquare,
   Users, BookOpen, AlertTriangle, RefreshCw,
@@ -218,69 +218,82 @@ export default function PlatformPage(props: PageProps & {
 
   // 推荐流：仅在该 tab 激活时请求（enabled 控制，避免无用主动请求）
   // ★ 2026-09-30：新增「换一批」——refreshIdx 递增即请求互不重复的新批次。
-  const [feedIdx, setFeedIdx] = useState(2);
-  const feedQ = useQuery({
-    queryKey: ["platform-feed", account, feedIdx],
-    queryFn: () => platformApi.feed(account, 20, feedIdx),
-    enabled: !!account && tab === "feed",
-    staleTime: 120_000,
-  });
-
-  // ★ 2026-10-03（用户指令）：推荐流**累积凑够 10 个**。
+  // ★ 2026-10-03（用户指令，第二轮）：推荐流**恰好 10 个** + **并行**取批。
   //
-  // 背景：上游 `refresh_index` 是「换一批」刷新种子，单次只回 2~6 条（实测，
-  //      与 count=20 无关）。用户要的是「凑够 10 个」而非「一批多少算多少」。
+  // 用户两点要求：
+  //  · 「推荐流只需要 10 个视频卡片就行」—— **精确 10**。原串行补拉实测出 11 个。
+  //  · 「能不能并行，串流有点慢」—— 原实现是**串行**补拉（一批到位才拉下一批），
+  //    每批一个网络往返（实测每批约 1s）⇒ 凑 10 个要等 3~4 秒。改**并行**。
   //
   // 设计（判据）：
-  //  · 每批到达 → 按 `aweme_id` **去重追加**（同一 refresh_index 重取结果会变，必须去重）；
-  //  · 追加后仍不足 `FEED_TARGET` → **自动再拉下一批**（feedIdx+1）；
-  //  · 补拉上限 `FEED_MAX_TRIES` 轮 —— 上游持续不足时**必须停**，否则无限打接口＝
-  //    风控面失控（本页铁律：主动请求越少越安全）；
-  //  · 「换一批」→ 重置累积与计数，从全新批次重新凑；
-  //  · 累积真源放在 **ref**（`feedAccRef`）而非 state：state 在 effect 闭包里是
-  //    上一轮的值，用它会「多加一批」（实测该坑）。ref 读到的永远是真实长度。
+  //  · 用 `useQueries` **并行**拉 `FEED_BATCHES` 个不同 `refresh_index` 的批次；
+  //  · 合并时按 `aweme_id` 去重，**累计到 `FEED_TARGET` 即截断**（多余的批次丢弃）⇒ 恰好 10；
+  //  · 排序键 = `refresh_index` 升序、批内保持上游顺序 ⇒ 稳定序（避免每次渲染卡片跳动）；
+  //  · 上游首批不足 10 ⇒ 再并行追加一段（受 `FEED_MAX_BATCHES` 风控上限约束，只增不减，
+  //    旧批数据保留 ⇒ 合并结果单调增长，不会「凑够了又掉回去」）；
+  //  · 「换一批」⇒ 起始索引跳过已用段，取全新批次。
   const FEED_TARGET = 10;
-  const FEED_MAX_TRIES = 5;
-  const [feedItems, setFeedItems] = useState<AwemeItem[]>([]);
-  const feedAccRef = useRef<AwemeItem[]>([]);   // 累积真源（去重后的真实列表）
-  const feedHandledRef = useRef<number>(-1);    // 已聚合到的 feedIdx（幂等）
-  const feedTriesRef = useRef(0);               // 自动补拉计数（风控上限）
-  const feedKeyRef = useRef<string>("");        // 账号切换检测
+  const FEED_BATCHES = 6;        // 每次并行拉多少批（实测每批 2~6 条 ⇒ 6 批通常一次就够 10）
+  const FEED_MAX_BATCHES = 12;   // 上游持续不足时的最大批数（风控上限：主动请求要可控）
+  const [feedBase, setFeedBase] = useState(2);
+  const [feedSpan, setFeedSpan] = useState(FEED_BATCHES);
+  const feedIndices: number[] = useMemo(
+    () => Array.from({ length: feedSpan }, (_, k) => feedBase + k),
+    [feedBase, feedSpan],
+  );
+  const feedQueries: { data?: { items?: AwemeItem[]; filtered?: number }; isPending: boolean; isFetching: boolean; isError: boolean; error?: unknown; refetch: () => void }[] = useQueries({
+    queries: feedIndices.map((ri) => ({
+      queryKey: ["platform-feed", account, ri],
+      queryFn: () => platformApi.feed(account, 20, ri),
+      enabled: !!account && tab === "feed",
+      staleTime: 120_000,
+    })),
+  });
+  const feedAnyFetching = feedQueries.some((q) => q.isFetching);
 
-  useEffect(() => {
-    // 账号切换 ⇒ 清空累积（否则会把上个账号的作品混进来）
-    const k = String(account || "");
-    if (feedKeyRef.current !== k) {
-      feedKeyRef.current = k;
-      feedAccRef.current = [];
-      feedHandledRef.current = -1;
-      feedTriesRef.current = 0;
-      setFeedItems([]);
-      return;
-    }
-    const d = feedQ.data;
+  // 合并：去重 → 按 refresh_index 排序 → **精确截断到 FEED_TARGET**。
+  // （不用 useMemo：`feedQueries` 每次渲染都是新数组引用，做依赖会每轮重算；
+  //   上限 12 批 × 约 6 条，开销可忽略，直接算更简单也更不易错。）
+  const _feedMerged: { ri: number; item: AwemeItem }[] = [];
+  const _feedSeen = new Set<string>();
+  feedIndices.forEach((ri, k) => {
+    const d = feedQueries[k]?.data;
     if (!d?.items?.length) return;
-    // 幂等键取「本批数据自带的 refresh_index」（= 数据身份），**不是** feedIdx。
-    // 🔴 坑（实测）：effect 依赖含 feedIdx ⇒ feedIdx 递增后 effect 会立刻重跑，
-    //   而此刻 feedQ.data 仍是**上一批**的数据。用 feedIdx 判定会误认「已处理」，
-    //   既丢掉新批、又白耗一次补拉计数。用数据自带的 refresh_index 则天然幂等。
-    const batchId = typeof d.refresh_index === "number" ? d.refresh_index : feedIdx;
-    if (feedHandledRef.current === batchId) return;
-    feedHandledRef.current = batchId;
+    for (const it of d.items as AwemeItem[]) {
+      const id = it?.aweme_id;
+      if (!id || _feedSeen.has(id)) continue;
+      _feedSeen.add(id);
+      _feedMerged.push({ ri, item: it });
+    }
+  });
+  _feedMerged.sort((a, b) => a.ri - b.ri);
+  const feedItems: AwemeItem[] = _feedMerged.slice(0, FEED_TARGET).map((x) => x.item);
+  const feedFiltered = feedQueries.reduce(
+    (n, q) => n + (typeof q.data?.filtered === "number" ? q.data.filtered : 0), 0);
+  const feedLoaded = feedQueries.filter((q) => (q.data?.items?.length ?? 0) > 0).length;
 
-    const seen = new Set(feedAccRef.current.map((x) => x.aweme_id));
-    const add = (d.items as AwemeItem[]).filter((x) => x.aweme_id && !seen.has(x.aweme_id));
-    if (add.length) {
-      feedAccRef.current = [...feedAccRef.current, ...add];
-      setFeedItems(feedAccRef.current);
-    }
-    // 决策基于 ref 的**真实**长度（不用闭包里的 state，避免多加一批）
-    if (feedAccRef.current.length < FEED_TARGET
-        && feedTriesRef.current < FEED_MAX_TRIES) {
-      feedTriesRef.current += 1;
-      setFeedIdx((n) => n + 1);
-    }
-  }, [feedQ.data, feedIdx, account]);
+  // 上游首批不足 10 ⇒ 并行追加一段。`expandedAtRef` 防同一 feedSpan 反复触发。
+  const expandedAtRef = useRef(0);
+  useEffect(() => {
+    if (!account || tab !== "feed") return;
+    if (feedAnyFetching) return;
+    if (feedItems.length >= FEED_TARGET) return;
+    if (feedSpan >= FEED_MAX_BATCHES) return;
+    if (expandedAtRef.current === feedSpan) return;
+    expandedAtRef.current = feedSpan;
+    setFeedSpan((n) => Math.min(n + FEED_BATCHES, FEED_MAX_BATCHES));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedAnyFetching, feedItems.length, feedSpan, account, tab]);
+
+  // renderQ 需要的最小契约（多批任一批未就绪即视为「加载中」）。
+  const feedQ = {
+    isPending: !!account && tab === "feed" && feedQueries.every((q) => q.isPending),
+    isError: feedQueries.length > 0 && feedQueries.every((q) => q.isError),
+    error: feedQueries.find((q) => q.isError)?.error,
+    data: { items: feedItems as unknown[] },
+    refetch: () => { feedQueries.forEach((q) => void q.refetch()); },
+  };
+
 
   const searchQ = useQuery({
     queryKey: ["platform-search", account, submitted?.q, submitted?.kind],
@@ -500,25 +513,25 @@ export default function PlatformPage(props: PageProps & {
           <div className="mb-3 flex items-center justify-between">
             <span className="text-[0.78rem] text-[var(--color-text-secondary)]">
               {feedItems.length
-                ? `已加载 ${feedItems.length} 个作品${feedItems.length < FEED_TARGET ? `（目标 ${FEED_TARGET}，补拉中…）` : ""}`
+                ? `${feedItems.length} 个作品`
+                  + (feedItems.length < FEED_TARGET ? `（目标 ${FEED_TARGET}）` : "")
+                  + (feedLoaded > 1 ? ` · 并行 ${feedLoaded} 批` : "")
                 : ""}
-              {typeof feedQ.data?.filtered === "number" && feedQ.data.filtered > 0
-                ? `（已过滤 ${feedQ.data.filtered} 个不可播条目）` : ""}
+              {feedFiltered > 0 ? `（已过滤 ${feedFiltered} 个不可播条目）` : ""}
             </span>
             <div className="flex items-center gap-2">
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={feedQ.isFetching}
+                disabled={feedAnyFetching}
                 onClick={() => {
-                  feedAccRef.current = [];
-                  feedHandledRef.current = -1;
-                  feedTriesRef.current = 0;
-                  setFeedItems([]);
-                  setFeedIdx((n) => n + 1);
+                  // 换一批：起始索引跳过本次已用过的整段 ⇒ 取全新批次
+                  setFeedBase((b) => b + feedSpan);
+                  setFeedSpan(FEED_BATCHES);
+                  expandedAtRef.current = 0;
                 }}
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${feedQ.isFetching ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-3.5 w-3.5 ${feedAnyFetching ? "animate-spin" : ""}`} />
                 换一批
               </Button>
               {/* ★ 2026-10-03：采集入口 */}
