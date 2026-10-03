@@ -176,7 +176,49 @@ class TestNoBackdropFilterOnHost(unittest.TestCase):
                               f"{host} 缺 ::before（模糊未搬家）")
         self.assertIn("pointer-events: none", src,
                       "伪元素缺 pointer-events:none（会挡住内部控件命中）")
-        self.assertIn("> *", src, "缺子元素 position 提升规则")
+        # ⚠️ 2026-10-03 修正：原先这里断言「必须存在 `> *` 提层规则」——
+        #   那条规则本身是**有害的**（硬覆盖子元素定位，已删）。
+        #   现在改为断言「**不得**存在」，见 test_no_child_position_lift。
+
+    def test_no_position_declared_on_host(self):
+        """🔴 绝不能给宿主写 `position`（实测回归，用户截图确认）。
+
+        组件的 className 里带 Tailwind 定位类（如采集悬浮窗
+        `modal-surface fixed bottom-4 right-4`）。我为了挂 `::before`
+        写了 `.modal-surface { position: relative }` —— CSS 同优先级
+        **后者胜** ⇒ `fixed` 被覆盖成 `relative` ⇒ `bottom-4 right-4`
+        全部失效 ⇒ 浮窗跟着文档流跑到**屏幕左边**。
+
+        伪元素用 `position: absolute` 挂在 `position: static` 宿主上
+        同样成立（宿主自身是 `fixed`，对 absolute 伪元素就是包含块），
+        **完全不需要**动宿主的 position。
+        """
+        # ⚠️ 只查「玻璃/浮层宿主」这几个选择器，**不查全库**：
+        #   装饰层（如 `.app-atmosphere`）自带 `position: fixed` 是**正确**的
+        #   —— 它不覆盖任何组件 className。全库扫描会误报。
+        hosts = (".modal-surface", ".popover-surface", ".glass-premium",
+                 ".glass-panel", ".card-surface")
+        bad = []
+        for sel, body in _rule_bodies(_css()):
+            s = sel.strip()
+            if s not in hosts:          # 只管这几个，其余不管
+                continue
+            if re.search(r"(?<![\w-])position\s*:\s*(relative|absolute|fixed|sticky)",
+                         body):
+                bad.append(f"{s} {{position}}")
+        self.assertEqual(
+            bad, [],
+            "这些**浮层宿主**选择器声明了 position ⇒ 会覆盖组件 className "
+            f"里的 Tailwind 定位类（fixed），浮层跑位。命中: {bad}")
+
+    def test_no_child_position_lift(self):
+        """🔴 不得用 `> * { position: relative }` 提层（硬覆盖子元素定位）。"""
+        src = _css()
+        hits = re.findall(r"\.\w[\w-]*\s*>\s*\*\s*\{[^}]*position\s*:", src)
+        self.assertEqual(
+            hits, [],
+            "不得用 `宿主 > * { position }` 提层 —— 会破坏子元素自身的 "
+            f"fixed/absolute（关闭按钮、滚动容器会跑位）。命中: {hits}")
 
     def test_blur_value_preserved_via_custom_property(self):
         """🔴 模糊值必须搬进自定义属性，不能被 `none` 抹掉。

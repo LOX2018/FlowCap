@@ -246,18 +246,26 @@
      定位基准就错位 ⇒ 「能点开但列表不显示/错位」。
      实测受害者：采集悬浮窗（modal-surface + 内含 Select）。
 
-     修法：模糊挪到 `::before` 伪元素（绝对定位、inset:0）——
+     修法：模糊挪到 `::before` 伪元素（absolute + inset:0）——
      视觉效果等价，但**宿主本身不再创建包含块**，fixed 后代定位恢复正常。
-     ⚠️ 两个必守的细节：
-       ① `pointer-events: none` —— 否则伪元素铺满整个宿主，**挡住内部所有
-          控件的命中测试**（这正是「点不动」的另一种表现）；
-       ② `z-index: 0` 而非 `-1` —— 宿主有 92% 不透明 background，
+     ⚠️ 三个必守的细节：
+       ① **绝对不能给宿主写 `position`** —— 组件的 className 里带
+          `fixed`（如采集悬浮窗 `modal-surface fixed bottom-4 right-4`）。
+          我第一版写了 `.modal-surface { position: relative }`，
+          CSS 同优先级**后者胜** ⇒ 把 `fixed` 覆盖成 `relative` ⇒
+          `bottom-4 right-4` 全部失效，浮窗跟着文档流跑到屏幕左边
+          （用户实测截图确认）。伪元素用 `position: absolute` 挂在
+          `position: static` 宿主上**同样成立**（此时包含块是最近
+          的定位祖先，通常是 body/视口）—— 而宿主自身是 `fixed`，
+          对 `absolute` 伪元素而言它就是包含块，铺满效果一致。
+       ② `pointer-events: none` —— 否则伪元素铺满整个宿主，**挡住内部
+          所有控件的命中测试**（这正是「点不动」的另一种表现）。
+       ③ `z-index: 0` 而非 `-1` —— 宿主有 92% 不透明 background，
           `z-index:-1` 会让伪元素落到背景**之下**（模糊不可见）。
-          宿主直接子元素若为静态定位会被伪元素盖住，故统一给
-          `.modal-surface > *` / `.popover-surface > *` 加
-          `position: relative`（不改层叠顺序，只提到伪元素之上）。 */
-  .modal-surface,
-  .popover-surface { position: relative; }
+          ⚠️ **不要**用 `> * { position: relative }` 提层：那是硬覆盖，
+          会破坏子元素自身的 `fixed`/`absolute`（`ModalHeader` 的关闭
+          按钮、滚动容器等都会跑位）。伪元素 `z-index: 0` 与宿主
+          `background` 同层，而**正常流内容**天然绘制在其上，无需提层。 */
   .modal-surface::before,
   .popover-surface::before {
     content: "";
@@ -269,9 +277,6 @@
     -webkit-backdrop-filter: blur(48px);
     pointer-events: none;   /* 关键：伪元素不参与命中测试，否则挡住内部控件 */
   }
-  /* 直接子元素提到伪元素之上（position 不改变 z 层级，只解决遮挡） */
-  .modal-surface > *,
-  .popover-surface > * { position: relative; }
   /* 小浮层（下拉/气泡）：更轻的模糊与投影，避免「小气泡像大弹窗」 */
   .popover-surface {
     box-shadow: var(--ring-inset-hi), var(--shadow-md);
@@ -300,14 +305,19 @@
   .glass-premium,
   .glass-panel,
   .card-surface {
-    position: relative;
     /* ⚠️ 关键：模糊值存进自定义属性，伪元素读它。
        若直接写 `backdrop-filter: none` 清声明，伪元素的 `inherit` 会
        一并变成 none ⇒ **模糊完全消失（视觉回归）**。
        自定义属性不在元素上触发包含块，只作数据载体。 */
     --glass-blur: blur(48px);
   }
-  html:not([data-glass-frost]) .glass-panel { --glass-blur: blur(14px); }
+  /* ⚠️ 变体必须**逐个**定义 `--glass-blur`（2026-10-03 实测漏了）：
+     frost 关闭时命中 `html:not([data-glass-frost])` 变体，若该变体没定义
+     变量，伪元素的 `var(--glass-blur)` 就取不到值 ⇒ **玻璃面板没有模糊**
+     （视觉回归，且不报错、只表现为「看起来不透明」）。
+     作用域：自定义属性继承 ⇒ 变体只需覆盖值，无需各自的 ::before。 */
+  html:not([data-glass-frost]) .glass-panel,
+  html:not([data-glass-frost]) .glass-premium { --glass-blur: blur(14px); }
   .glass-panel { --glass-blur: blur(24px); }
   .card-surface { --glass-blur: blur(18px); }
   .glass-premium::before,
@@ -322,9 +332,6 @@
     -webkit-backdrop-filter: var(--glass-blur);
     pointer-events: none;
   }
-  .glass-premium > *,
-  .glass-panel > *,
-  .card-surface > * { position: relative; }
   .modal-scrim {
     background: color-mix(in srgb, #05060a 55%, transparent);
     backdrop-filter: blur(6px);
