@@ -90,6 +90,42 @@ fn port_in_use(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
+/// 关窗优雅级联（2026-10-03）：向 backend 的免鉴权端点
+/// `POST http://127.0.0.1:{backend_port}/api/shutdown/daemons` 发一次请求，
+/// backend 级联向所有存活守护（BCC + recv）发 /quit 优雅退出。
+///
+/// 零新依赖：用 std::net::TcpStream 手写最小 HTTP/1.1 请求（不引 reqwest，
+/// 避免给 Tauri 壳增加依赖面）。backend 不可达（未起/已退）时静默返回 false，
+/// 调用方继续走 taskkill 兜底即可 —— 优雅级联是「尽力而为」，不阻断关窗。
+pub fn request_daemons_graceful_shutdown(backend_port: u16) -> bool {
+    use std::io::{Read, Write};
+    let addr = format!("127.0.0.1:{backend_port}");
+    let parsed = match addr.parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let stream = match TcpStream::connect_timeout(&parsed, Duration::from_millis(1500)) {
+        Ok(s) => s,
+        Err(_) => return false, // backend 不可达：兜底路径接管
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(4000)));
+    // 单行拼接（避免 CRLF 换行把缩进带进 HTTP 头）。
+    let req = format!("POST /api/shutdown/daemons HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let mut stream = stream;
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    true
+}
+
 /// 单个 sidecar 的句柄。字段全部 interior-mutable（Arc + Mutex/Atomic），
 /// 便于 BCC supervisor 在崩溃重启时替换 child 而无需可变借用——句柄存入
 /// AppState.daemons Vec 后仍可被 supervisor 跨任务更新。
@@ -110,6 +146,17 @@ impl SidecarHandle {
 
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    /// 置「显式停止」标记但不杀进程。
+    ///
+    /// 关窗优雅级联专用（2026-10-03）：BCC 收到 backend 级联的 /quit 后
+    /// 会在 ~0.5s 内自退；此时 supervisor 若先于兜底 kill_tree 看到
+    /// Terminated，会走「1s 退避后自动重启」路径 —— 把优雅退出当崩溃。
+    /// 先置 stopping=true，supervisor 的退避检查（supervise_bcc 第 4/5 步）
+    /// 与延迟期复查都会判「显式停止」而不重启。
+    pub fn mark_stopping(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
     }
 
     /// 递归终止整个进程树（Windows 下 PyInstaller onefile 的 sidecar 会解压出

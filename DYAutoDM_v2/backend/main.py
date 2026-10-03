@@ -783,6 +783,9 @@ _MEMBER_EXEMPT = (
     # 2026-09-13：版本探针必须免鉴权 —— 前端要在登录前就能校验前后端版本，
     # 否则 401 会让 checkVersionConsistency 拿到 unknown，校验形同虚设。
     "/api/version",
+    # 2026-10-03：关窗级联优雅退出必须免鉴权 —— 关窗瞬间可能未登录/已登出，
+    # 拿不到会员 token；Rust 侧（非前端）直接调它触发 BCC/recv 的 /quit 级联。
+    "/api/shutdown/daemons",
     "/redoc",
 )
 
@@ -1096,6 +1099,51 @@ async def ready_gate():
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[SYS-021] " + f"[ready] 就绪探测异常: {e}")
     return {"ok": True, "daemons_ready": daemons_ready, "accounts": accounts_n}
+
+
+# ---------------------------------------------------------------------------
+# 关窗级联优雅退出（2026-10-03，用户定调「优雅退出」）
+#
+# Tauri 关窗流程：POST 本端点 → backend 级联向所有存活守护发 /quit
+# （BCC 优雅关闭 Chromium context + SingletonLock 清扫后自退；recv 优雅收尾）
+# → Rust 等 1.5s → taskkill /F /T 兜底残留。
+# 免鉴权理由：关窗瞬间可能尚未登录/已登出，拿不到会员 token；与 /api/ready 同位。
+# 无副作用铁律：本端点**不写** .bcc_user_stopped 停止标记 —— 关窗≠用户主动停 BCC，
+# 重启后自动拉起路径（ensure_bcc）照常恢复。
+# ---------------------------------------------------------------------------
+@app.post("/api/shutdown/daemons")
+async def shutdown_daemons_graceful():
+    """关窗级联：向所有存活守护（BCC + recv）发 /quit 优雅退出（幂等、免鉴权）。"""
+    import urllib.request
+    from auto_dm import accounts as _acct_core
+
+    def _quit_http(port: int) -> bool:
+        if not port:
+            return False
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/quit", data=b"", method="POST")
+            with urllib.request.urlopen(req, timeout=3):
+                return True
+        except Exception:
+            return False
+
+    names = [n[0] if isinstance(n, (tuple, list)) else n
+             for n in _acct_core.list_accounts()]
+    bcc_quit = 0
+    recv_quit = 0
+    for n in names:
+        bport = _acct_core.browser_daemon_port(n)
+        if _acct_core._port_open(bport, timeout=0.3):
+            bcc_quit += 1 if _quit_http(bport) else 0
+        rport = _acct_core.recv_daemon_port(n)
+        if _acct_core._port_open(rport, timeout=0.3):
+            recv_quit += 1 if _quit_http(rport) else 0
+    logger.info(
+        f"[shutdown] 守护优雅级联完成: BCC {bcc_quit}/{len(names)}，"
+        f"recv {recv_quit}/{len(names)}（未运行视为已停，跳过）")
+    return {"ok": True, "bcc_quit": bcc_quit, "recv_quit": recv_quit,
+            "accounts": len(names)}
 
 
 @app.get("/")

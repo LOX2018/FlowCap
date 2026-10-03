@@ -219,27 +219,62 @@ pub fn run() {
             }
             Ok(())
         })
-        // 前端窗口关闭时联动关闭所有 sidecar：先关前端后端的子进程树，再关守护，
-        // 避免孤儿进程（PyInstaller onefile 解压出的 _MEI 子进程）继续占用端口。
-        // 顺序：① 后端 sidecar（kill_tree 递归终止）→ ② 各账号守护（kill_tree）。
+        // 前端窗口关闭时联动关闭所有 sidecar。
+        // 顺序（2026-10-03 起，关窗「优雅退出」定调）：
+        //   ① 优雅级联 —— 调 backend 免鉴权端点 /api/shutdown/daemons，
+        //      backend 级联向所有存活 BCC + recv 发 /quit：BCC 关闭 Chromium
+        //      context、清扫 SingletonLock，~0.5s 后自退（优雅，而非强杀残留）；
+        //   ② 标记守护为显式停止 —— 防 BCC 自退后 supervisor 误判「崩溃」
+        //      走退避重启；
+        //   ③ 级联成功则等 1.5s，给 BCC 完成优雅自退（/quit 契约 0.5s）；
+        //   ④⑤ taskkill /F /T 兜底 —— 未收信号/未自退的守护与 backend
+        //      进程树递归终止（连带 _MEI 子进程，避免孤儿占端口）。
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                log::info!("窗口关闭请求：先关闭后端进程树，再关闭守护");
+                log::info!("窗口关闭请求：优雅级联 → 等自退 → taskkill 兜底");
                 let app = window.app_handle();
-                // ① 优先关闭后端（递归杀进程树，连带 _MEI 子进程一并终止）
+                // ① 优雅级联（backend 活着才能调 —— 级联端点在 backend 上）
+                let backend_alive = app
+                    .state::<AppState>()
+                    .backend
+                    .lock()
+                    .map(|g| g.as_ref().map(|h| h.is_alive()).unwrap_or(false))
+                    .unwrap_or(false);
+                let cascade_ok = if backend_alive {
+                    sidecar::request_daemons_graceful_shutdown(8000)
+                } else {
+                    false
+                };
+                log::info!(
+                    "关窗级联: 优雅退出请求已发 (backend_alive={backend_alive}, ok={cascade_ok})；taskkill 兜底未来自退者"
+                );
+                // ② 先置「显式停止」标记（必须在等自退**之前**）：
+                //    BCC 收 /quit 后 ~0.5s 自退，supervisor 看到 Terminated
+                //    若 stopping=false 会走「1s 退避自动重启」——把优雅退出当崩溃。
+                if let Ok(mut guard) = app.state::<AppState>().daemons.lock() {
+                    for h in guard.iter() {
+                        h.mark_stopping();
+                    }
+                }
+                // ③ 仅级联成功时等待自退（1.5s 覆盖 BCC 的 0.5s 自退契约）。
+                //    主线程短暂阻塞可接受：即将关窗，换来的是干净自退而非强杀。
+                if cascade_ok {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                }
+                // ④ 兜底：杀后端进程树（递归终止，连带 _MEI 子进程）
                 if let Ok(mut state) = app.state::<AppState>().backend.lock() {
                     if let Some(h) = state.take() {
                         let _ = h.kill_tree();
                     }
                 }
-                // ② 再关闭各账号守护进程树
+                // ⑤ 兜底：杀各账号守护进程树（清扫未自退的 BCC/recv）
                 if let Ok(mut guard) = app.state::<AppState>().daemons.lock() {
                     let handles: Vec<SidecarHandle> = guard.drain(..).collect();
                     for h in handles {
                         let _ = h.kill_tree();
                     }
                 }
-                log::info!("后端与守护进程树已全部关闭");
+                log::info!("后端与守护进程树已全部关闭（优雅级联 + taskkill 兜底）");
             }
         })
         .invoke_handler(tauri::generate_handler![
