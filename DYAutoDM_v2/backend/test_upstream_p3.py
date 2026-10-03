@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -69,9 +70,53 @@ class _Base(unittest.TestCase):
         database._db_path = lambda: self._dbfile
         sys.modules["database"]._db_path = lambda: self._dbfile
         self.conn.commit()   # 建表落盘
+        self._inject_export_root()
+
+    # ── (2026-10-03) 显式注入 `system.export_dir`，去掉「环境巧合」绿灯 ──────
+    def _inject_export_root(self) -> None:
+        """把配置中心的 `system.export_dir` 钉到**本用例的临时目录**。
+
+        🔴 为什么必须显式注入（此前是真缺陷，不只是洁癖）：
+        本组 `TestExportDownload` 直接调 `CE.default_export_dir()` /
+        `export_chatlab(..., dest_dir="")`，二者最终都读配置中心
+        `system.export_dir`（`export_paths.root()`）。而旧断言写死
+        `d.parent.name == "exports"` —— 那**只在真实配置恰好为空时**成立。
+        于是绿灯是环境巧合：实测注入一个自定义值立刻打红
+        （`AssertionError: 'inject_xxxx' != 'exports'`），换台机器、
+        用户在系统页改过导出目录、或配置中心默认值一变，红灯就与代码无关地出现。
+
+        注入到 `self._tmp` 之下还有第二重收益：`export_chatlab` 默认落点、
+        `_safe_export_file` 的中文样本文件都随之写进 `%TEMP%`，**测试产物不再
+        落进仓库**（此前每次跑都在 `<项目根>/exports/聊天记录/` 留下真实导出件）。
+        其他配置键仍走真实配置中心 ⇒ 不掩盖任何其它行为。
+        """
+        from services import app_config as _ac
+
+        self._export_root = os.path.join(self._tmp, "exports")
+        self._real_get = getattr(_ac, "get", None)
+        self._had_get = hasattr(_ac, "get")
+        root = self._export_root
+
+        def _get(section, key, default=None, scope=None):  # noqa: ANN001
+            if section == "system" and key == "export_dir":
+                return root
+            return self._real_get(section, key, default, scope)
+
+        _ac.get = _get                     # type: ignore[assignment]
+
+    def _set_export_root(self, path: str) -> None:
+        """临时改注入值（给「自定义 export_dir 也得跟随」的用例用）。"""
+        from services import app_config as _ac
+
+        _ac.get = lambda section, key, default=None, scope=None: (  # type: ignore[assignment]
+            path if (section, key) == ("system", "export_dir")
+            else self._real_get(section, key, default, scope))
 
     def tearDown(self):
         import database
+        from services import app_config as _ac
+        if self._had_get:
+            _ac.get = self._real_get      # type: ignore[assignment]
         try:
             if self._had:
                 database.get_db = self._orig
@@ -510,8 +555,65 @@ class TestExportDownload(_Base):
     def test_default_export_dir_is_under_app_root(self):
         d = CE.default_export_dir()
         self.assertTrue(d.is_dir(), "默认导出目录应可创建")
-        self.assertEqual(d.name, "chatlab")
-        self.assertEqual(d.parent.name, "exports")
+        # 2026-10-02 用户要求「导出目录按图片/表格等类型划分」⇒ 分类目录
+        # 改用中文名（用户面向中文，资源管理器里一眼可辨）。分类 SSOT =
+        # `services/export_paths.CATEGORIES`；此处断言**经由该 SSOT** 求出，
+        # 避免两处各写一份字面量而漂移（禁硬编码，见铁律 R8）。
+        from services import export_paths
+
+        self.assertEqual(d.name, export_paths.CATEGORIES["chat"][0])
+        self.assertEqual(d.name, "聊天记录")
+        # 必须是 SSOT 解析出的根目录，不能是别处自算的一套。
+        # ⚠️ 2026-10-03：原先此处断言 `d.parent.name == "exports"` ——
+        # 那只在**真实配置恰好为空**时成立，绿灯属环境巧合（注入自定义
+        # `export_dir` 即打红）。现改为断言「跟着注入值走」，与配置中心无关。
+        self.assertEqual(d.parent, export_paths.root())
+        self.assertEqual(str(d.parent), self._export_root)
+        self.assertEqual(str(export_paths.root()), self._export_root)
+
+    def test_follows_custom_export_dir_not_just_empty(self):
+        """🔴 负控：绿灯不能只由「配置为空」撑起来。
+
+        旧实现只断言 `parent.name == "exports"`，即**恰好等于**默认值时才通过
+        —— 换一个非空 `export_dir` 就崩。显式注入一个自定义值后，
+        根目录与四个分类目录必须**全部**跟着走，才说明真的读了配置中心。
+        """
+        from services import export_paths
+
+        custom = os.path.join(self._tmp, "custom_export_root")
+        self._set_export_root(custom)
+        try:
+            self.assertEqual(str(export_paths.root()), custom)
+            d = CE.default_export_dir()
+            self.assertEqual(str(d.parent), custom)
+            self.assertEqual(d.name, "聊天记录")
+            # 四个分类都落在自定义根下（不是只改了根、分类还留在旧处）
+            for key in export_paths.CATEGORIES:
+                self.assertEqual(str(export_paths.dir_for(key).parent), custom)
+        finally:
+            self._set_export_root(self._export_root)
+
+    def test_export_artifacts_stay_out_of_repo(self):
+        """测试产物只写 `%TEMP%`：不得在**项目目录**里留下导出件。
+
+        此前 `export_chatlab(dest_dir="")` 会真往
+        `<项目根>/exports/聊天记录/` 写文件（哪怕该目录被 .gitignore 挡住），
+        等于每次跑测试都往用户的数据目录里丢垃圾。
+        """
+        from services import export_paths
+
+        self._ins("你好", 1700000000.0)
+        self.conn.commit()
+        import database
+        database._db_path = lambda: self._dbfile
+        r = CE.export_chatlab(_ACCT, _CONV, "", fmt="jsonl")
+        self.assertTrue(r["ok"], r)
+        written = Path(r["path"]).resolve()
+        self.assertTrue(str(written).startswith(str(Path(self._tmp).resolve())),
+                        f"导出件落在临时目录之外：{written}")
+        # 注入根的上游必须是临时目录，且不等于项目根
+        self.assertNotEqual(Path(export_paths.root()),
+                            Path(__file__).resolve().parent.parent)
 
     def test_export_without_dest_dir_lands_in_default(self):
         self._ins("你好", 1700000000.0)

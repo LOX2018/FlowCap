@@ -348,8 +348,12 @@ async def export_stats(request: Request):
     try:
         from config import settings
 
-        out_dir = settings.data_dir / "exports"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # 2026-10-02：改走导出分类 SSOT（`表格/`），此前硬编码
+        # `settings.data_dir/"exports"` —— 与用户配置中心 `system.export_dir`
+        # 以及备份 / 聊天记录 / 图片三处**各落各的目录**，用户找不到文件。
+        from services import export_paths
+
+        out_dir = export_paths.dir_for("table")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = out_dir / f"stats_{ts}.xlsx"
         try:

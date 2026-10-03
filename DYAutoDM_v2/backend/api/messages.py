@@ -907,13 +907,44 @@ async def export_chatlab(body: ChatlabExportReq) -> dict:
     return {"ok": True, **res}
 
 
+def _safe_render_name(s: str) -> str:
+    """渲染产物文件名安全化（Windows 非法字符 + 保留名）。"""
+    import re as _re
+
+    n = _re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(s or "")).strip(" .")
+    if n.upper().split(".")[0] in {
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+        "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+    }:
+        n = "_" + n
+    return n or "render"
+
+
+def _save_render_file(category: str, filename: str, data: bytes) -> dict:
+    """把渲染产物落盘到导出分类目录，返回 `{"headers": {"X-Export-Path": 相对路径}}`。
+
+    落盘**失败不阻断导出**（用户仍能拿到浏览器下载），只如实回一个头，
+    路径只回**相对分类目录的子路径**，不外泄本机绝对路径（沿用本文件既有约定）。
+    """
+    from services import export_paths
+
+    try:
+        d = export_paths.dir_for(category)
+        p = d / _safe_render_name(filename)
+        p.write_bytes(data)
+        return {"headers": {"X-Export-Path": p.name}}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MSG-051] " + f"导出落盘失败（不影响下载）: {e}")
+        return {}
+
+
 @router.post("/render/html")
 async def render_chat_html(body: dict) -> dict:
     """把消息区间渲染成**自包含 HTML 长图**（本地渲染，内容不出机器）。
 
     请求体：`{account, conv_id, start_seq?, end_seq?, theme?, title?, subtitle?,
-              self_uid?, width?, scale?}`
-    返回 `{ok, html, chars, theme}`；HTML 中消息文本已强制转义（防注入）。
+              self_uid?, width?, scale?, save?}`
+    返回 `{ok, html, chars, theme, saved_path?}`；HTML 中消息文本已强制转义（防注入）。
 
     注：上游直出 PNG（无头浏览器截图）。我方先产出 HTML（可浏览器打印/另存），
     服务端直出 PNG 的接法是在 BCC 容器里 `page.screenshot()`——属下一阶段。
@@ -939,8 +970,16 @@ async def render_chat_html(body: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[MSG-042] " + f"长图渲染失败: {type(e).__name__}")
         raise HTTPException(502, f"长图渲染失败: {type(e).__name__}")
-    return {"ok": True, "html": html, "chars": len(html),
-            "theme": str(body.get("theme") or "dark")}
+    # 2026-10-02：可选落盘到导出分类目录 `图片/`（`save=true`）。
+    saved: dict = {}
+    if body.get("save"):
+        hname = f"chat_{conv_id.replace(':','_')[:40]}.html"
+        saved = _save_render_file("image", hname, html.encode("utf-8"))
+    out: dict = {"ok": True, "html": html, "chars": len(html),
+                 "theme": str(body.get("theme") or "dark")}
+    if saved.get("headers"):
+        out["saved_path"] = saved["headers"]["X-Export-Path"]
+    return out
 
 
 class ChatlabDownloadReq(BaseModel):
@@ -1026,8 +1065,15 @@ async def render_chat_png(body: dict) -> Response:
         import base64 as _b64
         return {"ok": True, "bytes": len(data),
                 "data_uri": "data:image/png;base64," + _b64.b64encode(data).decode("ascii")}
+    # 2026-10-02 用户要求「文件导出目录按图片/表格分类」⇒ 长图可**落盘**到
+    # 导出根目录的 `图片/` 分类（此前只有浏览器下载，磁盘上没有归类痕迹）。
+    # 默认不落盘（保持既有调用方的 inline 语义不变）。
+    saved: dict = {}
+    if body.get("save"):
+        saved = _save_render_file("image", name, data)
     return _Resp(content=data, media_type="image/png",
-                 headers={"Content-Disposition": f'inline; filename="{name}"'})
+                 headers={"Content-Disposition": f'inline; filename="{name}"',
+                          **saved.get("headers", {})})
 
 
 @router.get("/open/conversations")

@@ -130,19 +130,19 @@ def _load_msgs(conn, account: str, conv_id: str) -> tuple[dict, list]:
 
 
 def default_export_dir(sub: str = "chatlab") -> Path:
-    """默认导出目录：`<app_root>/exports/<sub>`（2026-09-17 乙方案）。
+    """导出目录：**委派 `services/export_paths`**（2026-10-02 分类 SSOT 归位）。
 
     桌面应用没有「服务端路径」语义 —— 用户点导出应直接拿到文件，
-    故 `dest_dir` 留空时落到此默认目录，再由下载端点交给前端。
+    故 `dest_dir` 留空时落到分类目录（`聊天记录/`），再由下载端点交给前端。
+
+    ⚠️ 旧实现在此独立解析 `vbrowser.app_root() / "exports" / sub`，
+    **不读配置中心的 `system.export_dir`** ⇒ 用户在系统页改了导出目录，
+    聊天记录仍落旧位置（旧实现只认 `DY_APP_ROOT`）。
+    现统一走 SSOT，旧参数名 `chatlab` 由 `_ALIAS` 映射到 `chat`。
     """
-    try:
-        import vbrowser
-        root = Path(vbrowser.app_root())
-    except Exception:
-        root = Path(os.environ.get("DY_APP_ROOT") or os.getcwd())
-    d = root / "exports" / sub
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    from services import export_paths
+
+    return export_paths.dir_for(sub)
 
 
 def _safe_export_file(filename: str, sub: str = "chatlab") -> Path | None:
@@ -150,22 +150,20 @@ def _safe_export_file(filename: str, sub: str = "chatlab") -> Path | None:
 
     ⚠️ **不能**用 ASCII 白名单：导出文件名含**中文昵称**
     （`build_filename` 用会话名命名，如 `四川工伤-张老师_..._export.jsonl`），
-    白名单会把它一律拒绝 → 下载恒 404（实测踩中）。
-    故改为「拒绝路径分隔与上跳 + **以 resolve 后的目录包含性为准**（权威判据）」。
+    白名单会把它一律拒绝 → 下载恒 404（实测踩中）。故判据是
+    「拒绝路径分隔与上跳 + **以 resolve 后的目录包含性为准**（权威判据）」。
+
+    2026-10-03：上述判据**整体委派 `services/export_paths.safe_file`** ——
+    此前这里是逐行复制的第二份（同样的 strip/拒分隔符/resolve 包含性/is_file
+    四段），与 SSOT 并存即等于两份判据各自演化：改了一边忘了另一边，
+    「聊天下载」与「分类下载」两套端点的行为就会悄悄分叉（历史缺陷：
+    分类端点有 `category not in CATEGORIES` 白名单校验，此处没有）。
+    现在全仓只有 `export_paths.safe_file` 一份实现，
+    旧参数名 `chatlab` 由其 `_ALIAS` 映射到 `chat`。
     """
-    name = (filename or "").strip()
-    if not name or name in (".", ".."):
-        return None
-    # 显式拒绝路径分隔符与 NUL（跨平台：/ 与 \ 都拦）
-    if any(c in name for c in ("/", "\\", "\x00")):
-        return None
-    base = default_export_dir(sub).resolve()
-    p = (base / name).resolve()
-    try:
-        p.relative_to(base)          # ★ 权威判据：必须仍在导出目录内
-    except ValueError:
-        return None
-    return p if p.is_file() else None
+    from services import export_paths
+
+    return export_paths.safe_file(sub, filename)
 
 
 def export_chatlab(account: str, conv_id: str, dest_dir: str, *,

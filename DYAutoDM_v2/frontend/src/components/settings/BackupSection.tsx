@@ -113,6 +113,7 @@ export default function BackupSection(props: PageProps) {
   };
 
   const dir = dirQ.data?.dir || "";
+  const cats = Object.values(dirQ.data?.categories || {});
   const grouped = useMemo(() => {
     const kv = scopes.filter((s) => s.kind === "kv");
     const tb = scopes.filter((s) => s.kind !== "kv");
@@ -169,8 +170,11 @@ export default function BackupSection(props: PageProps) {
           ))}
         </div>
 
-        {/* ---- 导出 ---- */}
-        <div className="flex flex-wrap items-center gap-2">
+        {/* ---- 导入 / 导出：2026-10-02 用户要求「放在同一行」----
+             原为上下两块（导出块 + 中间一条分隔线的导入块），同一动作被拆到
+             两个视觉区块，视线要来回跳。现合并为一行：范围勾选在上，
+             动作行（导出 / 下载 / 导入）在下并对齐。 */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-3">
           <Button size="sm" onClick={doExport} disabled={busy || !sel.size} data-od-id="backup-export">
             <Download className="h-3.5 w-3.5" />导出
           </Button>
@@ -179,42 +183,65 @@ export default function BackupSection(props: PageProps) {
               <span className="text-[0.72rem] text-[var(--color-text-muted)]">
                 {exported.filename} · {fmtBytes(exported.bytes)}
               </span>
-              <Button size="sm" variant="secondary" onClick={doDownload}>
+              <Button size="sm" variant="secondary" onClick={doDownload} data-od-id="backup-download">
                 下载
               </Button>
             </>
           )}
+
+          {/* 同一行右侧：导入 */}
+          <span className="ml-1 h-4 w-px shrink-0 bg-[var(--color-border)]" aria-hidden />
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+            className="max-w-[240px] text-[0.72rem] text-[var(--color-text-muted)] file:mr-2 file:rounded-[8px]
+                       file:border file:border-[var(--color-border)] file:bg-[var(--color-surface)]
+                       file:px-2.5 file:py-1 file:text-[0.72rem] file:text-[var(--color-text)]"
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={doImport}
+            disabled={busy || !importFile}
+            data-od-id="backup-import"
+          >
+            <Upload className="h-3.5 w-3.5" />导入
+          </Button>
         </div>
 
-        {/* ---- 导入 ---- */}
-        <div className="mt-4 border-t border-[var(--color-border)] pt-3">
-          <div className="mb-1.5 text-[0.72rem] text-[var(--color-text-muted)]">导入备份</div>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="file"
-              accept="application/json,.json"
-              onChange={(e) => setImportFile(e.target.files?.[0] || null)}
-              className="text-[0.72rem] text-[var(--color-text-muted)] file:mr-2 file:rounded-[8px]
-                         file:border file:border-[var(--color-border)] file:bg-[var(--color-surface)]
-                         file:px-2.5 file:py-1 file:text-[0.72rem] file:text-[var(--color-text)]"
-            />
-            <Button size="sm" variant="secondary" onClick={doImport} disabled={busy || !importFile} data-od-id="backup-import">
-              <Upload className="h-3.5 w-3.5" />导入
-            </Button>
-          </div>
-          <div className="mt-2 flex items-start gap-1.5 text-[0.68rem] leading-relaxed text-[var(--color-text-muted)]">
-            <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0 text-[var(--color-warning)]" />
-            <span>
-              导入按范围**覆盖**现有数据（后端写前快照、失败自动回滚）。
-              备份包不含账号凭证 / 浏览器 profile / 日志。
-            </span>
-          </div>
+        <div className="mt-2 flex items-start gap-1.5 text-[0.68rem] leading-relaxed text-[var(--color-text-muted)]">
+          <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0 text-[var(--color-warning)]" />
+          <span>
+            导入按范围**覆盖**现有数据（后端写前快照、失败自动回滚）。
+            备份包不含账号凭证 / 浏览器 profile / 日志。
+          </span>
         </div>
       </SetCardBody>
       <SetCardFoot>
-        <span className="text-[0.68rem] text-[var(--color-text-muted)]">
-          导出目录可在上方「系统」分区修改
-        </span>
+        {/* 导出目录分类（2026-10-02 用户要求「图片、表格这些类型要划分好」）：
+            根目录在上方可改，下列为按类型自动划分的四个子目录及各自落点。 */}
+        <div className="w-full">
+          <div className="mb-1 text-[0.68rem] text-[var(--color-text-muted)]">
+            导出目录按类型划分（导出根目录可在上方「系统」分区修改）
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-1">
+            {cats.map((c) => (
+              <div
+                key={c.key}
+                title={c.desc}
+                className="flex items-baseline gap-1.5 rounded-[8px] border
+                           border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1"
+              >
+                <span className="shrink-0 text-[0.72rem] text-[var(--color-text)]">{c.name}</span>
+                <span className="min-w-0 flex-1 truncate text-[0.66rem] text-[var(--color-text-muted)]"
+                      title={c.dir}>
+                  {c.error ? `（${c.error}）` : c.dir}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       </SetCardFoot>
     </SetCard>
   );

@@ -32,8 +32,37 @@ async def get_scopes() -> dict:
 
 @router.get("/export_dir")
 async def get_export_dir() -> dict:
-    d = bk._default_export_dir()
-    return {"ok": True, "dir": str(d)}
+    """导出根目录 + **分类子目录**（2026-10-02 用户要求按类型细分）。
+
+    前端系统页据此展示「根目录可改 + 四个分类落点」，让用户看得见文件去哪了。
+    单个分类建目录失败不影响其余分类（`all_dirs` 已逐项兜住）。
+    """
+    from services import export_paths
+
+    try:
+        root = str(export_paths.root())
+        err = ""
+    except Exception as e:  # noqa: BLE001
+        root, err = "", f"{type(e).__name__}: {e}"
+    return {"ok": not err, "dir": root, "error": err,
+            "categories": export_paths.all_dirs()}
+
+
+@router.get("/export_file/{category}/{filename}")
+async def download_export_file(category: str, filename: str):
+    """下载某个分类目录下的导出文件（替代旧的无分类 `download/{name}`）。
+
+    分类目录**只创建、不清理**，故导出物可能已积累；给用户一个直接取回的口子。
+    安全判据全部在 `export_paths.safe_file`（拒分隔符 + resolve 包含性）。
+    """
+    from services import export_paths
+
+    if category not in export_paths.CATEGORIES:
+        raise HTTPException(400, f"未知分类 {category}")
+    p = export_paths.safe_file(category, filename)
+    if p is None:
+        raise HTTPException(404, "文件不存在")
+    return FileResponse(str(p), filename=p.name)
 
 
 class ExportBody(BaseModel):
@@ -55,19 +84,25 @@ async def do_export(body: ExportBody) -> dict:
     logger.info(f"[backup] 导出 scopes={pkg.get('scopes')} -> {r['path']}")
     return {"ok": True, "path": r["path"], "bytes": r["bytes"],
             "filename": r["path"].replace("\\", "/").split("/")[-1],
+            "category": "backup",
             "scopes": pkg.get("scopes"), "kv_keys": n_kv, "table_rows": n_tbl}
 
 
 @router.get("/download/{filename}")
 async def download(filename: str):
-    # 防目录穿越：只允许文件名（无路径分隔符）
+    """下载**备份分类**下的导出文件（保留旧端点，前端下载按钮仍走这里）。
+
+    ⚠️ 2026-10-02：导出物已按类型分目录（`备份/`），故本端点不能再拿
+    文件名直接拼根目录 —— 那会 404。委派 `export_paths.safe_file` 走分类目录。
+    """
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(400, "非法文件名")
-    d = bk._default_export_dir()
-    p = d / filename
-    if not p.exists():
+    from services import export_paths
+
+    p = export_paths.safe_file("backup", filename)
+    if p is None:
         raise HTTPException(404, "文件不存在")
-    return FileResponse(str(p), media_type="application/json", filename=filename)
+    return FileResponse(str(p), media_type="application/json", filename=p.name)
 
 
 @router.post("/import")

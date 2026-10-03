@@ -147,26 +147,16 @@ def export_scopes(scopes: list[str]) -> dict:
 
 
 def _default_export_dir() -> Path:
-    """导出目录：配置中心 system.export_dir → 默认 <app_root>/exports。"""
-    try:
-        from services.app_config import get as _ac_get
+    """导出目录：**委派 `services/export_paths`**（2026-10-02 分类 SSOT 归位）。
 
-        v = str(_ac_get("system", "export_dir", "") or "").strip()
-        if v:
-            p = Path(v)
-            p.mkdir(parents=True, exist_ok=True)
-            return p
-    except Exception:
-        pass
-    import os
+    旧实现在此内联读 `system.export_dir` 并 `try/except` 静默回落 ——
+    ① 与 `chatlab_export.default_export_dir` 各自算一套根目录；
+    ② 配了个坏路径也静默回落，用户在别处找不到文件且无提示。
+    现只保留薄壳，根目录解析与分类全在 `export_paths` 一处。
+    """
+    from services import export_paths
 
-    root = os.environ.get("DY_APP_ROOT") or "."
-    p = Path(root) / "exports"
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        p = Path(root)
-    return p
+    return export_paths.dir_for("backup")
 
 
 def write_export(pkg: dict, filename: str = "") -> dict:

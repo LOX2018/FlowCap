@@ -288,6 +288,63 @@ export interface Overview {
 }
 
 /**
+ * 采集专项统计（ADR-033，`GET /api/crawl/stats`，2026-10-03）。
+ *
+ * ## 为什么不是 OverviewFunnel 的一部分
+ *
+ * `OverviewFunnel` 是**全局业务漏斗**（含私信/线索/账号），口径「全站今日」。
+ * 本结构是**采集域自己的明细**：关键词排行 / kind 拆分 / 近 N 日趋势 / 最近记录。
+ * 维度不同 ⇒ 各自成端点，避免任一方读不清。
+ *
+ * ## 🔴 单位铁律（混标即是假数据）
+ *  · `total/today/kinds/top_keywords/trend[].results` = **条**（采集返回条目数）
+ *  · `sink.total/sink.sent` = **人**（`dm_uid_sink` 按 peer_uid 去重）
+ * 两者不可相加、不可互比，UI 必须分别标注单位。
+ */
+export interface CrawlStats {
+  ok: boolean;
+  /** 日切时区（后端夹取 [-12,14]） */
+  tz: number;
+  /** 趋势窗口天数 */
+  days: number;
+  /** 统计日（`YYYY-MM-DD`，按 tz 切） */
+  date: string;
+  /** 累计（全部历史，不受窗口限制）—— 单位：条 */
+  total: { runs: number; results: number };
+  /** 今日（本地时区）—— 单位：条 */
+  today: { runs: number; results: number };
+  /** 按采集类型拆（video / user / comment / batch …） */
+  kinds: Record<string, { runs: number; results: number }>;
+  /**
+   * 关键词排行（仅 keyword 非空且 kind∈{video,user}）。
+   *
+   * ⚠️ 刻意排除 `comment` 类：它的 `target` 是 aweme_id 而非关键词，
+   *    纳入会把作品 ID 当关键词塞进榜单（假数据）。
+   */
+  top_keywords: {
+    keyword: string;
+    runs: number;
+    results: number;
+    /** Unix 秒；0 表示无 */
+    last_ts: number;
+  }[];
+  /** 近 N 日趋势（按本地日切，缺日补 0，长度恒 = days） */
+  trend: { date: string; runs: number; results: number }[];
+  /** 采集域沉淀池 —— 单位：**人**（按 uid 去重） */
+  sink: { total: number; sent: number };
+  /** 最近 20 条采集记录（摘要，不含 payload） */
+  recent: {
+    id: number;
+    account: string;
+    kind: string;
+    keyword: string;
+    target: string;
+    result_count: number;
+    ts: string;
+  }[];
+}
+
+/**
  * 业务漏斗聚合（ADR-032，`GET /api/overview/funnel`）。
  *
  * ## 与 Overview.sent/limit 的本质区别
@@ -654,7 +711,14 @@ export interface AiAgent {
 export interface BackupScope { key: string; label: string; desc: string; kind: string }
 export interface BackupExportResult {
   ok: boolean; path: string; bytes: number; filename: string;
+  /** 导出分类（2026-10-02：导出物按类型分目录，key 与后端 CATEGORIES 一致） */
+  category?: string;
   scopes: string[]; kv_keys: number; table_rows: number;
+}
+
+/** 导出分类目录（供系统页展示落点；SSOT = 后端 services/export_paths.py） */
+export interface ExportCategory {
+  key: string; name: string; desc: string; dir: string; error?: string;
 }
 
 /** 带令牌的备份上传（FormData 直传）。request() 会强加 JSON Content-Type，
@@ -1836,9 +1900,18 @@ export const api = {
     return request("/api/backup/scopes");
   },
 
-  /** 当前导出目录（来自配置中心 system.export_dir，留空则后端默认） */
-  async getExportDir(): Promise<{ ok: boolean; dir: string }> {
+  /** 当前导出根目录 + 分类子目录（来自配置中心 system.export_dir，留空则后端默认） */
+  async getExportDir(): Promise<{
+    ok: boolean; dir: string; error?: string; categories: Record<string, ExportCategory>;
+  }> {
     return request("/api/backup/export_dir");
+  },
+
+  /** 下载某个分类目录下的导出文件（2026-10-02 按类型分目录后新增） */
+  async downloadExportFile(category: string, filename: string): Promise<Blob> {
+    return backupDownloadBlob(
+      `/api/backup/export_file/${encodeURIComponent(category)}/${encodeURIComponent(filename)}`
+    );
   },
 
   /** 按范围导出（纯读 + 落盘一个新文件） */
@@ -2388,11 +2461,13 @@ export const api = {
     aweme_ids: string[];
     limit?: number;
     count?: number;
+    min_score?: number;
   }): Promise<{
     ok: boolean;
     works: number;
     ok_works: number;
     total_comments: number;
+    cancelled?: boolean;
     per_work: {
       aweme_id: string;
       status: string;
@@ -2405,6 +2480,14 @@ export const api = {
     return request("/api/crawl/comments/batch", {
       method: "POST",
       body: JSON.stringify(body),
+    });
+  },
+
+  /** 终止正在进行的批量采集（★ 2026-10-02）。 */
+  async crawlCommentsBatchCancel(account: string): Promise<{ ok: boolean; message: string }> {
+    return request("/api/crawl/comments/batch/cancel", {
+      method: "POST",
+      body: JSON.stringify({ account }),
     });
   },
 
@@ -2446,6 +2529,30 @@ export const api = {
     });
   },
 
+  /** 批量私信（★ 2026-10-02）：从已采集评论中筛选候选并逐条发送。
+   *  筛选逻辑在后端执行（SSOT），发送走统一发送闸门。 */
+  async crawlDmBatch(body: {
+    account: string;
+    text: string;
+    items: { uid: string; nickname: string; text: string }[];
+    min_score?: number;
+    max_send?: number;
+    interval?: number;
+  }): Promise<{
+    ok: boolean;
+    candidates: number;
+    sent_ok: number;
+    sent_fail: number;
+    rate_limited: number;
+    results: { uid: string; nickname: string; ok: boolean; reason: string }[];
+    detail?: string;
+  }> {
+    return request("/api/crawl/dm/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   async crawlBatch(body: {
     account: string;
     aweme_id: string;
@@ -2482,6 +2589,19 @@ export const api = {
     }[];
   }> {
     return request(`/api/crawl/history?limit=${limit}`);
+  },
+
+  /**
+   * 采集专项统计（ADR-033，2026-10-03）。只读本地库，零网络零浏览器。
+   *
+   * ## 🔴 单位铁律（UI 必须区分标注，混标即是假数据）
+   *  · `total/today/kinds/top_keywords/trend` 的 `results` = **条**（采集返回的条目数）
+   *  · `sink.total/sent` = **人**（`dm_uid_sink` 按 peer_uid 去重）
+   * 两者不可相加、不可互比。
+   */
+  async crawlStats(days = 7, tz = 8): Promise<CrawlStats> {
+    const qs = new URLSearchParams({ days: String(days), tz: String(tz) });
+    return request(`/api/crawl/stats?${qs.toString()}`);
   },
 
   // ===== MCP 服务（dyautodm-mcp，2026-09-25）=====
