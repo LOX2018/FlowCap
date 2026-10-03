@@ -647,7 +647,24 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
 
     per_work: list[dict] = []
     total = 0
+    # ★ 2026-10-04：被高价值过滤掉的条数（回传给前端，让「0 条」可诊断）
+    batch_filtered = 0
     cancelled = False
+
+    # ★ 2026-10-04（用户定调）：**按作品数量分配采集策略** ——
+    #   单作品与批量是**同一条路**，只是策略参数不同，不存在「两条实现」。
+    #     · 1 个作品：翻页取满（`limit` 生效），节流 0（无需串行等待）；
+    #     · ≥2 个作品：按 `batch_interval` 串行节流，避免连打被风控。
+    #   ⚠️ 判据写在配置中心（`crawl.batch_interval`），此处不做硬编码分支
+    #      ——「策略」是数据，不是 if/else。
+    _n = len(ids)
+    if _n <= 1:
+        interval = 0.0
+        logger.info(f"[crawl] 采集策略=单作品（翻页取满 limit={limit}）"
+                    f" account={body.account}")
+    else:
+        logger.info(f"[crawl] 采集策略=批量（{_n} 个作品，节流 {interval}s）"
+                    f" account={body.account}")
     for i, aweme_id in enumerate(ids):
         # 检查取消标志
         if cancel_key in _batch_cancel_flags:
@@ -669,8 +686,21 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
             # ★ 2026-10-02：高价值关键词过滤
             if min_score > 0:
                 scope = _hv_scope(body.account)
+                _before = len(items)
                 items = [c for c in items
                          if _hv.score_text(c.get("text", ""), scope) >= min_score]
+                # 🔴 2026-10-04：过滤后**必须留痕**，否则「采到 0 条」
+                #   无法区分「作品真没评论」与「被过滤光了」（后者是配置问题，
+                #   用户会误判为采集坏了 —— 实测连着 7 批 n=0 就是这么来的）。
+                #   全滤掉且原集合非空 ⇒ WARN + 记入响应，让 UI/日志可诊断。
+                if _before and not items:
+                    logger.warning(
+                        f"[CRAWL-008] [crawl] 高价值过滤后为 0 条"
+                        f"（过滤前 {_before} 条，门槛={min_score}，"
+                        f"标签={getattr(body, 'tag_id', '') or '(账号绑定)'}"
+                        f"）⇒ 该标签的关键词表可能为空或不匹配，"
+                        f"并非采集失败。如需全采请不选标签或把门槛设为 0")
+                batch_filtered += (_before - len(items))
             total += len(items)
             per_work.append({"aweme_id": aweme_id, "status": "ok",
                              "count": len(items), "items": items})
@@ -689,6 +719,9 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
                 f"{'（已终止）' if cancelled else ''}")
     return {"ok": True, "works": len(ids), "ok_works": ok_works,
             "total_comments": total, "per_work": per_work,
+            # ★ 2026-10-04：被高价值过滤掉的条数。前端据此提示
+            #   「本批 0 条是因为过滤，不是采集失败」——否则用户无法区分。
+            "filtered": batch_filtered,
             "cancelled": cancelled}
 
 

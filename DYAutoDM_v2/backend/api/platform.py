@@ -362,6 +362,15 @@ class SearchReq(BaseModel):
     query: str
     kind: str = "video"           # video | user
     num: int = 20
+    # ★ 2026-10-04 接线（用户实测「发布时间/视频时长筛选失效」）：
+    #   平台页的筛选器 UI 早已渲染（platform-page.tsx 的「发布时间」「视频时长」），
+    #   但本模型**没有**这三个字段 ⇒ 前端无从传值 ⇒ 筛选器点了没效果
+    #   （与「采集策略假接线」同形的一个断链）。
+    #   接线口径沿用已废弃 `crawl-page.tsx` 的既有约定：**空 = 用采集策略**，
+    #   显式传值则覆盖 —— 不在此处 clamp，交给 `_resolve_policy_params`。
+    sort_type: str = ""           # 0 综合 / 1 最多点赞 / 2 最新发布
+    publish_time: str = ""        # 0 不限 / 1 一天内 / 7 一周内 / 180 半年内
+    filter_duration: str = ""     # '' 不限 / 0-1 / 1-5 / 5-10000
 
 
 class CollectListReq(BaseModel):
@@ -752,15 +761,34 @@ async def search(req: SearchReq) -> dict[str, Any]:
                     "items": [_pick_user(u) for u in (users or [])]}
         # ★ 2026-09-15：视频搜索改用**源项目方案** `/general/search/stream/`（实测 10 条、
         #   真实作者可读）；失败则回落到原 `search_some_general_work`（老接口），保证可用。
+        # ★ 2026-10-04 接线：显式传了筛选参数 ⇒ 改走**支持筛选**的旧接口。
+        #   `search_stream`（源项目方案）不接 sort_type/publish_time/filter_duration，
+        #   直接用它会让筛选器「点了没效果」。故仅当**未指定任何筛选**时才走
+        #   新接口（保留其「真实作者可读」的优势）；一旦指定了，就走
+        #   `search_general_work`（该接口原生支持这三个参数，见
+        #   dy_apis/client_search.py:72）。
+        #   ⚠️ 不做「先新后旧」的静默回落 —— 那会让筛选**看起来生效实则被忽略**
+        #   （正是本次要消灭的假成功）。
+        _has_filter = bool(req.sort_type or req.publish_time
+                           or req.filter_duration)
         works = None
         stream = None  # ★ M-20：供传输层事实读取（except 分支下保持 None）
-        # auth 已由策略层保证非 None（匿名不可用，见函数头 fail-closed）
-        try:
-            stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
-            works = (stream or {}).get("aweme_list") or []
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
-            works = None
+        if _has_filter:
+            works = await asyncio.to_thread(
+                api.search_general_work, auth, req.query,
+                req.sort_type or "0", req.publish_time or "0", "0",
+                str(num), req.filter_duration)
+            logger.info(f"[PLT-010] [platform] 搜索走筛选接口: "
+                        f"q={req.query!r} sort={req.sort_type or '0'} "
+                        f"pt={req.publish_time or '0'} dur={req.filter_duration!r}")
+        else:
+            # auth 已由策略层保证非 None（匿名不可用，见函数头 fail-closed）
+            try:
+                stream = await asyncio.to_thread(api.search_stream, auth, req.query, "0", str(num))
+                works = (stream or {}).get("aweme_list") or []
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[PLT-009] " + f"源项目搜索流失败，回落旧接口: {type(e).__name__}")
+                works = None
         # ★ 2026-09-27 修复（M-20 收口 · 「禁止假成功」）：此前 `works` 为空时
         #   一律回 200 + `items: []` —— 前端**无从区分**「这个关键词真没作品」与
         #   「被 Argus 风控拦截」，只能显示空列表**假装没结果**（项目铁律禁止）。

@@ -194,10 +194,13 @@ export const platformApi = {
 
   /** ★ 2026-09-27（M-20）：`blocked=true` 表示**被风控拦截**（≠ 真的没搜到）。
    *  前端必须据此显示被拦截提示，禁止把空列表呈现成「没结果」（铁律：禁假成功）。 */
-  search: (account: string, query: string, kind: "video" | "user" = "video", num = 20) =>
+  search: (account: string, query: string, kind: "video" | "user" = "video", num = 20,
+           /** ★ 2026-10-04 接线：筛选参数。**留空 = 用采集策略**；
+            *  显式传值则覆盖（与已废弃 crawl-page 的既有约定一致）。 */
+           filters?: { sort_type?: string; publish_time?: string; filter_duration?: string }) =>
     post<{ ok: boolean; kind: string; items: (AwemeItem | UserItem)[];
            blocked?: boolean; blocked_reason?: string | null }>(
-      "/api/platform/search", { account, query, kind, num }),
+      "/api/platform/search", { account, query, kind, num, ...(filters || {}) }),
 
   /** ★ 2026-09-21：我的收藏（作品维度）——**不依赖收藏夹文件夹**。
    *  实测该账号文件夹数 0 但收藏作品 19 条，故「收藏」tab 用这个。 */

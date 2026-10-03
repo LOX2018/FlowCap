@@ -9,7 +9,7 @@
  * - 行操作按钮：`.btn text sm` → `<Button variant="link|ghost|danger-outline">`
  * - **业务逻辑零改动**（分页、查阅模式跳转、复用配置快照、暂停/继续/停止调用全保持）
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Download, Trash2, Play, Pause, Square, RotateCw, ExternalLink, History, Inbox,
@@ -48,6 +48,29 @@ export default function TasksPage(props: PageProps) {
   });
   const history = historyQ.data?.list || [];
   const historyTotal = historyQ.data?.total || 0;
+
+  // ★ 2026-10-04：采集任务（与悬浮窗同源 `/api/crawl/tasks`）。
+  //   只在**任务页可见时**轮询（该数据是进程内存，不做后台常驻轮询省请求）；
+  //   有 running 的才 3s 一刷，否则 10s。
+  //   ⚠️ 轮询频率由**已取回的数据**决定（`crawlTasks`），不依赖
+  //      `refetchInterval` 的回调入参 —— 不同 react-query 版本签名不同
+  //      （v4 传 query、v5 不传），写成回调会静默失效。
+  const crawlTasksQ = useQuery({
+    queryKey: ["crawl-tasks-page"],
+    queryFn: () => api.crawlTasks(),
+    enabled: !!ready,
+    staleTime: 2_000,
+    refetchInterval: 10_000,
+  });
+  const crawlTasks = crawlTasksQ.data?.tasks || [];
+  const hasRunning = crawlTasks.some((t) => t.status === "running");
+  // 有在跑的 ⇒ 提高刷新频率（用第二个 query 不优雅，直接改 interval 需稳定引用；
+  //   这里用 refetch 定时器显式驱动，语义最清楚）
+  useEffect(() => {
+    if (!ready || !hasRunning) return;
+    const timer = setInterval(() => crawlTasksQ.refetch(), 3_000);
+    return () => clearInterval(timer);
+  }, [ready, hasRunning]);
   const refreshHistory = useCallback(() => {
     setHistoryPage(0);
     qc.invalidateQueries({ queryKey: ["task-history"] });
@@ -297,6 +320,57 @@ export default function TasksPage(props: PageProps) {
           </table>
         </div>
       </Card>
+
+      {/* 采集任务（★ 2026-10-04 接线）
+          用户定调：悬浮窗负责「采集哪些、怎么采集」，**任务页负责看结果与进度**。
+          此前采集任务只在悬浮窗内显示，任务页读的是另一套（/api/tasks 历史），
+          ⇒ 「批量采集没进任务系统、任务页看不到」。
+          现把 `/api/crawl/tasks` 接到任务页，与历史任务并列。
+          ⚠️ 该数据是**进程级内存**（storage 字段如实标注），重启即丢；
+             故只在页面可见时轮询，且如实标注来源，不假装持久化。 */}
+      <Section
+        title="采集任务"
+        description="由采集悬浮窗触发；显示进度与结果（后端进程内存，重启应用即清空）"
+      >
+        {crawlTasks.length === 0 ? (
+          <p className="text-[0.78rem] text-[var(--color-text-muted)]">
+            暂无采集任务 —— 在内容总览勾选作品后用采集悬浮窗启动
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {crawlTasks.map((t) => {
+              const total = t.total || t.aweme_ids?.length || 0;
+              const done = t.done || 0;
+              const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-[10px] border border-[var(--color-border)] p-2.5"
+                >
+                  <div className="flex items-center justify-between text-[0.78rem]">
+                    <span className="truncate">
+                      {t.account} · {t.phase || "queued"} · {t.status}
+                    </span>
+                    <span className="font-mono text-[var(--color-text-muted)]">
+                      {done}/{total}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-[var(--color-surface-raised)]">
+                    <div
+                      className="h-full bg-[var(--color-accent)] transition-[width]"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 text-[0.68rem] text-[var(--color-text-muted)]">
+                    成功 {t.ok_works ?? 0} · 失败 {t.fail_works ?? 0}
+                    {t.error ? ` · ${t.error}` : ""}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Section>
 
       {/* 历史任务 */}
       <Section

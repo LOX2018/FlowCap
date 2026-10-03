@@ -296,8 +296,15 @@ export default function PlatformPage(props: PageProps & {
 
 
   const searchQ = useQuery({
-    queryKey: ["platform-search", account, submitted?.q, submitted?.kind],
-    queryFn: () => platformApi.search(account, submitted!.q, submitted!.kind, 20),
+    // ★ 2026-10-04：筛选值必须进 queryKey —— 否则改了筛选**不会重新查询**
+    //   （react-query 只在 key 变化时失效），表现为「点了筛选没反应」。
+    queryKey: ["platform-search", account, submitted?.q, submitted?.kind,
+               order, pt, dur],
+    queryFn: () => platformApi.search(
+      account, submitted!.q, submitted!.kind, 20,
+      // 空值沿用「留空 = 用采集策略」的既有约定（不传空串覆盖策略）
+      { sort_type: order || undefined, publish_time: pt || undefined,
+        filter_duration: dur || undefined }),
     enabled: !!account && !!submitted?.q,
     staleTime: 120_000,
   });
