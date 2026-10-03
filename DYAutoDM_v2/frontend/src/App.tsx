@@ -23,6 +23,7 @@ const OverviewPage = lazy(() => import("./components/overview/overview-page"));
 const StatsPage = lazy(() => import("./components/stats/stats-page"));
 const PlatformPage = lazy(() => import("./components/platform/platform-page"));
 const LivePage = lazy(() => import("./components/live/live-page"));
+const LiveBatchPage = lazy(() => import("./components/live/live-batch-page"));
 const MessagesPage = lazy(() => import("./components/messages/messages-page"));
 const KbPage = lazy(() => import("./components/kb/kb-page"));
 const AccountsPage = lazy(() => import("./components/accounts/accounts-page"));
@@ -590,6 +591,7 @@ export default function App() {
           {tab === "stats" && <StatsPage {...pageProps} />}
           {tab === "platform" && <PlatformPage {...pageProps} />}
           {tab === "live" && <LivePage {...pageProps} />}
+          {tab === "live-batch" && <LiveBatchPage {...pageProps} />}
           {tab === "msg" && <MessagesPage {...pageProps} />}
           {tab === "kb" && <KbPage {...pageProps} />}
           {tab === "accounts" && <AccountsPage {...pageProps} />}

@@ -16,6 +16,58 @@ import { ensureBackendReady, BACKEND_BASE } from "./sidecar";
 // 后端地址：Tauri 模式与浏览器模式都用 127.0.0.1:8000
 const BASE = BACKEND_BASE;
 
+// ===== live-batch 类型定义 =====
+export interface LiveBatchTask {
+  task_id: string;
+  name: string;
+  rooms: string[];
+  accounts: string[];
+  strategy: string;
+  max_concurrent: number;
+  enabled: boolean;
+  dm_pool: string[] | null;
+  delay_range: number[] | null;
+  interval: number;
+  /** 2026-10-03：每个直播间的私信条数上限（与 max_concurrent 正交） */
+  max_target: number;
+}
+
+export interface LiveInstance {
+  instance_id: string;
+  task_id: string;
+  room_url: string;
+  account: string;
+  live_id: string;
+  real_room_id: string;
+  state: string;
+  status_msg: string;
+  error: string;
+  started_at: number;
+  stopped_at: number;
+}
+
+export interface TaskWithInstances {
+  task: LiveBatchTask;
+  instances: LiveInstance[];
+  running_count: number;
+  total_count: number;
+}
+
+export interface LiveBatchTemplate {
+  id: string;
+  name: string;
+  rooms: string[];
+  accounts: string[];
+  strategy: string;
+  max_concurrent: number;
+  dm_pool: string[] | null;
+  delay_range: number[] | null;
+  interval: number;
+  /** 2026-10-03：每个直播间的私信条数上限（与 max_concurrent 正交） */
+  max_target: number;
+  created_at: number;
+}
+
 // ===== 会员体系（v0.37.0）：token 管理 =====
 const MEMBER_TOKEN_KEY = "dy_member_token";
 export function getMemberToken(): string {
@@ -1190,6 +1242,148 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ url }),
     });
+  },
+
+  // ===== live-batch（批量采集）=====
+  async getLiveBatchStatus(): Promise<unknown> {
+    return request("/api/live-batch/status");
+  },
+
+  async listLiveBatchTasks(): Promise<{ ok: boolean; tasks: TaskWithInstances[]; global_enabled: boolean }> {
+    return request("/api/live-batch/tasks");
+  },
+
+  async createLiveBatchTask(data: {
+    name: string;
+    rooms: string[];
+    accounts: string[];
+    strategy: string;
+    max_concurrent: number;
+    enabled: boolean;
+    dm_pool: string[] | null;
+    delay_range: number[] | null;
+    interval: number;
+    max_target: number;
+  }): Promise<{ ok: boolean; task?: LiveBatchTask; error?: string }> {
+    return request("/api/live-batch/tasks", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  async getLiveBatchTask(taskId: string): Promise<{ ok: boolean; task: LiveBatchTask; instances: LiveInstance[]; running_count: number; total_count: number }> {
+    return request(`/api/live-batch/tasks/${encodeURIComponent(taskId)}`);
+  },
+
+  async deleteLiveBatchTask(taskId: string): Promise<{ ok: boolean; error?: string }> {
+    return request(`/api/live-batch/tasks/${encodeURIComponent(taskId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async startLiveBatchTask(taskId: string): Promise<{
+    ok: boolean;
+    started: string[];
+    /** 2026-10-03：该 (房间,账号) 已在运行，未新建（防重复点「启动」误报） */
+    already?: string[];
+    failed: { room: string; account: string; error: string }[];
+    skipped: number;
+    error?: string;
+  }> {
+    return request(`/api/live-batch/tasks/${encodeURIComponent(taskId)}/start`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  async stopLiveBatchTask(taskId: string): Promise<{ ok: boolean; stopped: string[]; failed: { instance_id: string; error: string }[] }> {
+    return request(`/api/live-batch/tasks/${encodeURIComponent(taskId)}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  async getLiveBatchInstance(instanceId: string): Promise<{ ok: boolean; instance: LiveInstance & { feed?: unknown[]; heat_curve?: number[]; room_stats?: Record<string, number>; contribution_rank?: unknown[]; dm_records?: unknown[]; dm_sent_count?: number } }> {
+    return request(`/api/live-batch/instances/${encodeURIComponent(instanceId)}`);
+  },
+
+  async updateLiveBatchTask(taskId: string, data: {
+    name?: string;
+    rooms?: string[];
+    accounts?: string[];
+    strategy?: string;
+    max_concurrent?: number;
+    enabled?: boolean;
+    dm_pool?: string[] | null;
+    delay_range?: number[] | null;
+    interval?: number;
+    max_target?: number;
+  }): Promise<{ ok: boolean; task?: LiveBatchTask; error?: string }> {
+    return request(`/api/live-batch/tasks/${encodeURIComponent(taskId)}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  },
+
+  async restartLiveBatchTask(taskId: string): Promise<{ ok: boolean; stopped: string[]; started: string[]; failed: { room: string; account: string; error: string }[] }> {
+    return request(`/api/live-batch/tasks/${encodeURIComponent(taskId)}/restart`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  async startLiveBatchInstance(instanceId: string): Promise<{ ok: boolean; instance_id?: string; error?: string }> {
+    return request(`/api/live-batch/instances/${encodeURIComponent(instanceId)}/start`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  async stopLiveBatchInstance(instanceId: string): Promise<{ ok: boolean; error?: string }> {
+    return request(`/api/live-batch/instances/${encodeURIComponent(instanceId)}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  async restartLiveBatchInstance(instanceId: string): Promise<{ ok: boolean; stopped: boolean; started: boolean }> {
+    return request(`/api/live-batch/instances/${encodeURIComponent(instanceId)}/restart`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  // ===== live-batch 模板 =====
+  async listLiveBatchTemplates(): Promise<{ ok: boolean; templates: LiveBatchTemplate[] }> {
+    return request("/api/live-batch/templates");
+  },
+
+  async createLiveBatchTemplate(data: {
+    name: string;
+    rooms: string[];
+    accounts: string[];
+    strategy: string;
+    max_concurrent: number;
+    dm_pool: string[] | null;
+    delay_range: number[] | null;
+    interval: number;
+    max_target: number;
+  }): Promise<{ ok: boolean; template?: LiveBatchTemplate; error?: string }> {
+    return request("/api/live-batch/templates", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  async deleteLiveBatchTemplate(templateId: string): Promise<{ ok: boolean; error?: string }> {
+    return request(`/api/live-batch/templates/${encodeURIComponent(templateId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  // ===== live-batch 导出 =====
+  async exportLiveBatchTask(taskId: string): Promise<{ ok: boolean; task: LiveBatchTask; instances: unknown[]; exported_at: number }> {
+    return request(`/api/live-batch/export/${encodeURIComponent(taskId)}`);
   },
 
   // ===== 直播间登记表（房间层，ADR-003，kv live_rooms）=====
@@ -2462,6 +2656,10 @@ export const api = {
     limit?: number;
     count?: number;
     min_score?: number;
+    /** 评论日期范围起（YYYY-MM-DD，空=不限） */
+    start_date?: string;
+    /** 评论日期范围止（YYYY-MM-DD，空=不限） */
+    end_date?: string;
   }): Promise<{
     ok: boolean;
     works: number;
@@ -2538,6 +2736,10 @@ export const api = {
     min_score?: number;
     max_send?: number;
     interval?: number;
+    /** ★ 2026-10-03（方案A）：本次显式选定的标签 id，作为**临时覆盖**
+     *  优先于账号在采集板块的默认绑定；空串 = 不覆盖。
+     *  ⚠️ 后端该模型已设 `extra="forbid"`，多发字段会 422（而非静默丢弃）。 */
+    tag_id?: string;
   }): Promise<{
     ok: boolean;
     candidates: number;

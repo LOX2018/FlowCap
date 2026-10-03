@@ -839,6 +839,9 @@ from api import live_rooms as live_rooms_api
 app.include_router(live_rooms_api.router, prefix="/api/live/rooms", tags=["live"])
 from api import linkmic as linkmic_api
 app.include_router(linkmic_api.router, prefix="/api/live/linkmic", tags=["live"])
+# 批量直播监听（多房间 × 多账号并发采集）
+from api import live_batch as live_batch_api
+app.include_router(live_batch_api.router, prefix="/api/live-batch", tags=["live-batch"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])

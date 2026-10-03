@@ -1,0 +1,386 @@
+# coding=utf-8
+"""批量采集（live_batch）机械门禁 —— v0.46.25。
+
+## 为什么有这份脚本
+本模块的缺陷有一个共同形态：**`hasattr` 探测 + 类型想当然** ⇒ 运行期
+静默失效（页面显示「监听中」，实际一条私信都发不出）。这类缺陷
+**静态检查与类型检查都抓不到**（`hasattr` 恒 False 不报错、`as` 断言可编译），
+只能靠「对真实类型求值 + 断言不变量」来拦。
+
+## 覆盖的缺陷（均为本会话实测坐实）
+| 编号 | 缺陷 | 判据 |
+|---|---|---|
+| LB-01 | 停止后实例不从注册表摘除 ⇒ 重复启动 N 倍膨胀 + **占死并发槽位** | 停止后 total_count==0 且 current_running==0 |
+| LB-02 | 同 (房间,账号) 重复启动不幂等 ⇒ 双 WS 抢同房间 | 二次 `_start_instance` 返回 already=True |
+| LB-03 | `DispatchCenter()` 无参构造（auth 必填）⇒ 每实例 TypeError | 源码不得出现无参 `DispatchCenter()` |
+| LB-04 | `LiveChatHook()` 无参构造（3 个必填） | 源码不得出现无参 `LiveChatHook()` |
+| LB-05 | `dispatch.start()` 未 await ⇒ 协程从未调度 | 源码必须 `await inst._dispatch.start()` |
+| LB-06 | `records[-50:]` 对 dict 切片 ⇒ TypeError，发送记录永远拿不到 | 对 dict 记录断言能取到末 50 条 |
+| LB-07 | `SendRecord.get()` 不存在（pydantic 模型） | 对真实 SendRecord 取字段不抛异常 |
+| LB-08 | `stop()` 不存在（真实为 stop_hard/stop_soft） | 源码必须引用 stop_hard |
+| LB-09 | `is_connected()` 不存在 ⇒ 断线状态永不更新 | 源码不得探测 is_connected |
+| LB-10 | 空账号/未登记账号必须 fail-closed | create_task 两次拒绝 |
+| LB-11 | `max_target` 必须是 LiveBatchConfig 真实字段 | dataclasses.fields 含 max_target |
+
+## 运行
+    cd DYAutoDM_v2/backend && py test_live_batch_guards.py
+
+## 负控（必须能让门禁变红）
+脚本末尾 `self_check_negative_controls()` 会在**内存副本**上注入缺陷并断言
+门禁能捕获；它不碰磁盘上的真实文件。
+"""
+import ast
+import dataclasses
+import os
+import sys
+import unittest
+
+# 让总开关在本进程内可用（create/start 的 fail-closed 前置）。
+os.environ.setdefault("DY_LIVE_BATCH_ENABLED", "1")
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SRC = os.path.join(_HERE, "services", "live_batch.py")
+
+
+def _strip_comments(src: str) -> str:
+    """剥掉注释，**保留代码原样排版**（行级剥离）。
+
+    ⚠️ 为什么不用 `tokenize`：它会把源码重排成空格分隔的 token 流，
+    破坏 `await inst._dispatch.start()` 这类跨 token 的字面匹配，
+    导致门禁对**正确代码**也报红（实测踩到）。
+    ⚠️ 判据纪律：判据的模式串不得写进被审文件的注释里，否则门禁恒红/恒绿皆无意义。
+    """
+    out = []
+    for line in src.splitlines():
+        q = None
+        cut = len(line)
+        for i, ch in enumerate(line):
+            if q:
+                if ch == q and (i == 0 or line[i - 1] != "\\\\"):
+                    q = None
+            elif ch in ("'", '"'):
+                q = ch
+            elif ch == "#":
+                cut = i
+                break
+        out.append(line[:cut])
+    return "\n".join(out)
+
+
+def _read(path=None):
+    with open(path or _SRC, encoding="utf-8") as f:
+        return f.read()
+
+
+class TestLiveBatchTypeContracts(unittest.TestCase):
+    """LB-03/04/05/08/09：对**真实类型**求值，而不是相信源码写法。"""
+
+    def test_lb03_dispatch_center_requires_auth(self):
+        """LB-03: DispatchCenter.__init__ 首参是必填 auth。"""
+        import ast as _ast
+        tree = _ast.parse(open(os.path.join(_HERE, "core", "dispatch.py"),
+                               encoding="utf-8").read())
+        for n in _ast.walk(tree):
+            if isinstance(n, _ast.ClassDef) and n.name == "DispatchCenter":
+                for f in n.body:
+                    if isinstance(f, _ast.FunctionDef) and f.name == "__init__":
+                        pos = [a.arg for a in f.args.args[1:]]
+                        nd = len(f.args.defaults)
+                        required = pos[:len(pos) - nd] if nd else pos
+                        self.assertIn("auth", required,
+                                      "契约变了：DispatchCenter 不再要求 auth —— "
+                                      "请同步复核 live_batch 的构造调用")
+                        return
+        self.fail("未找到 DispatchCenter.__init__")
+
+    def test_lb04_live_hook_requires_three_args(self):
+        """LB-04: LiveChatHook.__init__ 必填 (live_id, auth_, dispatch)。"""
+        import ast as _ast
+        tree = _ast.parse(open(os.path.join(_HERE, "core", "live_hook.py"),
+                               encoding="utf-8").read())
+        for n in _ast.walk(tree):
+            if isinstance(n, _ast.ClassDef) and n.name == "LiveChatHook":
+                for f in n.body:
+                    if isinstance(f, _ast.FunctionDef) and f.name == "__init__":
+                        pos = [a.arg for a in f.args.args[1:]]
+                        nd = len(f.args.defaults)
+                        required = set(pos[:len(pos) - nd] if nd else pos)
+                        for arg in ("live_id", "auth_", "dispatch"):
+                            self.assertIn(arg, required,
+                                          f"契约变了：LiveChatHook 不再要求 {arg}")
+                        return
+        self.fail("未找到 LiveChatHook.__init__")
+
+    def test_lb05_dispatch_start_must_be_awaited(self):
+        """LB-05: 消费任务靠 create_task 挂当前 loop，必须 await 启动。"""
+        src = _read()
+        code_only = _strip_comments(src)
+        self.assertIn("await inst._dispatch.start()", code_only,
+                      "dispatch.start() 未 await ⇒ 消费任务从未被调度")
+        # 反证：逐行看——凡出现 `inst._dispatch.start()` 的行，**同一行**必须含 `await`
+        #（`await` 与 `inst` 之间有空格，负向后顾匹配不到，故用行内判定）。
+        bad = [ln.strip() for ln in code_only.splitlines()
+               if "inst._dispatch.start()" in ln and "await" not in ln]
+        self.assertEqual(bad, [],
+                         f"存在未 await 的 dispatch.start() 调用 ⇒ 协程从未被调度: {bad}")
+
+    def test_lb08_stop_hard_is_the_real_api(self):
+        """LB-08: 真实停止方法是 stop_hard/stop_soft，不是 stop()。"""
+        import ast as _ast
+        tree = _ast.parse(open(os.path.join(_HERE, "core", "dispatch.py"),
+                               encoding="utf-8").read())
+        methods = {f.name for n in _ast.walk(tree)
+                   if isinstance(n, _ast.ClassDef) and n.name == "DispatchCenter"
+                   for f in n.body if isinstance(f, _ast.FunctionDef)}
+        self.assertIn("stop_hard", methods)
+        self.assertNotIn("stop", methods,
+                         "契约变了：DispatchCenter 新增了 stop() —— 请复核 live_batch")
+        self.assertIn("stop_hard", _strip_comments(_read()),
+                      "live_batch 未调用 stop_hard ⇒ 停止实例时调度器仍在跑")
+
+    def test_lb09_no_connection_probe(self):
+        """LB-09: 连接状态探测方法在 LiveChatHook 上不存在，探测它恒 False。
+
+        ⚠️ 判据实现纪律（skill 铁律）：**判据的模式串不得出现在被审文件的注释里**，
+        否则本门禁永远红/永远绿皆无意义。故先剥注释再断言。
+        """
+        import re as _re
+        code_only = _strip_comments(_read())
+        self.assertNotIn("is_connected", code_only,
+                         "仍在探测不存在的连接状态方法（恒 False ⇒ 断线永不更新）")
+
+
+class TestLiveBatchSourceInvariants(unittest.TestCase):
+    """LB-03/04：对源码形态的机械断言（无参构造必是错的）。"""
+
+    def test_lb03_no_bare_dispatch_center(self):
+        import re as _re
+        code_only = _strip_comments(_read())
+        self.assertIsNone(_re.search(r"DispatchCenter\(\s*\)", code_only),
+                          "存在无参 DispatchCenter() ⇒ 运行期 TypeError")
+
+    def test_lb04_no_bare_live_hook(self):
+        import re as _re
+        code_only = _strip_comments(_read())
+        self.assertIsNone(_re.search(r"LiveChatHook\(\s*\)", code_only),
+                          "存在无参 LiveChatHook() ⇒ 运行期 TypeError")
+
+
+class TestLiveBatchRecordContract(unittest.TestCase):
+    """LB-06/07：对**真实 SendRecord + 真实 dict 形态**求值。"""
+
+    def test_lb06_records_is_dict_and_slice_safe(self):
+        from models.task import SendRecord
+        import time as _t
+        recs = {}
+        for i in range(60):
+            k = f"k{i}"
+            recs[k] = SendRecord(
+                key=k, uid=str(i), nickname=f"n{i}",
+                status="captured", captured_at=_t.time(),
+            )
+        self.assertIsInstance(recs, dict)
+        # live_batch 的取法：list(recs.values())[-50:]
+        items = list(recs.values())[-50:]
+        self.assertEqual(len(items), 50)
+        self.assertEqual(items[-1].nickname, "n59")
+        # 反证：旧写法 records[-50:] 在 dict 上抛错（dict 把 slice 当 key → KeyError）
+        with self.assertRaises((KeyError, TypeError)):
+            _ = recs[-50:]
+
+    def test_lb07_sendrecord_has_no_get(self):
+        from models.task import SendRecord
+        import time as _t
+        r = SendRecord(key="k", uid="1", nickname="n", status="captured",
+                       captured_at=_t.time())
+        self.assertFalse(hasattr(r, "get"),
+                         "SendRecord 新增了 .get() —— 请复核 live_batch 的取字段方式")
+        for field in ("key", "nickname", "status", "sent_at"):
+            getattr(r, field)   # 属性访问必须可用
+
+
+class TestLiveBatchConfigFields(unittest.TestCase):
+    """LB-11: max_target 必须是真实字段（曾被 getattr 静默回退）。"""
+
+    def test_lb11_max_target_is_real_field(self):
+        from services.live_batch import LiveBatchConfig
+        names = {f.name for f in dataclasses.fields(LiveBatchConfig)}
+        self.assertIn("max_target", names,
+                      "LiveBatchConfig 缺 max_target —— 发送上限会静默回退到 3")
+        d = LiveBatchConfig(task_id="t", name="n").to_dict()
+        self.assertIn("max_target", d)
+        self.assertEqual(d["max_target"], 3)
+
+
+class TestLiveBatchManagerBehaviour(unittest.TestCase):
+    """LB-01/02/10：管理器真实行为。"""
+
+    def setUp(self):
+        from services.live_batch import get_manager
+        self.m = get_manager()
+        self._tasks = dict(self.m._tasks)
+        self._inst = dict(self.m._instances)
+        self._ti = {k: list(v) for k, v in self.m._task_instances.items()}
+
+    def tearDown(self):
+        self.m._tasks = self._tasks
+        self.m._instances = self._inst
+        self.m._task_instances = self._ti
+
+    def _mk(self, tid):
+        from services.live_batch import LiveBatchConfig, LiveInstance
+        cfg = LiveBatchConfig(task_id=tid, name=tid, rooms=["1"], accounts=["x"],
+                              strategy="round_robin", max_concurrent=3, enabled=True)
+        self.m._tasks[tid] = cfg
+        self.m._task_instances[tid] = []
+        return cfg
+
+    def _seed(self, tid, n=2, state="running"):
+        from services.live_batch import LiveInstance
+        ids = []
+        for i in range(n):
+            iid = f"{tid}_{i}"
+            inst = LiveInstance(instance_id=iid, task_id=tid, room_url="1",
+                                account="x", state=state)
+            self.m._instances[iid] = inst
+            self.m._task_instances[tid].append(iid)
+            ids.append(iid)
+        return ids
+
+    def test_lb01_stop_clears_registry(self):
+        """LB-01: 停止后实例必须从注册表摘除（否则占死并发槽位）。"""
+        self._mk("g_lb01")
+        self._seed("g_lb01", 2)
+        self.m.stop_task("g_lb01")
+        st = self.m.get_status("g_lb01")
+        self.assertEqual(st["total_count"], 0, "停止后仍残留实例")
+        self.assertEqual(st["running_count"], 0)
+        self.assertEqual(self.m.get_global_status()["current_running"], 0,
+                         "残留 running 记录占死了全局并发槽位")
+
+    def test_lb02_restart_does_not_multiply(self):
+        """LB-01 延伸：重启 3 次，实例数不得膨胀。"""
+        self._mk("g_lb01b")
+        for _ in range(3):
+            self._seed("g_lb01b", 2)
+            self.m.stop_task("g_lb01b")
+        self.assertEqual(self.m.get_status("g_lb01b")["total_count"], 0)
+
+    def test_lb02_duplicate_start_is_idempotent(self):
+        """LB-02: 同 (房间,账号) 重复启动必须返回既有实例。"""
+        cfg = self._mk("g_lb02")
+        self._seed("g_lb02", 1, state="running")
+        r = self.m._start_instance("g_lb02", "1", "x", cfg)
+        self.assertTrue(r.get("ok"))
+        self.assertIs(r.get("already"), True,
+                      "重复启动未去重 ⇒ 会开两个 WS 抢同一房间")
+        self.assertEqual(len(self.m._task_instances["g_lb02"]), 1)
+
+    def test_lb10_fail_closed_on_bad_accounts(self):
+        """LB-10: 空账号 / 未登记账号必须拒绝。"""
+        from services.live_batch import LiveBatchConfig
+        r1 = self.m.create_task(LiveBatchConfig(
+            task_id="g_lb10a", name="a", rooms=["1"], accounts=[], enabled=True))
+        self.assertFalse(r1["ok"])
+        r2 = self.m.create_task(LiveBatchConfig(
+            task_id="g_lb10b", name="b", rooms=["1"],
+            accounts=["__不存在的账号__"], enabled=True))
+        self.assertFalse(r2["ok"])
+
+
+# ===========================================================================
+# 负控（Negative Controls）
+# ===========================================================================
+# 纪律（skill 铁律）：**门禁必须能变红**。先造缺陷证明它会红，再信它报绿。
+# 判据与正式门禁**同源复用**，杜绝「负控与门禁两套口径」导致假绿。
+# 只在内存副本上变异，**不碰磁盘上的真实文件**。
+
+def _has_bare_dispatch(src: str) -> bool:
+    """LB-03 判据（与 TestLiveBatchSourceInvariants 同口径）。"""
+    import re
+    return bool(re.search(r"DispatchCenter\(\s*\)", _strip_comments(src)))
+
+
+def _has_bare_hook(src: str) -> bool:
+    """LB-04 判据。"""
+    import re
+    return bool(re.search(r"LiveChatHook\(\s*\)", _strip_comments(src)))
+
+
+def _has_unawaited_start(src: str) -> bool:
+    """LB-05 判据（行内判定：出现调用但同行无 await）。"""
+    code = _strip_comments(src)
+    return any("inst._dispatch.start()" in ln and "await" not in ln
+               for ln in code.splitlines())
+
+
+def _has_registry_leak(src: str) -> bool:
+    """LB-01 判据：停止后未从注册表摘除。"""
+    return ("self._instances.pop(instance_id, None)" not in _strip_comments(src)
+            or "lst.remove(instance_id)" not in _strip_comments(src))
+
+
+def self_check_negative_controls():
+    """返回 [(负控名, 是否被门禁捕获)]。"""
+    src = _read()
+    out = []
+
+    def probe(name, mutated, detector):
+        caught = detector(mutated)   # 缺陷被注入后，判据应当「发现缺陷」
+        out.append((name, caught))
+
+    # NC-1: 无参 DispatchCenter()
+    m1 = src.replace("from core.dispatch import DispatchCenter",
+                     "from core.dispatch import DispatchCenter\n"
+                     "    _BAD = DispatchCenter()", 1)
+    assert m1 != src, "NC1 注入失败（锚点不存在）"
+    probe("NC1 无参 DispatchCenter()", m1, _has_bare_dispatch)
+
+    # NC-2: 无参 LiveChatHook()
+    m2 = src.replace("hook = LiveChatHook(live_id, auth, dispatch)",
+                     "hook = LiveChatHook()", 1)
+    assert m2 != src, "NC2 注入失败"
+    probe("NC2 无参 LiveChatHook()", m2, _has_bare_hook)
+
+    # NC-3: dispatch.start() 去掉 await
+    m3 = src.replace("await inst._dispatch.start()", "inst._dispatch.start()", 1)
+    assert m3 != src, "NC3 注入失败"
+    probe("NC3 start() 未 await", m3, _has_unawaited_start)
+
+    # NC-4: 恢复注册表泄漏（去掉摘除两行）
+    m4 = src.replace("            self._instances.pop(instance_id, None)\n", "", 1)
+    assert m4 != src, "NC4 注入失败"
+    probe("NC4 实例注册表泄漏", m4, _has_registry_leak)
+
+    # NC-5: 去掉 stop_hard（退回不存在的 stop()）
+    m5 = src.replace('getattr(inst._dispatch, "stop_hard", None)', "None", 1)
+    assert m5 != src, "NC5 注入失败"
+    probe("NC5 未调用 stop_hard", m5,
+          lambda s: "stop_hard" not in _strip_comments(s))
+
+    # ── 正控：未变异的真实源码必须「无缺陷」──
+    for nm, det in [("NC1", _has_bare_dispatch), ("NC2", _has_bare_hook),
+                    ("NC3", _has_unawaited_start), ("NC4", _has_registry_leak),
+                    ("NC5", lambda s: "stop_hard" not in _strip_comments(s))]:
+        if det(src):
+            out.append((f"{nm} 正控（真实源码应无缺陷）", False))
+        else:
+            out.append((f"{nm} 正控", True))
+
+    return out
+
+
+if __name__ == "__main__":
+    if "--negative" in sys.argv:
+        print("=== 负控（注入缺陷 → 门禁必须变红）+ 正控 ===")
+        ok = True
+        for name, caught in self_check_negative_controls():
+            tag = "GATE_GOES_RED ✔" if caught else "FAIL_GATE ✘（假门禁！）"
+            print(f"  {name:34s} {tag}")
+            if not caught:
+                ok = False
+        print("负控结果:", "PASS（门禁会变红，且真实源码无缺陷）" if ok
+              else "FAIL（存在假门禁！）")
+        sys.exit(0 if ok else 1)
+
+    unittest.main(verbosity=2)
