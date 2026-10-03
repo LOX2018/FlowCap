@@ -245,6 +245,7 @@ export default function LiveBatchPage({ push, ready }: PageProps) {
       delay_range: task.delay_range,
       interval: task.interval,
       max_target: task.max_target,
+      tag_id: task.tag_id,
     });
   }, [saveTemplateMut]);
 
@@ -431,6 +432,7 @@ export default function LiveBatchPage({ push, ready }: PageProps) {
               delay_range: template.delay_range,
               interval: template.interval,
               max_target: template.max_target,
+              tag_id: template.tag_id,
             });
             setShowTemplate(false);
           }}
@@ -651,6 +653,7 @@ interface CreateTaskData {
   delay_range: number[] | null;
   interval: number;
   max_target: number;
+  tag_id: string;
 }
 
 // ===========================================================================
@@ -668,6 +671,8 @@ function EditTaskModal({ taskId, onClose, onSubmit }: {
   const [strategy, setStrategy] = useState("round_robin");
   const [maxConcurrent, setMaxConcurrent] = useState(3);
   const [maxTarget, setMaxTarget] = useState(3);
+  // 2026-10-03（用户定调）：词库与发送参数复用「私信策略标签」。
+  const [tagId, setTagId] = useState("");
   const [dmPool, setDmPool] = useState("");
   const [enabled, setEnabled] = useState(true);
 
@@ -687,6 +692,7 @@ function EditTaskModal({ taskId, onClose, onSubmit }: {
       setStrategy(task.strategy);
       setMaxConcurrent(task.max_concurrent);
       setMaxTarget(task.max_target ?? 3);
+      setTagId(task.tag_id ?? "");
       setDmPool(task.dm_pool?.join("\n") || "");
       setEnabled(task.enabled);
     }
@@ -698,6 +704,15 @@ function EditTaskModal({ taskId, onClose, onSubmit }: {
     queryFn: () => api.getAccounts() as Promise<{ name: string }[]>,
   });
   const availableAccounts = accountsQ.data || [];
+
+  // 2026-10-03（用户定调「词库复用私信策略的标签」）：标签是词库与发送参数的真源。
+  // 与直播监听页读同一份配置标签（api.listTags），两个模式口径一致。
+  const tagsQ = useQuery({
+    queryKey: ["live-tags"],
+    queryFn: () => api.listTags(),
+    staleTime: 30_000,
+  });
+  const configTags = (tagsQ.data?.tags || []) as { id: string; name: string }[];
 
   const handleSubmit = () => {
     const roomList = rooms.split("\n").map((r) => r.trim()).filter(Boolean);
@@ -715,6 +730,7 @@ function EditTaskModal({ taskId, onClose, onSubmit }: {
       delay_range: null,
       interval: 60,
       max_target: maxTarget,
+      tag_id: tagId,
     });
   };
 
@@ -802,6 +818,25 @@ function EditTaskModal({ taskId, onClose, onSubmit }: {
                 className="mt-1"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">私信策略标签（词库来源）</label>
+            <select
+              value={tagId}
+              onChange={(e) => setTagId(e.target.value)}
+              className="mt-1 w-full px-3 py-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
+            >
+              <option value="">不使用标签（用下方自带词库）</option>
+              {configTags.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+            {tagId && (
+              <p className="text-xs opacity-60 mt-1">
+                词库、每房上限、间隔、延迟均以标签为准，下方自带项被覆盖
+              </p>
+            )}
           </div>
 
           <div>
@@ -908,6 +943,8 @@ function CreateTaskModal({ onClose, onSubmit, templates }: {
   const [strategy, setStrategy] = useState("round_robin");
   const [maxConcurrent, setMaxConcurrent] = useState(3);
   const [maxTarget, setMaxTarget] = useState(3);
+  // 2026-10-03（用户定调）：词库与发送参数复用「私信策略标签」。
+  const [tagId, setTagId] = useState("");
   const [dmPool, setDmPool] = useState("");
 
   // 获取账号列表（getAccounts 返回数组，不是 {accounts}）
@@ -916,6 +953,15 @@ function CreateTaskModal({ onClose, onSubmit, templates }: {
     queryFn: () => api.getAccounts() as Promise<{ name: string }[]>,
   });
   const availableAccounts = accountsQ.data || [];
+
+  // 2026-10-03（用户定调「词库复用私信策略的标签」）：标签是词库与发送参数的真源。
+  // 与直播监听页读同一份配置标签（api.listTags），两个模式口径一致。
+  const tagsQ = useQuery({
+    queryKey: ["live-tags"],
+    queryFn: () => api.listTags(),
+    staleTime: 30_000,
+  });
+  const configTags = (tagsQ.data?.tags || []) as { id: string; name: string }[];
 
   const handleSubmit = () => {
     const roomList = rooms.split("\n").map((r) => r.trim()).filter(Boolean);
@@ -933,6 +979,7 @@ function CreateTaskModal({ onClose, onSubmit, templates }: {
       delay_range: null,
       interval: 60,
       max_target: maxTarget,
+      tag_id: tagId,
     });
   };
 
@@ -943,6 +990,7 @@ function CreateTaskModal({ onClose, onSubmit, templates }: {
     setStrategy(template.strategy);
     setMaxConcurrent(template.max_concurrent);
     setMaxTarget(template.max_target ?? 3);
+    setTagId(template.tag_id ?? "");
     setDmPool(template.dm_pool?.join("\n") || "");
   };
 
@@ -1050,6 +1098,25 @@ function CreateTaskModal({ onClose, onSubmit, templates }: {
                 className="mt-1"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">私信策略标签（词库来源）</label>
+            <select
+              value={tagId}
+              onChange={(e) => setTagId(e.target.value)}
+              className="mt-1 w-full px-3 py-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
+            >
+              <option value="">不使用标签（用下方自带词库）</option>
+              {configTags.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+            {tagId && (
+              <p className="text-xs opacity-60 mt-1">
+                词库、每房上限、间隔、延迟均以标签为准，下方自带项被覆盖
+              </p>
+            )}
           </div>
 
           <div>

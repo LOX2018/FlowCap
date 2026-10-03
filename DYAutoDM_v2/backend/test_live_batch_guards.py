@@ -288,6 +288,58 @@ class TestLiveBatchManagerBehaviour(unittest.TestCase):
         self.assertFalse(r2["ok"])
 
 
+class TestLiveBatchTagPool(unittest.TestCase):
+    """LB-12：词库复用私信策略标签（用户 2026-10-03 定调）。
+
+    判据要点：① 复用 `app_config` 的 `live` 分区（唯一真源），不自造存储；
+    ② **只取标签里显式配过的键** —— `app_config.get()` 未配置时回 schema 默认值
+       （实测：标签不存在时 max_target 仍返 3），若直接采用会覆盖用户在任务里
+       显式设的值（静默降级）。
+    """
+
+    def test_lb12_resolve_returns_empty_for_missing_tag(self):
+        from services.live_batch import resolve_tag_send_params
+        self.assertEqual(resolve_tag_send_params(""), {})
+        self.assertEqual(resolve_tag_send_params("__不存在的标签__"), {})
+
+    def test_lb12_never_returns_schema_defaults(self):
+        """未显式配置的键**不得**出现在结果里（否则会覆盖用户显式配置）。"""
+        from services.live_batch import resolve_tag_send_params
+        r = resolve_tag_send_params("__不存在的标签__")
+        for k in ("max_target", "interval", "delay_range", "dm_pool"):
+            self.assertNotIn(k, r,
+                             f"未配标签却返回了 {k}={r.get(k)!r} ⇒ 会覆盖用户显式配置")
+
+    def test_lb12_pick_filters_disabled_and_dedups(self):
+        """pick：跳过 enabled=False、按文本去重、随机抽（禁恒取第 0 条）。"""
+        from services.live_batch import _make_pick
+        self.assertIsNone(_make_pick([]))
+        self.assertIsNone(_make_pick(None))
+        pick = _make_pick([
+            {"text": "甲", "enabled": True},
+            {"text": "乙", "enabled": True},
+            {"text": "丙", "enabled": False},
+            {"text": "甲", "enabled": True},
+        ])
+        self.assertIsNotNone(pick)
+        seen = {pick() for _ in range(300)}
+        self.assertEqual(seen, {"甲", "乙"},
+                         f"词库抽取语义错：{seen}（禁用项须排除、重复须去重）")
+
+    def test_lb12_tag_id_is_real_config_field(self):
+        import dataclasses
+        from services.live_batch import LiveBatchConfig
+        names = {f.name for f in dataclasses.fields(LiveBatchConfig)}
+        self.assertIn("tag_id", names, "LiveBatchConfig 缺 tag_id")
+        self.assertEqual(LiveBatchConfig(task_id="t", name="n").to_dict()["tag_id"], "")
+
+    def test_lb12_dispatch_gets_pick_callback(self):
+        """词库必须经 `pick_dm_message` 注入（契约里没有 dm_pool 字段）。"""
+        code = _strip_comments(_read())
+        self.assertIn("pick_dm_message=", code,
+                      "DispatchCenter 构造未注入 pick_dm_message ⇒ 词库永远不生效")
+
+
 # ===========================================================================
 # 负控（Negative Controls）
 # ===========================================================================
@@ -358,10 +410,17 @@ def self_check_negative_controls():
     probe("NC5 未调用 stop_hard", m5,
           lambda s: "stop_hard" not in _strip_comments(s))
 
+    # NC-6: 去掉 pick_dm_message 注入（词库永远不生效）
+    m6 = src.replace("pick_dm_message=_make_pick(_pool),", "", 1)
+    assert m6 != src, "NC6 注入失败"
+    probe("NC6 未注入 pick_dm_message", m6,
+          lambda s: "pick_dm_message=" not in _strip_comments(s))
+
     # ── 正控：未变异的真实源码必须「无缺陷」──
     for nm, det in [("NC1", _has_bare_dispatch), ("NC2", _has_bare_hook),
                     ("NC3", _has_unawaited_start), ("NC4", _has_registry_leak),
-                    ("NC5", lambda s: "stop_hard" not in _strip_comments(s))]:
+                    ("NC5", lambda s: "stop_hard" not in _strip_comments(s)),
+                    ("NC6", lambda s: "pick_dm_message=" not in _strip_comments(s))]:
         if det(src):
             out.append((f"{nm} 正控（真实源码应无缺陷）", False))
         else:

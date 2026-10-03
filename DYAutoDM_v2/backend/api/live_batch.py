@@ -51,6 +51,8 @@ class CreateTaskRequest(BaseModel):
     interval: float = 60.0
     #: 2026-10-03：每个直播间的私信条数上限（与 max_concurrent 正交）。
     max_target: int = 3
+    #: 2026-10-03（用户定调「词库复用私信策略的标签」）：绑定配置标签 id。
+    tag_id: str = ""
 
 
 class StartTaskRequest(BaseModel):
@@ -70,6 +72,7 @@ class UpdateTaskRequest(BaseModel):
     delay_range: Optional[list[int]] = None
     interval: Optional[float] = None
     max_target: Optional[int] = None
+    tag_id: Optional[str] = None
 
 
 class CreateTemplateRequest(BaseModel):
@@ -83,6 +86,7 @@ class CreateTemplateRequest(BaseModel):
     delay_range: Optional[list[int]] = None
     interval: float = 60.0
     max_target: int = 3
+    tag_id: str = ""
 
 
 # ===========================================================================
@@ -143,6 +147,7 @@ async def create_task(req: CreateTaskRequest) -> dict:
         delay_range=delay_range,
         interval=req.interval,
         max_target=req.max_target,
+        tag_id=(req.tag_id or "").strip(),
     )
 
     mgr = get_manager()
@@ -252,6 +257,8 @@ async def update_task(task_id: str, req: UpdateTaskRequest) -> dict:
         if req.max_target < 1 or req.max_target > 999:
             raise HTTPException(400, "每房私信上限须在 1~999 之间")
         cfg.max_target = req.max_target
+    if req.tag_id is not None:
+        cfg.tag_id = req.tag_id.strip()
     
     logger.info(f"[LiveBatch] 任务已更新: {task_id}")
     return {"ok": True, "task": cfg.to_dict()}
@@ -393,6 +400,7 @@ async def create_template(req: CreateTemplateRequest) -> dict:
         "delay_range": req.delay_range,
         "interval": req.interval,
         "max_target": req.max_target,
+        "tag_id": (req.tag_id or "").strip(),
         "created_at": time.time(),
     }
     

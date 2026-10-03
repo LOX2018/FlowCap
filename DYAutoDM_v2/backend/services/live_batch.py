@@ -42,6 +42,7 @@ mgr.delete_task(task_id)      # 删除任务
 from __future__ import annotations
 
 import os
+import random
 import threading
 import time
 import traceback
@@ -120,6 +121,11 @@ class LiveBatchConfig:
     #: 前者是「每个房间这一场发几条」。原先代码读 `cfg.max_target` 但字段并不存在，
     #: getattr 永远回退 ⇒ 「每房 3 条」被隐式写死且无法配置。
     max_target: int = 3
+    #: 🔴 2026-10-03（用户定调「词库复用私信策略的标签」）：绑定**配置标签 id**。
+    #: 为空 = 沿用任务自身的 dm_pool/delay_range/interval/max_target（零回归）。
+    #: 非空 = 启动时从该标签的 `live` 分区解析词库与发送参数，**覆盖**任务自身值
+    #:（标签是策略唯一真源，与单任务模式 `/api/live/config-tags/{sid}/apply` 同源）。
+    tag_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -134,6 +140,7 @@ class LiveBatchConfig:
             "delay_range": list(self.delay_range) if self.delay_range else None,
             "interval": self.interval,
             "max_target": self.max_target,
+            "tag_id": self.tag_id,
         }
 
 
@@ -174,6 +181,132 @@ class LiveInstance:
             "started_at": self.started_at,
             "stopped_at": self.stopped_at,
         }
+
+
+def _make_pick(pool) -> Optional[Callable[[], str]]:
+    """由词库构造 `pick_dm_message` 回调；词库为空返回 None（调用方自带 content）。
+
+    ## 为什么照抄 AutoDM._make_pick_dm_message 的语义而不是「取第 0 条」
+    AutoDM 源码注释记录了实测教训：**恒取第 0 条会导致文案重复被风控**
+    （原缺陷名：`pick_dm_message` 之前的实现）。这里保持同款语义 ——
+    取 `enabled` 项、按文本去重、`random.choice` 随机抽。
+    自造第二份抽取逻辑必然与单任务模式漂移（同「两个模式口径必须一致」的理由）。
+    """
+    active: list = []
+    for t in (pool or []):
+        if isinstance(t, dict):
+            if not t.get("enabled", True):
+                continue
+            text = str(t.get("text", "")).strip()
+        else:
+            text = str(t).strip()
+        if text and text not in active:
+            active.append(text)
+    if not active:
+        return None
+
+    def _pick() -> str:
+        return random.choice(active)
+
+    return _pick
+
+
+# ===========================================================================
+# 标签 → 发送参数解析（2026-10-03，用户定调「词库复用私信策略的标签」）
+# ===========================================================================
+
+def resolve_tag_send_params(tag_id: str) -> dict:
+    """从配置标签的 `live` 分区解析**私信发送参数**（词库 + 发送节奏 + 上限）。
+
+    ## 为什么复用而不是自造
+    词库的**唯一真源**是配置中心 `app_config` 的 `live.dm_pool`（换行分隔字符串），
+    单任务模式已有现成映射 `api/live_config._tag_to_strategy_cfg`
+    （同一函数也供 `/config-tags/{sid}/apply` 用）。批量模式**复用它**，
+    保证两个模式的词库口径**逐字一致** —— 自造第二份解析必然漂移。
+
+    ## 关键语义：区分「标签显式配了」与「schema 默认值」
+    `app_config.get()` 在未配置时也会回 **schema 默认值**
+    （实测：标签不存在时 `max_target` 仍返回 3、`interval` 仍返回 60.0）。
+    若直接采用，用户在批量任务里显式设的「每房 5 条」会被默认值 3 悄悄覆盖。
+    ⇒ 本函数**只返回标签里显式配过的键**，未配的一律不出现（调用方保留自身值）。
+
+    返回 dict 形状（**仅含显式配置项**）：
+        {max_target?, interval?, delay_range?, dm_pool?}
+        dm_pool 为 ``[{"text": str, "enabled": bool}, ...]``。
+    """
+    if not tag_id:
+        return {}
+    try:
+        from services import app_config as ac
+        from services import config_tag
+    except Exception as e:
+        logger.warning(f"[LiveBatch] 标签参数解析依赖缺失: {e}")
+        return {}
+
+    tag_id = str(tag_id).strip()
+    if not tag_id:
+        return {}
+
+    # 标签不存在 → 直接返回（零回归：不该回落到任何默认值）
+    try:
+        if not config_tag.get_tag(tag_id):
+            logger.warning(f"[LiveBatch] 标签不存在，发送参数不覆盖: {tag_id}")
+            return {}
+    except Exception as e:
+        logger.warning(f"[LiveBatch] 标签存在性校验异常，按未配置处理: {e}")
+        return {}
+
+    # 只取该标签 live 分区里**显式配过**的键（不走 schema 默认值回落）
+    try:
+        stored = (ac._load(ac.scope_key(tag_id)).get("live") or {})
+    except Exception as e:
+        logger.warning(f"[LiveBatch] 读取标签 live 分区失败: {e}")
+        return {}
+
+    out: dict = {}
+
+    # dm_pool：换行分隔字符串 → [{text, enabled}]
+    if "dm_pool" in stored:
+        raw = stored.get("dm_pool")
+        lines = ([s.strip() for s in str(raw or "").splitlines() if s.strip()]
+                 if isinstance(raw, str) else [])
+        if lines:
+            out["dm_pool"] = [{"text": t, "enabled": True} for t in lines]
+
+    # max_target：标签显式值优先，否则回落 schema 默认（单任务模式同款口径）
+    if "max_target" in stored:
+        try:
+            v = int(stored.get("max_target"))
+            if v > 0:
+                out["max_target"] = v
+        except (TypeError, ValueError):
+            logger.warning(f"[LiveBatch] 标签 max_target 非法，忽略: "
+                           f"{stored.get('max_target')!r}")
+
+    # interval
+    if "interval" in stored:
+        try:
+            v = float(stored.get("interval"))
+            if v > 0:
+                out["interval"] = v
+        except (TypeError, ValueError):
+            logger.warning(f"[LiveBatch] 标签 interval 非法，忽略: "
+                           f"{stored.get('interval')!r}")
+
+    # delay：标签用 delay_min/delay_max 两个键（见 live_config._tag_to_strategy_cfg）
+    if "delay_min" in stored or "delay_max" in stored:
+        try:
+            lo = int(stored.get("delay_min") or 0)
+            hi = int(stored.get("delay_max") or 0)
+            if lo > 0 and hi > 0:
+                out["delay_range"] = (min(lo, hi), max(lo, hi))
+        except (TypeError, ValueError):
+            logger.warning("[LiveBatch] 标签 delay 非法，忽略")
+
+    if out:
+        logger.info(f"[LiveBatch] 标签 {tag_id} 发送参数生效: "
+                    f"{sorted(out.keys())}")
+    return out
 
 
 # ===========================================================================
@@ -449,20 +582,29 @@ class LiveBatchManager:
         # 1) DispatchCenter（auth 必填）
         try:
             from core.dispatch import DispatchCenter
-            # max_target = **每个直播间**的私信条数上限（对齐 AutoDM 的 `self.limit` 语义）。
-            # 🔴 原实现引用了 `cfg.max_target`，而 `LiveBatchConfig` **并无该字段**
-            #   （字段实测：task_id/name/rooms/accounts/strategy/max_concurrent/enabled/
-            #     dm_pool/delay_range/interval）⇒ getattr 永远回退，等于「每房发 3 条」被写死。
-            # 现按**与 max_conconsistent 无关的独立上限**显式建模，见 LiveBatchConfig.max_target。
+            # 🔴 2026-10-03（用户定调「词库复用私信策略的标签」）：
+            #   标签命中的发送参数**覆盖**任务自身值（标签是策略唯一真源）；
+            #   未命中的键保留任务自身值（不回落 schema 默认，见 resolve_tag_send_params）。
+            tp = resolve_tag_send_params(getattr(cfg, "tag_id", "") or "")
+            _max_target = int(tp.get("max_target") or cfg.max_target or 3)
+            _interval = float(tp.get("interval") or cfg.interval or 60.0)
+            _delay = tp.get("delay_range") or cfg.delay_range or (40, 65)
+            # 词库优先级：① 标签 live.dm_pool ② 任务自带 dm_pool
+            _pool = tp.get("dm_pool") or (
+                [{"text": t, "enabled": True} for t in (cfg.dm_pool or [])]
+                if cfg.dm_pool else None
+            )
             dispatch = DispatchCenter(
                 auth=auth,
-                max_target=int(cfg.max_target or 3),
-                delay_range=cfg.delay_range or (40, 65),
-                interval=float(cfg.interval or 60.0),
+                max_target=_max_target,
+                delay_range=_delay,
+                interval=_interval,
+                # 词库经 `pick_dm_message` 注入（**注入点，非自造**）：
+                # DispatchCenter 契约里没有 dm_pool 字段，抽取逻辑复用 AutoDM 的
+                # `_make_pick_dm_message` 同款实现（取启用项 + 去重 + 随机抽）。
+                # 不复用「恒取第 0 条」——那会因文案重复被风控（AutoDM 注释已记录该教训）。
+                pick_dm_message=_make_pick(_pool),
             )
-            # ⚠️ 词库（dm_pool）**不在** DispatchCenter 的契约里 —— 文案由 AutoDM 侧的
-            # `dm_template` 提供，DispatchCenter 只按 target 自带 content 发送。
-            # 批量模式没有 AutoDM 实例，故 dm_pool 目前**不生效**（见交付说明）。
             inst._dispatch = dispatch
         except Exception as e:
             return {"ok": False, "error": f"创建 DispatchCenter 失败: {e}"}
