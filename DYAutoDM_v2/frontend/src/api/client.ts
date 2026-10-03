@@ -2806,7 +2806,11 @@ export const api = {
    *  筛选逻辑在后端执行（SSOT），发送走统一发送闸门。 */
   async crawlDmBatch(body: {
     account: string;
-    text: string;
+    /**
+     * 私信文案。**留空即由后端按标签取 `dm_pool` 首条**（★ 2026-10-03）。
+     * 前端已不提供输入框 —— 私信复用标签，避免「一个页面两处文案来源」。
+     */
+    text?: string;
     items: { uid: string; nickname: string; text: string }[];
     min_score?: number;
     max_send?: number;

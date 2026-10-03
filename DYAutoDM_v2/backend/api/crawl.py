@@ -859,10 +859,45 @@ async def crawl_dm_batch(body: CrawlDmBatchRequest):
     """批量私信：从已采集评论中按高价值关键词筛选候选，逐条发送（★ 2026-10-02）。
 
     筛选逻辑在后端执行（SSOT），发送走统一发送闸门（core.sender.send_by_uid）。
+
+    ★ 2026-10-03（用户指令）：私信文案**复用标签**，前端不再单独输入。
+      文案取值优先级（SSOT，唯一真源 = 标签的 `send.dm_pool`）：
+        ① 请求体 `text` 非空 —— 显式覆盖（保留，兼容程序化调用）；
+        ② 本次显式选的标签 `tag_id` 的 `send.dm_pool` **第一行**；
+        ③ 账号在 send 板块绑定标签的 `send.dm_pool` 第一行；
+        ④ 仍取不到 ⇒ **400 并说清原因**（fail-closed，不静默发空文案）。
+      `dm_pool` 的既有语义是「每行一条、随机选用」（见
+      `app_config_schema.py`），此处取第一行是**确定性**取舍：
+      批量发送同一批人用不同文案会降低送达率，也不好事后核对。
     """
     text = (body.text or "").strip()
     if not text:
-        raise HTTPException(400, "缺少私信文案")
+        # 复用标签的私信词库（前端已不再提供输入框）
+        # ⚠️ 用 `app_config.get` 而非自造 helper：它**内建回落链**
+        #   「标签 scope → 全局 → 环境变量 → schema 默认」（app_config.py:196），
+        #   不必自己再实现一遍（我第一版写了不存在的 `_crawl_cfg_send`）。
+        _tag = (getattr(body, "tag_id", "") or "").strip()
+        try:
+            from services import app_config as _ac
+            _pool = str(_ac.get("send", "dm_pool", "", scope=_tag or None) or "")
+        except Exception as _e:  # noqa: BLE001 —— 取不到就当空，落到 400
+            logger.warning(f"[CRAWL-007] [crawl] 读标签私信词库失败: "
+                           f"{type(_e).__name__}: {_e}")
+            _pool = ""
+        # ⚠️ dm_pool 是「每行一条」文本：先去掉 CR，再按 LF 切，
+        #   否则 Windows 的 CRLF 会让末行残留回车（发出去带空白）。
+        # 用 chr(13)/chr(10) 而非字面量：heredoc 传输会把转义序列真的展开成
+        #   真实换行，插进字符串字面量里会直接语法错（本次已踩两次）。
+        lines = [ln.strip() for ln in _pool.replace(chr(13), "").split(chr(10))
+                 if ln.strip()]
+        if lines:
+            text = lines[0]
+            logger.info(f"[crawl] 私信文案取自标签词库 dm_pool: "
+                        f"tag={_tag or '(账号绑定)'} → 首条 {len(text)} 字")
+    if not text:
+        raise HTTPException(
+            400, "私信词库为空：请在配置中心为该标签的「私信词库」填一条，"
+                 "或直接传 text")
     if not body.items:
         raise HTTPException(400, "缺少评论数据")
 

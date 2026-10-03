@@ -133,8 +133,9 @@ export default function CrawlFloatingPanel({
   //     前端不硬编码业务阈值（那会造成第二份真值）。
   //   ⚠️ 传 1 而非配置值：语义是「确保进入过滤分支」，具体门槛由后端取配置。
   const hvMinScore = 1;
-  // 私信文案（私信阶段必填）
-  const [dmTpl, setDmTpl] = useState("");
+  // ★ 2026-10-03（用户指令）：私信文案**复用标签**，前端不再单独输入。
+  //   唯一真源 = 标签的 `send.dm_pool`（配置中心「私信词库」），
+  //   由后端 `/dm/batch` 在 text 为空时按标签取首条。
 
   // ★ 2026-10-03：正在运行的采集任务（任务中心接线）。
   //   ⚠️ 后端状态是**进程级内存**（进程重启即丢失），故：
@@ -201,10 +202,8 @@ export default function CrawlFloatingPanel({
       push(`请先勾选要采集的${unit}`);
       return;
     }
-    if (sendAfterCrawl && !dmTpl.trim()) {
-      push("已开启采集后私信，但私信文案为空 —— 请填写文案或关闭该开关");
-      return;
-    }
+    // ★ 2026-10-03：不再校验文案是否为空 —— 由标签的 dm_pool 决定，
+    //   取不到时后端会 400 并说清原因（fail-closed 在后端，前端不重复拦）。
     setSending(true);
     setSendResult(null);
     try {
@@ -282,7 +281,8 @@ export default function CrawlFloatingPanel({
             report({ phase: "dm", total: items.length, done: 0 });
             const d = await api.crawlDmBatch({
               account,
-              text: dmTpl.trim(),
+              // ★ 2026-10-03：不再传 text —— 由后端按本次标签取 `dm_pool` 首条
+              //   （空 text 才触发标签回落；传空串与不传等价）。
               items,
               // ★ 2026-10-03：传 hvMinScore（与采集阶段同一口径）。
               //   ⚠️ 原注释「0 = 不覆盖，由标签/配置中心决定门槛」**是错的**：
@@ -495,14 +495,6 @@ export default function CrawlFloatingPanel({
                 <SelectItem value="crawl+dm">采集并私信</SelectItem>
               </SelectContent>
             </Select>
-            {goal === "crawl+dm" && (
-              <Input
-                value={dmTpl}
-                onChange={(e) => setDmTpl(e.target.value)}
-                placeholder="私信文案"
-                className="mt-1.5"
-              />
-            )}
           </div>
 
           {/* 高价值标签（放回悬浮窗） */}
@@ -603,13 +595,7 @@ export default function CrawlFloatingPanel({
         <Button
           onClick={handleBatchCrawl}
           disabled={
-            sending || !selectedIds.length || !selectedAccounts.length ||
-            (sendAfterCrawl && !dmTpl.trim())   // 开启私信但文案为空 ⇒ 不给跑
-          }
-          title={
-            sendAfterCrawl && !dmTpl.trim()
-              ? "已开启采集后私信，但私信文案为空"
-              : undefined
+            sending || !selectedIds.length || !selectedAccounts.length
           }
         >
           {sending ? (
