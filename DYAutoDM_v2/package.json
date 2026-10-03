@@ -1,6 +1,6 @@
 {
   "name": "dyautodm-v2",
-  "version": "0.46.38",
+  "version": "0.46.39",
   "private": true,
   "description": "抖音直播间自动私信控制台 - Tauri + FastAPI 重构版",
   "scripts": {
