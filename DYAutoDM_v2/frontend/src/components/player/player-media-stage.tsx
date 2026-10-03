@@ -19,6 +19,7 @@ import {
 import { pickKernel, type VideoKernel } from "./player-kernel";
 import { getPosition, clearPosition, setMeta } from "./player-cache";
 import { useAuthedMediaUrl } from "@/lib/authed-media";
+import { toBackendUrl } from "@/api/client";
 import { Loader2 } from "lucide-react";
 
 interface Props {
@@ -66,14 +67,26 @@ export function PlayerMediaStage({
   //   现改走「重试」范式：失败时展示中文原因 + 重试按钮，点击后切换 `bust` 强制
   //   换 key 重取（新 key 触发 useEffect 重新 load → 命中负缓存则等待其失效后成功）。
   const [bust, setBust] = useState(0);
-  const resolvedUrl = useAuthedMediaUrl(media?.type === "video" ? media?.url : undefined, bust);
+  // ★ 2026-10-03（方案 A「签名即授权」；用户报障「一直加载」的根因修复）：
+  //   已签名的流地址（`/api/platform/media/stream?...`）**可直接**交给 <video> ——
+  //   后端已把签名当作授权凭证（不再要求 X-Member-Token），且该端点原生支持
+  //   Range（可拖进度条、边下边播）。
+  //   🔴 绝不能对它再走「令牌 fetch 全量 Blob」：那会把整片（实测单作品约 400MB）
+  //   下完才开播，正是「一直加载」的成因。
+  //   其它本地受保护地址（如 IM 消息视频 `/api/messages/video/…`）无签名，
+  //   仍走既有 Blob 方案（短视频，代价可接受）。
+  const rawVideoUrl = media?.type === "video" ? media?.url : undefined;
+  const isSignedStream = !!rawVideoUrl && rawVideoUrl.includes("/api/platform/media/stream?");
+  const directUrl = isSignedStream ? toBackendUrl(rawVideoUrl!) : undefined;
+  const resolvedUrl = useAuthedMediaUrl(directUrl ? undefined : rawVideoUrl, bust);
   const stageMedia = useMemo<PlayerMedia | null>(() => {
     if (!media) return null;
     if (media.type !== "video") return media;
+    if (directUrl) return { ...media, url: directUrl };       // 签名流：直连，支持 Range
     if (resolvedUrl === undefined) return null;      // 仍在取 Blob → 先不挂载（占位）
     if (resolvedUrl === null) return { ...media, url: "" };  // 取失败 → 触发失败分支
     return { ...media, url: resolvedUrl };
-  }, [media, resolvedUrl, bust]);
+  }, [media, resolvedUrl, bust, directUrl]);
 
   const set = (evt: string) => {
     setStatus((cur) => {

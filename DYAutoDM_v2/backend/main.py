@@ -795,6 +795,39 @@ async def member_auth_middleware(request, call_next):
     # （排查极难定位——本次即踩此坑）。预检不携带业务数据，放行无风险。
     if request.method == "OPTIONS":
         return await call_next(request)
+    # ★ 2026-10-03 方案 A「签名即授权」：媒体流端点（/api/platform/media/stream）
+    #   的设计意图是给 <video src> 直接指向（支持 Range、边收边转、可拖进度条）。
+    #   而 <video> 无法携带 X-Member-Token ⇒ 裸请求必被本中间件拦成 401，
+    #   前端被迫改走「令牌 fetch 全量 Blob」—— 大文件（实测单作品约 400MB）
+    #   必须整片下完才开播，表现为「一直加载」。
+    #   现：该端点保留**三层自有防护**（HMAC 签名 + 6h 过期 + 主机白名单防 SSRF），
+    #   并把 member_id 折进签名（等价于把令牌语义搬进 URL）：签名有效即等价于
+    #   「已认证 + 已授权」，故在判定层放行；仍带令牌的调用方不受影响。
+    #   ⚠️ 仅放行这一个二进制流端点，不放宽任何其它端点。
+    if path == "/api/platform/media/stream":
+        _valid = False
+        try:
+            import time as _t
+            from services import media_stream_sign as _mss
+            _valid = _mss.verify(
+                request.query_params.get("aid", ""),
+                int(request.query_params.get("exp", "0") or "0"),
+                request.query_params.get("mid", ""),
+                request.query_params.get("sig", ""),
+                int(_t.time()),
+            )[0]
+        except Exception:  # noqa: BLE001 —— 校验异常一律不放行（fail-closed）
+            _valid = False
+        if not _valid:
+            from fastapi.responses import JSONResponse
+            _r403 = JSONResponse({"detail": "流地址签名无效或已过期"},
+                                 status_code=403)
+            _o = request.headers.get("origin")
+            if _o:
+                _r403.headers["Access-Control-Allow-Origin"] = _o
+                _r403.headers["Access-Control-Allow-Credentials"] = "true"
+            return _r403
+        return await call_next(request)
     if path.startswith("/api") and not any(
         path.startswith(e) if e.endswith("/") else path == e
         for e in _MEMBER_EXEMPT

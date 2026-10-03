@@ -1703,13 +1703,11 @@ def stream_cache_stats() -> dict:
                 "ttl_sec": _STREAM_CACHE_TTL_SEC}
 
 
-def _media_sign(aweme_id: str, exp: int) -> str:
-    """本机流地址的短签名（防被当开放代理）。仅本机使用，密钥派生自应用盐。"""
-    import hashlib
-    import hmac
-    secret = b"dyautodm-media-stream-v1"
-    msg = f"{aweme_id}:{exp}".encode()
-    return hmac.new(secret, msg, hashlib.sha256).hexdigest()[:32]
+# ★ 2026-10-03 方案 A「签名即授权」：签名算法与字段顺序**只**在
+#   `services/media_stream_sign.py` 定义一处 —— 会员门禁中间件（main.py）与
+#   本端点都从那里取，禁止任一端自行实现（两处实现必然漂移 ⇒ 一半放行一半 403）。
+#   签名绑定 member_id（等价把令牌语义搬进 URL），旧签名随会话切换自动失效。
+from services import media_stream_sign as _mstream  # noqa: E402
 
 
 def _media_host_ok(url: str) -> bool:
@@ -1751,10 +1749,12 @@ async def media_stream_ticket(req: StreamTicketReq) -> dict[str, Any]:
         logger.warning(f"[PLT-043] " + f"直链主机不在白名单，拒绝代理: {direct[:80]}")
         raise HTTPException(502, "取址失败：地址主机不在允许列表")
     exp = int(_t.time()) + _STREAM_SIGN_TTL_SEC
-    sig = _media_sign(req.aweme_id, exp)
+    mid = _mstream.current_member_id()
+    sig = _mstream.sign(req.aweme_id, exp, mid)
     u = base64.urlsafe_b64encode(direct.encode()).decode()
+    # `mid`（会员 ID）参与签名 ⇒ 换会员/登出后旧链接自动失效。
     stream_url = (f"/api/platform/media/stream?u={u}&exp={exp}&sig={sig}"
-                  f"&aid={req.aweme_id}")
+                  f"&aid={req.aweme_id}&mid={mid}")
     return {"ok": True, "stream_url": stream_url, "expires_in": _STREAM_SIGN_TTL_SEC,
             "resolved_via": r.get("resolved_via"), "type": r.get("type"),
             "cover": r.get("cover"), "duration": r.get("duration"),
@@ -1763,7 +1763,8 @@ async def media_stream_ticket(req: StreamTicketReq) -> dict[str, Any]:
 
 
 @router.get("/media/stream")
-async def media_stream(u: str, exp: int, sig: str, aid: str = "", request: Request = None):
+async def media_stream(u: str, exp: int, sig: str, aid: str = "", mid: str = "",
+                  request: Request = None):
     """反向代理抖音媒体流（支持 Range；`<video>` 直接指向本机此处）。
 
     安全：签名校验 + 过期校验 + 主机白名单，三重防滥用/SSRF。
@@ -1773,10 +1774,11 @@ async def media_stream(u: str, exp: int, sig: str, aid: str = "", request: Reque
     from fastapi.responses import StreamingResponse
     import requests
 
-    if exp < int(_t.time()):
-        raise HTTPException(403, "流地址已过期，请重新取址")
-    if _media_sign(aid, exp) != sig:
-        raise HTTPException(403, "流地址签名无效")
+    # 双保险：中间件已按「签名即授权」放行；端点内再校验一次（纵深防御，
+    # 也覆盖「中间件被绕过 / 该路径未被中间件处理」的情形）。
+    _ok, _why = _mstream.verify(aid, exp, mid, sig, int(_t.time()))
+    if not _ok:
+        raise HTTPException(403, f"流地址校验失败：{_why}")
     try:
         target = base64.urlsafe_b64decode(u.encode()).decode()
     except Exception:  # noqa: BLE001

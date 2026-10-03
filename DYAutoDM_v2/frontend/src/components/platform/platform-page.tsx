@@ -226,6 +226,62 @@ export default function PlatformPage(props: PageProps & {
     staleTime: 120_000,
   });
 
+  // ★ 2026-10-03（用户指令）：推荐流**累积凑够 10 个**。
+  //
+  // 背景：上游 `refresh_index` 是「换一批」刷新种子，单次只回 2~6 条（实测，
+  //      与 count=20 无关）。用户要的是「凑够 10 个」而非「一批多少算多少」。
+  //
+  // 设计（判据）：
+  //  · 每批到达 → 按 `aweme_id` **去重追加**（同一 refresh_index 重取结果会变，必须去重）；
+  //  · 追加后仍不足 `FEED_TARGET` → **自动再拉下一批**（feedIdx+1）；
+  //  · 补拉上限 `FEED_MAX_TRIES` 轮 —— 上游持续不足时**必须停**，否则无限打接口＝
+  //    风控面失控（本页铁律：主动请求越少越安全）；
+  //  · 「换一批」→ 重置累积与计数，从全新批次重新凑；
+  //  · 累积真源放在 **ref**（`feedAccRef`）而非 state：state 在 effect 闭包里是
+  //    上一轮的值，用它会「多加一批」（实测该坑）。ref 读到的永远是真实长度。
+  const FEED_TARGET = 10;
+  const FEED_MAX_TRIES = 5;
+  const [feedItems, setFeedItems] = useState<AwemeItem[]>([]);
+  const feedAccRef = useRef<AwemeItem[]>([]);   // 累积真源（去重后的真实列表）
+  const feedHandledRef = useRef<number>(-1);    // 已聚合到的 feedIdx（幂等）
+  const feedTriesRef = useRef(0);               // 自动补拉计数（风控上限）
+  const feedKeyRef = useRef<string>("");        // 账号切换检测
+
+  useEffect(() => {
+    // 账号切换 ⇒ 清空累积（否则会把上个账号的作品混进来）
+    const k = String(account || "");
+    if (feedKeyRef.current !== k) {
+      feedKeyRef.current = k;
+      feedAccRef.current = [];
+      feedHandledRef.current = -1;
+      feedTriesRef.current = 0;
+      setFeedItems([]);
+      return;
+    }
+    const d = feedQ.data;
+    if (!d?.items?.length) return;
+    // 幂等键取「本批数据自带的 refresh_index」（= 数据身份），**不是** feedIdx。
+    // 🔴 坑（实测）：effect 依赖含 feedIdx ⇒ feedIdx 递增后 effect 会立刻重跑，
+    //   而此刻 feedQ.data 仍是**上一批**的数据。用 feedIdx 判定会误认「已处理」，
+    //   既丢掉新批、又白耗一次补拉计数。用数据自带的 refresh_index 则天然幂等。
+    const batchId = typeof d.refresh_index === "number" ? d.refresh_index : feedIdx;
+    if (feedHandledRef.current === batchId) return;
+    feedHandledRef.current = batchId;
+
+    const seen = new Set(feedAccRef.current.map((x) => x.aweme_id));
+    const add = (d.items as AwemeItem[]).filter((x) => x.aweme_id && !seen.has(x.aweme_id));
+    if (add.length) {
+      feedAccRef.current = [...feedAccRef.current, ...add];
+      setFeedItems(feedAccRef.current);
+    }
+    // 决策基于 ref 的**真实**长度（不用闭包里的 state，避免多加一批）
+    if (feedAccRef.current.length < FEED_TARGET
+        && feedTriesRef.current < FEED_MAX_TRIES) {
+      feedTriesRef.current += 1;
+      setFeedIdx((n) => n + 1);
+    }
+  }, [feedQ.data, feedIdx, account]);
+
   const searchQ = useQuery({
     queryKey: ["platform-search", account, submitted?.q, submitted?.kind],
     queryFn: () => platformApi.search(account, submitted!.q, submitted!.kind, 20),
@@ -351,13 +407,15 @@ export default function PlatformPage(props: PageProps & {
     checkedIds?: Record<string, boolean>,
     onToggleCheck?: (id: string, checked: boolean) => void,
     // ★ 2026-10-03：结果就绪回调（匿名探针用它并行发起，不阻塞渲染）
-    opts?: { onLoaded?: (ids: string[]) => void },
+    opts?: { onLoaded?: (ids: string[]) => void;
+            /** ★ 2026-10-03：覆盖渲染数据（推荐流用累积列表，不改 renderQ 既有契约） */
+            itemsOverride?: (AwemeItem | UserItem)[] },
   ) => {
     if (q.isPending) return <LoadingState />;
     if (q.isError) {
       return <ErrorState message={String((q.error as Error)?.message || "请求失败")} onRetry={q.refetch} />;
     }
-    const items = (q.data?.items || []) as (AwemeItem | UserItem)[];
+    const items = (opts?.itemsOverride ?? q.data?.items ?? []) as (AwemeItem | UserItem)[];
     // ★ 2026-10-03：结果就绪后触发回调（匿名探针）。
     //
     // 🔴 `renderQ` 是**普通函数**（在组件渲染期被调用），**绝不能**在里面用
@@ -441,8 +499,8 @@ export default function PlatformPage(props: PageProps & {
               上游 refresh_index 是换一批旋钮，递增即取新批次。 */}
           <div className="mb-3 flex items-center justify-between">
             <span className="text-[0.78rem] text-[var(--color-text-secondary)]">
-              {feedQ.data?.items?.length
-                ? `本批 ${feedQ.data.items.length} 个作品`
+              {feedItems.length
+                ? `已加载 ${feedItems.length} 个作品${feedItems.length < FEED_TARGET ? `（目标 ${FEED_TARGET}，补拉中…）` : ""}`
                 : ""}
               {typeof feedQ.data?.filtered === "number" && feedQ.data.filtered > 0
                 ? `（已过滤 ${feedQ.data.filtered} 个不可播条目）` : ""}
@@ -452,7 +510,13 @@ export default function PlatformPage(props: PageProps & {
                 size="sm"
                 variant="secondary"
                 disabled={feedQ.isFetching}
-                onClick={() => setFeedIdx((n) => n + 1)}
+                onClick={() => {
+                  feedAccRef.current = [];
+                  feedHandledRef.current = -1;
+                  feedTriesRef.current = 0;
+                  setFeedItems([]);
+                  setFeedIdx((n) => n + 1);
+                }}
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${feedQ.isFetching ? "animate-spin" : ""}`} />
                 换一批
@@ -469,7 +533,7 @@ export default function PlatformPage(props: PageProps & {
               </Button>
             </div>
           </div>
-          {renderQ(feedQ, "video", checkedIds, handleToggleCheck)}
+          {renderQ(feedQ, "video", checkedIds, handleToggleCheck, { itemsOverride: feedItems })}
         </TabsContent>
 
         <TabsContent value="search">
