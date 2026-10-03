@@ -30,6 +30,8 @@ export interface LiveBatchTask {
   interval: number;
   /** 2026-10-03：每个直播间的私信条数上限（与 max_concurrent 正交） */
   max_target: number;
+  /** 2026-10-03（用户定调）：绑定的配置标签 id，词库与发送参数由它提供 */
+  tag_id: string;
 }
 
 export interface LiveInstance {
@@ -65,6 +67,8 @@ export interface LiveBatchTemplate {
   interval: number;
   /** 2026-10-03：每个直播间的私信条数上限（与 max_concurrent 正交） */
   max_target: number;
+  /** 2026-10-03：绑定的配置标签 id */
+  tag_id: string;
   created_at: number;
 }
 
@@ -394,6 +398,70 @@ export interface CrawlStats {
     result_count: number;
     ts: string;
   }[];
+}
+
+/**
+ * 采集任务队列条目（★ 2026-10-03 采集任务队列（任务中心接线））。
+ *
+ * 对应后端 `backend/api/crawl_task_queue.py` 内存表 `_TASKS` 的**单条**结构，
+ * 字段集与 `register_task()` 的初始 dict **逐字一致**（12 个字段，无多无少）。
+ *
+ * ## 🔴 关键事实：这是**进程级内存**快照，不是持久化任务历史
+ *
+ * 后端该模块状态存放在**模块级 dict**，进程重启即全部丢失 —— 这是后端
+ * **有意为之的诚实边界**（对抗性爬虫场景下跨重启的「上次任务」没有意义，
+ * 且落库会踩「登录态决定活跃库」的写错库风险），不是「还没做完」。
+ * ⇒ 前端**不得**把它当持久化任务历史展示给用户、不得暗示「重启后还在」、
+ * 不得跨会话比对。列表接口的 `storage` 字段（见 CrawlTaskListResponse）
+ * 会把这个事实如实透出，UI 应据此标注或干脆只显示 `status === "running"`。
+ */
+export interface CrawlTask {
+  /** 任务 id，格式 `ct_<epoch_ms>`（后端 `_new_task_id()`） */
+  id: string;
+  /** 触发该任务的抖音账号（登记时传入，原样回显） */
+  account: string;
+  /** 作品 ID 列表（后端已去空白 + 去重 + 保序） */
+  aweme_ids: string[];
+  /**
+   * 阶段标记。**自由字符串**，不是枚举 ——
+   * 后端登记时置 `"queued"`，采集循环通过 progress 上报覆盖；
+   * 建议取值见后端 docstring：`anon_probe` / `collect` / `filter` / `dm`。
+   * ⚠️ 因此前端**不得**用穷举 switch 判定，否则遇到后端新增取值会漏渲染。
+   */
+  phase: string;
+  /** 已处理条数 */
+  done: number;
+  /** 总条数（登记时 = `aweme_ids.length`） */
+  total: number;
+  ok_works: number;
+  fail_works: number;
+  /** 创建时间：`time.time()` **Unix 秒（float）**，非毫秒 */
+  created_at: number;
+  /** 最后更新时间：Unix 秒（float）；每次 progress 上报刷新 */
+  updated_at: number;
+  /** 后端 `_ALLOWED_STATUS` 白名单，非法值会被 400 拒绝 */
+  status: "running" | "done" | "failed" | "cancelled";
+  /** 错误信息；空串 = 无。⚠️ 后端仅在 `error` 非空时才覆写，不会自动清空 */
+  error: string;
+}
+
+/**
+ * `GET /api/crawl/tasks` 的返回体（★ 2026-10-03 采集任务队列）。
+ *
+ * ## 🔴 `storage` 是必须透传给用户的事实，不是装饰字段
+ *
+ * 后端固定返回 `"memory(process-level, lost on restart)"`，其存在意义就是
+ * 让前端/排障**不必猜「这数据能不能信」**。UI 展示任务列表时应当把它
+ * 显示为「仅本次运行有效」之类的标注 —— 否则用户会误以为这是历史任务档案。
+ */
+export interface CrawlTaskListResponse {
+  ok: boolean;
+  /** 状态存储位置的如实说明（当前恒为 memory 描述串） */
+  storage: string;
+  /** 本次返回的任务条数（后端排序后统计） */
+  count: number;
+  /** 按 `created_at` **倒序**（新的在前） */
+  tasks: CrawlTask[];
 }
 
 /**
@@ -1264,6 +1332,7 @@ export const api = {
     delay_range: number[] | null;
     interval: number;
     max_target: number;
+    tag_id: string;
   }): Promise<{ ok: boolean; task?: LiveBatchTask; error?: string }> {
     return request("/api/live-batch/tasks", {
       method: "POST",
@@ -1318,6 +1387,7 @@ export const api = {
     delay_range?: number[] | null;
     interval?: number;
     max_target?: number;
+    tag_id?: string;
   }): Promise<{ ok: boolean; task?: LiveBatchTask; error?: string }> {
     return request(`/api/live-batch/tasks/${encodeURIComponent(taskId)}`, {
       method: "PUT",
@@ -1368,6 +1438,7 @@ export const api = {
     delay_range: number[] | null;
     interval: number;
     max_target: number;
+    tag_id: string;
   }): Promise<{ ok: boolean; template?: LiveBatchTemplate; error?: string }> {
     return request("/api/live-batch/templates", {
       method: "POST",
@@ -2660,6 +2731,10 @@ export const api = {
     start_date?: string;
     /** 评论日期范围止（YYYY-MM-DD，空=不限） */
     end_date?: string;
+    /** ★ 2026-10-03：指定采集策略 id（空 = 用账号绑定/全局默认策略）。 */
+    policy_id?: string;
+    /** ★ 2026-10-03：本次显式选的高价值标签（空 = 用账号绑定标签）。 */
+    tag_id?: string;
   }): Promise<{
     ok: boolean;
     works: number;
@@ -2804,6 +2879,94 @@ export const api = {
   async crawlStats(days = 7, tz = 8): Promise<CrawlStats> {
     const qs = new URLSearchParams({ days: String(days), tz: String(tz) });
     return request(`/api/crawl/stats?${qs.toString()}`);
+  },
+
+  // ===== ★ 2026-10-03 采集任务队列（任务中心接线）=====
+  //
+  // 【后端真源】`backend/api/crawl_task_queue.py`，由 main.py:859-860 以
+  //   `app.include_router(router, prefix="/api/crawl/tasks")` 挂载。
+  //
+  // 【🔴 关键事实 · 前端必须遵守，不得当持久化任务历史展示】
+  //   后端该模块的状态是**进程级内存**（模块级 dict `_TASKS`），**进程重启即全部
+  //   丢失** —— 这是后端**有意为之的诚实边界**（对抗性爬虫场景下跨重启的
+  //   「上次任务」没有意义：凭证/接口状态已变；且落库会踩「登录态决定活跃库」
+  //   的写错库风险，与「禁止假成功」红线冲突），**不是**「还没做完」。
+  //   ⇒ 列表接口会返回 `storage` 字段如实说明这一点（见 CrawlTaskListResponse），
+  //     悬浮窗**不得**把它渲染成「任务历史 / 历史记录」，不得暗示重启后仍在，
+  //     不得跨会话做趋势对比。只显示「当前正在跑的」是安全的。
+  //
+  // 【⚠️ 路径注意（易踩，tasks 出现两次）】
+  //   router 内路径是 `/tasks*`，而 prefix 也是 `/api/crawl/tasks` ⇒ 完整路径是
+  //   **`/api/crawl/tasks`（tasks 出现两次）**。这是后端当前的实际挂载结果，
+  //   前端按实际路径调用，不要「顺手」少写一段（会 404）。
+  //
+  // 【本组方法只登记与跟踪状态，不执行任何采集】
+  //   真实采集仍走 `crawlCommentsBatch()` 等既有方法；两者解耦是后端刻意设计。
+
+  /** 列出采集任务（★ 2026-10-03 采集任务队列（任务中心接线））。
+   *  ⚠️ 返回的 `storage` 字段如实说明状态存于**进程级内存**、重启即丢失；
+   *  UI 不得把它当持久化任务历史展示（详见上方模块级注释）。 */
+  async crawlTasks(): Promise<CrawlTaskListResponse> {
+    return request("/api/crawl/tasks");
+  },
+
+  /** 登记一个采集任务，返回 `task_id` 供后续进度上报（★ 2026-10-03 采集任务队列）。
+   *  ⚠️ 后端该模型设了 `extra="forbid"`：多传未声明字段会**响亮地 422**，
+   *  而不是静默丢弃（后端踩过「日期筛选静默不生效」的假成功坑）。空
+   *  `aweme_ids` 会 **400「缺少作品 ID 列表」**（fail-closed，不造僵尸任务）。 */
+  async crawlTaskRegister(body: {
+    account: string;
+    aweme_ids: string[];
+    min_score?: number;
+    start_date?: string;
+    end_date?: string;
+  }): Promise<{ ok: boolean; task_id: string }> {
+    return request("/api/crawl/tasks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** 上报采集进度（★ 2026-10-03 采集任务队列）。
+   *  ⚠️ 返回体是 `{ ok, task }` —— `task` 为**任务全量快照**（CrawlTask），
+   *  而非仅 `task_id`；据此可直接就地更新悬浮窗进度，无需再查一次列表。
+   *  找不到任务 → **404**（后端 fail-closed，绝不静默新建幽灵任务）。
+   *  `status` 传空则由后端按 `total > 0 && done >= total` 自动置 "done"。 */
+  async crawlTaskProgress(taskId: string, body: {
+    phase?: string;
+    done?: number;
+    total?: number;
+    ok_works?: number;
+    fail_works?: number;
+    error?: string;
+    status?: CrawlTask["status"];
+  }): Promise<{ ok: boolean; task: CrawlTask }> {
+    return request(`/api/crawl/tasks/${encodeURIComponent(taskId)}/progress`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** 移除单个采集任务（★ 2026-10-03 采集任务队列）。
+   *  🔴 注意语义：后端只是从内存表 `pop`，**并不会停止正在跑的采集**；
+   *  它在这里的作用是让用户手动把一条记录从悬浮窗上清掉。**幂等**：
+   *  任务不存在时返回 `deleted: false` 而不报错。 */
+  async crawlTaskDelete(taskId: string): Promise<{ ok: boolean; deleted: boolean }> {
+    return request(`/api/crawl/tasks/${encodeURIComponent(taskId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  /** 清空所有**已结束**的采集任务（★ 2026-10-03 采集任务队列）。
+   *  🔴 `status === "running"` 的条目**绝不删除**（后端显式约束）：在跑的任务
+   *  一删，悬浮窗上就消失了 —— 用户以为停了，实际还在采集且不再上报进度
+   *  （后续 progress 报 404），是本项目「静默假成功」的典型形态。
+   *  `remaining` 是清理后剩余条数（**含在跑的**），不是 0 是正常的。 */
+  async crawlTasksClear(): Promise<{ ok: boolean; removed: number; remaining: number }> {
+    return request("/api/crawl/tasks/clear", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   },
 
   // ===== MCP 服务（dyautodm-mcp，2026-09-25）=====
@@ -2976,8 +3139,10 @@ export interface CrawlPolicy {
   name: string;
   /** 采集类型：video | user | comment */
   kind: "video" | "user" | "comment";
-  /** 每次上限（后端收敛 1..50） */
+  /** 搜索条数上限（后端收敛 1..50）—— 勿与评论条数混用 */
   num: number;
+  /** ★ 2026-10-03 拆分：每作品评论采集上限（0..300，0=不覆盖） */
+  comment_limit?: number;
   /** 排序：0 综合 / 1 最多点赞 / 2 最新 */
   sort_type: string;
   /** 发布时段：0 不限 / 1 一天内 / 7 一周内 / 180 半年内 */

@@ -67,6 +67,12 @@ def _resolve_gate(cfg_value, req_value) -> int:
     刻意与实现同源：若决议式被改回「只认请求体」，本函数返回的语义随之改变
     ⇒ 门禁变红。为避免 exec 整个模块（牵出 fastapi/db 等重依赖），
     只取决议所需的最小片段并 dedent。
+
+    ★ 2026-10-03：实现新增了「本次显式选中标签」覆盖（方案A），决议式之前
+    多出 `_tag_scope` 定义行。提取器**必须**一并纳入该行，否则 exec 时
+    `NameError: _tag_scope` ⇒ 4 条用例会**假红**（不是产品回归，是门禁
+    跟不上实现演进）。同时 `_crawl_cfg` 桩须接受第三参 `scope_override`。
+    ⚠️ 注意：这里**不新增断言、不放宽阈值**，G1~G6 的语义完全不变。
     """
     src = _src()
     if _LEGACY_LINE in _dm_batch_body(src):
@@ -74,6 +80,8 @@ def _resolve_gate(cfg_value, req_value) -> int:
 
     frag = []
     for pat in (
+        # ★ 本次选中标签的覆盖 scope（方案A）；缺它则下面的 exec 会 NameError
+        r"^([ \t]*)_tag_scope = \(body\.tag_id or \"\"\)\.strip\(\) or None\n",
         r"^([ \t]*)_cfg_min = _crawl_cfg\([^\n]*\n",
         r"^([ \t]*)try:\n[ \t]*_cfg_min = int\(_cfg_min\)\n[ \t]*except \(TypeError, ValueError\):\n[ \t]*_cfg_min = 0\n",
         r"^([ \t]*)try:\n[ \t]*_req_min = int\(body\.min_score or 0\)\n[ \t]*except \(TypeError, ValueError\):\n[ \t]*_req_min = 0\n",
@@ -87,8 +95,11 @@ def _resolve_gate(cfg_value, req_value) -> int:
 
     code = textwrap.dedent("".join(frag))
     ns: dict = {
-        "_crawl_cfg": lambda k, a: cfg_value,
-        "body": type("B", (), {"min_score": req_value, "account": "acc1"})(),
+        # ★ 桩须接受 scope_override（第三参）；忽略之即可 —— 本门禁只验
+        #   「配置中心 vs 请求体」的优先级，不验标签覆盖（那由 test_crawl_dm_tag 守）。
+        "_crawl_cfg": lambda k, a, scope_override=None: cfg_value,
+        "body": type("B", (), {"min_score": req_value, "account": "acc1",
+                               "tag_id": ""})(),
         "max": max, "int": int, "logger": None,
     }
     exec(compile(code, "<gate>", "exec"), ns)  # noqa: S102 - 门禁自测内联求值

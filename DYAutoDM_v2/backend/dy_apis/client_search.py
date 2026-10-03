@@ -52,11 +52,17 @@ class LiveSearchResult(list):
 
     ``last_transport`` 为 ``None`` 表示传输层正常（HTTP 200 且响应可解析）；
     非 ``None`` 时形如 ``{"status": 403, "bytes": 46}``。
+
+    2026-10-02 新增 ``last_nil``：**业务层风控事实**。实测该端点被风控时
+    HTTP 200 + ``status_code=0`` + ``data=[]``，真相写在
+    ``search_nil_info.search_nil_type``（如 ``"verify_check"``）—— 若只带
+    transport，上层会把「验证拦截」读成「真无结果」（假成功，项目铁律禁止）。
     """
 
-    def __init__(self, items=None, transport=None):
+    def __init__(self, items=None, transport=None, nil=None):
         super().__init__(items or [])
         self.last_transport = transport
+        self.last_nil = nil
 
 
 class SearchMixin:
@@ -425,11 +431,15 @@ class SearchMixin:
         # has_more=1 且 data 为空时不得死循环）。
         MAX_ROUNDS = 20
         transport = None
+        nil_info = None
         for _round in range(MAX_ROUNDS):
             res_json = DouyinAPI.search_live(auth, query, offset, count)
             if isinstance(res_json, dict) and res_json.get("_transport"):
                 # 风控/限流：把传输层事实带出，供上层如实告知用户（禁止显示空列表）
                 transport = res_json["_transport"]
+            # 2026-10-02：业务层风控事实（HTTP 200 但 search_nil_type=verify_check）
+            if isinstance(res_json, dict) and res_json.get("search_nil_info"):
+                nil_info = res_json.get("search_nil_info")
             if not isinstance(res_json, dict) or not res_json.get("data"):
                 logger.warning(f"[SEARCH-002] 直播搜索缺 data（疑限流/风控），停止翻页: "
                                f"keys={list(res_json)[:6] if isinstance(res_json, dict) else type(res_json).__name__}")
@@ -444,7 +454,7 @@ class SearchMixin:
         # ⚠️ 必须用 `LiveSearchResult` 而非裸 `list`：内置 `list` **没有
         # __dict__**，直接 `lst.last_transport = ...` 会抛 AttributeError
         # （实测复现）。此处在返回前统一包装，且切片后的结果也仍用本类构造。
-        return LiveSearchResult(live_list, transport)
+        return LiveSearchResult(live_list, transport, nil_info)
 
     @staticmethod
     def take_search_transport(result) -> dict | None:
@@ -461,6 +471,15 @@ class SearchMixin:
     def take_live_transport(live_list) -> dict | None:
         """取回 ``search_some_live`` 结果上的传输层事实（无则 None）。"""
         return getattr(live_list, "last_transport", None) if live_list is not None else None
+
+    @staticmethod
+    def take_live_nil(live_list) -> dict | None:
+        """取回 ``search_some_live`` 结果上的**业务层风控事实**（无则 None）。
+
+        形如 ``{"search_nil_type": "verify_check", ...}`` —— 表示平台要求
+        风控验证，**不是**「该关键词没有直播间」。
+        """
+        return getattr(live_list, "last_nil", None) if live_list is not None else None
 
     @staticmethod
     def search_general_work_anon(query: str, sort_type: str = '0', publish_time: str = '0', offset: str = '0',

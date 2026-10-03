@@ -89,6 +89,11 @@ class CrawlCommentsBatchRequest(BaseModel):
     #   悬浮窗里选策略毫无效果（假成功）。现接入，与搜索端点同源
     #   （`_resolve_policy_params`），策略层才真正覆盖采集链路。
     policy_id: str = ""
+    # ★ 2026-10-03（用户指令）：本次显式选的高价值标签（方案A）。
+    #   空 = 沿用账号在 crawl 板块的绑定标签。
+    #   ⚠️ 本模型是 `extra="forbid"`（见类 docstring）—— 缺这个字段时
+    #   前端传 tag_id 会直接 **400**，不是静默忽略。
+    tag_id: str = ""
 
 
 class CrawlDmRequest(BaseModel):
@@ -587,7 +592,31 @@ async def crawl_comments_batch(body: CrawlCommentsBatchRequest):
     interval = max(0.0, float(_crawl_cfg("batch_interval", body.account)))
     limit = max(1, min(int(body.limit or 100), 300))
     count = _page_count(body.count, body.account)
-    min_score = max(0, int(body.min_score or 0))
+    # ★ 2026-10-03（用户指令）：批量采集接入高价值关键词过滤 ——
+    #   **只保留关键词命中的评论，其余全部丢弃**。
+    #
+    #   为何此前形同虚设：前端恒传 `min_score: 0`，而本行只读 body ⇒
+    #   `min_score > 0` 永假 ⇒ 过滤分支从未执行（假成功）。
+    #
+    #   契约与**批量私信**端点（`/dm/batch`，见下方同款实现）**完全一致**：
+    #     ① 配置中心 `crawl.batch_min_score` 是**唯一权威来源**；
+    #     ② 请求体 `min_score` 仅作「本次覆盖」，**0 视为不覆盖**
+    #        （否则前端每次传 0 又把门槛踩回不过滤 —— 正是要消灭的缺陷）；
+    #     ③ 本次显式选的标签 `tag_id` **优先于**账号默认绑定（方案A）。
+    _tag_scope = (getattr(body, "tag_id", "") or "").strip() or None
+    _cfg_min = _crawl_cfg("batch_min_score", body.account, _tag_scope)
+    try:
+        _cfg_min = int(_cfg_min)
+    except (TypeError, ValueError):
+        _cfg_min = 0
+    try:
+        _req_min = int(body.min_score or 0)
+    except (TypeError, ValueError):
+        _req_min = 0
+    min_score = max(0, _cfg_min) if _req_min <= 0 else max(0, _req_min)
+    if _tag_scope:
+        logger.info(f"[crawl] 批量采集按本次选中标签取门槛: tag={_tag_scope} "
+                    f"配置={_cfg_min} → 生效={min_score} account={body.account}")
     # ★ 2026-10-03 拆分：策略的**评论上限**读 `comment_limit`（新字段），
     #   **不再读 `num`** —— `num` 的语义是「搜索条数」，两者不可混用
     #   （`_page_count` docstring 早已明写该约定，此前误接 num 违反之）。

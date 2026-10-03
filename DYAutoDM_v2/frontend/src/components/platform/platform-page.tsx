@@ -8,7 +8,7 @@
  * 所有请求都是**用户显式动作触发**（切 tab / 点搜索 / 点刷新），
  * **不做后台自动轮询** —— 主动请求越少越安全。
  */
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User, MessageSquare,
@@ -23,11 +23,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { EmptyState, LoadingState, ErrorState } from "@/components/ui/empty-state";
 import { platformApi, type AwemeItem, type UserItem, type NoticeItem } from "@/api/platform";
-// ★ ADR-034（2026-10-03）：**采集功能融进本「内容总览」页**（最后一个 tab），
-//   挂载 CrawlPage 的 embedded 模式（完整工作台，非简化面板）。
-//   ⚠️ 循环依赖防护：CrawlPage 内部**不再**反向 import 本文件（见该文件头注释），
-//      故这里单向 import 是安全的。
-import CrawlWorkbench from "@/components/crawl/crawl-page";
+// ★ 2026-10-03：采集已从「独立 tab」改为**悬浮窗 + 各 tab 就地勾选**
+//   （用户指令「button[9] 删除」）。原挂载 CrawlPage 的 import 随之移除 ——
+//   留着会触发 tsc TS6133（未使用导入）。
 // ★ 2026-09-27（ADR-018 F3）：播放 + 评论同时展示；评论行可手动发私信
 import { CommentPanel } from "./comment-panel";
 import { fmtNum, fmtAgo } from "@/lib/utils";
@@ -37,6 +35,10 @@ import type { PlayerMedia } from "@/components/player";
 
 /** 作品卡片（封面 + 统计；点击打开播放器）。 */
 import { Grid, UserCard } from "./platform-cards";
+// ★ 2026-10-03：采集悬浮窗（独立于各 tab，统一入口）
+import CrawlFloatingPanel from "@/components/crawl/CrawlFloatingPanel";
+// ★ 2026-10-03：从采集页移植的筛选器选项
+import { ORDER_OPTS, PT_OPTS, DUR_OPTS } from "@/components/crawl/crawl-shared";
 
 export default function PlatformPage(props: PageProps & {
   /**
@@ -88,6 +90,14 @@ export default function PlatformPage(props: PageProps & {
   const [userUrl, setUserUrl] = useState("");
   const [submitted, setSubmitted] = useState<{ q: string; kind: "video" | "user" } | null>(null);
   const [worksUrl, setWorksUrl] = useState<string | null>(null);
+  // ★ 采集悬浮窗状态（2026-10-03）
+  const [crawlPanelOpen, setCrawlPanelOpen] = useState(false);
+  // ★ 各 tab 勾选的作品 ID 列表
+  const [checkedIds, setCheckedIds] = useState<Record<string, boolean>>({});
+  // ★ 搜索筛选器（从采集页移植）
+  const [order, setOrder] = useState("0");
+  const [pt, setPt] = useState("0");
+  const [dur, setDur] = useState("");
   // ── 播放器（★ 本分支新增：卡片点击 → 取址 → 播放）──
   const [playerMedia, setPlayerMedia] = useState<PlayerMedia | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
@@ -95,6 +105,75 @@ export default function PlatformPage(props: PageProps & {
   const [selectedAweme, setSelectedAweme] = useState<string>("");
   // 选中的收藏夹（2026-09-21 移除：收藏改为直接列作品，不再有「夹」这一层）
   const [playerErr, setPlayerErr] = useState<string>("");
+  // ★ 采集勾选处理（2026-10-03）
+  const handleToggleCheck = (id: string, checked: boolean) => {
+    setCheckedIds((prev) => ({ ...prev, [id]: checked }));
+  };
+  // 获取已勾选的作品 ID 列表
+  const getCheckedIds = () => Object.entries(checkedIds).filter(([, v]) => v).map(([k]) => k);
+
+  // ★ 2026-10-03（用户指令）：**标签在页面头部选**，悬浮窗不再重复选标签。
+  //   语义：本次采集/私信统一按这个标签取参数（后端 scope_override）。
+  const [crawlTag, setCrawlTag] = useState("");
+
+  // ★ 2026-10-03：搜索视频时**同步匿名采集**评论（只采不发私信）。
+  //
+  // 用户定义：「搜索按钮，搜索时就需要使用匿名凭证同步采集评论，只采集，不私信」。
+  // 设计要点：
+  //  · **零凭证**（`/api/crawl/comments/anon-preview` 不需要 account）⇒ 不落账号
+  //    风控面；这是它相对真凭证采集的核心价值。
+  //  · **只采不发**：匿名数据无数字 uid（后端日志原文「仅供预览，不可翻页/无私信
+  //    uid」），**不可能**进私信队列 —— 私信只在用户主动开「采集后自动私信」时
+  //    由真凭证采集结果驱动。
+  //  · 与搜索**并行**发起，不阻塞结果渲染（否则又变成「等渲染完才采」）。
+  //  · 失败**如实提示**，不静默（禁假成功）。
+  // 搜索结果区的匿名预览读数（供卡片角标显示「预览 N 条」）
+  const [anonPreview, setAnonPreview] = useState<Record<string, number>>({});
+  const [anonLoading, setAnonLoading] = useState(false);
+  // renderQ（普通函数）把「当前结果的作品 id」写到这儿；
+  // 组件层的 effect 监听它并发起探针（**Hook 只能在组件顶层用**）。
+  const anonLoadedRef = useRef<string[] | null>(null);
+  const anonFiredRef = useRef<string>("");
+  const runAnonProbe = async (ids: string[]) => {
+    const todo = ids.filter(Boolean).slice(0, 12);   // 上限 12：探针不是全量采集
+    if (!todo.length) return;
+    setAnonLoading(true);
+    try {
+      const r = await props.api.crawlCommentsAnonPreview({ aweme_ids: todo });
+      const m: Record<string, number> = {};
+      (r.per_work || []).forEach((w: { aweme_id: string; count?: number; status: string }) => {
+        if (w.status === "ok") m[w.aweme_id] = w.count || 0;
+      });
+      setAnonPreview((prev) => ({ ...prev, ...m }));
+      const hit = Object.values(m).filter((n) => n > 0).length;
+      props.push(
+        `匿名预览完成：${hit}/${todo.length} 个作品有评论（零凭证，不会发私信）`,
+        5000,
+      );
+    } catch (e) {
+      props.push(`匿名预览失败：${(e as Error)?.message || e}`, 6000);
+    } finally {
+      setAnonLoading(false);
+    }
+  };
+
+  // ★ 2026-10-03：搜索结果就绪 → 发起匿名探针（**effect 驱动**，非渲染期副作用）。
+  //
+  // 判据说明：
+  //  · effect 只在「提交了新搜索」时重跑（依赖 = submitted）；renderQ 在渲染期
+  //    把结果 id 写进 anonLoadedRef，随后本 effect 读取并发起探针。
+  //  · `anonFiredRef` 存「已探针的结果指纹」⇒ 同一批结果**只探一次**
+  //    （否则每次重渲染都会重发，风控面白白放大 + 日志噪音）。
+  useEffect(() => {
+    const ids = anonLoadedRef.current;
+    if (!ids || !ids.length) return;
+    const fp = ids.join(",");
+    if (anonFiredRef.current === fp) return;
+    anonFiredRef.current = fp;
+    void runAnonProbe(ids);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submitted]);
+
   const openAweme = async (it: AwemeItem) => {
     setPlayerErr("");
     setPlayerOpen(true);
@@ -269,12 +348,27 @@ export default function PlatformPage(props: PageProps & {
          data?: { items: unknown[]; blocked?: boolean; blocked_reason?: string | null };
          refetch: () => void },
     kind: "video" | "user",
+    checkedIds?: Record<string, boolean>,
+    onToggleCheck?: (id: string, checked: boolean) => void,
+    // ★ 2026-10-03：结果就绪回调（匿名探针用它并行发起，不阻塞渲染）
+    opts?: { onLoaded?: (ids: string[]) => void },
   ) => {
     if (q.isPending) return <LoadingState />;
     if (q.isError) {
       return <ErrorState message={String((q.error as Error)?.message || "请求失败")} onRetry={q.refetch} />;
     }
     const items = (q.data?.items || []) as (AwemeItem | UserItem)[];
+    // ★ 2026-10-03：结果就绪后触发回调（匿名探针）。
+    //
+    // 🔴 `renderQ` 是**普通函数**（在组件渲染期被调用），**绝不能**在里面用
+    //   Hook（`useRef` 等）—— Hook 数量会随分支变化，违反 Hooks 规则，
+    //   轻则警告、重则 React 崩溃。故副作用交给**外层组件的 effect**：
+    //   这里只负责把「当前结果的作品 id」写进一个模块级回调注册点，
+    //   由下面的 `anonProbeEffect` 统一监听。
+    anonLoadedRef.current =
+      opts?.onLoaded && items.length
+        ? (items as AwemeItem[]).map((it) => it.aweme_id).filter(Boolean)
+        : null;
     // ★ 2026-09-27（M-20 · 铁律「禁假成功」）：被风控拦截 ≠ 真的没搜到。
     //   此前一律渲染空 Grid ⇒ 用户以为「没这个关键词的作品」，
     //   实际是被 Argus 拦了。现**优先**如实呈现被拦截事实。
@@ -298,7 +392,10 @@ export default function PlatformPage(props: PageProps & {
       );
     }
     return <Grid items={items} kind={kind}
-                 onOpenAweme={kind === "video" ? openAweme : undefined} />;
+                 onOpenAweme={kind === "video" ? openAweme : undefined}
+                 checkedIds={checkedIds}
+                 onToggleCheck={onToggleCheck}
+                 previewCounts={kind === "video" ? anonPreview : undefined} />;
   };
 
   // ★ ADR-034：嵌入模式下不渲染 PageContainer / PageHeader / 账号下拉 ——
@@ -306,7 +403,7 @@ export default function PlatformPage(props: PageProps & {
   const header = embedded ? null : (
     <PageHeader
       title="内容总览"
-      description="推荐流 / 搜索 / 作品 / 点赞 / 收藏 / 通知，以及评论采集与私信截流"
+      description="推荐流 / 搜索 / 作品 / 点赞 / 收藏 / 通知"
       actions={
         <div className="flex items-center gap-2">
           <Select value={account} onValueChange={setAcctPersist}>
@@ -332,14 +429,11 @@ export default function PlatformPage(props: PageProps & {
           <TabsTrigger value="mixes"><BookOpen className="h-3.5 w-3.5" />合集</TabsTrigger>
           <TabsTrigger value="relation"><Users className="h-3.5 w-3.5" />粉丝/关注</TabsTrigger>
           <TabsTrigger value="notices"><Bell className="h-3.5 w-3.5" />站内通知</TabsTrigger>
-          {/* ★ ADR-034（2026-10-03，方向反转 ADR-033）：**采集**融进本「内容总览」页，
-              作为最后一个二级 tab。挂载的是 CrawlPage 的**完整工作台**（embedded），
-              含搜索/策略覆写/批量勾选采集/匿名预览/风控 blocked 提示/双模板私信 ——
-              不是早期那个简化版 CrawlPanel（后者只有「采评论 + 批量私信」两个按钮）。
-              `embedded` 模式下隐藏（宿主的宿主已提供采集容器，tab 套 tab 无意义）。 */}
-          {!embedded && (
-            <TabsTrigger value="crawl"><MessageSquare className="h-3.5 w-3.5" />采集</TabsTrigger>
-          )}
+          {/* ★ ADR-034 方向修正（2026-10-03，用户指令「button[9] 删除」）：
+              独立「采集」二级 tab 已撤除 —— 采集不再是「一个页面」，
+              而是**悬浮窗 + 各 tab 就地勾选**（入口在各 tab 工具条上的「采集」按钮）。
+              理由：① 用户要求删除该 tab；② 采集跨 tab（feed/search/works/liked/
+              collected 都能勾选），塞进单个 tab 反而割裂；③ 避免 tab 套 tab。 */}
         </TabsList>
 
         <TabsContent value="feed">
@@ -353,17 +447,29 @@ export default function PlatformPage(props: PageProps & {
               {typeof feedQ.data?.filtered === "number" && feedQ.data.filtered > 0
                 ? `（已过滤 ${feedQ.data.filtered} 个不可播条目）` : ""}
             </span>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={feedQ.isFetching}
-              onClick={() => setFeedIdx((n) => n + 1)}
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${feedQ.isFetching ? "animate-spin" : ""}`} />
-              换一批
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={feedQ.isFetching}
+                onClick={() => setFeedIdx((n) => n + 1)}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${feedQ.isFetching ? "animate-spin" : ""}`} />
+                换一批
+              </Button>
+              {/* ★ 2026-10-03：采集入口 */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCrawlPanelOpen(true)}
+                title="批量采集推荐流中的作品"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                采集
+              </Button>
+            </div>
           </div>
-          {renderQ(feedQ, "video")}
+          {renderQ(feedQ, "video", checkedIds, handleToggleCheck)}
         </TabsContent>
 
         <TabsContent value="search">
@@ -381,6 +487,7 @@ export default function PlatformPage(props: PageProps & {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && query.trim()) {
                   setSubmitted({ q: query.trim(), kind: searchKind });
+                  setAnonPreview({});   // 新一轮搜索 ⇒ 清掉上一轮预览读数
                 }
               }}
               placeholder="输入关键词后回车…"
@@ -392,10 +499,69 @@ export default function PlatformPage(props: PageProps & {
             >
               搜索
             </Button>
+            {/* ★ 2026-10-03：采集入口 */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setCrawlPanelOpen(true)}
+              title="批量采集搜索结果"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              采集
+            </Button>
           </div>
+          {/* ★ 2026-10-03：筛选器（从采集页移植） */}
+          {searchKind === "video" && (
+            <div className="mb-3 flex flex-wrap items-center gap-4 text-[0.74rem] text-[var(--color-text-secondary)]">
+              <label className="flex items-center gap-1.5">
+                排序
+                <Select value={order} onValueChange={setOrder}>
+                  <SelectTrigger className="w-[118px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {ORDER_OPTS.map((o) => (
+                      <SelectItem key={o.v} value={o.v}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="flex items-center gap-1.5">
+                发布时间
+                <Select value={pt} onValueChange={setPt}>
+                  <SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {PT_OPTS.map((o) => (
+                      <SelectItem key={o.v} value={o.v}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="flex items-center gap-1.5">
+                视频时长
+                <Select value={dur || "__all"} onValueChange={(v) => setDur(v === "__all" ? "" : v)}>
+                  <SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {DUR_OPTS.map((o) => (
+                      <SelectItem key={o.v || "__all"} value={o.v || "__all"}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            </div>
+          )}
           {submitted
-            ? renderQ(searchQ, submitted.kind)
+            ? renderQ(searchQ, submitted.kind, checkedIds, handleToggleCheck, {
+                // ★ 匿名探针：视频搜索结果到达后**并行**发起，不阻塞渲染。
+                //   只有 kind==="video" 有评论可采；用户搜索不触发。
+                onLoaded: (ids: string[]) => {
+                  if (submitted.kind === "video") void runAnonProbe(ids);
+                },
+              })
             : <EmptyState title="输入关键词开始搜索" description="回车或点「搜索」。结果自带作者昵称，不会额外查询。" />}
+          {anonLoading && (
+            <p className="mt-2 text-[0.7rem] text-[var(--color-text-muted)]">
+              匿名预览采集中…（零凭证，不会发私信）
+            </p>
+          )}
         </TabsContent>
 
         <TabsContent value="works">
@@ -410,6 +576,16 @@ export default function PlatformPage(props: PageProps & {
             <Button size="sm" onClick={() => userUrl.trim() && setWorksUrl(userUrl.trim())}>
               获取作品
             </Button>
+            {/* ★ 2026-10-03：采集入口 */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setCrawlPanelOpen(true)}
+              title="批量采集该用户的作品"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              采集
+            </Button>
           </div>
           {worksUrl
             ? (worksQ.isSuccess && !worksQ.data?.items?.length ? (
@@ -419,7 +595,7 @@ export default function PlatformPage(props: PageProps & {
                   title="未取到作品"
                   description="可能原因：① 填的是自己账号（抖音限制：查自己主页不返回作品，请填他人主页）；② 平台限流（同一账号短时多次查询会临时返回空，稍后重试即可）；③ 该用户无公开作品；④ sec_uid 有误。"
                 />
-              ) : renderQ(worksQ, "video"))
+              ) : renderQ(worksQ, "video", checkedIds, handleToggleCheck))
             : <EmptyState title="填入用户主页链接" description="支持主页 URL 或 sec_uid。作品列表会一次拉全（含翻页）。" />}
         </TabsContent>
 
@@ -434,7 +610,7 @@ export default function PlatformPage(props: PageProps & {
                 (likedQ.data as { unavailable?: boolean; reason?: string })?.reason
                 || "该账号还没有点赞过的作品（接口已正常返回）。"}
             />
-          ) : renderQ(likedQ, "video")}
+          ) : renderQ(likedQ, "video", checkedIds, handleToggleCheck)}
         </TabsContent>
 
         <TabsContent value="collected">
@@ -442,15 +618,27 @@ export default function PlatformPage(props: PageProps & {
               多数人收藏就是一堆作品，不专门建文件夹（该账号实测文件夹数 = 0，
               但收藏作品有 19 条）。改为直接列收藏作品。 */}
           <div className="space-y-3">
-            <div className="text-[0.78rem] text-[var(--color-text-secondary)]">
-              你的收藏作品（直接列出，无需先建文件夹）
+            <div className="flex items-center justify-between">
+              <span className="text-[0.78rem] text-[var(--color-text-secondary)]">
+                你的收藏作品（直接列出，无需先建文件夹）
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCrawlPanelOpen(true)}
+                title="批量采集收藏作品"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                采集
+              </Button>
             </div>
             {favoriteQ.isPending ? <LoadingState /> :
               favoriteQ.isError ? (
                 <ErrorState message={String((favoriteQ.error as Error)?.message)}
                             onRetry={favoriteQ.refetch} />
               ) : (favoriteQ.data?.items?.length
-                ? <Grid items={favoriteQ.data.items} kind="video" onOpenAweme={openAweme} />
+                ? <Grid items={favoriteQ.data.items} kind="video" onOpenAweme={openAweme}
+                         checkedIds={checkedIds} onToggleCheck={handleToggleCheck} />
                 : <EmptyState
                     title={(favoriteQ.data as { unavailable?: boolean })?.unavailable
                       ? "暂时取不到收藏" : "暂无收藏"}
@@ -477,7 +665,8 @@ export default function PlatformPage(props: PageProps & {
                   <ErrorState message={String((seriesQ.error as Error)?.message)}
                               onRetry={seriesQ.refetch} />
                 ) : (seriesQ.data?.items?.length
-                  ? <Grid items={seriesQ.data.items} kind="video" onOpenAweme={openAweme} />
+                  ? <Grid items={seriesQ.data.items} kind="video" onOpenAweme={openAweme}
+                           checkedIds={checkedIds} onToggleCheck={handleToggleCheck} />
                   : <EmptyState title="该合集暂无作品" />)}
             </div>
           ) : collectMixesQ.isPending ? <LoadingState /> :
@@ -593,23 +782,19 @@ export default function PlatformPage(props: PageProps & {
               </div>
             ) : <EmptyState title="暂无通知" />)}
         </TabsContent>
-        <TabsContent value="crawl">
-          {/* ★ ADR-034（2026-10-03）：采集功能融进「内容总览」，此处挂载
-              **完整采集工作台**（CrawlPage 的 embedded 模式），而非早期简化版 CrawlPanel。
-              简化版只有「采评论 + 批量私信」两个按钮，会丢掉：
-              采集策略覆写 / 多作品勾选批量采集 / 匿名零凭证预览 /
-              搜索域风控 blocked 显式提示（v0.46.18「禁止假成功」）/ 双模板私信。
-              —— 这些都是踩坑后写对的，不能因为「面板看起来够用」就丢。
-              账号与本页其它 tab 共享同一个（宿主选择器唯一），切换 tab 不需重选。 */}
-          <CrawlWorkbench
-            {...props}
-            embedded
-            account={account}
-            accounts={accounts}
-          />
-        </TabsContent>
 
       </Tabs>
+
+      {/* ★ 2026-10-03：采集悬浮窗（独立于各 tab，统一入口） */}
+      <CrawlFloatingPanel
+        open={crawlPanelOpen}
+        onClose={() => setCrawlPanelOpen(false)}
+        selectedIds={getCheckedIds()}
+        currentAccount={account}
+        tagId={crawlTag}
+        onTagChange={setCrawlTag}
+        props={props}
+      />
 
       {/* 播放器浮层（照源项目 components/player 的独立业务域形态） */}
       {playerOpen && (
