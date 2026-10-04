@@ -218,6 +218,9 @@ export default function App() {
   const setTabState = useAppViewStore((s) => s.setView);
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const [goDm, setGoDm] = useState<{ name: string; text: string } | null>(null);
+  // ★ 2026-10-04 留资线索「跳转原文」：按 conv_id 精确跳转到指定会话。
+  // `key` 用于保证**重复点击同一会话**也能触发（state 值不变则 useEffect 不重跑）。
+  const [goConvReq, setGoConvReq] = useState<{ convId: string; key: number } | null>(null);
   const [goDetail, setGoDetail] = useState<TaskDetailPayload | null>(null);
   const [goReuse, setGoReuse] = useState<ReusePayload | null>(null);
   const [msgAcct, setMsgAcct] = useState<string>("");
@@ -376,6 +379,13 @@ export default function App() {
     setTab("msg");
   }, [setTab]);
 
+  // ★ 2026-10-04 留资线索「跳转原文」：按 conv_id 精确跳转（不按昵称 —— 昵称
+  // 可能是裸 UID，goMsg 的 `find(c => c.name === name)` 会匹配不到）。
+  const goConv = useCallback((convId: string) => {
+    setGoConvReq({ convId, key: Date.now() });
+    setTab("msg");
+  }, [setTab]);
+
   const goDetailTrigger = useCallback((payload: TaskDetailPayload) => {
     setGoDetail(payload);
     setTab("taskdetail");
@@ -419,6 +429,8 @@ export default function App() {
     ready,
     goMsg,
     goDm,
+    goConv,
+    goConvReq,
     setTab,
     goDetail: goDetailTrigger,
     detailPayload: goDetail,

@@ -20,7 +20,7 @@
  */
 import { useCallback, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, ArrowUpDown } from "lucide-react";
+import { Download, ArrowUpDown, CornerDownRight, ChevronDown } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,16 +28,21 @@ import { Card } from "@/components/ui/card";
 import { Tone, Blank, Toolbar } from "@/components/page/kit";
 import { Th, Td } from "./message-shared";
 import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
+import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
 import { errMsg } from "@/lib/utils";
 
 interface Lead {
-  id: number; account: string; conv_id: string; peer_name: string;
+  id: number; account: string; peer_name: string;
   contact_type: string; contact_value: string; status: string;
   created_at: number; source_text: string;
   /** realtime = 实时（WS/网页经 AI）；backfill = 历史补全（「更新会话」抓到） */
   source?: string;
+  /** 会话 ID（★ 2026-10-04「跳转原文」用：goConv 据此精确打开该客户对话）。 */
+  conv_id?: string;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -60,7 +65,7 @@ function fmtTime(v: number): string {
 }
 
 export default function LeadsSection(props: PageProps) {
-  const { api, push } = props;
+  const { api, push, goConv } = props;
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [st, setSt] = useState<string>("all");
@@ -192,15 +197,19 @@ export default function LeadsSection(props: PageProps) {
           <div className="overflow-x-auto">
             <table className="w-full table-fixed border-collapse">
               <colgroup>
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "7%" }} />
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "13%" }} />
-                <col style={{ width: "12%" }} />
-                <col style={{ width: "12%" }} />
+                {/* ★ 2026-10-04 列宽优化：联系方式定长（手机号11位/微信号）；
+                    客户/账号各留弹性空间；原文给最大弹性（用户主要读的内容）；
+                    状态/类型/来源三个枚举列压到最小；时间固定防换行。
+                    合计 100%。 */}
+                <col style={{ width: "8%" }} />      /* 状态 */
+                <col style={{ width: "13%" }} />     /* 联系方式（11 位手机号） */
+                <col style={{ width: "7%" }} />      /* 类型 */
+                <col style={{ width: "9%" }} />      /* 来源（历史补全最长） */
+                <col style={{ width: "13%" }} />     /* 客户（昵称，通常 2-8 字） */
+                <col style={{ width: "10%" }} />     /* 账号 */
+                <col style={{ width: "12%" }} />     /* 捕获时间（不换行） */
+                <col style={{ width: "21%" }} />     /* 原文（主内容，最大弹性） */
+                <col style={{ width: "7%" }} />      /* 操作（下拉触发器） */
               </colgroup>
               <thead>
                 <tr>
@@ -239,27 +248,63 @@ export default function LeadsSection(props: PageProps) {
                           {SOURCE_LABEL[ld.source || "realtime"] || ld.source}
                         </Tone>
                       </Td>
+                      {/* ★ 2026-10-04 用户指令：客户列从 UID 改为**抖音昵称**。
+                          昵称由后端 `list_leads` 出参侧规范化（回查
+                          dm_conversations.peer_name）；查不到时保留原值并在
+                          hover 提示中说明 —— 不猜、不填假名。 */}
                       <Td>
-                        <span className="block truncate" title={ld.peer_name || ld.conv_id}>
-                          {ld.peer_name || ld.conv_id.slice(0, 12)}
+                        <span
+                          className="block truncate"
+                          title={/\d{8,}/.test(ld.peer_name || "")
+                            ? `昵称未同步：${ld.peer_name}\n（对该客户会话执行「更新会话」后可显示昵称）`
+                            : (ld.peer_name || ld.conv_id)}
+                        >
+                          {ld.peer_name || "—"}
                         </span>
                       </Td>
                       <Td muted className="truncate">{ld.account || "—"}</Td>
                       <Td mono className="whitespace-nowrap">{fmtTime(ld.created_at)}</Td>
-                      <Td muted className="truncate" >{ld.source_text || "—"}</Td>
+                      {/* ★ 2026-10-04 用户指令：原文列改为「跳转原文」入口。
+                          原先截断显示（「13037765888微…」）读不全 ⇒ 改成跳转
+                          到该客户对话的入口；完整原文仍可通过 hover 悬浮提示
+                          与对话原文查看。 */}
                       <Td>
-                        <Toolbar className="justify-end gap-1">
-                          {ld.status !== "followed" && (
-                            <Button variant="secondary" size="sm" onClick={() => leadStatus(ld.id, "followed")}>
-                              已跟进
+                        <button
+                          type="button"
+                          disabled={!ld.conv_id}
+                          title={ld.source_text || "（该线索无原文）"}
+                          className="inline-flex items-center gap-1 whitespace-nowrap rounded-[6px]
+                                     px-1.5 py-0.5 text-[var(--color-accent)] transition-colors
+                                     hover:bg-[var(--color-surface-raised)]
+                                     disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent"
+                          onClick={() => ld.conv_id && goConv?.(ld.conv_id)}
+                        >
+                          <CornerDownRight className="h-3.5 w-3.5 shrink-0" />
+                          跳转原文
+                        </button>
+                      </Td>
+                      {/* ★ 2026-10-04 用户指令：操作列改为下拉框。
+                          原「已跟进 / 无效」两按钮横向铺满、且按当前状态**隐藏**
+                          选项 ⇒ 看不出该线索现在处于什么状态。改为下拉后：
+                          · 列宽恒定（不再随状态变化伸缩）；
+                          · 两项常驻，当前状态打勾，一眼可判。 */}
+                      <Td>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm" className="w-full justify-between">
+                              操作
+                              <ChevronDown className="h-3.5 w-3.5" />
                             </Button>
-                          )}
-                          {ld.status !== "invalid" && (
-                            <Button variant="ghost" size="sm" onClick={() => leadStatus(ld.id, "invalid")}>
-                              无效
-                            </Button>
-                          )}
-                        </Toolbar>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-36">
+                            <DropdownMenuItem onClick={() => leadStatus(ld.id, "followed")}>
+                              {ld.status === "followed" ? "✓ 已跟进" : "标记为已跟进"}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => leadStatus(ld.id, "invalid")}>
+                              {ld.status === "invalid" ? "✓ 已标记无效" : "标记为无效"}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </Td>
                     </tr>
                   ))

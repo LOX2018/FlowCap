@@ -3350,6 +3350,12 @@ export interface PageProps {
   goMsg?: (name: string, text?: string) => void;
   /** 私信页接收的预填消息 */
   goDm?: { name: string; text: string } | null;
+  /** 跳转到私信页的**指定会话**（按 conv_id，2026-10-04 留资线索「跳转原文」用）。
+   *  与 goMsg 的区别：goMsg 按**昵称**匹配，昵称可能是裸 UID ⇒ 匹配不到；
+   *  goConv 按 conv_id 精确匹配，且携带 key 保证重复点击同一会话也能生效。 */
+  goConv?: (convId: string) => void;
+  /** 私信页收到的会话跳转请求（由 goConv 设置） */
+  goConvReq?: { convId: string; key: number } | null;
   /** 切换 Tab（任务中心跳转用） */
   setTab?: (tab: string) => void;
   /** 跳转到「任务详情」页（统一入口：直播页「进入查阅模式」+ 任务中心「查看结果」） */

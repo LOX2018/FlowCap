@@ -2840,6 +2840,15 @@ def list_leads(limit: int = 200, start_ms: float | None = None,
                end_ms: float | None = None) -> list:
     """读线索。默认倒序 LIMIT。
 
+    ★ 2026-10-04（用户要求「客户列从 UID 改成抖音昵称」）：出参侧统一把
+    `peer_name` 规范化成真实昵称。历史补全（`_tick` 的 peer_name 取自会话列表
+    的 `name`）常落库为**裸 UID**（16 位纯数字），故按 conv_id 回查
+    `dm_conversations.peer_name`（capture_all 写入的真实昵称）覆盖。
+
+    选读侧而非写侧，两个理由：
+      · 存量脏数据（peer_name 已是 UID）一并被修正，无需迁移；
+      · 新写入路径（`save_lead`）不动 —— UNIQUE 约束与幂等性零风险。
+
     ★ 2026-10-04（任务详情「留资情况」）：加**可选**时间窗 `start_ms`/`end_ms`
     （毫秒时间戳）。**向后兼容**：两参都 None ⇒ 与旧行为完全一致。
     `created_at` 是秒级 REAL，故乘 1000 与毫秒比较。
@@ -2856,8 +2865,71 @@ def list_leads(limit: int = 200, start_ms: float | None = None,
         args.append(float(end_ms))
     sql += " ORDER BY created_at DESC LIMIT ?"
     args.append(int(limit))
-    rows = database.get_db().execute(sql, args).fetchall()
-    return [dict(r) for r in rows]
+    rows = [dict(r) for r in database.get_db().execute(sql, args).fetchall()]
+    return _normalize_lead_names(rows)
+
+
+def _normalize_lead_names(rows: list) -> list:
+    """把线索的 `peer_name` 从「裸 UID」规范成真实昵称。
+
+    判定与取值口径沿用 `api/messages.py` 的既有范式（勿在此内联重写判定逻辑）：
+      · 只覆盖**无效值**（空 / 纯数字 UID）——真实昵称绝不覆盖；
+      · 排除 `peer_id == 本号 uid` 的**污染行**（其 peer_name 实为本号自己的
+        身份，2026-09-25 H-25），否则会把自己的昵称串到客户身上。
+
+    会话尚未入库（客户没触发过「更新会话」⇒ `dm_conversations` 无该行）时
+    查不到昵称 ⇒ **保留原值**（裸 UID），不猜、不填假名。
+    """
+    if not rows:
+        return rows
+    try:
+        from services.verdicts import is_placeholder_name
+        from services.conv_identity import my_uid as _my_uid
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[AI-018] " + f"[ai] 线索昵称规范化失败（回落原值）: {e}")
+        return rows
+
+    # 注意：`is_placeholder_name` 为 **True 表示「无效/占位」**（空或纯数字 UID）
+    # ⇒ 判定「需要替换」用正判断，勿写成 `not`。
+    bad = {r["conv_id"] for r in rows
+           if is_placeholder_name(r.get("peer_name"), peer_id=None)}
+    if not bad:
+        return rows
+
+    conn = database.get_db()
+    marks = ",".join("?" for _ in bad)
+    # acct0 用于污染行过滤（见下方循环）：本号 uid 的同行昵称不可复用
+    bad_list = list(bad)
+    try:
+        acct0 = next((r.get("account") or "" for r in rows if r.get("account")), "")
+    except Exception:  # noqa: BLE001
+        acct0 = ""
+    rs = conn.execute(
+        f"SELECT conv_id, peer_id, peer_name FROM dm_conversations "
+        f"WHERE conv_id IN ({marks})", bad_list).fetchall()
+    m: dict = {}
+    for r in rs:
+        pn = r["peer_name"]
+        # `is_placeholder_name` True = 无效（空/纯数字 UID）⇒ 这种昵称不采用。
+        # 判定必须带 peer_id 比较，与 `api/messages.py:364` 的口径一致。
+        if is_placeholder_name(pn, peer_id=r["peer_id"]):
+            continue
+        # 污染行过滤：peer_id == 本号 uid ⇒ peer_name 是本号身份，不可复用
+        # （2026-09-25 H-25：recv_daemon 首包解析会把本号身份写进 peer_name）
+        if acct0 and str(r["peer_id"]) == str(_my_uid(acct0) or ""):
+            continue
+        m[r["conv_id"]] = pn
+
+    for r in rows:
+        # ⚠️ 必须**逐行**复检 peer_name：`m` 是按 conv_id 索引的，而同一个
+        # 会话可能有多条线索（不同联系方式）—— 其中某条已带真昵称，
+        # 若按 conv_id 无条件回写，会把**正确值覆盖成别的线索的昵称**。
+        if not is_placeholder_name(r.get("peer_name"), peer_id=None):
+            continue
+        real = m.get(r["conv_id"])
+        if real:
+            r["peer_name"] = real
+    return rows
 
 
 def set_lead_status(lead_id: int, status: str) -> None:

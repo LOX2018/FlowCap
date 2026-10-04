@@ -400,6 +400,23 @@ export default function MessagesPage(props: PageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [goDm]);
 
+  // ★ 2026-10-04 留资线索「跳转原文」：按 conv_id 精确打开会话。
+  // 与 goDm 的区别：goDm 按**昵称**匹配（昵称可能是裸 UID ⇒ 匹配不到），
+  // 此处按 conv_id 精确匹配；且切回会话子页（当前可能在「留资线索」tab 内）。
+  // ⚠️ 用 allConvs（未按搜索/群聊筛选）匹配 —— 否则被当前筛选隐藏的会话跳不到。
+  useEffect(() => {
+    const req = props.goConvReq;
+    if (!req) return;
+    const hit = allConvs.find((c) => c.conv_id === req.convId);
+    if (hit) {
+      setActiveAcct(hit.acct);
+      setActive(hit.id);
+      setSubPage("conv");
+    }
+    push(hit ? "已打开该客户的对话原文" : "未找到该会话（可能尚未同步到会话列表）");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.goConvReq]);
+
   const send = () => {
     if (!draft.trim()) return;
     // 校验改为看 conv_id 是否有效（id 现为 conv_id，不再是 "rc"+下标）
