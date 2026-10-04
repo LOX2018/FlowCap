@@ -78,6 +78,11 @@ def _write_version_file(build_kind: str = "debug") -> str:
     """
     v = _app_version()
     kind = "release" if str(build_kind).lower() == "release" else "debug"
+    # 注：**不**把源码来源戳写进本文件。
+    #   `_build_version.py` 是**被跟踪且每次提交都带**的文件；把构建期戳写进去
+    #   = 把本地构建状态提交进版本库（别人拉到后该戳即"说谎"——文件里的戳
+    #   与他们 checkout 的源码未必一致，且他们若改了源码不重建，戳更会失真）。
+    #   来源戳只活在 gitignored 的 `artifacts/.build_stamp.json`（见 build_stamp.py）。
     try:
         fp = BACKEND / "_build_version.py"
         fp.write_text(
@@ -244,6 +249,7 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             # **函数体内** import（vbrowser.should_use_vb / utils/fingerprint._chrome_exe_path）
             # → 静态分析扫不到，必须显式声明；漏打则打包态抛 BCC-070。
             "camoufox.pkgman",
+            "apify_fingerprint_datapoints",
             "browserforge",
             "orjson",
             # 2026-09-20 实测事故：仅声明 "orjson" 时，PyInstaller 打入了
@@ -849,6 +855,20 @@ def main() -> None:
             print(f"[自检] 跳过（{_e}）")
 
         print(f"\n全部打包完成（mode={mode}），产物位于:", BINARIES)
+        # ★ 2026-10-04：构建成功后记录**来源戳 + 产物 md5**（供 --skip-* 与部署门禁判定陈旧）。
+        #   时机必须在产物落盘之后；失败不影响构建结论（但会让下次门禁判「无记录」）。
+        try:
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import build_stamp as _bs
+            _triple = _target_triple()
+            _arts = [BINARIES / f"{_n}-{_triple}{EXT}"
+                     for _n in ("dyautodm-backend", "dyautodm-browser-daemon",
+                                "dyautodm-recv-daemon")]
+            _rec = _bs.record_build("sidecar", _arts, version=_app_version())
+            print(f"[戳] 已记录 sidecar 来源戳 = {_rec['stamp'][:16]}…"
+                  f"（{_rec['files']} 个文件，{len(_rec['artifacts'])} 个产物 md5）")
+        except Exception as _e:  # noqa: BLE001
+            print(f"[戳] 记录失败（下次将判『无构建记录』）: {_e}")
         if debug_wl:
             print("[警告] 本次为**调试版**构建（含测试白名单限制），"
                   "禁止对外发布！")

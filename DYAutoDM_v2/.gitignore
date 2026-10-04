@@ -143,3 +143,6 @@ DYAutoDM_v2/accounts/
 # 4) 构建基线（L-9：build_and_deploy.py 记录「上次成功构建的 HEAD sha」，
 #    属本地构建状态，不入版本库）
 artifacts/.last_built_sha
+# 5) 构建来源戳（2026-10-04：build_stamp.py 记录「上次构建的源码 sha256 +
+#    产物 md5」，供 --skip-* 判定陈旧；属本地构建状态，不入版本库）
+artifacts/.build_stamp.json
