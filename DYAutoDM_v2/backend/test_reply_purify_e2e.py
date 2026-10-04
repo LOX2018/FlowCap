@@ -11,7 +11,12 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ["DY_APP_ROOT"] = tempfile.mkdtemp(prefix="dy_purify_e2e_")
+
+# 🔴 2026-10-04 必修：setUp 里有 `DELETE FROM dm_messages`（**无 WHERE，清全表**）。
+# 旧写法只设 `DY_APP_ROOT` env，而 `vbrowser.app_root()` 在目录不存在/被外部预设时
+# 会静默忽略并回退 ⇒ 该 DELETE 可能清掉**生产库**的 303 条消息。
+from test_isolation import isolate   # noqa: E402  必须在 import database 之前
+isolate("reply_purify_e2e")
 
 import database                      # noqa: E402
 from services import reply_kb, reply_purify as P   # noqa: E402

@@ -35,7 +35,10 @@ if _HERE not in sys.path:
 # 独立隔离库：只用 TEMP 下的 root，绝不碰 backend/data
 _ROOT = os.path.join(os.environ.get("TEMP", "."), "fixA")
 os.makedirs(_ROOT, exist_ok=True)
-os.environ.setdefault("DY_APP_ROOT", _ROOT)
+# 🔴 2026-10-04 必修：下方有 `DELETE FROM tasks`（无 WHERE，清全表）。
+# 旧写法用 setdefault —— 不覆盖已存在的 DY_APP_ROOT ⇒ 隔离失效，实测直接删掉**生产库**的 tasks。改用显式赋值。
+from test_isolation import env_isolate  # noqa: E402  必须在 import database 前
+env_isolate("id_uniq", root=_ROOT)
 
 from api import live_config, live_rooms  # noqa: E402
 import tasks_history  # noqa: E402

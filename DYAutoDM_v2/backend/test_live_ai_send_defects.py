@@ -33,8 +33,13 @@ _FE = os.path.join(os.path.dirname(BE), "frontend", "src", "components", "live")
 
 def setUpModule():
     global _ROOT
-    _ROOT = tempfile.mkdtemp(prefix="d12_gate_")
-    os.environ["DY_APP_ROOT"] = _ROOT
+    # 🔴 2026-10-04 必修：旧实现只设 `DY_APP_ROOT` env，但隔离的真正入口是
+    # `member_ctx.db_path()` —— 它由 `_resolve_member_id()` 从**盘上会话文件**解出
+    # 真实会员 ID，完全不看 DY_APP_ROOT ⇒ 下面的 `DELETE FROM dm_messages`
+    # 打的是**生产会员库**（仅按 account 过滤，仍可能删到真实消息）。
+    # 用 isolate() 直接钉死 db_path，不再依赖 env。
+    from test_isolation import isolate
+    _ROOT, _ = isolate("d12_gate")  # 用 isolate 实际使用的根，保持 tearDown 一致
 
 
 def tearDownModule():

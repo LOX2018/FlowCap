@@ -29,7 +29,12 @@ if _HERE not in sys.path:
 
 _ROOT = os.path.join(tempfile.gettempdir(), f"leads_backfill_test_{os.getpid()}")
 os.makedirs(_ROOT, exist_ok=True)
-os.environ.setdefault("DY_APP_ROOT", _ROOT)
+
+# 🔴 2026-10-04 事故后必修：本文件 setUp 里有 `DELETE FROM ai_leads`，
+# 旧写法 `setdefault("DY_APP_ROOT", _ROOT)` 在数据库层无效（database._db_path()
+# 不读该变量）⇒ 该 DELETE 一直在清**生产库**的线索。现走共享隔离助手。
+from test_isolation import isolate  # noqa: E402  必须在 import database 之前
+isolate("leads_backfill")
 
 from database import get_db  # noqa: E402
 from services import ai_reply  # noqa: E402

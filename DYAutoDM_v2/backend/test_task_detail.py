@@ -27,7 +27,10 @@ if _HERE not in sys.path:
 
 _ROOT = os.path.join(tempfile.gettempdir(), f"task_detail_test_{os.getpid()}")
 os.makedirs(_ROOT, exist_ok=True)
-os.environ.setdefault("DY_APP_ROOT", _ROOT)
+# 🔴 2026-10-04 必修：下方有 `DELETE FROM tasks`（无 WHERE，清全表）。
+# 旧写法用 setdefault —— 不覆盖已存在的 DY_APP_ROOT ⇒ 隔离失效，实测直接删掉**生产库**的 tasks。改用显式赋值。
+from test_isolation import env_isolate  # noqa: E402  必须在 import database 前
+env_isolate("task_detail", root=_ROOT)
 
 from api.tasks import get_task_detail, router  # noqa: E402
 from database import get_db  # noqa: E402

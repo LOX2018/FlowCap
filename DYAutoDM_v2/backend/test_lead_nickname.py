@@ -30,14 +30,19 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-_ROOT = os.path.join(tempfile.gettempdir(), f"lead_nick_test_{os.getpid()}")
-os.makedirs(_ROOT, exist_ok=True)
-os.environ.setdefault("DY_APP_ROOT", _ROOT)
+# 🔴 2026-10-04 事故根因与修法都在 test_isolation 里（含负控证据）。
+# 事故本体：本文件曾用 `os.environ.setdefault("DY_APP_ROOT", _ROOT)` 做隔离，
+# **但 database._db_path() 根本不读该变量** ⇒ 测试一直操作真实会员库，
+# 实测删掉了生产 ai_leads 唯一的真线索并注入 5 条假线索。
+# 统一走 test_isolation.isolate()，不要在此内联第二份实现（会漂移）。
+from test_isolation import isolate  # noqa: E402  必须在 import database 之前
+isolate("lead_nick")
 
 from database import get_db  # noqa: E402
 from services import ai_reply  # noqa: E402
