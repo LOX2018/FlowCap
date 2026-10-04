@@ -1466,12 +1466,12 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
         logger.info(
             f"[open-browser] 账号 {name} 凭证有效且引擎未运行 → 允许打开有头观测")
     else:
-        # 凭证失效：按契约暂停全部任务，并引导用户在有头窗口恢复凭证。
+        # 凭证失效：按契约暂停全部任务。
         # AutoDM.stop/pause 是 async，这里在线程池执行以免阻塞事件循环
         # （本路由是 async，直接 await 会与引擎协程交错）。
         logger.warning(
             f"[ACC-025] " + f"[open-browser] 账号 {name} 凭证失效（wp={_wp_level}）"
-            f"→ 暂停全部任务并打开有头浏览器供观测/重新授权")
+            f"→ 暂停全部任务")
         try:
             _adm = getattr(req.app.state, "adm", None)
             if _adm is not None and hasattr(_adm, "pause"):
@@ -1481,7 +1481,32 @@ async def open_fingerprint_browser(name: str, req: Request) -> ScanLoginResponse
                 logger.info(f"[open-browser] 账号 {name} 引擎已暂停（凭证失效）")
         except Exception as _e_stop:
             logger.warning(f"[ACC-026] " + f"[open-browser] 账号 {name} 引擎暂停失败"
-                f"（不阻塞打开浏览器）: {_e_stop}")
+                f"（不阻塞后续处置）: {_e_stop}")
+
+        # ══ 2026-10-05【凭证失效不再自动开浏览器】═══════════════════════
+        # 旧行为：凭证失效 ⇒ 自动拉起有头指纹浏览器让人重新授权。
+        #   但每次拉起都伴随 **context 重建** = 抖音侧一次全新环境访问（风控面），
+        #   实测形成「失效 → 重建 → 再失效」的重启风暴，凭证**越修越坏**。
+        # 新行为：默认只发 Windows 系统通知（零风控成本、可逆），由用户自己
+        #   决定何时手动处理；配置 general.cred_expire_action=auto 可回到旧行为。
+        #
+        # 🔴 注意：本路由是**用户主动点「查看」**才进来的手动入口，
+        #   但凭证失效分支原本会「顺带自动开」——那正是要拦下的自动动作。
+        #   用户想看窗口时，走下面的正常（凭证有效）路径不受影响。
+        try:
+            from services.cred_notify import should_auto_open_browser, notify_cred_expired
+            if not should_auto_open_browser():
+                notify_cred_expired(name, f"凭证失效（wp={_wp_level}）")
+                return ScanLoginResponse(
+                    ok=False,
+                    msg=f"账号 {name} 凭证失效 —— 已发 Windows 通知，"
+                        f"**未自动打开浏览器**（自动重建 context 会加剧风控、"
+                        f"导致凭证反复失效）。请在本机通知栏查看提示，"
+                        f"或在配置中心把「凭证失效处置」改为「自动开浏览器」。")
+        except Exception as _e_notify:  # noqa: BLE001
+            logger.warning(
+                f"[ACC-027] [open-browser] 账号 {name} 通知分支异常"
+                f"（降级为继续打开浏览器）: {_e_notify}")
     bport = acct_core.browser_daemon_port(name)
     # 1) 确保 BCC 在运行（懒加载；已在跑则立即返回）
     if not acct_core._port_open(bport, timeout=0.3):
@@ -2053,6 +2078,22 @@ async def auto_recapture(name: str) -> ScanLoginResponse:
                 f"本次**未发起**。上次结果：{_err or '（无错误记录，但不代表本次已刷新）'}")
 
     # ── 发起（仍沿用既有 best-effort 链路，但**只声明已启动**）─────────
+    # ══ 2026-10-05【与 sender._maybe_auto_recapture 同一道闸】══════════
+    # 本端点同样会 _quit_browser_daemon → enrich_auth(force=True) 重建 context。
+    # 默认（notify）下**拒绝自动发起**，只发 Windows 通知 —— 否则前端/IM 指令
+    # 一调就又触发一次「失效 → 重建 → 再失效」的风暴（用户实测报障）。
+    try:
+        from services.cred_notify import should_auto_open_browser, notify_cred_expired
+        if not should_auto_open_browser():
+            notify_cred_expired(name, "私信凭证失效（auto-recapture 已拒绝自动重建）")
+            return ScanLoginResponse(
+                ok=False, started=False,
+                msg=f"账号 {name} 凭证失效 —— 已发 Windows 通知，**未自动重捕获**"
+                    f"（自动重建 context 是风控面动作，会让凭证反复失效）。"
+                    f"请手动更新凭证；或在配置中心把「凭证失效处置」改为「自动开浏览器」。")
+    except Exception as _e_gate:  # noqa: BLE001
+        logger.warning(
+            f"[recap] 账号 {name} 处置门禁异常（降级为旧行为）: {_e_gate}")
     try:
         acct_core.auto_recapture(name, landing_url=_RECAP_LANDING)
     except Exception as e:  # noqa: BLE001

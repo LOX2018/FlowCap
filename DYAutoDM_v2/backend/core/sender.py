@@ -163,6 +163,29 @@ def _maybe_auto_recapture(auth: Any, reason: str) -> None:
         _ev.cred_expired(name or "(未知账号)", reason, auto_fixing=True)
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[notify] 凭证失效告警跳过: {e}")
+
+    # ══ 2026-10-05【重启风暴根治】═════════════════════════════════════
+    # 旧行为：无条件 auto_recapture() ⇒ 内部
+    #   _quit_browser_daemon()（杀 BCC）→ enrich_auth(force=True)（重建
+    #   context = 抖音侧一次全新环境访问）→ ensure_daemons_for()（拉回 BCC）。
+    #   这条路径**完全绕开 run_keepalive 的熔断**，只受 5 分钟节流 ⇒
+    #   用户手动更新凭证后，发送链路仍每 5 分钟杀一次 BCC + 重建一次 context，
+    #   形成「失效 → 重建 → 再失效」风暴 —— 凭证**越修越坏**（用户实测报障）。
+    #
+    # 新行为：默认**不再自动重捕获**，改为只发 Windows 系统通知；
+    #   配置 general.cred_expire_action=auto 可回到旧行为。
+    try:
+        from services.cred_notify import should_auto_open_browser, notify_cred_expired
+        if not should_auto_open_browser():
+            notify_cred_expired(name or "(未知账号)", reason)
+            logger.warning(
+                f"[SEND-011] [recap] 账号 {name} 凭证失效 —— 已发 Windows 通知，"
+                f"**未自动重捕获**（自动重建 context 是风控面动作，会加剧失效）。")
+            return
+    except Exception as _e_gate:  # noqa: BLE001
+        logger.warning(
+            f"[SEND-012] [recap] 账号 {name} 处置门禁异常（降级为旧行为）: {_e_gate}")
+
     try:
         from auto_dm.accounts import auto_recapture
 
