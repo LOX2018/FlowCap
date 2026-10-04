@@ -44,6 +44,33 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# 分位数（patch，第三位）上限 —— dyautodm-version-sync skill，2026-10-01 用户设定。
+# 规则：分位数 = 50 时再 +0.01 → 次版本号 +1，分位数从 01 起。
+# patch > 50 = 应进位而未进位 = 违规。
+# H-33 根因：此上限此前只在 skill 正文里、没有机械载体 ⇒ 已复发两次
+#（0.45.152 → 0.46.60，两次都超限却无人拦）。本常量是它的 instrument 层。
+PATCH_LIMIT = 50
+
+
+def _check_patch_limit(version: str) -> list[str]:
+    """分位数 ≤ PATCH_LIMIT，超过即应进位（H-33 根治，2026-10-04）。
+
+    返回违规消息列表（空 = 合规）。纯函数，便于负控验证。
+    """
+    bad: list[str] = []
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
+    if not m:
+        bad.append(f"版本号格式非 major.minor.patch: {version}")
+        return bad
+    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if patch > PATCH_LIMIT:
+        bad.append(
+            f"分位数 {patch} 超过上限 {PATCH_LIMIT}（应进位到 "
+            f"{major}.{minor + 1}.01，dyautodm-version-sync 规则）"
+        )
+    return bad
+
+
 # (文件, 提取方式, 说明)  —— 「说明」标注该文件在版本链路中的角色
 TARGETS = [
     ("frontend/package.json", "json", "vite __APP_VERSION__ 的真实来源（前端门禁上报值）"),
@@ -115,6 +142,15 @@ def main() -> int:
             print("   -", b)
         return 1
     print(f"✓ {len(TARGETS)} 处版本齐平: {sorted(vals)[0]}")
+    # 分位数上限（H-33 根治，2026-10-04）：六处齐平后检查 patch ≤ 50。
+    # 放在齐平检查**之后**：不一致时先报不一致（更优先的问题）。
+    patch_bad = _check_patch_limit(sorted(vals)[0])
+    if patch_bad:
+        print()
+        print("✗ 版本门禁未通过：")
+        for b in patch_bad:
+            print("   -", b)
+        return 1
     return 0
 
 
