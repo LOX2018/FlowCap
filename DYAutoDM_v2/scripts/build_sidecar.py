@@ -204,6 +204,15 @@ def build_one(entry: str, name: str, mode: str = "onefile") -> None:
             "botpy",
             "botpy.message",
             "botpy.gateway",
+            # 2026-10-05（凭证失效处置 / Windows 通知）：
+            # services.cred_notify 由 api/accounts.py（2 处）与 core/sender.py
+            # 在**函数体内** import；utils.win_notify 由 cred_notify 内部
+            # 函数体内 import —— 两层延迟导入，静态分析一层都扫不到。
+            # 缺失后果**极隐蔽**：调用点全被 try/except 包裹 ⇒ 冻结态
+            # ImportError 被吞掉，静默退回「自动开浏览器」旧行为
+            # （= 重启风暴复发），而日志只有一行 WARNING。故必须显式声明。
+            "services.cred_notify",
+            "utils.win_notify",
         ):
             cmd += ["--hidden-import", _m]
         # 2026-09-09：会员体系（v0.37.0）。api/member.py 与 services/member_ctx
