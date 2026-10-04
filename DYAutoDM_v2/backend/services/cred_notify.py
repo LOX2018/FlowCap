@@ -30,6 +30,50 @@ THROTTLE_SEC = float(os.environ.get("DY_CRED_NOTIFY_THROTTLE", "600") or 600)
 _lock = Lock()
 _last: dict[tuple[str, str], float] = {}
 
+# ── 待前台消费的通知队列 ──────────────────────────────────────────────
+# 为什么用队列而不是直接发：后端是 **Python sidecar**，没有窗口、也没有
+# 已注册的 AppUserModelID ⇒ 它发的 Toast 只能借用别的 AppID（表现为「终端」）。
+# 应用身份的通知必须由 **Tauri 前端** 用 tauri-plugin-notification 发出
+# （插件已在 lib.rs:205 注册、capabilities/default.json 已声明权限）。
+# 故后端只负责**入队**，前端轮询拉走后以应用身份展示。
+#
+# 🔴 有界队列：不设上限会在前端长期不消费时无限增长（内存泄漏）。
+_MAX_PENDING = 200
+_pending: list[dict] = []
+
+
+def _enqueue(account: str, title: str, body: str, reason: str = "") -> None:
+    """入队一条待前台消费的通知（有界，超上限丢弃最旧的）。"""
+    global _pending
+    item = {
+        "id": f"{account}:{int(time.time() * 1000)}",
+        "account": account,
+        "title": title,
+        "body": body,
+        "reason": reason or "",
+        "ts": time.time(),
+    }
+    with _lock:
+        _pending.append(item)
+        if len(_pending) > _MAX_PENDING:
+            _dropped = _pending[:-_MAX_PENDING]
+            del _pending[:-_MAX_PENDING]
+            logger.warning(
+                f"[cred-notify] 通知队列超上限 {_MAX_PENDING}，"
+                f"丢弃最旧 {len(_dropped)} 条（前端长期未消费？）")
+
+
+def drain_pending() -> list[dict]:
+    """取走全部待消费通知（**取走即清空**，前端轮询用）。
+
+    🔴 必须「取走即清空」：若只读取不清，前端每次轮询都会重复弹出同一条，
+    用户会被同一条通知反复打扰（与「不刷爆通知栏」的设计目标相反）。
+    """
+    global _pending
+    with _lock:
+        out, _pending = _pending, []
+    return out
+
 
 def _cred_expire_action() -> str:
     """读配置中心 general.cred_expire_action（热生效）。
@@ -79,17 +123,23 @@ def notify_cred_expired(account: str, reason: str = "", *,
                     f"（{int(THROTTLE_SEC - (now - prev))}s 内已发过），跳过")
                 return False
             _last[key] = now
+
+    title = f"凭证失效 · {account}"
+    body = (f"账号：{account}\n原因：{reason or '（未注明）'}\n"
+            f"请手动更新凭证：配置中心 → 账号 → 查看/重新授权。")
+
+    # ① 主通道：入队给前端（由 Tauri 通知插件以**应用身份**发出）
+    _enqueue(account, title, body, reason)
+
+    # ② 兜底：Windows Toast（当前走终端 AppID，身份不精确但可达）
     try:
         from utils.win_notify import notify_windows
-        title = f"川流 · 凭证失效 · {account}"
-        body = (f"账号：{account}\n原因：{reason or '（未注明）'}\n"
-                f"请手动更新凭证：配置中心 → 账号 → 查看/重新授权。")
-        ok = notify_windows(title, body)
+        ok = notify_windows(f"川流 · {title}", body)
         if ok:
-            logger.info(f"[cred-notify] 账号 {account} 已发 Windows 凭证失效通知")
+            logger.info(f"[cred-notify] 账号 {account} 已入队 + 兜底 Toast 已发")
         else:
             logger.warning(
-                f"[cred-notify] 账号 {account} Windows 通知发送失败"
+                f"[cred-notify] 账号 {account} 已入队；兜底 Toast 发送失败"
                 f"（不自动开浏览器 —— 避免触发 context 重建风暴）")
         return ok
     except Exception as e:  # noqa: BLE001
