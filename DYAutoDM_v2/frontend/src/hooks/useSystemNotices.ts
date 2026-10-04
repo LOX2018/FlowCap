@@ -45,6 +45,15 @@ function inTauri(): boolean {
 export function useSystemNotices(enabled: boolean = true) {
   // 已弹过的 id（后端已清空，这里是二次保险：防 React Query 重放导致重弹）
   const shown = useRef<Set<string>>(new Set());
+  const mountedLogged = useRef(false);
+
+  // 🔴 挂载即留痕：否则「hook 没执行」与「hook 执行了但队列为空」在日志上
+  //    完全无法区分 —— 上一版就栽在这里（队列空 ⇒ 直接 return ⇒ 零日志）。
+  useEffect(() => {
+    if (mountedLogged.current) return;
+    mountedLogged.current = true;
+    log(`MOUNT enabled=${enabled} inTauri=${inTauri()}`);
+  }, [enabled]);
 
   const { data } = useQuery({
     queryKey: ["pending-notices"],
