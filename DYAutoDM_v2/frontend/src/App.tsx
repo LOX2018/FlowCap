@@ -12,7 +12,6 @@ import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react"
 import { useQuery } from "@tanstack/react-query";
 // framer-motion 的页面切换动画已移入 AppShell，App 层不再直接使用
 import { api, PageProps, TaskDetailPayload, ReusePayload } from "./api/client";
-import { useSystemNotices } from "./hooks/useSystemNotices";
 // 页面按视图懒加载（2026-09-15 性能优化）：
 // 原实现 11 个页面全静态 import → 全部打进主 chunk（782KB），首屏要解析所有页面代码。
 // 改为 React.lazy：每个页面独立 chunk，首屏只加载当前视图（overview），
@@ -304,10 +303,6 @@ export default function App() {
     enabled: ready,
   });
 
-  // 系统通知（以**应用身份**发出，而非后端 sidecar 借用的终端身份）。
-  // 后端把凭证失效等事件入队，这里轮询取走后由 Tauri 通知插件展示。
-  // `ready` 门控：后端未就绪时不轮询（否则每 10s 一次 401/连接失败噪音）。
-  useSystemNotices(ready);
   useQuery({
     queryKey: ["current-task"],
     queryFn: api.getCurrentTask,

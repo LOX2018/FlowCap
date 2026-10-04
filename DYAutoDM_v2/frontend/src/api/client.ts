@@ -320,16 +320,6 @@ export interface HubConsumerBinding {
   model_id?: string;
 }
 
-/** 待前台消费的通知（后端入队、前端取走后以**应用身份**发出）。 */
-export interface PendingNotice {
-  id: string;
-  account: string;
-  title: string;
-  body: string;
-  reason?: string;
-  ts: number;
-}
-
 export interface Overview {
   running: boolean;
   paused?: boolean;
@@ -967,21 +957,6 @@ export const api = {
 
   async getOverview(): Promise<Overview> {
     return request("/api/overview");
-  },
-
-  /**
-   * 取走待前台消费的通知（**后端取走即清空**）。
-   *
-   * 后端是 Python sidecar，无窗口、无已注册 AppUserModelID ⇒ 它自己发的
-   * Toast 只能借用别的 AppID（用户看到的是「终端」发的通知）。应用身份的
-   * 通知必须由本前端用 tauri-plugin-notification 发出，故这里只负责拉队列。
-   */
-  async getPendingNotices(): Promise<{
-    ok: boolean;
-    items: PendingNotice[];
-    count: number;
-  }> {
-    return request("/api/notify/pending");
   },
   /**
    * 业务漏斗聚合（ADR-032）。**只读本地库，零网络零浏览器**。

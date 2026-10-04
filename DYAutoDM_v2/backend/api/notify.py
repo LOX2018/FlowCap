@@ -70,27 +70,6 @@ async def status() -> dict:
     return {"ok": True, **st}
 
 
-@router.get("/pending")
-async def pending() -> dict:
-    """取走待前台消费的通知（**取走即清空**）。
-
-    2026-10-05：后端是 Python sidecar，无窗口、无已注册 AppUserModelID ⇒
-    它自己发的 Toast 只能借用别的 AppID（用户看到的是「终端」发的通知）。
-    应用身份的通知必须由 Tauri 前端用 tauri-plugin-notification 发出，
-    故后端只入队、前端轮询取走后以**应用身份**展示。
-
-    🔴 取走即清空：否则前端每轮轮询都会重复弹同一条。
-    """
-    try:
-        from services.cred_notify import drain_pending, drained_total
-        items = drain_pending()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[NTY-002] [notify] 取待消费通知失败: {e}")
-        return {"ok": False, "items": [], "count": 0, "drained_total": -1,
-                "msg": str(e)}
-    return {"ok": True, "items": items, "count": len(items),
-            "drained_total": drained_total()}
-
 
 @router.get("/config")
 async def get_config() -> dict:
