@@ -401,6 +401,41 @@ export interface CrawlStats {
 }
 
 /**
+ * 任务表统计（ADR-035 §3.4 下游，`GET /api/tasks/stats`，2026-10-04）。
+ *
+ * ## 与 CrawlStats 的本质区别（口径铁律）
+ *  · 本结构数据源 = **统一 `tasks` 表**（持久化，采集+直播+定时同源）；
+ *  · `CrawlStats` 数据源 = `crawl_history`（采集域**明细流水**）。
+ *  两者口径不同（任务级 vs 流水级），**不可混算**。
+ *
+ * 单位：`results` = 该任务的结果条数（直播=发送数 / 采集=条目数）。
+ */
+export interface TaskStats {
+  ok: boolean;
+  tz: number;
+  days: number;
+  date: string;
+  total: { runs: number; results: number };
+  today: { runs: number; results: number };
+  /** 按任务类型拆：live / crawl / scheduled … */
+  kinds: Record<string, { runs: number; results: number }>;
+  /** 按状态：成功（finished）/ 失败（failed+stopped）/ 进行中 */
+  status: { ok: number; failed: number; running: number };
+  trend: { date: string; runs: number; results: number }[];
+  recent: {
+    id: number;
+    account: string;
+    kind: string;
+    status: string;
+    result_count: number;
+    start_ts: string;
+    end_ts: string;
+    error_code: string;
+    live_id: string;
+  }[];
+}
+
+/**
  * 采集任务队列条目（★ 2026-10-03 采集任务队列（任务中心接线））。
  *
  * 对应后端 `backend/api/crawl_task_queue.py` 内存表 `_TASKS` 的**单条**结构，
@@ -2883,6 +2918,12 @@ export const api = {
   async crawlStats(days = 7, tz = 8): Promise<CrawlStats> {
     const qs = new URLSearchParams({ days: String(days), tz: String(tz) });
     return request(`/api/crawl/stats?${qs.toString()}`);
+  },
+
+  /** 任务表统计（ADR-035 §3.4 下游）—— 对统一 `tasks` 表聚合，与 crawlStats 口径不同。 */
+  async taskStats(days = 7, tz = 8): Promise<TaskStats> {
+    const qs = new URLSearchParams({ days: String(days), tz: String(tz) });
+    return request(`/api/tasks/stats?${qs.toString()}`);
   },
 
   // ===== ★ 2026-10-03 采集任务队列（任务中心接线）=====

@@ -7,6 +7,7 @@
   {ok, dmPool, maxTarget, interval, delay,
    liveUrl, enableDanmaku, enableConsole, enableSend}
 """
+import asyncio
 import time
 
 from fastapi import APIRouter, Request
@@ -14,6 +15,139 @@ from loguru import logger
 from models.task import TaskConfig
 
 router = APIRouter()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 任务表统计（ADR-035 §3.4 下游，2026-10-04）
+#
+# 设计意图：采集/直播/定时已落**同一张 tasks 表**（kind 区分），故「全业务统计」
+#   不再各域各造一套，而是**对任务表聚合** —— 这正是用户要的「依任务溯源」的数据基础。
+# 口径：数据源 = tasks 表（**持久化**，含历史）；与 /api/crawl/stats（crawl_history 明细流水）
+#   口径不同，勿混算。status 终态 = finished/stopped/failed（其余如 running 计为进行中）。
+# ════════════════════════════════════════════════════════════════════════════
+
+_TERMINAL_OK = ("finished",)
+_TERMINAL_BAD = ("failed", "stopped")
+
+
+def _task_stats_sync(tz_hours: int = 8, days: int = 7) -> dict:
+    """在非事件循环线程里对 tasks 表做只读聚合（零网络零浏览器）。"""
+    from database import exec_query
+
+    try:
+        off = max(-12, min(int(tz_hours), 14))
+    except Exception:
+        off = 8
+    days = max(1, min(int(days), 30))
+    now = time.time()
+    today_start = now + off * 3600
+    today_start = today_start - (today_start % 86400) - off * 3600
+    window_start = today_start - (days - 1) * 86400
+
+    def _acc(rows, key_runs="runs", key_res="results"):
+        d = {}
+        for r in rows:
+            d[str(r.get("kind") or "")] = {
+                "runs": int(r.get(key_runs) or 0),
+                "results": int(r.get(key_res) or 0),
+            }
+        return d
+
+    # ① 累计（全量，不受窗口限制）
+    tot = exec_query(
+        "SELECT COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS results FROM tasks"
+    )[0] or {}
+    total_runs = int(tot.get("runs") or 0)
+    total_results = int(tot.get("results") or 0)
+
+    # ② 今日（本地时区）
+    td = exec_query(
+        "SELECT COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS results "
+        "FROM tasks WHERE created_at >= ? AND created_at < ?",
+        (today_start, today_start + 86400),
+    )[0] or {}
+    today_runs = int(td.get("runs") or 0)
+    today_results = int(td.get("results") or 0)
+
+    # ③ 按 kind 拆分（全量）
+    #    🔴 老数据兼容：空 kind + 非空 live_id ⇒ 归入 'live'（与 tasks_history._normalize_task
+    #    同一条回落契约；否则老直播任务会落进 '' 桶，任务中心显示与统计不一致）。
+    kinds = _acc(exec_query(
+        "SELECT CASE WHEN kind IS NULL OR TRIM(kind)='' "
+        "            THEN (CASE WHEN live_id IS NOT NULL AND TRIM(live_id)<>'' "
+        "                       THEN 'live' ELSE '' END) "
+        "            ELSE kind END AS kind, "
+        "       COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS results "
+        "FROM tasks GROUP BY kind"
+    ))
+
+    # ④ 按状态拆分（全量）—— 成功/失败/停止/进行中
+    st_map = {}
+    for r in exec_query("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"):
+        st_map[str(r.get("status") or "")] = int(r.get("n") or 0)
+    ok_runs = sum(st_map.get(s, 0) for s in _TERMINAL_OK)
+    failed_runs = sum(st_map.get(s, 0) for s in _TERMINAL_BAD)
+    running_runs = sum(n for s, n in st_map.items()
+                       if s not in _TERMINAL_OK and s not in _TERMINAL_BAD)
+
+    # ⑤ 近 N 日趋势（本地日切，缺日补 0）
+    trend_rows = exec_query(
+        "SELECT CAST((created_at + ?) / 86400 AS INTEGER) * 86400 AS day_key, "
+        "       COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS results "
+        "FROM tasks WHERE created_at >= ? GROUP BY day_key ORDER BY day_key",
+        (off * 3600, window_start),
+    )
+    by_day = {int(r["day_key"]): (int(r["runs"] or 0), int(r["results"] or 0))
+              for r in trend_rows}
+    trend = []
+    for i in range(days):
+        ds = window_start + i * 86400
+        key = int((ds + off * 3600) // 86400) * 86400
+        n, rc = by_day.get(key, (0, 0))
+        trend.append({
+            "date": time.strftime("%Y-%m-%d", time.gmtime(ds + off * 3600 + 12 * 3600)),
+            "runs": n, "results": rc,
+        })
+
+    # ⑥ 最近 20 条任务（摘要，含 kind 供溯源）
+    recent = []
+    for r in exec_query(
+        "SELECT id, acct, kind, status, result_count, start_ts, end_ts, error_code, "
+        "       live_id, params FROM tasks ORDER BY id DESC LIMIT 20"
+    ):
+        d = dict(r)
+        if not d.get("kind"):
+            d["kind"] = "live" if d.get("live_id") else ""
+        recent.append({
+            "id": d.get("id"), "account": d.get("acct") or "", "kind": d.get("kind") or "",
+            "status": d.get("status") or "", "result_count": int(d.get("result_count") or 0),
+            "start_ts": d.get("start_ts") or "", "end_ts": d.get("end_ts") or "",
+            "error_code": d.get("error_code") or "", "live_id": d.get("live_id") or "",
+        })
+
+    return {
+        "ok": True, "tz": off, "days": days,
+        "date": time.strftime("%Y-%m-%d", time.gmtime(today_start + off * 3600 + 12 * 3600)),
+        "total": {"runs": total_runs, "results": total_results},
+        "today": {"runs": today_runs, "results": today_results},
+        "kinds": kinds,
+        "status": {"ok": ok_runs, "failed": failed_runs, "running": running_runs},
+        "trend": trend,
+        "recent": recent,
+    }
+
+
+@router.get("/stats")
+async def task_stats(tz: int = 8, days: int = 7) -> dict:
+    """任务表统计（ADR-035 §3.4 下游）—— 对统一 `tasks` 表聚合。
+
+    采集/直播/定时同源 ⇒ 「全业务统计」不再各造一套。只读本地库，零网络零浏览器。
+    """
+    try:
+        return await asyncio.to_thread(_task_stats_sync, tz, days)
+    except Exception as e:  # noqa: BLE001 —— 统计失败如实上报，不返回伪造数字
+        logger.warning(f"[TSK-003] " + f"[tasks] 任务统计读取失败: {e}")
+        return {"ok": False, "error": str(e)}
 
 
 def _fmt_ts(v) -> str:

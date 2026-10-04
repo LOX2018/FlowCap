@@ -40,9 +40,9 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Search as SearchIcon, TrendingUp, Users, BarChart3, RefreshCw,
   MessageSquare, Sparkles, Target, Database, Radio, Send, X,
-  UserCheck,
+  UserCheck, ListChecks,
 } from "lucide-react";
-import { PageProps, type CrawlStats, type OverviewFunnel } from "@/api/client";
+import { PageProps, type CrawlStats, type TaskStats, type OverviewFunnel } from "@/api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Section, Stat, StatRow, Blank } from "@/components/page/kit";
@@ -63,6 +63,21 @@ const KIND_LABEL: Record<string, string> = {
   unknown: "未知",
 };
 
+/** 任务类型中文名（tasks 表的 kind 列，ADR-035）。 */
+const TASK_KIND_LABEL: Record<string, string> = {
+  live: "直播监听",
+  crawl: "评论采集",
+  scheduled: "定时任务",
+};
+
+/** 任务状态中文名。 */
+const TASK_STATUS_LABEL: Record<string, string> = {
+  finished: "已完成",
+  stopped: "已停止",
+  failed: "失败",
+  running: "运行中",
+};
+
 export type DomainKey =
   | "crawl" | "dm" | "leads" | "accounts" | "messages" | "live";
 
@@ -80,16 +95,16 @@ const DOMAINS: {
   label: string;
   icon: React.ElementType;
   note: string;
-  read: (f: OverviewFunnel) => { primary: string; secondary: string };
+  read: (f: OverviewFunnel, t?: TaskStats) => { primary: string; secondary: string };
 }[] = [
   {
     key: "crawl",
     label: "采集",
     icon: SearchIcon,
-    note: "每次采集的轮次、类型、目标与条数（可下钻到作品）",
-    read: (f) => ({
-      primary: String(f.crawl?.today_results ?? 0),
-      secondary: `今日 ${f.crawl?.today_runs ?? 0} 次 · 条`,
+    note: "采集任务（数据源 = 统一任务表 tasks，kind=crawl；下方「采集专项」为 crawl_history 明细口径）",
+    read: (f, t) => ({
+      primary: String(t?.kinds?.crawl?.results ?? f.crawl?.today_results ?? 0),
+      secondary: `累计 ${t?.kinds?.crawl?.runs ?? f.crawl?.today_runs ?? 0} 次 · 条`,
     }),
   },
   {
@@ -136,10 +151,12 @@ const DOMAINS: {
     key: "live",
     label: "直播",
     icon: Radio,
-    note: "直播监听任务（来自任务表）。若从未跑过真实监听，此处会显示「暂无明细」——那是事实，不是故障。",
-    read: (f) => ({
-      primary: String(f.crawl?.kinds?.comment ?? 0),
-      secondary: "评论采集（直播域）· 条",
+    // ★ 2026-10-04 修正（ADR-035）：此前读 `f.crawl.kinds.comment`（拿采集数据**冒充**直播）
+    //   —— 违反「禁止假数据」。现改为读任务表统计 kind=live。
+    note: "直播监听任务（数据源 = 统一任务表 tasks，kind=live）。从未跑过真实监听则为 0 —— 那是事实，不是故障。",
+    read: (_f, t) => ({
+      primary: String(t?.kinds?.live?.runs ?? 0),
+      secondary: `累计监听 ${t?.kinds?.live?.runs ?? 0} 次`,
     }),
   },
 ];
@@ -168,12 +185,22 @@ export default function StatsPage(props: PageProps) {
     staleTime: 30_000,
   });
 
+  // ── ③ 任务表统计（ADR-035 §3.4 下游）—— 采集/直播/定时同源聚合 ──
+  const taskQ = useQuery<TaskStats>({
+    queryKey: ["task-stats", days],
+    queryFn: () => props.api.taskStats(days),
+    enabled: !!props.ready,
+    staleTime: 30_000,
+  });
+
   const cs = crawlQ.data;
   const fn = funnelQ.data;
+  const ts = taskQ.data;
 
   const refreshAll = () => {
     void crawlQ.refetch();
     void funnelQ.refetch();
+    void taskQ.refetch();
   };
 
   /** 趋势最大值（柱状图归一化用；全 0 时避免除零）。 */
@@ -197,11 +224,11 @@ export default function StatsPage(props: PageProps) {
             <Button
               size="sm"
               variant="secondary"
-              disabled={crawlQ.isFetching || funnelQ.isFetching}
+              disabled={crawlQ.isFetching || funnelQ.isFetching || taskQ.isFetching}
               onClick={refreshAll}
             >
               <RefreshCw
-                className={`h-3.5 w-3.5 ${crawlQ.isFetching || funnelQ.isFetching ? "animate-spin" : ""}`}
+                className={`h-3.5 w-3.5 ${crawlQ.isFetching || funnelQ.isFetching || taskQ.isFetching ? "animate-spin" : ""}`}
               />
               刷新
             </Button>
@@ -239,7 +266,7 @@ export default function StatsPage(props: PageProps) {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             {/* 每个卡片 = 一个业务域；点击 → 下钻到该域详情（activeDomain） */}
             {DOMAINS.map((d) => {
-              const v = d.read(fn);
+              const v = d.read(fn, ts);
               const Icon = d.icon;
               const active = activeDomain === d.key;
               return (
@@ -287,9 +314,86 @@ export default function StatsPage(props: PageProps) {
             </Button>
           }
         >
-          <DomainDetail domain={activeDomain} props={props} days={days} />
+          <DomainDetail domain={activeDomain} props={props} days={days} taskStats={ts} />
         </Section>
       )}
+
+      {/* ══════════ L1 · 任务表统计（ADR-035 §3.4 下游）══════════
+          采集/直播/定时已落同一张 tasks 表 ⇒ 这里对**任务表**聚合，
+          是「依任务溯源」的汇总口径（下方「采集专项」是 crawl_history 明细口径）。 */}
+      <Section
+        className="mb-4"
+        title="任务表统计"
+        description={
+          <>
+            数据源 <code className="text-[0.72rem]">tasks</code>（采集 / 直播 / 定时同源，kind 区分）
+            {ts && !ts.today.runs ? " · 今日尚无任务" : ""}
+          </>
+        }
+        actions={
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">{ts ? `统计日 ${ts.date}` : "—"}</Badge>
+            {ts && ts.status.running > 0 ? (
+              <Badge variant="success">{ts.status.running} 进行中</Badge>
+            ) : null}
+          </div>
+        }
+      >
+        {taskQ.isPending ? <LoadingState /> : taskQ.isError ? (
+          <ErrorState
+            message={String((taskQ.error as Error)?.message || "任务统计读取失败")}
+            onRetry={() => void taskQ.refetch()}
+          />
+        ) : !ts ? (
+          <Blank>暂无任务统计</Blank>
+        ) : (
+          <>
+            <StatRow cols={4}>
+              <Stat label="累计任务" value={fmtNumShort(ts.total.runs)} unit="次"
+                    icon={<ListChecks className="h-3.5 w-3.5" />} />
+              <Stat label="今日任务" value={fmtNumShort(ts.today.runs)} unit="次"
+                    icon={<TrendingUp className="h-3.5 w-3.5" />} />
+              <Stat label="成功 / 失败"
+                    value={`${fmtNumShort(ts.status.ok)} / ${fmtNumShort(ts.status.failed)}`}
+                    unit="次" accent icon={<Target className="h-3.5 w-3.5" />} />
+              <Stat label="按类型"
+                    value={`${fmtNumShort(ts.kinds.live?.runs ?? 0)} / ${fmtNumShort(ts.kinds.crawl?.runs ?? 0)} / ${fmtNumShort(ts.kinds.scheduled?.runs ?? 0)}`}
+                    unit="直播/采集/定时" icon={<Radio className="h-3.5 w-3.5" />} />
+            </StatRow>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <div>
+                <div className="mb-2 text-[0.72rem] text-[var(--color-text-muted)]">按任务类型分布（全量累计）</div>
+                {!Object.keys(ts.kinds).length ? <Blank>暂无任务</Blank> : (
+                  <div className="space-y-1.5">
+                    {Object.entries(ts.kinds).sort((a, b) => b[1].runs - a[1].runs).map(([k, v]) => (
+                      <div key={k} className="flex items-center gap-2 text-[0.74rem]">
+                        <Badge variant="outline" className="w-[5.5rem] justify-center shrink-0">{TASK_KIND_LABEL[k] || k || "未知"}</Badge>
+                        <span className="flex-1 font-mono tabular-nums text-[var(--color-text-secondary)]">{v.runs} 次</span>
+                        <span className="font-mono tabular-nums text-[var(--color-text-muted)]">{fmtNumShort(v.results)} 条</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="mb-2 text-[0.72rem] text-[var(--color-text-muted)]">最近任务（可溯源到每条）</div>
+                {!ts.recent.length ? <Blank>暂无任务记录</Blank> : (
+                  <div className="max-h-[12rem] space-y-1 overflow-y-auto">
+                    {ts.recent.map((r) => (
+                      <div key={r.id} className="flex items-center gap-2 text-[0.72rem]">
+                        <Badge variant="outline" className="shrink-0">{TASK_KIND_LABEL[r.kind] || r.kind || "—"}</Badge>
+                        <span className="min-w-0 flex-1 truncate text-[var(--color-text)]" title={r.account}>{r.account || "—"}</span>
+                        <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">{TASK_STATUS_LABEL[r.status] || r.status}</span>
+                        <span className="w-[5.2rem] shrink-0 text-right font-mono text-[var(--color-text-muted)]">{r.result_count} 条</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </Section>
 
       {/* ══════════ L1 · 采集专项核心指标 ══════════ */}
       <Section
@@ -589,22 +693,70 @@ function DomainDetail({
   domain,
   props,
   days,
+  taskStats,
 }: {
   domain: DomainKey;
   props: PageProps;
   days: number;
+  taskStats?: TaskStats;
 }) {
-  // 采集域：拉真实明细（后端唯一已有的独立明细端点）
-  const enabled = domain === "crawl";
+  // ★ 2026-10-04（ADR-035 下游）：直播 / 采集两域改用**任务表**明细（可溯源到每条任务）；
+  //   其余域仍无独立明细端点，如实告知（不重复画概览数字冒充详情）。
+  const enabled = domain === "crawl" || domain === "live";
   const q = useQuery({
     queryKey: ["stats-domain-detail", domain, days],
     queryFn: async () => {
-      if (domain !== "crawl") return null;
-      return await props.api.crawlHistory(100);
+      if (domain === "crawl") return await props.api.crawlHistory(100);
+      return null; // live 域直接用已取回的 taskStats，不重复请求
     },
     enabled: !!props.ready && enabled,
     staleTime: 30_000,
   });
+
+  // 直播 / 采集：任务表明细（按 kind 过滤）
+  if (domain === "live" || domain === "crawl") {
+    const wantKind = domain === "live" ? "live" : "crawl";
+    const rows = (taskStats?.recent || []).filter((r) => r.kind === wantKind);
+    if (!rows.length) {
+      return (
+        <Blank>
+          最近 20 条任务里没有「{wantKind === "live" ? "直播监听" : "评论采集"}」任务
+          （若从未跑过，这是事实而非故障）
+        </Blank>
+      );
+    }
+    return (
+      <div className="overflow-x-auto">
+        <table className="w-full text-[0.75rem]">
+          <thead>
+            <tr className="border-b border-[var(--color-border)] text-left text-[var(--color-text-muted)]">
+              <th className="py-1.5 pr-3 font-medium">开始</th>
+              <th className="py-1.5 pr-3 font-medium">账号</th>
+              <th className="py-1.5 pr-3 font-medium">目标</th>
+              <th className="py-1.5 pr-3 font-medium">状态</th>
+              <th className="py-1.5 pr-3 text-right font-medium">结果</th>
+              <th className="py-1.5 pr-3 font-medium">结束</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-b border-[var(--color-border)] last:border-0">
+                <td className="py-1.5 pr-3 font-mono text-[var(--color-text-muted)]">{r.start_ts || "—"}</td>
+                <td className="py-1.5 pr-3">{r.account || "—"}</td>
+                <td className="py-1.5 pr-3 font-mono" title={r.live_id}>{r.live_id || "—"}</td>
+                <td className="py-1.5 pr-3">
+                  {TASK_STATUS_LABEL[r.status] || r.status}
+                  {r.error_code ? ` · ${r.error_code}` : ""}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono">{r.result_count}</td>
+                <td className="py-1.5 pr-3 font-mono text-[var(--color-text-muted)]">{r.end_ts || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
 
   if (!enabled) {
     return (
@@ -616,9 +768,9 @@ function DomainDetail({
         <div>
           现阶段可溯源的位置：
           <ul className="mt-1 list-disc space-y-0.5 pl-5">
-            <li>直播监听 → 页面内「查阅模式」（历史任务快照，逐条可查）</li>
-            <li>私信/会话 → 私信页的会话列表与聊天记录</li>
-            <li>采集 → 本页「采集」域（下方明细表即为真实明细）</li>
+            <li>直播监听 / 采集 → 本页「直播」「采集」域（任务表明细，逐条可查）</li>
+            <li>私信 / 会话 → 私信页的会话列表与聊天记录</li>
+            <li>线索 → 私信页留资线索</li>
           </ul>
         </div>
       </div>
