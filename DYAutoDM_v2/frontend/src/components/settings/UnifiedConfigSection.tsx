@@ -17,10 +17,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type {
   SettingsSchema,
+  SettingsFieldSchema,
 } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { errMsg } from "./settings-shared";
 import { type Val, SectionCard, SchemaField } from "./unified-config-widgets";
+import { TAG_MANAGED_SECTIONS } from "../../api/client";
 
 
 
@@ -34,6 +36,13 @@ export default function UnifiedConfigSection(
     scopeName?: string;
     /** 只渲染指定分区（设置页按功能拆 tab 用）；不传则显示全部 */
     onlySections?: string[];
+    /**
+     * 字段分组（2026-10-04：把某些字段拆成「单独子卡片」）。
+     * 在同一实例内渲染 —— 共享 scope / draft / 保存按钮语义，
+     * 因此标签切换栏只有一条、不会出现「两张卡各存各的 scope」的脱节。
+     * 未列入任何分组的字段渲染在主卡里。
+     */
+    fieldGroups?: Array<{ title: string; fields: string[] }>;
     /** 隐藏顶部标签切换栏（被 TagSection 内嵌时，外层已决定 scope） */
     hideScopeBar?: boolean;
   },
@@ -41,12 +50,25 @@ export default function UnifiedConfigSection(
   const { api, ready, push } = props;
   const qc = useQueryClient();
 
-  // ---- v0.38.3：顶部标签切换栏状态（业务分区才有）----
+  // ---- v0.38.3：顶部标签切换栏状态（**仅标签管辖的板块**才有）----
   // 选「全局」= 编辑全局参数；选某标签 = 编辑该标签的参数。
   // 删除标签只能在「配置标签」页做，这里只切换，不提供删除。
+  //
+  // ⚠️ 2026-10-02 根因修复（用户报障「系统里面不需要配置标签」）：
+  // 原判据是 `!hideScopeBar && (!onlySections || !onlySections.includes("general"))`
+  // —— 实质等于「**只要不是通用配置就显示**」⇒ 系统 / 私信 / 通知 / AI 等
+  // 与标签毫无关系的 tab 也弹出了「保存到 全局/标签」栏，且该栏能点、
+  // 点了会把这些**非托管分区**的参数写进 `app_config::<tag_id>`（后端不认
+  // 托管校验）⇒ 既是无意义入口，又是**参数写到错误作用域**的隐患。
+  //
+  // 现改为**白名单判据**：与后端 `services/config_tag.MANAGED_SECTIONS` 同源
+  // （前端常量 `TAG_MANAGED_SECTIONS`），只有 send/live/capture/crawl/
+  // live_orchestration 五个板块才认标签作用域。
+  const only = props.onlySections;
   const isBusiness =
     !props.hideScopeBar &&
-    (!props.onlySections || !props.onlySections.includes("general"));
+    (only ? only.some((s) => (TAG_MANAGED_SECTIONS as readonly string[]).includes(s))
+          : true);
   const [activeTag, setActiveTag] = useState<string>("");
 
   const tagsQ = useQuery({
@@ -114,11 +136,12 @@ export default function UnifiedConfigSection(
     setDraft((prev) => ({ ...prev, [sec]: { ...prev[sec], [key]: v } }));
   }, []);
 
-  const dirtyOf = useCallback(
-    (sec: string) => {
+  /** 字段级 dirty（子卡片用）：只看指定字段，避免同分区其他字段变动点亮子卡。 */
+  const dirtyOfFields = useCallback(
+    (sec: string, fieldKeys: string[]) => {
       const cur = serverCfg?.[sec] || {};
       const d = draft[sec] || {};
-      return Object.keys(d).some((k) => {
+      return fieldKeys.some((k) => {
         const a = cur[k];
         const b = d[k];
         if (a === undefined || a === null) {
@@ -167,9 +190,18 @@ export default function UnifiedConfigSection(
   });
 
   const resetMut = useMutation({
-    mutationFn: (sec: string) => api.resetSettings([sec]),
-    onSuccess: (data, sec) => {
-      qc.setQueryData(["unified-settings", scope], (old: unknown) => {
+    // 2026-10-04 修复（拆子卡片的作用域错配，真缺陷）：
+    //   原实现 `resetMut.mutate(unit.sec)` 只传 section ⇒ 后端 `data.pop(section)`
+    //   清掉**整个分区**。拆卡前「一张卡=一个分区」所以正确；拆卡后子卡与主卡
+    //   共享同一 section ⇒ 在「私信词库」子卡点「恢复默认」会连带清空整个 send
+    //   分区（全部风控/闸门/额度）。
+    //   现在传 `fields` = **本卡渲染的字段**，只清本卡作用域。
+    //   同时补 `scope` —— 原实现漏传，选中标签时会误重置**全局**（与保存路径不对称）。
+    mutationFn: (args: { sec: string; fields: string[]; scope: string }) =>
+      api.resetSettings([args.sec], { scope: args.scope, fields: args.fields }),
+    onSuccess: (data, args) => {
+      const { sec, scope: sc } = args;
+      qc.setQueryData(["unified-settings", sc], (old: unknown) => {
         const o = old as { ok: boolean; schema: SettingsSchema; config: unknown } | undefined;
         return o ? { ...o, config: data.config } : o;
       });
@@ -181,18 +213,40 @@ export default function UnifiedConfigSection(
     onError: (e) => push(`恢复失败：${errMsg(e)}`),
   });
 
-  const only = props.onlySections;
-  const sections = useMemo(
-    () =>
-      Object.entries(schema)
-        .filter(([key]) => !only || only.includes(key))
-        .map(([key, s]) => ({
-          key,
-          label: s.label,
-          fields: Object.entries(s.fields || {}),
-        })),
-    [schema, only],
-  );
+  // 分区 → 渲染单元列表。每项自带 `title` 与 `fields`：
+  //   · 未配 fieldGroups ⇒ 整分区一张卡（原行为，零回归）；
+  //   · 配了 ⇒ 每个分组一张子卡 + 剩余字段一张主卡（同一实例内，共享 scope/draft）。
+  const sections = useMemo(() => {
+    const groups = props.fieldGroups || [];
+    const grouped = new Set(groups.flatMap((g) => g.fields));
+    const out: Array<{
+      cardKey: string;
+      sec: string;
+      title: string;
+      fields: Array<[string, SettingsFieldSchema]>;
+    }> = [];
+    for (const [key, s] of Object.entries(schema)) {
+      if (only && !only.includes(key)) continue;
+      const all = Object.entries(s.fields || {}) as Array<[string, SettingsFieldSchema]>;
+      if (!groups.length) {
+        out.push({ cardKey: key, sec: key, title: s.label, fields: all });
+        continue;
+      }
+      // 主卡：未被任何分组接管的字段（先渲染，保证「主配置在上、子卡在下」）
+      const rest = all.filter(([fk]) => !grouped.has(fk));
+      if (rest.length) {
+        out.push({ cardKey: key, sec: key, title: s.label, fields: rest });
+      }
+      // 子卡片（按 fieldGroups 顺序）
+      for (const g of groups) {
+        const fs = all.filter(([fk]) => g.fields.includes(fk));
+        if (fs.length) {
+          out.push({ cardKey: `${key}:${g.title}`, sec: key, title: g.title, fields: fs });
+        }
+      }
+    }
+    return out;
+  }, [schema, only, props.fieldGroups]);
 
   if (q.isLoading) {
     return <div style={{ padding: 20, color: "var(--color-text-muted)" }}>加载配置…</div>;
@@ -280,30 +334,44 @@ export default function UnifiedConfigSection(
         </div>
       )}
 
-      {sections.map((sec, i) => (
+      {sections.map((unit, i) => (
         <SectionCard
-          key={sec.key}
-          title={sec.label}
-          subtitle={`${sec.fields.length} 项`}
-                    defaultOpen={props.onlySections ? i === 0 : true}
-          dirty={dirtyOf(sec.key)}
+          key={unit.cardKey}
+          title={unit.title}
+          subtitle={`${unit.fields.length} 项`}
+          defaultOpen={props.onlySections ? i === 0 : true}
+          dirty={dirtyOfFields(unit.sec, unit.fields.map(([fk]) => fk))}
           saving={saveMut.isPending}
-          onSave={() => saveMut.mutate({ sec: sec.key, scope: scope || "" })}
-          onReset={() => resetMut.mutate(sec.key)}
+          onSave={() => saveMut.mutate({ sec: unit.sec, scope: scope || "" })}
+          onReset={() =>
+            resetMut.mutate({
+              sec: unit.sec,
+              // 只清**本卡渲染的字段**：子卡与主卡共享同一 section，
+              // 不限定范围会连带清空同分区其他字段（2026-10-04 修复）。
+              fields: unit.fields.map(([fk]) => fk),
+              scope: scope || "",
+            })
+          }
         >
-          {sec.fields.map(([fk, fs]) => (
+          {unit.fields.map(([fk, fs]) => (
             <SchemaField
               key={fk}
               fieldKey={fk}
               schema={fs}
-              value={draft[sec.key]?.[fk] ?? (fs.default as Val)}
+              value={draft[unit.sec]?.[fk] ?? (fs.default as Val)}
               dirty={
-                String(serverCfg?.[sec.key]?.[fk] ?? fs.default) !==
-                String(draft[sec.key]?.[fk] ?? fs.default)
+                String(serverCfg?.[unit.sec]?.[fk] ?? fs.default) !==
+                String(draft[unit.sec]?.[fk] ?? fs.default)
               }
-              onChange={(v) => setVal(sec.key, fk, v)}
+              onChange={(v) => setVal(unit.sec, fk, v)}
             />
           ))}
+          {/* 子卡片提示：本卡是某分区的一部分，保存作用于整个分区。 */}
+          {props.fieldGroups?.some((g) => g.title === unit.title) && (
+            <div className="mt-1 text-[0.7rem] text-[var(--color-text-muted)]">
+              本卡与「{schema[unit.sec]?.label || unit.sec}」其余项同属一个分区，保存会一并提交。
+            </div>
+          )}
         </SectionCard>
       ))}
     </div>

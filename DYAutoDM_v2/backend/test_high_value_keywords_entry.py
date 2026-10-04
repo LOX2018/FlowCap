@@ -146,21 +146,21 @@ _JSX_MODAL = re.compile(r"<\s*HighValueKeywordsModal\b")
 
 
 def _section_is_mounted(settings_src: str, live_src: str, modal_src: str) -> bool:
-    """关键词权重表 Section 是否真实挂载在「设置页」**或**「直播页」。
+    """关键词权重表 Section 是否**真实挂载**（判据：设置页 JSX）。
 
-    判据（两分支任一成立即通过；两分支都要求**JSX 真实渲染**，只 import 不算）：
+    ## 判据沿革
+      · 初版（`8c7436e`）：只在设置页挂载 ⇒ 判据看 settings-page。
+      · 2026-10-01（台账 L-18）：入口迁到直播页弹窗 ⇒ 放宽为「设置页 **或**
+        直播页两跳」。
+      · **2026-10-04（用户指令「移除直播页入口」）**：入口收敛回**设置页**
+        （配置中心 → 采集策略 页直接挂载 `<HighValueKeywordsSection />`），
+        直播页链路（live-page → Modal → Section）**已下线**。
+        ⇒ 判据收敛为「设置页分支」，且**直播页不得再有入口**（见 G6b）。
 
-    · 设置页分支：`settings-page.tsx` 的 JSX 里出现 `<HighValueKeywordsSection`
-    · 直播页分支（**两跳**，缺一跳即不算）：
-        ① `live-page.tsx` 的 JSX 里出现 `<HighValueKeywordsModal`
-        ② `HighValueKeywordsModal.tsx` 的 JSX 里出现 `<HighValueKeywordsSection`
-
-    抽成纯函数是为了让负控能**在内存里**构造"摘掉挂载"的源码文本喂进来，
-    证明门禁真会红（而不是把负控写在注释里）。
+    保留 live_src / modal_src 入参是为了让负控能继续构造样本，
+    以及将来若再迁入口时判据可以平滑演进。
     """
-    if bool(_JSX_SECTION.search(settings_src)):
-        return True
-    return bool(_JSX_MODAL.search(live_src)) and bool(_JSX_SECTION.search(modal_src))
+    return bool(_JSX_SECTION.search(settings_src))
 
 
 def _drop_lines_matching(src: str, pattern: re.Pattern) -> str:
@@ -168,82 +168,98 @@ def _drop_lines_matching(src: str, pattern: re.Pattern) -> str:
     return "\n".join(ln for ln in src.splitlines() if not pattern.search(ln))
 
 
-def test_g6_section_mounted_in_settings_or_live():
-    """G6（决定性）：组件必须**真实挂载**到设置页**或**直播页 —— 光有组件文件等于不存在。
+def test_g6_section_mounted_in_settings():
+    """G6（决定性）：组件必须**真实挂载**到设置页 —— 光有组件文件等于不存在。
 
     H-26 的教训：能力层交付但未挂载 ⇒ 用户零感知。
 
-    ## 为什么判据从「只在设置页」改成「设置页 **或** 直播页」（2026-10-01 · 台账 L-18）
+    ## 判据沿革（勿再写回「或直播页」）
+      · `8c7436e` 初版：只在设置页挂载。
+      · 2026-10-01（台账 L-18）：入口迁到直播页弹窗 ⇒ 放宽为「设置页或直播页」。
+      · **2026-10-04（用户指令「移除直播页入口」）**：入口收敛回设置页
+        （配置中心 → 采集策略 页直接挂载），直播页链路已下线
+        ⇒ 判据收敛为**只认设置页**，并由 G6b 断言直播页不得再有入口。
 
-    提交 `7592727`「高价值关键词权重表**只保留直播页入口**（消除设置页重复入口）」
-    是**有意重构**，不是缺陷：设置页的入口按钮会跳到直播页弹窗，保留两处会形成
-    重复入口。而本门禁（源自更早的 `8c7436e`）没跟着改 ⇒ 门禁过时报错。
-
-    有效入口链（实测）：
-        `live-page.tsx:705` 渲染 `<HighValueKeywordsModal open={kwOpen} … />`
-        → `HighValueKeywordsModal.tsx:68` 渲染 `<HighValueKeywordsSection embedded />`
-
-    因此判据改为「设置页 **或** 直播页任一挂载即可」，且直播页分支必须**两跳都真**
-    （只认 import 字符串会假绿 —— 见负控 `test_g6_negative_control_...`）。
-
-    **不删除本门禁**的原因：该组件确实必须对用户可见，只是换了宿主页；
-    换成"删门禁"等于放弃 H-26 的机械防线。
+    **不删除本门禁**的原因：该组件必须对用户可见；删门禁 = 放弃 H-26 的机械防线。
     """
     assert SECTION.is_file(), "HighValueKeywordsSection.tsx 不存在"
-    assert LIVE_PAGE.is_file(), "live-page.tsx 不存在"
-    assert MODAL.is_file(), "HighValueKeywordsModal.tsx 不存在"
+    assert SETTINGS_PAGE.is_file(), "settings-page.tsx 不存在"
 
-    assert _section_is_mounted(_src(SETTINGS_PAGE), _src(LIVE_PAGE), _src(MODAL)), (
-        "高价值关键词表在设置页与直播页**都未挂载**：\n"
-        "  ① settings-page.tsx 的 JSX 中无 <HighValueKeywordsSection\n"
-        "  ② 或 live-page.tsx 的 JSX 中无 <HighValueKeywordsModal\n"
-        "  ③ 或 HighValueKeywordsModal.tsx 的 JSX 中无 <HighValueKeywordsSection\n"
-        "⇒ 用户看不见（H-26 同型缺口）"
+    assert _section_is_mounted(_src(SETTINGS_PAGE), "", ""), (
+        "高价值关键词表在设置页**未挂载**（settings-page.tsx 的 JSX 中无 "
+        "<HighValueKeywordsSection）⇒ 用户看不见（H-26 同型缺口）"
     )
 
 
-def test_g6_negative_control_unmounted_everywhere_turns_red():
-    """G6 负控：把挂载从**两处**都摘掉，门禁必须变红（否则门禁是摆设）。
+def _strip_comments(src: str) -> str:
+    """剥掉 JSX 块注释与 `//` 行注释，供「不得出现某标识」类判据使用。
+
+    🔴 为什么必须剥（本仓已踩两次）：源码契约类判据的模式串一旦出现在**注释**里
+    （例如本文件刻意留下的「入口已下线」说明），`in` / `grep -c` 会把注释算作命中
+    ⇒ 门禁与文档自相矛盾、且**判据当场失效**。G6b 首版正是如此误报。
+    """
+    src = re.sub(r"\{/\*.*?\*/\}", "", src, flags=re.S)
+    src = re.sub(r"(?m)^\s*//.*$", "", src)
+    return src
+
+
+def test_g6b_live_page_entry_removed():
+    """G6b（2026-10-04 用户指令「移除直播页入口」）：直播页**不得**再有入口。
+
+    判据：剥掉注释后，`live-page.tsx` 里不得出现 `<HighValueKeywordsModal`，
+    也不得再有 `live-high-value-keywords` 按钮锚点。
+
+    ⚠️ **必须先剥注释**：live-page 刻意留了「入口已下线」的说明注释（其中会
+    提及这两个标识符）。不剥注释会让门禁与文档自相矛盾（G6b 首版实测误报）。
+    """
+    live = _strip_comments(_src(LIVE_PAGE))
+    assert not _JSX_MODAL.search(live), (
+        "live-page.tsx 仍有 <HighValueKeywordsModal 挂载 ⇒ 直播页入口未移除"
+        "（用户 2026-10-04 要求单一入口：配置中心 → 采集策略）"
+    )
+    assert "live-high-value-keywords" not in live, (
+        "live-page.tsx 仍残留 live-high-value-keywords 锚点（入口按钮未删干净）"
+    )
+
+
+def test_g6_negative_control_unmounted_turns_red():
+    """G6 负控：摘掉设置页挂载后门禁必须变红（否则门禁是摆设）。
 
     全部在内存中构造源码样本喂给同一个纯函数 `_section_is_mounted`，
     **不碰真实文件**（避免与并行工作线争文件）。
 
-    三条断言：
-      · 真实三份源码 ⇒ True（基线，证明门禁当前是绿的）
-      · 摘掉 live-page 的 `<HighValueKeywordsModal …/>` ⇒ False
-      · 摘掉 modal 的 `<HighValueKeywordsSection …/>` ⇒ False
-      · 两处都摘 ⇒ False（"两处都摘掉必须变红"的可执行形态）
+    断言：
+      · 真实设置页源码 ⇒ True（基线，证明门禁当前是绿的）
+      · 摘掉设置页的 `<HighValueKeywordsSection …/>` ⇒ False
+      · 只有 import、没有 JSX ⇒ False（防「字符串命中即绿」的假绿）
+      · **回归防护**：即便直播页弹窗链路完整，设置页缺失也必须判红
+        （这正是 2026-10-04 判据收敛要守住的性质）
     """
     settings_src = _src(SETTINGS_PAGE)
     live_src = _src(LIVE_PAGE)
-    modal_src = _src(MODAL)
+    modal_src = _src(MODAL) if MODAL.is_file() else ""
 
     # 基线：真实源码必须绿，否则下面的负控没有意义
     assert _section_is_mounted(settings_src, live_src, modal_src) is True, \
         "基线失败：真实源码都没判绿，负控无从谈起"
 
-    # 负控 A：摘掉 live-page 里的 <HighValueKeywordsModal …/>
-    live_no_modal = _drop_lines_matching(live_src, _JSX_MODAL)
-    assert live_no_modal != live_src, "负控 A 没摘掉任何行（自造假绿）"
-    assert _section_is_mounted(settings_src, live_no_modal, modal_src) is False, \
-        "负控 A 失败：摘掉 live-page 的 Modal 挂载后门禁仍绿 ⇒ 判据不判直播页那一跳"
+    # 负控 A：摘掉设置页挂载 ⇒ 必须红
+    settings_no_section = _drop_lines_matching(settings_src, _JSX_SECTION)
+    assert settings_no_section != settings_src, "负控 A 没摘掉任何行（自造假绿）"
+    assert _section_is_mounted(settings_no_section, live_src, modal_src) is False, \
+        "负控 A 失败：摘掉设置页挂载后门禁仍绿 ⇒ 判据没在守设置页"
 
-    # 负控 B：摘掉 modal 里的 <HighValueKeywordsSection …/>
-    modal_no_section = _drop_lines_matching(modal_src, _JSX_SECTION)
-    assert modal_no_section != modal_src, "负控 B 没摘掉任何行（自造假绿）"
-    assert _section_is_mounted(settings_src, live_src, modal_no_section) is False, \
-        "负控 B 失败：摘掉 Modal 内的 Section 挂载后门禁仍绿 ⇒ 判据不判第二跳"
+    # 判别力：光有 import、没有 JSX ⇒ 必须红
+    import_only = 'import HighValueKeywordsSection from "./HighValueKeywordsSection";\n'
+    assert _section_is_mounted(import_only, live_src, modal_src) is False, \
+        "判别力失败：只有 import 无 JSX 却判绿 ⇒ 判据退化为字符串匹配"
 
-    # 负控 C：两处都摘 ⇒ 必须红
-    assert _section_is_mounted(settings_src, live_no_modal, modal_no_section) is False, \
-        "负控 C 失败：两处挂载都摘掉后门禁仍绿 ⇒ 门禁完全不设防"
+    # 回归防护：直播页链路完整也不能替代设置页挂载
+    if modal_src:
+        assert _section_is_mounted(settings_no_section, live_src, modal_src) is False, \
+            "回归失败：直播页链路完整就判绿 ⇒ 判据又退回「或直播页」了"
 
-    # 正控：设置页分支仍有效（避免将来只留直播页分支而把设置页分支写死成 False）
-    settings_mounted = settings_src + "\n<HighValueKeywordsSection />\n"
-    assert _section_is_mounted(settings_mounted, live_no_modal, modal_no_section) is True, \
+    # 正控：设置页分支仍有效（避免将来把设置页分支写死成 False）
+    settings_mounted = settings_no_section + "\n<HighValueKeywordsSection />\n"
+    assert _section_is_mounted(settings_mounted, live_src, modal_src) is True, \
         "正控失败：设置页 JSX 挂载后仍判红 ⇒ 设置页分支失效"
-
-    # 判别力：光有 import、没有 JSX ⇒ 必须红（防"字符串命中即绿"的假绿）
-    live_import_only = "import HighValueKeywordsModal from \"./HighValueKeywordsModal\";\n"
-    assert _section_is_mounted(settings_src, live_import_only, modal_src) is False, \
-        "判别力失败：live-page 只有 import 无 JSX 却判绿 ⇒ 判据退化为字符串匹配"

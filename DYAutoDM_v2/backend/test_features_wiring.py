@@ -78,6 +78,21 @@ class TestFeaturesWiring(unittest.TestCase):
         self._saved_load = c._load_auth
         c._load_auth = lambda account: _StubAuth()
 
+        # 2026-10-02 修补（实测 503 假失败）：`crawl_search` 已改走
+        # `services.auth_policy.get_auth_for(...)`（fail-closed 语义），
+        # 而本用例只桩了 `crawl._load_auth` —— 桩没盖到真实取值路径 ⇒
+        # auth 为 None ⇒ 撞上 503「采集搜索需登录态凭证」，
+        # 报错与被测的「features 封装层是否接在链路上」毫无关系。
+        # 补桩 auth_policy（setUp/tearDown 严格成对，见下方 tearDown）。
+        from services import auth_policy
+        self._saved_get_auth = auth_policy.get_auth_for
+        auth_policy.get_auth_for = lambda endpoint, account: _StubAuth()
+        # crawl_search 是 `from services.auth_policy import get_auth_for`
+        # 局部导入 ⇒ 还需替换模块内已绑定的名字
+        if hasattr(c, "get_auth_for"):
+            self._saved_crawl_get_auth = c.get_auth_for
+            c.get_auth_for = lambda endpoint, account: _StubAuth()
+
         # 保存 features 真身，tearDown 还原（防跨用例污染）
         self._saved_search_user = features.search_user
         self._saved_work_comments = features.work_comments
@@ -101,6 +116,10 @@ class TestFeaturesWiring(unittest.TestCase):
         self.features.search_user = self._saved_search_user
         self.features.work_comments = self._saved_work_comments
         self.crawl._load_auth = self._saved_load
+        from services import auth_policy
+        auth_policy.get_auth_for = self._saved_get_auth
+        if hasattr(self, "_saved_crawl_get_auth"):
+            self.crawl.get_auth_for = self._saved_crawl_get_auth
 
     # ---------------- G1：search user 经 features ----------------
     def test_g1_search_user_goes_through_features(self):

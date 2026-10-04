@@ -298,18 +298,22 @@ def resolve_tag_send_params(tag_id: str) -> dict:
         logger.warning(f"[LiveBatch] 标签存在性校验异常，按未配置处理: {e}")
         return {}
 
-    # 只取该标签 live 分区里**显式配过**的键（不走 schema 默认值回落）
+    # 只取该标签**显式配过**的键（不走 schema 默认值回落）。
+    # ⚠️ 2026-10-04：`dm_pool` 已迁到 send 分区，其余发送参数仍在 live
+    #    ⇒ 两个分区各读一次，再合并（否则迁分区后词库读不到）。
     try:
-        stored = (ac._load(ac.scope_key(tag_id)).get("live") or {})
+        _scope_kv = ac._load(ac.scope_key(tag_id))
+        stored = dict(_scope_kv.get("live") or {})
+        stored_send = dict(_scope_kv.get("send") or {})
     except Exception as e:
-        logger.warning(f"[LiveBatch] 读取标签 live 分区失败: {e}")
+        logger.warning(f"[LiveBatch] 读取标签分区失败: {e}")
         return {}
 
     out: dict = {}
 
-    # dm_pool：换行分隔字符串 → [{text, enabled}]
-    if "dm_pool" in stored:
-        raw = stored.get("dm_pool")
+    # dm_pool：换行分隔字符串 → [{text, enabled}]（send 分区）
+    if "dm_pool" in stored_send:
+        raw = stored_send.get("dm_pool")
         lines = ([s.strip() for s in str(raw or "").splitlines() if s.strip()]
                  if isinstance(raw, str) else [])
         if lines:

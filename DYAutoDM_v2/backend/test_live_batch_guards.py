@@ -38,6 +38,14 @@ import unittest
 # 让总开关在本进程内可用（create/start 的 fail-closed 前置）。
 os.environ.setdefault("DY_LIVE_BATCH_ENABLED", "1")
 
+# 🔴 数据隔离（2026-10-04 修复 R1 违规）：本测试会经 app_config / live_batch 写库，
+# 不设 DY_APP_ROOT 时 `database._db_path()` 回退到**源码树**（M-26/M-27 同型），
+# 在 DYAutoDM_v2/data/ 落 dyautodm.db ⇒ check_iron_rules.py R1 拦下提交。
+_TMP = os.path.join(os.environ.get("TEMP", "/tmp"), "dyautodm_live_batch_guards_test")
+os.makedirs(_TMP, exist_ok=True)
+os.environ["DY_APP_ROOT"] = _TMP
+os.environ["DY_DATA_DIR"] = _TMP
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(_HERE, "services", "live_batch.py")
 

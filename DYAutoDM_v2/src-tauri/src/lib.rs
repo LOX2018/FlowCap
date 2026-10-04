@@ -181,6 +181,24 @@ pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
+        // ── 单实例限制（2026-10-02 用户要求）──
+        // ⚠️ **必须第一个注册**：本插件靠「OS 级互斥体 + 把 argv 转发给首实例」
+        // 工作，若排在其它插件之后，晚于它初始化的插件可能已在首实例里建好资源
+        // （窗口 / sidecar 端口），重复启动就会撞端口、弹第二个窗口。
+        //
+        // 第二个实例的行为：**不静默退出**，而是把参数转发给首实例并聚焦其窗口
+        // （用户双击第二次时想的是「把我刚才那窗口叫出来」，不是「啥也没发生」）。
+        // 闭包返回 `true` = 本进程让位退出。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            log::info!("检测到重复启动：已存在的实例将被激活，本实例退出");
+            if let Some(win) = app.get_webview_window("main") {
+                // unminimize + show + set_focus 缺一不可：
+                // 最小化状态下只 show 不会真正置前。
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

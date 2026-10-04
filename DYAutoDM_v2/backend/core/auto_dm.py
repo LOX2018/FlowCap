@@ -1398,7 +1398,7 @@ class AutoDM:
             logger.warning(f"[ENG-013] " + f"[引擎] 热更被拒：引擎未运行（state={state}）")
             return {
                 "ok": False, "applied": [], "not_applied": [],
-                "reason": f"引擎未运行（当前 {state}），请先「开始自动私信」",
+                "reason": f"引擎未运行（当前 {state}），请先「启动」",
                 "engine_state": state,
             }
 

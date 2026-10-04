@@ -84,7 +84,7 @@ function mockApi() {
     applyRoomConfig: async () => ({ ok: true }),
     restartRoomConfig: async () => ({
       ok: true, applied_fields: [],
-      restart: { ok: false, applied: [], not_applied: [], reason: "引擎未运行（当前 idle），请先「开始自动私信」" },
+      restart: { ok: false, applied: [], not_applied: [], reason: "引擎未运行（当前 idle），请先「启动」" },
     }),
     crawlSearch: async () => ({ items: MOCK_VIDEOS, total: MOCK_VIDEOS.length }),
     crawlComments: async () => ({

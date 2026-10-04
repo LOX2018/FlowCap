@@ -61,12 +61,7 @@ function _verDiag(msg: string) {
   try { console.warn("[VERSION] " + msg); } catch { /* ignore */ }
 }
 
-function BootSplash({ onSkip }: { onSkip?: () => void }) {
-  const [showSkip, setShowSkip] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setShowSkip(true), 8000);
-    return () => clearTimeout(t);
-  }, []);
+function BootSplash() {
   return (
     <div
       style={{
@@ -101,14 +96,6 @@ function BootSplash({ onSkip }: { onSkip?: () => void }) {
                    border-[var(--color-border)] border-t-[var(--color-accent)]"
       />
       <div style={{ color: "var(--color-text-muted)", fontSize: 12.5 }}>正在唤醒后端引擎并准备数据…</div>
-      {showSkip && onSkip && (
-        <button
-          className="mt-2 text-[0.78rem] text-[var(--color-accent)] underline-offset-4 hover:underline"
-          onClick={onSkip}
-        >
-          等待过久？点此直接进入
-        </button>
-      )}
     </div>
   );
 }
@@ -459,10 +446,10 @@ export default function App() {
   if (!memberName) {
     // prealigned 未完成 → 持续闪屏（**不得引用 ready**：它需要登录）
     const gate = !prealigned
-      ? <BootSplash onSkip={() => { setPrealigned(true); setMemberChecked(true); }} />
+      ? <BootSplash />
       : memberChecked
         ? <MemberGate onLogin={(u) => { setMemberName(u); setPrealigned(true); }} />
-        : <BootSplash onSkip={() => setMemberChecked(true)} />;
+        : <BootSplash />;
     // 元素选择模式入口在此**一并渲染** —— 登录门/闪屏阶段也要能定位元素
     // （2026-09-19 用户定调：入口必须是全局顶层悬浮，不得被登录门挡住）。
     return (

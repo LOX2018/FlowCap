@@ -867,7 +867,7 @@ export type TagManagedSection = (typeof TAG_MANAGED_SECTIONS)[number];
 /** 板块中文名（UI 展示用，唯一处定义）。 */
 export const TAG_SECTION_LABELS: Record<TagManagedSection, string> = {
   send: "私信发送",
-  live: "直播监听",
+  live: "监听策略",
   capture: "捕获与存储",
   crawl: "内容采集",
   live_orchestration: "直播策略",
@@ -1644,7 +1644,7 @@ export const api = {
    * 任务，**不中断监听**（不重建 WS、不重扫凭证、不清队列）。
    * 三种结果都会如实下发，前端必须逐条呈现，禁止把 not_applied 当成功：
    *   - restart.ok=true            引擎运行中，applied 列出实际生效的字段
-   *   - restart.ok=false           引擎未运行 → 已保存，点「开始自动私信」后生效
+   *   - restart.ok=false           引擎未运行 → 已保存，点「启动」后生效
    *   - restart.not_applied_fields 换直播间/换账号/强制重扫属「换任务」语义，未生效
    */
   async restartRoomConfig(
@@ -1944,8 +1944,16 @@ export const api = {
     return request(q);
   },
 
-  async clearTaskHistory(): Promise<{ ok: boolean }> {
-    return request("/api/tasks/history/clear", { method: "POST" });
+  async clearTaskHistory(): Promise<{ ok: boolean; deleted?: number; error?: string }> {
+    // 2026-10-04 修复：后端 tasks_history.clear_history 有 confirm 门禁
+    // （backend/tasks_history.py:246，P2-9 安全修补：防一次误触清空全部历史）。
+    // 原实现只发空 POST ⇒ 后端一律返回 {ok:false, error:"需要显式确认"}，
+    // 而前端按钮又 .catch(() => {}) 吞掉错误 ⇒ 点了无任何反馈、数据也没清。
+    // 确认已由 UI 层 ConfirmDialog 承担（用户已点「确定」），故此处恒传 confirmed=true。
+    return request("/api/tasks/history/clear", {
+      method: "POST",
+      body: JSON.stringify({ confirmed: true }),
+    });
   },
 
   // ===== 定时任务中心（ADR-018 F4）=====
@@ -2207,15 +2215,27 @@ export const api = {
     return request(`/api/settings/scoped/${encodeURIComponent(tagId)}`);
   },
 
-  /** 清空指定 section 回默认值（不传则全清） */
-  async resetSettings(sections?: string[]): Promise<{
+  /** 清空指定 section 回默认值（不传则全清）。
+   *
+   *  2026-10-04 扩展（拆子卡片的作用域修正）：
+   *    · `scope`  标签 id；**不传 = 全局**（与 saveScoped 对称）。
+   *    · `fields` 字段子集；**不传 = 清整个 section**。
+   *  子卡片必须传 `fields`，否则会把同分区主卡字段一起清掉。 */
+  async resetSettings(
+    sections?: string[],
+    opts?: { scope?: string; fields?: string[] },
+  ): Promise<{
     ok: boolean;
     reset_sections: string[];
     config: Record<string, Record<string, unknown>>;
   }> {
     return request("/api/settings/reset", {
       method: "POST",
-      body: JSON.stringify({ sections: sections || [] }),
+      body: JSON.stringify({
+        sections: sections || [],
+        scope: opts?.scope || "",
+        fields: opts?.fields || null,
+      }),
     });
   },
 

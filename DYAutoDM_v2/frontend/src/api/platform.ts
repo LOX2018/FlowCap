@@ -194,7 +194,7 @@ export const platformApi = {
 
   /** ★ 2026-09-27（M-20）：`blocked=true` 表示**被风控拦截**（≠ 真的没搜到）。
    *  前端必须据此显示被拦截提示，禁止把空列表呈现成「没结果」（铁律：禁假成功）。 */
-  search: (account: string, query: string, kind: "video" | "user" = "video", num = 20,
+  search: (account: string, query: string, kind: "video" | "user" | "image" = "video", num = 20,
            /** ★ 2026-10-04 接线：筛选参数。**留空 = 用采集策略**；
             *  显式传值则覆盖（与已废弃 crawl-page 的既有约定一致）。 */
            filters?: { sort_type?: string; publish_time?: string; filter_duration?: string }) =>

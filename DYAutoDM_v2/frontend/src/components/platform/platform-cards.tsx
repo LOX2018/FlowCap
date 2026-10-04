@@ -135,7 +135,7 @@ export function UserCard({ item }: { item: UserItem }) {
 }
 
 export function Grid({ items, kind, onOpenAweme, checkedIds, onToggleCheck, previewCounts }: {
-  items: (AwemeItem | UserItem)[]; kind: "video" | "user";
+  items: (AwemeItem | UserItem)[]; kind: "video" | "user" | "image";
   onOpenAweme?: (it: AwemeItem) => void;
   checkedIds?: Record<string, boolean>;
   onToggleCheck?: (id: string, checked: boolean) => void;

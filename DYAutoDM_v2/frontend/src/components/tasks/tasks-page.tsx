@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone, Blank, Toolbar, SegmentedTabs } from "@/components/page/kit";
+import { ConfirmDialog } from "@/components/ui/modal";
 import { type OverviewExt, type ExportStatsResp, type Api, Th, Td, errMsg } from "./tasks-shared";
 import SchedulerSection from "./SchedulerSection";
 
@@ -47,6 +48,9 @@ export default function TasksPage(props: PageProps) {
   const qc = useQueryClient();
 
   const [view, setView] = useState<TaskTab>("running");
+  // 历史任务「清空」二次确认（2026-10-04）：后端 clear_history 有 confirm 门禁，
+  // UI 层需先让用户显式确认再放行；确认后由 client.clearTaskHistory 传 confirmed=true。
+  const [confirmClearHistory, setConfirmClearHistory] = useState(false);
 
   // 历史任务列表（App 常驻轮询 "task-history"，页面只读共享缓存，切页不重拉）
   const PAGE_SIZE = 50;
@@ -625,9 +629,7 @@ export default function TasksPage(props: PageProps) {
               <Button
                 variant="danger-outline"
                 size="sm"
-                onClick={() =>
-                  api.clearTaskHistory().then(() => refreshHistory()).catch(() => {})
-                }
+                onClick={() => setConfirmClearHistory(true)}
               >
                 <Trash2 className="h-3.5 w-3.5" />清空
               </Button>
@@ -744,6 +746,32 @@ export default function TasksPage(props: PageProps) {
           </div>
         </Section>
       )}
+
+      {/* 历史任务清空确认：后端 DELETE 无 WHERE，一次误触即清全部历史（P2-9），
+          故 UI 必须二次确认 —— 这也是后端 confirm 门禁的存在意义。 */}
+      <ConfirmDialog
+        open={confirmClearHistory}
+        danger
+        title="清空历史任务"
+        message={`将删除全部 ${historyTotal} 条历史任务记录，且不可恢复（含查阅/复用能力）。确定继续？`}
+        confirmText="清空"
+        onCancel={() => setConfirmClearHistory(false)}
+        onConfirm={() => {
+          setConfirmClearHistory(false);
+          api
+            .clearTaskHistory()
+            .then((r) => {
+              // 后端以 ok:false + error 表达失败（HTTP 仍为 200），必须判 r.ok 而不是只看 Promise 是否 resolve。
+              if (!r.ok) {
+                push("清空失败：" + (r.error || "未知原因"));
+                return;
+              }
+              push(`已清空 ${r.deleted ?? 0} 条历史任务`);
+              refreshHistory();
+            })
+            .catch((e: unknown) => push("清空失败：" + errMsg(e)));
+        }}
+      />
 
       {/* ══════════════ 页签三：定时任务（子页面） ══════════════ */}
       {view === "scheduled" && <SchedulerSection {...props} />}

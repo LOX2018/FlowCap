@@ -211,7 +211,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
    *
    * 后端契约见 `api.restartRoomConfig` —— 三种结果都必须如实告知：
    *   ① 引擎运行中：只列**实际生效**字段（applied）；
-   *   ② 引擎未运行：明说「已保存，点开始自动私信后生效」，不谎称已重启；
+   *   ② 引擎未运行：明说「已保存，点「启动」后生效」，不谎称已重启；
    *   ③ 换直播间/换账号：明说热更不覆盖（需停止后重新开始）。
    */
   const restart = (sid: string) => {

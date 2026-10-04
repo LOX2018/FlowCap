@@ -160,6 +160,19 @@ async def _post_login_init(member_id: str, master_key: str) -> None:
             logger.info(f"[member] 账号空间引导完成: {n_copied} 个账号(junction+索引)")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[MEM-007] " + f"[member] 账号索引引导失败（不阻塞登录）: {e}")
+    # ②c dm_pool 分区迁移补跑（2026-10-04 审查发现的数据丢失窗口）：
+    #  lifespan 里的迁移早于 `restore_persisted_session()`，此刻 member_ctx
+    #  仍为 None，目标库靠 `members/.session.json` 回退解析。若该文件缺失
+    #  （用户登出/被清）而会员库里还有 live.dm_pool ⇒ 迁移落在全局库上空跑，
+    #  而读取方已改读 send.dm_pool ⇒ 本次会话词库静默为空。
+    #  登录后此处再跑一次（幂等：send 已有值或无旧值均跳过），补上该窗口。
+    try:
+        from services import app_config as _ac
+        moved = await asyncio.to_thread(_ac.migrate_dm_pool_live_to_send)
+        if moved:
+            logger.info(f"[member] 私信词库分区迁移完成（登录后补跑）: {moved} 处")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[MEM-010] " + f"[member] dm_pool 分区迁移失败（不阻塞登录）: {e}")
     # ③ 拉起该会员账号的守护（等效原 lifespan 的 _auto_start_daemons）
     try:
         from auto_dm.daemon_launcher import ensure_daemons_for

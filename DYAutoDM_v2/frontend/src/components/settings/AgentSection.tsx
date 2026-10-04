@@ -31,7 +31,7 @@ const LEVELS = [
 const AGENT_SCOPES = ["dm", "live", "crawl"] as const;
 const SCOPE_LABELS: Record<string, string> = {
   dm: "私信中心",
-  live: "直播监听",
+  live: "监听策略",
   crawl: "视频采集",
 };
 

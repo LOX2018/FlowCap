@@ -421,6 +421,13 @@ class UsersInfoReq(BaseModel):
 
 
 class SearchReq(BaseModel):
+    """搜索请求。
+
+    ★ 2026-10-04（用户指令）：搜索新增「图文」维度 —— 取值
+    `kind` = `video`（作品，含视频与图文）/ `image`（**只要图文**）/ `user`（用户）。
+    `image` 映射上游 `search_general_work(content_type="2")`（0 不限/1 视频/2 图文，
+    见 `dy_apis/client_search.py:83`）；原接线漏了 `content_type`，故图文搜不到。
+    """
     account: str
     query: str
     kind: str = "video"           # video | user
@@ -431,6 +438,11 @@ class SearchReq(BaseModel):
     #   （与「采集策略假接线」同形的一个断链）。
     #   接线口径沿用已废弃 `crawl-page.tsx` 的既有约定：**空 = 用采集策略**，
     #   显式传值则覆盖 —— 不在此处 clamp，交给 `_resolve_policy_params`。
+    # ★ 2026-10-04（用户指令）：搜索**新增「图文」维度** —— 原只有 视频/用户。
+    #   上游 `search_general_work` 自带 `content_type`（0 不限/1 视频/2 图文，
+    #   见 dy_apis/client_search.py:83），但接线时漏了，故图文搜不到。
+    #   ⚠️ 不改 `video` 的既有语义（保持"不限"，兼容既有行为）—— 新增
+    #      `image` 值显式传 content_type=2，避免"视频"从 22 条骤变引发回归。
     sort_type: str = ""           # 0 综合 / 1 最多点赞 / 2 最新发布
     publish_time: str = ""        # 0 不限 / 1 一天内 / 7 一周内 / 180 半年内
     filter_duration: str = ""     # '' 不限 / 0-1 / 1-5 / 5-10000
@@ -832,8 +844,13 @@ async def search(req: SearchReq) -> dict[str, Any]:
         #   dy_apis/client_search.py:72）。
         #   ⚠️ 不做「先新后旧」的静默回落 —— 那会让筛选**看起来生效实则被忽略**
         #   （正是本次要消灭的假成功）。
+        # ★ 2026-10-04：`kind=image` ⇒ 只要图文（上游 content_type=2）。
+        #   图文同样走 `search_general_work`（它支持 content_type），
+        #   且**必须**经筛选分支（否则 search_stream 不支持该参数）。
+        _content_type = "2" if req.kind == "image" else ""
+        # `kind=image` 必须走支持 content_type 的接口 ⇒ 强制视为"有筛选"
         _has_filter = bool(req.sort_type or req.publish_time
-                           or req.filter_duration)
+                           or req.filter_duration or _content_type)
         works = None
         stream = None  # ★ M-20：供传输层事实读取（except 分支下保持 None）
         if _has_filter:
@@ -850,6 +867,7 @@ async def search(req: SearchReq) -> dict[str, Any]:
                 publish_time=req.publish_time or "0",
                 offset="0",
                 filter_duration=req.filter_duration or "",
+                content_type=_content_type,
             )
             # 🔴 2026-10-04 修「搜到结果但 aweme_id 全空 ⇒ 播放取址 422」：
             #   `DouyinAPI.search_general_work` 返回的是**完整 resp_json**
@@ -891,7 +909,7 @@ async def search(req: SearchReq) -> dict[str, Any]:
         if blocked:
             _reason = "被风控拦截（HTTP {}，响应 {} 字节）".format(
                 transport.get("status"), transport.get("bytes"))
-        return {"ok": True, "kind": "video",
+        return {"ok": True, "kind": req.kind,
                 "items": [_pick_aweme(w) for w in (works or [])],
                 "blocked": blocked,
                 "blocked_reason": _reason}
@@ -1852,20 +1870,36 @@ async def media_stream_ticket(req: StreamTicketReq) -> dict[str, Any]:
     import time as _t
     r = await media_resolve(MediaResolveReq(
         account=req.account, aweme_id=req.aweme_id, raw=req.raw, quality=req.quality))
-    direct = r.get("url") or ""
-    if not direct:
+    # ★ 2026-10-04 修「图文点开报 502 取址失败：无可用地址」：
+    #   原逻辑只取「视频流地址」（`r["url"]`），而图文作品的地址在 `images[]`
+    #   —— 没有 `video.play_addr` ⇒ `url` 为空 ⇒ 被误判成「取址失败」抛 502。
+    #   实际 `media_resolve` 已正确分流（`extract_media` 置 `type="images"` 并填
+    #   `images[]`），结果算好了却在最后一行被当失败丢掉。
+    #   ⇒ 按**媒体类型**分流：视频才要求 stream 地址；图文/Live Photo 直接以
+    #      `images` 成功返回（前端据 `type` 渲染图集，无需同源流票据）。
+    rtype = r.get("type") or "video"
+    images = r.get("images") or []
+    if rtype == "video" and not (r.get("url") or ""):
         raise HTTPException(502, "取址失败：无可用地址")
-    if not _media_host_ok(direct):
+    if rtype in ("images", "live_photo") and not images:
+        raise HTTPException(502, "取址失败：图文无可展示图片")
+    direct = r.get("url") or ""
+    if direct and not _media_host_ok(direct):
         # 非白名单域不代理（防 SSRF）；罕见但必须显式拒绝而非静默放行
         logger.warning(f"[PLT-043] " + f"直链主机不在白名单，拒绝代理: {direct[:80]}")
         raise HTTPException(502, "取址失败：地址主机不在允许列表")
     exp = int(_t.time()) + _STREAM_SIGN_TTL_SEC
     mid = _mstream.current_member_id()
-    sig = _mstream.sign(req.aweme_id, exp, mid)
-    u = base64.urlsafe_b64encode(direct.encode()).decode()
-    # `mid`（会员 ID）参与签名 ⇒ 换会员/登出后旧链接自动失效。
-    stream_url = (f"/api/platform/media/stream?u={u}&exp={exp}&sig={sig}"
-                  f"&aid={req.aweme_id}&mid={mid}")
+    # 图文没有视频流地址 ⇒ 不签流票据（签名的是 URL，空 URL 无意义）。
+    # 前端据 `type` + `images` 渲染图集，不依赖 `stream_url`。
+    if direct:
+        sig = _mstream.sign(req.aweme_id, exp, mid)
+        u = base64.urlsafe_b64encode(direct.encode()).decode()
+        # `mid`（会员 ID）参与签名 ⇒ 换会员/登出后旧链接自动失效。
+        stream_url = (f"/api/platform/media/stream?u={u}&exp={exp}&sig={sig}"
+                      f"&aid={req.aweme_id}&mid={mid}")
+    else:
+        stream_url = ""
     return {"ok": True, "stream_url": stream_url, "expires_in": _STREAM_SIGN_TTL_SEC,
             "resolved_via": r.get("resolved_via"), "type": r.get("type"),
             "cover": r.get("cover"), "duration": r.get("duration"),

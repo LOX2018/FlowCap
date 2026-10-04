@@ -115,11 +115,21 @@ class TestFeedRoute(unittest.TestCase):
         orig_api, orig_auth = P._api, P._auth_for
         P._api = lambda: fake
         P._auth_for = lambda acct: object()
+        # 2026-10-02 修补（实测 503 假失败）：`get_feed` 已改走
+        # `services.auth_policy.get_auth_for(...)`（v0.46.2 实测推荐流
+        # 不可匿名 ⇒ fail-closed），而本用例只桩了 `P._auth_for` ——
+        # 桩挂在一个**已不再被调用**的名字上 ⇒ auth 为 None ⇒ 撞 503，
+        # 报错与被测的「refresh_index 是否透传 / 过滤是否如实上报」无关。
+        # 补桩真实取值路径（局部导入在调用时从模块取属性，patch 模块属性即生效）。
+        from services import auth_policy
+        orig_get_auth_for = auth_policy.get_auth_for
+        auth_policy.get_auth_for = lambda endpoint, account: object()
         try:
             return asyncio.run(P.get_feed(P.FeedReq(
                 account="a", count=count, refresh_index=refresh_index))), fake
         finally:
             P._api, P._auth_for = orig_api, orig_auth
+            auth_policy.get_auth_for = orig_get_auth_for
 
     def test_n2_refresh_index_passthrough(self):
         # 负控对应：原实现硬编码 "2" ⇒ 本断言会红

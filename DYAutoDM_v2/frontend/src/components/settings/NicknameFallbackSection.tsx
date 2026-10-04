@@ -213,7 +213,7 @@ export default function NicknameFallbackSection() {
         {!enabled && status ? (
           <div className="text-[0.74rem] text-[var(--color-text-muted)]">
             提示：开关关闭时，「执行一次」会被后端直接拒绝（上方会显示原因）。
-            要开启请用左侧「私信 / 昵称兜底」里的开关。
+            要开启请用左侧「私信列表」里的开关。
           </div>
         ) : null}
       </CardContent>

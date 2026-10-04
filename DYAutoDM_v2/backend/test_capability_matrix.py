@@ -136,11 +136,31 @@ class LiveRoomRefGate(unittest.TestCase):
         """M7（**负控**）：kv 与 settings 都为空 ⇒ **必须**判 `unset`（防「假 ok」）。
 
         反向也要防：这个修复**不得**把「真没配」变成「假可用」。
+
+        🔴 2026-10-02 环境绑定修复：本用例原先硬编码真实账号
+        `尚进工伤小助理`。`capability_matrix` 在 `env_path_of(name)` 为空时
+        **提前 return `caps: []`** ⇒ 换台机器 / 换数据根（该账号不存在）就
+        `IndexError: list index out of range` —— 报的是「取不到元素」，
+        与被测的「live_read 该判 unset」毫无关系。
+        且这**违背本文件自己的声明**（头部：「全确定性：不触网、不读真凭证」）。
+
+        现把「账号存在」也纳入桩：`env_path_of` 指向一个**桩 .env 路径**，
+        四个探针全部打桩 ⇒ 被测判据（无直播间 ⇒ unset）**零网络**达成。
         """
         import database as _db
         import config as _cfg
+        import tempfile
+        import os as _os
+
+        _FAKE = "桩账号_门禁专用"
+        _stub_env = _os.path.join(tempfile.gettempdir(), "gate_stub_account.env")
         _orig_kv, _orig_url = _db.get_kv_json, _cfg.settings.live_url
         _orig_lid = getattr(_cfg.settings, "live_id", "")
+        _orig_env_of = acc.env_path_of
+        _orig_creds = acc.credentials_complete
+        _orig_sess = acc.live_session_state
+        _orig_uidv = acc.uid_identity_verdict
+        _orig_imw = acc.probe_im_write
         try:
             def _kv(key, default=None):        # 只清 config 键，其余照常
                 return {} if key == "config" else _orig_kv(key, default)
@@ -149,8 +169,18 @@ class LiveRoomRefGate(unittest.TestCase):
             if hasattr(_cfg.settings, "live_id"):
                 _cfg.settings.live_id = ""
 
+            # 账号「存在」：env_path_of 必须给出路径，否则矩阵提前返回空 caps
+            acc.env_path_of = lambda name, *a, **k: (
+                _stub_env if name == _FAKE else _orig_env_of(name, *a, **k))
+            # 四个探针全部打桩 ⇒ 零网络，且状态固定（不依赖任何真凭证）
+            acc.credentials_complete = lambda p, *a, **k: (False, "桩：不完整")
+            acc.live_session_state = lambda n, **k: (None, "桩：未知")
+            acc.uid_identity_verdict = lambda n, **k: (
+                None, "unknown", "桩", "桩：未取证")
+            acc.probe_im_write = lambda n, **k: (False, "桩：不可写")
+
             self.assertEqual(acc.live_room_ref(), "", "无配置时不得解析出房间号")
-            m = acc.capability_matrix("尚进工伤小助理", force=False, live_id="")
+            m = acc.capability_matrix(_FAKE, force=False, live_id="")
             lr = [c for c in m["caps"] if c["key"] == "live_read"][0]
             self.assertEqual(lr["state"], "unset", "无配置时必须判 unset（不得假 ok）")
             p = m["purposes"]["live_read"]
@@ -161,6 +191,11 @@ class LiveRoomRefGate(unittest.TestCase):
             _cfg.settings.live_url = _orig_url
             if hasattr(_cfg.settings, "live_id"):
                 _cfg.settings.live_id = _orig_lid
+            acc.env_path_of = _orig_env_of
+            acc.credentials_complete = _orig_creds
+            acc.live_session_state = _orig_sess
+            acc.uid_identity_verdict = _orig_uidv
+            acc.probe_im_write = _orig_imw
 
     def test_m8_api_check_passes_live_room_ref(self):
         """M8：check 端点**必须显式**传生效直播间（防「调用方漏传」复发）。"""

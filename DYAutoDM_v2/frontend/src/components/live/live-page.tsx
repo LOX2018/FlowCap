@@ -14,8 +14,6 @@ import { PageProps, ReusePayload, LiveRoom } from "../../api/client";
 
 import RoomManagePage from "./RoomManagePage";
 
-import HighValueKeywordsModal from "./HighValueKeywordsModal";
-
 import { Avatar, hue, KIND_NAME } from "../../components/ui";
 
 import {
@@ -61,7 +59,7 @@ export default function LivePage(props: PageProps) {
   const [room, setRoom] = useState("");
   // 提示弹窗：解析房间号未填地址 / 开启自动私信前核查账号
   const [alert, setAlert] = useState<{ title: string; msg: string } | null>(null);
-  // 强制停止二次确认（原用 window.confirm，2026-10-02 改主题化 ConfirmDialog）
+  // 停止（硬停止）二次确认（原用 window.confirm，2026-10-02 改主题化 ConfirmDialog）
   const [confirmStop, setConfirmStop] = useState(false);
   const [dmDraft, setDmDraft] = useState("");
   const [myLikes, setMyLikes] = useState(0);
@@ -84,8 +82,6 @@ export default function LivePage(props: PageProps) {
   const liveTags = (tagsQ.data?.tags || []) as { id: string; name: string }[];
   /** 「直播间管理」（房间层，ADR-003）：身份 + 策略引用 + 脱敏开关 */
   const [roomMgr, setRoomMgr] = useState(false);
-  /** 高价值关键词权重表弹窗（2026-09-29：入口从设置页迁入「直播间」区，与策略同场景） */
-  const [kwOpen, setKwOpen] = useState(false);
   // ── portal 宿主（2026-09-29 融合）────────────────────────────────────────
   // 把「AI 自动回复开关」**跨层级搬到**评论统计卡头，但不搬迁其 state / useQuery：
   // 仍由本组件持有，只改变渲染位置（避免把统计卡拆成 props 驱动的展示组件）。
@@ -597,16 +593,16 @@ export default function LivePage(props: PageProps) {
       <ConfirmDialog
         open={confirmStop}
         danger
-        title="强制停止监听"
-        message="强制停止会立即清空待发私信队列并断开监听，未发出的任务不再补发。确定继续？"
-        confirmText="强制停止"
+        title="停止"
+        message="停止会立即清空待发私信队列并断开监听，未发出的任务不再补发。确定继续？"
+        confirmText="停止"
         onCancel={() => setConfirmStop(false)}
         onConfirm={() => {
           setConfirmStop(false);
           api
             .stopEngine()
-            .then((r) => push(r.ok ? "已强制停止（队列已清空）" : "强制停止异常"))
-            .catch((e: unknown) => push("强制停止异常: " + errMsg(e)));
+            .then((r) => push(r.ok ? "已停止（队列已清空）" : "停止异常"))
+            .catch((e: unknown) => push("停止异常: " + errMsg(e)));
         }}
       />
       {/* 2026-10-02（用户定调「策略以标签为主」）：原 `RoomConfigPage`
@@ -670,8 +666,10 @@ export default function LivePage(props: PageProps) {
         }
       />
 
-      {/* 高价值关键词权重表弹窗（2026-09-29：入口从设置页迁来，见「直播间」区按钮） */}
-      <HighValueKeywordsModal open={kwOpen} onClose={() => setKwOpen(false)} />
+      {/* 高价值关键词权重表弹窗已下线（2026-10-04 用户指令「移除直播页入口」）：
+          唯一入口迁到 配置中心 → 采集策略 页（该表主用途是采集过滤，
+          `api/crawl.py` 消费它）。原 `live-high-value-keywords` 按钮与
+          `HighValueKeywordsModal` 一并移除，避免双入口（7592727 的 SSOT 收敛）。 */}
 
       {viewMode === "batch" ? (
               <LiveBatchPage push={push} ready={ready} api={api} />
@@ -770,15 +768,6 @@ export default function LivePage(props: PageProps) {
                   onClick={() => setRoomMgr(true)}
                 >
                   <Settings2 className="h-3.5 w-3.5" />直播间管理
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-od-id="live-high-value-keywords"
-                  title="编辑高价值关键词权重表"
-                  onClick={() => setKwOpen(true)}
-                >
-                  <Tags className="h-3.5 w-3.5" />高价值关键词
                 </Button>
               </>
             }
@@ -930,7 +919,7 @@ export default function LivePage(props: PageProps) {
                         .finally(() => setEngineReqBusy(false));
                     }}
                   >
-                    <Play className="h-3.5 w-3.5" />开始自动私信
+                    <Play className="h-3.5 w-3.5" />启动
                   </Button>
                   <Button
                     variant="ghost"
@@ -960,7 +949,7 @@ export default function LivePage(props: PageProps) {
                   >
                     <Play className="h-3.5 w-3.5" />继续
                   </Button>
-                  {/* 软停止（默认入口）：停止监听，**存量队列发完**才结束。
+                  {/* 软停止（默认入口，UI 标签「软停止」）：停止监听，**存量队列发完**才结束。
                       2026-10-01 起与硬停止并列 —— 此前只有这一个入口，用户报
                       「只有软着陆、没有硬着陆」。两者语义见 api/engine.py：
                       /stop-soft → adm.stop(hard=False)（队列发完）
@@ -970,29 +959,29 @@ export default function LivePage(props: PageProps) {
                     size="sm"
                     data-od-id="live-stop"
                     disabled={!engineBusy}
-                    title="停止监听：存量队列发完才结束（不丢已入队任务）"
+                    title="软停止：存量队列发完才结束（不丢已入队任务）"
                     onClick={() =>
                       api
                         .stopSoftEngine()
-                        .then((r) => push(r.ok ? "软停止中（存量队列发完即结束）" : "停止异常"))
+                        .then((r) => push(r.ok ? "软停止中（存量队列发完即结束）" : "软停止异常"))
                         .catch((e: unknown) => push("软停止异常: " + errMsg(e)))
                     }
                   >
-                    <Square className="h-3.5 w-3.5" />停止监听
+                    <Square className="h-3.5 w-3.5" />软停止
                   </Button>
                   <Button
                     variant="danger-outline"
                     size="sm"
                     data-od-id="live-stop-hard"
                     disabled={!engineBusy}
-                    title="强制停止：立即清空待发队列并断开监听（用于卡死/需立刻换房）"
+                    title="停止：立即清空待发队列并断开监听（用于卡死/需立刻换房）"
                     onClick={() => {
                       // 破坏性操作（丢队列）⇒ 必须二次确认，避免误点。
                       // 2026-10-02：原生 window.confirm → 主题化 ConfirmDialog。
                       setConfirmStop(true);
                     }}
                   >
-                    <AlertTriangle className="h-3.5 w-3.5" />强制停止
+                    <AlertTriangle className="h-3.5 w-3.5" />停止
                   </Button>
                 </>
               )}
@@ -1001,7 +990,7 @@ export default function LivePage(props: PageProps) {
               {ready
                 ? engineBusy
                   ? "引擎运行中" + (streaming ? "（真实监听）" : `（${ls?.statusMsg || "等待开播"}）`)
-                  : "引擎未运行 · 配置后点「开始自动私信」"
+                  : "引擎未运行 · 配置后点「启动」"
                 : "未连接后端 · 请先确保后端已启动"}
             </div>
           </Section>

@@ -77,8 +77,17 @@ def search_user(auth, query, num=20):
     return _safe("search_some_user", auth, query, num)
 
 
-def search_work(auth, query, num=16, sort_type="0", publish_time="0"):
-    return _safe("search_some_general_work", auth, query, num, sort_type, publish_time)
+def search_work(auth, query, num=16, sort_type="0", publish_time="0",
+                filter_duration=""):
+    """作品搜索。
+
+    ⚠️ 2026-10-02 补 `filter_duration`：底层 `search_some_general_work` 接该参数
+    （`api/crawl.py:crawl_search` 的策略解析会给出 `filter_duration`），而本封装层
+    原先只转发前 6 个 ⇒ 直连改走封装层后会 `TypeError`。
+    判据：封装层签名必须**覆盖**底层实现的全参数，否则「走封装层」本身就坏。
+    """
+    return _safe("search_some_general_work", auth, query, num, sort_type,
+                 publish_time, filter_duration)
 
 
 def search_live(auth, query, num=20):

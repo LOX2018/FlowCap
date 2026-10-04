@@ -206,19 +206,34 @@ async def get_scoped(tag_id: str):
 
 
 class ResetBody(BaseModel):
+    """重置请求。
+
+    2026-10-04 扩展（拆子卡片的作用域修正）：
+      · `sections`  必填，要重置的 section 列表（原语义）。
+      · `scope`     可选，标签 id；**不传 = 全局**（与保存路径对称）。
+                    此前前端点「恢复默认」未传 scope ⇒ 选中标签时误重置全局。
+      · `fields`    可选，字段子集；**不传 = 清整个 section**（原语义）。
+                    子卡片必须传它，否则会把同分区的主卡字段一起清掉。
+    """
+
     sections: list[str] = []
+    scope: str = ""
+    fields: list[str] | None = None
 
 
 @router.post("/reset")
 async def reset_config(body: ResetBody) -> dict:
     done = []
+    sc = body.scope.strip() or None
     try:
         for sec in body.sections or []:
             if sec in ac.SECTIONS:
-                ac.reset_section(sec)
+                ac.reset_section(sec, scope=sc, fields=body.fields or None)
                 done.append(sec)
     except RuntimeError as e:
         # 2026-09-17：同 save_config，落盘失败显式报错。
         logger.error(f"[settings] 重置失败: {e}")
         raise HTTPException(500, f"配置重置失败：{e}") from e
-    return {"ok": True, "reset_sections": done, "config": ac.get_all()}
+    # 与 save 一致：带 scope 时回该 scope 的全量，否则回全局
+    return {"ok": True, "reset_sections": done,
+            "config": ac.get_all() if not sc else ac._load(ac.scope_key(sc))}

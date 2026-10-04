@@ -459,7 +459,9 @@ def _tag_to_strategy_cfg(tag_id: str) -> dict:
 
     g = ac.get
     # 列表型字段用换行分隔字符串承载 → 转回 [{text, enabled}]
-    dm_lines = [s.strip() for s in str(g("live", "dm_pool", "", scope=tag_id) or "").splitlines() if s.strip()]
+    # ⚠️ 2026-10-04：`dm_pool` 已迁到 send 分区（私信文案归属「私信发送」），
+    #    故此处按 send 读；danmaku_pool 属监听侧，仍在 live。
+    dm_lines = [s.strip() for s in str(g("send", "dm_pool", "", scope=tag_id) or "").splitlines() if s.strip()]
     dk_lines = [s.strip() for s in str(g("live", "danmaku_pool", "", scope=tag_id) or "").splitlines() if s.strip()]
     return {
         "max_target": g("live", "max_target", None, scope=tag_id),

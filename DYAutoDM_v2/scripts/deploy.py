@@ -73,6 +73,230 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _deploy_dev_ps1(exe_name: str, app_root: Path) -> str:
+    """生成**部署版 dev.ps1**（2026-10-02 用户要求：dev.ps1 在部署路径常驻）。
+
+    ## 为什么需要「部署版」而不是直接复制源码版
+    源码版 `dev.ps1` 的核心动作是 `cd src-tauri && npx tauri dev` —— 依赖
+    **源码树**（`frontend/` + `src-tauri/` + `node_modules`）。部署目录只有
+    已编译 exe，**没有源码树** ⇒ 直接复制过去必然跑不起来。
+
+    本函数生成的脚本保留源码版的**环境注入**与**进程清理纪律**，
+    只把「启动方式」换成拉起已编译 exe。
+
+    ## 从源码版继承的两条纪律（勿删）
+    1. **环境注入**：`DY_APP_ROOT` + 会员态（`DY_MEMBER`/`DY_MEMBER_KEY`）
+       —— 分支隔离铁律：源码/部署目录不得产生 profile/db。
+    2. **进程清理（Stop-DyAll）**：`/quit` 优雅退出守护 → 按名强清
+       （3 sidecar + 主程序 + 本项目 camoufox）→ 端口复核。
+       理由见源码版 dev.ps1 §进程清理：Rust 侧 `taskkill /F /T` 跳过
+       Python 的 atexit/lifespan ⇒ 守护成孤儿占端口 ⇒ 二次启动卡死。
+
+    ## 参数
+    - ``exe_name``：主程序 exe 文件名（如 `川流_0.46.13-debug.exe`）
+    - ``app_root``：部署根（写进脚本作为默认 `-AppRoot`）
+
+    返回脚本全文（CRLF 由调用方 ``newline=""`` 控制；此处统一用 ``\n``，
+    PowerShell 两种行尾都能读）。
+    """
+    # 用 .format 而非 f-string 拼接：脚本文本里含大量 PowerShell 的 {}，
+    # f-string 需要转义，可读性差且易错。
+    tpl = r'''<#
+.SYNOPSIS
+    川流 测试副本启动器（**部署版 dev.ps1**，由 scripts/deploy.py 生成）
+.DESCRIPTION
+    与源码树 dev.ps1 的分工：
+      源码 dev.ps1  —— 跑 `npx tauri dev`（需源码树 frontend/ src-tauri/ node_modules）
+      本脚本        —— **部署版**：部署目录无源码树，故直接拉起**已编译 exe**。
+
+    保留源码版的**环境注入**与**进程清理纪律**，只把「启动方式」换成 exe：
+      1) 注入 DY_APP_ROOT（分支隔离铁律：不在别处产生 profile/db）
+      2) 注入会员态 DY_MEMBER / DY_MEMBER_KEY（.env.enc 解密需要）
+      3) 停止时按名清理残留（/quit 优雅退出 → 按名强清 → 端口复核），
+         防「关窗后守护成孤儿占端口 → 二次启动卡死」
+
+    ⚠️ 本脚本由 deploy.py 在**每次部署时重新生成** —— 手改会被下次部署覆盖。
+       要改行为请改 scripts/deploy.py::_deploy_dev_ps1()。
+.EXAMPLE
+    .\dev.ps1                  # 启动（本目录环境）
+    .\dev.ps1 -EnvOnly         # 只打印将注入的环境，不启动
+    .\dev.ps1 -Stop            # 停止本项目全部进程
+#>
+[CmdletBinding()]
+param(
+    [string]$AppRoot = "__APP_ROOT__",
+    [switch]$EnvOnly,
+    [switch]$Stop
+)
+
+$ErrorActionPreference = "Stop"
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+try { chcp 65001 > $null } catch {}
+
+# 脚本所在目录 = 部署根（部署版不再从 -AppRoot 推导，因为脚本就住在部署根）
+$ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
+$EXE  = Join-Path $ROOT "__EXE_NAME__"
+$BACKEND_PORT  = 8000
+$FRONTEND_PORT = 1420
+
+function Write-OK($msg)   { Write-Host "  [OK] $msg" -ForegroundColor Green }
+function Write-Warn2($msg){ Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
+function Write-Err2($msg) { Write-Host "  [ERROR] $msg" -ForegroundColor Red }
+
+# ---------------------------------------------------------------------------
+# 进程清理（-Stop 与启动结束共用）—— 纪律继承自源码版 dev.ps1，勿删
+#
+# 为什么必须按名兜底：Rust 侧 on_window_event 用 taskkill /F /T 强杀后端
+#   → Python atexit/lifespan 被跳过 → 后端自 spawn 的 BCC/recv 成孤儿，
+#   占住 8000/11231/账号端口 → 二次启动卡死。进程名是唯一覆盖全部形态的判据。
+# ---------------------------------------------------------------------------
+function Stop-DyAll {
+    param([switch]$Quiet)
+
+    # ① 守护优先 /quit 优雅退出（铁律：绝不强杀浏览器）
+    $graceful = 0
+    foreach ($nm in @('dyautodm-browser-daemon', 'dyautodm-recv-daemon')) {
+        foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                         Where-Object { $_.Name -like "$nm*" })) {
+            $port = $null
+            if ($p.CommandLine -match "--port\s+(\d+)") { $port = $Matches[1] }
+            if ($port) {
+                try {
+                    Invoke-WebRequest "http://127.0.0.1:$port/quit" -Method POST `
+                        -UseBasicParsing -TimeoutSec 5 | Out-Null
+                    $graceful++
+                } catch { }
+            }
+        }
+    }
+    if (-not $Quiet) {
+        if ($graceful -gt 0) { Write-OK "$graceful 个守护已 /quit 优雅退出" }
+        else { Write-Host "   （无守护需优雅退出）" -ForegroundColor DarkGray }
+    }
+    Start-Sleep -Seconds 2
+
+    # ② 残留强清：3 份 sidecar + 主程序 + 本项目 camoufox（按数据根精准匹配，不误杀用户浏览器）
+    $killed = 0
+    $targets = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like 'dyautodm-backend*' -or
+        $_.Name -like 'dyautodm-browser-daemon*' -or
+        $_.Name -like 'dyautodm-recv-daemon*' -or
+        $_.Name -like '川流*' -or
+        ($_.Name -like 'camoufox*' -and $_.CommandLine -like "*$ROOT*")
+    })
+    foreach ($p in $targets) {
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        $killed++
+    }
+    Start-Sleep -Seconds 1
+
+    # ③ 复核端口必须释放
+    $busy = @()
+    foreach ($pt in @($BACKEND_PORT, $FRONTEND_PORT)) {
+        if (Test-NetConnection -ComputerName 127.0.0.1 -Port $pt -InformationLevel Quiet `
+                -WarningAction SilentlyContinue) { $busy += $pt }
+    }
+    if (-not $Quiet) {
+        Write-OK "已清理 $killed 个残留进程"
+        if ($busy.Count -eq 0) { Write-OK "端口已释放（$BACKEND_PORT / $FRONTEND_PORT 均空闲）" }
+        else { Write-Warn2 "端口仍被占用: $($busy -join ', ')" }
+    }
+    return ($busy.Count -eq 0)
+}
+
+# ---------------------------------------------------------------------------
+# 环境注入（分支隔离铁律）
+# ---------------------------------------------------------------------------
+$env:DY_APP_ROOT = $ROOT
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONLEGACYWINDOWSSTDIO = "0"
+
+$mem = $null
+$sf = Join-Path $ROOT "members\.session.json"
+if (Test-Path $sf) {
+    try {
+        $j = Get-Content $sf -Raw -Encoding UTF8 | ConvertFrom-Json
+        $mem = @{ id = [string]$j.member_id; key = [string]$j.master_key }
+    } catch { Write-Warn2 "members\.session.json 解析失败: $($_.Exception.Message)" }
+}
+if ($mem -and $mem.id) {
+    $env:DY_MEMBER = $mem.id
+    if ($mem.key) { $env:DY_MEMBER_KEY = $mem.key }
+}
+
+if (-not (Test-Path $EXE)) {
+    Write-Err2 "主程序 exe 不存在: $EXE"
+    Write-Host "   部署目录可能未完成部署，请先跑 scripts/deploy.py。" -ForegroundColor DarkGray
+    exit 1
+}
+
+if ($Stop) {
+    Write-Host "`n=== 停止本项目进程 ===`n" -ForegroundColor Cyan
+    [void](Stop-DyAll)
+    Write-Host ""
+    exit 0
+}
+
+# ---------------------------------------------------------------------------
+# 启动前自检
+# ---------------------------------------------------------------------------
+Write-Host "`n=== 川流 测试副本启动（部署版 dev.ps1）===" -ForegroundColor Cyan
+Write-Host "  部署根   : $ROOT" -ForegroundColor White
+Write-Host "  主程序   : $(Split-Path -Leaf $EXE)" -ForegroundColor White
+Write-Host "  会员态   : $(if ($mem -and $mem.id) { $mem.id } else { '(未读到 members\.session.json)' })" -ForegroundColor White
+Write-Host ""
+
+$conflicts = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like '川流*' -or $_.Name -like 'dyautodm-*' })
+if ($conflicts) {
+    Write-Warn2 "发现 $(@($conflicts).Count) 个疑似在跑的进程，可能是上次未收干净："
+    foreach ($c in @($conflicts)) { Write-Host "        $($c.Name) pid=$($c.ProcessId)" -ForegroundColor DarkGray }
+    Write-Host "        （如确认要重开，先跑： .\dev.ps1 -Stop ）" -ForegroundColor DarkGray
+} else {
+    Write-OK "无残留实例"
+}
+
+$pB = Test-NetConnection -ComputerName 127.0.0.1 -Port $BACKEND_PORT -InformationLevel Quiet -WarningAction SilentlyContinue
+if ($pB) { Write-Warn2 "后端端口 $BACKEND_PORT 已被占用（sidecar 会起不来）" } else { Write-OK "后端端口 $BACKEND_PORT 空闲" }
+
+Write-Host ""
+Write-Host "  注入环境: DY_APP_ROOT=$($env:DY_APP_ROOT)" -ForegroundColor DarkGray
+if ($env:DY_MEMBER) { Write-Host "            DY_MEMBER=$($env:DY_MEMBER)（DY_MEMBER_KEY 已设，不打印）" -ForegroundColor DarkGray }
+Write-Host "  停止方式: Ctrl+C（或另开窗口 .\dev.ps1 -Stop）" -ForegroundColor DarkGray
+Write-Host ""
+
+if ($EnvOnly) {
+    Write-Host "（-EnvOnly：仅自检，未启动）`n" -ForegroundColor Cyan
+    exit 0
+}
+
+# ---------------------------------------------------------------------------
+# 启动主程序（已编译 exe）
+#
+# 为什么不用 Start-Process：本脚本由用户在窗口里跑，主程序 stdout/日志直接
+#   可见（与源码版 dev.ps1 前台跑 tauri dev 的体验一致）；Start-Process 会
+#   另开窗口、本窗口立即返回，用户看不到日志。
+# ---------------------------------------------------------------------------
+try {
+    & $EXE
+} finally {
+    Write-Host "`n=== 主程序已退出，正在清理残留进程（防二次启动卡死）===" -ForegroundColor Cyan
+    $clean = Stop-DyAll
+    if ($clean) {
+        Write-Host "`n  可以再次运行 .\dev.ps1 启动（端口已释放）。`n" -ForegroundColor Green
+    } else {
+        Write-Warn2 "仍有端口被占用，二次启动可能卡死；请检查上方告警。"
+        Write-Host "        （手动重试： .\dev.ps1 -Stop ）" -ForegroundColor DarkGray
+    }
+}
+'''
+    return (tpl
+            .replace("__APP_ROOT__", str(app_root).replace("\\", "\\\\"))
+            .replace("__EXE_NAME__", exe_name))
+
+
 def _md5(p: Path) -> str:
     h = hashlib.md5()
     with open(p, "rb") as f:
@@ -413,6 +637,21 @@ def main() -> int:
                 newline="",  # 禁止文本模式换行转换（否则 CRLF 会多出一个 CR，cmd 可能误解析）
             )
             log("  ✅ 启动器 → %s（双击即用 · 数据根已显式注入）" % _launcher.name)
+            # ★ 2026-10-02 用户要求：「dev.ps1 在源码路径和部署路径都常驻」。
+            #   部署目录**无源码树**（无 frontend/src-tauri/node_modules）⇒ 源码版
+            #   dev.ps1（`cd src-tauri && npx tauri dev`）在此**跑不起来**。
+            #   故生成**部署版 dev.ps1**：同样的环境注入 + 同样的进程清理纪律
+            #   （Stop-DyAll：/quit 优雅退出 → 按名强清 → 端口复核），
+            #   但启动的是**已编译 exe** 而非 tauri dev。
+            #   由本脚本生成 ⇒ 每次部署自动常驻，不靠手工复制（防漂移）。
+            _devps1 = app_root / "dev.ps1"
+            # 🔴 必须带 UTF-8 BOM：Windows PowerShell 5.1 **不认无 BOM 的 UTF-8**，
+            #   会按系统 ANSI（本机 GBK）解析 ⇒ 中文全部乱码 ⇒ 字符串终止符
+            #   解析失败（实测报 "TerminatorExpectedAtEndOfString"）。
+            #   源码版 dev.ps1 就是带 BOM 的（efbbbf），此处对齐（实测踩到）。
+            _devps1.write_bytes(
+                b"\xef\xbb\xbf" + _deploy_dev_ps1(_exe_name, app_root).encode("utf-8"))
+            log("  ✅ 开发脚本 → %s（部署版 · 启动已编译 exe + 进程清理）" % _devps1.name)
         except Exception as e:  # noqa: BLE001
             log("  ⚠️ 写数据根声明/启动器失败（不影响主部署，但双击 exe 需自备 DY_APP_ROOT）: %s"
                 % str(e)[:80])

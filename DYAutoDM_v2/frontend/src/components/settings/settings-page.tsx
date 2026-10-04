@@ -35,6 +35,7 @@ import TagSection from "./TagSection";
 import CrawlPolicySection from "./CrawlPolicySection";
 import AiEngineSection from "./AiEngineSection";
 import NicknameFallbackSection from "./NicknameFallbackSection";
+import HighValueKeywordsSection from "./HighValueKeywordsSection";
 import McpSection from "./McpSection";
 // ADR-018 F6：日夜主题切换的唯一可写入口（主题引擎本身早已存在，缺的是入口）
 import AppearanceSection from "./AppearanceSection";
@@ -57,9 +58,9 @@ const TABS: {
 }[] = [
   { key: "general", label: "通用配置", hint: "前端行为（非业务）", icon: <SettingsIcon className="h-3.5 w-3.5" /> },
   { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", icon: <Send className="h-3.5 w-3.5" /> },
-  { key: "live", label: "直播监听", hint: "监听节奏与轮询", icon: <Radio className="h-3.5 w-3.5" /> },
+  { key: "live", label: "监听策略", hint: "通用监听策略（不绑定具体直播间）", icon: <Radio className="h-3.5 w-3.5" /> },
   { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", icon: <Database className="h-3.5 w-3.5" /> },
-  { key: "dm", label: "私信 / 昵称兜底", hint: "昵称兜底（默认关，主动查询有风控成本）", icon: <MessageSquare className="h-3.5 w-3.5" /> },
+  { key: "dm", label: "私信列表", hint: "昵称兜底（默认关，主动查询有风控成本）", icon: <MessageSquare className="h-3.5 w-3.5" /> },
   { key: "ai", label: "AI 回复引擎", hint: "模型链路 + 回复内容 / 护栏 / 黑名单", icon: <Bot className="h-3.5 w-3.5" /> },
   { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", icon: <Users className="h-3.5 w-3.5" /> },
   { key: "tag", label: "配置标签", hint: "发送策略：怎么发", icon: <Tags className="h-3.5 w-3.5" /> },
@@ -134,17 +135,39 @@ export default function SettingsPage(props: PageProps) {
               <UnifiedConfigSection {...props} onlySections={["general"]} />
             )}
             {section === "send" && (
-              <UnifiedConfigSection {...props} onlySections={["send"]} />
+              /* 私信词库（2026-10-04 用户指令）从 live 分区迁回本分区，
+                 并用 fieldGroups 拆成**单独子卡片**：主卡放风控频率/闸门/额度，
+                 子卡只放词库。同一实例渲染 ⇒ 共享「保存到 全局/标签」与草稿，
+                 不会出现两张卡各存各的 scope。 */
+              <UnifiedConfigSection
+                {...props}
+                onlySections={["send"]}
+                fieldGroups={[{ title: "私信词库", fields: ["dm_pool"] }]}
+              />
             )}
             {section === "live" && (
               <>
-                <UnifiedConfigSection {...props} onlySections={["live"]} />
+                {/* 主卡（监听节奏/轮询等）+ 弹幕文案库子卡 —— **同一实例**渲染，
+                    共享「保存到 全局/标签」与草稿。
+                    ⚠️ 2026-10-04 修复：此前误写成「两个实例叠加」（一个渲染整分区、
+                    另一个再渲染 danmaku_pool 子卡）⇒ 弹幕文案库在页面上**出现两次**，
+                    且两张卡各有独立的 scope 选择，可把同一字段写进不同作用域。 */}
+                <UnifiedConfigSection
+                  {...props}
+                  onlySections={["live"]}
+                  fieldGroups={[{ title: "弹幕文案库", fields: ["danmaku_pool"] }]}
+                />
                 {/* ADR-002 §5.4 策略中心：与「直播监听」同 tab（后端 schema 驱动，
                     仅需在此白名单登记分区名，无手写表单）。 */}
                 <UnifiedConfigSection {...props} onlySections={["live_orchestration"]} />
-                {/* 高价值关键词权重表（2026-09-29）：唯一编辑入口已迁到「直播监听」页
-                    （`live-high-value-keywords` 按钮 → `HighValueKeywordsModal`）。
-                    此处**不再挂载**，避免同一张表两处入口（SSOT / 用户要求）。 */}
+                {/* 高价值关键词权重表：**唯一编辑入口**（2026-10-04 用户指令
+                    「移除直播页入口」后收敛到此，与 7592727 的 SSOT 方向一致）。
+                    该表由 `api/crawl.py` 消费做**采集过滤**，`config_tag.py` 称其为
+                    「策略的附属」⇒ 归属采集策略页。
+                    组件自带「保存到 全局/标签」切换栏（= 选择绑定的策略标签）。
+                    ⚠️ 配套参数 `high_value_score_threshold` / `high_value_window_seconds`
+                    在 **send** 分区（「私信发送」tab）—— 调整词表时若需同步阈值，
+                    请到该 tab。 */}
               </>
             )}
             {section === "capture" && (
@@ -168,7 +191,19 @@ export default function SettingsPage(props: PageProps) {
             )}
             {section === "agent" && <AgentSection {...props} />}
             {section === "tag" && <TagSection {...props} />}
-            {section === "crawlpolicy" && <CrawlPolicySection {...props} />}
+            {section === "crawlpolicy" && (
+              <>
+                <CrawlPolicySection {...props} />
+                {/* 高价值关键词权重表（2026-10-04 用户要求）：从直播页迁入采集策略页。
+                    该表由 `api/crawl.py` 消费（`score_text(..., scope)` 做采集过滤），
+                    且 `config_tag.py` 称其为「策略的附属」⇒ 归属采集策略更贴切。
+                    组件自带「保存到 全局/标签」切换栏 —— 即「选择绑定的策略标签」，
+                    故无需另加下拉（避免第二份真值）。
+                    ⚠️ 直播页的入口**保留**：该表同时服务直播发送侧（send 分区的
+                    `high_value_score_threshold`），两处入口分属不同业务域，非重复。 */}
+                <HighValueKeywordsSection />
+              </>
+            )}
             {section === "notify" && <NotifySection {...props} />}
             {section === "mcp" && <McpSection push={props.push} />}
             {section === "system" && (

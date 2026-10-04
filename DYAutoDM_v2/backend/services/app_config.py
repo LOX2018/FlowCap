@@ -241,6 +241,72 @@ def get_all() -> dict:
     return {s: get_section(s) for s in SECTIONS}
 
 
+def migrate_dm_pool_live_to_send() -> int:
+    """一次性：把 `dm_pool` 从 live 分区搬到 send 分区（全局 + 全部标签 scope），
+    **并删除 live 里的旧键**。
+
+    2026-10-04（用户指令）：私信词库归属「私信发送」，此前被 f08288a 随房间级
+    策略挪进 live 分区，属错位。schema 已把它改回 send；本函数负责**存量数据**
+    搬迁，否则用户已配的词库会静默消失。
+
+    ## 为什么必须做（不是「顺手」）
+    `app_config.get()` 在字段不属于该 section 时**直接返回默认值**
+    （见本文件 `_field_meta is None → return default`）。schema 一旦把 dm_pool
+    从 live 移除，`get("live","dm_pool")` 立即读不到；而新读点
+    `get("send","dm_pool")` 读的是 send 分区 —— 不搬数据 = 词库凭空消失。
+
+    ## 幂等与安全
+      · send 分区**已有非空值** ⇒ 不覆盖（用户已在新位置配过）；
+      · live 无旧键 ⇒ 跳过（不产生任何写入）；
+      · **搬值与删旧键在同一次 `_save` 内完成** —— 避免「先删后写」或
+        「先写后删」之间崩溃造成的数据丢失窗口；
+      · 用户 2026-10-04 明确要求清除旧键 ⇒ 迁移后 `live.dm_pool` 不再残留，
+        消除同值双存储（旧键无人消费，但留着是误导源）。
+    返回实际发生变更的 scope 数（0 = 无事可做）。
+    """
+    changed = 0
+    with _lock:
+        # 待处理的 scope：全局(None) + 所有现存 scope
+        scopes: list[str | None] = [None]
+        try:
+            conn = database.get_db()
+            for (k,) in conn.execute(
+                "SELECT key FROM kv_store WHERE key LIKE ?", (f"{_KV_KEY}::%",)
+            ).fetchall():
+                scopes.append(str(k).split("::", 1)[1])
+        except Exception as e:  # noqa: BLE001 —— 读不到 scope 列表就只处理全局
+            logger.warning(f"[CFG-014] [config] dm_pool 迁移：枚举 scope 失败，"
+                           f"仅处理全局: {type(e).__name__}: {e}")
+        for sc in scopes:
+            try:
+                data = _load(scope_key(sc))
+                live_sec = dict(data.get("live") or {})
+                old = live_sec.get("dm_pool")
+                has_old = isinstance(old, str) and bool(old.strip())
+                if not has_old:
+                    continue  # 无旧键 ⇒ 本次无变更（不写盘）
+
+                # ① 搬值：仅当 send 侧为空时写入（绝不覆盖用户新值）
+                cur_send = dict(data.get("send") or {})
+                if not str(cur_send.get("dm_pool") or "").strip():
+                    cur_send["dm_pool"] = old
+                    data["send"] = cur_send
+                # ② 删旧键：用户明确要求清除
+                live_sec.pop("dm_pool", None)
+                if live_sec:
+                    data["live"] = live_sec
+                else:
+                    data.pop("live", None)
+
+                # ③ 一次落盘（搬值 + 删键 原子完成）
+                if _save(data, scope_key(sc)):
+                    changed += 1
+            except Exception as e:  # noqa: BLE001 —— 单个 scope 失败不阻断其余
+                logger.warning(f"[CFG-015] [config] dm_pool 迁移失败"
+                               f"(scope={sc!r}): {type(e).__name__}: {e}")
+    return changed
+
+
 def save_section(section: str, values: dict, scope: str | None = None) -> dict:
     """保存整节（只认 schema 内字段，越界/非法值直接丢弃）。
 
@@ -271,11 +337,33 @@ def save_section(section: str, values: dict, scope: str | None = None) -> dict:
     return get_section(section, scope=scope)
 
 
-def reset_section(section: str, scope: str | None = None) -> dict:
-    """清空某节回默认值。scope 为标签 id 时只清该标签的覆盖值。"""
+def reset_section(section: str, scope: str | None = None,
+                  fields: list[str] | None = None) -> dict:
+    """清空某节回默认值。scope 为标签 id 时只清该标签的覆盖值。
+
+    2026-10-04 新增 `fields`（**拆子卡片引入的作用域修正**）：
+      · `fields=None` ⇒ 清整个 section（原语义，零回归）；
+      · `fields=[...]` ⇒ **只清这些字段**（该 section 其余字段原样保留）。
+
+    ## 为什么必须有这个参数（真缺陷，非防御性设计）
+    配置中心的卡片原先是「一张卡 = 一个 section」，故「恢复默认」= 清整个
+    section 是对的。本次把 `dm_pool`/`danmaku_pool` 拆成**子卡片**后，子卡与
+    主卡共享同一个 section ⇒ 在子卡点「恢复默认」会**连带清空同分区的主卡字段**
+    （实测：在「私信词库」子卡点一下，会清掉整个 send 分区的风控/闸门/额度）。
+    作用域必须由调用方显式给出，不能由「卡」隐式等于「section」。
+    """
     with _lock:
         data = _load(scope_key(scope))
-        data.pop(section, None)
+        if fields:
+            cur = dict(data.get(section) or {})
+            for f in fields:
+                cur.pop(f, None)
+            if cur:
+                data[section] = cur
+            else:
+                data.pop(section, None)
+        else:
+            data.pop(section, None)
         # 2026-09-17 修补：同 save_section，落盘失败必须显式报错。
         if not _save(data, scope_key(scope)):
             raise RuntimeError(

@@ -213,8 +213,9 @@ def _prealign_on_startup() -> None:
     2. 为每个账号在会员空间缺席时建 junction（复用 member bootstrap 逻辑，
        幂等，已存在直接跳过）；
     3. ensure_daemons_for 拉起全部守护（skip_cooldown=True 豁免 BCC 冷静期，
-       预对齐是有意拉起，非快闪误触发）。
+       wait=False：只 spawn 不阻塞等 45s 端口就绪）。
     全程不碰会员 session；登录后的 _post_login_init 幂等重入，无冲突。
+    BCC 真正就绪由消费侧 browser_gate/ensure_bcc(wait_ready=True) 按需兜底。
     """
     import json as _json
     import sqlite3 as _sqlite3
@@ -244,14 +245,16 @@ def _prealign_on_startup() -> None:
         #    此时 _accounts_dir() 已是全局目录，物理同源，无需 junction）
         from auto_dm import accounts as _acct
         names = list(accounts.keys())
-        # 3) 拉起全部守护（BCC 豁免冷静期）
+        # 3) 拉起全部守护（BCC 豁免冷静期；🔴 2026-10-03 起 wait=False：
+        #    逐账号「spawn + 等 45s 就绪」原本是串行 N×45s 阻塞；现只 spawn，
+        #    BCC 真正就绪由消费侧 browser_gate/ensure_bcc(wait_ready=True) 兜底）
         from auto_dm.daemon_launcher import ensure_daemons_for
         ok = 0
         for n in names:
-            r = ensure_daemons_for(n, wait=True, skip_cooldown=True)
-            if r.get("recv") and r.get("browser"):
+            r = ensure_daemons_for(n, wait=False, skip_cooldown=True)
+            if r.get("recv"):
                 ok += 1
-        logger.info(f"[prealign] 启动预对齐完成: {ok}/{len(names)} 个账号守护就绪")
+        logger.info(f"[prealign] 启动预对齐 spawn 完成: {ok}/{len(names)} 个账号 recv 已拉起（BCC 就绪交消费侧兜底）")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[SYS-022] " + f"[prealign] 启动预对齐失败（登录后会重试）: {e}")
 
@@ -343,10 +346,14 @@ def _auto_start_daemons() -> None:
                         logger.info(f"[startup] browser_daemon 已在运行 (port={bport})，跳过")
                     else:
                         # P3-B: 直_spawn_sidecar -> ensure_daemons_for（与 _prealign 同源）
+                        # 🔴 2026-10-03：wait=False —— 只 spawn 不阻塞等 45s 端口就绪。
+                        # 旧实现（wait=True）在后台线程里仍要等最慢一个 ~45s 才返回，
+                        # 虽不阻塞 lifespan，但 spawn 本身（毫秒级）完成后线程即应让出，
+                        # BCC 真正就绪交由消费侧 browser_gate/ensure_bcc(wait_ready=True) 按需兜底。
                         from auto_dm.daemon_launcher import ensure_daemons_for as _ensure_bcc_boot
-                        _bcc_r = _ensure_bcc_boot(names[0], wait=True, skip_cooldown=True)
+                        _bcc_r = _ensure_bcc_boot(names[0], wait=False, skip_cooldown=True)
                         if _bcc_r.get("browser", False):
-                            logger.info(f"[startup] BCC 已随启动拉起 via ensure_daemons_for (port={bport})")
+                            logger.info(f"[startup] BCC 已随启动 spawn（未等就绪，port={bport}），就绪由消费侧兜底")
                         else:
                             logger.warning(f"[startup] BCC 随启动拉起失败（{_bcc_r.get('msg','')}），"
                                 f"用户点按钮时会自动救起")
@@ -465,6 +472,18 @@ async def lifespan(app: FastAPI):
         fix_stuck_tasks()
     except Exception as e:
         logger.warning(f"[SYS-016] " + f"[history] 启动收尾悬空任务失败（不影响使用）: {e}")
+    # 2026-10-04（用户指令）：`dm_pool` 由 live 分区迁回 send 分区的一次性数据迁移。
+    # 旧值存在 `app_config` 的 live 分区（全局与各标签 scope 都可能有一份），
+    # 迁移后 send 分区才有值 —— 否则用户已配的私信词库会静默消失。
+    # 幂等：send 已有非空值 / 无旧值 均直接跳过。
+    try:
+        from services import app_config as _ac
+        _moved = _ac.migrate_dm_pool_live_to_send()
+        if _moved:
+            logger.info(f"[CFG-012] [config] 私信词库已从 live 分区迁到 send 分区: "
+                        f"{_moved} 处")
+    except Exception as e:
+        logger.warning(f"[CFG-013] " + f"[config] dm_pool 分区迁移失败（不影响使用）: {e}")
     # 引擎主控（v0.44.39 起改为**按账号编排**，ADR-002 §5.2）：
     #   app.state.engines = account → AutoDM 表（惰性创建；单账号/匿名仍是一个实例）
     #   app.state.adm     = 「最近启动的那个实例」的兼容别名 —— 既有单值读取方
@@ -522,7 +541,13 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning(f"[SYS-023] " + f"[startup] 会话恢复失败（忽略）: {_e}")
     # 启动后为所有账号拉起 daemon（browser + recv）并触发昵称关联
-    # 同步执行，确保 backend 启动完成时 daemon 已就绪
+    # 🔴 2026-10-03：改**后台线程**执行，不再阻塞 lifespan。
+    # 旧实现（同步 `_auto_start_daemons()`）把 BCC 45s 就绪等待 + recv 逐账号
+    # 30s 端口等待压在 lifespan 上：BCC 没起来 → HTTP 不 listen → 前端
+    # ensureBackendReady 30s 超时 → 登录框被 BootSplash 一直盖住。
+    # 「登录框先出现，守护后台就绪」是 v0.43.8 懒加载契约的本意，
+    # BCC 就绪由消费侧 browser_gate/ensure_bcc(wait_ready=True) 按需兜底，
+    # 不依赖 lifespan 同步等待。
     # 会员体系：未登录时按【启动预对齐】处理（2026-09-08 用户明确要求）——
     # 在全局空间引导账号索引/junction 并拉起全部守护，让 BootSplash 阶段
     # 就完成前后端对齐；登录框出现后用户登录即用，不再有任何等待。
@@ -532,7 +557,9 @@ async def lifespan(app: FastAPI):
             threading.Thread(target=_prealign_on_startup, daemon=True).start()
             logger.info("[startup] 未登录：启动预对齐已开始（后台引导账号+拉起守护）")
         else:
-            _auto_start_daemons()
+            # 后台线程：spawn 立即、端口等待异步，lifespan 秒级完成，HTTP 尽快 listen
+            threading.Thread(target=_auto_start_daemons, daemon=True).start()
+            logger.info("[startup] 已登录：守护拉起转入后台线程（不阻塞 HTTP 就绪）")
     except Exception as _e:
         logger.warning(f"[SYS-019] " + f"[startup] 会员态判断失败，按未登录处理: {_e}")
     # WP 通道私信接收循环（抖音网页版 chat 页被动截获）
@@ -887,6 +914,13 @@ app.include_router(logs_api.router, prefix="/api/logs", tags=["logs"])
 app.include_router(ai_api.router, prefix="/api/ai", tags=["ai"])
 # 数据采集（关键词搜索视频/用户 + 评论采集 + 评论转私信截流）
 app.include_router(crawl_api.router, prefix="/api/crawl", tags=["crawl"])
+# ★ 2026-10-03：采集任务队列（任务中心接线）—— 悬浮窗据此显示「正在运行的采集任务」。
+#   ⚠️ prefix 必须是 `/api/crawl`（**不是** `/api/crawl/tasks`）：本模块 router 内
+#   已声明 `@router.get("/tasks")` 等路径，若 prefix 再带 `/tasks`，
+#   完整路径会变成 `/api/crawl/tasks/tasks`（tasks 出现两次，实测已发生）。
+#   ⇒ 前缀只到域级 `/api/crawl`，子路径由各 router 自身声明。
+from api import crawl_task_queue as crawl_task_queue_api
+app.include_router(crawl_task_queue_api.router, prefix="/api/crawl", tags=["crawl"])
 # ★ 2026-09-27（ADR-018 F1-D3）：采集策略层（参数可复用载体，零身份字段）。
 #   挂在 /api/crawl/policies 子路径下，与 crawl 本体同属「采集」域。
 from api import crawl_policy as crawl_policy_api

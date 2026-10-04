@@ -152,9 +152,9 @@ SECTIONS: dict[str, dict[str, Any]] = {
         },
     },
 
-    # ===== 私信 / 昵称兜底 =====
+    # ===== 私信列表（原「私信 / 昵称兜底」；2026-10-04 用户指令改名）=====
     "dm": {
-        "label": "私信 / 昵称兜底",
+        "label": "私信列表",
         "fields": {
             "nickname_fallback_enabled": {
                 "label": "启用昵称兜底查询（默认关闭）",
@@ -205,15 +205,13 @@ SECTIONS: dict[str, dict[str, Any]] = {
         },
     },
 
-    # ===== 直播监听 =====
+    # ===== 监听策略（原「直播监听」；2026-10-04 改名）=====
+    # ⚠️ 本分区是**通用策略配置**，不绑定某个直播间 —— 故不含 live_url。
+    # 直播间链接只由**直播间号**（room_id）推导，见 api/live_config.resolve_live_url()；
+    # live_url 早被列为「身份/废弃字段」（live_config.py:110 会剔除）。
     "live": {
-        "label": "直播监听",
+        "label": "监听策略",
         "fields": {
-            "live_url": {
-                "label": "直播间链接",
-                "type": "str", "default": "", "env": None,
-                "apply": "hot",
-            },
             "max_target": {
                 "label": "每场私信上限",
                 "type": "int", "default": 3, "min": 1, "max": 200, "env": None,
@@ -345,14 +343,11 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "hint": "下限 120 秒"
             },
             # 2026-10-02（用户定调「策略以标签为主」）：原 `live_room_configs`
-            # 房间级策略的 4 个字段迁入本分区 —— 否则下线 RoomConfigPage 后
-            # 连麦设置 / 私信词库 / 弹幕文案库将「无处可配」（能力净损失）。
+            # 房间级策略的字段迁入本分区 —— 否则下线 RoomConfigPage 后
+            # 连麦设置 / 弹幕文案库将「无处可配」（能力净损失）。
             # 列表型用**换行分隔字符串**承载（与 automation 的 *_keywords 同范式）。
-            "dm_pool": {
-                "label": "私信词库（每行一条）", "type": "str", "default": "",
-                "env": None, "apply": "hot",
-                "hint": "每行一条，随机选用"
-            },
+            # ⚠️ 2026-10-04：`dm_pool` 已迁回 send 分区（私信文案归属「私信发送」），
+            #    本分区只保留**监听侧**的弹幕文案库。
             "danmaku_pool": {
                 "label": "弹幕文案库（每行一条）", "type": "str", "default": "",
                 "env": None, "apply": "hot",
@@ -570,6 +565,18 @@ SECTIONS: dict[str, dict[str, Any]] = {
                 "type": "int", "default": 2000, "min": 100, "max": 20000,
                 "env": "DY_AGGREGATE_MAX_CHARS", "apply": "hot",
                 "hint": "聚合文本截断上限"
+            },
+            # 2026-10-04（用户指令）：私信词库从 live 分区**迁回** send 分区。
+            # 它本就是「私信文案」，归属「私信发送」；此前由 f08288a
+            # （「策略以标签为主」）随房间级策略一并挪进 live，属错位。
+            # 列表型用**换行分隔字符串**承载（与 automation 的 *_keywords 同范式）。
+            # 读取方：api/live_config._tag_to_strategy_cfg（单任务）、
+            #         services/live_batch.resolve_tag_send_params（批量）、
+            #         api/crawl.py（采集后私信文案，本就按 send 读）。
+            "dm_pool": {
+                "label": "私信词库（每行一条）", "type": "str", "default": "",
+                "env": None, "apply": "hot",
+                "hint": "每行一条，随机选用"
             },
         },
     },

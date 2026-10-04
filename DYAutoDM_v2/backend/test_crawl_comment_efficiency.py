@@ -77,6 +77,12 @@ class TestCommentEfficiency(unittest.TestCase):
         self.crawl = c
         self._saved_load = c._load_auth
         c._load_auth = lambda account: _StubAuth()
+        # 2026-10-02 修补（实测 503 假失败）：`crawl_search` 已改走
+        # `services.auth_policy.get_auth_for(...)`（fail-closed），只桩
+        # `c._load_auth` 打不到真实取值路径 ⇒ 撞 503，与被测判据无关。
+        from services import auth_policy
+        self._saved_get_auth = auth_policy.get_auth_for
+        auth_policy.get_auth_for = lambda endpoint, account: _StubAuth()
         self._saved_wc = self.features.work_comments
         # 间隔置 0，避免测试真等；间隔断言单独用例显式设置
         ac.reset_section("crawl")
@@ -85,6 +91,8 @@ class TestCommentEfficiency(unittest.TestCase):
     def tearDown(self):
         self.features.work_comments = self._saved_wc
         self.crawl._load_auth = self._saved_load
+        from services import auth_policy
+        auth_policy.get_auth_for = self._saved_get_auth
         ac.reset_section("crawl")
 
     # ---------------- E1：count 真实传导到基座 ----------------
@@ -305,6 +313,10 @@ class TestPolicyWiring(unittest.TestCase):
         self.cp = cp
         self._saved_load = c._load_auth
         c._load_auth = lambda account: _StubAuth()
+        # 同上：补桩 auth_policy（crawl_search 的真实取值路径）
+        from services import auth_policy
+        self._saved_get_auth = auth_policy.get_auth_for
+        auth_policy.get_auth_for = lambda endpoint, account: _StubAuth()
         from database import set_kv_json
         set_kv_json("crawl_policies", {})
         ac.reset_section("crawl")
@@ -314,6 +326,8 @@ class TestPolicyWiring(unittest.TestCase):
         set_kv_json("crawl_policies", {})
         ac.reset_section("crawl")
         self.c._load_auth = self._saved_load
+        from services import auth_policy
+        auth_policy.get_auth_for = self._saved_get_auth
 
     def test_w1_w2_policy_num_enters_search_call(self):
         """策略 num 必须进入真实搜索调用（打桩捕获）。"""
