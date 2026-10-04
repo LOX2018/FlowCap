@@ -185,12 +185,14 @@ export function enginePill(level: string): PillColor {
  * 后端原始账号 → 前端卡片渲染对象。
  * 补齐 lastRun/fp 默认值，避免直接渲染原始对象导致渲染崩溃黑屏（原版"全部校验" bug 根因）。
  */
-export function mapAcct(a: RawAccount, i: number): FmtAccount {
+export function mapAcct(a: RawAccount): FmtAccount {
   const lvl = a.level || (a.loggedIn ? "ok" : "expired");
   const lvlLabel = a.label || (a.loggedIn ? "凭证有效" : "凭证过期");
   const isValid = lvl === "ok";
   return {
-    id: "ra" + i,
+    // 稳定键 = 账号名（后端唯一标识：accounts.py 以 name 为键，重名直接 raise「账号已存在」）。
+    // 原实现是 "ra" + i —— 列表位置序号，随轮询/刷新/排序变动，勾选集合会错位指向别的账号 ⇒ 误删。
+    id: a.name,
     name: a.name,
     uid: a.uid || "—",
     hue: hue(a.name.length * 2),

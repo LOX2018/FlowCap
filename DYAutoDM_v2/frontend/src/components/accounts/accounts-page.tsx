@@ -257,27 +257,37 @@ export default function AccountsPage(props: PageProps) {
       push("请先勾选账号");
       return;
     }
-    const ids = Array.from(batchSel);
+    // 稳定键 = 账号名（mapAcct.id），删除目标不经列表位置映射 —— 轮询/刷新后不会错位。
+    const names = Array.from(batchSel);
     // 乐观更新：立即从本地列表移除勾选的卡片，消除后端刷新 3s+ 等待，感官零延迟
-    const removedNames = new Set(
-      ids.map((id) => shownAccounts.find((x) => x.id === id)?.name).filter(Boolean),
-    );
     qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
-      (old ?? []).filter((a) => !removedNames.has(a.name)),
+      (old ?? []).filter((a) => !names.includes(a.name)),
     );
-    push("正在删除 " + ids.length + " 个账号…");
+    push("正在删除 " + names.length + " 个账号…");
     Promise.all(
-      ids.map((id) => {
-        const a = shownAccounts.find((x) => x.id === id);
-        return a ? api.removeAccount(a.name).catch(() => null) : Promise.resolve(null);
-      }),
+      names.map((name) =>
+        api.removeAccount(name)
+          .then((r) => ({ name, ok: r?.ok === true, error: (r as { error?: string })?.error }))
+          .catch((e: unknown) => ({ name, ok: false, error: errMsg(e) })),
+      ),
     )
-      .then(() => {
-        push("已删除 " + ids.length + " 个账号");
+      .then((results) => {
+        // 读真实返回：后端以 200 + {ok:false, error} 表达失败，不能当成功显示。
+        const okCount = results.filter((r) => r.ok).length;
+        const failed = results.filter((r) => !r.ok);
+        const detail = failed
+          .map((f) => f.name + (f.error ? "（" + f.error + "）" : ""))
+          .join("、");
+        if (failed.length === 0) {
+          push("已删除 " + okCount + " 个账号");
+        } else if (okCount === 0) {
+          push("删除失败：" + detail);
+        } else {
+          push("已删除 " + okCount + " 个，" + failed.length + " 个失败：" + detail);
+        }
         setBatchSel(new Set());
         setBatchMode(false);
       })
-      .catch((e: unknown) => push("删除异常: " + errMsg(e)))
       .finally(() => {
         // 后台静默重新拉取，纠正乐观更新的可能不一致（不阻塞 UI）
         refetch();
