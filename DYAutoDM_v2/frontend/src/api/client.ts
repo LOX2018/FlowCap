@@ -2699,8 +2699,12 @@ export const api = {
       body: JSON.stringify({ items, replace }),
     });
   },
-  async aiLeads(limit = 200): Promise<{ ok: boolean; items: Record<string, unknown>[] }> {
-    return request(`/api/ai/leads?limit=${limit}`);
+  async aiLeads(limit = 200, startMs?: number, endMs?: number): Promise<{ ok: boolean; items: Record<string, unknown>[] }> {
+    // ★ 2026-10-04 任务详情「留资情况」：可选时间窗（毫秒），筛本任务期间产生的线索
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (startMs) q.set("start_ms", String(Math.round(startMs)));
+    if (endMs) q.set("end_ms", String(Math.round(endMs)));
+    return request(`/api/ai/leads?${q.toString()}`);
   },
   async aiLeadStatus(id: number, status: string): Promise<{ ok: boolean }> {
     return request("/api/ai/leads/status", {

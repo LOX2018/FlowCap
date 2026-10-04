@@ -2836,11 +2836,27 @@ def judge_high_value(text: str, account: str = "") -> dict:
         return {"high_value": None, "reason": "llm_exception"}
 
 
-def list_leads(limit: int = 200) -> list:
-    rows = database.get_db().execute(
-        "SELECT * FROM ai_leads ORDER BY created_at DESC LIMIT ?",
-        (int(limit),),
-    ).fetchall()
+def list_leads(limit: int = 200, start_ms: float | None = None,
+               end_ms: float | None = None) -> list:
+    """读线索。默认倒序 LIMIT。
+
+    ★ 2026-10-04（任务详情「留资情况」）：加**可选**时间窗 `start_ms`/`end_ms`
+    （毫秒时间戳）。**向后兼容**：两参都 None ⇒ 与旧行为完全一致。
+    `created_at` 是秒级 REAL，故乘 1000 与毫秒比较。
+    用途：任务详情页按「任务开始~结束时间窗」筛选本任务期间产生的线索。
+    ai_leads 表**无 task_id 字段**，故只能按时间窗近似归属（UI 已明示此边界）。
+    """
+    sql = "SELECT * FROM ai_leads WHERE 1=1"
+    args: list = []
+    if start_ms is not None:
+        sql += " AND created_at*1000 >= ?"
+        args.append(float(start_ms))
+    if end_ms is not None:
+        sql += " AND created_at*1000 <= ?"
+        args.append(float(end_ms))
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(int(limit))
+    rows = database.get_db().execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 

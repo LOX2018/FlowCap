@@ -1071,12 +1071,22 @@ async def stop_worker():
 # ---------------------------------------------------------------------------
 
 @router.get("/leads")
-async def leads_list(limit: int = 200):
+async def leads_list(limit: int = 200, start_ms: float = 0,
+                     end_ms: float = 0):
+    """留资线索列表。
+
+    `start_ms`/`end_ms`（可选，**毫秒时间戳**）用于任务详情页按「任务时间窗」
+    筛选。**为何用毫秒而非本地时间字符串**：本地字符串的时区解释在前后端不一致
+    （`mktime` 取服务器本地时区，前端 `toLocaleString` 取浏览器时区），毫秒
+    无时区歧义。缺省 0 = 不筛该端（与旧行为一致）。
+    """
     try:
         ai_reply.ensure_tables()
     except Exception:
         pass
-    return {"ok": True, "items": ai_reply.list_leads(limit)}
+    return {"ok": True, "items": ai_reply.list_leads(
+        limit, float(start_ms) if start_ms else None,
+        float(end_ms) if end_ms else None)}
 
 
 class LeadStatusBody(BaseModel):

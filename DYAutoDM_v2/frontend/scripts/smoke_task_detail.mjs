@@ -51,7 +51,11 @@ async function main() {
     const props = {
       ready: true, push: () => {}, setTab: () => {},
       detailPayload: { id: 1790917347041, acct: "小助理", liveId: "761605494343", kind: "live", status: "finished", records: [] },
-      api: { getTaskDetail: async () => ({ ok: true, task: taskRow }) },
+      api: {
+        getTaskDetail: async () => ({ ok: true, task: taskRow }),
+        aiLeads: async () => ({ ok: true, items: [] }),
+        aiLeadStatus: async () => ({ ok: true }),
+      },
     };
     const html = renderToString(
       React.createElement(QueryClientProvider, { client: qc }, React.createElement(Page, props)),
@@ -76,7 +80,11 @@ async function main() {
         records: [{ nickname: "内存用户", comment: "hi", content: "回复", status: "sent", captured_at: 1759500000 }],
         resultCount: 1,
       },
-      api: { getTaskDetail: async () => ({ ok: false, error: "n/a" }) },
+      api: {
+        getTaskDetail: async () => ({ ok: false, error: "n/a" }),
+        aiLeads: async () => ({ ok: true, items: [] }),
+        aiLeadStatus: async () => ({ ok: true }),
+      },
     };
     const qc2 = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const html2 = renderToString(
@@ -101,13 +109,19 @@ async function main() {
         React.createElement(Page, {
           ready: true, push: () => {}, setTab: () => {},
           detailPayload: { id: 7, acct: "采集账号", liveId: "", kind: "crawl", records: [] },
-          api: { getTaskDetail: async () => ({ ok: true, task: crawlRow }) },
+          api: {
+            getTaskDetail: async () => ({ ok: true, task: crawlRow }),
+            aiLeads: async () => ({ ok: true, items: [] }),
+            aiLeadStatus: async () => ({ ok: true }),
+          },
         })),
     );
     push("采集任务详情渲染成功", html3.length > 0, `HTML ${html3.length} 字节`);
     push("采集参数含关键词", html3.includes("美食"), "");
     push("采集明细含评论内容", html3.includes("好吃"), "");
     push("采集明细含昵称", html3.includes("评论者"), "");
+    push("任务详情挂载留资板块", html3.includes("留资情况"), "③ 板块已挂入详情页");
+    push("留资板块空态文案", html3.includes("没有留资线索"), "");
   } finally {
     await server.close();
   }

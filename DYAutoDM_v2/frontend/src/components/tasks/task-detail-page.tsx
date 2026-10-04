@@ -37,6 +37,7 @@ import { Th, Td } from "./tasks-shared";
 import { LoadingState, ErrorState } from "@/components/ui/empty-state";
 import { ReviewMode } from "@/components/live/LiveReviewMode";
 import { recordsToRows } from "@/components/live/live-shared";
+import { TaskLeadsSection } from "./task-leads-section";
 
 const KIND_META: Record<string, { label: string; icon: React.ElementType }> = {
   live: { label: "直播监听", icon: Radio },
@@ -299,6 +300,17 @@ export default function TaskDetailPage(props: PageProps) {
               <Blank>该任务类型没有可展示的明细（参数见上）</Blank>
             </Section>
           )}
+
+          {/* ══════════ ③ 留资情况（任务时间窗内该账号）══════════ */}
+          {vm.acct ? (
+            <TaskLeadsSection
+              acct={vm.acct}
+              start={vm.start}
+              end={vm.end}
+              push={props.push}
+              api={props.api}
+            />
+          ) : null}
         </>
       )}
     </PageContainer>
