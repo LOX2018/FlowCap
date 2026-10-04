@@ -25,7 +25,9 @@ import { BrandMark } from "@/components/brand";
 
 export type TabId =
   | "overview" | "msg" | "live" | "platform" | "kb" | "stats"
-  | "accounts" | "tasks" | "notify" | "logs" | "settings";
+  | "accounts" | "tasks" | "notify" | "logs" | "settings"
+  // ★ 2026-10-04：「任务详情」页（归入任务中心；由任务中心/直播页跳入，不在侧栏列出）
+  | "taskdetail";
 
 type NavItem = { id: TabId; label: string; icon: React.ElementType };
 

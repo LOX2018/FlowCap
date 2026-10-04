@@ -4,8 +4,6 @@ import { createPortal } from "react-dom";
 
 import { useQuery } from "@tanstack/react-query";
 
-import { AnimatePresence } from "framer-motion";
-
 import {
   Play, Pause, Square, Heart, Send, Settings2, Mic, Eye, LogIn, Users, Tags, Layers,
   AlertTriangle, ChevronDown,
@@ -43,11 +41,11 @@ import {
 import { cn } from "@/lib/utils";
 
 import {
-  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, RankUser, acctValid, toDmStatus, fmtTime, recordsToRows, Th, Td, displayStatus, isIssue,
+  LiveStream, TaskListResponse, RealAcct, FeedItem, Row, RankUser, acctValid, toDmStatus, fmtTime, Th, Td, displayStatus, isIssue,
   sourceMetaOf, dmTitle, dmFailReason, dmPreviewText,
 } from "./live-shared";
 
-import { ReviewMode, errMsg } from "./LiveReviewMode";
+import { errMsg } from "./LiveReviewMode";
 import EngineCards from "./engine-cards";
 import LiveBatchPage from "./live-batch-page";
 import ContributionRank from "./ContributionRank";
@@ -55,14 +53,12 @@ import ContributionRank from "./ContributionRank";
 
 
 export default function LivePage(props: PageProps) {
-  const { push, ready, goMsg, api, reviewPayload, reusePayload } = props;
+  const { push, ready, api, reusePayload } = props;
   // 2026-10-03（用户定调「批量采集是直播监听的子页面」）：
   // 批量从侧栏独立入口**下沉**为本页第三个子页签。
   const [viewMode, setViewMode] = useState<"single" | "grid" | "batch">("single");
   const [activeAcct, setActiveAcct] = useState<string | null>(null);
   const [room, setRoom] = useState("");
-  const [review, setReview] = useState(false);
-  const [reviewRows, setReviewRows] = useState<Row[]>([]);
   // 提示弹窗：解析房间号未填地址 / 开启自动私信前核查账号
   const [alert, setAlert] = useState<{ title: string; msg: string } | null>(null);
   // 强制停止二次确认（原用 window.confirm，2026-10-02 改主题化 ConfirmDialog）
@@ -175,15 +171,6 @@ export default function LivePage(props: PageProps) {
             : engineBusy
               ? "直播引擎等待开播"
               : "直播引擎未运行";
-
-  // 响应任务中心「历史任务跳转查阅模式」：用历史任务 records 快照进入查阅模式
-  useEffect(() => {
-    if (!reviewPayload) return;
-    const src = reviewPayload.records || [];
-    setReviewRows(recordsToRows(src));
-    setReview(true);
-    push(`已进入历史任务「${reviewPayload.acct || ""}」的查阅模式，共 ${src.length} 条结果`);
-  }, [reviewPayload, push]);
 
   // ── 直播间配置（「标签」）：列表来自唯一可写入口「直播间配置管理」 ──────────
   // 2026-10-02（用户定调「策略以标签为主」）：直播页的「直播策略」下拉
@@ -332,15 +319,6 @@ export default function LivePage(props: PageProps) {
   // 保证「表里看得到几条失败，统计里就是几条」。
   const errorCount = useMemo(
     () => rows.filter((r) => displayStatus(r)[1] === "danger").length, [rows]);
-
-  // Esc 关闭查阅模式
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setReview(false);
-    };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, []);
 
   // ── 自动滚动跟随（2026-09-30 用户实测：弹幕/信息流不自动滚到最新）──────────
   // 判据：仅当用户**贴底**（距底 ≤ FEED_STICK_PX）才自动跟随；上滚查看历史时不打扰。
@@ -493,8 +471,6 @@ export default function LivePage(props: PageProps) {
     }
     likeOnce(n);
   };
-  const sendDm = (r: Row) => push("功能开发中：发送私信 → " + r.name);
-
   /** 从输入框提取直播间号（纯数字或 URL 里的 /<digits>），失败返回空串 */
   const extractRoomId = (raw: string): string => {
     // 2026-10-01（用户实测报障）：原实现只认 `^\d+$` 与 `live.douyin.com/(\d+)`，
@@ -531,22 +507,33 @@ export default function LivePage(props: PageProps) {
     //     .finally(() => setLinkMicBusy(false));
     // };
 
-  // 进入查阅模式：优先用实时记录；实时无数据时回读任务容器/历史任务 records，
-  // 避免「进入查阅模式后一片空白未写入数据」。
-  const openReview = () => {
-    if (rows.length) {
-      setReview(true);
+  // ★ 2026-10-04（用户定调）：原「查阅模式」浮层取消，改为跳「任务详情」页
+  //   （在 App 路由中渲染 ⇒ **主导航可见**，且参数更丰富）。两入口统一：
+  //   本页「进入查阅模式」与任务中心「查看结果」都指向该页。
+  //   内存态：运行中任务的 records 尚未落库，故直接随载荷带给详情页。
+  const openDetail = () => {
+    if (!props.goDetail) {
+      push("当前无法打开任务详情（缺少跳转入口）");
       return;
     }
-    api
-      .getCurrentTask()
-      .then((t) => {
-        const recs = t && t.ok && Array.isArray(t.records) ? t.records : [];
-        if (recs.length) setReviewRows(recordsToRows(recs));
-        setReview(true);
-        if (!recs.length) push("暂无发送记录可查阅");
-      })
-      .catch(() => setReview(true));
+    const recs = rows.length
+      ? rows.map((r) => ({
+          nickname: r.name,
+          comment: r.content,
+          content: r.dmText,
+          status: r.dmStatus,
+          captured_at: r.ts,
+        }))
+      : [];
+    props.goDetail({
+      acct: activeAcct || "",
+      liveId: (ls?.room_id ? String(ls.room_id) : "") || room || "",
+      kind: "live",
+      status: engineBusy ? "running" : "stopped",
+      records: recs,
+      resultCount: recs.length,
+    });
+    if (!recs.length) push("本次运行暂无发送记录（任务详情页仍可查看参数）");
   };
 
   /**
@@ -1179,8 +1166,8 @@ export default function LivePage(props: PageProps) {
                 >
                   {onlyIssues ? "仅看异常 ✓" : "仅看异常"}
                 </button>
-                <Button variant="ghost" size="sm" data-od-id="review-open" onClick={openReview}>
-                  <Eye className="h-3.5 w-3.5" />进入查阅模式
+                <Button variant="ghost" size="sm" data-od-id="review-open" onClick={openDetail}>
+                  <Eye className="h-3.5 w-3.5" />查看任务详情
                 </Button>
                 {/* 2026-09-29 融合：AI 自动回复开关的 portal 落点（卡头右侧，与上述控件同排） */}
                 <div ref={setKwHost} className="flex items-center" data-od-id="comment-stats-actions" />
@@ -1415,21 +1402,6 @@ export default function LivePage(props: PageProps) {
         </>
       )}
 
-      <AnimatePresence>
-        {review && (
-          <ReviewMode
-            key="review-mode"
-            rows={reviewRows.length ? reviewRows : rows}
-            onClose={() => {
-              setReview(false);
-              setReviewRows([]);
-            }}
-            push={push}
-            sendDm={sendDm}
-            goMsg={goMsg}
-          />
-        )}
-      </AnimatePresence>
     </PageContainer>
   );
 }

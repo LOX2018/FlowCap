@@ -11,7 +11,7 @@
 import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 // framer-motion 的页面切换动画已移入 AppShell，App 层不再直接使用
-import { api, PageProps, ReviewPayload, ReusePayload } from "./api/client";
+import { api, PageProps, TaskDetailPayload, ReusePayload } from "./api/client";
 // 页面按视图懒加载（2026-09-15 性能优化）：
 // 原实现 11 个页面全静态 import → 全部打进主 chunk（782KB），首屏要解析所有页面代码。
 // 改为 React.lazy：每个页面独立 chunk，首屏只加载当前视图（overview），
@@ -27,6 +27,7 @@ const MessagesPage = lazy(() => import("./components/messages/messages-page"));
 const KbPage = lazy(() => import("./components/kb/kb-page"));
 const AccountsPage = lazy(() => import("./components/accounts/accounts-page"));
 const TasksPage = lazy(() => import("./components/tasks/tasks-page"));
+const TaskDetailPage = lazy(() => import("./components/tasks/task-detail-page"));
 const SettingsPage = lazy(() => import("./components/settings/settings-page"));
 const NotifyPage = lazy(() => import("./components/notify/notify-page"));
 const LogsPage = lazy(() => import("./components/logs/logs-page"));
@@ -217,7 +218,7 @@ export default function App() {
   const setTabState = useAppViewStore((s) => s.setView);
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const [goDm, setGoDm] = useState<{ name: string; text: string } | null>(null);
-  const [goReview, setGoReview] = useState<ReviewPayload | null>(null);
+  const [goDetail, setGoDetail] = useState<TaskDetailPayload | null>(null);
   const [goReuse, setGoReuse] = useState<ReusePayload | null>(null);
   const [msgAcct, setMsgAcct] = useState<string>("");
   // 2026-09-13 用户反馈修复：「更新会话状态不持续，切到其他页面回来就丢」。
@@ -375,9 +376,10 @@ export default function App() {
     setTab("msg");
   }, [setTab]);
 
-  const goReviewTrigger = useCallback((payload: ReviewPayload) => {
-    setGoReview(payload);
-  }, []);
+  const goDetailTrigger = useCallback((payload: TaskDetailPayload) => {
+    setGoDetail(payload);
+    setTab("taskdetail");
+  }, [setTab]);
 
   const goReuseTrigger = useCallback((payload: ReusePayload) => {
     setGoReuse(payload);
@@ -418,8 +420,8 @@ export default function App() {
     goMsg,
     goDm,
     setTab,
-    goReview: goReviewTrigger,
-    reviewPayload: goReview,
+    goDetail: goDetailTrigger,
+    detailPayload: goDetail,
     goReuse: goReuseTrigger,
     reusePayload: goReuse,
     msgAcct,
@@ -594,6 +596,7 @@ export default function App() {
           {tab === "kb" && <KbPage {...pageProps} />}
           {tab === "accounts" && <AccountsPage {...pageProps} />}
           {tab === "tasks" && <TasksPage {...pageProps} />}
+          {tab === "taskdetail" && <TaskDetailPage {...pageProps} />}
           {tab === "settings" && <SettingsPage {...pageProps} />}
           {tab === "notify" && <NotifyPage {...pageProps} />}
           {tab === "logs" && <LogsPage {...pageProps} />}

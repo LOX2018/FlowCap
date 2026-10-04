@@ -81,6 +81,8 @@ export const VIEW_TITLE: Record<ViewType, string> = {
   stats: "统计",
   accounts: "账号",
   tasks: "任务",
+  // ★ 2026-10-04：「任务详情」页标题（归入任务中心，由任务中心/直播页跳入）
+  taskdetail: "任务详情",
   notify: "通知",
   logs: "日志",
   settings: "设置",

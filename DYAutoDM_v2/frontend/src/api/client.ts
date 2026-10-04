@@ -436,6 +436,31 @@ export interface TaskStats {
 }
 
 /**
+ * 单条任务详情（「任务详情」页，`GET /api/tasks/{id}`，ADR-035 §3.4 下游）。
+ *
+ * 由 `tasks_history.get_task` 规范化：`records`/`params`/`config` 已解析为对象，
+ * 老数据 `kind` 按 live_id 回落为 `live`。
+ */
+export interface TaskDetail {
+  id: number;
+  acct: string;
+  live_id: string;
+  start_ts: string;
+  end_ts: string;
+  status: string;
+  result_count: number;
+  config: Record<string, unknown>;
+  records: Record<string, unknown>[];
+  created_at: number;
+  pid: number;
+  /** live / crawl / scheduled（老数据为空时按 live_id 回落） */
+  kind: string;
+  params: Record<string, unknown>;
+  error_code: string;
+  updated_at: number;
+}
+
+/**
  * 采集任务队列条目（★ 2026-10-03 采集任务队列（任务中心接线））。
  *
  * 对应后端 `backend/api/crawl_task_queue.py` 内存表 `_TASKS` 的**单条**结构，
@@ -2926,6 +2951,11 @@ export const api = {
     return request(`/api/tasks/stats?${qs.toString()}`);
   },
 
+  /** 单条任务详情（「任务详情」页数据源）。返回 `{ok, task}`。 */
+  async getTaskDetail(taskId: number): Promise<{ ok: boolean; task?: TaskDetail; error?: string }> {
+    return request(`/api/tasks/${taskId}`);
+  },
+
   // ===== ★ 2026-10-03 采集任务队列（任务中心接线）=====
   //
   // 【后端真源】`backend/api/crawl_task_queue.py`，由 main.py:859-860 以
@@ -3276,12 +3306,31 @@ export interface ReusePayload {
 }
 
 /** 历史任务跳转查阅模式的载荷 */
-export interface ReviewPayload {
+/**
+ * 「任务详情」页载荷（★ 2026-10-04：由 `ReviewPayload` 升级而来）。
+ *
+ * 两个来源：
+ *   · **历史任务**（任务中心「查看结果」）—— 带 `id`，页面据 id 拉 `GET /api/tasks/{id}`
+ *     取权威全量（含持久化 records/params/error_code）；
+ *   · **内存态**（直播页「进入查阅模式」看本次运行）—— 无 `id`（或 id 为 0），
+ *     直接用载荷里携带的 `records`（运行中任务的 records 尚未落库）。
+ *
+ * 参数比旧版丰富：kind/status/resultCount/errorCode/params 均透出，供「任务详情」页展示。
+ */
+export interface TaskDetailPayload {
+  /** 统一任务表 id（历史任务有；内存态可缺省） */
+  id?: number;
   acct: string;
   liveId: string;
-  records: Record<string, unknown>[];
+  /** live / crawl / scheduled（缺省按 live 处理） */
+  kind?: string;
+  status?: string;
   startTs?: string;
   endTs?: string;
+  resultCount?: number;
+  errorCode?: string;
+  params?: Record<string, unknown>;
+  records: Record<string, unknown>[];
 }
 
 export interface PageProps {
@@ -3299,10 +3348,10 @@ export interface PageProps {
   goDm?: { name: string; text: string } | null;
   /** 切换 Tab（任务中心跳转用） */
   setTab?: (tab: string) => void;
-  /** 跳转到直播监听页并进入查阅模式查看历史任务结果 */
-  goReview?: (payload: ReviewPayload) => void;
-  /** 直播监听页收到的查阅模式载荷（由 goReview 设置） */
-  reviewPayload?: ReviewPayload | null;
+  /** 跳转到「任务详情」页（统一入口：直播页「进入查阅模式」+ 任务中心「查看结果」） */
+  goDetail?: (payload: TaskDetailPayload) => void;
+  /** 「任务详情」页收到的载荷（由 goDetail 设置） */
+  detailPayload?: TaskDetailPayload | null;
   /** 任务中心「复用」历史任务 -> 预填直播监听页 */
   goReuse?: (payload: ReusePayload) => void;
   /** 直播监听页收到的复用载荷（由 goReuse 设置） */

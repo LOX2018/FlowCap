@@ -27,9 +27,17 @@ interface ReviewModeProps {
   push: (msg: string, holdMs?: number) => void;
   sendDm: (r: Row) => void;
   goMsg?: (name: string, text?: string) => void;
+  /**
+   * ★ 2026-10-04：内嵌模式（供「任务详情」页复用）。
+   *
+   * `embedded=true` 时**不套 portal / 不铺全屏**，直接返回内容本身，
+   * 由调用方（TaskDetailPage）放进 `PageContainer` —— 这样**主导航可见**，
+   * 且参数区可置于其上。`false`（默认）保持原全屏浮层行为。
+   */
+  embedded?: boolean;
 }
 
-export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModeProps) {
+export function ReviewMode({ rows, onClose, push, sendDm, goMsg, embedded = false }: ReviewModeProps) {
   const [q, setQ] = useState("");
   const [st, setSt] = useState<"all" | DmStatus>("all");
   const [asc, setAsc] = useState(false);
@@ -81,29 +89,35 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
     ["fail", "发送失败", cnt("fail")],
   ];
 
-  return createPortal(
+  const inner = (
     <motion.div
-      className="fixed inset-0 z-[var(--z-view)] flex flex-col bg-[var(--color-background)]"
-      initial={{ opacity: 0, y: 14 }}
+      className={
+        embedded
+          ? "flex flex-col"
+          : "fixed inset-0 z-[var(--z-view)] flex flex-col bg-[var(--color-background)]"
+      }
+      initial={embedded ? false : { opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
       data-od-id="live-review"
     >
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b
-                      border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-3.5 pr-[128px]">
-        <Button variant="ghost" size="sm" data-od-id="review-back" onClick={onClose}>
-          ‹ 返回实时流
-        </Button>
-        <h2 className="text-[0.95rem] font-semibold text-[var(--color-text)]">评论查阅模式</h2>
-        <div className="min-w-0 flex-1" />
-        <Badge variant="outline">只读 · 实时入库</Badge>
-      </div>
+      {!embedded && (
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b
+                        border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-3.5 pr-[128px]">
+          <Button variant="ghost" size="sm" data-od-id="review-back" onClick={onClose}>
+            ‹ 返回实时流
+          </Button>
+          <h2 className="text-[0.95rem] font-semibold text-[var(--color-text)]">评论查阅模式</h2>
+          <div className="min-w-0 flex-1" />
+          <Badge variant="outline">只读 · 实时入库</Badge>
+        </div>
+      )}
 
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto overflow-x-hidden">
+      <div className={embedded ? "min-w-0" : "min-h-0 min-w-0 flex-1 overflow-auto overflow-x-hidden"}>
         {/* 查阅模式是全屏 overlay，独立于 PageContainer；其内容宽度须与
             PageContainer 的默认 maxWidth 保持一致（否则此页的留白与其它页不一致）。 */}
-        <div className="mx-auto w-full max-w-[1180px] px-5 pb-10 pt-4.5">
+        <div className={embedded ? "w-full" : "mx-auto w-full max-w-[1180px] px-5 pb-10 pt-4.5"}>
           <Toolbar className="mb-3">
             <Input
               className="min-w-[200px] flex-1"
@@ -384,7 +398,10 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
       </div>
       {/* 2026-09-08：私信发送失败原因弹窗（区分调度堵塞/凭证失效/风控等） */}
       <FailReasonModal row={failRow} onClose={() => setFailRow(null)} />
-    </motion.div>,
-    document.body
+    </motion.div>
   );
+
+  // 内嵌模式：直接返回内容（调用方放在 PageContainer 里 ⇒ 主导航可见）
+  if (embedded) return inner;
+  return createPortal(inner, document.body);
 }

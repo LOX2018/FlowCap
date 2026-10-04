@@ -636,3 +636,26 @@ async def scheduler_run_task(task_id: str) -> dict:
         logger.warning(f"[SCHED-012] [tasks] 手动执行任务失败: {e}")
         return {"ok": False, "error": str(e)}
 
+# ════════════════════════════════════════════════════════════════════════════
+# 单条任务详情（ADR-035 §3.4 下游 · 「任务详情」页数据源，2026-10-04）
+#
+# 🔴 路径参数放在**文件末尾**声明：FastAPI 按声明顺序匹配，`/{task_id}` 会吃掉
+#   一切单段路径；必须排在 `/stats`、`/history`、`/current`、`/scheduler*` 之后，
+#    否则那些端点会被它抢先匹配（`int` 转换失败 → 422）。
+# ════════════════════════════════════════════════════════════════════════════
+@router.get("/{task_id}")
+async def get_task_detail(task_id: int) -> dict:
+    """单条任务详情（「任务详情」页）。只读本地库，零网络零浏览器。
+
+    返回 `{ok, task}`；task 为 tasks_history 规范化后的整行（含 kind/params/
+    records/error_code 等，老数据 kind 按 live_id 回落）。
+    """
+    try:
+        from tasks_history import get_task
+        t = await asyncio.to_thread(get_task, int(task_id))
+        if not t:
+            return {"ok": False, "error": "任务不存在"}
+        return {"ok": True, "task": t}
+    except Exception as e:  # noqa: BLE001 —— 失败如实上报，不伪造
+        logger.warning(f"[TSK-004] " + f"[tasks] 读取任务详情失败 id={task_id}: {e}")
+        return {"ok": False, "error": str(e)}

@@ -110,7 +110,7 @@ async function main() {
       ready: true,
       push: () => {},
       setTab: () => {},
-      goReview: () => {},
+      goDetail: () => {},
       goReuse: () => {},
       overview: liveTask,
       api: {

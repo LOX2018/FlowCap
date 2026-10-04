@@ -117,19 +117,23 @@ export default function TasksPage(props: PageProps) {
       setTab("live");
       return;
     }
-    push("已跳转到直播监听页查阅模式，查看任务运行结果");
-    setTab("live");
-    setTimeout(() => {
-      if (props.goReview) {
-        props.goReview({
-          acct: item.acct || "",
-          liveId: item.live_id || "",
-          records: item.records || [],
-          startTs: item.start_ts,
-          endTs: item.end_ts,
-        });
-      }
-    }, 150);
+    // ★ 2026-10-04：历史任务「查看结果」改为跳「任务详情」页（带 id ⇒ 页面拉权威全量）
+    push("已进入「任务详情」查看运行结果");
+    if (props.goDetail) {
+      props.goDetail({
+        id: typeof item.id === "number" ? item.id : Number(item.id) || undefined,
+        acct: item.acct || "",
+        liveId: item.live_id || "",
+        kind: (item as { kind?: string }).kind || "live",
+        status: item.status || "",
+        records: item.records || [],
+        startTs: item.start_ts,
+        endTs: item.end_ts,
+        resultCount: item.result_count,
+      });
+    } else {
+      setTab("tasks");
+    }
   };
 
   // 复用：用历史任务保存的配置快照预填直播监听页
