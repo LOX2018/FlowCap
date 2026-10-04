@@ -1,4 +1,5 @@
 import { type Dispatch, type SetStateAction } from "react";
+import { createPortal } from "react-dom";
 import { CheckCircle2, Lightbulb, X, XCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -37,7 +38,7 @@ export function ProxyDrawer({
     { id: "system", label: "系统代理", desc: "跟随本机系统代理设置" },
     { id: "direct", label: "不走代理", desc: "走本机 IP · 豁免代理端口" },
   ];
-  return (
+  return createPortal(
     <>
       <motion.div
         key="proxy-backdrop"
@@ -256,7 +257,8 @@ export function ProxyDrawer({
           </Button>
         </div>
       </motion.div>
-    </>
+    </>,
+    document.body
   );
 }
 

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
   ArrowLeft, ChevronDown, ChevronRight, Download, Inbox,
@@ -82,7 +83,7 @@ export function AccountReview({
   const a = account;
   const r = a.lastRun;
 
-  return (
+  return createPortal(
     <motion.div
       className="fixed inset-0 z-[var(--z-view)] flex flex-col overflow-hidden bg-[var(--color-background)]"
       initial={{ opacity: 0, y: 14 }}
@@ -514,7 +515,8 @@ export function AccountReview({
           </div>
         </div>
       </div>
-    </motion.div>
+    </motion.div>,
+    document.body
   );
 }
 // ===== 代理配置抽屉 =====

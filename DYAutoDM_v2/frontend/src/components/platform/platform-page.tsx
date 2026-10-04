@@ -9,6 +9,7 @@
  * **不做后台自动轮询** —— 主动请求越少越安全。
  */
 import { useState, useEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import {
   LayoutGrid, Search as SearchIcon, Heart, Star, Bell, User, MessageSquare,
@@ -86,9 +87,9 @@ export default function PlatformPage(props: PageProps & {
   const account = embedded ? (props.account || "") : (acct || accounts[0] || "");
   const [tab, setTab] = useState("feed");
   const [query, setQuery] = useState("");
-  const [searchKind, setSearchKind] = useState<"video" | "user">("video");
+  const [searchKind, setSearchKind] = useState<"video" | "user" | "image">("video");
   const [userUrl, setUserUrl] = useState("");
-  const [submitted, setSubmitted] = useState<{ q: string; kind: "video" | "user" } | null>(null);
+  const [submitted, setSubmitted] = useState<{ q: string; kind: "video" | "user" | "image" } | null>(null);
   const [worksUrl, setWorksUrl] = useState<string | null>(null);
   // ★ 采集悬浮窗状态（2026-10-03）
   const [crawlPanelOpen, setCrawlPanelOpen] = useState(false);
@@ -190,10 +191,16 @@ export default function PlatformPage(props: PageProps & {
       const t = await platformApi.mediaStreamTicket(
         account, it.aweme_id, "origin",
         (it as AwemeItem & { media?: Record<string, unknown> }).media);
-      if (!t?.ok || !t.stream_url) throw new Error("取址失败");
+      // ★ 2026-10-04 修「图文点开报 502 取址失败」：原判据只认 `stream_url`，
+      //   而图文没有视频流地址（后端据 type 分流后 `stream_url` 为空、图集在
+      //   `images`）⇒ 被误判成失败。现按媒体类型判断是否算成功。
+      const isImageKind = t?.type === "images" || t?.type === "live_photo";
+      if (!t?.ok || !(t.stream_url || (isImageKind && (t.images?.length)))) {
+        throw new Error("取址失败");
+      }
       setPlayerMedia({
         type: t.type, aweme_id: it.aweme_id,
-        url: platformApi.mediaStreamUrl(t.stream_url),
+        url: t.stream_url ? platformApi.mediaStreamUrl(t.stream_url) : "",
         images: t.images, live_photos: t.live_photos,
         cover: t.cover || it.cover, duration: t.duration, desc: t.desc || it.desc,
         author: t.author,
@@ -433,7 +440,7 @@ export default function PlatformPage(props: PageProps & {
     q: { isPending: boolean; isError: boolean; error: unknown;
          data?: { items: unknown[]; blocked?: boolean; blocked_reason?: string | null };
          refetch: () => void },
-    kind: "video" | "user",
+    kind: "video" | "user" | "image",
     checkedIds?: Record<string, boolean>,
     onToggleCheck?: (id: string, checked: boolean) => void,
     // ★ 2026-10-03：结果就绪回调（匿名探针用它并行发起，不阻塞渲染）
@@ -480,10 +487,10 @@ export default function PlatformPage(props: PageProps & {
       );
     }
     return <Grid items={items} kind={kind}
-                 onOpenAweme={kind === "video" ? openAweme : undefined}
+                 onOpenAweme={kind !== "user" ? openAweme : undefined}
                  checkedIds={checkedIds}
                  onToggleCheck={onToggleCheck}
-                 previewCounts={kind === "video" ? anonPreview : undefined} />;
+                 previewCounts={kind !== "user" ? anonPreview : undefined} />;
   };
 
   // ★ ADR-034：嵌入模式下不渲染 PageContainer / PageHeader / 账号下拉 ——
@@ -568,10 +575,12 @@ export default function PlatformPage(props: PageProps & {
 
         <TabsContent value="search">
           <div className="mb-3 flex items-center gap-2">
-            <Select value={searchKind} onValueChange={(v) => setSearchKind(v as "video" | "user")}>
+            <Select value={searchKind} onValueChange={(v) => setSearchKind(v as "video" | "user" | "image")}>
               <SelectTrigger className="h-9 w-[110px]"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="video">视频</SelectItem>
+                {/* ★ 2026-10-04（用户指令）：搜索新增「图文」维度 */}
+                <SelectItem value="image">图文</SelectItem>
                 <SelectItem value="user">用户</SelectItem>
               </SelectContent>
             </Select>
@@ -605,7 +614,7 @@ export default function PlatformPage(props: PageProps & {
             </Button>
           </div>
           {/* ★ 2026-10-03：筛选器（从采集页移植） */}
-          {searchKind === "video" && (
+          {searchKind !== "user" && (
             <div className="mb-3 flex flex-wrap items-center gap-4 text-[0.74rem] text-[var(--color-text-secondary)]">
               <label className="flex items-center gap-1.5">
                 排序
@@ -890,15 +899,27 @@ export default function PlatformPage(props: PageProps & {
         props={props}
       />
 
-      {/* 播放器浮层（照源项目 components/player 的独立业务域形态） */}
-      {playerOpen && (
+      {/* 播放器浮层（照源项目 components/player 的独立业务域形态）
+          2026-10-04：走 Portal。platform-page 渲染在 `div.relative.z-10` 内（app-shell 主内容区），
+          不 Portal 的话 `z-[var(--z-view)]` 被困在 z-10 层叠上下文里，
+          永远盖不过 sidebar 的 `z-20`。 */}
+      {playerOpen && createPortal(
         <div className="fixed inset-0 z-[var(--z-view)] flex items-center justify-center modal-scrim p-6"
              onClick={() => setPlayerOpen(false)}>
           {/* ★ 2026-09-27（F3）：播放器 + 评论同屏，容器加宽到 max-w-5xl
               ★ 2026-10-02：材质改 card-surface（原 bg-[var(--color-surface)] 是极淡半透明，
-                在光晕底上几乎看不见 → 用户实测「不适配主题」）。 */}
-          <div className="card-surface flex h-[70vh] w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-lg)]"
-               onClick={(e) => e.stopPropagation()}>
+                在光晕底上几乎看不见 → 用户实测「不适配主题」）。
+              ⚠️ 2026-10-04 根因修复（用户报障「视频播放采集页面画面溢出」）：
+                原 `w-full max-w-5xl`（1024px）与兄弟 aside `w-[22rem]`（352px）之间
+                隔了 `ml-4`（16px）⇒ 三者相加 1392px；而 1536 屏扣掉侧栏 144 与
+                外层 p-6（左右各 24）后可用宽约 1344px ⇒ **必然溢出约 48px**，
+                aside 被推出视口右缘（观感「画面溢出」）。
+                正解：播放器改为**可收缩**（`min-w-0 flex-1`，`max-w-5xl` 只作上限），
+                让 aside 的固定 352px 先被满足，剩余宽度才归播放器 —— 容器永不溢出。 */}
+          <div
+            className="card-surface flex h-[70vh] min-w-0 flex-1 flex-col overflow-hidden rounded-[var(--radius-lg)]"
+            onClick={(e) => e.stopPropagation()}
+          >
             {playerErr ? (
               <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-text-muted)]">
                 取址失败：{playerErr}
@@ -931,8 +952,12 @@ export default function PlatformPage(props: PageProps & {
               不是切 Tab 才加载。
               ★ 2026-09-28：评论区改走**采集页同款一级评论**路径
               （api.crawlComments），不再自己走 comments/full + 串行楼中楼。 */}
+          {/* ★ 2026-10-04：`w-[22rem]`（352px）在窄屏仍会与播放器争宽导致溢出，
+              故评论栏改 `w-[20rem]`（320px）并在 <1280px 隐藏（`xl:flex`）——
+              窄屏只留播放器，同屏评论是宽屏增强而非必需。
+              保留 `shrink-0`：它是**固定**侧栏，不该被压缩。 */}
           <aside
-            className="card-surface ml-4 hidden h-[70vh] w-[22rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] p-3 md:flex"
+            className="card-surface ml-4 hidden h-[70vh] w-[20rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] p-3 xl:flex"
             onClick={(e) => e.stopPropagation()}
           >
             <CommentPanel
@@ -942,7 +967,8 @@ export default function PlatformPage(props: PageProps & {
               push={props.push}
             />
           </aside>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

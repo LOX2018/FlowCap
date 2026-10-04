@@ -24,7 +24,7 @@ import {
   GatewayPending,
 } from "../../api/client";
 import { Dot, Pill } from "../ui";
-import { errMsg, ROLE_LABELS } from "./settings-shared";
+import { errMsg, ROLE_LABELS, BTN_PRIMARY, BTN_GHOST, BTN_DANGER } from "./settings-shared";
 import { Card, Field } from "./notify-widgets";
 import { AuthorizationCard } from "./AuthorizationCard";
 
@@ -183,14 +183,7 @@ export default function NotifySection({ api, push }: PageProps) {
 
   return (
     <div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "var(--color-text-muted)",
-          marginBottom: 10,
-          lineHeight: 1.6,
-        }}
-      >
+      <div className="mb-2.5 text-[0.72rem] leading-relaxed text-[var(--color-text-muted)]">
         IM Bot 绑定：任务新建 / 任务监控 / 私信汇报 / 凭证失效提醒，推送到微信、
         企微、钉钉、飞书或 QQ。指令解析用的模型在
         <b>「AI 与 Agent → 模型链路中心」</b>
@@ -212,7 +205,7 @@ export default function NotifySection({ api, push }: PageProps) {
       <Card
         title={
           <>
-            <strong>启用通知</strong>
+            启用通知
             <Dot c={cfg.enabled ? "ok" : "mute"} />
             <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
               {cfg.enabled ? "已启用" : "已关闭"}
@@ -222,7 +215,7 @@ export default function NotifySection({ api, push }: PageProps) {
         defaultOpen
         footer={
           <button
-            className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
+            className={BTN_PRIMARY}
             disabled={saveMut.isPending}
             onClick={() => saveMut.mutate(cfg)}
           >
@@ -244,7 +237,7 @@ export default function NotifySection({ api, push }: PageProps) {
           />
           <span>开启 IM 通知推送</span>
         </label>
-        <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginTop: 6 }}>
+        <div className="mt-1.5 text-[0.72rem] text-[var(--color-text-muted)]">
           关闭后所有事件（含凭证失效告警）都不会推送。
         </div>
       </Card>
@@ -258,12 +251,12 @@ export default function NotifySection({ api, push }: PageProps) {
           margin: "14px 0 8px",
         }}
       >
-        <strong style={{ fontSize: 13.5 }}>
+        <strong className="text-[0.86rem] font-semibold tracking-tight text-[var(--color-text)]">
           推送渠道（{channels.length}）
         </strong>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {(Object.keys(CHANNEL_META) as NotifyKind[]).map((k) => (
-            <button key={k} className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]" onClick={() => addChannel(k)}>
+            <button key={k} className={BTN_GHOST} onClick={() => addChannel(k)}>
               + {CHANNEL_META[k].label}
             </button>
           ))}
@@ -271,16 +264,9 @@ export default function NotifySection({ api, push }: PageProps) {
       </div>
 
       {channels.length === 0 && (
-        <div
-          style={{
-            padding: 20,
-            textAlign: "center",
-            color: "var(--color-text-muted)",
-            background: "var(--color-surface-solid)",
-            borderRadius: 10,
-            border: "1px solid var(--color-border)",
-          }}
-        >
+        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)]
+                        bg-[var(--color-surface-solid)] p-5 text-center
+                        text-[0.78rem] text-[var(--color-text-muted)]">
           还没有渠道，点上方按钮添加一个
         </div>
       )}
@@ -294,7 +280,7 @@ export default function NotifySection({ api, push }: PageProps) {
             key={String(ch.id || i)}
             title={
               <>
-                <strong>{title}</strong>
+                {title}
                 <Dot c={!ch.enabled ? "mute" : st?.ready ? "ok" : "danger"} />
                 <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
                   {!ch.enabled ? "已停用" : st?.ready ? "就绪" : "未就绪"}
@@ -307,14 +293,14 @@ export default function NotifySection({ api, push }: PageProps) {
             footer={
               <div style={{ display: "flex", gap: 8 }}>
                 <button
-                  className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-surface-raised)] text-[var(--color-text)] shadow-[inset_0_0_0_1px_var(--color-border)] hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]"
+                  className={BTN_GHOST}
                   disabled={testing === String(ch.id || ch.kind)}
                   onClick={() => testChannel(ch)}
                 >
                   {testing === String(ch.id || ch.kind) ? "发送中…" : "测试推送"}
                 </button>
                 <button
-                  className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[var(--color-danger-soft)] text-[var(--color-danger)] hover:bg-[var(--color-danger)] hover:text-white h-9 px-4 text-[0.78rem] rounded-[10px]"
+                  className={BTN_DANGER}
                   onClick={() => removeChannel(i)}
                 >
                   删除渠道
@@ -360,13 +346,7 @@ export default function NotifySection({ api, push }: PageProps) {
             ))}
 
             {ch.kind === "weixin_oc" && (
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--warn, #d89614)",
-                  marginTop: 4,
-                }}
-              >
+              <div className="mt-1 text-[0.68rem] leading-relaxed text-[var(--color-warning)]">
                 ⚠️ 个人微信（iLink）只能被动回推：对方需先给机器人发一条消息，
                 机器人获得 context_token 后才能回复。
               </div>
@@ -378,7 +358,7 @@ export default function NotifySection({ api, push }: PageProps) {
       {channels.length > 0 && (
         <div style={{ marginTop: 6 }}>
           <button
-            className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-200 ease-[var(--ease-spring)] cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] bg-[var(--color-accent)] text-[#08130a] shadow-lg hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]"
+            className={BTN_PRIMARY}
             disabled={saveMut.isPending}
             onClick={() => saveMut.mutate(cfg)}
           >

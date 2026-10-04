@@ -1,6 +1,6 @@
 [package]
 name = "dyautodm-v2"
-version = "0.46.49"
+version = "0.46.51"
 description = "抖音自动私信控制台 - Tauri 壳"
 authors = ["you"]
 edition = "2021"

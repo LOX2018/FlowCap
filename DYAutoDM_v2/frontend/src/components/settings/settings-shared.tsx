@@ -65,6 +65,59 @@ export const inputStyle: React.CSSProperties = {
   outline: "none",
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   2026-10-04：按钮类名 SSOT（用户报障「IM 页与其它 tab 字体大小型号不一致」）
+   ───────────────────────────────────────────────────────────────────────────
+   根因链（实测，非推测）：
+     ① 旧 CSS 体系（global.css，884 行）在 v0.43.16 下线，`.btn` / `.inp`
+        两个类**一并被删除**；但 `AuthorizationCard` / `AgentSection` /
+        `TagSection` / `notify-widgets` 里**仍有 6 处引用** ⇒ 这些元素
+        退化为**浏览器默认 button/input 样式**（字号 ~13.3px、无圆角、
+        无主题色），与走 `Button` 组件的其它 tab **字号/圆角/间距全不同**。
+     ② 另一批地方把 `Button` 的 200+ 字类名**整串复制粘贴**（共 12 处），
+        一旦 Button 变体调整，这些副本不会跟着改 ⇒ 必然再次漂移。
+
+   判据：**同一视觉规格只允许一处定义**。故：
+     · `BTN_*` 常量 = `buttonVariants()` 的输出（与 Button 组件同源，不会漂移）
+     · 引用 `.btn sm` 的死类名处 → 改用 `BTN_PRIMARY` / `BTN_GHOST`
+     · 复制长串类名处 → 改用常量（本次收敛 Notify 系，其余留后续）
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** 主按钮（accent 实心）—— 等价于 `<Button>` 默认变体。 */
+export const BTN_PRIMARY =
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold " +
+  "transition-[background-color,color,border-color,box-shadow,transform,opacity] " +
+  "duration-200 ease-[var(--ease-spring)] cursor-pointer select-none " +
+  "focus-visible:outline-none focus-visible:ring-2 " +
+  "focus-visible:ring-[var(--color-accent-ring)] " +
+  "disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] " +
+  "bg-[var(--color-accent)] text-[#08130a] shadow-lg " +
+  "hover:bg-[var(--color-accent-hover)] h-9 px-4 text-[0.78rem] rounded-[10px]";
+
+/** 次级按钮（描边面）—— 等价于 `<Button variant="secondary">`。 */
+export const BTN_GHOST =
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold " +
+  "transition-[background-color,color,border-color,box-shadow,transform,opacity] " +
+  "duration-200 ease-[var(--ease-spring)] cursor-pointer select-none " +
+  "focus-visible:outline-none focus-visible:ring-2 " +
+  "focus-visible:ring-[var(--color-accent-ring)] " +
+  "disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] " +
+  "bg-[var(--color-surface-raised)] text-[var(--color-text)] " +
+  "shadow-[inset_0_0_0_1px_var(--color-border)] " +
+  "hover:bg-[var(--color-surface-solid)] h-9 px-4 text-[0.78rem] rounded-[10px]";
+
+/** 危险按钮（删除/撤销）—— 等价于 `<Button variant="danger">`。 */
+export const BTN_DANGER =
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap font-bold " +
+  "transition-[background-color,color,border-color,box-shadow,transform,opacity] " +
+  "duration-200 ease-[var(--ease-spring)] cursor-pointer select-none " +
+  "focus-visible:outline-none focus-visible:ring-2 " +
+  "focus-visible:ring-[var(--color-accent-ring)] " +
+  "disabled:pointer-events-none disabled:opacity-40 active:scale-[0.96] " +
+  "border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] " +
+  "bg-[var(--color-danger-soft)] text-[var(--color-danger)] " +
+  "hover:bg-[var(--color-danger)] hover:text-white h-9 px-4 text-[0.78rem] rounded-[10px]";
+
 export function Field(props: { label: string; children: React.ReactNode }) {
   return (
     <SetField

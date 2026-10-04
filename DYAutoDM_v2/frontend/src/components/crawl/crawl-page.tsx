@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   SearchIcon, MessageSquare, Send, Filter, X, Loader2, Square,
 } from "lucide-react";
@@ -667,8 +668,11 @@ export default function CrawlPage(props: PageProps & {
         </>
       )}
 
-      {/* 评论区抽屉 —— Radix Dialog（替代旧 .overlay，自带焦点管理与 Esc 关闭） */}
-      {cmtFor && (
+      {/* 评论区抽屉 —— Radix Dialog（替代旧 .overlay，自带焦点管理与 Esc 关闭）
+          2026-10-04：走 Portal。crawl-page 渲染在 `div.relative.z-10` 内（app-shell 主内容区），
+          不 Portal 的话 `z-[var(--z-drawer)]` 被困在 z-10 层叠上下文里，
+          永远盖不过 sidebar 的 `z-20` —— 与全站其它全屏浮层同款缺陷。 */}
+      {cmtFor && createPortal(
         <div
           className="fixed inset-0 z-[var(--z-drawer)] flex justify-end modal-scrim"
           onClick={() => setCmtFor(null)}
@@ -809,7 +813,8 @@ export default function CrawlPage(props: PageProps & {
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
         </TabsContent>
 

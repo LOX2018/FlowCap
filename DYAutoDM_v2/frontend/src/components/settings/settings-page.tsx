@@ -116,9 +116,18 @@ export default function SettingsPage(props: PageProps) {
           })}
         </nav>
 
-        {/* 右侧内容区 */}
+        {/* 右侧内容区
+            ⚠️ 2026-10-04 根因修复（用户报障「每一个页面的显示区宽度不一致」）：
+              外层 `min-w-0 flex-1` 只挡住了 **Card 本身**被撑破，挡不住 **Card
+              内部**的内容 —— 多个 Section（ModelHub / Agent / Tag / Provider）
+              用内联 style 写死 `minWidth: 140 / 170`、`width: 130` 的 flex 项，
+              父级是 `nowrap` 时这些最小宽会**累加**并撑出横向溢出 ⇒ 各 tab 的
+              实际内容宽度随其撑破程度而不同（观感「宽度不一致」）。
+              修法：CardContent 加 `min-w-0` + `overflow-x-hidden`，把溢出**就地
+              截断在卡片内**，各 tab 的显示区宽度恒等于 Card 宽度（= 一致）。
+              截断而非放任横向滚动：配置表单是纵向阅读，横向滚动条是缺陷不是功能。 */}
         <Card className="min-w-0 flex-1">
-          <CardContent className="p-3.5">
+          <CardContent className="min-w-0 overflow-x-hidden p-3.5">
             {section === "general" && (
               /* 后端 schema 驱动的通用配置（非业务）。
                  2026-10-02 用户要求：「外观（日夜主题）」实为系统页功能，已移至「系统」tab。 */

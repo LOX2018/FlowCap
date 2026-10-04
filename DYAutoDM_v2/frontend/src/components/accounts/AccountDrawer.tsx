@@ -1,4 +1,5 @@
 import { type Dispatch, type SetStateAction } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,7 @@ export function AccountDrawer({
   onBackupLogin?: (name: string, mode: "qr" | "sms") => void;
 }) {
   const isEdit = mode === "edit";
-  return (
+  return createPortal(
     <>
       <motion.div
         key={"acct-backdrop-" + mode}
@@ -159,6 +160,7 @@ export function AccountDrawer({
           </Button>
         </div>
       </motion.div>
-    </>
+    </>,
+    document.body
   );
 }

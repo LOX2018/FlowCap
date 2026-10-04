@@ -16,7 +16,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type { AiAgentSummary } from "../../api/client";
-import { errMsg, SectionBlock, Field } from "./settings-shared";
+import { errMsg, SectionBlock, Field, BTN_PRIMARY, BTN_GHOST } from "./settings-shared";
 import { confirmDialog } from "@/components/ui/modal";
 import { GlobalModelCard } from "./GlobalModelCard";
 
@@ -182,7 +182,7 @@ export default function AgentSection(props: PageProps) {
           {agents.map((a: AiAgentSummary) => (
             <button
               key={a.id}
-              className={"btn sm" + (selId === a.id ? " accent" : " ghost")}
+              className={selId === a.id ? BTN_PRIMARY : BTN_GHOST}
               onClick={() => setSelId(a.id)}
             >
               {a.name}

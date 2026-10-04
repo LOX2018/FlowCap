@@ -1,4 +1,5 @@
 import { Fragment, useState, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import { Download, ArrowUpDown } from "lucide-react";
 import { Avatar, hue, tick } from "../../components/ui";
@@ -80,7 +81,7 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
     ["fail", "发送失败", cnt("fail")],
   ];
 
-  return (
+  return createPortal(
     <motion.div
       className="fixed inset-0 z-[var(--z-view)] flex flex-col bg-[var(--color-background)]"
       initial={{ opacity: 0, y: 14 }}
@@ -99,7 +100,7 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
         <Badge variant="outline">只读 · 实时入库</Badge>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto overflow-x-hidden">
         {/* 查阅模式是全屏 overlay，独立于 PageContainer；其内容宽度须与
             PageContainer 的默认 maxWidth 保持一致（否则此页的留白与其它页不一致）。 */}
         <div className="mx-auto w-full max-w-[1180px] px-5 pb-10 pt-4.5">
@@ -383,6 +384,7 @@ export function ReviewMode({ rows, onClose, push, sendDm, goMsg }: ReviewModePro
       </div>
       {/* 2026-09-08：私信发送失败原因弹窗（区分调度堵塞/凭证失效/风控等） */}
       <FailReasonModal row={failRow} onClose={() => setFailRow(null)} />
-    </motion.div>
+    </motion.div>,
+    document.body
   );
 }

@@ -30,6 +30,7 @@
  * 规格：`docs/adr/ADR-003-live-room-registry.md`
  */
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { api, RoomConfig } from "../../api/client";
 import { Button } from "@/components/ui/button";
@@ -250,7 +251,7 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center modal-scrim p-5"
       onClick={onClose}
@@ -636,7 +637,8 @@ export default function RoomConfigPage({ open, onClose, push, onChanged, onApply
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

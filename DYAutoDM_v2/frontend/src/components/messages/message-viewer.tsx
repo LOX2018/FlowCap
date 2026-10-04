@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useRef } from "react";
+import { createPortal } from "react-dom";
 import { useEffect } from "react";
 import { MediaInfo } from "./message-shared";
 import { Button } from "@/components/ui/button";
@@ -61,7 +62,7 @@ export function ImageViewer({
     dragging.current = null;
   };
 
-  return (
+  return createPortal(
     <div
       ref={rootRef}
       className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center modal-scrim"
@@ -156,7 +157,8 @@ export function ImageViewer({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

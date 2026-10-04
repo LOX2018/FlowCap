@@ -23,6 +23,7 @@
  * 界面文案必须照此写，禁止暗示能取到昵称。
  */
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X, Search, Loader2, AlertTriangle } from "lucide-react";
 import { api, LiveRoom, DiscoveredRoom, ConfigTagSummary } from "../../api/client";
 import { Button } from "@/components/ui/button";
@@ -243,7 +244,7 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick,
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center modal-scrim p-5"
       onClick={onClose}
@@ -571,7 +572,8 @@ export default function RoomManagePage({ open, onClose, push, onChanged, onPick,
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

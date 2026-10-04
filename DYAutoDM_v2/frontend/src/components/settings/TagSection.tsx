@@ -21,7 +21,7 @@ import {
   type TagManagedSection,
 } from "../../api/client";
 import { SetCard, SetCardHead, SetCardBody } from "@/components/page/set-card";
-import { errMsg } from "./settings-shared";
+import { errMsg, BTN_PRIMARY, BTN_GHOST } from "./settings-shared";
 import { confirmDialog } from "@/components/ui/modal";
 
 /** 绑定下拉统一样式（整账号 / 板块级共用，避免两处各写一份）。
@@ -157,7 +157,7 @@ export default function TagSection(props: PageProps) {
             {tags.map((t: ConfigTagSummary) => (
               <button
                 key={t.id}
-                className={"btn sm" + (selId === t.id ? " accent" : " ghost")}
+                className={selId === t.id ? BTN_PRIMARY : BTN_GHOST}
                 onClick={() => setSelId(t.id)}
               >
                 {t.name}
