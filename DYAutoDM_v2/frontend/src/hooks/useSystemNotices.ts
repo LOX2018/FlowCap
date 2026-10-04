@@ -23,10 +23,18 @@
  */
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { api } from "../api/client";
 
 /** 轮询间隔（ms）。凭证失效不是秒级事件，10s 足够及时且不打扰。 */
 const POLL_MS = 10_000;
+
+/** 落盘日志（脱离 DevTools 也能查：frontend_boot.log）。 */
+function log(text: string) {
+  try {
+    invoke("write_boot_log", { text: `[notify] ${text}` }).catch(() => {});
+  } catch { /* ignore */ }
+}
 
 function inTauri(): boolean {
   return Boolean(
@@ -54,20 +62,37 @@ export function useSystemNotices(enabled: boolean = true) {
       try {
         const notif = await import("@tauri-apps/plugin-notification");
         let permitted = await notif.isPermissionGranted();
+        log(`perm-granted=${permitted} items=${items.length}`);
         if (!permitted) {
           const p = await notif.requestPermission();
           permitted = p === "granted";
+          log(`perm-after-request=${p} granted=${permitted}`);
         }
-        if (!permitted || cancelled) return;
+        if (!permitted || cancelled) {
+          if (!permitted) log("PERMISSION_DENIED — 通知不会弹出");
+          return;
+        }
 
+        let sent = 0;
         for (const n of items) {
           if (shown.current.has(n.id)) continue;
           shown.current.add(n.id);
           // 以**应用身份**发出（显示应用名与图标，而非终端）
           notif.sendNotification({ title: n.title, body: n.body });
+          sent += 1;
         }
-      } catch {
-        // 非 Tauri 环境或插件不可用：静默跳过（通知是增强，不是主流程）
+        if (sent) log(`SENT ${sent} 条（应用身份）`);
+      } catch (e) {
+        // 🔴 2026-10-05 修：**绝不静默**。原实现 `catch {}` 把「插件不可用 /
+        //    权限被拒 / 导入失败」全部吞掉，表现为「后端说已入队、前端一条不弹」，
+        //    而用户看到的只有后端兜底的终端 Toast —— 故障完全无痕，无法归因。
+        //    现改为落盘可查（项目铁律：静默路径必须可计数/可观测）。
+        console.warn("[useSystemNotices] 通知发送失败", e);
+        try {
+          invoke("write_boot_log", {
+            text: `[notify] FAIL items=${items.length} err=${String(e)}`,
+          }).catch(() => {});
+        } catch { /* 日志通道本身不可用则放弃，不再递归 */ }
       }
     })();
 
