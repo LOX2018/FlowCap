@@ -26,7 +26,25 @@ from pathlib import Path
 
 # pytest 会在收集阶段导入本文件，早于任何 test_*.py 及其依赖 ⇒ 时机正确。
 # 仅当调用方**没有**显式指定时才兜底（显式优先，绝不覆盖）。
+
+# --- 数据根（app_root() 的 SSOT） ---
 if not os.environ.get("DY_APP_ROOT"):
     _root = Path(tempfile.gettempdir()) / "dyautodm_test_app_root"
     _root.mkdir(parents=True, exist_ok=True)
     os.environ["DY_APP_ROOT"] = str(_root)
+else:
+    _root = Path(os.environ["DY_APP_ROOT"])
+
+# --- 路径双源（关键！）---
+# `config.settings.data_dir` 硬编码 `Path("data")`（config.py L49），且 config.py L87
+# 在**导入时**就 `mkdir` —— 任何 import config 的测试都会在 `backend/` 下建出
+# `data/` 与 `accounts/`，直接触发铁律门禁 R1。这条路径**不经过** `app_root()`：
+# database.py L542/575 直接用 `settings.data_dir`，所以只设 DY_APP_ROOT 堵不住。
+#
+# pydantic BaseSettings 的 env 优先于字段 default，故此处只需设 `DATA_DIR` /
+# `ACCOUNTS_DIR` 环境变量即可把 `settings.data_dir` 重定向到数据根，
+# **无需改生产代码**（改 config.py 的 default 会让测试便利泄漏进产品）。
+if not os.environ.get("DATA_DIR"):
+    os.environ["DATA_DIR"] = str(_root / "data")
+if not os.environ.get("ACCOUNTS_DIR"):
+    os.environ["ACCOUNTS_DIR"] = str(_root / "accounts")
