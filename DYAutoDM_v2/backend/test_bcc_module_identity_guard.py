@@ -111,7 +111,7 @@ class TestBccModuleIdentityGuard(unittest.TestCase):
         """
         code = _PROBE.format(backend=_BACKEND, entry=_ENTRY)
         env = dict(os.environ)
-        env.setdefault("DY_APP_ROOT", _ROOT)
+        env["DY_APP_ROOT"] = _ROOT
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, cwd=_BACKEND, env=env, timeout=120,
@@ -163,7 +163,7 @@ class TestBccModuleIdentityGuard(unittest.TestCase):
             self.skipTest(f"入口不存在: {entry}")
         code = _PROBE_MAIN.format(backend=_BACKEND, entry=entry)
         env = dict(os.environ)
-        env.setdefault("DY_APP_ROOT", _ROOT)
+        env["DY_APP_ROOT"] = _ROOT
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, cwd=_BACKEND, env=env, timeout=180,

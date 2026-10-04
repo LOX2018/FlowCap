@@ -289,7 +289,7 @@ print("N:" + str(d2._state.get("n")))
 
 def _run(code: str, timeout: int = 120):
     env = dict(os.environ)
-    env.setdefault("DY_APP_ROOT", os.path.join(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()), "Temp", "fixF"))
+    env["DY_APP_ROOT"] = os.path.join(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()), "Temp", "fixF")
     return subprocess.run([sys.executable, "-c", code], capture_output=True,
                           text=True, cwd=_BACKEND, env=env, timeout=timeout)
 

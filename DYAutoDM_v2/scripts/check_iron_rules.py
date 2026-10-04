@@ -587,8 +587,18 @@ def r15_schema_copy_concision() -> None:
 #     隔离（`env_isolate(...)` / `isolate(...)`，或显式 `os.environ["DY_APP_ROOT"]=`）。
 #     这是事故本体：删库 + 没隔离。有隔离则删的是自己的临时库，无害。
 #   · R16-B 警告（WARN_ONLY）：`setdefault("DY_APP_ROOT")` 是**已知危险写法**
-#     （键已存在时不覆盖 ⇒ 隔离静默失效；同进程测试串扰）。**存量债务**，不阻断
-#     （16 处存量，其中 5 处故意指向部署根），只让规模可见并禁止新增。
+#     （键已存在时不覆盖 ⇒ 隔离静默失效；同进程测试串扰）。
+#
+# R16-B 白名单：5 个直播类测试**故意**指向部署根 `C:\temp\dyautodm_design`
+#（需真实凭证/环境，无法隔离到临时库）—— 这是**既定设计**而非债务，
+# 故 R16-B 豁免它们（白名单 SSOT = `_R16B_DEPLOY_ROOT_FILES`，见本文件）。
+# 命中数仍计入以保持可见性（报出总数 + 白名单数），不静默放过。
+#
+# 🔴 2026-10-04 收编（M-31 ③）：其余 12 处 `setdefault` 已全部改为**显式赋值**
+#（`os.environ[...] = ...` 或子进程 `env[...] = ...`），目标值不变、语义不变，
+# 只消除「键已存在时空操作」的假隔离坑。收编后 R16-B 命中 = 仅 5 个白名单文件
+# ⇒ 报出总数但豁免白名单不报红；若有**新文件**用 setdefault（且不在白名单）
+# ⇒ R16-B 变红，禁止静默新增。
 #
 # 表清单 SSOT = `backend/*.py` 的 `CREATE TABLE` 动态抽取（新增表自动纳入）；
 # 不写死清单 —— 写死就是下一个漂移点。
@@ -607,6 +617,18 @@ def _business_tables() -> set:
             continue
     out -= {"kv_store", "sqlite_sequence"}
     return out
+
+
+# R16-B 白名单：5 个直播类测试**故意**指向部署根 `C:\temp\dyautodm_design`
+# （需真实凭证/环境，无法隔离到临时库）。这是**既定设计**而非债务，
+# 故 R16-B 豁免它们（仍计入命中数以保持可见性，但不报红）。
+_R16B_DEPLOY_ROOT_FILES = frozenset({
+    "test_capability_matrix.py",
+    "test_live_automation_gates.py",
+    "test_live_likes_rank.py",
+    "test_live_link_resolve.py",
+    "test_live_write_credential_loader.py",
+})
 
 
 def r16_test_db_isolation() -> None:
@@ -656,9 +678,17 @@ def r16_test_db_isolation() -> None:
     check(not risky, "R16",
           f"全表删业务表的测试均有数据隔离（{guarded} 个受保护"
           f"{': ' + '、'.join(risky) if risky else '，无违规'}）")
-    check(not sd_hits, "R16-B",
-          f"测试无 setdefault(DY_APP_ROOT) 存量写法（命中 {len(sd_hits)}"
-          f"{': ' + '、'.join(sd_hits[:3]) if sd_hits else ''}）")
+    # R16-B 白名单豁免：命中串形如 `basename:line`，取 `:` 前的 basename 精确比对
+    # （不用 startswith —— 前缀匹配会把 test_live_likes_rank.py 误配到
+    #  test_live_link_resolve.py 等共享前缀的文件上）。
+    def _fname(hit: str) -> str:
+        return hit.split(":", 1)[0]
+    sd_hits_real = [h for h in sd_hits if _fname(h) not in _R16B_DEPLOY_ROOT_FILES]
+    exempted = len(sd_hits) - len(sd_hits_real)
+    check(not sd_hits_real, "R16-B",
+          f"测试无 setdefault(DY_APP_ROOT) 存量写法（命中 {len(sd_hits_real)}"
+          f"，另 {exempted} 处白名单豁免"
+          f"{': ' + '、'.join(sd_hits_real[:3]) if sd_hits_real else ''}）")
 
 
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
@@ -687,8 +717,9 @@ PENDING: set[str] = set()
 
 # 磁盘卫生类（不影响提交内容）→ 仅警告
 WARN_ONLY = {"R2", "R3", "R9", "R10", "R12-B", "R16-B"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
-# R16-B 理由见 r16_test_db_isolation 注释 ②：16 处存量 setdefault（5 处故意指向部署根），
-# 属存量债务 → 只警告、不阻断；R16 本身（删业务表无隔离）仍阻断。
+# R16-B 理由见 r16_test_db_isolation 注释：5 个部署根测试的 setdefault 是既定设计
+#（白名单 `_R16B_DEPLOY_ROOT_FILES` 豁免）；2026-10-04 收编后其余 12 处已转显式赋值。
+# R16 本身（删业务表无隔离）仍阻断。
 
 
 def run() -> int:

@@ -114,7 +114,7 @@ class TestBccKernelUnavailableBreaker(unittest.TestCase):
     def _probe(self) -> str:
         code = _PROBE.format(backend=_BACKEND, entry=_ENTRY)
         env = dict(os.environ)
-        env.setdefault("DY_APP_ROOT", _ROOT)
+        env["DY_APP_ROOT"] = _ROOT
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, cwd=_BACKEND, env=env, timeout=180,

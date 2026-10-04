@@ -34,7 +34,7 @@ if _HERE not in sys.path:
 
 _ROOT = os.path.join(os.environ.get("TEMP", "."), "fixA")
 os.makedirs(_ROOT, exist_ok=True)
-os.environ.setdefault("DY_APP_ROOT", _ROOT)
+os.environ["DY_APP_ROOT"] = _ROOT
 
 from api import live_config, live_rooms  # noqa: E402
 from database import get_kv_json, set_kv_json  # noqa: E402

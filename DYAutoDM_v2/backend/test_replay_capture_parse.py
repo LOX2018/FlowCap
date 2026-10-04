@@ -35,10 +35,11 @@ _BACKEND = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
-# 回落根：独立运行时用；已存在则不动（不抢套件的隔离根）
+# 回落根：独立运行时用；已存在则不动（不抢套件的隔离根）。
+# 🔴 2026-10-04 收编（M-31 ③）：setdefault → 显式赋值（抗外部污染 + 抗同进程串扰）。
 _FALLBACK_ROOT = os.path.join(tempfile.gettempdir(), "dyautodm_replay_root")
 os.makedirs(_FALLBACK_ROOT, exist_ok=True)
-os.environ.setdefault("DY_APP_ROOT", _FALLBACK_ROOT)
+os.environ["DY_APP_ROOT"] = _FALLBACK_ROOT
 
 from replay import loader, selftest                # noqa: E402
 from replay.sandbox import DESIGN_ROOT, LEGACY_ROOT  # noqa: E402

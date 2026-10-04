@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("DY_APP_ROOT", tempfile.mkdtemp(prefix="dy_d5_"))
+os.environ["DY_APP_ROOT"] = tempfile.mkdtemp(prefix="dy_d5_")
 
 from services import reply_kb as R            # noqa: E402
 from services import reply_purify as P        # noqa: E402

@@ -18,8 +18,12 @@ _BACKEND = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
-os.environ.setdefault(
-    "DY_APP_ROOT", os.path.join(tempfile.gettempdir(), "dyautodm_replay_root"))
+# 🔴 2026-10-04 收编（M-31 ③）：setdefault → 显式赋值（抗外部污染 + 抗同进程串扰）。
+# 语义变化说明：原 setdefault 尊重进程级已设的 DY_APP_ROOT（与套件共享根）；现改为
+# 每个文件自己的共享根（dyautodm_replay_root）。replay 文件已按 mtime 排序、只读共享，
+# 共享语义保留；若套件中他处设了**别的**根，本文件不再跟随（可预期的行为变化，
+# 与全库 setdefault 收编方向一致）。
+os.environ["DY_APP_ROOT"] = os.path.join(tempfile.gettempdir(), "dyautodm_replay_root")
 
 from replay import loader, sanitize_db, selftest  # noqa: E402
 from services import env_audit  # noqa: E402

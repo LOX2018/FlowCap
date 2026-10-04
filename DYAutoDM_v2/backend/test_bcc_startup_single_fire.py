@@ -102,7 +102,7 @@ def _run(inject_double: bool, port: int):
     code = _PROBE.format(backend=_BACKEND, port=port,
                          inject_double="1" if inject_double else "0")
     env = dict(os.environ)
-    env.setdefault("DY_APP_ROOT", _ROOT)
+    env["DY_APP_ROOT"] = _ROOT
     return subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True, text=True, cwd=_BACKEND, env=env, timeout=180,

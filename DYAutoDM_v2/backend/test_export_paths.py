@@ -27,7 +27,10 @@ for p in (BACKEND, BACKEND.parent):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-os.environ.setdefault("DY_APP_ROOT", str(BACKEND.parent))
+# 🟡 R16-B 豁免（2026-10-04 登记）：本文件必须解析 BACKEND.parent 路径（导出路径契约测试），
+# 无法隔离到临时根 —— 与 5 个直播部署根测试同类。setdefault → 显式赋值（不改变目标值，
+# 仅消除「键已存在时空操作」的假隔离坑）。
+os.environ["DY_APP_ROOT"] = str(BACKEND.parent)
 
 
 class _Cfg:
