@@ -31,6 +31,7 @@
 | R7 | §1.2 昵称源 SSOT | 昵称链路不得调用已推翻的批量查询符号 |
 | **R8** | **数据契约（ADR-012）** | **委托 `audit_data_contract.py` 六项**（见下） |
 | **R9** | **H-22 §6·1 建议 A / D-02 审计红线** | **委托 `audit_redline_count.py` 的 count()**（见下） |
+| **R16** | **H-40 事故 / M-31 门禁盲区** | **测试数据隔离**：含无 WHERE 全表删业务表的测试文件必须有隔离（阻断）；`setdefault(DY_APP_ROOT)` 存量写法（R16-B，警告） |
 
 ### R9 为何存在（2026-09-26 全库审计 §6·1 建议 A）
 
@@ -74,6 +75,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import ast as _ast
 
 # ── 路径真源（本分支）──────────────────────────────────────────────────────
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -560,6 +562,104 @@ def r15_schema_copy_concision() -> None:
         check(False, "R15", f"调用 check_schema_copy 失败: {type(e).__name__}")
 
 
+# ── R16: 测试数据隔离（防「测试静默连生产库」，M-31 / H-40 事故）──────────
+# 出处：2026-10-04 实测事故（v0.46.60）。`check_version_sync` 与 `check_iron_rules`
+# **全绿时生产库已丢数据** —— `test_unified_task_model` 连接真实生产库执行
+# `DELETE FROM tasks`，删掉 3 条真实任务。故「门禁全绿」与「库没被删」此前
+# **毫无关联**：现有门禁对「测试连错库」零覆盖。这是**存量扫描**维度（与 R8 同理）：
+# 「没人新增这个写法」的增量检查永远不会发现已经在那里的危险。
+#
+# 判据设计（两点都由实测约束，不是想当然）：
+#
+# ① 🔴 **AST 判定，不用 grep。** 实测踩到：H-40 修复时在测试文件里写了一条说明
+#    注释，含字面量 `os.environ.setdefault("DY_APP_ROOT", ...)` ⇒ grep 假报
+#    3 个高危，而实际全是已修复文件。注释/字符串里的字面量在 AST 里不会成为
+#    Call 节点 ⇒ AST 天然免疫。
+#
+# ② 🔴 **不能「一律禁止 setdefault」**（台账 M-31 原建议），实测会误伤 16 个文件：
+#    全库 17 处真实 `setdefault("DY_APP_ROOT")` 中**没有一处**与业务表删除同文件；
+#    且其中 5 个**故意**指向部署根 `C:\temp\dyautodm_design`（直播类测试需真实
+#    凭证才能跑，无法隔离到临时库）。照原建议落地 ⇒ 门禁一上线就 16 个文件变红
+#    且被迫改坏测试 = 典型假门禁。
+#
+# ⇒ 改为**分层**：
+#   · R16 阻断：含「无 WHERE 的全表 DELETE <业务表>」的测试文件，必须显式做数据
+#     隔离（`env_isolate(...)` / `isolate(...)`，或显式 `os.environ["DY_APP_ROOT"]=`）。
+#     这是事故本体：删库 + 没隔离。有隔离则删的是自己的临时库，无害。
+#   · R16-B 警告（WARN_ONLY）：`setdefault("DY_APP_ROOT")` 是**已知危险写法**
+#     （键已存在时不覆盖 ⇒ 隔离静默失效；同进程测试串扰）。**存量债务**，不阻断
+#     （16 处存量，其中 5 处故意指向部署根），只让规模可见并禁止新增。
+#
+# 表清单 SSOT = `backend/*.py` 的 `CREATE TABLE` 动态抽取（新增表自动纳入）；
+# 不写死清单 —— 写死就是下一个漂移点。
+def _business_tables() -> set:
+    """动态抽取业务表名（SSOT）。排除系统表（删它们是运维行为）。"""
+    import glob as _glob
+    out: set = set()
+    for f in _glob.glob(os.path.join(BACKEND, "*.py")):
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                txt = fh.read()
+            _ast.parse(txt)      # 语法有效才信它的 CREATE TABLE
+            out.update(t.lower() for t in re.findall(
+                r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)', txt, re.I))
+        except Exception:  # noqa: BLE001
+            continue
+    out -= {"kv_store", "sqlite_sequence"}
+    return out
+
+
+def r16_test_db_isolation() -> None:
+    """含无 WHERE 全表删的测试文件必须显式做数据隔离（M-31 / H-40 事故本体）。"""
+    import glob as _glob
+    biz = _business_tables()
+
+    risky: list = []          # 阻断：删业务表却无隔离
+    sd_hits: list = []        # 警告：存量 setdefault 写法
+    guarded = 0              # 已正确隔离的文件数（正控口径）
+
+    for f in sorted(_glob.glob(os.path.join(BACKEND, "test_*.py"))):
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                src = fh.read()
+            tree = _ast.parse(src)
+        except Exception:  # noqa: BLE001
+            continue
+
+        deletes_biz = False
+        for n in _ast.walk(tree):
+            # ① 无 WHERE 的全表 DELETE <业务表>
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str):
+                u = n.value.upper().replace(" ", "")
+                if "DELETEFROM" in u and "WHERE" not in u:
+                    m = re.search(r"DELETE\s+FROM\s+(\w+)", n.value, re.I)
+                    if m and m.group(1).lower() in biz:
+                        deletes_biz = True
+            # ② setdefault("DY_APP_ROOT") 真实调用（注释/字符串里的字面量不计）
+            if (isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute)
+                    and n.func.attr == "setdefault" and n.args):
+                a = n.args[0]
+                if isinstance(a, _ast.Constant) and str(a.value) == "DY_APP_ROOT":
+                    sd_hits.append(f"{os.path.basename(f)}:{n.lineno}")
+
+        if not deletes_biz:
+            continue
+        # 显式赋值会覆盖既有值（隔离生效）；setdefault 不覆盖（隔离可静默失效）
+        explicit = bool(re.search(
+            r'os\.environ\s*\[\s*["\']DY_APP_ROOT["\']\s*\]\s*=', src))
+        uses_iso = bool(re.search(r'\b(env_isolate|isolate)\s*\(', src))
+        if uses_iso or explicit:
+            guarded += 1
+        else:
+            risky.append(os.path.basename(f))
+
+    check(not risky, "R16",
+          f"全表删业务表的测试均有数据隔离（{guarded} 个受保护"
+          f"{': ' + '、'.join(risky) if risky else '，无违规'}）")
+    check(not sd_hits, "R16-B",
+          f"测试无 setdefault(DY_APP_ROOT) 存量写法（命中 {len(sd_hits)}"
+          f"{': ' + '、'.join(sd_hits[:3]) if sd_hits else ''}）")
+
 
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
@@ -567,7 +667,8 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r8_data_contract, r9_audit_redline,
          r10_no_cargo_target_in_src, r11_no_legacy_profile_literal,
          r12_credential_exposure, r13_no_internal_info_in_ui_copy,
-         r14_deploy_root_marker_consistent, r15_schema_copy_concision]
+         r14_deploy_root_marker_consistent, r15_schema_copy_concision,
+         r16_test_db_isolation]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -585,7 +686,9 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
 PENDING: set[str] = set()
 
 # 磁盘卫生类（不影响提交内容）→ 仅警告
-WARN_ONLY = {"R2", "R3", "R9", "R10", "R12-B"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
+WARN_ONLY = {"R2", "R3", "R9", "R10", "R12-B", "R16-B"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
+# R16-B 理由见 r16_test_db_isolation 注释 ②：16 处存量 setdefault（5 处故意指向部署根），
+# 属存量债务 → 只警告、不阻断；R16 本身（删业务表无隔离）仍阻断。
 
 
 def run() -> int:
@@ -685,6 +788,21 @@ def selftest() -> int:
         f.write('_DEPLOY_ROOT_MARKER = "dyautodm_app_root.txt"\n')
     with open(os.path.join(fake_src, "scripts", "deploy.py"), "w", encoding="utf-8") as f:
         f.write("# 注入样本：故意不含声明文件名\n")
+    #   R16 负控：业务表清单 SSOT + 「删业务表但无隔离」样本（必须变红）
+    #     _business_tables() 先对每个 .py 做 _ast.parse（语法无效则不信它的
+    #     CREATE TABLE），故表名真源必须写成**合法 Python**（SQL 是字符串常量，
+    #     与真仓 database.py 同形）。写成裸 SQL 会让 AST 解析失败 ⇒ 表清单为空
+    #     ⇒ R16 恒绿，负控形同虚设（实测踩到）。
+    with open(os.path.join(fake_backend, "database.py"), "w", encoding="utf-8") as f:
+        f.write("SCHEMA = 'CREATE TABLE IF NOT EXISTS tasks (id INTEGER)'\n")
+    with open(os.path.join(fake_backend, "test_evil_delete.py"), "w", encoding="utf-8") as f:
+        f.write("import sqlite3\nconn.execute('DELETE FROM tasks')\n")
+    #   R16 正控样本（同目录，但**有**隔离 ⇒ 不得被判红）：
+    #     若判据不认 env_isolate 而恒报红，正控断言会失败 ⇒ 判据跟着数据走。
+    with open(os.path.join(fake_backend, "test_ok_delete.py"), "w", encoding="utf-8") as f:
+        f.write("from test_isolation import env_isolate\n"
+                "env_isolate('ok_del')\n"
+                "conn.execute('DELETE FROM tasks')\n")
 
     saved = (SRC_ROOT, BACKEND, DATA_ROOT, RESULTS[:])
     SRC_ROOT, BACKEND, DATA_ROOT = fake_src, fake_backend, fake_data
@@ -741,7 +859,7 @@ def selftest() -> int:
     saved_dc = globals()["_load_datacontract_module"]
     globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1", "R13", "R14"}
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1", "R13", "R14", "R16"}
     for r in RULES:
         try:
             r()
@@ -755,6 +873,28 @@ def selftest() -> int:
     r2_details = [d for ok, rid, d in RESULTS if rid == "R2"]
     r2_exemption_ok = any(("命中 1 个" in d and "appinternals" not in d)
                           for d in r2_details)
+    missing = failed_expect - got_failed
+    # ── R16 正控：撤销负控（删掉未隔离样本）后 R16 必须复绿 ─────────────
+    #    双向都验：只有负控的门禁自证不了（恒 False 的判据也能过负控）。
+    #    同时断言**已隔离**的正控样本没被误伤 —— 豁免面精确。
+    #    ⚠️ 必须在还原 BACKEND **之前**执行（用 fake_backend），否则会对
+    #    **真仓**跑 os.remove / 判据 —— 正控变成生产破坏。
+    r16_clean = False
+    r16_exemption_ok = False
+    try:
+        evil = os.path.join(BACKEND, "test_evil_delete.py")
+        if os.path.isfile(evil):
+            os.remove(evil)
+        RESULTS.clear()
+        r16_test_db_isolation()
+        r16_rows = [(ok, d) for ok, rid, d in RESULTS if rid == "R16"]
+        r16_clean = bool(r16_rows) and all(ok for ok, _ in r16_rows)
+        r16_exemption_ok = any("1 个受保护" in d for _, d in r16_rows)
+    except Exception as e:  # noqa: BLE001
+        print(f"  R16 正控异常: {type(e).__name__}: {e}")
+    finally:
+        RESULTS.clear()
+
     globals()["_load_redline_module"] = saved_loader   # 无论如何都要还原
     globals()["_load_datacontract_module"] = saved_dc
     globals()["_load_credexposure_module"] = saved_cred
@@ -798,7 +938,8 @@ def selftest() -> int:
         RESULTS.clear()
 
     missing = failed_expect - got_failed
-    ok = not missing and r9_clean and r8_clean and r2_exemption_ok
+    ok = not missing and r9_clean and r8_clean and r2_exemption_ok \
+        and r16_clean and r16_exemption_ok
     print("-" * 70)
     print(f"  期望报红: {sorted(failed_expect)}")
     print(f"  实际报红: {sorted(got_failed)}")
@@ -806,6 +947,8 @@ def selftest() -> int:
     print(f"  R8 正控（子项全通过应 PASS）: {'通过' if r8_clean else '未通过'}")
     print(f"  R2 正控（appinternals 豁免 / 顶层仍红）: "
           f"{'通过' if r2_exemption_ok else '未通过'}")
+    print(f"  R16 正控（撤销负控应复绿 / 已隔离样本不误伤）: "
+          f"{'通过' if r16_clean and r16_exemption_ok else '未通过'}")
     if missing:
         print(f"\n✗ 自检失败：以下规则在违规样本下**没有变红** = 形同虚设: {sorted(missing)}")
         return 1
@@ -818,6 +961,12 @@ def selftest() -> int:
     if not r2_exemption_ok:
         print("\n✗ 自检失败：R2 未精确豁免部署运行时目录（appinternals）"
               "—— 豁免名单可能未跟上 contents 目录改名")
+        return 1
+    if not r16_clean:
+        print("\n✗ 自检失败：R16 在撤销违规样本后没有复绿 = 判据写死，非数据驱动")
+        return 1
+    if not r16_exemption_ok:
+        print("\n✗ 自检失败：R16 误伤已隔离样本 = 豁免判据不精确")
         return 1
     print("\n✓ 自检通过：所有可判定规则在违规时均会报红（非空架子）")
     return 0
