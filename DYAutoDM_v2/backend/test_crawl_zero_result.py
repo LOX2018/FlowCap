@@ -189,7 +189,10 @@ class TestTaskPageShowsCrawlTasks(unittest.TestCase):
                                   "tasks", "tasks-page.tsx"),
                      encoding="utf-8") as f:
             src = f.read()
-        self.assertIn('title="采集任务"', src, "任务页未渲染「采集任务」区")
+        # 2026-10-04（ADR-035 三页签，用户拍板）：采集任务已并入「运行任务」页签，
+        # 原独立 `title="采集任务"` 区块不再存在 —— 断言改为「运行任务页签里
+        # 确实渲染了采集任务行（类型标签 + 成功/失败结果）」，意图不变且更强。
+        self.assertIn("评论采集", src, "任务页未渲染采集任务行")
         self.assertIn("成功 {t.ok_works", src, "未显示成功/失败结果")
 
 
@@ -337,6 +340,97 @@ class TestUiRequirements(unittest.TestCase):
                          "platform-cards.tsx")
         self.assertIn("checked\n          ? \"ring-2", src,
                       "选中卡片未加 ring 边框")
+
+
+class TestImageSearchKind(unittest.TestCase):
+    """⑧ 搜索必须支持「图文」维度（用户指令：除用户和视频外，把图文也加进去）。
+
+    上游 `search_general_work` 自带 `content_type`（0 不限/1 视频/2 图文，
+    `dy_apis/client_search.py:83`），接线时漏了 ⇒ 图文搜不到。
+    """
+
+    def test_backend_maps_image_kind_to_content_type(self):
+        import inspect
+        import api.platform as P
+        src = inspect.getsource(P.search)
+        self.assertIn('_content_type = "2" if req.kind == "image"', src,
+                      "kind=image 未映射到 content_type=2")
+        self.assertIn("content_type=_content_type", src,
+                      "content_type 未传入上游调用")
+
+    def test_image_kind_forces_filter_path(self):
+        """🔴 `search_stream` 不支持 content_type ⇒ kind=image 必须走筛选分支。"""
+        import inspect
+        import api.platform as P
+        src = inspect.getsource(P.search)
+        i = src.find("_has_filter = bool(")
+        self.assertGreater(i, 0)
+        seg = src[i:i + 200]
+        self.assertIn("_content_type", seg,
+                      "kind=image 未强制走筛选路径 ⇒ content_type 会被忽略")
+
+    def test_request_model_documents_image(self):
+        from api.platform import SearchReq
+        d = (SearchReq.__doc__ or "") + " ".join(
+            f.description or "" for f in SearchReq.model_fields.values())
+        self.assertIn("image", d, "SearchReq 未声明 image 取值")
+
+    def test_frontend_has_image_option(self):
+        with io.open(os.path.join(_SRC, "frontend", "src", "components",
+                                  "platform", "platform-page.tsx"),
+                     encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('<SelectItem value="image">图文</SelectItem>', src,
+                      "搜索类型缺「图文」选项")
+
+    def test_frontend_api_type_allows_image(self):
+        with io.open(os.path.join(_SRC, "frontend", "src", "api", "platform.ts"),
+                     encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('"video" | "user" | "image"', src,
+                      "前端 api 契约未放行 image")
+
+    def test_image_results_are_openable(self):
+        """图文必须能点开（原判定只在 kind==='video' 时挂 onOpen）。"""
+        with io.open(os.path.join(_SRC, "frontend", "src", "components",
+                                  "platform", "platform-page.tsx"),
+                     encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('onOpenAweme={kind !== "user" ? openAweme : undefined}', src,
+                      "图文点不开 ⇒ 用户看不到图文内容")
+
+
+    def test_image_ticket_not_misjudged_502(self):
+        """🔴 「取址失败：无可用地址」不得用于图文。
+
+        根因：`media_stream_ticket` 原只取 `r["url"]`（视频流地址），图文没有
+        `video.play_addr` ⇒ `url` 空 ⇒ 被误判成 502。修复按媒体类型分流。
+        """
+        import inspect
+        import api.platform as P
+        src = inspect.getsource(P.media_stream_ticket)
+        self.assertIn('rtype = r.get("type") or "video"', src,
+                      "未按媒体类型分流 ⇒ 图文仍会被误判 502")
+        self.assertIn('rtype == "video" and not (r.get("url")', src,
+                      "视频失败判据未与图文隔离")
+        self.assertIn('取址失败：图文无可展示图片', src,
+                      "图文缺图未给明确失败原因（静默 502）")
+        # 图文不应因缺 stream 地址而失败
+        self.assertNotIn('if not direct:\n        raise HTTPException(502, "取址失败：无可用地址")',
+                         src, "仍存在「无 direct 即 502」的一刀切判据")
+
+    def test_frontend_image_success_criteria(self):
+        """前端不得以 `stream_url` 为唯一成功判据（图文没有视频流地址）。"""
+        with io.open(os.path.join(_SRC, "frontend", "src", "components",
+                                  "platform", "platform-page.tsx"),
+                     encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("isImageKind", src,
+                      "前端未识别图文类型 ⇒ 会误报「取址失败」")
+        self.assertIn("throw new Error(\"取址失败\")", src)
+        # 原一刀切判据必须已移除
+        self.assertNotIn("if (!t?.ok || !t.stream_url) throw new Error", src,
+                      "仍用 stream_url 作唯一成功判据 ⇒ 图文点开必报错")
 
 
 class TestNegativeControl(unittest.TestCase):

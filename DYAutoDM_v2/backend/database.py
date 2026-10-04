@@ -163,7 +163,11 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         config TEXT DEFAULT '{}',
         records TEXT DEFAULT '[]',
         created_at REAL NOT NULL,
-        pid INTEGER DEFAULT 0
+        pid INTEGER DEFAULT 0,
+        kind TEXT DEFAULT '',
+        params TEXT DEFAULT '{}',
+        error_code TEXT DEFAULT '',
+        updated_at REAL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_tasks_acct ON tasks(acct);
@@ -301,6 +305,23 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN pid INTEGER DEFAULT 0")
     except Exception:
         pass  # 列已存在
+    # ★ 2026-10-04（ADR-035 统一任务模型）：tasks 表加通用列，使采集/直播/定时
+    # 三类任务可共用一张表。**加列不重建**（零迁移）：kind 为空 ⇒ 按 live_id 非空
+    # 回落为 'live'（老数据照读）。逐列 ADD COLUMN，幂等；失败仅告警不阻断启动。
+    for _ddl in (
+        "ALTER TABLE tasks ADD COLUMN kind TEXT DEFAULT ''",
+        "ALTER TABLE tasks ADD COLUMN params TEXT DEFAULT '{}'",
+        "ALTER TABLE tasks ADD COLUMN error_code TEXT DEFAULT ''",
+        "ALTER TABLE tasks ADD COLUMN updated_at REAL DEFAULT 0",
+    ):
+        try:
+            conn.execute(_ddl)
+        except Exception:
+            pass  # 列已存在
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks(kind)")
+    except Exception:
+        pass
     # ── dm_uid_sink 扩列（ADR-007 / C-06，2026-09-24）────────────────
     # 高价值筛查 + 沉淀窗口 + 按人聚合。逐列 ADD COLUMN，幂等。
     # 回滚：保留列、把新配置恢复默认即退化为原行为（旧代码无视新列）。

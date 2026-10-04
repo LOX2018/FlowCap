@@ -88,6 +88,22 @@ export default function TasksPage(props: PageProps) {
     const timer = setInterval(() => crawlTasksQ.refetch(), 3_000);
     return () => clearInterval(timer);
   }, [ready, hasRunning]);
+
+  // ★ 2026-10-04（ADR-035）：直播监听任务改为读 `/api/engine/accounts`
+  //   （ADR-002 §5.2 的按账号引擎表，**已支持多账号并发监听**）。
+  //   此前任务中心只读 overview 的 `app.state.adm`（最近启动的那一个）⇒ 多账号时
+  //   只显示 1 个任务。改用引擎表后，「全部」运行中的直播任务都能列出。
+  const RUNNING_STATES = ["starting", "running", "paused", "stopping"];
+  const engineQ = useQuery({
+    queryKey: ["engine-accounts"],
+    queryFn: () => api.listEngineAccounts(),
+    enabled: !!ready,
+    refetchInterval: 10_000,
+  });
+  const liveTasks = (engineQ.data?.items || []).filter((e) =>
+    RUNNING_STATES.includes(e.state)
+  );
+
   const refreshHistory = useCallback(() => {
     setHistoryPage(0);
     qc.invalidateQueries({ queryKey: ["task-history"] });
@@ -162,9 +178,10 @@ export default function TasksPage(props: PageProps) {
     (ov.acct || "").trim() ||
     (history.find((h) => h.status === "running")?.acct || "").trim();
 
-  // ── 运行任务页签：直播运行行 + 采集运行行 混排 ─────────────────────────
-  const liveRunning = !!ready && !!ov.running;
-  const runningCount = (liveRunning ? 1 : 0) + crawlTasks.length;
+  // ── 运行任务页签：直播运行行（多账号）+ 采集运行行 混排 ────────────────
+  //   `ov.running` 仅作**单任务回落**（engine 表查询失败时仍能显示最近那个引擎）。
+  const liveRunning = liveTasks.length > 0 || (!!ready && !!ov.running);
+  const runningCount = liveTasks.length + crawlTasks.length;
   const hasAnyRunning = crawlTasks.some((t) => t.status === "running") || liveRunning;
 
   return (
@@ -283,8 +300,96 @@ export default function TasksPage(props: PageProps) {
                     </tr>
                   ) : (
                     <>
-                      {/* ── 直播监听运行行（读 overview 快照） ── */}
-                      {liveRunning && (
+                      {/* ── 直播监听运行行（多账号，读 /api/engine/accounts） ── */}
+                      {liveTasks.map((e) => {
+                        const st = e.state;
+                        const tone: "ok" | "warn" =
+                          st === "starting" || st === "stopping" || st === "paused" ? "warn" : "ok";
+                        const label =
+                          st === "starting" ? "启动中…"
+                          : st === "stopping" ? "私信收尾中"
+                          : st === "paused" ? "已暂停" : "运行中";
+                        const acctName = e.acct || "匿名";
+                        return (
+                          <tr key={`live-${acctName}`}>
+                            <Td mono>—</Td>
+                            <Td>
+                              <div className="inline-flex items-center gap-2">
+                                <Avatar name={acctName} h="160" sm />
+                                <span>{acctName}</span>
+                              </div>
+                            </Td>
+                            <Td>
+                              <span className="inline-flex items-center gap-1">
+                                <Radio className="h-3 w-3 opacity-70" />直播监听
+                              </span>
+                            </Td>
+                            <Td mono muted>{e.live_url || e.live_id || "—"}</Td>
+                            <Td>
+                              <Tone tone={tone}>{label}</Tone>
+                              {e.status_msg && st === "stopping" && (
+                                <div className="mt-0.5 font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+                                  {e.status_msg}
+                                </div>
+                              )}
+                            </Td>
+                            <Td mono>已发 {e.sent || 0}</Td>
+                            <Td>
+                              <Toolbar className="justify-end gap-1">
+                                <Button
+                                  variant="link"
+                                  size="sm"
+                                  onClick={() => {
+                                    setTab?.("live");
+                                    push("已跳转到直播监听页（该任务运行中）");
+                                  }}
+                                >
+                                  进入任务
+                                </Button>
+                                {st === "paused" ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      api.resumeEngine(e.acct || undefined)
+                                        .then(() => push("已继续"))
+                                        .catch((err: unknown) => push("异常: " + errMsg(err)))
+                                    }
+                                  >
+                                    <Play className="h-3 w-3" />继续
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      api.pauseEngine(e.acct || undefined)
+                                        .then(() => push("已暂停"))
+                                        .catch((err: unknown) => push("异常: " + errMsg(err)))
+                                    }
+                                  >
+                                    <Pause className="h-3 w-3" />暂停
+                                  </Button>
+                                )}
+                                <Button
+                                  variant="danger-outline"
+                                  size="sm"
+                                  onClick={() =>
+                                    api.stopEngine(e.acct || undefined)
+                                      .then(() => push("已停止"))
+                                      .catch((err: unknown) => push("异常: " + errMsg(err)))
+                                  }
+                                >
+                                  <Square className="h-3 w-3" />停止
+                                </Button>
+                              </Toolbar>
+                            </Td>
+                          </tr>
+                        );
+                      })}
+
+                      {/* ── 直播监听（单任务回落：engine 表为空时读 overview 快照） ── */}
+                      {liveTasks.length === 0 && liveRunning && (
                         <tr>
                           <Td mono>{ov.status || "—"}</Td>
                           <Td>

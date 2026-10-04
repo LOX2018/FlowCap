@@ -49,8 +49,13 @@ def _next_task_id(conn) -> int:
         return cand
 
 
-def start_task(acct: str, live_id: str, config: dict | None = None, records: list | None = None) -> int:
+def start_task(acct: str, live_id: str, config: dict | None = None, records: list | None = None,
+               kind: str = "live", params: dict | None = None) -> int:
     """记录一条新历史任务（状态=运行中），返回任务 id。
+
+    ★ 2026-10-04（ADR-035 统一任务模型）：新增 `kind` / `params`，使采集/直播/定时
+    三类任务共用本表。**默认 `kind="live"`** ⇒ 既有直播调用点（core/auto_dm.py）
+    一行不改、行为不变（零回归）。
 
     同时写入当前进程 pid，用于区分「本进程正在运行」与「上次进程退出未收尾
     残留的悬空 running」——后者由 fix_stuck_tasks 按 pid 比对兜底修正。
@@ -65,6 +70,10 @@ def start_task(acct: str, live_id: str, config: dict | None = None, records: lis
     result_count = len(records or [])
     cfg_json = json.dumps(config or {}, ensure_ascii=False)
     rec_json = json.dumps(records or [], ensure_ascii=False)
+    # 兼容：kind 未显式给且带 live_id ⇒ 视为直播；params 缺省时直播写 {live_id}
+    kind_s = (kind or "").strip() or ("live" if live_s else "")
+    params_s = params if params is not None else ({"live_id": live_s} if live_s else {})
+    params_json = json.dumps(params_s, ensure_ascii=False)
     pid = os.getpid()
     tid = 0
     for attempt in (0, 1):
@@ -72,9 +81,11 @@ def start_task(acct: str, live_id: str, config: dict | None = None, records: lis
         try:
             conn.execute(
                 "INSERT INTO tasks(id,acct,live_id,start_ts,end_ts,status,result_count,"
-                "config,records,created_at,pid) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "config,records,created_at,pid,kind,params,error_code,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (tid, acct_s, live_s, start_ts, "", "running", result_count,
-                 cfg_json, rec_json, tid / 1000.0, pid),
+                 cfg_json, rec_json, tid / 1000.0, pid,
+                 kind_s, params_json, "", tid / 1000.0),
             )
             conn.commit()
             break
@@ -90,18 +101,21 @@ def start_task(acct: str, live_id: str, config: dict | None = None, records: lis
 # 2026-09-17 安全修补（审查 P1-2）：finish_task 允许动态拼接的列名白名单。
 # 任何新增可更新字段都必须在此登记，否则 finish_task 会拒绝执行。
 _TASK_UPDATABLE_COLUMNS = frozenset({
-    "status", "end_ts", "result_count", "records",
+    "status", "end_ts", "result_count", "records", "error_code", "updated_at",
 })
 # 注意：本模块 logger 为文件头部导入的 loguru logger（第 12 行），勿再覆盖。
 
 
 def finish_task(tid: int, status: str = "finished", result_count: int = 0,
-                 records: list | None = None) -> None:
-    """结束历史任务：更新状态、结果条数、记录快照。"""
+                 records: list | None = None, error_code: str = "") -> None:
+    """结束历史任务：更新状态、结果条数、记录快照、失败原因码（可选）。"""
     from database import get_db
     conn = get_db()
-    sets = ["status=?", "end_ts=?", "result_count=?"]
-    vals: list = [status, time.strftime("%Y-%m-%d %H:%M:%S"), result_count or 0]
+    sets = ["status=?", "end_ts=?", "result_count=?", "updated_at=?"]
+    vals: list = [status, time.strftime("%Y-%m-%d %H:%M:%S"), result_count or 0, time.time()]
+    if error_code:
+        sets.append("error_code=?")
+        vals.append(str(error_code))
     if records is not None:
         sets.append("records=?")
         vals.append(json.dumps(
@@ -178,10 +192,7 @@ def list_history(limit: int = 0, offset: int = 0) -> list[dict]:
         rows = conn.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
     out = []
     for r in rows:
-        d = dict(r)
-        d["config"] = json.loads(d.get("config") or "{}")
-        d["records"] = json.loads(d.get("records") or "[]")
-        out.append(d)
+        out.append(_normalize_task(dict(r)))
     return out
 
 
@@ -192,9 +203,23 @@ def get_task(tid: int) -> dict | None:
     r = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
     if not r:
         return None
-    d = dict(r)
+    return _normalize_task(dict(r))
+
+
+def _normalize_task(d: dict) -> dict:
+    """把一行 tasks 记录规整为对外 dict（含 JSON 解析 + 老数据 kind 回落）。
+
+    兼容契约（ADR-035 §3.1）：`kind` 为空 ⇒ 按 `live_id` 非空判为 `live`。
+    这样既有 5 行老数据（无 kind）在任务中心仍可正常分类，零迁移。
+    """
     d["config"] = json.loads(d.get("config") or "{}")
     d["records"] = json.loads(d.get("records") or "[]")
+    try:
+        d["params"] = json.loads(d.get("params") or "{}")
+    except (TypeError, ValueError):
+        d["params"] = {}
+    if not d.get("kind"):
+        d["kind"] = "live" if d.get("live_id") else ""
     return d
 
 

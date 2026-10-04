@@ -375,7 +375,14 @@ def _fetch_work_comments(auth, aweme_id: str, limit: int, count: int) -> list[di
 
 async def _save_history(account: str, kind: str, keyword: str, target: str,
                         items: list[dict]) -> None:
-    """采集结果落库 crawl_history（失败仅告警，不阻断采集本身）。"""
+    """采集结果落库 crawl_history（失败仅告警，不阻断采集本身）。
+
+    ★ 2026-10-04（ADR-035 统一任务模型，用户拍板）：
+    在保留 `crawl_history`（**结果流水**，每次明细）之外，**额外**落一条 `kind='crawl'`
+    的任务到统一 `tasks` 表 —— 使任务中心「运行任务/历史任务」能按任务统一展示与溯源。
+    粒度：**一次采集 = 一条任务**（明细仍在 crawl_history，二者是「任务→流水」一对多）。
+    🔴 落任务表是**附加**能力：其失败**不得**影响采集结果本身（故独立 try 包住）。
+    """
     try:
         exec_modify(
             "INSERT INTO crawl_history(account,kind,keyword,target,result_count,"
@@ -385,6 +392,17 @@ async def _save_history(account: str, kind: str, keyword: str, target: str,
         )
     except Exception as e:
         logger.warning(f"[CRAWL-001] " + f"[crawl] 采集历史落库失败（不影响本次结果）: {e}")
+    # ── ADR-035：采集也落统一任务表（kind='crawl'）────────────────────────
+    try:
+        from tasks_history import start_task, finish_task
+        _tid = start_task(
+            account, "", kind="crawl",
+            params={"keyword": keyword, "kind": kind, "target": target,
+                    "limit": len(items)},
+        )
+        finish_task(_tid, status="finished", result_count=len(items))
+    except Exception as e:
+        logger.warning(f"[CRAWL-009] " + f"[crawl] 采集任务落任务表失败（不影响采集）: {e}")
 
 
 # ---------------------------------------------------------------------------

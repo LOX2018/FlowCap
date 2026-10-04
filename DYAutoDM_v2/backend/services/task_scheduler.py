@@ -266,6 +266,24 @@ def _gate_for_send(task: Task) -> tuple:
     return True, ""
 
 
+def _sched_record(task: "Task", status: str, result_count: int = 0,
+                  error_code: str = "") -> None:
+    """把定时任务的**本次执行**落成统一任务表一行（ADR-035，kind='scheduled'）。
+
+    粒度：一次执行 = 一条任务。失败仅告警 —— 落表是**附加可观测性**，
+    绝不因它失败而影响调度执行本身（与采集落表同款边界）。
+    """
+    try:
+        from tasks_history import start_task, finish_task
+        tid = start_task(
+            task.account or "", "", kind="scheduled",
+            params={"sched_id": task.id, "sched_kind": task.kind, "name": task.name},
+        )
+        finish_task(tid, status=status, result_count=result_count, error_code=error_code)
+    except Exception as e:                          # noqa: BLE001
+        _ec_err("SCHED-013", f"[task_scheduler] 落任务表失败（不影响执行）: {e}")
+
+
 def _run_one(task: Task) -> dict:
     """执行单个任务（含闸门、超时、异常隔离）。"""
     started = time.time()
@@ -284,6 +302,7 @@ def _run_one(task: Task) -> dict:
 
     fn = _handlers.get(task.kind)
     if fn is None:
+        _sched_record(task, "failed", 0, "SCHED-NOHANDLER")
         return {"ok": False, "error": f"任务类型 {task.kind} 无注册执行体"}
 
     # 超时保护：单任务不得无限挂住调度线程
@@ -303,21 +322,26 @@ def _run_one(task: Task) -> dict:
     if th.is_alive():
         _ec_err("SCHED-005", f"[task_scheduler] 任务 {task.id} 执行超时 "
                            f"{TASK_TIMEOUT_SECONDS}s，已放弃本轮")
+        _sched_record(task, "failed", 0, "SCHED-TIMEOUT")
         return {"ok": False, "error": "执行超时",
                 "timeout": TASK_TIMEOUT_SECONDS}
 
     if "error" in box:
         _ec_err("SCHED-004", f"[task_scheduler] 任务 {task.id} 执行异常: "
                            f"{box['error']}")
+        _sched_record(task, "failed", 0, "SCHED-ERR")
         return {"ok": False, "error": box["error"]}
 
     res = box.get("result") or {}
     # 外发类任务：无投递回执不认成功（用户铁律）
     if needs_send and REQUIRE_DELIVERY_VERIFY:
         if not res.get("delivery_verified"):
+            _sched_record(task, "failed", 0, "SCHED-NODELIVERY")
             return {"ok": False, "error": "无投递验证回执，不认成功（M-5）",
                     "raw": res}
     res["duration_ms"] = int((time.time() - started) * 1000)
+    _sched_record(task, "finished",
+                  int(res.get("count") or res.get("sent") or res.get("sent_ok") or 0), "")
     return res
 
 

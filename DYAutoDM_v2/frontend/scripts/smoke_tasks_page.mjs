@@ -97,6 +97,14 @@ async function main() {
       tasks: [crawlTask],
     });
     qc.setQueryData(["task-history", 0], { ok: true, list: [historyItem], total: 1 });
+    // 两个直播账号（ADR-002 §5.2 多实例）⇒ 验证任务中心能列出**全部**运行任务
+    qc.setQueryData(["engine-accounts"], {
+      ok: true,
+      items: [
+        { acct: "工伤小助理", state: "running", live_url: "https://live.douyin.com/12345", sent: 12 },
+        { acct: "张老师", state: "paused", live_url: "https://live.douyin.com/67890", sent: 3 },
+      ],
+    });
 
     const props = {
       ready: true,
@@ -113,6 +121,13 @@ async function main() {
           storage: "memory(process-level, lost on restart)",
           count: 1,
           tasks: [crawlTask],
+        }),
+        listEngineAccounts: async () => ({
+          ok: true,
+          items: [
+            { acct: "工伤小助理", state: "running", live_url: "https://live.douyin.com/12345", sent: 12 },
+            { acct: "张老师", state: "paused", live_url: "https://live.douyin.com/67890", sent: 3 },
+          ],
         }),
         crawlTaskDelete: async () => ({ ok: true, deleted: true }),
         crawlTasksClear: async () => ({ ok: true, removed: 0, remaining: 0 }),
@@ -140,6 +155,9 @@ async function main() {
     push("采集账号渲染", html.includes("采集账号A"), "");
     // 默认在运行页签 ⇒ 不应出现历史表的空态/「开始时间」列头
     push("默认页签非历史（无「开始时间」列头）", !html.includes("开始时间"), "");
+    // 多账号直播任务（ADR-002 §5.2）：两个账号都要出现
+    push("多账号直播任务 #1 渲染", html.includes("工伤小助理"), "");
+    push("多账号直播任务 #2 渲染", html.includes("张老师"), "");
 
     // ── ② 定时任务子页面组件独立渲染（休眠态如实呈现）──
     const schedMod = await server.ssrLoadModule("/src/components/tasks/SchedulerSection.tsx");

@@ -375,6 +375,7 @@ ERRCODES = {
     "CAP-017": {"meaning": "capture][] 释放跨调用窗口租约失败（等 TTL 回收）:", "file": "auto_dm/conversation_capture.py", "line": 0},
     "CRAWL-001": {"meaning": "crawl] 采集历史落库失败（不影响本次结果）:", "file": "api/crawl.py", "line": 170},
     "CRAWL-002": {"meaning": "crawl] 搜索失败 account= q=:", "file": "api/crawl.py", "line": 206},
+    "CRAWL-009": {"meaning": "crawl] 采集任务落统一任务表失败（不影响采集）:", "file": "api/crawl.py", "line": 0},
     "CRAWL-003": {"meaning": "crawl] 评论采集失败 account= aweme=:", "file": "api/crawl.py", "line": 249},
     "CRAWL-004": {"meaning": "crawl] 私信发送异常 account= uid=:", "file": "api/crawl.py", "line": 282},
     "CRAWL-005": {"meaning": "crawl] 批量评论采集失败 account= aweme=:", "file": "api/crawl.py", "line": 339},
@@ -560,6 +561,7 @@ ERRCODES = {
     "SCHED-010": {"meaning": "tasks] 保存定时任务失败:", "file": "api/tasks.py", "line": 0},
     "SCHED-011": {"meaning": "tasks] 删除定时任务失败:", "file": "api/tasks.py", "line": 0},
     "SCHED-012": {"meaning": "tasks] 手动执行任务失败:", "file": "api/tasks.py", "line": 0},
+    "SCHED-013": {"meaning": "task_scheduler] 定时任务落统一任务表失败（不影响执行）:", "file": "services/task_scheduler.py", "line": 0},
     "HUB-001": {"meaning": "model_hub] kv 读取失败:", "file": "services/model_hub.py", "line": 0},
     "HUB-002": {"meaning": "model_hub] kv 写入失败:", "file": "services/model_hub.py", "line": 0},
     "HUB-003": {"meaning": "model_hub] v1 配置迁移失败（不影响运行）:", "file": "services/model_hub.py", "line": 0},
@@ -593,6 +595,27 @@ ERRCODES = {
 # ⚠️ 铁律：新增错误码必须至少填 design + verify（无设计契约的报错不许提交）。
 # ════════════════════════════════════════════════════════════════════════════
 CODE_DESIGN = {
+    "SCHED-013": {
+        "design": "定时任务每次执行都应落成一条统一任务（ADR-035，kind='scheduled'），"
+                  "使任务中心「运行任务/历史任务」能统一展示与溯源。",
+        "contract": "落表是**附加可观测性**：其失败不得影响调度执行本身；"
+                    "一次执行 = 一条任务，状态与 error_code 如实记录。",
+        "deviation": "定时任务落统一任务表失败",
+        "chain": "task_scheduler._run_one → _sched_record → tasks_history.start_task/"
+                 "finish_task → SQLite tasks 表",
+        "root": "DB 不可写 / tasks 表缺列 / 导入失败 —— 属可观测性降级，非调度故障",
+        "verify": "触发一次定时任务后 grep 'kind=.scheduled' 或查 tasks 表 kind 列。",
+    },
+    "CRAWL-009": {
+        "design": "采集每次执行（一次批量采集）应额外落一条 kind='crawl' 任务到统一任务表"
+                  "（ADR-035），使任务中心能按任务展示采集、与直播/定时统一坐标。",
+        "contract": "crawl_history 仍是**结果流水**（每次明细），统一任务是**任务级**；"
+                    "落任务表失败**不得**影响采集结果本身（独立 try 包住）。",
+        "deviation": "采集落统一任务表失败",
+        "chain": "api/crawl._save_history → tasks_history.start_task/finish_task → tasks 表",
+        "root": "DB 不可写 / tasks 表缺列 —— 属附加能力降级，采集结果不受影响",
+        "verify": "跑一次采集后查 tasks 表 kind='crawl' 行是否存在且 result_count 与采集条数一致。",
+    },
     "ENG-013": {
         "design": "「重启标签」的设计语义（用户 2026-09-15 定调）：把变更后的配置内容"
                   "补进**正在运行**的监听任务，只改配置、不中断监听（不重建 WS、"
