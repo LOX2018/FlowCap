@@ -115,7 +115,10 @@ def r1_source_has_no_data() -> None:
     # 2026-09-29（L-16）：补入 browser profile 目录名 —— 它们含**真实登录凭证**
     # （sessionid/sid_guard/sid_tt/uid_tt），必须只存在于数据根（app_root），
     # 绝不落源码树（既污染源码树，又因 tauri bundle.resources 引用而可能随包外发）。
-    markers = ("members", ".env.enc", "profiles",
+    # 2026-10-04（M-26/M-27 根治）：补入 `data` —— 它可能随 `_db_path()` 回退落到
+    # 源码树（`vbrowser.app_root()` 第 4 档「源码态：项目根」，`DY_APP_ROOT` 未设时）。
+    # 与 `members/` 同类：数据（.db / auto_dm/）必须在 app_root，不在源码树。
+    markers = ("members", ".env.enc", "profiles", "data",
                "vb_profile_default", "vb_profile_dm", "pw_profile_dm")
     hits = []
     for m in markers:
@@ -773,8 +776,9 @@ def selftest() -> int:
     os.makedirs(fake_backend, exist_ok=True)
 
     # 故意制造违规：
-    #   R1 源码树出现 members/
+    #   R1 源码树出现 members/ 与 data/（M-26/M-27：_db_path() 回退落到源码树）
     os.makedirs(os.path.join(fake_src, "members"), exist_ok=True)
+    os.makedirs(os.path.join(fake_src, "data"), exist_ok=True)
     #   R10 源码树出现 cargo target
     #     ⚠️ 2026-10-03：判据已改为「跳过联接 + 只数**真实文件**」
     #       （空目录/仅联接不算残留，见 r10_no_cargo_target_in_src）。
