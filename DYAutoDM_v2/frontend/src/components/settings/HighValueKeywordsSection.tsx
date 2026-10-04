@@ -113,11 +113,21 @@ export function checkDraft(rows: DraftRow[]): SaveCheck {
 /**
  * @param embedded 供弹窗内嵌使用：去掉外层 `mt-3` 外边距与圆角（弹窗自身已有壳）。
  */
-export default function HighValueKeywordsSection({
-  embedded = false,
-}: {
-  embedded?: boolean;
-} = {}) {
+export default function HighValueKeywordsSection(
+  props: {
+    embedded?: boolean;
+    /**
+     * 外部作用域（2026-10-04）：传入即用外部值，并**隐藏**本表自带的标签切换栏。
+     * 不传则保持自管（独立使用时的原行为）。
+     *
+     * 配置中心的「采集策略」页已有右侧统一的 ScopeRail，本页内自带的
+     * 「保存到 全局/标签」就是重复栏 —— 传入 scope 后本表不再自管。
+     */
+    scope?: string;
+    onScopeChange?: (scope: string) => void;
+  } = {},
+) {
+  const { embedded = false } = props;
   const [items, setItems] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState<DraftRow[]>([]);
   /** 被判为不合格的行（高亮用）；用户一改该行即刻清除。 */
@@ -128,7 +138,15 @@ export default function HighValueKeywordsSection({
   const seq = useRef(0);
   // 2026-10-02（用户定调「策略以标签为主」）：本表可按标签隔离。
   //   scope="" = 全局；scope=<tag_id> = 该标签的关键词表。
-  const [scope, setScope] = useState<string>("");
+  // 2026-10-04：外部传入 scope 时以外部值为准（见 props 注释）。
+  const [localScope, setLocalScope] = useState<string>("");
+  const scope = props.scope ?? localScope;
+  // 受控模式（外部传入 onScopeChange）下本表不自管作用域。
+  const scopeBarShown = props.onScopeChange === undefined;
+  const chooseScope = (id: string) => {
+    if (props.onScopeChange) props.onScopeChange(id);
+    else setLocalScope(id);
+  };
   const tagsQ = useQuery({
     queryKey: ["hvk-tags"],
     queryFn: () => api.listTags(),
@@ -266,12 +284,15 @@ export default function HighValueKeywordsSection({
           </div>
         </div>
 
-        {/* 2026-10-02：标签切换栏（「策略以标签为主」）。全局 / 各标签各一份关键词表。 */}
+        {/* 2026-10-02：标签切换栏（「策略以标签为主」）。全局 / 各标签各一份关键词表。
+            2026-10-04：受控模式（配置中心「采集策略」页）下隐藏 ——
+            该页右侧已有统一的 ScopeRail，留着就是重复栏。 */}
+        {scopeBarShown && (
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
           <span className="mr-0.5 text-[0.72rem] text-[var(--color-text-muted)]">保存到</span>
           <button
             type="button"
-            onClick={() => setScope("")}
+            onClick={() => chooseScope("")}
             className={
               "rounded-[8px] border px-2.5 py-1 text-[0.72rem] transition-colors " +
               (scope === ""
@@ -285,7 +306,7 @@ export default function HighValueKeywordsSection({
             <button
               key={t.id}
               type="button"
-              onClick={() => setScope(t.id)}
+              onClick={() => chooseScope(t.id)}
               className={
                 "rounded-[8px] border px-2.5 py-1 text-[0.72rem] transition-colors " +
                 (scope === t.id
@@ -300,6 +321,7 @@ export default function HighValueKeywordsSection({
             {scope ? "该标签的关键词表（未编辑则回落全局）" : "对所有未绑定标签的账号生效"}
           </span>
         </div>
+        )}
 
         {(msg || err) && (
           <div

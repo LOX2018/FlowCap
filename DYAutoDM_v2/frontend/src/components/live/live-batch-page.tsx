@@ -852,10 +852,11 @@ function EditTaskModal({ taskId, onClose, onSubmit }: {
           </div>
 
           <div>
-            <label className="text-sm font-medium">私信词库（每行一条，可选）</label>
+            <label className="text-sm font-medium">私信词库（可选）</label>
             <textarea
               value={dmPool}
               onChange={(e) => setDmPool(e.target.value)}
+              placeholder="每行一条，可留空"
               className="mt-1 w-full h-20 px-3 py-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-sm resize-none"
             />
           </div>

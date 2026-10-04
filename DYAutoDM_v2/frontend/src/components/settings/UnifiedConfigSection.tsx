@@ -12,17 +12,15 @@
  *   - apply != hot 的字段保存后提示「需重启 X 生效」
  *   - 改动未保存时字段左侧显示圆点标记，避免用户忘记保存
  */
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useEffect, useCallback, useMemo, useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageProps } from "../../api/client";
 import type {
   SettingsSchema,
   SettingsFieldSchema,
 } from "../../api/client";
-import { Button } from "@/components/ui/button";
 import { errMsg } from "./settings-shared";
 import { type Val, SectionCard, SchemaField } from "./unified-config-widgets";
-import { TAG_MANAGED_SECTIONS } from "../../api/client";
 
 
 
@@ -32,7 +30,15 @@ import { TAG_MANAGED_SECTIONS } from "../../api/client";
 
 export default function UnifiedConfigSection(
   props: PageProps & {
+    /**
+     * 作用域："" = 全局，非空 = 标签 id。
+     *
+     * 2026-10-04 起 scope 由 settings-page 持有并下发 —— 本组件**不再**自己渲染
+     * 「保存到 全局/标签」切换栏（原每个实例一条，一页 2~3 条重复栏）。
+     * 标签选择统一由 `ScopeRail` 承载，见该组件头注。
+     */
     scope?: string;
+    /** 当前 scope 的显示名（说明文字用） */
     scopeName?: string;
     /** 只渲染指定分区（设置页按功能拆 tab 用）；不传则显示全部 */
     onlySections?: string[];
@@ -43,46 +49,13 @@ export default function UnifiedConfigSection(
      * 未列入任何分组的字段渲染在主卡里。
      */
     fieldGroups?: Array<{ title: string; fields: string[] }>;
-    /** 隐藏顶部标签切换栏（被 TagSection 内嵌时，外层已决定 scope） */
-    hideScopeBar?: boolean;
   },
 ) {
   const { api, ready, push } = props;
   const qc = useQueryClient();
 
-  // ---- v0.38.3：顶部标签切换栏状态（**仅标签管辖的板块**才有）----
-  // 选「全局」= 编辑全局参数；选某标签 = 编辑该标签的参数。
-  // 删除标签只能在「配置标签」页做，这里只切换，不提供删除。
-  //
-  // ⚠️ 2026-10-02 根因修复（用户报障「系统里面不需要配置标签」）：
-  // 原判据是 `!hideScopeBar && (!onlySections || !onlySections.includes("general"))`
-  // —— 实质等于「**只要不是通用配置就显示**」⇒ 系统 / 私信 / 通知 / AI 等
-  // 与标签毫无关系的 tab 也弹出了「保存到 全局/标签」栏，且该栏能点、
-  // 点了会把这些**非托管分区**的参数写进 `app_config::<tag_id>`（后端不认
-  // 托管校验）⇒ 既是无意义入口，又是**参数写到错误作用域**的隐患。
-  //
-  // 现改为**白名单判据**：与后端 `services/config_tag.MANAGED_SECTIONS` 同源
-  // （前端常量 `TAG_MANAGED_SECTIONS`），只有 send/live/capture/crawl/
-  // live_orchestration 五个板块才认标签作用域。
-  const only = props.onlySections;
-  const isBusiness =
-    !props.hideScopeBar &&
-    (only ? only.some((s) => (TAG_MANAGED_SECTIONS as readonly string[]).includes(s))
-          : true);
-  const [activeTag, setActiveTag] = useState<string>("");
-
-  const tagsQ = useQuery({
-    queryKey: ["tag-switcher"],
-    queryFn: () => api.listTags(),
-    enabled: !!ready && isBusiness,
-    staleTime: 30_000,
-  });
-  const tagList = (tagsQ.data?.tags || []) as {
-    id: string; name: string; field_count: number;
-  }[];
-
-  // 当前生效的 scope：外部传入优先（标签页内嵌时用），否则用顶部选择
-  const scope = props.scope !== undefined ? props.scope : activeTag;
+  // 当前生效的 scope：由父级（settings-page 的 ScopeRail）决定。
+  const scope = props.scope ?? "";
 
   const q = useQuery({
     queryKey: ["unified-settings", scope],
@@ -176,7 +149,7 @@ export default function UnifiedConfigSection(
         return o ? { ...o, config: data.config } : o;
       });
       const need = data.restart_required || [];
-      const who = sc ? `标签「${scopeName}」` : "全局";
+      const who = sc ? `标签「${props.scopeName || "标签"}」` : "全局";
       if (need.length > 0) {
         push(
           `已保存到${who}：「${schema[sec]?.label || sec}」。` +
@@ -218,6 +191,7 @@ export default function UnifiedConfigSection(
   //   · 配了 ⇒ 每个分组一张子卡 + 剩余字段一张主卡（同一实例内，共享 scope/draft）。
   const sections = useMemo(() => {
     const groups = props.fieldGroups || [];
+    const only = props.onlySections;
     const grouped = new Set(groups.flatMap((g) => g.fields));
     const out: Array<{
       cardKey: string;
@@ -246,7 +220,7 @@ export default function UnifiedConfigSection(
       }
     }
     return out;
-  }, [schema, only, props.fieldGroups]);
+  }, [schema, props.onlySections, props.fieldGroups]);
 
   if (q.isLoading) {
     return <div style={{ padding: 20, color: "var(--color-text-muted)" }}>加载配置…</div>;
@@ -259,65 +233,14 @@ export default function UnifiedConfigSection(
     );
   }
 
-  const scopeName = scope
-    ? tagList.find((t) => t.id === scope)?.name || props.scopeName || "标签"
-    : "全局";
+  // 父级是否为本 tab 渲染了作用域栏（ScopeRail）。
+  // 只有渲染了栏的 tab 才需要在卡内说明「参数保存到…」—— 否则说明一句
+  // 「参数保存到标签」却没有可切换的栏，反而制造「选了也没反应」的困惑。
+  const showScopeNote = !!props.scope;
 
   return (
     <div>
-      {/* 顶部标签切换栏：决定下面参数保存到哪里（全局 / 某标签） */}
-      {isBusiness && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            flexWrap: "wrap",
-            padding: "8px 10px",
-            marginBottom: 12,
-            background: "var(--color-surface-solid)",
-            border: "1px solid var(--color-border-strong)",
-            borderRadius: 10,
-          }}
-        >
-          <span style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginRight: 2 }}>
-                      保存到
-                    </span>
-                    <Button
-                      variant={scope === "" ? "default" : "ghost"}
-                      size="sm"
-                      onClick={() => setActiveTag("")}
-                    >
-                      全局
-                    </Button>
-                    {tagList.map((t) => (
-                      <Button
-                        key={t.id}
-                        variant={scope === t.id ? "default" : "ghost"}
-                        size="sm"
-                        onClick={() => setActiveTag(t.id)}
-                        title={`编辑标签「${t.name}」的参数`}
-                      >
-                        {t.name}
-                      </Button>
-                    ))}
-          <div style={{ flex: 1 }} />
-          <span
-            style={{
-              fontSize: 11.5,
-              padding: "2px 8px",
-              borderRadius: 999,
-              background: scope ? "var(--color-accent-soft)" : "var(--color-surface-raised)",
-              color: scope ? "var(--color-accent)" : "var(--color-text-muted)",
-              border: "1px solid var(--color-border)",
-            }}
-          >
-            当前：{scopeName}
-          </span>
-        </div>
-      )}
-
-      {isBusiness && (
+      {showScopeNote && (
         <div
           style={{
             fontSize: 11.5,
@@ -327,7 +250,7 @@ export default function UnifiedConfigSection(
           }}
         >
           {scope ? (
-            <>参数保存到标签「{scopeName}」（仅影响绑定该标签的账号）。</>
+            <>参数保存到标签「{props.scopeName || "标签"}」（仅影响绑定该标签的账号）。</>
           ) : (
             <>参数保存到全局（对未绑定标签的账号生效）。</>
           )}

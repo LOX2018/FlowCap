@@ -302,9 +302,10 @@ export default function AiEngineSection(props: PageProps) {
             />
           </FormField>
 
-          <FormField label="兜底话术池（未命中/被拦截时随机发一条；每行一条）">
+          <FormField label="兜底话术池（未命中/被拦截时随机发一条）">
             <Textarea
               className="min-h-[70px]"
+              placeholder="每行一条"
               value={(c.fallback_pool || []).join("\n")}
               onChange={(e) =>
                 set("fallback_pool",

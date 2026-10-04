@@ -349,9 +349,9 @@ SECTIONS: dict[str, dict[str, Any]] = {
             # ⚠️ 2026-10-04：`dm_pool` 已迁回 send 分区（私信文案归属「私信发送」），
             #    本分区只保留**监听侧**的弹幕文案库。
             "danmaku_pool": {
-                "label": "弹幕文案库（每行一条）", "type": "str", "default": "",
+                "label": "弹幕文案库", "type": "str", "default": "",
                 "env": None, "apply": "hot",
-                "hint": "每行一条，定时发送"
+                "hint": "定时发送"
             },
             "auto_link_mic": {
                 "label": "自动申请连麦", "type": "bool", "default": False,
@@ -574,9 +574,9 @@ SECTIONS: dict[str, dict[str, Any]] = {
             #         services/live_batch.resolve_tag_send_params（批量）、
             #         api/crawl.py（采集后私信文案，本就按 send 读）。
             "dm_pool": {
-                "label": "私信词库（每行一条）", "type": "str", "default": "",
+                "label": "私信词库", "type": "str", "default": "",
                 "env": None, "apply": "hot",
-                "hint": "每行一条，随机选用"
+                "hint": "随机选用"
             },
         },
     },

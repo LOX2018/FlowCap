@@ -19,14 +19,15 @@
  *   · `AiEngineSection` 管**引擎参数**：商家名 / 档位 / prompt / 留资 / 延迟 / 护栏 / 黑名单
  *   · `AgentSection`    管**模版与绑定**：Agent 列表 / 名称 / 主模型 / 启用 / 作用域 / 账号绑定
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   // 2026-09-18 审查修复（#54）：`MessageSquare` 原先在下方**重复 import**
   // 同一个模块（lucide-react 被 import 两次）；合并到这一处。
   Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users, MessageSquare,
   Plug, ShieldCheck,
 } from "lucide-react";
-import { PageProps } from "../../api/client";
+import { PageProps, api } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
 import AgentSection from "./AgentSection";
 import ModelHubSection from "./ModelHubSection";
@@ -37,6 +38,7 @@ import AiEngineSection from "./AiEngineSection";
 import NicknameFallbackSection from "./NicknameFallbackSection";
 import HighValueKeywordsSection from "./HighValueKeywordsSection";
 import McpSection from "./McpSection";
+import { ScopeRail, readRememberedScope, rememberScope } from "./scope-rail";
 // ADR-018 F6：日夜主题切换的唯一可写入口（主题引擎本身早已存在，缺的是入口）
 import AppearanceSection from "./AppearanceSection";
 // 2026-09-30：能力巡检入口从总览页迁来（总览改为纯只读看板）。
@@ -55,30 +57,89 @@ const TABS: {
   label: string;
   hint: string;
   icon: React.ReactNode;
+  /**
+   * 本 tab 是否有**可编辑的参数分区**（即右侧是否显示「作用域标签栏」）。
+   *
+   * 判据 = 该 tab 是否渲染了走 `get_effective_config` 覆盖路径的参数：
+   * 参数按 scope 拉取、按 scope 保存 ⇒ 选标签才有意义。
+   *
+   * 只有**有**参数分区的 tab 才放这柱：
+   *   · 无参数分区的 tab（通知 / MCP / 系统 / Agent 与绑定 / 配置标签）
+   *     选标签不会改变任何行为，放了就是「点了没反应」的入口；
+   *   · 「配置标签」tab 是标签的**管理页**（新建/删除），
+   *     在这里再放一柱 scope 选择会与列表自身功能打架；
+   *   · 「私信列表」tab 的 dm 分区不在 `MANAGED_SECTIONS` 白名单内，
+   *     选标签会被后端忽略（写入成功但永不生效）⇒ 不显示；
+   *   · 「AI 回复引擎」tab 的两个子组件走各自存储
+   *     （`aiSaveConfig` 存 Agent、ModelHub 存模型链路），
+   *     **都不经** `get_effective_config` ⇒ 选标签无效 ⇒ 不显示。
+   *
+   * 放栏的 4 个 tab：私信发送（send）· 监听策略（live + live_orchestration）·
+   * 捕获与存储（capture）· 采集策略（高价值关键词权重表，按 全局/标签 存）。
+   */
+  scoped: boolean;
 }[] = [
-  { key: "general", label: "通用配置", hint: "前端行为（非业务）", icon: <SettingsIcon className="h-3.5 w-3.5" /> },
-  { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", icon: <Send className="h-3.5 w-3.5" /> },
-  { key: "live", label: "监听策略", hint: "通用监听策略（不绑定具体直播间）", icon: <Radio className="h-3.5 w-3.5" /> },
-  { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", icon: <Database className="h-3.5 w-3.5" /> },
-  { key: "dm", label: "私信列表", hint: "昵称兜底（默认关，主动查询有风控成本）", icon: <MessageSquare className="h-3.5 w-3.5" /> },
-  { key: "ai", label: "AI 回复引擎", hint: "模型链路 + 回复内容 / 护栏 / 黑名单", icon: <Bot className="h-3.5 w-3.5" /> },
-  { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", icon: <Users className="h-3.5 w-3.5" /> },
-  { key: "tag", label: "配置标签", hint: "发送策略：怎么发", icon: <Tags className="h-3.5 w-3.5" /> },
+  { key: "general", label: "通用配置", hint: "前端行为（非业务）", scoped: false, icon: <SettingsIcon className="h-3.5 w-3.5" /> },
+  { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", scoped: true, icon: <Send className="h-3.5 w-3.5" /> },
+  { key: "live", label: "监听策略", hint: "通用监听策略（不绑定具体直播间）", scoped: true, icon: <Radio className="h-3.5 w-3.5" /> },
+  { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", scoped: true, icon: <Database className="h-3.5 w-3.5" /> },
+  { key: "dm", label: "私信列表", hint: "昵称兜底（默认关，主动查询有风控成本）", scoped: false, icon: <MessageSquare className="h-3.5 w-3.5" /> },
+  { key: "ai", label: "AI 回复引擎", hint: "模型链路 + 回复内容 / 护栏 / 黑名单", scoped: false, icon: <Bot className="h-3.5 w-3.5" /> },
+  { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", scoped: false, icon: <Users className="h-3.5 w-3.5" /> },
+  { key: "tag", label: "配置标签", hint: "发送策略：怎么发", scoped: false, icon: <Tags className="h-3.5 w-3.5" /> },
   // 2026-09-27（ADR-018 F1-D3）：采集策略层。与「配置标签」互补 ——
   // 标签管「用哪套参数」，本项管「采集参数本身」。
-  { key: "crawlpolicy", label: "采集策略", hint: "可复用的采集参数（只存参数，不自动采集）", icon: <Database className="h-3.5 w-3.5" /> },
-  { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", icon: <Bell className="h-3.5 w-3.5" /> },
+  { key: "crawlpolicy", label: "采集策略", hint: "可复用的采集参数（只存参数，不自动采集）", scoped: true, icon: <Database className="h-3.5 w-3.5" /> },
+  { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", scoped: false, icon: <Bell className="h-3.5 w-3.5" /> },
   // 2026-09-25：补 MCP 入口。此前后端 7 个端点已完整，但前端零引用
   // ⇒ 用户「看不到入口、也不知道令牌」= 能力在位但不可得。
-  { key: "mcp", label: "MCP 服务", hint: "AI 客户端接入（stdio 免令牌 / 本机 HTTP 需令牌）", icon: <Plug className="h-3.5 w-3.5" /> },
+  { key: "mcp", label: "MCP 服务", hint: "AI 客户端接入（stdio 免令牌 / 本机 HTTP 需令牌）", scoped: false, icon: <Plug className="h-3.5 w-3.5" /> },
   // 2026-09-30：系统运维（能力巡检）。总览页改为纯只读看板后，
   // 「立即巡检」的**唯一**入口落在此处 —— 端点此前仅总览页一处调用，
   // 不补入口会让 /api/probe/patrol 变成「在位但不可得」。
-  { key: "system", label: "系统", hint: "外观主题 · 备份 · 导出路径 · 能力巡检", icon: <ShieldCheck className="h-3.5 w-3.5" /> },
+  { key: "system", label: "系统", hint: "外观主题 · 备份 · 导出路径 · 能力巡检", scoped: false, icon: <ShieldCheck className="h-3.5 w-3.5" /> },
 ];
 
 export default function SettingsPage(props: PageProps) {
   const [section, setSection] = useState<SectionKey>("general");
+
+  // ---- 配置作用域（标签）—— 2026-10-04 从各子组件内部提升到页面层 ----
+  // 原实现每个 UnifiedConfigSection 实例各自持有一条「保存到 全局/标签」栏，
+  // 一个 tab 挂 2 个实例就出现 2 条重复栏（「监听策略」= 监听主卡 + 弹幕子卡，
+  // 另有 HVK 自带一条），切换一次要对齐好几处。
+  // 现在 scope 是本页单一状态，右侧一柱 ScopeRail 是唯一入口，
+  // 下发给该 tab 下所有子组件 ⇒ 一个 tab 只有一个「当前作用域」概念。
+  // 初始化读 localStorage：切 tab 会卸载 ScopeRail，不记住的话每次切回都
+  // 重置为「全局」，用户可能在全局作用域里误存本该属于某标签的参数。
+  const [scope, setScope] = useState<string>(() => readRememberedScope());
+  const [scopeName, setScopeName] = useState<string>("");
+
+  const tagsQ = useQuery({
+    queryKey: ["tag-switcher"],
+    queryFn: () => api.listTags(),
+    staleTime: 30_000,
+  });
+  // 标签列表晚于 scope 初始值返回 ⇒ 补一次 scopeName（列表里可能已无该标签）。
+  useEffect(() => {
+    const list = tagsQ.data?.tags || [];
+    const t = list.find((x) => x.id === scope);
+    setScopeName(scope ? t?.name || "" : "");
+  }, [tagsQ.data, scope]);
+
+  const chooseScope = (id: string) => {
+    rememberScope(id);
+    setScope(id);
+  };
+
+  // 当前 tab 是否**支持**标签覆盖（见 TABS 各 tab 的 `scoped` 注释判据）。
+  const supportsScope = TABS.find((t) => t.key === section)?.scoped ?? false;
+
+  // 切到不支持 scope 的 tab 时清空 scope：这些 tab 的组件不会收到 scope，
+  // 若残留「上次选的标签」，回到支持 scope 的 tab 又会自动带上它 ——
+  // 用户可能在自己刚改了参数的作用域里存错地方。切走即清，回到默认「全局」。
+  useEffect(() => {
+    if (!supportsScope) setScope("");
+  }, [supportsScope]);
 
   return (
     <PageContainer>
@@ -126,100 +187,118 @@ export default function SettingsPage(props: PageProps) {
               实际内容宽度随其撑破程度而不同（观感「宽度不一致」）。
               修法：CardContent 加 `min-w-0` + `overflow-x-hidden`，把溢出**就地
               截断在卡片内**，各 tab 的显示区宽度恒等于 Card 宽度（= 一致）。
-              截断而非放任横向滚动：配置表单是纵向阅读，横向滚动条是缺陷不是功能。 */}
-        <Card className="min-w-0 flex-1">
-          <CardContent className="min-w-0 overflow-x-hidden p-3.5">
-            {section === "general" && (
-              /* 后端 schema 驱动的通用配置（非业务）。
-                 2026-10-02 用户要求：「外观（日夜主题）」实为系统页功能，已移至「系统」tab。 */
-              <UnifiedConfigSection {...props} onlySections={["general"]} />
-            )}
-            {section === "send" && (
-              /* 私信词库（2026-10-04 用户指令）从 live 分区迁回本分区，
-                 并用 fieldGroups 拆成**单独子卡片**：主卡放风控频率/闸门/额度，
-                 子卡只放词库。同一实例渲染 ⇒ 共享「保存到 全局/标签」与草稿，
-                 不会出现两张卡各存各的 scope。 */
-              <UnifiedConfigSection
-                {...props}
-                onlySections={["send"]}
-                fieldGroups={[{ title: "私信词库", fields: ["dm_pool"] }]}
-              />
-            )}
-            {section === "live" && (
-              <>
-                {/* 主卡（监听节奏/轮询等）+ 弹幕文案库子卡 —— **同一实例**渲染，
-                    共享「保存到 全局/标签」与草稿。
-                    ⚠️ 2026-10-04 修复：此前误写成「两个实例叠加」（一个渲染整分区、
-                    另一个再渲染 danmaku_pool 子卡）⇒ 弹幕文案库在页面上**出现两次**，
-                    且两张卡各有独立的 scope 选择，可把同一字段写进不同作用域。 */}
+              截断而非放任横向滚动：配置表单是纵向阅读，横向滚动条是缺陷不是功能。
+
+            2026-10-04：作用域标签栏（ScopeRail）是 Card 的**兄弟**，不是子节点 ——
+              CardContent 的 `overflow-x-hidden` 会把它裁掉。 */}
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <Card className="min-w-0 flex-1">
+            <CardContent className="min-w-0 overflow-x-hidden p-3.5">
+              {section === "general" && (
+                /* 后端 schema 驱动的通用配置（非业务）。
+                   2026-10-02 用户要求：「外观（日夜主题）」实为系统页功能，已移至「系统」tab。 */
+                <UnifiedConfigSection {...props} onlySections={["general"]} />
+              )}
+              {section === "send" && (
+                /* 私信词库（2026-10-04 用户指令）从 live 分区迁回本分区，
+                   并用 fieldGroups 拆成**单独子卡片**：主卡放风控频率/闸门/额度，
+                   子卡只放词库。同一实例渲染 ⇒ 共享 scope 与草稿，
+                   不会出现两张卡各存各的作用域。 */
                 <UnifiedConfigSection
                   {...props}
-                  onlySections={["live"]}
-                  fieldGroups={[{ title: "弹幕文案库", fields: ["danmaku_pool"] }]}
+                  scope={scope}
+                  scopeName={scopeName}
+                  onlySections={["send"]}
+                  fieldGroups={[{ title: "私信词库", fields: ["dm_pool"] }]}
                 />
-                {/* ADR-002 §5.4 策略中心：与「直播监听」同 tab（后端 schema 驱动，
-                    仅需在此白名单登记分区名，无手写表单）。 */}
-                <UnifiedConfigSection {...props} onlySections={["live_orchestration"]} />
-                {/* 高价值关键词权重表：**唯一编辑入口**（2026-10-04 用户指令
-                    「移除直播页入口」后收敛到此，与 7592727 的 SSOT 方向一致）。
-                    该表由 `api/crawl.py` 消费做**采集过滤**，`config_tag.py` 称其为
-                    「策略的附属」⇒ 归属采集策略页。
-                    组件自带「保存到 全局/标签」切换栏（= 选择绑定的策略标签）。
-                    ⚠️ 配套参数 `high_value_score_threshold` / `high_value_window_seconds`
-                    在 **send** 分区（「私信发送」tab）—— 调整词表时若需同步阈值，
-                    请到该 tab。 */}
-              </>
-            )}
-            {section === "capture" && (
-              <UnifiedConfigSection {...props} onlySections={["capture"]} />
-            )}
-            {section === "dm" && (
-              <>
-                {/* 配置域 dm：昵称兜底开关 + 三重上限（唯一可写处） */}
-                <UnifiedConfigSection {...props} onlySections={["dm"]} />
-                {/* 运维卡：状态 / 候选（零外呼）/ 执行一次（显式触发） */}
-                <NicknameFallbackSection />
-              </>
-            )}
-            {section === "ai" && (
-              <>
-                {/* 模型链路中心：提供商 / 模型 / 避障链路 / 消费方绑定（唯一真源） */}
-                <ModelHubSection {...props} />
-                {/* 引擎参数：Agent 设定 + 护栏 + 黑名单（原 AI 页打散归类而来） */}
-                <AiEngineSection {...props} />
-              </>
-            )}
-            {section === "agent" && <AgentSection {...props} />}
-            {section === "tag" && <TagSection {...props} />}
-            {section === "crawlpolicy" && (
-              <>
-                <CrawlPolicySection {...props} />
-                {/* 高价值关键词权重表（2026-10-04 用户要求）：从直播页迁入采集策略页。
-                    该表由 `api/crawl.py` 消费（`score_text(..., scope)` 做采集过滤），
-                    且 `config_tag.py` 称其为「策略的附属」⇒ 归属采集策略更贴切。
-                    组件自带「保存到 全局/标签」切换栏 —— 即「选择绑定的策略标签」，
-                    故无需另加下拉（避免第二份真值）。
-                    ⚠️ 直播页的入口**保留**：该表同时服务直播发送侧（send 分区的
-                    `high_value_score_threshold`），两处入口分属不同业务域，非重复。 */}
-                <HighValueKeywordsSection />
-              </>
-            )}
-            {section === "notify" && <NotifySection {...props} />}
-            {section === "mcp" && <McpSection push={props.push} />}
-            {section === "system" && (
-              <>
-                {/* 2026-10-02：系统分区（后端 schema）—— 文件导出路径管理。 */}
-                <UnifiedConfigSection {...props} onlySections={["system"]} />
-                {/* 2026-10-02 从「通用配置」迁入：外观（日夜主题）属系统级功能。
-                    纯前端偏好，存 localStorage，不经后端 schema。 */}
-                <AppearanceSection />
-                {/* 2026-10-02 用户要求：备份子板块（导出 / 导入，自定义范围）。 */}
-                <BackupSection {...props} />
-                <ProbeSection {...props} />
-              </>
-            )}
-          </CardContent>
-        </Card>
+              )}
+              {section === "live" && (
+                <>
+                  {/* 主卡（监听节奏/轮询等）+ 弹幕文案库子卡 —— **同一实例**渲染，
+                      共享 scope 与草稿。
+                      ⚠️ 2026-10-04 修复：此前误写成「两个实例叠加」（一个渲染整分区、
+                      另一个再渲染 danmaku_pool 子卡）⇒ 弹幕文案库在页面上**出现两次**，
+                      且两张卡各有独立的 scope 选择，可把同一字段写进不同作用域。 */}
+                  <UnifiedConfigSection
+                    {...props}
+                    scope={scope}
+                    scopeName={scopeName}
+                    onlySections={["live"]}
+                    fieldGroups={[{ title: "弹幕文案库", fields: ["danmaku_pool"] }]}
+                  />
+                  {/* ADR-002 §5.4 策略中心：与「直播监听」同 tab（后端 schema 驱动，
+                      仅需在此白名单登记分区名，无手写表单）。 */}
+                  <UnifiedConfigSection
+                    {...props}
+                    scope={scope}
+                    scopeName={scopeName}
+                    onlySections={["live_orchestration"]}
+                  />
+                </>
+              )}
+              {section === "capture" && (
+                <UnifiedConfigSection
+                  {...props}
+                  scope={scope}
+                  scopeName={scopeName}
+                  onlySections={["capture"]}
+                />
+              )}
+              {section === "dm" && (
+                <>
+                  {/* 配置域 dm：昵称兜底开关 + 三重上限（唯一可写处）。
+                      不传 scope：dm 不在 MANAGED_SECTIONS 白名单内，标签覆盖不生效。 */}
+                  <UnifiedConfigSection {...props} onlySections={["dm"]} />
+                  {/* 运维卡：状态 / 候选（零外呼）/ 执行一次（显式触发） */}
+                  <NicknameFallbackSection />
+                </>
+              )}
+              {section === "ai" && (
+                <>
+                  {/* 模型链路中心：提供商 / 模型 / 避障链路 / 消费方绑定（唯一真源） */}
+                  <ModelHubSection {...props} />
+                  {/* 引擎参数：Agent 设定 + 护栏 + 黑名单（原 AI 页打散归类而来） */}
+                  <AiEngineSection {...props} />
+                </>
+              )}
+              {section === "agent" && <AgentSection {...props} />}
+              {section === "tag" && <TagSection {...props} />}
+              {section === "crawlpolicy" && (
+                <>
+                  <CrawlPolicySection {...props} />
+                  {/* 高价值关键词权重表（2026-10-04 用户要求）：从直播页迁入采集策略页。
+                      该表由 `api/crawl.py` 消费（`score_text(..., scope)` 做采集过滤），
+                      且 `config_tag.py` 称其为「策略的附属」⇒ 归属采集策略更贴切。
+                      作用域选择由右侧统一的 ScopeRail 承载 —— 本页只有一柱标签栏。
+                      ⚠️ 直播页的入口**保留**：该表同时服务直播发送侧（send 分区的
+                      `high_value_score_threshold`），两处入口分属不同业务域，非重复。 */}
+                  <HighValueKeywordsSection scope={scope} onScopeChange={chooseScope} />
+                </>
+              )}
+              {section === "notify" && <NotifySection {...props} />}
+              {section === "mcp" && <McpSection push={props.push} />}
+              {section === "system" && (
+                <>
+                  {/* 2026-10-02：系统分区（后端 schema）—— 文件导出路径管理。 */}
+                  <UnifiedConfigSection {...props} onlySections={["system"]} />
+                  {/* 2026-10-02 从「通用配置」迁入：外观（日夜主题）属系统级功能。
+                      纯前端偏好，存 localStorage，不经后端 schema。 */}
+                  <AppearanceSection />
+                  {/* 2026-10-02 用户要求：备份子板块（导出 / 导入，自定义范围）。 */}
+                  <BackupSection {...props} />
+                  <ProbeSection {...props} />
+                </>
+              )}
+            </CardContent>
+          </Card>
+          {supportsScope && (
+            <ScopeRail
+              scope={scope}
+              onScopeChange={chooseScope}
+              scopeName={scopeName}
+            />
+          )}
+        </div>
       </div>
     </PageContainer>
   );

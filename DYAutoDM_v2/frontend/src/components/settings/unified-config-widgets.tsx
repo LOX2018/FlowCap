@@ -6,7 +6,7 @@
  * 二者是纯渲染件（schema 驱动），抽出后主组件只保留数据加载与保存编排。
  * **纯搬移**——字段映射、控件、保存回调逐字节不变。
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SetCard, SetCardHead, SetCardBody, SetCardFoot } from "@/components/page/set-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,7 +75,7 @@ export function SchemaField(props: {
   dirty: boolean;
   onChange: (v: Val) => void;
 }) {
-  const { schema: s, value } = props;
+  const { schema: s, value, fieldKey } = props;
   const [err, setErr] = useState("");
 
   const commit = useCallback(
@@ -108,6 +108,38 @@ export function SchemaField(props: {
     s.type === "int" || s.type === "float"
       ? `范围 ${s.min ?? "-∞"} ~ ${s.max ?? "+∞"}`
       : "";
+
+  // 词库类字段（换行分隔的多行文本）：渲染为「行列表 + 添加/删除」，
+  // 而不是单个输入框配一行「每行一条」的注释 —— 见 POOL_FIELD_KEYS。
+  // 保留 label 外壳（dirty 圆点 / risk 标记），只换掉控件本体。
+  if (POOL_FIELD_KEYS.has(fieldKey) && !s.options?.length) {
+    return (
+      <div
+        className={
+          "set-field" + (s.risk ? " is-risk" : "") + (props.dirty ? " is-dirty" : "")
+        }
+        style={{ flex: "1 1 240px", minWidth: 0, maxWidth: "100%" }}
+      >
+        <span className="mb-1 flex items-center gap-1.5 text-[0.7rem] text-[var(--color-text-muted)]">
+          <span className="truncate">{s.label}</span>
+          {props.dirty && (
+            <span className="text-[var(--color-accent)]" title="已修改未保存">
+              ●
+            </span>
+          )}
+          {s.risk && (
+            <span className="text-[var(--color-warning)]" title="风控敏感项">
+              ⚠
+            </span>
+          )}
+        </span>
+        <PoolField
+          value={value as string}
+          onChange={(v) => props.onChange(v)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -208,3 +240,107 @@ export const APPLY_LABEL: Record<string, string> = {
   restart_daemon: "需重启守护进程生效",
   restart_backend: "需重启后端生效",
 };
+
+/**
+ * 词库类字段 —— 存储为**换行分隔字符串**（与 automation 的 *_keywords 同范式）。
+ *
+ * 为何不直接给一个 textarea：这些字段的 label 曾标注「（每行一条）」、hint 又写一遍
+ * 「每行一条」，但控件是**单个单行输入框** —— 用户要输 5 条文案得删/粘贴 5 次，
+ * 而标注本身也纯属多余（控件根本不是一行一条）。
+ * 现改为**行列表**：每行独立输入 + 删除，底部「添加一行」。
+ *
+ * 存储格式不变（仍为 \n 分隔），因此**后端零改动**：
+ *   · backend/api/crawl.py 本就把 CR 去掉后按 LF 切分并 trim；
+ *   · 后端 `test_crawl_panel_fixes.py` 已覆盖「每行一条 ⇒ 取首条」的确定性语义。
+ *
+ * ⚠️ 加字段前先确认它是「条目列表」而非「一个长字符串」—— 否则会把语义改坏。
+ */
+export const POOL_FIELD_KEYS: ReadonlySet<string> = new Set(["danmaku_pool", "dm_pool"]);
+
+/** 行列表编辑器：编辑换行分隔的字符串值。 */
+export function PoolField(props: { value: string; onChange: (v: string) => void }) {
+  const { value, onChange } = props;
+  const [rows, setRows] = useState<string[]>(() => (value ? value.split("\n") : []));
+  // ext=false 表示「上一次 value 变化是本地编辑造成的回声」⇒ effect 不重置行，
+  // 否则输入中的焦点/光标会丢失。外部变更（切标签 / 恢复默认）走 ext=true 分支。
+  const ext = useRef(true);
+
+  useEffect(() => {
+    if (!ext.current) return;
+    setRows(value ? value.split("\n") : []);
+    ext.current = false;
+  }, [value]);
+
+  const sync = (next: string[]) => {
+    setRows(next);
+    ext.current = false;
+    onChange(next.join("\n"));
+  };
+
+  const add = () => sync([...rows, ""]);
+  const del = (i: number) => {
+    const next = rows.slice();
+    next.splice(i, 1);
+    sync(next);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+      {rows.length === 0 ? (
+        <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+          暂无文案，点击下方「添加一行」
+        </span>
+      ) : (
+        rows.map((r, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span
+              style={
+                {
+                  width: 16,
+                  flexShrink: 0,
+                  textAlign: "center",
+                  fontSize: 10.5,
+                  color: "var(--color-text-muted)",
+                  opacity: 0.75,
+                } as React.CSSProperties
+              }
+            >
+              {i + 1}
+            </span>
+            <Input
+              className="flex-1 px-2.5 font-mono text-[0.78rem]"
+              value={r}
+              placeholder={`第 ${i + 1} 条`}
+              onChange={(e) => {
+                const next = rows.slice();
+                next[i] = e.target.value;
+                sync(next);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  add();
+                }
+              }}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              title="删除该行"
+              aria-label="删除该行"
+              onClick={() => del(i)}
+              style={{ width: 28, flexShrink: 0, padding: 0 }}
+            >
+              ✕
+            </Button>
+          </div>
+        ))
+      )}
+      <div>
+        <Button variant="secondary" size="sm" onClick={add} className="text-[0.72rem]">
+          + 添加一行
+        </Button>
+      </div>
+    </div>
+  );
+}
