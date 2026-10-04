@@ -44,7 +44,7 @@ import { useAppViewStore, VIEW_TITLE, type ViewType } from "./stores/app-store";
 import { StatusDot } from "./components/ui/status-dot";
 import { memberApi, getMemberToken } from "./api/client";
 // 元素选择模式（调试工具：点击页面元素复制其结构位置，不触发功能）
-import { ElementInspectorButton } from "./lib/element-inspector";
+const ElementInspectorButton = lazy(() => import("./lib/element-inspector").then(m => ({ default: m.ElementInspectorButton })));
 // ADR-018 F6：顶栏日夜主题快捷切换（主入口仍在配置中心 → 通用配置 → 外观）
 import { ThemeToggleButton } from "./components/layout/theme-toggle";
 
@@ -456,7 +456,9 @@ export default function App() {
     return (
       <>
         {gate}
-        <ElementInspectorButton />
+        <Suspense fallback={null}>
+          <ElementInspectorButton />
+        </Suspense>
         {/* 登录门/闪屏阶段也要能操作窗口（与主界面同一常驻层）。 */}
         <WindowControls />
       </>
@@ -631,7 +633,9 @@ export default function App() {
 
       {/* 元素选择模式：全局顶层悬浮入口 + 覆盖层 + 结果面板。
           设计契约：只选择、不触发；不读不写任何业务数据。 */}
-      <ElementInspectorButton currentTab={tab} />
+      <Suspense fallback={null}>
+        <ElementInspectorButton currentTab={tab} />
+      </Suspense>
 
       {/* 指令式确认 / 输入弹窗的单例宿主（取代原生 confirm/prompt，全站统一主题观感）。
           挂载一次，供 confirmDialog()/promptDialog() 投递请求。 */}
