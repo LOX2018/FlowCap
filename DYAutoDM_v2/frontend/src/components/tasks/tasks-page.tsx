@@ -1,18 +1,31 @@
-﻿/**
+/**
  * 任务中心页（重设计版 · 对标 better-douyin 设计体系）
  *
- * 职责：任务列表（直播监听私信引擎）、导出管理、历史任务（查阅/复用）
+ * 职责：任务列表（直播监听私信引擎 + 评论采集）、导出管理、历史任务（查阅/复用）、定时任务
  *
- * ## 本次改动（重设计）
- * - 旧 `.table` / `.table-scroll` / `.sk` / 内联 `style={{color:"var(--muted)"}}`
- *   → 令牌化表格（`Th` / `Td` 具名组件）+ Badge/Tone + SkeletonRows
- * - 行操作按钮：`.btn text sm` → `<Button variant="link|ghost|danger-outline">`
- * - **业务逻辑零改动**（分页、查阅模式跳转、复用配置快照、暂停/继续/停止调用全保持）
+ * ## 2026-10-04：三页签重构（用户拍板）
+ *
+ * 用户要求「把评论采集和直播间听的运行任务全部接入任务中心，并将定时任务单独用子页面呈现」。
+ * 按拍板结果分为三个子页面：
+ *   · **运行任务** —— 直播监听 + 评论采集**混排**（此前是「直播一个表格行 + 采集一堆卡片」，
+ *     两套形态；现统一为一种列表，账号/类型/状态/进度/操作列一致）
+ *   · **历史任务** —— 原历史任务表（查阅/复用），语义未变
+ *   · **定时任务** —— 原页尾 `SchedulerSection`，从「页尾区块」升格为独立子页面
+ *
+ * ## 设计约束（不得违反）
+ *   · **不新增任何后端契约**：三个页签分别读既有 `/api/tasks`（经 overview 快照）、
+ *     `/api/crawl/tasks`、`/api/tasks/scheduler`；本页只做**呈现层归一**。
+ *   · **不删任何逻辑**：分页、查阅模式跳转、复用配置快照、暂停/继续/停止调用全部保留。
+ *   · **采集队列是进程内存**（`storage` 字段如实透出）：UI 如实标注「重启应用即清空」，
+ *     不把它渲染成持久化历史（后端模块 docstring 的硬约束）。
+ *   · **深归一无后端**：采集/直播「每次执行落同一张任务表」属 ADR-035 后端改造，
+ *     未落地；本页不改后端、不假装已归一。
  */
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Download, Trash2, Play, Pause, Square, RotateCw, ExternalLink, History, Inbox,
+  Activity, Radio, Database, CalendarClock,
 } from "lucide-react";
 import { PageProps, TaskHistoryItem, ReusePayload } from "../../api/client";
 import { Avatar } from "../../components/ui";
@@ -20,9 +33,11 @@ import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Section, Tone, Blank, Toolbar } from "@/components/page/kit";
+import { Section, Tone, Blank, Toolbar, SegmentedTabs } from "@/components/page/kit";
 import { type OverviewExt, type ExportStatsResp, type Api, Th, Td, errMsg } from "./tasks-shared";
 import SchedulerSection from "./SchedulerSection";
+
+type TaskTab = "running" | "history" | "scheduled";
 
 export default function TasksPage(props: PageProps) {
   const { push, overview, ready, goReuse } = props;
@@ -30,6 +45,8 @@ export default function TasksPage(props: PageProps) {
   const ov = (overview || ({} as OverviewExt)) as OverviewExt;
   const setTab = props.setTab;
   const qc = useQueryClient();
+
+  const [view, setView] = useState<TaskTab>("running");
 
   // 历史任务列表（App 常驻轮询 "task-history"，页面只读共享缓存，切页不重拉）
   const PAGE_SIZE = 50;
@@ -145,6 +162,11 @@ export default function TasksPage(props: PageProps) {
     (ov.acct || "").trim() ||
     (history.find((h) => h.status === "running")?.acct || "").trim();
 
+  // ── 运行任务页签：直播运行行 + 采集运行行 混排 ─────────────────────────
+  const liveRunning = !!ready && !!ov.running;
+  const runningCount = (liveRunning ? 1 : 0) + crawlTasks.length;
+  const hasAnyRunning = crawlTasks.some((t) => t.status === "running") || liveRunning;
+
   return (
     <PageContainer>
       <PageHeader
@@ -174,325 +196,448 @@ export default function TasksPage(props: PageProps) {
         }
       />
 
-      {/* 运行中任务 */}
-      <Card className="mb-4 overflow-hidden" data-od-id="task-list">
-        <div className="overflow-x-auto">
-          <table className="w-full table-fixed border-collapse">
-            {/* 列宽契约：与「历史任务」表共用网格，保证同名列（账号/状态/结果条数/操作）
-                落在同一横向位置。两表列数不同（9 vs 7），故用百分比同源对齐
-                —— 改列宽只改这里与下表同名的数值。 */}
-            <colgroup>
-              <col style={{ width: "19%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "10%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "18%" }} />
-            </colgroup>
-            <thead>
-              <tr>
-                <Th>创建时间</Th>
-                <Th>账号</Th>
-                <Th>任务类型</Th>
-                <Th>目标</Th>
-                <Th>状态</Th>
-                <Th>耗时</Th>
-                <Th>结果条数</Th>
-                <Th>重试</Th>
-                <Th className="text-right">操作</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {ready && ov.running ? (
-                <tr>
-                  <Td mono>{ov.status || "—"}</Td>
-                  <Td>
-                    <div className="inline-flex items-center gap-2">
-                      <Avatar name="引擎" h="160" sm />
-                      <span>自动私信引擎</span>
-                    </div>
-                  </Td>
-                  <Td>直播监听私信</Td>
-                  <Td mono muted>{ov.liveUrl || "—"}</Td>
-                  <Td>
-                    <Tone tone={engineTone}>{engineLabel}</Tone>
-                    {ov.statusMsg && ov.engineState === "stopping" && (
-                      <div className="mt-0.5 font-mono text-[0.68rem]
-                                      text-[var(--color-text-muted)]">
-                        {ov.statusMsg}
-                      </div>
-                    )}
-                  </Td>
-                  <Td mono>
-                    {ov.sent || 0}/{ov.limit || 0}
-                  </Td>
-                  <Td mono>{ov.queue || 0}</Td>
-                  <Td mono>0</Td>
-                  <Td>
-                    <Toolbar className="justify-end gap-1">
-                      <Button
-                        variant="link"
-                        size="sm"
-                        onClick={() => {
-                          setTab?.("live");
-                          push("已跳转到直播监听页（该任务运行中）");
-                        }}
-                      >
-                        进入任务
-                      </Button>
-                      {ov.engineState === "stopping" ? (
-                        <Button
-                          variant="danger-outline"
-                          size="sm"
-                          title="立即终止仍在发送的存量私信"
-                          onClick={() =>
-                            api
-                              .stopEngine(runningAcct || undefined)
-                              .then(() => push("已硬停止，存量私信终止发送"))
-                              .catch((e: unknown) => push("异常: " + errMsg(e)))
-                          }
-                        >
-                          <Square className="h-3 w-3" />停止存量
-                        </Button>
-                      ) : ov.paused ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() =>
-                            api
-                              .resumeEngine(runningAcct || undefined)
-                              .then(() => push("已继续"))
-                              .catch((e: unknown) => push("异常: " + errMsg(e)))
-                          }
-                        >
-                          <Play className="h-3 w-3" />继续
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() =>
-                            api
-                              .pauseEngine(runningAcct || undefined)
-                              .then(() => push("已暂停"))
-                              .catch((e: unknown) => push("异常: " + errMsg(e)))
-                          }
-                        >
-                          <Pause className="h-3 w-3" />暂停
-                        </Button>
-                      )}
-                      <Button
-                        variant="danger-outline"
-                        size="sm"
-                        onClick={() =>
-                          api
-                            .stopEngine(runningAcct || undefined)
-                            .then(() => push("已停止"))
-                            .catch((e: unknown) => push("异常: " + errMsg(e)))
-                        }
-                      >
-                        <Square className="h-3 w-3" />停止
-                      </Button>
-                    </Toolbar>
-                  </Td>
-                </tr>
-              ) : !ready ? (
-                [0, 1, 2].map((i) => (
-                  <tr key={i}>
-                    {Array.from({ length: 9 }).map((_, j) => (
-                      <Td key={j}>
-                        <div className="h-4 animate-pulse rounded bg-[var(--color-surface-raised)]" />
-                      </Td>
-                    ))}
+      {/* 子页面切换（三页签） */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <SegmentedTabs<TaskTab>
+          value={view}
+          onChange={setView}
+          items={[
+            {
+              value: "running",
+              label: (
+                <span className="inline-flex items-center gap-1.5">
+                  运行任务
+                  {runningCount > 0 && (
+                    <span className="rounded-full bg-[var(--color-accent-soft)] px-1.5 text-[0.68rem] tabular-nums">
+                      {runningCount}
+                    </span>
+                  )}
+                </span>
+              ),
+              icon: <Activity className="h-3.5 w-3.5" />,
+            },
+            {
+              value: "history",
+              label: "历史任务",
+              icon: <History className="h-3.5 w-3.5" />,
+            },
+            {
+              value: "scheduled",
+              label: "定时任务",
+              icon: <CalendarClock className="h-3.5 w-3.5" />,
+            },
+          ]}
+        />
+      </div>
+
+      {/* ══════════════ 页签一：运行任务（直播 + 采集 混排） ══════════════ */}
+      {view === "running" && (
+        <Section
+          title="运行任务"
+          description="直播监听与评论采集统一列出；采集为后端进程内存，重启应用即清空"
+        >
+          <Card className="overflow-hidden" data-od-id="running-tasks">
+            <div className="overflow-x-auto">
+              <table className="w-full table-fixed border-collapse">
+                {/* 列宽契约：与「历史任务」表共用网格，保证同名列（账号/状态/操作）
+                    落在同一横向位置。 */}
+                <colgroup>
+                  <col style={{ width: "18%" }} />
+                  <col style={{ width: "10%" }} />
+                  <col style={{ width: "12%" }} />
+                  <col style={{ width: "18%" }} />
+                  <col style={{ width: "10%" }} />
+                  <col style={{ width: "8%" }} />
+                  <col style={{ width: "24%" }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <Th>创建时间</Th>
+                    <Th>账号</Th>
+                    <Th>任务类型</Th>
+                    <Th>目标</Th>
+                    <Th>状态</Th>
+                    <Th>进度</Th>
+                    <Th className="text-right">操作</Th>
                   </tr>
-                ))
-              ) : (
-                <tr>
-                  <Td colSpan={9}>
-                    <Blank>暂无运行中任务</Blank>
-                  </Td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      {/* 采集任务（★ 2026-10-04 接线）
-          用户定调：悬浮窗负责「采集哪些、怎么采集」，**任务页负责看结果与进度**。
-          此前采集任务只在悬浮窗内显示，任务页读的是另一套（/api/tasks 历史），
-          ⇒ 「批量采集没进任务系统、任务页看不到」。
-          现把 `/api/crawl/tasks` 接到任务页，与历史任务并列。
-          ⚠️ 该数据是**进程级内存**（storage 字段如实标注），重启即丢；
-             故只在页面可见时轮询，且如实标注来源，不假装持久化。 */}
-      <Section
-        title="采集任务"
-        description="由采集悬浮窗触发；显示进度与结果（后端进程内存，重启应用即清空）"
-      >
-        {crawlTasks.length === 0 ? (
-          <p className="text-[0.78rem] text-[var(--color-text-muted)]">
-            暂无采集任务 —— 在内容总览勾选作品后用采集悬浮窗启动
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {crawlTasks.map((t) => {
-              const total = t.total || t.aweme_ids?.length || 0;
-              const done = t.done || 0;
-              const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-              return (
-                <div
-                  key={t.id}
-                  className="rounded-[10px] border border-[var(--color-border)] p-2.5"
-                >
-                  <div className="flex items-center justify-between text-[0.78rem]">
-                    <span className="truncate">
-                      {t.account} · {t.phase || "queued"} · {t.status}
-                    </span>
-                    <span className="font-mono text-[var(--color-text-muted)]">
-                      {done}/{total}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-[var(--color-surface-raised)]">
-                    <div
-                      className="h-full bg-[var(--color-accent)] transition-[width]"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <div className="mt-1 text-[0.68rem] text-[var(--color-text-muted)]">
-                    成功 {t.ok_works ?? 0} · 失败 {t.fail_works ?? 0}
-                    {t.error ? ` · ${t.error}` : ""}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Section>
-
-      {/* 历史任务 */}
-      <Section
-        title="历史任务"
-        description="运行中任务可跳转直播监听页；历史任务可跳转查阅模式看结果（双击行同）"
-        actions={
-          history.length > 0 ? (
-            <Button
-              variant="danger-outline"
-              size="sm"
-              onClick={() => api.clearTaskHistory().then(() => refreshHistory()).catch(() => {})}
-            >
-              <Trash2 className="h-3.5 w-3.5" />清空
-            </Button>
-          ) : undefined
-        }
-      >
-        <div className="-mx-4 -mb-4 overflow-x-auto">
-          <table className="w-full table-fixed border-collapse">
-            {/* 列宽契约：见上表注释 —— 账号/状态/结果条数/操作 四列与运行中任务表同源对齐 */}
-            <colgroup>
-              <col style={{ width: "19%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "19%" }} />
-              <col style={{ width: "18%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "18%" }} />
-            </colgroup>
-            <thead>
-              <tr>
-                <Th>开始时间</Th>
-                <Th>账号</Th>
-                <Th>直播间</Th>
-                <Th>状态</Th>
-                <Th>结果条数</Th>
-                <Th>结束时间</Th>
-                <Th className="text-right">操作</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {!ready ? (
-                <tr><Td colSpan={7}><Blank>未连接</Blank></Td></tr>
-              ) : history.length === 0 ? (
-                <tr>
-                  <Td colSpan={7}>
-                    <Blank>
-                      <Inbox className="mb-1 h-4 w-4" />
-                      暂无历史任务
-                    </Blank>
-                  </Td>
-                </tr>
-              ) : (
-                <>
-                  {history.map((h) => (
-                    <tr
-                      key={h.id}
-                      className="cursor-pointer transition-colors duration-[var(--duration-fast)]
-                                 hover:bg-[var(--color-surface-raised)]"
-                      onDoubleClick={() => gotoTask(h)}
-                      title="双击进入任务 / 查看结果查阅模式"
-                    >
-                      <Td mono className="whitespace-nowrap">{h.start_ts || "—"}</Td>
-                      <Td>{h.acct || "—"}</Td>
-                      <Td mono muted>{h.live_id || "—"}</Td>
-                      <Td>
-                        <Tone
-                          tone={
-                            h.status === "running" || h.status === "finished" ? "ok" : "warn"
-                          }
-                        >
-                          {h.status === "running"
-                            ? "运行中"
-                            : h.status === "finished"
-                              ? "已完成"
-                              : "已停止"}
-                        </Tone>
+                </thead>
+                <tbody>
+                  {!ready ? (
+                    [0, 1, 2].map((i) => (
+                      <tr key={i}>
+                        {Array.from({ length: 7 }).map((_, j) => (
+                          <Td key={j}>
+                            <div className="h-4 animate-pulse rounded bg-[var(--color-surface-raised)]" />
+                          </Td>
+                        ))}
+                      </tr>
+                    ))
+                  ) : !hasAnyRunning ? (
+                    <tr>
+                      <Td colSpan={7}>
+                        <Blank>
+                          <Inbox className="mb-1 h-4 w-4" />
+                          暂无运行中任务
+                        </Blank>
                       </Td>
-                      <Td mono>{h.result_count || 0}</Td>
-                      <Td mono className="whitespace-nowrap">{h.end_ts || "—"}</Td>
-                      <Td>
-                        <Toolbar className="justify-end gap-1">
-                          <Button variant="secondary" size="sm" onClick={() => gotoTask(h)}>
-                            <ExternalLink className="h-3 w-3" />
-                            {h.status === "running" ? "进入任务" : "查看结果"}
-                          </Button>
+                    </tr>
+                  ) : (
+                    <>
+                      {/* ── 直播监听运行行（读 overview 快照） ── */}
+                      {liveRunning && (
+                        <tr>
+                          <Td mono>{ov.status || "—"}</Td>
+                          <Td>
+                            <div className="inline-flex items-center gap-2">
+                              <Avatar name="引擎" h="160" sm />
+                              <span>{ov.acct || "自动私信引擎"}</span>
+                            </div>
+                          </Td>
+                          <Td>
+                            <span className="inline-flex items-center gap-1">
+                              <Radio className="h-3 w-3 opacity-70" />直播监听
+                            </span>
+                          </Td>
+                          <Td mono muted>{ov.liveUrl || "—"}</Td>
+                          <Td>
+                            <Tone tone={engineTone}>{engineLabel}</Tone>
+                            {ov.statusMsg && ov.engineState === "stopping" && (
+                              <div className="mt-0.5 font-mono text-[0.68rem] text-[var(--color-text-muted)]">
+                                {ov.statusMsg}
+                              </div>
+                            )}
+                          </Td>
+                          <Td mono>
+                            已发 {ov.sent || 0}/{ov.limit || 0} · 队列 {ov.queue || 0}
+                          </Td>
+                          <Td>
+                            <Toolbar className="justify-end gap-1">
+                              <Button
+                                variant="link"
+                                size="sm"
+                                onClick={() => {
+                                  setTab?.("live");
+                                  push("已跳转到直播监听页（该任务运行中）");
+                                }}
+                              >
+                                进入任务
+                              </Button>
+                              {ov.engineState === "stopping" ? (
+                                <Button
+                                  variant="danger-outline"
+                                  size="sm"
+                                  title="立即终止仍在发送的存量私信"
+                                  onClick={() =>
+                                    api
+                                      .stopEngine(runningAcct || undefined)
+                                      .then(() => push("已硬停止，存量私信终止发送"))
+                                      .catch((e: unknown) => push("异常: " + errMsg(e)))
+                                  }
+                                >
+                                  <Square className="h-3 w-3" />停止存量
+                                </Button>
+                              ) : ov.paused ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() =>
+                                    api
+                                      .resumeEngine(runningAcct || undefined)
+                                      .then(() => push("已继续"))
+                                      .catch((e: unknown) => push("异常: " + errMsg(e)))
+                                  }
+                                >
+                                  <Play className="h-3 w-3" />继续
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() =>
+                                    api
+                                      .pauseEngine(runningAcct || undefined)
+                                      .then(() => push("已暂停"))
+                                      .catch((e: unknown) => push("异常: " + errMsg(e)))
+                                  }
+                                >
+                                  <Pause className="h-3 w-3" />暂停
+                                </Button>
+                              )}
+                              <Button
+                                variant="danger-outline"
+                                size="sm"
+                                onClick={() =>
+                                  api
+                                    .stopEngine(runningAcct || undefined)
+                                    .then(() => push("已停止"))
+                                    .catch((e: unknown) => push("异常: " + errMsg(e)))
+                                }
+                              >
+                                <Square className="h-3 w-3" />停止
+                              </Button>
+                            </Toolbar>
+                          </Td>
+                        </tr>
+                      )}
+
+                      {/* ── 采集运行行（读 /api/crawl/tasks，进程内存） ── */}
+                      {crawlTasks.map((t) => {
+                        const total = t.total || t.aweme_ids?.length || 0;
+                        const done = t.done || 0;
+                        const pct =
+                          total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+                        const stTone: "ok" | "warn" | "danger" | "mute" =
+                          t.status === "running"
+                            ? "ok"
+                            : t.status === "done"
+                              ? "ok"
+                              : t.status === "failed"
+                                ? "danger"
+                                : t.status === "cancelled"
+                                  ? "warn"
+                                  : "mute";
+                        return (
+                          <tr key={t.id}>
+                            <Td mono className="whitespace-nowrap">
+                              {t.created_at
+                                ? new Date(t.created_at * 1000).toLocaleString("zh-CN", {
+                                    hour12: false,
+                                  })
+                                : "—"}
+                            </Td>
+                            <Td>{t.account || "—"}</Td>
+                            <Td>
+                              <span className="inline-flex items-center gap-1">
+                                <Database className="h-3 w-3 opacity-70" />评论采集
+                              </span>
+                            </Td>
+                            <Td mono muted>
+                              {total > 0 ? `${total} 个作品` : "—"}
+                            </Td>
+                            <Td>
+                              <Tone tone={stTone}>
+                                {t.status === "running"
+                                  ? `采集中 · ${t.phase || "queued"}`
+                                  : t.status === "done"
+                                    ? "已完成"
+                                    : t.status === "failed"
+                                      ? "失败"
+                                      : t.status === "cancelled"
+                                        ? "已取消"
+                                        : t.status}
+                              </Tone>
+                              {t.error && (
+                                <div className="mt-0.5 font-mono text-[0.68rem] text-[var(--color-danger,#ef4444)]">
+                                  {t.error}
+                                </div>
+                              )}
+                            </Td>
+                            <Td mono>
+                              <div className="flex items-center gap-1.5">
+                                <span className="tabular-nums">
+                                  {done}/{total}
+                                </span>
+                                <div className="h-1 w-10 overflow-hidden rounded-full bg-[var(--color-surface-raised)]">
+                                  <div
+                                    className="h-full bg-[var(--color-accent)]"
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                              </div>
+                              <div className="mt-0.5 text-[0.68rem] text-[var(--color-text-muted)]">
+                                成功 {t.ok_works ?? 0} · 失败 {t.fail_works ?? 0}
+                              </div>
+                            </Td>
+                            <Td>
+                              <Toolbar className="justify-end gap-1">
+                                {t.status === "running" ? (
+                                  <Button
+                                    variant="danger-outline"
+                                    size="sm"
+                                    onClick={() =>
+                                      api
+                                        .crawlTaskDelete(t.id)
+                                        .then(() => {
+                                          push("已移除采集任务（采集循环的下一次上报会 404）");
+                                          crawlTasksQ.refetch();
+                                        })
+                                        .catch((e: unknown) => push("异常: " + errMsg(e)))
+                                    }
+                                  >
+                                    <Trash2 className="h-3 w-3" />移除
+                                  </Button>
+                                ) : (
+                                  <span className="text-[0.7rem] text-[var(--color-text-muted)]">
+                                    已结束
+                                  </span>
+                                )}
+                              </Toolbar>
+                            </Td>
+                          </tr>
+                        );
+                      })}
+                    </>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* 采集清空：只清已结束（后端保证绝不清 running） */}
+          {crawlTasks.length > 0 && (
+            <div className="mt-2 flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  api
+                    .crawlTasksClear()
+                    .then((r) => {
+                      push(`已清理已结束采集任务 ${r?.removed ?? 0} 条`);
+                      crawlTasksQ.refetch();
+                    })
+                    .catch((e: unknown) => push("异常: " + errMsg(e)))
+                }
+              >
+                <Trash2 className="h-3.5 w-3.5" />清空已结束采集任务
+              </Button>
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* ══════════════ 页签二：历史任务 ══════════════ */}
+      {view === "history" && (
+        <Section
+          title="历史任务"
+          description="运行中任务可跳转直播监听页；历史任务可跳转查阅模式看结果（双击行同）"
+          actions={
+            history.length > 0 ? (
+              <Button
+                variant="danger-outline"
+                size="sm"
+                onClick={() =>
+                  api.clearTaskHistory().then(() => refreshHistory()).catch(() => {})
+                }
+              >
+                <Trash2 className="h-3.5 w-3.5" />清空
+              </Button>
+            ) : undefined
+          }
+        >
+          <div className="-mx-4 -mb-4 overflow-x-auto">
+            <table className="w-full table-fixed border-collapse">
+              {/* 列宽契约：见运行任务表注释 —— 账号/状态/结果条数/操作 四列与运行表同源对齐 */}
+              <colgroup>
+                <col style={{ width: "19%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "19%" }} />
+                <col style={{ width: "18%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "8%" }} />
+                <col style={{ width: "18%" }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <Th>开始时间</Th>
+                  <Th>账号</Th>
+                  <Th>直播间</Th>
+                  <Th>状态</Th>
+                  <Th>结果条数</Th>
+                  <Th>结束时间</Th>
+                  <Th className="text-right">操作</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {!ready ? (
+                  <tr>
+                    <Td colSpan={7}>
+                      <Blank>未连接</Blank>
+                    </Td>
+                  </tr>
+                ) : history.length === 0 ? (
+                  <tr>
+                    <Td colSpan={7}>
+                      <Blank>
+                        <Inbox className="mb-1 h-4 w-4" />
+                        暂无历史任务
+                      </Blank>
+                    </Td>
+                  </tr>
+                ) : (
+                  <>
+                    {history.map((h) => (
+                      <tr
+                        key={h.id}
+                        className="cursor-pointer transition-colors duration-[var(--duration-fast)]
+                                   hover:bg-[var(--color-surface-raised)]"
+                        onDoubleClick={() => gotoTask(h)}
+                        title="双击进入任务 / 查看结果查阅模式"
+                      >
+                        <Td mono className="whitespace-nowrap">
+                          {h.start_ts || "—"}
+                        </Td>
+                        <Td>{h.acct || "—"}</Td>
+                        <Td mono muted>{h.live_id || "—"}</Td>
+                        <Td>
+                          <Tone
+                            tone={
+                              h.status === "running" || h.status === "finished" ? "ok" : "warn"
+                            }
+                          >
+                            {h.status === "running"
+                              ? "运行中"
+                              : h.status === "finished"
+                                ? "已完成"
+                                : "已停止"}
+                          </Tone>
+                        </Td>
+                        <Td mono>{h.result_count || 0}</Td>
+                        <Td mono className="whitespace-nowrap">
+                          {h.end_ts || "—"}
+                        </Td>
+                        <Td>
+                          <Toolbar className="justify-end gap-1">
+                            <Button variant="secondary" size="sm" onClick={() => gotoTask(h)}>
+                              <ExternalLink className="h-3 w-3" />
+                              {h.status === "running" ? "进入任务" : "查看结果"}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => reuseTask(h)}
+                              title="复用该任务启动时的配置，重新运行"
+                            >
+                              <RotateCw className="h-3 w-3" />复用
+                            </Button>
+                          </Toolbar>
+                        </Td>
+                      </tr>
+                    ))}
+                    {(historyPage + 1) * PAGE_SIZE < historyTotal && (
+                      <tr>
+                        <Td colSpan={7} className="text-center">
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => reuseTask(h)}
-                            title="复用该任务启动时的配置，重新运行"
+                            onClick={() => setHistoryPage((p: number) => p + 1)}
                           >
-                            <RotateCw className="h-3 w-3" />复用
+                            <History className="h-3 w-3" />
+                            加载更多（已显示 {history.length} / {historyTotal} 条）
                           </Button>
-                        </Toolbar>
-                      </Td>
-                    </tr>
-                  ))}
-                  {(historyPage + 1) * PAGE_SIZE < historyTotal && (
-                    <tr>
-                      <Td colSpan={7} className="text-center">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setHistoryPage((p: number) => p + 1)}
-                        >
-                          <History className="h-3 w-3" />
-                          加载更多（已显示 {history.length} / {historyTotal} 条）
-                        </Button>
-                      </Td>
-                    </tr>
-                  )}
-                </>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Section>
+                        </Td>
+                      </tr>
+                    )}
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
 
-      {/* 定时任务中心（ADR-018 F4）—— 置于页尾：日常主要用上面的运行/历史任务，
-          调度中心是低频且默认休眠的功能，不抢主视线 */}
-      <SchedulerSection {...props} />
+      {/* ══════════════ 页签三：定时任务（子页面） ══════════════ */}
+      {view === "scheduled" && <SchedulerSection {...props} />}
     </PageContainer>
   );
 }
