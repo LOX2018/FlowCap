@@ -32,6 +32,25 @@
 | **R8** | **数据契约（ADR-012）** | **委托 `audit_data_contract.py` 六项**（见下） |
 | **R9** | **H-22 §6·1 建议 A / D-02 审计红线** | **委托 `audit_redline_count.py` 的 count()**（见下） |
 | **R16** | **H-40 事故 / M-31 门禁盲区** | **测试数据隔离**：含无 WHERE 全表删业务表的测试文件必须有隔离（阻断）；`setdefault(DY_APP_ROOT)` 存量写法（R16-B，警告） |
+| **R17** | **前端产物体积（产物视图，二元）** | **委托 `frontend_metrics.py --check`**：dist chunk > 51,200 B 二进制即超；存量 5 域（accounts/live/messages/platform/settings）白名单放行，**新增**超限域阻断；dist 陈旧于 src 阻断（fail-closed，见下） |
+| **R18** | **类型正确性（此前零覆盖）** | **前端 `tsc -b` exit 0** —— `vite build` 只经 esbuild 剥类型、不做类型检查，「build 过」不等于「类型对」 |
+
+### R17 为何 fail-closed
+
+`frontend/dist/` 被 gitignore（`.gitignore:34`），所以**它不在 git 里**，commit 时刻读到的
+可能是几小时前的构建产物。若「dist 陈旧则按旧数字判绿」，R17 就能被「不跑 vite build」
+**完全绕过**——判据退化成 Qoder 07:05 所指的那个「空的名义」。故陈旧即阻断，
+解锁成本一次 `vite build`（约 5s），与 R18 的 `tsc -b`（约 10s）同量级，一次提交多付一次。
+
+### R17 为何有白名单（而非直译阈值）
+
+落地时（@ bb043bc 实测）**已有 5 域超限**：accounts 63,893 · live 71,079 ·
+messages 53,466 · platform 56,669 · settings 124,558 B。五个全是台账 L-28 已确认的
+拆页目标 —— 直译成阻断门禁，**今天的 HEAD 谁都 commit 不了**，包括本条规则自己。
+故按 R16-B 的既有形态：存量债务白名单放行（命中数仍报出以保持可见），
+**新增**超限域或白名单外超限 ⇒ 阻断。判据 SSOT 仍在 `frontend_metrics.py`，
+门禁不复制 chunk 口径。
+
 
 ### R9 为何存在（2026-09-26 全库审计 §6·1 建议 A）
 
@@ -694,6 +713,133 @@ def r16_test_db_isolation() -> None:
           f"{': ' + '、'.join(sd_hits_real[:3]) if sd_hits_real else ''}）")
 
 
+# ── R17: 前端 dist chunk 体积（产物视图，二元判据）──────────────────────
+# R17 chunk 体积上限（二进制 B）。51200 = 50 KB，取整便于记忆。
+# 依据见 frontend_metrics.py「chunk 阈值灵敏度」：50,000 与 40,000 两档超限域
+# 完全相同（均为 5 域），故取 51,200 不再增加区分度，反而不放过 50K–51.2K 中间带。
+R17_CHUNK_MAX_B = 51200
+
+# R17 白名单：落地时**已超限**的存量域（2026-10-05 @ bb043bc 实测）：
+#   accounts 63,893 · live 71,079 · messages 53,466 · platform 56,669 · settings 124,558
+# 五个全是台账已确认的拆页目标（L-28），超限是**已知债务**而非新增回归 ——
+# 直译成阻断门禁会让今天的 HEAD 谁都 commit 不了（门禁比没有更坏）。
+# 判据 SSOT 在 frontend_metrics.py check_chunks（输出超限域清单 + 退出码），
+# 本集合只决定「哪些超限域是已知的」：**新增**超限域、或白名单外的域超限 ⇒ 阻断。
+# 与 R16-B 同一形态（白名单留在本文件，命中数仍报出以保持可见）。
+R17_KNOWN_OVER = frozenset({"accounts", "live", "messages", "platform", "settings"})
+
+
+def _r17_decide(out: str, known: frozenset[str]) -> tuple[bool, str]:
+    """R17 判据核心（纯函数，便于自检直接断言）。
+
+    入参是 frontend_metrics.py `--check` 的输出（形如
+    `R17-FAIL 6 域超限: accounts=63,893B, tasks=64,999B`），返回 (是否通过, 明细)。
+    与 r17_frontend_chunk_size 分离，是因为「新增回归阻断 / 存量债务放行」这条
+    判据是本条规则的全部价值所在，必须能被正控断言，而不是只靠真实构建碰运气。
+    """
+    names = [tok.split("=", 1)[0].strip()
+             for tok in (p.strip() for p in out.split(":", 1)[-1].split(","))
+             if "=" in tok]
+    new_over = [n for n in names if n not in known]
+    ok = not new_over
+    d = (f"dist chunk ≤ {R17_CHUNK_MAX_B} B"
+         + (f"（{len(names)} 域超存量基线：{', '.join(names)}）" if names else "")
+         + ("" if ok else f" ⇒ 新增回归域 {', '.join(new_over)}，阻断"))
+    return ok, d
+
+
+def r17_frontend_chunk_size() -> None:
+    import subprocess
+
+    fe = os.path.join(SRC_ROOT, "frontend")
+    sub = os.path.join(SRC_ROOT, "scripts", "frontend_metrics.py")
+    if not os.path.isfile(sub):
+        check(False, "R17", "判据脚本缺失: scripts/frontend_metrics.py")
+        return
+
+    assets = os.path.join(fe, "dist", "assets")
+    src = os.path.join(fe, "src")
+    if not os.path.isdir(assets):
+        check(False, "R17",
+              "dist/assets 不存在 ⇒ chunk 体积不可判定（阻断）⇒ 先跑 vite build")
+        return
+
+    # 新鲜度：dist 内最新文件新于 src ⇒ 数字可信；陈旧 ⇒ 不采信旧数字。
+    # 🔴 fail-closed 而非「陈旧则放行」：若陈旧仍按旧数字判绿，判据就等于可被
+    # 「不跑 vite build」绕过 —— 门禁比没有更坏。代价：commit 前 dist 需新于 src
+    # （vite build 约 6s），与 R18 类型检查约 10s 同量级，故不为此放宽。
+    def _newest(d: str) -> float:
+        best = 0.0
+        for root, _dirs, files in os.walk(d):
+            for fn in files:
+                try:
+                    best = max(best, os.path.getmtime(os.path.join(root, fn)))
+                except OSError:
+                    pass
+        return best
+
+    nd = _newest(assets)
+    ns = _newest(src) if os.path.isdir(src) else 0.0
+    if nd < ns:
+        import datetime as dt
+        _f = lambda t: dt.datetime.fromtimestamp(t).strftime("%m-%d %H:%M:%S")
+        check(False, "R17",
+              f"dist 陈旧于 src（dist {_f(nd)} / src {_f(ns)}）⇒ chunk 数字不可采信"
+              f"（阻断）⇒ 先跑 vite build 再提交")
+        return
+
+    py = sys.executable or "python"
+    try:
+        r = subprocess.run([py, sub, "--check", str(R17_CHUNK_MAX_B)],
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:  # noqa: BLE001
+        check(False, "R17", f"调用 frontend_metrics 失败: {type(e).__name__}")
+        return
+
+    out = (r.stdout or "").strip()
+    if r.returncode == 0:
+        check(True, "R17", f"dist chunk ≤ {R17_CHUNK_MAX_B} B 二进制")
+        return
+    if r.returncode == 2:
+        check(False, "R17", f"{out}（阻断）")
+        return
+
+    ok, d = _r17_decide(out, R17_KNOWN_OVER)
+    check(ok, "R17", d)
+
+
+# ── R18: 前端类型检查 ─────────────────────────────────────────────────────
+# 出处：07:05 实锤 —— 门禁链此前「没有 tsc」。`vite build` 只经 esbuild 剥类型
+# （不做类型检查），故「build 过」不等于「类型对」，门禁对类型错误零覆盖，
+# 与 R1 挡 data/、R16 挡无 WHERE 删业务表同级。
+# 用增量 `tsc -b`（实测约 10s，`--force` 同量级）而非 `--noEmit -p`：
+#   ① 增量是门禁默认路径，避免每次全量重编；
+#   ② 本仓 package.json build = `tsc -b && vite build`，tsc -b 与之同源判据；
+#      `--noEmit -p` 在有 references 的 composite 结构上有额外风险面。
+def r18_frontend_tsc() -> None:
+    import shutil
+    import subprocess
+
+    fe = os.path.join(SRC_ROOT, "frontend")
+    tc = os.path.join(fe, "tsconfig.json")
+    if not os.path.isfile(tc):
+        check(False, "R18", "frontend/tsconfig.json 缺失")
+        return
+    # npx 是 shell 脚本（Windows 下实为 npx.cmd）。subprocess 不用 shell 执行
+    # .cmd 会报「Unknown command: tsc」，故用 shutil.which 取全名（PATHEXT 已含 .CMD）。
+    npx = shutil.which("npx") or "npx"
+    try:
+        r = subprocess.run([npx, "tsc", "-b"], cwd=fe,
+                           capture_output=True, text=True, timeout=600)
+        lines = (r.stdout or "").strip().splitlines()
+        head = " ".join(lines[:2])[:160] if lines else ""
+        check(r.returncode == 0, "R18",
+              f"前端 tsc -b 通过（exit {r.returncode}）"
+              + (f"：{head}" if r.returncode != 0 and head else ""))
+    except Exception as e:  # noqa: BLE001
+        check(False, "R18", f"调用 tsc -b 失败: {type(e).__name__}")
+
+
 RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r3_no_build_artifacts_in_src, r4_version_sync,
          r5_no_plaintext_credential, r6_no_browser_kill,
@@ -701,7 +847,8 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r10_no_cargo_target_in_src, r11_no_legacy_profile_literal,
          r12_credential_exposure, r13_no_internal_info_in_ui_copy,
          r14_deploy_root_marker_consistent, r15_schema_copy_concision,
-         r16_test_db_isolation]
+         r16_test_db_isolation,
+         r17_frontend_chunk_size, r18_frontend_tsc]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -894,7 +1041,11 @@ def selftest() -> int:
     saved_dc = globals()["_load_datacontract_module"]
     globals()["_load_datacontract_module"] = lambda: _FakeDCModuleFail
 
-    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A", "R8-1", "R13", "R14", "R16"}
+    # R17/R18 在临时 SRC_ROOT 下必然报红（判据脚本 / tsconfig 缺失），
+    # 其判据本身由下方正控与真实构建负控断言 —— 故纳入期望集合，
+    # 保持「期望报红」与「实际报红」可逐条对账。
+    failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A",
+                     "R8-1", "R13", "R14", "R16", "R17", "R18"}
     for r in RULES:
         try:
             r()
@@ -972,9 +1123,46 @@ def selftest() -> int:
         globals()["_load_datacontract_module"] = saved_dc2
         RESULTS.clear()
 
+    # ── R17 正控：直测判据核心，断言「存量放行 / 新增阻断」两条都成立 ──
+    # R17 的判据价值全在 _r17_decide；只靠真实构建负控碰运气不够
+    # （恒 False 的判据也能过负控），故对纯函数做双向断言。
+    _KNOWN = frozenset({"accounts", "live", "messages", "platform", "settings"})
+    _p1 = _r17_decide(
+        "R17-FAIL 5 域超限: accounts=63,893B, live=71,079B, messages=53,466B, "
+        "platform=56,669B, settings=124,558B", _KNOWN)
+    _p2 = _r17_decide(
+        "R17-FAIL 6 域超限: accounts=63,893B, live=71,079B, messages=53,466B, "
+        "platform=56,669B, settings=124,558B, tasks=64,999B", _KNOWN)
+    _p3 = _r17_decide("R17-PASS 全部 chunk ≤ 51,200 B", _KNOWN)
+    r17_clean = (_p1[0] is True and _p2[0] is False
+                 and "tasks" in _p2[1] and _p3[0] is True)
+
+    # ── R18 正控：注入「tsc -b 成功」形态，断言 R18 不误报 ─────────────
+    # 负控已由真实构建产生（NEGCTRL-B 类型错误 ⇒ R18 报红），此处补正控，
+    # 否则「恒 False 的 R18」也能通过全部负控。r18 内 `import subprocess`
+    # 拿到的是模块对象本身，故替换模块属性即可被它看到。
+    import subprocess as _sp
+    saved_run = _sp.run
+
+    class _R18FakeResult:
+        returncode = 0
+        stdout = ""
+
+    saved_run = _sp.run
+    _sp.run = lambda *a, **k: _R18FakeResult()
+    try:
+        r18_frontend_tsc()
+        r18_clean = all(ok for ok, rid, _ in RESULTS if rid == "R18")
+    except Exception as e:  # noqa: BLE001
+        r18_clean = False
+        print(f"  R18 正控异常: {type(e).__name__}: {e}")
+    finally:
+        _sp.run = saved_run
+        RESULTS.clear()
+
     missing = failed_expect - got_failed
     ok = not missing and r9_clean and r8_clean and r2_exemption_ok \
-        and r16_clean and r16_exemption_ok
+        and r16_clean and r16_exemption_ok and r17_clean and r18_clean
     print("-" * 70)
     print(f"  期望报红: {sorted(failed_expect)}")
     print(f"  实际报红: {sorted(got_failed)}")
@@ -984,6 +1172,9 @@ def selftest() -> int:
           f"{'通过' if r2_exemption_ok else '未通过'}")
     print(f"  R16 正控（撤销负控应复绿 / 已隔离样本不误伤）: "
           f"{'通过' if r16_clean and r16_exemption_ok else '未通过'}")
+    print(f"  R17 正控（存量债务放行 / 新增回归阻断 / 全干净通过）: "
+          f"{'通过' if r17_clean else '未通过'}")
+    print(f"  R18 正控（tsc -b 成功形态应 PASS）: {'通过' if r18_clean else '未通过'}")
     if missing:
         print(f"\n✗ 自检失败：以下规则在违规样本下**没有变红** = 形同虚设: {sorted(missing)}")
         return 1
