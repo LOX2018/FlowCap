@@ -26,6 +26,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
 import { Row, RowText, SegmentedTabs, Blank, Toolbar } from "@/components/page/kit";
+import { confirmDialog } from "@/components/ui/modal";
 import { cn } from "@/lib/utils";
 import { type LogLine, type Session, fmtStart, fmtSize, LEVEL_CLASS } from "./logs-shared";
 
@@ -105,6 +106,13 @@ export default function LogsPage(props: PageProps) {
       props.push("请先勾选要删除的历史会话");
       return;
     }
+    // 危险操作确认：必须在乐观更新之前 —— 否则点「取消」也已触发 setQueryData，
+    // 列表先隐藏后回滚，用户看到的是「消失了又跳回来」。
+    if (!(await confirmDialog({
+      title: "批量删除",
+      message: `删除选中的 ${files.length} 个历史会话？文件将被永久删除。`,
+      danger: true,
+    }))) return;
     // 乐观更新：删除前立即从列表隐藏选中项，消除删除后的可见延迟
     const delSet = new Set(files);
     qc.setQueryData(
@@ -248,6 +256,12 @@ export default function LogsPage(props: PageProps) {
                   variant="danger-outline"
                   size="sm"
                   onClick={async () => {
+                    // 危险操作确认：await 在 mutate 之前（否则取消也删了）
+                    if (!(await confirmDialog({
+                      title: "删除历史会话",
+                      message: `删除 ${s.file}？文件将被永久删除。`,
+                      danger: true,
+                    }))) return;
                     const r = await api.deleteSessions([s.file]);
                     if (r.ok && r.deleted.length) props.push(`已删除 ${s.file}`);
                     else props.push("删除失败（本次会话不可删）");

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, Sparkles, Plus, Pencil } from "lucide-react";
 import type { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
+import { confirmDialog } from "@/components/ui/modal";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -211,7 +212,15 @@ export function ReplyKb({
             <Button
               variant="danger-outline"
               size="sm"
-              onClick={() => delMut.mutate(it.id)}
+              onClick={async () => {
+                // 危险操作确认：await 在 mutate 之前（否则取消也删了）
+                if (!(await confirmDialog({
+                  title: "删除话术",
+                  message: `删除话术「${it.question}」？`,
+                  danger: true,
+                }))) return;
+                delMut.mutate(it.id);
+              }}
             >
               <Trash2 className="h-3 w-3" />删除
             </Button>
