@@ -492,3 +492,41 @@ export function parseMedia(text: string): MediaInfo {
 }
 
 /** 原图预览弹层：点击缩略图后展示可放大的图 */
+
+/* ── 表格具名单元（与 tasks/live/accounts 同款，避免各处重复 className） ── */
+export function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
+  return (
+    <th
+      className={[
+        "whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2 text-left",
+        "text-[0.7rem] font-semibold tracking-[0.03em] text-[var(--color-text-secondary)]",
+        className || "",
+      ].join(" ")}
+    >
+      {children}
+    </th>
+  );
+}
+
+export function Td({
+  children, mono, muted, className, colSpan,
+}: {
+  children?: React.ReactNode; mono?: boolean; muted?: boolean;
+  className?: string; colSpan?: number;
+}) {
+  return (
+    <td
+      colSpan={colSpan}
+      className={[
+        "border-b border-[var(--color-border)] px-3 py-2 align-middle",
+        "text-[0.76rem] text-[var(--color-text)]",
+        mono ? "font-mono tabular-nums" : "",
+        muted ? "text-[var(--color-text-muted)]" : "",
+        className || "",
+      ].join(" ")}
+    >
+      {children}
+    </td>
+  );
+}
+

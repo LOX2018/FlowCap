@@ -2046,6 +2046,26 @@ def capture_all(name, with_browser=True):
                     n_msg += 1
                 except Exception:
                     pass
+            # ★ 2026-10-04（用户定调「历史补全也提，标记非实时」）：
+            #   历史补全抓到的老消息，其 dm_messages.id 常小于 AI 水位
+            #   （`ai_reply_last_msg_id`）⇒ 实时路径 `_tick` 会跳过 ⇒ 号码永远成不了线索。
+            #   此处按会话**直接提取**（纯本地正则，零网络），标记 source='backfill'。
+            #   🔴 独立 try + 纯本地：绝不因提线索失败或网络问题影响捕获主流程。
+            try:
+                from services import ai_reply as _air
+                _them_texts = [
+                    (m.get("text") or "")
+                    for m in (c.get("messages") or [])
+                    if (m.get("role") or "them") == "them"
+                ]
+                _n_lead = _air.extract_and_save_leads_from_messages(
+                    name, cid, nickname or peer_uid or "", _them_texts, source="backfill",
+                )
+                if _n_lead:
+                    logger.info(f"[capture] 历史补全提线索 {_n_lead} 条 "
+                                f"account={name} conv={cid}（source=backfill）")
+            except Exception as _e:  # noqa: BLE001 —— 提线索失败不得影响捕获
+                logger.debug(f"[capture] 历史补全提线索跳过（不影响捕获）: {_e}")
             n_conv += 1
         conn.commit()
         # 2026-09-07 存量污染一次性订正（D 方案）：

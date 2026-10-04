@@ -78,12 +78,18 @@ def ensure_tables() -> None:
         contact_value TEXT NOT NULL,
         source_text TEXT DEFAULT '',
         status TEXT DEFAULT 'new',       -- new / followed / invalid
+        source TEXT DEFAULT 'realtime',  -- realtime（WS/网页实时经 AI） / backfill（历史补全）
         created_at REAL NOT NULL,
         UNIQUE(account, conv_id, contact_type, contact_value)
     );
     CREATE INDEX IF NOT EXISTS idx_aileads_created
         ON ai_leads(created_at DESC);
     """)
+    # ★ 2026-10-04：老库（建表早于 source 列）幂等补列。ALTER 失败=列已存在，忽略。
+    try:
+        conn.execute("ALTER TABLE ai_leads ADD COLUMN source TEXT DEFAULT 'realtime'")
+    except Exception:
+        pass  # 列已存在
     conn.commit()
 
 
@@ -1691,22 +1697,59 @@ def extract_contacts(text: str) -> list[tuple[str, str]]:
 
 
 def save_lead(account: str, conv_id: str, peer_name: str,
-              ctype: str, cvalue: str, source_text: str) -> bool:
-    """写线索表。同会话同联系方式只写一次（UNIQUE 约束兜底）。"""
+              ctype: str, cvalue: str, source_text: str,
+              source: str = "realtime") -> bool:
+    """写线索表。同会话同联系方式只写一次（UNIQUE 约束兜底）。
+
+    `source`（★ 2026-10-04 用户定调）：`realtime` = 实时（WS/网页经 AI 处理时提取）；
+    `backfill` = 历史补全（「更新会话」抓到的历史消息里提取）。同一会话同号码
+    只写一次（UNIQUE）⇒ **先到者定源**：实时先到即标实时，补全先到即标补全。
+    """
     try:
         conn = database.get_db()
         cur = conn.execute(
             "INSERT OR IGNORE INTO ai_leads(account, conv_id, peer_name, "
-            "contact_type, contact_value, source_text, status, created_at) "
-            "VALUES(?,?,?,?,?,?, 'new', ?)",
+            "contact_type, contact_value, source_text, status, created_at, source) "
+            "VALUES(?,?,?,?,?,?, 'new', ?, ?)",
             (account, conv_id, peer_name or "", ctype, cvalue,
-             (source_text or "")[:200], time.time()),
+             (source_text or "")[:200], time.time(),
+             "backfill" if source == "backfill" else "realtime"),
         )
         conn.commit()
         return cur.rowcount > 0
     except Exception as e:
         logger.warning(f"[AI-016] " + f"[ai] 线索写入失败: {e}")
         return False
+
+
+def extract_and_save_leads_from_messages(account: str, conv_id: str,
+                                         peer_name: str, texts, source: str = "backfill") -> int:
+    """从一批**对方消息文本**里提取留资线索并入库，返回新增条数。
+
+    ★ 2026-10-04（用户定调「历史补全也提，但标记非实时」）：历史补全
+    （`conversation_capture.capture_all`，即私信页「更新会话」）抓到的老消息，
+    其 `dm_messages.id` 常**小于** AI 水位（`ai_reply_last_msg_id`）⇒ 实时路径
+    （`_tick` 的 `WHERE m.id > 水位`）会跳过 ⇒ 那些号码永远成不了线索。
+    本函数按会话**直接提取**，与实时路径互补。
+
+    设计边界：
+      · **纯本地文本解析**（`extract_contacts` 正则），零网络零浏览器；
+      · 只提**对方（them）**的消息文本，绝不提取我方话术里的号码；
+      · 失败仅告警，**绝不影响捕获主流程**（调用方还应再包一层 try）。
+    """
+    n_new = 0
+    try:
+        for text in (texts or []):
+            s_text = str(text or "")
+            if not s_text:
+                continue
+            for ctype, cvalue in extract_contacts(s_text):
+                if save_lead(account, conv_id, peer_name, ctype, cvalue, s_text,
+                             source=source):
+                    n_new += 1
+    except Exception as e:  # noqa: BLE001 —— 提线索失败不得影响捕获
+        logger.warning(f"[AI-017] " + f"[ai] 历史补全提线索失败（不影响捕获）: {e}")
+    return n_new
 
 
 # ---------------------------------------------------------------------------

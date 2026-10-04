@@ -10,33 +10,62 @@
  *   —— 线索是**按账号**维度的产出，且**产生在私信对话里**。
  *   它的出生地就是私信，放回这里 = 用户在聊天的地方管理聊天产生的线索。
  *
- *   同理被派往别处的：
- *     · Agent/护栏/黑名单（按 Agent、全局）→ 配置中心「AI 回复引擎」
- *     · 运行控制（全局运行状态）          → 总览页
+ * ## 呈现（★ 2026-10-04：由列表改为**表格**）
+ *
+ * 用户要求「用表格形式呈现」。列为：状态 / 联系方式 / 类型 / 客户 / 账号 /
+ * 捕获时间 / 原文 / 操作。新增可排序（按捕获时间）与类型·状态筛选，便于线索多时定位。
  *
  * ## 风控铁律
  * 只读写 `/api/ai/leads*`，不触发捕获/昵称查询。
- *
- * ## 搬迁保真声明
- * 列表渲染、状态流转、CSV 导出 URL **逐字搬迁**自 pages/ai.tsx。
  */
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download } from "lucide-react";
+import { Download, ArrowUpDown } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { Button } from "@/components/ui/button";
-import { Tone, Row, Blank, Toolbar } from "@/components/page/kit";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
+import { Tone, Blank, Toolbar } from "@/components/page/kit";
+import { Th, Td } from "./message-shared";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
 import { errMsg } from "@/lib/utils";
 
 interface Lead {
   id: number; account: string; conv_id: string; peer_name: string;
   contact_type: string; contact_value: string; status: string;
   created_at: number; source_text: string;
+  /** realtime = 实时（WS/网页经 AI）；backfill = 历史补全（「更新会话」抓到） */
+  source?: string;
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  new: "新线索", followed: "已跟进", invalid: "无效",
+};
+const TYPE_LABEL: Record<string, string> = { phone: "手机号", wechat: "微信号" };
+/** 来源：实时 vs 历史补全（★ 2026-10-04 用户要求「历史补全也提，但标记非实时」）。 */
+const SOURCE_LABEL: Record<string, string> = {
+  realtime: "实时",
+  backfill: "历史补全",
+};
+
+function fmtTime(v: number): string {
+  if (!v) return "—";
+  try {
+    return new Date(v * 1000).toLocaleString("zh-CN", { hour12: false });
+  } catch {
+    return "—";
+  }
 }
 
 export default function LeadsSection(props: PageProps) {
   const { api, push } = props;
   const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const [st, setSt] = useState<string>("all");
+  const [ty, setTy] = useState<string>("all");
+  const [asc, setAsc] = useState(false);
 
   const { data: leads } = useQuery({
     queryKey: ["ai-leads"],
@@ -52,9 +81,69 @@ export default function LeadsSection(props: PageProps) {
     }
   }, [api, push, qc]);
 
+  const items = (leads?.items || []) as unknown as Lead[];
+
+  const filtered = useMemo(() => {
+    let list = items.slice();
+    if (st !== "all") list = list.filter((r) => r.status === st);
+    if (ty !== "all") list = list.filter((r) => r.contact_type === ty);
+    if (q.trim()) {
+      const kw = q.trim().toLowerCase();
+      list = list.filter((r) =>
+        (r.contact_value + r.peer_name + r.account + r.source_text)
+          .toLowerCase()
+          .includes(kw)
+      );
+    }
+    list.sort((a, b) => (asc ? a.created_at - b.created_at : b.created_at - a.created_at));
+    return list;
+  }, [items, q, st, ty, asc]);
+
+  const cnt = (s: string) => items.filter((r) => r.status === s).length;
+
+  const pills: [string, string, number][] = [
+    ["all", "全部", items.length],
+    ["new", "新线索", cnt("new")],
+    ["followed", "已跟进", cnt("followed")],
+    ["invalid", "无效", cnt("invalid")],
+  ];
+
   return (
     <div>
-      <div className="mb-2.5 flex items-center gap-2">
+      <Toolbar className="mb-3">
+        <input
+          className="min-w-[200px] flex-1 rounded-[var(--radius-sm)] border
+                     border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5
+                     text-[0.78rem] text-[var(--color-text)] outline-none"
+          placeholder="搜索联系方式 / 客户 / 账号 / 原文…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <Select value={ty} onValueChange={setTy}>
+          <SelectTrigger className="w-[120px]" aria-label="联系方式类型筛选">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部类型</SelectItem>
+            <SelectItem value="phone">手机号</SelectItem>
+            <SelectItem value="wechat">微信号</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={st} onValueChange={setSt}>
+          <SelectTrigger className="w-[120px]" aria-label="状态筛选">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部状态</SelectItem>
+            <SelectItem value="new">新线索</SelectItem>
+            <SelectItem value="followed">已跟进</SelectItem>
+            <SelectItem value="invalid">无效</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button variant="ghost" size="sm" onClick={() => setAsc((v) => !v)}>
+          <ArrowUpDown className="h-3.5 w-3.5" />
+          {asc ? "时间 ↑" : "时间 ↓"}
+        </Button>
         <a
           href="http://127.0.0.1:8000/api/ai/leads/export"
           target="_blank"
@@ -64,51 +153,122 @@ export default function LeadsSection(props: PageProps) {
             <Download className="h-3.5 w-3.5" />导出 CSV
           </Button>
         </a>
-        <span className="text-[0.72rem] text-[var(--color-text-muted)]">
-          共 {leads?.items?.length ?? 0} 条 · 客户在对话中发出手机号/微信号后自动捕获
+      </Toolbar>
+
+      <div className="mb-2.5 flex flex-wrap items-center gap-2.5 text-[0.75rem]
+                      text-[var(--color-text-muted)]">
+        <span>
+          共 <b className="font-mono font-semibold text-[var(--color-text)]">{filtered.length}</b> 条
+          <span className="ml-1.5">· 客户在对话中发出手机号/微信号后自动捕获</span>
         </span>
-      </div>
-
-      {(leads?.items || []).length === 0 && (
-        <Blank>暂无线索。客户在对话中发出手机号/微信号后自动捕获。</Blank>
-      )}
-
-      <div className="divide-y divide-[var(--color-border)]">
-        {(leads?.items || []).map((raw) => {
-          const ld = raw as unknown as Lead;
-          return (
-            <Row key={ld.id} className="!px-0 py-2">
-              <Tone
-                tone={
-                  ld.status === "new" ? "accent" : ld.status === "followed" ? "ok" : "mute"
-                }
+        <div className="flex flex-wrap gap-1.5">
+          {pills.map(([id, label, c]) => {
+            const on = st === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSt(id)}
+                className={[
+                  "inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1",
+                  "text-[0.75rem] transition-colors duration-200",
+                  on
+                    ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] font-semibold text-[var(--color-accent)]"
+                    : "border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]",
+                ].join(" ")}
               >
-                {ld.status === "new" ? "新线索" : ld.status === "followed" ? "已跟进" : "无效"}
-              </Tone>
-              <span className="font-mono text-[0.78rem] font-semibold text-[var(--color-text)]">
-                {ld.contact_value}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[0.72rem]
-                               text-[var(--color-text-muted)]">
-                {ld.contact_type === "phone" ? "手机号" : "微信号"} ·{" "}
-                {ld.peer_name || ld.conv_id.slice(0, 12)} · {ld.account}
-              </span>
-              <Toolbar className="shrink-0 gap-1">
-                {ld.status !== "followed" && (
-                  <Button variant="secondary" size="sm" onClick={() => leadStatus(ld.id, "followed")}>
-                    已跟进
-                  </Button>
-                )}
-                {ld.status !== "invalid" && (
-                  <Button variant="ghost" size="sm" onClick={() => leadStatus(ld.id, "invalid")}>
-                    无效
-                  </Button>
-                )}
-              </Toolbar>
-            </Row>
-          );
-        })}
+                {label}
+                <span className="font-mono text-[0.68rem] opacity-80">{c}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      <Card className="overflow-hidden p-0" data-od-id="msg-leads-table">
+        {items.length === 0 ? (
+          <Blank>暂无线索。客户在对话中发出手机号/微信号后自动捕获。</Blank>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full table-fixed border-collapse">
+              <colgroup>
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "7%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "13%" }} />
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "12%" }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <Th>状态</Th>
+                  <Th>联系方式</Th>
+                  <Th>类型</Th>
+                  <Th>来源</Th>
+                  <Th>客户</Th>
+                  <Th>账号</Th>
+                  <Th>捕获时间</Th>
+                  <Th>原文</Th>
+                  <Th className="text-right">操作</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr>
+                    <Td colSpan={9}>
+                      <Blank>无匹配线索</Blank>
+                    </Td>
+                  </tr>
+                ) : (
+                  filtered.map((ld) => (
+                    <tr key={ld.id} className="hover:bg-[var(--color-surface-raised)]">
+                      <Td>
+                        <Tone tone={ld.status === "new" ? "accent" : ld.status === "followed" ? "ok" : "mute"}>
+                          {STATUS_LABEL[ld.status] || ld.status}
+                        </Tone>
+                      </Td>
+                      <Td mono className="font-semibold">{ld.contact_value}</Td>
+                      <Td>
+                        <Badge variant="outline">{TYPE_LABEL[ld.contact_type] || ld.contact_type}</Badge>
+                      </Td>
+                      <Td>
+                        <Tone tone={(ld.source || "realtime") === "backfill" ? "warn" : "info"}>
+                          {SOURCE_LABEL[ld.source || "realtime"] || ld.source}
+                        </Tone>
+                      </Td>
+                      <Td>
+                        <span className="block truncate" title={ld.peer_name || ld.conv_id}>
+                          {ld.peer_name || ld.conv_id.slice(0, 12)}
+                        </span>
+                      </Td>
+                      <Td muted className="truncate">{ld.account || "—"}</Td>
+                      <Td mono className="whitespace-nowrap">{fmtTime(ld.created_at)}</Td>
+                      <Td muted className="truncate" >{ld.source_text || "—"}</Td>
+                      <Td>
+                        <Toolbar className="justify-end gap-1">
+                          {ld.status !== "followed" && (
+                            <Button variant="secondary" size="sm" onClick={() => leadStatus(ld.id, "followed")}>
+                              已跟进
+                            </Button>
+                          )}
+                          {ld.status !== "invalid" && (
+                            <Button variant="ghost" size="sm" onClick={() => leadStatus(ld.id, "invalid")}>
+                              无效
+                            </Button>
+                          )}
+                        </Toolbar>
+                      </Td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
