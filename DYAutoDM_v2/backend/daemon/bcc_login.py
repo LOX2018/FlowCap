@@ -565,6 +565,15 @@ class BccLoginMixin:
                         f"凭证身份存疑，触发自动刷新…")
                     self._last_uid = uid
                     if self._loop and not in_breaker:
+                        # 2026-10-05：有头观测态不自动重扫（与分支 3 一致）——
+                        # 重扫会重建 context，销毁用户正在操作的窗口并在抖音侧
+                        # 记一次新环境访问（正是扫码/输手机号被拦的成因）。
+                        if not self._headless:
+                            logger.warning(
+                                f"[BCC-057] [bcc] {self.account} 处于【有头观测态】"
+                                f"（uid 漂移 old={prev_uid} new={uid}），"
+                                f"**不触发自动重扫** —— 请在打开的窗口中完成登录。")
+                            continue
                         fut = asyncio.run_coroutine_threadsafe(
                             self.scan_login(force=False), self._loop)
                         try:
@@ -572,10 +581,25 @@ class BccLoginMixin:
                             if _r.get("ok"):
                                 scan_fail_count = 0
                             else:
-                                scan_fail_count += 1
-                                logger.warning(
-                                    f"[BCC-020] [bcc] uid 漂移后自动刷新未通过校验"
-                                    f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
+                                if _r.get("drift"):
+                                    # 2026-10-05：已确认身份漂移 ⇒ 自动刷新救不回，
+                                    # **立即熔断**，不再消耗重试次数。
+                                    # 与分支 3（探活拿不到 uid）的处置一致：漂移再来一次
+                                    # 仍是漂移（还会重建 context = 一次全新环境访问）⇒
+                                    # 纯粹的风控面浪费。09-27 实测 BCC-025 392 次。
+                                    breaker_until = time.time() + SCAN_BACKOFF_SEC
+                                    logger.error(
+                                        f"[BCC-024] [bcc] uid 漂移后已确认身份漂移"
+                                        f"（uid={_r.get('uid')} 不在历史 conv_id 中）—— "
+                                        f"自动刷新救不回，**立即熔断 "
+                                        f"{SCAN_BACKOFF_SEC // 60} 分钟**，"
+                                        f"请在指纹浏览器重新扫码；期间只告警不重建浏览器")
+                                    scan_fail_count = 0
+                                else:
+                                    scan_fail_count += 1
+                                    logger.warning(
+                                        f"[BCC-020] [bcc] uid 漂移后自动刷新未通过校验"
+                                        f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
                         except Exception as e:
                             logger.warning(
                                 f"[BCC-020] [bcc] uid 漂移后自动刷新失败: {e}")
@@ -617,6 +641,15 @@ class BccLoginMixin:
                                if cred_mode == "observe" else "，触发 scan_login…"))
                         if cred_mode == "observe":
                             continue
+                        # 2026-10-05：有头观测态不自动重扫（与分支 3 一致）——
+                        # 重扫会重建 context，销毁用户正在操作的窗口并在抖音侧
+                        # 记一次新环境访问（正是扫码/输手机号被拦的成因）。
+                        if not self._headless:
+                            logger.warning(
+                                f"[BCC-057] [bcc] {self.account} 处于【有头观测态】"
+                                f"（页面操作级失效 conv={page_state.get('conv')}），"
+                                f"**不触发自动重扫** —— 请在打开的窗口中完成登录。")
+                            continue
                         if self._loop:
                             fut = asyncio.run_coroutine_threadsafe(
                                 self.scan_login(force=False), self._loop)
@@ -625,10 +658,23 @@ class BccLoginMixin:
                                 if _r.get("ok"):
                                     scan_fail_count = 0
                                 else:
-                                    scan_fail_count += 1
-                                    logger.warning(
-                                        f"[BCC-023] [bcc] 页面重激活未通过校验"
-                                        f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
+                                    if _r.get("drift"):
+                                        # 2026-10-05：与分支 1/3 一致 —— 已确认身份漂移 ⇒
+                                        # 立即熔断，不再消耗重试次数（漂移再来一次仍是漂移，
+                                        # 还会重建 context = 一次全新环境访问 = 风控面浪费）。
+                                        breaker_until = time.time() + SCAN_BACKOFF_SEC
+                                        logger.error(
+                                            f"[BCC-024] [bcc] 页面重激活后已确认身份漂移"
+                                            f"（uid={_r.get('uid')} 不在历史 conv_id 中）—— "
+                                            f"自动刷新救不回，**立即熔断 "
+                                            f"{SCAN_BACKOFF_SEC // 60} 分钟**，"
+                                            f"请在指纹浏览器重新扫码；期间只告警不重建浏览器")
+                                        scan_fail_count = 0
+                                    else:
+                                        scan_fail_count += 1
+                                        logger.warning(
+                                            f"[BCC-023] [bcc] 页面重激活未通过校验"
+                                            f"（连续 {scan_fail_count} 次）: {_r.get('uid')}")
                             except Exception as e:
                                 logger.warning(
                                     f"[BCC-023] [bcc] 页面重激活失败: {e}")
