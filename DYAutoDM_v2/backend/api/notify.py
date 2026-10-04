@@ -82,12 +82,14 @@ async def pending() -> dict:
     🔴 取走即清空：否则前端每轮轮询都会重复弹同一条。
     """
     try:
-        from services.cred_notify import drain_pending
+        from services.cred_notify import drain_pending, drained_total
         items = drain_pending()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[NTY-002] [notify] 取待消费通知失败: {e}")
-        return {"ok": False, "items": [], "msg": str(e)}
-    return {"ok": True, "items": items, "count": len(items)}
+        return {"ok": False, "items": [], "count": 0, "drained_total": -1,
+                "msg": str(e)}
+    return {"ok": True, "items": items, "count": len(items),
+            "drained_total": drained_total()}
 
 
 @router.get("/config")

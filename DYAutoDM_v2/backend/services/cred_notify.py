@@ -40,6 +40,8 @@ _last: dict[tuple[str, str], float] = {}
 # 🔴 有界队列：不设上限会在前端长期不消费时无限增长（内存泄漏）。
 _MAX_PENDING = 200
 _pending: list[dict] = []
+# 累计被取走条数（可观测性：证明前端真的在消费，而非队列从未有人取）
+_drained_total = 0
 
 
 def _enqueue(account: str, title: str, body: str, reason: str = "") -> None:
@@ -69,10 +71,24 @@ def drain_pending() -> list[dict]:
     🔴 必须「取走即清空」：若只读取不清，前端每次轮询都会重复弹出同一条，
     用户会被同一条通知反复打扰（与「不刷爆通知栏」的设计目标相反）。
     """
-    global _pending
+    global _pending, _drained_total
     with _lock:
         out, _pending = _pending, []
+        if out:
+            _drained_total += len(out)
+            # 可观测性：取走必须留痕，否则「前端到底消费没消费」无从判定
+            # （项目铁律：静默路径必须可计数）。
+            logger.info(
+                f"[cred-notify] 队列被取走 {len(out)} 条"
+                f"（累计 {_drained_total} 条）；最近一条："
+                f"{out[-1].get('title')} / 账号 {out[-1].get('account')}")
     return out
+
+
+def drained_total() -> int:
+    """已被前端取走的通知总数（可观测性判据：证明前端真的在消费）。"""
+    with _lock:
+        return _drained_total
 
 
 def _cred_expire_action() -> str:
