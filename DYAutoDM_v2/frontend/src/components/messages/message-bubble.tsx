@@ -385,16 +385,6 @@ export function MsgBubble({
         ) : null}
       </div>
     );
-  if (m.type === "image")
-    return (
-      <div
-        className="grid h-[110px] w-[150px] place-items-center rounded-[var(--radius-md)]
-                   bg-[linear-gradient(135deg,var(--color-accent-soft),var(--color-info-soft))]
-                   text-[0.75rem] text-[var(--color-text-secondary)]"
-      >
-        图片消息
-      </div>
-    );
   // 2026-09-16 实机修复：未知类型的兜底分支。
   // 原实现：任何 type 非 text/voice/sticker/image 的消息都落进这里，渲染成
   // 「分享的视频」卡片 —— 但 WS 实时路径的数字 msg_type（如 "7"=文本）曾
