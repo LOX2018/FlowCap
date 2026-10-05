@@ -165,6 +165,15 @@
   --elev-2: 0 2px 6px rgba(15, 23, 42, 0.07), 0 24px 48px -18px rgba(15, 23, 42, 0.22);
   --elev-3: 0 8px 20px rgba(15, 23, 42, 0.10), 0 48px 96px -28px rgba(15, 23, 42, 0.28);
   --ring-inset-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  /* -- 语义色（浅色主题补深：原值在 #f3f6ec 底上对比度均 < 3:1，修正后全部 >= 4.5:1）-- */
+  --color-success: #047857;
+  --color-success-soft: rgba(4, 120, 87, 0.12);
+  --color-info: #6d28d9;
+  --color-info-soft: rgba(109, 40, 217, 0.12);
+  --color-warning: #b45309;
+  --color-warning-soft: rgba(180, 83, 9, 0.12);
+  --color-danger: #b91c1c;
+  --color-danger-soft: rgba(185, 28, 28, 0.12);
 }
 
 /* ═══════════════════════════════════════════════════════════════
