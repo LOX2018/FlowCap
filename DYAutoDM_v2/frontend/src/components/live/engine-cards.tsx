@@ -269,6 +269,7 @@ export default function EngineCards({ push }: EngineCardsProps) {
                   size="sm"
                   className="flex-1"
                   disabled={!!busy}
+                  title="软停止：发送完队列存量后退出"
                   onClick={() => act(item.acct, "stop", () => api.stopSoftEngine(item.acct))}
                 >
                   {loading[item.acct + ":stop"] ? (
@@ -277,7 +278,7 @@ export default function EngineCards({ push }: EngineCardsProps) {
                   ) : (
                     <Square className="h-3.5 w-3.5" />
                   )}
-                  停止
+                  软停止
                 </Button>
               )}
             </div>

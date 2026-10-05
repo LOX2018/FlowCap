@@ -134,17 +134,6 @@ export default function LeadsSection(props: PageProps) {
             <SelectItem value="wechat">微信号</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={st} onValueChange={setSt}>
-          <SelectTrigger className="w-[120px]" aria-label="状态筛选">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部状态</SelectItem>
-            <SelectItem value="new">新线索</SelectItem>
-            <SelectItem value="followed">已跟进</SelectItem>
-            <SelectItem value="invalid">无效</SelectItem>
-          </SelectContent>
-        </Select>
         <Button variant="ghost" size="sm" onClick={() => setAsc((v) => !v)}>
           <ArrowUpDown className="h-3.5 w-3.5" />
           {asc ? "时间 ↑" : "时间 ↓"}
