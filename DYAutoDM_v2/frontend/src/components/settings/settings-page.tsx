@@ -52,53 +52,88 @@ export type SectionKey =
   | "general" | "send" | "live" | "capture" | "dm"
   | "ai" | "agent" | "tag" | "notify" | "mcp" | "crawlpolicy" | "system";
 
-const TABS: {
-  key: SectionKey;
-  label: string;
-  hint: string;
-  icon: React.ReactNode;
-  /**
-   * 本 tab 是否有**可编辑的参数分区**（即右侧是否显示「作用域标签栏」）。
-   *
-   * 判据 = 该 tab 是否渲染了走 `get_effective_config` 覆盖路径的参数：
-   * 参数按 scope 拉取、按 scope 保存 ⇒ 选标签才有意义。
-   *
-   * 只有**有**参数分区的 tab 才放这柱：
-   *   · 无参数分区的 tab（通知 / MCP / 系统 / Agent 与绑定 / 配置标签）
-   *     选标签不会改变任何行为，放了就是「点了没反应」的入口；
-   *   · 「配置标签」tab 是标签的**管理页**（新建/删除），
-   *     在这里再放一柱 scope 选择会与列表自身功能打架；
-   *   · 「私信列表」tab 的 dm 分区不在 `MANAGED_SECTIONS` 白名单内，
-   *     选标签会被后端忽略（写入成功但永不生效）⇒ 不显示；
-   *   · 「AI 回复引擎」tab 的两个子组件走各自存储
-   *     （`aiSaveConfig` 存 Agent、ModelHub 存模型链路），
-   *     **都不经** `get_effective_config` ⇒ 选标签无效 ⇒ 不显示。
-   *
-   * 放栏的 4 个 tab：私信发送（send）· 监听策略（live + live_orchestration）·
-   * 捕获与存储（capture）· 采集策略（高价值关键词权重表，按 全局/标签 存）。
-   */
-  scoped: boolean;
-}[] = [
-  { key: "general", label: "通用配置", hint: "前端行为（非业务）", scoped: false, icon: <SettingsIcon className="h-3.5 w-3.5" /> },
-  { key: "send", label: "私信发送", hint: "风控频率、闸门、额度", scoped: true, icon: <Send className="h-3.5 w-3.5" /> },
-  { key: "live", label: "监听策略", hint: "通用监听策略（不绑定具体直播间）", scoped: true, icon: <Radio className="h-3.5 w-3.5" /> },
-  { key: "capture", label: "捕获与存储", hint: "历史补全、缓存、图片", scoped: true, icon: <Database className="h-3.5 w-3.5" /> },
-  { key: "dm", label: "私信列表", hint: "昵称兜底（默认关，主动查询有风控成本）", scoped: false, icon: <MessageSquare className="h-3.5 w-3.5" /> },
-  { key: "ai", label: "AI 回复引擎", hint: "模型链路 + 回复内容 / 护栏 / 黑名单", scoped: false, icon: <Bot className="h-3.5 w-3.5" /> },
-  { key: "agent", label: "Agent 与绑定", hint: "Agent 模版 + 账号绑定", scoped: false, icon: <Users className="h-3.5 w-3.5" /> },
-  { key: "tag", label: "配置标签", hint: "发送策略：怎么发", scoped: false, icon: <Tags className="h-3.5 w-3.5" /> },
-  // 2026-09-27（ADR-018 F1-D3）：采集策略层。与「配置标签」互补 ——
-  // 标签管「用哪套参数」，本项管「采集参数本身」。
-  { key: "crawlpolicy", label: "采集策略", hint: "可复用的采集参数（只存参数，不自动采集）", scoped: true, icon: <ListFilter className="h-3.5 w-3.5" /> },
-  { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", scoped: false, icon: <Bell className="h-3.5 w-3.5" /> },
-  // 2026-09-25：补 MCP 入口。此前后端 7 个端点已完整，但前端零引用
-  // ⇒ 用户「看不到入口、也不知道令牌」= 能力在位但不可得。
-  { key: "mcp", label: "MCP 服务", hint: "AI 客户端接入（stdio 免令牌 / 本机 HTTP 需令牌）", scoped: false, icon: <Plug className="h-3.5 w-3.5" /> },
-  // 2026-09-30：系统运维（能力巡检）。总览页改为纯只读看板后，
-  // 「立即巡检」的**唯一**入口落在此处 —— 端点此前仅总览页一处调用，
-  // 不补入口会让 /api/probe/patrol 变成「在位但不可得」。
-  { key: "system", label: "系统", hint: "外观主题 · 备份 · 导出路径 · 能力巡检", scoped: false, icon: <ShieldCheck className="h-3.5 w-3.5" /> },
+type TabGroup = {
+  title: string;
+  items: {
+    key: SectionKey;
+    label: string;
+    hint: string;
+    icon: React.ReactNode;
+    /**
+     * 本 tab 是否有**可编辑的参数分区**（即右侧是否显示「作用域标签栏」）。
+     *
+     * 判据 = 该 tab 是否渲染了走 `get_effective_config` 覆盖路径的参数：
+     * 参数按 scope 拉取、按 scope 保存 ⇒ 选标签才有意义。
+     *
+     * 只有**有**参数分区的 tab 才放这柱：
+     *   · 无参数分区的 tab（通知 / MCP / 系统 / Agent 与绑定 / 配置标签）
+     *     选标签不会改变任何行为，放了就是「点了没反应」的入口；
+     *   · 「配置标签」tab 是标签的**管理页**（新建/删除），
+     *     在这里再放一柱 scope 选择会与列表自身功能打架；
+     *   · 「私信列表」tab 的 dm 分区不在 `MANAGED_SECTIONS` 白名单内，
+     *     选标签会被后端忽略（写入成功但永不生效）⇒ 不显示；
+     *   · 「AI 回复引擎」tab 的两个子组件走各自存储
+     *     （`aiSaveConfig` 存 Agent、ModelHub 存模型链路），
+     *     **都不经** `get_effective_config` ⇒ 选标签无效 ⇒ 不显示。
+     *
+     * 放栏的 4 个 tab：私信发送（send）· 监听策略（live + live_orchestration）·
+     * 捕获与存储（capture）· 采集策略（高价值关键词权重表，按 全局/标签 存）。
+     */
+    scoped: boolean;
+  }[];
+};
+
+/**
+ * 分区按用户任务流分四组（2026-10-05 T9）：
+ * 此前 12 个分区平铺、无分组，支持标签差异化的 4 个与支持不了的 8 个
+ * 在页面上看不出任何区别，用户无法预判「切标签会不会改变这一页的行为」。
+ * 分组依据是任务顺序（先发送、再采集、再智能、最后通用），不是后端分区归属。
+ *
+ * ⚠️ 数据源仍是扁平的 `TABS`（`SectionKey` 联合、`TABS.some`、`TABS.find`
+ * 等既有引用点不动）；`TAB_GROUPS` 只是对同一批条目的**顺序与分组视图**，
+ * 新增分组时不要复制条目，改这里一处即可。
+ */
+const TAB_GROUPS: TabGroup[] = [
+  {
+    title: "发送与风控",
+    items: [
+      { key: "send", label: "私信发送", hint: "多久发一条、每天发多少", scoped: true, icon: <Send className="h-3.5 w-3.5" /> },
+      { key: "tag", label: "配置标签", hint: "给一套参数起个名，按账号套用", scoped: false, icon: <Tags className="h-3.5 w-3.5" /> },
+    ],
+  },
+  {
+    title: "采集与监听",
+    items: [
+      { key: "live", label: "监听策略", hint: "看直播多久刷新一次", scoped: true, icon: <Radio className="h-3.5 w-3.5" /> },
+      { key: "capture", label: "捕获与存储", hint: "历史消息补全、缓存多久", scoped: true, icon: <Database className="h-3.5 w-3.5" /> },
+      { key: "crawlpolicy", label: "采集策略", hint: "可复用的采集参数，不自动跑", scoped: true, icon: <ListFilter className="h-3.5 w-3.5" /> },
+      { key: "dm", label: "私信列表", hint: "昵称查不到时是否主动查", scoped: false, icon: <MessageSquare className="h-3.5 w-3.5" /> },
+    ],
+  },
+  {
+    title: "智能与接入",
+    items: [
+      { key: "ai", label: "AI 回复引擎", hint: "用什么模型、回什么内容", scoped: false, icon: <Bot className="h-3.5 w-3.5" /> },
+      { key: "agent", label: "Agent 与绑定", hint: "回复模版、绑到哪个账号", scoped: false, icon: <Users className="h-3.5 w-3.5" /> },
+      { key: "notify", label: "通知与指令", hint: "发到哪个群、指令怎么解析", scoped: false, icon: <Bell className="h-3.5 w-3.5" /> },
+      // 2026-09-25：补 MCP 入口。此前后端 7 个端点已完整，但前端零引用
+      // ⇒ 用户「看不到入口、也不知道令牌」= 能力在位但不可得。
+      { key: "mcp", label: "MCP 服务", hint: "让 AI 助手连上本系统", scoped: false, icon: <Plug className="h-3.5 w-3.5" /> },
+    ],
+  },
+  {
+    title: "通用",
+    items: [
+      { key: "general", label: "通用配置", hint: "启动行为、凭据失效时怎么办", scoped: false, icon: <SettingsIcon className="h-3.5 w-3.5" /> },
+      // 2026-09-30：系统运维（能力巡检）。总览页改为纯只读看板后，
+      // 「立即巡检」的**唯一**入口落在此处 —— 端点此前仅总览页一处调用，
+      // 不补入口会让 /api/probe/patrol 变成「在位但不可得」。
+      { key: "system", label: "系统", hint: "外观、备份、导出、能力巡检", scoped: false, icon: <ShieldCheck className="h-3.5 w-3.5" /> },
+    ],
+  },
 ];
+
+const TABS = TAB_GROUPS.flatMap((g) => g.items);
 
 export default function SettingsPage(props: PageProps) {
   // 2026-10-05：支持外部指定落点分区（总览「去巡检」→ system）。
@@ -154,33 +189,49 @@ export default function SettingsPage(props: PageProps) {
       />
 
       <div className="flex items-start gap-4">
-        {/* 左侧子导航 */}
-        {/* 独立固定：main 是滚动容器，nav 用 sticky 留在流内（保留 168px 占位与 gap-4，
-            无需 fixed 的宽度补偿）。top-0 贴 main 顶边；self-start 防止被拉伸导致无吸附余量；
-            max-h/overflow 使导航项超高时内部滚动且不把滚动链传导回 main。 */}
+        {/* 左侧子导航
+            2026-10-05（T9）：改为分组渲染。此前 12 项平铺，支持「按账号」差异化的
+            4 个与不支持的 8 个在视觉上无差别；现在组标题 + 行内「按账号」小标
+            让用户进入该分区前就知道切标签是否生效。 */}
         <nav className="w-[168px] shrink-0 space-y-0.5 sticky top-0 self-start z-20 max-h-[calc(100vh-120px)] overflow-y-auto overscroll-contain bg-[var(--color-background)] py-1">
-          {TABS.map((t) => {
-            const on = section === t.key;
-            return (
-              <button
-                key={t.key}
-                type="button"
-                title={t.hint}
-                onClick={() => setSection(t.key)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2",
-                  "text-left text-[0.8rem] font-medium",
-                  "transition-colors duration-[var(--duration-fast)] ease-[var(--ease-spring)]",
-                  on
-                    ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-                    : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
-                )}
-              >
-                {t.icon}
-                {t.label}
-              </button>
-            );
-          })}
+          {TAB_GROUPS.map((g) => (
+            <div key={g.title} className="mb-1">
+              <div className="flex items-center gap-1 px-3 pb-0.5 pt-1.5">
+                <span className="text-[0.64rem] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-muted)]">
+                  {g.title}
+                </span>
+              </div>
+              {g.items.map((t) => {
+                const on = section === t.key;
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    title={t.hint}
+                    onClick={() => setSection(t.key)}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2",
+                      "text-left text-[0.8rem] font-medium",
+                      "transition-colors duration-[var(--duration-fast)] ease-[var(--ease-spring)]",
+                      on
+                        ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                        : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
+                    )}
+                  >
+                    {t.icon}
+                    <span className="min-w-0 truncate">{t.label}</span>
+                    {/* 只标在真正支持标签差异化的分区上：未标即表示「这里改的是全局」，
+                        与右侧 ScopeRail 是否出现同源（同一 `scoped` 字段），不新增判据。 */}
+                    {t.scoped && (
+                      <span className="ml-auto shrink-0 rounded-[var(--radius-sm)] bg-[var(--color-surface-raised)] px-1 py-0.5 text-[0.58rem] font-medium text-[var(--color-text-muted)]">
+                        按账号
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         {/* 右侧内容区
