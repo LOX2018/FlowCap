@@ -33,19 +33,19 @@ import { openExternal } from "../../utils/openExternal";
 import { stopBrowserDaemon, stopRecvDaemon } from "../../api/sidecar";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
-import { promptDialog } from "@/components/ui/modal";
+import { promptDialog, confirmDialog } from "@/components/ui/modal";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusDot } from "@/components/ui/status-dot";
 import { Avatar, } from "../../components/ui";
-import { StatRow, KeyValue, Tone, Toolbar } from "@/components/page/kit";
+import { StatRow, KeyValue, Tone, Toolbar, Blank } from "@/components/page/kit";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import {
   type AcctForm, type CapabilityPurpose, type CheckResult, type FmtAccount, type ProxyForm,
   type RawAccount, type FpInfo,
-  enginePill, errMsg, mapAcct, StatCard, SectionLabel,
+  enginePill, errMsg, mapAcct, StatCard, SectionLabel, credentialTone, credentialLabel,
 } from "./accounts-shared";
 import { AccountReview } from "./AccountReview";
 import { ProxyDrawer } from "./ProxyDrawer";
@@ -252,13 +252,25 @@ export default function AccountsPage(props: PageProps) {
     push("已导出 " + batchSel.size + " 个账号的运行数据");
   };
 
-  const batchDelete = () => {
+  const batchDelete = async () => {
     if (!batchSel.size) {
       push("请先勾选账号");
       return;
     }
     // 稳定键 = 账号名（mapAcct.id），删除目标不经列表位置映射 —— 轮询/刷新后不会错位。
     const names = Array.from(batchSel);
+    // 破坏性操作前置确认（2026-10-05 T7）：取消则不发任何请求、列表不变。
+    const go = await confirmDialog({
+      title: "删除账号",
+      message:
+        "将删除所选 " + names.length + " 个账号及其本地数据（" +
+        names.slice(0, 3).join("、") +
+        (names.length > 3 ? " 等" : "") +
+        "）。此操作不可撤销，确定继续？",
+      confirmText: "删除",
+      danger: true,
+    });
+    if (!go) return;
     // 乐观更新：立即从本地列表移除勾选的卡片，消除后端刷新 3s+ 等待，感官零延迟
     qc.setQueryData<RawAccount[]>(["accounts"], (old) =>
       (old ?? []).filter((a) => !names.includes(a.name)),
@@ -639,6 +651,15 @@ export default function AccountsPage(props: PageProps) {
           ? Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={"sk" + i} className="h-[220px] w-full rounded-[var(--radius-md)]" />
             ))
+          : shownAccounts.length === 0 ? (
+              // 空态（2026-10-05 T7）：此前三元只有 skeleton 与 .map 两支，0 账号时该区域高度塌陷、无文案、无入口。
+              <Blank className="min-h-[220px]">
+                <div>还没有账号</div>
+                <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)}>
+                  <Plus className="h-3.5 w-3.5" />新增账号
+                </Button>
+              </Blank>
+            )
           : shownAccounts.map((a) => (
               <Card
                 key={a.id}
@@ -671,9 +692,7 @@ export default function AccountsPage(props: PageProps) {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 text-[0.95rem] font-semibold text-[var(--color-text)]">
                       {a.name}
-                      <Tone tone={a.tokenValid ? "ok" : a.lvl === "nosign" ? "warn" : "danger"}>
-                        {a.lvlLabel || (a.tokenValid ? "凭证有效" : "凭证过期")}
-                      </Tone>
+                      <Tone tone={credentialTone(a)}>{credentialLabel(a)}</Tone>
                     </div>
                     <div className="mt-0.5 font-mono text-[0.75rem] text-[var(--color-text-muted)]">
                       UID {a.uid} · 上次校验 {a.lastCheck}

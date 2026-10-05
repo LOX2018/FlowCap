@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { BrandMark, BRAND_NAME } from "@/components/brand";
 import {
-  type FmtAccount, type ReviewRow, PanelTitle, DM_META, Th, Td,
+  type FmtAccount, type ReviewRow, PanelTitle, DM_META, Th, Td, credentialTone, credentialLabel,
 } from "./accounts-shared";
 
 export function AccountReview({
@@ -155,9 +155,7 @@ export function AccountReview({
         <h2 className="text-[0.94rem] font-semibold text-[var(--color-text)]">
           {a.name} · 查阅模式
         </h2>
-        <Tone tone={a.tokenValid ? "ok" : a.lvl === "nosign" ? "warn" : "danger"}>
-          {a.lvlLabel || (a.tokenValid ? "凭证有效" : "凭证过期")}
-        </Tone>
+        <Tone tone={credentialTone(a)}>{credentialLabel(a)}</Tone>
         <div className="flex-1" />
         <Badge variant="outline">只读 · {a.uid}</Badge>
       </div>

@@ -18,7 +18,7 @@
 import { type ReactNode } from "react";
 import { hue } from "../../components/ui";
 import { Card } from "@/components/ui/card";
-import { Stat } from "@/components/page/kit";
+import { Stat, type ToneKey } from "@/components/page/kit";
 import { cn } from "@/lib/utils";
 
 // ===== 类型定义 =====
@@ -179,6 +179,17 @@ export function enginePill(level: string): PillColor {
   if (level === "warn") return "warn";
   if (level === "fail" || level === "error") return "danger";
   return "mute";
+}
+
+/** 凭证状态 → Tone 色调。此前 accounts-page 与 AccountReview 各写一份逐字符相同的
+ *  三元式（2026-10-05 T7 收敛），改文案/判据只需改这一处。 */
+export function credentialTone(a: FmtAccount): ToneKey {
+  return a.tokenValid ? "ok" : a.lvl === "nosign" ? "warn" : "danger";
+}
+
+/** 凭证状态 → 文案（后端标签优先，否则按 tokenValid 兜底）。 */
+export function credentialLabel(a: FmtAccount): string {
+  return a.lvlLabel || (a.tokenValid ? "凭证有效" : "凭证过期");
 }
 
 /**
