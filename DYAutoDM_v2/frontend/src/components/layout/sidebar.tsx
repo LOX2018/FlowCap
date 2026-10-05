@@ -33,13 +33,26 @@ type NavItem = { id: TabId; label: string; icon: React.ElementType };
 
 type NavGroup = { title: string; items: NavItem[] };
 
-/** 三组编排：任务（我在跑的活）/ 资产（我积累的）/ 记录（发生过什么）。 */
+/**
+ * 三组编排（2026-10-05 页面分布优化）：
+ *   运营 = 我在跑的活 / 资产 = 我积累的 / 记录 = 发生过什么
+ *
+ * 两处命名收敛：
+ *   · 第一组原标题「任务」与记录组里的页面「任务」**同屏撞名** —— 用户说"去任务"
+ *     指不了哪个。改「运营」后全侧栏无重名，「任务」恢复唯一指代记录组的任务列表。
+ *   · 「私信」「通知」两个页面与设置中心的功能重名（通知在两处都叫通知，一个配渠道
+ *     一个配指令解析）。改名消歧：私信 → 私信会话（看聊天记录），
+ *     通知 → 通知渠道（配发到哪个群）。
+ *
+ * ⚠️ 只改 `title` / `label`（展示层）。`id` 与路由映射一律不动 —— 改 id 会连锁
+ * app-store 的 TabId 联合、App.tsx 的 lazy 分支与各页 setTab 调用点。
+ */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    title: "任务",
+    title: "运营",
     items: [
       { id: "overview", label: "总览", icon: LayoutDashboard },
-      { id: "msg", label: "私信", icon: MessageSquare },
+      { id: "msg", label: "私信会话", icon: MessageSquare },
       { id: "live", label: "直播", icon: Radio },
       // ★ ADR-034（2026-10-03，方向反转 ADR-033）：「采集」导航项已撤除 ——
       //   采集功能融进「内容」页，成为它的一个二级 tab。
@@ -59,7 +72,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "记录",
     items: [
       { id: "tasks", label: "任务", icon: ListChecks },
-      { id: "notify", label: "通知", icon: Bell },
+      { id: "notify", label: "通知渠道", icon: Bell },
       { id: "logs", label: "日志", icon: ScrollText },
     ],
   },

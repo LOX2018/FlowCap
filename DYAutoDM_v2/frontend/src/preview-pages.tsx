@@ -245,10 +245,10 @@ const PAGES: Record<string, { title: string; tab: TabId; el: (p: PageProps) => R
   //   访问 preview-pages.html?p=platform&tab=crawl。
   stats: { title: "统计", tab: "stats", el: (p) => <StatsPage {...p} /> },
   tasks: { title: "任务", tab: "tasks", el: (p) => <TasksPage {...p} /> },
-  notify: { title: "通知", tab: "notify", el: (p) => <NotifyPage {...p} /> },
+  notify: { title: "通知渠道", tab: "notify", el: (p) => <NotifyPage {...p} /> },
   logs: { title: "日志", tab: "logs", el: (p) => <LogsPage {...p} /> },
   settings: { title: "设置", tab: "settings", el: (p) => <SettingsPage {...p} /> },
-  messages: { title: "私信", tab: "msg", el: (p) => <MessagesPage {...p} /> },
+  messages: { title: "私信会话", tab: "msg", el: (p) => <MessagesPage {...p} /> },
   live: { title: "直播", tab: "live", el: (p) => <LivePage {...p} /> },
   accounts: { title: "账号", tab: "accounts", el: (p) => <AccountsPage {...p} /> },
   kb: { title: "知识库", tab: "kb", el: (p) => <KbPage {...p} /> },
