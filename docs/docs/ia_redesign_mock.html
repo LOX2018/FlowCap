@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: inherit; color: var(--foreground); }
+  .wrap { display: flex; gap: 18px; align-items: flex-start; }
+  .col { flex: 1; min-width: 0; }
+  .cap { font-size: 0.72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+         color: var(--muted-foreground); margin: 0 0 7px 2px; }
+  .cap.bad { color: #e06c5a; }
+  .cap.good { color: #68cb6e; }
+
+  .panel { border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: var(--card); }
+  .brand { display: flex; align-items: center; gap: 7px; padding: 3px 4px 9px; font-size: 0.82rem; font-weight: 700; }
+  .dot { width: 14px; height: 14px; border-radius: 5px; background: #68cb6e; box-shadow: 0 0 10px -2px #68cb6e; }
+  .grp { margin: 7px 0 3px; font-size: 0.63rem; font-weight: 700; letter-spacing: .08em;
+         color: var(--muted-foreground); padding: 0 4px; display: flex; align-items: center; gap: 4px; }
+  .item { display: flex; align-items: center; gap: 7px; padding: 5px 7px; border-radius: 7px;
+          font-size: 0.78rem; color: var(--foreground); }
+  .item .ic { width: 13px; height: 13px; border-radius: 4px; background: var(--muted-foreground);
+              opacity: .45; flex: none; }
+  .item.on { background: rgba(104,203,110,.13); color: #68cb6e; font-weight: 600; }
+  .item.on .ic { background: #68cb6e; opacity: 1; }
+  .item.warn { color: #e0a35a; }
+  .item.warn::after { content: "两处可写"; font-size: .58rem; margin-left: auto; opacity: .85;
+                      border: 1px solid currentColor; border-radius: 4px; padding: 0 3px; }
+  .item.dup::after { content: "概念重叠"; font-size: .58rem; margin-left: auto; opacity: .85;
+                     border: 1px solid currentColor; border-radius: 4px; padding: 0 3px; }
+  .sep { height: 1px; background: var(--border); margin: 9px 3px 7px; }
+  .cfg { display: flex; align-items: center; gap: 7px; padding: 7px; border-radius: 8px;
+         font-size: 0.78rem; font-weight: 600;
+         border: 1px solid rgba(104,203,110,.45); background: rgba(104,203,110,.08); color: #68cb6e; }
+  .badge { margin-left: auto; font-size: .58rem; font-weight: 700; letter-spacing: .05em;
+           background: #68cb6e; color: #0e0e14; border-radius: 4px; padding: 1px 4px; }
+  .foot { display: flex; align-items: center; gap: 6px; padding: 6px 7px; font-size: 0.72rem;
+          color: var(--muted-foreground); }
+
+  .note { margin-top: 9px; font-size: 0.71rem; line-height: 1.55; color: var(--muted-foreground); }
+  .note b { color: var(--foreground); font-weight: 600; }
+  .hint { display: flex; gap: 6px; align-items: flex-start; margin-top: 4px; }
+  .hint .k { flex: none; width: 14px; height: 14px; border-radius: 4px; margin-top: 1px;
+             background: rgba(224,108,90,.18); border: 1px solid rgba(224,108,90,.5);
+             color: #e06c5a; font-size: 10px; line-height: 13px; text-align: center; font-weight: 700; }
+  .hint .k.ok { background: rgba(104,203,110,.16); border-color: rgba(104,203,110,.5); color: #68cb6e; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 旧 -->
+  <div class="col">
+    <p class="cap bad">现状 · 12 项平铺（系统名词）</p>
+    <div class="panel">
+      <div class="brand"><span class="dot"></span>FlowCap</div>
+
+      <div class="grp">核心</div>
+      <div class="item on"><span class="ic"></span>总览</div>
+      <div class="item"><span class="ic"></span>私信</div>
+      <div class="item"><span class="ic"></span>直播</div>
+
+      <div class="grp">内容</div>
+      <div class="item"><span class="ic"></span>采集</div>
+      <div class="item warn"><span class="ic"></span>内容</div>
+      <div class="item warn"><span class="ic"></span>AI 获客</div>
+      <div class="item dup"><span class="ic"></span>知识库</div>
+
+      <div class="grp">系统</div>
+      <div class="item"><span class="ic"></span>账号</div>
+      <div class="item"><span class="ic"></span>任务</div>
+      <div class="item"><span class="ic"></span>通知</div>
+      <div class="item"><span class="ic"></span>日志</div>
+      <div class="item"><span class="ic"></span>设置</div>
+
+      <div class="sep"></div>
+      <div class="foot"><span class="ic"></span>收起</div>
+    </div>
+    <div class="note">
+      <div class="hint"><span class="k">!</span><span>名字与组名撞车：<b>「内容」</b>既是组名又是项名</span></div>
+      <div class="hint"><span class="k">!</span><span><b>「AI 获客」</b>的话术与设置页<b>两处可写</b></span></div>
+      <div class="hint"><span class="k">!</span><span><b>知识库</b>与设置页概念重叠</span></div>
+      <div class="hint"><span class="k">!</span><span>「设置」是 12 项里的一项，却是<b>唯一配置入口</b></span></div>
+    </div>
+  </div>
+
+  <!-- 新 -->
+  <div class="col">
+    <p class="cap good">提案 · 按「我要做什么」三层 + 底部配置中心</p>
+    <div class="panel">
+      <div class="brand"><span class="dot"></span>FlowCap</div>
+
+      <div class="grp">任务 <span style="opacity:.6;font-weight:400">· 我在跑的活</span></div>
+      <div class="item on"><span class="ic"></span>总览</div>
+      <div class="item"><span class="ic"></span>私信</div>
+      <div class="item"><span class="ic"></span>直播</div>
+      <div class="item"><span class="ic"></span>采集</div>
+
+      <div class="grp">资产 <span style="opacity:.6;font-weight:400">· 我积累的</span></div>
+      <div class="item"><span class="ic"></span>账号</div>
+      <div class="item"><span class="ic"></span>内容</div>
+      <div class="item"><span class="ic"></span>知识库</div>
+
+      <div class="grp">记录 <span style="opacity:.6;font-weight:400">· 发生过什么</span></div>
+      <div class="item"><span class="ic"></span>任务</div>
+      <div class="item"><span class="ic"></span>通知</div>
+      <div class="item"><span class="ic"></span>日志</div>
+
+      <div class="sep"></div>
+      <div class="cfg"><span class="ic" style="background:#68cb6e;opacity:1"></span>配置中心<span class="badge">唯一可写</span></div>
+      <div class="foot"><span class="ic"></span>收起</div>
+    </div>
+    <div class="note">
+      <div class="hint"><span class="k ok">✓</span><span>分组用<b>动词性心智</b>：任务 / 资产 / 记录</span></div>
+      <div class="hint"><span class="k ok">✓</span><span>共享设定集中在<b>配置中心</b>，全局仅 1 个可写口</span></div>
+      <div class="hint"><span class="k ok">✓</span><span>账号页新增 <b>[Agent ▾] [标签 ▾]</b> —— 你要的「选择配置的调用口」</span></div>
+      <div class="hint"><span class="k ok">✓</span><span>8 处「请到 XX 页」→ <b>就地能做 / 一键直达</b></span></div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

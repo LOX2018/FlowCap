@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: inherit; color: var(--foreground); }
+  .root { display: flex; gap: 14px; align-items: flex-start; }
+  .col { flex: 1; min-width: 0; }
+  h3 { font-size: .73rem; letter-spacing: .06em; text-transform: uppercase;
+       color: var(--muted-foreground); margin: 0 0 7px 2px; font-weight: 700; }
+  h3.blue { color: #7aa2f7; }
+  h3.green { color: #68cb6e; }
+  .box { border: 1px solid var(--border); border-radius: 11px; padding: 9px; background: var(--card); }
+  .grp { font-size: .6rem; font-weight: 700; letter-spacing: .07em; color: var(--muted-foreground); margin: 7px 0 3px; padding-left: 3px; }
+  .item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px; font-size: .76rem; }
+  .item .ic { width: 11px; height: 11px; border-radius: 3px; background: var(--muted-foreground); opacity: .45; flex: none; }
+  .tag { margin-left: auto; font-size: .56rem; font-weight: 700; border-radius: 4px; padding: 0 4px; border: 1px solid; white-space: nowrap; }
+  .t-keep { color: #68cb6e; border-color: rgba(104,203,110,.5); background: rgba(104,203,110,.1); }
+  .t-new  { color: #7aa2f7; border-color: rgba(122,162,247,.5); background: rgba(122,162,247,.1); }
+  .t-conf { color: #e0a35a; border-color: rgba(224,163,90,.5); background: rgba(224,163,90,.1); }
+  .t-rm   { color: #e06c5a; border-color: rgba(224,108,90,.5); background: rgba(224,108,90,.1); }
+
+  .note { margin-top: 9px; font-size: .7rem; line-height: 1.55; color: var(--muted-foreground); }
+  .note b { color: var(--foreground); font-weight: 600; }
+
+  .card { border: 1px solid var(--border); border-radius: 11px; padding: 10px; background: var(--card); margin-bottom: 9px; }
+  .card h4 { margin: 0 0 6px; font-size: .76rem; font-weight: 700; }
+  .row { display: flex; gap: 8px; font-size: .71rem; padding: 3px 0; border-bottom: 1px dashed var(--border); }
+  .row:last-child { border-bottom: none; }
+  .row .k { flex: none; width: 92px; color: var(--muted-foreground); }
+  .row .v { flex: 1; min-width: 0; }
+  .ok { color: #68cb6e; font-weight: 600; }
+  .warn { color: #e0a35a; font-weight: 600; }
+  .bad { color: #e06c5a; font-weight: 600; }
+
+  .qs { border: 1px solid rgba(224,163,90,.45); border-radius: 11px; padding: 10px; background: rgba(224,163,90,.06); }
+  .qs h4 { margin: 0 0 7px; font-size: .77rem; font-weight: 700; color: #e0a35a; }
+  .q { font-size: .72rem; line-height: 1.6; margin-bottom: 6px; }
+  .q b { color: var(--foreground); }
+  .ab, .bb { display: inline-block; font-size: .65rem; padding: 1px 6px; border-radius: 5px; margin-right: 4px; }
+  .ab { background: rgba(122,162,247,.14); color: #7aa2f7; border: 1px solid rgba(122,162,247,.4); }
+  .bb { background: rgba(224,108,90,.12); color: #e06c5a; border: 1px solid rgba(224,108,90,.4); }
+</style>
+</head>
+<body>
+<div class="root">
+
+  <!-- 左：蓝本 -->
+  <div class="col">
+    <h3 class="blue">源项目 better-douyin · 导航 11 项（实测）</h3>
+    <div class="box">
+      <div class="grp">内容浏览</div>
+      <div class="item"><span class="ic"></span>首页</div>
+      <div class="item"><span class="ic"></span>搜索</div>
+      <div class="item"><span class="ic"></span>用户主页</div>
+      <div class="item"><span class="ic"></span>推荐视频</div>
+      <div class="grp">我的库</div>
+      <div class="item"><span class="ic"></span>我的下载</div>
+      <div class="item"><span class="ic"></span>点赞视频</div>
+      <div class="item"><span class="ic"></span>收藏视频</div>
+      <div class="grp">社交 / 监控</div>
+      <div class="item"><span class="ic"></span>通知</div>
+      <div class="item"><span class="ic"></span>好友</div>
+      <div class="item"><span class="ic"></span>监控</div>
+      <div class="grp">系统</div>
+      <div class="item"><span class="ic"></span>设置</div>
+    </div>
+    <div class="note">
+      <b>形态</b>：下载器 + 内容浏览工具<br>
+      <b>后端</b>：公开仓库仅单文件 mock，真实能力在闭源 Rust<br>
+      <b>指纹</b>：<span class="bad">无指纹浏览器</span>（直接 HTTP + 注入签名）
+    </div>
+  </div>
+
+  <div style="align-self:center;flex:none;width:22px;text-align:center;color:var(--muted-foreground)">➜</div>
+
+  <!-- 右：本项目 -->
+  <div class="col">
+    <h3 class="green">本项目 FlowCap · 现状</h3>
+    <div class="box">
+      <div class="grp">任务</div>
+      <div class="item"><span class="ic"></span>总览<span class="tag t-new">↔蓝本首页</span></div>
+      <div class="item"><span class="ic"></span>私信<span class="tag t-new">↔蓝本好友</span></div>
+      <div class="item"><span class="ic"></span>直播<span class="tag t-conf">蓝本「监控」?</span></div>
+      <div class="item"><span class="ic"></span>采集<span class="tag t-conf">蓝本无</span></div>
+      <div class="grp">资产</div>
+      <div class="item"><span class="ic"></span>账号<span class="tag t-conf">蓝本无</span></div>
+      <div class="item"><span class="ic"></span>内容<span class="tag t-new">↔点赞/收藏/用户</span></div>
+      <div class="item"><span class="ic"></span>知识库<span class="tag t-conf">蓝本无</span></div>
+      <div class="grp">记录</div>
+      <div class="item"><span class="ic"></span>任务<span class="tag t-conf">蓝本无</span></div>
+      <div class="item"><span class="ic"></span>通知<span class="tag t-conf">语义冲突</span></div>
+      <div class="item"><span class="ic"></span>日志<span class="tag t-conf">蓝本无</span></div>
+      <div class="grp">配置</div>
+      <div class="item"><span class="ic" style="background:#68cb6e;opacity:1"></span>配置中心<span class="tag t-keep">保留</span></div>
+    </div>
+    <div class="note">
+      <b>形态</b>：直播间自动私信 + AI 获客运营工具<br>
+      <b>后端</b>：Python 34k 行 / 157 端点 / <b>312 码错误体系</b><br>
+      <b>指纹</b>：<span class="ok">★ 指纹浏览器 + 单源化</span>（你要保留的）
+    </div>
+  </div>
+</div>
+
+<!-- 保留项 -->
+<div class="card" style="margin-top:12px">
+  <h4 class="ok">★ 按你的要求「保留」的部分 = 指纹管控</h4>
+  <div class="row"><span class="k">指纹内核</span><span class="v">fingerprint-chromium 148 + 账号级固定种子</span></div>
+  <div class="row"><span class="k">指纹单源化</span><span class="v">浏览器层与 HTTP 层共用<b>同一份账号档案</b>（v0.43.14 落地，实测两层一致）</span></div>
+  <div class="row"><span class="k">无头策略</span><span class="v">默认真无头 · 观测态有头（本次刚改）</span></div>
+  <div class="row"><span class="k">代理/环境</span><span class="v">账号级 <code>DY_PROXY</code> + 环境门阀三态（显式配置，不猜本机）</span></div>
+  <div class="row"><span class="k">BCC 容器</span><span class="v">单账号单例硬守卫 + 租约调度（profile 锁层自证）</span></div>
+  <div class="row"><span class="k">签名层</span><span class="v">TicketGuard <b>P-256 完整实现</b>（蓝本反而只有参数面）· a_bogus · CSRF</span></div>
+</div>
+
+<!-- 冲突 -->
+<div class="qs">
+  <h4>⚠️ 必须先拍板的 6 个冲突</h4>
+  <div class="q"><b>C1 下载子系统</b>（蓝本有 11 模块，本项目完全没有）<br>
+    <span class="ab">A. 按蓝本新建</span><span class="bb">B. 不复刻</span></div>
+  <div class="q"><b>C2「通知」语义冲突</b>：蓝本=抖音站内通知 / 本项目=IM 指令网关<br>
+    <span class="ab">A. 按蓝本语义</span><span class="bb">B. 各保留、导航区分</span></div>
+  <div class="q"><b>C3「监控」冲突</b>：蓝本=创作者监控 / 本项目=直播间自动私信<br>
+    <span class="ab">A. 按蓝本做监控</span><span class="bb">B. 保留直播业务</span></div>
+  <div class="q"><b>C4 本项目独有 4 页</b>（采集/知识库/账号/日志）<br>
+    <span class="bb">A. 全移除（严格只留蓝本 11 项）</span><span class="ab">B. 保留</span></div>
+  <div class="q"><b>C5 核心业务</b>（直播自动私信 / AI 获客 / 知识库 / 采集）<br>
+    <span class="bb">A. 全按蓝本改造</span><span class="ab">B. 保留本项目实现</span></div>
+  <div class="q"><b>C6 三种整体解读</b><br>
+    <span class="bb">① 字面：真变成蓝本复刻品 + 指纹（丢全部业务）</span><br>
+    <span class="ab">② 折中：UI/信息架构按蓝本，后端业务保留</span><br>
+    <span class="ab">③ 增强：保留本项目 + 补齐蓝本独有能力</span></div>
+  <div class="note" style="margin-top:7px">
+    <b>我的倾向：② 或 ③</b>。字面 ① 会删掉本项目核心业务（直播自动私信/AI获客/知识库/312码体系），
+    风险最大 —— 所以必须你定。
+  </div>
+</div>
+
+<div class="note" style="margin-top:9px">
+  完整对照表：<code>FlowCap/docs/diff_matrix_flowcap_vs_better_douyin.md</code>
+</div>
+</body>
+</html>

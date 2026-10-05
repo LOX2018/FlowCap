@@ -1,0 +1,82 @@
+{
+  "projects": {
+    "astrbot": {
+      "name": "AstrBotDevs/AstrBot",
+      "repo": "AstrBotDevs/AstrBot",
+      "pushed_at": "2026-09-23T07:34:04Z",
+      "head_sha": "95e98b8aed75d56713666eff39e31bafffd95426",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "douyin_auto_reply": {
+      "name": "xyc667/douyin-auto-reply-assistant",
+      "repo": "xyc667/douyin-auto-reply-assistant",
+      "pushed_at": "2026-06-29T09:37:29Z",
+      "head_sha": "27302d02dbe7f7e1538104a9c39efbec564a0529",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "douyin_spider": {
+      "name": "cv-cat/DouYin_Spider",
+      "repo": "cv-cat/DouYin_Spider",
+      "pushed_at": "2026-09-27T09:40:31Z",
+      "head_sha": "b17b12eef6000378aa0e3275a1e7586c1cc5987b",
+      "checked_at": "2026-09-30 10:15:00"
+    },
+    "douyin_live_recorder": {
+      "name": "ihmily/DouyinLiveRecorder",
+      "repo": "ihmily/DouyinLiveRecorder",
+      "pushed_at": "2026-04-01T14:45:17Z",
+      "head_sha": "add187f8d8c7ff7d231fcbee45cbb4f1ed247d3a",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "openbrowser": {
+      "name": "lyu0805/OpenBrowser",
+      "repo": "lyu0805/OpenBrowser",
+      "pushed_at": null,
+      "head_sha": null,
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "douyin_live": {
+      "name": "saermart/DouyinLiveWebFetcher",
+      "repo": "saermart/DouyinLiveWebFetcher",
+      "pushed_at": "2026-09-08T07:59:04Z",
+      "head_sha": "40a904bdb0561a5a9c958a95634a29681cc4fbf4",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "patchright": {
+      "name": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+      "repo": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+      "pushed_at": "2026-09-20T11:55:03Z",
+      "head_sha": "c4064f5833c811d99772aabefee8984c51322ace",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "fingerprint_chromium": {
+      "name": "adryfish/fingerprint-chromium",
+      "repo": "adryfish/fingerprint-chromium",
+      "pushed_at": "2026-06-21T04:22:01Z",
+      "head_sha": "3f61b0dfa665e883da8824b1450601fc529dd006",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "malogbot": {
+      "name": "hxxxi-malog/MalogBot",
+      "repo": "hxxxi-malog/MalogBot",
+      "pushed_at": "2026-06-02T12:37:38Z",
+      "head_sha": "22b2aac4b15b3004aa9072e47b03aaacb67a594c",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "satelite_proxy": {
+      "name": "zn0wii/satelite-proxy",
+      "repo": "zn0wii/satelite-proxy",
+      "pushed_at": "2026-09-23T01:04:01Z",
+      "head_sha": "a32b2a032a0c8386b26a284269426401af6d7942",
+      "checked_at": "2026-09-23 15:40:49"
+    },
+    "douyin_chat_export": {
+      "name": "TeamBreakerr/douyin-chat-export",
+      "repo": "TeamBreakerr/douyin-chat-export",
+      "pushed_at": "2026-09-17T08:24:36Z",
+      "head_sha": "2b3ed23ac47884069619f53a2c68350e093ac86c",
+      "checked_at": "2026-09-23 15:40:49"
+    }
+  },
+  "_updated_at": "2026-09-23 15:40:49"
+}

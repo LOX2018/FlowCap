@@ -1,4 +1,4 @@
-# DYAutoDM v2
+# FlowCap v2
 
 抖音直播间自动私信控制台 —— Tauri 2 桌面应用。
 
@@ -65,7 +65,7 @@
 ## 三、目录结构
 
 ```
-DYAutoDM_v2/
+FlowCap/
 ├── src-tauri/                  # Tauri Rust 壳（窗口 + Sidecar 管理）
 │   ├── Cargo.toml
 │   ├── tauri.conf.json         # 窗口 / 打包 / externalBin
@@ -172,17 +172,17 @@ export PATH="$PATH:/c/Users/LOX/.cargo/bin"
 npx tauri build
 ```
 
-**仅改后端时**：只需重跑 `build_sidecar.py`，把 3 个 exe 复制到部署目录 `C:\temp\dyautodm_test\`（先走 `/quit` 优雅停旧进程防占用），**不必**完整 tauri build。
+**仅改后端时**：只需重跑 `build_sidecar.py`，把 3 个 exe 复制到部署目录 `C:\temp\flowcap_test\`（先走 `/quit` 优雅停旧进程防占用），**不必**完整 tauri build。
 **改了前端或 `src-tauri/src/*.rs`**：必须完整 `npx tauri build` 重嵌。
 
 ---
 
 ## 七、测试与部署约定
 
-- **测试目录**：`C:\temp\dyautodm_test\DYAutoDM_v2_<版本>.exe` + 同目录 3 个 daemon exe + `binaries/`。
+- **测试目录**：`C:\temp\flowcap_test\FlowCap_<版本>.exe` + 同目录 3 个 daemon exe + `binaries/`。
 - **测试阶段只打前后端并部署，不打 NSIS/MSI 安装包**（`tauri build --no-bundle`）；仅正式发布才需安装包。
-- **所有真机测试 / 浏览器激活 / 运行验证一律在 `C:\temp\dyautodm_test` 进行**，绝不在源码仓库直接跑。
-- 启动 BCC / backend / recv_daemon 必须带 `DY_APP_ROOT=C:\temp\dyautodm_test`（frozen 态 exe 在 `binaries/` 时 `app_root` 会错位，报「无 .env」）。
+- **所有真机测试 / 浏览器激活 / 运行验证一律在 `C:\temp\flowcap_test` 进行**，绝不在源码仓库直接跑。
+- 启动 BCC / backend / recv_daemon 必须带 `FLOWCAP_APP_ROOT=C:\temp\flowcap_test`（frozen 态 exe 在 `binaries/` 时 `app_root` 会错位，报「无 .env」）。
 
 ---
 
