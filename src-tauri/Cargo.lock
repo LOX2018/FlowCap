@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "flowcap"
-version = "0.47.27"
+version = "0.47.28"
 dependencies = [
  "env_logger",
  "log",

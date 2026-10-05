@@ -1,6 +1,6 @@
 {
   "name": "flowcap",
-  "version": "0.47.27",
+  "version": "0.47.28",
   "private": true,
   "description": "抖音直播间自动私信控制台 - Tauri + FastAPI 重构版",
   "scripts": {
@@ -15,7 +15,14 @@
     "lint": "npm run lint --workspace frontend"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
+    "@tauri-apps/cli": "^2.0.0",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.7"
+  },
+  "overrides": {
+    "esbuild": "^0.25.12",
+    "js-yaml": "^4.3.2",
+    "brace-expansion": "^2.1.7"
   },
   "workspaces": [
     "frontend"
