@@ -228,9 +228,14 @@ export default function LogsPage(props: PageProps) {
       {/* 历史会话列表 */}
       {mode === "history" && !viewFile && (
         <Card className="mb-3 overflow-hidden">
-          {historySessions.length === 0 && (
+          {sessQ.isError ? (
+            <ErrorState
+              message={String((sessQ.error as Error)?.message || "历史会话读取失败")}
+              onRetry={() => void sessQ.refetch()}
+            />
+          ) : historySessions.length === 0 ? (
             <Blank>暂无历史会话（只有本次启动）</Blank>
-          )}
+          ) : null}
           <div className="divide-y divide-[var(--color-border)]">
             {historySessions.map((s) => (
               <Row key={s.file} className="!px-3.5 !py-2.5">

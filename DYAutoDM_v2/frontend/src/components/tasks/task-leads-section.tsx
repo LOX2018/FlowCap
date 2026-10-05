@@ -18,6 +18,7 @@ import { PhoneCall } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone, Blank } from "@/components/page/kit";
+import { LoadingState, ErrorState } from "@/components/ui/empty-state";
 import { Th, Td, fmtTs } from "./tasks-shared";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -78,11 +79,12 @@ export function TaskLeadsSection(props: {
   const startMs = toMs(props.start);
   const endMs = toMs(props.end);
 
-  const { data } = useQuery({
+  const leadsQ = useQuery({
     queryKey: ["task-leads", props.acct, startMs, endMs],
     queryFn: () => props.api.aiLeads(200, startMs, endMs),
     enabled: props.acct.length > 0,
   });
+  const { data } = leadsQ;
 
   const items = (data?.items || []) as unknown as LeadRow[];
   const fresh = items.filter((r) => r.account === props.acct);
@@ -108,7 +110,14 @@ export function TaskLeadsSection(props: {
           其他渠道产生的线索也会列出，不等于确由本任务产生。
         </span>
       </div>
-      {fresh.length === 0 ? (
+      {leadsQ.isPending ? (
+        <LoadingState />
+      ) : leadsQ.isError ? (
+        <ErrorState
+          message={String((leadsQ.error as Error)?.message || "留资线索读取失败")}
+          onRetry={() => void leadsQ.refetch()}
+        />
+      ) : fresh.length === 0 ? (
         <Blank>本任务时间窗内该账号没有留资线索</Blank>
       ) : (
         <Card className="overflow-hidden p-0">

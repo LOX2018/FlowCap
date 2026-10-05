@@ -110,6 +110,9 @@ export default function NotifyPage({ api, push, ready }: PageProps) {
   const cfg: NotifyConfig = draft || { enabled: false, channels: [], llm: {} };
   const channels: NotifyChannelCfg[] = cfg.channels || [];
   const status: NotifyStatus | undefined = stQ.data;
+  // 2026-10-05：状态查询此前一态不读 ⇒ 取不到时渠道卡显示「未就绪」，
+  // 把「未知」说成「未就绪」。改为显式区分。
+  const statusUnknown = stQ.isPending || stQ.isError;
 
   const patch = (fn: (c: NotifyConfig) => void) => {
     const next: NotifyConfig = JSON.parse(JSON.stringify(cfg));
@@ -262,10 +265,10 @@ export default function NotifyPage({ api, push, ready }: PageProps) {
               <>
                 <strong className="text-[0.84rem] text-[var(--color-text)]">{title}</strong>
                 <StatusDot
-                  tone={!ch.enabled ? "muted" : st?.ready ? "ok" : "danger"}
+                  tone={statusUnknown ? "muted" : !ch.enabled ? "muted" : st?.ready ? "ok" : "danger"}
                 />
                 <span className="text-[0.72rem] text-[var(--color-text-muted)]">
-                  {!ch.enabled ? "已停用" : st?.ready ? "就绪" : "未就绪"}
+                  {statusUnknown ? "状态未知" : !ch.enabled ? "已停用" : st?.ready ? "就绪" : "未就绪"}
                 </span>
                 {st?.missing?.length ? (
                   <Badge variant="warning">缺 {st.missing.join("、")}</Badge>
