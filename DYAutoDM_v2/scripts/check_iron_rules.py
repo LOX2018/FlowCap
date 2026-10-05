@@ -32,6 +32,7 @@
 | **R8** | **数据契约（ADR-012）** | **委托 `audit_data_contract.py` 六项**（见下） |
 | **R9** | **H-22 §6·1 建议 A / D-02 审计红线** | **委托 `audit_redline_count.py` 的 count()**（见下） |
 | **R16** | **H-40 事故 / M-31 门禁盲区** | **测试数据隔离**：含无 WHERE 全表删业务表的测试文件必须有隔离（阻断）；`setdefault(DY_APP_ROOT)` 存量写法（R16-B，警告） |
+| **R19** | **产物来源戳（部署产物视图，WARN_ONLY）** | **委托 `build_stamp.py`**：sidecar / rust 戳须与当前源码一致；陈旧只警告 —— 产物 gitignored 不进提交内容，且 RUST_GLOBS 136 文件里 132 属 frontend/，fail-closed 会让改一行前端都需完整 tauri build 才能 commit |
 | **R17** | **前端产物体积（产物视图，二元）** | **委托 `frontend_metrics.py --check`**：dist chunk > 51,200 B 二进制即超；存量 5 域（accounts/live/messages/platform/settings）白名单放行，**新增**超限域阻断；dist 陈旧于 src 阻断（fail-closed，见下） |
 | **R18** | **类型正确性（此前零覆盖）** | **前端 `tsc -b` exit 0** —— `vite build` 只经 esbuild 剥类型、不做类型检查，「build 过」不等于「类型对」 |
 
@@ -713,6 +714,65 @@ def r16_test_db_isolation() -> None:
           f"{': ' + '、'.join(sd_hits_real[:3]) if sd_hits_real else ''}）")
 
 
+# ── R19: 产物来源戳（部署产物视图，WARN_ONLY）──────────────────────────
+# 真实断链：build_stamp 机制自 1c755f9（v0.46.58）就已覆盖 RUST_GLOBS 里的
+# frontend/vite.config.ts —— 「vite.config.ts 断链」不成立。断链的另一头是：
+#   grep build_stamp .git/hooks/pre-commit   -> 0 次
+#   grep build_stamp check_iron_rules.py     -> 0 处（本规则之前）
+# 即 build_stamp 只在**构建时**被消费（build_all.py / build_sidecar.py），
+# commit 时刻没有任何东西读它 ⇒ 源码改过、戳判陈旧，门禁照样放行。R19 接这头。
+#
+# 形态为何 WARN_ONLY 而非阻断（本文件判据：只有**会进入提交内容**的违规才阻断）：
+# `frontend/dist`、`*.exe`、`artifacts/.build_stamp.json` 全是 gitignored 的
+# 本地构建/部署产物，不在 git 里、不进提交内容 ⇒ 与 R2 / R3 同一分层。
+# 更关键的死锁：RUST_GLOBS 的 136 文件里 **132 是 frontend/**（实测 97%），
+# 故改任意一个 .tsx 都会让 rust stamp 变；而 rust 产物 dyautodm-v2.exe 不在磁盘
+# （实测 ls src-tauri/target/release/*.exe 为空）⇒ 做成 fail-closed 会让
+# 「改一行前端」必须一次完整 tauri build 才能 commit。R17 判 dist 可以
+# fail-closed（vite build 约 5s 可当场解锁）；R19 判 exe 不行。
+#
+# 判据 SSOT 仍在 build_stamp.py（其 __main__ 打印 `[{kind}] 判定 = ✅一致 / ❌…`）；
+# 本规则只做委托 + 降级 + 可见化，不重写戳口径。
+R19_STAMP_SCRIPT = "build_stamp.py"
+
+
+def r19_build_stamp() -> None:
+    import subprocess
+
+    sub = os.path.join(SRC_ROOT, "scripts", R19_STAMP_SCRIPT)
+    if not os.path.isfile(sub):
+        check(False, "R19", f"判据脚本缺失: scripts/{R19_STAMP_SCRIPT}")
+        return
+
+    py = sys.executable or "python"
+    stale = []
+    okk = []
+    for kind in ("sidecar", "rust"):
+        try:
+            r = subprocess.run([py, sub, kind], cwd=SRC_ROOT,
+                               capture_output=True, text=True, timeout=120)
+            line = next((l for l in (r.stdout or "").splitlines()
+                         if kind in l and "判定" in l), "")
+        except Exception as e:  # noqa: BLE001
+            check(False, "R19",
+                  f"调用 {R19_STAMP_SCRIPT} 失败: {type(e).__name__}")
+            return
+        if "✅" in line:
+            okk.append(kind)
+        elif "❌" in line:
+            stale.append(kind)
+        else:
+            # 诚实降级：脚本输出改形 => 不猜判定，直接报红要求人工看
+            check(False, "R19",
+                  f"{kind} 判定行未识别（build_stamp 输出格式可能已变），需人工核对")
+            return
+
+    detail = f"（{', '.join(okk)}）" if okk else ""
+    if stale:
+        detail += f"；⚠ 陈旧 {', '.join(stale)}"
+    check(not stale, "R19", "产物来源戳一致" + detail)
+
+
 # ── R17: 前端 dist chunk 体积（产物视图，二元判据）──────────────────────
 # R17 chunk 体积上限（二进制 B）。51200 = 50 KB，取整便于记忆。
 # 依据见 frontend_metrics.py「chunk 阈值灵敏度」：50,000 与 40,000 两档超限域
@@ -848,7 +908,8 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
          r12_credential_exposure, r13_no_internal_info_in_ui_copy,
          r14_deploy_root_marker_consistent, r15_schema_copy_concision,
          r16_test_db_isolation,
-         r17_frontend_chunk_size, r18_frontend_tsc]
+         r17_frontend_chunk_size, r18_frontend_tsc,
+         r19_build_stamp]
 
 # ── 分级：哪些阻断提交，哪些只警告 ─────────────────────────────────────────
 # 判据（2026-09-25 实测校准）：只有**会进入提交内容**的违规才阻断。
@@ -866,7 +927,7 @@ RULES = [r1_source_has_no_data, r2_data_root_no_source,
 PENDING: set[str] = set()
 
 # 磁盘卫生类（不影响提交内容）→ 仅警告
-WARN_ONLY = {"R2", "R3", "R9", "R10", "R12-B", "R16-B"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
+WARN_ONLY = {"R2", "R3", "R9", "R10", "R12-B", "R16-B", "R19"}   # R9 理由见顶部「R9 为何是 WARN_ONLY」
 # R16-B 理由见 r16_test_db_isolation 注释：5 个部署根测试的 setdefault 是既定设计
 #（白名单 `_R16B_DEPLOY_ROOT_FILES` 豁免）；2026-10-04 收编后其余 12 处已转显式赋值。
 # R16 本身（删业务表无隔离）仍阻断。
@@ -1045,7 +1106,7 @@ def selftest() -> int:
     # 其判据本身由下方正控与真实构建负控断言 —— 故纳入期望集合，
     # 保持「期望报红」与「实际报红」可逐条对账。
     failed_expect = {"R1", "R2", "R3", "R5", "R6", "R9", "R10", "R11", "R12-A",
-                     "R8-1", "R13", "R14", "R16", "R17", "R18"}
+                     "R8-1", "R13", "R14", "R16", "R17", "R18", "R19"}
     for r in RULES:
         try:
             r()
@@ -1160,9 +1221,60 @@ def selftest() -> int:
         _sp.run = saved_run
         RESULTS.clear()
 
+    # ── R19 正控：三态注入（部分陈旧 / 全一致 / 输出改形）────────────
+    # R19 只委托 build_stamp.py 并解析其 `判定` 行；真仓负控由实跑给出，
+    # 此处补正控，否则「恒 False 的解析」也能通过负控。
+    import subprocess as _sp19
+
+    class _R19Res:
+        returncode = 0
+        stdout = ""
+
+    def _mk19(stdout):
+        _r = _R19Res()
+        _r.stdout = stdout
+        return _r
+
+    def _r19_run_stale(cmd, **_kw):
+        if cmd[-1] == "rust":
+            return _mk19("[rust] 判定       = ❌ rust 源码自上次构建后已改动（x ≠ y）")
+        return _mk19("[sidecar] 判定       = ✅ 一致")
+
+    def _r19_run_all_ok(cmd, **_kw):
+        return _mk19(f"[{cmd[-1]}] 判定       = ✅ 一致")
+
+    def _r19_run_bad_shape(cmd, **_kw):
+        return _mk19("输出格式已变，没有判定行")
+
+    _saved19 = _sp19.run
+    try:
+        RESULTS.clear()
+        _sp19.run = _r19_run_stale
+        r19_build_stamp()
+        _g = [ok for ok, rid, _ in RESULTS if rid == "R19"]
+        _ok_stale = len(_g) == 1 and _g[0] is False
+
+        RESULTS.clear()
+        _sp19.run = _r19_run_all_ok
+        r19_build_stamp()
+        _ok_all = all(ok for ok, rid, _ in RESULTS if rid == "R19")
+
+        RESULTS.clear()
+        _sp19.run = _r19_run_bad_shape
+        r19_build_stamp()
+        _ok_bad = not any(ok for ok, rid, _ in RESULTS if rid == "R19")
+
+        r19_clean = _ok_stale and _ok_all and _ok_bad
+    except Exception as e:  # noqa: BLE001
+        r19_clean = False
+        print(f"  R19 正控异常: {type(e).__name__}: {e}")
+    finally:
+        _sp19.run = _saved19
+        RESULTS.clear()
+
     missing = failed_expect - got_failed
     ok = not missing and r9_clean and r8_clean and r2_exemption_ok \
-        and r16_clean and r16_exemption_ok and r17_clean and r18_clean
+        and r16_clean and r16_exemption_ok and r17_clean and r18_clean and r19_clean
     print("-" * 70)
     print(f"  期望报红: {sorted(failed_expect)}")
     print(f"  实际报红: {sorted(got_failed)}")
@@ -1175,6 +1287,8 @@ def selftest() -> int:
     print(f"  R17 正控（存量债务放行 / 新增回归阻断 / 全干净通过）: "
           f"{'通过' if r17_clean else '未通过'}")
     print(f"  R18 正控（tsc -b 成功形态应 PASS）: {'通过' if r18_clean else '未通过'}")
+    print(f"  R19 正控（陈旧 FAIL / 全一致 PASS / 输出改形 FAIL）: "
+          f"{'通过' if r19_clean else '未通过'}")
     if missing:
         print(f"\n✗ 自检失败：以下规则在违规样本下**没有变红** = 形同虚设: {sorted(missing)}")
         return 1
@@ -1193,6 +1307,9 @@ def selftest() -> int:
         return 1
     if not r16_exemption_ok:
         print("\n✗ 自检失败：R16 误伤已隔离样本 = 豁免判据不精确")
+        return 1
+    if not r19_clean:
+        print("\n✗ 自检失败：R19 三态未全部按预期（陈旧应 FAIL / 全一致应 PASS / 输出改形应 FAIL）")
         return 1
     print("\n✓ 自检通过：所有可判定规则在违规时均会报红（非空架子）")
     return 0
