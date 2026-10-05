@@ -1,6 +1,6 @@
 {
   "name": "flowcap-frontend",
-  "version": "0.47.26",
+  "version": "0.47.27",
   "private": true,
   "type": "module",
   "scripts": {

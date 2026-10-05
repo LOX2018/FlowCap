@@ -1,6 +1,6 @@
 [package]
 name = "flowcap"
-version = "0.47.26"
+version = "0.47.27"
 description = "抖音自动私信控制台 - Tauri 壳"
 authors = ["you"]
 edition = "2021"

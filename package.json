@@ -1,6 +1,6 @@
 {
   "name": "flowcap",
-  "version": "0.47.26",
+  "version": "0.47.27",
   "private": true,
   "description": "抖音直播间自动私信控制台 - Tauri + FastAPI 重构版",
   "scripts": {

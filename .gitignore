@@ -49,11 +49,21 @@ node_modules/
 # MCP 浏览器测试快照
 .playwright-mcp/
 
-# ===== DYAutoDM_v2 运行时/构建缓存（不入库）=====
+# ===== FlowCap 运行时/构建缓存（不入库）=====
+auto_dm/
+FlowCap/auto_dm/
 DYAutoDM_v2/auto_dm/
+data/
+FlowCap/data/
 DYAutoDM_v2/data/
+vb_chromium/
+FlowCap/vb_chromium/
 DYAutoDM_v2/vb_chromium/
+build_tauri.err
+FlowCap/build_tauri.err
 DYAutoDM_v2/build_tauri.err
+*.log
+FlowCap/*.log
 DYAutoDM_v2/*.log
 frontend/tsconfig.tsbuildinfo
 frontend/tsconfig.node.tsbuildinfo
@@ -66,7 +76,7 @@ DY_Spider_base/
 # ── 2026-09-23 F-6 修补（CI 卫生：源码树零构建产物 / 零一次性脚本）─────
 # 实测：`git check-ignore` 对根目录 `_fix_visibility_test.py` 无输出
 # （= 未被忽略）⇒ `git add .` 会把一次性调试脚本提交进仓库。
-# `_*.py` 的「一次性脚本」约定此前只写在 `DYAutoDM_v2/.gitignore`（其作用域
+# `_*.py` 的「一次性脚本」约定此前只写在 `FlowCap/.gitignore`（其作用域
 # **不覆盖仓库根**），故根级新脚本一直裸奔。此处补根级同名规则。
 # 注：`_export_git.py` / `_push_user_profile.py` / `_jscheck.js` 已入库，
 # gitignore 不影响已跟踪文件 ⇒ 三者照旧入库，本规则只拦**新产生**的脚本。
@@ -88,7 +98,7 @@ _ext_repos/DouYin_Spider_git/
 data/*.db
 data/*.db-shm
 data/*.db-wal
-# 2026-09-30：任意深度的 data 库（防子目录位置的 db，如 DYAutoDM_v2/backend/data/，
+# 2026-09-30：任意深度的 data 库（防子目录位置的 db，如 FlowCap/backend/data/，
 # 落入源码树后被 `git add -A` 误提交 —— M-27 实测点）
 **/data/*.db
 **/data/*.db-shm
@@ -114,8 +124,14 @@ data/*.db-wal
 **/%TEMP%/
 **/%APPDATA%/
 # 2) 源码树运行期数据目录（铁律：源码目录不得产生 data/accounts）
+src-tauri/data/
+FlowCap/src-tauri/data/
 DYAutoDM_v2/src-tauri/data/
+src-tauri/accounts/
+FlowCap/src-tauri/accounts/
 DYAutoDM_v2/src-tauri/accounts/
+accounts/
+FlowCap/accounts/
 DYAutoDM_v2/accounts/
 # 3) 知识库/Docs 的 .bak.<时间戳> 备份（我自己脚本生成的，不入库）
 *.bak.[0-9]*
@@ -128,7 +144,7 @@ artifacts/_ledger_bak_*.md
 # `state.db`(270KB 含会话与记忆)、`config.yaml` / `profile.yaml` /
 # `memories/`。此前只有 `.env` 被既有规则覆盖，**其余 6 个文件
 # `git add -A` 会直接入库** —— 且 R12 凭证门禁的扫描根只到
-# `DYAutoDM_v2/`，结构上看不见仓根 `artifacts/`，无任何机械防线。
+# `FlowCap/`，结构上看不见仓根 `artifacts/`，无任何机械防线。
 # 故在此按**目录整体**排除，不逐文件列举（防下次备份换个名就漏）。
 artifacts/*profile_backup*/
 artifacts/*_profile_backup*/
@@ -146,16 +162,24 @@ artifacts/**/memories/
 # 默认 all rights reserved。它是 backend/auto_dm/login_api_vendor.py 的
 # sys.path 运行时依赖，本地开发需要，但不发布无许可代码。
 # 获取方式见仓库根 NOTICE.md。
+vendor/
+FlowCap/vendor/
 DYAutoDM_v2/vendor/
 
 # ── 开发过程笔记与审计产物（本地知识库，不属产品交付物）─────────────────
 # 目录本身在根级 .gitignore 已有（artifacts/、工作记忆/、.hermes/），
 # 此处补产品子目录内的同类产物。
+artifacts/
+FlowCap/artifacts/
 DYAutoDM_v2/artifacts/
+knowledge/
+FlowCap/knowledge/
 DYAutoDM_v2/knowledge/
+.hermes/
+FlowCap/.hermes/
 DYAutoDM_v2/.hermes/
 
-# ══ 以下规则合并自原 DYAutoDM_v2/.gitignore（2026-10-06 去壳）══
+# ══ 以下规则合并自原 FlowCap/.gitignore（2026-10-06 去壳）══
 # Dependencies
 node_modules/
 __pycache__/
@@ -277,6 +301,8 @@ _*.py
 _force_rebuild.ps1
 _kill_clean.ps1
 _verify_exe.py
+日志.md
+FlowCap/日志.md
 DYAutoDM_v2/日志.md
 _deploy.ps1
 
@@ -292,8 +318,14 @@ scripts/_*.json
 **/%TEMP%/
 **/%APPDATA%/
 # 2) 源码树运行期数据目录（铁律：源码目录不得产生 data/accounts）
+src-tauri/data/
+FlowCap/src-tauri/data/
 DYAutoDM_v2/src-tauri/data/
+src-tauri/accounts/
+FlowCap/src-tauri/accounts/
 DYAutoDM_v2/src-tauri/accounts/
+accounts/
+FlowCap/accounts/
 DYAutoDM_v2/accounts/
 # 3) 知识库/Docs 的 .bak.<时间戳> 备份（我自己脚本生成的，不入库）
 *.bak.[0-9]*
