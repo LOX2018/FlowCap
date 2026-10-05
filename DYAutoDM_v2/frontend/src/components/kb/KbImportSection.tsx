@@ -19,7 +19,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Database, Loader2, Eye, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { api } from "@/api/client";
+import type { PageProps } from "@/api/client";
+import { errMsg } from "@/lib/utils";
 import { SegmentedTabs } from "@/components/page/kit";
 
 /** QA 对预览行 */
@@ -38,12 +39,15 @@ interface ConvOption {
   name: string;
 }
 
-export default function KbImportSection({ push }: { push?: (m: string, holdMs?: number) => void }) {
+export default function KbImportSection({ push, api, ready }: {
+  push?: (m: string, holdMs?: number) => void;
+  api: PageProps["api"];
+  ready?: boolean;
+}) {
   const [target, setTarget] = useState<"reply" | "pro">("reply");
   const [convId, setConvId] = useState("");
   const [acct, setAcct] = useState("");
   const [pairs, setPairs] = useState<QaPair[] | null>(null);
-  const [checked, setChecked] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<"" | "preview" | "import">("");
 
   // 2026-09-18（#38）：预览请求的竞态守卫需要读「当前最新」的账号/会话。
@@ -60,6 +64,7 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
       const d = (await api.getAccounts()) as unknown as { name: string }[];
       return Array.isArray(d) ? d : [];
     },
+    enabled: !!ready,
   });
   const convsQ = useQuery({
     queryKey: ["kb-import-convs", acct],
@@ -89,7 +94,6 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
     const still = () => reqAcct === acctRef.current && reqConv === convRef.current;
     setBusy("preview");
     setPairs(null);
-    setChecked(new Set());
     try {
       const r = await api.exportToKb(reqAcct, reqConv, { target, preview: true });
       if (!still()) return;                    // 已切走 → 丢弃，不污染当前视图
@@ -124,14 +128,6 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
     }
   };
 
-  const toggle = (i: number) => {
-    setChecked((prev) => {
-      const nx = new Set(prev);
-      if (nx.has(i)) nx.delete(i);
-      else nx.add(i);
-      return nx;
-    });
-  };
 
   return (
     <Card>
@@ -148,6 +144,21 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
             </div>
           </div>
         </div>
+
+        {/* 2026-10-05：账号/会话读取失败此前静默为空下拉，用户以为「没有账号」。 */}
+        {acctsQ.isPending && (
+          <div className="text-[0.76rem] text-[var(--color-text-muted)]">账号加载中…</div>
+        )}
+        {acctsQ.isError && (
+          <div className="text-[0.76rem] text-[var(--color-danger)]">
+            账号列表读取失败：{errMsg(acctsQ.error)}（请确认后端已启动）
+          </div>
+        )}
+        {convsQ.isError && (
+          <div className="text-[0.76rem] text-[var(--color-danger)]">
+            会话列表读取失败：{errMsg(convsQ.error)}
+          </div>
+        )}
 
         {/* 目标库 */}
         <div className="flex flex-wrap items-center gap-2">
@@ -183,7 +194,7 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
             // 2026-09-18 审查修复（HIGH）：切会话必须清空预览与勾选。
             // 旧实现只 setConvId → 上一会话的问答对仍留在屏上，而 doImport 用的是
             // **当前 convId** → 用户核对的是 A、实际入库的是 B（数据错位）。
-            onChange={(e) => { setConvId(e.target.value); setPairs(null); setChecked(new Set()); }}
+            onChange={(e) => { setConvId(e.target.value); setPairs(null); }}
             disabled={!acct}
           >
             <option value="">选会话…</option>
@@ -218,9 +229,9 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
             ) : (
               <>
                 <div className="flex items-center gap-2 text-[0.74rem] text-[var(--color-text-secondary)]">
-                  抽到 {pairs.length} 对 · 已勾选 {checked.size} 对
+                  抽到 {pairs.length} 对
                   <span className="text-[var(--color-text-muted)]">
-                    （入库按整会话执行，勾选用于核对内容）
+                    （入库按整会话执行，预览仅供核对内容）
                   </span>
                   <div className="flex-1" />
                   <Button
@@ -243,7 +254,6 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
                     <thead className="sticky top-0 bg-[var(--color-surface-raised)]
                                       text-[var(--color-text-muted)]">
                       <tr>
-                        <th className="w-8 px-2 py-1.5"></th>
                         <th className="px-2 py-1.5 font-normal">对方提问</th>
                         <th className="px-2 py-1.5 font-normal">我方作答</th>
                         <th className="w-28 px-2 py-1.5 font-normal">来源</th>
@@ -256,14 +266,6 @@ export default function KbImportSection({ push }: { push?: (m: string, holdMs?: 
                         // 统一用「来源 id + 下标」复合键，稳定且唯一。
                         <tr key={`${p.source_msg_id ?? "x"}-${i}`}
                             className="border-t border-[var(--color-border)]">
-                          <td className="px-2 py-1.5">
-                            {/* 2026-09-18 审查修复（#6）：后端 `to_kb` 是整会话抽取，
-                                没有逐条选择参数 → 复选框语义只能是「人工核对标记」，
-                                不可让它看起来像「只入库勾选项」。加 title 说明 + aria-label。 */}
-                            <input type="checkbox" title="仅作人工核对标记，入库始终为整会话"
-                                aria-label="人工核对标记（不影响入库范围）" checked={checked.has(i)}
-                                   onChange={() => toggle(i)} />
-                          </td>
                           <td className="px-2 py-1.5 text-[var(--color-text)]">{p.question}</td>
                           <td className="px-2 py-1.5 text-[var(--color-text-secondary)]">{p.answer}</td>
                           <td className="px-2 py-1.5 font-mono text-[0.68rem] text-[var(--color-text-muted)]">

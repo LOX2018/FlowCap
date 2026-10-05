@@ -10,7 +10,7 @@ import KbImportSection from "./KbImportSection";
 
 type SubTab = "pro" | "reply" | "import";
 
-export default function KbPage({ push, api }: PageProps) {
+export default function KbPage({ push, api, ready }: PageProps) {
   const [sub, setSub] = useState<SubTab>("pro");
   const qc = useQueryClient();
 
@@ -35,9 +35,9 @@ export default function KbPage({ push, api }: PageProps) {
       {/* 2026-09-18 审查修复（#46）：原为三层嵌套三元（项目 checklist 明令禁止
           —— 每个分支需要读者自己配对 `?`/`:`）。改为线性 if/else。 */}
       {(() => {
-        if (sub === "pro") return <ProKb push={push} api={api} qc={qc} />;
-        if (sub === "reply") return <ReplyKb push={push} api={api} qc={qc} />;
-        return <KbImportSection push={push} />;
+        if (sub === "pro") return <ProKb push={push} api={api} qc={qc} ready={ready} />;
+        if (sub === "reply") return <ReplyKb push={push} api={api} qc={qc} ready={ready} />;
+        return <KbImportSection push={push} api={api} ready={ready} />;
       })()}
     </PageContainer>
   );

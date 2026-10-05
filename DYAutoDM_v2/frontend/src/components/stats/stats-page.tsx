@@ -314,7 +314,7 @@ export default function StatsPage(props: PageProps) {
             </Button>
           }
         >
-          <DomainDetail domain={activeDomain} props={props} days={days} taskStats={ts} />
+          <DomainDetail domain={activeDomain} taskStats={ts} />
         </Section>
       )}
 
@@ -635,7 +635,7 @@ export default function StatsPage(props: PageProps) {
           {crawlQ.isPending ? <LoadingState /> : !cs?.recent?.length ? (
             <EmptyState
               title="还没有采集记录"
-              description="到「采集」页搜一次，这里就会出现记录。"
+              description="到「内容」页搜一次，这里就会出现记录。"
             />
           ) : (
             <div className="max-h-[16rem] space-y-1 overflow-y-auto">
@@ -691,27 +691,14 @@ export default function StatsPage(props: PageProps) {
  */
 function DomainDetail({
   domain,
-  props,
-  days,
   taskStats,
 }: {
   domain: DomainKey;
-  props: PageProps;
-  days: number;
   taskStats?: TaskStats;
 }) {
   // ★ 2026-10-04（ADR-035 下游）：直播 / 采集两域改用**任务表**明细（可溯源到每条任务）；
   //   其余域仍无独立明细端点，如实告知（不重复画概览数字冒充详情）。
   const enabled = domain === "crawl" || domain === "live";
-  const q = useQuery({
-    queryKey: ["stats-domain-detail", domain, days],
-    queryFn: async () => {
-      if (domain === "crawl") return await props.api.crawlHistory(100);
-      return null; // live 域直接用已取回的 taskStats，不重复请求
-    },
-    enabled: !!props.ready && enabled,
-    staleTime: 30_000,
-  });
 
   // 直播 / 采集：任务表明细（按 kind 过滤）
   if (domain === "live" || domain === "crawl") {
@@ -777,56 +764,5 @@ function DomainDetail({
     );
   }
 
-  if (q.isPending) return <LoadingState />;
-  if (q.isError) {
-    return (
-      <ErrorState
-        message={String((q.error as Error)?.message || "明细读取失败")}
-        onRetry={() => void q.refetch()}
-      />
-    );
-  }
-
-  const items = (q.data as { items?: Record<string, unknown>[] } | null)?.items || [];
-  if (!items.length) {
-    return <Blank>近 100 条内无采集记录</Blank>;
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-[0.75rem]">
-        <thead>
-          <tr className="border-b border-[var(--color-border)] text-left text-[var(--color-text-muted)]">
-            <th className="py-1.5 pr-3 font-medium">时间</th>
-            <th className="py-1.5 pr-3 font-medium">账号</th>
-            <th className="py-1.5 pr-3 font-medium">类型</th>
-            <th className="py-1.5 pr-3 font-medium">关键词 / 目标</th>
-            <th className="py-1.5 pr-3 text-right font-medium">条数</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((it, i) => {
-            const kind = String(it.kind ?? "");
-            const target = String(it.target ?? "");
-            const kw = String(it.keyword ?? "");
-            return (
-              <tr key={String(it.id ?? i)} className="border-b border-[var(--color-border)] last:border-0">
-                <td className="py-1.5 pr-3 font-mono text-[var(--color-text-muted)]">
-                  {String(it.ts ?? "")}
-                </td>
-                <td className="py-1.5 pr-3">{String(it.account || "—")}</td>
-                <td className="py-1.5 pr-3">{KIND_LABEL[kind] ?? (kind || "—")}</td>
-                <td className="py-1.5 pr-3 font-mono" title={kw || target}>
-                  {kw || (target ? `作品 ${target.slice(-10)}` : "—")}
-                </td>
-                <td className="py-1.5 pr-3 text-right font-mono">
-                  {String(it.result_count ?? 0)}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
+  return null;
 }

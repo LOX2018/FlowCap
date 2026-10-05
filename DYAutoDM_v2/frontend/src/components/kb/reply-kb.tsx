@@ -11,17 +11,22 @@ import {
   Collapse, Row, Blank,
 } from "@/components/page/kit";
 import { errMsg } from "@/lib/utils";
+import { LoadingState, ErrorState } from "@/components/ui/empty-state";
 
 export function ReplyKb({
   push,
   api,
   qc,
+  ready,
 }: {
   push: PageProps["push"];
   api: PageProps["api"];
   qc: ReturnType<typeof useQueryClient>;
+  ready: PageProps["ready"];
 }) {
-  const list = useQuery({ queryKey: ["ai-reply-kb"], queryFn: api.aiReplyKbList });
+  const list = useQuery({
+    queryKey: ["ai-reply-kb"], queryFn: api.aiReplyKbList, enabled: !!ready,
+  });
   const [q, setQ] = useState("");
   const [a, setA] = useState("");
   const [editId, setEditId] = useState<number | null>(null);
@@ -81,6 +86,16 @@ export function ReplyKb({
   });
 
   const items = list?.data?.items ?? [];
+
+  if (list.isPending) return <LoadingState />;
+  if (list.isError) {
+    return (
+      <ErrorState
+        message={String((list.error as Error)?.message || "回复库读取失败")}
+        onRetry={() => void list.refetch()}
+      />
+    );
+  }
 
   return (
     <div>

@@ -15,6 +15,8 @@ import {
   Row, RowText, Blank, Toolbar, Section,
 } from "@/components/page/kit";
 import { cn, errMsg } from "@/lib/utils";
+import { confirmDialog } from "@/components/ui/modal";
+import { LoadingState, ErrorState } from "@/components/ui/empty-state";
 
 export type ProItem = {
   id?: number;
@@ -29,12 +31,16 @@ export function ProKb({
   push,
   api,
   qc,
+  ready,
 }: {
   push: PageProps["push"];
   api: PageProps["api"];
   qc: ReturnType<typeof useQueryClient>;
+  ready: PageProps["ready"];
 }) {
-  const list = useQuery({ queryKey: ["ai-pro-kb"], queryFn: api.aiProKbList });
+  const list = useQuery({
+    queryKey: ["ai-pro-kb"], queryFn: api.aiProKbList, enabled: !!ready,
+  });
   const [search, setSearch] = useState("");
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["ai-pro-kb"] });
@@ -103,7 +109,7 @@ export function ProKb({
   const statusQ = useQuery({
     queryKey: ["ai-pro-kb-maint"],
     queryFn: api.aiProKbMaintainStatus,
-    enabled: maintOpen,
+    enabled: maintOpen && !!ready,
   });
 
   const scanMut = useMutation({
@@ -239,6 +245,16 @@ export function ProKb({
     return "";
   };
 
+  if (list.isPending) return <LoadingState />;
+  if (list.isError) {
+    return (
+      <ErrorState
+        message={String((list.error as Error)?.message || "知识库读取失败")}
+        onRetry={() => void list.refetch()}
+      />
+    );
+  }
+
   return (
     <div>
       {/* 2026-09-29：原顶部「思维导图结构：…」说明块已删除（用户要求）——
@@ -354,7 +370,16 @@ export function ProKb({
                       variant="secondary"
                       size="sm"
                       className="mt-1.5"
-                      onClick={() => mergeMut.mutate(scan.duplicate)}
+                      onClick={async () => {
+                        // 2026-10-05：全库唯一不可逆写 —— 一次合并 N 组、无预览无确认。
+                        if (!(await confirmDialog({
+                          title: "合并全部重复",
+                          message: `合并不可撤销，将删除 ${scan.duplicate.length} 条重复项（每组保留高重要度那条）。确定继续？`,
+                          confirmText: "合并",
+                          danger: true,
+                        }))) return;
+                        mergeMut.mutate(scan.duplicate);
+                      }}
                       disabled={mergeMut.isPending}
                     >
                       合并全部重复
@@ -366,7 +391,16 @@ export function ProKb({
                   <Button
                     variant="danger-outline"
                     size="sm"
-                    onClick={() => applyMut.mutate()}
+                    onClick={async () => {
+                      const n = Object.values(picked).filter(Boolean).length;
+                      if (!(await confirmDialog({
+                        title: "处理选中项",
+                        message: `将把选中的 ${n} 条移入回收站（30 天内可恢复）。确定继续？`,
+                        confirmText: "移入回收站",
+                        danger: true,
+                      }))) return;
+                      applyMut.mutate();
+                    }}
                     disabled={applyMut.isPending || Object.values(picked).every((v) => !v)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />处理选中项 → 回收站
@@ -655,7 +689,15 @@ export function ProKb({
                         variant="ghost"
                         size="sm"
                         className="h-6 px-1.5 text-[0.68rem] text-[var(--color-danger)]"
-                        onClick={() => delMut.mutate(r.id)}
+                        onClick={async () => {
+                          if (!(await confirmDialog({
+                            title: "删除知识条目",
+                            message: `删除「${String(r.summary || r.topic || "").slice(0, 40)}」？移入回收站，30 天内可恢复。`,
+                            confirmText: "删除",
+                            danger: true,
+                          }))) return;
+                          delMut.mutate(r.id);
+                        }}
                       >
                         删
                       </Button>
