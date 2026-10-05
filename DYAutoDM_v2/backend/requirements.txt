@@ -1,0 +1,81 @@
+# FastAPI 后端依赖
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+python-dotenv>=1.0.1
+httpx>=0.27.0
+loguru>=0.7.2
+
+# 业务依赖（从 DY_Spider_base/requirements.txt 迁移）
+requests>=2.32.0
+urllib3>=2.0.0
+aiohttp>=3.10.0
+aiofiles>=24.1.0
+websocket-client>=1.8.0  # recv_daemon 的 WebSocketApp（注意：不是 websockets）
+websockets>=13.0
+protobuf>=5.0.0
+protobuf3_to_dict>=0.1.5
+beautifulsoup4>=4.12.0
+ecdsa>=0.19.0  # 私信签名
+qrcode>=7.4.2  # 扫码登录
+pillow>=10.4.0
+pillow-heif>=0.16.0  # HEIC/HEIF → JPEG 转码（抖音原图 40% 是 HEIC）
+cryptography>=42.0.0  # AES-256-GCM 解密抖音私信加密原图（08 §三十五）
+openpyxl>=3.1.5  # 导出 xlsx
+pymupdf>=1.24.0  # AI 知识库：PDF 文本提取（2026-09-06 文件导入）
+retry>=0.9.2
+pywin32>=306  # Windows API（打包 Windows 用）
+
+# 浏览器自动化
+# ── 2026-09-23 T3-b 修补（依赖上界缺失 → 干净机解析即撞内核）──────────
+# 原为 `playwright>=1.47.0`（**无上界**）⇒ 在一台干净机上
+# `pip install -r requirements.txt` 今天会解析出 **1.63.0**，
+# 而 `camoufox 0.5.6` 硬性要求 `playwright (<1.63)`
+# （读码：camoufox-0.5.6.dist-info/METADATA `Requires-Dist: playwright (<1.63)`；
+# 实测：`uv pip install --dry-run camoufox==0.5.6 playwright==1.63.0`
+# → No solution found / unsatisfiable）。
+# Camoufox 是本项目**唯一生效内核**（backend/auto_dm/config.py
+# DY_BROWSER_KERNEL="camoufox"；无 Chromium 回退）⇒ 必须钉上界。
+# 本机实测已装版本：playwright 1.62.0 / patchright 1.62.3 / camoufox 0.5.6。
+# 证据：artifacts/UP_L3_浏览器依赖升级评估_20260923.md
+playwright>=1.62,<1.63
+# patchright 是 playwright 的 patch 分支，**版本号镜像 Playwright**。
+# 它此前**未在 requirements 中声明**（只在开发机恰好装着 1.62.3）⇒
+# 干净机重建环境会缺包。实测本机为 1.62.3，与 playwright 1.62.x 同线。
+# 依 UP-L3 结论：playwright 线锁 1.62.x 期间 **patchright 亦不单独越线**
+# （避免留下「patchright 1.63 + playwright 1.62」的双驱动不一致态）。
+patchright>=1.62,<1.63
+# camoufox = 本项目唯一生效浏览器内核，此前**未声明**。0.5.6 实测生效；
+# 上界 <0.6 防内核行为跨小版本漂移（内核更换需走实机验收，不走依赖升级）。
+camoufox>=0.5.6,<0.6
+
+# 工具
+python-multipart>=0.0.9
+
+# TLS：原生 OS 信任库 + 公共 CA 叠加（2026-09-17，对照上游 douyin-chat-export）。
+# 纯增强：企业内网把自签根证书装入系统信任库即可正常校验，**无需**再用
+# DY_TLS_INSECURE=1 关闭校验；未安装时 utils.tls_policy 自动降级，不影响启动。
+truststore>=0.10
+certifi
+
+# IM 入站通道（v0.38.5）：QQ 官方机器人 WebSocket（botpy 1.2.1 实测）
+qq-botpy>=1.2.1
+
+# 打包（可移到 dev 依赖）
+pyinstaller>=6.10.0
+
+# ── 2026-09-26 ADR-017：上游登录模块（vendor/douyin_spider_upstream）必需 ──
+# 抖音接口统一走 curl_cffi（冒充 Chrome 的 TLS/HTTP2 指纹）；
+# 纯 requests 的 TLS 指纹会被识别。仅 API 备用路径需要，RPA 主路径无关。
+# 注意：装到项目 Python（Python314）。**不要用裸 `uv pip install`**
+# —— 它会解析到 Hermes 自己的 venv（`hermes-agent\venv`），装错地方。
+curl_cffi>=0.16.0
+
+# ── 2026-09-29：DOM 自适应定位兜底（auto_dm/dom_locator.py）─────────────────
+# 只装 **base 包**（parser 层：lxml/cssselect/orjson/tld/w3lib），**不装**
+# `scrapling[fetchers]`（那会引入 playwright/patchright 第二套浏览器栈，与本项目
+# Camoufox 单内核冲突）。用途：登录页/控件在抖音改版后按「旧选择器 + 自适应重定位」
+# 找回元素（确定性校验 + 唯一性铁律，宁缺勿错）。缺失时优雅降级（走原锚点，零回归）。
+# 打包：scripts/build_sidecar.py 已 collect-all scrapling/lxml/tld/cssselect/w3lib。
+scrapling>=0.4.15

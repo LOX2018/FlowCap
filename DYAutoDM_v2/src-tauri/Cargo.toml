@@ -1,0 +1,39 @@
+[package]
+name = "dyautodm-v2"
+version = "0.47.24"
+description = "抖音自动私信控制台 - Tauri 壳"
+authors = ["you"]
+edition = "2021"
+rust-version = "1.77.0"
+
+# 库形态（Tauri 2 推荐）：移动端复用同一 lib
+[lib]
+name = "dyautodm_v2_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = [] }
+tauri-plugin-shell = "2.0"
+tauri-plugin-dialog = "2.0"
+tauri-plugin-fs = "2.0"
+tauri-plugin-notification = "2.0"
+# 2026-10-02 用户要求「限制单实例启动」：官方插件，本机 cargo 缓存已有
+# （tauri-plugin-single-instance-2.5.0.crate）⇒ 可离线构建。
+tauri-plugin-single-instance = "2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+env_logger = "0.11"
+# Sidecar 进程管理
+sysinfo = "0.30"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

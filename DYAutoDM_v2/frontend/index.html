@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>川流 · 控制台</title>
+    <!--
+      首帧主题预置（防 FOUC）。
+      ThemeContext 要等 React 挂载后的 useEffect 才写 <html data-theme>，
+      在那之前页面会用「暗色 + 绿色」的兜底变量渲染一帧；若用户上次选的是
+      亮色主题，就会看到一次明显的闪白。这里在样式表解析前同步读完
+      localStorage 并打上属性，保证首帧就是正确主题。
+      只写 data-theme / color-scheme；accent 与氛围光的变量值仍由
+      ThemeContext 统一注入（它们依赖颜色计算，不适合内联）。
+    -->
+    <!-- 首帧背景（防白闪）：与 tokens.css 的「淡绿→浅黄」底图一致。
+         内联在此是因为本脚本在样式表之前执行，读不到 CSS 变量。 -->
+    <style>
+      html, body { margin: 0; background: #0b0d13; }
+      html[data-theme="day"], html[data-theme="day"] body { background: #f3f6ec; }
+    </style>
+    <script>
+      (function () {
+        try {
+          var t = (localStorage.getItem("dy.theme") || "").toLowerCase();
+          var theme = t === "day" ? "day" : "aerospace";
+          var el = document.documentElement;
+          el.dataset.theme = theme;
+          el.style.colorScheme = theme === "day" ? "light" : "dark";
+        } catch (e) {
+          document.documentElement.dataset.theme = "aerospace";
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

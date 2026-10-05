@@ -1,0 +1,148 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# Build artifacts
+dist/
+build/
+target/
+*.exe
+*.app
+*.dll
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/*.exe
+src-tauri/binaries/*.app
+# 2026-08-31：sidecar 在运行期会在 binaries/ 下建 data/、auto_dm/
+# （PyInstaller onefile 解压 + 相对路径 data 目录），里面含运行数据库，
+# 必须忽略；上方 *.exe 规则只挡了二进制本体，挡不住这两个目录。
+src-tauri/binaries/data/
+src-tauri/binaries/auto_dm/
+# 2026-09-08：PyInstaller **onedir** 产物是目录（<name>-<triple>/，不带 .exe），
+# 上方 *.exe 规则挡不住 —— 曾被误 add 1.9 万个文件（1.2G）进暂存区。
+# 整个 binaries 目录都是构建产物，一律忽略（部署时从构建输出拷贝）。
+src-tauri/binaries/
+
+# Frontend
+frontend/dist/
+# ── 2026-09-23 F-6 修补（CI 卫生：源码树零构建产物）─────────────────
+# 实测：`git add .` 会把下面三项加进暂存区（`git check-ignore` 对它们**无输出**
+# = 未被忽略），违反「源码树不得含构建产物」：
+#   · frontend/dist-prototype/      —— 原型页面的 vite 构建输出（800K 级）
+#   · frontend/_proto/              —— 原型专用源码桩（framer-motion-stub.tsx）
+#   · frontend/vite.prototype.config.ts —— 跑原型的**一次性** vite 配置
+# 全部为「原型预览」临时资产，用完即弃；不入库。
+frontend/dist-prototype/
+frontend/_proto/
+frontend/vite.prototype.config.ts
+frontend/node_modules/
+*.tsbuildinfo
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Python sidecar
+backend/dist/
+backend/build/
+backend/*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+# 说明：上面的 logs/ 本意是忽略运行期日志目录，但它会连带忽略同名**源码**目录
+# （frontend/src/components/logs/ 是页面组件，必须入库）。加否定规则修正。
+!src/components/logs/
+!frontend/src/components/logs/
+
+# PyInstaller
+*.manifest
+
+# Local data
+accounts_data/
+stats_export/
+data/*.db
+# 2026-09-17：导出目录（ChatLab / 长图等运行时产物，不入库）
+exports/
+# 注：仓库根是 ../DYchajian，本文件里的 ../ 规则**无效**
+# （git 的 .gitignore 不允许跳出仓库根）。外层 data/*.db 与
+# 工作记忆/_kb*.py 的忽略规则已写在**仓库根** .gitignore（2026-08-31）。
+data/*.db-shm
+data/*.db-wal
+vb_profile_*/
+pw_profile_*/
+
+# Debug / temporary artifacts
+_*.txt
+_unittest_out.txt
+_fe_deps.txt
+*.txt.tmp
+# 临时调试脚本/日志（不入库）
+# ⚠️ 2026-09-14 修正：原规则 `_*.py` 会**误伤 `__init__.py`**
+#（Python 包入口，必须以双下划线开头）→ 导致新建包目录时入口文件被静默排除。
+# 改用 `!_` 例外：仍忽略单下划线开头的临时脚本，但**不忽略 `__init__.py`**。
+_*.py
+!__init__.py
+# ⚠️ 2026-09-15 修正：`_*.py` 还会误伤 `__main__.py`（包/工具入口）与
+# `dy_apis/_bindings.py`（接口层门面接线，被 douyin_api.py 引用）。
+# 二者是**真源码**，必须入库；仅忽略单下划线开头的临时脚本。
+!__main__.py
+!**/__main__.py
+!**/_bindings.py
+!**/_common.py
+# ⚠️ 2026-09-17 修补（OCR 审查 HIGH 核实后确认，非报告原例）：
+# `_*.py` 本意只忽略「单下划线开头的临时脚本」，但它**静默吞掉了持久验证资产**——
+# 下列门禁/验证脚本被 ADR 与审计档案明文引用（docs/adr_conv_identity_single_source.md:72/147、
+# 工作记忆/审计修复总档案），却在 git 历史中**从未入库**（0 次提交），
+# 只存在于开发机工作区 → 换机/克隆即永久丢失验证能力，且 ADR 引用断链。
+# 现为这些**持久资产**加例外（临时脚本仍照旧忽略）。
+!**/_build_version.py
+!**/_verify_send_gate_cache.py
+!**/_verify_conv_identity.py
+!**/_verify_lease_lock.py
+_force_rebuild.ps1
+_kill_clean.ps1
+_verify_exe.py
+DYAutoDM_v2/日志.md
+_deploy.ps1
+
+# 探针运行输出（含真实图片 URL，不入库）
+scripts/_*.json
+
+# ── 2026-09-20 补充（实测污染源，防复发）─────────────────────────
+# 1) 未展开的环境变量被当路径：tauri dev 期间 Windows 字体缓存工具在
+#    src-tauri/ 下创建了字面量目录 `%SystemDrive%/ProgramData/...`
+**/%SystemDrive%/
+**/%ProgramData%/
+**/%SystemRoot%/
+**/%TEMP%/
+**/%APPDATA%/
+# 2) 源码树运行期数据目录（铁律：源码目录不得产生 data/accounts）
+DYAutoDM_v2/src-tauri/data/
+DYAutoDM_v2/src-tauri/accounts/
+DYAutoDM_v2/accounts/
+# 3) 知识库/Docs 的 .bak.<时间戳> 备份（我自己脚本生成的，不入库）
+*.bak.[0-9]*
+*.bak2.[0-9]*
+# 4) 构建基线（L-9：build_and_deploy.py 记录「上次成功构建的 HEAD sha」，
+#    属本地构建状态，不入版本库）
+artifacts/.last_built_sha
+# 5) 构建来源戳（2026-10-04：build_stamp.py 记录「上次构建的源码 sha256 +
+#    产物 md5」，供 --skip-* 判定陈旧；属本地构建状态，不入版本库）
+artifacts/.build_stamp.json

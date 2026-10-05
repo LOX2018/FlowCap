@@ -1,0 +1,71 @@
+{
+  "dm_read_fixture": {
+    "desc": "脱敏只读 DB 快照（408 会话/559 消息，会话读取路径回归用）",
+    "expected": {
+      "accounts": 2,
+      "conversations": 408,
+      "convs_with_msgs": 134,
+      "empty_convs": 273,
+      "kv_store_rows": 0,
+      "messages": 559,
+      "roles_me": 367,
+      "roles_them": 192
+    },
+    "file": "dm_read_fixture/dm_read_fixture.db",
+    "provenance": "2026-09-22 由活库派生：replay/sanitize_db.py 双向映射脱敏（源库只读，未改动）",
+    "recorded_at": "2026-09-22 15:01:08",
+    "sha256": "ba75d7cee474fb5af37d62d9ab662c30b8b1eb7b6d078c098c5fd9a3787709e1",
+    "size": 409600
+  },
+  "dom_list_snapshots": {
+    "account_uid": "316276709526638",
+    "desc": "DOM 会话列表逐屏快照（脱敏；虚拟列表滚动累积回归用）",
+    "expected": {
+      "accumulated_unique": 88,
+      "final_round_items": 16,
+      "first_round_items": 16,
+      "total_rounds": 9
+    },
+    "file": "dom_list_snapshots/dom_list_snapshots.json",
+    "previous_sha256": "d0d7a6271abdbb3d0f325a6b870e77f810ee35048101e7ef5248f811b1c453ab",
+    "provenance": "2026-09-23 17:01 实机录（BCC 纯无头态，账号 尚进工伤小助理；9 屏滚动，CAP_DOM_SWEEP 提取逻辑），昵称/头像/desc 已脱敏",
+    "recorded_at": "2026-09-23 17:01:35",
+    "sha256": "1fb09ebbe07f8146b970b3f8914597f91fbb9bb63a80101b70df2e80aa8a0a3a",
+    "size": 21903
+  },
+  "idb_userinfo": {
+    "account_uid": "316276709526638",
+    "desc": "IndexedDB <uid>_user 昵称表（脱敏；JS 解码器 CAP_IDB_USERINFO_JS 实机输出）",
+    "expected": {
+      "nickname_coverage": 94,
+      "numeric_uid": 94,
+      "total": 94,
+      "users_len": 94
+    },
+    "file": "idb_userinfo/idb_userinfo.json",
+    "provenance": "2026-09-23 16:40 实机拉取（BCC /userinfo_idb，账号 尚进工伤小助理），昵称/头像/sec_uid 已脱敏",
+    "recorded_at": "2026-09-23 16:40:36",
+    "sha256": "e3cba00857d81365c566f7e6eacdb939f825ac1f61092b85ccac048ff2f24f1c",
+    "size": 52433
+  },
+  "init_packet": {
+    "account_uid": "316276709526638",
+    "desc": "get_message_by_init 首包（cmd2043 包裹，44 会话骨架）",
+    "expected": {
+      "convs": 44,
+      "convs_with_msgs": 10,
+      "roles_me": 23,
+      "roles_them": 5,
+      "short_id_coverage": 44,
+      "total_msgs": 28,
+      "unique_conv_id": 44
+    },
+    "file": "init_packet/init_packet.bin",
+    "previous_sha256": "68b7d8376d20d259b48d89f3fd2b3feb9f773d15ba500b45def325b9e19cafa7",
+    "provenance": "2026-09-06 13:41 实拉；2026-09-20 测试根删除时由 _backup_dyautodm_test_20260920_171030 保留",
+    "recorded_at": "2026-09-22 14:38:24",
+    "sha256": "68b7d8376d20d259b48d89f3fd2b3feb9f773d15ba500b45def325b9e19cafa7",
+    "size": 127711,
+    "note": "2026-09-27 订正：total_msgs/roles_me/roles_them = 28/23/5（原 19/18/1）。根因：conversation_capture 的消息去重键原为 (conv_id, text[:50])，H-25 统一落库契约（a10ac1f, v0.45.3）后所有图片消息 text 均为 '[图片]'，同会话多张图前 50 字符相同 ⇒ 后发图片被静默当重复丢弃（实测 3 张图只留 1 张）。该缺陷自 a10ac1f 起潜伏，本次修复改按 msg_id 去重（与 _merge_history 的 seen_ids 一致），恢复 28 条真实消息（零重复 msg_id、零 None，已复核）。样本 sha256 未变。"
+  }
+}

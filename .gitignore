@@ -1,0 +1,156 @@
+# 根目录大文件 / 外部下载产物（不入库，从 Release 重新下载即可）
+*.zip
+*.tar.gz
+*.7z
+*.exe
+
+# 浏览器指纹内核运行时 profile（Chromium 缓存/登录态/本地存储，体积大且含敏感信息）
+vb_profile_*/
+vb_profile_dm/
+vb_profile_default/
+pw_profile_dm/
+pw_profile_default/
+chromium_profile*/
+
+# 打包产物
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
+
+# 账号凭证 / 环境变量 / 日志
+.env
+.env.*
+*.env.bak
+.env.stray_bak
+logs/
+*.log
+
+# 前端依赖与 vendor（若未来引入 node_modules）
+node_modules/
+
+# 编辑器 / 系统 / 临时
+.vscode/
+.idea/
+*.swp
+.DS_Store
+.codebuddy/
+# 2026-09-30：AI 工具状态目录（与 .codebuddy 同族，属本地工具态，不入库）
+.freebuff/
+.workbuddy/
+
+# 内存快照 / 调试产物
+*.pma
+*.tmp
+~$*
+
+# MCP 浏览器测试快照
+.playwright-mcp/
+
+# ===== DYAutoDM_v2 运行时/构建缓存（不入库）=====
+DYAutoDM_v2/auto_dm/
+DYAutoDM_v2/data/
+DYAutoDM_v2/vb_chromium/
+DYAutoDM_v2/build_tauri.err
+DYAutoDM_v2/*.log
+frontend/tsconfig.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+_commit_msg.txt
+# V1 (DY_Spider_base) 已彻底清理废弃，永不重新跟踪
+DY_Spider_base/
+
+# ── 2026-09-23 F-6 修补（CI 卫生：源码树零构建产物 / 零一次性脚本）─────
+# 实测：`git check-ignore` 对根目录 `_fix_visibility_test.py` 无输出
+# （= 未被忽略）⇒ `git add .` 会把一次性调试脚本提交进仓库。
+# `_*.py` 的「一次性脚本」约定此前只写在 `DYAutoDM_v2/.gitignore`（其作用域
+# **不覆盖仓库根**），故根级新脚本一直裸奔。此处补根级同名规则。
+# 注：`_export_git.py` / `_push_user_profile.py` / `_jscheck.js` 已入库，
+# gitignore 不影响已跟踪文件 ⇒ 三者照旧入库，本规则只拦**新产生**的脚本。
+/_*.py
+
+# ── 2026-09-23 F-7 修补（坏 gitlink → 本地对照库改为一律不入库）─────────
+# `_ext_repos/DouYin_Spider_git` 曾被误以 gitlink 形式写入索引
+# （`git ls-tree HEAD` → `160000 commit 1712dad...`），但仓库**无 .gitmodules**
+# ⇒ `git submodule status` 报 `fatal: no submodule mapping found`（rc=128）、
+# 他人 clone 得到空目录、且 open-code-review 每轮报
+# `cannot read file _ext_repos/DouYin_Spider_git at ref HEAD: exit status 128`
+# 污染统计。
+# 处置（择②）：它只是**本地对照参考库**（同目录下另有 DouYin_Spider-master /
+# DouYin_Spider_latest / douyin-jiliu-src 三个对照库，均未按 submodule 管理），
+# 不是本项目依赖 ⇒ **从索引移除 + 忽略**，不新建 .gitmodules。
+_ext_repos/DouYin_Spider_git/
+
+# 2026-08-31 追加：运行数据库（含真实私信/昵称，绝不入库）
+data/*.db
+data/*.db-shm
+data/*.db-wal
+# 2026-09-30：任意深度的 data 库（防子目录位置的 db，如 DYAutoDM_v2/backend/data/，
+# 落入源码树后被 `git add -A` 误提交 —— M-27 实测点）
+**/data/*.db
+**/data/*.db-shm
+**/data/*.db-wal
+
+# 一次性知识库写入脚本（用完即弃）
+工作记忆/_kb*.py
+
+# OCR 审查的**中间分诊产物**（原始机器报告的子集/重切）。
+# 权威源是 D:\SJ  agent 下的完整报告，这些只是处理过程中的切片，
+# 体积可达 MB 级且会随处理进度不断重写 → 不入库，避免污染历史。
+# 处置结论一律落在 工作记忆/*.md 文档里（人可读、可评审）。
+工作记忆/ocr_remaining_items.json
+工作记忆/ocr_high_still.json
+工作记忆/ocr_high_gone.json
+
+# ── 2026-09-20 补充（实测污染源，防复发）─────────────────────────
+# 1) 未展开的环境变量被当路径：tauri dev 期间 Windows 字体缓存工具在
+#    src-tauri/ 下创建了字面量目录 `%SystemDrive%/ProgramData/...`
+**/%SystemDrive%/
+**/%ProgramData%/
+**/%SystemRoot%/
+**/%TEMP%/
+**/%APPDATA%/
+# 2) 源码树运行期数据目录（铁律：源码目录不得产生 data/accounts）
+DYAutoDM_v2/src-tauri/data/
+DYAutoDM_v2/src-tauri/accounts/
+DYAutoDM_v2/accounts/
+# 3) 知识库/Docs 的 .bak.<时间戳> 备份（我自己脚本生成的，不入库）
+*.bak.[0-9]*
+*.bak2.[0-9]*
+# 台账写时备份（脚本生成，不入库；SSOT 仅保留最新版）
+artifacts/_ledger_bak_*.md
+# 🔴 2026-10-04 修（审计 P0-1）：profile 备份目录整体不入库。
+# `artifacts/yingyue_profile_backup_20261003-131055/` 内含
+# `.env`(26.7KB：GITHUB_TOKEN / NVIDIA_API_KEY / LONGCAT_API_KEY 等)、
+# `state.db`(270KB 含会话与记忆)、`config.yaml` / `profile.yaml` /
+# `memories/`。此前只有 `.env` 被既有规则覆盖，**其余 6 个文件
+# `git add -A` 会直接入库** —— 且 R12 凭证门禁的扫描根只到
+# `DYAutoDM_v2/`，结构上看不见仓根 `artifacts/`，无任何机械防线。
+# 故在此按**目录整体**排除，不逐文件列举（防下次备份换个名就漏）。
+artifacts/*profile_backup*/
+artifacts/*_profile_backup*/
+# 🔴 同类兜底（负控实测：只认 `profile_backup` 名字时，换成
+# `_probe_newbackup_xyz` 就会漏网）。故按**内容类型**再兜一层 ——
+# artifacts/ 是审计/备份产物区，本就不该有入库的库文件与配置：
+artifacts/**/*.db
+artifacts/**/*.sqlite
+artifacts/**/config.yaml
+artifacts/**/profile.yaml
+artifacts/**/memories/
+
+# ── vendored 上游代码（ADR-017 API 备用路径）────────────────────────────
+# 上游 cv-cat/DouYin_Spider 无 LICENSE（GitHub API 404 确证），
+# 默认 all rights reserved。它是 backend/auto_dm/login_api_vendor.py 的
+# sys.path 运行时依赖，本地开发需要，但不发布无许可代码。
+# 获取方式见仓库根 NOTICE.md。
+DYAutoDM_v2/vendor/
+
+# ── 开发过程笔记与审计产物（本地知识库，不属产品交付物）─────────────────
+# 目录本身在根级 .gitignore 已有（artifacts/、工作记忆/、.hermes/），
+# 此处补产品子目录内的同类产物。
+DYAutoDM_v2/artifacts/
+DYAutoDM_v2/knowledge/
+DYAutoDM_v2/.hermes/
