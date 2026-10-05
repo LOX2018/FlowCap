@@ -3376,7 +3376,6 @@ export interface PageProps {
   goConv?: (convId: string) => void;
   /** 私信页收到的会话跳转请求（由 goConv 设置） */
   goConvReq?: { convId: string; key: number } | null;
-  /** 切换 Tab（任务中心跳转用） */
   /** 切到指定一级 tab；第二参可选，指定页内二级分区落点 */
   setTab?: (tab: string, section?: string) => void;
   /** 挂载时指定的二级分区落点（settings 页消费；其余页忽略） */
