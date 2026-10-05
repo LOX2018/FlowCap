@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone } from "@/components/page/kit";
-import { type Api, Th, Td, errMsg } from "./tasks-shared";
+import { type Api, Th, Td, errMsg, fmtTs as fmtTime } from "./tasks-shared";
 
 /** 调度中心状态（后端 `GET /api/tasks/scheduler` 的 state 字段）。 */
 interface SchedulerState {
@@ -66,15 +66,6 @@ const KIND_LABEL: Record<string, string> = {
   hot_comment_crawl: "热门视频评论采集",
   auto_dm_send: "自动发私信",
 };
-
-function fmtTime(v?: number | null): string {
-  if (!v) return "—";
-  try {
-    return new Date(v * 1000).toLocaleString("zh-CN", { hour12: false });
-  } catch {
-    return "—";
-  }
-}
 
 export default function SchedulerSection(props: PageProps) {
   const api = props.api as Api;
@@ -173,7 +164,10 @@ export default function SchedulerSection(props: PageProps) {
 
       {/* 状态概览 */}
       <div className="mb-3 flex flex-wrap items-center gap-2 text-[0.76rem]">
-        {dormant ? (
+        {q.isPending ? (
+          /* 2026-10-05：首帧未取到状态时此前直接落「已停止」，是伪陈述。 */
+          <Badge variant="outline">状态未知</Badge>
+        ) : dormant ? (
           <Badge variant="warning">休眠（默认）</Badge>
         ) : st.enabled ? (
           <Badge variant="success">运行中</Badge>
@@ -197,7 +191,7 @@ export default function SchedulerSection(props: PageProps) {
       <Card>
         {tasks.length === 0 ? (
           <div className="px-3 py-6 text-center text-[0.76rem] text-[var(--color-text-muted)]">
-            暂无定时任务（可通过后端接口添加；本页未来会提供新增表单）
+            暂无定时任务（可通过后端接口添加）
           </div>
         ) : (
           <div className="-mx-4 -mb-4 overflow-x-auto">

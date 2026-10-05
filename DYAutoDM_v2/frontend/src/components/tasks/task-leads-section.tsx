@@ -13,12 +13,12 @@
  * 并在角标注明「内存态·未按时间筛选」。
  */
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PhoneCall } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone, Blank } from "@/components/page/kit";
-import { Th, Td } from "./tasks-shared";
+import { Th, Td, fmtTs } from "./tasks-shared";
 
 const STATUS_LABEL: Record<string, string> = {
   new: "新线索",
@@ -30,19 +30,6 @@ const SOURCE_LABEL: Record<string, string> = {
   realtime: "实时",
   backfill: "历史补全",
 };
-
-/** 秒级 / 毫秒级时间戳 → 可读时间（与任务详情页 `fmtTs` 同口径）。 */
-function fmtTs(v: unknown): string {
-  if (v === null || v === undefined || v === "" || v === 0) return "—";
-  const n = Number(v);
-  if (!isFinite(n) || n <= 0) return "—";
-  const ms = n < 1e12 ? n * 1000 : n;
-  try {
-    return new Date(ms).toLocaleString("zh-CN", { hour12: false });
-  } catch {
-    return String(v);
-  }
-}
 
 interface LeadRow {
   id: number;
@@ -188,6 +175,7 @@ export function LeadStatusBadge(props: {
   api: { aiLeadStatus(id: number, status: string): Promise<{ ok: boolean }> };
   push: (m: string, ms?: number) => void;
 }) {
+  const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
   const tone: "ok" | "warn" | "danger" | "info" | "mute" =
     props.lead.status === "followed"
@@ -200,7 +188,11 @@ export function LeadStatusBadge(props: {
     if (!v || v === props.lead.status) return;
     setBusy(true);
     try {
+      // 2026-10-05：成功后此前既不 invalidate 也不 push ⇒ select 弹回原值，
+      // 用户以为没生效。改后刷新列表并给成功反馈。
       await props.api.aiLeadStatus(props.lead.id, v);
+      qc.invalidateQueries({ queryKey: ["task-leads"] });
+      props.push("线索状态已更新", 3000);
     } catch (e) {
       props.push(`状态更新失败: ${String(e)}`, 6000);
     } finally {

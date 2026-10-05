@@ -73,18 +73,21 @@ function Field({
   );
 }
 
-export default function NotifyPage({ api, push }: PageProps) {
+export default function NotifyPage({ api, push, ready }: PageProps) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState<NotifyConfig | null>(null);
   const [testing, setTesting] = useState("");
 
+  // 2026-10-05：两 query 此前无 enabled 门 ⇒ app 未就绪即发请求。
   const cfgQ = useQuery({
     queryKey: ["notify-config"],
     queryFn: () => api.getNotifyConfig(),
+    enabled: !!ready,
   });
   const stQ = useQuery({
     queryKey: ["notify-status"],
     queryFn: () => api.getNotifyStatus(),
+    enabled: !!ready,
   });
 
   // 后端数据到齐后初始化草稿（仅首次，避免覆盖用户输入）

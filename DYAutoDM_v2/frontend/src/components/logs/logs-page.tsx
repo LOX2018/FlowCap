@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Copy, Trash2, Eye, ArrowLeft, Eraser, RotateCcw, FileText,
+  Copy, Trash2, ArrowLeft, Eraser, RotateCcw, FileText,
 } from "lucide-react";
 import { PageProps } from "../../api/client";
 import { PageContainer, PageHeader } from "@/components/layout/app-shell";
@@ -29,6 +29,7 @@ import { Row, RowText, SegmentedTabs, Blank, Toolbar } from "@/components/page/k
 import { confirmDialog } from "@/components/ui/modal";
 import { cn } from "@/lib/utils";
 import { type LogLine, type Session, fmtStart, fmtSize, LEVEL_CLASS } from "./logs-shared";
+import { ErrorState } from "@/components/ui/empty-state";
 
 export default function LogsPage(props: PageProps) {
   const { api, ready } = props;
@@ -47,24 +48,25 @@ export default function LogsPage(props: PageProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
   // 本次日志轮询（只读最新会话文件）
-  const curQ = useQuery({
-    queryKey: ["logs-current", limit],
-    queryFn: async (): Promise<{ ok: boolean; file: string | null; lines: LogLine[] }> => {
-      const s = await api.getSessions();
-      const name = s.current;
-      const d = await api.getLogs(limit, name || undefined);
-      return d as unknown as { ok: boolean; file: string | null; lines: LogLine[] };
-    },
-    refetchInterval: 2000,
-    enabled: !!ready && mode === "current",
-  });
-
-  // 历史会话列表轮询
+  // 历史会话列表轮询（提供 current 文件名，供本次日志复用，避免重复 getSessions）
   const sessQ = useQuery({
     queryKey: ["logs-sessions"],
     queryFn: async () => await api.getSessions(),
     refetchInterval: 5000,
     enabled: !!ready,
+  });
+  const currentName = sessQ.data?.current || null;
+
+  // 本次日志轮询（只读最新会话文件）
+  // 2026-10-05：此前每次自拉 getSessions（每 2s 一次），改用 sessQ 的 current。
+  const curQ = useQuery({
+    queryKey: ["logs-current", currentName, limit],
+    queryFn: async (): Promise<{ ok: boolean; file: string | null; lines: LogLine[] }> => {
+      const d = await api.getLogs(limit, currentName || undefined);
+      return d as unknown as { ok: boolean; file: string | null; lines: LogLine[] };
+    },
+    refetchInterval: 2000,
+    enabled: !!ready && mode === "current" && !!currentName,
   });
 
   // 查看某历史会话时的日志轮询
@@ -249,9 +251,6 @@ export default function LogsPage(props: PageProps) {
                     mono
                   />
                 </button>
-                <Button variant="ghost" size="sm" onClick={() => setViewFile(s.file)}>
-                  <Eye className="h-3.5 w-3.5" />查看
-                </Button>
                 <Button
                   variant="danger-outline"
                   size="sm"
@@ -331,7 +330,12 @@ export default function LogsPage(props: PageProps) {
             {displayCleared && shownLines.length === 0 && (
               <Blank>显示已清空（实质日志保留）· 新日志将从这里开始显示</Blank>
             )}
-            {!displayCleared && lines.length === 0 && (
+            {!displayCleared && activeQ.isError ? (
+              <ErrorState
+                message={String((activeQ.error as Error)?.message || "日志读取失败")}
+                onRetry={() => void activeQ.refetch()}
+              />
+            ) : !displayCleared && lines.length === 0 && (
               <Blank>
                 {activeQ.isLoading ? "加载中…" : "暂无日志（后端尚未产生运行记录）"}
               </Blank>
@@ -359,7 +363,7 @@ export default function LogsPage(props: PageProps) {
       {mode === "history" && !viewFile && historySessions.length > 0 && (
         <Toolbar className="text-[0.72rem] text-[var(--color-text-muted)]">
           <FileText className="h-3.5 w-3.5" />
-          点某条会话的「查看」进入日志内容
+          点某条会话进入日志内容
         </Toolbar>
       )}
     </PageContainer>

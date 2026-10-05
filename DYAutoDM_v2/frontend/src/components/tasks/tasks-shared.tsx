@@ -19,6 +19,21 @@ export type Api = PageProps["api"] & {
 
 export { errMsg } from "@/lib/utils";
 
+/** 秒级 / 毫秒级时间戳 → 可读时间（tasks/ 域唯一实现）。
+ *  2026-10-05：此前四处各写一份（tasks-page 内联 / task-detail / task-leads / Scheduler），
+ *  口径虽同但复制四份，归一到此处。 */
+export function fmtTs(v: unknown): string {
+  if (v === null || v === undefined || v === "" || v === 0) return "—";
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return String(v);
+  const ms = n < 1e12 ? n * 1000 : n;
+  try {
+    return new Date(ms).toLocaleString("zh-CN", { hour12: false });
+  } catch {
+    return String(v);
+  }
+}
+
 /* ── 表格具名单元（避免每处重复 className） ── */
 
 export function Th({ children, className }: { children?: React.ReactNode; className?: string }) {

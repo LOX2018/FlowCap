@@ -34,8 +34,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone, Blank, Toolbar, SegmentedTabs } from "@/components/page/kit";
-import { ConfirmDialog } from "@/components/ui/modal";
-import { type OverviewExt, type ExportStatsResp, type Api, Th, Td, errMsg } from "./tasks-shared";
+import { ConfirmDialog, confirmDialog } from "@/components/ui/modal";
+import { type OverviewExt, type ExportStatsResp, type Api, Th, Td, errMsg, fmtTs } from "./tasks-shared";
+import { ErrorState } from "@/components/ui/empty-state";
 import SchedulerSection from "./SchedulerSection";
 
 type TaskTab = "running" | "history" | "scheduled";
@@ -189,7 +190,10 @@ export default function TasksPage(props: PageProps) {
   // ── 运行任务页签：直播运行行（多账号）+ 采集运行行 混排 ────────────────
   //   `ov.running` 仅作**单任务回落**（engine 表查询失败时仍能显示最近那个引擎）。
   const liveRunning = liveTasks.length > 0 || (!!ready && !!ov.running);
-  const runningCount = liveTasks.length + crawlTasks.length;
+  // 2026-10-05：回落行（engine 表空但 ov.running 有值）此前不计入角标 ⇒
+  // 回落行显示时页签角标为 0。
+  const runningCount =
+    liveTasks.length + crawlTasks.length + (liveTasks.length === 0 && liveRunning ? 1 : 0);
   const hasAnyRunning = crawlTasks.some((t) => t.status === "running") || liveRunning;
 
   return (
@@ -297,6 +301,16 @@ export default function TasksPage(props: PageProps) {
                         ))}
                       </tr>
                     ))
+                  ) : engineQ.isError || crawlTasksQ.isError ? (
+                    <tr>
+                      <Td colSpan={7}>
+                        <ErrorState
+                          message={String(((engineQ.error || crawlTasksQ.error) as Error)?.message
+                            || "运行任务读取失败")}
+                          onRetry={() => { void engineQ.refetch(); void crawlTasksQ.refetch(); }}
+                        />
+                      </Td>
+                    </tr>
                   ) : !hasAnyRunning ? (
                     <tr>
                       <Td colSpan={7}>
@@ -440,12 +454,19 @@ export default function TasksPage(props: PageProps) {
                                   variant="danger-outline"
                                   size="sm"
                                   title="立即终止仍在发送的存量私信"
-                                  onClick={() =>
+                                  onClick={async () => {
+                                    // 2026-10-05：不可逆（立即终止存量私信），此前零确认。
+                                    if (!(await confirmDialog({
+                                      title: "停止存量私信",
+                                      message: "将立即终止仍在发送的存量私信（未发出的不再补发）。确定继续？",
+                                      confirmText: "停止",
+                                      danger: true,
+                                    }))) return;
                                     api
                                       .stopEngine(runningAcct || undefined)
                                       .then(() => push("已硬停止，存量私信终止发送"))
-                                      .catch((e: unknown) => push("异常: " + errMsg(e)))
-                                  }
+                                      .catch((e: unknown) => push("异常: " + errMsg(e)));
+                                  }}
                                 >
                                   <Square className="h-3 w-3" />停止存量
                                 </Button>
@@ -512,11 +533,7 @@ export default function TasksPage(props: PageProps) {
                         return (
                           <tr key={t.id}>
                             <Td mono className="whitespace-nowrap">
-                              {t.created_at
-                                ? new Date(t.created_at * 1000).toLocaleString("zh-CN", {
-                                    hour12: false,
-                                  })
-                                : "—"}
+                              {fmtTs(t.created_at)}
                             </Td>
                             <Td>{t.account || "—"}</Td>
                             <Td>
@@ -567,15 +584,22 @@ export default function TasksPage(props: PageProps) {
                                   <Button
                                     variant="danger-outline"
                                     size="sm"
-                                    onClick={() =>
+                                    onClick={async () => {
+                                      // 2026-10-05：移除运行中采集任务，此前零确认。
+                                      if (!(await confirmDialog({
+                                        title: "移除采集任务",
+                                        message: "将移除该运行中的采集任务（采集循环的下一次上报会 404）。确定继续？",
+                                        confirmText: "移除",
+                                        danger: true,
+                                      }))) return;
                                       api
                                         .crawlTaskDelete(t.id)
                                         .then(() => {
                                           push("已移除采集任务（采集循环的下一次上报会 404）");
                                           crawlTasksQ.refetch();
                                         })
-                                        .catch((e: unknown) => push("异常: " + errMsg(e)))
-                                    }
+                                        .catch((e: unknown) => push("异常: " + errMsg(e)));
+                                    }}
                                   >
                                     <Trash2 className="h-3 w-3" />移除
                                   </Button>
@@ -602,15 +626,22 @@ export default function TasksPage(props: PageProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() =>
+                onClick={async () => {
+                  // 2026-10-05：批量清理已结束采集，此前零确认。
+                  if (!(await confirmDialog({
+                    title: "清空已结束采集任务",
+                    message: "将清空所有已结束的采集任务记录（运行中的不受影响）。确定继续？",
+                    confirmText: "清空",
+                    danger: true,
+                  }))) return;
                   api
                     .crawlTasksClear()
                     .then((r) => {
                       push(`已清理已结束采集任务 ${r?.removed ?? 0} 条`);
                       crawlTasksQ.refetch();
                     })
-                    .catch((e: unknown) => push("异常: " + errMsg(e)))
-                }
+                    .catch((e: unknown) => push("异常: " + errMsg(e)));
+                }}
               >
                 <Trash2 className="h-3.5 w-3.5" />清空已结束采集任务
               </Button>
@@ -664,6 +695,15 @@ export default function TasksPage(props: PageProps) {
                   <tr>
                     <Td colSpan={7}>
                       <Blank>未连接</Blank>
+                    </Td>
+                  </tr>
+                ) : historyQ.isError ? (
+                  <tr>
+                    <Td colSpan={7}>
+                      <ErrorState
+                        message={String((historyQ.error as Error)?.message || "历史任务读取失败")}
+                        onRetry={() => void historyQ.refetch()}
+                      />
                     </Td>
                   </tr>
                 ) : history.length === 0 ? (

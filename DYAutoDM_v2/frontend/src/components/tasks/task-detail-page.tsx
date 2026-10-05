@@ -33,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Section, Tone, Blank } from "@/components/page/kit";
-import { Th, Td } from "./tasks-shared";
+import { Th, Td, fmtTs } from "./tasks-shared";
 import { LoadingState, ErrorState } from "@/components/ui/empty-state";
 import { ReviewMode } from "@/components/live/LiveReviewMode";
 import { recordsToRows } from "@/components/live/live-shared";
@@ -59,21 +59,6 @@ function toneOf(status: string): "ok" | "warn" | "danger" | "mute" {
   if (status === "failed") return "danger";
   if (status === "stopped" || status === "cancelled") return "warn";
   return "mute";
-}
-
-/** 秒级时间戳 / 字符串 → 可读时间。 */
-function fmtTs(v: unknown): string {
-  if (v === null || v === undefined || v === "") return "—";
-  if (typeof v === "number" && v > 0) {
-    // 秒级（<1e12）或毫秒级
-    const ms = v < 1e12 ? v * 1000 : v;
-    try {
-      return new Date(ms).toLocaleString("zh-CN", { hour12: false });
-    } catch {
-      return String(v);
-    }
-  }
-  return String(v);
 }
 
 /** 计算耗时（start/end 字符串或时间戳）。 */
