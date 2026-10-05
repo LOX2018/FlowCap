@@ -347,8 +347,12 @@ export default function App() {
   }, [ready]);
 
   // 切换视图（签名与行为不变：含 localStorage 持久化，已由 store 承担）
-  const setTab = useCallback((t: string) => {
+  // 2026-10-05：第二参 = 页内二级分区落点（此前只有一级，
+  // settings 页恒定落 general ⇒ 总览「去巡检」文案与落点不符）。
+  const [settingsSection, setSettingsSection] = useState<string>();
+  const setTab = useCallback((t: string, section?: string) => {
     setTabState(t);
+    if (t === "settings") setSettingsSection(section);
   }, [setTabState]);
 
   // 2026-08-31 修复：长任务（更新会话耗时 3~6 分钟）的结果提示原本只显示 2.6s，
@@ -420,6 +424,7 @@ export default function App() {
     goConv,
     goConvReq,
     setTab,
+    initialSection: settingsSection,
     goDetail: goDetailTrigger,
     detailPayload: goDetail,
     goReuse: goReuseTrigger,

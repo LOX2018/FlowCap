@@ -3377,7 +3377,10 @@ export interface PageProps {
   /** 私信页收到的会话跳转请求（由 goConv 设置） */
   goConvReq?: { convId: string; key: number } | null;
   /** 切换 Tab（任务中心跳转用） */
-  setTab?: (tab: string) => void;
+  /** 切到指定一级 tab；第二参可选，指定页内二级分区落点 */
+  setTab?: (tab: string, section?: string) => void;
+  /** 挂载时指定的二级分区落点（settings 页消费；其余页忽略） */
+  initialSection?: string;
   /** 跳转到「任务详情」页（统一入口：直播页「进入查阅模式」+ 任务中心「查看结果」） */
   goDetail?: (payload: TaskDetailPayload) => void;
   /** 「任务详情」页收到的载荷（由 goDetail 设置） */

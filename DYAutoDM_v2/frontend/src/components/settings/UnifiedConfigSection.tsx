@@ -262,6 +262,8 @@ export default function UnifiedConfigSection(
           key={unit.cardKey}
           title={unit.title}
           subtitle={`${unit.fields.length} 项`}
+          count={unit.fields.length}
+          scopeName={props.scopeName || "全局"}
           defaultOpen={props.onlySections ? i === 0 : true}
           dirty={dirtyOfFields(unit.sec, unit.fields.map(([fk]) => fk))}
           saving={saveMut.isPending}

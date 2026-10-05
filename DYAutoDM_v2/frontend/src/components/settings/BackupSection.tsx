@@ -21,6 +21,7 @@ import { PageProps, BackupScope } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { SetCard, SetCardHead, SetCardBody, SetCardFoot } from "@/components/page/set-card";
 import { errMsg } from "@/lib/utils";
+import { confirmDialog } from "@/components/ui/modal";
 
 export default function BackupSection(props: PageProps) {
   const { api, ready, push } = props;
@@ -99,6 +100,17 @@ export default function BackupSection(props: PageProps) {
 
   const doImport = async () => {
     if (!importFile) return push("请先选择备份文件");
+    // 2026-10-05：导入按范围**覆盖**全库，此前零确认（全仓 7 个 confirmDialog
+    // 点不含此处）。覆盖性破坏操作必须显式确认；后端写前快照 + 失败回滚
+    // 是第二道防线，不能替代用户决策。
+    if (!(await confirmDialog({
+      title: "确认覆盖导入",
+      message: "将按备份包内声明的全部范围覆盖现有数据（配置、任务表等）。\n"
+        + "后端会先写快照并在失败时自动回滚，但请确认当前无未导出的改动。",
+      confirmText: "覆盖导入",
+      cancelText: "取消",
+      danger: true,
+    }))) return;
     setBusy(true);
     try {
       // scopes 空 = 按备份包内声明的全部范围导入

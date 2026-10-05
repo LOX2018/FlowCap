@@ -15,6 +15,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
 import type { SettingsFieldSchema } from "../../api/client";
+import { confirmDialog } from "@/components/ui/modal";
 
 export type Val = string | number | boolean;
 
@@ -24,11 +25,31 @@ export function SectionCard(props: {
   dirty: boolean;
   saving: boolean;
   onSave: () => void;
+  /** 本卡渲染的字段数（恢复默认确认文案用；口径对齐 HVK） */
+  count?: number;
+  /** 本卡作用域显示名（恢复默认确认文案用） */
+  scopeName?: string;
   onReset: () => void;
   defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(!!props.defaultOpen);
+
+  // 2026-10-05：恢复默认此前直提无确认，而同一页 HighValueKeywordsSection:225
+  // 的「恢复默认词表」有确认且文案标「无法撤销」—— 同一动词两套标准。
+  // 统一为「必须确认 + 文案写明影响范围」。
+  const doReset = async () => {
+    if (!(await confirmDialog({
+      title: "恢复默认",
+      message: "将把本卡 " + (props.count ?? 0) + " 项恢复为后端默认值，作用于「"
+        + (props.scopeName || "全局") + "」。\n其他卡与未保存改动不受影响。",
+      confirmText: "恢复默认",
+      cancelText: "取消",
+      danger: true,
+    }))) return;
+    props.onReset();
+  };
+
   return (
     <SetCard>
       <SetCardHead
@@ -54,7 +75,7 @@ export function SectionCard(props: {
             {props.children}
           </div>
           <SetCardFoot>
-                      <Button variant="secondary" onClick={props.onReset} disabled={props.saving}>
+                      <Button variant="secondary" onClick={() => void doReset()} disabled={props.saving}>
                         恢复默认
                       </Button>
                       <Button onClick={props.onSave} disabled={props.saving || !props.dirty}>

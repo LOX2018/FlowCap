@@ -25,7 +25,7 @@ import {
   // 2026-09-18 审查修复（#54）：`MessageSquare` 原先在下方**重复 import**
   // 同一个模块（lucide-react 被 import 两次）；合并到这一处。
   Settings as SettingsIcon, Send, Radio, Database, Bot, Tags, Bell, Users, MessageSquare,
-  Plug, ShieldCheck,
+  Plug, ShieldCheck, ListFilter,
 } from "lucide-react";
 import { PageProps, api } from "../../api/client";
 import UnifiedConfigSection from "./UnifiedConfigSection";
@@ -48,7 +48,7 @@ import { PageContainer, PageHeader } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
-type SectionKey =
+export type SectionKey =
   | "general" | "send" | "live" | "capture" | "dm"
   | "ai" | "agent" | "tag" | "notify" | "mcp" | "crawlpolicy" | "system";
 
@@ -89,7 +89,7 @@ const TABS: {
   { key: "tag", label: "配置标签", hint: "发送策略：怎么发", scoped: false, icon: <Tags className="h-3.5 w-3.5" /> },
   // 2026-09-27（ADR-018 F1-D3）：采集策略层。与「配置标签」互补 ——
   // 标签管「用哪套参数」，本项管「采集参数本身」。
-  { key: "crawlpolicy", label: "采集策略", hint: "可复用的采集参数（只存参数，不自动采集）", scoped: true, icon: <Database className="h-3.5 w-3.5" /> },
+  { key: "crawlpolicy", label: "采集策略", hint: "可复用的采集参数（只存参数，不自动采集）", scoped: true, icon: <ListFilter className="h-3.5 w-3.5" /> },
   { key: "notify", label: "通知与指令", hint: "IM 通知与指令解析的模型", scoped: false, icon: <Bell className="h-3.5 w-3.5" /> },
   // 2026-09-25：补 MCP 入口。此前后端 7 个端点已完整，但前端零引用
   // ⇒ 用户「看不到入口、也不知道令牌」= 能力在位但不可得。
@@ -101,7 +101,12 @@ const TABS: {
 ];
 
 export default function SettingsPage(props: PageProps) {
-  const [section, setSection] = useState<SectionKey>("general");
+  // 2026-10-05：支持外部指定落点分区（总览「去巡检」→ system）。
+  // 此前 setTab 只有一级、默认恒落 general ⇒ 按钮文案与落点不符。
+  const [section, setSection] = useState<SectionKey>(() => {
+    const want = props.initialSection;
+    return TABS.some((t) => t.key === want) ? (want as SectionKey) : "general";
+  });
 
   // ---- 配置作用域（标签）—— 2026-10-04 从各子组件内部提升到页面层 ----
   // 原实现每个 UnifiedConfigSection 实例各自持有一条「保存到 全局/标签」栏，
@@ -265,6 +270,14 @@ export default function SettingsPage(props: PageProps) {
               {section === "tag" && <TagSection {...props} />}
               {section === "crawlpolicy" && (
                 <>
+                  {/* 2026-10-05：本页 scoped:true，但策略集合本身不按作用域存
+                      （CrawlPolicySection 只收 push，不接 scope）—— 右侧 ScopeRail
+                      实际只驱动下方关键词权重表。此前无说明，用户会以为切标签
+                      会切换策略集合。 */}
+                  <div style={{ fontSize: 11, color: "var(--color-text-muted)",
+                                 marginBottom: 10, lineHeight: 1.6 }}>
+                    本 tab 仅下方「高价值关键词权重表」随右侧作用域变化；采集策略集合本身不按作用域保存。
+                  </div>
                   <CrawlPolicySection {...props} />
                   {/* 高价值关键词权重表（2026-10-04 用户要求）：从直播页迁入采集策略页。
                       该表由 `api/crawl.py` 消费（`score_text(..., scope)` 做采集过滤），

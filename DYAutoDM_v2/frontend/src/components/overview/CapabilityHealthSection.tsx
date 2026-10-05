@@ -154,7 +154,9 @@ export default function CapabilityHealthSection(props: PageProps) {
             {props.setTab ? (
               <button
                 type="button"
-                onClick={() => props.setTab!("settings")}
+                // 2026-10-05：巡检入口在 system 分区。此前只有一级 setTab、
+                // settings 页恒落 general ⇒ 点「去巡检」落「通用配置」，文案与落点不符。
+                onClick={() => props.setTab!("settings", "system")}
                 className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] underline-offset-2 hover:underline"
               >
                 去巡检
