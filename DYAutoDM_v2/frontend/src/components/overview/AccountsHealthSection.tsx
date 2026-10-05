@@ -71,10 +71,12 @@ export default function AccountsHealthSection(props: PageProps) {
 
   // 复用 App 级常驻缓存（queryKey ["accounts"]，30s 轮询）—— 切到总览页直接读
   // 热数据，不再向后端重复拉重型校验。
+  // 2026-10-05 T8-2：删除自带 refetchInterval（与 App 常驻 30s 重复），
+  // 改为纯读共享缓存。queryFn 保留 —— 树里所有消费者都声明 queryFn，
+  // 省略它会在缓存过期时触发 Missing queryFn。
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["accounts"],
     queryFn: async () => (await api.getAccounts()) as unknown as RawAccountHealth[],
-    refetchInterval: 30000,
     enabled: !!ready,
   });
 

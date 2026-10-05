@@ -284,7 +284,7 @@ export default function App() {
   // ===== 共享数据常驻轮询（「前端启动拉一次、后端数据一直热着」）=====
   // App 永不卸载，这些查询一直订阅刷缓存；各页面用相同 key 读缓存，
   // 切页不再向后端重拉，消灭 4s/3s 的等待（尤其是 accounts 的重型校验）。
-  useQuery({
+  const { data: accountsCache } = useQuery({
     queryKey: ["accounts"],
     queryFn: async () => (await api.getAccounts()) as never[],
     refetchInterval: 30000,
@@ -318,23 +318,11 @@ export default function App() {
     refetchInterval: 15000,
     enabled: ready,
   });
-  // 私信会话列表常驻轮询（提升到 App，与 accounts 同机制）：
-  // 切到私信页时该 query 已在内存热着，页面挂载只读缓存、不再冷拉，
-  // 同时避免 React.StrictMode 双挂载 + 账号状态变化造成的 1 秒内多次读请求。
-  const { data: accountsCache } = useQuery({
-    queryKey: ["accounts"],
-    queryFn: async () => (await api.getAccounts()) as never[],
-    refetchInterval: 30000,
-    enabled: ready,
-  });
   useEffect(() => {
     if (!msgAcct && accountsCache && (accountsCache as unknown[]).length) {
       setMsgAcct((accountsCache as { name: string }[])[0].name);
     }
   }, [msgAcct, accountsCache]);
-  // 私信会话列表轮询已移除：App 级常驻轮询会导致非私信页也每 5s 拉一次会话列表，
-  // 产生大量冗余日志；切到私信页时 44 个会话同时渲染还会导致窗口崩溃。
-  // 会话列表轮询由 messages.tsx 自行管理（仅在该页挂载时激活）。
 
   // ===== 启动自检已移除（用户要求：避免干扰日志与自动行为）=====
   // 不再打开时自动跑双引擎校验/弹窗；state 仅保留供 SelfCheckModal 渲染（恒不弹窗）。

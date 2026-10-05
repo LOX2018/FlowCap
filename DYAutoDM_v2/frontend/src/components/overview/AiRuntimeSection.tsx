@@ -71,7 +71,7 @@ export default function AiRuntimeSection(props: PageProps) {
             items={[
               { k: "已处理", v: st.processed ?? 0, mono: true },
               { k: "已回复", v: st.replied ?? 0, mono: true },
-              { k: "线索", v: st.leads_total ?? 0, mono: true },
+              { k: "线索(AI累计)", v: st.leads_total ?? 0, mono: true },
               { k: "错误", v: st.errors ?? 0, mono: true },
             ]}
           />

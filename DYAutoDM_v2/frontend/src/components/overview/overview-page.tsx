@@ -275,7 +275,7 @@ export default function OverviewPage(props: PageProps) {
               push("已切换到 " + acct.name);
             }}
           >
-            查看详情
+            查看该账号总览
           </Button>
         </div>
       </Card>

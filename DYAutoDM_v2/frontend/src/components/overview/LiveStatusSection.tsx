@@ -49,10 +49,10 @@ interface LiveStreamState {
 export default function LiveStatusSection(props: PageProps) {
   const { api, ready } = props;
 
+  // 2026-10-05 T8-2：删除自带 refetchInterval（与 App 常驻 3s 重复），改为读共享缓存。
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["live-stream"],
     queryFn: async () => (await api.getStream()) as unknown as LiveStreamState,
-    refetchInterval: 3000,
     enabled: !!ready,
   });
 

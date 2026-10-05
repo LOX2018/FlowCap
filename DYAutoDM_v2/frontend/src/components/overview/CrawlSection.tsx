@@ -91,7 +91,7 @@ export default function CrawlSection({
   return (
     <Section
       title="采集与内容"
-      description="获客漏斗入口 · 只读历史，发起采集在「采集」页"
+      description="获客漏斗入口 · 只读历史，发起采集在「内容」页"
       data-od-id="overview-crawl"
       actions={
         today && (today.runs > 0 || today.results > 0) ? (
@@ -131,7 +131,7 @@ export default function CrawlSection({
           ) : null}
 
           {!items.length ? (
-            <Blank>暂无采集记录 —— 可在「采集」页开始关键词搜索或评论采集。</Blank>
+            <Blank>暂无采集记录 —— 可在「内容」页开始关键词搜索或评论采集。</Blank>
           ) : (
             <div className="space-y-1.5">
               {items.map((it) => {
