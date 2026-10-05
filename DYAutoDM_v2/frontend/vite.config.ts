@@ -33,9 +33,9 @@ export default defineConfig({
         // 注意：**不要把 radix 全量预载** —— 实测 vendor-radix 会达 229KB，
         // 而首屏仅用到少数几个，全量预载反而拖慢首帧。radix 交给页面 chunk 按需加载。
         // 只拆 react/react-dom（真正首屏必需、且极少变更）。
-        // framer-motion **不**单独成 chunk —— 因为它在 app-shell 用了 LazyMotion，
-        // 靠 tree-shaking 只保留 domAnimation 特性；若强拆 vendor-motion 会把整个
-        // 包（~120KB）原样装进去，反而抵消减包（实测：拆=120KB，不拆=更小）。
+        // framer-motion 走完整包（5 处真实 import：accounts-page / AccountDrawer /
+        // AccountReview / ProxyDrawer / LiveReviewMode），不再单独成 chunk。
+        // 若强拆 vendor-motion 会把整包（~120KB）原样装进去，反而抵消减包。
         manualChunks: {
           "vendor-react": ["react", "react-dom"],
         },
