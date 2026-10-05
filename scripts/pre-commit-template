@@ -5,8 +5,25 @@
 
 set -e
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-SCRIPT="$REPO_ROOT/FlowCap/scripts/check_frontend_gate.py"
+# 2026-10-06 修复：原用 `dirname $0` + 三级上跳推导仓库根。hook 位于
+# .git/hooks/ 下只需**两级**上跳（.git/hooks -> .git -> 根），多跳一级
+# 算出 Desktop/ ⇒ 脚本路径永久失配 ⇒ 走 SKIP 静默放行（实测踩到）。
+# 改用 git 自报仓库根，与目录深度解耦（当前生效 hook 亦用此法）。
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO_ROOT" ]; then
+    REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+fi
+# 2026-10-06 修复：原硬编码 FlowCap/scripts/（目录实为 DYchajian）永久失配，
+# 走「脚本不存在，跳过」分支静默放行 —— 门禁装了等于没装。
+# 失配表现为「跳过」而非「报错」，比硬失败危险一个量级。
+# 现做多路径探测：仓库根 scripts/ 优先，历史位置回退。
+SCRIPT="$REPO_ROOT/scripts/check_frontend_gate.py"
+if [ ! -f "$SCRIPT" ]; then
+    SCRIPT="$REPO_ROOT/FlowCap/scripts/check_frontend_gate.py"
+fi
+if [ ! -f "$SCRIPT" ]; then
+    SCRIPT="$REPO_ROOT/DYAutoDM_v2/scripts/check_frontend_gate.py"
+fi
 
 if [ ! -f "$SCRIPT" ]; then
     echo "[SKIP] 前端门禁脚本不存在，跳过"
