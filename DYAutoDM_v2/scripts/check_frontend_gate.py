@@ -101,6 +101,44 @@ def stage_tsc() -> tuple[bool, str]:
         return False, "npx 不可用（node_modules 缺失？）"
 
 
+# ── 阶段 ①·乙：vitest 单元测试 ───────────────────────────────────────────
+def stage_test() -> tuple[bool, str]:
+    """跑前端单元测试（拆分安全网）。
+
+    无测试文件时视为「不适用」而非失败 —— 避免在建网过渡期误阻提交，
+    但一旦有测试就必须全绿。
+    """
+    has_tests = sorted((FE / "src").rglob("*.test.ts")) or sorted(
+        (FE / "src").rglob("*.test.tsx")
+    )
+    if not has_tests:
+        return True, "无测试文件（跳过）"
+
+    shell = os.name == "nt"
+    cmd = "npx vitest run" if shell else ["npx", "vitest", "run"]
+    try:
+        r = subprocess.run(
+            cmd, cwd=str(FE), capture_output=True, text=True, timeout=300,
+            shell=shell,
+        )
+        if r.returncode == 0:
+            # 提取 pass 计数
+            for l in r.stdout.splitlines():
+                if "Tests" in l and "passed" in l:
+                    return True, f"vitest 通过 ({l.strip()})"
+            return True, "vitest 通过"
+        fail_lines = [
+            l for l in r.stdout.splitlines()
+            if "✗" in l or "×" in l or "FAIL" in l
+        ][:5]
+        detail = "\n".join(f"    {l.strip()}" for l in fail_lines)
+        return False, f"vitest 失败 (exit {r.returncode})\n{detail}"
+    except subprocess.TimeoutExpired:
+        return False, "vitest 超时 (>300s)"
+    except FileNotFoundError:
+        return False, "npx 不可用（node_modules 缺失？）"
+
+
 # ── 阶段 ②：vite build ────────────────────────────────────────────────
 def stage_vite_build() -> tuple[bool, str]:
     """返回 (pass, detail)。"""
@@ -219,6 +257,17 @@ def run(args: argparse.Namespace) -> int:
         print(f"  {detail}")
         return 1
 
+    # 阶段 ①·乙 vitest（拆分安全网）
+    ok, detail = stage_test()
+    results.append(("test", ok, detail))
+    if args.quiet:
+        status = "PASS" if ok else "FAIL"
+        print(f"[{status}] vitest")
+    if not ok and not args.dry_run:
+        print(f"\n[ABORT] vitest 失败，跳过后续阶段")
+        print(f"  {detail}")
+        return 1
+
     # 阶段 ② vite build
     ok, detail = stage_vite_build()
     results.append(("vite", ok, detail))
@@ -246,9 +295,9 @@ def run(args: argparse.Namespace) -> int:
         n_pass = sum(1 for r in results if r[1])
         n_fail = sum(1 for r in results if not r[1])
         if all_ok:
-            print(f"\n✓ 前端门禁通过 ({n_pass}/3)")
+            print(f"\n✓ 前端门禁通过 ({n_pass}/{len(results)} 阶段)")
         else:
-            print(f"\n✗ 前端门禁失败 ({n_pass}/3 通过, {n_fail}/3 失败)")
+            print(f"\n✗ 前端门禁失败 ({n_pass}/{len(results)} 通过, {n_fail}/{len(results)} 失败)")
 
     if args.dry_run:
         if not args.quiet:
